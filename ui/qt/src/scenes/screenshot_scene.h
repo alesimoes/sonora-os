@@ -46,6 +46,8 @@ struct ShotScene {
     // the scene is meant to show.
     bool take = true;
     bool tempo_map = false;
+    // The one scene that documents the software-rendering banner.
+    bool software_banner = false;
     // Before the whole session is fitted in view and the snare selected.
     std::function<void(ShotContext&)> setup;
     // After that.

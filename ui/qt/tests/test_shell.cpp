@@ -12,6 +12,7 @@
 #include <QTest>
 #include <cstdio>
 
+#include "capture.h"
 #include "key_router.h"
 #include "meter_item.h"
 #include "qt_keys.h"
@@ -295,6 +296,32 @@ int main(int argc, char** argv) {
     CHECK(session.transportOverlay().playhead == 48000 * 61 + 24000);
 
     CHECK(engine.frames > 0);   // one frame per refresh, not a read per track
+
+    // --- screenshot mode: the reference size, and no banner about the rig ---
+    {
+        QSize px;
+        CHECK(parse_capture_size(QStringLiteral("1920x1080"), px) && px == QSize(1920, 1080));
+        CHECK(!parse_capture_size(QStringLiteral("1920"), px));
+        CHECK(!parse_capture_size(QStringLiteral("100x100"), px));
+        CHECK(capture_window_size(QSize(1920, 1080), 1.0) == QSize(1920, 1080));
+        CHECK(capture_window_size(QSize(2560, 1440), 1.25) == QSize(2048, 1152));
+
+        QQuickItem* soft = view.rootObject()->findChild<QQuickItem*>(QStringLiteral("banner"));
+        QQuickItem* soft_text =
+            view.rootObject()->findChild<QQuickItem*>(QStringLiteral("bannerText"));
+        CHECK(soft != nullptr && soft_text != nullptr);
+        model.setRenderPath(QStringLiteral("llvmpipe"), true, true);
+        // A real run says so.
+        CHECK(soft->isVisible());
+        CHECK(soft_text->property("text").toString().startsWith(
+            QStringLiteral("Software rendering")));
+        model.setCaptureMode(true);
+        CHECK(!soft->isVisible());
+        model.setCaptureMode(false);
+        CHECK(soft->isVisible());
+        model.setRenderPath(QString(), false, true);
+        CHECK(!soft->isVisible());
+    }
 
     // --- what the engine says is wrong is on screen, in red ---
     {

@@ -216,7 +216,9 @@ public:
     // half-loaded map, nor moved to the default behind their back.
     Q_INVOKABLE void useProfile(const QString& file);
     QString renderPath() const { return render_path_; }
-    bool softwareRendering() const { return software_; }
+    // Screenshot mode hides the rig's own missing GPU, not the product's.
+    bool softwareRendering() const { return software_ && !capture_mode_; }
+    void setCaptureMode(bool on);
     bool metersAvailable() const { return meters_available_; }
     int meterHz() const { return hz_; }
 
@@ -351,6 +353,7 @@ private:
     QString latency_refusal_;
     QString render_path_ = QStringLiteral("not yet known");
     bool software_ = false;
+    bool capture_mode_ = false;
     bool meters_available_ = true;
 };
 

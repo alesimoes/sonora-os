@@ -37,6 +37,7 @@
 #include "sonora/client/socket_engine.h"
 #include "sonora/platform/ipc.h"
 #include "theme.h"
+#include "capture.h"
 #include "timeline_document.h"
 #include "transport_model.h"
 
@@ -52,6 +53,7 @@ struct Options {
     int tracks = 18;
     int meter_hz = 0;  // 0: 60, or 30 on a software rasteriser
     bool kiosk = false;
+    QSize capture_size;  // valid: screenshot mode at this many pixels
     double measure_s = 0;
     double warmup_s = 2;
     QString measure_label;
@@ -226,6 +228,11 @@ bool parse(QGuiApplication& app, Options& o) {
                                 QStringLiteral("hz"));
     const QCommandLineOption kiosk({QStringLiteral("kiosk")},
                                    QStringLiteral("Full screen, as under the kiosk compositor."));
+    const QCommandLineOption capture(
+        {QStringLiteral("capture-size")},
+        QStringLiteral("Screenshot mode: a window of WxH pixels (under QT_SCALE_FACTOR), "
+                       "without the software-rendering banner."),
+        QStringLiteral("WxH"));
     const QCommandLineOption measure({QStringLiteral("measure")},
                                      QStringLiteral("Measure for N seconds after warm-up, print, exit."),
                                      QStringLiteral("seconds"));
@@ -271,7 +278,7 @@ bool parse(QGuiApplication& app, Options& o) {
         QStringLiteral("The most MIDI a session the engine sends, or one File > Open sends it, "
                        "may hold, in MiB (default 512)."),
         QStringLiteral("mib"));
-    p.addOptions({keymap, tracks, hz, kiosk, measure, label, shot, after, dies, nometers, demo,
+    p.addOptions({keymap, tracks, hz, kiosk, capture, measure, label, shot, after, dies, nometers, demo,
                   window, sessions, socket, fake, open, max_snapshot});
     p.process(app);
 
@@ -280,6 +287,10 @@ bool parse(QGuiApplication& app, Options& o) {
     if (p.isSet(tracks)) o.tracks = p.value(tracks).toInt();
     if (p.isSet(hz)) o.meter_hz = p.value(hz).toInt();
     o.kiosk = p.isSet(kiosk);
+    if (p.isSet(capture) && !parse_capture_size(p.value(capture), o.capture_size)) {
+        std::fprintf(stderr, "sonora-ui: --capture-size must be WxH, 640x360 or more\n");
+        return false;
+    }
     if (p.isSet(measure)) o.measure_s = p.value(measure).toDouble();
     o.measure_label = p.value(label);
     o.screenshot = p.value(shot);
@@ -624,7 +635,13 @@ int main(int argc, char** argv) {
     model.routeKeysFrom(&view);
     model.start(a.opt.meter_hz > 0 ? a.opt.meter_hz : 60);
 
-    if (a.opt.kiosk) {
+    if (a.opt.capture_size.isValid()) {
+        const bool keep = a.opt.scene != nullptr && a.opt.scene->software_banner;
+        model.setCaptureMode(!keep);
+        view.resize(capture_window_size(a.opt.capture_size,
+                                        qEnvironmentVariable("QT_SCALE_FACTOR", "1").toDouble()));
+        view.show();
+    } else if (a.opt.kiosk) {
         view.showFullScreen();
     } else {
         view.resize(1280, 720);
