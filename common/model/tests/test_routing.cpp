@@ -253,7 +253,7 @@ int test_codec_window_and_file() {
     Loaded l;
     LoadError le;
     CHECK(deserialize(bytes, l, le));
-    CHECK(l.file_version == kFormatVersion && kFormatVersion == 12);
+    CHECK(l.file_version == kFormatVersion && kFormatVersion >= 12);
     CHECK(same_document(l.snapshot, doc.current()));
     CHECK(l.snapshot.edit->tracks[0]->output == sub.bus);
     CHECK(l.snapshot.edit->buses[0].output == top.bus);

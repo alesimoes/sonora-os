@@ -115,6 +115,13 @@ add_executable(test_loop_playback tests/test_loop_playback.cpp)
 target_link_libraries(test_loop_playback PRIVATE sonora_core)
 add_test(NAME loop_playback COMMAND test_loop_playback)
 
+# Read automation (ADR-0027): the lane value, playback on the timeline grid,
+# block-split invariance, a locate mid-ramp, a loop wrap, Off and pan, and no
+# allocation.
+add_executable(test_automation tests/test_automation.cpp)
+target_link_libraries(test_automation PRIVATE sonora_core)
+add_test(NAME automation COMMAND test_automation)
+
 # Region fades through process(): every shape in and out, the same output
 # however the roll is cut into blocks, a locate into a fade, a loop wrapping
 # from a fade out into a fade in, with no allocation in process().

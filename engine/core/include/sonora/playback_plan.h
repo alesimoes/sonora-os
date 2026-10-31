@@ -84,11 +84,24 @@ struct PlanSegment {
     FadeCurve fade_out_shape = FadeCurve::Linear;
 };
 
+// The parameters a plan carries lanes for (ADR-0027 §2), in
+// PlanTrack::auto_first and auto_count.
+enum PlanAutoParam : uint32_t { kAutoVolume = 0, kAutoPan = 1, kAutoParams = 2 };
+
+// One breakpoint, as model::AutomationPoint: volume in dB, pan -1 to +1.
+struct PlanAutoPoint {
+    int64_t at = 0;
+    float value = 0.0f;
+};
+
 struct PlanTrack {
     uint32_t engine_track = 0;   // index into Session::tracks()
     uint32_t first_segment = 0;  // sorted by start, and by end
     uint32_t segment_count = 0;
     uint16_t channels = 1;
+    // Each parameter's lane, in PlaybackPlan::auto_points; count 0: none.
+    uint32_t auto_first[kAutoParams] = {0, 0};
+    uint32_t auto_count[kAutoParams] = {0, 0};
 };
 
 // The graph, in topological order: per track a TrackOut, or TrackSource,
@@ -166,6 +179,7 @@ struct PlanTrackMix {
     bool armed = false;
     uint8_t monitor = 0;   // Track::Monitor
     uint32_t input = 0;
+    uint8_t automation = 1;   // Track::Automation, Read
 };
 
 // One send slot of an engine track, as the same plan places the tracks:
@@ -189,6 +203,7 @@ struct PlanSizes {
     uint32_t click_segments = 0;
     uint32_t track_mix = 0;   // engine tracks, or 0 for a plan that carries no mix
     uint32_t send_mix = 0;    // engine tracks x kStripSendSlots, or 0
+    uint32_t auto_points = 0;
 };
 
 struct PlaybackPlan {
@@ -242,7 +257,39 @@ struct PlaybackPlan {
     // read for a track strip's send while that track lags the plan.
     PlanSendMix* send_mix = nullptr;
     uint32_t send_mix_count = 0;
+    // Every track's automation lanes, each sorted by `at` (ADR-0027 §2).
+    PlanAutoPoint* auto_points = nullptr;
+    uint32_t auto_point_count = 0;
 };
+
+// Automation is evaluated at timeline frames that are multiples of this and
+// interpolated between them (ADR-0027 §2): anchored to the timeline, so a
+// frame's value never depends on where a callback starts.
+constexpr int64_t kAutoGridFrames = 32;
+
+// A lane's value at frame t: linear between points, held before the first
+// and after the last; at a step (two points at one frame) the second from
+// that frame on. `n` > 0.
+inline float auto_lane_value(const PlanAutoPoint* p, uint32_t n, int64_t t) noexcept SONORA_RT {
+    if (t < p[0].at) return p[0].value;
+    if (t >= p[n - 1].at) return p[n - 1].value;
+    // p[lo].at <= t < p[hi].at, so lo ends on the last point at or before
+    // t: a step's second.
+    uint32_t lo = 0;
+    uint32_t hi = n - 1;
+    while (hi - lo > 1) {
+        const uint32_t mid = lo + (hi - lo) / 2;
+        if (p[mid].at <= t) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    const PlanAutoPoint& a = p[lo];
+    const PlanAutoPoint& b = p[hi];
+    const double x = static_cast<double>(t - a.at) / static_cast<double>(b.at - a.at);
+    return a.value + static_cast<float>(x * static_cast<double>(b.value - a.value));
+}
 
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "chunk slots");
 

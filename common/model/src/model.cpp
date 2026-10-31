@@ -134,7 +134,7 @@ bool MidiRegion::operator==(const MidiRegion& o) const {
 bool TrackEdit::operator==(const TrackEdit& o) const {
     if (id != o.id || kind != o.kind || name != o.name || channels != o.channels ||
         active_playlist != o.active_playlist || inserts != o.inserts || sends != o.sends ||
-        output != o.output ||
+        output != o.output || automation.size() != o.automation.size() ||
         playlists.size() != o.playlists.size() ||
         midi_playlists.size() != o.midi_playlists.size()) {
         return false;
@@ -145,7 +145,17 @@ bool TrackEdit::operator==(const TrackEdit& o) const {
     for (std::size_t i = 0; i < midi_playlists.size(); ++i) {
         if (!same_ptr_or_value(midi_playlists[i], o.midi_playlists[i])) return false;
     }
+    for (std::size_t i = 0; i < automation.size(); ++i) {
+        if (!same_ptr_or_value(automation[i], o.automation[i])) return false;
+    }
     return true;
+}
+
+const AutomationLane* TrackEdit::lane(AutomationParam param) const {
+    for (const auto& l : automation) {
+        if (l->param == param) return l.get();
+    }
+    return nullptr;
 }
 
 bool EditState::operator==(const EditState& o) const {
@@ -177,7 +187,8 @@ bool MidiSource::operator==(const MidiSource& o) const {
 bool TrackMix::operator==(const TrackMix& o) const {
     return track == o.track && input == o.input && monitor == o.monitor &&
            gain_db == o.gain_db && pan == o.pan && mute == o.mute &&
-           solo == o.solo && solo_safe == o.solo_safe && midi == o.midi;
+           solo == o.solo && solo_safe == o.solo_safe && midi == o.midi &&
+           automation == o.automation;
 }
 
 const Source* SourcePool::find(Id id) const {
@@ -1101,6 +1112,69 @@ std::string mix_problem(const TrackMix& m, TrackKind kind, std::uint16_t track_c
         where = "pan";
         return "must be from -1 to 1";
     }
+    if (m.automation != AutomationMode::Off && m.automation != AutomationMode::Read) {
+        where = "automation";
+        if (m.automation > AutomationMode::Trim) return "is not an automation mode";
+        // ADR-0027 §3: the write slice brings them.
+        return "touch, latch, write and trim are not available yet; use off or read";
+    }
+    if (kind == TrackKind::Midi && m.automation != AutomationMode::Read) {
+        where = "automation";
+        return "a MIDI track has no audio automation; it must be read";
+    }
+    return {};
+}
+
+std::string automation_points_problem(const std::vector<AutomationPoint>& points,
+                                      AutomationParam param, std::string& where) {
+    where.clear();
+    if (points.size() > kMaxAutomationPoints) {
+        where = "points";
+        return "a lane holds at most " + str(static_cast<std::int64_t>(kMaxAutomationPoints)) +
+               " points";
+    }
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        const AutomationPoint& p = points[i];
+        where = "points[" + str(static_cast<std::int64_t>(i)) + "]";
+        if (p.at < 0 || p.at > kMaxInteger) return "must be at a frame from 0 to 2^53 - 1";
+        if (i > 0 && p.at < points[i - 1].at) return "points are not sorted by frame";
+        if (i > 1 && p.at == points[i - 2].at) return "at most two points share a frame";
+        if (param == AutomationParam::Volume && !gain_in_range(p.value)) return gain_range();
+        if (param == AutomationParam::Pan && !(p.value >= -1.0f && p.value <= 1.0f)) {
+            return "a pan point must be from -1 to 1";
+        }
+    }
+    where.clear();
+    return {};
+}
+
+std::string automation_problem(const TrackEdit& t, std::string& where) {
+    where.clear();
+    if (t.kind == TrackKind::Midi && !t.automation.empty()) {
+        where = "automation";
+        return "a MIDI track has no audio automation";
+    }
+    for (std::size_t i = 0; i < t.automation.size(); ++i) {
+        const std::string path = "automation[" + str(static_cast<std::int64_t>(i)) + "]";
+        const AutomationLane* lane = t.automation[i].get();
+        if (lane == nullptr || lane->points.empty()) {
+            where = path;
+            return "a lane needs at least one point";
+        }
+        if (lane->param > AutomationParam::Pan) {
+            where = path;
+            return "is not a parameter this version automates";
+        }
+        if (i > 0 && lane->param <= t.automation[i - 1]->param) {
+            where = path;
+            return "lanes are not sorted by parameter, or one is there twice";
+        }
+        const std::string why = automation_points_problem(lane->points, lane->param, where);
+        if (!why.empty()) {
+            where = path + "." + where;
+            return why;
+        }
+    }
     return {};
 }
 
@@ -1584,6 +1658,11 @@ bool check_invariants(const Snapshot& s, std::string& error) {
             return false;
         }
         if (!check_sends(tr.sends, path)) return false;
+        why = automation_problem(tr, where);
+        if (!why.empty()) {
+            error = path + "." + where + ": " + why;
+            return false;
+        }
         if (tr.output != kMasterOutput &&
             (tr.kind == TrackKind::Midi || bus_ids.count(tr.output) == 0)) {
             error = path + ".output: " +

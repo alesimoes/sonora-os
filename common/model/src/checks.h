@@ -65,6 +65,14 @@ std::vector<Id> bus_path(const EditState& e, Id from, Id to);
 // Empty when the buses' sends form no loop; else `where` names a bus on one.
 std::string bus_loop_problem(const EditState& e, std::string& where);
 
+// Automation (ADR-0027). Points: each `at` from 0 to kMaxInteger, sorted, at
+// most two at a frame, values in the param's range, at most
+// kMaxAutomationPoints. Lanes: sorted by param, unique, none empty, none on
+// a MIDI track.
+std::string automation_points_problem(const std::vector<AutomationPoint>& points,
+                                      AutomationParam param, std::string& where);
+std::string automation_problem(const TrackEdit& t, std::string& where);
+
 // A fade left running into the crossfade at its region's other end is
 // shortened to meet it, as clamp_fades() shortens one that outgrew its
 // region. Used by edits that move edges, clear a crossfade or add a take's

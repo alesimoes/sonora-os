@@ -778,6 +778,9 @@ public:
         // The copy plays where its source does (ADR-0024 §2); a track has no
         // input, so its output closes no loop.
         copy->output = src.output;
+        // Pro Tools' Duplicate copies automation by default; the lanes are
+        // shared, as an undo step shares them.
+        copy->automation = src.automation;
         Id next = op.track + 1;
         const auto renamed = [&](const std::string& name) {
             // "Vox.02" on "Vox" is "Vox.dup1.02" on its copy.
@@ -1214,6 +1217,72 @@ public:
             }
             edit->buses[b].output = op.output;
         }
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
+    // --- automation (ADR-0027 §1): undoable ---
+
+    bool operator()(const EditAutomation& op) {
+        const std::size_t t = locate_track(*before_.edit, op.track);
+        if (t == kNone) return fail("track " + str(op.track) + " does not exist");
+        const TrackEdit& before_track = *before_.edit->tracks[t];
+        if (before_track.kind == TrackKind::Midi) {
+            return fail("track " + str(op.track) + " is a MIDI track; it has no audio automation");
+        }
+        if (op.param > AutomationParam::Pan) return fail("not a parameter this version automates");
+        if (op.from < 0 || op.to > kMaxInteger || op.from >= op.to) {
+            return fail("the range must run forward, from 0 to at most 2^53 - 1");
+        }
+        std::string where;
+        const std::string why = detail::automation_points_problem(op.points, op.param, where);
+        if (!why.empty()) return fail(where + ": " + why);
+        for (const AutomationPoint& p : op.points) {
+            if (p.at < op.from || p.at >= op.to) {
+                return fail("a point at " + str(p.at) + " lies outside the range it replaces");
+            }
+        }
+        std::vector<AutomationPoint> points;
+        const AutomationLane* old = before_track.lane(op.param);
+        if (old != nullptr) {
+            for (const AutomationPoint& p : old->points) {
+                if (p.at < op.from) points.push_back(p);
+            }
+        }
+        points.insert(points.end(), op.points.begin(), op.points.end());
+        if (old != nullptr) {
+            for (const AutomationPoint& p : old->points) {
+                if (p.at >= op.to) points.push_back(p);
+            }
+        }
+        if (points.size() > kMaxAutomationPoints) {
+            return fail("the lane would hold " + str(static_cast<std::int64_t>(points.size())) +
+                        " points; it holds at most " +
+                        str(static_cast<std::int64_t>(kMaxAutomationPoints)));
+        }
+        auto track = std::make_shared<TrackEdit>(before_track);
+        auto& lanes = track->automation;
+        const auto at = std::lower_bound(
+            lanes.begin(), lanes.end(), op.param,
+            [](const std::shared_ptr<const AutomationLane>& l, AutomationParam p) {
+                return l->param < p;
+            });
+        const bool present = at != lanes.end() && (*at)->param == op.param;
+        if (points.empty()) {
+            if (present) lanes.erase(at);
+        } else {
+            auto lane = std::make_shared<AutomationLane>();
+            lane->param = op.param;
+            lane->points = std::move(points);
+            if (present) {
+                *at = std::move(lane);
+            } else {
+                lanes.insert(at, std::move(lane));
+            }
+        }
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        edit->tracks[t] = std::move(track);
         after_ = before_;
         after_.edit = std::move(edit);
         return true;

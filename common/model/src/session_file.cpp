@@ -50,6 +50,12 @@ constexpr Name<PluginFormat> kPluginFormats[] = {{"lv2", PluginFormat::Lv2},
 constexpr Name<TrackKind> kTrackKinds[] = {{"audio", TrackKind::Audio},
                                            {"midi", TrackKind::Midi},
                                            {"instrument", TrackKind::Instrument}};
+constexpr Name<AutomationMode> kAutomationModes[] = {
+    {"off", AutomationMode::Off},     {"read", AutomationMode::Read},
+    {"touch", AutomationMode::Touch}, {"latch", AutomationMode::Latch},
+    {"write", AutomationMode::Write}, {"trim", AutomationMode::Trim}};
+constexpr Name<AutomationParam> kAutomationParams[] = {{"volume", AutomationParam::Volume},
+                                                       {"pan", AutomationParam::Pan}};
 
 template <typename E, std::size_t N>
 const char* name_of(const Name<E> (&table)[N], E v) {
@@ -348,9 +354,32 @@ bool v11_to_v12(Value& root, std::vector<Repair>&, std::string& error) {
     return add("tracks", false) && add("buses", true);
 }
 
+// v12 -> v13 (ADR-0027): every track with audio gains "automation": [] and
+// "automation_mode": "read", which plays what a version 12 session played.
+bool v12_to_v13(Value& root, std::vector<Repair>&, std::string& error) {
+    Value* list = root.find("tracks");
+    if (list == nullptr || !list->is_array()) return true;   // the reader names it
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        Value& v = list->items()[i];
+        if (!v.is_object()) continue;
+        for (const char* key : {"automation", "automation_mode"}) {
+            if (v.find(key) != nullptr) {
+                error = "tracks[" + std::to_string(i) + "] has \"" + key +
+                        "\", which version 12 does not define";
+                return false;
+            }
+        }
+        const Value* kind = v.find("kind");
+        if (kind != nullptr && kind->is_string() && kind->text() == "midi") continue;
+        v.set("automation", Value::array());
+        v.set("automation_mode", Value::string("read"));
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
-     v9_to_v10, v10_to_v11, v11_to_v12}};
+     v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -1249,6 +1278,44 @@ bool read_inserts(Reader& rd, const Value& track, const std::string& path, Track
     return true;
 }
 
+// "automation": [{"param": "volume", "points": [[at, value], ...]}, ...]
+// (ADR-0027 §6).
+bool read_automation(Reader& rd, const Value& track, const std::string& path, TrackEdit& t) {
+    const Value* list = nullptr;
+    if (!rd.array(track, path, "automation", list)) return false;
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        const Value& v = list->items()[i];
+        const std::string p = index_path(path + ".automation", i);
+        auto lane = std::make_shared<AutomationLane>();
+        const Value* points = nullptr;
+        if (!rd.keys(v, p, {"param", "points"}) ||
+            !rd.choice(v, p, "param", kAutomationParams, lane->param) ||
+            !rd.array(v, p, "points", points)) {
+            return false;
+        }
+        if (points->items().size() > kMaxAutomationPoints) {
+            return rd.fail(*points, p + ".points",
+                           "a lane holds at most " + std::to_string(kMaxAutomationPoints) +
+                               " points");
+        }
+        lane->points.reserve(points->items().size());
+        for (std::size_t k = 0; k < points->items().size(); ++k) {
+            const Value& e = points->items()[k];
+            std::int64_t at = 0;
+            float value = 0.0f;
+            if (!e.is_array() || e.items().size() != 2 || !e.items()[0].is_integer_lexeme() ||
+                !e.items()[0].to_int64(at) || at < 0 || at > kMaxInteger ||
+                !e.items()[1].is_number() || !e.items()[1].to_float(value)) {
+                return rd.fail(e, index_path(p + ".points", k), "must be [frame, value]");
+            }
+            lane->points.push_back(AutomationPoint{at, value});
+        }
+        t.automation.push_back(std::move(lane));
+    }
+    std::string where;
+    return rd.checked(detail::automation_problem(t, where), track, path, where);
+}
+
 bool read_sends(Reader& rd, const Value& strip, const std::string& path,
                 std::vector<Send>& sends, MixState& mix) {
     const Value* list = nullptr;
@@ -1338,7 +1405,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
             keys_ok = rd.keys(v, p,
                               {"id", "kind", "name", "channels", "input", "monitor", "gain_db",
                                "pan", "mute", "solo", "solo_safe", "active_playlist", "inserts",
-                               "sends", "output", "playlists"});
+                               "sends", "output", "automation", "automation_mode", "playlists"});
         } else if (midi) {
             keys_ok = rd.keys(v, p,
                               {"id", "kind", "name", "midi_input", "midi_output", "monitor",
@@ -1347,7 +1414,8 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
             keys_ok = rd.keys(v, p,
                               {"id", "kind", "name", "channels", "midi_input", "monitor",
                                "gain_db", "pan", "mute", "solo", "solo_safe", "active_playlist",
-                               "inserts", "sends", "output", "playlists"});
+                               "inserts", "sends", "output", "automation", "automation_mode",
+                               "playlists"});
         }
         if (!keys_ok) return false;
         TrackMix m;
@@ -1397,14 +1465,18 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
         if (!rd.flag(v, p, "mute", m.mute)) return false;
         if (!rd.flag(v, p, "solo", m.solo)) return false;
         if (!rd.flag(v, p, "solo_safe", m.solo_safe)) return false;
-        std::string where;
-        if (!rd.checked(detail::mix_problem(m, t->kind, t->channels, where), v, p, where)) {
+        if (!midi && !rd.choice(v, p, "automation_mode", kAutomationModes, m.automation)) {
             return false;
         }
+        std::string where;
+        std::string why = detail::mix_problem(m, t->kind, t->channels, where);
+        if (where == "automation") where = "automation_mode";
+        if (!rd.checked(why, v, p, where)) return false;
         if (!rd.id(v, p, "active_playlist", t->active_playlist)) return false;
         if (!midi && !read_inserts(rd, v, p, *t, mix)) return false;
         if (!midi && !read_sends(rd, v, p, t->sends, mix)) return false;
         if (!midi && !rd.id(v, p, "output", t->output)) return false;
+        if (!midi && !read_automation(rd, v, p, *t)) return false;
         const Value* pls = nullptr;
         if (!rd.array(v, p, "playlists", pls)) return false;
         if (pls->items().empty()) {
@@ -1590,6 +1662,18 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
             Value& sends = tv.set("sends", Value::array());
             for (const Send& sd : t.sends) sends.push(send_value(sd, *s.mix.find_send(sd.id)));
             tv.set("output", id_value(t.output));
+            tv.set("automation_mode", Value::string(name_of(kAutomationModes, m.automation)));
+            Value& lanes = tv.set("automation", Value::array());
+            for (const auto& l : t.automation) {
+                Value& lv = lanes.push(Value::object());
+                lv.set("param", Value::string(name_of(kAutomationParams, l->param)));
+                Value& points = lv.set("points", Value::array());
+                for (const AutomationPoint& pt : l->points) {
+                    Value& e = points.push(Value::array());
+                    e.push(integer(pt.at));
+                    e.push(Value::number_float(pt.value));
+                }
+            }
         }
         Value& pls = tv.set("playlists", Value::array());
         for (const auto& mp : t.midi_playlists) {

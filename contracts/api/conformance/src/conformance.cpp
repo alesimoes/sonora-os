@@ -1624,6 +1624,83 @@ int check_output_routing(Rig& rig) {
     return C(rig, "output routing").go();
 }
 
+// Automation (ADR-0027, protocol 32): a lane edit crosses as an operation
+// and every replica holds it; a point outside its range or a write mode is
+// refused, saying so, and changes nothing; undo takes the lane edit back
+// and leaves the mode, which is mix state.
+int check_automation(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        bool apply(Session& s, const model::Operation& op, CommandReply& r) {
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            if (!model::encode_operation(op, m.op, error)) return false;
+            return s.await(rig_, s.engine->submit(m), r);
+        }
+
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            const model::Snapshot before = s.replica.current();
+            const model::Id track = before.edit->tracks.at(0)->id;
+            const model::AutomationParam vol = model::AutomationParam::Volume;
+            CommandReply r;
+            EXPECT(apply(s, model::EditAutomation{track, vol, 0, model::kMaxInteger,
+                                                  {{0, -6.0f}, {48000, 0.0f}}},
+                         r) &&
+                       r.result == DispatchResult::Ok,
+                   "EditAutomation was refused: " + r.message);
+            EXPECT(apply(s, model::EditAutomation{track, vol, 24000, 30000, {{24000, -3.0f}}}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "a range EditAutomation was refused: " + r.message);
+            model::TrackMix mix = *before.mix.find(track);
+            mix.automation = model::AutomationMode::Off;
+            EXPECT(apply(s, model::SetMix{mix}, r) && r.result == DispatchResult::Ok,
+                   "SetMix with automation off was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.current().revision == before.revision + 3; }),
+                   "no update for the automation: " + s.replica_error);
+            const model::Snapshot here = s.replica.current();
+            const model::AutomationLane* lane = here.edit->tracks[0]->lane(vol);
+            EXPECT(lane != nullptr && lane->points.size() == 3,
+                   "the replica does not hold the lane's three points");
+            EXPECT(here.mix.find(track)->automation == model::AutomationMode::Off,
+                   "the replica does not hold the automation mode");
+
+            const std::size_t updates = s.inbox.model.size();
+            EXPECT(apply(s, model::EditAutomation{track, vol, 100, 200, {{300, 0.0f}}}, r) &&
+                       r.result == DispatchResult::Failed,
+                   "a point outside its range was accepted");
+            EXPECT(mentions(r.message, "outside the range"), "the refusal does not name the range");
+            EXPECT(s.next_publish(rig_), "nothing published after the refusal");
+            mix.automation = model::AutomationMode::Latch;
+            EXPECT(apply(s, model::SetMix{mix}, r) && r.result == DispatchResult::Failed,
+                   "a write mode was accepted before its slice");
+            EXPECT(mentions(r.message, "not available yet"), "the refusal does not say why");
+            EXPECT(s.next_publish(rig_), "nothing published after the second refusal");
+            EXPECT(s.inbox.model.size() == updates, "a refused operation sent an update");
+            EXPECT(s.replica.current() == here, "a refused operation changed the replica");
+
+            ModelRequest undo;
+            undo.action = ModelAction::Undo;
+            EXPECT(s.await(rig_, s.engine->submit(undo), r) && r.result == DispatchResult::Ok,
+                   "undo failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.inbox.model.size() == updates + 1; }),
+                   "no update for the undo");
+            const model::Snapshot after = s.replica.current();
+            lane = after.edit->tracks[0]->lane(vol);
+            EXPECT(lane != nullptr && lane->points.size() == 2, "undo did not take the range edit back");
+            EXPECT(after.mix.find(track)->automation == model::AutomationMode::Off,
+                   "undo moved the automation mode, which is not a step");
+            return ok();
+        }
+    };
+    return C(rig, "automation").go();
+}
+
 // Track structure (ADR-0023): no track past the engine's count; outside a
 // take the record arm goes with its track when the tracks move; during a
 // take nothing may delete or move the armed track, by an operation, an
@@ -3404,6 +3481,7 @@ int run(Rig& rig) {
     failures += check_compound(rig);
     failures += check_sends(rig);
     failures += check_output_routing(rig);
+    failures += check_automation(rig);
     failures += check_track_structure(rig);
     failures += check_track_structure_while_closing(rig);
     failures += check_track_structure_while_starting(rig);

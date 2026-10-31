@@ -54,6 +54,12 @@ constexpr Name<TrackKind> kTrackKinds[] = {{"audio", TrackKind::Audio},
                                            {"instrument", TrackKind::Instrument}};
 constexpr Name<Timebase> kTimebases[] = {{"frames", Timebase::Frames},
                                          {"ticks", Timebase::Ticks}};
+constexpr Name<AutomationMode> kAutomationModes[] = {
+    {"off", AutomationMode::Off},     {"read", AutomationMode::Read},
+    {"touch", AutomationMode::Touch}, {"latch", AutomationMode::Latch},
+    {"write", AutomationMode::Write}, {"trim", AutomationMode::Trim}};
+constexpr Name<AutomationParam> kAutomationParams[] = {{"volume", AutomationParam::Volume},
+                                                       {"pan", AutomationParam::Pan}};
 
 template <typename E, std::size_t N>
 Value name_of(const Name<E> (&table)[N], E v) {
@@ -148,6 +154,30 @@ Value mix_value(const TrackMix& m) {
     v.set("solo_safe", Value::boolean(m.solo_safe));
     v.set("midi_input", port_value(m.midi.in_port, m.midi.in_channel));
     v.set("midi_output", port_value(m.midi.out_port, m.midi.out_channel));
+    v.set("automation", name_of(kAutomationModes, m.automation));
+    return v;
+}
+
+// [[at, value], ...]: the session file's spelling (ADR-0027 §6).
+Value points_value(const std::vector<AutomationPoint>& points) {
+    Value v = Value::array();
+    for (const AutomationPoint& p : points) {
+        Value e = Value::array();
+        e.push(integer(p.at));
+        e.push(Value::number_float(p.value));
+        v.push(std::move(e));
+    }
+    return v;
+}
+
+Value lanes_value(const std::vector<std::shared_ptr<const AutomationLane>>& lanes) {
+    Value v = Value::array();
+    for (const auto& l : lanes) {
+        Value lv = Value::object();
+        lv.set("param", name_of(kAutomationParams, l->param));
+        lv.set("points", points_value(l->points));
+        v.push(std::move(lv));
+    }
     return v;
 }
 
@@ -689,6 +719,14 @@ struct Encoder {
         v.set("output", id_value(o.output));
         return v;
     }
+    Value operator()(const EditAutomation& o) const {
+        Value v = with_kind("EditAutomation");
+        v.set("track", id_value(o.track));
+        v.set("param", name_of(kAutomationParams, o.param));
+        v.set("range", pair(o.from, o.to));
+        v.set("points", points_value(o.points));
+        return v;
+    }
     // Each member exactly as it would be alone; no label key when there is
     // none, so the encoding stays canonical.
     Value operator()(const Compound& o) const {
@@ -979,7 +1017,7 @@ bool read_midi_region_value(Reader& rd, const Value& v, const std::string& p, Mi
 bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& m) {
     if (!rd.keys(v, p,
                  {"track", "input", "monitor", "gain_db", "pan", "mute", "solo", "solo_safe",
-                  "midi_input", "midi_output"}) ||
+                  "midi_input", "midi_output", "automation"}) ||
         !rd.id(v, p, "track", m.track)) {
         return false;
     }
@@ -995,7 +1033,48 @@ bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& 
     return rd.choice(v, p, "monitor", kMonitors, m.monitor) &&
            rd.real(v, p, "gain_db", m.gain_db) && rd.real(v, p, "pan", m.pan) &&
            rd.flag(v, p, "mute", m.mute) && rd.flag(v, p, "solo", m.solo) &&
-           rd.flag(v, p, "solo_safe", m.solo_safe) && read_routing(rd, v, p, m.midi);
+           rd.flag(v, p, "solo_safe", m.solo_safe) && read_routing(rd, v, p, m.midi) &&
+           rd.choice(v, p, "automation", kAutomationModes, m.automation);
+}
+
+// Shape only; apply() and check_invariants() judge order and range.
+bool read_points(Reader& rd, const Value& obj, const std::string& p,
+                 std::vector<AutomationPoint>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(obj, p, "points", list)) return false;
+    if (list->items().size() > kMaxAutomationPoints) {
+        return rd.fail(Reader::at(p, "points"),
+                       "a lane holds at most " + std::to_string(kMaxAutomationPoints) + " points");
+    }
+    out.reserve(list->items().size());
+    for (const Value& e : list->items()) {
+        std::int64_t at = 0;
+        float value = 0.0f;
+        if (!e.is_array() || e.items().size() != 2 || !e.items()[0].is_integer_lexeme() ||
+            !e.items()[0].to_int64(at) || at < 0 || at > kMaxInteger ||
+            !e.items()[1].is_number() || !e.items()[1].to_float(value)) {
+            return rd.fail(Reader::at(p, "points"), "must hold [frame, value] pairs");
+        }
+        out.push_back(AutomationPoint{at, value});
+    }
+    return true;
+}
+
+bool read_lanes(Reader& rd, const Value& obj, const std::string& p,
+                std::vector<std::shared_ptr<const AutomationLane>>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(obj, p, "automation", list)) return false;
+    const std::string lp = Reader::at(p, "automation");
+    for (const Value& e : list->items()) {
+        auto lane = std::make_shared<AutomationLane>();
+        if (!rd.keys(e, lp, {"param", "points"}) ||
+            !rd.choice(e, lp, "param", kAutomationParams, lane->param) ||
+            !read_points(rd, e, lp, lane->points)) {
+            return false;
+        }
+        out.push_back(std::move(lane));
+    }
+    return true;
 }
 
 bool read_mix(Reader& rd, const Value& obj, const std::string& path, TrackMix& m) {
@@ -1571,6 +1650,18 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = o;
+    } else if (kind == "EditAutomation") {
+        EditAutomation o;
+        std::array<std::int64_t, 2> range{};
+        if (!rd.keys(v, "", {"op", "track", "param", "range", "points"}) ||
+            !rd.id(v, "", "track", o.track) ||
+            !rd.choice(v, "", "param", kAutomationParams, o.param) ||
+            !rd.range(v, "", "range", kMaxInteger, range) || !read_points(rd, v, "", o.points)) {
+            return false;
+        }
+        o.from = range[0];
+        o.to = range[1];
+        out = std::move(o);
     } else if (kind == "Compound") {
         return decode_compound(rd, v, out);
     } else {
@@ -1639,7 +1730,9 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 //    bus_mix and send_mix (ADR-0022).
 // 9: each edit track and aux bus carries its output, each bus mix its solo
 //    (ADR-0024).
-constexpr std::int64_t kWindowFormat = 9;
+// 10: each edit track carries its automation lanes, each track mix its
+//    automation mode (ADR-0027).
+constexpr std::int64_t kWindowFormat = 10;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1723,6 +1816,7 @@ private:
         Value& sends = tv.set("sends", Value::array());
         for (const Send& sd : t.sends) sends.push(send_value(sd));
         tv.set("output", id_value(t.output));
+        tv.set("automation", lanes_value(t.automation));
         Value& ps = tv.set("playlists", Value::array());
         for (const auto& p : t.playlists) ps.push(index_value(playlist(*p)));
         Value& ms = tv.set("midi_playlists", Value::array());
@@ -2025,7 +2119,7 @@ bool read_tracks(Reader& rd, const Value& root,
         const Value* sends = nullptr;
         if (!rd.keys(e, "tracks",
                      {"id", "kind", "name", "channels", "active_playlist", "inserts", "sends",
-                      "output", "playlists", "midi_playlists"}) ||
+                      "output", "automation", "playlists", "midi_playlists"}) ||
             !rd.id(e, "tracks", "id", t->id) || !rd.id(e, "tracks", "output", t->output) ||
             !rd.choice(e, "tracks", "kind", kTrackKinds, t->kind) ||
             !rd.text(e, "tracks", "name", t->name) ||
@@ -2033,7 +2127,8 @@ bool read_tracks(Reader& rd, const Value& root,
             !rd.id(e, "tracks", "active_playlist", t->active_playlist) ||
             !rd.array(e, "tracks", "inserts", ins) || !rd.array(e, "tracks", "sends", sends) ||
             !rd.array(e, "tracks", "playlists", ps) ||
-            !rd.array(e, "tracks", "midi_playlists", ms)) {
+            !rd.array(e, "tracks", "midi_playlists", ms) ||
+            !read_lanes(rd, e, "tracks", t->automation)) {
             return false;
         }
         for (const Value& i : ms->items()) {
@@ -2383,7 +2478,8 @@ const char* const kNames[] = {
     "SetInsertState", "AddMidiSource", "PlaceMidiRegion", "EditMidi",
     "SetMidiRouting", "RecordLoopTake", "AddBus", "RemoveBus",
     "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
-    "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "Compound"};
+    "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "EditAutomation",
+    "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

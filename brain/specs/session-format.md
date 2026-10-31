@@ -354,6 +354,13 @@ not referenced by any region in any playlist is *unused*. It stays.
   (Phase 3); the format carries them from the start so the Phase 3 change is
   behaviour, not format.
 - `inserts` (version 2): the track's plugin inserts. See "Inserts".
+- `automation_mode` and `automation` (version 13, tracks with audio,
+  ADR-0027): the mode, `"off"` or `"read"` (`"touch"`, `"latch"`,
+  `"write"`, `"trim"` are reserved for the write slice and refused), is mix
+  state; the lanes are undoable: `[{"param": "volume" | "pan", "points":
+  [[frame, value], ...]}]`, sorted by param, one lane each, never empty,
+  points sorted by frame with at most two at one frame (a step), volume in
+  dB from -144 to +24, pan from -1 to +1, at most 65,536 points a lane.
 - `kind` (version 5, second key): `"audio"`, `"midi"` or `"instrument"`.
   The example above is an audio track. The key set depends on the kind,
   strictly: a MIDI track has no `channels`, `input`, `gain_db`, `pan` or
@@ -939,6 +946,12 @@ key. The frozen v9 fixture loads through it and saves as
 `tracks`. Nothing else changes. A version 10 file cannot carry either key.
 The frozen v10 fixture loads through it and saves as `v11-sends.sonora`,
 byte for byte.
+
+**v12→v13 (automation, ADR-0027):** every track with audio gains
+`"automation_mode": "read"` and `"automation": []`, after `output`. Nothing
+else changes. A version 12 file cannot carry either key. The frozen v12
+fixture loads through it and saves as `v13-automation.sonora`, byte for
+byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

@@ -234,6 +234,26 @@ playback can follow edits; it is in flight.
           review N4)
         - [ ] FakeEngine::Config::sessions_root is never set by a rig; cover
           its folder-Load sessions-root branch in a test (#151 review N5)
+- [ ] Automation write slice (ADR-0027 §3; read playback of volume and pan
+      landed on `t4-automation`, session format 13, protocol 32):
+  - [ ] Touch, Latch, Write and Trim: per-track live override atomics
+        (value, touched) set by the control thread from `ParameterChange`
+        with touch and release, played instead of the lane, ramped; a fixed
+        `RingBuffer` of `{track, param, frame, value}` written by the audio
+        thread for each block a written parameter is live (full: counted,
+        never waited on); the control thread drains it into a buffer
+        reserved at pass start and applies one thinned `EditAutomation` per
+        lane in a `Compound` "Automation Write" at the pass's end. Touch
+        returns at the glide time; Write falls back to Latch after a pass.
+        `SetMix` then accepts the four modes.
+  - [ ] Trim: a relative dB lane summed with Volume in dB.
+  - [ ] Sends follow automated volume and pan per frame; today post-fader
+        and follow-pan sends take the lane at the callback's first frame
+        (ADR-0027 §2).
+  - [ ] A track behind an insert chain reads its lanes `L` frames early,
+        folded into the loop; on the loop's first pass the audio of the
+        pre-roll is scaled by the lane at the loop's end for `L` frames.
+        Track the frames the chain's output came from instead.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -474,6 +494,18 @@ playback can follow edits; it is in flight.
        - [ ] While tracks are moving every fader ride step is dropped, not
              just one; resend the rider's last value at adoption (#162
              review)
+- [ ] Automation in the model, after ADR-0027's first slice:
+  - [ ] `DuplicateTrack` carries an automation flag (Pro Tools' dialog
+        checkbox); today a duplicate always copies its lanes.
+  - [ ] Automation follows edits: moving, cutting, pasting or deleting
+        regions moves the automation under them, as Pro Tools' "Automation
+        Follows Edit" option, one `Compound` with the region edit.
+  - [ ] Owner question, default taken: automation per track (Logic) rather
+        than per edit playlist (Pro Tools); revisit if the comping workflow
+        wants Pro Tools' behaviour (ADR-0027, alternatives).
+  - [ ] Mute, send level and send pan as `AutomationParam` values, and
+        lanes on aux returns and the Master (strip-keyed, with ADR-0024's
+        strips); a session format bump.
 
 ### Track 3: UI (ui-engineer)
 
@@ -877,6 +909,23 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          behind modals, the primary-button rule, left-aligned menus with
          key equivalents from the active map, destructive actions labelled
          (F30 to F33).
+- [ ] `automation.lanes` UI (ADR-0027; the model and read playback landed
+      on `t4-automation`): a lane per automated parameter under each track
+      in the Edit window (Pro Tools' track view selector, Logic's lane
+      disclosure), the curve drawn from `TrackEdit::automation`; pencil
+      (free, line), breakpoints with the grabber and the Smart Tool, thin,
+      cut, copy and paste of automation, each one `EditAutomation` (a
+      `Compound` across lanes); key bindings `"verified": false` until
+      checked; screenshots.
+- [ ] `ui.mixer.automation` UI: the automation mode selector on each strip
+      and track header (Off, Read now; Touch, Latch, Write, Trim once Track
+      1's write slice lands), sent with `SetMix`; the fader and pan knob
+      follow the lane while playing in Read.
+- [ ] `session.cpp:1916`: while `from` is less than the chain latency and not
+      looping, `t` clamps to 0 and then advances, so a lane changing in the
+      first frames saws. Hold at frame 0 until `from + i` reaches the latency.
+- [ ] `test_automation.cpp`: add a test that a track behind an insert chain
+      reads its lanes `chain.latency_frames` early; the `lag` path has no test.
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
 
@@ -1488,6 +1537,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          raises a standing `PluginFault` on that insert, cleared once the
          document names another state or none (ctest
          `plugin_hosting_state_not_restored`).
+- [ ] Plugin parameter automation (ADR-0027 §5): lanes keyed by insert id
+      and ParamValue key, carried in the plan beside the mix lanes,
+      evaluated once per block at the block's first frame less the chain's
+      latency into ADR-0012's block-tagged last-value table; no new IPC.
+      After the write slice (Track 1).
 
 ### Track 5: dev environment (distro-engineer, researcher)
 

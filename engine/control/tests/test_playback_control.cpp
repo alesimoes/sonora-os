@@ -1616,6 +1616,53 @@ int test_solo_safe_reaches_the_track() {
     return 0;
 }
 
+// ADR-0027 §2: the builder copies each track's volume and pan lanes into
+// the plan's point pool, and the mode reaches the track as mix state does.
+int test_automation_reaches_the_plan() {
+    auto session = make_session(2);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK(two_tracks(h));
+    CHECK_APPLY(h, (EditAutomation{102, AutomationParam::Pan, 0, kMaxInteger, {{0, -1.0f}}}));
+    CHECK_APPLY(h, (EditAutomation{102, AutomationParam::Volume, 0, kMaxInteger,
+                                   {{0, -6.0f}, {4800, 0.0f}}}));
+    sonora::BuildLimits limits;
+    limits.engine_tracks = 2;
+    limits.max_segments = 64;
+    limits.max_chunk_slots = 1024;
+    limits.chunk_frames = kChunk;
+    limits.window_frames = 1024;
+    limits.pool_chunks = 128;
+    const sonora::SourceSlot slot = [](const Source&, uint32_t& out, std::string&) {
+        out = 0;
+        return true;
+    };
+    PlaybackPlan* plan = nullptr;
+    sonora::PlanReport report;
+    std::string error;
+    CHECK(sonora::build_plan(h.current(), limits, slot, 1, plan, report, error));
+    CHECK(plan->auto_point_count == 3);
+    CHECK(plan->tracks[0].auto_count[sonora::kAutoVolume] == 0);
+    const sonora::PlanTrack& b = plan->tracks[1];
+    CHECK(b.auto_count[sonora::kAutoVolume] == 2 && b.auto_count[sonora::kAutoPan] == 1);
+    const sonora::PlanAutoPoint* vol = plan->auto_points + b.auto_first[sonora::kAutoVolume];
+    CHECK(vol[0].at == 0 && vol[0].value == -6.0f && vol[1].at == 4800);
+    CHECK(plan->auto_points[b.auto_first[sonora::kAutoPan]].value == -1.0f);
+    sonora::destroy_plan(plan);
+
+    PlaybackController ctl(s);
+    CHECK(show(ctl, h.current(), error));
+    CHECK(s.tracks()[1]->automation() == sonora::Track::Automation::Read);
+    TrackMix m = *h.current().mix.find(102);
+    m.automation = AutomationMode::Off;
+    CHECK_APPLY(h, SetMix{m});
+    ctl.apply_mix(h.current());
+    CHECK(s.tracks()[1]->automation() == sonora::Track::Automation::Off);
+    CHECK(s.tracks()[0]->automation() == sonora::Track::Automation::Read);
+    return 0;
+}
+
 // The same, rolling. A document without track C (a session opened, an
 // AddTrack undone) is shown while the old plan still renders C on engine
 // track 2, and goes on rendering it until the reader has the new plan's
@@ -2345,6 +2392,7 @@ int main() {
     if (test_takes_name_the_document_session()) return 1;
     if (test_undone_track_leaves_no_solo()) return 1;
     if (test_solo_safe_reaches_the_track()) return 1;
+    if (test_automation_reaches_the_plan()) return 1;
     if (test_removed_track_stays_muted_until_the_swap()) return 1;
     if (test_sample_rate_must_match()) return 1;
     if (test_locate_serial_is_monotonic()) return 1;

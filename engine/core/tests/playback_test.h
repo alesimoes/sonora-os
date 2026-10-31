@@ -236,7 +236,7 @@ struct SegmentSpec {
 inline sonora::PlaybackPlan* make_plan(uint64_t epoch, uint32_t tracks,
                                        const std::vector<SegmentSpec>& specs,
                                        uint32_t chunk_frames, uint32_t edge_delay = 0,
-                                       uint32_t track_mix = 0) {
+                                       uint32_t track_mix = 0, uint32_t auto_points = 0) {
     uint32_t slots = 0;
     for (const SegmentSpec& s : specs) {
         const int64_t first = s.source_offset / chunk_frames;
@@ -250,6 +250,7 @@ inline sonora::PlaybackPlan* make_plan(uint64_t epoch, uint32_t tracks,
     sizes.edges = tracks + 1;
     sizes.chunk_slots = slots;
     sizes.track_mix = track_mix;
+    sizes.auto_points = auto_points;
     sonora::PlaybackPlan* p = sonora::create_plan(sizes);
     p->epoch = epoch;
     p->chunk_frames = chunk_frames;

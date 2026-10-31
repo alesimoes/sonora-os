@@ -65,6 +65,10 @@ add_test(NAME model_sends COMMAND test_model_sends)
 add_executable(test_model_routing tests/test_routing.cpp)
 target_link_libraries(test_model_routing PRIVATE sonora_model_audited)
 add_test(NAME model_routing COMMAND test_model_routing)
+# Automation lanes and modes (ADR-0027).
+add_executable(test_model_automation tests/test_automation.cpp)
+target_link_libraries(test_model_automation PRIVATE sonora_model_audited)
+add_test(NAME model_automation COMMAND test_model_automation)
 # Track structure: delete, duplicate (ADR-0023).
 add_executable(test_model_tracks tests/test_tracks.cpp)
 target_link_libraries(test_model_tracks PRIVATE sonora_model_audited)
