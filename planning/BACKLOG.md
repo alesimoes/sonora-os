@@ -221,10 +221,10 @@ playback can follow edits; it is in flight.
           (`t1-track-input-monitor`).
 11. [ ] Session-folder follow-ups (ADR-0018 step 4; #150 review items 1-4
         done in #151, `t1-folder-followups`):
-        - [ ] ActiveFolder::enter() releases the old folder's flock before
+        - [x] ActiveFolder::enter() releases the old folder's flock before
           remove_unreferenced(); delete while still holding it, and unlink
           only the *.state(.tmp) entries holds_no_data() checked (#151
-          review N1)
+          review N1; `t1-folder-lock-order`)
         - [ ] ADR-0018 §1 step 6 still says the cleanup "can never delete a
           file"; update it for the states-only removal of #151 (#151 review
           N2)
