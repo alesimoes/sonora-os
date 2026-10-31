@@ -39,38 +39,62 @@ in_cage() {
 }
 
 if [[ "$MODE" == screenshot ]]; then
-  # Captured by the compositor (grim, over wlr-screencopy), not by the
-  # application, so the picture is what the kiosk actually put on the output.
-  # One shot per scene sonora-ui lists (ui/qt/src/scenes/, one file each).
+  # Every scene is a picture of the application's own window, at the size a
+  # reviewer judges the interface at: 1920x1080, scale 1.0 (the reference).
+  # cage's headless output is fixed at 1280x720, so these run on an Xvfb
+  # screen of the picture's size and the application saves its own window
+  # (--capture-size also hides the rig's software-rendering banner).
   # "edit" is NAME.png itself, "edit-X" is NAME-X.png, and any other scene
   # follows NAME with a trailing "-edit" dropped, so sonora-ui-edit.png
   # gives sonora-ui-mix.png and sonora-ui-mix-browser.png.
-  shoot() {  # file, then sonora-ui arguments
-    local file="$1"
-    shift
-    # shellcheck disable=SC2016  # expanded by the inner shell, inside cage
-    in_cage sh -c '
-      out="$1"; shift
-      "$@" & ui=$!
-      sleep 5
-      grim "/out/$out"
-      kill "$ui"; wait "$ui" || true
-    ' sh "$file" "$UI" --kiosk --demo --fake-engine --keymap keymaps/protools.json "$@"
-  }
   base="${SHOT%.png}"
   stem="${base%-edit}"
+  shoot() {  # file, WxH, scale, then sonora-ui arguments; one try, 90 s at most
+    local file="$1" size="$2" scale="$3"
+    shift 3
+    DISPLAY=:99 QT_QPA_PLATFORM=xcb QT_SCALE_FACTOR="$scale" timeout 90 "$UI" \
+      --demo --fake-engine --keymap keymaps/protools.json \
+      --capture-size "$size" --screenshot "/out/$file" --after 5 "$@" \
+      || { echo "error: no picture for $file" >&2; return 1; }
+    echo "saved /out/$file"
+  }
+  with_screen() {  # WxH, then the command to run on that screen (:99)
+    Xvfb :99 -screen 0 "${1}x24" -nolisten tcp >/dev/null 2>&1 &
+    local xvfb=$!
+    sleep 1
+    local rc=0
+    "${@:2}" || rc=$?
+    kill "$xvfb" 2>/dev/null || true
+    wait "$xvfb" 2>/dev/null || true
+    return "$rc"
+  }
   scenes=$("$UI" --list-scenes)
   [[ -n "$scenes" ]] || { echo "error: sonora-ui lists no scenes" >&2; exit 1; }
-  while read -r -a words <&3; do
-    name="${words[0]}"
-    case "$name" in
-      edit) file="$SHOT" ;;
-      edit-*) file="$base-${name#edit-}.png" ;;
-      *) file="$stem-$name.png" ;;
-    esac
-    shoot "$file" --scene "$name" "${words[@]:1}"
-    echo "saved /out/$file"
-  done 3<<<"$scenes"
+  all_scenes() {
+    local words name file
+    while read -r -a words <&3; do
+      name="${words[0]}"
+      case "$name" in
+        edit) file="$SHOT" ;;
+        edit-*) file="$base-${name#edit-}.png" ;;
+        *) file="$stem-$name.png" ;;
+      esac
+      shoot "$file" 1920x1080 1 --scene "$name" "${words[@]:1}"
+    done 3<<<"$scenes"
+  }
+  with_screen 1920x1080 all_scenes
+  # Mix and Edit again at 2560x1440 and scale 1.25, and at the minimum
+  # width, 1280x720, where nothing may clip.
+  extra_sizes() {
+    shoot "$stem-mix-2560x1440.png" 2560x1440 1.25 --scene mix
+    shoot "$base-2560x1440.png" 2560x1440 1.25 --scene edit
+  }
+  with_screen 2560x1440 extra_sizes
+  min_width() {
+    shoot "$stem-mix-1280x720.png" 1280x720 1 --scene mix
+    shoot "$base-1280x720.png" 1280x720 1 --scene edit
+  }
+  with_screen 1280x720 min_width
 
   # The version refusal on a real sonora-engine that announces the next
   # protocol version (--announce-versions, as the conformance suite runs it):

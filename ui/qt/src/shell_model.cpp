@@ -203,6 +203,11 @@ void ShellModel::useProfile(const QString& qfile) {
     say(QStringLiteral("Keys: ") + profileName());
 }
 
+void ShellModel::setCaptureMode(bool on) {
+    capture_mode_ = on;
+    emit renderPathChanged();
+}
+
 void ShellModel::setRenderPath(const QString& text, bool software, bool meters_available) {
     render_path_ = text;
     software_ = software;
