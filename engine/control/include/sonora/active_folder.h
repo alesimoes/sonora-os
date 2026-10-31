@@ -47,8 +47,8 @@ public:
     // lock taken while the old one is still held; "Audio Files/" created,
     // and the folder synced when that made it; unclosed takes recovered,
     // their notices appended to `notices`; the medium read. Then the switch,
-    // the old lock released, and the old folder removed as the destructor
-    // would. The first step that fails returns false with `why` and
+    // the old folder removed as the destructor would, and only then the old
+    // lock released. The first step that fails returns false with `why` and
     // leaves the old folder active and locked. Entering the folder already
     // active keeps its lock and runs the rest again.
     bool enter(Session& session, const std::string& path, Kind kind, std::string& why,
