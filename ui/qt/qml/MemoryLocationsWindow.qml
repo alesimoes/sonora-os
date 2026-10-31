@@ -72,7 +72,7 @@ Rectangle {
             width: parent.width
             height: 14
             Repeater {
-                model: [["#", 2], ["NAME", 40], ["START", 196], ["END", 290], ["LENGTH", 376]]
+                model: [["#", 2], ["NAME", 40], ["START", 155], ["END", 242], ["LENGTH", 329]]
                 Text {
                     required property var modelData
                     x: modelData[1]
@@ -138,7 +138,7 @@ Rectangle {
                     }
                     Text {
                         objectName: "memoryLocationName"
-                        x: 39; width: 150
+                        x: 39; width: 110
                         anchors.verticalCenter: parent.verticalCenter
                         text: row.modelData.name
                         elide: Text.ElideRight
@@ -146,7 +146,7 @@ Rectangle {
                         font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.DemiBold }
                     }
                     Text {
-                        x: 195; width: 90
+                        x: 154; width: 84
                         anchors.verticalCenter: parent.verticalCenter
                         text: row.modelData.start
                         elide: Text.ElideRight
@@ -154,10 +154,10 @@ Rectangle {
                         font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
                     }
                     Repeater {
-                        model: [[289, row.modelData.end], [375, row.modelData.length]]
+                        model: [[241, row.modelData.end], [328, row.modelData.length]]
                         Text {
                             required property var modelData
-                            x: modelData[0]; width: 80
+                            x: modelData[0]; width: 84
                             anchors.verticalCenter: parent.verticalCenter
                             text: modelData[1]
                             elide: Text.ElideRight

@@ -73,6 +73,12 @@ std::string format_meter(const model::TempoEntry& t);
 std::string format_min_sec(model::Frames f, uint32_t rate);
 std::string format_samples(model::Frames f);
 std::string format_time(TimeFormat fmt, model::Frames f, const model::SessionSettings& s);
+// A span of `length` frames starting at `position`, in `fmt`: a duration, not
+// a position, so timecode counts from zero rather than the origin and bars
+// are 0-based ("2|1|240" is two bars, a beat and a quarter). Bars|Beats
+// reads the span through the tempo map from `position`.
+std::string format_length(TimeFormat fmt, model::Frames position, model::Frames length,
+                          const model::SessionSettings& s);
 const char* time_format_name(TimeFormat fmt);
 
 // The other way: text typed into a counter, in that counter's format, as

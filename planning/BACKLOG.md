@@ -480,7 +480,7 @@ playback can follow edits; it is in flight.
 Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 
 - [ ] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
-- [ ] Memory Locations length column uses the main counter format, not always min:sec.
+- [x] Memory Locations length column uses the main counter format, not always min:sec. (format_length() in time_format; columns narrowed to fit timecode; scene edit-markers-timecode.)
 - [ ] `ui.mixer.sends` follow-ups (ADR-0022):
   - [ ] Send and aux fader rides as live parameters (`ParamId` for send level and aux gain): today each step is a SetSendMix or SetBusMix, a revision per step.
   - [ ] Aux return meters, post-fader, in the state block (state layout bump); the aux strip shows none yet.

@@ -221,6 +221,26 @@ int test_command() {
 
     local.dispatch("window.memory_locations", CommandContext{});
     CHECK(session.memoryLocationsOpen());
+
+    // The length column follows the main counter, not always min:sec.
+    std::string range_why;
+    session.controller().select_range(1, 96000, 144000);
+    CHECK(session.controller().add_marker("Range", session.controller().marker_place(false, 0), range_why));
+    auto length_of = [&]() {
+        for (const QVariant& r : session.markers()) {
+            if (r.toMap()[QStringLiteral("name")] == QStringLiteral("Range"))
+                return r.toMap()[QStringLiteral("length")].toString();
+        }
+        return QString();
+    };
+    CHECK(session.mainCounterFormat() == QStringLiteral("Bars|Beats"));
+    CHECK(length_of() == QStringLiteral("0|2|000"));
+    session.cycleMainCounter();
+    CHECK(length_of() == QStringLiteral("0:01.000"));
+    session.cycleMainCounter();
+    CHECK(length_of() == QStringLiteral("00:00:01:00"));
+    session.cycleMainCounter();
+    CHECK(length_of() == QStringLiteral("48000"));
     return 0;
 }
 
