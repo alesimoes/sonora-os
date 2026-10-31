@@ -250,6 +250,16 @@
       "command": "track.duplicate",
       "comment": "Duplicate Tracks, Option+Shift+D: Shortcuts Guide ch. 8, Track Menu (brain/research/protools-logic-key-bindings.md). The dialog's default choices, without the dialog: the active playlist, the inserts and the mix (ADR-0023)."
     },
+    "cmd+backslash": {
+      "command": "track.playlist_new",
+      "verified": false,
+      "comment": "New Playlist on the selected track, Control+Backslash on a Mac (the Start key on Windows, cmd in this file's spelling). Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md (ADR-0026)."
+    },
+    "cmd+alt+backslash": {
+      "command": "track.playlist_duplicate",
+      "verified": false,
+      "comment": "Duplicate Playlist on the selected track, Control+Option+Backslash on a Mac. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md (ADR-0026)."
+    },
     "ctrl+shift+n": {
       "command": "track.new",
       "verified": false,

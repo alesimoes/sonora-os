@@ -203,6 +203,41 @@ void SessionModel::installCommands(CommandRegistry& local) {
                                        after, why);
                });
     }
+
+    // --- the playlist selector (ADR-0026) ---
+    simple("track.playlist_new", [this, row](const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        return playlistCommand(i, true, [&](Why& w) { return ctl_.new_playlist(i, w); }, why);
+    });
+    simple("track.playlist_duplicate", [this, row](const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        return playlistCommand(i, true, [&](Why& w) { return ctl_.duplicate_playlist(i, w); },
+                               why);
+    });
+    simple("track.playlist_choose", [this, row](const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        const bool chooses = ctx.argument != ctl_.active_playlist_name(i);
+        return playlistCommand(
+            i, chooses, [&](Why& w) { return ctl_.choose_playlist(i, ctx.argument, w); }, why);
+    });
+    simple("track.playlist_rename", [this, row](const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        if (ctx.argument.empty()) {
+            if (i < 0 || i >= static_cast<int>(ctl_.snapshot().edit->tracks.size())) {
+                why = i < 0 ? "no track is selected" : "there is no track " + std::to_string(i + 1);
+                return false;
+            }
+            emit playlistRenameRequested(i, q(ctl_.active_playlist_name(i)));
+            return true;
+        }
+        return playlistCommand(
+            i, false, [&](Why& w) { return ctl_.rename_playlist(i, ctx.argument, w); }, why);
+    });
+    simple("track.playlist_delete_unused", [this, row](const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        return playlistCommand(i, false,
+                               [&](Why& w) { return ctl_.delete_unused_playlists(i, w); }, why);
+    });
     simple("edit.duplicate",
            [this](const CommandContext&, Why& why) { return ctl_.duplicate(why); });
     // Pro Tools' Repeat asks for the number of repeats first. The key sends
@@ -543,6 +578,27 @@ void SessionModel::setRoutingRefusal(const QString& why) {
     emit routingRefusalChanged();
 }
 
+bool SessionModel::playlistCommand(int track, bool chooses,
+                                   const std::function<bool(std::string&)>& run_op,
+                                   std::string& why) {
+    const model::EditState& edit = *ctl_.snapshot().edit;
+    // The engine refuses these too; refused here, the reason is held
+    // rather than flashed while the operator watches the take.
+    if (chooses && overlay_.recording && engine_armed_ && track >= 0 &&
+        track < static_cast<int>(edit.tracks.size())) {
+        const std::string r = model::pinned_playlist_refusal(
+            edit, {edit.tracks[static_cast<std::size_t>(track)]->id}, engine_armed_());
+        if (!r.empty()) {
+            setTrackRefusal(q(r));
+            why = r;
+            return false;
+        }
+    }
+    if (!run_op(why)) return false;
+    setTrackRefusal(QString());
+    return true;
+}
+
 void SessionModel::setTrackRefusal(const QString& why) {
     if (why == track_refusal_) return;
     track_refusal_ = why;
@@ -640,6 +696,19 @@ int SessionModel::trackCount() const {
 QStringList SessionModel::trackNames() const {
     QStringList out;
     for (const auto& t : ctl_.snapshot().edit->tracks) out << q(t->name);
+    return out;
+}
+
+QStringList SessionModel::playlistNames() const {
+    QStringList out;
+    const int n = static_cast<int>(ctl_.snapshot().edit->tracks.size());
+    for (int i = 0; i < n; ++i) out << q(ctl_.active_playlist_name(i));
+    return out;
+}
+
+QStringList SessionModel::trackPlaylists(int track) const {
+    QStringList out;
+    for (const std::string& name : ctl_.playlist_names(track)) out << q(name);
     return out;
 }
 

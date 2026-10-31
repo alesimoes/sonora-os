@@ -187,6 +187,48 @@ struct SetActivePlaylist {
     Id playlist = 0;
 };
 
+// Pro Tools' Duplicate Playlist (ADR-0026): a copy of `source`, one of
+// `track`'s playlists, as a new playlist of the same track. `playlist` is
+// the copy's id and its regions take the ids after it one by one, in
+// position order; duplicate_playlist_ids() says how many that is. Sources
+// and MIDI sequences are shared. The active playlist does not change: the
+// interface sends SetActivePlaylist after it, in the same compound.
+struct DuplicatePlaylist {
+    Id track = 0;
+    Id source = 0;
+    Id playlist = 0;
+    std::string name;
+};
+
+struct SetPlaylistName {
+    Id track = 0;
+    Id playlist = 0;
+    std::string name;
+};
+
+// Takes a playlist that is not the active one off its track: Pro Tools'
+// Delete Unused Playlists is one of these per playlist, in a compound. Its
+// regions' sources stay in the pool (ADR-0009 §3), so undo brings it back
+// with its audio.
+struct RemovePlaylist {
+    Id track = 0;
+    Id playlist = 0;
+};
+
+// How many ids `op` takes from op.playlist upward on `s`: the copy and each
+// of its regions. 0 when op.source is not a playlist of op.track.
+std::size_t duplicate_playlist_ids(const Snapshot& s, const DuplicatePlaylist& op);
+
+// Pro Tools' name for a track's next playlist: "<track name>.<nn>", two
+// digits or more, the lowest number from 01 that no playlist of the session
+// has. Empty when `track` is not a track of `s`.
+std::string next_playlist_name(const Snapshot& s, Id track);
+
+// Whether a playlist of `s` other than `except` is named `name`. Pro Tools
+// keeps playlist names unique in a session; the model does not require it
+// (sessions written before ADR-0026 may repeat one), the interface does.
+bool playlist_name_taken(const Snapshot& s, const std::string& name, Id except = 0);
+
 struct AddMarker {
     Marker marker;
 };
@@ -457,7 +499,7 @@ using Member =
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
-                 DuplicateTrack, SetOutput>;
+                 DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -491,7 +533,8 @@ using Operation =
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
-                 DuplicateTrack, SetOutput, Compound>;
+                 DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
+                 Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");
@@ -573,5 +616,30 @@ std::string pinned_track_refusal(const EditState& before, const std::vector<Id>&
 // every engine.
 std::string take_starting_track_refusal();
 std::string take_closing_track_refusal(int take);
+
+// --- the active playlist during a take (ADR-0026 §4) ------------------------
+//
+// A take goes onto the active playlist of its track as that playlist is
+// when the take's files are in (closed_take.cpp), so the playlist a take
+// records onto may not change from Record until then.
+
+// The tracks, by id, whose active playlist differs between `before` and
+// `after`; a track only one of them holds is not one.
+std::vector<Id> active_playlist_changes(const EditState& before, const EditState& after);
+
+// The same for `member` applied to `at`, without applying it: the track of
+// a SetActivePlaylist that names a playlist other than its active one.
+std::vector<Id> active_playlist_changes(const Snapshot& at, MemberRef member);
+
+// Empty, or why the tracks `changed` may not choose another playlist while
+// the tracks at the rows `pinned` marks record: "\"Vox\" is recording: stop
+// recording before choosing another playlist".
+std::string pinned_playlist_refusal(const EditState& before, const std::vector<Id>& changed,
+                                    const std::vector<bool>& pinned);
+
+// While a take is about to start, or while take `take` is closing, no track
+// chooses another playlist. The same words from every engine.
+std::string take_starting_playlist_refusal();
+std::string take_closing_playlist_refusal(int take);
 
 }  // namespace sonora::model

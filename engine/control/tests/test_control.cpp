@@ -298,6 +298,7 @@ public:
         frames = RealEngine::kCableFrames;
         return true;
     }
+    bool places_closed_takes() const override { return true; }
     int take_files_in(api::EngineControl&, const std::string& folder, int take) override {
         char suffix[16];
         std::snprintf(suffix, sizeof suffix, "_%02d.wav", take);

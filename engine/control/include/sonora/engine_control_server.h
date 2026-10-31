@@ -494,6 +494,12 @@ private:
     std::string structure_refusal(const model::Snapshot& doc, model::MemberRef member) const;
     // The same for the step an Undo (or a Redo) would restore.
     std::string step_refusal(bool undo) const;
+    // ADR-0026 §4: a take goes onto its track's active playlist once its
+    // files are in, so `changed` (tracks of `now` choosing another playlist)
+    // may not include a recording track, nor any track while a take is about
+    // to start or closing. Empty when they may.
+    std::string playlist_refusal(const model::EditState& now,
+                                 const std::vector<model::Id>& changed) const;
     // The plugin side, for one backend activation; null until the period is
     // known, and when no host is configured. Released in after_deactivate().
     std::unique_ptr<PluginHosting> hosting_;

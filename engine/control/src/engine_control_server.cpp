@@ -1485,11 +1485,32 @@ std::string EngineControlServer::structure_refusal(const model::Snapshot& doc,
     return model::pinned_track_refusal(*doc.edit, after, pinned, "is recording", "stop recording");
 }
 
+std::string EngineControlServer::playlist_refusal(const model::EditState& now,
+                                                  const std::vector<model::Id>& changed) const {
+    if (changed.empty()) return {};
+    if (playback_->record_requested()) return model::take_starting_playlist_refusal();
+    // A closing take is placed on whatever playlist is active when its
+    // files are in, on every track that recorded it, armed or not by then.
+    if (const int take = session_.closing_take()) return model::take_closing_playlist_refusal(take);
+    if (session_.transport().state() != TransportState::Recording &&
+        session_.recording_take() == 0) {
+        return {};
+    }
+    const auto& tracks = session_.tracks();
+    std::vector<bool> pinned(tracks.size(), false);
+    for (std::size_t i = 0; i < tracks.size(); ++i) pinned[i] = tracks[i]->rec_armed();
+    return model::pinned_playlist_refusal(now, changed, pinned);
+}
+
 std::string EngineControlServer::step_refusal(bool undo) const {
     const model::History& h = document_->history();
     if (undo ? !h.can_undo() : !h.can_redo()) return {};
     const auto& target = h.step_edit(undo ? h.undo_depth() - 1 : h.undo_depth() + 1);
     const model::EditState& now = *document_->current().edit;
+    if (std::string refused = playlist_refusal(now, model::active_playlist_changes(now, *target));
+        !refused.empty()) {
+        return refused;
+    }
     const std::vector<model::Id> after = model::track_order(*target);
     if (after == model::track_order(now)) return {};
     std::vector<bool> pinned;
@@ -2319,6 +2340,11 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                                " aux buses, and this session has them all (limit: max_buses)";
                     }
                     if (std::string refusal = structure_refusal(at, member); !refusal.empty()) {
+                        return refusal;
+                    }
+                    if (std::string refusal =
+                            playlist_refusal(*at.edit, model::active_playlist_changes(at, member));
+                        !refusal.empty()) {
                         return refusal;
                     }
                     // Even one that leaves the document as it was: it ends a

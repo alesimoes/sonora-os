@@ -17,6 +17,8 @@ Item {
     property MixModel mixer: null
     // A track header was right-clicked: the window draws the Track menu there.
     signal trackMenuRequested(real x, real y)
+    // A track's playlist selector was clicked: the window draws its menu.
+    signal playlistMenuRequested(int track, real x, real y)
 
     // --- toolbar --------------------------------------------------------------
     Rectangle {
@@ -319,12 +321,31 @@ Item {
                         width: 1; color: Theme.borderSubtle
                     }
                     Text {
+                        id: headerName
                         x: Theme.space3; y: Theme.space2
-                        width: parent.width - 2 * Theme.space3 - 14
+                        width: (parent.width - 2 * Theme.space3 - 14) * 0.45
                         elide: Text.ElideRight
                         text: header.modelData
                         color: header.selected ? Theme.text : Theme.textSecondary
                         font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.DemiBold }
+                    }
+                    // Pro Tools' playlist selector: the active playlist's
+                    // name; a click opens the playlist menu on this track.
+                    SButton {
+                        objectName: "playlistSelector" + header.index
+                        x: headerName.x + headerName.width + Theme.space1
+                        y: Theme.space2 - 2
+                        width: parent.width - x - Theme.space3 - 14
+                        implicitHeight: 20
+                        bold: false
+                        fontPx: Theme.textCaption
+                        alignLeft: true
+                        text: (edit.session.playlistNames[header.index] || "") + "  \u25BE"
+                        onClicked: {
+                            edit.session.selectTrack(header.index)
+                            const p = mapToItem(null, 0, height)
+                            edit.playlistMenuRequested(header.index, p.x, p.y)
+                        }
                     }
                     Row {
                         x: Theme.space3

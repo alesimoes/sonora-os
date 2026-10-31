@@ -120,6 +120,9 @@ public:
         (void)frames;
         return false;
     }
+    // Whether the engine puts a closed take on its tracks' active playlists
+    // (engine/control does; the fake leaves the document alone).
+    virtual bool places_closed_takes() const { return false; }
     // How many files of take `take` the engine wrote into `folder`'s
     // "Audio Files/": a real engine's on disk, the fake's as it remembers
     // them. -1 if this rig cannot tell; the check then says so.
