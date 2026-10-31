@@ -401,6 +401,10 @@ bool EditController::zoom_toggle(std::string& why) {
 
 void EditController::vertical_zoom(bool in) {
     view_.wave_scale = std::clamp(view_.wave_scale * (in ? 1.5f : 1.0f / 1.5f), 0.25f, 8.0f);
+    // Lanes grow with the waveforms so a curve can be edited as finely as a
+    // clip is read; the clamp keeps a lane usable at both ends.
+    view_.autolane_height = std::clamp(ViewState::kAutolaneBaseHeight * view_.wave_scale, 32.0, 224.0);
+    clamp_scroll();
 }
 
 void EditController::scroll_by(double dx_px, double dy_px) {
