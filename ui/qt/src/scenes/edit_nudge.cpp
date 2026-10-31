@@ -17,7 +17,7 @@ const ShotRegistrar registrar{[] {
     s.name = QStringLiteral("edit-nudge");
     s.take = false;
     s.tempo_map = true;
-    s.apply = [](ShotContext& c) {
+    s.apply = [](ShotContext& c0) { when_open(c0, [](ShotContext& c) {
         EditController& edit = c.session.controller();
         const auto& tempo = edit.snapshot().settings.tempo;
         const auto change = tempo.size() > 1 ? tempo[1].at : 0;
@@ -39,7 +39,7 @@ const ShotRegistrar registrar{[] {
         } else {
             std::fprintf(stderr, "sonora-ui: nudge: no region at the tempo change\n");
         }
-    };
+    }); };
     return s;
 }()};
 

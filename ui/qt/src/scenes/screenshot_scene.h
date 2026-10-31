@@ -13,7 +13,9 @@
 
 #include <QQuickView>
 #include <QString>
+#include <QTimer>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "insert_model.h"
@@ -36,6 +38,24 @@ struct ShotContext {
     int track = 0;                              // the snare's, selected
     const model::Playlist* playlist = nullptr;  // its active playlist
 };
+
+// The engine answers the demo session's Load a moment after the window is
+// up, and an edit before that is refused ("still opening"). Runs `then`
+// once it has answered, asking again every 100 ms within the capture's
+// wait. Undo is the probe: it refuses with that reason while opening and
+// changes nothing, since the demo session has no history to undo.
+inline void when_open(ShotContext c, std::function<void(ShotContext&)> then, int tries = 0) {
+    std::string why;
+    const bool opening = !c.session.controller().document().undo(why) &&
+                         why.find("still opening") != std::string::npos;
+    if (!opening || tries >= 30) {
+        then(c);
+        return;
+    }
+    QTimer::singleShot(100, [c, then = std::move(then), tries]() mutable {
+        when_open(c, std::move(then), tries + 1);
+    });
+}
 
 struct ShotScene {
     QString name;

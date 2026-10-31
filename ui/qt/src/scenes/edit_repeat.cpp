@@ -13,7 +13,7 @@ const ShotRegistrar registrar{[] {
     ShotScene s;
     s.name = QStringLiteral("edit-repeat");
     s.take = false;
-    s.apply = [](ShotContext& c) {
+    s.apply = [](ShotContext& c0) { when_open(c0, [](ShotContext& c) {
         if (c.playlist == nullptr || c.playlist->regions.size() <= 1) return;
         // An id, not the playlist: the repeat replaces the snapshot it is in.
         const auto snare = c.playlist->regions[1].id;
@@ -23,7 +23,7 @@ const ShotRegistrar registrar{[] {
         c.model.invoke(QStringLiteral("zoom.fit_session"), -1);
         c.session.controller().select_region(snare);
         c.model.invoke(QStringLiteral("edit.repeat"), -1);
-    };
+    }); };
     return s;
 }()};
 

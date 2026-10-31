@@ -5,7 +5,6 @@
 // audio track below the copy, and the Track menu open on it. Then, as a
 // second scene, the New Tracks dialog asking how many.
 #include <QQuickItem>
-#include <QTimer>
 #include <cstdio>
 
 #include "screenshot_scene.h"
@@ -30,19 +29,9 @@ bool step(ShotContext& c, const char* command, int target, const QString& argume
     return false;
 }
 
-// The demo session may still be opening on the engine, which refuses edits
-// until it has answered: the first one is asked again until it goes,
-// within the capture's wait.
-void build(ShotContext c, int tries) {
+void build(ShotContext& c) {
     const int last = c.session.trackCount() - 1;
-    if (!c.model.invokeWith(QStringLiteral("track.delete"), last, QString())) {
-        if (tries < 30) {
-            QTimer::singleShot(100, [c, tries]() { build(c, tries + 1); });
-        } else {
-            std::fprintf(stderr, "sonora-ui: track.delete: %s\n", qPrintable(c.model.statusText()));
-        }
-        return;
-    }
+    if (!step(c, "track.delete", last)) return;
     // The demo fills every engine track: a second row makes room for two.
     if (!step(c, "track.delete", c.session.trackCount() - 1)) return;
     if (!step(c, "track.duplicate", c.track)) return;
@@ -57,7 +46,7 @@ const ShotRegistrar tracks{[] {
     s.take = false;
     s.apply = [](ShotContext& c) {
         if (c.session.trackCount() <= c.track + 2) return;
-        build(c, 0);
+        when_open(c, build);
     };
     return s;
 }()};
