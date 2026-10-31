@@ -23,6 +23,16 @@ Rectangle {
     readonly property int strip: sends.trackCount + bus
     readonly property var stripInfo: strip < sends.strips.length ? sends.strips[strip] : null
 
+    // The same height budget as ChannelStrip's, so every fader starts level.
+    readonly property real faderFloor: Math.ceil(height * Theme.faderSharePercent / 100)
+    readonly property real room: height - (Theme.space2 + top.height) - 2 * Theme.space2
+                                 - faderFloor - (Theme.space3 + Theme.space2)
+                                 - (16 + Theme.space2) - (18 + Theme.space2 + 22 + Theme.space1)
+    readonly property real sendsHeight: Math.min(5 * Theme.insertSlotHeight + 4,
+        Math.max(Theme.stripMinSlots * Theme.insertSlotHeight + 1, room * 0.4))
+    readonly property real insertsHeight: Math.min(10 * Theme.insertSlotHeight + 9 + 2 + 12,
+        Math.max(Theme.stripMinSlots * Theme.insertSlotHeight + 2 + 12, room - sendsHeight))
+
     objectName: "aux" + bus
     color: Theme.panel
     radius: Theme.radius
@@ -113,27 +123,31 @@ Rectangle {
     Item {
         id: insertArea
         anchors { left: parent.left; right: parent.right; top: top.bottom; topMargin: Theme.space2 }
-        height: 10 * Theme.insertSlotHeight + 9 + 2 + 12
+        height: aux.insertsHeight
     }
 
     Item {
         id: sendArea
         anchors { left: parent.left; right: parent.right; top: insertArea.bottom; topMargin: Theme.space2
                   leftMargin: Theme.space1; rightMargin: Theme.space1 }
-        height: 5 * Theme.insertSlotHeight + 4
-        Column {
-            width: parent.width
-            spacing: 1
-            Repeater {
-                model: 5
-                SendSlot {
-                    required property int index
-                    width: sendArea.width
-                    sends: aux.sends
-                    stripIndex: aux.strip
-                    slot: aux.sends.bank + index
-                    info: aux.stripInfo !== null ? aux.stripInfo.slots[aux.sends.bank + index]
-                                                 : ({ present: false, letter: String.fromCharCode(65 + aux.sends.bank + index) })
+        height: aux.sendsHeight
+        ScrollFrame {
+            anchors.fill: parent
+            contentHeight: 5 * Theme.insertSlotHeight + 4
+            Column {
+                width: parent.width
+                spacing: 1
+                Repeater {
+                    model: 5
+                    SendSlot {
+                        required property int index
+                        width: sendArea.width
+                        sends: aux.sends
+                        stripIndex: aux.strip
+                        slot: aux.sends.bank + index
+                        info: aux.stripInfo !== null ? aux.stripInfo.slots[aux.sends.bank + index]
+                                                     : ({ present: false, letter: String.fromCharCode(65 + aux.sends.bank + index) })
+                    }
                 }
             }
         }
@@ -153,6 +167,7 @@ Rectangle {
 
     Item {
         id: faderArea
+        objectName: "auxFaderZone" + aux.bus
         anchors { left: parent.left; right: parent.right; top: outputButton.bottom; bottom: readout.top
                   topMargin: Theme.space3; bottomMargin: Theme.space2 }
         readonly property real capH: 26

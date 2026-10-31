@@ -76,7 +76,7 @@ target_link_libraries(sonora_ui_qt PRIVATE sonora_platform)
 qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
-        qml/MixWindow.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
+        qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
         qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml
         qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml
@@ -269,3 +269,10 @@ if(SONORA_XVFB)
 else()
   message(STATUS "ui/qt: Xvfb not found; ui_render (a rendered frame) is not run")
 endif()
+
+# The Mix window's layout at 1920x1080, 18 and 48 tracks: fixed strip
+# widths, the master pinned, the fader zone's share of the strip height.
+add_executable(test_ui_mix_layout tests/test_mix_layout.cpp)
+target_link_libraries(test_ui_mix_layout PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_mix_layout COMMAND test_ui_mix_layout)
+set_tests_properties(ui_mix_layout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

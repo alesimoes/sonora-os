@@ -123,6 +123,17 @@ constexpr int kRegionNameBand = 14;
 constexpr int kMarkerFlagWidth = 9;
 constexpr int kMarkerHitSlop = 3;
 constexpr int kInsertSlotHeight = 16;
+// Mixer strip widths (ui-design.md, "Mixer strip anatomy"): fixed, never the
+// window divided by the strip count. The master is always Wide.
+constexpr int kStripNarrow = 64;
+constexpr int kStripRegular = 96;
+constexpr int kStripWide = 128;
+// The fader zone's share of the strip height, in percent: the floor with
+// the default views, which this layout holds with everything expanded; the
+// inserts and sends scroll inside their frames before the fader gives it up.
+constexpr int kFaderSharePercent = 55;
+// The fewest insert or send slots a scrolling frame still shows.
+constexpr int kStripMinSlots = 2;
 
 // The colour a region on display-order track `index` gets.
 constexpr uint32_t region_colour(int index) {
