@@ -262,6 +262,30 @@ Rectangle {
                     font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                 }
             }
+            // An output change refused (ADR-0024), kept until dismissed or
+            // until a routing change goes through.
+            Row {
+                objectName: "routingRefusal"
+                visible: root.session.routingRefusal.length > 0
+                width: footerColumn.width
+                spacing: Theme.space2
+                SButton {
+                    id: dismissRoutingRefusal
+                    objectName: "dismissRoutingRefusal"
+                    text: "Dismiss"
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    onClicked: root.session.dismissRoutingRefusal()
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - parent.spacing - dismissRoutingRefusal.width
+                    wrapMode: Text.Wrap
+                    text: "! " + root.session.routingRefusal
+                    color: Theme.caution
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                }
+            }
             Repeater {
                 model: root.shell.notices
                 Text {

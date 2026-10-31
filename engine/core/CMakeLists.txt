@@ -65,6 +65,9 @@ add_test(NAME plan_pdc COMMAND test_plan_pdc)
 add_executable(test_sends tests/test_sends.cpp)
 target_link_libraries(test_sends PRIVATE sonora_core)
 add_test(NAME sends COMMAND test_sends)
+add_executable(test_routing tests/test_routing.cpp)
+target_link_libraries(test_routing PRIVATE sonora_core)
+add_test(NAME routing COMMAND test_routing)
 
 # Takes closed while rolling, by in-band boundary records (timeline-model.md,
 # "Closing a take while rolling"), and the take-epoch race's regression test.

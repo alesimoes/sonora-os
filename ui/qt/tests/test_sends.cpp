@@ -234,6 +234,90 @@ int reassign_loop_and_remove_bus() {
     return 0;
 }
 
+// Output routing and aux solo (ADR-0024): the output chooser lists the Master
+// first and every bus, a bus that would close a loop is offered with the
+// reason and, chosen anyway, is refused with a held notice (not the status
+// line); one undo step takes an output back; a bus's solo is mix state; a bus
+// removed with strips routed to it sends them to the Master, one step.
+int outputs_and_aux_solo() {
+    Rig r;
+    CHECK(r.connect());
+    std::string why;
+    CHECK(r.ctl().new_bus(why) && r.ctl().new_bus(why));   // Bus 1, Bus 2
+    r.settle();
+    const int bus1 = r.ctl().track_count();
+    const int bus2 = bus1 + 1;
+    CHECK(r.ctl().output_name(0) == "Master" && r.ctl().output(0) == SendController::kMaster);
+
+    r.sends.openOutputChooser(0);
+    CHECK(r.sends.chooserOpen() && r.sends.chooserIsOutput());
+    CHECK(r.sends.chooserTitle().contains(QStringLiteral("output to")));
+    QVariantList items = r.sends.chooserItems();
+    CHECK(items.size() == 3);
+    CHECK(items[0].toMap()[QStringLiteral("name")].toString() == QStringLiteral("Master"));
+    CHECK(items[0].toMap()[QStringLiteral("bus")].toInt() == -1);
+    CHECK(r.sends.choose(0));
+    r.settle();
+    CHECK(!r.sends.chooserOpen());
+    CHECK(r.ctl().output_name(0) == "Bus 1");
+    CHECK(r.engine_doc().edit->tracks[0]->output == r.engine_doc().edit->buses[0].id);
+    CHECK(r.doc.undo_label() == "SetOutput");
+    CHECK(r.sends.strips()[0].toMap()[QStringLiteral("output")].toString() == QStringLiteral("Bus 1"));
+
+    // Bus 1 to Bus 2 is fine; Bus 2 to Bus 1 is a loop, offered with the reason.
+    r.sends.openOutputChooser(bus1);
+    CHECK(r.sends.choose(1));
+    r.settle();
+    r.sends.openOutputChooser(bus2);
+    items = r.sends.chooserItems();
+    CHECK(items.size() == 3);
+    CHECK(items[0].toMap()[QStringLiteral("refusal")].toString().isEmpty());
+    CHECK(items[1].toMap()[QStringLiteral("refusal")].toString().contains(QStringLiteral("feedback loop")));
+    CHECK(items[2].toMap()[QStringLiteral("refusal")].toString().contains(QStringLiteral("itself")));
+    r.refused.clear();
+    CHECK(!r.sends.choose(0));
+    r.settle();
+    // Held, not flashed on the status line; cleared by the next change that works.
+    CHECK(r.session.routingRefusal().contains(QStringLiteral("feedback loop")));
+    CHECK(r.refused.empty());
+    CHECK(r.sends.choose(-1));
+    r.settle();
+    CHECK(r.session.routingRefusal().isEmpty());
+    CHECK(!r.sends.chooserOpen());
+
+    // One undo step puts the last output back.
+    CHECK(r.session.controller().undo(why));
+    r.settle();
+    CHECK(r.ctl().output(bus1) == SendController::kMaster);
+    CHECK(r.ctl().set_output(bus1, 1, why));
+    r.settle();
+
+    // Aux solo is mix state.
+    const std::size_t undo_depth = r.doc.revision();
+    r.sends.toggleAuxSolo(0);
+    r.settle();
+    CHECK(r.ctl().aux(0).solo && r.engine_doc().mix.find_bus(r.ctl().aux(0).id)->solo);
+    CHECK(r.sends.auxes()[0].toMap()[QStringLiteral("solo")].toBool());
+    CHECK(r.doc.undo_label() == "SetOutput");
+    CHECK(r.doc.revision() > undo_depth);
+    r.sends.toggleAuxSolo(0);
+    r.settle();
+    CHECK(!r.ctl().aux(0).solo);
+
+    // Removing Bus 1 sends what outputs to it back to the Master, one step.
+    r.sends.removeBus(0);
+    r.settle();
+    CHECK(r.ctl().bus_count() == 1);
+    CHECK(r.ctl().output(0) == SendController::kMaster);
+    CHECK(r.doc.undo_label() == "Remove Bus");
+    CHECK(r.session.controller().undo(why));
+    r.settle();
+    CHECK(r.ctl().bus_count() == 2 && r.ctl().output(0) == 0 && r.ctl().output(bus1) == 1);
+    CHECK(r.refused.empty());
+    std::printf("  outputs and aux solo: ok\n");
+    return 0;
+}
+
 QQuickItem* named(QQuickItem* item, const QString& name) {
     if (item->objectName() == name) return item;
     for (QQuickItem* c : item->childItems()) {
@@ -308,6 +392,33 @@ int qml() {
     CHECK(r.sends.bank() == 5);
     CHECK(named(root, QStringLiteral("send_0_5")) != nullptr);
     CHECK(named(root, QStringLiteral("send_0_0")) == nullptr);
+    // The strip's output button opens the chooser on its output; the Master
+    // is first, and a bus routes the strip there.
+    QQuickItem* out0 = named(root, QStringLiteral("output0"));
+    CHECK(out0 != nullptr && out0->isVisible());
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(out0));
+    QTest::qWait(30);
+    CHECK(r.sends.chooserOpen() && r.sends.chooserIsOutput() && chooser->isVisible());
+    CHECK(!named(root, QStringLiteral("sendChoiceNew"))->isVisible());
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(named(root, QStringLiteral("sendChoice1"))));
+    r.settle();
+    QTest::qWait(30);
+    CHECK(r.ctl().output(0) == 0 && !chooser->isVisible());
+    CHECK(out0->property("text").toString() == QStringLiteral("Bus 1"));
+    // The aux strip's solo and output buttons, and the Master strip.
+    QQuickItem* solo = named(root, QStringLiteral("auxSolo0"));
+    CHECK(solo != nullptr);
+    CHECK(solo->isVisible() && solo->width() > 0);
+    // Through the model: a headless click on this button does not land, which
+    // the screenshot's geometry does not show either (see the PR's gap list).
+    r.sends.toggleAuxSolo(0);
+    r.settle();
+    QTest::qWait(30);
+    // The strips are rebuilt on a change: look the button up again.
+    solo = named(root, QStringLiteral("auxSolo0"));
+    CHECK(solo != nullptr && r.ctl().aux(0).solo && solo->property("active").toBool());
+    CHECK(named(root, QStringLiteral("auxOutput0")) != nullptr);
+    CHECK(named(root, QStringLiteral("masterOutput")) != nullptr);
     CHECK(r.refused.empty());
     std::printf("  qml: ok\n");
     return 0;
@@ -320,6 +431,7 @@ int main(int argc, char** argv) {
     register_types();
     if (new_bus_send_and_values() != 0) return 1;
     if (reassign_loop_and_remove_bus() != 0) return 1;
+    if (outputs_and_aux_solo() != 0) return 1;
     if (qml() != 0) return 1;
     std::printf("ui sends: all checks passed\n");
     return 0;

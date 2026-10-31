@@ -537,6 +537,12 @@ bool SessionModel::trackCommand(const std::function<bool(std::string&)>& run_op,
     return true;
 }
 
+void SessionModel::setRoutingRefusal(const QString& why) {
+    if (why == routing_refusal_) return;
+    routing_refusal_ = why;
+    emit routingRefusalChanged();
+}
+
 void SessionModel::setTrackRefusal(const QString& why) {
     if (why == track_refusal_) return;
     track_refusal_ = why;

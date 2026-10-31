@@ -54,6 +54,13 @@ SendModel::SendModel(TimelineDocument& doc, SessionModel& session, QObject* pare
     refresh();
 }
 
+bool SendModel::reportRouting(bool ok, const std::string& why) {
+    session_.reportRouting(ok, why);
+    refresh();
+    refreshWindow();
+    return ok;
+}
+
 bool SendModel::report(bool ok, const std::string& why) {
     session_.reportEdit(ok, why);
     refresh();
@@ -67,6 +74,7 @@ void SendModel::refresh() {
         QVariantMap strip;
         strip.insert(QStringLiteral("name"), q(ctl_.strip_name(s)));
         strip.insert(QStringLiteral("sends"), ctl_.strip_sends(s));
+        strip.insert(QStringLiteral("output"), q(ctl_.output_name(s)));
         QVariantList cells;
         for (int k = 0; k < kSendSlots; ++k) {
             const SendSlotView v = ctl_.slot(s, k);
@@ -92,6 +100,8 @@ void SendModel::refresh() {
         m.insert(QStringLiteral("pan"), v.pan);
         m.insert(QStringLiteral("panText"), q(pan_text(v.pan)));
         m.insert(QStringLiteral("mute"), v.mute);
+        m.insert(QStringLiteral("solo"), v.solo);
+        m.insert(QStringLiteral("output"), q(ctl_.output_name(ctl_.track_count() + b)));
         auxes_.append(m);
     }
     // A chooser over a strip that has gone is closed, not left on another.
@@ -149,6 +159,7 @@ void SendModel::slotClicked(int strip, int slot) {
 
 QString SendModel::chooserTitle() const {
     if (chooser_strip_ < 0) return {};
+    if (chooser_output_) return q(ctl_.strip_name(chooser_strip_)) + QStringLiteral(": output to");
     return q(ctl_.strip_name(chooser_strip_)) + QStringLiteral(": send ") + letter(chooser_slot_) +
            QStringLiteral(" to");
 }
@@ -156,7 +167,10 @@ QString SendModel::chooserTitle() const {
 QVariantList SendModel::chooserItems() const {
     QVariantList out;
     if (chooser_strip_ < 0) return out;
-    for (const SendDestination& d : ctl_.destinations(chooser_strip_, chooser_slot_)) {
+    const std::vector<SendDestination> items = chooser_output_
+        ? ctl_.output_choices(chooser_strip_)
+        : ctl_.destinations(chooser_strip_, chooser_slot_);
+    for (const SendDestination& d : items) {
         QVariantMap m;
         m.insert(QStringLiteral("bus"), d.bus);
         m.insert(QStringLiteral("name"), q(d.name));
@@ -170,12 +184,26 @@ void SendModel::openChooser(int strip, int slot) {
     if (strip < 0 || strip >= ctl_.strip_count() || slot < 0 || slot >= kSendSlots) return;
     chooser_strip_ = strip;
     chooser_slot_ = slot;
+    chooser_output_ = false;
+    emit chooserChanged();
+}
+
+void SendModel::openOutputChooser(int strip) {
+    if (strip < 0 || strip >= ctl_.strip_count()) return;
+    if (!ctl_.strip_sends(strip)) {
+        reportRouting(false, "\"" + ctl_.strip_name(strip) + "\" is a MIDI track; it has no audio output");
+        return;
+    }
+    chooser_strip_ = strip;
+    chooser_slot_ = -1;
+    chooser_output_ = true;
     emit chooserChanged();
 }
 
 void SendModel::closeChooser() {
     if (chooser_strip_ < 0) return;
     chooser_strip_ = chooser_slot_ = -1;
+    chooser_output_ = false;
     emit chooserChanged();
 }
 
@@ -184,6 +212,11 @@ bool SendModel::choose(int bus) {
     const int strip = chooser_strip_;
     const int slot = chooser_slot_;
     std::string why;
+    if (chooser_output_) {
+        const bool ok = ctl_.set_output(strip, bus < 0 ? SendController::kMaster : bus, why);
+        if (ok) closeChooser();
+        return reportRouting(ok, why);
+    }
     const bool ok = bus < 0 ? ctl_.assign_new_bus(strip, slot, why)
                             : ctl_.assign(strip, slot, bus, why);
     if (ok) closeChooser();
@@ -313,6 +346,11 @@ void SendModel::auxPanDrag(int bus, qreal dx, qreal width, bool fine) {
 void SendModel::toggleAuxMute(int bus) {
     std::string why;
     report(ctl_.toggle_bus_mute(bus, why), why);
+}
+
+void SendModel::toggleAuxSolo(int bus) {
+    std::string why;
+    report(ctl_.toggle_bus_solo(bus, why), why);
 }
 
 }  // namespace sonora::ui

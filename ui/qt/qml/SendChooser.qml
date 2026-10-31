@@ -5,6 +5,8 @@
 // (itself, a feedback loop, a bus another slot of the strip feeds) is
 // dimmed with the reason, never hidden. "New bus" makes the bus and the
 // send in one undo step, as Logic makes the aux strip with the bus.
+// Opened on a strip's output (ADR-0024), the Master comes first and "New
+// bus" is not offered.
 // Escape or a click outside closes.
 import QtQuick
 import Sonora
@@ -85,7 +87,9 @@ Item {
             }
             SButton {
                 objectName: "sendChoiceNew"
+                visible: chooser.sends !== null && !chooser.sends.chooserIsOutput
                 width: list.width
+                height: visible ? implicitHeight : 0
                 implicitHeight: 24
                 bold: false
                 fontPx: Theme.textSmall

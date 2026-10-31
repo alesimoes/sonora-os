@@ -336,6 +336,7 @@ Value bus_mix_value(const BusMix& m) {
     v.set("gain_db", Value::number_float(m.gain_db));
     v.set("pan", Value::number_float(m.pan));
     v.set("mute", Value::boolean(m.mute));
+    v.set("solo", Value::boolean(m.solo));
     return v;
 }
 
@@ -345,6 +346,7 @@ Value aux_bus_value(const Bus& b) {
     v.set("name", Value::string(b.name));
     Value& sends = v.set("sends", Value::array());
     for (const Send& sd : b.sends) sends.push(send_value(sd));
+    v.set("output", id_value(b.output));
     return v;
 }
 
@@ -658,6 +660,12 @@ struct Encoder {
     Value operator()(const SetBusMix& o) const {
         Value v = with_kind("SetBusMix");
         v.set("mix", bus_mix_value(o.mix));
+        return v;
+    }
+    Value operator()(const SetOutput& o) const {
+        Value v = with_kind("SetOutput");
+        v.set("strip", id_value(o.strip));
+        v.set("output", id_value(o.output));
         return v;
     }
     // Each member exactly as it would be alone; no label key when there is
@@ -1133,15 +1141,17 @@ bool read_send_mix_value(Reader& rd, const Value& v, const std::string& p, SendM
 }
 
 bool read_bus_mix_value(Reader& rd, const Value& v, const std::string& p, BusMix& m) {
-    return rd.keys(v, p, {"bus", "gain_db", "pan", "mute"}) && rd.id(v, p, "bus", m.bus) &&
-           rd.real(v, p, "gain_db", m.gain_db) && rd.real(v, p, "pan", m.pan) &&
-           rd.flag(v, p, "mute", m.mute);
+    return rd.keys(v, p, {"bus", "gain_db", "pan", "mute", "solo"}) &&
+           rd.id(v, p, "bus", m.bus) && rd.real(v, p, "gain_db", m.gain_db) &&
+           rd.real(v, p, "pan", m.pan) && rd.flag(v, p, "mute", m.mute) &&
+           rd.flag(v, p, "solo", m.solo);
 }
 
 bool read_aux_bus_value(Reader& rd, const Value& v, const std::string& p, Bus& b) {
     const Value* sends = nullptr;
-    if (!rd.keys(v, p, {"id", "name", "sends"}) || !rd.id(v, p, "id", b.id) ||
-        !rd.text(v, p, "name", b.name) || !rd.array(v, p, "sends", sends)) {
+    if (!rd.keys(v, p, {"id", "name", "sends", "output"}) || !rd.id(v, p, "id", b.id) ||
+        !rd.text(v, p, "name", b.name) || !rd.array(v, p, "sends", sends) ||
+        !rd.id(v, p, "output", b.output)) {
         return false;
     }
     for (const Value& e : sends->items()) {
@@ -1510,6 +1520,13 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = o;
+    } else if (kind == "SetOutput") {
+        SetOutput o;
+        if (!rd.keys(v, "", {"op", "strip", "output"}) || !rd.id(v, "", "strip", o.strip) ||
+            !rd.id(v, "", "output", o.output)) {
+            return false;
+        }
+        out = o;
     } else if (kind == "Compound") {
         return decode_compound(rd, v, out);
     } else {
@@ -1576,7 +1593,9 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 //    listing leaves.
 // 8: sends on each edit track, aux buses on each edit state, and the mix's
 //    bus_mix and send_mix (ADR-0022).
-constexpr std::int64_t kWindowFormat = 8;
+// 9: each edit track and aux bus carries its output, each bus mix its solo
+//    (ADR-0024).
+constexpr std::int64_t kWindowFormat = 9;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1659,6 +1678,7 @@ private:
         for (const Insert& in : t.inserts) ins.push(insert_value(in));
         Value& sends = tv.set("sends", Value::array());
         for (const Send& sd : t.sends) sends.push(send_value(sd));
+        tv.set("output", id_value(t.output));
         Value& ps = tv.set("playlists", Value::array());
         for (const auto& p : t.playlists) ps.push(index_value(playlist(*p)));
         Value& ms = tv.set("midi_playlists", Value::array());
@@ -1961,8 +1981,8 @@ bool read_tracks(Reader& rd, const Value& root,
         const Value* sends = nullptr;
         if (!rd.keys(e, "tracks",
                      {"id", "kind", "name", "channels", "active_playlist", "inserts", "sends",
-                      "playlists", "midi_playlists"}) ||
-            !rd.id(e, "tracks", "id", t->id) ||
+                      "output", "playlists", "midi_playlists"}) ||
+            !rd.id(e, "tracks", "id", t->id) || !rd.id(e, "tracks", "output", t->output) ||
             !rd.choice(e, "tracks", "kind", kTrackKinds, t->kind) ||
             !rd.text(e, "tracks", "name", t->name) ||
             !rd.small(e, "tracks", "channels", t->channels) ||
@@ -2319,7 +2339,7 @@ const char* const kNames[] = {
     "SetInsertState", "AddMidiSource", "PlaceMidiRegion", "EditMidi",
     "SetMidiRouting", "RecordLoopTake", "AddBus", "RemoveBus",
     "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
-    "Compound"};
+    "SetOutput", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

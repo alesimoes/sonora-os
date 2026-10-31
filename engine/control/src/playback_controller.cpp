@@ -176,9 +176,12 @@ void PlaybackController::apply_sends(const model::Snapshot& snapshot, bool track
         const model::BusMix* m = snapshot.mix.find_bus(buses[b].id);
         if (m) {
             session_.set_aux(static_cast<uint32_t>(b), gain_of_db(m->gain_db), pan_of(m->pan),
-                             m->mute);
+                             m->mute, m->solo);
         }
         put(buses[b].sends, engine_tracks + static_cast<uint32_t>(b));
+    }
+    for (std::size_t b = buses.size(); b < session_.max_buses(); ++b) {
+        session_.set_aux_solo(static_cast<uint32_t>(b), false);
     }
 }
 

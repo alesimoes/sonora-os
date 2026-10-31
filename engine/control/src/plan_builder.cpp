@@ -334,11 +334,30 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         bind_sends(tracks[ti]->sends, static_cast<uint32_t>(ti));
     }
     for (uint32_t b = 0; b < bus_count; ++b) bind_sends(buses[b].sends, limits.engine_tracks + b);
-    // Topological, ties in display order: the lowest-numbered bus no
-    // remaining bus sends to goes next. Quadratic in buses, which are few.
+    // Outputs (ADR-0024 §6): an engine bus index, or kNoBus for the Master.
+    std::vector<uint32_t> track_outputs(limits.engine_tracks, kNoBus);
+    std::vector<uint32_t> bus_outputs(bus_count, kNoBus);
+    for (std::size_t ti = 0; ti < tracks.size() && ti < limits.engine_tracks; ++ti) {
+        const auto it = bus_index.find(tracks[ti]->output);
+        if (tracks[ti]->output != model::kMasterOutput && it != bus_index.end()) {
+            track_outputs[ti] = it->second;
+        }
+    }
+    for (uint32_t b = 0; b < bus_count; ++b) {
+        const auto it = bus_index.find(buses[b].output);
+        if (buses[b].output != model::kMasterOutput && it != bus_index.end()) {
+            bus_outputs[b] = it->second;
+        }
+    }
+    // Topological over sends and outputs, ties in display order: the
+    // lowest-numbered bus no remaining bus feeds goes next. Quadratic in
+    // buses, which are few.
     std::vector<uint32_t> inputs(bus_count, 0);
     for (const SendBinding& s : sends) {
         if (s.strip >= limits.engine_tracks) ++inputs[s.bus];
+    }
+    for (uint32_t b = 0; b < bus_count; ++b) {
+        if (bus_outputs[b] != kNoBus) ++inputs[bus_outputs[b]];
     }
     std::vector<uint32_t> bus_order;
     std::vector<uint8_t> placed(bus_count, 0);
@@ -348,7 +367,7 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
             if (!placed[b] && inputs[b] == 0) next = b;
         }
         if (next == bus_count) {
-            error = "the aux buses' sends make a feedback loop; the plan is not built";
+            error = "the aux buses' sends and outputs make a feedback loop; the plan is not built";
             return false;
         }
         placed[next] = 1;
@@ -356,6 +375,7 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         for (const SendBinding& s : sends) {
             if (s.strip == limits.engine_tracks + next) --inputs[s.bus];
         }
+        if (bus_outputs[next] != kNoBus) --inputs[bus_outputs[next]];
     }
     MixLayout mix;
     mix.bus_count = bus_count;
@@ -363,6 +383,8 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     mix.bus_order = bus_order.data();
     mix.sends = sends.data();
     mix.send_count = static_cast<uint32_t>(sends.size());
+    mix.track_outputs = track_outputs.data();
+    mix.bus_outputs = bus_outputs.data();
     const GraphSize graph = mix_graph_size(limits.engine_tracks, bindings.data(), mix);
 
     PlanSizes sizes;

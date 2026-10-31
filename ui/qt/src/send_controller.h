@@ -46,6 +46,7 @@ struct AuxView {
     float gain_db = 0.0f;
     float pan = 0.0f;
     bool mute = false;
+    bool solo = false;
 };
 
 // One bus a strip's send could go to, and why it cannot, when it cannot.
@@ -75,6 +76,18 @@ public:
     // to it from `slot`: itself, a loop, a bus another of its slots feeds.
     std::vector<SendDestination> destinations(int strip, int slot) const;
 
+    // --- outputs (ADR-0024) ---
+    // Where `strip` feeds: the aux bus index, or kMaster for the Master.
+    static constexpr int kMaster = -1;
+    int output(int strip) const;
+    std::string output_name(int strip) const;
+    // The Master first, then every bus in display order, with the reason when
+    // `strip` cannot output to it: itself, a loop (named as the model names
+    // it), a MIDI track, which has no audio.
+    std::vector<SendDestination> output_choices(int strip) const;
+    // One undo step. `bus` is an aux bus index, or kMaster.
+    bool set_output(int strip, int bus, std::string& why);
+
     // --- structure: each one undo step ---
     // `slot` sends to bus `bus`. A slot already in use is sent elsewhere,
     // keeping its level, pan and mutes: RemoveSend and AddSend in one
@@ -97,6 +110,7 @@ public:
     bool set_bus_gain(int bus, float db, std::string& why);
     bool set_bus_pan(int bus, float pan, std::string& why);
     bool toggle_bus_mute(int bus, std::string& why);
+    bool toggle_bus_solo(int bus, std::string& why);
 
     // "Bus 1", "Bus 2", ...: the first number no bus is named with.
     std::string next_bus_name() const;

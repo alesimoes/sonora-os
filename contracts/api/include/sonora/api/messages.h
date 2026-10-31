@@ -110,7 +110,11 @@ namespace sonora::api {
 // 29 (daw.model.session_mgmt, ADR-0018 update of 2026-10-27):
 //   ModelAction::SaveAs, Save As and Save Copy In, which a version-28 peer's
 //   decoder refuses as an unknown action.
-constexpr uint32_t kProtocolVersion = 29;
+// 30 (ADR-0024; 29 is PR #164's): the operation codec has SetOutput, a
+//   BusMix carries its solo, and a Snapshot's undo window is window format
+//   9, with each track's and bus's output (session format 12). A version-28
+//   peer refuses all of them.
+constexpr uint32_t kProtocolVersion = 30;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

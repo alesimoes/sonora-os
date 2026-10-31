@@ -13,7 +13,7 @@ namespace {
 
 std::string letter(int slot) { return std::string(1, static_cast<char>('A' + slot)); }
 
-// Whether `from` reaches `to` along the buses' sends.
+// Whether `from` reaches `to` along the buses' sends and outputs.
 bool reaches(const EditState& e, Id from, Id to) {
     std::vector<Id> stack{from};
     std::unordered_set<Id> seen{from};
@@ -26,6 +26,7 @@ bool reaches(const EditState& e, Id from, Id to) {
             for (const Send& sd : b.sends) {
                 if (seen.insert(sd.bus).second) stack.push_back(sd.bus);
             }
+            if (b.output != kMasterOutput && seen.insert(b.output).second) stack.push_back(b.output);
         }
     }
     return false;
@@ -121,8 +122,68 @@ AuxView SendController::aux(int bus) const {
         v.gain_db = m->gain_db;
         v.pan = m->pan;
         v.mute = m->mute;
+        v.solo = m->solo;
     }
     return v;
+}
+
+int SendController::output(int strip) const {
+    const EditState& e = *snapshot().edit;
+    Id out = kMasterOutput;
+    if (strip >= 0 && strip < track_count()) {
+        out = e.tracks[static_cast<std::size_t>(strip)]->output;
+    } else if (strip >= track_count() && strip < strip_count()) {
+        out = e.buses[static_cast<std::size_t>(strip - track_count())].output;
+    }
+    for (int b = 0; b < bus_count(); ++b) {
+        if (e.buses[static_cast<std::size_t>(b)].id == out) return b;
+    }
+    return kMaster;
+}
+
+std::string SendController::output_name(int strip) const {
+    const int b = output(strip);
+    return b == kMaster ? "Master" : snapshot().edit->buses[static_cast<std::size_t>(b)].name;
+}
+
+std::vector<SendDestination> SendController::output_choices(int strip) const {
+    std::vector<SendDestination> out;
+    const EditState& e = *snapshot().edit;
+    const Id from = strip_id(strip);
+    const bool from_bus = strip >= track_count();
+    const bool audio = strip_sends(strip);
+    const std::string midi = "\"" + strip_name(strip) + "\" is a MIDI track; it has no audio output";
+    out.push_back({kMaster, "Master", audio ? std::string() : midi});
+    for (int b = 0; b < bus_count(); ++b) {
+        const Bus& bus = e.buses[static_cast<std::size_t>(b)];
+        SendDestination d{b, bus.name, {}};
+        if (!audio) {
+            d.refusal = midi;
+        } else if (from_bus && bus.id == from) {
+            d.refusal = "a bus cannot output to itself";
+        } else if (from_bus && reaches(e, bus.id, from)) {
+            d.refusal = "\"" + bus.name + "\" already feeds \"" + strip_name(strip) +
+                        "\": a feedback loop";
+        }
+        out.push_back(std::move(d));
+    }
+    return out;
+}
+
+bool SendController::set_output(int strip, int bus, std::string& why) {
+    const Id id = strip_id(strip);
+    if (id == kNoId) {
+        why = "that strip is gone";
+        return false;
+    }
+    if (bus != kMaster && (bus < 0 || bus >= bus_count())) {
+        why = "that bus is gone";
+        return false;
+    }
+    if (output(strip) == bus) return true;
+    const Id dest =
+        bus == kMaster ? kMasterOutput : snapshot().edit->buses[static_cast<std::size_t>(bus)].id;
+    return doc_.submit(SetOutput{id, dest}, why);
 }
 
 std::vector<SendDestination> SendController::destinations(int strip, int slot) const {
@@ -226,6 +287,14 @@ bool SendController::remove_bus(int bus, std::string& why) {
     const Id id = e.buses[static_cast<std::size_t>(bus)].id;
     Compound c;
     c.label = "Remove Bus";
+    // A strip that outputs to the bus goes back to the Master first, in the
+    // same step: the model refuses the removal while one is routed to it.
+    for (const auto& t : e.tracks) {
+        if (t->output == id) c.ops.push_back(SetOutput{t->id, kMasterOutput});
+    }
+    for (const Bus& other : e.buses) {
+        if (other.output == id) c.ops.push_back(SetOutput{other.id, kMasterOutput});
+    }
     const auto feeding = [&](const std::vector<Send>& sends) {
         for (const Send& sd : sends) {
             if (sd.bus == id) c.ops.push_back(RemoveSend{sd.id});
@@ -304,6 +373,10 @@ bool SendController::set_bus_pan(int bus, float pan, std::string& why) {
 
 bool SendController::toggle_bus_mute(int bus, std::string& why) {
     return edit_bus(bus, why, [](BusMix& v) { v.mute = !v.mute; });
+}
+
+bool SendController::toggle_bus_solo(int bus, std::string& why) {
+    return edit_bus(bus, why, [](BusMix& v) { v.solo = !v.solo; });
 }
 
 std::string SendController::next_bus_name() const {

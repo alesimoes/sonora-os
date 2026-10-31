@@ -435,6 +435,16 @@ struct SetBusMix {
     BusMix mix;    // replaces the values of mix.bus
 };
 
+// --- output routing (ADR-0024) ----------------------------------------------
+
+// Undoable: routes `strip`, a track with audio or an aux bus, to `output`,
+// kMasterOutput or an aux bus. Refused if it would close a loop through the
+// buses' sends and outputs.
+struct SetOutput {
+    Id strip = 0;
+    Id output = kMasterOutput;
+};
+
 // Every operation but Compound: what a compound holds. The type, not a
 // runtime check, keeps a compound out of a compound.
 using Member =
@@ -447,7 +457,7 @@ using Member =
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
-                 DuplicateTrack>;
+                 DuplicateTrack, SetOutput>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -481,7 +491,7 @@ using Operation =
                  SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
-                 DuplicateTrack, Compound>;
+                 DuplicateTrack, SetOutput, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");
