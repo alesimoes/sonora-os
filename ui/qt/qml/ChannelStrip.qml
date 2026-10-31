@@ -90,7 +90,9 @@ Rectangle {
                                  - faderFloor - (Theme.space3 + Theme.space2)
                                  - outputRow - (18 + Theme.space2 + 22 + Theme.space1)
     readonly property real sendsHeight: sendsFull
+    // Both banks collapsed with a plugin in one: the area is only the "+N" chip's row.
     readonly property real insertsHeight: inserts === null ? 0
+        : insertCount === 0 ? (hiddenInserts > 0 ? 12 : 0)
         : Math.min(insertsFull, Math.max(minSection, room - sendsHeight))
     readonly property alias insertFrame: insertFrame
     // Plugins in a collapsed insert bank, said on the strip ("+N").
@@ -238,7 +240,7 @@ Rectangle {
                   leftMargin: Theme.space1; rightMargin: Theme.space1 }
         // The same on the bus (no inserts), which keeps its fader level with the tracks'.
         height: strip.insertsHeight
-        visible: strip.inserts !== null && strip.insertCount > 0
+        visible: strip.inserts !== null && (strip.insertCount > 0 || strip.hiddenInserts > 0)
 
         ScrollFrame {
             id: insertFrame

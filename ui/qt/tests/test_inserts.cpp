@@ -566,6 +566,20 @@ int qml() {
     CHECK(a != nullptr && a->property("present").toBool());
     CHECK(named(root, QStringLiteral("compensation")) != nullptr);
 
+    // A plugin in a collapsed bank says so on the strip ("+N"), even with
+    // both banks collapsed; with nothing hidden there is no chip.
+    QQuickItem* chip = named(root, QStringLiteral("insertsMore0"));
+    CHECK(chip != nullptr && !chip->isVisible());
+    r.mixer.setShowInsertsFJ(false);
+    r.mixer.setShowInsertsAE(false);
+    QTest::qWait(30);
+    CHECK(chip->isVisible() && chip->property("text").toString() == QStringLiteral("+1"));
+    CHECK(named(root, QStringLiteral("insertsMore2")) != nullptr
+          && !named(root, QStringLiteral("insertsMore2"))->isVisible());
+    r.mixer.setShowInsertsAE(true);
+    QTest::qWait(30);
+    CHECK(!chip->isVisible());
+
     // A click on an empty slot opens the chooser, and its search field has
     // the keyboard: "s" types, it does not solo a track.
     QQuickItem* empty = named(root, QStringLiteral("insert_1_2"));

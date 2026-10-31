@@ -468,6 +468,7 @@ playback can follow edits; it is in flight.
 
 Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 
+- [ ] ui.mixer.views: label the insert bank toggle "Ins F-J" so it is not confused with the sends' "F-J" in the Mix header.
 - [ ] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
 - [ ] Memory Locations length column uses the main counter format, not always min:sec.
 - [ ] `ui.mixer.sends` follow-ups (ADR-0022):
