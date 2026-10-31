@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -1735,6 +1736,158 @@ void resync_applies_the_mix() {
     CHECK(real.state().track(0).gain == 0.25f);
 }
 
+// ADR-0022 update of 2026-10-31 on the real engine: a send's level and an
+// aux's gain ridden as ParameterChanges reach the session's atomics with no
+// model update; an unrelated edit leaves the ride, the release's SetSendMix
+// applies, and a rider that leaves has the document's value put back on
+// what it rode, and only that.
+void live_send_and_aux_rides() {
+    RealEngine real(fresh_dir("live_send_rides"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            std::string why;
+            CHECK(replica.receive(from_wire(in.model[fed]), why));
+        }
+    };
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        feed();
+        return got;
+    };
+    const auto apply = [&](const model::Operation& op, api::CommandReply& r) {
+        api::ModelRequest m;
+        m.action = api::ModelAction::Apply;
+        std::string why;
+        return model::encode_operation(op, m.op, why) && reply_to(real.submit(m), r) &&
+               r.result == DispatchResult::Ok;
+    };
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    feed();
+    CHECK(replica.synced());
+    if (!replica.synced()) return;
+    model::Id next = replica.current().next_id;
+    const model::Id verb = next++;
+    const model::Id room = next++;
+    api::CommandReply r;
+    CHECK(apply(model::AddBus{verb, "Verb", model::BusMix{}}, r));
+    CHECK(apply(model::AddBus{room, "Room", model::BusMix{}}, r));
+    model::AddSend send;
+    send.strip = replica.current().edit->tracks[0]->id;
+    send.send = next++;
+    send.slot = 2;
+    send.bus = verb;
+    send.mix.level_db = 0.0f;
+    CHECK(apply(send, r));
+    // A bus's own send: strip tracks + 0, slot 0.
+    model::AddSend chain;
+    chain.strip = verb;
+    chain.send = next++;
+    chain.bus = room;
+    chain.mix.level_db = 0.0f;
+    CHECK(apply(chain, r));
+    Session& session = real.session();
+    const auto tracks = static_cast<uint32_t>(session.tracks().size());
+    CHECK(until(real, in, [&]() {
+        return session.send_level(0, 2) == 1.0f && session.send_level(tracks, 0) == 1.0f;
+    }));
+    const uint64_t revision = replica.current().revision;
+    const std::size_t updates = in.model.size();
+
+    api::ParameterChange ride;
+    ride.param = api::ParamId::SendLevel;
+    ride.id = send.send;
+    ride.value = 0.5f;
+    ride.gesture = api::Gesture::Touch;
+    CHECK(reply_to(real.send(ride), r) && r.result == DispatchResult::Ok);
+    CHECK(session.send_level(0, 2) == 0.5f);
+    ride.id = chain.send;
+    ride.value = 0.75f;
+    ride.gesture = api::Gesture::Move;
+    CHECK(reply_to(real.send(ride), r) && r.result == DispatchResult::Ok);
+    CHECK(session.send_level(tracks, 0) == 0.75f);
+    ride.param = api::ParamId::AuxGain;
+    ride.id = room;
+    ride.value = 2.0f;
+    CHECK(reply_to(real.send(ride), r) && r.result == DispatchResult::Ok);
+    CHECK(session.aux_gain(1) == 2.0f);
+    // The rest of the send's state is the document's: a ride moves the level
+    // alone, and none of it is a revision.
+    CHECK(in.model.size() == updates && replica.current().revision == revision);
+
+    // An unrelated edit leaves the rides where they are.
+    model::AddMarker marker;
+    marker.marker.id = next++;
+    marker.marker.name = "Ride";
+    CHECK(apply(marker, r));
+    CHECK(session.send_level(0, 2) == 0.5f && session.aux_gain(1) == 2.0f);
+
+    // The release's SetSendMix is what is saved, and the atomics follow it.
+    model::SendMix saved = *replica.current().mix.find_send(send.send);
+    saved.level_db = -12.0f;
+    CHECK(apply(model::SetSendMix{saved}, r));
+    CHECK(std::fabs(session.send_level(0, 2) - std::pow(10.0f, -12.0f / 20.0f)) < 1e-6f);
+
+    // A second client rides the track's send and the Verb's return, then
+    // leaves with no release: both go back to the document's, and the
+    // first client's ride on Room's gain stays.
+    ride.param = api::ParamId::AuxGain;
+    ride.id = room;
+    ride.value = 2.0f;
+    CHECK(reply_to(real.send(ride), r) && r.result == DispatchResult::Ok);
+    EngineControlServer& server = real.engine().server();
+    const auto rider = server.attach([](EngineControlServer::Frame) {}, {});
+    const auto deliver = [&](const api::ParameterChange& c) {
+        std::string bytes;
+        api::wire::encode(c, bytes);
+        std::vector<std::string> frames;
+        CHECK(api::wire::split_frames(bytes, frames, error));
+        for (std::string& f : frames) server.deliver(rider, std::move(f));
+    };
+    api::ParameterChange stranded;
+    stranded.seq = 1;
+    stranded.param = api::ParamId::SendLevel;
+    stranded.id = send.send;
+    stranded.value = 3.0f;
+    deliver(stranded);
+    stranded.seq = 2;
+    stranded.param = api::ParamId::AuxGain;
+    stranded.id = verb;
+    stranded.value = 0.125f;
+    deliver(stranded);
+    CHECK(until(real, in, [&]() {
+        return session.send_level(0, 2) == 3.0f && session.aux_gain(0) == 0.125f;
+    }));
+    server.detach(rider);
+    CHECK(until(real, in, [&]() {
+        return std::fabs(session.send_level(0, 2) - std::pow(10.0f, -12.0f / 20.0f)) < 1e-6f &&
+               session.aux_gain(0) == 1.0f;
+    }));
+    CHECK(session.aux_gain(1) == 2.0f);
+
+    // Refused by name: an id with no send, a NaN.
+    ride.param = api::ParamId::SendLevel;
+    ride.id = verb;
+    CHECK(reply_to(real.send(ride), r) && r.result == DispatchResult::Failed);
+    CHECK(r.message == "there is no send " + std::to_string(verb));
+    ride.id = send.send;
+    ride.value = std::numeric_limits<float>::quiet_NaN();
+    CHECK(reply_to(real.send(ride), r) && r.result == DispatchResult::Failed);
+    CHECK(r.message == "send level must be from 0 to 4 (linear)");
+}
+
 }  // namespace
 
 // ADR-0015 §5 on the real engine: Options::midi_max_entries is the budget,
@@ -2647,6 +2800,7 @@ int main() {
     housekeeping_and_early_events();
     no_plugin_hosting_yet();
     resync_applies_the_mix();
+    live_send_and_aux_rides();
     midi_budget_at_open_and_its_notice();
     snapshot_parts_are_paced_and_held();
     what_waits_behind_a_snapshot_is_bounded();

@@ -192,6 +192,7 @@ same document.
   decodes the six new operations; a version-25 peer refuses them.
 - No new `ParamId`: a send or aux fader ride is a `SetSendMix` or
   `SetBusMix` per step, as the monitor bus rides today (mix_model.h).
+  *Superseded by the update of 2026-10-31 below (protocol 34).*
 
 ## Consequences
 
@@ -217,3 +218,33 @@ same document.
 
 - Pro Tools allows two sends of one strip to one bus; §4 refuses it. If an
   owner workflow needs it, the delay-line pair must key on the send.
+
+## Update 2026-10-31: send level and aux gain as live parameters (protocol 34)
+
+§8 made each step of a send or aux fader ride a `SetSendMix` or `SetBusMix`:
+a document change, a replicated update and an apply per step. A ride is
+now what a track's fader ride is (ADR-0013 §3, ADR-0027 §3): live values,
+then one model operation at release.
+
+- `ParamId` appends `SendLevel = 2` and `AuxGain = 3`, both linear 0 to 4
+  as `Gain`; NaN and out of range are refused by name.
+- `ParameterChange` appends `uint64_t id`: the send's model id for
+  `SendLevel`, the aux bus's for `AuxGain`; `track` is ignored for them.
+  A model id, not a strip and slot: the engine's strip index of a track's
+  send moves with the track order (ADR-0023 §4), the id does not. An id
+  the document has no send (or bus) for is refused by name.
+- The server writes only the level or gain atomic of the strip and slot
+  the current document gives that id (`Session::set_send_level`,
+  `set_aux_gain`), atomics the audio thread already reads once per block
+  and ramps (§6). The audio thread is unchanged. A track's send while the
+  tracks are being rearranged is dropped, as the track's fader step is;
+  the next step lands.
+- The gesture is carried and accepted; sends and aux strips have no
+  automation lanes yet, so Touch and Release change nothing.
+- The ride rule is the track fader's: `apply_mix()` runs only when an
+  update changed the mix, a client that leaves mid-ride has the document's
+  value put back on the sends and buses it was the last to ride, and the
+  operator's release is saved with one `SetSendMix` or `SetBusMix`.
+- Protocol 34: a version-33 peer refuses the new values and the trailing
+  id. `FakeEngine` resolves the id in its document the same way, and the
+  conformance case "live send and aux rides" runs on both engines.

@@ -549,6 +549,9 @@ private:
     // since the document's faders were last applied: a rider that leaves
     // has that track's gain put back, and no other client's ride moves.
     std::map<uint32_t, ClientId> riders_;
+    // The same by the model id of a send or aux bus ridden live (ADR-0022
+    // update of 2026-10-31).
+    std::map<model::Id, ClientId> send_riders_;
     // The pass being collected (0: none) and what it holds so far, reserved
     // when it opens; the drain buffer, sized once.
     uint64_t pass_open_ = 0;

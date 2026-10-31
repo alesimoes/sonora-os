@@ -1540,6 +1540,93 @@ int check_sends(Rig& rig) {
     return C(rig, "sends and aux buses").go();
 }
 
+// Send and aux fader rides as live parameters (ADR-0022 update of
+// 2026-10-31, protocol 34): a ParameterChange with SendLevel or AuxGain,
+// naming the send or the bus by model id, is accepted and is no document
+// change; an id the document has no send or bus for, a NaN and a value
+// past 4 are refused by name, and none of it changes the replica.
+int check_live_send_rides(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        bool apply(Session& s, const model::Operation& op, CommandReply& r) {
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            if (!model::encode_operation(op, m.op, error)) return false;
+            return s.await(rig_, s.engine->submit(m), r);
+        }
+
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            const model::Snapshot before = s.replica.current();
+            model::Id next = before.next_id;
+            const model::Id verb = next++;
+            CommandReply r;
+            EXPECT(apply(s, model::AddBus{verb, "Verb", model::BusMix{}}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "AddBus was refused: " + r.message);
+            model::AddSend send;
+            send.strip = before.edit->tracks.at(0)->id;
+            send.send = next++;
+            send.bus = verb;
+            EXPECT(apply(s, send, r) && r.result == DispatchResult::Ok,
+                   "AddSend was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.current().revision == before.revision + 2; }),
+                   "no update for the send: " + s.replica_error);
+
+            const model::Snapshot here = s.replica.current();
+            const std::size_t updates = s.inbox.model.size();
+            ParameterChange p;
+            p.param = ParamId::SendLevel;
+            p.id = send.send;
+            p.value = 0.5f;
+            p.gesture = Gesture::Touch;
+            EXPECT(s.await(rig_, s.engine->send(p), r) && r.result == DispatchResult::Ok,
+                   "a send level ride failed: " + r.message);
+            p.gesture = Gesture::Move;
+            p.value = 0.25f;
+            EXPECT(s.await(rig_, s.engine->send(p), r) && r.result == DispatchResult::Ok,
+                   "a send level step failed: " + r.message);
+            p.param = ParamId::AuxGain;
+            p.id = verb;
+            p.value = 2.0f;
+            EXPECT(s.await(rig_, s.engine->send(p), r) && r.result == DispatchResult::Ok,
+                   "an aux gain ride failed: " + r.message);
+
+            p.id = send.send;
+            EXPECT(s.await(rig_, s.engine->send(p), r) && r.result == DispatchResult::Failed &&
+                       r.message == "there is no aux bus " + std::to_string(send.send),
+                   "an aux gain naming a send was not refused by name: " + r.message);
+            p.param = ParamId::SendLevel;
+            p.id = verb;
+            EXPECT(s.await(rig_, s.engine->send(p), r) && r.result == DispatchResult::Failed &&
+                       r.message == "there is no send " + std::to_string(verb),
+                   "a send level naming a bus was not refused by name: " + r.message);
+            p.id = send.send;
+            p.value = std::numeric_limits<float>::quiet_NaN();
+            EXPECT(s.await(rig_, s.engine->send(p), r) && r.result == DispatchResult::Failed &&
+                       r.message == "send level must be from 0 to 4 (linear)",
+                   "a NaN send level was not refused by name: " + r.message);
+            p.param = ParamId::AuxGain;
+            p.id = verb;
+            p.value = 4.5f;
+            EXPECT(s.await(rig_, s.engine->send(p), r) && r.result == DispatchResult::Failed &&
+                       r.message == "aux gain must be from 0 to 4 (linear)",
+                   "an aux gain past 4 was not refused by name: " + r.message);
+
+            EXPECT(s.next_publish(rig_), "nothing published after the rides");
+            EXPECT(s.inbox.model.size() == updates, "a ride sent a model update");
+            EXPECT(s.replica.current() == here, "a ride changed the replica");
+            return ok();
+        }
+    };
+    return C(rig, "live send and aux rides").go();
+}
+
 // Output routing (ADR-0024, protocol 30): a strip's output crosses as an
 // operation and every replica holds it; an output that would close a loop
 // through the buses, or a bus a strip still outputs to being removed, is
@@ -3480,6 +3567,7 @@ int run(Rig& rig) {
     failures += check_model(rig);
     failures += check_compound(rig);
     failures += check_sends(rig);
+    failures += check_live_send_rides(rig);
     failures += check_output_routing(rig);
     failures += check_automation(rig);
     failures += check_track_structure(rig);

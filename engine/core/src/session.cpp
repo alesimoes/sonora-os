@@ -411,6 +411,26 @@ void Session::set_aux_solo(uint32_t bus, bool solo) {
     if (bus < max_buses_) aux_[bus].solo.store(solo, std::memory_order_relaxed);
 }
 
+void Session::set_send_level(uint32_t strip, uint32_t slot, float level) {
+    if (slot >= kStripSendSlots) return;
+    const uint64_t k = static_cast<uint64_t>(strip) * kStripSendSlots + slot;
+    if (k < send_states_) sends_[k].level.store(level, std::memory_order_relaxed);
+}
+
+void Session::set_aux_gain(uint32_t bus, float gain) {
+    if (bus < max_buses_) aux_[bus].gain.store(gain, std::memory_order_relaxed);
+}
+
+float Session::send_level(uint32_t strip, uint32_t slot) const {
+    if (slot >= kStripSendSlots) return 0.0f;
+    const uint64_t k = static_cast<uint64_t>(strip) * kStripSendSlots + slot;
+    return k < send_states_ ? sends_[k].level.load(std::memory_order_relaxed) : 0.0f;
+}
+
+float Session::aux_gain(uint32_t bus) const {
+    return bus < max_buses_ ? aux_[bus].gain.load(std::memory_order_relaxed) : 0.0f;
+}
+
 void Session::play() {
     // A take keeps its own state; this only starts a roll.
     if (transport_->state() == TransportState::Stopped) {

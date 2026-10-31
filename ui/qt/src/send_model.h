@@ -12,7 +12,8 @@
 // through the TimelineDocument and reports through SessionModel, so a
 // refused send reaches the status line the way a refused region edit does.
 // A ride of a send or aux fader is a SetSendMix or SetBusMix per step, as
-// the monitor bus rides (mix_model.h): no ParamId carries them yet.
+// the monitor bus rides (mix_model.h); the engine takes them as live
+// ParamId::SendLevel and AuxGain since protocol 34, not used here yet.
 #pragma once
 
 #include <QObject>

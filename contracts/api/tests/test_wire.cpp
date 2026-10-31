@@ -89,8 +89,31 @@ void round_trips() {
         CHECK(wire::decode(bytes, back, error));
         CHECK(back.param == ParamId::Pan && back.value == -0.5f &&
               back.gesture == Gesture::Release);
-        // A version-32 peer's change, without the gesture, is cut short.
-        bytes.resize(bytes.size() - 4);
+        // A version-32 peer's change, without the gesture or the id, is cut
+        // short.
+        bytes.resize(bytes.size() - 12);
+        CHECK(!wire::decode(bytes, back, error));
+        // A send's level and an aux's gain, by model id (ADR-0022 update of
+        // 2026-10-31, protocol 34).
+        c.param = ParamId::SendLevel;
+        c.value = 0.25f;
+        c.gesture = Gesture::Touch;
+        c.id = 0x1234567890ull;
+        wire::encode(c, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.param == ParamId::SendLevel && back.value == 0.25f &&
+              back.gesture == Gesture::Touch && back.id == 0x1234567890ull);
+        c.param = ParamId::AuxGain;
+        c.id = 7;
+        wire::encode(c, bytes);
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.param == ParamId::AuxGain && back.id == 7);
+        // A version-33 peer's change, without the id, is cut short.
+        bytes.resize(bytes.size() - 8);
+        CHECK(!wire::decode(bytes, back, error));
+        // A parameter past AuxGain is refused.
+        wire::encode(c, bytes);
+        bytes[1 + 8 + 4] = 4;
         CHECK(!wire::decode(bytes, back, error));
     }
     {
@@ -370,8 +393,9 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // ParameterChange's gesture and ParamId::Pan (ADR-0027 §3) are version
-    // 33; EditAutomation and the track mix's automation mode (ADR-0027) are
+    // ParamId::SendLevel and AuxGain with ParameterChange's id (ADR-0022
+    // update of 2026-10-31) are version 34; ParameterChange's gesture and
+    // ParamId::Pan (ADR-0027 §3) are version 33; EditAutomation and the track mix's automation mode (ADR-0027) are
     // version 32; DuplicatePlaylist, SetPlaylistName and RemovePlaylist
     // (ADR-0026) are version 31; Save As and Save Copy In
     // (ModelAction::SaveAs) are version 29;
@@ -392,7 +416,7 @@ void version_check() {
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 33);
+    CHECK(kProtocolVersion == 34);
     CHECK(kStateLayoutVersion == 4);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
@@ -400,13 +424,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 33 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 34 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 33"));
+                   "speaks version 34"));
 }
 
 void domains() {
