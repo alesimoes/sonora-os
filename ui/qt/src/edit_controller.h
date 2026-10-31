@@ -57,7 +57,8 @@ struct ViewState {
     // track i's top in row pixels and `tops[n]` the end of the last; empty
     // when no track discloses lanes, and every track is then `track_height`
     // tall. `open[i]` says track i shows its lanes.
-    double autolane_height = 56.0;
+    static constexpr double kAutolaneBaseHeight = 56.0;  // at wave_scale 1
+    double autolane_height = kAutolaneBaseHeight;
     std::vector<double> tops;
     std::vector<std::uint8_t> open;
 
