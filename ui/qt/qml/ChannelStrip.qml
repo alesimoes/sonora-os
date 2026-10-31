@@ -189,6 +189,8 @@ Rectangle {
                 }
                 onReleased: finish()
                 onCanceled: finish()
+                // A window closed mid-press delivers no onCanceled.
+                Component.onDestruction: finish()
                 onPositionChanged: (m) => {
                     if (!pressed || (m.modifiers & Qt.AltModifier)) return
                     if (strip.mixer !== null) {
@@ -448,6 +450,7 @@ Rectangle {
             }
             onReleased: finish()
             onCanceled: finish()
+            Component.onDestruction: finish()
         }
 
         Row {

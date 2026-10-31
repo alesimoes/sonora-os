@@ -33,6 +33,32 @@ void MixModel::resetViews() {
 
 void MixModel::documentChanged() {
     if (ride_track_ != kNoRide) rideStillHolds();
+    if (pan_track_ != kNoRide) panStillHolds();
+}
+
+bool MixModel::panStillHolds() {
+    if (session_.sessionGeneration() != pan_generation_) {
+        dropPan("The session was replaced while a pan was held");
+        return false;
+    }
+    if (session_.trackIndex(pan_id_) != pan_track_) {
+        dropPan("The track whose pan was held moved or is gone");
+        return false;
+    }
+    return true;
+}
+
+void MixModel::dropPan(const std::string& why) {
+    // The Touch went to an engine index; that index gets its Release, or
+    // the track stays touched and the engine keeps writing the held value.
+    const int index = pan_track_;
+    pan_track_ = kNoRide;
+    pan_id_ = 0;
+    if (live(index)) {
+        const float value = index < session_.trackCount() ? session_.stripPan(index) : 0.0f;
+        sender_(static_cast<uint32_t>(index), api::ParamId::Pan, value, api::Gesture::Release);
+    }
+    if (!why.empty()) session_.reportEdit(false, why);
 }
 
 bool MixModel::rideStillHolds() {
@@ -105,6 +131,7 @@ void MixModel::sendLive(int track, float db, api::Gesture gesture) {
 
 void MixModel::beginRide(int track) {
     if (track < -1 || track >= session_.trackCount()) return;
+    if (ride_track_ != kNoRide) dropRide("A second fader press arrived while one was held");
     ride_track_ = track;
     ride_id_ = track < 0 ? 0 : session_.trackId(track);
     ride_generation_ = session_.sessionGeneration();
@@ -174,14 +201,18 @@ bool MixModel::setPanText(int track, const QString& text) {
 
 void MixModel::beginPan(int track) {
     if (!live(track) || track >= session_.trackCount()) return;
+    if (pan_track_ != kNoRide) dropPan("A second pan press arrived while one was held");
     pan_track_ = track;
+    pan_id_ = session_.trackId(track);
+    pan_generation_ = session_.sessionGeneration();
     sender_(static_cast<uint32_t>(track), api::ParamId::Pan, session_.stripPan(track),
             api::Gesture::Touch);
 }
 
 void MixModel::endPan(int track) {
-    if (pan_track_ == kNoRide || track != pan_track_) return;
+    if (pan_track_ == kNoRide || track != pan_track_ || !panStillHolds()) return;
     pan_track_ = kNoRide;
+    pan_id_ = 0;
     if (!live(track) || track >= session_.trackCount()) return;
     sender_(static_cast<uint32_t>(track), api::ParamId::Pan, session_.stripPan(track),
             api::Gesture::Release);

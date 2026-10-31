@@ -174,6 +174,9 @@ private:
     // If the ride's steps reached the engine, its index goes back to the
     // gain the document holds for the track now there.
     void dropRide(const std::string& why);
+    // The same for a pan hold: false, with a Release to the touched index.
+    bool panStillHolds();
+    void dropPan(const std::string& why);
 
     SessionModel& session_;
     GainSender sender_;
@@ -187,6 +190,8 @@ private:
     bool ride_sent_live_ = false;
     bool ride_touched_ = false;   // a Touch went out and wants its Release
     int pan_track_ = kNoRide;     // the engine track whose pan the hand holds
+    model::Id pan_id_ = 0;
+    uint64_t pan_generation_ = 0;
     uint64_t live_steps_ = 0;
     bool show_io_ = true;
     bool show_inserts_ae_ = true;

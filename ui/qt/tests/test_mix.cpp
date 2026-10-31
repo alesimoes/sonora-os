@@ -911,6 +911,51 @@ int automation_gestures() {
     r.mixer.panDrag(0, 10, 100, false);
     r.mixer.endPan(0);
     CHECK(r.sent.empty());
+    // A hold that loses its Release leaves the track touched (PR #187): every
+    // way out of a hold ends with the Release to the index that was Touched.
+    {
+        // A second press does not strand the first.
+        r.sent.clear();
+        r.mixer.beginPan(0);
+        r.mixer.beginPan(1);
+        CHECK(r.sent.size() == 3 && r.sent[1].gesture == Gesture::Release && r.sent[1].track == 0 &&
+              r.sent[2].gesture == Gesture::Touch && r.sent[2].track == 1);
+        r.mixer.endPan(1);
+        r.sent.clear();
+        r.mixer.beginRide(0);
+        r.mixer.beginRide(1);
+        CHECK(r.sent.size() == 3 && r.sent[1].gesture == Gesture::Release && r.sent[1].track == 0 &&
+              r.sent[2].gesture == Gesture::Touch && r.sent[2].track == 1);
+        r.mixer.endRide(1);
+    }
+    {
+        // The session is replaced under the hand.
+        Rig q;
+        CHECK(q.connect());
+        q.mixer.beginPan(2);
+        q.sent.clear();
+        std::string why;
+        CHECK(q.doc.reset(make_empty_session(4, 48000), why));
+        q.settle();
+        CHECK(q.sent.size() == 1 && q.sent[0].gesture == Gesture::Release && q.sent[0].track == 2);
+        q.mixer.endPan(2);
+        CHECK(q.sent.size() == 1);
+    }
+    {
+        // The track is removed under the hand: its index gets the Release,
+        // and nothing more goes at the lift.
+        Rig q;
+        CHECK(q.connect());
+        std::string why;
+        q.mixer.beginPan(1);
+        q.sent.clear();
+        CHECK(q.doc.submit(model::RemoveTrack{q.doc.snapshot().edit->tracks[1]->id}, why));
+        q.settle();
+        CHECK(q.sent.size() == 1 && q.sent[0].gesture == Gesture::Release &&
+              q.sent[0].param == ParamId::Pan && q.sent[0].track == 1);
+        q.mixer.endPan(1);
+        CHECK(q.sent.size() == 1);
+    }
     std::printf("  automation gestures: ok\n");
     return 0;
 }
