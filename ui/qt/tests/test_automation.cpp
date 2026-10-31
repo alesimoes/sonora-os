@@ -252,6 +252,27 @@ int test_rows() {
     return 0;
 }
 
+int test_lane_height_follows_zoom() {
+    ModelDocument doc(make_empty_session(3, kRate));
+    EditController ctl(doc);
+    ctl.set_viewport(1000, 600);
+    std::string why;
+    OK(ctl.toggle_autolanes(0, why));
+    const double base = ctl.view().autolane_height;
+    ctl.vertical_zoom(true);
+    OK(ctl.view().autolane_height > base);
+    OK(std::fabs(ctl.view().autolane_height - base * 1.5) < 1e-6);
+    // The rows below follow it.
+    OK(std::fabs(ctl.view().y_of_track(1) - (ctl.view().track_height + 2 * base * 1.5)) < 1e-6);
+    ctl.vertical_zoom(false);
+    ctl.vertical_zoom(false);
+    OK(ctl.view().autolane_height < base);
+    OK(ctl.view().autolane_height >= 32.0);
+    for (int i = 0; i < 20; ++i) ctl.vertical_zoom(true);
+    OK(ctl.view().autolane_height <= 224.0);
+    return 0;
+}
+
 int test_gestures() {
     ModelDocument doc(make_empty_session(2, kRate));
     EditController ctl(doc);
@@ -461,7 +482,7 @@ int test_scene() {
 }  // namespace
 
 int main() {
-    if (test_values() || test_operations() || test_stroke() || test_clip() || test_rows() ||
+    if (test_values() || test_operations() || test_stroke() || test_clip() || test_rows() || test_lane_height_follows_zoom() ||
         test_gestures() || test_range_commands() || test_scene()) {
         return 1;
     }

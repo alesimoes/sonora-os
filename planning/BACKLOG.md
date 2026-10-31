@@ -953,7 +953,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       freely and is thinned at the release, the Selector selects a range of a
       lane and Cut, Copy, Paste and Clear act on it; each gesture is one
       `EditAutomation`, so one undo step. Screenshot `edit-automation`.
-- [ ] `automation.lanes` follow-ups: Thin as its own command on a range
+- [ ] `automation.lanes` follow-ups (lane height following the vertical zoom is done): Thin as its own command on a range
       (`automation.thin`, needs a command id and a key map entry),
       a `Compound` of several lanes when a range spans tracks (the Selector is
       one lane on one track for now), Trim mode's relative edit of a range,

@@ -28,6 +28,7 @@ void gestures(ShotContext c) {
     EditController& edit = c.session.controller();
     const auto bar = static_cast<model::Frames>(edit.snapshot().settings.sample_rate * 2);
     c.model.invoke(QStringLiteral("zoom.fit_session"), -1);
+    c.model.invoke(QStringLiteral("zoom.vertical_in"), -1);   // the lanes grow with it
     const ViewState& v = edit.view();
     std::string ignored;
     edit.set_tool(Tool::Select);
