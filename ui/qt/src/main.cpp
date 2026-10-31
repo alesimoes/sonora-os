@@ -73,7 +73,8 @@ struct Options {
 // The demo session's aux buses and sends (ADR-0022), on any engine: a
 // reverb and a delay bus, most tracks sending to the reverb post-fader,
 // one pre-fader send to the delay, and the delay feeding the reverb, so the
-// Mix window shows each kind of send.
+// Mix window shows each kind of send; and a Drums bus its first two tracks
+// output to.
 void add_demo_sends(model::Snapshot& s) {
     const auto apply = [&s](const model::Operation& op) {
         model::Snapshot after;
@@ -108,6 +109,11 @@ void add_demo_sends(model::Snapshot& s) {
     }
     if (audio.size() > 3) send(audio[3], 1, delay, -10.0f, true);
     send(delay, 0, verb, -6.0f, false);
+    // A subgroup (ADR-0024): the first two tracks output to a Drums bus,
+    // which plays on the Master.
+    const model::Id drums = s.next_id;
+    apply(model::AddBus{drums, "Drums", model::BusMix{}});
+    for (std::size_t i = 0; i < audio.size() && i < 2; ++i) apply(model::SetOutput{audio[i], drums});
 }
 
 // The demo session's inserts, on the fake engine's catalog (fake_catalog()):

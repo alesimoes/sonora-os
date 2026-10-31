@@ -41,7 +41,9 @@ namespace sonora::model {
 //    Playback (ADR-0016). A version 9 file opens with it as loop playback.
 // 11: "buses", the aux buses with their returns and sends, and "sends" on
 //    every track with audio (ADR-0022). A version 10 file opens with none.
-constexpr std::int64_t kFormatVersion = 11;
+// 12: "output" on every track with audio and every bus, "solo" on every bus
+//    (ADR-0024). A version 11 file opens with every strip on the Master.
+constexpr std::int64_t kFormatVersion = 12;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

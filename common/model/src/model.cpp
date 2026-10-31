@@ -134,6 +134,7 @@ bool MidiRegion::operator==(const MidiRegion& o) const {
 bool TrackEdit::operator==(const TrackEdit& o) const {
     if (id != o.id || kind != o.kind || name != o.name || channels != o.channels ||
         active_playlist != o.active_playlist || inserts != o.inserts || sends != o.sends ||
+        output != o.output ||
         playlists.size() != o.playlists.size() ||
         midi_playlists.size() != o.midi_playlists.size()) {
         return false;
@@ -1392,11 +1393,15 @@ std::vector<Id> bus_path(const EditState& e, Id from, Id to) {
             return path;
         }
         const Bus* b = find_bus(e, f.bus);
-        if (b == nullptr || f.next >= b->sends.size()) {
+        // Its sends, then its output (ADR-0024 §3), as edge sends.size().
+        const std::size_t edges = b == nullptr ? 0 : b->sends.size() + 1;
+        if (f.next >= edges) {
             stack.pop_back();
             continue;
         }
-        const Id next = b->sends[f.next++].bus;
+        const std::size_t k = f.next++;
+        const Id next = k < b->sends.size() ? b->sends[k].bus : b->output;
+        if (next == kMasterOutput) continue;
         if (seen.insert(next).second) stack.push_back({next, 0});
     }
     return path;
@@ -1412,6 +1417,8 @@ std::string bus_loop_problem(const EditState& e, std::string& where) {
             const auto it = inputs.find(sd.bus);
             if (it != inputs.end()) ++it->second;
         }
+        const auto out = inputs.find(b.output);
+        if (b.output != kMasterOutput && out != inputs.end()) ++out->second;
     }
     std::vector<Id> ready;
     for (const Bus& b : e.buses) {
@@ -1427,6 +1434,10 @@ std::string bus_loop_problem(const EditState& e, std::string& where) {
             const auto it = inputs.find(sd.bus);
             if (it != inputs.end() && --it->second == 0) ready.push_back(sd.bus);
         }
+        const auto out = inputs.find(b->output);
+        if (b->output != kMasterOutput && out != inputs.end() && --out->second == 0) {
+            ready.push_back(b->output);
+        }
     }
     if (done == e.buses.size()) {
         where.clear();
@@ -1435,11 +1446,11 @@ std::string bus_loop_problem(const EditState& e, std::string& where) {
     for (std::size_t i = 0; i < e.buses.size(); ++i) {
         if (inputs[e.buses[i].id] != 0) {
             where = "buses[" + str(static_cast<std::int64_t>(i)) + "]";
-            return "its sends make a feedback loop through the aux buses";
+            return "its sends and outputs make a feedback loop through the aux buses";
         }
     }
     where.clear();
-    return "the sends make a feedback loop through the aux buses";
+    return "the sends and outputs make a feedback loop through the aux buses";
 }
 
 }  // namespace detail
@@ -1573,6 +1584,14 @@ bool check_invariants(const Snapshot& s, std::string& error) {
             return false;
         }
         if (!check_sends(tr.sends, path)) return false;
+        if (tr.output != kMasterOutput &&
+            (tr.kind == TrackKind::Midi || bus_ids.count(tr.output) == 0)) {
+            error = path + ".output: " +
+                    (tr.kind == TrackKind::Midi
+                         ? std::string("a MIDI track has no audio output")
+                         : std::to_string(tr.output) + " is neither the Master (0) nor an aux bus");
+            return false;
+        }
         for (std::size_t i = 0; i < tr.inserts.size(); ++i) {
             const Insert& in = tr.inserts[i];
             const std::string ipath = path + ".inserts[" + std::to_string(i) + "]";
@@ -1653,6 +1672,15 @@ bool check_invariants(const Snapshot& s, std::string& error) {
                 error = path + ".sends[" + std::to_string(i) + "]: a bus cannot send to itself";
                 return false;
             }
+        }
+        if (bus.output != kMasterOutput && bus_ids.count(bus.output) == 0) {
+            error = path + ".output: " + std::to_string(bus.output) +
+                    " is neither the Master (0) nor an aux bus";
+            return false;
+        }
+        if (bus.output == bus.id) {
+            error = path + ".output: a bus cannot be its own output";
+            return false;
         }
     }
     why = bus_loop_problem(*s.edit, where);

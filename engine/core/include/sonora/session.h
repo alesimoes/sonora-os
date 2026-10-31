@@ -446,7 +446,12 @@ public:
     // Control thread.
     void set_send(uint32_t strip, uint32_t slot, float level, float pan, bool follow_pan,
                   bool mute, bool pre);
-    void set_aux(uint32_t bus, float gain, float pan, bool mute);
+    // `solo` solos what feeds the bus as well (ADR-0024 §4); the return itself
+    // is never muted by a solo.
+    void set_aux(uint32_t bus, float gain, float pan, bool mute, bool solo = false);
+    // A solo left on a bus slot the document no longer has would mute the
+    // rest while every replica shows none, as a track's does.
+    void set_aux_solo(uint32_t bus, bool solo);
     uint32_t max_buses() const { return max_buses_; }
 
     // Monitor bus gain, linear. Mix state, ramped per block.
@@ -863,7 +868,13 @@ private:
         std::atomic<float> gain{1.0f};
         std::atomic<float> pan{0.0f};
         std::atomic<bool> mute{false};
+        std::atomic<bool> solo{false};
     };
+    // Which nodes and engine tracks feed a soloed aux this callback
+    // (ADR-0024 §4), sized when the session is created.
+    void feeds_solo(const PlaybackPlan& plan) noexcept SONORA_RT;
+    std::unique_ptr<uint8_t[]> feeds_node_;    // per node
+    std::unique_ptr<uint8_t[]> feeds_track_;   // per engine track
     uint32_t max_buses_ = 0;
     uint32_t send_states_ = 0;               // (tracks + max_buses) x kStripSendSlots
     std::unique_ptr<SendState[]> sends_;

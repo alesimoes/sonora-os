@@ -668,6 +668,9 @@ public:
         copy->name = op.name;
         copy->kind = src.kind;
         copy->channels = src.channels;
+        // The copy plays where its source does (ADR-0024 §2); a track has no
+        // input, so its output closes no loop.
+        copy->output = src.output;
         Id next = op.track + 1;
         const auto renamed = [&](const std::string& name) {
             // "Vox.02" on "Vox" is "Vox.dup1.02" on its copy.
@@ -954,6 +957,19 @@ public:
                             "\"; remove the send first");
             }
         }
+        // A strip routed to it would have nowhere to play (ADR-0024 §3).
+        for (const auto& t : before_.edit->tracks) {
+            if (t->output == op.bus) {
+                return fail("bus \"" + name + "\" is the output of track \"" + t->name +
+                            "\"; route the track elsewhere first");
+            }
+        }
+        for (const Bus& other : before_.edit->buses) {
+            if (other.output == op.bus) {
+                return fail("bus \"" + name + "\" is the output of bus \"" + other.name +
+                            "\"; route the bus elsewhere first");
+            }
+        }
         auto edit = std::make_shared<EditState>(*before_.edit);
         edit->buses.erase(edit->buses.begin() + static_cast<std::ptrdiff_t>(b));
         after_ = before_;
@@ -1075,6 +1091,48 @@ public:
         if (!why.empty()) return fail("bus " + str(op.mix.bus) + "." + where + ": " + why);
         after_ = before_;
         set_bus_mix(after_.mix, op.mix);
+        return true;
+    }
+
+    // --- output routing (ADR-0024): structure, undoable ---
+
+    bool operator()(const SetOutput& op) {
+        if (op.output != kMasterOutput && bus_index(op.output) == kNone) {
+            return fail("output " + str(op.output) + " is neither the Master nor an aux bus");
+        }
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        const std::size_t t = locate_track(*before_.edit, op.strip);
+        if (t != kNone) {
+            if (before_.edit->tracks[t]->kind == TrackKind::Midi) {
+                return fail("track " + str(op.strip) + " is a MIDI track; it has no audio output");
+            }
+            auto track = std::make_shared<TrackEdit>(*before_.edit->tracks[t]);
+            track->output = op.output;
+            edit->tracks[t] = std::move(track);
+        } else {
+            const std::size_t b = bus_index(op.strip);
+            if (b == kNone) {
+                return fail("strip " + str(op.strip) + " is neither a track nor an aux bus");
+            }
+            if (op.output == op.strip) return fail("a bus cannot be its own output");
+            // Its new output closes a loop if that bus already reaches it
+            // over sends and outputs (ADR-0024 §3). The search stops at the
+            // strip, so the output being replaced is never followed.
+            if (op.output != kMasterOutput) {
+                const std::vector<Id> path = detail::bus_path(*before_.edit, op.output, op.strip);
+                if (!path.empty()) {
+                    std::string chain;
+                    for (const Id id : path) {
+                        chain += (chain.empty() ? "" : " -> ") + bus_name(id);
+                    }
+                    return fail("bus " + bus_name(op.strip) + " to bus " + bus_name(op.output) +
+                                " would make a feedback loop: " + chain + " already");
+                }
+            }
+            edit->buses[b].output = op.output;
+        }
+        after_ = before_;
+        after_.edit = std::move(edit);
         return true;
     }
 

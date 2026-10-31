@@ -140,7 +140,7 @@ Rectangle {
         sends: mix.sends
         mixer: mix.mixer
         track: -1
-        name: "Monitor"
+        name: "Master"
         hasPan: false
         gainDb: mix.session.busGain
     }

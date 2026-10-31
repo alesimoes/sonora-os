@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // An aux bus's return strip (ADR-0022 §1): the bus's input, its balance,
-// its mute, its own sends, a fader and the name, laid out as ChannelStrip
-// so every fader starts at the same height. It returns to the monitor bus;
-// its inserts, output, solo and meter come with ui.mixer.io, and the
-// insert area is left empty until then.
+// its mute and solo, its own sends, its output, a fader and the name, laid
+// out as ChannelStrip so every fader starts at the same height. It returns
+// to its output, the Master or another bus (ADR-0024). Soloing it plays
+// what feeds it; its inserts and meter come later, and the insert area is
+// left empty until then.
 //
 // Fader: drag (Ctrl for fine), Alt-click for 0 dB, click the readout to
 // type a gain. Pan: drag, Alt-click centres. The x by the name removes the
@@ -99,6 +100,13 @@ Rectangle {
             active: aux.info.mute; activeColour: Theme.mute
             onClicked: aux.sends.toggleAuxMute(aux.bus)
         }
+        SButton {
+            objectName: "auxSolo" + aux.bus
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: "S"; implicitWidth: 18; implicitHeight: 18; fontPx: Theme.textCaption
+            active: aux.info.solo === true; activeColour: Theme.solo
+            onClicked: aux.sends.toggleAuxSolo(aux.bus)
+        }
     }
 
     // No inserts on a return yet (ui.mixer.io): the space keeps the faders level.
@@ -131,9 +139,21 @@ Rectangle {
         }
     }
 
+    SButton {
+        id: outputButton
+        objectName: "auxOutput" + aux.bus
+        anchors { left: parent.left; right: parent.right; top: sendArea.bottom
+                  topMargin: Theme.space2; leftMargin: Theme.space1; rightMargin: Theme.space1 }
+        implicitHeight: 16
+        bold: false
+        fontPx: Theme.textCaption
+        text: aux.info.output !== undefined ? aux.info.output : "Master"
+        onClicked: aux.sends.openOutputChooser(aux.strip)
+    }
+
     Item {
         id: faderArea
-        anchors { left: parent.left; right: parent.right; top: sendArea.bottom; bottom: readout.top
+        anchors { left: parent.left; right: parent.right; top: outputButton.bottom; bottom: readout.top
                   topMargin: Theme.space3; bottomMargin: Theme.space2 }
         readonly property real capH: 26
         readonly property real travel: height - capH

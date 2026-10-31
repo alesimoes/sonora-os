@@ -1540,6 +1540,90 @@ int check_sends(Rig& rig) {
     return C(rig, "sends and aux buses").go();
 }
 
+// Output routing (ADR-0024, protocol 30): a strip's output crosses as an
+// operation and every replica holds it; an output that would close a loop
+// through the buses, or a bus a strip still outputs to being removed, is
+// refused, saying so, and changes nothing; undo puts the routing back; a
+// bus's solo crosses with its mix.
+int check_output_routing(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        bool apply(Session& s, const model::Operation& op, CommandReply& r) {
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            if (!model::encode_operation(op, m.op, error)) return false;
+            return s.await(rig_, s.engine->submit(m), r);
+        }
+
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            const model::Snapshot before = s.replica.current();
+            const model::Id track = before.edit->tracks.at(0)->id;
+            model::Id next = before.next_id;
+            const model::Id drums = next++;
+            const model::Id verb = next++;
+            CommandReply r;
+            EXPECT(apply(s, model::AddBus{drums, "Drums", model::BusMix{}}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "AddBus was refused: " + r.message);
+            EXPECT(apply(s, model::AddBus{verb, "Verb", model::BusMix{}}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "a second AddBus was refused: " + r.message);
+            EXPECT(apply(s, model::SetOutput{track, drums}, r) && r.result == DispatchResult::Ok,
+                   "SetOutput of a track was refused: " + r.message);
+            EXPECT(apply(s, model::SetOutput{drums, verb}, r) && r.result == DispatchResult::Ok,
+                   "SetOutput of a bus was refused: " + r.message);
+            model::BusMix solo;
+            solo.bus = drums;
+            solo.solo = true;
+            EXPECT(apply(s, model::SetBusMix{solo}, r) && r.result == DispatchResult::Ok,
+                   "SetBusMix with a solo was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.current().revision == before.revision + 5; }),
+                   "no update for the routing: " + s.replica_error);
+            const model::Snapshot here = s.replica.current();
+            EXPECT(here.edit->tracks[0]->output == drums, "the replica does not hold the track's output");
+            EXPECT(here.mix.find_bus(drums) != nullptr && here.mix.find_bus(drums)->solo,
+                   "the replica does not hold the bus's solo");
+
+            const std::size_t updates = s.inbox.model.size();
+            EXPECT(apply(s, model::SetOutput{verb, drums}, r) && r.result == DispatchResult::Failed,
+                   "an output that closes a loop was accepted");
+            EXPECT(mentions(r.message, "feedback loop"), "the refusal does not say it is a loop");
+            EXPECT(s.next_publish(rig_), "nothing published after the refusal");
+            EXPECT(apply(s, model::RemoveBus{drums}, r) && r.result == DispatchResult::Failed,
+                   "a bus a track outputs to was removed");
+            EXPECT(mentions(r.message, "output"), "the refusal does not name the output");
+            EXPECT(s.next_publish(rig_), "nothing published after the second refusal");
+            EXPECT(s.inbox.model.size() == updates, "a refused operation sent an update");
+            EXPECT(s.replica.current() == here, "a refused operation changed the replica");
+
+            // Undo takes the last step, the bus's output; the solo is mix state.
+            ModelRequest undo;
+            undo.action = ModelAction::Undo;
+            EXPECT(s.await(rig_, s.engine->submit(undo), r) && r.result == DispatchResult::Ok,
+                   "undo failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.inbox.model.size() == updates + 1; }),
+                   "no update for the undo");
+            const model::Snapshot after = s.replica.current();
+            const model::Bus* bus = nullptr;
+            for (const model::Bus& b : after.edit->buses) {
+                if (b.id == drums) bus = &b;
+            }
+            EXPECT(bus != nullptr && bus->output == model::kMasterOutput,
+                   "undo did not put the bus on the Master");
+            EXPECT(after.edit->tracks[0]->output == drums, "undo moved two outputs");
+            EXPECT(after.mix.find_bus(drums)->solo, "undo moved a bus's solo, which is not a step");
+            return ok();
+        }
+    };
+    return C(rig, "output routing").go();
+}
+
 // Track structure (ADR-0023): no track past the engine's count; outside a
 // take the record arm goes with its track when the tracks move; during a
 // take nothing may delete or move the armed track, by an operation, an
@@ -3194,6 +3278,7 @@ int run(Rig& rig) {
     failures += check_model(rig);
     failures += check_compound(rig);
     failures += check_sends(rig);
+    failures += check_output_routing(rig);
     failures += check_track_structure(rig);
     failures += check_track_structure_while_closing(rig);
     failures += check_track_structure_while_starting(rig);

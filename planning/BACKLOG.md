@@ -434,7 +434,7 @@ playback can follow edits; it is in flight.
        the plan swap, protocol 28. Left, each its own line:
        - [ ] VCA masters as a track kind: `ui.mixer.vca`.
        - [ ] Folder tracks and track stacks: `ui.mixer.folders`.
-       - [ ] A master track (`ui.mixer.io`); aux buses and sends are
+       - [x] A master track: the Master is the monitor bus (ADR-0024); aux buses and sends are
              ADR-0022's, and a track's sends go with it (ADR-0023 §3).
        - [ ] New Tracks offers mono audio only: MIDI and instrument kinds
              once MIDI plays (ADR-0014 M-3) and instruments are hosted
@@ -482,6 +482,13 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
   - [x] FakeEngine refuses AddBus past a configurable max_buses (default 32) with the engine's wording; conformance case for it (#163 review).
   - [x] PDC line budget with sends: a return with no input takes no line, and the edges into the bus get lines before the sends. Measured: at 18 tracks, 32 buses and every send slot used, the dry mix lost lines before; 128 lines stay the default, documented in PlaybackConfig (#163 review).
   - Aux inserts, output assignment, solo and I/O-setup bus paths are `ui.mixer.io`.
+- [ ] `ui.mixer.io` follow-ups (ADR-0024). Landed: every strip's output (the Master or an aux bus, subgroups, loop-free, PDC-aligned), aux solo with implicit upstream solo, the Master strip (the monitor bus), the output chooser (protocol 30, session format 12). Left, each its own line:
+  - [ ] compensate() treats a bus with no send as silent and releases its return's delay line on the swap that removes the last send: keep the line while a removed send fades out, and drop the silent shortcut for a bus with an active insert (aux inserts) (#165 review)
+  - [ ] Aux and Master inserts: PluginHosting resolves chains by TrackEdit; key it by strip so an aux return and the Master can host a chain, with the delay line kept while a tail plays (ADR-0024 section 5).
+  - [ ] Hardware output paths and the I/O setup page: named paths mapping pairs of the device's channels (the UMC1820's 10 outputs), an output naming a path, a sink per path aligned with the Master; needs the device's channel counts in Hello (ADR-0024 section 5).
+  - [ ] Aux and Master meters in the state block (a layout bump), and the Master's output pair chosen in the Mix window (ADR-0024 section 5).
+  - [ ] Show implicit solo on the strips, outlined as Pro Tools does (ADR-0024 section 5).
+  - [ ] A rerouted strip's edge starts a fresh delay line, a cut at the swap: ramp it (ADR-0024 section 6).
 
 1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,
        edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;

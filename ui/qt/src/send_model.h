@@ -29,10 +29,12 @@ class SessionModel;
 
 class SendModel : public QObject {
     Q_OBJECT
-    // [{name, sends, slots: [10 x {present, letter, bus, levelText, pre,
-    // mute}]}]: the tracks in display order, then the aux buses.
+    // [{name, sends, output, slots: [10 x {present, letter, bus, levelText,
+    // pre, mute}]}]: the tracks in display order, then the aux buses. `output`
+    // is where the strip feeds: "Master" or a bus's name (ADR-0024).
     Q_PROPERTY(QVariantList strips READ strips NOTIFY changed)
-    // [{name, gainDb, gainText, pan, panText, mute}], one per aux bus.
+    // [{name, gainDb, gainText, pan, panText, mute, solo, output}], one per
+    // aux bus.
     Q_PROPERTY(QVariantList auxes READ auxes NOTIFY changed)
     Q_PROPERTY(int trackCount READ trackCount NOTIFY changed)
     // 0: sends A-E shown on the strips; 5: F-J.
@@ -41,6 +43,7 @@ class SendModel : public QObject {
     // The bus chooser, on one slot.
     Q_PROPERTY(bool chooserOpen READ chooserOpen NOTIFY chooserChanged)
     Q_PROPERTY(QString chooserTitle READ chooserTitle NOTIFY chooserChanged)
+    Q_PROPERTY(bool chooserIsOutput READ chooserIsOutput NOTIFY chooserChanged)
     // [{bus, name, refusal}]
     Q_PROPERTY(QVariantList chooserItems READ chooserItems NOTIFY chooserChanged)
 
@@ -63,6 +66,7 @@ public:
 
     bool chooserOpen() const { return chooser_strip_ >= 0; }
     QString chooserTitle() const;
+    bool chooserIsOutput() const { return chooser_output_; }
     QVariantList chooserItems() const;
 
     bool windowOpen() const { return window_strip_id_ != kNoId; }
@@ -76,7 +80,11 @@ public:
     Q_INVOKABLE void slotClicked(int strip, int slot);
     Q_INVOKABLE void openChooser(int strip, int slot);
     Q_INVOKABLE void closeChooser();
-    // `bus` from chooserItems; -1 makes a new bus for it.
+    // The same chooser on a strip's output (ADR-0024): the Master is bus -1
+    // in chooserItems, and "New bus" is not offered.
+    Q_INVOKABLE void openOutputChooser(int strip);
+    // `bus` from chooserItems; -1 makes a new bus for it (a send), or is the
+    // Master (an output).
     Q_INVOKABLE bool choose(int bus);
     Q_INVOKABLE void openWindow(int strip, int slot);
     Q_INVOKABLE void closeWindow();
@@ -101,6 +109,7 @@ public:
     Q_INVOKABLE void resetAuxGain(int bus);
     Q_INVOKABLE void auxPanDrag(int bus, qreal dx, qreal width, bool fine);
     Q_INVOKABLE void toggleAuxMute(int bus);
+    Q_INVOKABLE void toggleAuxSolo(int bus);
 
 signals:
     void changed();
@@ -112,6 +121,8 @@ private:
     void refresh();
     void refreshWindow();
     bool report(bool ok, const std::string& why);
+    // An output change: a refusal is held, not flashed (SessionModel).
+    bool reportRouting(bool ok, const std::string& why);
 
     SendController ctl_;
     SessionModel& session_;
@@ -120,6 +131,7 @@ private:
     int bank_ = 0;
     int chooser_strip_ = -1;
     int chooser_slot_ = -1;
+    bool chooser_output_ = false;
     model::Id window_strip_id_ = kNoId;
     int window_strip_ = -1;
     int window_slot_ = -1;

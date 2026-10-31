@@ -1389,6 +1389,81 @@ int test_build_with_sends() {
     return 0;
 }
 
+// ADR-0024: a track and a bus output to a bus. Room (engine bus 1) is laid
+// out before Verb (engine bus 0) because it outputs to it; the track feeds
+// Room's AuxSum, Room's return feeds Verb's, and only the spare track and
+// Verb's return reach the Master. A loop through the outputs is refused.
+int test_build_with_outputs() {
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "Vox"));
+    CHECK_APPLY(h, (AddBus{300, "Verb", BusMix{}}));
+    CHECK_APPLY(h, (AddBus{301, "Room", BusMix{}}));
+    CHECK_APPLY(h, (SetOutput{100, 301}));
+    CHECK_APPLY(h, (SetOutput{301, 300}));
+    sonora::BuildLimits limits;
+    limits.engine_tracks = 2;
+    limits.max_segments = 64;
+    limits.max_chunk_slots = 1024;
+    limits.chunk_frames = kChunk;
+    limits.window_frames = 1024;
+    limits.pool_chunks = 128;
+    limits.max_buses = 2;
+    const sonora::SourceSlot no_sources = [](const Source&, uint32_t&, std::string& e) {
+        e = "no source expected";
+        return false;
+    };
+    PlaybackPlan* plan = nullptr;
+    sonora::PlanReport report;
+    std::string error;
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, 1, plan, report, error));
+    CHECK(plan->node_count == 2 + 4 + 2);
+    const sonora::PlanNode& room = plan->nodes[2];
+    CHECK(room.kind == sonora::NodeKind::AuxSum && room.track == 1 && room.input_edge_count == 1);
+    CHECK(plan->edges[room.first_input_edge].from_node == 0);
+    CHECK(plan->edges[room.first_input_edge].send == sonora::kNoSend);
+    const sonora::PlanNode& verb = plan->nodes[4];
+    CHECK(verb.kind == sonora::NodeKind::AuxSum && verb.track == 0 && verb.input_edge_count == 1);
+    CHECK(plan->edges[verb.first_input_edge].from_node == 3);
+    const sonora::PlanNode& master = plan->nodes[6];
+    CHECK(master.kind == sonora::NodeKind::BusSum && master.input_edge_count == 2);
+    CHECK(plan->edges[master.first_input_edge].from_node == 1);
+    CHECK(plan->edges[master.first_input_edge + 1].from_node == 5);
+    sonora::destroy_plan(plan);
+
+    Snapshot looped = h.current();
+    auto edit = std::make_shared<EditState>(*looped.edit);
+    edit->buses[0].output = 301;   // Verb to Room, and Room is already on Verb
+    looped.edit = edit;
+    CHECK(!sonora::build_plan(looped, limits, no_sources, 2, plan, report, error));
+    CHECK(plan == nullptr && error.find("feedback loop") != std::string::npos);
+    return 0;
+}
+
+// ADR-0024 section 4: a bus's solo mutes what does not feed it, and a bus
+// that goes (an undone AddBus) takes its solo with it, as a track's does.
+// The track plays again once the plan without the bus is the one heard.
+int test_removed_bus_leaves_no_solo() {
+    auto session = make_session(1);
+    Session& s = *session;
+    CHECK(write_source(1, 40 * kChunk));
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, source_op(1, 40 * kChunk));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, (PlaceRegion{101, region(210, 1, 0, 3000, 0), 0}));
+    BusMix soloed;
+    soloed.solo = true;
+    CHECK_APPLY(h, (AddBus{300, "Verb", soloed}));
+    PlaybackController ctl(s);
+    ctl.apply_mix(h.current());
+    CHECK(heard_from_zero(s, ctl, h, "muted by the bus's solo",
+                          [](int64_t) { return 0.0f; }));
+    CHECK(h.undo());
+    ctl.apply_mix(h.current());
+    CHECK(heard_from_zero(s, ctl, h, "bus gone, solo gone",
+                          [](int64_t t) { return t < 3000 ? value(1, t) : 0.0f; }));
+    return 0;
+}
+
 // engine.timeline.region_ops: a duplicate is a second PlaceRegion of the
 // same source. Both copies play, each from the source's start, and a third
 // copy with an offset plays its own part: the reader serves one source to
@@ -2278,6 +2353,8 @@ int main() {
     if (test_midi_tracks_are_never_monitored_or_armed()) return 1;
     if (test_build_with_chains()) return 1;
     if (test_build_with_sends()) return 1;
+    if (test_build_with_outputs()) return 1;
+    if (test_removed_bus_leaves_no_solo()) return 1;
     if (test_sends_are_heard()) return 1;
     if (test_latency_change_is_a_new_plan()) return 1;
     if (test_report_shows_the_planned_latency()) return 1;

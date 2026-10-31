@@ -70,7 +70,17 @@ struct MixLayout {
     // Any order; the layout sums them in strip order, then slot order.
     const SendBinding* sends = nullptr;
     uint32_t send_count = 0;
+    // Where each strip's last node feeds (ADR-0024 §6): an engine bus, or
+    // kNoBus for the Master's BusSum. Null: every strip feeds the BusSum.
+    // `track_outputs` has one entry per engine track, `bus_outputs` one per
+    // bus. An output the layout cannot place forward (a bus not in the order,
+    // or not after its source) feeds the BusSum instead.
+    const uint32_t* track_outputs = nullptr;
+    const uint32_t* bus_outputs = nullptr;
 };
+
+// A strip with no aux bus as its output (MixLayout::track_outputs).
+constexpr uint32_t kNoBus = 0xFFFFFFFFu;
 
 struct GraphSize {
     uint32_t nodes = 0;
@@ -89,7 +99,9 @@ constexpr uint32_t kAuxFaderIdTag = 0x05000000u;
 // active chain is TrackSource -> TrackFader; its sends leave from the last
 // node before TrackFader, the pre-fader point. Each bus, in mix.bus_order,
 // is AuxSum -> AuxFader, its sends leaving from AuxSum. BusSum sums the
-// tracks in order, then the buses in plan order. Needs nodes and edges
+// tracks in order, then the buses in plan order, that do not output to a
+// bus; an AuxSum sums the strips routed to it, then its sends (ADR-0024
+// §6). Needs nodes and edges
 // sized by mix_graph_size(). A send naming a strip or a bus out of range is
 // left out; mix_graph_size() leaves it out too.
 void layout_mix_graph(PlaybackPlan& plan, const ChainBinding* chains, const MixLayout& mix);

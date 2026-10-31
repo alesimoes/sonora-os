@@ -332,6 +332,8 @@ Session::Session(SessionConfig cfg)
     send_target_.reset(new float[2 * static_cast<std::size_t>(send_states_) + 2]());
     send_stamp_.reset(new uint64_t[send_states_ + 1]());
     send_dest_.reset(new uint32_t[send_states_ + 1]());
+    feeds_node_.reset(new uint8_t[scratch_buffers_ + 1]());
+    feeds_track_.reset(new uint8_t[tracks + 1]());
     aux_gain_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
     aux_target_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
     aux_stamp_.reset(new uint64_t[max_buses_ + 1]());
@@ -377,12 +379,17 @@ void Session::set_send(uint32_t strip, uint32_t slot, float level, float pan, bo
     s.pre.store(pre, std::memory_order_relaxed);
 }
 
-void Session::set_aux(uint32_t bus, float gain, float pan, bool mute) {
+void Session::set_aux(uint32_t bus, float gain, float pan, bool mute, bool solo) {
     if (bus >= max_buses_) return;
     AuxState& a = aux_[bus];
     a.gain.store(gain, std::memory_order_relaxed);
     a.pan.store(pan, std::memory_order_relaxed);
     a.mute.store(mute, std::memory_order_relaxed);
+    a.solo.store(solo, std::memory_order_relaxed);
+}
+
+void Session::set_aux_solo(uint32_t bus, bool solo) {
+    if (bus < max_buses_) aux_[bus].solo.store(solo, std::memory_order_relaxed);
 }
 
 void Session::play() {
@@ -1244,10 +1251,22 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // coefficient per side, so each ramps to and from zero like a fader.
     bool any_solo = false;
     for (std::size_t e = 0; e < tracks_.size(); ++e) any_solo = any_solo || mix_view(*plan, e).solo;
+    // Soloing an aux solos what feeds it, through the plan being played, so a
+    // reroute at a swap changes the implicit solo in the same callback
+    // (ADR-0024 §4).
+    bool aux_solo = false;
+    for (uint32_t b = 0; b < max_buses_; ++b) {
+        aux_solo = aux_solo || aux_[b].solo.load(std::memory_order_relaxed);
+    }
+    std::memset(feeds_track_.get(), 0, tracks_.size());
+    if (aux_solo) {
+        any_solo = true;
+        if (plan_valid_) feeds_solo(*plan);
+    }
     for (std::size_t e = 0; e < tracks_.size(); ++e) {
         const TrackMixView v = mix_view(*plan, e);
         const float level = v.gain;
-        const bool open = !(v.mute || (any_solo && !v.solo && !v.solo_safe));
+        const bool open = !(v.mute || (any_solo && !v.solo && !v.solo_safe && feeds_track_[e] == 0));
         const float g = open ? level : 0.0f;
         const float pan = v.pan;
         float l = 0.0f;
@@ -1899,6 +1918,29 @@ bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
         }
     }
     return true;
+}
+
+void Session::feeds_solo(const PlaybackPlan& plan) noexcept SONORA_RT {
+    std::memset(feeds_node_.get(), 0, plan.node_count);
+    for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
+        const PlanNode& node = plan.nodes[ni];
+        if (node.kind == NodeKind::AuxFader && node.track < max_buses_ &&
+            aux_[node.track].solo.load(std::memory_order_relaxed)) {
+            feeds_node_[ni] = 1;
+        }
+    }
+    // Edges go from an earlier node to a later one, so one pass from the end
+    // reaches everything upstream of a soloed return.
+    for (uint32_t ni = plan.node_count; ni-- > 0;) {
+        if (feeds_node_[ni] == 0) continue;
+        const PlanNode& node = plan.nodes[ni];
+        const bool strip = node.kind == NodeKind::TrackOut || node.kind == NodeKind::TrackSource ||
+                           node.kind == NodeKind::InsertChain || node.kind == NodeKind::TrackFader;
+        if (strip) feeds_track_[plan.tracks[node.track].engine_track] = 1;
+        for (uint32_t k = 0; k < node.input_edge_count; ++k) {
+            feeds_node_[plan.edges[node.first_input_edge + k].from_node] = 1;
+        }
+    }
 }
 
 void Session::sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const float* const in[2],

@@ -26,6 +26,25 @@ bool usable(const SendBinding& s, uint32_t tracks, const MixLayout& mix,
     return from < mix.bus_count && pos[from] != kNoNode && pos[from] < pos[s.bus];
 }
 
+// The bus each strip feeds, or kNoBus for the BusSum: tracks first, then
+// buses. An output that is out of range, not in the order, or not after its
+// own source is the BusSum's, so the edge always goes forward.
+std::vector<uint32_t> resolve_outputs(uint32_t tracks, const MixLayout& mix,
+                                      const std::vector<uint32_t>& pos) {
+    std::vector<uint32_t> dest(tracks + mix.bus_count, kNoBus);
+    for (uint32_t t = 0; mix.track_outputs != nullptr && t < tracks; ++t) {
+        const uint32_t o = mix.track_outputs[t];
+        if (o < mix.bus_count && pos[o] != kNoNode) dest[t] = o;
+    }
+    for (uint32_t b = 0; mix.bus_outputs != nullptr && b < mix.bus_count; ++b) {
+        const uint32_t o = mix.bus_outputs[b];
+        if (pos[b] != kNoNode && o < mix.bus_count && pos[o] != kNoNode && pos[b] < pos[o]) {
+            dest[tracks + b] = o;
+        }
+    }
+    return dest;
+}
+
 }  // namespace
 
 GraphSize mix_graph_size(uint32_t tracks, const ChainBinding* chains, const MixLayout& mix) {
@@ -53,6 +72,7 @@ void layout_mix_graph(PlaybackPlan& plan, const ChainBinding* chains, const MixL
     const uint32_t tracks = plan.track_count;
     const uint32_t buses = mix.bus_count;
     const std::vector<uint32_t> pos = bus_positions(mix);
+    const std::vector<uint32_t> dest = resolve_outputs(tracks, mix, pos);
     std::vector<SendBinding> sends;
     std::vector<uint8_t> has_send(tracks, 0);
     for (uint32_t k = 0; k < mix.send_count; ++k) {
@@ -172,6 +192,18 @@ void layout_mix_graph(PlaybackPlan& plan, const ChainBinding* chains, const MixL
         a.first_input_edge = e;
         a.scratch_buffer = n;
         a.track = b;
+        // The strips routed here, tracks in order, then the buses in plan
+        // order, then the sends (ADR-0024 §6).
+        for (uint32_t t = 0; t < tracks; ++t) {
+            if (dest[t] != b) continue;
+            plan.edges[e++] = PlanEdge{last[t], sum, 0, kNoDelayLine};
+            ++plan.nodes[sum].input_edge_count;
+        }
+        for (uint32_t j = 0; j < i; ++j) {
+            if (dest[tracks + mix.bus_order[j]] != b) continue;
+            plan.edges[e++] = PlanEdge{returns[j], sum, 0, kNoDelayLine};
+            ++plan.nodes[sum].input_edge_count;
+        }
         for (const SendBinding& s : sends) {
             if (s.bus != b) continue;
             PlanEdge edge{pre[s.strip], sum, 0, kNoDelayLine};
@@ -201,10 +233,18 @@ void layout_mix_graph(PlaybackPlan& plan, const ChainBinding* chains, const MixL
     bs.kind = NodeKind::BusSum;
     bs.stable_id = kBusSumStableId;
     bs.first_input_edge = e;
-    bs.input_edge_count = tracks + buses;
+    bs.input_edge_count = 0;
     bs.scratch_buffer = bus;
-    for (uint32_t t = 0; t < tracks; ++t) plan.edges[e++] = PlanEdge{last[t], bus, 0, kNoDelayLine};
-    for (uint32_t i = 0; i < buses; ++i) plan.edges[e++] = PlanEdge{returns[i], bus, 0, kNoDelayLine};
+    for (uint32_t t = 0; t < tracks; ++t) {
+        if (dest[t] != kNoBus) continue;
+        plan.edges[e++] = PlanEdge{last[t], bus, 0, kNoDelayLine};
+        ++bs.input_edge_count;
+    }
+    for (uint32_t i = 0; i < buses; ++i) {
+        if (dest[tracks + mix.bus_order[i]] != kNoBus) continue;
+        plan.edges[e++] = PlanEdge{returns[i], bus, 0, kNoDelayLine};
+        ++bs.input_edge_count;
+    }
     PlanNode& hw = plan.nodes[out];
     hw = PlanNode{};
     hw.kind = NodeKind::HardwareOut;
@@ -277,14 +317,17 @@ Compensation compensate(PlaybackPlan& plan, uint32_t max_delay_frames, DelayLine
         }
     }
     // Lines go to the edges into the bus first, the dry tracks and the
-    // returns, then to the sends: a pool too small for every send still
+    // returns (and the same edges into an aux), then to the sends: a pool too small for every send still
     // keeps the mix itself aligned (#163 review).
     for (int pass = 0; pass < 2; ++pass) {
         for (uint32_t ei = 0; ei < plan.edge_count; ++ei) {
             PlanEdge& edge = plan.edges[ei];
             if (edge.from_node >= plan.node_count || edge.to_node >= plan.node_count) continue;
             const PlanNode& to = plan.nodes[edge.to_node];
-            if ((to.kind == NodeKind::BusSum) != (pass == 0)) continue;
+            // The strips' own paths, to the BusSum or to the aux they output
+            // to, before the sends (ADR-0024 §6).
+            const bool own_path = to.kind == NodeKind::BusSum || edge.send == kNoSend;
+            if (own_path != (pass == 0)) continue;
             uint64_t applied = std::min<uint64_t>(need[ei], max_delay_frames);
             if (applied < need[ei]) ++result.clamped_edges;
             uint32_t line = kNoDelayLine;

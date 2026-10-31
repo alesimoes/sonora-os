@@ -134,6 +134,17 @@ public:
         engine_armed_ = std::move(armed);
         engine_track_count_ = std::move(count);
     }
+    // Why the last output change was refused (ADR-0024): a loop through the
+    // buses, held until dismissed or until a routing change goes through,
+    // as the track refusal is, since the status line clears in seconds.
+    Q_PROPERTY(QString routingRefusal READ routingRefusal NOTIFY routingRefusalChanged)
+    QString routingRefusal() const { return routing_refusal_; }
+    Q_INVOKABLE void dismissRoutingRefusal() { setRoutingRefusal(QString()); }
+    // An output change's outcome: held when refused, cleared when it went through.
+    bool reportRouting(bool ok, const std::string& why) {
+        setRoutingRefusal(ok ? QString() : QString::fromStdString(why));
+        return run(ok, std::string());
+    }
     QString trackRefusal() const { return track_refusal_; }
     Q_INVOKABLE void dismissTrackRefusal() { setTrackRefusal(QString()); }
     const QString& sessionsDir() const { return sessions_dir_; }
@@ -431,6 +442,7 @@ signals:
     // shell's notice list until dismissed.
     void heldNotice(const QString& text);
     void copyWithAudioChanged();
+    void routingRefusalChanged();
 
 private:
     // A track command through the controller, `run_op`, checked here first
@@ -440,6 +452,7 @@ private:
     bool trackCommand(const std::function<bool(std::string&)>& run_op,
                       const std::vector<model::Id>& after, std::string& why);
     void setTrackRefusal(const QString& why);
+    void setRoutingRefusal(const QString& why);
     // Re-publishes what changed since the last call and marks the items.
     void sync();
     bool run(bool ok, const std::string& why);
@@ -521,6 +534,7 @@ private:
     std::function<std::vector<bool>()> engine_armed_;
     std::function<int()> engine_track_count_;
     QString track_refusal_;
+    QString routing_refusal_;
     TimeFormat main_fmt_ = TimeFormat::BarsBeats;
     TimeFormat sub_fmt_ = TimeFormat::MinSec;
     QString main_counter_, sub_counter_;

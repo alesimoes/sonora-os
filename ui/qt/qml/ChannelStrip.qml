@@ -261,12 +261,29 @@ Rectangle {
         }
     }
 
+    // --- output (ADR-0024): where the fader feeds; the Master's is its device ---
+    SButton {
+        id: outputButton
+        objectName: strip.isBus ? "masterOutput" : "output" + strip.track
+        readonly property var info: strip.sends !== null && !strip.isBus && strip.track < strip.sends.strips.length
+                                    ? strip.sends.strips[strip.track] : null
+        anchors { left: parent.left; right: parent.right; top: sendArea.bottom
+                  topMargin: Theme.space2; leftMargin: Theme.space1; rightMargin: Theme.space1 }
+        implicitHeight: 16
+        visible: strip.sends !== null && (strip.isBus || (info !== null && info.sends))
+        bold: false
+        fontPx: Theme.textCaption
+        text: strip.isBus ? "Out" : info !== null ? info.output : ""
+        available: !strip.isBus
+        onClicked: strip.sends.openOutputChooser(strip.track)
+    }
+
     // --- fader and meter ---
     Item {
         id: faderArea
         anchors {
             left: parent.left; right: parent.right
-            top: sendArea.bottom; bottom: readout.top
+            top: outputButton.bottom; bottom: readout.top
             topMargin: Theme.space3; bottomMargin: Theme.space2
         }
         readonly property real capH: 26

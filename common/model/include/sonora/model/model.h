@@ -576,15 +576,20 @@ struct Send {
     }
 };
 
+// A strip's output (ADR-0024 §2): kMasterOutput, the monitor bus, or the id
+// of an aux bus.
+inline constexpr Id kMasterOutput = 0;
+
 // An aux bus and its return strip, one object (ADR-0022 §1): stereo, fed by
-// sends, returned to the monitor bus. Its own sends feed other buses; the
-// buses never form a loop.
+// sends and by strips whose output it is, returned to its own output. Its
+// sends and its output feed other buses; the buses never form a loop.
 struct Bus {
     Id id = 0;
     std::string name;
     std::vector<Send> sends;   // sorted by slot
+    Id output = kMasterOutput;
     bool operator==(const Bus& o) const {
-        return id == o.id && name == o.name && sends == o.sends;
+        return id == o.id && name == o.name && sends == o.sends && output == o.output;
     }
 };
 
@@ -608,6 +613,9 @@ struct TrackEdit {
     std::vector<std::shared_ptr<const MidiPlaylist>> midi_playlists;
     // Sorted by slot. A MIDI track has no audio, and so no send.
     std::vector<Send> sends;
+    // Where the track's fader feeds (ADR-0024 §2); a MIDI track's is the
+    // Master, unused.
+    Id output = kMasterOutput;
     bool operator==(const TrackEdit& o) const;
 };
 
@@ -745,8 +753,12 @@ struct BusMix {
     float gain_db = 0.0f;
     float pan = 0.0f;   // balance: the bus is stereo
     bool mute = false;
+    // Solos what feeds the bus as well (ADR-0024 §4); the return itself is
+    // never muted by a solo.
+    bool solo = false;
     bool operator==(const BusMix& o) const {
-        return bus == o.bus && gain_db == o.gain_db && pan == o.pan && mute == o.mute;
+        return bus == o.bus && gain_db == o.gain_db && pan == o.pan && mute == o.mute &&
+               solo == o.solo;
     }
 };
 
