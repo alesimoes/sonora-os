@@ -8,7 +8,11 @@
 // and the old one stays; recovery runs on every entry; and the next take
 // lands in the folder entered.
 #include <dirent.h>
+#include <poll.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/inotify.h>
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -594,6 +598,48 @@ int test_a_symlink_keeps_the_folder() {
     return 0;
 }
 
+#ifdef __linux__
+// #151 review, N1: enter() released the old folder's lock before removing
+// it, so another engine could enter the folder between the check and the
+// unlinks and have its files deleted under it. The probe tries the lock as
+// the first state file goes; it must find the folder still held (or gone).
+int test_the_old_folder_stays_locked_while_it_is_removed() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    std::string why;
+    std::vector<std::string> notices;
+    const std::string u = ActiveFolder::make_untitled(r, why);
+    sonora::Session s(config(u));
+    ActiveFolder folder;
+    CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+    const std::string states = u + "/Plugin State";
+    fs::create_directories(states);
+    // Enough unlinks that the probe runs while the removal is still going.
+    for (int i = 0; i < 2000; ++i) CHECK(touch(states + "/" + std::to_string(i) + ".state"));
+
+    const int fd = ::inotify_init1(IN_CLOEXEC);
+    CHECK(fd >= 0);
+    CHECK(::inotify_add_watch(fd, states.c_str(), IN_DELETE) >= 0);
+    int seen = -1;   // -1: no delete seen within the timeout
+    std::thread probe([&] {
+        pollfd p{fd, POLLIN, 0};
+        if (::poll(&p, 1, 5000) != 1) return;
+        sonora::platform::FolderLock lock;
+        std::string err;
+        seen = static_cast<int>(lock.acquire(u, err));
+    });
+    const bool entered = folder.enter(s, r + "/Mix", ActiveFolder::Kind::Named, why, notices);
+    probe.join();
+    ::close(fd);
+    CHECK(entered);
+    CHECK(seen != -1);
+    CHECK(seen != static_cast<int>(sonora::platform::FolderLock::Result::Held));
+    CHECK(!exists(u));
+    fs::remove_all(root());
+    return 0;
+}
+#endif
+
 }  // namespace
 
 int main() {
@@ -612,6 +658,9 @@ int main() {
     failed += test_naming_is_refused_during_a_take();
     failed += test_a_folder_holding_only_unreferenced_states_goes();
     failed += test_a_symlink_keeps_the_folder();
+#ifdef __linux__
+    failed += test_the_old_folder_stays_locked_while_it_is_removed();
+#endif
     if (failed) return 1;
     std::printf("active folder: ok\n");
     return 0;
