@@ -78,7 +78,7 @@ Rectangle {
         }
         SButton {
             objectName: "viewInsertsFJ"
-            text: "F-J"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            text: "Ins F-J"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
             active: mix.mixer !== null && mix.mixer.showInsertsFJ
             onClicked: mix.mixer.showInsertsFJ = !mix.mixer.showInsertsFJ
         }
@@ -103,7 +103,7 @@ Rectangle {
         }
         SButton {
             objectName: "sendBankFJ"
-            text: "F-J"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            text: "Sends F-J"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
             active: mix.sends !== null && mix.sends.bank === 5 && (mix.mixer === null || mix.mixer.showSends)
             onClicked: mix.pickSends(5)
         }

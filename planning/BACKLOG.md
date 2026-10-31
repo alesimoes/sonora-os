@@ -530,9 +530,10 @@ playback can follow edits; it is in flight.
 
 Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 
-- [ ] ui.mixer.views: label the insert bank toggle "Ins F-J" so it is not confused with the sends' "F-J" in the Mix header.
 - [x] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
       Done: marker.add reads the state block when it runs (`ShellModel::readTransport`); a stale read or a dead engine falls back to the last tick; no protocol change.
+- [x] ui.mixer.views: label the insert bank toggle "Ins F-J" so it is not confused with the sends' "F-J" in the Mix header.
+- [ ] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
 - [x] Memory Locations length column uses the main counter format, not always min:sec. (format_length() in time_format; columns narrowed to fit timecode; scene edit-markers-timecode.)
 - [ ] `ui.editing.markers` format_length Bars|Beats: borrow the beat count from the meter at the span end, not the start (the `beats < 0` branch uses tempo_at(position)); add tests for a tempo or meter change inside the span and for a marker past the last tempo point (PR #179 review).
 - [ ] Regenerate docs/images/sonora-ui-edit-markers.png with the narrowed Memory Locations columns; it still shows the old layout (PR #179 review).
@@ -564,7 +565,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 - [ ] `ui.mixer.views` follow-ups (D2, after #175 merges):
   - [ ] Emit `sessionOpened` also on the "Opened the unsaved recording" recovery path (`session_model.cpp` ~1545), with a test (#175 review).
   - [ ] `test_mix_layout` resets views by emitting `sessionOpened` by hand; add a check that a real `openSessionFile` emits it and a refused Open does not (#175 review).
-  - [ ] Label the insert bank toggle "Ins F-J": two bare "F-J" buttons sit side by side in the header (#175 review).
+  - [x] Label the insert bank toggle "Ins F-J": two bare "F-J" buttons sit side by side in the header (#175 review).
 
 1. [ ] Arrange view: tracks, rulers, waveforms, regions; move, trim, split,
        edit commands, undo/redo; edit modes, Smart Tool, grid and nudge;
