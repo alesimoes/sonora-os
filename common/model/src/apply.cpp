@@ -780,7 +780,7 @@ public:
         copy->output = src.output;
         // Pro Tools' Duplicate copies automation by default; the lanes are
         // shared, as an undo step shares them.
-        copy->automation = src.automation;
+        if (op.automation) copy->automation = src.automation;
         Id next = op.track + 1;
         const auto renamed = [&](const std::string& name) {
             // "Vox.02" on "Vox" is "Vox.dup1.02" on its copy.

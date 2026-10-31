@@ -5,6 +5,7 @@
 // outside undo, and lanes surviving the codec, the undo window and a
 // duplicate. The session file's lanes: test_session_file.
 #include <memory>
+#include <variant>
 
 #include "model_test.h"
 #include "sonora/model/op_codec.h"
@@ -186,6 +187,68 @@ int test_codec_window_and_duplicate() {
     return 0;
 }
 
+// Pro Tools' Duplicate Tracks dialog's "Automation" checkbox (ADR-0023,
+// update of 2026-10-31): on by default; off, the copy has no lanes but keeps
+// its source's mode, which is mix state.
+int test_duplicate_without_automation() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    CHECK_APPLY(h, whole(vox.track, AutomationParam::Volume, {{0, -6.0f}, {48000, 0.0f}}));
+    CHECK_APPLY(h, whole(vox.track, AutomationParam::Pan, {{0, -1.0f}}));
+    TrackMix m = *h.current().mix.find(vox.track);
+    m.automation = AutomationMode::Touch;
+    CHECK_APPLY(h, SetMix{m});
+
+    DuplicateTrack with;
+    with.source = vox.track;
+    with.name = "Vox.dup1";
+    CHECK(with.automation);
+    with.track = h.current().next_id;
+    const std::size_t ids_with = duplicate_track_ids(h.current(), with);
+    CHECK_APPLY(h, with);
+    CHECK(h.current().edit->tracks[1]->automation.size() == 2);
+    CHECK(h.current().edit->tracks[1]->automation[0].get() ==
+          h.current().edit->tracks[0]->automation[0].get());
+    CHECK(h.undo());
+
+    DuplicateTrack without = with;
+    without.track = h.current().next_id;
+    without.automation = false;
+    // Lanes take no ids.
+    CHECK(duplicate_track_ids(h.current(), without) == ids_with);
+    CHECK_APPLY(h, without);
+    CHECK(invariants_hold(h.current()));
+    CHECK(h.current().edit->tracks[1]->automation.empty());
+    CHECK(lane_of(h.current(), 1, AutomationParam::Volume) == nullptr);
+    CHECK(h.current().mix.find(without.track)->automation == AutomationMode::Touch);
+    // The source keeps its lanes.
+    CHECK(h.current().edit->tracks[0]->automation.size() == 2);
+
+    // The flag crosses the wire, and an operation without it (a version-34
+    // peer's) is refused rather than read as on.
+    std::string bytes, error;
+    CHECK(encode_operation(without, bytes, error));
+    CHECK(mentions(bytes, "\"automation\""));
+    Operation back;
+    CHECK(decode_operation(bytes, back, error));
+    const auto* d = std::get_if<DuplicateTrack>(&back);
+    CHECK(d != nullptr && !d->automation);
+    DuplicateTrack on = without;
+    on.automation = true;
+    CHECK(encode_operation(on, bytes, error) && decode_operation(bytes, back, error));
+    d = std::get_if<DuplicateTrack>(&back);
+    CHECK(d != nullptr && d->automation);
+
+    const std::string v34 =
+        R"({"op": "DuplicateTrack", "source": 1, "track": 9, "name": "Vox.dup1",)"
+        R"( "all_playlists": false, "inserts": true, "sends": true})";
+    CHECK(!decode_operation(v34, back, error));
+    CHECK(mentions(error, "missing required key \"automation\""));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -198,6 +261,7 @@ int main() {
     t(test_edit_replaces_a_range_and_undoes);
     t(test_refusals);
     t(test_codec_window_and_duplicate);
+    t(test_duplicate_without_automation);
     if (failed != 0) {
         std::fprintf(stderr, "model_automation: %d of %d failed\n", failed, run);
         return 1;

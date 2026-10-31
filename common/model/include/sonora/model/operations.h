@@ -268,6 +268,8 @@ struct RemoveTrack {
 // in slot order, then each send copied, in slot order. duplicate_track_ids()
 // says how many that is. Sources and MIDI sequences are shared, not copied.
 // The mix, the inserts' values and the sends' values are copied, solo off.
+// The automation lanes are copied unless `automation` is off (ADR-0023,
+// update of 2026-10-31); the mode is mix state and is copied either way.
 struct DuplicateTrack {
     Id source = 0;
     Id track = 0;
@@ -275,6 +277,7 @@ struct DuplicateTrack {
     bool all_playlists = false;   // false: the active playlist only
     bool inserts = true;          // with their values
     bool sends = true;            // the same buses, with their values
+    bool automation = true;       // the lanes
 };
 
 // How many ids `op` takes from op.track upward on `s`; 0 when op.source is
