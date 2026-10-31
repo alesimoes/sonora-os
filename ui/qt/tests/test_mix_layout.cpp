@@ -211,6 +211,15 @@ int layout(int tracks) {
     };
     Result def, expanded, collapsed;
 
+    // The two F-J buttons side by side in the header are told apart by name.
+    {
+        QQuickItem* ins = named(root, QStringLiteral("viewInsertsFJ"));
+        QQuickItem* snd = named(root, QStringLiteral("sendBankFJ"));
+        CHECK(ins != nullptr && snd != nullptr);
+        CHECK(ins->property("text").toString() == QStringLiteral("Ins F-J"));
+        CHECK(snd->property("text").toString() != ins->property("text").toString());
+    }
+
     // Defaults: inserts A-E, sends A-E, I/O.
     CHECK(r.mixer.showIO() && r.mixer.showInsertsAE() && r.mixer.showSends());
     CHECK(!r.mixer.showInsertsFJ() && r.sends.bank() == 0);
