@@ -789,7 +789,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          wrap (F7, F14). Empty slots become blank wells (F6).
        - [ ] D4 `ui.design.strip_controls`: `Knob.qml` (spec "Knobs, faders
          and sliders"); pan as a knob, two for a stereo track; R/I/S/M at
-         ≥ 20 × 20 px, 2 × 2 at Narrow; `insertSlotHeight` 18 (F3, F9).
+         ≥ 24 × 24 px (WCAG 2.2), 2 × 2 at Narrow; `insertSlotHeight` 18 (F3, F9).
        - [ ] D5 `ui.design.strip_kinds`: kind band (input, AUX, MASTER);
          master Wide on `raised` behind a rule, one name everywhere; aux
          remove into a context menu; aux and master meter wells drawing the
@@ -804,7 +804,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          dropped (it moves to the banner row); nothing clipped at 1280 px;
          "Open" only in File; tab and menu labels told apart; Transport
          leaves the tab row for a Window menu; status chips drawn flat
-         (F15, F17, F18, F19). P1 for the health line: it can go first.
+         (F15, F17, F18, F19).
        - [ ] D8 `ui.design.type_scale`: the glance set (counter ≥ 40 px,
          names and readouts 13 px) and the UI scale preference (1.0, 1.25,
          1.5, 2.0; default from the screen's physical size) (F16).

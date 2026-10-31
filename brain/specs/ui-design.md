@@ -73,11 +73,11 @@ background ≥ 4.5:1, non-text indicators ≥ 3:1.
 
 | Token | Value | On `window` | Means |
 |---|---|---|---|
-| `accent` | `#3FC1B0` | 8.3 | selection, focus, the insertion cursor, loop/punch on |
+| `accent` | `#3FC1B0` | 8.3 | selection, focus, the insertion cursor, loop on (punch on is `record`, Update 2026-10-31) |
 | `record` | `#F0524F` | 5.3 | record arm, the record button, the playhead while recording |
 | `solo` | `#F2C14E` | 11.0 | solo |
 | `mute` | `#6B9BF2` | 6.7 | mute; outline only when muted implicitly by another track's solo |
-| `input` | `#4CC38A` | 8.3 | input monitoring (reserved; not yet drawn) |
+| `input` | `#4CC38A` | 8.3 | input monitoring: the I button and its armed state |
 | `caution` | `#E8B04B` | 9.4 | the status line, synthetic-data labels, gain above 0 dB |
 | `alarm` on `alarmSurface` | `#FF5A5F` on `#3A1618` | 5.3 | banners: engine gone, software rendering |
 | `playhead` | `#F5F7FA` | 16.8 on a lane | the playhead while playing |
@@ -120,7 +120,7 @@ list is open (it is an ISO change, outside this PR).
 | `textSmall` | 11 | DemiBold for buttons | button captions, secondary values |
 | `textBody` | 13 | DemiBold for names | track names, the status line |
 | `textTitle` | 15 | — | transport glyphs, window tabs |
-| `textCounter` | 28 | Medium, `tnum` | the main counter |
+| `textCounter` | 40 | Medium, `tnum` | the main counter (was 28; Update 2026-10-31, glance set) |
 | `textDisplay` | 40 | Bold, outlined | NO DATA over dead meters, nothing else |
 
 **Update, 2026-10-31: reading distance.** The scale above is sized for a
@@ -133,7 +133,7 @@ the mix position. Two tiers follow:
   at the 1920×1080 reference: the main counter at least 40 px; the transport
   state at 15 px Bold; a strip's gain readout at 13 px with tabular figures;
   a strip's name at 13 px DemiBold (11 px at Narrow width); R/I/S/M letters
-  at 11 px Bold on buttons of at least 20×20 px. The meters, the clip
+  at 11 px Bold on buttons of at least 24×24 px (WCAG 2.2, 2.5.8). The meters, the clip
   indicators and the record state belong to this set.
 - **Work set.** These are read at the desk: everything else, at the sizes in
   the table.
@@ -309,7 +309,7 @@ kept with the session.
 | Sends A–E | *view*, shown | 5 × 18 + 4 | |
 | Sends F–J | *view*, hidden | 5 × 18 + 4 | same "+N" rule |
 | Pan | shown | 44 | knob and readout; a stereo track has two knobs side by side |
-| R / I / S / M | shown | 24 | one row of buttons at least 20 × 20 px; at Narrow, a 2 × 2 grid (46 px) |
+| R / I / S / M | shown | 24 | one row of buttons at least 24 × 24 px (WCAG 2.2, 2.5.8); at Narrow, a 2 × 2 grid (50 px) |
 | Fader and meter | shown | **the rest** | |
 | Gain readout | shown | 20 | `sunken` well, 13 px, tabular figures |
 | Name plate | shown | 24 | 13 px DemiBold, abbreviated by the rules below |
