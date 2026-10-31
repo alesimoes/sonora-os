@@ -77,6 +77,8 @@ bool starts_a_take(const std::string& id) {
 
 constexpr const char* kMeasuringRefusal =
     "a latency measurement is running; cancel it or let it finish before recording";
+constexpr const char* kSaveAsRefusal =
+    "a Save As is still copying the session to its new folder; record once it has finished";
 
 // While nothing gave L, how often the server's own figure is read again.
 constexpr uint64_t kReportedLatencyPeriodMs = 500;
@@ -2183,6 +2185,13 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             reply(from, r.seq, DispatchResult::Failed, kMeasuringRefusal);
             return;
         }
+        // A Save As copy is not paced by checkpoints (exFAT has no hard
+        // links, so it may copy every take), and the take would land in the
+        // folder being left (#164 review). FakeEngine's start() says the same.
+        if (starts_a_take(r.command) && save_as_in_flight_) {
+            reply(from, r.seq, DispatchResult::Failed, kSaveAsRefusal);
+            return;
+        }
         // Play from a session just opened waits for its plug-ins, at most
         // the bound (the owner's decision of 2026-10-18); a second press, a
         // stop or a take withdraws it. Record never waits: capture is
@@ -2575,12 +2584,14 @@ void EngineControlServer::finish_save_as(const SessionSaver::Done& d) {
     if (!d.copy) {
         namespace fs = std::filesystem;
         const std::string target = fs::path(session_files::session_folder_of(d.file)).lexically_normal().string();
-        // Anything still queued writes the folder being left, which is
-        // unlocked once the new one is entered (PR #142 review N3).
-        fence_saver("Finishing the last save before moving the session");
-        std::string why;
+        std::string why = session_.folder_change_refusal();
         std::vector<std::string> notices;
-        if (folder_->enter(session_, target, ActiveFolder::Kind::Named, why, notices)) {
+        // The fence is unpaced, so only once the folder can be entered
+        // (#164 review). Anything still queued writes the folder being
+        // left, which is unlocked once the new one is entered (PR #142
+        // review N3).
+        if (why.empty()) fence_saver("Finishing the last save before moving the session");
+        if (why.empty() && folder_->enter(session_, target, ActiveFolder::Kind::Named, why, notices)) {
             for (const std::string& line : notices) {
                 api::EngineEvent e;
                 e.kind = api::EventKind::Notice;
@@ -2625,6 +2636,8 @@ void EngineControlServer::autosave_when_due() {
     job.state_source = active.string();
     autosave_in_flight_ = true;
     autosave_soon_ = false;
+    autosave_prior_revision_ = covered_revision_;
+    autosave_revision_ = revision;
     covered_revision_ = revision;
     next_autosave_ms_ = now + opts_.autosave_period_ms;
     saver_->submit(std::move(job));
@@ -2646,6 +2659,9 @@ void EngineControlServer::follow_saver() {
         }
         if (d.kind == SessionSaver::Kind::Autosave) {
             autosave_in_flight_ = false;
+            // Not covered after all: retried a period later without waiting
+            // for another edit, unless a Save has covered another revision.
+            if (!d.ok && covered_revision_ == autosave_revision_) covered_revision_ = autosave_prior_revision_;
             // Held: an autosave that keeps failing is protection the
             // operator believes they have. Said once until one succeeds.
             if (!d.ok && !autosave_failed_said_) {

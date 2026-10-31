@@ -6,6 +6,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <set>
 #include <utility>
@@ -276,21 +277,45 @@ bool rotated_backup_name(const std::string& name, const std::string& stem) {
     return all_digits(name, rest + 1, end - rest - 1);
 }
 
+namespace {
+
+// "<media name>.part": what copy_synced() writes before its rename, for a
+// file save_as() copies, which has a stem and an extension and is not
+// itself a ".part" or a ".tmp". A "notes.part" of the operator's is not.
+bool partial_copy_name(const std::string& name) {
+    if (!ends_with(name, ".part")) return false;
+    const std::string media = name.substr(0, name.size() - 5);
+    if (media.empty() || ends_with(media, ".part") || ends_with(media, ".tmp")) return false;
+    const fs::path p(media);
+    return !p.stem().empty() && p.has_extension();
+}
+
+}  // namespace
+
 int sweep_partial_copies(const std::string& folder) {
-    int gone = 0;
+    std::vector<fs::path> doomed;
     for (const char* sub : {kAudioDir, kMidiFilesDir}) {
         const fs::path dir = fs::path(folder) / sub;
         std::error_code ec;
         if (!fs::is_directory(fs::symlink_status(dir, ec)) || ec) continue;
-        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        // Recursive like save_as(), and like it never into a directory
+        // symlink: its files are not the session's.
+        for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
             std::error_code type;
-            if (!ends_with(it->path().filename().string(), ".part") ||
-                !fs::is_regular_file(it->symlink_status(type)) || type) {
-                continue;
-            }
-            std::error_code rm;
-            if (fs::remove(it->path(), rm)) ++gone;
+            const std::string name = it->path().filename().string();
+            if (!partial_copy_name(name) || !fs::is_regular_file(it->symlink_status(type)) || type) continue;
+            // The rename that ends a copy takes its ".part" away: one
+            // beside its file is not a copy's.
+            std::error_code there;
+            const fs::path media = it->path().parent_path() / name.substr(0, name.size() - 5);
+            if (fs::exists(fs::symlink_status(media, there))) continue;
+            doomed.push_back(it->path());
         }
+    }
+    int gone = 0;
+    for (const fs::path& p : doomed) {
+        std::error_code rm;
+        if (fs::remove(p, rm)) ++gone;
     }
     return gone;
 }
@@ -307,7 +332,6 @@ SessionFolder::SessionFolder(SyncDirectory sync_directory)
 void SessionFolder::enter(const std::string& folder) {
     if (folder == folder_) return;
     folder_ = folder;
-    autosaves_written_.clear();
     files_.clear();
     known_.clear();
     std::error_code ec;
@@ -687,11 +711,16 @@ bool SessionFolder::autosave(const std::string& session_file, const model::Snaps
     set_aside_.clear();
     std::string there;
     const bool had = read_file(target, kMaxSessionBytes, there);
+    // A file that exists but cannot be read (too large, I/O error) is foreign
+    // too: it must be moved aside, not renamed over.
+    std::error_code present_ec;
+    const bool present = fs::exists(fs::symlink_status(target, present_ec));
     if (had && there == bytes) {
-        autosaves_written_.insert(target.string());
+        autosaves_written_[target.string()] = std::hash<std::string>{}(bytes);
         return true;
     }
-    if (had && autosaves_written_.count(target.string()) == 0) {
+    const auto mine = autosaves_written_.find(target.string());
+    if (present && (!had || mine == autosaves_written_.end() || mine->second != std::hash<std::string>{}(there))) {
         const std::string stem = target.filename().string().substr(
             0, target.filename().string().size() - std::string(".sonora").size());
         const std::string stamp = utc_stamp(clock_ != nullptr ? clock_() : now_seconds());
@@ -729,7 +758,7 @@ bool SessionFolder::autosave(const std::string& session_file, const model::Snaps
         }
     }
     if (!save(target.string(), bytes, document, why, caution, state_source)) return false;
-    autosaves_written_.insert(target.string());
+    autosaves_written_[target.string()] = std::hash<std::string>{}(bytes);
     if (!set_aside_.empty()) {
         const std::string said = "the autosave of an earlier run is kept as " + set_aside_;
         caution = caution.empty() ? said : caution + "; " + said;
@@ -829,12 +858,21 @@ bool SessionFolder::save_as(const std::string& session_file, const std::string& 
         why = "cannot create the session folder " + target.string();
         return false;
     }
+    // In a folder that was there, empty: the entries this call may make in
+    // it, which are all a failure removes there (#164 review).
+    std::set<std::string> put = {file.filename().string(), file.filename().string() + ".tmp",
+                                 kSequenceDir, kPluginStateDir, kBackupsDir};
     const auto fail = [&](std::string reason) {
+        std::error_code rm;
         if (!made.empty()) {
             // Only links and copies this call made are in it, and remove_all
             // never follows a symlink.
-            std::error_code rm;
             fs::remove_all(made, rm);
+        } else {
+            for (const std::string& name : put) {
+                const fs::path p = target / name;
+                if (fs::exists(fs::symlink_status(p, rm))) fs::remove_all(p, rm);
+            }
         }
         folder_.clear();
         swept_.erase(target.string());
@@ -894,6 +932,7 @@ bool SessionFolder::save_as(const std::string& session_file, const std::string& 
         for (const std::string& rel : files) {
             const fs::path from = source / rel;
             const fs::path to = target / rel;
+            put.insert(fs::path(rel).begin()->string());
             for (fs::path d = to.parent_path(); within(d, target) && plain(d) != target; d = d.parent_path()) {
                 dirs.insert(plain(d));
             }

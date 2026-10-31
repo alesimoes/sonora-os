@@ -187,6 +187,10 @@ public:
     // While not empty, every Save is refused with `why` and writes nothing,
     // as one the disk refused would be.
     void script_save_failure(std::string why) { save_failure_ = std::move(why); }
+    // While set, a Save As is taken to be still copying on the engine's
+    // saver thread: a take is refused, as the real engine refuses one
+    // (the fake's own Save As finishes before it replies).
+    void script_save_as_copying(bool copying) { save_as_copying_ = copying; }
     // Saves written since construction.
     uint32_t saves() const { return saves_; }
     // The capture inputs go away (`why` says how) or come back: an
@@ -372,6 +376,7 @@ private:
     uint32_t transport_flags_ = 0;
     bool fail_takes_ = false;
     std::string save_failure_;
+    bool save_as_copying_ = false;
     uint32_t saves_ = 0;
     int32_t failed_take_ = 0;     // the take TakeFailed was said for
     bool take_failed_shown_ = false;

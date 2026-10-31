@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -62,9 +63,10 @@ std::string autosave_file_of(const std::string& session_file);
 bool rotated_backup_name(const std::string& name, const std::string& stem);
 
 // Deletes what an interrupted Save As copy left (ADR-0018 §5, step 4):
-// "<name>.part" regular files in the folder's "Audio Files/" and "MIDI
-// Files/". No session file names one. A symlink is never followed or
-// removed. How many went.
+// "<media name>.part" regular files (a stem and an extension before
+// ".part", no file of that name beside it) anywhere under the folder's
+// "Audio Files/" and "MIDI Files/". No session file names one. A symlink,
+// file or directory, is never followed or removed. How many went.
 int sweep_partial_copies(const std::string& folder);
 
 // What a Save As put in the new folder, for the reply and the tests.
@@ -154,8 +156,9 @@ public:
     // states it names copied from `state_source`. Bytes equal to the
     // autosave already there write nothing. Refused when "Session File
     // Backups" is a symlink: an autosave is never written outside the
-    // session's folder. An autosave there that this saver has not written
-    // since entering the folder (a crash's) is first moved to
+    // session's folder. An autosave there that this saver never wrote (a
+    // crash's; one it wrote before a Save As took it to another folder and
+    // back is still its own) is first moved to
     // "<stem>.autosave.recovered-<UTC stamp>.sonora", named in `caution` and
     // set_aside(). False with `why` when nothing was written.
     bool autosave(const std::string& session_file, const model::Snapshot& document,
@@ -173,8 +176,9 @@ public:
     // copies fit; each new directory is synced once. Then save() writes the
     // sequence files, the plugin states (from `source_folder`) and, last,
     // the session file, so a folder without one is an interrupted Save As.
-    // False with `why`: the folder this call made is removed again and the
-    // source is as it was.
+    // False with `why`: the folder this call made is removed again, or, in
+    // an empty folder that was there, what this call put in it, so a retry
+    // finds it empty; the source is as it was.
     bool save_as(const std::string& session_file, const std::string& bytes,
                  const model::Snapshot& document, const std::string& source_folder, bool media,
                  std::string& why, std::string& caution, SaveAsReport* report = nullptr);
@@ -235,7 +239,9 @@ private:
     std::size_t sequences_written_ = 0;
     std::size_t states_written_ = 0;
     std::set<std::string> durable_states_;   // state files a folder sync has covered
-    std::set<std::string> autosaves_written_;   // autosaves this saver wrote since entering folder_
+    // By path, every folder's, never cleared; the hash of the bytes last written
+    // there, so an autosave another writer put at the path is not taken for ours.
+    std::map<std::string, std::size_t> autosaves_written_;
     std::string set_aside_;
     std::set<std::string> swept_;            // folders whose "Plugin State/" was swept
 };

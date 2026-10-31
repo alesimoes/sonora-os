@@ -938,6 +938,132 @@ void save_as_moves_the_autosave_with_the_session() {
     CHECK(!fs::exists(dir / "Session File Backups"));
 }
 
+// #164 review: an autosave that failed is tried again a period later, with
+// no further edit; it did not cover the revision it tried.
+void a_failed_autosave_is_tried_again() {
+    const fs::path dir = fresh_dir("autosave_retry");
+    EngineControlServer::Options opts;
+    opts.autosave_period_ms = 50;
+    const model::Snapshot start = RealEngine::start_document(dir);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(dir, opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto answer = [&](uint64_t seq) -> const api::CommandReply* {
+        const auto end = Clock::now() + std::chrono::seconds(4);
+        while (Clock::now() < end) {
+            real.poll(in);
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return &r;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return nullptr;
+    };
+    const fs::path file = fs::absolute(dir) / "Song.sonora";
+    std::string bytes;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, bytes, error));
+    api::ModelRequest save;
+    save.action = api::ModelAction::Save;
+    save.op = api::wire::encode_save(file.string(), bytes);
+    const api::CommandReply* r = answer(real.submit(save));
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+    // A file where the backups folder goes: the autosave is refused.
+    const fs::path blocker = fs::absolute(dir) / "Session File Backups";
+    { std::ofstream(blocker) << "not a folder"; }
+    model::SessionSettings settings = start.settings;
+    settings.name = "Edited";
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    model::encode_operation(model::SetSettings{settings}, m.op, error);
+    r = answer(real.submit(m));
+    CHECK(r != nullptr && r->result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return std::any_of(in.events.begin(), in.events.end(), [](const api::EngineEvent& e) {
+            return e.kind == api::EventKind::Notice && e.text.find("Autosave failed") != std::string::npos;
+        });
+    }));
+    CHECK(real.engine().server().autosaves() == 0);
+    std::error_code ec;
+    fs::remove(blocker, ec);
+    CHECK(wait_for([&]() { return real.engine().server().autosaves() == 1; }));
+    CHECK(fs::exists(session_files::autosave_file_of(file.string())));
+}
+
+std::atomic<bool> g_hold_saver{false};
+std::atomic<int> g_saver_held{0};
+// The saver thread, as one copying a large take across volumes, stops at
+// its first directory sync while held.
+bool holding_sync(const std::string&) {
+    if (g_hold_saver.load()) {
+        g_saver_held.fetch_add(1);
+        while (g_hold_saver.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+}
+
+// #164 review: no take starts while a Save As copies; the copy is not
+// paced by checkpoints, and the take would land in the folder being left.
+// Once the Save As has finished, Record starts one in the new folder.
+void no_take_while_a_save_as_copies() {
+    const fs::path dir = fresh_dir("save_as_hold");
+    const fs::path to = fresh_dir("save_as_hold_to") / "Held";
+    EngineControlServer::Options opts;
+    opts.save_sync_directory = holding_sync;
+    const model::Snapshot start = RealEngine::start_document(dir);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(dir, opts);
+    struct Release {
+        ~Release() { g_hold_saver = false; }
+    } release;
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+    };
+    const auto run = [&](const char* id) {
+        api::CommandRequest c;
+        c.command = id;
+        c.target = 0;
+        api::CommandReply r;
+        if (!reply_to(real.send(c), r)) r.message = "no reply";
+        return r;
+    };
+    CHECK(run("track.toggle_arm").result == DispatchResult::Ok);
+    std::string bytes;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, bytes, error));
+    const fs::path file = to / "Held.sonora";
+    api::ModelRequest as;
+    as.action = api::ModelAction::SaveAs;
+    as.op = api::wire::encode_save_as(file.string(), 0, bytes);
+    g_saver_held = 0;
+    g_hold_saver = true;
+    const uint64_t as_seq = real.submit(as);
+    CHECK(until(real, in, [&]() { return g_saver_held.load() > 0; }));
+    for (const char* id : {"transport.record", "transport.toggle_record", "transport.punch"}) {
+        const api::CommandReply r = run(id);
+        CHECK(r.result == DispatchResult::Failed &&
+              r.message == "a Save As is still copying the session to its new folder; record once it has finished");
+    }
+    CHECK(real.session().recording_take() == 0);
+    g_hold_saver = false;
+    api::CommandReply done;
+    CHECK(reply_to(as_seq, done) && done.result == DispatchResult::Ok);
+    CHECK(*real.session().folder() == to.lexically_normal().string());
+    CHECK(run("transport.record").result == DispatchResult::Ok);
+    CHECK(run("transport.stop").result == DispatchResult::Ok);
+}
+
 model::ReplicationUpdate from_wire(const api::ModelUpdate& m);
 
 // ADR-0016 end to end: with the document's loop range set, transport.record
@@ -2436,6 +2562,8 @@ int main() {
     the_engine_autosaves_a_session_with_a_file();
     save_as_moves_the_autosave_with_the_session();
     a_reopened_session_keeps_the_crash_autosave();
+    a_failed_autosave_is_tried_again();
+    no_take_while_a_save_as_copies();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

@@ -522,6 +522,41 @@ void bus_limit() {
     CHECK(e.document().edit->buses.size() == 2);
 }
 
+// #164 review: no take starts while a Save As copies, in the engine's words;
+// once it has finished, the same Record starts one.
+void no_take_during_a_save_as_copy() {
+    uint64_t now = 1'000'000'000;
+    FakeEngine::Config cfg;
+    cfg.tracks = 2;
+    cfg.clock = [&now]() { return now; };
+    FakeEngine e(cfg);
+    std::string error;
+    CHECK(e.connect(error));
+    Inbox in;
+    const auto run = [&](const char* id, uint32_t target) {
+        CommandRequest r;
+        r.command = id;
+        r.target = target;
+        const uint64_t seq = e.send(r);
+        e.poll(in);
+        for (const CommandReply& c : in.replies) {
+            if (c.seq == seq) return c;
+        }
+        return CommandReply{seq, DispatchResult::UnknownCommand, "no reply"};
+    };
+    CHECK(run("track.toggle_arm", 0).result == DispatchResult::Ok);
+    e.script_save_as_copying(true);
+    for (const char* id : {"transport.record", "transport.toggle_record", "transport.punch"}) {
+        const CommandReply r = run(id, 0);
+        CHECK(r.result == DispatchResult::Failed &&
+              mentions(r.message, "a Save As is still copying the session to its new folder; record once it "
+                                  "has finished"));
+    }
+    e.script_save_as_copying(false);
+    CHECK(run("transport.record", 0).result == DispatchResult::Ok);
+    CHECK(run("transport.stop", 0).result == DispatchResult::Ok);
+}
+
 }  // namespace
 
 int main() {
@@ -535,6 +570,7 @@ int main() {
     scripted_plugins();
     midi_tracks();
     bus_limit();
+    no_take_during_a_save_as_copy();
     if (failures) return EXIT_FAILURE;
     std::printf("api fake engine: ok\n");
     return EXIT_SUCCESS;

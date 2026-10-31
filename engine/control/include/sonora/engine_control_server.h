@@ -656,6 +656,10 @@ private:
     uint64_t covered_revision_ = 0;
     // The revision a Save or Save As handed over held, for when it lands.
     uint64_t submitted_revision_ = 0;
+    // The autosave in flight's revision and covered_revision_ before it,
+    // put back when it fails.
+    uint64_t autosave_revision_ = 0;
+    uint64_t autosave_prior_revision_ = 0;
     uint64_t next_autosave_ms_ = 0;
     bool autosave_soon_ = false;        // a take landed
     bool autosave_in_flight_ = false;   // one at a time
