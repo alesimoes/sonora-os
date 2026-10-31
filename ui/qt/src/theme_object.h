@@ -33,6 +33,8 @@ class ThemeObject : public QObject {
     Q_PROPERTY(QColor solo READ solo CONSTANT)
     Q_PROPERTY(QColor mute READ mute CONSTANT)
     Q_PROPERTY(QColor marker READ marker CONSTANT)
+    Q_PROPERTY(QColor automationVolume READ automationVolume CONSTANT)
+    Q_PROPERTY(QColor automationPan READ automationPan CONSTANT)
     Q_PROPERTY(QColor input READ input CONSTANT)
     Q_PROPERTY(QColor caution READ caution CONSTANT)
     Q_PROPERTY(QColor alarm READ alarm CONSTANT)
@@ -90,6 +92,8 @@ public:
     QColor solo() const { return QColor::fromRgba(theme::kSolo); }
     QColor mute() const { return QColor::fromRgba(theme::kMute); }
     QColor marker() const { return QColor::fromRgba(theme::kMarker); }
+    QColor automationVolume() const { return QColor::fromRgba(theme::kAutomationVolume); }
+    QColor automationPan() const { return QColor::fromRgba(theme::kAutomationPan); }
     QColor input() const { return QColor::fromRgba(theme::kInput); }
     QColor caution() const { return QColor::fromRgba(theme::kCaution); }
     QColor alarm() const { return QColor::fromRgba(theme::kAlarm); }

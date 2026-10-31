@@ -176,7 +176,9 @@ the write slice.
   playlist, so switching playlists switches the mix moves; Logic keeps it
   per track. Per track (Logic) is taken: a comp built across playlists
   (ADR-0026) keeps one mix. Moving the lanes onto `Playlist` later is a
-  format bump, not a redesign; a BACKLOG line asks the owner.
+  format bump, not a redesign. Decided (2026-10-31, the owner's question
+  answered on the recommended default): per track; the Edit window's lanes
+  (`automation.lanes` UI) are disclosed per track.
 - **Interpolating on the control thread into a per-block value table.**
   Block-rate values zipper on fast rides and change with the period size.
 - **A cursor per lane on the audio thread.** Faster per frame, but every

@@ -86,6 +86,13 @@ class SessionModel : public QObject {
     Q_PROPERTY(qreal scrollY READ scrollY NOTIFY viewChanged)
     Q_PROPERTY(qreal trackHeight READ trackHeight NOTIFY viewChanged)
     Q_PROPERTY(QString zoomText READ zoomText NOTIFY viewChanged)
+    // One entry per track: {top, shown, captions}. `top` is the row's top in
+    // the track area before the scroll; `shown` says its automation lanes
+    // are disclosed under it (ADR-0027), `captions` what each lane says about
+    // itself (kLaneCount strings). The rows are not all `trackHeight` tall
+    // once a lane is open, so the headers place themselves by `top`.
+    Q_PROPERTY(QVariantList trackRows READ trackRows NOTIFY rowsChanged)
+    Q_PROPERTY(qreal autolaneHeight READ autolaneHeight NOTIFY viewChanged)
     Q_PROPERTY(QList<bool> mutes READ mutes NOTIFY mixChanged)
     Q_PROPERTY(QList<bool> solos READ solos NOTIFY mixChanged)
     Q_PROPERTY(QList<bool> soloSafes READ soloSafes NOTIFY mixChanged)
@@ -257,6 +264,8 @@ public:
     int trackCount() const;
     QStringList trackNames() const;
     QStringList playlistNames() const;
+    QVariantList trackRows() const;
+    qreal autolaneHeight() const { return ctl_.view().autolane_height; }
     // The track's playlists in their order, for its selector's menu.
     Q_INVOKABLE QStringList trackPlaylists(int track) const;
     bool canUndo() const { return doc_.can_undo(); }
@@ -336,6 +345,9 @@ public:
     Q_INVOKABLE void wheel(qreal x, qreal dx, qreal dy, bool shift, bool ctrl);
     Q_INVOKABLE void rulerClick(qreal x);
     Q_INVOKABLE void selectTrack(int index);
+    // The triangle on a track header: discloses or hides the track's
+    // automation lanes. A refusal (a MIDI track) is a notice.
+    Q_INVOKABLE void toggleAutolanes(int track);
     Q_INVOKABLE void cycleGrid();
     // The shape the next fade, or crossfade, is made with: the no-dialog
     // fades use the last shape chosen, as Pro Tools' do.
@@ -412,6 +424,7 @@ signals:
     void editStateChanged();
     void selectionChanged();
     void viewChanged();
+    void rowsChanged();
     void mixChanged();
     void counterChanged();
     void sessionChanged();

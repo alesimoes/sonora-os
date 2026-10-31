@@ -20,6 +20,13 @@ Item {
     // A track's playlist selector was clicked: the window draws its menu.
     signal playlistMenuRequested(int track, real x, real y)
 
+    // A track's top in the track area, before the scroll: its lanes, when
+    // disclosed, make the rows below it start lower.
+    function rowTop(index) {
+        const r = session.trackRows[index]
+        return r !== undefined ? r.top : index * session.trackHeight
+    }
+
     // --- toolbar --------------------------------------------------------------
     Rectangle {
         id: toolbar
@@ -52,7 +59,7 @@ Item {
                 spacing: 2
                 Repeater {
                     model: [["Smart", "tool.smart"], ["Trim", "tool.trim"],
-                            ["Select", "tool.select"], ["Grab", "tool.grab"]]
+                            ["Select", "tool.select"], ["Grab", "tool.grab"], ["Pencil", "tool.pencil"]]
                     SButton {
                         required property var modelData
                         text: modelData[0]
@@ -288,8 +295,9 @@ Item {
                     required property int index
                     required property string modelData
                     readonly property bool selected: edit.session.selectedTrack === index
+                    readonly property var row: edit.session.trackRows[index] || ({})
                     readonly property bool armed: edit.shell.engineAlive && edit.shell.armed[index] === true
-                    y: index * edit.session.trackHeight - edit.session.scrollY
+                    y: edit.rowTop(index) - edit.session.scrollY
                     width: headers.width
                     height: edit.session.trackHeight
                     visible: y + height >= 0 && y <= headers.height
@@ -329,13 +337,27 @@ Item {
                         color: header.selected ? Theme.text : Theme.textSecondary
                         font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.DemiBold }
                     }
+                    // The disclosure triangle: this track's automation lanes
+                    // (ADR-0027), a lane for each parameter the model
+                    // automates, shown under the row.
+                    SButton {
+                        objectName: "autolanes" + header.index
+                        visible: header.row.canShow === true
+                        x: parent.width - Theme.space3 - 14 - 20
+                        y: Theme.space2 - 2
+                        implicitWidth: 20; implicitHeight: 20
+                        fontPx: Theme.textCaption
+                        active: header.row.shown === true
+                        text: header.row.shown === true ? "▾" : "▸"
+                        onClicked: edit.session.toggleAutolanes(header.index)
+                    }
                     // Pro Tools' playlist selector: the active playlist's
                     // name; a click opens the playlist menu on this track.
                     SButton {
                         objectName: "playlistSelector" + header.index
                         x: headerName.x + headerName.width + Theme.space1
                         y: Theme.space2 - 2
-                        width: parent.width - x - Theme.space3 - 14
+                        width: parent.width - x - Theme.space3 - 14 - 24
                         implicitHeight: 20
                         bold: false
                         fontPx: Theme.textCaption
@@ -397,6 +419,56 @@ Item {
                         channel: header.index
                         anchors { right: parent.right; rightMargin: Theme.space2; top: parent.top; bottom: parent.bottom; margins: Theme.space1 }
                         width: 6
+                    }
+                }
+            }
+        }
+
+        // The automation lanes under a track, one row each; the lane itself
+        // is drawn by the timeline, level with this name.
+        Item {
+            id: laneHeaders
+            width: Theme.trackHeaderWidth
+            height: parent.height
+            clip: true
+            Repeater {
+                model: edit.session.trackRows
+                Item {
+                    id: laneBlock
+                    required property int index
+                    required property var modelData
+                    visible: modelData.shown === true
+                    y: modelData.top + edit.session.trackHeight - edit.session.scrollY
+                    width: laneHeaders.width
+                    height: 2 * edit.session.autolaneHeight
+                    Repeater {
+                        model: 2
+                        Rectangle {
+                            id: laneHeader
+                            required property int index
+                            objectName: "autolaneHeader" + laneBlock.index + "_" + index
+                            y: index * edit.session.autolaneHeight
+                            width: laneBlock.width
+                            height: edit.session.autolaneHeight
+                            color: Theme.sunken
+                            Rectangle { width: 3; height: parent.height - 2; color: laneHeader.index === 0 ? Theme.automationVolume : Theme.automationPan }
+                            Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: Theme.borderSubtle }
+                            Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom } width: 1; color: Theme.borderSubtle }
+                            Text {
+                                x: Theme.space3; y: Theme.space2
+                                text: laneHeader.index === 0 ? "Volume" : "Pan"
+                                color: laneHeader.index === 0 ? Theme.automationVolume : Theme.automationPan
+                                font { family: Theme.fontFamily; pixelSize: Theme.textSmall; weight: Font.DemiBold }
+                            }
+                            Text {
+                                x: Theme.space3; y: Theme.space2 + 16
+                                width: parent.width - 2 * Theme.space3
+                                elide: Text.ElideRight
+                                text: (laneBlock.modelData.captions || [])[laneHeader.index] || ""
+                                color: Theme.textTertiary
+                                font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
+                            }
+                        }
                     }
                 }
             }

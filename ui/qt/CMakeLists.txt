@@ -54,6 +54,8 @@ add_library(sonora_ui_qt STATIC
   src/edit_controller.h src/edit_controller.cpp
   src/edit_clipboard.h src/edit_clipboard.cpp
   src/edit_markers.cpp
+  src/automation_edit.h src/automation_edit.cpp
+  src/edit_automation.cpp
   src/timeline_scene.h src/timeline_scene.cpp
   src/scene_item.h src/scene_item.cpp
   src/session_files.h src/session_files.cpp
@@ -120,6 +122,12 @@ target_link_libraries(test_ui_edit PRIVATE sonora_ui_qt sonora_session_files)
 target_compile_definitions(test_ui_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_edit COMMAND test_ui_edit)
+
+# Automation lanes (ADR-0027): the operations a gesture is built into, the
+# lane rows, the mouse and Edit-command paths, and what the timeline draws.
+add_executable(test_ui_automation tests/test_automation.cpp)
+target_link_libraries(test_ui_automation PRIVATE sonora_ui_qt)
+add_test(NAME ui_automation COMMAND test_ui_automation)
 set_tests_properties(ui_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Cut, Copy, Paste, Duplicate and Clear as compounds, at the member limit
