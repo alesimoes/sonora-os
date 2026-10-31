@@ -415,6 +415,9 @@ signals:
     void mixChanged();
     void counterChanged();
     void sessionChanged();
+    // Another session was opened (not a refused Open, not a save): the
+    // per-session view state of the windows goes back to its defaults.
+    void sessionOpened();
     void repairsChanged();
     void undoHistoryOpenChanged();
     void markersChanged();

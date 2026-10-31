@@ -511,6 +511,7 @@ playback can follow edits; it is in flight.
 
 Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 
+- [ ] ui.mixer.views: label the insert bank toggle "Ins F-J" so it is not confused with the sends' "F-J" in the Mix header.
 - [ ] Marker added while playing takes the engine-side playhead timestamp, not the last UI tick (it can be off by tens of ms).
 - [ ] Memory Locations length column uses the main counter format, not always min:sec.
 - [ ] `ui.mixer.sends` follow-ups (ADR-0022):
@@ -851,11 +852,17 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          "the rest", with the ≥ 55 % and ≥ 35 % budgets checked by a layout
          test at 1920×1080 for 18 and 48 tracks (F1, F2). Tokens in
          `theme.h`.
-       - [ ] D2 `ui.mixer.views` (existing item): collapsible views for I/O,
+       - [x] D2 `ui.mixer.views` (existing item): collapsible views for I/O,
          Inserts A–E and F–J, and Sends A–E and F–J, with A–E shown by
          default, kept with the session; "+N" chip on a collapsed bank in
          use; a section that would break the budget scrolls inside itself
          (F1). The width presets from D1 go in its View menu.
+         Done: the banks (MixModel `showIO`, `showInsertsAE`, `showInsertsFJ`,
+         `showSends`; the sends' A-E/F-J is SendModel::bank), "+N" chip, the
+         fader floor 35 % with an F-J bank expanded, reset when another
+         session opens. Left: the width presets and a View menu; the views
+         live in the process, not in a file (interface state is outside the
+         session format, ADR-0007 5), so they do not survive a restart.
        - [ ] D3 `ui.design.names`: one Qt-free `abbreviate()` with tests (the
          spec's rules 1 to 6), used by name plates, insert and send slots,
          the Edit header and the choosers; full names in tooltips; reasons

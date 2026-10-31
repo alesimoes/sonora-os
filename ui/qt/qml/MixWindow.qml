@@ -30,12 +30,23 @@ Rectangle {
     property SendModel sends: null
     property MixModel mixer: null
     readonly property int auxCount: sends !== null ? sends.auxes.length : 0
+    // Clicking the bank in use collapses the sends; the other one, or the
+    // collapsed sends' switch, shows that bank.
+    function pickSends(first) {
+        const shown = mixer === null || mixer.showSends
+        if (shown && sends.bank === first && mixer !== null) {
+            mixer.showSends = false
+            return
+        }
+        sends.setBank(first)
+        if (mixer !== null) mixer.showSends = true
+    }
     color: Theme.window
 
     Text {
         id: note
         objectName: "mixNote"
-        anchors { left: parent.left; right: sendControls.left; top: parent.top; margins: Theme.space3; leftMargin: Theme.space4 }
+        anchors { left: parent.left; right: viewControls.left; top: parent.top; margins: Theme.space3; leftMargin: Theme.space4 }
         elide: Text.ElideRight
         text: (mix.inserts !== null && mix.inserts.pluginsDisabled
                ? "This engine hosts no plugins yet: inserts are kept with the session and do not run. "
@@ -44,24 +55,57 @@ Rectangle {
         color: Theme.caution
         font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
     }
+    // The views: which sections of a strip are drawn (MixModel, ui-design.md
+    // "Mixer strip anatomy"). A collapsed section gives its height to the fader.
+    Row {
+        id: viewControls
+        objectName: "viewControls"
+        anchors { right: sendControls.left; rightMargin: Theme.space3; top: parent.top; topMargin: Theme.space1 }
+        spacing: 2
+        visible: mix.mixer !== null
+        width: visible ? implicitWidth : 0
+        SButton {
+            objectName: "viewIO"
+            text: "I/O"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            active: mix.mixer !== null && mix.mixer.showIO
+            onClicked: mix.mixer.showIO = !mix.mixer.showIO
+        }
+        SButton {
+            objectName: "viewInsertsAE"
+            text: "Ins A-E"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            active: mix.mixer !== null && mix.mixer.showInsertsAE
+            onClicked: mix.mixer.showInsertsAE = !mix.mixer.showInsertsAE
+        }
+        SButton {
+            objectName: "viewInsertsFJ"
+            text: "F-J"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            active: mix.mixer !== null && mix.mixer.showInsertsFJ
+            onClicked: mix.mixer.showInsertsFJ = !mix.mixer.showInsertsFJ
+        }
+    }
     Row {
         id: sendControls
         objectName: "sendControls"
-        anchors { right: compensation.left; rightMargin: Theme.space3; top: parent.top; topMargin: Theme.space1 }
+        // Not anchored to `compensation`: its width would be bound to its
+        // own visibility (a binding loop); the margin is its room.
+        anchors { right: parent.right; top: parent.top; topMargin: Theme.space1
+                  rightMargin: Theme.space4 + (compensation.visible ? compensation.implicitWidth + Theme.space3 : 0) }
         spacing: 2
         visible: mix.sends !== null
         width: visible ? implicitWidth : 0
+        // The sends' own switch: A-E or F-J, and a click on the one in use
+        // collapses the sends.
         SButton {
             objectName: "sendBankAE"
             text: "Sends A-E"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
-            active: mix.sends !== null && mix.sends.bank === 0
-            onClicked: mix.sends.setBank(0)
+            active: mix.sends !== null && mix.sends.bank === 0 && (mix.mixer === null || mix.mixer.showSends)
+            onClicked: mix.pickSends(0)
         }
         SButton {
             objectName: "sendBankFJ"
             text: "F-J"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
-            active: mix.sends !== null && mix.sends.bank === 5
-            onClicked: mix.sends.setBank(5)
+            active: mix.sends !== null && mix.sends.bank === 5 && (mix.mixer === null || mix.mixer.showSends)
+            onClicked: mix.pickSends(5)
         }
         Item { width: Theme.space2; height: 1 }
         SButton {
@@ -75,7 +119,6 @@ Rectangle {
         objectName: "compensation"
         anchors { right: parent.right; top: parent.top; margins: Theme.space3; rightMargin: Theme.space4 }
         visible: mix.inserts !== null
-        width: visible ? implicitWidth : 0
         text: mix.inserts !== null ? mix.inserts.compensationText : ""
         color: mix.inserts !== null && mix.inserts.compensationShort ? Theme.alarm : Theme.textSecondary
         font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 }
@@ -155,6 +198,7 @@ Rectangle {
                 shell: mix.shell
                 session: mix.session
                 sends: mix.sends
+                mixer: mix.mixer
                 bus: index
                 info: modelData
             }

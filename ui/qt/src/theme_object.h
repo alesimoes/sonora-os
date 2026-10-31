@@ -44,6 +44,7 @@ class ThemeObject : public QObject {
     Q_PROPERTY(int stripRegular READ stripRegular CONSTANT)
     Q_PROPERTY(int stripWide READ stripWide CONSTANT)
     Q_PROPERTY(int faderSharePercent READ faderSharePercent CONSTANT)
+    Q_PROPERTY(int faderShareExpandedPercent READ faderShareExpandedPercent CONSTANT)
     Q_PROPERTY(int stripMinSlots READ stripMinSlots CONSTANT)
     Q_PROPERTY(QColor meterWell READ meterWell CONSTANT)
     Q_PROPERTY(QColor highlight READ highlight CONSTANT)
@@ -100,6 +101,7 @@ public:
     int stripRegular() const { return theme::kStripRegular; }
     int stripWide() const { return theme::kStripWide; }
     int faderSharePercent() const { return theme::kFaderSharePercent; }
+    int faderShareExpandedPercent() const { return theme::kFaderShareExpandedPercent; }
     int stripMinSlots() const { return theme::kStripMinSlots; }
     QColor meterWell() const { return QColor::fromRgba(theme::kMeterWell); }
     QColor highlight() const { return QColor::fromRgba(theme::kHighlight); }

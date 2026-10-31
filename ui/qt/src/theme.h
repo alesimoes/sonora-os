@@ -132,6 +132,9 @@ constexpr int kStripWide = 128;
 // the default views, which this layout holds with everything expanded; the
 // inserts and sends scroll inside their frames before the fader gives it up.
 constexpr int kFaderSharePercent = 55;
+// With an F-J bank of inserts or sends expanded the floor is lower
+// (ui-design.md: every view expanded, at least 35 %); the banks scroll.
+constexpr int kFaderShareExpandedPercent = 35;
 // The fewest insert slots a strip shows, A to E, before the fader gives way.
 constexpr int kStripMinSlots = 5;
 
