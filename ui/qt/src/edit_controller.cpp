@@ -1538,6 +1538,18 @@ bool EditController::toggle_solo_safe(int index, std::string& why) {
     return submit(SetMix{m}, why);
 }
 
+bool EditController::set_automation_mode(int index, AutomationMode mode, std::string& why) {
+    TrackMix m;
+    if (!mix_target(snapshot(), index, m, why)) return false;
+    if (mode == AutomationMode::Trim) {
+        why = "Trim automation is not available yet: the engine has no Trim slice";
+        return false;
+    }
+    if (m.automation == mode) return true;
+    m.automation = mode;
+    return submit(SetMix{m}, why);
+}
+
 bool EditController::toggle_input_monitor(int index, std::string& why) {
     TrackMix m;
     if (!mix_target(snapshot(), index, m, why)) return false;

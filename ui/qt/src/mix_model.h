@@ -59,6 +59,7 @@
 #include <functional>
 #include <string>
 
+#include "sonora/api/messages.h"
 #include "sonora/model/model.h"
 
 namespace sonora::ui {
@@ -89,9 +90,14 @@ class MixModel : public QObject {
 public:
     static constexpr int kNoRide = -2;
 
-    // Sends a ParameterChange (ParamId::Gain, linear 0..4) for an engine
-    // track. Empty: there is no live path, and every step is a SetMix.
-    using GainSender = std::function<void(uint32_t track, float linear)>;
+    // Sends a ParameterChange for an engine track: gain (linear 0..4) or pan
+    // (-1..1), with the hand's gesture. A ride sends Touch when the hand
+    // lands, Move per step and Release when it lets go, so the engine's
+    // Touch, Latch and Write modes know when the operator holds the control
+    // (ADR-0027 section 3). Empty: there is no live path, and every step is
+    // a SetMix.
+    using GainSender = std::function<void(uint32_t track, api::ParamId param, float value,
+                                          api::Gesture gesture)>;
     // The engine's track count, as its latest Hello says: asked when used,
     // so a restarted engine with another count is followed (PR #67 review).
     using EngineTracks = std::function<uint32_t()>;
@@ -127,8 +133,16 @@ public:
     // False, with the reason on the status line, for text that is not one.
     Q_INVOKABLE bool setGainText(int track, const QString& text);
     Q_INVOKABLE bool setPanText(int track, const QString& text);
-    // Ctrl-drag is a tenth of the motion, as on the fader.
+    // Ctrl-drag is a tenth of the motion, as on the fader. The hand landing
+    // and lifting are the pan's touch and release (see a fader ride).
+    Q_INVOKABLE void beginPan(int track);
+    Q_INVOKABLE void endPan(int track);
     Q_INVOKABLE void panDrag(int track, qreal dx, qreal width, bool fine);
+
+    // --- the strip's automation mode selector (ADR-0027) ---
+    // One SetMix. Trim is refused by name: the engine has no write slice for
+    // it, and a selector that took it would show a mode that does nothing.
+    Q_INVOKABLE bool setAutomationMode(int track, const QString& mode);
 
     // --- solo and mute clicks with a modifier (Qt::KeyboardModifiers) ---
     // True when the modifier was this one's to handle; false for a plain
@@ -148,7 +162,7 @@ private:
     }
     void resetViews();
     bool live(int track) const;
-    void sendLive(int track, float db);
+    void sendLive(int track, float db, api::Gesture gesture = api::Gesture::Move);
     // Every track's solo (or mute) to `on`, one SetMix per track that differs.
     void setAll(bool solo, bool on);
     // The document changed: a ride whose track or session is not there any
@@ -160,6 +174,9 @@ private:
     // If the ride's steps reached the engine, its index goes back to the
     // gain the document holds for the track now there.
     void dropRide(const std::string& why);
+    // The same for a pan hold: false, with a Release to the touched index.
+    bool panStillHolds();
+    void dropPan(const std::string& why);
 
     SessionModel& session_;
     GainSender sender_;
@@ -171,6 +188,10 @@ private:
     float ride_db_ = 0.0f;
     float ride_from_db_ = 0.0f;
     bool ride_sent_live_ = false;
+    bool ride_touched_ = false;   // a Touch went out and wants its Release
+    int pan_track_ = kNoRide;     // the engine track whose pan the hand holds
+    model::Id pan_id_ = 0;
+    uint64_t pan_generation_ = 0;
     uint64_t live_steps_ = 0;
     bool show_io_ = true;
     bool show_inserts_ae_ = true;

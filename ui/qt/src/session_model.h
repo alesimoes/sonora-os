@@ -96,6 +96,8 @@ class SessionModel : public QObject {
     Q_PROPERTY(QList<bool> mutes READ mutes NOTIFY mixChanged)
     Q_PROPERTY(QList<bool> solos READ solos NOTIFY mixChanged)
     Q_PROPERTY(QList<bool> soloSafes READ soloSafes NOTIFY mixChanged)
+    // Each strip's automation mode by name (Off, Read, Touch, Latch, Write, Trim).
+    Q_PROPERTY(QStringList automationModes READ automationModes NOTIFY mixChanged)
     // Per strip, whether the track is in Input mode (Pro Tools' TrackInput,
     // the "I" button); Auto and Off are not.
     Q_PROPERTY(QList<bool> inputMonitors READ inputMonitors NOTIFY mixChanged)
@@ -314,6 +316,7 @@ public:
     QList<bool> mutes() const;
     QList<bool> solos() const;
     QList<bool> soloSafes() const;
+    QStringList automationModes() const;
     QList<bool> inputMonitors() const;
     // Per strip, whether another track's solo silences it: some track is
     // soloed, this one is not, and it is not solo safe. The engine's rule

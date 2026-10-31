@@ -71,8 +71,9 @@ public:
     }
     bool engine_alive(uint64_t) const override { return alive; }
     std::string link_error() const override { return link_error_text; }
-    uint64_t send_track_gain(uint32_t track, float linear) override {
-        gain_changes.push_back({track, linear});
+    uint64_t send_track_param(uint32_t track, api::ParamId param, float value,
+                              api::Gesture gesture) override {
+        gain_changes.push_back({track, value, param, gesture});
         return ++seq_;
     }
     uint64_t send_plugin_parameter(uint64_t insert, const std::string& key, float value) override {
@@ -89,6 +90,8 @@ public:
     struct GainChange {
         uint32_t track;
         float linear;
+        api::ParamId param = api::ParamId::Gain;
+        api::Gesture gesture = api::Gesture::Move;
     };
     std::vector<GainChange> gain_changes;
 
