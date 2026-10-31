@@ -132,8 +132,8 @@ constexpr int kStripWide = 128;
 // the default views, which this layout holds with everything expanded; the
 // inserts and sends scroll inside their frames before the fader gives it up.
 constexpr int kFaderSharePercent = 55;
-// The fewest insert or send slots a scrolling frame still shows.
-constexpr int kStripMinSlots = 2;
+// The fewest insert slots a strip shows, A to E, before the fader gives way.
+constexpr int kStripMinSlots = 5;
 
 // The colour a region on display-order track `index` gets.
 constexpr uint32_t region_colour(int index) {

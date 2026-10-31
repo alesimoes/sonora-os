@@ -10,7 +10,7 @@
 //   - the fader zone is at least 55 % of the strip's height, with every
 //     insert and send slot in use (they scroll inside their own frames
 //     before the fader gives up the space), and at least 240 px of throw;
-//   - an insert or send frame keeps at least two slots in view, and nothing
+//   - the insert frame keeps slots A to E in view, the sends their five rows, and nothing
 //     overlaps the fader zone.
 #include <QGuiApplication>
 #include <QQuickItem>
@@ -185,8 +185,8 @@ int layout(int tracks) {
         QQuickItem* sendFrame = named(strip, QStringLiteral("sendFrame%1").arg(t));
         CHECK(frame != nullptr && sendFrame != nullptr);
         const double slot = theme::kInsertSlotHeight;
-        CHECK(frame->height() >= 2 * slot);
-        CHECK(sendFrame->height() >= 2 * slot);
+        CHECK(frame->height() >= theme::kStripMinSlots * slot);
+        CHECK(sendFrame->height() >= 5 * slot);
         // Nothing sits over the fader.
         CHECK(frame->mapToItem(strip, QPointF(0, frame->height())).y() <= zone->y());
         CHECK(sendFrame->mapToItem(strip, QPointF(0, sendFrame->height())).y() <= zone->y());

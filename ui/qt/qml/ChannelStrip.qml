@@ -64,10 +64,11 @@ Rectangle {
     readonly property int stateButton: Math.max(12, Math.min(18, Math.floor((width - 10) / 4)))
 
     // The fader zone takes the rest, and the strip's height budget starts
-    // from its floor: the inserts and sends get what is left above it and
-    // scroll inside their frames when they need more (ui-design.md, "Mixer
-    // strip anatomy"). A strip too short to hold two slots of each keeps
-    // those two and the fader gives way, rather than a section vanishing.
+    // from its floor: the five sends keep their rows, and the inserts get
+    // what is left above the fader and scroll inside their frame when they
+    // need more (ui-design.md, "Mixer strip anatomy"). A strip too short to
+    // hold five insert slots keeps those five and the fader gives way, so
+    // slots A to E are never out of reach.
     readonly property real faderFloor: Math.ceil(height * Theme.faderSharePercent / 100)
     readonly property real insertsFull: inserts === null ? 0 : 10 * Theme.insertSlotHeight + 9 + 2 + 12
     readonly property real sendsFull: sends === null ? 0 : 5 * Theme.insertSlotHeight + 4
@@ -75,8 +76,7 @@ Rectangle {
     readonly property real room: height - (Theme.space2 + top.height) - 2 * Theme.space2
                                  - faderFloor - (Theme.space3 + Theme.space2)
                                  - (16 + Theme.space2) - (18 + Theme.space2 + 22 + Theme.space1)
-    readonly property real sendsHeight: sends === null ? 0
-        : Math.min(sendsFull, Math.max(Theme.stripMinSlots * Theme.insertSlotHeight + 1, room * 0.4))
+    readonly property real sendsHeight: sendsFull
     readonly property real insertsHeight: inserts === null ? 0
         : Math.min(insertsFull, Math.max(minSection, room - sendsHeight))
     readonly property alias insertFrame: insertFrame

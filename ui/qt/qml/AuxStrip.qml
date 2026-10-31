@@ -28,8 +28,7 @@ Rectangle {
     readonly property real room: height - (Theme.space2 + top.height) - 2 * Theme.space2
                                  - faderFloor - (Theme.space3 + Theme.space2)
                                  - (16 + Theme.space2) - (18 + Theme.space2 + 22 + Theme.space1)
-    readonly property real sendsHeight: Math.min(5 * Theme.insertSlotHeight + 4,
-        Math.max(Theme.stripMinSlots * Theme.insertSlotHeight + 1, room * 0.4))
+    readonly property real sendsHeight: 5 * Theme.insertSlotHeight + 4
     readonly property real insertsHeight: Math.min(10 * Theme.insertSlotHeight + 9 + 2 + 12,
         Math.max(Theme.stripMinSlots * Theme.insertSlotHeight + 2 + 12, room - sendsHeight))
 
