@@ -191,6 +191,20 @@ void DiskThread::apply(std::size_t i, const CaptureBoundary& b) {
     s.active = target;
     s.open_at = b.at;
     t.writer(target).set_time_reference(b.timeline);
+    // Only a loop take's slot has a list; any other take's Open says 0.
+    if (t.sidecar(target).is_open()) hold_places(i, target, b.ordinal, WrapSidecar::kBeforeFile);
+}
+
+void DiskThread::hold_places(std::size_t i, int slot, uint64_t upto, uint64_t mark) {
+    TrackState& s = state_[i];
+    std::vector<uint64_t>& list = s.wraps[slot];
+    uint64_t& written = s.wraps_written[slot];
+    WrapSidecar& side = tracks_[i]->sidecar(slot);
+    while (written < upto) {
+        if (list.size() < wrap_cap_) list.push_back(mark);
+        side.append(mark);
+        ++written;
+    }
 }
 
 void DiskThread::wrap(std::size_t i, const CaptureBoundary& b) {
@@ -206,11 +220,7 @@ void DiskThread::wrap(std::size_t i, const CaptureBoundary& b) {
     const uint64_t frame = (b.at > s.open_at ? b.at - s.open_at : 0) / t.channels();
     // Wraps whose records a full ring lost keep their places, so every
     // later wrap is still the pass it ends.
-    while (written + 1 < b.ordinal) {
-        if (list.size() < wrap_cap_) list.push_back(WrapSidecar::kLostWrap);
-        side.append(WrapSidecar::kLostWrap);
-        ++written;
-    }
+    hold_places(i, slot, b.ordinal - 1, WrapSidecar::kLostWrap);
     // Past the cap, on disk only: those passes stay recoverable.
     if (list.size() < wrap_cap_) list.push_back(frame);
     side.append(frame);

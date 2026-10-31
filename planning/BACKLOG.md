@@ -104,9 +104,12 @@ playback can follow edits; it is in flight.
          a choice of which wins, per profile (Logic plays the cycle area).
        Remain: pre-roll for a plain take. Input monitoring
          with latency compensation: ADR-0019, `t1-input-monitor`.
-       - [ ] Loop record: a track that opens late and loses every later
+       - [x] Loop record: a track that opens late and loses every later
          wrap still numbers its passes from P1; the Open record needs the
-         take's wrap count.
+         take's wrap count. The Open record carries it; the disk thread
+         holds those wraps' places as WrapSidecar::kBeforeFile (wrap list
+         version 2, version 1 reads as 2), never placed by loop length
+         (`t1-late-open-wraps`).
        - [ ] Loop stall test: hold the drain for the full
          `disk_stall_seconds` (0.5 s), not 300 ms.
        - [ ] Optional: reserve the extra reader window only during loop

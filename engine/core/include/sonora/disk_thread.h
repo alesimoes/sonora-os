@@ -35,7 +35,8 @@ struct CaptureBoundary {
     Kind kind;
     uint32_t take;
     // Wrap: which of the take's wraps, from 1, so one lost to a full ring
-    // leaves a gap the next one shows.
+    // leaves a gap the next one shows. Open: how many wraps the take made
+    // before the window opened, 0 unless it opened late in a loop take.
     uint32_t ordinal;
     // The take's Transport::Word::start: with `take`, which take this is.
     uint32_t start;
@@ -155,6 +156,8 @@ private:
     void move(std::size_t i, uint64_t n);
     void apply(std::size_t i, const CaptureBoundary& b);
     void wrap(std::size_t i, const CaptureBoundary& b);
+    // Fills slot `slot`'s list with `mark` until it holds `upto` wraps.
+    void hold_places(std::size_t i, int slot, uint64_t upto, uint64_t mark);
     void finish(std::size_t i, int slot);
 
     std::vector<Track*> tracks_;

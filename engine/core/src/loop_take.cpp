@@ -13,9 +13,14 @@ namespace sonora {
 namespace {
 
 constexpr uint64_t kLost = WrapSidecar::kLostWrap;
+constexpr uint64_t kBefore = WrapSidecar::kBeforeFile;
+
+bool is_frame(uint64_t w) { return w != kLost && w != kBefore; }
 
 // The first wrap of a file whose first sample was recorded at
-// `time_reference`: the sample at B, L samples late.
+// `time_reference`: the sample at B, L samples late. A loop take's
+// TimeReference lies in [A, B) for a late open too (its take latency is 0),
+// so this is the wrap after the last one the take made before the file.
 uint64_t first_wrap(uint64_t loop_to, uint64_t time_reference, uint32_t latency) {
     return time_reference <= loop_to ? loop_to - time_reference + latency : kLost;
 }
@@ -29,29 +34,41 @@ std::vector<uint64_t> complete_wraps(const std::vector<uint64_t>& known, std::si
     if (loop_to <= loop_from) return known;
     const uint64_t len = loop_to - loop_from;
     const bool until_end = count == kWrapsUntilEnd;
+    // The wraps the take made before a late file opened lead the list;
+    // first_wrap() is the one after them.
+    std::size_t before = 0;
+    while (before < known.size() && known[before] == kBefore) ++before;
+    const uint64_t first = first_wrap(loop_to, time_reference, latency);
     std::vector<uint64_t> out = known;
     if (!until_end && count > out.size()) out.resize(count, kLost);
     for (std::size_t k = 0; k < out.size(); ++k) {
-        if (out[k] != kLost) continue;
-        derived = true;
-        if (k > 0 && out[k - 1] != kLost) {
+        if (is_frame(out[k])) continue;
+        // One before the file is in it still when the input latency carried
+        // its sample past the open; that is where the file starts, not a
+        // guess, so it does not count as derived.
+        if (out[k] == kLost) derived = true;
+        if (k > 0 && is_frame(out[k - 1])) {
             out[k] = out[k - 1] + len;
             continue;
         }
         std::size_t q = k + 1;
-        while (q < known.size() && known[q] == kLost) ++q;
+        while (q < known.size() && !is_frame(known[q])) ++q;
         if (q < known.size()) {
             const uint64_t back = static_cast<uint64_t>(q - k) * len;
             if (known[q] >= back) out[k] = known[q] - back;
             continue;
         }
-        const uint64_t first = first_wrap(loop_to, time_reference, latency);
-        if (first != kLost) out[k] = first + static_cast<uint64_t>(k) * len;
+        if (first == kLost) continue;
+        if (k >= before) {
+            out[k] = first + static_cast<uint64_t>(k - before) * len;
+        } else if (first >= static_cast<uint64_t>(before - k) * len) {
+            out[k] = first - static_cast<uint64_t>(before - k) * len;
+        }
     }
     if (until_end) {
-        uint64_t next = out.empty() ? first_wrap(loop_to, time_reference, latency)
-                        : out.back() == kLost ? kLost
-                                              : out.back() + len;
+        uint64_t next = out.empty() || out.back() == kBefore ? first
+                        : out.back() == kLost                ? kLost
+                                                             : out.back() + len;
         while (next != kLost && next <= frames) {
             out.push_back(next);
             derived = true;
@@ -79,10 +96,11 @@ std::vector<LoopPass> loop_passes(const std::vector<uint64_t>& wraps, uint64_t f
         p.complete = whole && p.length == len;
         out.push_back(p);
     };
-    // Wrap k ends pass k + 1: a lost wrap keeps its place in the list.
+    // Wrap k ends pass k + 1: a lost wrap, or one before the file, keeps its
+    // place in the list.
     for (std::size_t k = 0; k < wraps.size(); ++k) {
         const uint64_t w = wraps[k];
-        if (w == kLost) continue;
+        if (!is_frame(w)) continue;
         // A track whose window opened late, inside this pass: the part it has.
         if (w < len) {
             add(k + 1, 0, len - w, w, false);
@@ -92,7 +110,7 @@ std::vector<LoopPass> loop_passes(const std::vector<uint64_t>& wraps, uint64_t f
     }
     uint64_t tail = kLost;
     uint64_t at = 0;
-    if (!wraps.empty()) {
+    if (!wraps.empty() && wraps.back() != kBefore) {
         tail = wraps.back();
     } else {
         // Sample i was played at time_reference + i - L.

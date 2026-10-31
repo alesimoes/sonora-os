@@ -755,10 +755,13 @@ provides them:
 - **Loop takes keep their wraps beside them** (ADR-0016 §2, §5). A loop
   take is one file per track through every pass, and `<take file>.wraps`
   next to it lists the file frame of each wrap: a 32-byte header ("SNWR",
-  version 1, A and B as little-endian u64, then L as a little-endian u32
+  version 2, A and B as little-endian u64, then L as a little-endian u32
   and four zero bytes) and one 8-byte little-endian
   record per wrap, append-only, `~0` for a wrap whose boundary record a
-  full ring lost (`common/audiofile` `WrapSidecar`). The disk thread
+  full ring lost, `~0 - 1` for a wrap the take made before this track's
+  file opened (a late open), so its passes keep the take's numbers
+  (`common/audiofile` `WrapSidecar`). Version 1 never wrote `~0 - 1` and
+  reads as version 2. The disk thread
   appends each wrap as it comes and syncs the list after the take's own
   checkpoint, so the loss window covers the wraps too. A wrap can reach the
   medium before the audio it ends, by writeback; recovery drops a wrap past
