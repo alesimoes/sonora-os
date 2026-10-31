@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <map>
@@ -229,9 +230,34 @@ std::string megabytes(std::uint64_t bytes) {
 
 }  // namespace
 
+namespace {
+
+// The stem a rotated backup's name was made from: "Mix" of
+// "Mix.20270115-080000-2.sonora". Stems may hold dots, so each is tried.
+bool rotated_backup_stem(const std::string& name, std::string& stem) {
+    for (std::size_t dot = name.find('.'); dot != std::string::npos; dot = name.find('.', dot + 1)) {
+        if (rotated_backup_name(name, name.substr(0, dot))) {
+            stem = name.substr(0, dot);
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
 std::string autosave_file_of(const std::string& session_file) {
+    const fs::path file(session_file);
     const fs::path folder = plain(session_folder_of(session_file));
-    return (folder / kBackupsDir / (folder.filename().string() + ".autosave.sonora")).string();
+    const std::string name = file.filename().string();
+    const bool in_backups = plain(file.parent_path()).filename() == kBackupsDir;
+    const char* const suffix = ".autosave.sonora";
+    // An autosave opened from the backups folder autosaves onto itself.
+    if (in_backups && ends_with(name, suffix) && name.size() > std::strlen(suffix)) return plain(file).string();
+    std::string stem = file.stem().string();
+    if (in_backups) rotated_backup_stem(name, stem);
+    // Per session file: two files in one folder must not share an autosave.
+    return (folder / kBackupsDir / (stem + suffix)).string();
 }
 
 bool rotated_backup_name(const std::string& name, const std::string& stem) {
@@ -281,6 +307,7 @@ SessionFolder::SessionFolder(SyncDirectory sync_directory)
 void SessionFolder::enter(const std::string& folder) {
     if (folder == folder_) return;
     folder_ = folder;
+    autosaves_written_.clear();
     files_.clear();
     known_.clear();
     std::error_code ec;
@@ -390,6 +417,13 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
     const fs::path file(session_file);
     if (!file.is_absolute() || file.extension() != ".sonora" || file.stem().empty()) {
         why = "a session file is an absolute path ending in \".sonora\", not \"" + session_file + "\"";
+        return false;
+    }
+    std::string rotated_stem;
+    if (plain(file.parent_path()).filename() == kBackupsDir &&
+        rotated_backup_stem(file.filename().string(), rotated_stem)) {
+        // Pruning deletes rotated backups, work saved into one with it.
+        why = file.filename().string() + " is a backup that pruning removes; use Save As to keep this session";
         return false;
     }
     std::set<std::string> refs;
@@ -647,8 +681,42 @@ bool SessionFolder::autosave(const std::string& session_file, const model::Snaps
         why = "the autosave could not be made: " + error;
         return false;
     }
+    // The autosave of a crash holds edits the file does not; a restarted
+    // saver must not be the one to replace it.
+    enter(session_folder_of(session_file));
+    set_aside_.clear();
     std::string there;
-    if (read_file(target, kMaxSessionBytes, there) && there == bytes) return true;
+    const bool had = read_file(target, kMaxSessionBytes, there);
+    if (had && there == bytes) {
+        autosaves_written_.insert(target.string());
+        return true;
+    }
+    if (had && autosaves_written_.count(target.string()) == 0) {
+        const std::string stem = target.filename().string().substr(
+            0, target.filename().string().size() - std::string(".sonora").size());
+        const std::string stamp = utc_stamp(clock_ != nullptr ? clock_() : now_seconds());
+        fs::path moved;
+        for (unsigned n = 1;; ++n) {
+            moved = dir / (stem + ".recovered-" + stamp + (n > 1 ? "-" + std::to_string(n) : "") + ".sonora");
+            std::error_code exists;
+            if (!fs::exists(fs::symlink_status(moved, exists))) break;
+        }
+        // A hard link first: the autosave stays in place until the new one
+        // replaces it, so a crash here leaves one. exFAT has none, so there
+        // the file is renamed.
+        std::error_code mv;
+        fs::create_hard_link(target, moved, mv);
+        if (mv) fs::rename(target, moved, mv);
+        if (mv) {
+            why = "the autosave left by an earlier run could not be moved aside: " + mv.message();
+            return false;
+        }
+        if (!sync_directory_(dir.string())) {
+            why = "cannot sync " + dir.string() + " after moving the earlier autosave aside";
+            return false;
+        }
+        set_aside_ = moved.filename().string();
+    }
     if (!fs::exists(st)) {
         fs::create_directories(dir, ec);
         if (ec) {
@@ -660,7 +728,13 @@ bool SessionFolder::autosave(const std::string& session_file, const model::Snaps
             return false;
         }
     }
-    return save(target.string(), bytes, document, why, caution, state_source);
+    if (!save(target.string(), bytes, document, why, caution, state_source)) return false;
+    autosaves_written_.insert(target.string());
+    if (!set_aside_.empty()) {
+        const std::string said = "the autosave of an earlier run is kept as " + set_aside_;
+        caution = caution.empty() ? said : caution + "; " + said;
+    }
+    return true;
 }
 
 bool SessionFolder::copy_synced(const std::string& from, const std::string& to, std::string& why) {

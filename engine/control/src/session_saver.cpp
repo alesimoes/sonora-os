@@ -154,6 +154,7 @@ void SessionSaver::run() {
                     d.ok = folder_.autosave(job.file, job.document, "sonora-engine", job.state_source, why,
                                             caution);
                     if (d.ok) autosaves_.fetch_add(1, std::memory_order_acq_rel);
+                    d.set_aside = folder_.set_aside();
                     break;
                 default:
                     d.ok = folder_.save(job.file, job.bytes, job.document, why, caution, job.state_source);

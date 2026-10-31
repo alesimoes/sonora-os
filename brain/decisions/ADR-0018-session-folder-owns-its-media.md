@@ -624,8 +624,10 @@ stop it. Decisions:
   BACKLOG line.
 - The control thread only hands over the shared snapshot; the saver
   thread serialises it (never the control thread) and writes
-  `Session File Backups/<folder's name>.autosave.sonora` by save()'s steps
-  2-4, crash-safe by tmp, `fdatasync`, rename and folder `fsync`. One in
+  `Session File Backups/<session stem>.autosave.sonora` (per session file,
+  so "Song" and "Song alt" in one folder do not share one; the interface
+  still reads the older `<folder's name>.autosave.sonora` at open) by
+  save()'s steps 2-4, crash-safe by tmp, `fdatasync`, rename and folder `fsync`. One in
   flight at a time; bytes equal to what is there write nothing.
 - **During a take it is paced, not refused**: like a Save, it touches the
   disk only just after a disk-thread checkpoint, at most one batch per
@@ -633,6 +635,14 @@ stop it. Decisions:
   pacing that keeps saves from pushing the disk thread into an overrun
   (ADR-0015 §6, Unverified 5 still open); refusing would lose the
   autosave-after-a-take ADR-0015 relies on.
+- **A saver never replaces an autosave it has not written** since it
+  entered the folder: a restart's first autosave finds the crash's, which
+  holds the edits since the last Save. It is moved aside atomically to
+  `<stem>.autosave.recovered-<UTC stamp>.sonora` (never colliding; neither
+  pruning nor the open-time scan matches that name) and a held Notice
+  names it.
+- save() refuses a rotated-backup name inside `Session File Backups/`
+  ("use Save As"): pruning would delete the work saved into it.
 - `save_generation` is the file's plus one, so the interface offers it at
   open (a held notice) only until the next Save, which writes that
   generation itself. Never applied silently.

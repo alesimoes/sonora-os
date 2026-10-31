@@ -49,9 +49,9 @@ struct StateFile {
 std::string session_folder_of(const std::string& session_file);
 
 // Where the autosave of `session_file` goes: "<folder>/Session File
-// Backups/<folder's name>.autosave.sonora". Named after the folder, not the
-// file, so a session opened from one of its backups has the same autosave,
-// and the interface finds it at open by the same rule.
+// Backups/<session stem>.autosave.sonora". Per session file, so two files in
+// one folder do not share one; a rotated backup of "Mix" has Mix's autosave.
+// The interface finds it at open by the same rule.
 std::string autosave_file_of(const std::string& session_file);
 
 // Whether `name` is one of the rotated backups a save of a session file
@@ -114,7 +114,8 @@ public:
     // `document` does not hold fails the save by name, and so does a plugin
     // state found in neither folder, unless the file being replaced already
     // names it (its state was lost before, and the operator told at open).
-    // True once the rename
+    // Refused for a rotated-backup name in "Session File Backups/", which
+    // pruning deletes; `why` points to Save As. True once the rename
     // has landed; `caution` then says what could not be made durable (the
     // folder would not sync), and empty means the save is durable.
     bool save(const std::string& session_file, const std::string& bytes,
@@ -153,7 +154,10 @@ public:
     // states it names copied from `state_source`. Bytes equal to the
     // autosave already there write nothing. Refused when "Session File
     // Backups" is a symlink: an autosave is never written outside the
-    // session's folder. False with `why` when nothing was written.
+    // session's folder. An autosave there that this saver has not written
+    // since entering the folder (a crash's) is first moved to
+    // "<stem>.autosave.recovered-<UTC stamp>.sonora", named in `caution` and
+    // set_aside(). False with `why` when nothing was written.
     bool autosave(const std::string& session_file, const model::Snapshot& document,
                   const std::string& written_by, const std::string& state_source, std::string& why,
                   std::string& caution);
@@ -190,6 +194,8 @@ public:
 
     // The folder the last save entered; empty before the first.
     const std::string& folder() const { return folder_; }
+    // The name the last autosave() moved a foreign autosave to, or empty.
+    const std::string& set_aside() const { return set_aside_; }
     // Kept files parsed since the folder was entered, for the tests: each
     // is read once, when first seen.
     std::size_t kept_reads() const { return kept_reads_; }
@@ -229,6 +235,8 @@ private:
     std::size_t sequences_written_ = 0;
     std::size_t states_written_ = 0;
     std::set<std::string> durable_states_;   // state files a folder sync has covered
+    std::set<std::string> autosaves_written_;   // autosaves this saver wrote since entering folder_
+    std::string set_aside_;
     std::set<std::string> swept_;            // folders whose "Plugin State/" was swept
 };
 

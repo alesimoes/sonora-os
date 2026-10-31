@@ -69,7 +69,7 @@ bool read_session_file(const QString& file, std::string& bytes, model::Loaded& o
 QString session_folder_of(const QString& file);
 
 // The engine's autosave of `file`'s session: "<folder>/Session File
-// Backups/<folder's name>.autosave.sonora" (common/session_files'
+// Backups/<session stem>.autosave.sonora" (common/session_files'
 // autosave_file_of(), the same rule).
 QString autosave_file_of(const QString& file);
 

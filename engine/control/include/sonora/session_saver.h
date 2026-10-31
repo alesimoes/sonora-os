@@ -90,6 +90,8 @@ public:
         std::string notice;
         // The save waited for a checkpoint.
         bool paced = false;
+        // An autosave: the name an earlier run's autosave was moved to.
+        std::string set_aside;
         // The job's file and, for SaveAs, whether it was a copy.
         std::string file;
         bool copy = false;

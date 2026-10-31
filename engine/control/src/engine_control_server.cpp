@@ -2631,7 +2631,14 @@ void EngineControlServer::follow_saver() {
             } else if (d.ok) {
                 autosave_failed_said_ = false;
             }
-            if (d.ok && !d.message.empty()) {
+            if (d.ok && !d.set_aside.empty()) {
+                // Held: the operator must know where the crash's edits are.
+                api::EngineEvent e;
+                e.kind = api::EventKind::Notice;
+                e.text = "The autosave of an earlier run, which may hold edits the file lacks, was kept as " +
+                         d.set_aside + " in Session File Backups";
+                post_event(e);
+            } else if (d.ok && !d.message.empty()) {
                 api::EngineEvent e;
                 e.kind = api::EventKind::Notice;
                 e.text = "Autosaved, but " + d.message;

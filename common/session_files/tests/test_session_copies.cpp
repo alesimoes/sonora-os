@@ -130,8 +130,6 @@ int test_rotated_backup_names() {
     CHECK(!sf::rotated_backup_name("Mix.20270115-080000.sonora.tmp", "Mix"));
     CHECK(!sf::rotated_backup_name("Mix.2027011a-080000.sonora", "Mix"));
     CHECK(sf::autosave_file_of("/s/Mix/Mix.sonora") == "/s/Mix/Session File Backups/Mix.autosave.sonora");
-    CHECK(sf::autosave_file_of("/s/Mix/Session File Backups/Mix.20270115-080000.sonora") ==
-          "/s/Mix/Session File Backups/Mix.autosave.sonora");
     return 0;
 }
 
@@ -336,6 +334,100 @@ int test_autosave() {
     fs::create_directories(fresh.parent_path());
     CHECK(f.autosave(fresh.string(), a.h.current(), "sonora-engine", fresh.parent_path().string(), why, caution));
     CHECK(file_save_generation(read(sf::autosave_file_of(fresh.string())), generation) && generation == 1);
+    return 0;
+}
+
+// #164 review B1: a restarted engine's first autosave must not overwrite
+// the autosave a crash left, which holds the edits made after the last
+// save. It is moved aside to a name pruning and the open-time scan ignore,
+// and the saver replaces only autosaves it wrote itself from then on.
+int test_reopen_keeps_the_crash_autosave() {
+    TempDir tmp;
+    const fs::path folder = tmp.path / "Mix";
+    const fs::path file = folder / "Mix.sonora";
+    const fs::path autosave = sf::autosave_file_of(file.string());
+    const fs::path backups = folder / "Session File Backups";
+    std::string why, caution;
+    {
+        Audio a;
+        SessionFolder before;
+        CHECK(before.save(file.string(), a.bytes(7), a.h.current(), why, caution));
+        a.rename("Crash edits");
+        CHECK(before.autosave(file.string(), a.h.current(), "sonora-engine", folder.string(), why, caution));
+    }
+    const std::string crash = read(autosave);
+    CHECK(crash.find("\"Crash edits\"") != std::string::npos);
+
+    // The engine restarted: a new saver, the document as the file holds it
+    // plus one edit.
+    Audio b;
+    b.rename("After reopen");
+    SessionFolder after;
+    after.set_clock(fake_clock);
+    CHECK(after.autosave(file.string(), b.h.current(), "sonora-engine", folder.string(), why, caution));
+    CHECK(read(autosave).find("\"After reopen\"") != std::string::npos);
+    std::string kept;
+    for (const std::string& n : names(backups)) {
+        if (n != autosave.filename().string() && read(backups / n) == crash) kept = n;
+    }
+    CHECK(!kept.empty());
+    CHECK(kept.find("recovered") != std::string::npos);
+    CHECK(!sf::rotated_backup_name(kept, "Mix"));
+    CHECK(mentions(caution, kept.c_str()));
+    // Pruning keeps it, whatever it keeps.
+    std::string pruned;
+    after.prune_backups(folder.string(), "Mix", 0, pruned);
+    CHECK(read(backups / kept) == crash);
+
+    // Its own autosave it replaces, and nothing more is moved aside.
+    const std::size_t count = names(backups).size();
+    b.rename("Again");
+    CHECK(after.autosave(file.string(), b.h.current(), "sonora-engine", folder.string(), why, caution));
+    CHECK(names(backups).size() == count);
+    CHECK(read(autosave).find("\"Again\"") != std::string::npos);
+    return 0;
+}
+
+// #164 review B1: two session files in one folder (Pro Tools' habit of
+// "Song" and "Song alt") each have their own autosave.
+int test_each_session_file_has_its_own_autosave() {
+    CHECK(sf::autosave_file_of("/s/Mix/Song.sonora") != sf::autosave_file_of("/s/Mix/Song alt.sonora"));
+    CHECK(sf::autosave_file_of("/s/Mix/Song alt.sonora") ==
+          "/s/Mix/Session File Backups/Song alt.autosave.sonora");
+    // An autosave opened from the backups folder autosaves onto itself.
+    CHECK(sf::autosave_file_of("/s/Mix/Session File Backups/Song.autosave.sonora") ==
+          "/s/Mix/Session File Backups/Song.autosave.sonora");
+    return 0;
+}
+
+// #164 review B2: a rotated backup is pruning's to delete, so nothing is
+// saved into one; Save As keeps a session opened from it. A pre-migration
+// copy or the autosave, which pruning never touches, still saves in place.
+int test_no_save_into_a_rotated_backup() {
+    TempDir tmp;
+    const fs::path folder = tmp.path / "Mix";
+    const fs::path file = folder / "Mix.sonora";
+    const fs::path backups = folder / "Session File Backups";
+    Audio a;
+    SessionFolder f;
+    std::string why, caution;
+    CHECK(f.save(file.string(), a.bytes(1), a.h.current(), why, caution));
+    const fs::path rotated = backups / "Mix.20200101-000000.sonora";
+    write(rotated, a.bytes(1));
+    a.rename("An hour of work");
+    CHECK(!f.save(rotated.string(), a.bytes(2), a.h.current(), why, caution));
+    CHECK(mentions(why, "Save As"));
+    CHECK(read(rotated).find("\"An hour of work\"") == std::string::npos);
+    const fs::path second = backups / "Mix.20200101-000000-2.sonora";
+    write(second, a.bytes(1));
+    CHECK(!f.save(second.string(), a.bytes(2), a.h.current(), why, caution));
+    const fs::path other = backups / "Mix alt.20200101-000000.sonora";
+    write(other, a.bytes(1));
+    CHECK(!f.save(other.string(), a.bytes(2), a.h.current(), why, caution));
+    // Not rotated names: saved in place as before.
+    const fs::path autosave = sf::autosave_file_of(file.string());
+    write(autosave, a.bytes(1));
+    CHECK(f.save(autosave.string(), a.bytes(3), a.h.current(), why, caution));
     return 0;
 }
 
@@ -553,6 +645,9 @@ int main() {
     t(test_pruning_removes_only_backups);
     t(test_symlinked_backups_folder);
     t(test_autosave);
+    t(test_reopen_keeps_the_crash_autosave);
+    t(test_each_session_file_has_its_own_autosave);
+    t(test_no_save_into_a_rotated_backup);
     t(test_save_as_links_media_and_leaves_the_source);
     t(test_save_as_refusals);
     t(test_failed_save_as_is_taken_back);
