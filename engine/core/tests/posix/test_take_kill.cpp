@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <new>
 #include <string>
@@ -120,6 +121,43 @@ Seen read_take(const std::string& path) {
     return seen;
 }
 
+uint32_t le32(const unsigned char* p) {
+    return static_cast<uint32_t>(p[0]) | static_cast<uint32_t>(p[1]) << 8 |
+           static_cast<uint32_t>(p[2]) << 16 | static_cast<uint32_t>(p[3]) << 24;
+}
+
+// The data chunk as the header counts it and as the file holds it, in
+// frames of the one float channel: the difference is audio the disk thread
+// wrote after the last checkpoint. Both -1 while the header is unreadable.
+struct DataFrames {
+    int64_t counted = -1;
+    int64_t on_file = -1;
+};
+
+DataFrames data_frames(const std::string& path) {
+    DataFrames d;
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return d;
+    unsigned char h[12];
+    if (std::fread(h, 1, 12, f) == 12) {
+        long at = 12;
+        unsigned char c[8];
+        while (std::fseek(f, at, SEEK_SET) == 0 && std::fread(c, 1, 8, f) == 8) {
+            const uint32_t size = le32(c + 4);
+            if (std::memcmp(c, "data", 4) == 0) {
+                std::fseek(f, 0, SEEK_END);
+                d.counted = static_cast<int64_t>(size / sizeof(float));
+                d.on_file = (static_cast<int64_t>(std::ftell(f)) - (at + 8)) /
+                            static_cast<int64_t>(sizeof(float));
+                break;
+            }
+            at += 8 + static_cast<long>(size) + static_cast<long>(size & 1);
+        }
+    }
+    std::fclose(f);
+    return d;
+}
+
 }  // namespace
 
 int main() {
@@ -138,19 +176,36 @@ int main() {
     CHECK(child >= 0);
     if (child == 0) record_forever(dir, produced);
 
-    // Until the first checkpoint shows, then about half an interval: the
-    // kill lands between checkpoints.
+    // Until the first checkpoint shows, then until audio past it reaches the
+    // file and the disk thread has caught up: the kill lands between
+    // checkpoints, with only a pass's worth in the rings. Not a fixed wait:
+    // the header shows before the checkpoint's fdatasync returns, and on a
+    // loaded disk (ctest -j under TSan) that sync outlasted a 250 ms sleep,
+    // so the kill found nothing past the header to recover. Nor as soon as
+    // the file grows: after a long sync the drain writes a backlog, and a
+    // kill in its middle leaves more in the rings than the bound below.
     Seen before;
     for (int i = 0; i < 1000; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         before = read_take(take);
         if (before.ok && before.frames > 0) break;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    constexpr int64_t kPast = 2400;
+    bool ready = false;
+    for (int i = 0; i < 10000 && before.frames > 0 && !ready; ++i) {
+        const DataFrames d = data_frames(take);
+        const auto now = static_cast<int64_t>(produced->load(std::memory_order_acquire));
+        ready = d.on_file - d.counted >= kPast &&
+                static_cast<int64_t>(before.time_reference) + d.on_file + kPast >= now;
+        if (!ready) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    // Before any check: a child left running records forever.
     CHECK(::kill(child, SIGKILL) == 0);
     int status = 0;
     CHECK(::waitpid(child, &status, 0) == child);
     CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+    CHECK(before.ok && before.frames > 0);
+    CHECK(ready);
     const uint64_t end = produced->load(std::memory_order_acquire);
 
     // As the engine left it: valid already, up to its last checkpoint.
@@ -161,6 +216,7 @@ int main() {
 
     // The next open: everything that reached the file, in whole frames.
     const sonora::TakeRecovery r = sonora::recover_take(take);
+    std::printf("recovery outcome: %d\n", static_cast<int>(r.outcome));
     CHECK(r.outcome == sonora::TakeRecovery::Outcome::Repaired);
     CHECK(r.header_frames == static_cast<uint64_t>(killed.frames));
     const Seen recovered = read_take(take);
