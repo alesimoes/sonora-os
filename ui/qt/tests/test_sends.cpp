@@ -426,12 +426,70 @@ int qml() {
 
 }  // namespace
 
+int rides_are_live_and_saved_once() {
+    Rig r;
+    CHECK(r.connect());
+    r.sends.setLiveSender([&r](bool aux, model::Id id, float linear) {
+        if (aux) r.engine.send_aux_gain(id, linear);
+        else r.engine.send_send_level(id, linear);
+    });
+    r.sends.newBus();
+    r.settle();
+    r.sends.openChooser(1, 0);
+    CHECK(r.sends.choose(0));
+    r.settle();
+    r.sends.openWindow(1, 0);
+    CHECK(r.sends.setLevelText(QStringLiteral("-6")));
+    r.settle();
+    const uint64_t rev = r.doc.revision();
+    const model::Id send = r.ctl().slot(1, 0).send;
+
+    // A send ride: steps are live, the document and the undo list untouched.
+    r.sends.beginLevelRide();
+    r.sends.levelDrag(-10.0, 200.0, false);
+    r.sends.levelDrag(-10.0, 200.0, false);
+    r.settle();
+    CHECK(r.sends.liveSteps() == 2);
+    CHECK(r.doc.revision() == rev);
+    CHECK(std::fabs(r.ctl().slot(1, 0).level_db + 6.0f) < 1e-4f);
+    const float riding = r.sends.window()[QStringLiteral("levelDb")].toFloat();
+    CHECK(riding > -6.0f);   // the cap follows the hand, not the document
+    r.sends.endLevelRide();
+    r.settle();
+    CHECK(std::fabs(r.ctl().slot(1, 0).level_db - riding) < 1e-3f);
+    CHECK(r.doc.revision() == rev + 1);   // one SetSendMix at release
+    const model::SendMix* m = r.engine_doc().mix.find_send(send);
+    CHECK(m != nullptr && std::fabs(m->level_db - riding) < 1e-3f);
+
+    // An aux ride, the same.
+    const uint64_t rev2 = r.doc.revision();
+    r.sends.beginAuxRide(0);
+    r.sends.auxFaderDrag(0, -10.0, 200.0, false);
+    r.settle();
+    CHECK(r.sends.liveSteps() == 3);
+    CHECK(r.doc.revision() == rev2);
+    CHECK(r.ctl().aux(0).gain_db == 0.0f);
+    CHECK(r.sends.auxes()[0].toMap()[QStringLiteral("gainDb")].toFloat() > 0.0f);
+    r.sends.endAuxRide(0);
+    r.settle();
+    CHECK(r.ctl().aux(0).gain_db > 0.0f);
+    CHECK(r.doc.revision() == rev2 + 1);
+
+    // A ride that never moved saves nothing.
+    const uint64_t rev3 = r.doc.revision();
+    r.sends.beginAuxRide(0);
+    r.sends.endAuxRide(0);
+    CHECK(r.doc.revision() == rev3);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (new_bus_send_and_values() != 0) return 1;
     if (reassign_loop_and_remove_bus() != 0) return 1;
     if (outputs_and_aux_solo() != 0) return 1;
+    if (rides_are_live_and_saved_once() != 0) return 1;
     if (qml() != 0) return 1;
     std::printf("ui sends: all checks passed\n");
     return 0;

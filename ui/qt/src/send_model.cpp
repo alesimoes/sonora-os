@@ -52,7 +52,10 @@ SendModel::SendModel(TimelineDocument& doc, SessionModel& session, QObject* pare
         refreshWindow();
     });
     // Which five sends a strip shows is the window's view of one session.
-    connect(&session_, &SessionModel::sessionOpened, this, [this]() { setBank(0); });
+    connect(&session_, &SessionModel::sessionOpened, this, [this]() {
+        dropRide();   // another session: the ride's ids mean nothing in it
+        setBank(0);
+    });
     refresh();
 }
 
@@ -106,6 +109,7 @@ void SendModel::refresh() {
         m.insert(QStringLiteral("output"), q(ctl_.output_name(ctl_.track_count() + b)));
         auxes_.append(m);
     }
+    overlayRide();
     // A chooser over a strip that has gone is closed, not left on another.
     if (chooser_strip_ >= ctl_.strip_count()) {
         chooser_strip_ = chooser_slot_ = -1;
@@ -136,6 +140,7 @@ void SendModel::refreshWindow() {
     w.insert(QStringLiteral("pre"), v.pre);
     w.insert(QStringLiteral("mute"), v.mute);
     window_ = w;
+    overlayRide();
     emit windowChanged();
 }
 
@@ -241,8 +246,119 @@ void SendModel::closeWindow() {
     emit windowChanged();
 }
 
+void SendModel::sendLive(float db) {
+    sender_(ride_ == Ride::Aux, ride_id_, fader_linear_gain(db));
+    ++live_steps_;
+    ride_sent_ = true;
+}
+
+void SendModel::showRide() {
+    overlayRide();
+    if (ride_ == Ride::Send) emit windowChanged();
+    else if (ride_ == Ride::Aux) emit changed();
+}
+
+void SendModel::overlayRide() {
+    if (ride_ == Ride::Send) {
+        if (window_strip_id_ == ride_strip_id_ && window_slot_ == ride_slot_) {
+            window_.insert(QStringLiteral("levelDb"), ride_db_);
+            window_.insert(QStringLiteral("levelText"), q(gain_text(ride_db_)));
+        }
+    } else if (ride_ == Ride::Aux) {
+        const int b = strip_of(ctl_.snapshot(), ride_id_) - ctl_.track_count();
+        if (b >= 0 && b < auxes_.size()) {
+            QVariantMap m = auxes_[b].toMap();
+            m.insert(QStringLiteral("gainDb"), ride_db_);
+            m.insert(QStringLiteral("gainText"), q(gain_text(ride_db_)));
+            auxes_[b] = m;
+        }
+    }
+}
+
+void SendModel::dropRide() {
+    ride_ = Ride::None;
+    ride_id_ = ride_strip_id_ = kNoId;
+    ride_slot_ = -1;
+    ride_sent_ = false;
+}
+
+void SendModel::beginLevelRide() {
+    if (!windowOpen() || !sender_) return;
+    const SendSlotView v = ctl_.slot(window_strip_, window_slot_);
+    if (!v.present) return;
+    ride_ = Ride::Send;
+    ride_id_ = v.send;
+    ride_strip_id_ = window_strip_id_;
+    ride_slot_ = window_slot_;
+    ride_db_ = v.level_db;
+    ride_sent_ = false;
+}
+
+void SendModel::beginAuxRide(int bus) {
+    if (!sender_ || bus < 0 || bus >= ctl_.bus_count()) return;
+    ride_ = Ride::Aux;
+    ride_id_ = ctl_.aux(bus).id;
+    ride_db_ = ctl_.aux(bus).gain_db;
+    ride_sent_ = false;
+}
+
+void SendModel::finishRide(bool save) {
+    const Ride kind = ride_;
+    const model::Id id = ride_id_;
+    const model::Id strip_id = ride_strip_id_;
+    const int slot = ride_slot_;
+    const float db = ride_db_;
+    const bool sent = ride_sent_;
+    dropRide();
+    if (!sent) return;
+    std::string why;
+    bool ok = false;
+    if (save && kind == Ride::Send) {
+        const int strip = strip_of(ctl_.snapshot(), strip_id);
+        ok = strip >= 0 && ctl_.slot(strip, slot).send == id &&
+             ctl_.set_level(strip, slot, db, why);
+        if (strip < 0 || ctl_.slot(strip, slot).send != id) why = "the send being ridden is gone";
+    } else if (save) {
+        const int b = strip_of(ctl_.snapshot(), id) - ctl_.track_count();
+        ok = b >= 0 && ctl_.set_bus_gain(b, db, why);
+        if (b < 0) why = "the aux bus being ridden is gone";
+    }
+    if (save) session_.reportEdit(ok, why);
+    // The engine is where the ride left it; if the document refused that, or
+    // the ride was dropped, it goes back to what the document holds.
+    if (!ok && sender_) {
+        if (kind == Ride::Send) {
+            const int strip = strip_of(ctl_.snapshot(), strip_id);
+            if (strip >= 0 && ctl_.slot(strip, slot).send == id) {
+                sender_(false, id, fader_linear_gain(ctl_.slot(strip, slot).level_db));
+            }
+        } else {
+            const int b = strip_of(ctl_.snapshot(), id) - ctl_.track_count();
+            if (b >= 0) sender_(true, id, fader_linear_gain(ctl_.aux(b).gain_db));
+        }
+    }
+    refresh();
+    refreshWindow();
+}
+
+void SendModel::endLevelRide() {
+    if (ride_ == Ride::Send) finishRide(true);
+}
+
+void SendModel::endAuxRide(int bus) {
+    if (ride_ == Ride::Aux && bus >= 0 && bus < ctl_.bus_count() && ctl_.aux(bus).id == ride_id_) {
+        finishRide(true);
+    }
+}
+
 void SendModel::levelDrag(qreal dy, qreal travel, bool fine) {
     if (!windowOpen()) return;
+    if (ride_ == Ride::Send) {
+        ride_db_ = fader_drag(ride_db_, static_cast<float>(dy), static_cast<float>(travel), fine);
+        sendLive(ride_db_);
+        showRide();
+        return;
+    }
     const float from = ctl_.slot(window_strip_, window_slot_).level_db;
     const float db = fader_drag(from, static_cast<float>(dy), static_cast<float>(travel), fine);
     std::string why;
@@ -319,6 +435,12 @@ void SendModel::removeBus(int bus) {
 }
 
 void SendModel::auxFaderDrag(int bus, qreal dy, qreal travel, bool fine) {
+    if (ride_ == Ride::Aux && bus >= 0 && bus < ctl_.bus_count() && ctl_.aux(bus).id == ride_id_) {
+        ride_db_ = fader_drag(ride_db_, static_cast<float>(dy), static_cast<float>(travel), fine);
+        sendLive(ride_db_);
+        showRide();
+        return;
+    }
     const float from = ctl_.aux(bus).gain_db;
     const float db = fader_drag(from, static_cast<float>(dy), static_cast<float>(travel), fine);
     std::string why;

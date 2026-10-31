@@ -76,6 +76,14 @@ public:
         gain_changes.push_back({track, value, param, gesture});
         return ++seq_;
     }
+    uint64_t send_send_level(uint64_t send, float linear) override {
+        level_changes.push_back({send, false, linear});
+        return ++seq_;
+    }
+    uint64_t send_aux_gain(uint64_t bus, float linear) override {
+        level_changes.push_back({bus, true, linear});
+        return ++seq_;
+    }
     uint64_t send_plugin_parameter(uint64_t insert, const std::string& key, float value) override {
         plugin_changes.push_back({insert, key, value});
         return ++seq_;
@@ -94,6 +102,12 @@ public:
         api::Gesture gesture = api::Gesture::Move;
     };
     std::vector<GainChange> gain_changes;
+    struct LevelChange {
+        uint64_t id;
+        bool aux;
+        float linear;
+    };
+    std::vector<LevelChange> level_changes;
 
     struct PluginChange {
         uint64_t insert;

@@ -214,6 +214,13 @@ public:
     virtual uint64_t send_track_param(uint32_t track, api::ParamId param, float value,
                                       api::Gesture gesture) = 0;
 
+    // A send's level or an aux bus's gain being ridden (ADR-0022 update of
+    // 2026-10-31): the model id of the send (api::ParamId::SendLevel) or of
+    // the bus (AuxGain), linear 0 .. 4. Heard at once and not saved; the
+    // release is saved with SetSendMix or SetBusMix. Never blocks.
+    virtual uint64_t send_send_level(uint64_t send, float linear) = 0;
+    virtual uint64_t send_aux_gain(uint64_t bus, float linear) = 0;
+
     // A plugin parameter moving (ADR-0012 §8): a drag in the generic
     // parameter panel, by insert id and stable key. Never blocks; a refusal
     // comes back through poll() as a command's does.

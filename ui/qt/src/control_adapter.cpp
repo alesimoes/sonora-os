@@ -183,6 +183,26 @@ uint64_t ControlAdapter::send_track_param(uint32_t track, api::ParamId param, fl
     return seq;
 }
 
+uint64_t ControlAdapter::send_send_level(uint64_t send, float linear) {
+    api::ParameterChange c;
+    c.param = api::ParamId::SendLevel;
+    c.id = send;
+    c.value = linear;
+    const uint64_t seq = engine_.send(c);
+    await(seq, "the fader of a send", true);
+    return seq;
+}
+
+uint64_t ControlAdapter::send_aux_gain(uint64_t bus, float linear) {
+    api::ParameterChange c;
+    c.param = api::ParamId::AuxGain;
+    c.id = bus;
+    c.value = linear;
+    const uint64_t seq = engine_.send(c);
+    await(seq, "the fader of an aux bus", true);
+    return seq;
+}
+
 uint64_t ControlAdapter::send_plugin_parameter(uint64_t insert, const std::string& key,
                                                float value) {
     api::PluginParameterChange c;
