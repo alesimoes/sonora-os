@@ -452,9 +452,11 @@ int test_wraps_in_one_callback() {
                       9, kLongest);
 }
 
-// RT audit of PR #117, highest risk. The disk thread held for 300 ms (a
-// slow sync on a stick), with 18 tracks recording the shortest loop allowed
-// (one block), loses no wrap: the boundary ring is sized by the wrap rate.
+// RT audit of PR #117, highest risk. The disk thread held for the whole
+// stall the ring is sized for (a slow sync on a stick), with 18 tracks
+// recording the shortest loop allowed (one block), loses no wrap: the
+// boundary ring is sized by the wrap rate. The stall is the config's, not a
+// shorter one, so the test holds the ring to the bound it claims.
 int test_a_stalled_disk_thread_loses_no_wrap() {
     Rig rig("stall", 18);
     Session& s = *rig.session;
@@ -462,8 +464,9 @@ int test_a_stalled_disk_thread_loses_no_wrap() {
     std::string error;
     const int take = s.next_free_take();
     CHECK(s.start_loop(take, l, &error));
-    // 300 ms at 48 kHz, with nothing drained.
-    const int blocks = static_cast<int>(48000 * 3 / 10 / kBlock);
+    const sonora::SessionConfig defaults;
+    const int blocks =
+        static_cast<int>(defaults.disk_stall_seconds * defaults.sample_rate / kBlock);
     for (int b = 0; b < blocks; ++b) rig.block();
     CHECK(s.boundary_overruns() == 0);
     CHECK(s.stop(&error));
