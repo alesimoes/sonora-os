@@ -1325,9 +1325,17 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // (ADR-0027 §2).
     // A pass is one roll, and becomes one undo step (ADR-0027 §3). Its end
     // is published after every write it holds.
-    if (rolling && !pass_rolling_) ++auto_pass_;
+    if (rolling && !pass_rolling_) {
+        ++auto_pass_;
+        auto_pass_now_.store(auto_pass_, std::memory_order_release);
+    }
     if (!rolling && pass_rolling_) auto_passes_ended_.store(auto_pass_, std::memory_order_release);
     pass_rolling_ = rolling;
+    const uint32_t unlatch = auto_unlatch_.load(std::memory_order_acquire);
+    if (unlatch != auto_unlatch_seen_) {
+        auto_unlatch_seen_ = unlatch;
+        std::memset(auto_latched_.get(), 0, tracks_.size());
+    }
     if (plan_valid_) {
         automation_targets(*plan, rolling, playhead);
     } else {
