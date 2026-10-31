@@ -1676,9 +1676,9 @@ int check_automation(Rig& rig) {
                    "a point outside its range was accepted");
             EXPECT(mentions(r.message, "outside the range"), "the refusal does not name the range");
             EXPECT(s.next_publish(rig_), "nothing published after the refusal");
-            mix.automation = model::AutomationMode::Latch;
+            mix.automation = model::AutomationMode::Trim;
             EXPECT(apply(s, model::SetMix{mix}, r) && r.result == DispatchResult::Failed,
-                   "a write mode was accepted before its slice");
+                   "trim was accepted before its slice");
             EXPECT(mentions(r.message, "not available yet"), "the refusal does not say why");
             EXPECT(s.next_publish(rig_), "nothing published after the second refusal");
             EXPECT(s.inbox.model.size() == updates, "a refused operation sent an update");

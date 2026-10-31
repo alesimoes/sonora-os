@@ -5,7 +5,10 @@
 // the callbacks are cut, a locate mid-ramp crossfaded over one callback and
 // exact after it, a loop wrap taking the lane at the loop start with no
 // fade, Off playing the static fader, a pan lane, a static parameter's change
-// ramped on a partly automated track, and no allocation.
+// ramped on a partly automated track, and no allocation. Live writes (§3):
+// Touch plays and stamps the fader while held and returns to the lane over
+// the return time, Latch holds until the stop, Write writes every parameter
+// and splits a span at the loop's end, a full ring is counted.
 #define PLAYBACK_TEST_COUNT_HEAP 1
 #include "playback_test.h"
 
@@ -417,6 +420,181 @@ int test_pan_change_on_a_volume_lane_ramps() {
     return 0;
 }
 
+// --- live writes (ADR-0027 §3) ---
+
+using sonora::AutomationWrite;
+
+std::vector<AutomationWrite> drained(Session& s) {
+    std::vector<AutomationWrite> got(4096);
+    got.resize(s.take_automation_writes(got.data(), got.size()));
+    return got;
+}
+
+// What a Touch return from `from_db` at `r` toward a flat lane at `lane_db`
+// applies at frame f, by the grid rule.
+float expected_return(float from_db, float lane_db, int64_t r, int64_t len, int64_t f) {
+    const auto at = [&](int64_t g) {
+        if (g < r - kAutoGridFrames || g >= r + len) return gain_of_db(lane_db);
+        if (g < r) return gain_of_db(from_db);
+        const float x = static_cast<float>(g - r) / static_cast<float>(len);
+        return gain_of_db(from_db + (lane_db - from_db) * x);
+    };
+    const int64_t g0 = f - f % kAutoGridFrames;
+    const float c0 = at(g0);
+    const float c1 = at(g0 + kAutoGridFrames);
+    return c0 + (c1 - c0) * (static_cast<float>(f - g0) / static_cast<float>(kAutoGridFrames));
+}
+
+int test_touch_plays_and_writes_the_fader() {
+    Rig rig("touch");
+    CHECK(rig.load({{0, -40.0f}}));
+    Session& s = *rig.session;
+    Track& track = *s.tracks()[0];
+    track.set_automation(Track::Automation::Touch);
+    CHECK(rig.park(2000));
+    s.play();
+    rig.block();
+    int64_t t = 2000 + kBlock;
+    rig.block();
+    const float lane = gain_of_db(-40.0f);
+    CHECK(holds(applied(rig, 0, t), lane, "untouched"));
+    t += kBlock;
+    CHECK(drained(s).empty());
+
+    // Held: the fader, crossfaded in from the lane over one callback.
+    track.set_gain(1.0f);
+    track.set_touched(kAutoVolume, true);
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    CHECK(ramps(applied(rig, 0, t), lane, 1.0f, "touch"));
+    const int64_t first = t;
+    t += kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), 1.0f, "held"));
+    t += kBlock;
+    std::vector<AutomationWrite> w = drained(s);
+    CHECK(w.size() == 2);
+    if (w.size() != 2) return 1;
+    for (std::size_t i = 0; i < 2; ++i) {
+        CHECK(w[i].pass == 1 && w[i].track == 0 && w[i].param == kAutoVolume);
+        CHECK(w[i].frame == static_cast<uint64_t>(first) + i * kBlock && w[i].frames == kBlock);
+        CHECK(w[i].value == 1.0f);
+    }
+
+    // Released: back to the lane over the return time, from 0 dB.
+    track.set_touched(kAutoVolume, false);
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    const int64_t r = t;
+    const auto len = static_cast<int64_t>(s.touch_return_frames());
+    CHECK(len == 12000);
+    w = drained(s);
+    CHECK(w.size() == 1 && w[0].frames == 0 && w[0].frame == static_cast<uint64_t>(r) &&
+          w[0].value == 1.0f);
+    t += kBlock;
+    rig.block();
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        const float want = expected_return(0.0f, -40.0f, r, len, t + i);
+        CHECK(near(applied(rig, 0, t)[i], want, 1e-4f));
+    }
+    // Not snapped to the lane: still near the fader a few blocks on.
+    CHECK(applied(rig, 0, t)[kBlock - 1] > 0.9f);
+    CHECK(drained(s).empty());
+
+    // A stop ends the pass, and the release is not replayed by a locate.
+    CHECK(s.automation_passes_ended() == 0);
+    s.stop_playback();
+    rig.block();
+    CHECK(s.automation_passes_ended() == 1);
+    CHECK(rig.park(2000));
+    s.play();
+    rig.block();
+    rig.block();
+    CHECK(holds(applied(rig, 0, 2000 + kBlock), lane, "after the pass"));
+    return 0;
+}
+
+int test_latch_holds_until_stop() {
+    Rig rig("latch");
+    CHECK(rig.load({{0, -40.0f}}));
+    Session& s = *rig.session;
+    Track& track = *s.tracks()[0];
+    track.set_automation(Track::Automation::Latch);
+    track.set_gain(0.5f);
+    CHECK(rig.park(2000));
+    s.play();
+    rig.block();
+    track.set_touched(kAutoVolume, true);
+    rig.block();
+    track.set_touched(kAutoVolume, false);
+    rig.block();
+    int64_t t = 2000 + 3 * kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), 0.5f, "latched after the release"));
+    const std::vector<AutomationWrite> w = drained(s);
+    // Touch and every block since, no release mark.
+    CHECK(w.size() == 3);
+    for (const AutomationWrite& x : w) CHECK(x.frames == kBlock && x.value == 0.5f);
+
+    s.stop_playback();
+    rig.block();
+    CHECK(s.automation_passes_ended() == 1);
+    CHECK(rig.park(2000));
+    s.play();
+    rig.block();
+    rig.block();
+    CHECK(holds(applied(rig, 0, 2000 + kBlock), gain_of_db(-40.0f), "lane on the next pass"));
+    CHECK(drained(s).empty());
+    return 0;
+}
+
+int test_write_writes_every_parameter_and_splits_at_the_wrap() {
+    Rig rig("write");
+    CHECK(rig.load({{0, -40.0f}}));
+    Session& s = *rig.session;
+    Track& track = *s.tracks()[0];
+    track.set_automation(Track::Automation::Write);
+    track.set_gain(0.25f);
+    CHECK(rig.loop(1000, 3000));
+    CHECK(rig.park(2950));
+    s.play();
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    // The fader, never the lane.
+    CHECK(near(rig.out[0][0], source_value(5, 0, 2950) * 0.25f, 1e-4f));
+    const std::vector<AutomationWrite> w = drained(s);
+    // Volume and pan, each [2950, 3000) then [1000, 1047).
+    CHECK(w.size() == 4);
+    if (w.size() != 4) return 1;
+    CHECK(w[0].param == kAutoVolume && w[0].frame == 2950 && w[0].frames == 50);
+    CHECK(w[1].param == kAutoVolume && w[1].frame == 1000 && w[1].frames == kBlock - 50);
+    CHECK(w[0].value == 0.25f);
+    CHECK(w[2].param == kAutoPan && w[2].frame == 2950 && w[3].frame == 1000);
+    CHECK(w[2].value == -1.0f);
+    return 0;
+}
+
+int test_a_full_ring_is_counted() {
+    Rig rig("full");
+    CHECK(rig.load({}));
+    Session& s = *rig.session;
+    s.tracks()[0]->set_automation(Track::Automation::Write);
+    CHECK(rig.loop(1000, 6000));
+    CHECK(rig.park(1000));
+    s.play();
+    reset_heap_counts();
+    // Never drained: two writes a block, more blocks than the ring holds.
+    for (int b = 0; b < 1200; ++b) rig.block();
+    CHECK(heap_untouched());
+    CHECK(s.automation_write_overruns() > 0);
+    const std::vector<AutomationWrite> w = drained(s);
+    CHECK(!w.empty() && w.front().frame == 1000);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -437,6 +615,11 @@ int main() {
     t(test_off_and_pan, "test_off_and_pan");
     t(test_level_change_on_a_pan_lane_ramps, "test_level_change_on_a_pan_lane_ramps");
     t(test_pan_change_on_a_volume_lane_ramps, "test_pan_change_on_a_volume_lane_ramps");
+    t(test_touch_plays_and_writes_the_fader, "test_touch_plays_and_writes_the_fader");
+    t(test_latch_holds_until_stop, "test_latch_holds_until_stop");
+    t(test_write_writes_every_parameter_and_splits_at_the_wrap,
+      "test_write_writes_every_parameter_and_splits_at_the_wrap");
+    t(test_a_full_ring_is_counted, "test_a_full_ring_is_counted");
     if (failed != 0) {
         std::fprintf(stderr, "automation: %d of %d failed (heap counter: %s)\n", failed, run,
                      heap_counter_scope());

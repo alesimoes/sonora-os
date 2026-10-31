@@ -1528,7 +1528,7 @@ int test_v12_migrates_and_automation() {
                   nullptr));
     CHECK(refused(edit(with_lane, points, "\"points\": []"), "a lane needs at least one point",
                   nullptr));
-    CHECK(refused(edit(with_lane, "\"automation_mode\": \"off\"", "\"automation_mode\": \"touch\""),
+    CHECK(refused(edit(with_lane, "\"automation_mode\": \"off\"", "\"automation_mode\": \"trim\""),
                   "not available yet", nullptr));
     CHECK(refused(edit(with_lane, "\"param\": \"volume\"", "\"param\": \"mute\""),
                   "must be one of", nullptr));

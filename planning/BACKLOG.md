@@ -236,7 +236,9 @@ playback can follow edits; it is in flight.
           its folder-Load sessions-root branch in a test (#151 review N5)
 - [ ] Automation write slice (ADR-0027 §3; read playback of volume and pan
       landed on `t4-automation`, session format 13, protocol 32):
-  - [ ] Touch, Latch, Write and Trim: per-track live override atomics
+  - [x] Touch, Latch and Write (protocol 33: `ParameterChange` gesture
+        and pan; one "Automation Write" step per pass, Write to Latch after
+        it; Trim split out below). Per-track live override atomics
         (value, touched) set by the control thread from `ParameterChange`
         with touch and release, played instead of the lane, ramped; a fixed
         `RingBuffer` of `{track, param, frame, value}` written by the audio
@@ -246,7 +248,13 @@ playback can follow edits; it is in flight.
         lane in a `Compound` "Automation Write" at the pass's end. Touch
         returns at the glide time; Write falls back to Latch after a pass.
         `SetMix` then accepts the four modes.
-  - [ ] Trim: a relative dB lane summed with Volume in dB.
+  - [ ] Trim: a relative dB lane summed with Volume in dB; `SetMix` still
+        refuses it.
+  - [ ] The interface: an automation mode selector per track, and the fader
+        and pan knob sending `Gesture::Touch` at press and `Release` at
+        release (they send `Move` only today, so no UI touch is seen).
+  - [ ] Touch's return time as a session setting (Pro Tools' AutoMatch);
+        a constant 250 ms today (`Session::touch_return_frames()`).
   - [ ] Sends follow automated volume and pan per frame; today post-fader
         and follow-pan sends take the lane at the callback's first frame
         (ADR-0027 §2).

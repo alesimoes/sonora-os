@@ -124,6 +124,17 @@ the automation *mode* is a strip setting.
   thread thins the pass and applies one `EditAutomation` per written lane,
   in a `Compound` labelled "Automation Write": one undo step per pass.
 - After a pass Write falls back to Latch, as Pro Tools does by default.
+- *As built (write slice, protocol 33):* `ParameterChange` carries a
+  `gesture` (move, touch, release) and drives `ParamId::Pan` as well as
+  gain. A pass is one roll, numbered by the audio thread, which publishes
+  the last pass ended after its writes; a write is a span `{frame, frames,
+  value}` per block, split at the loop's end, and a release is a span of 0
+  frames. A later write over the same frames (a loop's next turn) wins.
+  Outside what it wrote each lane keeps what it played: its old points in
+  the gaps, its old value (or the static fader or pan where it had no lane)
+  as a step on each run's edges. The return time is a constant 250 ms (Pro
+  Tools' AutoMatch default) until the session carries one. Write plays the
+  live values stopped as well. Trim stays refused until its own slice.
 
 ### §4 Plan swaps, locate and loop
 

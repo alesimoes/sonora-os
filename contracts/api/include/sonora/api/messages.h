@@ -121,7 +121,10 @@ namespace sonora::api {
 //   TrackMix carries its automation mode, and a Snapshot's undo window is
 //   window format 10, with each track's automation lanes (session format
 //   13). A version-31 peer refuses all of them.
-constexpr uint32_t kProtocolVersion = 32;
+// 33 (ADR-0027 §3, the write slice; follows 32): ParameterChange carries a
+//   gesture (touch, move, release) and may drive ParamId::Pan; a version-32
+//   peer's decoder refuses both, as left-over bytes or an unknown parameter.
+constexpr uint32_t kProtocolVersion = 33;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -144,13 +147,21 @@ struct CommandRequest {
 // Continuous values: fader drags, surface faders. Append-only enum.
 enum class ParamId : uint32_t {
     Gain = 0,   // linear, 0 .. 4 (+12 dB)
+    Pan = 1,    // -1 (left) .. +1 (right)
 };
+
+// Where a change sits in the operator's gesture (ADR-0027 §3). In Touch,
+// Latch and Write a parameter plays its live value instead of its lane from
+// Touch on, and in Touch returns to the lane from Release. Move is every
+// step between, and all a surface without touch sensing sends.
+enum class Gesture : uint32_t { Move = 0, Touch = 1, Release = 2 };
 
 struct ParameterChange {
     uint64_t seq = 0;
     uint32_t track = 0;
     ParamId param = ParamId::Gain;
     float value = 0.0f;
+    Gesture gesture = Gesture::Move;
 };
 
 // A value moved in the plugin's own editor (ADR-0012 §8) comes from the

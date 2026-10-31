@@ -56,6 +56,20 @@ public:
     Automation automation() const { return automation_.load(std::memory_order_relaxed); }
     void set_automation(Automation a) { automation_.store(a, std::memory_order_relaxed); }
 
+    // The parameters the operator holds, a bit per PlanAutoParam (ADR-0027
+    // §3): in Touch, Latch and Write each plays gain() or pan() instead of
+    // its lane while held, and is written while the transport rolls.
+    // Control thread writes; the callback reads once per block.
+    uint8_t touched() const { return touched_.load(std::memory_order_relaxed); }
+    void set_touched(uint8_t param, bool held) {
+        const auto bit = static_cast<uint8_t>(1u << param);
+        if (held) {
+            touched_.fetch_or(bit, std::memory_order_relaxed);
+        } else {
+            touched_.fetch_and(static_cast<uint8_t>(~bit), std::memory_order_relaxed);
+        }
+    }
+
     // The backend input this track meters, captures and monitors: its
     // document track's, so a track moved to another engine track keeps its
     // input (ADR-0023 §4). Its own index until the control thread sets it.
@@ -143,6 +157,7 @@ private:
     std::atomic<bool> solo_safe_{false};
     std::atomic<Monitor> monitor_{Monitor::Auto};
     std::atomic<Automation> automation_{Automation::Read};
+    std::atomic<uint8_t> touched_{0};
     std::atomic<uint32_t> input_;
     std::atomic<uint32_t> mix_serial_{0};
     std::atomic<float> peak_{0.0f};
@@ -151,6 +166,7 @@ private:
 
 static_assert(std::atomic<Track::Monitor>::is_always_lock_free, "monitor_");
 static_assert(std::atomic<Track::Automation>::is_always_lock_free, "automation_");
+static_assert(std::atomic<uint8_t>::is_always_lock_free, "touched_");
 
 // The callback touches each of these every period; a lock behind any of
 // them would be a lock on the audio thread.

@@ -163,7 +163,8 @@ private:
 };
 
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
-constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Gain);
+constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::Pan);
+constexpr uint32_t kLastGesture = static_cast<uint32_t>(Gesture::Release);
 constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::SaveAs);
 constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::Latency);
 constexpr uint32_t kEventFlags = kFolderUntitled | kFolderReadOnly;
@@ -205,6 +206,7 @@ void encode(const ParameterChange& m, std::string& out) {
     w.u32(m.track);
     w.u32(static_cast<uint32_t>(m.param));
     w.f32(m.value);
+    w.u32(static_cast<uint32_t>(m.gesture));
 }
 
 void encode(const ModelRequest& m, std::string& out) {
@@ -354,7 +356,8 @@ bool decode(std::string_view bytes, ParameterChange& out, std::string& error) {
     Reader r(bytes, error);
     ParameterChange m;
     if (!r.type(Type::ParameterChange) || !r.u64(m.seq) || !r.u32(m.track) ||
-        !r.enumeration(m.param, kLastParam) || !r.f32(m.value) || !r.done()) {
+        !r.enumeration(m.param, kLastParam) || !r.f32(m.value) ||
+        !r.enumeration(m.gesture, kLastGesture) || !r.done()) {
         return false;
     }
     out = m;

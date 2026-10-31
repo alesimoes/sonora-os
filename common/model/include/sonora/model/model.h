@@ -599,8 +599,9 @@ struct Bus {
 // -1 (left) to +1 (right).
 enum class AutomationParam : std::uint8_t { Volume, Pan };
 // Off plays the static fader and pan; Read, Touch and Latch play the lanes
-// until a parameter is touched. Touch, Latch, Write and Trim come with the
-// write slice (ADR-0027 §3); until then a mix holding one is refused.
+// until a parameter is touched; Write plays the live values and writes them
+// from play to stop (ADR-0027 §3). Trim's relative lane is not built yet,
+// so a mix holding Trim is refused.
 enum class AutomationMode : std::uint8_t { Off, Read, Touch, Latch, Write, Trim };
 
 inline constexpr std::size_t kMaxAutomationPoints = 65536;

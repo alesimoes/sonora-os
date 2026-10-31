@@ -104,7 +104,7 @@ int test_refusals() {
     for (std::size_t i = 0; i < many.size(); ++i) many[i].at = static_cast<Frames>(i);
     CHECK(refused(h, whole(vox.track, AutomationParam::Volume, many), "at most"));
 
-    // The mode: Off and Read; the write modes wait for their slice.
+    // The mode: every one but Trim, whose relative lane waits for its slice.
     TrackMix m = *h.current().mix.find(vox.track);
     CHECK(m.automation == AutomationMode::Read);
     m.automation = AutomationMode::Off;
@@ -112,7 +112,13 @@ int test_refusals() {
     CHECK_APPLY(h, SetMix{m});
     CHECK(h.undo_depth() == depth);   // mix state, outside undo
     CHECK(h.current().mix.find(vox.track)->automation == AutomationMode::Off);
-    m.automation = AutomationMode::Latch;
+    for (const AutomationMode mode :
+         {AutomationMode::Touch, AutomationMode::Latch, AutomationMode::Write}) {
+        m.automation = mode;
+        CHECK_APPLY(h, SetMix{m});
+        CHECK(h.current().mix.find(vox.track)->automation == mode);
+    }
+    m.automation = AutomationMode::Trim;
     CHECK(refused(h, SetMix{m}, "not available yet"));
     return 0;
 }
