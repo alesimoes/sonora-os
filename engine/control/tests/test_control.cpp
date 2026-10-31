@@ -1138,9 +1138,15 @@ void no_plugin_hosting_yet() {
     m.op = api::wire::encode_load("", bytes);
     const std::size_t events = in.events.size();
     CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    // The insert state and the PluginFault event travel separately: the state
+    // can be visible before the event is delivered, so wait for both.
     CHECK(until(real, in, [&]() {
         const api::TrackSnapshot t = real.state().track(0);
-        return t.inserts[0].present() && t.inserts[4].present();
+        if (!t.inserts[0].present() || !t.inserts[4].present()) return false;
+        for (std::size_t i = events; i < in.events.size(); ++i) {
+            if (in.events[i].kind == api::EventKind::PluginFault) return true;
+        }
+        return false;
     }));
     const api::TrackSnapshot t = real.state().track(0);
     CHECK(t.inserts[0].faulted() && (t.inserts[0].flags & api::kInsertActive) != 0);
