@@ -802,7 +802,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        under ~150k context, in this order. Every one carries before-and-after
        screenshots and is reviewed under the spec's "Review of UI PRs".
        Findings are referred to as F1 to F37.
-       - [ ] D1 `ui.design.strip_layout`: fixed strip widths (Narrow 64,
+       - [x] D1 `ui.design.strip_layout`: fixed strip widths (Narrow 64,
          Regular 96, Wide 128) with sideways scroll instead of
          `window / count`; the master pinned right; the fader zone takes
          "the rest", with the ≥ 55 % and ≥ 35 % budgets checked by a layout

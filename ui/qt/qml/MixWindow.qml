@@ -82,13 +82,45 @@ Rectangle {
                weight: mix.inserts !== null && mix.inserts.compensationShort ? Font.DemiBold : Font.Normal }
     }
 
-    Item {
+    // Fixed widths, never the window divided by the count: past what fits
+    // the strips scroll sideways and the master stays where it is
+    // (ui-design.md, "Mixer strip anatomy"). Regular until the Mix window's
+    // View menu (ui.mixer.views) chooses another.
+    property int stripWidth: Theme.stripRegular
+
+    Flickable {
         id: strips
+        objectName: "mixStrips"
         anchors {
             left: parent.left; right: bus.left; top: note.bottom; bottom: parent.bottom
             leftMargin: Theme.space3; rightMargin: Theme.space3; topMargin: Theme.space2; bottomMargin: Theme.space3
         }
-        readonly property real stripWidth: Math.floor(width / Math.max(1, mix.session.trackCount + mix.auxCount))
+        clip: true
+        contentWidth: (mix.session.trackCount + mix.auxCount) * mix.stripWidth
+        contentHeight: height
+        flickableDirection: Flickable.HorizontalFlick
+        boundsBehavior: Flickable.StopAtBounds
+        readonly property real stripWidth: mix.stripWidth
+
+        // A vertical wheel moves the strips sideways, as a mixer's does.
+        WheelHandler {
+            onWheel: (e) => {
+                const d = e.angleDelta.x !== 0 ? e.angleDelta.x : e.angleDelta.y
+                strips.contentX = Math.max(0, Math.min(strips.contentWidth - strips.width, strips.contentX - d))
+            }
+        }
+        Rectangle {
+            objectName: "stripsScrollBar"
+            parent: strips
+            z: 5
+            visible: strips.contentWidth > strips.width
+            y: strips.height - height
+            height: 4
+            radius: 2
+            color: Theme.textTertiary
+            x: strips.contentWidth > 0 ? strips.contentX / strips.contentWidth * strips.width : 0
+            width: strips.contentWidth > 0 ? strips.width * strips.width / strips.contentWidth : 0
+        }
 
         Repeater {
             id: stripRepeater
@@ -133,7 +165,7 @@ Rectangle {
         id: bus
         anchors { right: parent.right; top: note.bottom; bottom: parent.bottom
                   rightMargin: Theme.space3; topMargin: Theme.space2; bottomMargin: Theme.space3 }
-        width: 92
+        width: Theme.stripWide
         shell: mix.shell
         session: mix.session
         inserts: mix.inserts
@@ -168,9 +200,16 @@ Rectangle {
             dragging = true
         }
         function slotUnder(x, y) {
+            // Strips scrolled out of view, and slots scrolled out of their
+            // frame, are not drop targets: the pointer is over something else.
+            const v = dragLayer.mapToItem(strips, x, y)
+            if (v.x < 0 || v.y < 0 || v.x >= strips.width || v.y >= strips.height)
+                return { track: -1, slot: -1 }
             for (let i = 0; i < stripRepeater.count; ++i) {
                 const st = stripRepeater.itemAt(i)
                 if (st === null) continue
+                const f = dragLayer.mapToItem(st.insertFrame, x, y)
+                if (f.x < 0 || f.y < 0 || f.x >= st.insertFrame.width || f.y >= st.insertFrame.height) continue
                 const col = st.insertColumn
                 const p = dragLayer.mapToItem(col, x, y)
                 if (p.x < 0 || p.y < 0 || p.x >= col.width || p.y >= col.height) continue

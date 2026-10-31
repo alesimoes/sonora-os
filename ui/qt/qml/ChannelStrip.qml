@@ -63,6 +63,24 @@ Rectangle {
     // laptop screen leave about 70 px a strip.
     readonly property int stateButton: Math.max(12, Math.min(18, Math.floor((width - 10) / 4)))
 
+    // The fader zone takes the rest, and the strip's height budget starts
+    // from its floor: the five sends keep their rows, and the inserts get
+    // what is left above the fader and scroll inside their frame when they
+    // need more (ui-design.md, "Mixer strip anatomy"). A strip too short to
+    // hold five insert slots keeps those five and the fader gives way, so
+    // slots A to E are never out of reach.
+    readonly property real faderFloor: Math.ceil(height * Theme.faderSharePercent / 100)
+    readonly property real insertsFull: inserts === null ? 0 : 10 * Theme.insertSlotHeight + 9 + 2 + 12
+    readonly property real sendsFull: sends === null ? 0 : 5 * Theme.insertSlotHeight + 4
+    readonly property real minSection: Theme.stripMinSlots * Theme.insertSlotHeight + 2 + 12
+    readonly property real room: height - (Theme.space2 + top.height) - 2 * Theme.space2
+                                 - faderFloor - (Theme.space3 + Theme.space2)
+                                 - (16 + Theme.space2) - (18 + Theme.space2 + 22 + Theme.space1)
+    readonly property real sendsHeight: sendsFull
+    readonly property real insertsHeight: inserts === null ? 0
+        : Math.min(insertsFull, Math.max(minSection, room - sendsHeight))
+    readonly property alias insertFrame: insertFrame
+
     color: selected ? Theme.raised : Theme.panel
     radius: Theme.radius
     border.color: selected ? Theme.borderStrong : Theme.borderSubtle
@@ -195,26 +213,32 @@ Rectangle {
         objectName: strip.isBus ? "" : "inserts" + strip.track
         anchors { left: parent.left; right: parent.right; top: top.bottom; topMargin: Theme.space2
                   leftMargin: Theme.space1; rightMargin: Theme.space1 }
-        // Fixed, so the bus (no inserts) keeps its fader level with the tracks'.
-        height: strip.inserts === null ? 0 : 10 * Theme.insertSlotHeight + 9 + 2 + delay.height
+        // The same on the bus (no inserts), which keeps its fader level with the tracks'.
+        height: strip.insertsHeight
         visible: strip.inserts !== null
 
-        Column {
-            id: insertColumn
-            width: parent.width
-            spacing: 1
-            visible: !strip.isBus
-            Repeater {
-                model: strip.isBus || strip.inserts === null ? 0 : 10
-                InsertSlot {
-                    required property int index
-                    width: insertColumn.width
-                    inserts: strip.inserts
-                    dragHost: strip.dragHost
-                    track: strip.track
-                    slot: index
-                    info: strip.insertInfo !== null ? strip.insertInfo.slots[index]
-                                                    : ({ present: false, letter: String.fromCharCode(65 + index) })
+        ScrollFrame {
+            id: insertFrame
+            contentHeight: insertColumn.height
+            objectName: strip.isBus ? "" : "insertFrame" + strip.track
+            anchors { left: parent.left; right: parent.right; top: parent.top; bottom: delay.top }
+            Column {
+                id: insertColumn
+                width: parent.width
+                spacing: 1
+                visible: !strip.isBus
+                Repeater {
+                    model: strip.isBus || strip.inserts === null ? 0 : 10
+                    InsertSlot {
+                        required property int index
+                        width: insertColumn.width
+                        inserts: strip.inserts
+                        dragHost: strip.dragHost
+                        track: strip.track
+                        slot: index
+                        info: strip.insertInfo !== null ? strip.insertInfo.slots[index]
+                                                        : ({ present: false, letter: String.fromCharCode(65 + index) })
+                    }
                 }
             }
         }
@@ -236,26 +260,30 @@ Rectangle {
         objectName: strip.isBus ? "" : "sends" + strip.track
         anchors { left: parent.left; right: parent.right; top: insertArea.bottom; topMargin: strip.sends === null ? 0 : Theme.space2
                   leftMargin: Theme.space1; rightMargin: Theme.space1 }
-        // Fixed, so the bus (no sends) keeps its fader level with the tracks'.
-        height: strip.sends === null ? 0 : 5 * Theme.insertSlotHeight + 4
+        height: strip.sendsHeight
         visible: strip.sends !== null
         readonly property var info: strip.sends !== null && !strip.isBus && strip.track < strip.sends.strips.length
                                     ? strip.sends.strips[strip.track] : null
 
-        Column {
-            width: parent.width
-            spacing: 1
-            visible: !strip.isBus && sendArea.info !== null && sendArea.info.sends
-            Repeater {
-                model: strip.isBus || strip.sends === null ? 0 : 5
-                SendSlot {
-                    required property int index
-                    width: sendArea.width
-                    sends: strip.sends
-                    stripIndex: strip.track
-                    slot: strip.sends.bank + index
-                    info: sendArea.info !== null ? sendArea.info.slots[strip.sends.bank + index]
-                                                 : ({ present: false, letter: String.fromCharCode(65 + strip.sends.bank + index) })
+        ScrollFrame {
+            anchors.fill: parent
+            objectName: strip.isBus ? "" : "sendFrame" + strip.track
+            contentHeight: 5 * Theme.insertSlotHeight + 4
+            Column {
+                width: parent.width
+                spacing: 1
+                visible: !strip.isBus && sendArea.info !== null && sendArea.info.sends
+                Repeater {
+                    model: strip.isBus || strip.sends === null ? 0 : 5
+                    SendSlot {
+                        required property int index
+                        width: sendArea.width
+                        sends: strip.sends
+                        stripIndex: strip.track
+                        slot: strip.sends.bank + index
+                        info: sendArea.info !== null ? sendArea.info.slots[strip.sends.bank + index]
+                                                     : ({ present: false, letter: String.fromCharCode(65 + strip.sends.bank + index) })
+                    }
                 }
             }
         }
@@ -281,6 +309,7 @@ Rectangle {
     // --- fader and meter ---
     Item {
         id: faderArea
+        objectName: strip.isBus ? "busFaderZone" : "faderZone" + strip.track
         anchors {
             left: parent.left; right: parent.right
             top: outputButton.bottom; bottom: readout.top

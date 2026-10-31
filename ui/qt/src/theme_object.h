@@ -40,6 +40,11 @@ class ThemeObject : public QObject {
     Q_PROPERTY(QColor playhead READ playhead CONSTANT)
     Q_PROPERTY(QColor bypass READ bypass CONSTANT)
     Q_PROPERTY(int insertSlotHeight READ insertSlotHeight CONSTANT)
+    Q_PROPERTY(int stripNarrow READ stripNarrow CONSTANT)
+    Q_PROPERTY(int stripRegular READ stripRegular CONSTANT)
+    Q_PROPERTY(int stripWide READ stripWide CONSTANT)
+    Q_PROPERTY(int faderSharePercent READ faderSharePercent CONSTANT)
+    Q_PROPERTY(int stripMinSlots READ stripMinSlots CONSTANT)
     Q_PROPERTY(QColor meterWell READ meterWell CONSTANT)
     Q_PROPERTY(QColor highlight READ highlight CONSTANT)
     Q_PROPERTY(QColor shadow READ shadow CONSTANT)
@@ -91,6 +96,11 @@ public:
     QColor playhead() const { return QColor::fromRgba(theme::kPlayhead); }
     QColor bypass() const { return QColor::fromRgba(theme::kBypass); }
     int insertSlotHeight() const { return theme::kInsertSlotHeight; }
+    int stripNarrow() const { return theme::kStripNarrow; }
+    int stripRegular() const { return theme::kStripRegular; }
+    int stripWide() const { return theme::kStripWide; }
+    int faderSharePercent() const { return theme::kFaderSharePercent; }
+    int stripMinSlots() const { return theme::kStripMinSlots; }
     QColor meterWell() const { return QColor::fromRgba(theme::kMeterWell); }
     QColor highlight() const { return QColor::fromRgba(theme::kHighlight); }
     QColor shadow() const { return QColor::fromRgba(theme::kShadow); }
