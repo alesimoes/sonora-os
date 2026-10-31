@@ -2,6 +2,7 @@
   "schema": 1,
   "about": "Catalogue of everything SonoraOS needs, front -> module -> item. Rendered by tools/progress.py into planning/PROGRESS.md. An item is done only when it is merged to main AND verified; done needs evidence, doing needs a branch. Sizes: S=1, M=3, L=8 points. Two fronts, two milestones (owner, 2026-10-13): Complete DAW, built first, then OS packaging. 'phase' is the stage in planning/ROADMAP.md. 'ref' cites the Avid or Apple documentation the feature's behaviour comes from (PT-RG: Pro Tools Reference Guide; LP-UG: Logic Pro for Mac 12.3 User Guide); behaviour only, never code or content (ADR-0004).",
   "sizes": {"S": 1, "M": 3, "L": 8},
+  "post_launch_phases": ["11"],
   "phases": {
     "0": "Foundations (done before 2026-10-13)",
     "1": "DAW 1: engine core, contracts, model, session file",
@@ -13,8 +14,8 @@
     "7": "DAW 7: tempo, time and pitch",
     "8": "DAW 8: interchange, import and export",
     "9": "DAW 9: Logic creative tools and content",
-    "10": "DAW 10: control surfaces, sync and video",
-    "11": "DAW 11: surround and immersive (later)",
+    "10": "DAW 10: control surfaces and sync",
+    "11": "After launch (optional, ADR-0025): video, surround and immersive",
     "12": "OS 1: bootable image and target hardware",
     "13": "OS 2: hardening and updates",
     "14": "OS 3: installable to disk"
@@ -391,8 +392,8 @@
             {"id": "drivers.sync.ltc", "title": "LTC chase and generate", "size": "M", "phase": 10, "status": "todo"},
             {"id": "drivers.sync.midi_clock", "title": "MIDI clock and MMC, send and receive", "size": "S", "phase": 10, "status": "todo", "ref": "LP-UG: Synchronization"},
             {"id": "drivers.sync.clock", "title": "Word clock and ADAT clock source, validated", "size": "M", "phase": 10, "status": "todo", "note": "Validated on the UMC1820 at the end"},
-            {"id": "video.timecode", "title": "Timecode formats and frame rates (23.976 to 60, drop frame), session start", "size": "M", "phase": 10, "status": "todo", "ref": "PT-RG: Session setup (timecode rate)"},
-            {"id": "video.track", "title": "Video track: import, frame-accurate display locked to the timeline", "size": "L", "phase": 10, "status": "todo", "ref": "PT-RG: Video; LP-UG: Movie track"}
+            {"id": "video.timecode", "title": "Timecode formats and frame rates (23.976 to 60, drop frame), session start", "size": "M", "phase": 11, "status": "todo", "ref": "PT-RG: Session setup (timecode rate)"},
+            {"id": "video.track", "title": "Video track: import, frame-accurate display locked to the timeline", "size": "L", "phase": 11, "status": "todo", "ref": "PT-RG: Video; LP-UG: Movie track"}
           ]
         },
         {

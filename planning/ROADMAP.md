@@ -253,19 +253,21 @@ tools.
 Exit criteria: a Logic user builds a 16-bar pattern in the Step Sequencer and
 launches four Live Loops scenes in time, without reading documentation.
 
-## DAW 10 — Control surfaces, sync and video
+## DAW 10 — Control surfaces and sync
 
 HUI and Mackie Control (codecs against documented behaviour, ADR-0007 §10),
 MTC, LTC, MIDI clock and MMC, word clock and ADAT (validated on the UMC1820
-in OS 1), timecode formats, a video track locked to the timeline. The direct
-ALSA backend, if it is ever needed. Key map coverage against both vendors'
+in OS 1). The video track and video timecode formats moved after launch
+(ADR-0025). The direct ALSA backend, if it is ever needed. Key map coverage against both vendors'
 guides for every command that now exists.
 
-Exit criteria: the engine chases incoming LTC and MTC to within one frame,
-and a video frame shown at a given timecode is the frame at that timecode,
-checked on a burnt-in reference.
+Exit criteria: the engine chases incoming LTC and MTC to within one frame.
 
-## DAW 11 — Surround and immersive (later)
+## After launch (optional, ADR-0025) — Video, surround and immersive
+
+A video track locked to the timeline and video timecode formats (a video
+frame shown at a given timecode is the frame at that timecode, checked on a
+burnt-in reference).
 
 Multichannel buses, 5.1 and 7.1 panning, binaural panning (via plugins),
 object mixing and ADM BWF export (ITU-R BS.2076). Dolby's renderer needs
