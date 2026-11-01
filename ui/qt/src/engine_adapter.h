@@ -119,6 +119,9 @@ struct TransportSnapshot {
     // Layout 5 (ADR-0009, update of 2026-11-01): a locate held back for its
     // window, and the playback blocks the disk thread did not have ready.
     bool locating = false;
+    // Layout 6 (record-ready): Pro Tools' Record armed the take and Play
+    // starts it. Blinks the Record button; the state is Stopped meanwhile.
+    bool record_ready = false;
     uint32_t playback_misses = 0;   // only rises
     // Update 2026-10-12 item 3: a seqlock read that ran out of retries. The
     // interface shows it as stale for that tick rather than spinning.

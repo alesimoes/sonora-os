@@ -42,6 +42,28 @@ Rectangle {
         z: 10
     }
 
+    // Why Record was refused, held until the next Record or Stop; over the
+    // window below the bar, as the status line is too brief for it.
+    Rectangle {
+        objectName: "recordRefusal"
+        visible: bar.shell.recordRefusal.length > 0
+        anchors { horizontalCenter: parent.horizontalCenter; top: parent.bottom; topMargin: Theme.space2 }
+        width: refusalText.implicitWidth + 2 * Theme.space3
+        height: refusalText.implicitHeight + Theme.space2
+        radius: Theme.radius
+        color: Theme.alarmSurface
+        border.color: Theme.alarm
+        z: 20
+        Text {
+            id: refusalText
+            objectName: "recordRefusalText"
+            anchors.centerIn: parent
+            text: bar.shell.recordRefusal
+            color: Theme.alarm
+            font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.DemiBold }
+        }
+    }
+
     Row {
         id: left
         anchors { left: parent.left; leftMargin: Theme.space4; verticalCenter: parent.verticalCenter }
@@ -148,13 +170,12 @@ Rectangle {
                 available: bar.shell.implemented("transport.toggle_play")
                 onClicked: bar.shell.invoke("transport.toggle_play", -1)
             }
-            SButton {
+            RecordButton {
                 objectName: "barRecord"
-                text: "●"; implicitWidth: 40; implicitHeight: 32; fontPx: Theme.textTitle
-                available: bar.shell.implemented("transport.record")
-                active: bar.shell.recording
-                activeColour: Theme.record
-                onClicked: bar.shell.invoke("transport.record", -1)
+                shell: bar.shell
+                implicitWidth: 40; implicitHeight: 32; fontPx: Theme.textTitle
+                ready: bar.shell.recordReady
+                recording: bar.shell.recording
             }
         }
 

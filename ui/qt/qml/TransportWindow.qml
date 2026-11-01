@@ -130,12 +130,12 @@ Rectangle {
             }
             TransportKey { shell: win.shell; text: "▶▶"; command: "transport.fast_forward" }
             TransportKey { shell: win.shell; text: "▶|"; command: "transport.go_to_end" }
-            TransportKey {
+            RecordButton {
                 objectName: "transportRecord"
                 shell: win.shell
-                text: "●"; command: "transport.record"; fontPx: Theme.textTitle
-                active: win.transport.recording
-                activeColour: Theme.record
+                implicitWidth: 40; implicitHeight: 30; fontPx: Theme.textTitle
+                ready: win.transport.recordReady
+                recording: win.transport.recording
             }
             // Pro Tools: Loop Playback and Loop Record, two modes. Logic:
             // Cycle, one switch for both, so one button.
