@@ -83,6 +83,8 @@ private:
     std::map<uint64_t, std::string> pending_;   // seq -> command, for the status line
     api::Inbox inbox_;
     api::StateFrame frame_;   // kept, so a frame allocates only once
+    static constexpr uint64_t kLocatingShownAfterNs = 100'000'000;
+    uint64_t locating_since_ns_ = 0;   // 0: no locate held
 };
 
 struct TerminalOptions {

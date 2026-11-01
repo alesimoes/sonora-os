@@ -4,10 +4,11 @@
 //
 // A thread at normal priority that copies what the audio thread already
 // writes -- Transport's state and playhead, each Track's arm, mute, gain,
-// peak and overrun atomics -- into the shared state block, on a fixed
-// timer. The audio thread is not touched: it writes no new atomic and
-// learns of no client. The publisher is the only caller of
-// Track::take_peak(), so the exchange-to-clear loses no peak between
+// peak and overrun atomics, the monitor bus's peaks and the playback miss
+// count -- into the shared state block, on a fixed timer. The audio thread
+// is not touched: it writes no new atomic and learns of no client. The
+// publisher is the only caller of Track::take_peak() and of
+// Session::take_bus_peak(), so the exchange-to-clear loses no peak between
 // publishes, and readers keep cursors of their own in the block.
 //
 // Paced, never "on change": an unpaced republish loop starved a 60 Hz
@@ -72,6 +73,8 @@ public:
     // The track reaches the bus early by `shortfall_frames` (non-zero: red,
     // kTrackCompensationShort).
     void set_track_shortfall(uint32_t track, uint32_t shortfall_frames);
+    // PlaybackController::locating() after each pump(): kTransportLocating.
+    void set_locating(bool on) { locating_.store(on, std::memory_order_relaxed); }
 
     uint64_t period_ns() const { return period_ns_; }
     uint64_t publishes() const { return publishes_.load(std::memory_order_relaxed); }
@@ -94,6 +97,7 @@ private:
     std::unique_ptr<std::atomic<uint32_t>[]> track_shortfall_;
     std::atomic<uint32_t> compensation_{0};
     std::atomic<uint32_t> compensation_shortfall_{0};
+    std::atomic<bool> locating_{false};
 
     // The publisher thread's own; sized once, so a publish never allocates.
     std::vector<api::TrackFields> tracks_;

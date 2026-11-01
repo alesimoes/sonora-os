@@ -78,6 +78,7 @@ void read_transport(const StateHeader& h, TransportSnapshot& s) {
     s.compensation_frames = h.compensation_frames.load(acq);
     s.compensation_shortfall_frames = h.compensation_shortfall_frames.load(acq);
     s.transport_flags = h.transport_flags.load(acq);
+    s.playback_misses = h.playback_misses.load(acq);
 }
 
 void read_track(const TrackState& t, TrackSnapshot& s) {
@@ -150,7 +151,9 @@ bool StateView::attach(const void* block, std::size_t bytes, std::string& error)
     tracks_ = state_tracks(block);
     // From now on, not from the start of the session: a reader that attaches
     // late is not shown every peak since the engine started.
-    cursors_.assign(h->capacity_tracks, h->heartbeat.load(std::memory_order_acquire));
+    const uint64_t now = h->heartbeat.load(std::memory_order_acquire);
+    cursors_.assign(h->capacity_tracks, now);
+    bus_cursors_.fill(now);
     seen_any_ = false;
     return true;
 }
@@ -243,12 +246,19 @@ void StateView::frame(StateFrame& out) const {
 
 float StateView::take_peak(uint32_t index) {
     if (header_ == nullptr || index >= track_count()) return 0.0f;
+    return take_from(tracks_[index].peaks, cursors_[index]);
+}
+
+float StateView::take_bus_peak(uint32_t side) {
+    if (header_ == nullptr || side >= kBusPeakSides) return 0.0f;
+    return take_from(header_->bus_peaks[side], bus_cursors_[side]);
+}
+
+float StateView::take_from(const PeakRing& ring, uint64_t& cursor) const {
     const uint64_t now = header_->heartbeat.load(std::memory_order_acquire);
-    uint64_t& cursor = cursors_[index];
     if (now <= cursor) return 0.0f;
     const uint64_t first = std::max(cursor + 1, now >= kPeakSlots ? now - kPeakSlots + 1 : 1);
     float peak = 0.0f;
-    const PeakRing& ring = tracks_[index].peaks;
     for (uint64_t tick = first; tick <= now; ++tick) {
         const uint64_t v = ring.entries[tick % kPeakSlots].load(std::memory_order_acquire);
         // A newer tick has taken the slot: this reader fell a whole ring

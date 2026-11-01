@@ -1898,6 +1898,7 @@ void FakeEngine::publish() {
     tf.inputs_connected = inputs_connected_ ? cfg_.tracks : 0;
     tf.buffer_frames = cfg_.buffer_frames;
     tf.transport_flags = transport_flags_;
+    tf.playback_misses = playback_misses_;
 
     std::vector<TrackFields> tracks(cfg_.tracks);
     std::vector<float> peaks(cfg_.tracks, 0.0f);
@@ -1924,7 +1925,7 @@ void FakeEngine::publish() {
         tracks[i].clip_count = clips_[i];
     }
     insert_fields(tracks.data(), cfg_.tracks, tf);
-    writer_.publish(tf, tracks.data(), peaks.data());
+    writer_.publish(tf, tracks.data(), peaks.data(), bus_peaks_);
 }
 
 }  // namespace sonora::api::testing
