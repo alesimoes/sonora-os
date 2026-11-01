@@ -116,8 +116,13 @@ playback can follow edits; it is in flight.
          unreachable.
        - [ ] `session-format.md`: note that engines before wrap list v2
          refuse it, and place a loop take's passes by loop length.
-       - [ ] Loop stall test: hold the drain for the full
+       - [x] Loop stall test: hold the drain for the full
          `disk_stall_seconds` (0.5 s), not 300 ms.
+       - [ ] Loop stall test (#196 review): hold the disk-thread drain through
+         a test hook for `disk_stall_seconds` instead of relying on blocks
+         outrunning the 10 ms wakeup; also assert the boundary ring capacity
+         is >= tracks*ceil(disk_stall_seconds*sample_rate/max_block_frames)
+         so power-of-two rounding cannot hide an undersized formula.
        - [ ] Optional: reserve the extra reader window only during loop
          takes (the pool is doubled now).
        For the Transport window (Track 3 item 3, `feature/ui-transport`),
@@ -521,8 +526,11 @@ playback can follow edits; it is in flight.
              just one; resend the rider's last value at adoption (#162
              review)
 - [ ] Automation in the model, after ADR-0027's first slice:
-  - [ ] `DuplicateTrack` carries an automation flag (Pro Tools' dialog
+  - [x] `DuplicateTrack` carries an automation flag (Pro Tools' dialog
         checkbox); today a duplicate always copies its lanes.
+  - [ ] Conformance (#197 review): DuplicateTrack with automation=false over
+        the real and the fake engine: the copy arrives with no lanes and
+        its source's mode (ADR-0023 update 2026-10-31).
   - [ ] Automation follows edits: moving, cutting, pasting or deleting
         regions moves the automation under them, as Pro Tools' "Automation
         Follows Edit" option, one `Compound` with the region edit.
@@ -983,14 +991,17 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       freely and is thinned at the release, the Selector selects a range of a
       lane and Cut, Copy, Paste and Clear act on it; each gesture is one
       `EditAutomation`, so one undo step. Screenshot `edit-automation`.
-- [ ] `automation.lanes` follow-ups (lane height following the vertical zoom is done): Thin as its own command on a range
-      (`automation.thin`, needs a command id and a key map entry),
-      a `Compound` of several lanes when a range spans tracks (the Selector is
+- [ ] `automation.lanes` follow-ups (lane height following the vertical zoom is done): a `Compound` of several lanes when a range spans tracks (the Selector is
       one lane on one track for now), Trim mode's relative edit of a range,
       the lane selector for plugin parameters (ADR-0027 §5), a lane height
       that follows the vertical zoom, and key bindings `"verified": false`
-      until checked (none were added: `tool.pencil` was already F10).
+      until checked (none were added: `tool.pencil` was already F10;
+      `automation.thin` is `ctrl+alt+t`, `origin: sonora`, in both maps).
 - [ ] `automation.lanes` UI follow-ups from the #181 review:
+  - [ ] ui test (#199 review): `automation.thin` asserts the exact kept points (a collinear 11-point ramp keeps 2 edge points), a step inside the range survives, and a pan lane uses its own tolerance.
+  - [ ] keymaps (#199 review): reconsider `ctrl+alt+t` for `automation.thin` if the UI is ever run under a desktop environment (GNOME grabs it for the terminal).
+  - [ ] ui (#199 review): decide whether `automation.thin` uses the engine writer's tolerance (0.1 dB) instead of Pencil's 0.25 dB.
+  - [ ] review process (#199 review): reviewers of PRs that add a command or key must also run or read the `contracts/` api tests; the `api_wire` `domains()` list is hand-written, so add the id there (#199 failed CI on it).
   - [ ] `EditController::undo` and `redo` leave `sel_.point` stale: an undo or redo resets the selected breakpoint, otherwise Clear deletes whichever point now has that index.
   - [ ] `tool.next` cycles `% 4`, so Pencil is never reached: decide whether Pencil joins the cycle, and document the choice in the keymap notes.
   - [ ] ui CMake: move the `ui_automation` block below `ui_edit`'s `set_tests_properties`.
@@ -1169,7 +1180,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              the control thread instead of timing them. ctest
              `plugin_hosting_rescan_drops_stale`, `plugin_catalog`
              (shared_frames), `plugin_scanner` (exchange_frees_nothing).
-       - [ ] FlushPluginState through GetState and the saver thread's
+       - [x] FlushPluginState through GetState and the saver thread's
              durable write; today it still answers from the document.
        - [x] Play waits for plug-ins at session open (owner, 2026-10-18):
              `transport.play`/`toggle_play` from a stopped transport is
@@ -1375,11 +1386,24 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
              reads it; tests for a host that exits before Ready, a
              replacement that never reaches Ready, and a chain destroyed
              while its host starts (ctest `plugin_client_host_control_start_paths`).
-       - [ ] M3, the control server's side: poll each host's socket for
-             POLLOUT while `wants_write()` (the 50 ms loop moves a Load near
-             64 MiB slowly; the Ready bound now starts once it is sent).
-             The same poll set takes each host's `exit_handle()`, so an exit
-             wakes the loop instead of waiting for its next turn.
+       - [x] M3, the control server's side: the control thread sleeps on a
+             `common/platform` WaitSet (self-pipe, polled on that thread): its
+             clients' notify(), each running host's `exit_handle()` and, only
+             while `wants_write()`, its socket for POLLOUT, from a registry
+             of every host the supervisor spawned. Only what the next turn
+             services is listed, so nothing spins. ctest `platform_wait_set`,
+             `plugin_client_host_control_watch`.
+       - [ ] Hosts' sockets for POLLIN too (host_control.h asks for it): a
+             gesture from an editor reaches the document at the next 50 ms
+             turn today; needs a service-every-turn rule for every holder
+             that drains, so a dying host's unread datagrams cannot spin.
+       - [ ] WaitSet spin (#198 review): a chain in `PluginHosting::retiring_`
+             awaiting its epoch is never pumped, yet `HostSupervisor::watch`
+             (`engine/plugin_client/src/host_supervisor.cpp` ~736) lists its
+             hosts' sockets Writable while `wants_write()`; pump those hosts
+             each turn (or list only serviced holders) so POLLOUT cannot wake
+             the control thread in a loop (`plugin_hosting.cpp` ~865-870: a
+             restart sending a multi-MB Load while the chain retires).
        - [ ] L6 on #78: the Hello pid check assumes no PID namespace; a
              sandboxed host (bwrap, unshare) needs the pid as the engine sees
              it compared another way.
