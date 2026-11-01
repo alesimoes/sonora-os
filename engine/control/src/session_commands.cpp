@@ -2,6 +2,7 @@
 #include "sonora/session_commands.h"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 
 #include "sonora/playback_controller.h"
@@ -12,7 +13,12 @@ namespace sonora {
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record,
                               PlaybackController* playback, PunchFor punch_for,
-                              MayArm may_arm, LoopFor loop_for) {
+                              MayArm may_arm, LoopFor loop_for, bool* record_ready) {
+    // Shared by the handlers that set and clear it; the caller's when given,
+    // which it must keep alive as long as `reg`.
+    const std::shared_ptr<bool> ready =
+        record_ready != nullptr ? std::shared_ptr<bool>(record_ready, [](bool*) {})
+                                : std::make_shared<bool>(false);
     const auto loop_take = [loop_for](LoopRange& loop, std::string& refusal) {
         refusal.clear();
         return loop_for && loop_for(loop, refusal);
@@ -43,7 +49,10 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     // just before must have landed, or the take starts somewhere else
     // (ADR-0009 §4.4). The request is answered from pump(); a refusal then
     // comes back through take_record_error().
-    const auto start = [&session, open_take, playback, loop_take, punch_for](std::string& why) {
+    const auto start = [&session, open_take, playback, loop_take, punch_for,
+                        ready](std::string& why) {
+        // Asked for now: no longer ready, whether the take starts or not.
+        *ready = false;
         LoopRange loop;
         std::string refusal;
         const bool looped = loop_take(loop, refusal);
@@ -147,7 +156,8 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     // A roll is not a take: stopping it closes no file and uses no take
     // number.
     reg.install("transport.stop",
-                [&session, finish, playback](const CommandContext&, std::string& why) {
+                [&session, finish, playback, ready](const CommandContext&, std::string& why) {
+        *ready = false;
         const TransportState state = session.transport().state();
         if (state == TransportState::Recording) return finish(why);
         if (playback) {
@@ -173,14 +183,17 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                    playback->play_range(from, to, why);
         };
         // Rolls once the window at the playhead is resident (ADR-0009 §4.4).
-        reg.install("transport.play",
-                    [&session, roll](const CommandContext& ctx, std::string& why) {
+        // Record-ready, it is the take instead, with the document's punch
+        // range and not the argument's play range.
+        reg.install("transport.play", [&session, roll, start, playback, ready](
+                                          const CommandContext& ctx, std::string& why) {
             if (session.transport().state() != TransportState::Stopped) return true;
+            if (*ready && !playback->record_requested()) return start(why);
             return roll(ctx, why);
         });
         // Space in Pro Tools: plays, or stops whatever is running, a take
         // included.
-        reg.install("transport.toggle_play", [&session, finish, playback, roll](
+        reg.install("transport.toggle_play", [&session, finish, playback, roll, start, ready](
                                                  const CommandContext& ctx, std::string& why) {
             const TransportState state = session.transport().state();
             if (state == TransportState::Recording) return finish(why);
@@ -189,18 +202,53 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                 playback->stop();
                 return true;
             }
+            if (*ready) return start(why);
             return roll(ctx, why);
         });
+        // Pro Tools' Record (ADR-0009 update of 2026-11-01, record-ready):
+        // the blinking button, a take that starts on Play. Logic's R stays
+        // transport.record, which starts the take at once.
+        reg.install("transport.record_ready", [&session, playback, ready](const CommandContext&,
+                                                                          std::string& why) {
+            const TransportState state = session.transport().state();
+            // As a second transport.record press: the take is left alone.
+            if (state == TransportState::Recording) return true;
+            if (playback->record_requested()) {
+                playback->cancel_record();
+                return true;
+            }
+            // Ready while rolling would have Play do nothing, and starting
+            // the take here is what this key must not do.
+            if (state != TransportState::Stopped || playback->play_requested()) {
+                why = "the transport is playing: stop first, then press Record";
+                return false;
+            }
+            if (*ready) {
+                *ready = false;
+                return true;
+            }
+            bool armed = false;
+            for (const auto& tr : session.tracks()) armed = armed || tr->rec_armed();
+            if (!armed) {
+                why = "no track is armed: arm a track, then press Record";
+                return false;
+            }
+            *ready = true;
+            return true;
+        });
+        // A locate takes record-ready back, as stop does.
         reg.install("transport.return_to_zero",
-                    [playback](const CommandContext&, std::string& why) {
+                    [playback, ready](const CommandContext&, std::string& why) {
+            *ready = false;
             return playback->locate(0, why);
         });
         // Marker recall. Rolling, the roll goes on from the frame once its
         // window is resident, as return to zero's does.
         reg.install("transport.locate",
-                    [playback](const CommandContext& ctx, std::string& why) {
+                    [playback, ready](const CommandContext& ctx, std::string& why) {
             uint64_t frame = 0;
             if (!parse_locate_frame(ctx.argument, frame, why)) return false;
+            *ready = false;
             return playback->locate(frame, why);
         });
     }

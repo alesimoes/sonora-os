@@ -456,6 +456,132 @@ int check_play(Rig& rig) {
     return C(rig, "a roll").go();
 }
 
+// Pro Tools' record-ready (ADR-0009 update of 2026-11-01): Record makes the
+// transport ready and starts nothing; Play, or Space, then starts the take.
+// Stop, a locate and a session open take it back, and it is refused with
+// nothing armed and while rolling.
+int check_record_ready(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            StateView& v = s.engine->state();
+            const auto& impl = s.engine->hello().implemented_commands;
+            EXPECT(std::find(impl.begin(), impl.end(), "transport.record_ready") != impl.end(),
+                   "transport.record_ready is not announced");
+            EXPECT(s.until(rig_, [&]() { return !v.transport().stale; }), "state is stale");
+            const int32_t take = v.transport().take;
+            const auto ready = [&]() {
+                return (v.transport().transport_flags & kTransportRecordReady) != 0;
+            };
+            const auto press = [&](const char* id, CommandReply& r) {
+                return s.await(rig_, s.command(id), r);
+            };
+            const auto make_ready = [&](CommandReply& r) {
+                return press("transport.record_ready", r) && r.result == DispatchResult::Ok &&
+                       s.until(rig_, ready);
+            };
+            CommandReply r;
+
+            EXPECT(press("transport.record_ready", r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "no track is armed"),
+                   "record-ready with nothing armed was not refused by name");
+            EXPECT(s.next_publish(rig_) && !ready(), "a refused record-ready shows ready");
+
+            EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                       r.result == DispatchResult::Ok,
+                   "arming failed: " + r.message);
+            EXPECT(make_ready(r), "record-ready did not show: " + r.message);
+            EXPECT(s.next_publish(rig_), "nothing published while ready");
+            EXPECT(v.transport().state == TransportState::Stopped && v.transport().take == take,
+                   "record-ready started a take");
+            EXPECT(press("transport.record_ready", r) && r.result == DispatchResult::Ok,
+                   "the second record-ready press failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return !ready(); }),
+                   "the second record-ready press did not take it back");
+
+            for (const char* cancel : {"transport.stop", "transport.return_to_zero"}) {
+                EXPECT(make_ready(r), "record-ready did not show: " + r.message);
+                EXPECT(press(cancel, r) && r.result == DispatchResult::Ok,
+                       std::string(cancel) + " failed: " + r.message);
+                EXPECT(s.until(rig_, [&]() { return !ready(); }),
+                       std::string(cancel) + " did not cancel record-ready");
+                EXPECT(v.transport().state == TransportState::Stopped,
+                       std::string(cancel) + " after record-ready moved the transport");
+            }
+
+            // Per-session state: another session opens not ready.
+            EXPECT(make_ready(r), "record-ready did not show: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");
+            {
+                std::string bytes;
+                std::string error;
+                model::WriteInfo info;
+                info.written_by = "conformance";
+                EXPECT(model::serialize(s.replica.current(), info, bytes, error), error);
+                ModelRequest m;
+                m.action = ModelAction::Load;
+                m.op = wire::encode_load("", bytes);
+                EXPECT(s.await(rig_, s.engine->submit(m), r) && r.result == DispatchResult::Ok,
+                       "the session was not opened: " + r.message);
+                EXPECT(s.until(rig_, [&]() { return !ready(); }),
+                       "record-ready survived opening a session");
+            }
+            if (!v.track(0).armed()) {
+                EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
+                           r.result == DispatchResult::Ok,
+                       "arming after the open failed: " + r.message);
+            }
+
+            EXPECT(press("transport.play", r) && r.result == DispatchResult::Ok,
+                   "play failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Rolling; }),
+                   "play did not roll");
+            EXPECT(press("transport.record_ready", r), "no reply");
+            EXPECT(r.result == DispatchResult::Failed && mentions(r.message, "stop first"),
+                   "record-ready while rolling was not refused by name");
+            EXPECT(s.next_publish(rig_) && !ready() &&
+                       v.transport().state == TransportState::Rolling,
+                   "a refused record-ready while rolling changed the transport");
+            EXPECT(press("transport.stop", r) && r.result == DispatchResult::Ok,
+                   "stop failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Stopped; }),
+                   "the roll did not stop");
+
+            // Play, then Space: each starts the take, and the next number is
+            // the one after.
+            int32_t expect = v.transport().take;
+            for (const char* play : {"transport.play", "transport.toggle_play"}) {
+                EXPECT(make_ready(r), "record-ready did not show: " + r.message);
+                EXPECT(press(play, r) && r.result == DispatchResult::Ok,
+                       std::string(play) + " while ready failed: " + r.message);
+                EXPECT(s.until(rig_, [&]() {
+                           return v.transport().state == TransportState::Recording && !ready();
+                       }),
+                       std::string(play) + " while ready did not start the take");
+                EXPECT(v.transport().take == expect, "the take is not the one announced");
+                EXPECT(press("transport.record_ready", r) && r.result == DispatchResult::Ok,
+                       "record-ready during a take failed: " + r.message);
+                EXPECT(s.next_publish(rig_) &&
+                           v.transport().state == TransportState::Recording && !ready(),
+                       "record-ready during a take changed it");
+                EXPECT(press("transport.toggle_play", r) && r.result == DispatchResult::Ok,
+                       "stopping the take failed: " + r.message);
+                EXPECT(s.until(rig_, [&]() {
+                           const TransportSnapshot t = v.transport();
+                           return t.state == TransportState::Stopped && t.take == expect + 1;
+                       }),
+                       "the take did not close and announce the next number");
+                ++expect;
+            }
+            EXPECT(s.next_publish(rig_) && !ready(), "record-ready is back after the take");
+            return ok();
+        }
+    };
+    return C(rig, "record-ready").go();
+}
+
 // The click and the count-off (ADR-0020): both toggles are announced, each
 // press is answered Ok and flips its flag on the state block, and neither
 // touches the transport or the take number.
@@ -3649,6 +3775,7 @@ int run(Rig& rig) {
     failures += check_arming(rig);
     failures += check_take(rig);
     failures += check_play(rig);
+    failures += check_record_ready(rig);
     failures += check_locate(rig);
     failures += check_click(rig);
     failures += check_loop_toggle(rig);

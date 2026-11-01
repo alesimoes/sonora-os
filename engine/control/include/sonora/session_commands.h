@@ -63,10 +63,16 @@ using MayArm = std::function<bool(std::size_t engine_track, std::string& why)>;
 // it. transport.play and transport.toggle_play take an optional range,
 // "A-B", played with the pre-roll and post-roll of the snapshot `playback`
 // last showed (PlaybackController::play_range()).
+// With `playback`, transport.record_ready too: Pro Tools' Record, which sets
+// `record_ready` and starts nothing. Play then starts the take as
+// transport.record would, and stop, a locate or a take started another way
+// clears it (ADR-0009 update of 2026-11-01, record-ready). The caller owns
+// `record_ready`, publishes it, and clears it when a session opens; without
+// one, the commands keep their own.
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record = nullptr,
                               PlaybackController* playback = nullptr,
                               PunchFor punch_for = nullptr, MayArm may_arm = nullptr,
-                              LoopFor loop_for = nullptr);
+                              LoopFor loop_for = nullptr, bool* record_ready = nullptr);
 
 }  // namespace sonora

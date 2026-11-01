@@ -279,7 +279,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.toggle_loop", "latency.measure", "latency.cancel", "latency.set",
         "transport.toggle_loop_record", "transport.toggle_cycle",
         "transport.cycle_selection", "transport.punch_selection", "transport.clear_punch",
-        "transport.set_pre_roll", "transport.set_post_roll",
+        "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready",
     };
     return ids;
 }
@@ -515,6 +515,8 @@ bool FakeEngine::load(const std::string& op, std::string& why) {
     if (!document_->load(bytes, cfg_.sample_rate, why, load_parts_.get(), wire::kMaxModelBytes)) {
         return false;
     }
+    // Per-session, as the engine's: the next session opens not ready.
+    record_ready_ = false;
     if (!folder.empty()) {
         folder_ = folder;
         folder_untitled_ = untitled;
@@ -1559,6 +1561,8 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
             why = "a Save As is still copying the session to its new folder; record once it has finished";
             return false;
         }
+        // Asked for now, so no longer ready, whether it starts or not.
+        record_ready_ = false;
         if (std::find(armed_.begin(), armed_.end(), true) == armed_.end()) {
             why = "no track is armed";
             return false;
@@ -1593,6 +1597,7 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     // A roll is not a take: stopping it closes no file and uses no number.
     const auto stop = [&]() {
         record_requested_ = false;
+        record_ready_ = false;
         if (recording) return finish();
         if (mode_ == TransportState::Rolling) move(TransportState::Stopped);
         return true;
@@ -1634,6 +1639,28 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         return true;
     }
     if (id == "transport.stop") return stop();
+    // As engine/control's (ADR-0009 update of 2026-11-01, record-ready).
+    if (id == "transport.record_ready") {
+        if (recording) return true;
+        if (record_requested_) {
+            record_requested_ = false;
+            return true;
+        }
+        if (mode_ != TransportState::Stopped) {
+            why = "the transport is playing: stop first, then press Record";
+            return false;
+        }
+        if (record_ready_) {
+            record_ready_ = false;
+            return true;
+        }
+        if (std::find(armed_.begin(), armed_.end(), true) == armed_.end()) {
+            why = "no track is armed: arm a track, then press Record";
+            return false;
+        }
+        record_ready_ = true;
+        return true;
+    }
     if (id == "transport.toggle_click") {
         transport_flags_ ^= kTransportClick;
         return true;
@@ -1704,6 +1731,7 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         }
         position_ = frame;
         moved_ns_ = now();
+        record_ready_ = false;
         return true;
     };
     // A range is checked as the engine checks it and rolls from its start;
@@ -1716,8 +1744,15 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         if (!parse_play_range(r.argument, from, to, why)) return false;
         return locate(from) && play();
     };
-    if (id == "transport.play") return mode_ == TransportState::Stopped ? roll() : true;
-    if (id == "transport.toggle_play") return mode_ == TransportState::Stopped ? roll() : stop();
+    // Ready, Play is the take, from the document's punch range and not the
+    // argument's play range.
+    const bool stopped = mode_ == TransportState::Stopped;
+    if ((id == "transport.play" || id == "transport.toggle_play") && stopped && record_ready_ &&
+        !record_requested_) {
+        return start();
+    }
+    if (id == "transport.play") return stopped ? roll() : true;
+    if (id == "transport.toggle_play") return stopped ? roll() : stop();
     if (id == "transport.return_to_zero") return locate(0);
     if (id == "transport.locate") {
         uint64_t frame = 0;
@@ -1897,7 +1932,7 @@ void FakeEngine::publish() {
     tf.health_flags = health_;
     tf.inputs_connected = inputs_connected_ ? cfg_.tracks : 0;
     tf.buffer_frames = cfg_.buffer_frames;
-    tf.transport_flags = transport_flags_;
+    tf.transport_flags = transport_flags_ | (record_ready_ ? kTransportRecordReady : 0u);
     tf.playback_misses = playback_misses_;
 
     std::vector<TrackFields> tracks(cfg_.tracks);

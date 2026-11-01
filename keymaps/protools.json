@@ -15,8 +15,8 @@
     "numpad_1": "transport.rewind",
     "numpad_2": "transport.fast_forward",
     "numpad_3": {
-      "command": "transport.record",
-      "comment": "Avid's own guide disagrees with itself: the Transport keypad table calls keypad 3 Record Enable, the Recording table lists it under Start record. This follows the second."
+      "command": "transport.record_ready",
+      "comment": "Avid's own guide disagrees with itself: the Transport keypad table calls keypad 3 Record Enable, the Recording table lists it under Start record. This profile assumes Transport keypad mode, so it follows the first: the transport goes record-ready, Record blinks, and Play starts the take (ADR-0009 update of 2026-11-01). Command+Space and F12 are the Recording table's Start record, a take at once."
     },
     "numpad_4": "transport.toggle_loop",
     "ctrl+shift+l": "transport.toggle_loop",

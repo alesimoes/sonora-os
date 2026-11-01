@@ -35,7 +35,8 @@ namespace sonora::api {
 // 4 (ADR-0020): StateHeader::transport_flags, the click and the count-off.
 // 5 (ADR-0009 update of 2026-11-01): kTransportLocating, the header's
 //   playback_misses and the monitor bus's peak rings.
-constexpr uint32_t kStateLayoutVersion = 5;
+// 6 (ADR-0009 update of 2026-11-01, record-ready): kTransportRecordReady.
+constexpr uint32_t kStateLayoutVersion = 6;
 constexpr uint32_t kStateMagic = 0x534F4E53;   // "SONS"
 
 // Publish ticks a peak survives in the ring. At the fastest pace measured
@@ -80,6 +81,9 @@ enum TransportFlag : uint32_t {
     // Layout 5: a locate waits for its window to be resident. The interface
     // says "Locating…" once this has stood 100 ms on its own clock.
     kTransportLocating = 1u << 3,
+    // Layout 6: Pro Tools' record-ready, the blinking Record. Play starts
+    // the take (ADR-0009 update of 2026-11-01, record-ready).
+    kTransportRecordReady = 1u << 4,
 };
 
 // The monitor bus's sides in StateHeader::bus_peaks: left, then right.

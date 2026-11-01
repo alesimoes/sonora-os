@@ -36,7 +36,9 @@ file>` gives each heading's line; Read from there with offset/limit.*
   server's `model::Document` is the one document and its control thread the
   document thread; `Compound{ops, label}` makes several edits one revision
   and one undo step (accepted 2026-10-18), its limit 256 at
-  `kProtocolVersion` 5.
+  `kProtocolVersion` 5. Update 2026-11-01: Pro Tools' record-ready is
+  engine state (`kTransportRecordReady`, layout 6, protocol 37), and Play
+  starts the take.
 
 Sections: Context; Decision §1 to §5; Rationale; Consequences; Unverified;
 Updates 2026-10-13 (hardware measurements move after the Complete DAW; a
@@ -1212,6 +1214,73 @@ block is still sized once, when the session is created. A publish stores
 two more slots and one more word inside the section. `sonora-tui` shows the
 bus meter, the miss count and "Locating…". The Qt bus meter is its own
 ui-engineer item, with screenshots.
+
+## Update, 2026-11-01: record-ready, state block layout 6, protocol 37
+
+Decided by: rt-engineer, on the owner's requirement of 2026-11-01 and its
+recommended default.
+
+**Context.** In Pro Tools, pressing Record does not start a take. The
+transport goes *record ready* and the Record button blinks. The take starts
+when the operator presses Play, and Stop takes record-ready back. Our
+`transport.record` starts a take at once, which is Logic's R. Logic keeps
+that behaviour. The Pro Tools profile gets the two-step behaviour.
+
+**Decision.**
+
+1. **Record-ready is engine state.** It is a control-thread `bool`, owned
+   by the server like `take_`. The publisher shows it as
+   **`kTransportRecordReady`** (`TransportFlag` bit 4), so every interface
+   and the TUI show the same blinking Record. The flag is handed over as
+   `kTransportLocating` is, through an atomic (`StatePublisher::
+   set_record_ready`). The audio thread never reads it and never writes
+   it.
+2. **`transport.record_ready`** toggles it. It is installed with the
+   playback controller, because only Play starts what it prepares.
+   - It is refused when no track is armed, with "no track is armed".
+   - It is refused while the transport rolls, or while a play waits for
+     its window or its plug-ins, with "stop first".
+   - During a take it does nothing and answers Ok, as a second
+     `transport.record` does.
+   - With a take waiting behind the residency gate, it withdraws that
+     take, as `transport.toggle_record` does.
+3. **Play while ready starts the take.** This covers `transport.play` and
+   `transport.toggle_play` with the transport stopped. Each runs the start
+   path that `transport.record` runs: `MayRecord`, the residency gate, a
+   loop take from its pre-roll (ADR-0016 §1), a punch from A less the
+   pre-roll, and the ADR-0016 C3 refusal. A range argument is ignored then.
+   The take is the document's punch range, not the selection's play range.
+   The flag clears once the take is asked for, whether it starts or is
+   refused. At the server, such a Play counts as a take start
+   (`starts_a_take`). So it is refused during a latency measurement and
+   during a Save As copy. It never waits for plug-ins, because capture is
+   pre-insert. Its reply waits on the gate, as a Record's does.
+4. **What cancels it.** `transport.stop`, `transport.return_to_zero` and
+   `transport.locate` cancel it. So do `transport.record`,
+   `transport.toggle_record` and `transport.punch`, each of which starts a
+   take itself. A session open (`Load`) resets it: per-session state does
+   not cross into another session. Disarming every track leaves the flag
+   up. The Play that follows is then refused with "no track is armed", as
+   a Record would be.
+5. **Keymaps.** The Record *button* arms, as in Pro Tools. The keys
+   follow Avid's guide. Command+Space and F12 are listed under "Start
+   record", so in `protools.json` they stay `transport.record`, a take at
+   once. Keypad 3 is "Record Enable" in the Transport keypad table, the
+   mode the profile assumes, so it is `transport.record_ready`. Space stays
+   `transport.toggle_play`. `logic.json` keeps R on `transport.record`. The
+   keymap essentials count `transport.record_ready` in the start group,
+   because every shipped engine installs Play with it. The Qt Record button
+   sends `transport.record_ready` under Pro Tools in a follow-up PR.
+
+**Versions.** `kStateLayoutVersion` **6**, for the new flag. Layout 5 is
+on main. `kProtocolVersion` **37**: Play now means something else when
+ready, and there is a new command. It follows 36 (#226). Neither the session
+format nor the window format changes, because the flag is not saved.
+
+**Consequences.** The FakeEngine and the conformance suite carry the same
+rules ("record-ready"), so FakeEngine, InProcessEngine and SocketEngine are
+held to them. The TUI shows "REC READY". The Qt Record button does not
+blink yet; it is a follow-up for the ui-engineer, with screenshots.
 
 ## Alternatives rejected
 

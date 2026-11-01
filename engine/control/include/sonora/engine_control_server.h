@@ -543,6 +543,10 @@ private:
     // the publisher sees it through set_take().
     int take_ = 1;
     bool quit_ = false;   // app.quit's flag; never set, as the engine never runs it
+    // Pro Tools' record-ready, set and cleared by install_session_commands'
+    // handlers; the publisher sees it through set_record_ready(), and a
+    // session open clears it.
+    bool record_ready_ = false;
 
     // The control thread's, or start()'s before that thread exists.
     std::map<ClientId, Client> clients_;

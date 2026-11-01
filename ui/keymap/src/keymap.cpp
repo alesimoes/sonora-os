@@ -893,9 +893,13 @@ const std::vector<std::vector<std::string>>& KeyMap::essential_commands() {
     // transport.toggle_play is in the stop group:
     // its handler closes a running take (session_commands.cpp), and where a
     // build cannot run it, it does not count.
+    // transport.record_ready starts nothing itself, but the engine installs
+    // it only beside transport.play and transport.toggle_play, and a profile
+    // with it reaches Play on the key the stop group asks for.
     static const std::vector<std::vector<std::string>> groups = {
         {"track.toggle_arm", "track.arm", "track.arm_all"},
-        {"transport.toggle_record", "transport.record", "transport.punch"},
+        {"transport.toggle_record", "transport.record", "transport.punch",
+         "transport.record_ready"},
         {"transport.toggle_record", "transport.stop", "transport.toggle_play"},
         {"app.quit"},
     };

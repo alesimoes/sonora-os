@@ -135,7 +135,11 @@ namespace sonora::api {
 //   "insert" and "key", and a Snapshot's undo window is window format 11
 //   (session format 14). A version-35 peer refuses the param as a value it
 //   does not know.
-constexpr uint32_t kProtocolVersion = 36;
+// 37 (ADR-0009 update of 2026-11-01, record-ready; follows 36):
+//   transport.record_ready, and transport.play and transport.toggle_play
+//   start a take while the transport is record-ready. A version-36 engine
+//   has no record-ready, so its Play only plays.
+constexpr uint32_t kProtocolVersion = 37;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
