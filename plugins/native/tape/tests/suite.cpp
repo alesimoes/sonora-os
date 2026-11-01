@@ -108,10 +108,12 @@ void against_reference(Suite& s) {
     const double bar = s.bar("reference.max_error");
     const double fs = 48000.0;
     json::Value rows = json::Value::array();
-    for (int q = 0; q < 3; ++q) {
+    // Quick mode: eco only (its error is the largest) and two tones.
+    for (int q = 0; q < (measure::quick() ? 1 : 3); ++q) {
         const std::uint32_t factor = std::array<std::uint32_t, 3>{2, 4, 8}[q];
         for (const auto& [f, level, drive] : {std::tuple<double, double, double>{1000.0, -12.0, 12.0},
                                               {8000.0, -12.0, 12.0}, {15000.0, -18.0, 18.0}, {100.0, 0.0, 12.0}}) {
+            if (measure::quick() && f != 1000.0 && f != 8000.0) continue;
             auto p = measuring(s, fs, 1, {{"quality", static_cast<float>(q)}, {"drive", static_cast<float>(drive)}});
             const Chans x = measure::sine(fs, f, level, 0.5, 1);
             const Chans y = aligned(*p, x);
@@ -148,6 +150,7 @@ void response(Suite& s) {
     const double eq_flat = s.bar("response.eq_flat_db");
     json::Value rows = json::Value::array();
     for (double fs : measure::kRates) {
+        if (measure::quick() && fs != 44100.0) continue;
         for (int sp = 0; sp < 3; ++sp) {
             double worst = 0.0, worst_f = 0.0, lf = 0.0;
             double nab_vs_iec = 0.0;
@@ -215,7 +218,8 @@ void distortion(Suite& s) {
     json::Value rows = json::Value::array();
     double nominal_thd = 0.0, nominal_h3 = 0.0, nominal_h2 = 0.0;
     for (double drive : {0.0, 12.0}) {
-        for (double level = -48.0; level <= 6.0 + 1e-9; level += measure::quick() ? 12.0 : 6.0) {
+        // Quick mode keeps the -18 dBFS nominal point the bars read.
+        for (double level = measure::quick() ? -36.0 : -48.0; level <= 6.0 + 1e-9; level += measure::quick() ? 18.0 : 6.0) {
             auto p = measuring(s, fs, 1, {{"drive", static_cast<float>(drive)}});
             const Chans x = measure::sine(fs, 1000.0, level, 1.5, 1);
             const Chans y = aligned(*p, x);
@@ -277,10 +281,11 @@ void aliasing(Suite& s) {
     json::Value rows = json::Value::array();
     for (int q = 0; q < 3; ++q) {
         for (double fs : rates) {
-            for (std::size_t lv = 0; lv < std::size(levels); ++lv) {
+            for (std::size_t lv = 0; lv < (measure::quick() ? 1u : std::size(levels)); ++lv) {
                 double worst = -400.0, worst_f = 0.0, worst_all = -400.0, worst_all_f = 0.0;
                 for (double f0 : tones) {
                     if (f0 > 0.45 * fs) continue;
+                    if (measure::quick() && f0 != 997.0 && f0 != 7993.0 && f0 != 19001.0) continue;
                     auto p = measuring(s, fs, 1, {{"quality", static_cast<float>(q)}, {"drive", levels[lv].drive}});
                     const Chans y = aligned(*p, measure::sine(fs, f0, levels[lv].dbfs, 1.5, 1));
                     const double a = measure::alias_dbc(y[0], static_cast<std::size_t>(0.6 * fs), fs, f0);
@@ -368,6 +373,7 @@ void motion(Suite& s) {
     const double tol = s.bar("motion.deviation_tolerance");
     json::Value rows = json::Value::array();
     for (double fs : {44100.0, 48000.0, 96000.0}) {
+        if (measure::quick() && fs != 44100.0) continue;
         for (const auto& [name, wow, flutter] : {std::tuple<const char*, float, float>{"wow 0.3 %", 0.3f, 0.0f},
                                                   {"wow 0.1 %", 0.1f, 0.0f}, {"flutter 0.2 %", 0.0f, 0.2f},
                                                   {"flutter 0.05 %", 0.0f, 0.05f}}) {
@@ -462,6 +468,8 @@ int tape(const measure::Args& args) {
     for (int q = 0; q < 3; ++q) {
         const float qf = static_cast<float>(q);
         const std::string n = kQualityIds[q];
+        // Quick mode: the first and last qualities.
+        if (measure::quick() && q == 1) continue;
         // 30 in/s with the bump off: the latency is the oversampler's and
         // the motion line's. The head-loss low-pass and the bump are
         // magnitude shaping with their own group delay (about 90 us at 7.5
