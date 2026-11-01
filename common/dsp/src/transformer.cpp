@@ -7,26 +7,27 @@ namespace sonora::dsp {
 
 namespace {
 
-// The Langevin function and its derivative. The closed form cancels badly
-// near 0 (coth x and 1/x both blow up), so a series takes over under 0.1,
-// where its first four terms are good to 1e-14.
-double langevin(double x) noexcept {
-    const double ax = std::fabs(x);
-    if (ax < 0.1) {
-        const double x2 = x * x;
-        return x * (1.0 / 3.0 - x2 * (1.0 / 45.0 - x2 * (2.0 / 945.0 - x2 / 4725.0)));
-    }
-    return 1.0 / std::tanh(x) - 1.0 / x;
-}
+constexpr double kUMax = 1e6;
 
-double langevin_d(double x) noexcept {
+// The Langevin function and its derivative together. The closed form
+// cancels badly near 0 (coth x and 1/x both blow up), so a series takes over
+// under 0.1, where its first four terms are good to 1e-14. Above it one
+// exp serves both: with e = exp(-2|x|), coth|x| = (1 + e) / (1 - e) and
+// 1 / sinh^2 |x| = 4 e / (1 - e)^2, where a tanh and a sinh were two calls.
+void langevin_both(double x, double& l, double& dl) noexcept {
     const double ax = std::fabs(x);
     if (ax < 0.1) {
         const double x2 = x * x;
-        return 1.0 / 3.0 - x2 * (1.0 / 15.0 - x2 * (2.0 / 189.0 - x2 / 675.0));
+        l = x * (1.0 / 3.0 - x2 * (1.0 / 45.0 - x2 * (2.0 / 945.0 - x2 / 4725.0)));
+        dl = 1.0 / 3.0 - x2 * (1.0 / 15.0 - x2 * (2.0 / 189.0 - x2 / 675.0));
+        return;
     }
-    const double s = std::sinh(x);
-    return 1.0 / (x * x) - 1.0 / (s * s);
+    const double e = std::exp(-2.0 * ax);
+    const double om = 1.0 - e;
+    const double inv = 1.0 / ax;
+    const double mag = (1.0 + e) / om - inv;
+    l = x < 0.0 ? -mag : mag;
+    dl = inv * inv - 4.0 * e / (om * om);
 }
 
 }  // namespace
@@ -71,8 +72,10 @@ OutputStage::Eval OutputStage::eval(const Core& s, double i) const noexcept SONO
     const double dh = i - s.i;
     const double he = i + p_.alpha * s.m;
     const double x = he / p_.a;
-    const double man = p_.m_sat * langevin(x);
-    const double dman = p_.m_sat / p_.a * langevin_d(x);
+    double lan, dlan;
+    langevin_both(x, lan, dlan);
+    const double man = p_.m_sat * lan;
+    const double dman = p_.m_sat / p_.a * dlan;
     const double d = man - s.m_irr;
     const double delta = dh > 0.0 ? 1.0 : (dh < 0.0 ? -1.0 : 0.0);
     double m_irr = s.m_irr;
@@ -107,11 +110,17 @@ double OutputStage::step(Core& s, double vs) noexcept SONORA_RT {
     const double rhs = s.psi + 0.5 * t_ * (g_ * vs + s.v);
     // F(i) = psi(i) - rhs + half i: strictly increasing with slope >= half,
     // so from F(i0) the root lies within |F(i0)| / half of i0.
-    double i = s.i;
+    // The state is the converged point of the last step, so F(s.i) needs no
+    // evaluation: s.psi is psi there. The first Newton step uses the slope
+    // kept from that step (the core's slope moves little in one sample);
+    // the bracket is then taken at the point it lands on, as before.
+    const double slope = s.slope > 0.0 ? s.slope : p_.l_core;
+    const double f0 = s.psi - rhs + half * s.i;
+    double i = s.i - f0 / (slope + half);
     Eval e = eval(s, i);
     double f = e.psi - rhs + half * i;
     const double tol = 1e-11 * (1.0 + std::fabs(rhs));
-    std::uint32_t n = 0;
+    std::uint32_t n = 1;
     if (std::fabs(f) > tol) {
         double lo, hi;
         if (f > 0.0) {
@@ -139,6 +148,7 @@ double OutputStage::step(Core& s, double vs) noexcept SONORA_RT {
     s.v = v;
     s.m = e.m;
     s.m_irr = e.m_irr;
+    s.slope = e.dpsi;
     return v;
 }
 
@@ -149,7 +159,13 @@ void OutputStage::tick(const double* in, double* out) noexcept SONORA_RT {
     for (std::uint32_t c = 0; c < channels_; ++c) {
         double x = in[c];
         if (!std::isfinite(x)) x = 0.0;
-        const double u = x * vpu / rail, u2 = u * u;
+        // |u| is capped before u^4: past 1e6 the soft clip is flat at the
+        // rail to 1e-6 relative, and u^4 (and x * vpu) can no longer reach
+        // inf, which would make vs = inf / inf = NaN and poison the state.
+        double u = x * vpu / rail;
+        if (!(u < kUMax)) u = kUMax;
+        if (!(u > -kUMax)) u = -kUMax;
+        const double u2 = u * u;
         const double vs = rail * u / std::sqrt(std::sqrt(1.0 + u2 * u2));
         const double v = step(ch_[c], vs);
         // The primary's current, from the driver: push-pull draws it from
