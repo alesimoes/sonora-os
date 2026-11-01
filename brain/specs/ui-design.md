@@ -219,6 +219,19 @@ track dimmed, with the reason in `caution`, never hidden.
 - A time selection is `accent` at 20 % over the lane.
 - The insertion cursor is a 1 px `accent` line while stopped; the playhead
   a 2 px `playhead` line while playing, `record` while recording.
+- **Update, 2026-11-01: the take in progress.** While the transport records,
+  each armed audio track's lane shows the new take as a region growing from
+  where it began to the playhead, as Pro Tools draws it: drawn as a region
+  is, from `record` instead of the palette colour (body `#632829`, name band
+  `#953737`, overview `#F58F8D`, 4.93:1 on the body), over the lane's regions
+  since it records over them, with no name until the engine names it. The
+  overview is the track's input peak (the meter's reading, read every tick
+  while armed, shown or not), symmetric, one value per tick of timeline the
+  playhead crossed. It lands where the engine keeps the take: inside the
+  punch range, inside the loop range with each pass drawn again from its
+  start, from the playhead otherwise. It stays up to two seconds after Stop
+  for the engine's region, and goes at once when that arrives, when the
+  engine goes or when a session opens (`ui/qt/src/live_take.h`).
 
 ## Meters
 

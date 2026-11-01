@@ -192,6 +192,8 @@ void link_transport(ShellModel& shell, SessionModel& session, TransportModel& tr
         transport.onTransport(t, alive);
         session.onTransport(t, alive);
     });
+    shell.setLiveTakeSink([&session](const EngineFrame& f, const std::vector<float>& peaks,
+                                     bool alive) { session.onLiveTake(f, peaks, alive); });
     QObject::connect(&session, &SessionModel::counterChanged, &transport,
                      &TransportModel::followCounter);
     session.setCommandSender([&shell](const QString& command, const QString& argument) {

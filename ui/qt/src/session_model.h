@@ -248,6 +248,10 @@ public:
 
     // From ShellModel's tick, on the GUI thread, every tick.
     void onTransport(const TransportSnapshot& t, bool alive);
+    // From ShellModel's tick after onTransport (ShellModel::LiveTakeSink):
+    // the take being recorded, drawn growing on each armed track's lane.
+    void onLiveTake(const EngineFrame& f, const std::vector<float>& peaks, bool alive);
+    const LiveTake& liveTake() const { return live_; }
     // The document changed under the windows: the engine's update, another
     // interface's edit, or a refused edit taken back (ReplicaDocument).
     void documentUpdated();
@@ -571,6 +575,10 @@ private:
     ReadTransport read_transport_;
 
     TransportOverlay overlay_;
+    // Per session: cleared when one opens, so a take never lands on
+    // another session's lanes.
+    LiveTake live_;
+    std::vector<bool> live_armed_, live_audio_;   // kept, so a tick allocates nothing
     std::function<std::vector<bool>()> engine_armed_;
     std::function<int()> engine_track_count_;
     QString track_refusal_;

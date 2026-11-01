@@ -667,6 +667,12 @@ void SessionModel::documentUpdated() {
     // Another interface's edit can arrive at the revision an edit of ours
     // was shown at, so the revision alone does not say the content changed.
     seen_revision_ = UINT64_MAX;
+    // A stopped take's region has arrived (or the document moved on without
+    // it): what the engine placed is drawn now, not the live overview.
+    if (!live_.recording() && !live_.empty()) {
+        live_.clear();
+        for (SceneItem* item : items_) item->markOverlayDirty();
+    }
     sync();
 }
 
@@ -687,6 +693,31 @@ void SessionModel::onTransport(const TransportSnapshot& t, bool alive) {
     if (rolling && ctl_.follow(playhead)) sync();
     for (SceneItem* item : items_) item->markOverlayDirty();
     updateCounters(++transport_ticks_ % kCounterEvery == 0 || !rolling);
+}
+
+void SessionModel::onLiveTake(const EngineFrame& f, const std::vector<float>& peaks, bool alive) {
+    const bool drawn = !live_.empty();
+    if (!alive) {
+        // The engine that comes back says what it kept; a take drawn
+        // growing for an engine that is gone would be one nobody records.
+        live_.clear();
+    } else {
+        if (f.transport.stale) return;
+        // A count-off records nothing yet.
+        const bool recording =
+            f.transport.state == TransportMode::Recording && !f.transport.counting_off;
+        const auto& tracks = ctl_.snapshot().edit->tracks;
+        live_armed_.assign(f.tracks.size(), false);
+        live_audio_.assign(tracks.size(), false);
+        for (std::size_t i = 0; i < f.tracks.size(); ++i) live_armed_[i] = f.tracks[i].armed;
+        for (std::size_t i = 0; i < tracks.size(); ++i) {
+            live_audio_[i] = tracks[i]->kind == model::TrackKind::Audio;
+        }
+        live_.tick(recording, static_cast<Frames>(f.transport.playhead_frames), live_armed_,
+                   live_audio_, peaks, ctl_.snapshot().settings.transport);
+    }
+    if (!drawn && live_.empty()) return;
+    for (SceneItem* item : items_) item->markOverlayDirty();
 }
 
 void SessionModel::updateCounters(bool force) {
@@ -1402,6 +1433,7 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
         return false;
     }
     ctl_.document_replaced();
+    live_.clear();
     before_open_.valid = true;
     before_open_.opened = file;
     before_open_.file = file_;
@@ -1505,6 +1537,7 @@ void SessionModel::openWasRefused(const QString& why, bool later_load) {
     BeforeOpen b = std::move(before_open_);
     before_open_ = BeforeOpen{};
     ctl_.document_replaced();
+    live_.clear();
     file_ = b.file;
     saved_revision_ = b.saved_revision;
     save_generation_ = b.save_generation;
@@ -1602,6 +1635,7 @@ bool SessionModel::openRecordingFolder(const QString& folder, bool discard, std:
         return false;
     }
     ctl_.document_replaced();
+    live_.clear();
     before_open_.valid = true;
     before_open_.opened = folder;
     before_open_.file = file_;
@@ -1698,7 +1732,7 @@ void SessionModel::buildTimeline(Scene& out) const {
 }
 
 void SessionModel::buildOverlay(std::vector<SceneRect>& out) const {
-    build_timeline_overlay(ctl_.view(), ctl_.selection(), overlay_, out);
+    build_timeline_overlay(ctl_.view(), ctl_.selection(), overlay_, out, &live_);
 }
 
 void SessionModel::buildRuler(TimeFormat fmt, double height, Scene& out) const {

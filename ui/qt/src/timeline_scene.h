@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "edit_controller.h"
+#include "live_take.h"
 #include "peak_source.h"
 #include "time_format.h"
 
@@ -55,9 +56,15 @@ struct TransportOverlay {
     bool recording = false;  // and drawn in the record colour
 };
 
-// The insertion cursor while stopped, the playhead while rolling.
+// The insertion cursor while stopped, the playhead while rolling. Under it,
+// `live`'s take as it is being recorded: on each recording track's lane a
+// region in the record colour from where the take began to the playhead,
+// its overview the track's input peaks. On the overlay, not the content,
+// because it grows every tick, and over the lane's regions because the
+// take is recording over them.
 void build_timeline_overlay(const ViewState& view, const Selection& sel,
-                            const TransportOverlay& t, std::vector<SceneRect>& out);
+                            const TransportOverlay& t, std::vector<SceneRect>& out,
+                            const LiveTake* live = nullptr);
 
 // One ruler strip, `height` pixels tall, for the same view.
 void build_ruler_scene(TimeFormat fmt, const model::SessionSettings& s, const ViewState& view,
