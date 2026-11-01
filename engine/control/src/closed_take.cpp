@@ -14,6 +14,7 @@
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
 #include "sonora/wav_recovery.h"
+#include "sonora/wrap_sidecar.h"
 
 namespace sonora {
 
@@ -384,20 +385,31 @@ LoopFile loop_file(const model::Snapshot& document, const Session::ClosedTake& t
     // wraps there were, the lost ones at the end included.
     const std::size_t total =
         std::max<std::size_t>(take.loop_wraps, f.wraps.size() + f.wraps_past_cap);
+    // A file opened after the cap holds only before-file places, cut at the
+    // cap: put back the ones cut, or its passes count from the cap and the
+    // first is labelled P(cap + 1).
+    std::vector<uint64_t> known = f.wraps;
+    if (f.wraps_before_file > known.size()) {
+        known.assign(static_cast<std::size_t>(f.wraps_before_file), WrapSidecar::kBeforeFile);
+    }
     bool derived = false;
     const std::vector<uint64_t> wraps = complete_wraps(
-        f.wraps, std::min(total, cap), frames, loop.from, loop.to, origin, loop.latency, derived);
+        known, std::min(total, cap), frames, loop.from, loop.to, origin, loop.latency, derived);
     std::vector<LoopPass> passes =
         loop_passes(wraps, frames, loop.from, loop.to, origin, loop.latency);
     out.all_passes = passes.size();
     if (total > cap) {
         bool beyond = false;
-        out.all_passes = loop_passes(complete_wraps(f.wraps, total, frames, loop.from, loop.to,
+        out.all_passes = loop_passes(complete_wraps(known, total, frames, loop.from, loop.to,
                                                     origin, loop.latency, beyond),
                                      frames, loop.from, loop.to, origin, loop.latency)
                              .size();
     }
-    if (passes.size() > cap) passes.resize(cap);
+    // By the take's pass, not by count: a late file's passes skip numbers,
+    // so its first `cap` may run past the cap.
+    passes.erase(std::remove_if(passes.begin(), passes.end(),
+                                [cap](const LoopPass& p) { return p.pass > cap; }),
+                 passes.end());
     out.by_length = derived;
 
     model::RecordLoopTake& op = out.op;

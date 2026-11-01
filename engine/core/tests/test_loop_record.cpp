@@ -530,6 +530,10 @@ int test_a_late_track_numbers_its_passes_from_the_take() {
     // The take's wrap before the file holds its place, in memory and on
     // disk, so recovery numbers the pass the same.
     CHECK((late->wraps == std::vector<uint64_t>{WrapSidecar::kBeforeFile}));
+    CHECK(late->wraps_before_file == 1);
+    for (const auto& f : c.files) {
+        if (f.track == 0) CHECK(f.wraps_before_file == 0);
+    }
     sonora::WrapList list;
     CHECK(sonora::read_wrap_sidecar(WrapSidecar::path_for(late->path), list, error));
     CHECK(list.wraps == late->wraps);

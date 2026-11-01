@@ -322,6 +322,53 @@ int test_passes_past_the_cap_are_said() {
     return 0;
 }
 
+// BACKLOG Track 1, loop record: a track whose window opens after the take
+// has wrapped past the cap holds only passes past it. With a cap of 2 its
+// list is [before, before], cut there, and the take's third wrap came
+// before the file too: its passes are P4 and P5, both past the cap, so it
+// puts none on a playlist, not one labelled P3.
+int test_a_late_window_past_the_cap_places_no_pass() {
+    // Two opens in a ring of one: track 2's waits, undrained, until after
+    // wrap 3 at file frame 6500; the take runs on to 8750, past wrap 4,
+    // whose record for track 2 the same ring loses.
+    Rig rig("sonora_test_loop_take_late_cap", 2, 2, 2);
+    LoopRange l;
+    l.from = kA;
+    l.to = kB;
+    l.start = kA - 500;
+    std::string why;
+    CHECK(rig.session->start_loop(1, l, &why));
+    for (int b = 0; b < 27; ++b) rig.block(250, false);   // 6750 frames
+    for (int b = 27; b < 35; ++b) rig.block(250);         // 8750 frames
+    CHECK(rig.session->stop());
+    const Session::ClosedTake take = rig.take();
+    CHECK(take.loop_wraps == 4);
+    CHECK(take.files.size() == 2);
+    const DiskThread::ClosedFile& f = take.files[0].track == 1 ? take.files[0] : take.files[1];
+    CHECK(f.track == 1);
+    // Its Open finds room in the block after the first drain: the file
+    // starts at 7000, A + 500 in pass 4.
+    CHECK(f.frames == 8750 - 7000);
+    CHECK((f.wraps == std::vector<uint64_t>{WrapSidecar::kBeforeFile, WrapSidecar::kBeforeFile}));
+    CHECK(f.wraps_before_file == 3);
+
+    model::Document doc(engine_document(*rig.session));
+    const TakeAdded r = add_closed_take(doc, *rig.session, take);
+    CHECK(r.refused.empty());
+    const model::TrackEdit& first = *doc.current().edit->tracks[0];
+    const model::TrackEdit& late = *doc.current().edit->tracks[1];
+    CHECK(first.playlists.size() == 3);
+    if (late.playlists.size() != 1) {
+        for (const auto& p : late.playlists) std::fprintf(stderr, "  late: %s\n", p->name.c_str());
+    }
+    CHECK(late.playlists.size() == 1);
+    CHECK(active(doc.current(), 1)->regions.empty());
+    // Its audio is in the pool, and the stop says where the rest went.
+    CHECK(doc.current().sources->sources.size() == 2);
+    CHECK(any_mentions(r.track_notices, "take 1 recorded 5 passes; the first 2 are on playlists"));
+    return 0;
+}
+
 // O1: a take stopped before its first wrap has one pass, cut short, on its
 // own playlist only; one stopped in its pre-roll has none, and says so.
 int test_no_complete_pass() {
@@ -451,6 +498,7 @@ int main() {
     if (test_a_lost_wrap_is_placed_by_loop_length()) return 1;
     if (test_a_late_window_keeps_the_take_s_pass_numbers()) return 1;
     if (test_passes_past_the_cap_are_said()) return 1;
+    if (test_a_late_window_past_the_cap_places_no_pass()) return 1;
     if (test_no_complete_pass()) return 1;
     if (test_the_document_loop()) return 1;
     if (test_record_commands_start_a_loop_take()) return 1;

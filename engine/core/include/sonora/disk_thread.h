@@ -65,6 +65,10 @@ public:
         // file's wrap list on disk holds past the cap.
         std::vector<uint64_t> wraps;
         uint64_t wraps_past_cap = 0;
+        // How many of the take's wraps came before a late file opened: the
+        // list's leading WrapSidecar::kBeforeFile places, those past the cap
+        // included, which `wraps` alone cannot say once the cap cuts it.
+        uint64_t wraps_before_file = 0;
         // Empty unless the wrap list on disk could not be written.
         std::string wrap_failure;
     };
@@ -147,6 +151,7 @@ private:
         // many wraps its list on disk holds.
         std::vector<uint64_t> wraps[2];
         uint64_t wraps_written[2] = {0, 0};
+        uint64_t wraps_before_file[2] = {0, 0};
     };
 
     void run();
