@@ -1,0 +1,29 @@
+[Unit]
+Description=Sonora user interface (Qt on Wayland)
+ConditionKernelCommandLine=sonora.gui
+BindsTo=sonora-compositor.service
+After=sonora-compositor.service
+OnFailure=sonora-display-fallback.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sonora
+Group=sonora
+Environment=HOME=/home/sonora
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=QT_QPA_PLATFORM=wayland
+Environment=QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+ExecStartPre=/usr/local/bin/sonora-wait-for-display
+# Stage 1: the fake engine, so the boot is unchanged and the display stack can
+# be measured on its own. Stage 2 drops --demo.
+ExecStart=/usr/local/bin/sonora-ui --kiosk --demo
+Restart=always
+RestartSec=1
+# The UI's "unfit display" exit code (ui/qt/README: 3). Retrying cannot fix it.
+RestartPreventExitStatus=3
+LimitRTPRIO=0
+OOMScoreAdjust=500
+# No [Install]: the compositor pulls this in.

@@ -41,3 +41,22 @@ usbutils
 htop
 less
 nano
+
+# Display stack (ADR-0010). Inert unless the kernel command line has
+# sonora.gui. libpam-systemd is listed explicitly: without it libseat1 is
+# satisfied by the seatd daemon instead of logind.
+libpam-systemd
+labwc
+xwayland
+qt6-wayland
+libqt6gui6
+libqt6widgets6
+libqt6quick6
+qml6-module-qtquick
+qml6-module-qtquick-controls
+qml6-module-qtquick-window
+qml6-module-qtquick-templates
+libgl1-mesa-dri
+libglx-mesa0
+libegl-mesa0
+fonts-dejavu-core

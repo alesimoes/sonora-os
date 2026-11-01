@@ -32,6 +32,16 @@ directly so that `audio-stack/` stays the single documented source for them —
    launches the engine. It restarts on exit, so the operator never reaches a
    shell.
 
+## Display stack (ADR-0010, stage 1)
+
+Off by default. With `sonora.gui` on the kernel command line,
+`sonora-compositor.service` runs labwc as a kiosk on tty1, pulls in
+`sonora-ui.service` (`sonora-ui --kiosk --demo`, fake engine) and
+`sonora-session.service` stands down. Five failures in 60 s, or the UI's exit
+code 3, run `sonora-display-fallback.service` (`chvt 2`; tty2 hosts the terminal UI only from stage 2, so at stage 1 it is an empty console). `sonora-ui` is not
+yet staged by `tools/build-iso.sh`; until it is, the UI unit fails and falls
+back.
+
 ## What is not verified
 
 The image builds and boots in QEMU, both from the ISO (`tools/test-boot-qemu.sh`)

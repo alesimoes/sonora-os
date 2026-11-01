@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!-- ADR-0010 section 1: labwc as a kiosk.
+     labwc loads its default key bindings (Alt-Tab, Super-Return, ...) when
+     rc.xml declares no keybind at all, so we declare exactly one inert binding
+     on a key we never use, and no <default/>. The same holds for <mouse>:
+     declaring any binding drops the defaults, including the root-menu ones. -->
+<labwc_config>
+  <keyboard>
+    <keybind key="XF86LaunchB">
+      <action name="None"/>
+    </keybind>
+  </keyboard>
+
+  <mouse>
+    <!-- Only what an operator needs to move or dismiss a plugin editor.
+         Nothing on the Root context: the desktop shows for about a second
+         between a UI crash and its restart and must lead nowhere. -->
+    <context name="Frame">
+      <mousebind button="Left" action="Press"><action name="Focus"/></mousebind>
+    </context>
+    <context name="Client">
+      <mousebind button="Left" action="Press"><action name="Focus"/></mousebind>
+    </context>
+    <context name="Title">
+      <mousebind button="Left" action="Drag"><action name="Move"/></mousebind>
+    </context>
+    <context name="Close">
+      <mousebind button="Left" action="Click"><action name="Close"/></mousebind>
+    </context>
+  </mouse>
+
+  <windowRules>
+    <!-- The UI covers the output and stays below every other window, so
+         clicking it never raises it over an open plugin editor. -->
+    <windowRule identifier="sonora-ui" serverDecoration="no" fixedPosition="yes">
+      <action name="Maximize"/>
+      <action name="ToggleAlwaysOnBottom"/>
+    </windowRule>
+  </windowRules>
+
+  <!-- Every other window (plugin editors, Qt dialogs) keeps server-side
+       decorations: a title bar and a close button are how an operator gets
+       rid of a misbehaving editor. -->
+  <placement>
+    <policy>center</policy>
+  </placement>
+</labwc_config>
