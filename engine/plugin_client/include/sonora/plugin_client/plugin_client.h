@@ -80,7 +80,11 @@ struct InsertChainRef {
     uint32_t channel_generation = 0;  // the slot generation the plan was built against
     uint32_t param_store = kNoStore;
     uint32_t node_state = 0;
-    uint32_t channels = 0;  // the chain's audio channels, in and out
+    uint32_t channels = 0;  // the chain's signal channels, in and out
+    // Side-chain key channels, the region's last input planes after the
+    // signal (ADR-0012 amendment 2026-11-01); 0 for an unkeyed chain. The
+    // slot's Layout::channels is channels + key_channels.
+    uint32_t key_channels = 0;
 };
 
 // A parameter change the audio thread has for a node this callback: from an
@@ -215,8 +219,13 @@ public:
     //    input is copied aside before the output is written.
     //  - events: at most what the caller holds, with param_store a valid
     //    store or kNoStore.
+    //  - `key`: node.key_channels planes of `frames`, submitted into the
+    //    key input planes; null, or a null plane, is a silent key. The key
+    //    is never collected or played: `out` has node.channels planes. It
+    //    may alias `out` too.
     Outcome process_chain(const InsertChainRef& node, const float* const* in, float* const* out,
-                          uint32_t frames, const ParamEvent* events, uint32_t event_count) noexcept SONORA_RT;
+                          uint32_t frames, const ParamEvent* events, uint32_t event_count,
+                          const float* const* key = nullptr) noexcept SONORA_RT;
     // §7.2 step 3: one tick if anything was submitted, and the wake only
     // behind kHostWakeEnabled.
     void end_callback() noexcept SONORA_RT;

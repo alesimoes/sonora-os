@@ -35,6 +35,12 @@
 //      input planes     [channels][max_frames] float    engine writes, host reads
 //      output planes    [channels][max_frames] float    host writes, engine reads
 //
+//    A side-chain key is not a region of its own (ADR-0012 amendment
+//    2026-11-01): a keyed chain's `channels` counts signal and key, the key
+//    being the last HostControl Load::key_channels planes. The engine writes
+//    the key into those input planes; their output planes are written by no
+//    one and never read. The split lives in Load, not in the header.
+//
 // 2. The CLOCK region, one per session, shared by every host: a ClockHeader.
 //    The engine writes it; every host maps it READ-ONLY, and that is enforced
 //    by the descriptor, not left to the host (auditor M1): the engine hands
@@ -410,7 +416,7 @@ struct ChannelHeader {
     uint32_t sample_rate;
     uint32_t max_frames;       // per block, the size of every plane
     uint32_t block_frames;     // nominal quantum; used for the IPC latency
-    uint32_t channels;         // audio channels in and out of the chain
+    uint32_t channels;         // audio channels in and out of the chain, a key included
     uint32_t pipeline_depth;   // kPipelineDepth
     uint32_t instance_count;   // plugins in the chain, <= kMaxInstances
     int32_t host_rt_priority;  // SCHED_FIFO priority to ask for; 0 = none

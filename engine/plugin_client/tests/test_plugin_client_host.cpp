@@ -71,6 +71,7 @@ const char* const kCrash = "urn:sonora:test#crash";
 const char* const kSleep = "urn:sonora:test#sleep";
 const char* const kNan = "urn:sonora:test#nan";
 const char* const kLookahead = "urn:sonora:test#lookahead";
+const char* const kKey = "urn:sonora:test#key";
 
 uint64_t now_ns() {
     return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -125,24 +126,28 @@ Probe probe(const Args& a, const std::string& id) {
 // allocation here: every buffer is sized before the backend is activated.
 class ChainSession final : public backend::ProcessCallback {
 public:
-    ChainSession(PluginClient& client, uint32_t channels, uint64_t blocks)
-        : client_(client), channels_(channels), blocks_(blocks), in(channels), out(channels), outcomes(blocks) {
+    ChainSession(PluginClient& client, uint32_t channels, uint64_t blocks, uint32_t keys = 0)
+        : client_(client), channels_(channels), keys_(keys), blocks_(blocks), in(channels), out(channels),
+          key(keys), outcomes(blocks) {
         for (uint32_t c = 0; c < channels; ++c) {
             in[c].assign(blocks * kBlock, 0.f);
             out[c].assign(blocks * kBlock, 0.f);
         }
+        for (auto& k : key) k.assign(blocks * kBlock, 0.f);
     }
 
     void process(const backend::AudioBlock& b) noexcept SONORA_RT override {
         if (callback < blocks_ && b.nframes == kBlock) {
             const float* ip[4] = {};
             float* op[4] = {};
+            const float* kp[4] = {};
             for (uint32_t c = 0; c < channels_; ++c) {
                 ip[c] = in[c].data() + callback * kBlock;
                 op[c] = out[c].data() + callback * kBlock;
             }
+            for (uint32_t k = 0; k < keys_; ++k) kp[k] = key[k].data() + callback * kBlock;
             client_.begin_callback(now_ns());
-            outcomes[callback] = client_.process_chain(ref, ip, op, b.nframes, events, event_count);
+            outcomes[callback] = client_.process_chain(ref, ip, op, b.nframes, events, event_count, kp);
             client_.end_callback();
             event_count = 0;
             for (uint32_t o = 0; o < b.output_count; ++o)
@@ -167,10 +172,11 @@ public:
 private:
     PluginClient& client_;
     uint32_t channels_;
+    uint32_t keys_;
     uint64_t blocks_;
 
 public:
-    std::vector<std::vector<float>> in, out;
+    std::vector<std::vector<float>> in, out, key;
     std::vector<Outcome> outcomes;
 };
 
@@ -204,7 +210,7 @@ struct Rig {
 
     Rig(const Args& a, ChainSpec spec, uint64_t blocks)
         : client(client_config()), scfg(sup_config(a)), sup(scfg, client),
-          fake(FakeBackend::onboard_config()), session(client, spec.channels, blocks) {
+          fake(FakeBackend::onboard_config()), session(client, spec.channels, blocks, spec.key_channels) {
         check(sup.ok(), "the host speaks this engine's versions and the clock is sealed");
         // The container grants memlock (tools/build-plugins.sh), so a
         // refusal here is a bug, not the environment (auditor M2, #49).
@@ -1344,6 +1350,43 @@ int scenario_passthrough(const Args& a) {
     return 0;
 }
 
+// ADR-0012 amendment 2026-11-01, end to end: a keyed chain's node names
+// the split, the key reaches the plugin's lv2:isSideChain port through the
+// region's last plane, and what plays is the signal output only.
+// sonora_test#key outputs its key, so block k plays key block k - 1.
+int scenario_keyed(const Args& a) {
+    std::printf("keyed: %s, a mono chain with a mono key\n", kKey);
+    ChainSpec spec = mono_spec(a, kKey);
+    spec.key_channels = 1;
+    Rig rig(a, spec, 48);
+    if (!rig.ready) return 1;
+    check(rig.session.ref.channels == 1 && rig.session.ref.key_channels == 1, "the node names 1 signal + 1 key");
+    fill_noise(rig.session, 5);
+    uint32_t x = 99;
+    for (float& v : rig.session.key[0]) {
+        x = x * 1103515245u + 12345u;
+        v = float(int32_t(x >> 9) % 800) / 1600.f;
+    }
+    rig.run_waited(48);
+    bool exact = true;
+    for (uint64_t k = 2; k < 48 && exact; ++k) {
+        const float* o = rig.session.out_block(0, k);
+        const float* want = rig.session.key[0].data() + (k - 1) * kBlock;
+        for (uint32_t f = 0; f < kBlock; ++f)
+            if (o[f] != want[f]) {
+                std::printf("  block %llu frame %u: %.9g, want the key's %.9g\n", (unsigned long long)k, f,
+                            double(o[f]), double(want[f]));
+                exact = false;
+                break;
+            }
+    }
+    check(exact, "the plugin hears the key, one block late, bit for bit");
+    const SlotStatus st = rig.client.slot_status(rig.session.ref.channel_slot);
+    check(st.collected == 47 && st.misses == 0, "47 collected, no miss");
+    check(rig.client.node_status(rig.session.ref.node_state).shape_faults == 0, "no shape fault");
+    return 0;
+}
+
 int scenario_params(const Args& a) {
     std::printf("params: %s, a gain in dB moved through the ring\n", kLookahead);
     Rig rig(a, mono_spec(a, kLookahead), 64);
@@ -1660,6 +1703,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "async_refused") r = scenario_async_refused(a);
     else if (a.scenario == "passthrough") r = scenario_passthrough(a);
     else if (a.scenario == "params") r = scenario_params(a);
+    else if (a.scenario == "keyed") r = scenario_keyed(a);
     else if (a.scenario == "miss") r = scenario_miss(a);
     else if (a.scenario == "crash") r = scenario_crash(a);
     else if (a.scenario == "restarts") r = scenario_restarts(a);
