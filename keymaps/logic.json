@@ -65,6 +65,11 @@
       "origin": "sonora",
       "comment": "Ours. Logic thins by menu (Thin Data); no key is documented. Thins the selected lane range."
     },
+    "ctrl+alt+m": {
+      "command": "track.step_automation_mode",
+      "origin": "sonora",
+      "comment": "Ours. Logic picks the mode from the track header with no documented key. Steps the selected track Off, Read, Touch, Latch, Write."
+    },
     "delete": {
       "command": "edit.clear",
       "comment": "Not in any key-command table; Apple's guide says it in prose: \"Choose Edit > Delete (or press Delete)\". Edit > Delete removes the selection without the clipboard, which is Clear."

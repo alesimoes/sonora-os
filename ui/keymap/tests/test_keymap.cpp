@@ -676,6 +676,7 @@ int test_profile_corrections() {
         {"protools.json", "alt+f", "zoom.fit_selection"},
         {"protools.json", "alt+a", "zoom.fit_session"},
         {"protools.json", "ctrl+space", "transport.record"},
+        {"protools.json", "ctrl+alt+m", "track.step_automation_mode"},
         {"protools.json", "alt+shift+d", "track.duplicate"},  // Duplicate Tracks (ADR-0023)
         {"protools.json", "cmd+backslash", "track.playlist_new"},  // ADR-0026, unverified
         {"protools.json", "cmd+alt+\\", "track.playlist_duplicate"},
@@ -699,6 +700,7 @@ int test_profile_corrections() {
         {"logic.json", "alt+shift+r", nullptr},  // Region Inspector Float
         {"logic.json", "ctrl+r", "track.toggle_arm"},
         {"logic.json", "ctrl+i", "track.toggle_input_monitor"},
+        {"logic.json", "ctrl+alt+m", "track.step_automation_mode"},
         {"logic.json", "up", "track.select_previous"},
         {"logic.json", "down", "track.select_next"},
     };

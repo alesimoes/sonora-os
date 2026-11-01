@@ -302,6 +302,7 @@ Item {
                     height: edit.session.trackHeight
                     visible: y + height >= 0 && y <= headers.height
                     color: selected ? Theme.raised : Theme.panel
+                    z: headerAutoMode.open ? 100 : 0
 
                     // Right-click, as Pro Tools' track name menu: the track
                     // is selected and the Track menu acts on it.
@@ -405,10 +406,23 @@ Item {
                             activeColour: Theme.mute
                             onClicked: edit.shell.invoke("track.toggle_mute", header.index)
                         }
+                        // The automation mode, as on the Mix strip, so a lane
+                        // can be armed to write without leaving the Edit window.
+                        AutomationModeButton {
+                            id: headerAutoMode
+                            objectName: "editAutoMode" + header.index
+                            visible: edit.mixer !== null
+                            width: 38; height: 20
+                            mixer: edit.mixer
+                            track: header.index
+                            mode: header.index < edit.session.automationModes.length
+                                  ? edit.session.automationModes[header.index] : "Read"
+                        }
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
-                            leftPadding: Theme.space2
-                            text: edit.session.gainText(edit.session.gains[header.index] || 0) + " dB"
+                            leftPadding: Theme.space1
+                            // No unit: the automation selector took its room.
+                            text: edit.session.gainText(edit.session.gains[header.index] || 0)
                             color: header.selected ? Theme.textSecondary : Theme.textTertiary
                             font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
                         }

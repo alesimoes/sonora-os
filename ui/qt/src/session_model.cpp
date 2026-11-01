@@ -350,6 +350,11 @@ void SessionModel::installCommands(CommandRegistry& local) {
                                          why);
     });
 
+    simple("track.step_automation_mode", [this](const CommandContext& ctx, Why& why) {
+        return ctl_.step_automation_mode(ctx.has_target() ? ctx.target : ctl_.selection().track,
+                                         why);
+    });
+
     // Saving is the engine's once it has session commands (session_files.h);
     // until then the interface writes the file itself.
     simple("app.save", [this](const CommandContext&, Why& why) { return saveSession(why); });
