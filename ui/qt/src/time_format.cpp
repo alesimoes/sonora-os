@@ -340,7 +340,10 @@ std::string format_length(TimeFormat fmt, model::Frames position, model::Frames 
                 --beats;
             }
             if (beats < 0) {
-                beats += static_cast<int>(tempo_at(position, s).meter[0]);
+                // The bar borrowed from is the one before the span's end, and
+                // its meter is the one that counts, not the start's.
+                const MusicalTime prev{std::max<int64_t>(1, b.bar - 1), 1, 0};
+                beats += meter_beats(tempo_at(frame_of(prev, s), s));
                 --bars;
             }
             return printf_string("%lld|%lld|%03lld", bars, beats, ticks);
