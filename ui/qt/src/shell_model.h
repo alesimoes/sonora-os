@@ -153,6 +153,14 @@ public:
     // Edit window's playhead. A C++ call, never a signal (ADR-0006).
     using TransportSink = std::function<void(const TransportSnapshot&, bool alive)>;
     void setTransportSink(TransportSink s) { transport_sink_ = std::move(s); }
+    // Called every tick after the transport sink, with the tick's frame and
+    // the input peaks read in it: while the engine records, every armed
+    // track's is read this tick, meter on screen or not, so the take drawn
+    // growing on its lane (LiveTake) has no gap. `peaks[i]` is engine track
+    // i's and means nothing for a track that is not armed.
+    using LiveTakeSink =
+        std::function<void(const EngineFrame&, const std::vector<float>& peaks, bool alive)>;
+    void setLiveTakeSink(LiveTakeSink s) { live_take_sink_ = std::move(s); }
     // One read of the engine's transport now, between ticks: a command that
     // stamps the playhead (marker.add while rolling) takes it from here, as
     // the last tick's reading is up to a tick and a period behind. False when
@@ -316,6 +324,7 @@ private:
     std::array<float, 2> bus_peaks_{};
     std::array<bool, 2> bus_peak_read_{};
     TransportSink transport_sink_;
+    LiveTakeSink live_take_sink_;
     PluginSinks plugin_sinks_;
     api::PluginCatalog catalog_;   // kept, so taking one reuses its storage
     std::vector<CommandOutcome> replies_;

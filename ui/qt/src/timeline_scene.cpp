@@ -269,6 +269,46 @@ void draw_autolane(const Snapshot& s, const TrackEdit& t, int i, int l, const Vi
     }
 }
 
+// The take being recorded, one region per recording lane: body, name band
+// and overview in the record colour, so it reads as recording and as
+// nothing else (ui-design.md, "Colour means something, once").
+void draw_live_take(const LiveTake& live, const ViewState& v, std::vector<SceneRect>& out) {
+    const uint32_t body = theme::region_body(theme::kRecord);
+    const uint32_t band_colour = theme::region_name_band(theme::kRecord);
+    const uint32_t wave = theme::region_wave(theme::kRecord);
+    static thread_local std::vector<PeakPair> buf;
+    for (const LiveTake::Lane& lane : live.lanes()) {
+        if (lane.end <= lane.start) continue;
+        const double lane_y = v.y_of_track(lane.row);
+        if (lane_y + v.track_height < 0 || lane_y > v.height) continue;
+        const double x0 = v.x_of(lane.start), x1 = v.x_of(lane.end);
+        if (x1 < 0 || x0 > v.width) continue;
+        // At least a pixel, so the first tick of a take already shows.
+        const double cx0 = std::max(0.0, x0), cx1 = std::min(v.width, std::max(x1, x0 + 1));
+        const double y = lane_y + kLaneInset;
+        const double h = v.track_height - 2 * kLaneInset;
+        add(out, cx0, y, cx1 - cx0, h, body);
+        const double band = std::min<double>(theme::kRegionNameBand, h / 3);
+        add(out, cx0, y, cx1 - cx0, band, band_colour);
+        double wy = 0, wh = 0;
+        wave_area(lane_y, v, wy, wh);
+        const int first_px = static_cast<int>(std::floor(cx0));
+        const int count = static_cast<int>(std::ceil(cx1)) - first_px;
+        if (count <= 0 || wh <= 2) continue;
+        buf.resize(static_cast<std::size_t>(count));
+        live.peaks(lane, static_cast<Frames>(std::llround(v.scroll + first_px * v.fpp)), v.fpp,
+                   count, buf.data());
+        const double mid = wy + wh / 2, half = wh / 2;
+        for (int i = 0; i < count; ++i) {
+            const double px = first_px + i;
+            if (px < cx0 - 0.5 || px >= cx1) continue;
+            const double m = std::min(1.0, static_cast<double>(buf[i].max) * v.wave_scale);
+            if (m <= 0) continue;
+            add(out, px, mid - m * half, 1.0, std::max(1.0, 2 * m * half), wave);
+        }
+    }
+}
+
 }  // namespace
 
 void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection& sel,
@@ -408,9 +448,10 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
 }
 
 void build_timeline_overlay(const ViewState& v, const Selection& sel, const TransportOverlay& t,
-                            std::vector<SceneRect>& out) {
+                            std::vector<SceneRect>& out, const LiveTake* live) {
     out.clear();
     if (v.width <= 0 || v.height <= 0) return;
+    if (live != nullptr) draw_live_take(*live, v, out);
     if (t.rolling) {
         const double x = std::floor(v.x_of(t.playhead));
         if (x >= -1 && x <= v.width) {

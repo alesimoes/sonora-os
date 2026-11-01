@@ -38,7 +38,8 @@ class TransportModel;
 // Feeds both models from the shell's tick and publishes the window's
 // position text on the main counter's cue, so the counter in the bar and
 // the Transport window show one reading while rolling, not two a few ticks
-// apart. Replaces any transport sink the shell had.
+// apart. Replaces any transport sink the shell had. Feeds the Edit
+// window's take in progress too (SessionModel::onLiveTake).
 void link_transport(ShellModel& shell, SessionModel& session, TransportModel& transport);
 
 // Marker recall locates the engine's playhead with transport.locate, through

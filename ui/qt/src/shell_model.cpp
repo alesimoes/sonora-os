@@ -467,8 +467,22 @@ void ShellModel::tick() {
     // A new format refreshes at once: the arm buttons and the clock are
     // sized and read from it.
     const bool refresh = ++tick_count_ % kStateEvery == 0 || reformatted;
-    if (alive && (transport_sink_ || refresh)) engine_.frame(frame_);
+    if (alive && (transport_sink_ || live_take_sink_ || refresh)) engine_.frame(frame_);
     if (transport_sink_) transport_sink_(alive ? frame_.transport : TransportSnapshot{}, alive);
+    if (live_take_sink_) {
+        // A stale read says nothing about the tracks; the next tick's peak,
+        // the maximum since this reader's last, covers this one too.
+        if (alive && !frame_.transport.stale &&
+            frame_.transport.state == TransportMode::Recording) {
+            const std::size_t n = std::min(peaks_.size(), frame_.tracks.size());
+            for (std::size_t ch = 0; ch < n; ++ch) {
+                if (!frame_.tracks[ch].armed || peak_read_[ch]) continue;
+                peaks_[ch] = engine_.take_peak(static_cast<uint32_t>(ch));
+                peak_read_[ch] = true;
+            }
+        }
+        live_take_sink_(frame_, peaks_, alive);
+    }
     if (refresh) refreshState(false);
     if (refresh && plugin_sinks_.frame) plugin_sinks_.frame(frame_, alive);
     if (!status_.isEmpty() && t0 > status_until_ns_) {
