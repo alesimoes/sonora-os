@@ -106,6 +106,8 @@ class ShellModel : public QObject {
 
 public:
     ShellModel(EngineAdapter& engine, KeyRouter& router, QObject* parent = nullptr);
+    // For a screenshot scene that scripts the fake engine behind it.
+    EngineAdapter& engineAdapter() { return engine_; }
 
     // Starts the tick. `hz` is the meter rate; ADR-0006 allows lowering it
     // to protect the callback, never raising the cost of a frame.

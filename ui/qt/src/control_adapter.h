@@ -76,6 +76,8 @@ public:
     static constexpr std::size_t kMaxAwaiting = 1024;
     std::size_t awaiting_model_replies() const { return model_seqs_.size(); }
     std::size_t awaiting_command_replies() const { return pending_.size(); }
+    // The backend itself, for a screenshot scene that scripts the fake.
+    api::EngineControl& backend() { return engine_; }
 
 private:
     api::EngineControl& engine_;
