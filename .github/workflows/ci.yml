@@ -483,6 +483,9 @@ jobs:
       - name: Check
         run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot
 
+      - name: RT limits agree across limits.d, unit and hook
+        run: tools/test-rt-limits.sh
+
       # The image installs the copies under iso/, not audio-stack/ itself, so
       # an edit that skipped tools/sync-audio-stack.sh would ship the old
       # tuning while every container test (which reads audio-stack/) passed.
