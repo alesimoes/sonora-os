@@ -91,7 +91,7 @@
 | Per-strip metering, pre/post fader | Complete DAW / Mixer, routing and processing graph | `feature/ui-mixer-monitor` | 1 |
 | I/O setup and routing: buses, aux tracks, master | Complete DAW / Mixer, routing and processing graph | `t4-mixer-io` | 3 |
 | Automation modes: off, read, touch, latch, write, trim | Complete DAW / Automation | `t4-automation` | 8 |
-| Automation lanes: display, pencil, breakpoints, thin, copy and paste | Complete DAW / Automation | `ui-automation-lanes` | 3 |
+| Automation lanes: display, pencil, breakpoints, thin, copy and paste | Complete DAW / Automation | `t2-automation-model` | 3 |
 | Sample-accurate automation in the engine plan, for faders, pans, sends and plugin parameters | Complete DAW / Automation | `automation-write-slice` | 3 |
 | Out-of-process host: contracts/plugin, engine/plugin_client, plugins/host (M9) | Complete DAW / Plugin hosting and PDC | `t4-events-dropped-shown` | 8 |
 | Checklist 5: the plugin scan worker and catalog cache; AddInsert/ReplaceInsert resolved against the catalog (ADR-0012 amendment of 2026-10-19, items 1-7, Q1-Q3) | Complete DAW / Plugin hosting and PDC | `track4-scan-worker` | 8 |
