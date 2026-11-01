@@ -585,7 +585,7 @@ void test_window() {
         OK(bar_rec->property("active").toBool());
         bar_rec->setProperty("blinkOn", false);
         OK(!bar_rec->property("active").toBool());
-        OK(bar_rec->property("border.width").toInt() == 2);
+        OK(bar_rec->property("outlined").toBool());
         // A take replaces the blink with the solid button.
         engine.snapshot.state = TransportMode::Recording;
         for (int i = 0; i < 4; ++i) model.tick();
