@@ -1945,8 +1945,8 @@ not deferred.
       ends on tty2, renderer chosen on `-vga std`, Alt-Tab/Super-Return reach
       the client. distro-engineer.
 - [x] Stage 1, UI side (#208): `app_id` `sonora-ui`, no fullscreen request, a
-      first-frame log line, a documented "unfit display" exit code; later
-      `sd_notify` watchdog through `common/platform`. ui-engineer.
+      first-frame log line, a documented "unfit display" exit code. ui-engineer.
+- [ ] Stage 1 UI, later: `sd_notify` watchdog through `common/platform`. ui-engineer.
 - [ ] Stage 2, after M7: `sonora-session.service` becomes
       `sonora-engine.service` + `sonora-tui.service` (tty2); compositor
       enabled by default; smoke test kills labwc and the UI mid-take and
@@ -2074,11 +2074,13 @@ Order and owners are in ADR-0008 §5.
       file and every replica keep the old gain, and the next mix-changing
       update (another track's `SetMix`, a load) snaps the fader back.
       ui-engineer with rt-engineer.
-- [x] `transport.locate` with the frame in `argument` (a click on the ruler),
-      and state block layout v2 carrying "Locating...", the monitor bus
-      peaks and the playback miss count. Contract PRs of their own (ADR-0009
-      update, item 4, "Not in this port"); the bus meters return in
-      sonora-tui and sonora-ui with them. rt-engineer with ui-engineer.
+- [x] `transport.locate` with the frame in `argument` (a click on the ruler)
+      (done in #123).
+- [x] State block layout 5 (#213): "Locating...", the monitor bus peaks and
+      the playback miss count. Contract PRs of their own (ADR-0009 update,
+      item 4, "Not in this port").
+- [ ] Bus meters back in sonora-ui (Qt, with screenshots) and sonora-tui,
+      from the layout 5 bus peaks. ui-engineer with rt-engineer.
 - [x] Input monitoring with latency compensation measured by a loopback test
       (ADR-0019, `t1-input-monitor`): `LatencyProbe` in the callback, takes
       captured L later on the playhead and labelled P0 − L, drivers/fake's
