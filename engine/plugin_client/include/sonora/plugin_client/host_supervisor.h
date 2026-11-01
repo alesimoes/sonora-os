@@ -100,6 +100,12 @@ struct HostWatch {
 // leaves a dangling pointer. Control thread only.
 struct HostRegistry {
     std::set<HostProcess*> live;
+    // Children a destroyed HostProcess killed and could not reap within
+    // kTeardownReapMs (D state): HostSupervisor::reap() drops them once
+    // they have exited. Whatever is left when the last owner goes is
+    // reaped then, at teardown.
+    std::vector<std::unique_ptr<platform::ChildProcess>> unreaped;
+    ~HostRegistry();
 };
 
 // One running host and its channel region. Owned by a SupervisedChain.
@@ -141,10 +147,12 @@ public:
     // the control thread and harnesses; never the audio thread's question.
     bool idle();
     // Shutdown on the socket and the shutdown word, a bounded wait, then
-    // SIGKILL; reaps it. Both BLOCK, so harnesses and the destructor only:
-    // the control thread uses request_stop, stopped and signal_kill.
+    // SIGKILL; reaps it. Both BLOCK, so harnesses only: the control thread
+    // uses request_stop, stopped and signal_kill. The destructor sends
+    // SIGKILL and reaps for at most kTeardownReapMs.
     void stop();
     void kill();
+    static constexpr int kTeardownReapMs = 200;
     // stop() without the wait, for the control thread: Shutdown and the
     // word now; stopped() true once it has exited, killing it if it is
     // still running `grace_ms` after the request.
@@ -449,6 +457,15 @@ public:
     // (HostSupervisor::adopt), whose reap() finishes it.
     void request_stop(uint64_t now_ms);
     bool stopped(uint64_t now_ms);
+    // Every turn in place of poll(), for an owner that has stopped using the
+    // chain while plans still name its slots (the control server's retiring
+    // chains, until their epoch passes); never waits. A host still starting
+    // is let go and killed, since no plan names it; the bound and retiring
+    // hosts are pumped and what they send is dropped, since nobody reads a
+    // chain on its way out; the hosts let go are reaped. Every host it keeps
+    // is serviced on the turn after a wake: unserviced, a socket watch()
+    // lists Writable ends every sleep at once (the #198 review's spin).
+    void poll_parked(uint64_t now_ms);
     // A replacement is starting while the old host's slot stays bound.
     bool restarting() const { return starting_ != nullptr && current_ != nullptr; }
     // Down because the plugin refused (deterministic; ADR-0012 amendment of
@@ -478,7 +495,8 @@ private:
     Event replace(uint64_t now_ms, const std::string& reason);
     // starting_ looked at once.
     Event poll_starting(uint64_t now_ms);
-    bool bind(std::unique_ptr<HostProcess> host);
+    // Moves `host` into current_ only when a slot was free.
+    bool bind(std::unique_ptr<HostProcess>& host);
     // A host no plan names any more (its slot retired, or never bound):
     // asked to stop, killed now if `kill`, and kept in let_go_ until it has
     // exited, so no path of the control thread waits for a process.

@@ -1177,6 +1177,119 @@ int scenario_control_watch(const Args&) {
     return 0;
 }
 
+// The #198 review's WaitSet spin: a chain its owner no longer polls while
+// plans still name its slots (the control server's retiring chains, until
+// their epoch passes). Its restart, still starting, has a multi-MB Load
+// queued on a socket that can take more; listed Writable with nobody to
+// write, it ended every sleep at once and the control thread spun.
+// poll_parked() is that owner's turn: the sleep holds.
+int scenario_control_parked(const Args&) {
+    std::printf("control_parked: a retiring chain's starting host does not end every sleep\n");
+    const std::string marker = "/tmp/sonora-fake-marker-" + std::to_string(::getpid());
+    std::remove(marker.c_str());
+    ::setenv("SONORA_FAKE_MARKER", marker.c_str(), 1);
+    ::setenv("SONORA_FAKE_HOST", "ready-once", 1);
+    int r = 0;
+    {
+        ControlRig rig(self_path(), {});
+        if (!rig.sup->ok()) return 1;
+        ChainSpec spec = fake_spec();
+        spec.states = {std::string(std::size_t{8} << 20, 'x')};
+        SupervisedChain chain(*rig.sup, spec, 0, 0);
+        std::string error;
+        check(chain.begin(error), "spawned");
+        check(ControlRig::next_event(chain, 5000) == SupervisedChain::Event::Swapped, "the first host Ready");
+        check(ControlRig::next_event(chain, 3000) == SupervisedChain::Event::Restarting, "it crashed: restarting");
+        check(chain.starting(), "the replacement starting, its Load queued and not yet sent");
+        platform::WaitSet sleep;
+        uint32_t wakes = 0, turns = 0;
+        const uint64_t end = now_ms() + 1000;
+        while (now_ms() < end) {
+            std::vector<HostWatch> hw;
+            rig.sup->watch(hw);
+            std::vector<platform::WaitSet::Watch> ws;
+            for (const HostWatch& h : hw)
+                ws.push_back(
+                    {h.handle, h.writable ? platform::WaitSet::When::Writable : platform::WaitSet::When::Readable});
+            if (sleep.wait(ws.data(), ws.size(), 100) != platform::WaitSet::Woke::Timeout) ++wakes;
+            chain.poll_parked(now_ms());
+            ++turns;
+        }
+        char line[128];
+        std::snprintf(line, sizeof line, "%u wakes in %u turns over 1 s: the sleep holds", wakes, turns);
+        check(wakes <= 20, line);
+        check(!chain.starting(), "the replacement, which no plan names, let go");
+        chain.request_stop(now_ms());
+        const uint64_t stop_end = now_ms() + 5000;
+        bool stopped = false;
+        while (!stopped && now_ms() < stop_end) {
+            stopped = chain.stopped(now_ms());
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        check(stopped, "then stopped once its epoch has passed");
+        if (wakes > 20) r = 1;
+    }
+    std::remove(marker.c_str());
+    return r;
+}
+
+// The #191 review: a Ready host bind() refuses (no free channel slot) is
+// let go and killed, not destroyed on the control thread, where
+// ~HostProcess's stop() gave a host deaf to its Shutdown 2 s. And
+// ~HostProcess itself is one SIGKILL and a bounded reap.
+int scenario_control_no_slot(const Args&) {
+    std::printf("control_no_slot: a Ready host with no slot, and a deaf host destroyed\n");
+    ::setenv("SONORA_FAKE_HOST", "deaf", 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) return 1;
+    while (rig.client.acquire_slot() != kNoSlot) {
+    }
+    {
+        auto chain = std::make_unique<SupervisedChain>(*rig.sup, fake_spec(), 0, 0);
+        std::string error;
+        check(chain->begin(error), "spawned");
+        SupervisedChain::Event e = SupervisedChain::Event::None;
+        uint64_t longest = 0;
+        const uint64_t end = now_ms() + 5000;
+        while (e == SupervisedChain::Event::None && now_ms() < end) {
+            const uint64_t t0 = now_ms();
+            e = chain->poll(t0);
+            longest = std::max(longest, now_ms() - t0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        std::printf("  why: %s\n", chain->why().c_str());
+        check(e == SupervisedChain::Event::Down && chain->why().find("no free channel slot") != std::string::npos,
+              "Ready, no slot: down, named");
+        char line[96];
+        std::snprintf(line, sizeof line, "the longest poll took %llu ms, its deaf host not waited for",
+                      (unsigned long long)longest);
+        check(longest < 500, line);
+        chain->request_stop(now_ms());
+        const uint64_t stop_end = now_ms() + 5000;
+        bool stopped = false;
+        while (!stopped && now_ms() < stop_end) {
+            stopped = chain->stopped(now_ms());
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        check(stopped, "the host let go is reaped");
+        chain.reset();
+        check(rig.sup->live_hosts() == 0 && rig.sup->adopted() == 0, "nothing left");
+    }
+    {
+        std::string error;
+        std::unique_ptr<HostProcess> h = rig.sup->start(fake_spec(), error);
+        check(h != nullptr, "a deaf host Ready");
+        const uint64_t t0 = now_ms();
+        h.reset();
+        const uint64_t took = now_ms() - t0;
+        char line[96];
+        std::snprintf(line, sizeof line, "destroyed in %llu ms: SIGKILL and a bounded reap, no 2 s Shutdown grace",
+                      (unsigned long long)took);
+        check(took < 500, line);
+    }
+    return 0;
+}
+
 // M1 on #78: the state caps are checked before anything is copied, encoded
 // or spawned. One state over 16 MiB is that instance's refusal; together
 // over 64 MiB, the chain's; neither starts a host or retries.
@@ -1540,6 +1653,8 @@ int main(int argc, char** argv) {
     else if (a.scenario == "control_start_paths") r = scenario_control_start_paths(a);
     else if (a.scenario == "control_stop_paths") r = scenario_control_stop_paths(a);
     else if (a.scenario == "control_watch") r = scenario_control_watch(a);
+    else if (a.scenario == "control_parked") r = scenario_control_parked(a);
+    else if (a.scenario == "control_no_slot") r = scenario_control_no_slot(a);
     else if (a.scenario == "async_start") r = scenario_async_start(a);
     else if (a.scenario == "ready_timeout") r = scenario_ready_timeout(a);
     else if (a.scenario == "async_refused") r = scenario_async_refused(a);
