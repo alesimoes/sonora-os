@@ -20,7 +20,7 @@ playback can follow edits; it is in flight.
 
 ### Track 1: engine (rt-engineer; driver-engineer for M3; auditor gates)
 
-- [ ] `transport.locate` command to a frame, so marker recall moves the playhead.
+- [x] `transport.locate` command to a frame, so marker recall moves the playhead (done in #123).
 1. [ ] M2 backend contract, `contract/backend` (in review).
 2. [x] M3 `drivers/fake` and the conformance suite, with the two port-order
        injections ("ADR-0007 follow-ups"). `feature/fake-backend`.
@@ -210,6 +210,8 @@ playback can follow edits; it is in flight.
          changes older than its last apply_mix. Not a regression; the
          removed resendGains had the same race (#76 review,
          #issuecomment-6249488192 item 1).
+       - [ ] FakeEngine bus peaks from its track signal, so the conformance
+         suite can check the bus meter's values.
 10. [ ] Engine commands the shipped key maps bind and no engine runs yet
         (Track 3 item 4; the window says "not implemented" for each):
         `transport.go_to_end`, `transport.rewind`, `transport.fast_forward`,
@@ -528,12 +530,16 @@ playback can follow edits; it is in flight.
 - [ ] Automation in the model, after ADR-0027's first slice:
   - [x] `DuplicateTrack` carries an automation flag (Pro Tools' dialog
         checkbox); today a duplicate always copies its lanes.
-  - [ ] Conformance (#197 review): DuplicateTrack with automation=false over
+  - [x] Conformance (#197 review): DuplicateTrack with automation=false over
         the real and the fake engine: the copy arrives with no lanes and
         its source's mode (ADR-0023 update 2026-10-31).
-  - [ ] Automation follows edits: moving, cutting, pasting or deleting
+  - [x] Automation follows edits: moving, cutting, pasting or deleting
         regions moves the automation under them, as Pro Tools' "Automation
         Follows Edit" option, one `Compound` with the region edit.
+  - [ ] Automation Follows Edit on a lane at `kMaxAutomationPoints` (65536)
+        makes apply refuse the whole Move or Clear Compound (the apply.cpp
+        lane cap): move the region and report the lane left behind, or drop
+        redundant points first.
   - [x] Owner question, default taken: automation per track (Logic) rather
         than per edit playlist (Pro Tools); revisit if the comping workflow
         wants Pro Tools' behaviour (ADR-0027, alternatives).
@@ -553,9 +559,9 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       Done: marker.add reads the state block when it runs (`ShellModel::readTransport`); a stale read or a dead engine falls back to the last tick; no protocol change.
 - [x] ui.mixer.views: label the insert bank toggle "Ins F-J" so it is not confused with the sends' "F-J" in the Mix header.
 - [x] Memory Locations length column uses the main counter format, not always min:sec. (format_length() in time_format; columns narrowed to fit timecode; scene edit-markers-timecode.)
-- [ ] `ui.editing.markers` format_length Bars|Beats: borrow the beat count from the meter at the span end, not the start (the `beats < 0` branch uses tempo_at(position)); add tests for a tempo or meter change inside the span and for a marker past the last tempo point (PR #179 review).
-- [ ] Regenerate docs/images/sonora-ui-edit-markers.png with the narrowed Memory Locations columns; it still shows the old layout (PR #179 review).
-- [ ] Fold the edit-markers and edit-markers-timecode capture scenes into one scene with a counter-format parameter (PR #179 review).
+- [x] (#215) `ui.editing.markers` format_length Bars|Beats: borrow the beat count from the meter at the span end, not the start (the `beats < 0` branch uses tempo_at(position)); add tests for a tempo or meter change inside the span and for a marker past the last tempo point (PR #179 review).
+- [x] (#215) Regenerate docs/images/sonora-ui-edit-markers.png with the narrowed Memory Locations columns; it still shows the old layout (PR #179 review).
+- [x] (#215) Fold the edit-markers and edit-markers-timecode capture scenes into one scene with a counter-format parameter (PR #179 review).
 - [ ] Screenshot scenes edit-markers, edit-nudge and edit-repeat fail with "session is still opening" because they send commands before the engine answers Load: give ShotContext a shared wait-for-open helper instead of per-scene retries (PR #179 review).
 - [x] Capture scenes edit-markers, edit-nudge, edit-repeat failed with "session is still opening": ShotContext got a shared when_open() (screenshot_scene.h), used by them and by edit-tracks and edit-markers-timecode in place of the per-scene retries; edit-markers picture regenerated.
 - [ ] Same "still opening" refusal remains in the edit-undo-history scene (edit.repeat) and mix-solo-safe (solo safe); wrap their apply in when_open().
@@ -1034,6 +1040,9 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       engine/app/tests/test_exit_watchdog.cpp and
       engine/control/tests/fake_plugin_host.cpp for the ctest -j + TSan load
       flake class fixed in test_take_kill (#195); replace with condition waits.
+- [ ] `test_exit_watchdog` prompt-exit case: arm the watchdog with a ~20 s
+      deadline, so the prompt-exit path is tested without load-sensitive
+      bounds (#205 dropped those from the other cases).
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
 
@@ -1685,6 +1694,18 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       evaluated once per block at the block's first frame less the chain's
       latency into ADR-0012's block-tagged last-value table; no new IPC.
       After the write slice (Track 1).
+  - [x] Slice 1, engine side (#212): lanes are played once per callback into
+        the chain. The parent item stays open for the rest.
+- [ ] `insert_chain_runner.h:38-41` comment should say events are posted
+      changes followed by plan plugin lane values.
+- [ ] `test_plugin_automation`: cover Trim mode, a lane on an unbound or
+      silent chain, and a period of another size.
+- [ ] Plan builder and model: refuse non-finite plugin lane values; a NaN
+      lane is resent every callback.
+- [ ] Plugin lanes follow-ups from #212: model lanes keyed by insert id with
+      the session, window and protocol bumped; builder key-to-index
+      resolution; restoring knob values on leaving lane play; per-insert
+      latency; touch and write; UI.
 
 ### Track 5: dev environment (distro-engineer, researcher)
 
@@ -1717,10 +1738,12 @@ not start or extend those items before the Complete DAW closes (owner,
 
 ## Phase 1 (OS 1, after the Complete DAW)
 
-- [ ] The image writes `BUILD_ID` into `/etc/os-release`: the plugin
+- [x] The image writes `BUILD_ID` into `/etc/os-release` (#207): the plugin
       catalog cache's header carries it (ADR-0012, amendment of 2026-10-19,
       change B); every cache is discarded once, with one Notice, when it
       first appears.
+- [ ] The `0100-sonora-system` hook falls back to `BUILD_ID=unstamped` when
+      the sanitised id is empty.
 - [ ] Compile the engine on Debian trixie and fix what the compiler finds.
 - [ ] Run `ctest`; make the ring buffer and BWF tests pass.
 - [ ] `live-build` config: package list, RT kernel, PipeWire from backports.
@@ -1911,20 +1934,25 @@ not start or extend those items before the Complete DAW closes (owner,
 The M4, M5 and doc items at the end of this section are DAW 1 work and are
 not deferred.
 
-- [ ] Stage 1, shipped boot unchanged: package block (`libpam-systemd labwc
+- [x] Stage 1, shipped boot unchanged (#208): package block (`libpam-systemd labwc
       xwayland qt6-wayland` + Qt runtime), `/usr/share/sonora/labwc/`,
       `/etc/pam.d/sonora-ui`, `sonora-compositor`, `sonora-wait-for-display`,
-      compositor/UI/fallback units behind `sonora.gui`. QEMU checks: ISO size,
-      time to first frame, `kill -9` UI and labwc recover, repeated UI failure
-      ends on tty2, renderer chosen on `-vga std`, Alt-Tab/Super-Return reach
-      the client. distro-engineer.
-- [ ] Stage 1, UI side: `app_id` `sonora-ui`, no fullscreen request, a
-      first-frame log line, a documented "unfit display" exit code; later
-      `sd_notify` watchdog through `common/platform`. ui-engineer.
+      compositor/UI/fallback units behind `sonora.gui`. distro-engineer.
+- [x] Stage 1, UI side (#208): `app_id` `sonora-ui`, no fullscreen request, a
+      first-frame log line, a documented "unfit display" exit code. ui-engineer.
+- [ ] Stage 1 UI, later: `sd_notify` watchdog through `common/platform`. ui-engineer.
 - [ ] Stage 2, after M7: `sonora-session.service` becomes
       `sonora-engine.service` + `sonora-tui.service` (tty2); compositor
       enabled by default; smoke test kills labwc and the UI mid-take and
       asserts the engine PID and a growing take file. distro-engineer.
+- [ ] Stage 1 QEMU checks (the list above) and the rc.xml mouse contexts
+      against labwc 0.8.3: not run yet. distro-engineer.
+- [ ] `sonora-display-fallback` runs `chvt 2`, which reaches no terminal UI
+      until stage 2 adds `sonora-tui.service` on tty2.
+- [ ] `sonora-smoketest` checks `BUILD_ID` and the `sonora.gui` path.
+- [ ] `tools/build-iso.sh` needs a `sonora-ui` stage.
+- [ ] `main.cpp` comments at lines 341 and 402 say tty2 runs the terminal UI,
+      which holds only from stage 2; one of them is an over-long line.
 - [ ] Bare metal: GPU reset/hang under the compositor vs the audio callback;
       nouveau on NVIDIA; llvmpipe vs GPU xruns (ADR-0006 items 2 and 3).
       researcher.
@@ -1970,15 +1998,18 @@ Order and owners are in ADR-0008 §5.
       Per-thread CPU goes through a new `common/platform`
       `thread_cpu_times()`, with posix and unsupported implementations.
       ui-engineer and rt-engineer.
-- [ ] P6, with M5: `SONORA_PLATFORM` (linux, neutral, and windows, which
+- [x] P6, with M5 (#211): `SONORA_PLATFORM` (linux, neutral, and windows, which
       fails at configure for now) and `SONORA_BACKENDS`. Compiler flags go
-      under generator expressions. Add the neutral-module include allowlist,
-      a platform-macro check and an OS-path check to M5's script.
-      distro-engineer.
+      under generator expressions. distro-engineer.
+- [ ] P6 remainder: add the neutral-module include allowlist, a platform-macro
+      check and an OS-path check to M5's script. distro-engineer.
 - [ ] P7, right after M5 and before M6: a required `portable` CI job on
       `windows-latest` with MSVC, building `SONORA_PLATFORM=neutral` and
       running `ctest`. Record the first 10 run durations in `brain/research/`.
       distro-engineer.
+- [ ] P7 stays open until the portable job is green and required and its
+      first 10 run durations are recorded. Widen its ctest filter to
+      `dsp_|native_|json|measure_`.
 - [ ] P8, inside M6: put the ADR-0008 §1 table into OPERATIONS.md and the
       charters, and propose the rule for CLAUDE.md. The CLAUDE.md edit is
       the owner's.
@@ -2037,11 +2068,14 @@ Order and owners are in ADR-0008 §5.
       file and every replica keep the old gain, and the next mix-changing
       update (another track's `SetMix`, a load) snaps the fader back.
       ui-engineer with rt-engineer.
-- [ ] `transport.locate` with the frame in `argument` (a click on the ruler),
-      and state block layout v2 carrying "Locating...", the monitor bus
-      peaks and the playback miss count. Contract PRs of their own (ADR-0009
-      update, item 4, "Not in this port"); the bus meters return in
-      sonora-tui and sonora-ui with them. rt-engineer with ui-engineer.
+- [x] `transport.locate` with the frame in `argument` (a click on the ruler)
+      (done in #123).
+- [x] State block layout 5 (#213): "Locating...", the monitor bus peaks and
+      the playback miss count. Contract PRs of their own (ADR-0009 update,
+      item 4, "Not in this port").
+- [ ] Bus meters back in sonora-ui (Qt, in the Mix window and the Transport
+      bar, with screenshots in the PR) and in sonora-tui, from the layout 5
+      bus peaks. ui-engineer with rt-engineer.
 - [x] Input monitoring with latency compensation measured by a loopback test
       (ADR-0019, `t1-input-monitor`): `LatencyProbe` in the callback, takes
       captured L later on the playhead and labelled P0 − L, drivers/fake's
@@ -2248,17 +2282,16 @@ Stages N0–N7 are ADR-0011 §6. Nothing here goes into `engine/` except the
 meters (N1), which the rt-engineer writes. Owner rulings that gate items are
 ADR-0011 "For the owner".
 
-- [ ] N0: `common/dsp` skeleton (neutral, `arch/generic` + `arch/x86_64`
+- [x] N0: `common/dsp` skeleton (neutral, `arch/generic` + `arch/x86_64`
       for flush-to-zero), `plugins/native/sdk` (`Processor`, parameter table,
-      descriptor and preset codecs on `common/json`), and the new edges in
-      M5's check. dsp-engineer.
-- [ ] N0: `sonora-dsp-measure` harness and golden-file infrastructure:
+      descriptor and preset codecs on `common/json`) (#34). dsp-engineer.
+- [ ] N0 skeleton remainder: the new edges in M5's check. dsp-engineer.
+- [x] N0: `sonora-dsp-measure` harness and golden-file infrastructure:
       response, THD, step timing, aliasing, latency equals reported,
-      denormal, non-finite, zipper; RTSan job runs it. dsp-engineer.
-- [ ] N0: BS.1770 loudness and true-peak in `common/dsp`, checked against
-      EBU Tech 3341/3342 cases (redistribution of the test files to be
-      checked first). dsp-engineer.
-- [ ] N0: EQ, gate, compressor, limiter, delay, chorus as `Processor`s,
+      denormal, non-finite, zipper; RTSan job runs it (#34). dsp-engineer.
+- [x] N0: BS.1770 loudness and true-peak in `common/dsp`, checked against
+      EBU Tech 3341/3342 cases (#34). dsp-engineer.
+- [x] N0: EQ, gate, compressor, limiter, delay, chorus as `Processor`s (#34, #40, #43),
       meeting their `quality.json`. CPU figures on the owner's laptop
       recorded in `brain/research/` (ADR-0011 Unverified 4). dsp-engineer.
 - [ ] Still missing after N0 (PR #34 review, 2026-10-13): ~~the RTSan job
@@ -2268,10 +2301,14 @@ ADR-0011 "For the owner".
       both exist, "RTSan-clean" and "passes under MSVC" are claims nobody
       has checked for `common/dsp` and `plugins/native`. distro-engineer
       with dsp-engineer.
-- [ ] Research, before N1: licences of DPF (pinned commit), the VST3 SDK
+- [x] Research, before N1 (#209, `brain/research/plugin-licences-onnx.md`): licences of DPF (pinned commit), the VST3 SDK
       (MIT since 3.8, reported), ONNX Runtime; ONNX Runtime on trixie and
       its installed size (ADR-0011 Unverified 1, 3). researcher; feeds
       `brain/research/native-plugin-suite.md`.
+- [ ] Licence follow-ups from `brain/research/plugin-licences-onnx.md` (#209):
+      an LGPL scan of ONNX Runtime's ThirdPartyNotices, its install size with
+      its dependencies, MSVC and arm64 builds, where third-party notices ship,
+      and EBU Tech 3341/3342 test-signal redistribution (the N0 BS.1770 item).
 - [ ] N1, after `feature/plugin-host-lv2` merges: `plugins/native/format`
       on DPF, LV2 and VST3; `lv2lint` and Steinberg `validator` in CI; the
       DPF-VST3 checkpoint on the EQ (Unverified 2). dsp-engineer,
@@ -2320,10 +2357,12 @@ ADR-0011 "For the owner".
       grid current, interelectrode capacitances, MNA/DK Newton solve); the
       tube drive processor on it (2x/4x/8x, LV2 and VST3, stereo and mono).
       Measurements: `brain/research/native-tube-n2.md`. dsp-engineer.
-- [ ] N2 slice 3: transformer (core saturation and hysteresis, LF first)
+- [x] N2 slice 3 (#214): transformer (core saturation and hysteresis, LF first)
       as an output stage of the tube drive, with the supply sag an output
       stage draws (slice 2 has one preamp stage, which draws too little
       for sag to matter). dsp-engineer.
+- [ ] N2 slice 3 follow-up: `OutputStage::tick` clamps |u| before u^4
+      (x = 1e300 gives NaN until reset).
 - [ ] N2 tube follow-ups (slice 2): (a) CPU: eco (2x) meets class B at
       44-48 us p99.9 per q128 stereo block on programme and full-drive
       worst cases (Docker Desktop, i7-11800H); standard (4x) is 72-110 us
