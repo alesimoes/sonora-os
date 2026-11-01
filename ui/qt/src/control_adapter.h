@@ -42,6 +42,7 @@ public:
     void take_events(std::vector<EngineEvent>& out) override;
     void frame(EngineFrame& out) const override;
     float take_peak(uint32_t index) override;
+    float take_bus_peak(uint32_t side) override;
     bool engine_alive(uint64_t now_ns) const override;
     uint64_t send_track_param(uint32_t track, api::ParamId param, float value,
                               api::Gesture gesture) override;

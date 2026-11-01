@@ -20,7 +20,7 @@
 //
 // The meter beside a track's fader reads the track's input, which is what
 // the engine publishes (state_block.h); it says so over it. The monitor
-// bus's two have no feed yet and say that.
+// bus's two read the monitor bus after its fader, left and right.
 import QtQuick
 import Sonora
 
@@ -461,8 +461,9 @@ Rectangle {
             spacing: 2
             Meter {
                 objectName: strip.isBus ? "busMeterL" : "mixMeter" + strip.track
-                source: strip.isBus ? null : strip.shell
+                source: strip.shell
                 channel: strip.isBus ? -1 : strip.track
+                busSide: strip.isBus ? 0 : -1
                 width: strip.isBus ? 8 : 10
                 height: parent.height
             }
@@ -470,7 +471,9 @@ Rectangle {
                 active: strip.isBus
                 width: 8
                 height: parent.height
-                sourceComponent: Meter { objectName: "busMeterR"; channel: -1 }
+                sourceComponent: Meter {
+                    objectName: "busMeterR"; channel: -1; busSide: 1; source: strip.shell
+                }
             }
         }
         // What the meter reads, over it: a track's input, or for the bus,

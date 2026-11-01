@@ -176,7 +176,8 @@ public:
     // synthetic signal; negative goes back to the signal.
     void script_peak(uint32_t track, float peak);
     // The monitor bus's peak on `side` (0 left, 1 right) from the next
-    // publish on; 0 until scripted, as the fake mixes nothing.
+    // publish on. Unscripted (or negative), the bus follows the loudest
+    // unmuted track after its gain, so a demo's master meter moves.
     void script_bus_peak(uint32_t side, float peak) {
         if (side < kBusPeakSides) bus_peaks_[side] = peak;
     }
@@ -393,7 +394,8 @@ private:
     // nothing; a take starts at once.
     uint32_t transport_flags_ = 0;
     uint32_t playback_misses_ = 0;
-    float bus_peaks_[kBusPeakSides] = {0.0f, 0.0f};
+    // Negative: unscripted, and the loudest unmuted track stands in for it.
+    float bus_peaks_[kBusPeakSides] = {-1.0f, -1.0f};
     bool fail_takes_ = false;
     std::string save_failure_;
     bool save_as_copying_ = false;

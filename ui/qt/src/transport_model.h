@@ -62,6 +62,11 @@ class TransportModel : public QObject {
     Q_PROPERTY(QString stateText READ stateText NOTIFY stateChanged)
     Q_PROPERTY(bool rolling READ rolling NOTIFY stateChanged)
     Q_PROPERTY(bool recording READ recording NOTIFY stateChanged)
+    // A locate the engine holds back for its window, once it has stood
+    // 100 ms on this side's clock (ADR-0009, update of 2026-11-01); and the
+    // playback blocks it did not have ready, which only rise.
+    Q_PROPERTY(bool locating READ locating NOTIFY stateChanged)
+    Q_PROPERTY(int playbackMisses READ playbackMisses NOTIFY stateChanged)
     Q_PROPERTY(bool alive READ alive NOTIFY stateChanged)
     // What the position is: the playhead while rolling, else the insertion
     // point, which is what the counters show and where play starts.
@@ -113,6 +118,12 @@ public:
     bool rolling() const { return rolling_; }
     bool recording() const { return recording_; }
     bool alive() const { return alive_; }
+    bool locating() const { return locating_; }
+    int playbackMisses() const { return static_cast<int>(playback_misses_); }
+    // Nanoseconds on a monotonic clock; the tests set their own.
+    using Clock = std::function<uint64_t()>;
+    void setClock(Clock c) { clock_ = std::move(c); }
+    static constexpr uint64_t kLocatingAfterNs = 100'000'000;
     QString positionSource() const;
     QString barsBeats() const { return bars_beats_; }
     QString timecode() const { return timecode_; }
@@ -169,6 +180,11 @@ private:
     bool click_ = false;
     bool count_off_ = false;
     bool counting_off_ = false;
+    bool locating_ = false;
+    uint32_t playback_misses_ = 0;
+    // When the engine's flag was first seen set; 0 while it is not.
+    uint64_t locating_since_ns_ = 0;
+    Clock clock_;
     QString state_text_ = QStringLiteral("STOP");
     model::Frames position_ = -1;
     model::Frames shown_ = -1;

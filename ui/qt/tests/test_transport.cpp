@@ -1119,6 +1119,56 @@ void test_punch_from_the_ui() {
 
 }  // namespace
 
+// --- "Locating..." after 100 ms, and the playback misses -------------------------
+
+void test_locating() {
+    SessionSettings settings = mapped();
+    TransportModel t([&settings]() -> const SessionSettings& { return settings; },
+                     []() { return Frames{0}; });
+    uint64_t now = 1'000'000'000;
+    t.setClock([&now]() { return now; });
+
+    TransportSnapshot snap;
+    snap.state = TransportMode::Rolling;
+    snap.locating = true;
+    t.onTransport(snap, true);
+    OK(!t.locating());                       // a locate is routinely this short
+    OK(t.stateText() == QStringLiteral("PLAY"));
+    now += 99'000'000;
+    t.onTransport(snap, true);
+    OK(!t.locating());
+    now += 1'000'000;
+    QSignalSpy states(&t, &TransportModel::stateChanged);
+    t.onTransport(snap, true);
+    OK(t.locating() && states.count() == 1);
+    OK(t.stateText() == QStringLiteral("Locating..."));
+
+    // A stale read is one tick's miss, not the end of the wait.
+    TransportSnapshot stale;
+    stale.stale = true;
+    t.onTransport(stale, true);
+    OK(t.locating());
+
+    // Cleared by the engine: gone at once, and a later locate waits again.
+    snap.locating = false;
+    t.onTransport(snap, true);
+    OK(!t.locating() && t.stateText() == QStringLiteral("PLAY"));
+    snap.locating = true;
+    now += 500'000'000;
+    t.onTransport(snap, true);
+    OK(!t.locating());
+
+    // A dead engine is not locating, and its misses are not shown.
+    now += 500'000'000;
+    t.onTransport(snap, true);
+    OK(t.locating());
+    snap.playback_misses = 3;
+    t.onTransport(snap, true);
+    OK(t.playbackMisses() == 3);
+    t.onTransport(snap, false);
+    OK(!t.locating() && t.playbackMisses() == 0);
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
@@ -1131,6 +1181,7 @@ int main(int argc, char** argv) {
     test_window();
     test_bar_loop_record();
     test_punch_from_the_ui();
+    test_locating();
     if (failures != 0) {
         std::fprintf(stderr, "test_ui_transport: %d failure(s)\n", failures);
         return 1;

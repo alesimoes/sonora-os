@@ -437,12 +437,23 @@ void ShellModel::tick() {
         emit engineAliveChanged();
     }
     std::fill(peak_read_.begin(), peak_read_.end(), false);
+    bus_peak_read_ = {false, false};
     for (MeterItem* m : meters_) {
         if (!alive) {
             m->setNoData();
             continue;
         }
         if (!m->isVisible()) continue;
+        if (m->busSide() >= 0) {
+            const auto side = static_cast<std::size_t>(m->busSide());
+            if (side >= bus_peaks_.size()) continue;
+            if (!bus_peak_read_[side]) {
+                bus_peaks_[side] = engine_.take_bus_peak(static_cast<uint32_t>(side));
+                bus_peak_read_[side] = true;
+            }
+            m->feed(bus_peaks_[side], dt);
+            continue;
+        }
         const auto ch = static_cast<std::size_t>(m->channel());
         if (ch >= peaks_.size()) continue;
         if (!peak_read_[ch]) {

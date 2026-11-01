@@ -3,6 +3,7 @@
 
 #include <QVariantMap>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <utility>
 
@@ -18,6 +19,12 @@ namespace {
 // 60), which is faster than anyone reads a number and a quarter of the
 // text layouts.
 constexpr unsigned kEvery = 4;
+
+uint64_t steady_ns() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
+}
 
 QString q(const std::string& s) { return QString::fromStdString(s); }
 
@@ -84,16 +91,29 @@ void TransportModel::onTransport(const TransportSnapshot& t, bool alive) {
     if (state_known) {
         const bool rolling = alive && t.state != TransportMode::Stopped;
         const bool recording = rolling && t.state == TransportMode::Recording;
-        const QString text = !alive                 ? QStringLiteral("NO ENGINE")
+        const uint64_t now = clock_ ? clock_() : steady_ns();
+        if (!alive || !t.locating) {
+            locating_since_ns_ = 0;
+        } else if (locating_since_ns_ == 0) {
+            locating_since_ns_ = now == 0 ? 1 : now;
+        }
+        const bool locating =
+            locating_since_ns_ != 0 && now - locating_since_ns_ >= kLocatingAfterNs;
+        const uint32_t misses = alive ? t.playback_misses : 0;
+        const QString text = locating               ? QStringLiteral("Locating...")
+                             : !alive                 ? QStringLiteral("NO ENGINE")
                              : recording            ? QStringLiteral("REC")
                              : rolling              ? QStringLiteral("PLAY")
                                                     : QStringLiteral("STOP");
         const bool click = alive && t.click;
         const bool count_off = alive && t.count_off;
         const bool counting_off = alive && t.counting_off;
-        state_changed = rolling != rolling_ || recording != recording_ || alive != alive_ ||
+        state_changed = locating != locating_ || misses != playback_misses_ ||
+                        rolling != rolling_ || recording != recording_ || alive != alive_ ||
                         text != state_text_ || click != click_ || count_off != count_off_ ||
                         counting_off != counting_off_;
+        locating_ = locating;
+        playback_misses_ = misses;
         click_ = click;
         count_off_ = count_off;
         counting_off_ = counting_off;

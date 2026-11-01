@@ -116,6 +116,10 @@ struct TransportSnapshot {
     bool click = false;
     bool count_off = false;
     bool counting_off = false;
+    // Layout 5 (ADR-0009, update of 2026-11-01): a locate held back for its
+    // window, and the playback blocks the disk thread did not have ready.
+    bool locating = false;
+    uint32_t playback_misses = 0;   // only rises
     // Update 2026-10-12 item 3: a seqlock read that ran out of retries. The
     // interface shows it as stale for that tick rather than spinning.
     bool stale = false;
@@ -196,6 +200,9 @@ public:
     // Linear peak, the maximum since *this reader's* previous call, so no
     // peak between two ticks is lost and no other reader's is stolen.
     virtual float take_peak(uint32_t index) = 0;
+    // The same for the monitor bus, side 0 left and 1 right, each with a
+    // cursor of its own.
+    virtual float take_bus_peak(uint32_t side) = 0;
     // False when the heartbeat has stalled. The interface then shows meters
     // as "no data" rather than frozen values (§3).
     virtual bool engine_alive(uint64_t now_ns) const = 0;

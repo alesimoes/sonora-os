@@ -721,7 +721,7 @@ int qml() {
     QQuickItem* cap = named(root, QStringLiteral("meterCaption0"));
     CHECK(cap != nullptr && cap->property("text").toString() == QStringLiteral("IN"));
     QQuickItem* bus = named(root, QStringLiteral("busMeterCaption"));
-    CHECK(bus != nullptr && bus->property("text").toString() == QStringLiteral("NO DATA"));
+    CHECK(bus != nullptr && bus->property("text").toString() == QStringLiteral("OUT"));
     QQuickItem* note = named(root, QStringLiteral("mixNote"));
     CHECK(note != nullptr && note->property("text").toString() == r.mixer.note());
     CHECK(r.mixer.note().contains(QStringLiteral("input")));

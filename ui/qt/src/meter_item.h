@@ -24,6 +24,8 @@ class MeterItem : public QQuickItem {
     Q_OBJECT
     // Set once by QML; neither is expected to change afterwards.
     Q_PROPERTY(int channel READ channel WRITE setChannel NOTIFY channelChanged)
+    // 0 or 1 reads the monitor bus's left or right instead of a track.
+    Q_PROPERTY(int busSide READ busSide WRITE setBusSide NOTIFY busSideChanged)
     Q_PROPERTY(sonora::ui::ShellModel* source READ source WRITE setSource NOTIFY sourceChanged)
 
 public:
@@ -32,6 +34,8 @@ public:
 
     int channel() const { return channel_; }
     void setChannel(int c);
+    int busSide() const { return bus_side_; }
+    void setBusSide(int s);
     ShellModel* source() const { return source_; }
     void setSource(ShellModel* s);
 
@@ -44,6 +48,7 @@ public:
 
 signals:
     void channelChanged();
+    void busSideChanged();
     void sourceChanged();
 
 protected:
@@ -55,6 +60,7 @@ private:
     void attach();
 
     int channel_ = -1;
+    int bus_side_ = -1;
     QPointer<ShellModel> source_;
     bool attached_ = false;
     MeterBallistics ballistics_;

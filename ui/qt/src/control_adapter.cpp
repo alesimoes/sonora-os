@@ -145,6 +145,8 @@ void ControlAdapter::frame(EngineFrame& out) const {
     t.click = (s.transport_flags & api::kTransportClick) != 0;
     t.count_off = (s.transport_flags & api::kTransportCountOff) != 0;
     t.counting_off = (s.transport_flags & api::kTransportCountingOff) != 0;
+    t.locating = (s.transport_flags & api::kTransportLocating) != 0;
+    t.playback_misses = s.playback_misses;
     t.stale = s.stale;
     out.tracks.resize(state_.tracks.size());
     for (std::size_t i = 0; i < state_.tracks.size(); ++i) {
@@ -223,6 +225,10 @@ bool ControlAdapter::take_catalog(api::PluginCatalog& out) {
 }
 
 float ControlAdapter::take_peak(uint32_t index) { return engine_.state().take_peak(index); }
+
+float ControlAdapter::take_bus_peak(uint32_t side) {
+    return engine_.state().take_bus_peak(side);
+}
 
 bool ControlAdapter::engine_alive(uint64_t now_ns) const {
     return engine_.state().engine_alive(now_ns);

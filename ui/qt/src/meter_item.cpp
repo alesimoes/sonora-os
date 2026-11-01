@@ -51,6 +51,13 @@ void MeterItem::setChannel(int c) {
     attach();
 }
 
+void MeterItem::setBusSide(int s) {
+    if (s == bus_side_) return;
+    bus_side_ = s;
+    emit busSideChanged();
+    attach();
+}
+
 void MeterItem::setSource(ShellModel* s) {
     if (s == source_) return;
     if (source_ && attached_) source_->detachMeter(this);
@@ -66,7 +73,7 @@ void MeterItem::componentComplete() {
 }
 
 void MeterItem::attach() {
-    if (attached_ || !source_ || channel_ < 0 || !isComponentComplete()) return;
+    if (attached_ || !source_ || (channel_ < 0 && bus_side_ < 0) || !isComponentComplete()) return;
     source_->attachMeter(this);
     attached_ = true;
 }

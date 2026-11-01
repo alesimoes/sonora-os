@@ -20,6 +20,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QVariantList>
+#include <array>
 #include <functional>
 #include <vector>
 
@@ -309,6 +310,9 @@ private:
     // tick would see nothing and draw a meter that lies.
     std::vector<float> peaks_;
     std::vector<bool> peak_read_;
+    // The monitor bus's two sides, read once a tick for the same reason.
+    std::array<float, 2> bus_peaks_{};
+    std::array<bool, 2> bus_peak_read_{};
     TransportSink transport_sink_;
     PluginSinks plugin_sinks_;
     api::PluginCatalog catalog_;   // kept, so taking one reuses its storage
