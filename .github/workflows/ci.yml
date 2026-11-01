@@ -54,6 +54,34 @@ jobs:
           docker exec -e SONORA_DSP_QUICK=1 build
           bash -c 'ctest --test-dir build --output-on-failure -j"$(nproc)"'
 
+  portable:
+    name: Portable modules under MSVC
+    # ADR-0008 §4: MSVC has no <unistd.h> or <sys/stat.h>, so a POSIX use in a
+    # module that claims to be neutral fails to compile here, and the tests
+    # run against the real UCRT. SONORA_PLATFORM=neutral configures only
+    # common/dsp, the native SDK, the measurement harness and the processors
+    # (and the OS seam's unsupported stubs, which are not built here).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DSONORA_PLATFORM=neutral
+
+      - name: Build
+        run: >-
+          cmake --build build --config Release --parallel
+          --target sonora_dsp sonora_native_sdk sonora_dsp_measure sonora-dsp-measure
+          test_json test_native_sdk test_measure_time_bars
+          test_dsp_filters test_dsp_oversampling test_dsp_loudness test_dsp_dynamics
+          test_dsp_limiter test_dsp_fdn test_dsp_triode test_dsp_triode_generic
+          test_dsp_opto test_dsp_fet test_dsp_noise test_dsp_transformer
+
+      - name: Test
+        env:
+          SONORA_DSP_QUICK: "1"
+        run: ctest --test-dir build -C Release --output-on-failure -R "dsp_|native_"
+
   ui:
     name: Qt interface build and headless tests
     # In tools/Dockerfile.ui, the image tools/build-ui.sh uses: Debian trixie

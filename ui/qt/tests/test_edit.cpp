@@ -574,6 +574,26 @@ int test_time() {
     OK(format_length(TimeFormat::BarsBeats, kBeat, kBar + kBeat / 2, s) == "1|0|480");
     OK(format_length(TimeFormat::BarsBeats, kBeat, 3 * kBeat, s) == "0|3|000");
     OK(format_length(TimeFormat::Samples, 5, 1234, s) == "1234");
+    {
+        // 120 4/4 to bar 3, 60 3/4 for two bars, 120 4/4 again from bar 5.
+        constexpr Frames kSlowBeat = 48000, kSlowBar = 3 * kSlowBeat;
+        SessionSettings m;
+        TempoEntry slow;
+        slow.at = 2 * kBar;
+        slow.bpm = 60.0f;
+        slow.meter = {{3, 4}};
+        TempoEntry back;
+        back.at = 2 * kBar + 2 * kSlowBar;
+        m.tempo = {TempoEntry{}, slow, back};
+        // 1|4 to 4|2: the bar borrowed is bar 3, three beats long, not the start's four.
+        OK(format_length(TimeFormat::BarsBeats, 3 * kBeat, 2 * kBar + kSlowBar + kSlowBeat - 3 * kBeat, m) ==
+           "2|1|000");
+        // Inside the 3/4 span, start and end in the same meter.
+        OK(format_length(TimeFormat::BarsBeats, 2 * kBar + 2 * kSlowBeat, kSlowBar, m) == "1|0|000");
+        // A span past the last tempo point reads that entry's meter.
+        const Frames five = back.at;
+        OK(format_length(TimeFormat::BarsBeats, five + 3 * kBeat, 2 * kBar - 2 * kBeat, m) == "1|2|000");
+    }
     OK(format_length(TimeFormat::MinSec, 0, 83 * kRate + kRate / 2, s) == "1:23.500");
     OK(format_min_sec(0, kRate) == "0:00.000");
     OK(format_min_sec(83 * kRate + kRate / 2, kRate) == "1:23.500");
@@ -2202,6 +2222,112 @@ int test_step_automation_mode() {
     return 0;
 }
 
+// Pro Tools' Automation Follows Edit (Options menu), on by default: a region
+// moved (drag or nudge) or cleared takes the automation under it along, in
+// the same undo step; off, the lanes stay where they are.
+int test_automation_follows_edit() {
+    ModelDocument doc(two_tracks());
+    FlatPeaks peaks;
+    SessionModel session(doc, peaks, false);
+    CommandRegistry local;
+    session.installCommands(local);
+    EditController& c = session.controller();
+    c.set_viewport(1000, 200);
+    std::string why;
+    const Id t0 = doc.snapshot().edit->tracks[0]->id;
+    // A dip to -30 dB inside A [1 bar, 3 bars), and a slope after it.
+    EditAutomation seed;
+    seed.track = t0;
+    seed.param = AutomationParam::Volume;
+    seed.from = 0;
+    seed.to = kMaxInteger;
+    seed.points = {{0, 0.0f}, {kBar + kBeat, 0.0f}, {2 * kBar, -30.0f}, {2 * kBar + 2 * kBeat, 0.0f},
+                   {6 * kBar, -12.0f}, {20 * kBar, -12.0f}};
+    OK(doc.submit(seed, why));
+    const AutomationLane before = *doc.snapshot().edit->tracks[0]->lane(AutomationParam::Volume);
+    const auto was = [&](Frames f) { return lane_value_at(&before, f, 99.0f); };
+    const auto vol = [&](Frames f) {
+        return lane_value_at(doc.snapshot().edit->tracks[0]->lane(AutomationParam::Volume), f, 99.0f);
+    };
+    const auto same = [](float a, float b) { return std::fabs(a - b) < 0.01f; };
+    // The lane outside the region's old and new spans plays as it did.
+    const auto kept_outside = [&](Frames lo, Frames hi) {
+        for (Frames f : {Frames(0), lo - 1, hi + 1, 5 * kBar, 6 * kBar, 10 * kBar}) {
+            if (f >= lo && f <= hi) continue;
+            if (!same(vol(f), was(f))) return false;
+        }
+        return true;
+    };
+
+    OK(c.automation_follows_edit() && session.automationFollowsEdit());
+    // Nudge A one bar later, onto [2 bars, 4 bars): one edit.
+    OK(c.select_region(10));
+    c.set_grid(GridValue::Bar);
+    uint64_t r = doc.snapshot().revision;
+    OK(c.nudge(1, why));
+    OK(doc.snapshot().revision == r + 1);
+    OK(region(doc.snapshot(), 10)->position == 2 * kBar);
+    for (Frames f : {2 * kBar, 2 * kBar + kBeat, 3 * kBar, 3 * kBar + 3 * kBeat}) {
+        OK(same(vol(f), was(f - kBar)));
+    }
+    OK(vol(kBar + 2 * kBeat) > was(kBar + 2 * kBeat) + 5.0f);   // the dip left its old place
+    OK(kept_outside(kBar, 4 * kBar));
+    OK(valid(doc.snapshot()));
+    OK(c.undo(why));
+    OK(region(doc.snapshot(), 10)->position == kBar && same(vol(2 * kBar), -30.0f));
+
+    // A drag with the Grabber, one second later.
+    const double th = c.view().track_height;
+    const double a_mid = c.view().x_of(2 * kBar);
+    r = doc.snapshot().revision;
+    OK(c.press(a_mid, th * 0.75, why));
+    c.move(a_mid + 40, th * 0.75);
+    OK(c.release(a_mid + 40, th * 0.75, why));
+    OK(doc.snapshot().revision == r + 1);
+    OK(region(doc.snapshot(), 10)->position == kBar + kRate);
+    OK(same(vol(2 * kBar + kRate), -30.0f));
+    OK(kept_outside(kBar, 3 * kBar + kRate));
+    OK(c.undo(why));
+
+    // Clearing the region clears the lane under it, which runs straight
+    // across; undone together.
+    OK(c.select_region(10));
+    r = doc.snapshot().revision;
+    OK(c.clear(why));
+    OK(doc.snapshot().revision == r + 1);
+    OK(region(doc.snapshot(), 10) == nullptr);
+    OK(vol(2 * kBar) > -5.0f);
+    OK(kept_outside(kBar, 3 * kBar));
+    OK(c.undo(why));
+    OK(region(doc.snapshot(), 10) != nullptr && same(vol(2 * kBar), -30.0f));
+
+    // A range cleared with the Selector, likewise.
+    c.select_range(0, kBar + kBeat, 2 * kBar + 2 * kBeat);
+    OK(c.clear(why));
+    OK(vol(2 * kBar) > -5.0f);
+    OK(kept_outside(kBar + kBeat, 2 * kBar + 2 * kBeat));
+    OK(c.undo(why));
+
+    // Off (automation.toggle_follows_edit): the region moves alone.
+    OK(local.dispatch("automation.toggle_follows_edit") == DispatchResult::Ok);
+    OK(!c.automation_follows_edit() && !session.automationFollowsEdit());
+    OK(c.select_region(10));
+    OK(c.nudge(1, why));
+    OK(region(doc.snapshot(), 10)->position == 2 * kBar);
+    OK(same(vol(2 * kBar), -30.0f) && same(vol(3 * kBar), was(3 * kBar)));
+    OK(c.undo(why));
+    OK(c.select_region(10));
+    OK(c.clear(why));
+    OK(same(vol(2 * kBar), -30.0f));
+    OK(c.undo(why));
+    // Kept by a session open, as the edit mode is.
+    c.document_replaced();
+    OK(!c.automation_follows_edit());
+    OK(local.dispatch("automation.toggle_follows_edit") == DispatchResult::Ok);
+    OK(c.automation_follows_edit());
+    return 0;
+}
+
 // daw.model.session_mgmt in the window: Save As goes on in a new folder
 // under the new name once the engine says it moved there, the old file as
 // it was; a name already taken is refused; Save Copy In writes a copy and
@@ -2295,7 +2421,8 @@ int main(int argc, char** argv) {
         test_save_failures() || test_autosave_names_agree() ||
         test_midi_sequence_files() ||
         test_midi_sequence_cleanup_follow_ups() || test_input_monitor() ||
-        test_step_automation_mode() || test_save_as_and_copy()) {
+        test_step_automation_mode() || test_save_as_and_copy() ||
+        test_automation_follows_edit()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);

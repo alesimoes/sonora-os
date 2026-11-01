@@ -37,10 +37,20 @@
 //   path, so mix scales them. Mains (50 or 60 Hz) sets the ripple's
 //   frequencies; it reconfigures (the supply is integrated in prepare()).
 //
-// Not yet (ADR-0011 N2, planning/BACKLOG.md): the output transformer,
-// power-supply sag (a single preamp stage draws too little for it to
-// matter; it belongs with the output stage), the bias as a parameter,
-// flicker noise and heater hum (slice 5 follow-ups).
+// - Transformer, sag (slice 3): the output stage after the triode: a
+//   push-pull driver on a sagging supply into an output transformer with a
+//   Jiles-Atherton core (common/dsp transformer.h). It sees the signal at
+//   the level auto level leaves it at (1.0 = 250 V at the driver), so the
+//   core saturates on bass first, with the hysteresis loop widest there,
+//   and the driver's rail falls with the current it draws (the sag a
+//   one-stage preamp is too light a load to show). Transformer is the
+//   share of the processed path that goes through the stage; 0 % bypasses
+//   it exactly (the default: the sound of slice 5, to the bit). Sag is the
+//   supply's source resistance, 0 % a stiff rail. The stage has no latency.
+//
+// Not yet (ADR-0011 N2, planning/BACKLOG.md): the bias as a parameter,
+// flicker noise and heater hum (slice 5 follow-ups), a transformer
+// checked against a SPICE core model.
 #pragma once
 
 #include <memory>
@@ -62,6 +72,8 @@ enum : std::uint32_t {
     kNoise,
     kHum,
     kMains,
+    kTransformer,
+    kSag,
     kParamCount,
 };
 // Oversampling factor of each quality choice.

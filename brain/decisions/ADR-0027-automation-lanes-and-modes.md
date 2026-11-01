@@ -35,6 +35,8 @@
   evaluated once per block into ADR-0012's block-tagged last-value table.
 - §6: first slice: read-mode volume and pan on audio tracks. Session
   format 13, window format 10, protocol 32.
+- §7 (update): Automation Follows Edit, computed by the interface into the
+  region edit's `Compound`; no format or protocol change.
 
 ## Context
 
@@ -157,6 +159,29 @@ first frame less the chain's latency, into the block-tagged last-value
 table that ADR-0012 §5 already gives the host. No new IPC. They come after
 the write slice.
 
+- *Amended (plugin lanes, slice 1, 2026-11-01): the frame is the block's
+  first frame, not that less the chain's latency.* A change tagged with a
+  block applies to the input submitted with it (ADR-0012 §5.1), and the
+  chain's input in that callback is the timeline at the block's first
+  frame; the chain's latency then delays the audio and the change alike.
+  Less the latency would land every plugin move that many frames late,
+  2048 frames behind a look-ahead limiter. The TrackFader's `L` early
+  (§2) is the same rule seen from after the chain. For an insert behind a
+  latent one in the same chain the exact frame is that less the earlier
+  inserts' latency, which the plan does not yet carry per instance: until
+  it does such an insert's lane is that much late, and only there.
+- *As built (slice 1, engine/core):* `PlanPluginLane {instance, param,
+  first, count}` in `PlaybackPlan::plugin_lanes`, listed by its
+  InsertChain node, points in `auto_points`, `param` the dense index the
+  builder resolves from the key. Once per callback that runs the chain,
+  each lane's value goes to the node as a change at offset 0 when it
+  moved, after the changes the control thread posted (all of the node's
+  lanes after any posted one, so a knob moved under a lane never wins);
+  every lane goes again after a plan swap. Read, Touch, Latch and Trim
+  play the lanes; Off and Write play the knob, as a plugin parameter has
+  no touch to write from yet. `PlaybackConfig::max_plugin_lanes` bounds a
+  plan's lanes; more is a plan out of bounds.
+
 ### §6 First slice, format, protocol
 
 - Slice 1: read playback of Volume and Pan on audio tracks; `EditAutomation`
@@ -169,6 +194,28 @@ the write slice.
 - Protocol **32** (31 is PR #167's): the operation codec has
   `EditAutomation`, and `TrackMix` carries `automation`. A version-31 peer
   refuses both.
+
+### §7 Automation Follows Edit (update, 2026-10-31)
+
+- Pro Tools' Options > Automation Follows Edit: a region moved (drag,
+  nudge) or cleared (the region, or a range on the track's row) takes the
+  automation under it along. The interface computes one `EditAutomation`
+  per lane that changes (`follow_move_ops`, `follow_clear_ops` in
+  `ui/qt/src/automation_edit.h`) and sends them in one `Compound` with the
+  region operation: one undo step, `apply` still only validates and splices.
+  No new operation, protocol or session format.
+- Moving the span `[s, e)` to `d`: the lane's values on `[s, e)` play on
+  `[d, d + e - s)`, the place left runs straight from the value arriving at
+  `s` to the value at `e`, and nothing outside both spans changes. Each
+  span's ends are steps (two points at one frame, §1): the value arriving
+  and the value leaving, collapsed to one point when they agree. A clear is
+  the first half alone, on lanes with a point in `[s, e]`.
+- The option is the interface's, as the edit mode is: on by default as in
+  Pro Tools, not saved in the session, kept when a session opens, toggled by
+  the Interface-domain command `automation.toggle_follows_edit`.
+- Per track (§1, alternatives): a move on the active playlist moves the
+  track's lanes. Cut, Copy, Paste, Duplicate, Shuffle-mode moves, trims and
+  MIDI regions do not follow yet (BACKLOG).
 
 ## Consequences
 

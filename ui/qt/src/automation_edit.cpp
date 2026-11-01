@@ -49,9 +49,10 @@ std::string lane_value_text(AutomationParam p, float value) {
     return is_volume(p) ? gain_text(value) + " dB" : pan_text(value);
 }
 
-float lane_value_at(const AutomationLane* lane, Frames at, float fallback) {
-    if (lane == nullptr || lane->points.empty()) return fallback;
-    const auto& pts = lane->points;
+namespace {
+
+// lane_value_at on a lane known to have a point.
+float value_on(const std::vector<AutomationPoint>& pts, Frames at) {
     const auto next = std::upper_bound(pts.begin(), pts.end(), at,
                                        [](Frames f, const AutomationPoint& p) { return f < p.at; });
     if (next == pts.begin()) return pts.front().value;
@@ -61,6 +62,66 @@ float lane_value_at(const AutomationLane* lane, Frames at, float fallback) {
     if (a.at == at) return a.value;
     const double t = static_cast<double>(at - a.at) / static_cast<double>(b.at - a.at);
     return static_cast<float>(a.value + t * (b.value - a.value));
+}
+
+// Where the line arriving at `at` ends: the first of a step's two points,
+// which lane_value_at passes over.
+float value_before(const std::vector<AutomationPoint>& pts, Frames at) {
+    const auto first = std::lower_bound(pts.begin(), pts.end(), at,
+                                        [](const AutomationPoint& p, Frames f) { return p.at < f; });
+    if (first != pts.end() && first->at == at) return first->value;
+    return value_on(pts, at);
+}
+
+// A step whose two values agree is one point.
+void push_point(std::vector<AutomationPoint>& out, AutomationPoint p) {
+    if (!out.empty() && out.back().at == p.at && out.back().value == p.value) return;
+    out.push_back(p);
+}
+
+// `pts` with [a, b] replaced by `inside` (sorted, within [a, b]) between a
+// point at `a` holding the value arriving there and one at `b` holding the
+// value leaving it, so nothing outside [a, b] plays differently.
+std::vector<AutomationPoint> overlaid(const std::vector<AutomationPoint>& pts, Frames a, Frames b,
+                                      const std::vector<AutomationPoint>& inside) {
+    std::vector<AutomationPoint> out;
+    for (const AutomationPoint& p : pts) {
+        if (p.at < a) out.push_back(p);
+    }
+    push_point(out, {a, value_before(pts, a)});
+    for (const AutomationPoint& p : inside) push_point(out, p);
+    push_point(out, {b, value_on(pts, b)});
+    for (const AutomationPoint& p : pts) {
+        if (p.at > b) out.push_back(p);
+    }
+    return out;
+}
+
+bool flat(const AutomationLane& lane) {
+    for (const AutomationPoint& p : lane.points) {
+        if (p.value != lane.points.front().value) return false;
+    }
+    return true;
+}
+
+EditAutomation window_op(Id track, AutomationParam param, Frames lo, Frames hi,
+                         const std::vector<AutomationPoint>& pts) {
+    EditAutomation op;
+    op.track = track;
+    op.param = param;
+    op.from = lo;
+    op.to = hi + 1;
+    for (const AutomationPoint& p : pts) {
+        if (p.at >= lo && p.at <= hi) op.points.push_back(p);
+    }
+    return op;
+}
+
+}  // namespace
+
+float lane_value_at(const AutomationLane* lane, Frames at, float fallback) {
+    if (lane == nullptr || lane->points.empty()) return fallback;
+    return value_on(lane->points, at);
 }
 
 int point_near(const AutomationLane* lane, AutomationParam p, Frames at, float value,
@@ -282,6 +343,44 @@ bool paste_op(Id track, const AutomationClip& clip, Frames at, EditAutomation& o
     out.to = at + clip.length;
     for (const AutomationPoint& p : clip.points) out.points.push_back({p.at + at, p.value});
     return true;
+}
+
+std::vector<EditAutomation> follow_move_ops(const TrackEdit& track, Frames from, Frames to,
+                                            Frames at) {
+    std::vector<EditAutomation> out;
+    if (to <= from || at == from || at < 0) return out;
+    const Frames end = at + (to - from);
+    const Frames lo = std::min(from, at), hi = std::max(to, end);
+    // The op's range is [lo, hi + 1), which must stay a legal lane range.
+    if (hi >= kMaxInteger - 1) return out;
+    for (const auto& lane : track.automation) {
+        if (lane == nullptr || lane->points.empty() || flat(*lane)) continue;
+        const auto& pts = lane->points;
+        std::vector<AutomationPoint> carried{{at, value_on(pts, from)}};
+        for (const AutomationPoint& p : pts) {
+            if (p.at > from && p.at < to) carried.push_back({p.at - from + at, p.value});
+        }
+        carried.push_back({end, value_before(pts, to)});
+        const auto moved = overlaid(overlaid(pts, from, to, {}), at, end, carried);
+        out.push_back(window_op(track.id, lane->param, lo, hi, moved));
+    }
+    return out;
+}
+
+std::vector<EditAutomation> follow_clear_ops(const TrackEdit& track, Frames from, Frames to) {
+    std::vector<EditAutomation> out;
+    if (to <= from || from < 0 || to >= kMaxInteger - 1) return out;
+    for (const auto& lane : track.automation) {
+        if (lane == nullptr || lane->points.empty() || flat(*lane)) continue;
+        const auto& pts = lane->points;
+        // No point in [from, to]: the lane already runs straight across.
+        const bool inside = std::any_of(pts.begin(), pts.end(), [&](const AutomationPoint& p) {
+            return p.at >= from && p.at <= to;
+        });
+        if (!inside) continue;
+        out.push_back(window_op(track.id, lane->param, from, to, overlaid(pts, from, to, {})));
+    }
+    return out;
 }
 
 }  // namespace sonora::ui

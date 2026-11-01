@@ -3,9 +3,9 @@
 # Layer 0 beside common/base: any module may link it except common/base and
 # contracts/*, and a module links it only when it needs an OS service.
 #
-# Until ADR-0008 P6 brings SONORA_PLATFORM, UNIX picks posix and anything
-# else gets the unsupported stubs, which report "unavailable" loudly.
-if(UNIX)
+# SONORA_PLATFORM (root CMakeLists.txt, ADR-0008 P6): linux gets posix,
+# neutral gets the unsupported stubs, which report "unavailable" loudly.
+if(SONORA_PLATFORM STREQUAL "linux")
   set(SONORA_PLATFORM_IMPL posix)
 else()
   set(SONORA_PLATFORM_IMPL unsupported)
@@ -35,7 +35,7 @@ add_test(NAME platform_thread_cpu COMMAND test_thread_cpu)
 
 # The control channel and the read-only region (ADR-0007 §3): POSIX only,
 # because the test also checks what the kernel refuses a client.
-if(UNIX)
+if(SONORA_PLATFORM STREQUAL "linux")
   add_executable(test_platform_ipc tests/test_ipc.cpp)
   target_link_libraries(test_platform_ipc PRIVATE sonora_platform Threads::Threads)
   add_test(NAME platform_ipc COMMAND test_platform_ipc)

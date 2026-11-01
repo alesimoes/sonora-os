@@ -153,6 +153,38 @@ int test_engine_events_and_death() {
     return 0;
 }
 
+// State block layout 5 (ADR-0009 update of 2026-11-01): the monitor bus
+// meters, the playback miss count, and "Locating…" once a held locate has
+// stood 100 ms, never for one that resolves sooner.
+int test_bus_meters_misses_and_locating() {
+    Rig r;
+    CHECK(r.connect());
+    for (uint32_t t = 0; t < 4; ++t) r.engine.script_peak(t, 0.0f);
+    r.engine.script_bus_peak(0, 0.125f);
+    r.engine.script_bus_peak(1, 0.0625f);
+    std::string screen = r.frame();
+    CHECK(mentions(screen, "Bus L"));
+    CHECK(mentions(screen, "Bus R"));
+    CHECK(mentions(screen, "-18.1 dB"));
+    CHECK(mentions(screen, "-24.1 dB"));
+    CHECK(mentions(screen, "misses 0"));
+    CHECK(screen.find("Locating") == std::string::npos);
+
+    r.engine.add_playback_misses(3);
+    CHECK(mentions(r.frame(), "\033[31mmisses 3\033[0m"));
+
+    r.engine.script_locating(true);
+    CHECK(r.frame().find("Locating") == std::string::npos);   // 0 ms
+    CHECK(r.frame().find("Locating") == std::string::npos);   // 50 ms
+    CHECK(mentions(r.frame(), "Locating"));                   // 100 ms
+    r.engine.script_locating(false);
+    CHECK(r.frame().find("Locating") == std::string::npos);
+    // A second locate is timed from its own start.
+    r.engine.script_locating(true);
+    CHECK(r.frame().find("Locating") == std::string::npos);
+    return 0;
+}
+
 int test_backend_failure_ends_the_interface() {
     Rig r;
     CHECK(r.connect());
@@ -175,6 +207,7 @@ int main() {
     failures += test_keys_drive_the_engine();
     failures += test_engine_events_and_death();
     failures += test_backend_failure_ends_the_interface();
+    failures += test_bus_meters_misses_and_locating();
     if (failures != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failures);
         return 1;

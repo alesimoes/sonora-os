@@ -744,7 +744,7 @@ bool EditController::release(double x, double y, std::string& why) {
         case Drag::Kind::Move: {
             MoveRegion op;
             if (!resolve_move(snapshot(), d.region, d.start, doc_.reserve_id(), op)) return true;
-            if (!submit(op, why)) return false;
+            if (!submit_move(op, why)) return false;
             break;
         }
         case Drag::Kind::TrimStart:
@@ -877,11 +877,15 @@ bool EditController::clear(std::string& why) {
     if (refuse_shuffle("Clear", "cleared", why)) return false;
     if (sel_.region != kNoId) {
         const TrackEdit* t = nullptr;
-        if (find_region(snapshot(), sel_.region, &t) == nullptr) {
+        const Region* r = find_region(snapshot(), sel_.region, &t);
+        if (r == nullptr) {
             why = "the selected region is gone";
             return false;
         }
-        return submit(RemoveRegion{t->active_playlist, sel_.region}, why);
+        std::vector<EditAutomation> follow;
+        if (automation_follows_edit_) follow = follow_clear_ops(*t, r->position, r->end());
+        return submit_following(RemoveRegion{t->active_playlist, sel_.region}, std::move(follow),
+                                "Clear", "cleared", why);
     }
     if (!sel_.has_range()) {
         why = "nothing is selected";
@@ -893,6 +897,15 @@ bool EditController::clear(std::string& why) {
     for (int i = 0; i < e.count; ++i) {
         clear_range(*active(track(e.first + i)), e.a, e.b, [this]() { return doc_.reserve_id(); },
                     members);
+    }
+    // After the regions' members, which reserve ids in order; a lane edit
+    // reserves none.
+    if (automation_follows_edit_) {
+        for (int i = 0; i < e.count; ++i) {
+            for (EditAutomation& f : follow_clear_ops(*track(e.first + i), e.a, e.b)) {
+                members.push_back(std::move(f));
+            }
+        }
     }
     if (members.empty()) {
         why = e.count == 1 ? "there is no region in the selection on " + track(e.first)->name
@@ -918,7 +931,7 @@ bool EditController::nudge(int direction, std::string& why) {
         why = "the region is already at the session start";
         return false;
     }
-    if (!submit(op, why)) return false;
+    if (!submit_move(op, why)) return false;
     if (const Region* moved = find_region(snapshot(), id)) {
         sel_.start = moved->position;
         sel_.end = moved->end();
@@ -1018,6 +1031,23 @@ bool EditController::submit_compound(std::vector<Member> members, const char* ge
         return false;
     }
     return submit(Compound{std::move(members), gesture}, why);
+}
+
+bool EditController::submit_following(Member op, std::vector<EditAutomation> follow,
+                                      const char* gesture, const char* nothing_was,
+                                      std::string& why) {
+    if (follow.empty()) return submit(to_operation(op), why);
+    std::vector<Member> members{std::move(op)};
+    for (EditAutomation& f : follow) members.push_back(std::move(f));
+    return submit_compound(std::move(members), gesture, nothing_was, why);
+}
+
+bool EditController::submit_move(const MoveRegion& op, std::string& why) {
+    std::vector<EditAutomation> follow;
+    const TrackEdit* t = nullptr;
+    const Region* r = automation_follows_edit_ ? find_region(snapshot(), op.region, &t) : nullptr;
+    if (r != nullptr) follow = follow_move_ops(*t, r->position, r->end(), op.position);
+    return submit_following(op, std::move(follow), "Move", "moved", why);
 }
 
 bool EditController::copy(std::string& why) {

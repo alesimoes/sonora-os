@@ -46,6 +46,10 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
     h->compensation_frames.store(0, std::memory_order_relaxed);
     h->compensation_shortfall_frames.store(0, std::memory_order_relaxed);
     h->transport_flags.store(0, std::memory_order_relaxed);
+    h->playback_misses.store(0, std::memory_order_relaxed);
+    for (PeakRing& ring : h->bus_peaks) {
+        for (auto& s : ring.entries) s.store(0, std::memory_order_relaxed);
+    }
 
     TrackState* t = state_tracks(memory);
     for (uint32_t i = 0; i < capacity_tracks; ++i) {
@@ -78,7 +82,7 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
 }
 
 void StateWriter::publish(const TransportFields& transport, const TrackFields* tracks,
-                          const float* peaks) {
+                          const float* peaks, const float* bus_peaks) {
     if (header_ == nullptr) return;
     StateHeader& h = *header_;
     // The seqlock without standalone fences, which ThreadSanitizer cannot
@@ -102,6 +106,7 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
     h.compensation_frames.store(transport.compensation_frames, rel);
     h.compensation_shortfall_frames.store(transport.compensation_shortfall_frames, rel);
     h.transport_flags.store(transport.transport_flags, rel);
+    h.playback_misses.store(transport.playback_misses, rel);
     for (uint32_t i = 0; i < track_count_; ++i) {
         TrackState& t = tracks_[i];
         t.flags.store(tracks[i].flags, rel);
@@ -157,6 +162,11 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
     for (uint32_t i = 0; i < track_count_; ++i) {
         tracks_[i].peaks.entries[tick % kPeakSlots].store(pack_peak(tick, peaks[i]),
                                                         std::memory_order_release);
+    }
+    for (uint32_t side = 0; side < kBusPeakSides; ++side) {
+        const float peak = bus_peaks != nullptr ? bus_peaks[side] : 0.0f;
+        h.bus_peaks[side].entries[tick % kPeakSlots].store(pack_peak(tick, peak),
+                                                         std::memory_order_release);
     }
     h.heartbeat.store(tick, std::memory_order_release);
     tick_ = tick;

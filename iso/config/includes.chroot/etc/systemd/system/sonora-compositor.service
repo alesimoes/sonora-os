@@ -1,0 +1,32 @@
+[Unit]
+Description=Sonora kiosk compositor (labwc)
+# Opt-in until ADR-0010 stage 2: without sonora.gui the image boots as before.
+ConditionKernelCommandLine=sonora.gui
+After=systemd-user-sessions.service systemd-logind.service
+Wants=sonora-ui.service
+Conflicts=getty@tty1.service
+OnFailure=sonora-display-fallback.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=sonora
+Group=sonora
+PAMName=sonora-ui
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+UtmpIdentifier=tty1
+Environment=HOME=/home/sonora
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/local/bin/sonora-compositor
+Restart=always
+RestartSec=1
+LimitRTPRIO=0
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

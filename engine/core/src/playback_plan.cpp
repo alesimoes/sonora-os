@@ -25,8 +25,9 @@ PlaybackPlan* create_plan(const PlanSizes& sizes) {
     const std::size_t mix = round_up(sizeof(PlanTrackMix) * sizes.track_mix);
     const std::size_t send_mix = round_up(sizeof(PlanSendMix) * sizes.send_mix);
     const std::size_t auto_points = round_up(sizeof(PlanAutoPoint) * sizes.auto_points);
+    const std::size_t plugin_lanes = round_up(sizeof(PlanPluginLane) * sizes.plugin_lanes);
     const std::size_t total = header + tracks + segments + nodes + edges + slots + click + mix +
-                              send_mix + auto_points;
+                              send_mix + auto_points + plugin_lanes;
 
     void* raw = ::operator new(total, std::align_val_t{kAlign}, std::nothrow);
     if (!raw) return nullptr;
@@ -66,6 +67,9 @@ PlaybackPlan* create_plan(const PlanSizes& sizes) {
     at += send_mix;
     plan->auto_points = new (at) PlanAutoPoint[sizes.auto_points];
     plan->auto_point_count = sizes.auto_points;
+    at += auto_points;
+    plan->plugin_lanes = new (at) PlanPluginLane[sizes.plugin_lanes];
+    plan->plugin_lane_count = sizes.plugin_lanes;
     return plan;
 }
 

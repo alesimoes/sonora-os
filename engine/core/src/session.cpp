@@ -284,7 +284,12 @@ Session::Session(SessionConfig cfg)
     param_commands_ = std::make_unique<RingBuffer<RtCommand>>(
         pb.plugin_param_capacity ? pb.plugin_param_capacity : 1);
     params_.reset(new RtCommand[param_commands_->capacity()]());
-    node_params_.reset(new ChainParamEvent[param_commands_->capacity()]());
+    // Room for a full ring of posted changes and every lane of a plan in
+    // the same callback (ADR-0027 §5).
+    max_plugin_lanes_ = pb.max_plugin_lanes;
+    node_params_.reset(new ChainParamEvent[param_commands_->capacity() + max_plugin_lanes_]());
+    lane_sent_.reset(new float[max_plugin_lanes_ + 1]());
+    lane_has_sent_.reset(new uint8_t[max_plugin_lanes_ + 1]());
 
     // Every track with a chain, and every bus: the largest graph a plan can
     // have.
@@ -302,6 +307,8 @@ Session::Session(SessionConfig cfg)
     order_first_.reset(new uint32_t[max_order_ + 1]());
     order_count_.reset(new uint32_t[max_order_ + 1]());
     order_pos_.reset(new uint32_t[max_order_ + 1]());
+    order_node_.reset(new uint32_t[max_order_ + 1]());
+    order_lanes_.reset(new uint32_t[max_order_ + 1]());
     scratch_.reset(new float[static_cast<std::size_t>(scratch_buffers_) * 2 * max_block_]());
     track_buf_.reset(new float[2 * static_cast<std::size_t>(max_block_)]());
     delay_len_ = pb.max_delay_frames ? pb.max_delay_frames + 1 : 0;
@@ -1338,6 +1345,8 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     }
     if (plan_valid_) {
         automation_targets(*plan, rolling, playhead);
+        // At the frame automation_targets() starts the callback's lanes at.
+        gather_lanes(*plan, auto_start_);
     } else {
         std::memset(track_auto_.get(), 0, tracks_.size());
     }
@@ -1552,8 +1561,12 @@ void Session::adopt_param_order(const PlaybackPlan& plan) noexcept SONORA_RT {
         }
         store_order_[node.param_store] = order_chains_;
         order_store_[order_chains_] = node.param_store;
+        order_node_[order_chains_] = ni;
+        order_lanes_[order_chains_] = node.plugin_lane_count;
         node_order_[ni] = order_chains_++;
     }
+    // In bounds: plan_in_bounds() held the total to max_plugin_lanes_.
+    std::memset(lane_has_sent_.get(), 0, plan.plugin_lane_count);
 }
 
 void Session::gather_params() noexcept SONORA_RT {
@@ -1578,11 +1591,14 @@ void Session::gather_params() noexcept SONORA_RT {
                 ++order_count_[o];
             }
         }
+        // Each node's posted changes, then room for every one of its lanes,
+        // which gather_lanes() appends: at most the ring's capacity plus
+        // max_plugin_lanes_ in all, node_params_'s size.
         uint32_t at = 0;
         for (uint32_t o = 0; o < order_chains_; ++o) {
             order_first_[o] = at;
             order_pos_[o] = at;
-            at += order_count_[o];
+            at += order_count_[o] + order_lanes_[o];
         }
         // Stable: each node's changes keep the order they were posted in.
         // Those for a later plan move to the front, in order, never past
@@ -1602,6 +1618,42 @@ void Session::gather_params() noexcept SONORA_RT {
     if (dropped != 0) {
         params_dropped_.store(params_dropped_.load(std::memory_order_relaxed) + dropped,
                               std::memory_order_relaxed);
+    }
+}
+
+void Session::gather_lanes(const PlaybackPlan& plan, uint64_t frame) noexcept SONORA_RT {
+    if (runner_ == nullptr) return;
+    // The frame the chain's input carries: the host applies a change tagged
+    // with a block to the input submitted with it, so a lane drawn at frame
+    // t reaches the audio at t. The chain's latency delays both alike.
+    const auto t = static_cast<int64_t>(frame);
+    for (uint32_t o = 0; o < order_chains_; ++o) {
+        if (order_lanes_[o] == 0) continue;
+        const PlanNode& node = plan.nodes[order_node_[o]];
+        const Track::Automation mode = mix_view(plan, plan.tracks[node.track].engine_track).automation;
+        // Off plays the knobs; Write plays the live values, and a plugin
+        // parameter has no touch to write from yet, so its knob too. Touch
+        // and Latch play the lane until a touch exists to override it.
+        const bool plays = mode != Track::Automation::Off && mode != Track::Automation::Write;
+        // A posted change for this node may be for an automated parameter:
+        // every lane goes after it, so the lane, not the knob, is what the
+        // host keeps (ADR-0027 §2: an automated parameter's static value is
+        // ignored).
+        const bool posted = order_count_[o] != 0;
+        for (uint32_t k = 0; k < node.plugin_lane_count; ++k) {
+            const uint32_t li = node.first_plugin_lane + k;
+            if (!plays) {
+                lane_has_sent_[li] = 0;
+                continue;
+            }
+            const PlanPluginLane& lane = plan.plugin_lanes[li];
+            const float v = auto_lane_value(plan.auto_points + lane.first, lane.count, t);
+            if (!posted && lane_has_sent_[li] != 0 && lane_sent_[li] == v) continue;
+            lane_sent_[li] = v;
+            lane_has_sent_[li] = 1;
+            node_params_[order_first_[o] + order_count_[o]++] =
+                ChainParamEvent{lane.instance, lane.param, 0, v};
+        }
     }
 }
 
@@ -2170,9 +2222,30 @@ bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
             }
         }
     }
+    // Plugin lanes (ADR-0027 §5): node_params_ has room for this many beside
+    // a full ring, and lane_sent_ an entry each.
+    if (plan.plugin_lane_count > max_plugin_lanes_) return false;
+    for (uint32_t li = 0; li < plan.plugin_lane_count; ++li) {
+        const PlanPluginLane& lane = plan.plugin_lanes[li];
+        if (lane.count == 0 || lane.first > plan.auto_point_count ||
+            lane.count > plan.auto_point_count - lane.first) {
+            return false;
+        }
+    }
+    // gather_params() reserves each node's count, so ranges that overlap
+    // would reserve past node_params_: the counts must sum to no more than
+    // the lanes there are.
+    uint32_t node_lanes = 0;
     for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
         const PlanNode& node = plan.nodes[ni];
         if (node.scratch_buffer >= scratch_buffers_) return false;
+        if (node.plugin_lane_count != 0 &&
+            (node.kind != NodeKind::InsertChain || node.first_plugin_lane > plan.plugin_lane_count ||
+             node.plugin_lane_count > plan.plugin_lane_count - node.first_plugin_lane ||
+             node.plugin_lane_count > plan.plugin_lane_count - node_lanes)) {
+            return false;
+        }
+        node_lanes += node.plugin_lane_count;
         if (node.first_input_edge > plan.edge_count ||
             node.input_edge_count > plan.edge_count - node.first_input_edge) {
             return false;

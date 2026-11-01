@@ -145,6 +145,12 @@ add_executable(test_click_control tests/test_click.cpp)
 target_link_libraries(test_click_control PRIVATE sonora_control)
 add_test(NAME click_control COMMAND test_click_control)
 
+# State block layout 5 from a playing session (ADR-0009 update of
+# 2026-11-01): bus peaks per side, the miss count, "Locating…".
+add_executable(test_publisher_playback tests/test_publisher_playback.cpp)
+target_link_libraries(test_publisher_playback PRIVATE sonora_control)
+add_test(NAME publisher_playback COMMAND test_publisher_playback)
+
 # PluginHosting against real hosts (ADR-0012 checklist 5): built where the
 # host is (tools/build-plugins.sh, CI's plugins job).
 if(TARGET sonora-plugin-host)

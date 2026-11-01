@@ -418,7 +418,9 @@ void version_check() {
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
     CHECK(kProtocolVersion == 35);
-    CHECK(kStateLayoutVersion == 4);
+    // Layout 5: "Locating…", the bus peaks and the playback misses (ADR-0009
+    // update of 2026-11-01); no message changed, so the protocol did not.
+    CHECK(kStateLayoutVersion == 5);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
@@ -443,6 +445,7 @@ void domains() {
         const bool interface = id.rfind("tool.", 0) == 0 || id.rfind("zoom.", 0) == 0 ||
                                id.rfind("edit.mode.", 0) == 0 || id.rfind("focus.", 0) == 0 ||
                                id == "app.quit" || id == "automation.thin" ||
+                               id == "automation.toggle_follows_edit" ||
                                id == "window.transport" ||
                                id == "window.undo_history" ||
                                id == "window.memory_locations" || id == "window.latency";

@@ -31,7 +31,12 @@
   "denormal_ratio": 1.2,
   "zipper_tone_dbfs": -40.0,
   "zipper_dbfs": -60.0,
-  "zipper": ["drive", "output", "mix", "auto_level", "noise", "hum"],
+  "zipper": ["drive", "output", "mix", "auto_level", "noise", "hum", "transformer", "sag"],
+  "transformer": {
+    "mid_added_db": -55.0,
+    "lf_over_mid_db": 10.0,
+    "sag_db": 0.05
+  },
   "golden_abs": 1e-6,
   "cpu": {
     "p999_us": 60.0,

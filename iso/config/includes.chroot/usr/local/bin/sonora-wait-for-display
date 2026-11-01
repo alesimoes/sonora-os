@@ -1,0 +1,15 @@
+#!/bin/sh
+# The UI must not start before the compositor's socket exists: Qt would exit,
+# and the unit would burn its start limit before labwc is up.
+# Exit 0 on timeout so the UI prints its own diagnostic; the unit's start
+# limit and OnFailure= handle a display that never comes.
+set -e
+SOCK="${XDG_RUNTIME_DIR:-/run/user/1000}/${WAYLAND_DISPLAY:-wayland-0}"
+i=0
+while [ "$i" -lt 100 ]; do
+  [ -S "$SOCK" ] && exit 0
+  i=$((i + 1))
+  sleep 0.1
+done
+echo "sonora: no Wayland socket at $SOCK after 10s; starting anyway." >&2
+exit 0

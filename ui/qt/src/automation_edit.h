@@ -109,4 +109,21 @@ bool thin_range_op(model::Id track, const model::AutomationLane& lane, model::Fr
 bool paste_op(model::Id track, const AutomationClip& clip, model::Frames at,
               model::EditAutomation& out);
 
+// Automation Follows Edit (Pro Tools' Options menu; ADR-0027 §7): what a
+// region edit on `track` adds, each lane's EditAutomation, to go in one
+// Compound with it. Unlike Paste, both keep the lane exactly outside the
+// spans: each span's ends become steps, the value before on one side and
+// after on the other. A flat lane, and a move to where the region is, add
+// nothing.
+//
+// The region moved from [from, to) to `at`: its part of each lane goes
+// with it, and the place it left runs straight across, as a clear leaves it.
+std::vector<model::EditAutomation> follow_move_ops(const model::TrackEdit& track,
+                                                   model::Frames from, model::Frames to,
+                                                   model::Frames at);
+// [from, to) cleared on every lane with a point in [from, to]: it runs
+// straight from the value before `from` to the value at `to`.
+std::vector<model::EditAutomation> follow_clear_ops(const model::TrackEdit& track,
+                                                    model::Frames from, model::Frames to);
+
 }  // namespace sonora::ui

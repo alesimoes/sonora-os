@@ -38,6 +38,7 @@ struct TransportSnapshot {
     uint32_t compensation_frames = 0;
     uint32_t compensation_shortfall_frames = 0;
     uint32_t transport_flags = 0;   // TransportFlag
+    uint32_t playback_misses = 0;   // layout 5; only rises
     uint64_t heartbeat = 0;
     // The seqlock ran out of retries: these values may be torn, and are the
     // zeros above. Show "stale", never them.
@@ -119,6 +120,9 @@ public:
     // reader that falls more than kPeakSlots publishes behind loses the
     // oldest of them, never the newest.
     float take_peak(uint32_t index);
+    // The same for the monitor bus, side 0 left and 1 right, each with a
+    // cursor of its own. 0 for any other side.
+    float take_bus_peak(uint32_t side);
 
     // False once the heartbeat has stood still for the timeout, judged on
     // the caller's monotonic clock, so no clock is shared with the engine.
@@ -131,9 +135,12 @@ public:
     uint64_t retries() const { return retries_; }
 
 private:
+    float take_from(const PeakRing& ring, uint64_t& cursor) const;
+
     const StateHeader* header_ = nullptr;
     const TrackState* tracks_ = nullptr;
     std::vector<uint64_t> cursors_;
+    std::array<uint64_t, kBusPeakSides> bus_cursors_{};
     mutable uint64_t stale_reads_ = 0;
     mutable uint64_t retries_ = 0;
     mutable uint64_t stuck_seq_ = 0;   // an odd sequence a read gave up on

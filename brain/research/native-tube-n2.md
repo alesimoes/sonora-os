@@ -384,3 +384,76 @@ without the counts; `reset()` stays the caller's and still clears them.
   allocates nothing (tables, oversampler buffers and the dry delay are
   sized in `prepare()`); the rt-safety-auditor's review is the check
   until the RTSan job exists.
+
+## Slice 3: the output stage (transformer and supply sag)
+
+`common/dsp/transformer.h`, `OutputStage`; in the tube drive as
+`transformer` (0 % bypasses it exactly, the default) and `sag`.
+
+**The circuit.** A push-pull driver (a voltage behind Rs = 1.5 k) feeds
+the magnetising branch of an output transformer in parallel with the load
+(3 k, referred). The node equation is `v = g Vs - Rp i` with
+`d psi / dt = v`, integrated with the trapezoidal rule at the oversampled
+rate; one scalar equation per sample, strictly monotone in `i`, so a
+safeguarded Newton converges in at most 4 iterations over the cases
+measured (1e-6 to 1000 of full scale, sines and squares; bound 24). The
+driver cannot swing past the supply rail: `Vs = x / (1 + (x/rail)^4)^(1/4)`.
+That curve is ours, a smooth stand-in for the load line of a class-AB
+pair; it is not from a paper and is not validated against a circuit. The
+supply is a 100 uF reservoir behind 600 ohm (rectifier and winding) at
+Sag 100 %, feeding 60 mA and the rectified primary current: it sags with
+the signal and recovers with tau = 60 ms.
+
+**The core** is Jiles-Atherton (Jiles and Atherton 1986; the update and
+its guard for the non-physical region after Jiles, Thoelke and Devine
+1992), written in amperes with `psi = Lc (i + M)`. The step is
+explicit in the irreversible magnetisation and clamped so it never passes
+the anhysteretic curve it chases; that makes `psi(i)` monotone, which the
+bracketing relies on. The scheme is first order in the hysteresis update:
+60 Hz at half scale differs 1.2e-4 (96 vs 192 kHz) and 6e-5 (192 vs
+384 kHz) of the peak.
+
+**Parameters are ours.** Lc = 10 mH, Ms = 80 A (saturation flux 0.8 V*s),
+a = 20 mA, k = 6 mA, c = 0.3, alpha = 2e-5; 1.0 of signal = 250 V at the
+driver, rail 271 V at idle. They are in the range of a small audio output
+transformer, set so the low-field corner is near 40 Hz (measured -2.9 dB
+at 40 Hz and 1 mV of drive, -6.9 dB at 20 Hz). They are not fitted to any
+unit and not checked against a published measurement.
+
+**Measured** (`test_dsp_transformer`, `native_tube`; GCC, x86-64, a busy
+Docker Desktop host):
+- Bass first: at half scale the THD is 0.49 % at 1 kHz, 1.4 % at 80 Hz and
+  2.3 % at 40 Hz; the flux at a fixed level goes as 1/f (200 Hz over
+  400 Hz: 1.90 for an ideal 2).
+- Hysteresis dissipates: the loop integral of `i d psi` over a cycle at
+  40 Hz is positive and falls 8.5x when the coercivity falls 10x.
+- Through the processor (drive 0 dB, auto level): the stage adds -58 dB of
+  distortion (harmonics 2-9 against the fundamental) at 1 kHz and -31 dB
+  at 40 Hz, at -12 dBFS: 27 dB bass-first.
+- Sag: a full-scale 100 Hz burst pulls the rail 14 % down (271 to 232 V)
+  and it returns to within 0.1 V in 600 ms. A held -1 dBFS 100 Hz tone
+  ends 0.098 dB below where it began at Sag 100 % and level at Sag 0 %.
+  The effect is small at moderate levels because the rail has headroom;
+  it grows as the level rises towards the rail.
+- Aliasing with the stage in, nominal level (-18 dBFS), 48 kHz: -88 dBc
+  eco, -113 dBc standard, -123 dBc high (bars -70, -90, -90). At drive
+  +18 dB and -6 dBFS (reported) the preamp's own overload dominates.
+- Latency unchanged with the stage in (0 samples measured - reported at
+  44.1, 48 and 96 kHz, eco and high); the zipper bar holds for
+  `transformer` and `sag`.
+
+**Not done.** No SPICE reference for the core (ngspice's core model is a
+Jiles-Atherton and is the natural reference; the build image has no
+ngspice); no golden for the stage on (the golden stays the stage off); the
+CPU cost of the stage on is reported below, not held.
+
+**CPU of the stage on** (`--cpu`, q128 stereo 48 kHz, GCC Release, a busy
+Docker Desktop host on which the stage-off eco p50 read 98 us, so read the
+ratios): eco p50 281 us / p99.9 475 us with Transformer 100 % on the
+programme; standard p50 506 us, high p50 459 us. The stage costs roughly
+two to three times the preamp (a Newton solve with a tanh per iteration for
+the Langevin function, per oversampled sample, per channel). It is over
+class B and so is reported, not held; the defaults (stage off) still meet
+the bar. Reducing it is a follow-up: a tabulated Langevin, a warm start
+from the previous step's slope, and running the stage at 2x whatever the
+quality.
