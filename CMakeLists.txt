@@ -9,7 +9,38 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-add_compile_options(-Wall -Wextra)
+# Per compiler: MSVC does not take -Wall/-Wextra (it reads them as /Wall-like
+# or unknown options).
+add_compile_options(
+  $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall>
+  $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wextra>
+  $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
+
+# The platform selection (ADR-0008 §3). linux builds everything the appliance
+# ships; neutral builds the modules that are standard C++17 only, which the
+# `portable` CI job compiles on Windows with MSVC; windows is reserved.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(SONORA_PLATFORM_DEFAULT linux)
+else()
+  set(SONORA_PLATFORM_DEFAULT neutral)
+endif()
+set(SONORA_PLATFORM "${SONORA_PLATFORM_DEFAULT}" CACHE STRING
+    "Platform to build for: linux or neutral (windows is reserved)")
+set_property(CACHE SONORA_PLATFORM PROPERTY STRINGS linux neutral windows)
+if(SONORA_PLATFORM STREQUAL "windows")
+  message(FATAL_ERROR "drivers/asio and the Windows entry layer do not exist yet; "
+                      "use SONORA_PLATFORM=neutral")
+elseif(NOT SONORA_PLATFORM STREQUAL "linux" AND NOT SONORA_PLATFORM STREQUAL "neutral")
+  message(FATAL_ERROR "SONORA_PLATFORM must be linux or neutral, not '${SONORA_PLATFORM}'")
+endif()
+if(SONORA_PLATFORM STREQUAL "linux")
+  set(SONORA_BACKENDS_DEFAULT "jack;fake")
+else()
+  set(SONORA_BACKENDS_DEFAULT "fake")
+endif()
+set(SONORA_BACKENDS "${SONORA_BACKENDS_DEFAULT}" CACHE STRING
+    "Audio backends linked into the entry layer")
+message(STATUS "SONORA_PLATFORM=${SONORA_PLATFORM} SONORA_BACKENDS=${SONORA_BACKENDS}")
 
 # The RealtimeSanitizer build (tools/build-rtsan.sh, CI's rtsan job; ADR-0007,
 # first 2026-10-12 update). Every SONORA_RT function is [[clang::nonblocking]]
@@ -59,16 +90,20 @@ enable_testing()
 add_subdirectory(common/base)
 # Strict JSON for the session file and the key maps (ADR-0009 §5), layer 0.
 add_subdirectory(common/json)
+if(SONORA_PLATFORM STREQUAL "linux")
 add_subdirectory(common/audiofile)
 add_subdirectory(common/midi)
 # The session document (ADR-0009), layer 1 beside common/audiofile. It links
 # common/midi for notes and edits (ADR-0014 §1), above it in this list.
 add_subdirectory(common/model)
+endif()
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
+if(SONORA_PLATFORM STREQUAL "linux")
 # A session folder on disk (ADR-0015 §3, §6), layer 2 on common/model and
 # common/platform: the engine's saver writes through it.
 add_subdirectory(common/session_files)
+endif()
 # Neutral DSP for the native plugin suite and the meters (ADR-0011 §2.1),
 # layer 1 on common/base.
 add_subdirectory(common/dsp)
@@ -76,7 +111,13 @@ add_subdirectory(common/dsp)
 # adapters (each processor's directory asks them for its LV2 and VST3
 # bundles), then the measurement harness, then each processor.
 add_subdirectory(plugins/native/sdk)
+if(SONORA_PLATFORM STREQUAL "linux")
 add_subdirectory(plugins/native/format)
+else()
+# The LV2 and VST3 bundles are Linux-only; the processors still call this.
+function(sonora_native_plugin)
+endfunction()
+endif()
 add_subdirectory(plugins/native/measure)
 add_subdirectory(plugins/native/eq)
 add_subdirectory(plugins/native/compressor)
@@ -89,6 +130,11 @@ add_subdirectory(plugins/native/tube)
 add_subdirectory(plugins/native/opto)
 add_subdirectory(plugins/native/fet)
 add_subdirectory(plugins/native/measure/app)
+
+# Everything below is POSIX or Qt: the neutral build stops here.
+if(NOT SONORA_PLATFORM STREQUAL "linux")
+  return()
+endif()
 add_subdirectory(contracts/api)
 add_subdirectory(contracts/backend)
 # The engine <-> plugin host shared-memory layout, accepted as layout 1
