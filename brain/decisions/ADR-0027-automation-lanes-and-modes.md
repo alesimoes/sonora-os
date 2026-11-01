@@ -159,6 +159,29 @@ first frame less the chain's latency, into the block-tagged last-value
 table that ADR-0012 §5 already gives the host. No new IPC. They come after
 the write slice.
 
+- *Amended (plugin lanes, slice 1, 2026-11-01): the frame is the block's
+  first frame, not that less the chain's latency.* A change tagged with a
+  block applies to the input submitted with it (ADR-0012 §5.1), and the
+  chain's input in that callback is the timeline at the block's first
+  frame; the chain's latency then delays the audio and the change alike.
+  Less the latency would land every plugin move that many frames late,
+  2048 frames behind a look-ahead limiter. The TrackFader's `L` early
+  (§2) is the same rule seen from after the chain. For an insert behind a
+  latent one in the same chain the exact frame is that less the earlier
+  inserts' latency, which the plan does not yet carry per instance: until
+  it does such an insert's lane is that much late, and only there.
+- *As built (slice 1, engine/core):* `PlanPluginLane {instance, param,
+  first, count}` in `PlaybackPlan::plugin_lanes`, listed by its
+  InsertChain node, points in `auto_points`, `param` the dense index the
+  builder resolves from the key. Once per callback that runs the chain,
+  each lane's value goes to the node as a change at offset 0 when it
+  moved, after the changes the control thread posted (all of the node's
+  lanes after any posted one, so a knob moved under a lane never wins);
+  every lane goes again after a plan swap. Read, Touch, Latch and Trim
+  play the lanes; Off and Write play the knob, as a plugin parameter has
+  no touch to write from yet. `PlaybackConfig::max_plugin_lanes` bounds a
+  plan's lanes; more is a plan out of bounds.
+
 ### §6 First slice, format, protocol
 
 - Slice 1: read playback of Volume and Pan on audio tracks; `EditAutomation`

@@ -156,6 +156,12 @@ add_executable(test_plugin_params tests/test_plugin_params.cpp)
 target_link_libraries(test_plugin_params PRIVATE sonora_core)
 add_test(NAME plugin_params COMMAND test_plugin_params)
 
+# ADR-0027 §5: plugin parameter lanes on an InsertChain node, evaluated once
+# per callback and handed to the chain as parameter changes.
+add_executable(test_plugin_automation tests/test_plugin_automation.cpp)
+target_link_libraries(test_plugin_automation PRIVATE sonora_core)
+add_test(NAME plugin_automation COMMAND test_plugin_automation)
+
 # PluginChainRunner's own cases, no host: a node with no node state is
 # silence, a chain wider than stereo is silence, a mono chain fills both
 # sides.
