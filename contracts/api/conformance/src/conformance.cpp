@@ -1788,6 +1788,101 @@ int check_automation(Rig& rig) {
     return C(rig, "automation").go();
 }
 
+// Duplicate Tracks' Automation checkbox (ADR-0023, update of 2026-10-31):
+// off, the copy arrives with no lanes and still with its source's mode,
+// which is mix state; on, it arrives with its source's lanes.
+int check_duplicate_automation(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        bool apply(Session& s, const model::Operation& op, CommandReply& r) {
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            if (!model::encode_operation(op, m.op, error)) return false;
+            return s.await(rig_, s.engine->submit(m), r);
+        }
+        static const model::TrackEdit* track_of(const model::Snapshot& s, model::Id id) {
+            for (const auto& t : s.edit->tracks) {
+                if (t->id == id) return t.get();
+            }
+            return nullptr;
+        }
+
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            const model::Snapshot before = s.replica.current();
+            const std::size_t n = before.edit->tracks.size();
+            EXPECT(n >= 2, "the check needs two tracks");
+            const model::Id source = before.edit->tracks.at(0)->id;
+            const model::AutomationParam vol = model::AutomationParam::Volume;
+            CommandReply r;
+            // Every engine track is in use; the copy needs one free.
+            EXPECT(apply(s, model::RemoveTrack{model::track_order(*before.edit).back()}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "deleting the last track failed: " + r.message);
+            EXPECT(apply(s, model::EditAutomation{source, vol, 0, model::kMaxInteger,
+                                                  {{0, -6.0f}, {48000, 0.0f}}},
+                         r) &&
+                       r.result == DispatchResult::Ok,
+                   "EditAutomation was refused: " + r.message);
+            // Off is not the default mode, so a copy that took the default
+            // instead of its source's would show.
+            model::TrackMix mix = *before.mix.find(source);
+            mix.automation = model::AutomationMode::Off;
+            EXPECT(apply(s, model::SetMix{mix}, r) && r.result == DispatchResult::Ok,
+                   "SetMix with automation off was refused: " + r.message);
+
+            model::DuplicateTrack dup;
+            dup.source = source;
+            EXPECT(s.until(rig_, [&]() { return s.replica.current().revision == before.revision + 3; }),
+                   "no update for the setup: " + s.replica_error);
+            dup.track = s.replica.current().next_id;
+            dup.name = model::duplicate_track_name(s.replica.current(), source);
+            dup.automation = false;
+            EXPECT(apply(s, dup, r) && r.result == DispatchResult::Ok,
+                   "the duplicate without automation failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.current().edit->tracks.size() == n; }),
+                   "no duplicate: " + s.replica_error);
+            model::Snapshot here = s.replica.current();
+            const model::TrackEdit* copy = track_of(here, dup.track);
+            EXPECT(copy != nullptr, "the replica has no track with the duplicate's id");
+            EXPECT(copy->automation.empty(), "the duplicate without automation has lanes");
+            EXPECT(here.mix.find(dup.track) != nullptr &&
+                       here.mix.find(dup.track)->automation == model::AutomationMode::Off,
+                   "the duplicate does not have its source's automation mode");
+            const model::TrackEdit* kept = track_of(here, source);
+            EXPECT(kept != nullptr && kept->lane(vol) != nullptr && kept->lane(vol)->points.size() == 2,
+                   "duplicating without automation changed the source's lane");
+
+            ModelRequest undo;
+            undo.action = ModelAction::Undo;
+            EXPECT(s.await(rig_, s.engine->submit(undo), r) && r.result == DispatchResult::Ok,
+                   "undoing the duplicate failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.current().edit->tracks.size() == n - 1; }),
+                   "the undo left the duplicate");
+            dup.track = s.replica.current().next_id;
+            dup.automation = true;
+            EXPECT(apply(s, dup, r) && r.result == DispatchResult::Ok,
+                   "the duplicate with automation failed: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.current().edit->tracks.size() == n; }),
+                   "no second duplicate: " + s.replica_error);
+            here = s.replica.current();
+            copy = track_of(here, dup.track);
+            EXPECT(copy != nullptr && copy->lane(vol) != nullptr &&
+                       *copy->lane(vol) == *track_of(here, source)->lane(vol),
+                   "the duplicate with automation does not hold its source's lane");
+            EXPECT(here.mix.find(dup.track)->automation == model::AutomationMode::Off,
+                   "the duplicate with automation does not have its source's mode");
+            return ok();
+        }
+    };
+    return C(rig, "duplicate automation").go();
+}
+
 // Track structure (ADR-0023): no track past the engine's count; outside a
 // take the record arm goes with its track when the tracks move; during a
 // take nothing may delete or move the armed track, by an operation, an
@@ -3570,6 +3665,7 @@ int run(Rig& rig) {
     failures += check_live_send_rides(rig);
     failures += check_output_routing(rig);
     failures += check_automation(rig);
+    failures += check_duplicate_automation(rig);
     failures += check_track_structure(rig);
     failures += check_track_structure_while_closing(rig);
     failures += check_track_structure_while_starting(rig);
