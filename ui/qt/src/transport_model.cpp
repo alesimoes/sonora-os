@@ -104,14 +104,16 @@ void TransportModel::onTransport(const TransportSnapshot& t, bool alive) {
                              : !alive                 ? QStringLiteral("NO ENGINE")
                              : recording            ? QStringLiteral("REC")
                              : rolling              ? QStringLiteral("PLAY")
+                             : alive && !recording && t.record_ready ? QStringLiteral("READY")
                                                     : QStringLiteral("STOP");
         const bool click = alive && t.click;
+        const bool record_ready = alive && !recording && t.record_ready;
         const bool count_off = alive && t.count_off;
         const bool counting_off = alive && t.counting_off;
         state_changed = locating != locating_ || misses != playback_misses_ ||
                         rolling != rolling_ || recording != recording_ || alive != alive_ ||
                         text != state_text_ || click != click_ || count_off != count_off_ ||
-                        counting_off != counting_off_;
+                        counting_off != counting_off_ || record_ready != record_ready_;
         locating_ = locating;
         playback_misses_ = misses;
         click_ = click;
@@ -119,6 +121,7 @@ void TransportModel::onTransport(const TransportSnapshot& t, bool alive) {
         counting_off_ = counting_off;
         rolling_ = rolling;
         recording_ = recording;
+        record_ready_ = record_ready;
         alive_ = alive;
         state_text_ = text;
     }

@@ -59,6 +59,14 @@ class ShellModel : public QObject {
     Q_PROPERTY(bool cycleMode READ cycleMode NOTIFY keymapChanged)
     Q_PROPERTY(QString transportText READ transportText NOTIFY transportChanged)
     Q_PROPERTY(bool recording READ recording NOTIFY transportChanged)
+    // Record armed, waiting for Play; and the command the Record button
+    // sends: transport.record_ready when the profile binds it (Pro Tools),
+    // transport.record otherwise (Logic starts the take at once).
+    Q_PROPERTY(bool recordReady READ recordReady NOTIFY transportChanged)
+    Q_PROPERTY(QString recordCommand READ recordCommand NOTIFY keymapChanged)
+    // Why Record was refused (no armed track, no inputs), held until the
+    // next Record, Stop or a take that starts; not the 2.5 s status line.
+    Q_PROPERTY(QString recordRefusal READ recordRefusal NOTIFY transportChanged)
     Q_PROPERTY(QString clockText READ clockText NOTIFY transportChanged)
     Q_PROPERTY(int take READ take NOTIFY transportChanged)
     Q_PROPERTY(int xruns READ xruns NOTIFY transportChanged)
@@ -187,6 +195,9 @@ public:
     QString profileName() const;
     QString transportText() const { return transport_text_; }
     bool recording() const { return recording_; }
+    bool recordReady() const { return record_ready_; }
+    QString recordCommand() const;
+    QString recordRefusal() const { return record_refusal_; }
     QString clockText() const { return clock_text_; }
     int take() const { return take_; }
     int xruns() const { return xruns_; }
@@ -295,6 +306,9 @@ private:
     // A latency.* command, its refusal held in the window.
     void latencyCommand(const char* command, const QString& argument);
     void holdLatencyRefusal(const QString& why);
+    void holdRecordRefusal(const QString& why);
+    static bool isRecordCommand(const std::string& c);
+    static bool clearsRecordRefusal(const std::string& c);
     // `read_frame` false: tick() has just read frame_.
     void refreshState(bool read_frame = true);
     void takeEvents();
@@ -347,6 +361,8 @@ private:
 
     QString transport_text_ = QStringLiteral("STOP");
     bool recording_ = false;
+    bool record_ready_ = false;
+    QString record_refusal_;
     QString clock_text_ = QStringLiteral("00:00:00.000");
     int take_ = 0;
     int xruns_ = 0;

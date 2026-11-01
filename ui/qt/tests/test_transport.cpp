@@ -560,6 +560,82 @@ void test_window() {
         OK(!active("barRecord") && !active("transportRecord"));
         OK(transport.stateText() == QStringLiteral("PLAY"));
     }
+    // Pro Tools' Record only arms: both buttons send transport.record_ready,
+    // the state block's flag blinks them, and a refusal is held on screen.
+    {
+        engine.snapshot.state = TransportMode::Stopped;
+        for (int i = 0; i < 4; ++i) model.tick();
+        QQuickItem* bar_rec = named(root, QStringLiteral("barRecord"));
+        QQuickItem* win_rec = named(root, QStringLiteral("transportRecord"));
+        OK(bar_rec != nullptr && win_rec != nullptr);
+        OK(model.recordCommand() == QStringLiteral("transport.record_ready"));
+        engine.sent.clear();
+        click(view, bar_rec);
+        click(view, win_rec);
+        OK(engine.sent.size() == 2 && engine.sent[0].command == "transport.record_ready" &&
+           engine.sent[1].command == "transport.record_ready");
+        OK(!model.recordReady() && !bar_rec->property("active").toBool());
+
+        engine.snapshot.record_ready = true;
+        for (int i = 0; i < 4; ++i) model.tick();
+        OK(model.recordReady() && transport.recordReady() && !model.recording());
+        OK(transport.stateText() == QStringLiteral("READY"));
+        // The bar's pill says what the window's does.
+        OK(model.transportText() == QStringLiteral("READY"));
+        OK(bar_rec->property("ready").toBool() && win_rec->property("ready").toBool());
+        // Lit on its first frame, outline kept when the blink is off.
+        OK(bar_rec->property("active").toBool());
+        bar_rec->setProperty("blinkOn", false);
+        OK(!bar_rec->property("active").toBool());
+        OK(bar_rec->property("outlined").toBool());
+        // A take replaces the blink with the solid button.
+        engine.snapshot.state = TransportMode::Recording;
+        for (int i = 0; i < 4; ++i) model.tick();
+        OK(bar_rec->property("active").toBool() && !model.recordReady());
+        engine.snapshot.state = TransportMode::Stopped;
+        engine.snapshot.record_ready = false;
+        for (int i = 0; i < 4; ++i) model.tick();
+        OK(!model.recordReady() && !bar_rec->property("active").toBool());
+
+        // No armed track: the engine's words stay until Stop, past the status line.
+        engine.next_result = DispatchResult::Failed;
+        engine.next_message = "no track is armed";
+        click(view, bar_rec);
+        model.tick();
+        OK(model.recordRefusal() == QStringLiteral("no track is armed"));
+        QQuickItem* held = named(root, QStringLiteral("recordRefusal"));
+        OK(held != nullptr && held->isVisible());
+        now += 10ull * 1000000000ull;
+        model.tick();
+        OK(model.recordRefusal() == QStringLiteral("no track is armed"));
+        engine.next_result = DispatchResult::Ok;
+        engine.next_message.clear();
+        // Cleared by each way the operator moves on. Keys go through the
+        // router's event filter, not ShellModel::invoke.
+        const auto refuse = [&]() {
+            engine.next_result = DispatchResult::Failed;
+            engine.next_message = "no track is armed";
+            click(view, bar_rec);
+            model.tick();
+            engine.next_result = DispatchResult::Ok;
+            engine.next_message.clear();
+            return model.recordRefusal() == QStringLiteral("no track is armed");
+        };
+        OK(refuse());
+        key(view, Qt::Key_Space, Qt::NoModifier);   // toggle_play
+        model.tick();
+        OK(model.recordRefusal().isEmpty() && !held->isVisible());
+        OK(refuse());
+        engine.snapshot.state = TransportMode::Recording;   // a take started
+        for (int i = 0; i < 4; ++i) model.tick();
+        OK(model.recordRefusal().isEmpty());
+        engine.snapshot.state = TransportMode::Stopped;
+        for (int i = 0; i < 4; ++i) model.tick();
+        OK(refuse());
+        model.invoke(QStringLiteral("transport.stop"), -1);
+        model.tick();
+        OK(model.recordRefusal().isEmpty() && !held->isVisible());
+    }
     engine.snapshot.state = TransportMode::Rolling;
     engine.snapshot.playhead_frames = static_cast<uint64_t>(kAt96 + kBeat96);
     model.tick();

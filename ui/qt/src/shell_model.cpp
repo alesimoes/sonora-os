@@ -88,6 +88,14 @@ bool ShellModel::cycleMode() const {
                        [](const Binding& x) { return x.command == "transport.toggle_cycle"; });
 }
 
+QString ShellModel::recordCommand() const {
+    const auto& b = router_.map().bindings();
+    const bool ready = std::any_of(b.begin(), b.end(), [](const Binding& x) {
+        return x.command == "transport.record_ready";
+    });
+    return ready ? QStringLiteral("transport.record_ready") : QStringLiteral("transport.record");
+}
+
 QStringList ShellModel::helpEntries() const {
     QStringList out;
     for (const auto& h : router_.help()) out << QString::fromStdString(h);
@@ -272,7 +280,30 @@ bool ShellModel::eventFilter(QObject* watched, QEvent* event) {
 void ShellModel::invoke(const QString& command, int target) {
     CommandContext ctx;
     ctx.target = target;
-    report(router_.invoke(command.toStdString(), ctx));
+    const RouteResult r = router_.invoke(command.toStdString(), ctx);
+    report(r);
+    // Refused before it left (not implemented): held as the engine's is.
+    if (isRecordCommand(command.toStdString()) && r.kind != RouteResult::Kind::Sent &&
+        !r.message.empty()) {
+        holdRecordRefusal(QString::fromStdString(r.message));
+    }
+}
+
+// What ends a refusal: the operator moved on (Stop, Play), or took the Record
+// again. Keys reach the shell through report(), buttons through invoke(), and
+// the engine's answer through tick(): all three apply this.
+bool ShellModel::clearsRecordRefusal(const std::string& c) {
+    return c == "transport.stop" || c == "transport.play" || c == "transport.toggle_play";
+}
+
+bool ShellModel::isRecordCommand(const std::string& c) {
+    return c == "transport.record_ready" || c == "transport.record";
+}
+
+void ShellModel::holdRecordRefusal(const QString& why) {
+    if (record_refusal_ == why) return;
+    record_refusal_ = why;
+    emit transportChanged();
 }
 
 bool ShellModel::invokeWith(const QString& command, int target, const QString& argument) {
@@ -353,6 +384,9 @@ QList<qreal> ShellModel::scaleMarks() const {
 }
 
 void ShellModel::report(const RouteResult& r) {
+    if (r.kind == RouteResult::Kind::Sent && clearsRecordRefusal(r.command)) {
+        holdRecordRefusal(QString());
+    }
     if (router_.commandsFocus() != seen_focus_) {
         seen_focus_ = router_.commandsFocus();
         emit keymapChanged();
@@ -407,10 +441,14 @@ void ShellModel::tick() {
             r.command == "session.place_recovered" || r.command == "session.leave_recovered";
         const bool latency = r.command.compare(0, 8, "latency.") == 0;
         if (r.result == DispatchResult::Ok) {
+            if (isRecordCommand(r.command) || clearsRecordRefusal(r.command)) {
+                holdRecordRefusal(QString());
+            }
             if (!r.live && !status_.isEmpty()) say(QString());
             continue;
         }
         const std::string why = r.message.empty() ? dispatch_result_text(r.result) : r.message;
+        if (isRecordCommand(r.command)) holdRecordRefusal(QString::fromStdString(why));
         // Held under the offer, not on the status line that clears.
         if (recovery && !recovery_offer_.isEmpty()) {
             recovery_refusal_ = QString::fromStdString(why);
@@ -566,6 +604,7 @@ void ShellModel::refreshState(bool read_frame) {
         // look exactly like a live one that is stopped.
         set(transport_text_, QStringLiteral("NO ENGINE"));
         set(recording_, false);
+        set(record_ready_, false);
         set(clock_text_, QStringLiteral("--:--:--.---"));
         set(stale_, false);
         set(health_text_, QStringLiteral("engine not responding: meters show no data"));
@@ -579,9 +618,13 @@ void ShellModel::refreshState(bool read_frame) {
     if (!t.stale) {
         const QString mode = t.state == TransportMode::Recording ? QStringLiteral("REC")
                              : t.state == TransportMode::Rolling ? QStringLiteral("PLAY")
+                             : t.record_ready                    ? QStringLiteral("READY")
                                                                  : QStringLiteral("STOP");
         set(transport_text_, mode);
         set(recording_, t.state == TransportMode::Recording);
+        set(record_ready_, t.record_ready && t.state != TransportMode::Recording);
+        // A take that started answers a refusal made before it.
+        if (t.state == TransportMode::Recording) holdRecordRefusal(QString());
         set(clock_text_, clock_text(t.playhead_frames, engine_.info().sample_rate));
         set(take_, static_cast<int>(t.take));
         set(xruns_, static_cast<int>(t.xruns));

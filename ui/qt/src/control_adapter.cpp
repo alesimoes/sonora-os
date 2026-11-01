@@ -146,6 +146,7 @@ void ControlAdapter::frame(EngineFrame& out) const {
     t.count_off = (s.transport_flags & api::kTransportCountOff) != 0;
     t.counting_off = (s.transport_flags & api::kTransportCountingOff) != 0;
     t.locating = (s.transport_flags & api::kTransportLocating) != 0;
+    t.record_ready = (s.transport_flags & api::kTransportRecordReady) != 0;
     t.playback_misses = s.playback_misses;
     t.stale = s.stale;
     out.tracks.resize(state_.tracks.size());
