@@ -192,7 +192,10 @@ void DiskThread::apply(std::size_t i, const CaptureBoundary& b) {
     s.open_at = b.at;
     t.writer(target).set_time_reference(b.timeline);
     // Only a loop take's slot has a list; any other take's Open says 0.
-    if (t.sidecar(target).is_open()) hold_places(i, target, b.ordinal, WrapSidecar::kBeforeFile);
+    if (t.sidecar(target).is_open()) {
+        hold_places(i, target, b.ordinal, WrapSidecar::kBeforeFile);
+        s.wraps_before_file[target] = s.wraps_written[target];
+    }
 }
 
 void DiskThread::hold_places(std::size_t i, int slot, uint64_t upto, uint64_t mark) {
@@ -245,9 +248,11 @@ void DiskThread::finish(std::size_t i, int slot) {
     std::vector<uint64_t>& list = state_[i].wraps[slot];
     f.wraps = list;
     f.wraps_past_cap = state_[i].wraps_written[slot] - list.size();
+    f.wraps_before_file = state_[i].wraps_before_file[slot];
     // Keeps its capacity, so the next take's list does not grow it.
     list.clear();
     state_[i].wraps_written[slot] = 0;
+    state_[i].wraps_before_file[slot] = 0;
     {
         std::lock_guard<std::mutex> lock(closed_mutex_);
         closed_.push_back(std::move(f));
