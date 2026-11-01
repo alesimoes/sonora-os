@@ -31,6 +31,7 @@
 #include "sonora/fake_backend.h"
 #include "sonora/platform/ipc.h"
 #include "sonora/platform/process.h"
+#include "sonora/platform/wait_set.h"
 #include "sonora/platform/wake.h"
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin_client/host_supervisor.h"
@@ -1106,6 +1107,76 @@ int scenario_control_stop_paths(const Args&) {
     return 0;
 }
 
+// M3 on #78: what the control thread sleeps on. A Ready host lists its exit
+// handle, and its socket only while frames wait to be sent. A deaf host's
+// full socket does not end the sleep; its kill does, at once, and a host
+// that has exited lists nothing more, so the turn after the wake cannot be
+// woken again by the same exit.
+int scenario_control_watch(const Args&) {
+    std::printf("control_watch: the exit handle and the socket the control thread sleeps on\n");
+    ::setenv("SONORA_FAKE_HOST", "deaf", 1);
+    ControlRig rig(self_path(), {});
+    if (!rig.sup->ok()) return 1;
+    const auto listed = [&rig]() {
+        std::vector<HostWatch> w;
+        rig.sup->watch(w);
+        return w;
+    };
+    const auto as_watches = [](const std::vector<HostWatch>& hw) {
+        std::vector<platform::WaitSet::Watch> w;
+        for (const HostWatch& h : hw)
+            w.push_back({h.handle, h.writable ? platform::WaitSet::When::Writable : platform::WaitSet::When::Readable});
+        return w;
+    };
+    {
+        SupervisedChain chain(*rig.sup, fake_spec(), 0, 0);
+        std::string error;
+        check(chain.begin(error), "spawned");
+        check(ControlRig::next_event(chain, 5000) == SupervisedChain::Event::Swapped, "Ready and bound");
+        HostProcess* h = chain.host();
+        if (!h) return 1;
+        check(rig.sup->live_hosts() == 1, "the supervisor knows one host");
+        if (h->exit_handle() < 0) {
+            std::printf("  no pidfd on this kernel: the rest is skipped\n");
+            return 0;
+        }
+        std::vector<HostWatch> w = listed();
+        check(w.size() == 1 && w[0].handle == h->exit_handle() && !w[0].writable,
+              "idle: its exit handle only, the socket not listed");
+
+        // The deaf host reads nothing more, so its socket fills.
+        std::string bytes;
+        pc::encode(pc::Shutdown{}, bytes);
+        for (int i = 0; i < 100000 && !h->wants_write(); ++i) {
+            if (!h->send(bytes, error)) break;
+            h->pump(now_ms());
+        }
+        check(h->wants_write(), "frames wait on its full socket");
+        w = listed();
+        bool socket = false;
+        for (const HostWatch& e : w) socket = socket || (e.handle == h->socket_handle() && e.writable);
+        check(w.size() == 2 && socket, "listed: the exit handle, and the socket for writing");
+
+        platform::WaitSet sleep;
+        const std::vector<platform::WaitSet::Watch> ws = as_watches(w);
+        check(sleep.wait(ws.data(), ws.size(), 200) == platform::WaitSet::Woke::Timeout,
+              "a full socket and a running host do not end the sleep");
+        const uint64_t t0 = now_ms();
+        h->signal_kill();
+        const platform::WaitSet::Woke woke = sleep.wait(ws.data(), ws.size(), 5000);
+        const uint64_t took = now_ms() - t0;
+        char line[96];
+        std::snprintf(line, sizeof line, "its kill ends the sleep in %llu ms, not at the timeout",
+                      (unsigned long long)took);
+        check(woke == platform::WaitSet::Woke::Handle && took < 2000, line);
+        const uint64_t end = now_ms() + 5000;
+        while (h->running() && now_ms() < end) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        check(listed().empty(), "exited and reaped: nothing listed, so the same exit cannot wake twice");
+    }
+    check(rig.sup->live_hosts() == rig.sup->adopted(), "a destroyed host leaves the supervisor's list");
+    return 0;
+}
+
 // M1 on #78: the state caps are checked before anything is copied, encoded
 // or spawned. One state over 16 MiB is that instance's refusal; together
 // over 64 MiB, the chain's; neither starts a host or retries.
@@ -1468,6 +1539,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "control_load_cap") r = scenario_control_load_cap(a);
     else if (a.scenario == "control_start_paths") r = scenario_control_start_paths(a);
     else if (a.scenario == "control_stop_paths") r = scenario_control_stop_paths(a);
+    else if (a.scenario == "control_watch") r = scenario_control_watch(a);
     else if (a.scenario == "async_start") r = scenario_async_start(a);
     else if (a.scenario == "ready_timeout") r = scenario_ready_timeout(a);
     else if (a.scenario == "async_refused") r = scenario_async_refused(a);

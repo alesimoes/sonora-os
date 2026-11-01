@@ -1078,6 +1078,15 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
     }
 }
 
+void PluginHosting::watch(std::vector<platform::WaitSet::Watch>& out) const {
+    out.clear();
+    if (!supervisor_) return;
+    std::vector<plugin_client::HostWatch> hosts;
+    supervisor_->watch(hosts);
+    for (const plugin_client::HostWatch& h : hosts)
+        out.push_back({h.handle, h.writable ? platform::WaitSet::When::Writable : platform::WaitSet::When::Readable});
+}
+
 // ---- FlushPluginState (§8)
 
 uint64_t PluginHosting::request_states(model::Id only, const model::Snapshot& doc) {

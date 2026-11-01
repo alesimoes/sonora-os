@@ -81,6 +81,7 @@
 #include "sonora/machine_latency.h"
 #include "sonora/model/operations.h"
 #include "sonora/orphan_offer.h"
+#include "sonora/platform/wait_set.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/session_commands.h"
 #include "sonora/session_saver.h"
@@ -693,7 +694,9 @@ private:
     std::atomic<uint64_t> longest_copy_us_{0};
 
     std::mutex mutex_;
-    std::condition_variable wake_;
+    // The control thread's sleep: notify() after anything set under mutex_
+    // for it, and the plug-in hosts' handles beside (run()).
+    platform::WaitSet wake_;
     std::condition_variable room_;
     std::deque<Inbound> inbound_;
     // Bytes delivered and not yet handled, per client attached.

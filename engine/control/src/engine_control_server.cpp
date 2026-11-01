@@ -373,7 +373,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                                     std::lock_guard<std::mutex> lock(mutex_);
                                                     save_ready_ = true;
                                                 }
-                                                wake_.notify_all();
+                                                wake_.notify();
                                             },
                                             std::chrono::milliseconds(2), opts_.save_sync_directory,
                                             opts_.backups);
@@ -1775,7 +1775,7 @@ void EngineControlServer::encode_loop() {
             std::lock_guard<std::mutex> lock(mutex_);
             snapshot_ready_ = true;
         }
-        wake_.notify_all();
+        wake_.notify();
     }
 }
 
@@ -1975,7 +1975,7 @@ void EngineControlServer::stop() {
         inbound_.clear();
         backlog_.clear();
     }
-    wake_.notify_all();
+    wake_.notify();
     room_.notify_all();
     if (thread_.joinable()) thread_.join();
     {
@@ -2018,7 +2018,7 @@ EngineControlServer::ClientId EngineControlServer::attach(Outbound out, Refuse r
         backlog_[id] = 0;
         inbound_.push_back(std::move(in));
     }
-    wake_.notify_one();
+    wake_.notify();
     return id;
 }
 
@@ -2032,7 +2032,7 @@ void EngineControlServer::detach(ClientId client) {
         if (stopping_ || !running()) return;
         inbound_.push_back(std::move(in));
     }
-    wake_.notify_one();
+    wake_.notify();
     room_.notify_all();
 }
 
@@ -2054,7 +2054,7 @@ void EngineControlServer::deliver(ClientId client, std::string frame) {
         }
         inbound_.push_back(std::move(in));
     }
-    wake_.notify_one();
+    wake_.notify();
 }
 
 EngineControlServer::Room EngineControlServer::wait_for_room(ClientId client, int timeout_ms) {
@@ -2239,13 +2239,28 @@ void EngineControlServer::run() {
     std::deque<Inbound> batch;
     std::vector<std::deque<Inbound>> lanes;
     std::map<ClientId, std::size_t> lane_of;
+    std::vector<platform::WaitSet::Watch> watches;
     for (;;) {
+        // Clients' frames, a Snapshot or a save result (set under mutex_,
+        // then notify()), or a plug-in host that exited or whose socket can
+        // take the next frames of a Load (M3 on #78): whichever comes first
+        // ends the sleep. A notify() between the look and the sleep is kept
+        // by the WaitSet, so that sleep ends at once.
+        bool work = false;
+        int period_ms = 0;
         {
-            std::unique_lock<std::mutex> lock(mutex_);
-            wake_.wait_for(lock, playback_busy() || sending_snapshot_ ? kBusy : kIdle,
-                           [this]() {
-                               return stopping_ || snapshot_ready_ || save_ready_ || !inbound_.empty();
-                           });
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) return;
+            work = snapshot_ready_ || save_ready_ || !inbound_.empty();
+            period_ms = int((playback_busy() || sending_snapshot_ ? kBusy : kIdle).count());
+        }
+        if (!work) {
+            if (hosting_) hosting_->watch(watches);
+            else watches.clear();
+            wake_.wait(watches.data(), watches.size(), period_ms);
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
             if (stopping_) return;
             snapshot_ready_ = false;
             save_ready_ = false;

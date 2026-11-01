@@ -17,11 +17,13 @@ add_library(sonora_platform STATIC
   include/sonora/platform/process.h
   include/sonora/platform/file.h
   include/sonora/platform/wake.h
+  include/sonora/platform/wait_set.h
   src/${SONORA_PLATFORM_IMPL}/thread_cpu.cpp
   src/${SONORA_PLATFORM_IMPL}/ipc.cpp
   src/${SONORA_PLATFORM_IMPL}/process.cpp
   src/${SONORA_PLATFORM_IMPL}/file.cpp
   src/${SONORA_PLATFORM_IMPL}/wake.cpp
+  src/${SONORA_PLATFORM_IMPL}/wait_set.cpp
 )
 target_include_directories(sonora_platform PUBLIC include)
 # sonora_base for SONORA_RT, which wake.h's wake_all() carries (ADR-0012, A3).
@@ -58,6 +60,12 @@ if(UNIX)
     add_test(NAME platform_child_exit COMMAND test_platform_child_exit)
     set_tests_properties(platform_child_exit PROPERTIES SKIP_RETURN_CODE 77)
   endif()
+
+  # WaitSet, the control thread's sleep (ADR-0012 §4, M3 on #78): ended by
+  # notify(), a pidfd or a writable socket, and by nothing else.
+  add_executable(test_platform_wait_set tests/test_wait_set.cpp)
+  target_link_libraries(test_platform_wait_set PRIVATE sonora_platform Threads::Threads)
+  add_test(NAME platform_wait_set COMMAND test_platform_wait_set)
 
   # The unsupported stub claims no exclusion; the other holder is a fork.
   add_executable(test_platform_folder_lock tests/test_folder_lock.cpp)
