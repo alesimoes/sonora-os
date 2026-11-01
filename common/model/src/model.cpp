@@ -152,10 +152,27 @@ bool TrackEdit::operator==(const TrackEdit& o) const {
 }
 
 const AutomationLane* TrackEdit::lane(AutomationParam param) const {
+    // A track may hold many plugin lanes; none of them is "the" plugin lane.
+    if (param == AutomationParam::Plugin) return nullptr;
     for (const auto& l : automation) {
         if (l->param == param) return l.get();
     }
     return nullptr;
+}
+
+const AutomationLane* TrackEdit::lane(Id insert, const std::string& key) const {
+    for (const auto& l : automation) {
+        if (l->param == AutomationParam::Plugin && l->insert == insert && l->key == key) {
+            return l.get();
+        }
+    }
+    return nullptr;
+}
+
+bool lane_before(const AutomationLane& a, const AutomationLane& b) {
+    if (a.param != b.param) return a.param < b.param;
+    if (a.insert != b.insert) return a.insert < b.insert;
+    return a.key < b.key;
 }
 
 bool EditState::operator==(const EditState& o) const {
@@ -1126,7 +1143,8 @@ std::string mix_problem(const TrackMix& m, TrackKind kind, std::uint16_t track_c
 }
 
 std::string automation_points_problem(const std::vector<AutomationPoint>& points,
-                                      AutomationParam param, std::string& where) {
+                                      AutomationParam param, std::string& where,
+                                      PluginFormat format) {
     where.clear();
     if (points.size() > kMaxAutomationPoints) {
         where = "points";
@@ -1145,9 +1163,36 @@ std::string automation_points_problem(const std::vector<AutomationPoint>& points
         if (param == AutomationParam::Pan && !(p.value >= -1.0f && p.value <= 1.0f)) {
             return "a pan point must be from -1 to 1";
         }
+        if (param == AutomationParam::Plugin) {
+            // ParamValue's rules (insert_mix_problem): a lane point is a
+            // value the insert could hold.
+            if (!std::isfinite(p.value)) return "a plugin value must be a finite number";
+            if (format == PluginFormat::Vst3 && !(p.value >= 0.0f && p.value <= 1.0f)) {
+                return "a VST3 value is normalised, from 0 to 1";
+            }
+        }
     }
     where.clear();
     return {};
+}
+
+std::string automation_target_problem(const TrackEdit& t, AutomationParam param, Id insert,
+                                      const std::string& key, PluginFormat& format) {
+    if (param > AutomationParam::Plugin) return "is not a parameter this version automates";
+    if (param != AutomationParam::Plugin) {
+        if (insert != 0 || !key.empty()) return "a volume or pan lane names no insert and no key";
+        return {};
+    }
+    const Insert* in = nullptr;
+    for (const Insert& each : t.inserts) {
+        if (each.id == insert) in = &each;
+    }
+    if (in == nullptr) {
+        return str(static_cast<std::uint64_t>(insert)) + " is not an insert on track " +
+               str(static_cast<std::uint64_t>(t.id));
+    }
+    format = in->plugin.format;
+    return param_key_problem(key, format);
 }
 
 std::string automation_problem(const TrackEdit& t, std::string& where) {
@@ -1156,6 +1201,7 @@ std::string automation_problem(const TrackEdit& t, std::string& where) {
         where = "automation";
         return "a MIDI track has no audio automation";
     }
+    std::size_t run = 0;   // lanes so far of the insert this lane names
     for (std::size_t i = 0; i < t.automation.size(); ++i) {
         const std::string path = "automation[" + str(static_cast<std::int64_t>(i)) + "]";
         const AutomationLane* lane = t.automation[i].get();
@@ -1163,15 +1209,28 @@ std::string automation_problem(const TrackEdit& t, std::string& where) {
             where = path;
             return "a lane needs at least one point";
         }
-        if (lane->param > AutomationParam::Pan) {
+        PluginFormat format = PluginFormat::Lv2;
+        std::string why =
+            automation_target_problem(t, lane->param, lane->insert, lane->key, format);
+        if (!why.empty()) {
             where = path;
-            return "is not a parameter this version automates";
+            return why;
         }
-        if (i > 0 && lane->param <= t.automation[i - 1]->param) {
+        const AutomationLane* prev = i > 0 ? t.automation[i - 1].get() : nullptr;
+        if (prev != nullptr && !lane_before(*prev, *lane)) {
             where = path;
-            return "lanes are not sorted by parameter, or one is there twice";
+            return "lanes are not sorted by parameter, insert and key, or one is there twice";
         }
-        const std::string why = automation_points_problem(lane->points, lane->param, where);
+        const bool same_insert = prev != nullptr && lane->param == AutomationParam::Plugin &&
+                                 prev->param == AutomationParam::Plugin &&
+                                 prev->insert == lane->insert;
+        run = same_insert ? run + 1 : 1;
+        if (lane->param == AutomationParam::Plugin && run > kMaxInsertParams) {
+            where = path;
+            return "an insert has at most " + str(static_cast<std::int64_t>(kMaxInsertParams)) +
+                   " automated parameters";
+        }
+        why = automation_points_problem(lane->points, lane->param, where, format);
         if (!why.empty()) {
             where = path + "." + where;
             return why;
@@ -1301,6 +1360,18 @@ static bool vst3_param_id(const std::string& s) {
     return n <= 0xFFFFFFFFu;
 }
 
+std::string param_key_problem(const std::string& key, PluginFormat format) {
+    if (format == PluginFormat::Lv2 && !lv2_symbol(key)) {
+        return "key \"" + (valid_text(key) ? key : std::string("?")) +
+               "\" is not an LV2 port symbol";
+    }
+    if (format == PluginFormat::Vst3 && !vst3_param_id(key)) {
+        return "key \"" + (valid_text(key) ? key : std::string("?")) +
+               "\" is not a VST3 ParamID in decimal";
+    }
+    return {};
+}
+
 std::string plugin_problem(const PluginRef& p, std::string& where) {
     where = "plugin.id";
     if (p.id.empty()) return "is empty";
@@ -1339,14 +1410,8 @@ std::string insert_mix_problem(const InsertMix& m, PluginFormat format, std::str
     for (std::size_t i = 0; i < m.params.size(); ++i) {
         const ParamValue& p = m.params[i];
         where = "params[" + str(static_cast<std::int64_t>(i)) + "]";
-        if (format == PluginFormat::Lv2 && !lv2_symbol(p.key)) {
-            return "key \"" + (valid_text(p.key) ? p.key : std::string("?")) +
-                   "\" is not an LV2 port symbol";
-        }
-        if (format == PluginFormat::Vst3 && !vst3_param_id(p.key)) {
-            return "key \"" + (valid_text(p.key) ? p.key : std::string("?")) +
-                   "\" is not a VST3 ParamID in decimal";
-        }
+        why = param_key_problem(p.key, format);
+        if (!why.empty()) return why;
         if (!keys.insert(p.key).second) return "key \"" + p.key + "\" appears twice";
         if (!std::isfinite(p.value)) return "value must be a finite number";
         // Written so that NaN fails it, though isfinite already has.

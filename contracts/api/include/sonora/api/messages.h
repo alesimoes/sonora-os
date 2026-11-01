@@ -130,7 +130,12 @@ namespace sonora::api {
 // 35 (ADR-0023 update of 2026-10-31; follows 34): DuplicateTrack carries
 //   `automation`; a version-34 peer's op decoder refuses the key, and this
 //   one requires it.
-constexpr uint32_t kProtocolVersion = 35;
+// 36 (ADR-0027 §5, update of 2026-11-01; follows 35): an automation lane and
+//   EditAutomation may be a plugin parameter's, param "plugin" with
+//   "insert" and "key", and a Snapshot's undo window is window format 11
+//   (session format 14). A version-35 peer refuses the param as a value it
+//   does not know.
+constexpr uint32_t kProtocolVersion = 36;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

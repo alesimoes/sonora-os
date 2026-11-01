@@ -508,6 +508,24 @@ int test_follow_ops() {
        cleared[0].points[0].value == 0.0f && cleared[0].points[1].at == 2000 &&
        near(cleared[0].points[1].value, lane_value_at(&dip, 2000, 9.0f), 0.001f));
     OK(follow_clear_ops(t, 2500, 3000).empty());
+
+    // A plugin lane follows as any other, and its edit names the lane's
+    // insert and key: without them apply() refuses the edit, and with it
+    // the whole Compound (ADR-0027 §5, update of 2026-11-01).
+    AutomationLane plugin = lane_of(AutomationParam::Plugin, dip.points);
+    plugin.insert = 42;
+    plugin.key = "threshold";
+    t.automation = {std::make_shared<AutomationLane>(plugin)};
+    const std::vector<EditAutomation> plugin_moved = follow_move_ops(t, 1000, 2000, 5000);
+    OK(plugin_moved.size() == 1 && plugin_moved[0].param == AutomationParam::Plugin);
+    OK(plugin_moved[0].insert == 42 && plugin_moved[0].key == "threshold");
+    const std::vector<EditAutomation> plugin_cleared = follow_clear_ops(t, 1000, 2000);
+    OK(plugin_cleared.size() == 1 && plugin_cleared[0].insert == 42 &&
+       plugin_cleared[0].key == "threshold");
+    EditAutomation op;
+    OK(clear_range_op(7, plugin, 1000, 2000, op) && op.insert == 42 && op.key == "threshold");
+    OK(delete_point_op(7, plugin, 1, op) && op.insert == 42 && op.key == "threshold");
+    OK(move_point_op(7, plugin, 1, 1300, -1.0f, op) && op.insert == 42 && op.key == "threshold");
     return 0;
 }
 

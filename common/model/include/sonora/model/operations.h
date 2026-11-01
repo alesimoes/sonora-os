@@ -502,6 +502,11 @@ struct EditAutomation {
     Frames from = 0;
     Frames to = 0;
     std::vector<AutomationPoint> points;
+    // Plugin only, as AutomationLane's: an insert on `track` and its key.
+    // Both have an initializer, so a volume or pan edit written as
+    // {track, param, from, to, points} draws no missing-initializer warning.
+    Id insert = 0;
+    std::string key{};
 };
 
 // Every operation but Compound: what a compound holds. The type, not a

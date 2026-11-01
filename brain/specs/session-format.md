@@ -363,6 +363,13 @@ not referenced by any region in any playlist is *unused*. It stays.
   `[0, 2^53 - 1)` reaches each one) with at most two at one frame (a
   step), volume in dB from -144 to +24, pan from -1 to +1, at most 65,536
   points a lane.
+- A plugin parameter's lane (version 14, ADR-0027 §5, update of
+  2026-11-01): `{"param": "plugin", "insert": <id>, "key": "<key>",
+  "points": [...]}`. `insert` is an insert on the same track, `key` its
+  ParamValue key (an LV2 port symbol, a VST3 ParamID in decimal), values
+  format-native as in `params` (finite; a VST3 value from 0 to 1). Lanes
+  sort by param (volume, pan, plugin), then insert, then key; at most 8,192
+  plugin lanes an insert. A volume or pan lane carries neither key.
 - `kind` (version 5, second key): `"audio"`, `"midi"` or `"instrument"`.
   The example above is an audio track. The key set depends on the kind,
   strictly: a MIDI track has no `channels`, `input`, `gain_db`, `pan` or
@@ -957,6 +964,11 @@ byte for byte.
 else changes. A version 12 file cannot carry either key. The frozen v12
 fixture loads through it and saves as `v13-automation.sonora`, byte for
 byte.
+
+**v13→v14 (plugin lanes, ADR-0027 §5):** nothing is filled in; only the
+version changes. A version 13 file cannot carry a lane of param
+`"plugin"`, nor `insert` or `key` on a lane. The frozen v13 fixture loads
+through it and saves as `v14-plugin-lanes.sonora`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

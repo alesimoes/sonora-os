@@ -778,9 +778,6 @@ public:
         // The copy plays where its source does (ADR-0024 §2); a track has no
         // input, so its output closes no loop.
         copy->output = src.output;
-        // Pro Tools' Duplicate copies automation by default; the lanes are
-        // shared, as an undo step shares them.
-        if (op.automation) copy->automation = src.automation;
         Id next = op.track + 1;
         const auto renamed = [&](const std::string& name) {
             // "Vox.02" on "Vox" is "Vox.dup1.02" on its copy.
@@ -805,10 +802,12 @@ public:
             copy->midi_playlists.push_back(std::move(c));
         }
         std::vector<InsertMix> values;
+        std::unordered_map<Id, Id> insert_copies;
         if (op.inserts) {
             for (const Insert& in : src.inserts) {
                 Insert c = in;
                 c.id = next++;
+                insert_copies.emplace(in.id, c.id);
                 copy->inserts.push_back(c);
                 if (const InsertMix* v = before_.mix.find_insert(in.id)) {
                     InsertMix m = *v;
@@ -816,6 +815,29 @@ public:
                     values.push_back(std::move(m));
                 }
             }
+        }
+        // Pro Tools' Duplicate copies automation by default. Volume and pan
+        // lanes are shared, as an undo step shares them; a plugin lane keys
+        // the copy's insert, and without the inserts it has none to key.
+        if (op.automation) {
+            for (const auto& l : src.automation) {
+                if (l->param != AutomationParam::Plugin) {
+                    copy->automation.push_back(l);
+                    continue;
+                }
+                const auto c = insert_copies.find(l->insert);
+                if (c == insert_copies.end()) continue;
+                auto lane = std::make_shared<AutomationLane>(*l);
+                lane->insert = c->second;
+                copy->automation.push_back(std::move(lane));
+            }
+            // The copies' ids follow slot order, which need not be the
+            // order of the source's ids.
+            std::sort(copy->automation.begin(), copy->automation.end(),
+                      [](const std::shared_ptr<const AutomationLane>& a,
+                         const std::shared_ptr<const AutomationLane>& b) {
+                          return lane_before(*a, *b);
+                      });
         }
         // The same buses: a bus is fed once per strip, and the copy is
         // another strip, so no loop or second send can follow.
@@ -909,7 +931,7 @@ public:
     }
 
     bool operator()(const RemoveInsert& op) {
-        return edit_insert(op.insert, [&](std::vector<Insert>& v, std::size_t i) {
+        return edit_insert_dropping_lanes(op.insert, [&](std::vector<Insert>& v, std::size_t i) {
             v.erase(v.begin() + static_cast<std::ptrdiff_t>(i));
             return true;
         });
@@ -942,6 +964,25 @@ public:
         if (!free_slot(*to_track, op.to_slot, op.insert)) return false;
         moving.slot = op.to_slot;
         insert_by_slot(to_track->inserts, std::move(moving));
+        if (to != at.track) {
+            // Its plugin lanes go with it: they key the insert, not the track.
+            auto& from_lanes = from_track->automation;
+            auto& to_lanes = to_track->automation;
+            const auto first = std::stable_partition(
+                from_lanes.begin(), from_lanes.end(),
+                [&](const std::shared_ptr<const AutomationLane>& l) {
+                    return !(l->param == AutomationParam::Plugin && l->insert == op.insert);
+                });
+            if (first != from_lanes.end()) {
+                const auto mid = to_lanes.insert(to_lanes.end(), first, from_lanes.end());
+                from_lanes.erase(first, from_lanes.end());
+                std::inplace_merge(to_lanes.begin(), mid, to_lanes.end(),
+                                   [](const std::shared_ptr<const AutomationLane>& a,
+                                      const std::shared_ptr<const AutomationLane>& b) {
+                                       return lane_before(*a, *b);
+                                   });
+            }
+        }
         edit->tracks[at.track] = std::move(from_track);
         if (to != at.track) edit->tracks[to] = std::move(to_track);
         after_ = before_;
@@ -964,7 +1005,10 @@ public:
         why = detail::insert_mix_problem(values, op.plugin.format, where);
         if (!why.empty()) return fail(where + ": " + why);
         if (!fresh(op.replacement)) return false;
-        const bool ok = edit_insert(op.insert, [&](std::vector<Insert>& v, std::size_t i) {
+        // The replacement's keys mean other things, even for another version
+        // of the same plugin, so the old insert's lanes go with it.
+        const bool ok = edit_insert_dropping_lanes(op.insert, [&](std::vector<Insert>& v,
+                                                                  std::size_t i) {
             v[i] = Insert{op.replacement, v[i].slot, op.plugin, v[i].active};
             return true;
         });
@@ -1231,12 +1275,15 @@ public:
         if (before_track.kind == TrackKind::Midi) {
             return fail("track " + str(op.track) + " is a MIDI track; it has no audio automation");
         }
-        if (op.param > AutomationParam::Pan) return fail("not a parameter this version automates");
+        PluginFormat format = PluginFormat::Lv2;
+        std::string why =
+            detail::automation_target_problem(before_track, op.param, op.insert, op.key, format);
+        if (!why.empty()) return fail(why);
         if (op.from < 0 || op.to > kMaxInteger || op.from >= op.to) {
             return fail("the range must run forward, from 0 to at most 2^53 - 1");
         }
         std::string where;
-        const std::string why = detail::automation_points_problem(op.points, op.param, where);
+        why = detail::automation_points_problem(op.points, op.param, where, format);
         if (!why.empty()) return fail(where + ": " + why);
         for (const AutomationPoint& p : op.points) {
             if (p.at < op.from || p.at >= op.to) {
@@ -1244,7 +1291,9 @@ public:
             }
         }
         std::vector<AutomationPoint> points;
-        const AutomationLane* old = before_track.lane(op.param);
+        const AutomationLane* old = op.param == AutomationParam::Plugin
+                                        ? before_track.lane(op.insert, op.key)
+                                        : before_track.lane(op.param);
         if (old != nullptr) {
             for (const AutomationPoint& p : old->points) {
                 if (p.at < op.from) points.push_back(p);
@@ -1261,19 +1310,33 @@ public:
                         " points; it holds at most " +
                         str(static_cast<std::int64_t>(kMaxAutomationPoints)));
         }
+        if (old == nullptr && !points.empty() && op.param == AutomationParam::Plugin) {
+            std::size_t held = 0;
+            for (const auto& l : before_track.automation) {
+                if (l->param == AutomationParam::Plugin && l->insert == op.insert) ++held;
+            }
+            if (held >= kMaxInsertParams) {
+                return fail("insert " + str(static_cast<std::uint64_t>(op.insert)) +
+                            " has " + str(static_cast<std::int64_t>(kMaxInsertParams)) +
+                            " automated parameters, the most an insert has");
+            }
+        }
+        AutomationLane target;
+        target.param = op.param;
+        target.insert = op.insert;
+        target.key = op.key;
         auto track = std::make_shared<TrackEdit>(before_track);
         auto& lanes = track->automation;
         const auto at = std::lower_bound(
-            lanes.begin(), lanes.end(), op.param,
-            [](const std::shared_ptr<const AutomationLane>& l, AutomationParam p) {
-                return l->param < p;
+            lanes.begin(), lanes.end(), target,
+            [](const std::shared_ptr<const AutomationLane>& l, const AutomationLane& x) {
+                return lane_before(*l, x);
             });
-        const bool present = at != lanes.end() && (*at)->param == op.param;
+        const bool present = at != lanes.end() && !lane_before(target, **at);
         if (points.empty()) {
             if (present) lanes.erase(at);
         } else {
-            auto lane = std::make_shared<AutomationLane>();
-            lane->param = op.param;
+            auto lane = std::make_shared<AutomationLane>(std::move(target));
             lane->points = std::move(points);
             if (present) {
                 *at = std::move(lane);
@@ -1816,6 +1879,25 @@ private:
         if (!locate_insert(*before_.edit, insert, at)) return no_insert(insert);
         return edit_track(before_.edit->tracks[at.track]->id,
                           [&](TrackEdit& t) { return f(t.inserts, at.index); });
+    }
+
+    // As edit_insert, for an edit that takes the insert's plugin lanes with
+    // it (ADR-0027 §5, update of 2026-11-01): the plugin it keyed is gone.
+    template <typename F>
+    bool edit_insert_dropping_lanes(Id insert, F&& f) {
+        InsertAt at;
+        if (!locate_insert(*before_.edit, insert, at)) return no_insert(insert);
+        return edit_track(before_.edit->tracks[at.track]->id, [&](TrackEdit& t) {
+            if (!f(t.inserts, at.index)) return false;
+            auto& lanes = t.automation;
+            lanes.erase(std::remove_if(lanes.begin(), lanes.end(),
+                                       [&](const std::shared_ptr<const AutomationLane>& l) {
+                                           return l->param == AutomationParam::Plugin &&
+                                                  l->insert == insert;
+                                       }),
+                        lanes.end());
+            return true;
+        });
     }
 
     // An insert's values, checked against its plugin's format. Only an
