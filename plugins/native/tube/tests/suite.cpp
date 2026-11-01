@@ -766,6 +766,140 @@ void cpu_qualities(Suite& s, const Config& golden) {
         noisy.push_back({"noise", 100.0f});
         noisy.push_back({"hum", 100.0f});
         measure::check_cpu_on(s, noisy, programme, std::string(names[q]) + ", noise and hum 100 %", q == 0);
+        // Slice 3: the output stage in, a Newton solve per oversampled
+        // sample on top of the triode's. Reported, not held: see the PR.
+        Config xf = c;
+        xf.push_back({"transformer", 100.0f});
+        measure::check_cpu_on(s, xf, programme, std::string(names[q]) + ", transformer 100 %", false);
+        Config xf_full = full;
+        xf_full.push_back({"transformer", 100.0f});
+        measure::check_cpu_on(s, xf_full, square, std::string(names[q]) + ", 0 dBFS square, drive +36 dB, transformer 100 %",
+                              false);
+    }
+}
+
+// Slice 3, the output stage as part of the processor (the stage's own
+// physics is common/dsp's test_transformer).
+// - 0 % is the path without it, to the bit, whatever Sag says.
+// - LF first: with the stage in, a bass tone is distorted far more than a
+//   mid tone at the same level, and more than without the stage.
+// - Sag: a loud bass burst ends lower than it began (the rail falls as the
+//   reservoir drains) with Sag at 100 %, and not at 0 %.
+// - Aliasing, on the same tones as the preamp's, with the stage in.
+// Harmonics 1..9 of a tone over whole periods from `from`.
+std::vector<std::complex<double>> harmonics_of(const std::vector<float>& y, std::size_t from, int per) {
+    std::vector<std::complex<double>> h(10);
+    const std::size_t n = (y.size() - from) / per * per;
+    for (int k = 1; k <= 9; ++k) {
+        std::complex<double> a = 0.0;
+        for (std::size_t i = 0; i < n; ++i)
+            a += static_cast<double>(y[from + i]) *
+                 std::exp(std::complex<double>(0.0, -dsp::kTwoPi * k * static_cast<double>(i % per) / per));
+        h[k] = a;
+    }
+    return h;
+}
+
+// The distortion the stage adds: harmonics 2..9 of the with-stage render
+// less those of the without-stage render (the preamp's own cancel: the same
+// tone through the same preamp), over the fundamental without the stage.
+double added_distortion(const std::vector<std::complex<double>>& off, const std::vector<std::complex<double>>& on) {
+    double s = 0.0;
+    for (int k = 2; k <= 9; ++k) s += std::norm(on[k] - off[k]);
+    return std::sqrt(s) / std::abs(off[1]);
+}
+
+void output_stage(Suite& s) {
+    const double fs = 48000.0;
+    const Config base = {{"drive", 0.0f}, {"mix", 100.0f}};
+    auto render_cfg = [&](Config c, const Chans& in) {
+        auto p = s.make();
+        measure::apply(*p, c);
+        p->prepare(fs, 128, 2);
+        return measure::render(*p, in);
+    };
+    {
+        const Chans in = measure::sine(fs, 80.0, -3.0, 0.5);
+        Config a = base, b = base;
+        a.push_back({"sag", 100.0f});
+        b.push_back({"sag", 0.0f});
+        b.push_back({"transformer", 0.0f});
+        a.push_back({"transformer", 0.0f});
+        const Chans ya = render_cfg(a, in), yb = render_cfg(b, in);
+        bool same = true;
+        for (std::size_t i = 0; i < ya[0].size(); ++i) same &= ya[0][i] == yb[0][i] && ya[1][i] == yb[1][i];
+        s.check("transformer 0 %: the output is the same whatever Sag says (bit-exact)", same ? 1.0 : 0.0, 1.0, same,
+                "bool");
+    }
+    // THD of the 1 kHz and 40 Hz tones at -3 dBFS, with and without the stage.
+    double added[2];
+    const double tone[2] = {1000.0, 40.0};
+    for (int t = 0; t < 2; ++t) {
+        const int per = static_cast<int>(fs / tone[t]);
+        const Chans in = measure::sine(fs, tone[t], -12.0, 1.5);
+        std::vector<std::complex<double>> h[2];
+        for (int on = 0; on < 2; ++on) {
+            Config c = base;
+            c.push_back({"transformer", on ? 100.0f : 0.0f});
+            c.push_back({"sag", 0.0f});
+            const Chans y = render_cfg(c, in);
+            h[on] = harmonics_of(y[0], static_cast<std::size_t>(0.5 * fs), per);
+        }
+        added[t] = db(added_distortion(h[0], h[1]));
+        s.info(fmt("distortion added by the stage at %.0f Hz, -12 dBFS, drive 0 dB, harmonics 2-9 re fundamental", tone[t]),
+               added[t], "dB");
+    }
+    s.check_le("output stage: 1 kHz distortion added by the stage", added[0], s.bar("transformer.mid_added_db"), "dB");
+    s.check("output stage: LF first, distortion added at 40 Hz over that at 1 kHz", added[1] - added[0],
+            s.bar("transformer.lf_over_mid_db"), added[1] - added[0] >= s.bar("transformer.lf_over_mid_db"), "dB");
+    {
+        // 100 Hz, -1 dBFS for 0.4 s; peak of the first cycles over the peak
+        // of the last ones.
+        const Chans in = measure::sine(fs, 100.0, -1.0, 0.6);
+        double ratio[2];
+        for (int sag = 0; sag < 2; ++sag) {
+            Config c = base;
+            c.push_back({"transformer", 100.0f});
+            c.push_back({"sag", sag ? 100.0f : 0.0f});
+            const Chans y = render_cfg(c, in);
+            auto peak = [&](double t0, double t1) {
+                double p = 0.0;
+                for (auto i = static_cast<std::size_t>(t0 * fs); i < static_cast<std::size_t>(t1 * fs); ++i)
+                    p = std::fmax(p, std::fabs(y[0][i]));
+                return p;
+            };
+            ratio[sag] = db(peak(0.5, 0.6) / peak(0.1, 0.2));
+            s.info(sag ? "sag 100 %: 100 Hz at -1 dBFS, peak at 0.5-0.6 s over 0.1-0.2 s"
+                       : "sag 0 %: 100 Hz at -1 dBFS, peak at 0.5-0.6 s over 0.1-0.2 s",
+                   ratio[sag], "dB");
+        }
+        s.check("output stage: sag compresses a held loud bass tone (100 % against 0 %)", ratio[1] - ratio[0],
+                s.bar("transformer.sag_db"), ratio[1] - ratio[0] <= -s.bar("transformer.sag_db"), "dB");
+    }
+    // Aliasing with the stage in: the preamp's tones and bars.
+    const double tones[] = {997.0, 2503.0, 5011.0, 7993.0, 10007.0, 14009.0, 19001.0};
+    const char* bars[] = {"aliasing.eco_dbc", "aliasing.standard_dbc", "aliasing.high_dbc"};
+    for (int q = 0; q < 3; ++q) {
+        for (int lv = 0; lv < 2; ++lv) {
+            double worst = -400.0, worst_f = 0.0;
+            for (double f0 : tones) {
+                auto p = s.make();
+                measure::apply(*p, {{"quality", static_cast<float>(q)}, {"mix", 100.0f}, {"transformer", 100.0f}});
+                if (lv) measure::set(*p, "drive", 18.0f);
+                p->prepare(fs, 128, 1);
+                const Chans y = measure::render(*p, measure::sine(fs, f0, lv ? -6.0 : -18.0, 1.0, 1));
+                const double a = measure::alias_dbc(y[0], static_cast<std::size_t>(0.2 * fs), fs, f0);
+                if (a > worst) {
+                    worst = a;
+                    worst_f = f0;
+                }
+            }
+            const std::string what = std::string("aliasing with the output stage, ") +
+                                     (q == 0 ? "eco (2x)" : (q == 1 ? "standard (4x)" : "high (8x)")) + ", 48 kHz, " +
+                                     (lv ? "drive +18 dB, -6 dBFS" : "nominal (-18 dBFS)") + ": worst non-harmonic";
+            if (lv == 0) s.check_le(what, worst, s.bar(bars[q]), "dBc", fmt("at %.0f Hz", worst_f));
+            else s.info(what, worst, "dBc", fmt("at %.0f Hz", worst_f));
+        }
     }
 }
 
@@ -784,13 +918,16 @@ int tube(const measure::Args& args) {
     aliasing(s);
     small_signal(s);
     solver_bound(s);
+    output_stage(s);
     hot_input(s);
     const Config golden = tube_golden_config();
     // check_common() without its CPU check, which holds the golden
     // (standard) quality to the class bar: cpu_qualities() instead.
     measure::check_latency(s, {{"eco (2x)", {{"quality", 0.0f}}},
                                {"standard (4x)", {{"quality", 1.0f}}},
-                               {"high (8x)", {{"quality", 2.0f}}}});
+                               {"high (8x)", {{"quality", 2.0f}}},
+                               {"eco (2x), transformer", {{"quality", 0.0f}, {"transformer", 100.0f}}},
+                               {"high (8x), transformer", {{"quality", 2.0f}, {"transformer", 100.0f}}}});
     measure::check_nonfinite(s, golden);
     measure::check_denormals(s, golden);
     Config noisy = golden;
@@ -798,7 +935,11 @@ int tube(const measure::Args& args) {
     noisy.push_back({"hum", 100.0f});
     measure::check_nonfinite(s, noisy);
     measure::check_denormals(s, noisy);
-    measure::check_zipper(s, {{"mix", 60.0f}}, "");
+    Config xfmr = golden;
+    xfmr.push_back({"transformer", 100.0f});
+    measure::check_nonfinite(s, xfmr);
+    measure::check_denormals(s, xfmr);
+    measure::check_zipper(s, {{"mix", 60.0f}, {"transformer", 100.0f}}, "");
     measure::check_golden(s, golden);
     cpu_qualities(s, golden);
     return s.finish();
