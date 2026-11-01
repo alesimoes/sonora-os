@@ -49,8 +49,17 @@ std::string join(const std::vector<std::string>& v, char sep) {
 
 // ---- HostProcess
 
+HostRegistry::~HostRegistry() = default;
+
 HostProcess::~HostProcess() {
-    stop();
+    // On the control thread, so never stop()'s 2 s Shutdown grace (#191
+    // review): one SIGKILL and a bounded reap. A child the kill has not
+    // ended by then (D state on a slow stick) goes to the registry, where
+    // HostSupervisor::reap() finishes it without waiting.
+    if (child_ && child_->running()) {
+        child_->kill();
+        if (!child_->wait(kTeardownReapMs) && registry_) registry_->unreaped.push_back(std::move(child_));
+    }
     if (registry_) registry_->live.erase(this);
 }
 
@@ -746,7 +755,9 @@ void HostSupervisor::adopt(std::unique_ptr<HostProcess> host) {
 bool HostSupervisor::reap(uint64_t now_ms) {
     for (auto it = adopted_.begin(); it != adopted_.end();)
         it = (*it)->stopped(now_ms) ? adopted_.erase(it) : std::next(it);
-    return adopted_.empty();
+    auto& unreaped = registry_->unreaped;
+    for (auto it = unreaped.begin(); it != unreaped.end();) it = (*it)->running() ? std::next(it) : unreaped.erase(it);
+    return adopted_.empty() && unreaped.empty();
 }
 
 std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::string& error,
@@ -1023,6 +1034,17 @@ void SupervisedChain::request_stop(uint64_t now_ms) {
     for (const std::unique_ptr<HostProcess>& h : let_go_) h->request_stop(now_ms);
 }
 
+void SupervisedChain::poll_parked(uint64_t now_ms) {
+    if (starting_) let_go(std::move(starting_), now_ms, true);
+    for (HostProcess* h : {current_.get(), retiring_.get()}) {
+        // A broken contract is killed as poll() would; its slot plays
+        // silent in the plans that still name it.
+        if (h && !h->pump(now_ms)) h->signal_kill();
+    }
+    reap_let_go(now_ms);
+    (void)take_host_messages();
+}
+
 bool SupervisedChain::stopped(uint64_t now_ms) {
     bool all = reap_let_go(now_ms);
     if (starting_) all = starting_->stopped(now_ms) && all;
@@ -1056,8 +1078,11 @@ SupervisedChain::Event SupervisedChain::poll_starting(uint64_t now_ms) {
         retiring_ = std::move(current_);
         retiring_slot_ = slot_;
     }
-    if (!bind(std::move(starting_))) {
-        starting_.reset();
+    if (!bind(starting_)) {
+        // Ready, so running: let go and killed like a failed start, never
+        // destroyed here, which would wait for it on the control thread
+        // (#191 review).
+        let_go(std::move(starting_), now_ms, true);
         if (retiring_) {
             current_ = std::move(retiring_);
             retiring_slot_ = kNoSlot;
@@ -1069,7 +1094,7 @@ SupervisedChain::Event SupervisedChain::poll_starting(uint64_t now_ms) {
     return Event::Swapped;
 }
 
-bool SupervisedChain::bind(std::unique_ptr<HostProcess> host) {
+bool SupervisedChain::bind(std::unique_ptr<HostProcess>& host) {
     const uint32_t slot = sup_.client().acquire_slot();
     if (slot == kNoSlot) return false;
     ChannelBinding b;
