@@ -33,7 +33,7 @@ jobs:
         run: |
           code=true
           if [ "${{ github.event_name }}" = pull_request ]; then
-            files=$(git diff --name-only HEAD^1 HEAD)
+            files=$(git diff --no-renames --name-only HEAD^1 HEAD)
             if [ -n "$files" ] && ! printf '%s\n' "$files" |
                  grep -qvE '^(planning|brain|docs)/|\.md$'; then
               code=false
@@ -207,10 +207,10 @@ jobs:
 
       # ccache hashes the compiler, flags and preprocessed source, so TSan and
       # ASan objects never collide and an unchanged translation unit is not
-      # recompiled. The key is per run so the cache is always re-saved;
-      # restore-keys picks the newest one.
+      # recompiled. Only pushes to main save it (last step), so PR pushes do not
+      # churn the repo cache; restore-keys picks the newest one.
       - name: Restore the compiler cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: .ccache
           key: ccache-sanitizers-${{ github.sha }}
@@ -222,7 +222,8 @@ jobs:
             cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"
-            cmake --build build-tsan -j"$(nproc)"'
+            cmake --build build-tsan -j"$(nproc)"
+            ccache -s'
 
       - name: Run under TSan
         # TSan is here for the concurrent code. The DSP and native processor
@@ -247,12 +248,20 @@ jobs:
             cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
-            cmake --build build-asan -j"$(nproc)"'
+            cmake --build build-asan -j"$(nproc)"
+            ccache -s'
 
       - name: Run under ASan and UBSan
         run: >-
           docker exec -e SONORA_DSP_QUICK=1 build bash -c
           'ctest --test-dir build-asan --output-on-failure -j"$(nproc)"'
+
+      - name: Save the compiler cache
+        if: github.event_name == 'push' && always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-sanitizers-${{ github.sha }}
 
   rtsan:
     name: RealtimeSanitizer over the SONORA_RT call graph
