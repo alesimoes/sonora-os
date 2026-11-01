@@ -92,7 +92,8 @@ something below is a PR that waits an hour.
   and time it. A new suite must stay under about 60 s in Release; one new
   test target must also be added to the explicit `--target` list of the
   Portable (MSVC) job in `.github/workflows/ci.yml`. A processor over its CPU
-  class is not installable (ADR-0011 §3.5): gate it off, do not ship it.
+  class ships only with an eco mode that meets the class (ADR-0011 §3.5);
+  until then gate it off so it is not installed.
 - New or changed scripts: mode 100755 in the index (`git update-index
   --chmod=+x`) for `tools/*.sh`, hooks and `usr/local/bin`; the CI "Executable
   bits" job checks it. Read C++ string literals you edited: an `\n` must not
@@ -105,9 +106,10 @@ something below is a PR that waits an hour.
 - Open one PR per item with a body written from your own text, and name
   scratch files uniquely: a shared `pr.md` overwrote another agent's PR body.
   Do not push a chain of small fixes (each push restarts the whole CI); push
-  once, when the work is complete. Never edit `planning/BACKLOG.md` or run
-  `tools/progress.sh`; put the `[x]` line, the follow-ups and the progress
-  change in the PR description.
+  once, when the work is complete. An implementer agent never edits
+  `planning/BACKLOG.md` or runs `tools/progress.sh set` (`get` and `list` are
+  fine): it puts the `[x]` line, the follow-ups and the progress change in the
+  PR description. The coordinator's chore PR is the one place that edits them.
 - Never tick a line `[x]` whose own text still names an open part; split it.
 
 ## Conventions
