@@ -45,7 +45,9 @@ namespace sonora::model {
 //    (ADR-0024). A version 11 file opens with every strip on the Master.
 // 13: "automation" (breakpoint lanes) and "automation_mode" on every track
 //    with audio (ADR-0027). A version 12 file opens with no lanes, in read.
-constexpr std::int64_t kFormatVersion = 13;
+// 14: a lane may be a plugin parameter's, keyed by "insert" and "key"
+//    (ADR-0027 §5, update of 2026-11-01). A version 13 file opens as it was.
+constexpr std::int64_t kFormatVersion = 14;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

@@ -596,8 +596,9 @@ struct Bus {
 // --- automation (ADR-0027) --------------------------------------------------
 
 // What a lane drives. Volume is in dB, kMinGainDb to kMaxGainDb; pan is
-// -1 (left) to +1 (right).
-enum class AutomationParam : std::uint8_t { Volume, Pan };
+// -1 (left) to +1 (right); a plugin parameter is format-native, as
+// ParamValue's value is (ADR-0027 §5, update of 2026-11-01).
+enum class AutomationParam : std::uint8_t { Volume, Pan, Plugin };
 // Off plays the static fader and pan; Read, Touch and Latch play the lanes
 // until a parameter is touched; Write plays the live values and writes them
 // from play to stop (ADR-0027 §3). Trim's relative lane is not built yet,
@@ -619,10 +620,19 @@ struct AutomationPoint {
 struct AutomationLane {
     AutomationParam param = AutomationParam::Volume;
     std::vector<AutomationPoint> points;
+    // Plugin only: an insert on the lane's track and its ParamValue key, so
+    // the lane survives a plugin version that renumbers its ports. Zero and
+    // empty for volume and pan. Initialised, as EditAutomation's are, so
+    // {param, points} stays warning-free.
+    Id insert = 0;
+    std::string key{};
     bool operator==(const AutomationLane& o) const {
-        return param == o.param && points == o.points;
+        return param == o.param && points == o.points && insert == o.insert && key == o.key;
     }
 };
+
+// The order of TrackEdit::automation: by param, then insert, then key.
+bool lane_before(const AutomationLane& a, const AutomationLane& b);
 
 // The undoable part of a track. Input, monitor mode and the mix live in
 // TrackMix, because a fader move is not an edit.
@@ -648,11 +658,13 @@ struct TrackEdit {
     // Master, unused.
     Id output = kMasterOutput;
     // Undoable, as Pro Tools' automation edits are (ADR-0027 §1). Sorted by
-    // param, one lane each; shared, so an undo step copies only the lanes
-    // it changes. A MIDI track holds none.
+    // lane_before, one lane each; shared, so an undo step copies only the
+    // lanes it changes. A MIDI track holds none.
     std::vector<std::shared_ptr<const AutomationLane>> automation;
-    // Nullptr when the track has no lane for `param`.
+    // Nullptr when the track has no lane for `param`, Volume or Pan.
     const AutomationLane* lane(AutomationParam param) const;
+    // The plugin lane of `insert`'s parameter `key`, or nullptr.
+    const AutomationLane* lane(Id insert, const std::string& key) const;
     bool operator==(const TrackEdit& o) const;
 };
 

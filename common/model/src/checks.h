@@ -67,11 +67,20 @@ std::string bus_loop_problem(const EditState& e, std::string& where);
 
 // Automation (ADR-0027). Points: each `at` from 0 to kMaxInteger, sorted, at
 // most two at a frame, values in the param's range, at most
-// kMaxAutomationPoints. Lanes: sorted by param, unique, none empty, none on
-// a MIDI track.
+// kMaxAutomationPoints. A plugin value is finite, and from 0 to 1 when
+// `format` is VST3. Lanes: sorted by lane_before, unique, none empty, none
+// on a MIDI track, each plugin lane on an insert of its track with a key
+// valid for that insert's format, at most kMaxInsertParams an insert.
 std::string automation_points_problem(const std::vector<AutomationPoint>& points,
-                                      AutomationParam param, std::string& where);
+                                      AutomationParam param, std::string& where,
+                                      PluginFormat format = PluginFormat::Lv2);
 std::string automation_problem(const TrackEdit& t, std::string& where);
+// Empty when (param, insert, key) names a lane `t` may hold; `format` is
+// then the insert's format for a plugin lane.
+std::string automation_target_problem(const TrackEdit& t, AutomationParam param, Id insert,
+                                      const std::string& key, PluginFormat& format);
+// Empty when `key` is a ParamValue key of `format`.
+std::string param_key_problem(const std::string& key, PluginFormat format);
 
 // A fade left running into the crossfade at its region's other end is
 // shortened to meet it, as clamp_fades() shortens one that outgrew its

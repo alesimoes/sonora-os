@@ -26,7 +26,10 @@ AutomationParam lane_param(int lane) {
     return lane == 1 ? AutomationParam::Pan : AutomationParam::Volume;
 }
 
-const char* lane_name(AutomationParam p) { return is_volume(p) ? "Volume" : "Pan"; }
+const char* lane_name(AutomationParam p) {
+    if (p == AutomationParam::Plugin) return "Plugin";
+    return is_volume(p) ? "Volume" : "Pan";
+}
 
 float lane_position(AutomationParam p, float value) {
     if (is_volume(p)) return fader_position_from_db(value);
@@ -42,6 +45,9 @@ float lane_value(AutomationParam p, float position) {
 float clamp_lane_value(AutomationParam p, float value) {
     if (!(value == value)) return 0.0f;  // NaN
     if (is_volume(p)) return std::clamp(value, kMinGainDb, kMaxGainDb);
+    // A plugin value is format-native; its range is the plugin's, which the
+    // lane does not carry, so apply() is the one to refuse it.
+    if (p == AutomationParam::Plugin) return value;
     return std::clamp(value, -1.0f, 1.0f);
 }
 
@@ -104,11 +110,19 @@ bool flat(const AutomationLane& lane) {
     return true;
 }
 
-EditAutomation window_op(Id track, AutomationParam param, Frames lo, Frames hi,
+// The lane an edit replaces points of: its param, and a plugin lane's insert
+// and key, without which apply() would look for another lane.
+void aim(EditAutomation& op, const AutomationLane& lane) {
+    op.param = lane.param;
+    op.insert = lane.insert;
+    op.key = lane.key;
+}
+
+EditAutomation window_op(Id track, const AutomationLane& lane, Frames lo, Frames hi,
                          const std::vector<AutomationPoint>& pts) {
     EditAutomation op;
     op.track = track;
-    op.param = param;
+    aim(op, lane);
     op.from = lo;
     op.to = hi + 1;
     for (const AutomationPoint& p : pts) {
@@ -176,7 +190,7 @@ bool move_point_op(Id track, const AutomationLane& lane, std::size_t index, Fram
     at = to.at;
     out = EditAutomation{};
     out.track = track;
-    out.param = lane.param;
+    aim(out, lane);
     out.from = std::min(was, at);
     out.to = std::max(was, at) + 1;
     for (std::size_t i = 0; i < pts.size(); ++i) {
@@ -192,7 +206,7 @@ bool delete_point_op(Id track, const AutomationLane& lane, std::size_t index,
     if (index >= pts.size()) return false;
     out = EditAutomation{};
     out.track = track;
-    out.param = lane.param;
+    aim(out, lane);
     out.from = pts[index].at;
     out.to = pts[index].at + 1;
     for (std::size_t i = 0; i < pts.size(); ++i) {
@@ -289,7 +303,7 @@ bool clear_range_op(Id track, const AutomationLane& lane, Frames a, Frames b,
     if (!inside) return false;
     out = EditAutomation{};
     out.track = track;
-    out.param = lane.param;
+    aim(out, lane);
     out.from = a;
     out.to = b;
     if (outside) {
@@ -327,7 +341,7 @@ bool thin_range_op(Id track, const AutomationLane& lane, Frames a, Frames b,
     if (kept.size() == had.size()) return false;
     out = EditAutomation{};
     out.track = track;
-    out.param = lane.param;
+    aim(out, lane);
     out.from = a;
     out.to = b;
     out.points = std::move(kept);
@@ -362,7 +376,7 @@ std::vector<EditAutomation> follow_move_ops(const TrackEdit& track, Frames from,
         }
         carried.push_back({end, value_before(pts, to)});
         const auto moved = overlaid(overlaid(pts, from, to, {}), at, end, carried);
-        out.push_back(window_op(track.id, lane->param, lo, hi, moved));
+        out.push_back(window_op(track.id, *lane, lo, hi, moved));
     }
     return out;
 }
@@ -378,7 +392,7 @@ std::vector<EditAutomation> follow_clear_ops(const TrackEdit& track, Frames from
             return p.at >= from && p.at <= to;
         });
         if (!inside) continue;
-        out.push_back(window_op(track.id, lane->param, from, to, overlaid(pts, from, to, {})));
+        out.push_back(window_op(track.id, *lane, from, to, overlaid(pts, from, to, {})));
     }
     return out;
 }

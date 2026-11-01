@@ -59,7 +59,8 @@ constexpr Name<AutomationMode> kAutomationModes[] = {
     {"touch", AutomationMode::Touch}, {"latch", AutomationMode::Latch},
     {"write", AutomationMode::Write}, {"trim", AutomationMode::Trim}};
 constexpr Name<AutomationParam> kAutomationParams[] = {{"volume", AutomationParam::Volume},
-                                                       {"pan", AutomationParam::Pan}};
+                                                       {"pan", AutomationParam::Pan},
+                                                       {"plugin", AutomationParam::Plugin}};
 
 template <typename E, std::size_t N>
 Value name_of(const Name<E> (&table)[N], E v) {
@@ -170,11 +171,26 @@ Value points_value(const std::vector<AutomationPoint>& points) {
     return v;
 }
 
+// "param", and for a plugin lane its "insert" and "key"; a volume or pan
+// lane has neither, so its encoding is a version-35 peer's.
+void set_lane_target(Value& v, AutomationParam param, Id insert, const std::string& key) {
+    v.set("param", name_of(kAutomationParams, param));
+    if (param != AutomationParam::Plugin) return;
+    v.set("insert", id_value(insert));
+    v.set("key", Value::string(key));
+}
+
+// Whether `v` names a plugin lane, so which keys it must carry.
+bool names_plugin(const Value& v) {
+    const Value* p = v.is_object() ? v.find("param") : nullptr;
+    return p != nullptr && p->is_string() && p->text() == "plugin";
+}
+
 Value lanes_value(const std::vector<std::shared_ptr<const AutomationLane>>& lanes) {
     Value v = Value::array();
     for (const auto& l : lanes) {
         Value lv = Value::object();
-        lv.set("param", name_of(kAutomationParams, l->param));
+        set_lane_target(lv, l->param, l->insert, l->key);
         lv.set("points", points_value(l->points));
         v.push(std::move(lv));
     }
@@ -723,7 +739,7 @@ struct Encoder {
     Value operator()(const EditAutomation& o) const {
         Value v = with_kind("EditAutomation");
         v.set("track", id_value(o.track));
-        v.set("param", name_of(kAutomationParams, o.param));
+        set_lane_target(v, o.param, o.insert, o.key);
         v.set("range", pair(o.from, o.to));
         v.set("points", points_value(o.points));
         return v;
@@ -1068,8 +1084,12 @@ bool read_lanes(Reader& rd, const Value& obj, const std::string& p,
     const std::string lp = Reader::at(p, "automation");
     for (const Value& e : list->items()) {
         auto lane = std::make_shared<AutomationLane>();
-        if (!rd.keys(e, lp, {"param", "points"}) ||
+        const bool plugin = names_plugin(e);
+        if (!(plugin ? rd.keys(e, lp, {"param", "insert", "key", "points"})
+                     : rd.keys(e, lp, {"param", "points"})) ||
             !rd.choice(e, lp, "param", kAutomationParams, lane->param) ||
+            (plugin && (!rd.id(e, lp, "insert", lane->insert) ||
+                        !rd.text(e, lp, "key", lane->key))) ||
             !read_points(rd, e, lp, lane->points)) {
             return false;
         }
@@ -1655,9 +1675,12 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
     } else if (kind == "EditAutomation") {
         EditAutomation o;
         std::array<std::int64_t, 2> range{};
-        if (!rd.keys(v, "", {"op", "track", "param", "range", "points"}) ||
+        const bool plugin = names_plugin(v);
+        if (!(plugin ? rd.keys(v, "", {"op", "track", "param", "insert", "key", "range", "points"})
+                     : rd.keys(v, "", {"op", "track", "param", "range", "points"})) ||
             !rd.id(v, "", "track", o.track) ||
             !rd.choice(v, "", "param", kAutomationParams, o.param) ||
+            (plugin && (!rd.id(v, "", "insert", o.insert) || !rd.text(v, "", "key", o.key))) ||
             !rd.range(v, "", "range", kMaxInteger, range) || !read_points(rd, v, "", o.points)) {
             return false;
         }
@@ -1734,7 +1757,9 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 //    (ADR-0024).
 // 10: each edit track carries its automation lanes, each track mix its
 //    automation mode (ADR-0027).
-constexpr std::int64_t kWindowFormat = 10;
+// 11: a lane may be a plugin lane, with its insert and key (ADR-0027 §5,
+//    update of 2026-11-01).
+constexpr std::int64_t kWindowFormat = 11;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on

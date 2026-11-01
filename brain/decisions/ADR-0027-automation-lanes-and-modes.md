@@ -181,6 +181,27 @@ the write slice.
   play the lanes; Off and Write play the knob, as a plugin parameter has
   no touch to write from yet. `PlaybackConfig::max_plugin_lanes` bounds a
   plan's lanes; more is a plan out of bounds.
+- *Update (plugin lanes in the model, 2026-11-01).* `AutomationParam`
+  gains `Plugin`; a plugin lane also carries `insert`, the id of an insert
+  on the same track, and `key`, ADR-0012's stable ParamValue key, valid for
+  that insert's format (an LV2 port symbol, a VST3 ParamID in decimal).
+  Volume and pan lanes carry insert 0 and an empty key. Lanes stay on
+  `TrackEdit::automation`, sorted by (param, insert, key), one each, so
+  Automation Follows Edit (§7) and every lane edit treat a plugin lane as
+  any other. Values are format-native, as ParamValue's: finite, and a VST3
+  one from 0 to 1. At most `kMaxInsertParams` lanes an insert.
+  `EditAutomation` carries `insert` and `key` beside `param`. The lanes
+  follow their insert: `RemoveInsert` and `ReplaceInsert` drop them (a
+  replacement is another plugin, whose keys mean other things; undo brings
+  them back), `MoveInsert` carries them to the destination track, and
+  `DuplicateTrack` with automation and inserts gives the copy's lanes the
+  copied inserts' ids, and with automation but no inserts drops them.
+  Session format **14** (lane objects of param `"plugin"` carry `insert`
+  and `key`; a version-13 file migrates unchanged), window format **11**,
+  protocol **36** (a version-35 peer refuses param `"plugin"` and the new
+  keys). The plan builder's resolution of key to dense index (slice 1's
+  `PlanPluginLane::param`) is a later engine slice; until it lands a plugin
+  lane is saved, undone and replicated but not played.
 
 ### §6 First slice, format, protocol
 

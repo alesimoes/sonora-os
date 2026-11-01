@@ -55,7 +55,8 @@ constexpr Name<AutomationMode> kAutomationModes[] = {
     {"touch", AutomationMode::Touch}, {"latch", AutomationMode::Latch},
     {"write", AutomationMode::Write}, {"trim", AutomationMode::Trim}};
 constexpr Name<AutomationParam> kAutomationParams[] = {{"volume", AutomationParam::Volume},
-                                                       {"pan", AutomationParam::Pan}};
+                                                       {"pan", AutomationParam::Pan},
+                                                       {"plugin", AutomationParam::Plugin}};
 
 template <typename E, std::size_t N>
 const char* name_of(const Name<E> (&table)[N], E v) {
@@ -377,9 +378,34 @@ bool v12_to_v13(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v13 -> v14 (ADR-0027 §5, update of 2026-11-01): a lane may be a plugin
+// lane, with "insert" and "key". Nothing to fill; a version 13 file that
+// already holds one is refused, as it would be by a version 13 reader.
+bool v13_to_v14(Value& root, std::vector<Repair>&, std::string& error) {
+    Value* list = root.find("tracks");
+    if (list == nullptr || !list->is_array()) return true;   // the reader names it
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        const Value& t = list->items()[i];
+        const Value* lanes = t.is_object() ? t.find("automation") : nullptr;
+        if (lanes == nullptr || !lanes->is_array()) continue;
+        for (std::size_t k = 0; k < lanes->items().size(); ++k) {
+            const Value& l = lanes->items()[k];
+            if (!l.is_object()) continue;
+            const Value* param = l.find("param");
+            const bool plugin = param != nullptr && param->is_string() && param->text() == "plugin";
+            if (plugin || l.find("insert") != nullptr || l.find("key") != nullptr) {
+                error = "tracks[" + std::to_string(i) + "].automation[" + std::to_string(k) +
+                        "] is a plugin lane, which version 13 does not define";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
-     v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13}};
+     v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -1288,8 +1314,13 @@ bool read_automation(Reader& rd, const Value& track, const std::string& path, Tr
         const std::string p = index_path(path + ".automation", i);
         auto lane = std::make_shared<AutomationLane>();
         const Value* points = nullptr;
-        if (!rd.keys(v, p, {"param", "points"}) ||
+        const Value* param = v.is_object() ? v.find("param") : nullptr;
+        const bool plugin = param != nullptr && param->is_string() && param->text() == "plugin";
+        if (!(plugin ? rd.keys(v, p, {"param", "insert", "key", "points"})
+                     : rd.keys(v, p, {"param", "points"})) ||
             !rd.choice(v, p, "param", kAutomationParams, lane->param) ||
+            (plugin && (!rd.id(v, p, "insert", lane->insert) ||
+                        !rd.text(v, p, "key", lane->key))) ||
             !rd.array(v, p, "points", points)) {
             return false;
         }
@@ -1667,6 +1698,10 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
             for (const auto& l : t.automation) {
                 Value& lv = lanes.push(Value::object());
                 lv.set("param", Value::string(name_of(kAutomationParams, l->param)));
+                if (l->param == AutomationParam::Plugin) {
+                    lv.set("insert", id_value(l->insert));
+                    lv.set("key", Value::string(l->key));
+                }
                 Value& points = lv.set("points", Value::array());
                 for (const AutomationPoint& pt : l->points) {
                     Value& e = points.push(Value::array());

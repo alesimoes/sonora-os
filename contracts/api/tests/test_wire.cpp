@@ -393,7 +393,8 @@ void version_check() {
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     CHECK(pv == kProtocolVersion + 1);
 
-    // DuplicateTrack's automation flag (ADR-0023 update of 2026-10-31) is
+    // Plugin automation lanes (ADR-0027 §5, update of 2026-11-01) are
+    // version 36; DuplicateTrack's automation flag (ADR-0023 update of 2026-10-31) is
     // version 35; ParamId::SendLevel and AuxGain with ParameterChange's id
     // (ADR-0022 update of 2026-10-31) are version 34; ParameterChange's gesture and
     // ParamId::Pan (ADR-0027 §3) are version 33; EditAutomation and the track mix's automation mode (ADR-0027) are
@@ -417,7 +418,7 @@ void version_check() {
     // record 9. An older interface cannot decode this Hello, so it reads
     // only its versions and refuses it at connect, naming both numbers. Its
     // check is this function with its own constants, passed here.
-    CHECK(kProtocolVersion == 35);
+    CHECK(kProtocolVersion == 36);
     // Layout 5: "Locating…", the bus peaks and the playback misses (ADR-0009
     // update of 2026-11-01); no message changed, so the protocol did not.
     CHECK(kStateLayoutVersion == 5);
@@ -427,13 +428,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 35 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 36 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 35"));
+                   "speaks version 36"));
 }
 
 void domains() {
