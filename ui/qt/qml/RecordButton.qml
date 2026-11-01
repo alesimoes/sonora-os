@@ -26,6 +26,14 @@ SButton {
     readonly property bool outlined: ready && !recording
     border.color: outlined ? Theme.record : (active ? Qt.darker(activeColour, 1.15) : Theme.borderSubtle)
     border.width: outlined ? 2 : 1
+    // Record-ready is a toggle in the engine: a second press disarms it.
+    readonly property string hint: recording ? "Recording"
+        : ready ? "Record ready: Play starts the take; press again to disarm"
+        : shell.recordCommand === "transport.record_ready" ? "Record: arm, then Play starts the take"
+        : "Record: starts a take"
+    Accessible.role: Accessible.Button
+    Accessible.name: ready ? "Record ready" : "Record"
+    Accessible.description: hint
     onClicked: shell.invoke(shell.recordCommand, -1)
 
     onReadyChanged: blinkOn = true

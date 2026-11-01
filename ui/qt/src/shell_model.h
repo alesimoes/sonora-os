@@ -308,6 +308,7 @@ private:
     void holdLatencyRefusal(const QString& why);
     void holdRecordRefusal(const QString& why);
     static bool isRecordCommand(const std::string& c);
+    static bool clearsRecordRefusal(const std::string& c);
     // `read_frame` false: tick() has just read frame_.
     void refreshState(bool read_frame = true);
     void takeEvents();
