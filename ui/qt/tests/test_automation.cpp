@@ -6,7 +6,9 @@
 // timeline draws. Every edit must be one EditAutomation, so one undo step.
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "automation_edit.h"
 #include "edit_controller.h"
@@ -443,6 +445,72 @@ int test_range_commands() {
     return 0;
 }
 
+// Automation Follows Edit: what a region move or clear adds for each lane.
+int test_follow_ops() {
+    TrackEdit t;
+    t.id = 7;
+    OK(follow_move_ops(t, 1000, 2000, 5000).empty());   // no lane
+    OK(follow_clear_ops(t, 1000, 2000).empty());
+
+    // A flat lane plays the same whatever moves over it.
+    t.automation = {std::make_shared<AutomationLane>(
+        lane_of(AutomationParam::Volume, {{0, -6.0f}, {9000, -6.0f}}))};
+    OK(follow_move_ops(t, 1000, 2000, 5000).empty());
+    OK(follow_clear_ops(t, 1000, 2000).empty());
+
+    // A dip on [1000, 2000) moved to 5000: one EditAutomation a lane, over
+    // both spans, its ends included.
+    const AutomationLane dip = lane_of(
+        AutomationParam::Volume, {{0, 0.0f}, {1200, 0.0f}, {1500, -30.0f}, {1800, 0.0f}, {9000, -9.0f}});
+    t.automation = {std::make_shared<AutomationLane>(dip),
+                    std::make_shared<AutomationLane>(
+                        lane_of(AutomationParam::Pan, {{0, -1.0f}, {9000, 1.0f}}))};
+    OK(follow_move_ops(t, 1000, 2000, 1000).empty());   // nowhere to go
+    const std::vector<EditAutomation> ops = follow_move_ops(t, 1000, 2000, 5000);
+    OK(ops.size() == 2);
+    OK(ops[0].track == 7 && ops[0].param == AutomationParam::Volume);
+    OK(ops[0].from == 1000 && ops[0].to == 6001);
+    OK(ops[1].param == AutomationParam::Pan);
+    // Spliced as apply() does.
+    AutomationLane moved = dip;
+    moved.points.clear();
+    for (const AutomationPoint& p : dip.points) {
+        if (p.at < ops[0].from) moved.points.push_back(p);
+    }
+    for (const AutomationPoint& p : ops[0].points) {
+        OK(p.at >= ops[0].from && p.at < ops[0].to);
+        moved.points.push_back(p);
+    }
+    for (const AutomationPoint& p : dip.points) {
+        if (p.at >= ops[0].to) moved.points.push_back(p);
+    }
+    const auto& mp = moved.points;
+    for (std::size_t i = 1; i < mp.size(); ++i) OK(mp[i - 1].at <= mp[i].at);
+    for (std::size_t i = 2; i < mp.size(); ++i) OK(mp[i - 2].at != mp[i].at);   // two a frame at most
+    for (Frames f : {Frames(5000), Frames(5300), Frames(5500), Frames(5999)}) {
+        OK(near(lane_value_at(&moved, f, 9.0f), lane_value_at(&dip, f - 4000, 9.0f), 0.01f));
+    }
+    for (Frames f : {Frames(0), Frames(999), Frames(6000), Frames(7000), Frames(9000)}) {
+        OK(near(lane_value_at(&moved, f, 9.0f), lane_value_at(&dip, f, 9.0f), 0.01f));
+    }
+    OK(lane_value_at(&moved, 1500, 9.0f) > -5.0f);   // the dip left its old place
+
+    // A move onto its own span (a nudge shorter than the region) too.
+    const std::vector<EditAutomation> near_ops = follow_move_ops(t, 1000, 2000, 1100);
+    OK(near_ops.size() == 2 && near_ops[0].from == 1000 && near_ops[0].to == 2101);
+
+    // A clear runs straight across [1000, 2000], its edges kept. The pan
+    // lane has no point there, so already runs straight: no edit for it.
+    const std::vector<EditAutomation> cleared = follow_clear_ops(t, 1000, 2000);
+    OK(cleared.size() == 1 && cleared[0].param == AutomationParam::Volume);
+    OK(cleared[0].from == 1000 && cleared[0].to == 2001);
+    OK(cleared[0].points.size() == 2 && cleared[0].points[0].at == 1000 &&
+       cleared[0].points[0].value == 0.0f && cleared[0].points[1].at == 2000 &&
+       near(cleared[0].points[1].value, lane_value_at(&dip, 2000, 9.0f), 0.001f));
+    OK(follow_clear_ops(t, 2500, 3000).empty());
+    return 0;
+}
+
 int test_scene() {
     ModelDocument doc(make_empty_session(2, kRate));
     EditController ctl(doc);
@@ -501,7 +569,7 @@ int test_scene() {
 
 int main() {
     if (test_values() || test_operations() || test_stroke() || test_clip() || test_rows() || test_lane_height_follows_zoom() ||
-        test_gestures() || test_range_commands() || test_scene()) {
+        test_gestures() || test_range_commands() || test_follow_ops() || test_scene()) {
         return 1;
     }
     std::printf("ui automation: %d checks passed\n", checks);

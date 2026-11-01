@@ -195,6 +195,11 @@ public:
     GridValue grid() const { return grid_; }
     void set_grid(GridValue g) { grid_ = g; }
     bool grid_lines() const { return mode_ == EditMode::Grid; }
+    // Pro Tools' Automation Follows Edit (Options menu), on by default as
+    // there: a region moved or cleared takes the automation under it along
+    // (ADR-0027 §7). How the operator works, so kept when a session opens.
+    bool automation_follows_edit() const { return automation_follows_edit_; }
+    void set_automation_follows_edit(bool on) { automation_follows_edit_ = on; }
 
     // --- selection ---
     const Selection& selection() const { return sel_; }
@@ -462,6 +467,12 @@ private:
     // unsent past the member limit.
     bool submit_compound(std::vector<model::Member> members, const char* gesture,
                          const char* nothing_was, std::string& why);
+    // `op` alone, or with `follow` (Automation Follows Edit) as one
+    // Compound labelled `gesture`, so one undo step.
+    bool submit_following(model::Member op, std::vector<model::EditAutomation> follow,
+                          const char* gesture, const char* nothing_was, std::string& why);
+    // A region move, its lanes following when Automation Follows Edit is on.
+    bool submit_move(const model::MoveRegion& op, std::string& why);
 
     TimelineDocument& doc_;
     void refresh_rows() const;
@@ -480,6 +491,7 @@ private:
     ViewState saved_view_;
     bool has_saved_view_ = false;
     EditMode mode_ = EditMode::Slip;
+    bool automation_follows_edit_ = true;
     Tool tool_ = Tool::Smart;
     GridValue grid_ = GridValue::Beat;
     Selection sel_;
