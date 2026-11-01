@@ -47,16 +47,17 @@ function InDistro([string]$Cmd) {
 
 # --- steps that need no distro ---------------------------------------------
 
-if ($Step -and $Step[0] -eq '-Step') { $Step = $Step[1..($Step.Count)] }
+[string[]]$Step = @($Step | Where-Object { $_ })
+if ($Step.Count -gt 0 -and $Step[0] -eq "-Step") { $Step = if ($Step.Count -gt 1) { @($Step[1..($Step.Count - 1)]) } else { @() } }
 
-if ($Step -and $Step[0] -eq 'shortcut') {
+if ($Step.Count -gt 0 -and $Step[0] -eq 'shortcut') {
     $cmd = Join-Path $PSScriptRoot 'sonora-wsl.cmd'
     $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Sonora.lnk'
     $sh = New-Object -ComObject WScript.Shell
     $s = $sh.CreateShortcut($lnk)
     $s.TargetPath = $cmd
     $s.WorkingDirectory = $Repo
-    $s.WindowStyle = 7  # minimised console; the DAW window is the UI
+    $s.WindowStyle = 1
     $s.Description = 'Start Sonora (engine + UI) in WSL2 Debian'
     $s.Save()
     Write-Host "dev-wsl: shortcut created: $lnk"
@@ -73,7 +74,7 @@ if ($WslExit -ne 0) {
     Fail "WSL is installed but does not answer (wsl --status exit $WslExit)." 'run `wsl --update`; if it still fails, enable "Virtual Machine Platform" and "Windows Subsystem for Linux" in Windows Features and reboot.'
 }
 
-$installed = Invoke-Wsl @('--list', '--quiet') -Listing
+$installed = @(Invoke-Wsl @('--list', '--quiet') -Listing)
 if ($installed -notcontains $Distro) {
     Write-Host "dev-wsl: installing the $Distro distro (WSL is already present for Docker)"
     # Installing a distro on an existing WSL2 needs neither admin rights nor a reboot.
@@ -81,7 +82,7 @@ if ($installed -notcontains $Distro) {
     if ($LASTEXITCODE -ne 0) {
         Fail "wsl --install -d $Distro failed ($LASTEXITCODE)." 'run `wsl --update` and `wsl --list --online`, then try again.'
     }
-    $installed = Invoke-Wsl @('--list', '--quiet') -Listing
+    $installed = @(Invoke-Wsl @('--list', '--quiet') -Listing)
     if ($installed -notcontains $Distro) { Fail "$Distro is still not listed after installing." 'run `wsl --list --verbose` and check the distro name.' }
 }
 
@@ -101,7 +102,7 @@ if ($WslExit -ne 0) {
 # --- the non-root user ------------------------------------------------------
 
 $uid1000 = InDistro 'getent passwd 1000 | cut -d: -f1'
-if ($Step -and $Step[0] -eq 'user') {
+if ($Step.Count -gt 0 -and $Step[0] -eq 'user') {
     $name = if ($Step.Count -gt 1) { $Step[1] } else { 'sonora' }
     if ($name -notmatch '^[a-z][a-z0-9_-]*$') { Fail "'$name' is not a valid Linux user name." '' }
     if ($uid1000) { Write-Host "dev-wsl: user '$uid1000' already exists; nothing to do"; exit 0 }
@@ -120,7 +121,7 @@ if (-not $uid1000) {
 
 # --- run --------------------------------------------------------------------
 
-$stepArgs = if ($Step) { $Step } else { @() }
+[string[]]$stepArgs = @($Step)
 $isSelftest = $stepArgs.Count -gt 0 -and $stepArgs[0] -eq 'selftest'
 
 # The checkout is reached through /mnt/c; dev-wsl.sh builds into the
@@ -141,7 +142,7 @@ if ($isSelftest) {
     $rc = $LASTEXITCODE
 }
 $ErrorActionPreference = $old
-if ($rc -ne 0 -and $stepArgs.Count -gt 0 -and $stepArgs[0] -notin @('status', 'stop')) {
+if ($rc -ne 0 -and $stepArgs.Count -gt 0 -and $stepArgs[0] -notin @('status', 'stop') -and -not ($rc -eq 143 -and $stepArgs[0] -eq 'run')) {
     $hint = switch -Regex ($stepArgs[0]) {
         '^run$' { 'if the message above says the engine exited before listening, its log is printed there; if it says "no build", run this script without arguments first.' }
         '^selftest$' { 'no microphone? try: selftest --tone' }
@@ -149,4 +150,5 @@ if ($rc -ne 0 -and $stepArgs.Count -gt 0 -and $stepArgs[0] -notin @('status', 's
     }
     Write-Host "dev-wsl: step '$($stepArgs[0])' failed (exit $rc). $hint" -ForegroundColor Red
 }
+if ($rc -eq 143 -and $stepArgs.Count -gt 0 -and $stepArgs[0] -eq "run") { $rc = 0 }
 exit $rc
