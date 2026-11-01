@@ -1114,7 +1114,8 @@ InsertChainRef SupervisedChain::node() const {
     r.channel_generation = generation_;
     r.param_store = store_;
     r.node_state = node_;
-    r.channels = spec_.channels + spec_.key_channels;
+    r.channels = spec_.channels;
+    r.key_channels = spec_.key_channels;
     return r;
 }
 

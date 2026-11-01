@@ -61,6 +61,8 @@ offset/limit.*
   control API, all additive.
 - Amendment 2026-10-14 (accepted 2026-10-18): the control server's chains.
   Amendment 2026-10-19 (accepted): the scan worker and the plugin catalog.
+  Amendment 2026-11-01 (accepted): side-chain keys, the region's last
+  planes, keyed from an aux bus.
 - For the owner: O1 insert edits undoable (default yes), O2 keys while a
   plugin editor has focus.
 
@@ -1217,6 +1219,57 @@ to `contracts/plugin` (item 2), which is a contract change under ADR-0007
   transport records, and the start-up scan pauses during a take (change D).
 - Q4. **A standing fault when saved state is not restored** on a running
   insert (2026-10-14 amendment, item 5, "Saved state not restored").
+
+**Amendment, 2026-11-01: side-chain keys (BACKLOG Track 4, "how the engine
+routes a key to a plugin's side-chain")** (accepted on the recommended
+defaults). The host has taken a key since PR #43 as the last N channels of
+the region (`--sidechain N`, later `Load::key_channels`), and
+`engine/plugin_client` passed it through blind: `InsertChainRef::channels`
+was signal and key together, so a caller handing the node its stereo planes
+would have submitted the track's right side as the key and played the key
+channel's never-written output plane as audio. This fixes the contract
+before anything in the plan writes against it.
+
+1. **The region carries the key; no key planes of its own.** Layout version
+   stays 1. A keyed chain's region is laid out for `signal + key` channels;
+   the key is the last `Load::key_channels` input planes. The header carries
+   no key count (its `channels` is the sum): `Load` is the only place, so a
+   scribbling plugin cannot move the split. The host never writes a key
+   channel's output plane and the engine never reads one. Rejected: a key
+   region, or key planes after the output planes. Either is a layout
+   version 2 for no gain: the host already validates the split at `Load`
+   (`key_channels` below the region's channels), and the copy costs the
+   same.
+2. **`InsertChainRef` names the split.** `channels` is the signal (1 or 2,
+   the track's, §7.1) and `key_channels` the key, 0 for a chain with none;
+   the slot's `Layout::channels` must equal their sum or the node is a shape
+   fault. `process_chain` takes the key planes as their own argument (`key`;
+   null, or a null plane, is silence), copies them into the key input
+   planes on submit, and collects, fades and ramps the signal planes only.
+   The key is checked for aliasing with the output as the input is.
+   `SupervisedChain::node()` reports the split as the supervisor started it.
+3. **Where the key comes from: an aux bus, as Pro Tools' key input.** An
+   insert chain gains a key source, the id of an aux bus (ADR-0022), 0 for
+   none; the key is that bus's sum before its return fader, so what keys
+   the compressor is set by the sends that feed the bus (level, pre/post),
+   which the operator already knows how to use. A track as a direct key
+   source (Logic) is a later addition on the same edge. The key's channel
+   count is the chain's: a stereo bus keying a mono chain is summed to mono
+   (each side × 0.5) by the node that reads it.
+4. **In the plan: a second input edge of the InsertChain node** from the
+   bus's sum node. §7.3 needs no change: the key edge is one more input of
+   the node, so `max_in` aligns signal and key on the slower one, sample
+   for sample, and a key bus behind its own plugin chains delays the keyed
+   track rather than arriving late. A key source that depends on the keyed
+   track's output (track → send → bus → key of the same chain) is a loop,
+   refused by the builder as bus loops are (ADR-0022 §1). A key bus that is
+   removed leaves the chain keyed by silence, shown on the insert, never
+   refused at play.
+5. **Done in this amendment's PR:** items 1 and 2, with a regression test in
+   `engine/plugin_client`. **Follow-ups:** item 3's model field and session
+   format, item 4's edge in `plan_builder`, and the supervisor spawning a
+   chain with `key_channels` from it. They bump the session format and are
+   scheduled with the other format changes.
 
 ## Rationale
 

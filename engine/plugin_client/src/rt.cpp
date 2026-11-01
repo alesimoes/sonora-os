@@ -106,11 +106,11 @@ void PluginClient::end_callback() noexcept SONORA_RT {
 
 Outcome PluginClient::process_chain(const InsertChainRef& ref, const float* const* in, float* const* out,
                                     uint32_t frames, const ParamEvent* events,
-                                    uint32_t event_count) noexcept SONORA_RT {
+                                    uint32_t event_count, const float* const* key) noexcept SONORA_RT {
     if (frames == 0) return Outcome::Missed;
     if (ref.node_state >= config_.max_nodes ||
         (ref.param_store >= config_.max_stores && ref.param_store != kNoStore) || ref.channels == 0 ||
-        ref.channels > config_.max_chain_channels) {
+        ref.channels > config_.max_chain_channels || ref.key_channels > config_.max_chain_channels - ref.channels) {
         // Nothing of the node's can be trusted to index with; the plan
         // builder never produces this, so it is counted and nothing else.
         bad_refs_.store(bad_refs_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
@@ -129,25 +129,33 @@ Outcome PluginClient::process_chain(const InsertChainRef& ref, const float* cons
     }
     node.processed_callback = callback_;
 
-    // In place (in[c] == out[d]): the collect below writes `out` before
-    // the submit reads `in`, so the input is copied aside first.
+    // Input plane c of the region: the signal, then the key.
+    const uint32_t planes = ref.channels + ref.key_channels;
+    const auto source = [&](uint32_t c) noexcept -> const float* {
+        return c < ref.channels ? in[c] : key ? key[c - ref.channels] : nullptr;
+    };
+    // In place (in[c] == out[d], or a key plane on out[d]): the collect
+    // below writes `out` before the submit reads its sources, so they are
+    // copied aside first.
     if (frames <= config_.block_frames) {
         bool aliased = false;
-        for (uint32_t c = 0; c < ref.channels && !aliased; ++c)
+        for (uint32_t c = 0; c < planes && !aliased; ++c)
             for (uint32_t d = 0; d < ref.channels && !aliased; ++d) {
-                const auto i0 = reinterpret_cast<std::uintptr_t>(in[c]);
+                const float* src = source(c);
+                const auto i0 = reinterpret_cast<std::uintptr_t>(src);
                 const auto o0 = reinterpret_cast<std::uintptr_t>(out[d]);
                 const std::uintptr_t bytes = std::uintptr_t(frames) * sizeof(float);
-                aliased = in[c] && i0 < o0 + bytes && o0 < i0 + bytes;
+                aliased = src && i0 < o0 + bytes && o0 < i0 + bytes;
             }
         if (aliased) {
-            for (uint32_t c = 0; c < ref.channels; ++c) {
+            for (uint32_t c = 0; c < planes; ++c) {
                 float* copy = alias_scratch_.data() + std::size_t(c) * config_.block_frames;
-                if (in[c]) std::memcpy(copy, in[c], std::size_t(frames) * sizeof(float));
+                if (const float* src = source(c)) std::memcpy(copy, src, std::size_t(frames) * sizeof(float));
                 else std::memset(copy, 0, std::size_t(frames) * sizeof(float));
                 alias_in_[c] = copy;
             }
             in = alias_in_.data();
+            key = alias_in_.data() + ref.channels;
         }
     }
 
@@ -168,7 +176,7 @@ Outcome PluginClient::process_chain(const InsertChainRef& ref, const float* cons
         return Outcome::Missed;
     }
     Slot& s = slots_[ref.channel_slot];
-    if (s.layout.channels != ref.channels || s.layout.param_slots != store.map.param_slots ||
+    if (s.layout.channels != planes || s.layout.param_slots != store.map.param_slots ||
         frames > s.layout.max_frames) {
         node.shape_faults.bump();
         node.silent_blocks.bump();
@@ -268,9 +276,9 @@ Outcome PluginClient::process_chain(const InsertChainRef& ref, const float* cons
             s.resync_deferred.bump();
         }
     }
-    for (uint32_t c = 0; c < ref.channels; ++c) {
+    for (uint32_t c = 0; c < planes; ++c) {
         float* dst = plugin::input_plane(s.region, s.layout, c);
-        if (in[c]) std::memcpy(dst, in[c], std::size_t(frames) * sizeof(float));
+        if (const float* src = source(c)) std::memcpy(dst, src, std::size_t(frames) * sizeof(float));
         else std::memset(dst, 0, std::size_t(frames) * sizeof(float));
     }
     const uint64_t tag = plugin::next_block(s.eng);

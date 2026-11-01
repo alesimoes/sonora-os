@@ -394,8 +394,11 @@ inline constexpr uint32_t kLoadReactivate = 1u << 0;  // re-activate after the f
 inline constexpr uint32_t kLoadKnownFlags = kLoadReactivate;
 
 // The chain, once. `key_channels`: the last N of the region's channels are
-// a side-chain key, not signal (every plugin with a key input reads them;
-// their output planes stay silent). Fewer than the region's channels.
+// a side-chain key, not signal (every plugin with a key input reads them).
+// Fewer than the region's channels. The host never writes a key channel's
+// output plane and the engine never reads one; the header has no key count,
+// so this is the only place the split is said (ADR-0012 amendment
+// 2026-11-01, and protocol.h's channel region).
 struct Load {
     uint32_t key_channels = 0;
     uint32_t flags = 0;

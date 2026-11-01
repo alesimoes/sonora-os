@@ -17,6 +17,7 @@
 //                 busy, written before the next submit, never early
 //   A2.2, A2.5    the per-callback copy budget; stores by index
 //   frame count   a callback of another size submits nothing
+//   keys          a key reaches the last planes and is never played
 #include "sonora/platform/process.h"
 #include "sonora/plugin_client/host_supervisor.h"
 #include "sonora/plugin_client/plugin_client.h"
@@ -114,6 +115,21 @@ public:
             float* out = plugin::output_plane(base_, layout_, c);
             for (uint32_t i = 0; i < kBlock; ++i) out[i] = gain * in[i];
             if (use_poison) out[5] = poison;
+        }
+        h->completed_block.store(block, std::memory_order_release);
+    }
+
+    // A keyed chain as sonora_test#key runs it: each signal output is the
+    // key, and the key channels' output planes get `junk`, which the
+    // contract says the engine never reads.
+    void complete_keyed(uint32_t signal, float junk) {
+        const uint64_t block = h->submitted_block.load(std::memory_order_acquire);
+        if (block == h->completed_block.load()) return;
+        const uint32_t keys = layout_.channels - signal;
+        for (uint32_t c = 0; c < layout_.channels; ++c) {
+            float* out = plugin::output_plane(base_, layout_, c);
+            const float* key = plugin::input_plane(base_, layout_, signal + (c < keys ? c : keys - 1));
+            for (uint32_t i = 0; i < kBlock; ++i) out[i] = c < signal ? key[i] : junk;
         }
         h->completed_block.store(block, std::memory_order_release);
     }
@@ -677,6 +693,81 @@ void an_in_place_node_submits_its_input_not_its_output() {
     }
 }
 
+// ADR-0012 amendment 2026-11-01: a keyed chain's region is signal + key
+// channels, the key last. The node names the split; the key reaches the key
+// input planes, and only the signal planes are collected. Before it, a
+// keyed slot was a shape fault for a signal-only ref, and a ref counting
+// the key as signal played the key's output plane and took `in[1]` as key.
+void a_keyed_chain_submits_the_key_last_and_plays_only_the_signal() {
+    Rig rig;
+    ScriptedHost host(2, {0});  // mono signal + mono key
+    InsertChainRef r = rig.bind(host, 0, 0, 1, map_of({0}));
+    r.key_channels = 1;
+    std::vector<float> in(kBlock), key(kBlock), out(kBlock), spare(kBlock, 3.f), prev_key(kBlock);
+    const float* ip[2] = {in.data(), spare.data()};  // a stray second plane is never the key
+    const float* kp[1] = {key.data()};
+    float* op[2] = {out.data(), spare.data()};
+    for (uint64_t cb = 1; cb <= 6; ++cb) {
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            in[i] = float(int((cb * 37 + i) % 50) - 25) / 64.f;
+            key[i] = float(int((cb * 53 + i) % 40) - 20) / 32.f;
+        }
+        rig.client.begin_callback(0);
+        const Outcome o = rig.client.process_chain(r, ip, op, kBlock, nullptr, 0, kp);
+        rig.client.end_callback();
+        CHECK(same(host.input(0), in.data(), kBlock));
+        CHECK(same(host.input(1), key.data(), kBlock));
+        if (cb >= 3) CHECK(o == Outcome::Collected && same(out.data(), prev_key.data(), kBlock));
+        for (float x : out) CHECK(x != 9.f);
+        for (float x : spare) CHECK(x == 3.f);
+        prev_key = key;
+        host.complete_keyed(1, 9.f);
+    }
+    const NodeStatus ns = rig.client.node_status(r.node_state);
+    CHECK(ns.shape_faults == 0);
+    CHECK(rig.client.slot_status(r.channel_slot).collected == 5);
+
+    // No key planes: the key is silence, not whatever follows `in`.
+    rig.client.begin_callback(0);
+    rig.client.process_chain(r, ip, op, kBlock, nullptr, 0);
+    rig.client.end_callback();
+    for (uint32_t i = 0; i < kBlock; ++i) CHECK(host.input(1)[i] == 0.f);
+    host.complete_keyed(1, 9.f);
+
+    // A split that is not the slot's is a shape fault: nothing submitted.
+    const uint64_t before = host.h->submitted_block.load();
+    InsertChainRef wrong = r;
+    wrong.key_channels = 0;
+    rig.client.begin_callback(0);
+    CHECK(rig.client.process_chain(wrong, ip, op, kBlock, nullptr, 0, kp) == Outcome::Missed);
+    rig.client.end_callback();
+    CHECK(rig.client.node_status(r.node_state).shape_faults == 1);
+    CHECK(host.h->submitted_block.load() == before);
+}
+
+// The key aliasing the node's output (a key bus summed into the buffer the
+// node writes): the host gets this callback's key, not the output the
+// collect wrote over it.
+void a_key_aliasing_the_output_is_submitted_before_the_collect() {
+    Rig rig;
+    ScriptedHost host(2, {0});
+    InsertChainRef r = rig.bind(host, 0, 0, 1, map_of({0}));
+    r.key_channels = 1;
+    std::vector<float> in(kBlock, 0.125f), buf(kBlock), want(kBlock);
+    const float* ip[1] = {in.data()};
+    const float* kp[1] = {buf.data()};
+    float* op[1] = {buf.data()};
+    for (uint64_t cb = 1; cb <= 6; ++cb) {
+        for (uint32_t i = 0; i < kBlock; ++i) want[i] = buf[i] = float(int((cb * 71 + i) % 30) - 15) / 16.f;
+        rig.client.begin_callback(0);
+        rig.client.process_chain(r, ip, op, kBlock, nullptr, 0, kp);
+        rig.client.end_callback();
+        CHECK(same(host.input(1), want.data(), kBlock));
+        CHECK(same(host.input(0), in.data(), kBlock));
+        host.complete_keyed(1, 9.f);
+    }
+}
+
 // PR #48's sentinel: a chain with no parameters runs with no store.
 void a_chain_without_parameters_runs_with_no_store() {
     Rig rig;
@@ -849,6 +940,8 @@ int main() {
     a_second_call_in_one_callback_touches_nothing();
     an_in_place_node_submits_its_input_not_its_output();
     a_chain_without_parameters_runs_with_no_store();
+    a_keyed_chain_submits_the_key_last_and_plays_only_the_signal();
+    a_key_aliasing_the_output_is_submitted_before_the_collect();
     a_swap_back_to_the_previous_channel_is_not_a_miss();
     retire_moves_the_generation();
     sizes_from_the_control_thread_are_clamped();
