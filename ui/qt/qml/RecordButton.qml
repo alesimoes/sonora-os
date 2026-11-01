@@ -22,8 +22,10 @@ SButton {
     available: shell.implemented(shell.recordCommand)
     active: recording || (ready && (blinkOn || steady))
     activeColour: Theme.record
-    border.color: ready && !recording ? Theme.record : (active ? Qt.darker(activeColour, 1.15) : Theme.borderSubtle)
-    border.width: ready && !recording ? 2 : 1
+    // Record-ready keeps a record-coloured outline in the blink's off phase.
+    readonly property bool outlined: ready && !recording
+    border.color: outlined ? Theme.record : (active ? Qt.darker(activeColour, 1.15) : Theme.borderSubtle)
+    border.width: outlined ? 2 : 1
     onClicked: shell.invoke(shell.recordCommand, -1)
 
     onReadyChanged: blinkOn = true
