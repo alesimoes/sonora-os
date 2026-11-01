@@ -75,6 +75,7 @@ class SessionModel : public QObject {
     Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
+    Q_PROPERTY(bool automationFollowsEdit READ automationFollowsEdit NOTIFY editStateChanged)
     Q_PROPERTY(QString tool READ tool NOTIFY editStateChanged)
     Q_PROPERTY(QString gridValue READ gridValue NOTIFY editStateChanged)
     Q_PROPERTY(QString fadeShape READ fadeShape NOTIFY editStateChanged)
@@ -300,6 +301,7 @@ public:
     Q_INVOKABLE void markerRulerClick(qreal x, bool alt);
     bool canPaste() const { return !ctl_.clipboard().empty(); }
     QString editMode() const { return QString::fromLatin1(edit_mode_name(ctl_.mode())); }
+    bool automationFollowsEdit() const { return ctl_.automation_follows_edit(); }
     QString tool() const { return QString::fromLatin1(tool_name(ctl_.tool())); }
     QString gridValue() const { return QString::fromLatin1(grid_value_name(ctl_.grid())); }
     QString fadeShape() const { return QString::fromLatin1(fade_shape_name(ctl_.fade_shape())); }
@@ -583,6 +585,7 @@ private:
     bool seen_dirty_ = false;
     int seen_mode_ = -1, seen_tool_ = -1, seen_grid_ = -1, seen_fades_ = -1;
     uint64_t seen_clip_ = UINT64_MAX;
+    int seen_follows_ = -1;
     Selection seen_sel_;
     bool seen_sel_valid_ = false;
     ViewState seen_view_;

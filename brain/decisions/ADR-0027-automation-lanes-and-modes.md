@@ -35,6 +35,8 @@
   evaluated once per block into ADR-0012's block-tagged last-value table.
 - §6: first slice: read-mode volume and pan on audio tracks. Session
   format 13, window format 10, protocol 32.
+- §7 (update): Automation Follows Edit, computed by the interface into the
+  region edit's `Compound`; no format or protocol change.
 
 ## Context
 
@@ -169,6 +171,28 @@ the write slice.
 - Protocol **32** (31 is PR #167's): the operation codec has
   `EditAutomation`, and `TrackMix` carries `automation`. A version-31 peer
   refuses both.
+
+### §7 Automation Follows Edit (update, 2026-10-31)
+
+- Pro Tools' Options > Automation Follows Edit: a region moved (drag,
+  nudge) or cleared (the region, or a range on the track's row) takes the
+  automation under it along. The interface computes one `EditAutomation`
+  per lane that changes (`follow_move_ops`, `follow_clear_ops` in
+  `ui/qt/src/automation_edit.h`) and sends them in one `Compound` with the
+  region operation: one undo step, `apply` still only validates and splices.
+  No new operation, protocol or session format.
+- Moving the span `[s, e)` to `d`: the lane's values on `[s, e)` play on
+  `[d, d + e - s)`, the place left runs straight from the value arriving at
+  `s` to the value at `e`, and nothing outside both spans changes. Each
+  span's ends are steps (two points at one frame, §1): the value arriving
+  and the value leaving, collapsed to one point when they agree. A clear is
+  the first half alone, on lanes with a point in `[s, e]`.
+- The option is the interface's, as the edit mode is: on by default as in
+  Pro Tools, not saved in the session, kept when a session opens, toggled by
+  the Interface-domain command `automation.toggle_follows_edit`.
+- Per track (§1, alternatives): a move on the active playlist moves the
+  track's lanes. Cut, Copy, Paste, Duplicate, Shuffle-mode moves, trims and
+  MIDI regions do not follow yet (BACKLOG).
 
 ## Consequences
 

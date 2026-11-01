@@ -443,6 +443,7 @@ void domains() {
         const bool interface = id.rfind("tool.", 0) == 0 || id.rfind("zoom.", 0) == 0 ||
                                id.rfind("edit.mode.", 0) == 0 || id.rfind("focus.", 0) == 0 ||
                                id == "app.quit" || id == "automation.thin" ||
+                               id == "automation.toggle_follows_edit" ||
                                id == "window.transport" ||
                                id == "window.undo_history" ||
                                id == "window.memory_locations" || id == "window.latency";

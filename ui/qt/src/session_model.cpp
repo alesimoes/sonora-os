@@ -136,6 +136,10 @@ void SessionModel::installCommands(CommandRegistry& local) {
     simple("edit.clear", [this](const CommandContext&, Why& why) { return ctl_.clear(why); });
     simple("automation.thin",
            [this](const CommandContext&, Why& why) { return ctl_.thin_automation(why); });
+    simple("automation.toggle_follows_edit", [this](const CommandContext&, Why&) {
+        ctl_.set_automation_follows_edit(!ctl_.automation_follows_edit());
+        return true;
+    });
     simple("edit.cut", [this](const CommandContext&, Why& why) { return ctl_.cut(why); });
     simple("edit.copy", [this](const CommandContext&, Why& why) { return ctl_.copy(why); });
     // A paste that left lanes out still ran; what it left out goes on the
@@ -415,9 +419,11 @@ void SessionModel::sync() {
     const int fades = static_cast<int>(ctl_.fade_shape()) * 16 +
                       static_cast<int>(ctl_.crossfade_shape());
     const uint64_t clip = ctl_.clipboard_serial();
+    const int follows = ctl_.automation_follows_edit() ? 1 : 0;
     if (m != seen_mode_ || t != seen_tool_ || g != seen_grid_ || fades != seen_fades_ ||
-        clip != seen_clip_) {
+        clip != seen_clip_ || follows != seen_follows_) {
         seen_clip_ = clip;
+        seen_follows_ = follows;
         content = content || m != seen_mode_ || g != seen_grid_;  // grid lines follow them
         seen_mode_ = m;
         seen_tool_ = t;
