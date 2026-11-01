@@ -574,6 +574,26 @@ int test_time() {
     OK(format_length(TimeFormat::BarsBeats, kBeat, kBar + kBeat / 2, s) == "1|0|480");
     OK(format_length(TimeFormat::BarsBeats, kBeat, 3 * kBeat, s) == "0|3|000");
     OK(format_length(TimeFormat::Samples, 5, 1234, s) == "1234");
+    {
+        // 120 4/4 to bar 3, 60 3/4 for two bars, 120 4/4 again from bar 5.
+        constexpr Frames kSlowBeat = 48000, kSlowBar = 3 * kSlowBeat;
+        SessionSettings m;
+        TempoEntry slow;
+        slow.at = 2 * kBar;
+        slow.bpm = 60.0f;
+        slow.meter = {{3, 4}};
+        TempoEntry back;
+        back.at = 2 * kBar + 2 * kSlowBar;
+        m.tempo = {TempoEntry{}, slow, back};
+        // 1|4 to 4|2: the bar borrowed is bar 3, three beats long, not the start's four.
+        OK(format_length(TimeFormat::BarsBeats, 3 * kBeat, 2 * kBar + kSlowBar + kSlowBeat - 3 * kBeat, m) ==
+           "2|1|000");
+        // Inside the 3/4 span, start and end in the same meter.
+        OK(format_length(TimeFormat::BarsBeats, 2 * kBar + 2 * kSlowBeat, kSlowBar, m) == "1|0|000");
+        // A span past the last tempo point reads that entry's meter.
+        const Frames five = back.at;
+        OK(format_length(TimeFormat::BarsBeats, five + 3 * kBeat, 2 * kBar - 2 * kBeat, m) == "1|2|000");
+    }
     OK(format_length(TimeFormat::MinSec, 0, 83 * kRate + kRate / 2, s) == "1:23.500");
     OK(format_min_sec(0, kRate) == "0:00.000");
     OK(format_min_sec(83 * kRate + kRate / 2, kRate) == "1:23.500");
