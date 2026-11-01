@@ -286,6 +286,7 @@ do_run() {
   # A fresh WSL Debian sets no locale, and Qt warns without a UTF-8 one.
   export LANG="${LANG:-C.UTF-8}"
   patch_engine "$MIC" >"$STATE/patch.log" 2>&1 &
+  mkdir -p "$(dirname "$SESSION_DIR")"  # the engine creates only the last path component
   say "engine + Qt UI; session in $SESSION_DIR"
   SONORA_BUILD="$BUILD" SONORA_ENGINE_ARGS="${ENGINE_EXTRA[*]}" \
     "$ROOT/tools/run-sonora.sh" --backend jack --tracks 2 --dir "$SESSION_DIR" "$@"
