@@ -10,6 +10,7 @@
 #include "sonora/dsp/noise.h"
 #include "sonora/dsp/oversampling.h"
 #include "sonora/dsp/supply.h"
+#include "sonora/dsp/transformer.h"
 #include "sonora/dsp/triode.h"
 #include "sonora/native/processor_base.h"
 
@@ -37,6 +38,9 @@ const ParamInfo kParams[kParamCount] = {
     {"noise", "Noise", Unit::Percent, Taper::Linear, 0.0f, 100.0f, 0.0f, 20.0f, true, false, false, "%.0f %%", nullptr, 0},
     {"hum", "Hum", Unit::Percent, Taper::Linear, 0.0f, 100.0f, 0.0f, 20.0f, true, false, false, "%.0f %%", nullptr, 0},
     {"mains", "Mains", Unit::Choice, Taper::Stepped, 0.0f, 1.0f, 0.0f, 0.0f, false, true, false, "%.0f", kMainsChoices, 2},
+    // Slice 3. 0 % bypasses the output stage exactly.
+    {"transformer", "Transformer", Unit::Percent, Taper::Linear, 0.0f, 100.0f, 0.0f, 20.0f, true, false, false, "%.0f %%", nullptr, 0},
+    {"sag", "Sag", Unit::Percent, Taper::Linear, 0.0f, 100.0f, 100.0f, 20.0f, true, false, false, "%.0f %%", nullptr, 0},
 };
 
 // The noise generators' seeds, two per channel: fixed, so a render is the
@@ -87,6 +91,14 @@ protected:
         mix_.assign(max_frames(), 0.0);
         noise_gain_.assign(max_frames(), 0.0);
         hum_.assign(max_frames(), 0.0);
+        pre_.assign(max_frames(), 1.0);
+        inv_pre_.assign(max_frames(), 1.0);
+        xf_amount_.assign(max_frames(), 0.0);
+        sag_amount_.assign(max_frames(), 0.0);
+        if (!out_stage_.prepare(os_rate, chs)) return false;
+        pre_coef_ = 1.0 - std::exp(-1.0 / (0.003 * sample_rate()));
+        pre_state_ = norm_;
+        xf_active_ = false;
         return prepare_noise() && prepare_hum();
     }
 
@@ -169,6 +181,9 @@ protected:
             leak_y_[c] = 0.0;
         }
         hum_bank_.reset();
+        out_stage_.reset();
+        xf_active_ = false;
+        pre_state_ = norm_ / (value(kAutoLevel) >= 0.5f ? g : 1.0);
     }
 
     void render(const float* const* in, float* const* out, const float* const*, std::uint32_t,
@@ -187,6 +202,11 @@ protected:
             const double g_then = drive_line_[drive_pos_];
             const double level = dsp::db_to_gain(smoother(kOutput).next());
             post_[k] = norm_ * level / (auto_level ? g_then : 1.0);
+            // Smoothed (3 ms): the auto-level switch and the drive reach the
+            // stage as a ramp, not a step in what its core is fed.
+            pre_state_ += pre_coef_ * (norm_ / (auto_level ? g_then : 1.0) - pre_state_);
+            pre_[k] = pre_state_;
+            sag_amount_[k] = 0.01 * smoother(kSag).next();
             mix_[k] = 0.01 * smoother(kMix).next();
         }
         // Noise and hum: nothing is generated, and nothing added, while a
@@ -223,6 +243,27 @@ protected:
             for (std::uint32_t i = 0; i < n; ++i) dsp::TriodeStage::tick2(stage_[0], stage_[1], x[0][i], x[1][i], x[0][i], x[1][i]);
         } else {
             for (std::uint32_t i = 0; i < n; ++i) x[0][i] = stage_[0].tick(x[0][i]);
+        }
+        // The output stage (slice 3): in the oversampled domain, at the
+        // level auto level leaves the signal at, mixed back by its amount.
+        // At 0 % and not moving it is not run, and its state is dropped so
+        // the next engagement starts from rest.
+        if (level_active(kTransformer, xf_amount_.data(), frames)) {
+            for (std::uint32_t k = 0; k < frames; ++k) inv_pre_[k] = 1.0 / pre_[k];
+            xf_active_ = true;
+            for (std::uint32_t k = 0; k < frames; ++k) {
+                out_stage_.set_sag(sag_amount_[k]);
+                const double pre = pre_[k], inv = inv_pre_[k], a = xf_amount_[k];
+                for (std::uint32_t j = 0; j < factor_; ++j) {
+                    const std::uint32_t i = k * factor_ + j;
+                    double in2[2] = {x[0][i] * pre, chs > 1 ? x[1][i] * pre : 0.0}, y2[2];
+                    out_stage_.tick(in2, y2);
+                    for (std::uint32_t c = 0; c < chs; ++c) x[c][i] += a * (y2[c] * inv - x[c][i]);
+                }
+            }
+        } else if (xf_active_) {
+            out_stage_.reset();
+            xf_active_ = false;
         }
         for (std::uint32_t c = 0; c < chs; ++c) {
             os_.down(c, wet_.data(), frames);
@@ -262,6 +303,11 @@ private:
     double leak_y_[2] = {0.0, 0.0};
     double white_sigma_ = 0.0, leak_sigma_ = 0.0, leak_pole_ = 0.0;
     dsp::HumBank hum_bank_;
+    // The output stage (slice 3) and its per-sample controls.
+    dsp::OutputStage out_stage_;
+    bool xf_active_ = false;
+    std::vector<double> pre_, inv_pre_, xf_amount_, sag_amount_;
+    double pre_state_ = -1.0, pre_coef_ = 0.0;
 };
 
 }  // namespace
