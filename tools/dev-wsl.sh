@@ -9,6 +9,8 @@
 #   tools/dev-wsl.sh build      configure and build engine, UI, sonora-ctl
 #   tools/dev-wsl.sh audio      start PipeWire bridged to WSLg, then exit
 #   tools/dev-wsl.sh run [-- UI ARGS]   engine + Qt UI (no deps, no build)
+#   tools/dev-wsl.sh stop       stop the engine and UI (PipeWire stays)
+#   tools/dev-wsl.sh status     what is running; exit 0 when the DAW is up
 #   tools/dev-wsl.sh selftest [--tone] [SECONDS]
 #                               record SECONDS (default 4) from the mic, or
 #                               from a test tone, play it back to the
@@ -286,6 +288,7 @@ do_run() {
   # A fresh WSL Debian sets no locale, and Qt warns without a UTF-8 one.
   export LANG="${LANG:-C.UTF-8}"
   patch_engine "$MIC" >"$STATE/patch.log" 2>&1 &
+  mkdir -p "$(dirname "$SESSION_DIR")"
   say "engine + Qt UI; session in $SESSION_DIR"
   SONORA_BUILD="$BUILD" SONORA_ENGINE_ARGS="${ENGINE_EXTRA[*]}" \
     "$ROOT/tools/run-sonora.sh" --backend jack --tracks 2 --dir "$SESSION_DIR" "$@"
@@ -406,6 +409,32 @@ PY
   say "selftest passed; the files are in $dir"
 }
 
+# --- stop, status ----------------------------------------------------------
+
+do_stop() {
+  # Engine and UI only: PipeWire stays up.
+  pkill -TERM -x sonora-ui 2>/dev/null || true
+  pkill -TERM -x sonora-engine 2>/dev/null || true
+  sleep 1
+  pkill -KILL -x sonora-engine 2>/dev/null || true
+  say "stopped"
+}
+
+do_status() {
+  local up=0 n
+  for n in sonora-engine sonora-ui pipewire; do
+    if pgrep -x "$n" >/dev/null; then
+      say "$n: running"
+      [[ $n == pipewire ]] || up=1
+    else
+      say "$n: not running"
+    fi
+  done
+  if [[ -S $WSLG_PULSE ]]; then say "WSLg audio: present"; else say "WSLg audio: MISSING"; fi
+  if [[ -x "$BUILD/sonora-engine" ]]; then say "build: present"; else say "build: missing"; fi
+  return $((1 - up))
+}
+
 # --- main ------------------------------------------------------------------
 
 cmd="${1:-all}"
@@ -415,8 +444,10 @@ case "$cmd" in
   build) do_build ;;
   audio) do_audio ;;
   run) [[ "${1:-}" == -- ]] && shift; do_run -- "$@" ;;
+  stop) do_stop ;;
+  status) do_status ;;
   selftest) do_selftest "$@" ;;
   all|--) [[ "${1:-}" == -- ]] && shift; do_deps; do_build; do_run -- "$@" ;;
-  -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown step $cmd (see --help)" ;;
 esac
