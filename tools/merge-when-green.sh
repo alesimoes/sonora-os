@@ -13,7 +13,7 @@
 # Exits 1 if any PR was skipped.
 set -u
 
-# shellcheck source=tools/merge-checks.sh
+# shellcheck source=/dev/null
 . "$(dirname "$0")/merge-checks.sh"
 
 [ $# -ge 1 ] || { echo "usage: tools/merge-when-green.sh PR..." >&2; exit 2; }

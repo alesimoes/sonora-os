@@ -1,6 +1,7 @@
 #!/bin/sh
 # Dry run of the merge decision against fake `gh pr checks` output.
 set -u
+# shellcheck source=/dev/null
 . "$(dirname "$0")/merge-checks.sh"
 fail=0
 expect() {  # label, expected count of missing heavy checks, input
