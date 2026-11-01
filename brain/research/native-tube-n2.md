@@ -457,3 +457,30 @@ class B and so is reported, not held; the defaults (stage off) still meet
 the bar. Reducing it is a follow-up: a tabulated Langevin, a warm start
 from the previous step's slope, and running the stage at 2x whatever the
 quality.
+
+## Output stage: finite for any input, and a cheaper solve
+
+- `OutputStage::tick` caps |u| at 1e6 before u^4. Past that the soft clip is
+  flat at the rail to 1e-6 relative; before, x = 1e300 made u^4 infinite,
+  vs = inf / inf = NaN, and the core state and the rail were poisoned.
+  Regression test: `test_dsp_transformer` extremes, inputs of +-1e100,
+  +-1e300 and 1.7e308 keep the output, the rail and the core finite and the
+  stage usable afterwards.
+- The solve is cheaper: one exp serves the Langevin function and its slope
+  (was tanh and sinh), and the Newton start uses the previous step's
+  stored slope and psi instead of an extra evaluation.
+- Measured (`tools/dsp-cpu.sh`, i7-11800H in the Docker image, a host
+  running 2.58x slower than the recorded reference kernel, so read ratios;
+  eco, stage 100 %): p50 274 us against 120 us stage off, 2.3x. The note
+  above read 281 against 98, 2.9x, on a busy host. Divided by the runner
+  scale, eco with the stage on is about 106 us against the 60 us bar.
+
+**Class B is not met** by the stage on at eco (about 1.8x over), nor by
+standard (4x: p50 247 us stage off, 549 us on) or high (8x: 464 / 1016 us)
+on this host (divide by 2.58 for the reference machine). Those need a
+different structure, not tuning: a tabulated core running at the base
+rate in eco is the next candidate, and needs its own SPICE reference
+for the core. ADR-0011 section 3.5 lets standard and high ship over the bar
+beside an eco that meets it; with the stage off eco still does (150.6 us
+against 154.5 us calibrated bar, 1.79 kernels against 1.76 in this run:
+host noise, not a change, as the stage is not in that path).

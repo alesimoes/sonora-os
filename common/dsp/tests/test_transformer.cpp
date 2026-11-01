@@ -206,6 +206,20 @@ int test_extremes() {
         std::printf("  square at %g of full scale: solve <= %u iterations\n", amp, st.max_iterations_seen());
         CHECK(st.max_iterations_seen() <= OutputStage::kMaxIter);
     }
+    // A finite input so large that u^4 overflows: the drive voltage, the
+    // core and the rail stay finite, and the stage works afterwards.
+    for (double big : {1e100, 1e300, -1e300, 1.7e308}) {
+        OutputStage hot = make(1.0);
+        double hin[2] = {big, -big}, hout[2];
+        for (int n = 0; n < 2000; ++n) {
+            hot.tick(hin, hout);
+            CHECK(std::isfinite(hout[0]) && std::isfinite(hout[1]));
+            CHECK(std::isfinite(hot.rail_voltage()) && hot.rail_voltage() >= 10.0);
+        }
+        hin[0] = hin[1] = 0.1;
+        for (int n = 0; n < 4800; ++n) hot.tick(hin, hout);
+        CHECK(std::isfinite(hout[0]) && std::fabs(hout[0]) > 0.01);
+    }
     OutputStage st = make(1.0);
     double in[2] = {std::nan(""), HUGE_VAL}, out[2];
     for (int n = 0; n < 100; ++n) {
