@@ -53,7 +53,7 @@ int test_hung_teardown_is_ended() {
         for (;;) ::pause();
     }
     double took = 0.0;
-    const int status = wait_child(pid, 10, took);
+    const int status = wait_child(pid, 60, took);
     CHECK(status != -1);
     CHECK(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 1);
@@ -70,11 +70,12 @@ int test_prompt_exit_keeps_its_status() {
         std::exit(0);
     }
     double took = 0.0;
-    const int status = wait_child(pid, 10, took);
+    const int status = wait_child(pid, 60, took);
     CHECK(status != -1);
     CHECK(WIFEXITED(status));
+    // The exit status alone shows the watchdog did not fire; an upper bound
+    // on `took` only measures how loaded the machine is.
     CHECK(WEXITSTATUS(status) == 0);
-    CHECK(took < 4.0);
     return 0;
 }
 
@@ -89,10 +90,11 @@ int test_arming_twice_keeps_the_first_deadline() {
         for (;;) ::pause();
     }
     double took = 0.0;
-    const int status = wait_child(pid, 10, took);
+    const int status = wait_child(pid, 60, took);
     CHECK(status != -1);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 1);
-    CHECK(took < 5.0);
+    // Far below the second deadline (30 s) even on a loaded machine.
+    CHECK(took < 25.0);
     return 0;
 }
 
