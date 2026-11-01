@@ -75,7 +75,7 @@ jobs:
           test_json test_native_sdk test_measure_time_bars
           test_dsp_filters test_dsp_oversampling test_dsp_loudness test_dsp_dynamics
           test_dsp_limiter test_dsp_fdn test_dsp_triode test_dsp_triode_generic
-          test_dsp_opto test_dsp_fet test_dsp_noise
+          test_dsp_opto test_dsp_fet test_dsp_noise test_dsp_transformer
 
       - name: Test
         env:
