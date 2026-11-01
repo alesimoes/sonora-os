@@ -104,16 +104,17 @@ void MixModel::dropRide(const std::string& why) {
 
 QString MixModel::trackMeterCaption() const { return QStringLiteral("IN"); }
 
-QString MixModel::busMeterCaption() const { return QStringLiteral("NO DATA"); }
+QString MixModel::busMeterCaption() const { return QStringLiteral("OUT"); }
 
 QString MixModel::note() const {
     // The state block carries each track's input peak and nothing after the
     // fader (state_block.h, layout 2), so that is what the meters are said
-    // to read. BACKLOG Track 1 asks for post-fader and bus peaks.
+    // to read, and the Master's pair the bus (layout 5).
     return audible_
                ? QStringLiteral("Faders, pan, mute and solo play through the monitor bus. "
-                                "Strip meters read each track's input; the engine does not "
-                                "publish post-fader or bus levels yet.")
+                                "Strip meters read each track's input, the Master's the "
+                                "monitor bus after its fader; the engine does not publish "
+                                "post-fader track levels yet.")
                : QStringLiteral("The built-in fake engine plays nothing back: the mix is kept "
                                 "with the session and changes nothing you hear. Strip meters "
                                 "read its synthetic inputs.");

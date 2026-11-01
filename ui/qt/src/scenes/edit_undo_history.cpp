@@ -14,7 +14,7 @@ const ShotRegistrar registrar{[] {
     ShotScene s;
     s.name = QStringLiteral("edit-undo-history");
     s.take = false;
-    s.apply = [](ShotContext& c) {
+    s.apply = [](ShotContext& c0) { when_open(c0, [](ShotContext& c) {
         if (c.playlist == nullptr || c.playlist->regions.size() <= 1) return;
         EditController& edit = c.session.controller();
         const auto snare = c.playlist->regions[1].id;
@@ -34,7 +34,7 @@ const ShotRegistrar registrar{[] {
         c.model.invoke(QStringLiteral("edit.undo"), -1);
         c.model.invoke(QStringLiteral("zoom.fit_session"), -1);
         c.model.invoke(QStringLiteral("window.undo_history"), -1);
-    };
+    }); };
     return s;
 }()};
 

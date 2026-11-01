@@ -1925,7 +1925,15 @@ void FakeEngine::publish() {
         tracks[i].clip_count = clips_[i];
     }
     insert_fields(tracks.data(), cfg_.tracks, tf);
-    writer_.publish(tf, tracks.data(), peaks.data(), bus_peaks_);
+    float loudest = 0.0f;
+    for (uint32_t i = 0; i < cfg_.tracks; ++i) {
+        if (!muted_[i]) loudest = std::max(loudest, peaks[i] * gain_[i]);
+    }
+    float bus[kBusPeakSides];
+    for (uint32_t side = 0; side < kBusPeakSides; ++side) {
+        bus[side] = bus_peaks_[side] >= 0.0f ? bus_peaks_[side] : loudest;
+    }
+    writer_.publish(tf, tracks.data(), peaks.data(), bus);
 }
 
 }  // namespace sonora::api::testing

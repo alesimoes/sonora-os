@@ -15,7 +15,7 @@ const ShotRegistrar registrar{[] {
     ShotScene s;
     s.name = QStringLiteral("mix-solo-safe");
     s.window = QStringLiteral("mix");
-    s.setup = [](ShotContext& c) {
+    s.apply = [](ShotContext& c0) { when_open(c0, [](ShotContext& c) {
         EditController& edit = c.session.controller();
         std::string why;
         for (const int t : {7, 17}) {
@@ -23,7 +23,7 @@ const ShotRegistrar registrar{[] {
                 std::fprintf(stderr, "sonora-ui: solo safe: %s\n", why.c_str());
         }
         if (14 < c.session.trackCount()) c.model.invoke(QStringLiteral("track.toggle_solo"), 14);
-    };
+    }); };
     return s;
 }()};
 

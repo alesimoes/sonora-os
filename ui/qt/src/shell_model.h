@@ -20,6 +20,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QVariantList>
+#include <array>
 #include <functional>
 #include <vector>
 
@@ -105,6 +106,8 @@ class ShellModel : public QObject {
 
 public:
     ShellModel(EngineAdapter& engine, KeyRouter& router, QObject* parent = nullptr);
+    // For a screenshot scene that scripts the fake engine behind it.
+    EngineAdapter& engineAdapter() { return engine_; }
 
     // Starts the tick. `hz` is the meter rate; ADR-0006 allows lowering it
     // to protect the callback, never raising the cost of a frame.
@@ -309,6 +312,9 @@ private:
     // tick would see nothing and draw a meter that lies.
     std::vector<float> peaks_;
     std::vector<bool> peak_read_;
+    // The monitor bus's two sides, read once a tick for the same reason.
+    std::array<float, 2> bus_peaks_{};
+    std::array<bool, 2> bus_peak_read_{};
     TransportSink transport_sink_;
     PluginSinks plugin_sinks_;
     api::PluginCatalog catalog_;   // kept, so taking one reuses its storage

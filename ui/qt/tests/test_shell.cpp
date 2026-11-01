@@ -143,9 +143,9 @@ int main(int argc, char** argv) {
     model.setScanCodesAreXkb(true);
 
     // --- one meter per UMC1820 input in each window, each attached to the
-    // one tick; the monitor bus's two have no source and stay "no data" ---
+    // one tick, and the monitor bus's two beside them ---
     CHECK(meters(view).size() == 2 * 18 + 2);
-    CHECK(model.attachedMeters() == 2 * 18);
+    CHECK(model.attachedMeters() == 2 * 18 + 2);
     // The Edit window shows the meters of the lanes on screen, and the tick
     // feeds only those; the Mix window shows all eighteen.
     const int on_screen = static_cast<int>(visible_meters(view).size());
@@ -169,6 +169,23 @@ int main(int argc, char** argv) {
         else if (m->channel() == 9) CHECK(b.over);
         else CHECK(b.bar_db == kSilenceDb);
     }
+
+    // --- the bus meters read the bus's sides, once a tick each ---
+    CHECK(engine.bus_peak_reads == 2);
+    engine.bus_peaks[0] = 0.5f;     // -6 dBFS on the left
+    engine.bus_peaks[1] = 0.25f;    // -12 dBFS on the right
+    model.tick();
+    CHECK(engine.bus_peak_reads == 4);
+    int bus_meters = 0;
+    for (MeterItem* m : meters(view)) {
+        if (m->busSide() < 0) continue;
+        ++bus_meters;
+        const auto& b = m->ballistics();
+        CHECK(b.has_data);
+        if (m->busSide() == 0) CHECK(b.bar_db > -6.1f && b.bar_db < -5.9f);
+        else CHECK(b.bar_db > -12.1f && b.bar_db < -11.9f);
+    }
+    CHECK(bus_meters == 2);
 
     // --- keys go through the profile, not through Qt's focus chain ---
     key(view, Qt::Key_NumberSign, Qt::ShiftModifier, false, 12);  // shift+3: arm 3

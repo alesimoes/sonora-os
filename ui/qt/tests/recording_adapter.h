@@ -69,6 +69,13 @@ public:
         peaks[i] = 0.0f;  // the reader's cursor moves on, as StateView's does
         return p;
     }
+    float take_bus_peak(uint32_t side) override {
+        ++bus_peak_reads;
+        if (side >= 2) return 0.0f;
+        const float p = bus_peaks[side];
+        bus_peaks[side] = 0.0f;
+        return p;
+    }
     bool engine_alive(uint64_t) const override { return alive; }
     std::string link_error() const override { return link_error_text; }
     uint64_t send_track_param(uint32_t track, api::ParamId param, float value,
@@ -120,6 +127,7 @@ public:
 
     std::vector<Sent> sent;
     std::vector<float> peaks;
+    float bus_peaks[2] = {0.0f, 0.0f};
     std::vector<bool> armed;
     TransportSnapshot snapshot;
     std::vector<EngineEvent> events;   // handed over at the next take_events()
@@ -127,6 +135,7 @@ public:
     bool alive = true;
     std::string link_error_text;
     int peak_reads = 0;
+    int bus_peak_reads = 0;
     DispatchResult next_result = DispatchResult::Ok;
     std::string next_message;
 

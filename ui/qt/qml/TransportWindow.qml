@@ -83,7 +83,16 @@ Rectangle {
                 color: Theme.text
                 font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
             }
+            Text {
+                objectName: "transportMisses"
+                visible: win.transport.playbackMisses > 0
+                anchors { right: transportState.left; rightMargin: Theme.space2; verticalCenter: parent.verticalCenter }
+                text: "Disk misses " + win.transport.playbackMisses
+                color: Theme.alarm
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+            }
             Rectangle {
+                id: transportState
                 objectName: "transportState"
                 anchors { right: closeButton.left; rightMargin: Theme.space2; verticalCenter: parent.verticalCenter }
                 width: 84; height: 20; radius: Theme.radiusSmall
