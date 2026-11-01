@@ -59,6 +59,7 @@
 #include "sonora/model/model.h"
 #include "sonora/model/operations.h"
 #include "sonora/plan_graph.h"
+#include "sonora/platform/wait_set.h"
 
 namespace sonora {
 
@@ -171,6 +172,13 @@ public:
     // Host processes alive, retiring and stopping ones included. For tests
     // and the log.
     uint32_t hosts() const;
+
+    // What the control thread sleeps on beside its clients (M3 on #78):
+    // each host's exit handle while it runs and, while frames wait for it,
+    // its socket for writing, whoever holds the host. The turn that wakes
+    // runs poll(), which services each (reaps the exit, sends the frames).
+    // Replaces `out`'s contents; empty when hosting is disabled.
+    void watch(std::vector<platform::WaitSet::Watch>& out) const;
 
     // What the running host of `insert` reads for `key` (empty: its bypass)
     // in its channel's last-value table: the store as the last submit

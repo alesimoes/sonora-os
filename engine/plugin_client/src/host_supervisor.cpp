@@ -49,7 +49,10 @@ std::string join(const std::vector<std::string>& v, char sep) {
 
 // ---- HostProcess
 
-HostProcess::~HostProcess() { stop(); }
+HostProcess::~HostProcess() {
+    stop();
+    if (registry_) registry_->live.erase(this);
+}
 
 bool HostProcess::running() { return child_ && child_->running(); }
 
@@ -610,6 +613,15 @@ int HostProcess::socket_handle() const { return ctl_ ? ctl_->native_handle() : -
 
 int HostProcess::exit_handle() const { return child_ ? child_->exit_handle() : -1; }
 
+void HostProcess::watch(std::vector<HostWatch>& out) {
+    if (!child_ || !child_->running()) return;
+    if (child_->exit_handle() >= 0) out.push_back({child_->exit_handle(), false});
+    // A host that broke the contract is pumped no more (pump() returns at
+    // once), so its socket would stay writable with nobody writing.
+    if (ctl_ && !ctl_closed_ && protocol_fault_.empty() && link_.wants_write())
+        out.push_back({ctl_->native_handle(), true});
+}
+
 std::string HostProcess::exit_text() {
     if (!child_) return "never started";
     if (child_->running()) return "still running";
@@ -721,6 +733,10 @@ HostSupervisor::~HostSupervisor() {
     if (!client_.detach_clock()) (void)clock_region_.release();
 }
 
+void HostSupervisor::watch(std::vector<HostWatch>& out) const {
+    for (HostProcess* h : registry_->live) h->watch(out);
+}
+
 void HostSupervisor::adopt(std::unique_ptr<HostProcess> host) {
     if (!host) return;
     host->request_stop(steady_ms());
@@ -776,6 +792,8 @@ std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::s
     }
 
     std::unique_ptr<HostProcess> host(new HostProcess());
+    host->registry_ = registry_;
+    registry_->live.insert(host.get());
     host->heartbeat_timeout_ms_ = config_.heartbeat_timeout_ms;
     host->map_ = plugin::make_param_map(spec.param_counts.data(), n);
     if (host->map_.param_slots > client_.config().store_slots) {

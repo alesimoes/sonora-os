@@ -321,6 +321,13 @@ without its inserts (a DAW 4/5 mixer feature, not a protocol mode).
   The heartbeat is checked every 50 ms; one older than 500 ms while `Ready`
   is a hang outside a plugin, and the host is killed (`SIGKILL`), which
   then follows the crash path.
+  *As built (M3 on #78):* the control thread sleeps on a
+  `common/platform` `WaitSet` (a self-pipe beside the handles, polled on
+  that thread, no new thread or lock): its clients' `notify()`, every
+  running host's pidfd and, only while frames wait for it, the host's
+  socket for `POLLOUT`. A host is listed only while its owner services it
+  on the turn after the wake, so a ready handle cannot spin the loop. The
+  50 ms turn stays for the heartbeat and the rest.
 
 **Amendment, 2026-10-13: HostControl transport and handshake** (PR #51,
 `host_control.h` wire version 1). Proposed by plugin-engineer. The

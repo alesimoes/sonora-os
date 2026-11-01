@@ -19,9 +19,9 @@
 //
 // Still open:
 //   - a host's exit is a pidfd (exit_handle()), and every wait for one
-//     sleeps on it; the control server, which has no poll set yet, still
-//     finds an exit from poll() (waitpid WNOHANG each turn) until M3 puts
-//     exit_handle() beside socket_handle() in one.
+//     sleeps on it; the control server sleeps on every host's pidfd and,
+//     while frames wait, its socket (watch(), M3 on #78), and still finds
+//     the exit itself from poll() (waitpid WNOHANG) on the turn it wakes.
 //   - GetState for the instances that carry over an edit is the control
 //     server's; a restart starts from the store and the last state the
 //     server gave (spec.states, then set_state after a FlushPluginState).
@@ -82,6 +82,24 @@ struct ChainSpec {
     std::vector<std::string> states;
     // Load's flags (kLoadReactivate).
     uint32_t load_flags = 0;
+};
+
+class HostProcess;
+
+// A handle the control thread sleeps on (M3 on #78): readable once a host
+// exits, or, `writable`, a socket that can take the next frames.
+// engine/control turns these into platform::WaitSet watches; no public
+// header of plugin_client names common/platform (CMakeLists.txt).
+struct HostWatch {
+    int handle = -1;
+    bool writable = false;
+};
+
+// Every HostProcess a supervisor spawned and that still exists, wherever it
+// is held. Shared, so neither the supervisor nor a host outliving the other
+// leaves a dangling pointer. Control thread only.
+struct HostRegistry {
+    std::set<HostProcess*> live;
 };
 
 // One running host and its channel region. Owned by a SupervisedChain.
@@ -186,6 +204,14 @@ public:
     // with no host or no pidfd, and then only running() tells.
     int exit_handle() const;
     bool wants_write() const { return link_.wants_write(); }
+    // Its entries for the control thread's WaitSet (M3 on #78): the exit
+    // handle while the process runs, and the socket, Writable, while frames
+    // wait on an open socket. Only what the owner services on the turn after
+    // a wake, or a ready handle would wake the loop again at once: running()
+    // here reaps a child that exited, so a fired pidfd is listed once, and
+    // the turn's pump() writes to the socket (or finds it closed, or the
+    // host faulted, and it is listed no more).
+    void watch(std::vector<HostWatch>& out);
     // GestureEnds a burst coalesced (M2): counted, never a kill.
     uint64_t gesture_ends_coalesced() const { return gesture_ends_coalesced_; }
 
@@ -195,6 +221,7 @@ public:
 private:
     friend class HostSupervisor;
     HostProcess() = default;
+    std::shared_ptr<HostRegistry> registry_;
     bool fault(std::string why);
     bool on_message(std::string_view m, uint64_t now_ms);
     bool hold(std::string_view m, bool unsolicited);
@@ -333,8 +360,16 @@ public:
     bool reap(uint64_t now_ms);
     std::size_t adopted() const { return adopted_.size(); }
 
+    // What the control thread sleeps on (M3 on #78): HostProcess::watch of
+    // every host this supervisor spawned that still exists, wherever it is
+    // held (bound, starting, retiring, let go, adopted). Appends to `out`.
+    void watch(std::vector<HostWatch>& out) const;
+    // How many of those exist: the registry's size, for tests.
+    std::size_t live_hosts() const { return registry_->live.size(); }
+
 private:
     SupervisorConfig config_;
+    std::shared_ptr<HostRegistry> registry_ = std::make_shared<HostRegistry>();
     std::vector<std::unique_ptr<HostProcess>> adopted_;
     PluginClient& client_;
     std::unique_ptr<platform::SharedRegion> clock_region_;
