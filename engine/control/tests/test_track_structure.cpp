@@ -358,6 +358,62 @@ int test_arm_and_input_follow_the_track() {
     return 0;
 }
 
+// ADR-0027 §3: a touch holds its document track off its lanes, so it moves
+// with that track when a reorder puts it on another engine track; the
+// engine track left behind, now another track's, is not held.
+int test_a_touch_follows_its_track() {
+    auto session = make_session(2);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, "A", 0.0f, 0));
+    CHECK_APPLY(h, track_op(102, "B", 0.0f, 1));
+    PlaybackController ctl(s);
+    CHECK(show(ctl, h.current()));
+    CHECK(ctl.settle(2.0));
+    s.tracks()[0]->set_touched(sonora::kAutoVolume, true);
+
+    CHECK_APPLY(h, (ReorderTracks{{102, 100}}));
+    CHECK(show(ctl, h.current()));
+    CHECK(settle_moved(ctl, s));
+    CHECK(s.tracks()[0]->touched() == 0);
+    CHECK(s.tracks()[1]->touched() == 1u << sonora::kAutoVolume);
+    return 0;
+}
+
+// #178 review: a ParameterChange's Release while a plan moving tracks is
+// pending names the track by its row in the new order, and is applied to
+// the engine track holding it then, not dropped: once the plan plays, no
+// track is still held.
+int test_a_release_while_moving_reaches_its_track() {
+    auto session = make_session(2);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, "A", 0.0f, 0));
+    CHECK_APPLY(h, track_op(102, "B", 0.0f, 1));
+    PlaybackController ctl(s);
+    CHECK(show(ctl, h.current()));
+    CHECK(ctl.settle(2.0));
+    ctl.touch(h.current(), 0, sonora::kAutoPan, true);
+    CHECK(s.tracks()[0]->touched() == 1u << sonora::kAutoPan);
+
+    CHECK_APPLY(h, (ReorderTracks{{102, 100}}));
+    CHECK(show(ctl, h.current()));
+    CHECK(ctl.tracks_moving());
+    // A is on row 1 of the document, still on engine track 0.
+    ctl.touch(h.current(), 1, sonora::kAutoPan, false);
+    CHECK(s.tracks()[0]->touched() == 0 && s.tracks()[1]->touched() == 0);
+    // A touch while moving goes to A's engine track too, and follows it.
+    ctl.touch(h.current(), 1, sonora::kAutoVolume, true);
+    CHECK(s.tracks()[0]->touched() == 1u << sonora::kAutoVolume);
+    CHECK(settle_moved(ctl, s));
+    CHECK(s.tracks()[0]->touched() == 0);
+    CHECK(s.tracks()[1]->touched() == 1u << sonora::kAutoVolume);
+    // Past the end of the document: nothing to hold.
+    ctl.touch(h.current(), 2, sonora::kAutoVolume, true);
+    CHECK(s.tracks()[0]->touched() == 0);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -365,6 +421,8 @@ int main() {
     if (test_arm_and_input_follow_the_track() != 0) return 1;
     if (test_atomics_wait_for_the_old_plans_last_block() != 0) return 1;
     if (test_sends_move_with_their_tracks() != 0) return 1;
+    if (test_a_touch_follows_its_track() != 0) return 1;
+    if (test_a_release_while_moving_reaches_its_track() != 0) return 1;
     std::printf("test_track_structure: ok\n");
     return 0;
 }
