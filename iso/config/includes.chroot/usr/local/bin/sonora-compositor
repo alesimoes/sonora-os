@@ -1,0 +1,15 @@
+#!/bin/sh
+# Starts labwc as the kiosk compositor (ADR-0010). The keyboard layout comes
+# from the same /etc/default/keyboard the console uses.
+#
+# Exported here rather than written to labwc's `environment` file: that file
+# would live under /usr/share, which the sonora user cannot write.
+[ -r /etc/default/keyboard ] && . /etc/default/keyboard
+[ -n "$XKBLAYOUT" ] && export XKB_DEFAULT_LAYOUT="$XKBLAYOUT"
+[ -n "$XKBVARIANT" ] && export XKB_DEFAULT_VARIANT="$XKBVARIANT"
+[ -n "$XKBMODEL" ] && export XKB_DEFAULT_MODEL="$XKBMODEL"
+# srvrkeys:none turns Ctrl+Alt+F1-F12 into plain function keys. labwc acts on
+# XF86Switch_VT_n unconditionally, and a chord that leaves the UI mid-take is a
+# control that lies.
+export XKB_DEFAULT_OPTIONS=srvrkeys:none
+exec labwc -C /usr/share/sonora/labwc

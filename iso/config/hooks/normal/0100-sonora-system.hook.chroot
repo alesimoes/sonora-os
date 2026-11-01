@@ -52,6 +52,11 @@ chmod 0755 /usr/local/bin/sonora-engine
 chmod 0755 /usr/local/bin/sonora-tui
 chmod 0755 /usr/local/bin/sonora-wait-for-audio
 chmod 0755 /usr/local/bin/sonora-smoketest
+chmod 0755 /usr/local/bin/sonora-compositor
+chmod 0755 /usr/local/bin/sonora-wait-for-display
+# sonora-ui is staged only when a UI build exists; the units are inert without
+# sonora.gui, so its absence must not fail the build.
+[ -e /usr/local/bin/sonora-ui ] && chmod 0755 /usr/local/bin/sonora-ui
 
 # The engine must exist, or the image boots into a Restart=always loop against
 # a missing file. Fail the build instead.
@@ -94,6 +99,9 @@ systemctl enable sonora-session.service
 # is inert. Without enabling it the test silently never runs, which is
 # worse than not having it.
 systemctl enable sonora-smoketest.service
+# Same for the display stack (ADR-0010): ConditionKernelCommandLine=sonora.gui
+# on the compositor and UI units; sonora-session.service carries the negation.
+systemctl enable sonora-compositor.service
 # No display manager and no login prompt on tty1: the unit owns that tty.
 systemctl disable getty@tty1.service || true
 # systemd-getty-generator creates serial-getty@<tty> for every console= on the

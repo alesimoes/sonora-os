@@ -1,0 +1,8 @@
+[Unit]
+Description=Switch to the terminal UI after the display stack failed
+ConditionKernelCommandLine=sonora.gui
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/chvt 2
+# Started only by OnFailure= of the compositor and UI units.

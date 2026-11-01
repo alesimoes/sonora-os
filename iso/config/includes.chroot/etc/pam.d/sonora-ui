@@ -1,0 +1,7 @@
+# ADR-0010 section 3: gives the compositor a logind session on seat0, so
+# libseat opens DRM and input through logind.
+# pam_limits is left out on purpose: /etc/security/limits.d/95-audio.conf
+# (rtprio 95 for the audio group) must not reach the UI.
+account  required  pam_unix.so
+session  required  pam_unix.so
+session  optional  pam_systemd.so

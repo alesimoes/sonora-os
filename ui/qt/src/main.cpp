@@ -8,6 +8,7 @@
 // The session it edits is the engine's document, replicated here
 // (ReplicaDocument behind TimelineDocument, the model seam).
 #include <QCommandLineParser>
+#include <QElapsedTimer>
 #include <QGuiApplication>
 #include <QImage>
 #include <QQmlEngine>
@@ -227,7 +228,7 @@ bool parse(QGuiApplication& app, Options& o) {
                                 QStringLiteral("Meter rate; default 60, 30 on a software rasteriser."),
                                 QStringLiteral("hz"));
     const QCommandLineOption kiosk({QStringLiteral("kiosk")},
-                                   QStringLiteral("Full screen, as under the kiosk compositor."));
+                                   QStringLiteral("As under the kiosk compositor: no fixed size; the compositor maximizes the window."));
     const QCommandLineOption capture(
         {QStringLiteral("capture-size")},
         QStringLiteral("Screenshot mode: a window of WxH pixels (under QT_SCALE_FACTOR), "
@@ -335,6 +336,11 @@ bool parse(QGuiApplication& app, Options& o) {
     return true;
 }
 
+// Exit status for "this display cannot run the interface". The unit lists it
+// in RestartPreventExitStatus=, so the failure goes to OnFailure= (tty2, the
+// terminal UI) instead of a restart loop. Keep in step with sonora-ui.service.
+constexpr int kExitUnfitDisplay = 3;
+
 struct App {
     Options opt;
     ShellModel* model = nullptr;
@@ -360,12 +366,10 @@ int show_refusal(QGuiApplication& app, const Options& opt, const QString& reason
         return 1;
     }
     QObject::connect(view.engine(), &QQmlEngine::quit, &app, &QCoreApplication::quit);
-    if (opt.kiosk) {
-        view.showFullScreen();
-    } else {
-        view.resize(1280, 720);
-        view.show();
-    }
+    // Under --kiosk the compositor's window rule maximizes us (ADR-0010 §2);
+    // asking for full screen as well would fight it.
+    if (!opt.kiosk) view.resize(1280, 720);
+    view.show();
     app.exec();
     return 1;
 }
@@ -386,9 +390,22 @@ int main(int argc, char** argv) {
     }
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("sonora-ui"));
+    // The Wayland app_id the compositor's window rule matches (ADR-0010 §2).
+    QGuiApplication::setDesktopFileName(QStringLiteral("sonora-ui"));
+    QElapsedTimer since_start;
+    since_start.start();
 
     App a;
     if (!parse(app, a.opt)) return 2;
+    // The kiosk has no fallback path inside the UI: a Qt that came up on xcb
+    // or offscreen means the compositor is not there, and retrying cannot
+    // help. The unit goes to the terminal UI instead (ADR-0010 §4).
+    if (a.opt.kiosk && app.platformName() != QLatin1String("wayland")) {
+        std::fprintf(stderr, "sonora-ui: unfit display: platform is %s, not wayland
+",
+                     qPrintable(app.platformName()));
+        return kExitUnfitDisplay;
+    }
 
     // --keymap wins; else the profile chosen in the Keys menu last time;
     // else the built-in default.
@@ -640,6 +657,15 @@ int main(int argc, char** argv) {
     view.rootObject()->setProperty("transport", QVariant::fromValue(&transport));
     if (a.opt.no_meters) model.hideMeters();
     model.routeKeysFrom(&view);
+    // One line, for the boot-time check (ADR-0010 migration, stage 1).
+    QObject::connect(&view, &QQuickWindow::frameSwapped, &view,
+                     [&since_start]() {
+                         std::fprintf(stderr, "sonora-ui: first frame after %lld ms
+",
+                                      static_cast<long long>(since_start.elapsed()));
+                         std::fflush(stderr);
+                     },
+                     Qt::SingleShotConnection);
     model.start(a.opt.meter_hz > 0 ? a.opt.meter_hz : 60);
 
     if (a.opt.capture_size.isValid()) {
@@ -648,10 +674,10 @@ int main(int argc, char** argv) {
         view.resize(capture_window_size(a.opt.capture_size,
                                         qEnvironmentVariable("QT_SCALE_FACTOR", "1").toDouble()));
         view.show();
-    } else if (a.opt.kiosk) {
-        view.showFullScreen();
     } else {
-        view.resize(1280, 720);
+        // Under --kiosk no full-screen request: the compositor's window rule
+        // for app_id sonora-ui maximizes us (ADR-0010 §2).
+        if (!a.opt.kiosk) view.resize(1280, 720);
         view.show();
     }
 
