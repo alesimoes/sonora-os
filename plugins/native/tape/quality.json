@@ -1,0 +1,16 @@
+{
+  "processor": "org.sonora.tape",
+  "class": "B",
+  "note": "bars set from the first measured run (see the PR); aliasing barred for tones to 8 kHz; cpu NOT held: the Jiles-Atherton RK4 costs 0.9 ms per block in eco, about 15x the 60 us class B bar (i7-11800H, loaded host); needs a table or cheaper integrator before it ships",
+  "reference": {"max_error": 1e-4},
+  "response": {"head_db": 0.6, "unity_db": 0.1, "eq_flat_db": 0.05, "bump_db": 0.15, "bump_far_db": 0.5},
+  "thd": {"nominal_pct": 5.0, "h2_below_h3_db": -20.0},
+  "aliasing": {"eco_dbc": -40.0, "standard_dbc": -80.0, "high_dbc": -95.0},
+  "motion": {"deviation_tolerance": 0.05},
+  "hot": {"max_abs": 3.0},
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["drive", "output", "bump", "wow", "flutter"],
+  "golden_abs": 1e-6,
+  "cpu": {"p999_us": 60.0, "max_us": 150.0, "held": []}
+}
