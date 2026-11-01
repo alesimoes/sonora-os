@@ -1040,6 +1040,7 @@ void EngineControlServer::pump_playback() {
     // pass runs here, off the audio thread, as settle() does.
     if (!session_.reader().running()) session_.reader().run_pass();
     playback_->pump();
+    publisher_->set_locating(playback_->locating());
     if (playback_->plans_published() != compensation_shown_for_) {
         compensation_shown_for_ = playback_->plans_published();
         const PlanReport& r = playback_->playing_report();

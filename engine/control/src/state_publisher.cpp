@@ -124,7 +124,10 @@ void StatePublisher::publish_once() {
     Click& click = session_.click();
     t.transport_flags = (click.on() ? api::kTransportClick : 0u) |
                         (click.count_off() ? api::kTransportCountOff : 0u) |
-                        (click.counting_off() ? api::kTransportCountingOff : 0u);
+                        (click.counting_off() ? api::kTransportCountingOff : 0u) |
+                        (locating_.load(std::memory_order_relaxed) ? api::kTransportLocating : 0u);
+    t.playback_misses = static_cast<uint32_t>(session_.playback_misses());
+    const float bus[api::kBusPeakSides] = {session_.take_bus_peak(0), session_.take_bus_peak(1)};
     if (audio_ != nullptr) {
         t.xruns = audio_->xruns();
         t.clock_steps = audio_->clock_discontinuities();
@@ -158,7 +161,7 @@ void StatePublisher::publish_once() {
                 insert_work_refused_[i * api::kInsertSlots + k].load(std::memory_order_relaxed);
         }
     }
-    writer_.publish(t, tracks_.data(), peaks_.data());
+    writer_.publish(t, tracks_.data(), peaks_.data(), bus);
     publishes_.fetch_add(1, std::memory_order_relaxed);
 }
 

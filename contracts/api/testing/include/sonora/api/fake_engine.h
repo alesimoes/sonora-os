@@ -165,9 +165,21 @@ public:
     void set_health_flags(uint32_t flags) { health_ = flags; }
     void add_xruns(uint32_t n) { xruns_ += n; }
     void add_clock_steps(uint32_t n) { clock_steps_ += n; }
+    // Layout 5: spans played as silence, as the real engine counts them.
+    void add_playback_misses(uint32_t n) { playback_misses_ += n; }
+    // A locate held back for its window, kTransportLocating, until cleared.
+    void script_locating(bool on) {
+        transport_flags_ = on ? transport_flags_ | kTransportLocating
+                              : transport_flags_ & ~uint32_t{kTransportLocating};
+    }
     // A fixed peak for a track from the next publish on, instead of the
     // synthetic signal; negative goes back to the signal.
     void script_peak(uint32_t track, float peak);
+    // The monitor bus's peak on `side` (0 left, 1 right) from the next
+    // publish on; 0 until scripted, as the fake mixes nothing.
+    void script_bus_peak(uint32_t side, float peak) {
+        if (side < kBusPeakSides) bus_peaks_[side] = peak;
+    }
     // One publish now, without waiting for poll().
     void publish();
     // While set, a take fails to write as a full disk would: the engine
@@ -380,6 +392,8 @@ private:
     // TransportFlag: the click and count-off toggles. The fake counts off
     // nothing; a take starts at once.
     uint32_t transport_flags_ = 0;
+    uint32_t playback_misses_ = 0;
+    float bus_peaks_[kBusPeakSides] = {0.0f, 0.0f};
     bool fail_takes_ = false;
     std::string save_failure_;
     bool save_as_copying_ = false;

@@ -62,6 +62,7 @@ struct Publish {
         t.buffer_frames = k;
         t.compensation_frames = k;
         t.compensation_shortfall_frames = k;
+        t.playback_misses = k;
         for (auto& tr : tracks) {
             tr.flags = k;
             tr.gain = static_cast<float>(k);
@@ -86,7 +87,7 @@ bool consistent(const TransportSnapshot& s) {
     return static_cast<uint32_t>(s.state) == k % 3 && s.playhead == uint64_t{k} * 1000 &&
            s.xruns == k && s.overruns == k && s.clock_steps == k && s.health_flags == k &&
            s.inputs_connected == k && s.buffer_frames == k && s.compensation_frames == k &&
-           s.compensation_shortfall_frames == k;
+           s.compensation_shortfall_frames == k && s.playback_misses == k;
 }
 
 // Only what the seqlock covers. The per-insert counters are words of their
@@ -693,11 +694,64 @@ void insert_slots_by_track() {
     CHECK(!v.track(0).inserts[0].present() && v.track(0).inserts[0].latency_frames == 0);
 }
 
+// Layout 5 (ADR-0009 update of 2026-11-01): "Locating…", the playback miss
+// count and the monitor bus's peaks, each side with its own cursor per
+// reader.
+void layout_5_fields() {
+    StateBlockMemory mem(1);
+    StateWriter w;
+    CHECK(w.init(mem.data(), mem.bytes(), 1, 1, 10'000'000));
+    StateView a, b;
+    std::string error;
+    CHECK(a.attach(mem.data(), mem.bytes(), error));
+    CHECK(b.attach(mem.data(), mem.bytes(), error));
+    CHECK(a.take_bus_peak(0) == 0.0f && a.take_bus_peak(1) == 0.0f);
+
+    Publish p(1);
+    p.fill(0);
+    p.t.transport_flags = kTransportLocating;
+    p.t.playback_misses = 3;
+    const float bus[2] = {0.5f, 0.25f};
+    w.publish(p.t, p.tracks.data(), p.peaks.data(), bus);
+    StateFrame f;
+    a.frame(f);
+    CHECK(!f.transport.stale);
+    CHECK((f.transport.transport_flags & kTransportLocating) != 0);
+    CHECK(f.transport.playback_misses == 3);
+    CHECK(a.transport().playback_misses == 3);
+
+    const float louder[2] = {0.75f, 0.125f};
+    w.publish(p.t, p.tracks.data(), p.peaks.data(), louder);
+    CHECK(a.take_bus_peak(0) == 0.75f);
+    CHECK(a.take_bus_peak(1) == 0.25f);
+    CHECK(a.take_bus_peak(0) == 0.0f);
+    // B's cursors are its own, and so is each side's.
+    CHECK(b.take_bus_peak(1) == 0.25f);
+    CHECK(b.take_bus_peak(0) == 0.75f);
+    // The track ring is apart from the bus's.
+    CHECK(a.take_peak(0) == 0.0f);
+
+    // A writer with no bus publishes silence, tagged, so a reader never
+    // takes an older tick's value from the slot.
+    for (uint32_t i = 0; i < kPeakSlots; ++i) w.publish(p.t, p.tracks.data(), p.peaks.data());
+    CHECK(a.take_bus_peak(0) == 0.0f && b.take_bus_peak(1) == 0.0f);
+    w.publish(p.t, p.tracks.data(), p.peaks.data(), bus);
+    CHECK(a.take_bus_peak(0) == 0.5f);
+    CHECK(a.take_bus_peak(2) == 0.0f);   // no third side, and no read past the rings
+
+    p.t.transport_flags = 0;
+    w.publish(p.t, p.tracks.data(), p.peaks.data());
+    CHECK((a.transport().transport_flags & kTransportLocating) == 0);
+    StateView none;
+    CHECK(none.take_bus_peak(0) == 0.0f);
+}
+
 }  // namespace
 
 int main() {
     attach_refusals();
     insert_slots_by_track();
+    layout_5_fields();
     blocked_writer_reads_stale();
     never_torn_unpaced();
     paced_writer_does_not_starve_a_60hz_reader();

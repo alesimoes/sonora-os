@@ -33,7 +33,9 @@ namespace sonora::api {
 // 3: InsertState::work_refused, the LV2 worker messages a plugin's host
 //   refused (ADR-0012 change G, as for non-finite output).
 // 4 (ADR-0020): StateHeader::transport_flags, the click and the count-off.
-constexpr uint32_t kStateLayoutVersion = 4;
+// 5 (ADR-0009 update of 2026-11-01): kTransportLocating, the header's
+//   playback_misses and the monitor bus's peak rings.
+constexpr uint32_t kStateLayoutVersion = 5;
 constexpr uint32_t kStateMagic = 0x534F4E53;   // "SONS"
 
 // Publish ticks a peak survives in the ring. At the fastest pace measured
@@ -75,7 +77,13 @@ enum TransportFlag : uint32_t {
     kTransportClick = 1u << 0,        // the click sounds while rolling
     kTransportCountOff = 1u << 1,     // a take started stopped counts off first
     kTransportCountingOff = 1u << 2,  // one is counting off now
+    // Layout 5: a locate waits for its window to be resident. The interface
+    // says "Locating…" once this has stood 100 ms on its own clock.
+    kTransportLocating = 1u << 3,
 };
+
+// The monitor bus's sides in StateHeader::bus_peaks: left, then right.
+constexpr uint32_t kBusPeakSides = 2;
 
 // Pro Tools' A to J: insert slots per track (ADR-0012 §2). common/model's
 // kInsertSlots is the same number; engine/control asserts that it is.
@@ -146,8 +154,9 @@ struct alignas(64) StateHeader {
     // long enough says the engine is not answering (StateView::engine_alive).
     // Also the tick the peak ring slots are tagged with.
     std::atomic<uint64_t> heartbeat;
-    // Odd while a publish is writing. Covers everything below and every
-    // TrackState field except the peaks and the insert counters.
+    // Odd while a publish is writing. Covers everything below but the bus
+    // peaks, and every TrackState field except the peaks and the insert
+    // counters.
     std::atomic<uint64_t> seq;
 
     std::atomic<uint32_t> transport_state;   // TransportState
@@ -165,6 +174,11 @@ struct alignas(64) StateHeader {
     std::atomic<uint32_t> compensation_frames;
     std::atomic<uint32_t> compensation_shortfall_frames;
     std::atomic<uint32_t> transport_flags;   // TransportFlag; layout 4
+    // Layout 5. Spans played as silence because their chunk was not
+    // resident, each an audible hole; only rises in an engine run.
+    std::atomic<uint32_t> playback_misses;
+    // Layout 5. Not under the seqlock, as a track's peaks are not.
+    PeakRing bus_peaks[kBusPeakSides];
 };
 
 // Shared memory needs atomics that never fall back to libatomic's lock
@@ -239,6 +253,7 @@ struct TransportFields {
     uint32_t compensation_frames = 0;
     uint32_t compensation_shortfall_frames = 0;
     uint32_t transport_flags = 0;
+    uint32_t playback_misses = 0;
 };
 
 struct InsertFields {
@@ -272,10 +287,12 @@ public:
 
     // One publish: the seqlock section, then the insert counters and the
     // peaks, then the heartbeat.
-    // `tracks` and `peaks` have track_count entries. Short and bounded: it
-    // never loops and never waits for a reader.
+    // `tracks` and `peaks` have track_count entries, `bus_peaks`
+    // kBusPeakSides; a null `bus_peaks` publishes silence, still tagged with
+    // the tick. Short and bounded: it never loops and never waits for a
+    // reader.
     void publish(const TransportFields& transport, const TrackFields* tracks,
-                 const float* peaks);
+                 const float* peaks, const float* bus_peaks = nullptr);
 
     // A publish that stops after opening the seqlock, for the test that a
     // reader gives up and says "stale" instead of spinning. finish_write()

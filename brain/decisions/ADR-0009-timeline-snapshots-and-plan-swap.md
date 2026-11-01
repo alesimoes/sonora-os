@@ -537,7 +537,8 @@ take: closed takes are on disk and absent from every replica.
      ruler) needs a new catalog id (`transport.locate`, frame in
      `argument`), and "Locating…", bus peaks and playback misses in the
      state block need layout version 2. Both are contract PRs of their own
-     after the port, not part of it.
+     after the port, not part of it. (Both landed: `transport.locate` in
+     #123, the state block as layout 5 in the update of 2026-11-01.)
 5. **The headless `--record` path uses the same server.** With `--place`,
    or whenever the session has playback, `run_headless` builds the
    `EngineControlServer` without a socket and drives it through
@@ -1163,6 +1164,54 @@ compounds. That now needs 130 tracks' files. While the limit is over twice
 the test's 40 tracks, the test instead checks that a 40-track take lands
 as one compound. The split path in `add_closed_take()` is kept, but no
 test exercises it now.
+
+## Update, 2026-11-01: state block layout 5, "Locating…", bus peaks, misses
+
+Decided by: rt-engineer, on the recommended default. Lands the second half
+of the playback update's item 4, "Not in this port". `transport.locate`
+with the frame in `argument` merged in #123. That update wrote "layout
+version 2". Since then ADR-0012 and ADR-0020 took 2, 3 and 4, so this is
+`kStateLayoutVersion` **5**.
+
+**Decision.** The state block (`contracts/api/state_block.h`) gains three
+things. All of them are written by the publisher thread, and none by the
+audio thread.
+
+1. **`kTransportLocating`** (`TransportFlag` bit 3). It is set while
+   `PlaybackController::locating()` holds a locate back because its window
+   is not yet resident. The control thread hands the flag to the publisher
+   after every `pump()` (`StatePublisher::set_locating`). The flag says
+   that a locate is waiting. When to say so is up to the interface. §4.4
+   says the interface shows "Locating…" once the flag has stood for
+   100 ms, timed on its own clock, as `engine_alive()` is. A locate that
+   resolves inside the first pump never sets it.
+2. **`StateHeader::playback_misses`**, under the seqlock. It holds
+   `Session::playback_misses()`, truncated to 32 bits like `xruns`. It
+   counts the spans played as silence because their chunk was not
+   resident, and it only rises during an engine run. Each one is an
+   audible hole. An interface shows the count beside xruns, and shows it
+   red when it rises.
+3. **`StateHeader::bus_peaks[2]`**, the monitor bus's left and right
+   peaks. Each is a `PeakRing` with the same slot format and tick tag as a
+   track's, outside the seqlock for the same reason. The publisher becomes
+   the only caller of `Session::take_bus_peak()`, as it already is of
+   `Track::take_peak()`. `StateView::take_bus_peak(side)` keeps a cursor
+   per reader for each side, so two interfaces metering the bus do not
+   take each other's peaks.
+
+`StateWriter::publish()` gains a trailing `const float* bus_peaks` (two
+entries). A null pointer publishes silence, so a writer with no bus, such
+as `FakeEngine` today, still tags every slot.
+
+**No `kProtocolVersion` bump.** No message changes. `Hello` already
+carries `state_layout_version`, and `wire::version_mismatch()` already
+refuses a client of another layout at connect, naming both numbers.
+
+**Consequences.** `state_header_bytes()` grows by two 512-byte rings. The
+block is still sized once, when the session is created. A publish stores
+two more slots and one more word inside the section. `sonora-tui` shows the
+bus meter, the miss count and "Locating…". The Qt bus meter is its own
+ui-engineer item, with screenshots.
 
 ## Alternatives rejected
 

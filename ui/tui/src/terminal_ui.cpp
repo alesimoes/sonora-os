@@ -226,27 +226,49 @@ std::string TerminalView::render(uint64_t now_ns) {
                                                                   : "STOP";
     const double secs = h.sample_rate > 0 ? static_cast<double>(t.playhead) / h.sample_rate : 0.0;
     const int whole = static_cast<int>(secs);
-    append(out, "  SONORA  %s  %02d:%02d:%06.3f   take %d%s\n", label, whole / 3600,
-           (whole / 60) % 60, secs - 60.0 * (whole / 60), t.take, t.stale ? "   (stale)" : "");
-    append(out, "  %u Hz / %u frames   xruns %u   clock steps %u   overruns %u\n\n",
-           h.sample_rate, t.buffer_frames, t.xruns, t.clock_steps, t.overruns);
+    // ADR-0009 §4.4: only a locate held back past 100 ms is said, so the
+    // word does not flash on every click of the ruler.
+    const bool held = !t.stale && (t.transport_flags & api::kTransportLocating) != 0;
+    if (!held) {
+        locating_since_ns_ = 0;
+    } else if (locating_since_ns_ == 0) {
+        locating_since_ns_ = now_ns;
+    }
+    const bool locating = held && now_ns >= locating_since_ns_ &&
+                          now_ns - locating_since_ns_ >= kLocatingShownAfterNs;
+    append(out, "  SONORA  %s  %02d:%02d:%06.3f   take %d%s%s\n", label, whole / 3600,
+           (whole / 60) % 60, secs - 60.0 * (whole / 60), t.take,
+           locating ? "   Locating\xE2\x80\xA6" : "", t.stale ? "   (stale)" : "");
+    // Each miss is an audible hole in playback: red once there is one.
+    append(out, "  %u Hz / %u frames   xruns %u   clock steps %u   overruns %u   %smisses %u%s\n\n",
+           h.sample_rate, t.buffer_frames, t.xruns, t.clock_steps, t.overruns,
+           t.playback_misses > 0 ? "\033[31m" : "", t.playback_misses,
+           t.playback_misses > 0 ? "\033[0m" : "");
 
+    const auto meter = [&out, alive](float peak) {
+        if (!alive) {
+            // A control that lies is worse than one that is missing
+            // (ADR-0007 §3): no frozen bar from before the engine stopped.
+            out += "  no data\n";
+            return;
+        }
+        const int bars = static_cast<int>(peak * 40.0f);
+        for (int b = 0; b < 40; ++b) out.push_back(b < bars ? '=' : '.');
+        append(out, " %5.1f dB\n",
+               peak > 0.0f ? 20.0 * std::log10(static_cast<double>(peak)) : -99.9);
+    };
     for (uint32_t i = 0; i < h.track_count; ++i) {
         api::TrackSnapshot s;
         if (i < frame_.tracks.size()) s = frame_.tracks[i];
         const float peak = v.take_peak(i);
         append(out, "  %-10s %s %s  ", h.track_names[i].c_str(),
                s.armed() ? "\033[31m[R]\033[0m" : "[ ]", s.muted() ? "[M]" : "[ ]");
-        if (!alive) {
-            // A control that lies is worse than one that is missing
-            // (ADR-0007 §3): no frozen bar from before the engine stopped.
-            out += "  no data\n";
-            continue;
-        }
-        const int bars = static_cast<int>(peak * 40.0f);
-        for (int b = 0; b < 40; ++b) out.push_back(b < bars ? '=' : '.');
-        append(out, " %5.1f dB\n",
-               peak > 0.0f ? 20.0 * std::log10(static_cast<double>(peak)) : -99.9);
+        meter(peak);
+    }
+    for (uint32_t side = 0; side < api::kBusPeakSides; ++side) {
+        const float peak = v.take_bus_peak(side);
+        append(out, "  %-10s          ", side == 0 ? "Bus L" : "Bus R");
+        meter(peak);
     }
     out.push_back('\n');
     for (const std::string& l : help_) append(out, "  %s\n", l.c_str());
