@@ -23,6 +23,25 @@ if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
   export MSYS2_ARG_CONV_EXCL='*'
 fi
 
+# BUILD_ID for /etc/os-release (the plugin catalog cache keys on it, ADR-0012).
+# Commit date plus short hash, not the wall clock: the same commit must give
+# the same id, or every rebuild would discard every operator's cache. A dirty
+# tree gets a suffix so an uncommitted experiment never shares a commit's id.
+stamp_build_id() {
+  local id date sha
+  if date="$(git -C "$ROOT" log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null)" &&
+     sha="$(git -C "$ROOT" rev-parse --short=9 HEAD 2>/dev/null)"; then
+    id="$date.$sha"
+    [[ -z "$(git -C "$ROOT" status --porcelain -- iso audio-stack engine 2>/dev/null)" ]] || id="$id-dirty"
+  else
+    id="unstamped"
+  fi
+  mkdir -p "$ROOT/iso/config/includes.chroot/usr/share/sonora"
+  printf '%s\n' "$id" >"$ROOT/iso/config/includes.chroot/usr/share/sonora/build-id"
+  echo "BUILD_ID=$id"
+}
+stamp_build_id
+
 if [[ "$(uname -s)" == "Linux" && "$(id -u)" == "0" ]] && command -v lb >/dev/null; then
   cd "$ROOT/iso"
   lb clean

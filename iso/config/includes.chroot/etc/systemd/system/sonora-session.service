@@ -6,6 +6,9 @@ Description=Sonora recording session
 After=sound.target systemd-user-sessions.service
 Wants=sound.target
 Conflicts=getty@tty1.service
+# The default start limit (5 in 10 s) would stop a crash-looping engine for
+# good and leave tty1 blank with no way back. Never give up.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

@@ -30,6 +30,8 @@ compile_commands.json
 # build artefact, not source.
 iso/config/includes.chroot/usr/local/bin/sonora-engine
 iso/config/includes.chroot/usr/local/bin/sonora-tui
+# Stamped per build by tools/build-iso.sh; becomes BUILD_ID in /etc/os-release.
+iso/config/includes.chroot/usr/share/sonora/build-id
 
 # `lb config` writes its own defaults into iso/config on every run: its stock
 # hooks, package lists and a dozen stage directories. Only the files we author

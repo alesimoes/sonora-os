@@ -69,6 +69,24 @@ if [ ! -x /usr/local/bin/sonora-smoketest ]; then
   exit 1
 fi
 
+# --- build id ---
+# The plugin catalog cache's header carries BUILD_ID (ADR-0012), so a new
+# image discards stale caches once. /etc/os-release is a symlink to
+# /usr/lib/os-release; write the target so the symlink survives.
+BUILD_ID_FILE=/usr/share/sonora/build-id
+if [ -s "$BUILD_ID_FILE" ]; then
+  BUILD_ID="$(head -n 1 "$BUILD_ID_FILE" | tr -cd 'A-Za-z0-9._-')"
+else
+  BUILD_ID=unstamped
+fi
+OSREL="$(readlink -f /etc/os-release)"
+sed -i '/^BUILD_ID=/d' "$OSREL"
+printf 'BUILD_ID=%s\n' "$BUILD_ID" >>"$OSREL"
+if ! grep -qx "BUILD_ID=$BUILD_ID" /etc/os-release; then
+  echo "E: BUILD_ID did not land in /etc/os-release." >&2
+  exit 1
+fi
+
 # --- services ---
 systemctl enable sonora-session.service
 # Safe to enable unconditionally: the unit carries
