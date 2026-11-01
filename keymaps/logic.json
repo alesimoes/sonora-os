@@ -60,6 +60,11 @@
     "cmd+t": "edit.separate_at_selection",
     "cmd+j": "edit.heal_separation",
     "cmd+r": "edit.repeat",
+    "ctrl+alt+t": {
+      "command": "automation.thin",
+      "origin": "sonora",
+      "comment": "Ours. Logic thins by menu (Thin Data); no key is documented. Thins the selected lane range."
+    },
     "delete": {
       "command": "edit.clear",
       "comment": "Not in any key-command table; Apple's guide says it in prose: \"Choose Edit > Delete (or press Delete)\". Edit > Delete removes the selection without the clipboard, which is Clear."

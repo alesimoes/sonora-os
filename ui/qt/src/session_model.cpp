@@ -134,6 +134,8 @@ void SessionModel::installCommands(CommandRegistry& local) {
         return true;
     });
     simple("edit.clear", [this](const CommandContext&, Why& why) { return ctl_.clear(why); });
+    simple("automation.thin",
+           [this](const CommandContext&, Why& why) { return ctl_.thin_automation(why); });
     simple("edit.cut", [this](const CommandContext&, Why& why) { return ctl_.cut(why); });
     simple("edit.copy", [this](const CommandContext&, Why& why) { return ctl_.copy(why); });
     // A paste that left lanes out still ran; what it left out goes on the

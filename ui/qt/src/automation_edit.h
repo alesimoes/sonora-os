@@ -99,6 +99,12 @@ bool copy_lane_range(const model::AutomationLane* lane, model::Frames a, model::
 bool clear_range_op(model::Id track, const model::AutomationLane& lane, model::Frames a,
                     model::Frames b, model::EditAutomation& out);
 
+// The breakpoints inside [a, b) thinned the way a Pencil stroke is, steps
+// kept. False when nothing would go (fewer than three points, or all needed):
+// no edit, no undo step.
+bool thin_range_op(model::Id track, const model::AutomationLane& lane, model::Frames a,
+                   model::Frames b, model::EditAutomation& out);
+
 // `clip` laid over [at, at + clip.length).
 bool paste_op(model::Id track, const AutomationClip& clip, model::Frames at,
               model::EditAutomation& out);
