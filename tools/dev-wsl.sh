@@ -200,12 +200,84 @@ node_ports() {  # node, -o|-i: its ports, monitor ports excluded
   pw-link "$2" 2>/dev/null | grep "^$1:" | grep -v ":monitor_" || true
 }
 
+have_bus() {
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -f "$STATE/dbus.env" ]]; then
+    # shellcheck disable=SC1091
+    . "$STATE/dbus.env"
+  fi
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    # WirePlumber needs a session bus; WSL without systemd has none.
+    eval "$(dbus-launch --sh-syntax)"
+    echo "export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'" >"$STATE/dbus.env"
+  fi
+}
+
+start_wireplumber() {
+  have_bus
+  setsid wireplumber >>"$STATE/wireplumber.log" 2>&1 < /dev/null &
+  echo $! >"$STATE/wireplumber.pid"
+  sleep 0.5
+}
+
+ensure_wireplumber() {
+  pgrep -x wireplumber >/dev/null && return 0
+  say "WirePlumber is not running; starting it"
+  start_wireplumber
+}
+
+# The pipewire socket must answer before WirePlumber starts, or it exits with
+# "Failed to connect to PipeWire".
+start_cold() {
+  say "starting PipeWire and WirePlumber (logs in $STATE)"
+  : >"$STATE/pipewire.log"  # the tunnel's overrun lines can reach hundreds of MB
+  : >"$STATE/wireplumber.log"
+  have_bus
+  setsid pipewire >"$STATE/pipewire.log" 2>&1 < /dev/null &
+  echo $! >"$STATE/pipewire.pid"
+  wait_for 10 pw_up || die "PipeWire never answered; see $STATE/pipewire.log"
+  start_wireplumber
+}
+
+# Only this distro's pipewire and wireplumber: the pids this script saved,
+# then a pkill fallback.
+kill_ours() {
+  local f p
+  for f in "$STATE/wireplumber.pid" "$STATE/pipewire.pid"; do
+    if [[ -f $f ]]; then
+      p="$(cat "$f")"
+      kill -TERM "$p" 2>/dev/null || true
+      rm -f "$f"
+    fi
+  done
+  pkill -TERM -x wireplumber 2>/dev/null || true
+  pkill -TERM -x pipewire 2>/dev/null || true
+  sleep 1
+  pkill -KILL -x wireplumber 2>/dev/null || true
+  pkill -KILL -x pipewire 2>/dev/null || true
+  sleep 0.3
+}
+
+speakers_up() { pw-link -i 2>/dev/null | grep -q "^$SPEAKERS:"; }
+
+# WSLg's PulseServer restarts now and then; the tunnel does not reconnect.
+tunnel_dead() {
+  tail -c 300000 "$STATE/pipewire.log" 2>/dev/null | grep -v overrun | tail -n 5 |
+    grep -qi 'connection failure\|connection terminated'
+}
+
+log_tails() {
+  local l
+  for l in pipewire wireplumber; do
+    echo "--- last lines of $STATE/$l.log (overrun lines removed):" >&2
+    grep -v overrun "$STATE/$l.log" 2>/dev/null | tail -n 12 >&2 || true
+  done
+}
+
 do_audio() {
   check_host
   check_wslg
   runtime_dir
   write_pipewire_config
-  local ours="$STATE/pipewire.pid"
   if command -v systemctl >/dev/null && systemctl --user is-active -q pipewire 2>/dev/null; then
     # systemd is enabled in this distro and runs PipeWire per user. Restart
     # it once, so the drop-ins written above are read.
@@ -214,25 +286,30 @@ do_audio() {
       systemctl --user restart pipewire wireplumber
       touch "$STATE/systemd-restarted"
     fi
-  elif pw_up; then
-    say "PipeWire is already running; reusing it"
   else
-    say "starting PipeWire and WirePlumber (logs in $STATE)"
-    if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
-      # WirePlumber needs a session bus; WSL without systemd has none.
-      eval "$(dbus-launch --sh-syntax)"
-      echo "export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'" >"$STATE/dbus.env"
+    if pw_up; then
+      say "PipeWire is already running; reusing it"
+      ensure_wireplumber
+    else
+      start_cold
     fi
-    setsid pipewire >"$STATE/pipewire.log" 2>&1 < /dev/null &
-    echo $! >"$ours"
-    setsid wireplumber >"$STATE/wireplumber.log" 2>&1 < /dev/null &
-    echo $! >"$STATE/wireplumber.pid"
+    if speakers_up && tunnel_dead; then
+      say "the WSLg tunnel lost its connection; restarting PipeWire"
+      kill_ours
+      start_cold
+    fi
+    if ! wait_for 10 speakers_up; then
+      ls /usr/lib/*/pipewire-0.3/libpipewire-module-pulse-tunnel.so >/dev/null 2>&1 ||
+        die "PipeWire's pulse-tunnel module is not installed (libpipewire-0.3-modules)"
+      say "the $SPEAKERS node did not appear; restarting PipeWire once"
+      kill_ours
+      start_cold
+    fi
   fi
   wait_for 10 pw_up || die "PipeWire never answered; see $STATE/pipewire.log"
-  if ! wait_for 10 bash -c "pw-link -i 2>/dev/null | grep -q '^$SPEAKERS:'"; then
-    ls /usr/lib/*/pipewire-0.3/libpipewire-module-pulse-tunnel.so >/dev/null 2>&1 ||
-      die "PipeWire's pulse-tunnel module is not installed (libpipewire-0.3-modules)"
-    die "the $SPEAKERS node never appeared; see $STATE/pipewire.log"
+  if ! wait_for 10 speakers_up; then
+    log_tails
+    die "the $SPEAKERS node never appeared (even after a restart); logs above"
   fi
   say "PipeWire up; speakers: $(node_ports "$SPEAKERS" -i | tr '\n' ' ')"
   if wait_for 5 bash -c "pw-link -o 2>/dev/null | grep -q '^$MIC:'"; then
