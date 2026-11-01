@@ -63,6 +63,8 @@ class TransportModel : public QObject {
     Q_PROPERTY(QString stateText READ stateText NOTIFY stateChanged)
     Q_PROPERTY(bool rolling READ rolling NOTIFY stateChanged)
     Q_PROPERTY(bool recording READ recording NOTIFY stateChanged)
+    // Record armed and waiting for Play (Pro Tools' record-ready).
+    Q_PROPERTY(bool recordReady READ recordReady NOTIFY stateChanged)
     // A locate the engine holds back for its window, once it has stood
     // 100 ms on this side's clock (ADR-0009, update of 2026-11-01); and the
     // playback blocks it did not have ready, which only rise.
@@ -118,6 +120,7 @@ public:
     QString stateText() const { return state_text_; }
     bool rolling() const { return rolling_; }
     bool recording() const { return recording_; }
+    bool recordReady() const { return record_ready_; }
     bool alive() const { return alive_; }
     bool locating() const { return locating_; }
     int playbackMisses() const { return static_cast<int>(playback_misses_); }
@@ -177,6 +180,7 @@ private:
     bool open_ = false;
     bool rolling_ = false;
     bool recording_ = false;
+    bool record_ready_ = false;
     bool alive_ = false;
     bool click_ = false;
     bool count_off_ = false;
