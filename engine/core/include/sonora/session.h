@@ -67,6 +67,10 @@ struct PlaybackConfig {
     // ClientConfig::max_stores. Sizes the store-to-node index the audio
     // thread builds when it adopts a plan (#68 RT audit N1).
     uint32_t max_param_stores = 256;
+    // Plugin parameter lanes a plan may carry, over every chain (ADR-0027
+    // §5). Sizes what one callback can hand the chains beside the posted
+    // changes; a plan with more is refused.
+    uint32_t max_plugin_lanes = 1024;
     // Punched takes started (start_punch()) faster than the audio thread
     // drains them: one more is refused, never waited on.
     uint32_t punch_capacity = 8;
@@ -810,10 +814,22 @@ private:
     std::unique_ptr<uint32_t[]> order_first_;   // per ordinal: first event in node_params_
     std::unique_ptr<uint32_t[]> order_count_;   // per ordinal: events this callback
     std::unique_ptr<uint32_t[]> order_pos_;     // per ordinal: scatter cursor
+    std::unique_ptr<uint32_t[]> order_node_;    // per ordinal: its node
+    std::unique_ptr<uint32_t[]> order_lanes_;   // per ordinal: its node's plugin lanes
     uint32_t order_chains_ = 0;                 // ordinals in the adopted plan
     uint32_t max_order_ = 0;                    // the most a plan can have: tracks
     void adopt_param_order(const PlaybackPlan& plan) noexcept SONORA_RT;
     void gather_params() noexcept SONORA_RT;
+    // Plugin parameter lanes (ADR-0027 §5), after gather_params() and once
+    // the callback's first frame is known: each lane a runnable node plays
+    // is evaluated there and appended to the node's changes when it moved,
+    // so it lands after what the control thread posted. Per plan lane, the
+    // value last handed over and whether there was one; cleared at
+    // adoption, since a new plan can name a new host.
+    void gather_lanes(const PlaybackPlan& plan, uint64_t frame) noexcept SONORA_RT;
+    uint32_t max_plugin_lanes_ = 0;
+    std::unique_ptr<float[]> lane_sent_;
+    std::unique_ptr<uint8_t[]> lane_has_sent_;
 
     // Punch ranges, posted by begin_take() before the take is published;
     // drained by the audio thread at block start into punch_table_.

@@ -95,6 +95,19 @@ struct PlanAutoPoint {
     float value = 0.0f;
 };
 
+// A plugin parameter's lane (ADR-0027 §5), listed on its chain's
+// InsertChain node. `instance` and `param` name it as ParamEvent does (the
+// dense index the host's scan built, or plugin::kBypassParam); its `count`
+// points, never 0, are at `first` in PlaybackPlan::auto_points, values
+// format-native (ADR-0012 §5.2). The builder resolves ADR-0012's stable
+// parameter key to the dense index, so the audio thread never sees a key.
+struct PlanPluginLane {
+    uint32_t instance = 0;
+    uint32_t param = 0;
+    uint32_t first = 0;
+    uint32_t count = 0;
+};
+
 struct PlanTrack {
     uint32_t engine_track = 0;   // index into Session::tracks()
     uint32_t first_segment = 0;  // sorted by start, and by end
@@ -127,6 +140,10 @@ struct PlanNode {
     // The chain's checked latency, IPC block included, as read at build.
     // The audio thread never recomputes alignment from it.
     uint32_t latency_frames = 0;
+    // InsertChain only: its lanes, at first_plugin_lane in
+    // PlaybackPlan::plugin_lanes; any other node has none.
+    uint32_t first_plugin_lane = 0;
+    uint32_t plugin_lane_count = 0;
     uint16_t channels = 2;
     // The model track id, for the control thread; the audio thread never
     // reads it.
@@ -205,6 +222,7 @@ struct PlanSizes {
     uint32_t track_mix = 0;   // engine tracks, or 0 for a plan that carries no mix
     uint32_t send_mix = 0;    // engine tracks x kStripSendSlots, or 0
     uint32_t auto_points = 0;
+    uint32_t plugin_lanes = 0;
 };
 
 struct PlaybackPlan {
@@ -261,6 +279,10 @@ struct PlaybackPlan {
     // Every track's automation lanes, each sorted by `at` (ADR-0027 §2).
     PlanAutoPoint* auto_points = nullptr;
     uint32_t auto_point_count = 0;
+    // Every chain's plugin parameter lanes, grouped by node (ADR-0027 §5);
+    // their points are in auto_points with the mix lanes'.
+    PlanPluginLane* plugin_lanes = nullptr;
+    uint32_t plugin_lane_count = 0;
 };
 
 // Automation is evaluated at timeline frames that are multiples of this and
