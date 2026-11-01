@@ -4,8 +4,14 @@
   "bindings": {
     "space": "transport.toggle_play",
     "shift+space": "transport.play_half_speed",
-    "ctrl+space": "transport.record",
-    "f12": "transport.record",
+    "ctrl+space": {
+      "command": "transport.play",
+      "comment": "Command+Space. Pro Tools' Record button only makes the transport record-ready, and the take starts on Play: Space, this key or the Play button. Ready or not, this key plays, so it never stops a take (ADR-0009 update of 2026-11-01, record-ready)."
+    },
+    "f12": {
+      "command": "transport.record_ready",
+      "comment": "Record: the transport goes record-ready, with Record blinking, and Play starts the take; Stop takes it back. Logic's R starts at once, which is transport.record."
+    },
     "return": "transport.return_to_zero",
     "alt+return": {
       "command": "transport.go_to_end",
@@ -15,8 +21,8 @@
     "numpad_1": "transport.rewind",
     "numpad_2": "transport.fast_forward",
     "numpad_3": {
-      "command": "transport.record",
-      "comment": "Avid's own guide disagrees with itself: the Transport keypad table calls keypad 3 Record Enable, the Recording table lists it under Start record. This follows the second."
+      "command": "transport.record_ready",
+      "comment": "Avid's own guide disagrees with itself: the Transport keypad table calls keypad 3 Record Enable, the Recording table lists it under Start record. As F12, it makes the transport record-ready, and Play starts the take."
     },
     "numpad_4": "transport.toggle_loop",
     "ctrl+shift+l": "transport.toggle_loop",

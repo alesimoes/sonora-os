@@ -401,7 +401,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                      post_event(e);
                                  }
                                  return false;
-                             });
+                             },
+                             &record_ready_);
     if (!opts_.plugin_host.empty()) {
         // For the engine process's life (amendment of 2026-10-19, item 3):
         // its catalog outlives a backend activation.
@@ -1371,6 +1372,9 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
     }
     *document_ = std::move(next);
     drop_pass();
+    // Per-session: the opened session is not record-ready.
+    record_ready_ = false;
+    publisher_->set_record_ready(false);
     // What the autosave is named after and compared with; a folder or a new
     // session has no file until its first Save.
     session_file_ = opened_file;
@@ -2338,14 +2342,23 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         // impulses (#152 N2). Before anything else, so the refusal changes
         // nothing, a waiting play included. FakeEngine's start() says the
         // same.
-        if (starts_a_take(r.command) && session_.latency_probe().running()) {
+        // Record-ready, Play is the take (ADR-0009 update of 2026-11-01,
+        // record-ready): refused as a Record is, never held for plug-ins,
+        // and answered from the gate.
+        const bool takes =
+            starts_a_take(r.command) ||
+            (record_ready_ &&
+             (r.command == "transport.play" || r.command == "transport.toggle_play") &&
+             session_.transport().state() == TransportState::Stopped &&
+             !playback_->play_requested() && !playback_->record_requested());
+        if (takes && session_.latency_probe().running()) {
             reply(from, r.seq, DispatchResult::Failed, kMeasuringRefusal);
             return;
         }
         // A Save As copy is not paced by checkpoints (exFAT has no hard
         // links, so it may copy every take), and the take would land in the
         // folder being left (#164 review). FakeEngine's start() says the same.
-        if (starts_a_take(r.command) && save_as_in_flight_) {
+        if (takes && save_as_in_flight_) {
             reply(from, r.seq, DispatchResult::Failed, kSaveAsRefusal);
             return;
         }
@@ -2353,7 +2366,8 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         // the bound (the owner's decision of 2026-10-18); a second press, a
         // stop or a take withdraws it. Record never waits: capture is
         // pre-insert.
-        const bool would_play = (r.command == "transport.play" || r.command == "transport.toggle_play") &&
+        const bool would_play = !takes &&
+                                (r.command == "transport.play" || r.command == "transport.toggle_play") &&
                                 session_.transport().state() == TransportState::Stopped &&
                                 !playback_->play_requested() && !playback_->record_requested();
         if (!held_plays_.empty()) {
@@ -2371,6 +2385,12 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                 return;
             }
             if (r.command == "transport.stop" || starts_a_take(r.command)) release_plays(true);
+            // Ready, the waiting play would become a take nobody asked for.
+            if (r.command == "transport.record_ready" && !held_plays_.empty()) {
+                reply(from, r.seq, DispatchResult::Failed,
+                      "a play is waiting for its plug-ins: stop first, then press Record");
+                return;
+            }
         }
         if (would_play && plugins_loading()) {
             held_plays_.push_back({from, r.seq, r.command, ctx});
@@ -2397,6 +2417,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         std::string why;
         const DispatchResult d = registry_.dispatch(r.command, ctx, why);
         publisher_->set_take(take_);
+        publisher_->set_record_ready(record_ready_);
         // A stop just dispatched closed a take: placed now, so the reply
         // follows its RecordTake updates. Placement comes from the disk
         // thread's report of each file, not from arming.
@@ -2404,8 +2425,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         if (d == DispatchResult::Ok && changes_arming(r.command)) {
             playback_->apply_monitoring(document_->current());
         }
-        if (d == DispatchResult::Ok && starts_a_take(r.command) &&
-            playback_->record_requested()) {
+        if (d == DispatchResult::Ok && takes && playback_->record_requested()) {
             held_records_.push_back({from, r.seq});
         } else {
             reply(from, r.seq, d, why);

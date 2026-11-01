@@ -185,6 +185,32 @@ int test_bus_meters_misses_and_locating() {
     return 0;
 }
 
+// Record-ready (ADR-0009 update of 2026-11-01): the screen says it,
+// blinking, until Play starts the take.
+int test_record_ready_is_shown() {
+    Rig r;
+    CHECK(r.connect());
+    const auto send = [&r](const char* id, int32_t target) {
+        sonora::api::CommandRequest q;
+        q.command = id;
+        q.target = target;
+        r.engine.send(q);
+    };
+    CHECK(r.frame().find("REC READY") == std::string::npos);
+    send("track.toggle_arm", 0);
+    send("transport.record_ready", -1);
+    const std::string on = r.frame();
+    const std::string next = r.frame();
+    CHECK(mentions(on + next, "REC READY"));
+    CHECK(mentions(on + next, "\033[31mREC READY\033[0m"));
+    CHECK(mentions(on, "STOP"));
+    send("transport.play", -1);
+    const std::string rolling = r.frame();
+    CHECK(rolling.find("REC READY") == std::string::npos);
+    CHECK(mentions(rolling, "REC "));
+    return 0;
+}
+
 int test_backend_failure_ends_the_interface() {
     Rig r;
     CHECK(r.connect());
@@ -208,6 +234,7 @@ int main() {
     failures += test_engine_events_and_death();
     failures += test_backend_failure_ends_the_interface();
     failures += test_bus_meters_misses_and_locating();
+    failures += test_record_ready_is_shown();
     if (failures != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failures);
         return 1;

@@ -300,7 +300,7 @@ int test_switch() {
     router.local().install("app.quit", [](const CommandContext&) { return true; });
     router.prepare(qt_device_chords(true));
     router.setCommandsFocus(false);
-    CHECK(router.route(chord("f12")).command == "transport.record");
+    CHECK(router.route(chord("f12")).command == "transport.record_ready");
 
     // To Logic: R records, F12 is nobody's, and the focus is the operator's.
     std::vector<std::string> notices = router.setMap(load("logic.json"));

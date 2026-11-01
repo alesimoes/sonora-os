@@ -74,6 +74,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"transport.stop", CommandTarget::None, "Stop the transport"},
         {"transport.toggle_play", CommandTarget::None, "Play, or stop if rolling", true},
         {"transport.record", CommandTarget::None, "Start recording"},
+        // Pro Tools' Record button: the transport goes record-ready and Play
+        // starts the take (ADR-0009 update of 2026-11-01, record-ready).
+        {"transport.record_ready", CommandTarget::None,
+         "Record-ready on or off; Play then starts the take"},
         {"transport.toggle_record", CommandTarget::None,
          "Start recording, or stop and close the take if recording"},
         {"transport.punch", CommandTarget::None,

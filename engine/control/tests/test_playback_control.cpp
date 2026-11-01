@@ -2141,7 +2141,10 @@ int test_report_shows_the_planned_latency() {
 // pre-roll and records from there, as far as the handle reaches; the take
 // punches out past B + H, and the transport stops at B plus the post-roll,
 // at the sample.
-int test_punch_pre_and_post_roll() {
+// With `ready`, the same take from Pro Tools' record-ready and then Play
+// with a selection as its argument: the take is the punch range's, from its
+// pre-roll, not the selection's (ADR-0009 update of 2026-11-01).
+int test_punch_pre_and_post_roll(bool ready) {
     auto session = make_session(2);
     Session& s = *session;
     CHECK(write_source(1, 40 * kChunk));
@@ -2158,10 +2161,12 @@ int test_punch_pre_and_post_roll() {
     sonora::CommandRegistry reg;
     int take = 1;
     bool quit = false;
+    bool record_ready = false;
     sonora::install_session_commands(reg, s, take, quit, nullptr, &ctl,
                                      [&h](sonora::PunchRange& range) {
                                          return sonora::document_punch(h.current(), range);
-                                     });
+                                     },
+                                     nullptr, nullptr, &record_ready);
     s.tracks()[1]->set_rec_armed(true);
     // Drained on this thread after every block: the take is a second long,
     // ten times the capture ring, and the blocks run faster than real time.
@@ -2169,7 +2174,19 @@ int test_punch_pre_and_post_roll() {
     Out o;
     s.transport().set_playhead(5000);
 
-    CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+    if (ready) {
+        CHECK(reg.dispatch("transport.record_ready") == DispatchResult::Ok);
+        CHECK(record_ready);
+        CHECK(!ctl.record_requested() && s.transport().state() == TransportState::Stopped);
+        sonora::CommandContext play;
+        play.argument = "8000-9000";
+        std::string why;
+        CHECK(reg.dispatch("transport.play", play, why) == DispatchResult::Ok);
+        CHECK(!record_ready);
+        CHECK(ctl.record_requested());
+    } else {
+        CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+    }
     uint64_t first_take_block = 0;
     bool punched_out = false;
     for (int i = 0; i < 2000; ++i) {
@@ -2407,7 +2424,8 @@ int main() {
     if (test_latency_change_is_a_new_plan()) return 1;
     if (test_report_shows_the_planned_latency()) return 1;
     if (test_cancelled_plan_leaves_the_pool_alone()) return 1;
-    if (test_punch_pre_and_post_roll()) return 1;
+    if (test_punch_pre_and_post_roll(false)) return 1;
+    if (test_punch_pre_and_post_roll(true)) return 1;
     if (test_play_range_with_pre_and_post_roll()) return 1;
     if (test_a_slot_follows_the_folder_and_the_document()) return 1;
     std::filesystem::remove_all(kDir);

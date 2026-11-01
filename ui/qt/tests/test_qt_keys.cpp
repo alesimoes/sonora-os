@@ -314,11 +314,12 @@ int main(int argc, char** argv) {
         CHECK(r.kind == RouteResult::Kind::Sent);
         CHECK(engine.sent.size() == 3 && engine.sent[2].target == 5);
 
-        // Ctrl+Space and F12 start a take.
+        // F12 makes the transport record-ready, and Ctrl+Space is a Play
+        // that then starts the take (ADR-0009 update of 2026-11-01).
         r = press(Qt::Key_Space, Qt::ControlModifier);
-        CHECK(r.kind == RouteResult::Kind::Sent && r.command == "transport.record");
+        CHECK(r.kind == RouteResult::Kind::Sent && r.command == "transport.play");
         r = press(Qt::Key_F12, none);
-        CHECK(r.kind == RouteResult::Kind::Sent && r.command == "transport.record");
+        CHECK(r.kind == RouteResult::Kind::Sent && r.command == "transport.record_ready");
         // Space is Pro Tools' play/stop, and the engine plays back: it plays,
         // and stops a roll or a take, exactly as at the tty.
         r = press(Qt::Key_Space, none);

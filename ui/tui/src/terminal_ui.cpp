@@ -236,8 +236,14 @@ std::string TerminalView::render(uint64_t now_ns) {
     }
     const bool locating = held && now_ns >= locating_since_ns_ &&
                           now_ns - locating_since_ns_ >= kLocatingShownAfterNs;
-    append(out, "  SONORA  %s  %02d:%02d:%06.3f   take %d%s%s\n", label, whole / 3600,
-           (whole / 60) % 60, secs - 60.0 * (whole / 60), t.take,
+    // Pro Tools' blinking Record: red for half of each second. The take
+    // starts on Play (ADR-0009 update of 2026-11-01, record-ready).
+    const bool ready = !t.stale && (t.transport_flags & api::kTransportRecordReady) != 0;
+    const char* ready_text = !ready ? ""
+                             : (now_ns / 500'000'000) % 2 == 0 ? "   \033[31mREC READY\033[0m"
+                                                                : "   REC READY";
+    append(out, "  SONORA  %s  %02d:%02d:%06.3f   take %d%s%s%s\n", label, whole / 3600,
+           (whole / 60) % 60, secs - 60.0 * (whole / 60), t.take, ready_text,
            locating ? "   Locating\xE2\x80\xA6" : "", t.stale ? "   (stale)" : "");
     // Each miss is an audible hole in playback: red once there is one.
     append(out, "  %u Hz / %u frames   xruns %u   clock steps %u   overruns %u   %smisses %u%s\n\n",

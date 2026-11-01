@@ -375,6 +375,8 @@ private:
     int closing_take_ = 0;      // a take held closing, or 0
     bool hold_record_ = false;
     bool record_requested_ = false;
+    // Pro Tools' record-ready: Play starts the take (kTransportRecordReady).
+    bool record_ready_ = false;
     std::vector<std::string> planned_;
     std::vector<PlannedCall> planned_log_;
     std::vector<float> gain_;

@@ -75,6 +75,9 @@ public:
     void set_track_shortfall(uint32_t track, uint32_t shortfall_frames);
     // PlaybackController::locating() after each pump(): kTransportLocating.
     void set_locating(bool on) { locating_.store(on, std::memory_order_relaxed); }
+    // The control thread's record-ready after each command and session
+    // open: kTransportRecordReady.
+    void set_record_ready(bool on) { record_ready_.store(on, std::memory_order_relaxed); }
 
     uint64_t period_ns() const { return period_ns_; }
     uint64_t publishes() const { return publishes_.load(std::memory_order_relaxed); }
@@ -98,6 +101,7 @@ private:
     std::atomic<uint32_t> compensation_{0};
     std::atomic<uint32_t> compensation_shortfall_{0};
     std::atomic<bool> locating_{false};
+    std::atomic<bool> record_ready_{false};
 
     // The publisher thread's own; sized once, so a publish never allocates.
     std::vector<api::TrackFields> tracks_;
