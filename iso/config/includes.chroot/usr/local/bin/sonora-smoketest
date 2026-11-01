@@ -150,6 +150,31 @@ else
   fail "no pro-input node; the pro-audio profile was not applied"
 fi
 
+# --- 5. build id and the display stack (ADR-0010) ---
+# The catalog cache keys on BUILD_ID; an empty or missing one shares a cache
+# across images.
+BUILD_ID_SEEN="$(sed -n 's/^BUILD_ID=//p' /etc/os-release 2>/dev/null)"
+echo "SMOKETEST info  BUILD_ID $BUILD_ID_SEEN"
+check "os-release carries a BUILD_ID" test -n "$BUILD_ID_SEEN"
+
+# Default boot has no sonora.gui: the compositor must be enabled (so the flag
+# alone turns it on) yet skipped, and the session must own tty1.
+if grep -qw 'sonora.gui' /proc/cmdline; then
+  echo "SMOKETEST info  sonora.gui set; display stack expected to run"
+  check "sonora-compositor.service active" systemctl is-active --quiet sonora-compositor.service
+  check "sonora-session.service not running under sonora.gui" sh -c '! systemctl is-active --quiet sonora-session.service'
+else
+  check "sonora-compositor.service enabled" sh -c '[ "$(systemctl is-enabled sonora-compositor.service)" = enabled ]'
+  check "sonora-compositor.service skipped without sonora.gui" sh -c '! systemctl is-active --quiet sonora-compositor.service'
+  check "sonora-ui.service skipped without sonora.gui" sh -c '! systemctl is-active --quiet sonora-ui.service'
+fi
+# Both units claim tty1, so they must never be startable together: their
+# kernel-command-line conditions have to be opposites.
+check "session and compositor have opposite sonora.gui conditions" sh -c \
+  'systemctl show -p ConditionKernelCommandLine sonora-session.service | grep -q "!sonora.gui" &&
+   systemctl show -p ConditionKernelCommandLine sonora-compositor.service | grep -q "sonora.gui" &&
+   ! systemctl show -p ConditionKernelCommandLine sonora-compositor.service | grep -q "!sonora.gui"'
+
 if [ "$FAILED" = "0" ]; then
   echo "SMOKETEST RESULT pass"
 else

@@ -337,8 +337,9 @@ bool parse(QGuiApplication& app, Options& o) {
 }
 
 // Exit status for "this display cannot run the interface". The unit lists it
-// in RestartPreventExitStatus=, so the failure goes to OnFailure= (tty2; the
-// terminal UI lives there from stage 2) instead of a restart loop. Keep in step with sonora-ui.service.
+// in RestartPreventExitStatus=, so the failure goes to OnFailure= (the unit
+// switches to tty2; the terminal UI runs there only from ADR-0010 stage 2)
+// instead of a restart loop. Keep in step with sonora-ui.service.
 constexpr int kExitUnfitDisplay = 3;
 
 struct App {
