@@ -5,6 +5,7 @@ FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
+      ccache \
       cmake \
       pkg-config \
       libjack-jackd2-dev \

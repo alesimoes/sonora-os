@@ -5,9 +5,47 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a PR cancels its stale run. Runs on main are never cancelled:
+# each merge keeps its own result, so the group is unique per run there.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # A PR whose files are all planning/, brain/, docs/ or Markdown cannot
+      # change a build, so the heavy jobs below are skipped (a skipped job
+      # counts as passing for branch protection, and `gh pr checks` buckets it
+      # "skipping", which tools/merge-when-green.sh does not treat as failing).
+      # On the PR merge commit, HEAD^1 is the base, so this is the PR's diff.
+      # Pushes to main always build everything.
+      - name: Does the change touch anything but documentation?
+        id: filter
+        run: |
+          code=true
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            files=$(git diff --name-only HEAD^1 HEAD)
+            if [ -n "$files" ] && ! printf '%s\n' "$files" |
+                 grep -qvE '^(planning|brain|docs)/|\.md$'; then
+              code=false
+            fi
+            printf '%s\n' "$files"
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   engine:
     name: Engine build and tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # In tools/Dockerfile.build, the image tools/build-engine.sh uses: Debian
     # trixie and its GCC 14, the compiler and baseline x86-64 codegen the
     # appliance ships. The runner's own compiler moved with ubuntu-latest
@@ -56,6 +94,8 @@ jobs:
 
   portable:
     name: Portable modules under MSVC
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # ADR-0008 §4: MSVC has no <unistd.h> or <sys/stat.h>, so a POSIX use in a
     # module that claims to be neutral fails to compile here, and the tests
     # run against the real UCRT. SONORA_PLATFORM=neutral configures only
@@ -84,6 +124,8 @@ jobs:
 
   ui:
     name: Qt interface build and headless tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # In tools/Dockerfile.ui, the image tools/build-ui.sh uses: Debian trixie
     # and its Qt 6.8, the Qt the product ships. ui/qt needs 6.7 (QSGTextNode,
     # QFont::Tag); Ubuntu 24.04's apt has 6.4, on which ui/qt skipped itself
@@ -122,6 +164,8 @@ jobs:
 
   sanitizers:
     name: Thread and address sanitizers
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # GCC 14's TSan, ASan and UBSan, in the engine job's trixie image: the
     # shipped compiler's instrumentation, not whatever the runner carries.
     runs-on: ubuntu-24.04
@@ -143,7 +187,10 @@ jobs:
 
       - name: Start the build container
         run: |
+          mkdir -p .ccache
           docker run -d --name build --ulimit memlock=-1:-1 \
+            -e CCACHE_DIR=/src/.ccache -e CCACHE_BASEDIR=/src \
+            -e CCACHE_MAXSIZE=1G \
             -v "$PWD:/src" -w /src sonora-build:trixie sleep infinity
           docker exec build c++ --version
 
@@ -158,10 +205,22 @@ jobs:
       - name: Make ASLR compatible with the sanitizers
         run: sudo sysctl -w vm.mmap_rnd_bits=28
 
+      # ccache hashes the compiler, flags and preprocessed source, so TSan and
+      # ASan objects never collide and an unchanged translation unit is not
+      # recompiled. The key is per run so the cache is always re-saved;
+      # restore-keys picks the newest one.
+      - name: Restore the compiler cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-sanitizers-${{ github.sha }}
+          restore-keys: ccache-sanitizers-
+
       - name: Build with TSan
         run: |
           docker exec build bash -ec '
             cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"
             cmake --build build-tsan -j"$(nproc)"'
 
@@ -186,6 +245,7 @@ jobs:
         run: |
           docker exec build bash -ec '
             cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
             cmake --build build-asan -j"$(nproc)"'
 
@@ -196,6 +256,8 @@ jobs:
 
   rtsan:
     name: RealtimeSanitizer over the SONORA_RT call graph
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # Its own build: -fsanitize=realtime cannot be combined with ASan or
     # TSan, and needs Clang 20 or later (clang-22 from trixie main, in
     # tools/Dockerfile.rtsan). Every SONORA_RT function is
@@ -238,6 +300,8 @@ jobs:
 
   record:
     name: Records audio against PipeWire
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # tools/build-engine.sh builds the engine in the sonora-build image, as
     # the engine job does; only Docker runs on the host.
     runs-on: ubuntu-24.04
@@ -269,6 +333,8 @@ jobs:
 
   interop:
     name: BWF files read back by third-party tools
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # The engine is built as in the record job, in the sonora-build image.
     runs-on: ubuntu-24.04
     steps:
@@ -300,6 +366,8 @@ jobs:
 
   quantum:
     name: Quantum and rate stay pinned
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -313,6 +381,8 @@ jobs:
 
   plugins:
     name: Plugin host against real LV2 and VST3 plugins
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
