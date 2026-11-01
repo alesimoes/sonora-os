@@ -422,6 +422,24 @@ int test_range_commands() {
     OK(ctl.press(xf(60000), v.y_of_track(0) + 10, why) && ctl.release(xf(60000), v.y_of_track(0) + 10, why));
     OK(ctl.selection().autolane == -1);
     OK(!ctl.clear(why) && why.find("nothing is selected") != std::string::npos);
+
+    // Thin: a dense ramp loses its middle in one undo step; a lane already
+    // thin is refused without an edit.
+    std::vector<AutomationPoint> ramp;
+    for (int i = 0; i <= 10; ++i) ramp.push_back({i * 10000, -40.0f + 2.0f * i});
+    OK(seed(doc, 0, AutomationParam::Volume, ramp));
+    OK(ctl.press(xf(0), y, why));
+    ctl.move(xf(100000), y);
+    OK(ctl.release(xf(100000), y, why));
+    const uint64_t r2 = doc.snapshot().revision;
+    OK(ctl.thin_automation(why));
+    OK(doc.snapshot().revision == r2 + 1);
+    OK(lane(doc, 0, AutomationParam::Volume)->points.size() < 11);
+    OK(valid(doc.snapshot()));
+    OK(!ctl.thin_automation(why) && why.find("nothing to thin") != std::string::npos);
+    OK(doc.snapshot().revision == r2 + 1);
+    OK(ctl.press(xf(60000), v.y_of_track(0) + 10, why) && ctl.release(xf(60000), v.y_of_track(0) + 10, why));
+    OK(!ctl.thin_automation(why) && why.find("select a range") != std::string::npos);
     return 0;
 }
 

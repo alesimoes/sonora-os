@@ -244,6 +244,35 @@ bool clear_range_op(Id track, const AutomationLane& lane, Frames a, Frames b,
     return had != out.points;
 }
 
+bool thin_range_op(Id track, const AutomationLane& lane, Frames a, Frames b,
+                   EditAutomation& out) {
+    if (b <= a) return false;
+    std::vector<AutomationPoint> had;
+    for (const AutomationPoint& p : lane.points) {
+        if (p.at >= a && p.at < b) had.push_back(p);
+    }
+    if (had.size() < 3) return false;
+    // A step (two points on one frame) is a deliberate jump: thin each run
+    // between steps on its own so the jump survives.
+    std::vector<AutomationPoint> kept, run;
+    const float tol = thin_tolerance(lane.param);
+    for (std::size_t i = 0; i < had.size(); ++i) {
+        run.push_back(had[i]);
+        if (i + 1 == had.size() || had[i + 1].at == had[i].at) {
+            for (const AutomationPoint& p : thin_points(run, tol)) kept.push_back(p);
+            run.clear();
+        }
+    }
+    if (kept.size() == had.size()) return false;
+    out = EditAutomation{};
+    out.track = track;
+    out.param = lane.param;
+    out.from = a;
+    out.to = b;
+    out.points = std::move(kept);
+    return true;
+}
+
 bool paste_op(Id track, const AutomationClip& clip, Frames at, EditAutomation& out) {
     if (clip.empty() || clip.length <= 0 || at < 0 || at + clip.length > kMaxInteger) return false;
     out = EditAutomation{};

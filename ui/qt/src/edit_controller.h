@@ -229,6 +229,9 @@ public:
     // what the range covers, leaving the gap (Slip, Spot and Grid). A range
     // that is exactly one fade or crossfade removes that instead.
     bool clear(std::string& why);
+    // Thin the selected lane's range (`automation.thin`); refused with a
+    // reason when no lane range is selected or nothing would go.
+    bool thin_automation(std::string& why);
     bool nudge(int direction, std::string& why);
 
     // --- the clipboard (edit_clipboard.h) ---

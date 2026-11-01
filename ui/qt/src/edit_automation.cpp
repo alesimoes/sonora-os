@@ -295,4 +295,21 @@ bool EditController::automation_clear(std::string& why) {
     return submit(op, why);
 }
 
+bool EditController::thin_automation(std::string& why) {
+    const TrackEdit* t = track(sel_.track);
+    if (!autolane_selected() || t == nullptr || !sel_.has_range()) {
+        why = "select a range of an automation lane first; nothing was thinned";
+        return false;
+    }
+    const AutomationParam p = lane_param(sel_.autolane);
+    const AutomationLane* lane = t->lane(p);
+    EditAutomation op;
+    if (lane == nullptr || !thin_range_op(t->id, *lane, sel_.start, sel_.end, op)) {
+        why = "there is nothing to thin in the selection on " + lane_label(*t, p) +
+              "; nothing was thinned";
+        return false;
+    }
+    return submit(op, why);
+}
+
 }  // namespace sonora::ui

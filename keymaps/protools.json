@@ -116,6 +116,11 @@
       "comment": "Not listed in Avid's Shortcuts Guide; macOS convention."
     },
     "ctrl+b": "edit.clear",
+    "ctrl+alt+t": {
+      "command": "automation.thin",
+      "origin": "sonora",
+      "comment": "Ours. Pro Tools has Edit > Thin Data > Automation with no key; this thins the selected lane range."
+    },
     "alt+r": "edit.repeat",
     "alt+shift+3": "edit.consolidate",
 
