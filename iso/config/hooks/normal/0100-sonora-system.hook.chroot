@@ -81,9 +81,10 @@ fi
 BUILD_ID_FILE=/usr/share/sonora/build-id
 if [ -s "$BUILD_ID_FILE" ]; then
   BUILD_ID="$(head -n 1 "$BUILD_ID_FILE" | tr -cd 'A-Za-z0-9._-')"
-else
-  BUILD_ID=unstamped
 fi
+# A file of only characters the filter strips leaves nothing; an empty
+# BUILD_ID= would key every cache to the same value.
+[ -n "${BUILD_ID:-}" ] || BUILD_ID=unstamped
 OSREL="$(readlink -f /etc/os-release)"
 sed -i '/^BUILD_ID=/d' "$OSREL"
 printf 'BUILD_ID=%s\n' "$BUILD_ID" >>"$OSREL"

@@ -87,6 +87,23 @@ install -m 0755 "$ENGINE" "$STAGE/sonora-engine"
 install -m 0755 "$(dirname "$ENGINE")/sonora-tui" "$STAGE/sonora-tui"
 echo "staged the engine and sonora-tui into includes.chroot/usr/local/bin/"
 
+# The graphical interface (ADR-0010) needs Qt, which the engine image lacks, so
+# it is built by tools/build-ui.sh and staged only on request: SONORA_WITH_UI=1.
+# Without it any stale copy is removed, so an image never ships a binary from
+# an older commit; sonora-ui.service stays inert without sonora.gui anyway.
+rm -f "$STAGE/sonora-ui"
+if [[ "${SONORA_WITH_UI:-0}" == 1 ]]; then
+  echo "Building the interface for the image..."
+  "$ROOT/tools/build-ui.sh" >/dev/null
+  UI="$(find "$ROOT/build-ui-container" -name sonora-ui -type f 2>/dev/null | head -n 1)"
+  [[ -n "$UI" ]] || {
+    echo "error: SONORA_WITH_UI=1 but no sonora-ui binary was found to stage." >&2
+    exit 1
+  }
+  install -m 0755 "$UI" "$STAGE/sonora-ui"
+  echo "staged sonora-ui"
+fi
+
 
 # live-build must not work on the bind-mounted host directory. debootstrap
 # unpacks with tar, which needs real ownership, hardlinks and xattrs; on a
