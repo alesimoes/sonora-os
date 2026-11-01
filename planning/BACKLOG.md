@@ -210,9 +210,6 @@ playback can follow edits; it is in flight.
          changes older than its last apply_mix. Not a regression; the
          removed resendGains had the same race (#76 review,
          #issuecomment-6249488192 item 1).
-       - [ ] Qt bus meter for the monitor bus peaks that state block layout 5
-         publishes (#213), in the Mix window and the Transport bar, with
-         screenshots in the PR.
        - [ ] FakeEngine bus peaks from its track signal, so the conformance
          suite can check the bus meter's values.
 10. [ ] Engine commands the shipped key maps bind and no engine runs yet
@@ -1940,10 +1937,7 @@ not deferred.
 - [x] Stage 1, shipped boot unchanged (#208): package block (`libpam-systemd labwc
       xwayland qt6-wayland` + Qt runtime), `/usr/share/sonora/labwc/`,
       `/etc/pam.d/sonora-ui`, `sonora-compositor`, `sonora-wait-for-display`,
-      compositor/UI/fallback units behind `sonora.gui`. QEMU checks: ISO size,
-      time to first frame, `kill -9` UI and labwc recover, repeated UI failure
-      ends on tty2, renderer chosen on `-vga std`, Alt-Tab/Super-Return reach
-      the client. distro-engineer.
+      compositor/UI/fallback units behind `sonora.gui`. distro-engineer.
 - [x] Stage 1, UI side (#208): `app_id` `sonora-ui`, no fullscreen request, a
       first-frame log line, a documented "unfit display" exit code. ui-engineer.
 - [ ] Stage 1 UI, later: `sd_notify` watchdog through `common/platform`. ui-engineer.
@@ -2006,9 +2000,9 @@ Order and owners are in ADR-0008 §5.
       ui-engineer and rt-engineer.
 - [x] P6, with M5 (#211): `SONORA_PLATFORM` (linux, neutral, and windows, which
       fails at configure for now) and `SONORA_BACKENDS`. Compiler flags go
-      under generator expressions. Add the neutral-module include allowlist,
-      a platform-macro check and an OS-path check to M5's script.
-      distro-engineer.
+      under generator expressions. distro-engineer.
+- [ ] P6 remainder: add the neutral-module include allowlist, a platform-macro
+      check and an OS-path check to M5's script. distro-engineer.
 - [ ] P7, right after M5 and before M6: a required `portable` CI job on
       `windows-latest` with MSVC, building `SONORA_PLATFORM=neutral` and
       running `ctest`. Record the first 10 run durations in `brain/research/`.
@@ -2079,8 +2073,9 @@ Order and owners are in ADR-0008 §5.
 - [x] State block layout 5 (#213): "Locating...", the monitor bus peaks and
       the playback miss count. Contract PRs of their own (ADR-0009 update,
       item 4, "Not in this port").
-- [ ] Bus meters back in sonora-ui (Qt, with screenshots) and sonora-tui,
-      from the layout 5 bus peaks. ui-engineer with rt-engineer.
+- [ ] Bus meters back in sonora-ui (Qt, in the Mix window and the Transport
+      bar, with screenshots in the PR) and in sonora-tui, from the layout 5
+      bus peaks. ui-engineer with rt-engineer.
 - [x] Input monitoring with latency compensation measured by a loopback test
       (ADR-0019, `t1-input-monitor`): `LatencyProbe` in the callback, takes
       captured L later on the playhead and labelled P0 − L, drivers/fake's
@@ -2289,14 +2284,13 @@ ADR-0011 "For the owner".
 
 - [x] N0: `common/dsp` skeleton (neutral, `arch/generic` + `arch/x86_64`
       for flush-to-zero), `plugins/native/sdk` (`Processor`, parameter table,
-      descriptor and preset codecs on `common/json`), and the new edges in
-      M5's check. dsp-engineer.
+      descriptor and preset codecs on `common/json`) (#34). dsp-engineer.
+- [ ] N0 skeleton remainder: the new edges in M5's check. dsp-engineer.
 - [x] N0: `sonora-dsp-measure` harness and golden-file infrastructure:
       response, THD, step timing, aliasing, latency equals reported,
-      denormal, non-finite, zipper; RTSan job runs it. dsp-engineer.
+      denormal, non-finite, zipper; RTSan job runs it (#34). dsp-engineer.
 - [x] N0: BS.1770 loudness and true-peak in `common/dsp`, checked against
-      EBU Tech 3341/3342 cases (redistribution of the test files to be
-      checked first). dsp-engineer.
+      EBU Tech 3341/3342 cases (#34). dsp-engineer.
 - [x] N0: EQ, gate, compressor, limiter, delay, chorus as `Processor`s (#34, #40, #43),
       meeting their `quality.json`. CPU figures on the owner's laptop
       recorded in `brain/research/` (ADR-0011 Unverified 4). dsp-engineer.
