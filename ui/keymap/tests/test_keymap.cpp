@@ -675,10 +675,11 @@ int test_profile_corrections() {
         {"protools.json", "ctrl+f7", nullptr},
         {"protools.json", "alt+f", "zoom.fit_selection"},
         {"protools.json", "alt+a", "zoom.fit_session"},
-        // Record-ready (ADR-0009 update of 2026-11-01): Record only makes
-        // the transport ready, and Command+Space is a Play that starts it.
-        {"protools.json", "ctrl+space", "transport.play"},
-        {"protools.json", "f12", "transport.record_ready"},
+        // Avid's Start record: a take at once. Keypad 3 is the Transport
+        // keypad's Record Enable, record-ready (ADR-0009 update of
+        // 2026-11-01).
+        {"protools.json", "ctrl+space", "transport.record"},
+        {"protools.json", "f12", "transport.record"},
         {"protools.json", "numpad_3", "transport.record_ready"},
         {"logic.json", "r", "transport.record"},
         {"protools.json", "ctrl+alt+m", "track.step_automation_mode"},

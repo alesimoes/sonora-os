@@ -101,12 +101,13 @@ default's substitute would be `transport.toggle_record`, and on Space that
 starts a take exactly where the operator expects playback; `transport.stop`
 stops a take as the application's Space does and never starts one.
 
-With the shipped profiles that means the following. `logic.json` starts a
-take with `r` (`transport.record`). `protools.json` makes the transport
-record-ready with `f12` or keypad 3 (`transport.record_ready`), as Pro
-Tools' Record button does. The take then starts on Play: `space`,
-`ctrl+space` or keypad 0 (ADR-0009 update of 2026-11-01, record-ready).
-Both profiles stop with `space`, which is `transport.toggle_play`. The engine plays
+With the shipped profiles that means the following. `protools.json` starts
+a take with `ctrl+space` or `f12`, and `logic.json` with `r`, all three
+`transport.record`. `protools.json`'s keypad 3 is Avid's Transport-mode
+Record Enable (`transport.record_ready`): the transport goes record-ready,
+as with Pro Tools' Record button, and Play (`space` or keypad 0) starts the
+take (ADR-0009 update of 2026-11-01, record-ready). Both profiles stop with
+`space`, which is `transport.toggle_play`. The engine plays
 back since ADR-0009's port onto the control server, and `toggle_play` closes
 a running take, so `space` needs no repair in either: it plays, and stops a
 roll or a take, as the applications' Space does. `logic.json`'s quit is

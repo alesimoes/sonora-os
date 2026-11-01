@@ -1262,15 +1262,19 @@ that behaviour. The Pro Tools profile gets the two-step behaviour.
    not cross into another session. Disarming every track leaves the flag
    up. The Play that follows is then refused with "no track is armed", as
    a Record would be.
-5. **Keymaps.** In `protools.json`, F12 and keypad 3 are
-   `transport.record_ready`, and Ctrl+Space is `transport.play`. Space
-   stays `transport.toggle_play`. `logic.json` keeps R on
-   `transport.record`. The keymap essentials count `transport.record_ready`
-   in the start group, because every shipped engine installs Play with it.
+5. **Keymaps.** The Record *button* arms, as in Pro Tools. The keys
+   follow Avid's guide. Command+Space and F12 are listed under "Start
+   record", so in `protools.json` they stay `transport.record`, a take at
+   once. Keypad 3 is "Record Enable" in the Transport keypad table, the
+   mode the profile assumes, so it is `transport.record_ready`. Space stays
+   `transport.toggle_play`. `logic.json` keeps R on `transport.record`. The
+   keymap essentials count `transport.record_ready` in the start group,
+   because every shipped engine installs Play with it. The Qt Record button
+   sends `transport.record_ready` under Pro Tools in a follow-up PR.
 
 **Versions.** `kStateLayoutVersion` **6**, for the new flag. Layout 5 is
 on main. `kProtocolVersion` **37**: Play now means something else when
-ready, and there is a new command. PR #226 holds 36. Neither the session
+ready, and there is a new command. It follows 36 (#226). Neither the session
 format nor the window format changes, because the flag is not saved.
 
 **Consequences.** The FakeEngine and the conformance suite carry the same

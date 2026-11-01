@@ -203,7 +203,7 @@ int main(int argc, char** argv) {
     key(view, Qt::Key_Space, Qt::ControlModifier, /*repeat=*/true);
     CHECK(engine.sent.size() == 1);
     key(view, Qt::Key_Space, Qt::ControlModifier);
-    CHECK(engine.sent.size() == 2 && engine.sent[1].command == "transport.play");
+    CHECK(engine.sent.size() == 2 && engine.sent[1].command == "transport.record");
 
     // A modifier on its own is not a key press.
     key(view, Qt::Key_Shift, Qt::ShiftModifier);
