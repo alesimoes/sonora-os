@@ -410,6 +410,9 @@ public:
     // not Input, so it goes to Input. Refused on a MIDI or instrument
     // track, whose engine track carries no audio of its own (ADR-0014 M-1).
     bool toggle_input_monitor(int track, std::string& why);
+    // Off, Read, Touch, Latch, Write and round to Off. Trim is skipped (the
+    // engine refuses it); a track already on Trim steps to Off.
+    bool step_automation_mode(int track, std::string& why);
     bool set_bus_gain(float db, std::string& why);
 
     // The end of the last region, or one minute when the session is empty.

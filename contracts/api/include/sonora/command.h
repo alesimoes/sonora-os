@@ -133,6 +133,8 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"track.toggle_solo", CommandTarget::Track, "Toggle solo on a track"},
         {"track.toggle_input_monitor", CommandTarget::Track,
          "Toggle input monitoring on a track"},
+        {"track.step_automation_mode", CommandTarget::Track,
+         "Step a track's automation mode: Off, Read, Touch, Latch, Write"},
         {"track.select", CommandTarget::Track, "Make a track the selected track"},
         {"track.select_next", CommandTarget::None, "Select the next track down"},
         {"track.select_previous", CommandTarget::None, "Select the next track up"},

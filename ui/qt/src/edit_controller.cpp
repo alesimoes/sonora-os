@@ -1554,6 +1554,20 @@ bool EditController::set_automation_mode(int index, AutomationMode mode, std::st
     return submit(SetMix{m}, why);
 }
 
+bool EditController::step_automation_mode(int index, std::string& why) {
+    TrackMix m;
+    if (!mix_target(snapshot(), index, m, why)) return false;
+    switch (m.automation) {
+        case AutomationMode::Off: m.automation = AutomationMode::Read; break;
+        case AutomationMode::Read: m.automation = AutomationMode::Touch; break;
+        case AutomationMode::Touch: m.automation = AutomationMode::Latch; break;
+        case AutomationMode::Latch: m.automation = AutomationMode::Write; break;
+        case AutomationMode::Write:
+        case AutomationMode::Trim: m.automation = AutomationMode::Off; break;
+    }
+    return submit(SetMix{m}, why);
+}
+
 bool EditController::toggle_input_monitor(int index, std::string& why) {
     TrackMix m;
     if (!mix_target(snapshot(), index, m, why)) return false;

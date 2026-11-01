@@ -2174,6 +2174,34 @@ int test_input_monitor() {
     return 0;
 }
 
+// track.step_automation_mode: Off, Read, Touch, Latch, Write and round to
+// Off. Trim is skipped, because the engine refuses it; a key that landed on
+// it would be a key that does nothing.
+int test_step_automation_mode() {
+    FlatPeaks peaks;
+    std::string why;
+    Id playlist = 0, region = 0;
+    ModelDocument doc(midi_session(1, playlist, region));
+    SessionModel session(doc, peaks, false);
+    EditController& c = session.controller();
+    const Id audio = doc.snapshot().edit->tracks[0]->id;
+    const auto mode = [&]() { return doc.snapshot().mix.find(audio)->automation; };
+    OK(mode() == AutomationMode::Read);
+    const AutomationMode order[] = {AutomationMode::Touch, AutomationMode::Latch,
+                                    AutomationMode::Write, AutomationMode::Off,
+                                    AutomationMode::Read};
+    for (const AutomationMode want : order) {
+        OK(c.step_automation_mode(0, why) && mode() == want);
+    }
+    OK(!c.step_automation_mode(-1, why) && why == "no track is selected");
+    // The command runs on the selected track, or the one it is aimed at.
+    OK(session.automationModes()[0] == "Read");
+    session.selectTrack(0);
+    OK(c.step_automation_mode(c.selection().track, why) &&
+       session.automationModes()[0] == "Touch");
+    return 0;
+}
+
 // daw.model.session_mgmt in the window: Save As goes on in a new folder
 // under the new name once the engine says it moved there, the old file as
 // it was; a name already taken is refused; Save Copy In writes a copy and
@@ -2266,7 +2294,8 @@ int main(int argc, char** argv) {
         test_first_save_keeps_the_sessions_name() ||
         test_save_failures() || test_autosave_names_agree() ||
         test_midi_sequence_files() ||
-        test_midi_sequence_cleanup_follow_ups() || test_input_monitor() || test_save_as_and_copy()) {
+        test_midi_sequence_cleanup_follow_ups() || test_input_monitor() ||
+        test_step_automation_mode() || test_save_as_and_copy()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);
