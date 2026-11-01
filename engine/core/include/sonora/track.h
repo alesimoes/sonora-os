@@ -69,6 +69,7 @@ public:
             touched_.fetch_and(static_cast<uint8_t>(~bit), std::memory_order_relaxed);
         }
     }
+    void set_touched_bits(uint8_t bits) { touched_.store(bits, std::memory_order_relaxed); }
 
     // The backend input this track meters, captures and monitors: its
     // document track's, so a track moved to another engine track keeps its

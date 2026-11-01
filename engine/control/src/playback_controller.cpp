@@ -252,6 +252,26 @@ void PlaybackController::restore_ride(const model::Snapshot& snapshot, model::Id
     }
 }
 
+void PlaybackController::touch(const model::Snapshot& snapshot, std::size_t row, uint8_t param,
+                               bool held) {
+    const auto& tracks = snapshot.edit->tracks;
+    const auto& engine = session_.tracks();
+    if (row >= tracks.size()) return;
+    // By id, not by row: while a plan moving tracks is pending the row is
+    // the new order's and the atomics are still the old one's. A track the
+    // atomics do not hold yet (a duplicate whose plan has not played) has
+    // nothing to hold.
+    std::size_t e = row;
+    if (atoms_order_) {
+        const std::vector<model::Id>& order = *atoms_order_;
+        e = engine.size();
+        for (std::size_t j = 0; j < order.size(); ++j) {
+            if (order[j] == tracks[row]->id) e = j;
+        }
+    }
+    if (e < engine.size()) engine[e]->set_touched(param, held);
+}
+
 void PlaybackController::apply_monitoring(const model::Snapshot& snapshot) {
     if (!atoms_follow(snapshot)) return;
     const auto& tracks = snapshot.edit->tracks;
@@ -407,6 +427,15 @@ void PlaybackController::fill_track_mix(PlaybackPlan& plan, const model::Snapsho
 
 void PlaybackController::adopt_track_mix(const PlaybackPlan& plan) {
     const auto& engine = session_.tracks();
+    // A hold is its document track's, as its arm is: read before any
+    // engine track's is overwritten, since a swap reads both ways.
+    std::vector<uint8_t> held(engine.size(), 0);
+    for (std::size_t e = 0; e < engine.size() && e < adopting_order_.size(); ++e) {
+        for (std::size_t j = 0; atoms_order_ && j < atoms_order_->size() && j < engine.size(); ++j) {
+            if ((*atoms_order_)[j] == adopting_order_[e]) held[e] = engine[j]->touched();
+        }
+    }
+    for (std::size_t e = 0; e < engine.size(); ++e) engine[e]->set_touched_bits(held[e]);
     for (std::size_t e = 0; e < plan.track_mix_count && e < engine.size(); ++e) {
         const PlanTrackMix& m = plan.track_mix[e];
         Track& t = *engine[e];

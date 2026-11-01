@@ -2085,10 +2085,8 @@ void EngineControlServer::forget(ClientId id) {
             playback_->apply_gain(document_->current(), it->first);
             // Nor a touch it never released, which would hold the track off
             // its lanes for good.
-            if (it->first < session_.tracks().size()) {
-                session_.tracks()[it->first]->set_touched(kAutoVolume, false);
-                session_.tracks()[it->first]->set_touched(kAutoPan, false);
-            }
+            playback_->touch(document_->current(), it->first, kAutoVolume, false);
+            playback_->touch(document_->current(), it->first, kAutoPan, false);
             it = riders_.erase(it);
         } else {
             ++it;
@@ -2473,11 +2471,14 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             } else {
                 t.set_gain(c.value);
             }
-            // A touch holds the parameter off its lane in Touch, Latch and
-            // Write until its release (ADR-0027 §3).
-            const uint8_t param = pan ? kAutoPan : kAutoVolume;
-            if (c.gesture == api::Gesture::Touch) t.set_touched(param, true);
-            if (c.gesture == api::Gesture::Release) t.set_touched(param, false);
+        }
+        // A touch holds the parameter off its lane in Touch, Latch and
+        // Write until its release (ADR-0027 §3), even through a move: a
+        // dropped release would hold it until the client leaves.
+        const uint8_t param = pan ? kAutoPan : kAutoVolume;
+        if (c.gesture == api::Gesture::Touch || c.gesture == api::Gesture::Release) {
+            playback_->touch(document_->current(), c.track, param,
+                             c.gesture == api::Gesture::Touch);
         }
         riders_[c.track] = from;
         reply(from, c.seq, DispatchResult::Ok, "");

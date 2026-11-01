@@ -68,6 +68,13 @@ public:
     // The document's level or gain back on the send or bus `id`, whichever
     // it names: a ride whose rider left ends without the rest moving.
     void restore_ride(const model::Snapshot& snapshot, model::Id id);
+    // Holds or lets go `param` (a PlanAutoParam) of the document track at
+    // `row` of `snapshot` (ADR-0027 §3), on the engine track whose atomics
+    // hold that track: unlike a fader step, not dropped while the tracks
+    // are being rearranged, since a lost release would hold the track off
+    // its lanes for good. The hold moves with its track when they are.
+    // Nothing for a row past the document's end.
+    void touch(const model::Snapshot& snapshot, std::size_t row, uint8_t param, bool held);
     // Each track's monitor mode alone, for when arming changed: an armed
     // track under --no-input-monitoring must stop sending its input at
     // once, without the faders being written.
