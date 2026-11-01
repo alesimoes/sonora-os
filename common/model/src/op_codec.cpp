@@ -561,6 +561,7 @@ struct Encoder {
         v.set("all_playlists", Value::boolean(o.all_playlists));
         v.set("inserts", Value::boolean(o.inserts));
         v.set("sends", Value::boolean(o.sends));
+        v.set("automation", Value::boolean(o.automation));
         return v;
     }
     Value operator()(const DuplicatePlaylist& o) const {
@@ -1474,11 +1475,12 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
     } else if (kind == "DuplicateTrack") {
         DuplicateTrack o;
         if (!rd.keys(v, "", {"op", "source", "track", "name", "all_playlists", "inserts",
-                             "sends"}) ||
+                             "sends", "automation"}) ||
             !rd.id(v, "", "source", o.source) || !rd.id(v, "", "track", o.track) ||
             !rd.text(v, "", "name", o.name) ||
             !rd.flag(v, "", "all_playlists", o.all_playlists) ||
-            !rd.flag(v, "", "inserts", o.inserts) || !rd.flag(v, "", "sends", o.sends)) {
+            !rd.flag(v, "", "inserts", o.inserts) || !rd.flag(v, "", "sends", o.sends) ||
+            !rd.flag(v, "", "automation", o.automation)) {
             return false;
         }
         out = std::move(o);

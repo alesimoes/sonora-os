@@ -37,6 +37,8 @@
 - §5: while a take is about to start or still closing, no apply, undo or
   redo may change the tracks at all; while one records, none may delete or
   move an armed track. A track past the engine's track count is refused.
+- Update 2026-10-31: `DuplicateTrack` carries `automation` (default on),
+  Pro Tools' dialog checkbox; off, the copy has no lanes. Protocol 35.
 
 ## Context
 
@@ -55,7 +57,8 @@ row, would record input 2 into "Kick".
 
 ```
 RemoveTrack    { track }
-DuplicateTrack { source, track, name, all_playlists = false, inserts = true }
+DuplicateTrack { source, track, name, all_playlists = false, inserts = true,
+                 sends = true, automation = true }
 ```
 
 Both are undoable members, so they also ride compounds. A compound of
@@ -219,6 +222,25 @@ conformance suite runs them on both.
   engineer adding a track while a take rolls on others is ordinary; while
   it records, only the armed rows are pinned. Once it is starting or
   closing, rows are what place its files, and everything waits (§5).
+
+## Update 2026-10-31: the automation flag (protocol 35)
+
+ADR-0027 gave tracks automation lanes, and `DuplicateTrack` copied them
+always, by §2's rule. Pro Tools' Duplicate Tracks dialog has an
+"Automation" checkbox, on by default, so the operation gets the same
+choice:
+
+- `DuplicateTrack` appends `bool automation = true`. On, the copy shares
+  its source's lanes (immutable, as an undo step shares them). Off, the
+  copy has no lanes, and plays its fader and pan as they stand.
+- The track's automation mode is mix state (ADR-0027 §1) and is copied
+  with the mix either way, as Pro Tools copies it: a copy without lanes in
+  Read plays the fader as it is.
+- Lanes take no ids, so `duplicate_track_ids()` is unchanged.
+- The operation codec writes and requires the `automation` key. Protocol
+  35: a version-34 peer refuses the key, and this one refuses an operation
+  without it. Session format unchanged (13): operations are not saved, the
+  lanes they make are.
 
 ## Open questions
 

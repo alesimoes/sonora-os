@@ -127,7 +127,10 @@ namespace sonora::api {
 // 34 (ADR-0022 update of 2026-10-31; follows 33): ParamId::SendLevel and
 //   ParamId::AuxGain, and ParameterChange's `id`; a version-33 peer refuses
 //   both, as an unknown parameter or left-over bytes.
-constexpr uint32_t kProtocolVersion = 34;
+// 35 (ADR-0023 update of 2026-10-31; follows 34): DuplicateTrack carries
+//   `automation`; a version-34 peer's op decoder refuses the key, and this
+//   one requires it.
+constexpr uint32_t kProtocolVersion = 35;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
