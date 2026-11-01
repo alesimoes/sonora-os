@@ -7,7 +7,7 @@
 | 0 | Normal quit |
 | 1 | The interface never ran (engine refused, QML error, refusal page closed) |
 | 2 | Bad command line |
-| 3 | Unfit display (ADR-0010 §4): under `--kiosk` the platform is not Wayland. `sonora-ui.service` lists 3 in `RestartPreventExitStatus=`, so the unit fails at once and `OnFailure=` switches the console to tty2, the terminal UI. |
+| 3 | Unfit display (ADR-0010 section 4): under `--kiosk` the platform is not Wayland. `sonora-ui.service` lists 3 in `RestartPreventExitStatus=`, so the unit fails at once and `OnFailure=` switches the console to tty2 (the terminal UI runs there only from ADR-0010 stage 2; until then tty2 is an empty console). |
 
 ## Kiosk
 

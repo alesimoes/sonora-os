@@ -337,8 +337,8 @@ bool parse(QGuiApplication& app, Options& o) {
 }
 
 // Exit status for "this display cannot run the interface". The unit lists it
-// in RestartPreventExitStatus=, so the failure goes to OnFailure= (tty2, the
-// terminal UI) instead of a restart loop. Keep in step with sonora-ui.service.
+// in RestartPreventExitStatus=, so the failure goes to OnFailure= (tty2; the
+// terminal UI lives there from stage 2) instead of a restart loop. Keep in step with sonora-ui.service.
 constexpr int kExitUnfitDisplay = 3;
 
 struct App {
@@ -366,7 +366,7 @@ int show_refusal(QGuiApplication& app, const Options& opt, const QString& reason
         return 1;
     }
     QObject::connect(view.engine(), &QQmlEngine::quit, &app, &QCoreApplication::quit);
-    // Under --kiosk the compositor's window rule maximizes us (ADR-0010 §2);
+    // Under --kiosk the compositor's window rule maximizes us (ADR-0010 section 2);
     // asking for full screen as well would fight it.
     if (!opt.kiosk) view.resize(1280, 720);
     view.show();
@@ -390,7 +390,7 @@ int main(int argc, char** argv) {
     }
     QGuiApplication app(argc, argv);
     QGuiApplication::setApplicationName(QStringLiteral("sonora-ui"));
-    // The Wayland app_id the compositor's window rule matches (ADR-0010 §2).
+    // The Wayland app_id the compositor's window rule matches (ADR-0010 section 2).
     QGuiApplication::setDesktopFileName(QStringLiteral("sonora-ui"));
     QElapsedTimer since_start;
     since_start.start();
@@ -399,10 +399,9 @@ int main(int argc, char** argv) {
     if (!parse(app, a.opt)) return 2;
     // The kiosk has no fallback path inside the UI: a Qt that came up on xcb
     // or offscreen means the compositor is not there, and retrying cannot
-    // help. The unit goes to the terminal UI instead (ADR-0010 §4).
+    // help. The unit goes to the terminal UI instead (ADR-0010 section 4).
     if (a.opt.kiosk && app.platformName() != QLatin1String("wayland")) {
-        std::fprintf(stderr, "sonora-ui: unfit display: platform is %s, not wayland
-",
+        std::fprintf(stderr, "sonora-ui: unfit display: platform is %s, not wayland\n",
                      qPrintable(app.platformName()));
         return kExitUnfitDisplay;
     }
@@ -660,8 +659,7 @@ int main(int argc, char** argv) {
     // One line, for the boot-time check (ADR-0010 migration, stage 1).
     QObject::connect(&view, &QQuickWindow::frameSwapped, &view,
                      [&since_start]() {
-                         std::fprintf(stderr, "sonora-ui: first frame after %lld ms
-",
+                         std::fprintf(stderr, "sonora-ui: first frame after %lld ms\n",
                                       static_cast<long long>(since_start.elapsed()));
                          std::fflush(stderr);
                      },
@@ -676,7 +674,7 @@ int main(int argc, char** argv) {
         view.show();
     } else {
         // Under --kiosk no full-screen request: the compositor's window rule
-        // for app_id sonora-ui maximizes us (ADR-0010 §2).
+        // for app_id sonora-ui maximizes us (ADR-0010 section 2).
         if (!a.opt.kiosk) view.resize(1280, 720);
         view.show();
     }

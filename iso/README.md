@@ -38,7 +38,7 @@ Off by default. With `sonora.gui` on the kernel command line,
 `sonora-compositor.service` runs labwc as a kiosk on tty1, pulls in
 `sonora-ui.service` (`sonora-ui --kiosk --demo`, fake engine) and
 `sonora-session.service` stands down. Five failures in 60 s, or the UI's exit
-code 3, run `sonora-display-fallback.service` (`chvt 2`). `sonora-ui` is not
+code 3, run `sonora-display-fallback.service` (`chvt 2`; tty2 hosts the terminal UI only from stage 2, so at stage 1 it is an empty console). `sonora-ui` is not
 yet staged by `tools/build-iso.sh`; until it is, the UI unit fails and falls
 back.
 

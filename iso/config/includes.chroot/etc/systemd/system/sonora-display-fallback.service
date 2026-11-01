@@ -1,5 +1,5 @@
 [Unit]
-Description=Switch to the terminal UI after the display stack failed
+Description=Switch to tty2 after the display stack failed (the terminal UI lives there from ADR-0010 stage 2)
 ConditionKernelCommandLine=sonora.gui
 
 [Service]
