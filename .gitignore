@@ -107,3 +107,4 @@ Thumbs.db
 # every PR rewrote it, each merge forced a conflicting rebase of every queued
 # PR. tools/session-start.sh still prints it when it exists.
 /planning/handoffs/main-session.md
+.ccache/

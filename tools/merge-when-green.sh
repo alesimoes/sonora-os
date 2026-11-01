@@ -13,6 +13,9 @@
 # Exits 1 if any PR was skipped.
 set -u
 
+# shellcheck source=/dev/null
+. "$(dirname "$0")/merge-checks.sh"
+
 [ $# -ge 1 ] || { echo "usage: tools/merge-when-green.sh PR..." >&2; exit 2; }
 
 skipped=0
@@ -58,7 +61,22 @@ $files"
     sleep 30
   fi
 
-  gh pr checks "$pr" --watch --interval 60 >/dev/null 2>&1 || true
+  # The heavy jobs' check runs appear only once "Changed paths" finishes, so
+  # a watch can end with only the cheap ones listed. Keep watching, for up to
+  # 10 minutes, until every heavy check is present (passed or skipped).
+  tries=0
+  while :; do
+    gh pr checks "$pr" --watch --interval 60 >/dev/null 2>&1 || true
+    missing=$(gh pr checks "$pr" --json name,bucket \
+      --jq '.[] | [.name, .bucket] | @tsv' 2>/dev/null | missing_heavy_checks)
+    [ -n "$missing" ] || break
+    # A failed check is reported below, not waited out.
+    gh pr checks "$pr" --json bucket --jq '.[].bucket' 2>/dev/null |
+      grep -qx -e fail -e cancel && break
+    tries=$((tries + 1))
+    [ "$tries" -lt 10 ] || break
+    sleep 60
+  done
   # Read before the checks are, so a push after this point makes the merge
   # refuse rather than land a head nobody checked.
   head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid) || {
@@ -70,6 +88,12 @@ $files"
   if [ -n "$failing" ]; then
     skip "$pr" "checks not green:
 $failing"
+    continue
+  fi
+
+  if [ -n "$missing" ]; then
+    skip "$pr" "checks not reported after 10 minutes:
+$missing"
     continue
   fi
 
