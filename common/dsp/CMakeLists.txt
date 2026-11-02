@@ -62,6 +62,15 @@ if(NOT SONORA_DSP_ARCH STREQUAL "generic")
   target_compile_options(test_dsp_tape_generic PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off> $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
   add_test(NAME dsp_tape_generic COMMAND test_dsp_tape_generic)
+  # And for the output stage's two-channel step (transformer_process_pair).
+  # transformer.cpp flushes no denormals itself, so no denormals.cpp.
+  add_executable(test_dsp_transformer_generic tests/test_transformer.cpp src/transformer.cpp
+                 src/arch/generic/transformer_pair.cpp)
+  target_include_directories(test_dsp_transformer_generic PRIVATE include)
+  target_link_libraries(test_dsp_transformer_generic PRIVATE sonora_base)
+  target_compile_options(test_dsp_transformer_generic PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off> $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
+  add_test(NAME dsp_transformer_generic COMMAND test_dsp_transformer_generic)
 endif()
 # The two slow ones (tens of seconds in Release, minutes under ASan) carry
 # the "slow" label: PR CI runs them with SONORA_DSP_QUICK=1 (one rate, one
