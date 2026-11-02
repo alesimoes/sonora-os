@@ -9,6 +9,8 @@
 #   tools/dev-wsl.sh build      configure and build engine, UI, sonora-ctl
 #   tools/dev-wsl.sh audio      start PipeWire bridged to WSLg, then exit
 #   tools/dev-wsl.sh run [-- UI ARGS]   engine + Qt UI (no deps, no build)
+#   tools/dev-wsl.sh stop       stop the engine and UI (PipeWire stays)
+#   tools/dev-wsl.sh status     what is running; exit 0 when the DAW is up
 #   tools/dev-wsl.sh selftest [--tone] [SECONDS]
 #                               record SECONDS (default 4) from the mic, or
 #                               from a test tone, play it back to the
@@ -37,7 +39,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${SONORA_BUILD:-$HOME/.cache/sonora/build-wsl}"
 SESSION_DIR="${SONORA_DIR:-$HOME/Sessions/Untitled}"
-WSLG_PULSE=/mnt/wslg/PulseServer
+# Overridable only so the "WSLg does not answer" path can be tested.
+WSLG_PULSE="${SONORA_WSLG_PULSE:-/mnt/wslg/PulseServer}"
 SPEAKERS=wslg-speakers
 MIC=wslg-mic
 
@@ -67,6 +70,15 @@ check_wslg() {
         "(wsl --update) and reopen the distro; WSLg needs WSL from the Store."
   [[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]] ||
     die "no WAYLAND_DISPLAY or DISPLAY: WSLg's display is not available."
+  # A socket whose server is wedged is worse than none: the tunnel connects,
+  # then nothing plays and the patching waits for ports that never come.
+  if command -v pactl >/dev/null &&
+     ! timeout 5 pactl -s "unix:$WSLG_PULSE" info >/dev/null 2>&1; then
+    die "WSLg's PulseAudio server ($WSLG_PULSE) does not answer, so there is" \
+        "no sound. From Windows run \`wsl --terminate ${WSL_DISTRO_NAME:-Debian}\`" \
+        "(only this distro; never \`wsl --shutdown\`, it stops Docker Desktop)," \
+        "then start Sonora again. If it still fails: \`wsl --update\`."
+  fi
 }
 
 # --- deps ------------------------------------------------------------------
@@ -185,7 +197,7 @@ context.modules = [
 EOF
 }
 
-pw_up() { pw-cli info 0 >/dev/null 2>&1; }
+pw_up() { timeout 3 pw-cli info 0 >/dev/null 2>&1; }
 
 wait_for() {  # seconds, then a command
   local n=$(( $1 * 5 ))
@@ -198,12 +210,96 @@ node_ports() {  # node, -o|-i: its ports, monitor ports excluded
   pw-link "$2" 2>/dev/null | grep "^$1:" | grep -v ":monitor_" || true
 }
 
+# A unix:path bus whose socket is gone. WSL exports
+# unix:path=/run/user/N/bus even when nothing listens there (no systemd), and
+# PipeWire and WirePlumber then fail to reach a bus.
+bus_dead() {
+  local a="${DBUS_SESSION_BUS_ADDRESS:-}"
+  [[ -z $a ]] && return 0
+  [[ $a == unix:path=* ]] || return 1
+  a="${a#unix:path=}"
+  [[ ! -S ${a%%,*} ]]
+}
+
+have_bus() {
+  if bus_dead && [[ -f "$STATE/dbus.env" ]]; then
+    # shellcheck disable=SC1091
+    . "$STATE/dbus.env"
+  fi
+  if bus_dead; then
+    # WirePlumber needs a session bus; WSL without systemd has none.
+    unset DBUS_SESSION_BUS_ADDRESS
+    eval "$(dbus-launch --sh-syntax)"
+    echo "export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'" >"$STATE/dbus.env"
+  fi
+}
+
+start_wireplumber() {
+  have_bus
+  setsid wireplumber >>"$STATE/wireplumber.log" 2>&1 < /dev/null &
+  echo $! >"$STATE/wireplumber.pid"
+  sleep 0.5
+}
+
+ensure_wireplumber() {
+  pgrep -x wireplumber >/dev/null && return 0
+  say "WirePlumber is not running; starting it"
+  start_wireplumber
+}
+
+# The pipewire socket must answer before WirePlumber starts, or it exits with
+# "Failed to connect to PipeWire".
+start_cold() {
+  say "starting PipeWire and WirePlumber (logs in $STATE)"
+  : >"$STATE/pipewire.log"  # the tunnel's overrun lines can reach hundreds of MB
+  : >"$STATE/wireplumber.log"
+  have_bus
+  setsid pipewire >"$STATE/pipewire.log" 2>&1 < /dev/null &
+  echo $! >"$STATE/pipewire.pid"
+  wait_for 10 pw_up || die "PipeWire never answered; see $STATE/pipewire.log"
+  start_wireplumber
+}
+
+# Only this distro's pipewire and wireplumber: the pids this script saved,
+# then a pkill fallback.
+kill_ours() {
+  local f p
+  for f in "$STATE/wireplumber.pid" "$STATE/pipewire.pid"; do
+    if [[ -f $f ]]; then
+      p="$(cat "$f")"
+      kill -TERM "$p" 2>/dev/null || true
+      rm -f "$f"
+    fi
+  done
+  pkill -TERM -x wireplumber 2>/dev/null || true
+  pkill -TERM -x pipewire 2>/dev/null || true
+  sleep 1
+  pkill -KILL -x wireplumber 2>/dev/null || true
+  pkill -KILL -x pipewire 2>/dev/null || true
+  sleep 0.3
+}
+
+speakers_up() { pw-link -i 2>/dev/null | grep -q "^$SPEAKERS:"; }
+
+# WSLg's PulseServer restarts now and then; the tunnel does not reconnect.
+tunnel_dead() {
+  tail -c 300000 "$STATE/pipewire.log" 2>/dev/null | grep -v overrun | tail -n 5 |
+    grep -qi 'connection failure\|connection terminated'
+}
+
+log_tails() {
+  local l
+  for l in pipewire wireplumber; do
+    echo "--- last lines of $STATE/$l.log (overrun lines removed):" >&2
+    grep -v overrun "$STATE/$l.log" 2>/dev/null | tail -n 12 >&2 || true
+  done
+}
+
 do_audio() {
   check_host
   check_wslg
   runtime_dir
   write_pipewire_config
-  local ours="$STATE/pipewire.pid"
   if command -v systemctl >/dev/null && systemctl --user is-active -q pipewire 2>/dev/null; then
     # systemd is enabled in this distro and runs PipeWire per user. Restart
     # it once, so the drop-ins written above are read.
@@ -212,25 +308,30 @@ do_audio() {
       systemctl --user restart pipewire wireplumber
       touch "$STATE/systemd-restarted"
     fi
-  elif pw_up; then
-    say "PipeWire is already running; reusing it"
   else
-    say "starting PipeWire and WirePlumber (logs in $STATE)"
-    if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
-      # WirePlumber needs a session bus; WSL without systemd has none.
-      eval "$(dbus-launch --sh-syntax)"
-      echo "export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'" >"$STATE/dbus.env"
+    if pw_up; then
+      say "PipeWire is already running; reusing it"
+      ensure_wireplumber
+    else
+      start_cold
     fi
-    setsid pipewire >"$STATE/pipewire.log" 2>&1 < /dev/null &
-    echo $! >"$ours"
-    setsid wireplumber >"$STATE/wireplumber.log" 2>&1 < /dev/null &
-    echo $! >"$STATE/wireplumber.pid"
+    if speakers_up && tunnel_dead; then
+      say "the WSLg tunnel lost its connection; restarting PipeWire"
+      kill_ours
+      start_cold
+    fi
+    if ! wait_for 10 speakers_up; then
+      ls /usr/lib/*/pipewire-0.3/libpipewire-module-pulse-tunnel.so >/dev/null 2>&1 ||
+        die "PipeWire's pulse-tunnel module is not installed (libpipewire-0.3-modules)"
+      say "the $SPEAKERS node did not appear; restarting PipeWire once"
+      kill_ours
+      start_cold
+    fi
   fi
   wait_for 10 pw_up || die "PipeWire never answered; see $STATE/pipewire.log"
-  if ! wait_for 10 bash -c "pw-link -i 2>/dev/null | grep -q '^$SPEAKERS:'"; then
-    ls /usr/lib/*/pipewire-0.3/libpipewire-module-pulse-tunnel.so >/dev/null 2>&1 ||
-      die "PipeWire's pulse-tunnel module is not installed (libpipewire-0.3-modules)"
-    die "the $SPEAKERS node never appeared; see $STATE/pipewire.log"
+  if ! wait_for 10 speakers_up; then
+    log_tails
+    die "the $SPEAKERS node never appeared (even after a restart); logs above"
   fi
   say "PipeWire up; speakers: $(node_ports "$SPEAKERS" -i | tr '\n' ' ')"
   if wait_for 5 bash -c "pw-link -o 2>/dev/null | grep -q '^$MIC:'"; then
@@ -407,6 +508,40 @@ PY
   say "selftest passed; the files are in $dir"
 }
 
+# --- stop, status ----------------------------------------------------------
+
+do_stop() {
+  # Engine and UI only: PipeWire stays up.
+  pkill -TERM -x sonora-ui 2>/dev/null || true
+  pkill -TERM -x sonora-engine 2>/dev/null || true
+  for _ in $(seq 50); do  # up to 5 s for the engine to write its session
+    pgrep -x sonora-engine >/dev/null || pgrep -x sonora-ui >/dev/null || break
+    sleep 0.1
+  done
+  pkill -KILL -x sonora-engine 2>/dev/null || true
+  pkill -KILL -x sonora-ui 2>/dev/null || true
+  sleep 0.2
+  if pgrep -x sonora-engine >/dev/null || pgrep -x sonora-ui >/dev/null; then
+    die "could not stop the engine or UI"
+  fi
+  say "stopped"
+}
+
+do_status() {
+  local up=0 n
+  for n in sonora-engine sonora-ui pipewire; do
+    if pgrep -x "$n" >/dev/null; then
+      say "$n: running"
+      [[ $n == pipewire ]] || up=1
+    else
+      say "$n: not running"
+    fi
+  done
+  if [[ -S $WSLG_PULSE ]]; then say "WSLg audio: present"; else say "WSLg audio: MISSING"; fi
+  if [[ -x "$BUILD/sonora-engine" ]]; then say "build: present"; else say "build: missing"; fi
+  return $((1 - up))
+}
+
 # --- main ------------------------------------------------------------------
 
 cmd="${1:-all}"
@@ -416,8 +551,10 @@ case "$cmd" in
   build) do_build ;;
   audio) do_audio ;;
   run) [[ "${1:-}" == -- ]] && shift; do_run -- "$@" ;;
+  stop) do_stop ;;
+  status) do_status ;;
   selftest) do_selftest "$@" ;;
   all|--) [[ "${1:-}" == -- ]] && shift; do_deps; do_build; do_run -- "$@" ;;
-  -h|--help) sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown step $cmd (see --help)" ;;
 esac

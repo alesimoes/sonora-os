@@ -16,6 +16,10 @@
 *.md      text eol=lf
 *.yml     text eol=lf
 
+# Windows launchers: cmd.exe misparses labels and multi-line blocks with LF.
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+
 *.iso  binary
 *.wav  binary
 *.msq  binary
