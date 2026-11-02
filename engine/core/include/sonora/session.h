@@ -726,7 +726,21 @@ private:
     // The coefficients of engine track e at timeline frame t, L and R,
     // before mute and solo.
     void auto_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, int64_t t,
-                    float& l, float& r) const noexcept SONORA_RT;
+                    float& l, float& r) noexcept SONORA_RT;
+    // What auto_gains() and send_lane_gains() did before the lane grid was
+    // shared: each lane searched and each powf taken per call. The test
+    // reference (fresh_lanes_) the shared path must match bit for bit.
+    void auto_gains_fresh(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, int64_t t,
+                          float& l, float& r) const noexcept SONORA_RT;
+    void send_lane_gains_fresh(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t k,
+                               int64_t t, float& l, float& r) const noexcept SONORA_RT;
+    // Track e's lanes at grid point t this mix call, the parts `want` names
+    // (bits kAutoVolume, kAutoPan) evaluated on first use: a fader and its
+    // sends at the same frames share one search and one powf (PR #271
+    // audit, F1).
+    struct LaneGrid;
+    const LaneGrid& lane_grid(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e,
+                              int64_t t, uint8_t want) noexcept SONORA_RT;
     // Each engine track's automated parameters this callback, and whether
     // its fader crossfades from what it last applied (ADR-0027 §4).
     void automation_targets(const PlaybackPlan& plan, bool rolling,
@@ -761,8 +775,10 @@ private:
                   uint32_t lag) noexcept SONORA_RT;
     // Send k's coefficients at lane frame t, L and R, before its own level
     // and mute: the lanes its SendLane bits name, the static values else.
+    // `sl`, `sr`: the pan law of the send's static pan, which a block
+    // takes once.
     void send_lane_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t k, int64_t t,
-                         float& l, float& r) const noexcept SONORA_RT;
+                         float sl, float sr, float& l, float& r) noexcept SONORA_RT;
     // This block's send and return targets, from the mix state (ADR-0022
     // §6). A send or return the last callback did not play starts from
     // silence.
@@ -1041,6 +1057,27 @@ private:
         uint8_t ramp = 0;
     };
     std::unique_ptr<SendLane[]> send_lane_;
+    // lane_grid()'s memo, lane_grid_slots_ per engine track, direct-mapped
+    // by grid index: a mix call's contiguous run of grid points never
+    // evicts itself. An entry holds only within the mix call that wrote it
+    // (`stamp`), since the lanes, a Touch return and the plan change
+    // between calls.
+    struct LaneGrid {
+        uint64_t stamp = 0;
+        int64_t t = 0;
+        uint32_t row = 0;
+        uint8_t have = 0;
+        float gain = 0.0f;
+        float pan_l = 0.0f;
+        float pan_r = 0.0f;
+    };
+    std::unique_ptr<LaneGrid[]> lane_grid_;
+    uint32_t lane_grid_slots_ = 1;
+    uint64_t mix_stamp_ = 0;
+    // Lane searches lane_param() ran, for a test to count.
+    mutable uint64_t lane_evals_ = 0;
+    // Set only by a test, before any callback: the per-call reference path.
+    bool fresh_lanes_ = false;
     std::unique_ptr<float[]> aux_gain_;     // per bus, L and R, end of last block
     std::unique_ptr<float[]> aux_target_;
     std::unique_ptr<uint64_t[]> aux_stamp_;

@@ -10,10 +10,17 @@
 // delay line, a kept send survives a swap, and the PDC line budget. And a
 // send's level and an aux's gain ridden alone, as live parameters. And a
 // post-fader or follow-pan send under a lane takes it per frame, as the
-// fader does, behind a chain too (ADR-0027 §8).
+// fader does, behind a chain too (ADR-0027 §8). And those sends share the
+// fader's lane evaluations, bit for bit what each evaluating alone gave,
+// through seeks and loop wraps (PR #271 audit, F1), with the cost of the
+// worst block at 128 tracks of 10 sends each reported.
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
+#include <random>
 #include <vector>
 
 #define PLAYBACK_TEST_COUNT_HEAP 1
@@ -21,6 +28,15 @@
 #include "sonora/insert_chain_runner.h"
 #include "sonora/plan_graph.h"
 #include "sonora/session.h"
+
+// The lane path's reference switch and its search count are private to
+// Session; only a test defines this.
+namespace sonora {
+struct SessionTestAccess {
+    static void set_fresh_lanes(Session& s, bool on) { s.fresh_lanes_ = on; }
+    static uint64_t lane_evals(const Session& s) { return s.lane_evals_; }
+};
+}  // namespace sonora
 
 namespace {
 
@@ -113,7 +129,8 @@ struct Rig {
                        uint32_t buses, const std::vector<uint32_t>& order, DelayLinePool& pool,
                        float pan_exponent = 0.5f,
                        const std::vector<sonora::PlanAutoPoint>& volume = {},
-                       const std::vector<sonora::PlanAutoPoint>& pan = {}) {
+                       const std::vector<sonora::PlanAutoPoint>& pan = {},
+                       uint32_t lane_tracks = 1) {
         const auto tracks = static_cast<uint32_t>(session->tracks().size());
         std::vector<ChainBinding> c = chains;
         c.resize(tracks);
@@ -136,13 +153,18 @@ struct Rig {
             p->tracks[t].engine_track = t;
             p->tracks[t].channels = 1;
         }
-        // The lanes are track 0's.
+        // The lanes are track 0's, or the first `lane_tracks` tracks' all
+        // reading the same points.
+        const auto vn = static_cast<uint32_t>(volume.size());
+        const auto pn = static_cast<uint32_t>(pan.size());
+        for (uint32_t t = 0; t < lane_tracks && t < tracks; ++t) {
+            p->tracks[t].auto_first[sonora::kAutoVolume] = 0;
+            p->tracks[t].auto_count[sonora::kAutoVolume] = vn;
+            p->tracks[t].auto_first[sonora::kAutoPan] = vn;
+            p->tracks[t].auto_count[sonora::kAutoPan] = pn;
+        }
         uint32_t at = 0;
-        p->tracks[0].auto_first[sonora::kAutoVolume] = at;
-        p->tracks[0].auto_count[sonora::kAutoVolume] = static_cast<uint32_t>(volume.size());
         for (const sonora::PlanAutoPoint& v : volume) p->auto_points[at++] = v;
-        p->tracks[0].auto_first[sonora::kAutoPan] = at;
-        p->tracks[0].auto_count[sonora::kAutoPan] = static_cast<uint32_t>(pan.size());
         for (const sonora::PlanAutoPoint& v : pan) p->auto_points[at++] = v;
         sonora::layout_mix_graph(*p, c.data(), mix);
         sonora::compensate(*p, session->max_delay_frames(), pool);
@@ -152,9 +174,17 @@ struct Rig {
     bool publish(PlaybackPlan* p) { return playback_test::publish_plan(*session, p); }
 
     void block(uint32_t n = kBlock) {
+        fill(n);
+        run(n);
+    }
+
+    void fill(uint32_t n) {
         for (auto& v : in) {
             for (uint32_t i = 0; i < n; ++i) v[i] = signal(frame + i);
         }
+    }
+
+    void run(uint32_t n) {
         sonora::backend::AudioBlock b{};
         b.inputs = in_ptrs.data();
         b.input_count = static_cast<uint32_t>(in_ptrs.size());
@@ -828,6 +858,272 @@ int test_send_out_of_range_is_refused() {
     return 0;
 }
 
+// Random lanes on every track: volume in dB with steps (two points on one
+// frame), pan across its range.
+std::vector<sonora::PlanAutoPoint> random_lane(std::mt19937& rng, uint32_t points, int64_t span,
+                                               float lo, float hi) {
+    std::uniform_int_distribution<int64_t> step(0, 2 * span / points);
+    std::uniform_real_distribution<float> value(lo, hi);
+    std::vector<sonora::PlanAutoPoint> lane;
+    int64_t at = 0;
+    for (uint32_t i = 0; i < points; ++i) {
+        // About one in eight a step: the next point on the same frame.
+        if (i == 0 || (rng() & 7u) != 0) at += step(rng);
+        lane.push_back({at, value(rng)});
+    }
+    return lane;
+}
+
+// One of the two rigs the identity test plays in lockstep: 4 tracks, two
+// of them behind a latent chain so their sends read the lanes lagged, and
+// sends post- and pre-fader, following the track's pan or their own.
+struct LaneRig {
+    Rig rig;
+    DelayRunner runner;
+    DelayLinePool pool;
+    bool published = false;
+
+    LaneRig(bool fresh, const std::vector<sonora::PlanAutoPoint>& volume,
+            const std::vector<sonora::PlanAutoPoint>& pan)
+        : rig(4, 256, 4), runner(2, 4096), pool(rig.session->delay_lines()) {
+        Session& s = *rig.session;
+        sonora::SessionTestAccess::set_fresh_lanes(s, fresh);
+        s.set_insert_chains(&runner);
+        std::vector<ChainBinding> chains(4);
+        const uint32_t latency[2] = {100, 37};
+        for (uint32_t c = 0; c < 2; ++c) {
+            ChainBinding& b = chains[1 + 2 * c];
+            b.active = true;
+            b.chain_id = 100 + c;
+            b.channel_slot = c;
+            b.param_store = 7 + c;
+            b.node_state = c;
+            b.latency_frames = latency[c];
+        }
+        std::vector<SendBinding> sends;
+        for (uint32_t t = 0; t < 4; ++t) {
+            s.tracks()[t]->set_pan(-0.75f + 0.5f * static_cast<float>(t));
+            s.tracks()[t]->set_gain(0.5f + 0.125f * static_cast<float>(t));
+            for (uint32_t j = 0; j < 4; ++j) {
+                const bool follow = (j & 1u) == 0;
+                const bool pre = j >= 2;
+                s.set_send(t, j, 0.25f + 0.0625f * static_cast<float>(t + j), 0.3f, follow, false,
+                           pre);
+                sends.push_back({t, j, j});
+            }
+        }
+        for (uint32_t b = 0; b < 4; ++b) s.set_aux(b, 1.0f, 0.0f, false);
+        const std::vector<uint32_t> order{0, 1, 2, 3};
+        published = rig.publish(rig.plan(chains, sends, 4, order, pool, 0.5f, volume, pan, 4));
+    }
+};
+
+bool settle_loop(Session& s, uint64_t a, uint64_t b) {
+    if (!s.set_loop(a, b)) return false;
+    for (int k = 0; k < 8 && s.loop_pending(); ++k) {
+        s.reader().run_pass();
+        s.pump_loop();
+    }
+    return !s.loop_pending();
+}
+
+// The fader and its sends share each grid point's lanes (PR #271 audit,
+// F1). Against the reference that evaluates per call, as before, the
+// output is the same bits, through callbacks cut at random sizes (past
+// max_block_frames too, so several mix calls each), seeks back and forth
+// and loop wraps, lagged sends included.
+int test_shared_lanes_are_bit_identical() {
+    std::mt19937 rng(271);
+    const auto volume = random_lane(rng, 300, 30000, -60.0f, 6.0f);
+    const auto pan = random_lane(rng, 300, 30000, -1.0f, 1.0f);
+    LaneRig shared(false, volume, pan);
+    LaneRig fresh(true, volume, pan);
+    CHECK(shared.published && fresh.published);
+    LaneRig* rigs[2] = {&shared, &fresh};
+    for (LaneRig* r : rigs) r->rig.session->play();
+    std::uniform_int_distribution<uint32_t> size(1, kMaxCallback);
+    std::uniform_int_distribution<uint64_t> where(0, 32000);
+    for (int blk = 0; blk < 600; ++blk) {
+        // A loop shorter than some callbacks wraps inside most of them.
+        if (blk == 200) {
+            for (LaneRig* r : rigs) CHECK(settle_loop(*r->rig.session, 2005, 2005 + 300));
+        }
+        if (blk == 400) {
+            for (LaneRig* r : rigs) CHECK(settle_loop(*r->rig.session, 0, 0));
+        }
+        // Stopped, every frame takes the lanes at the playhead.
+        if (blk == 450) {
+            for (LaneRig* r : rigs) r->rig.session->stop_playback();
+        }
+        if (blk == 500) {
+            for (LaneRig* r : rigs) r->rig.session->play();
+        }
+        if ((rng() % 16u) == 0) {
+            const uint64_t to = where(rng);
+            for (LaneRig* r : rigs) CHECK(r->rig.session->post_locate(to));
+        }
+        const uint32_t n = size(rng);
+        for (LaneRig* r : rigs) r->rig.block(n);
+        for (int side = 0; side < 2; ++side) {
+            const float* a = shared.rig.out[side].data();
+            const float* b = fresh.rig.out[side].data();
+            if (std::memcmp(a, b, n * sizeof(float)) == 0) continue;
+            uint32_t i = 0;
+            while (i < n && a[i] == b[i]) ++i;
+            std::fprintf(stderr, "  block %d frame %u side %d: shared %.9g, fresh %.9g\n", blk, i,
+                         side, static_cast<double>(a[i]), static_cast<double>(b[i]));
+            return 1;
+        }
+    }
+    const uint64_t shared_evals = sonora::SessionTestAccess::lane_evals(*shared.rig.session);
+    const uint64_t fresh_evals = sonora::SessionTestAccess::lane_evals(*fresh.rig.session);
+    CHECK(shared_evals * 2 < fresh_evals);
+    return 0;
+}
+
+// The lane searches one 64-frame block takes, off the grid, at 1 track
+// with `sends` post-fader follow-pan sends.
+uint64_t evals_per_block(uint32_t sends) {
+    const std::vector<sonora::PlanAutoPoint> volume = {{0, 0.0f}, {100000, -40.0f}};
+    const std::vector<sonora::PlanAutoPoint> pan = {{0, -1.0f}, {100000, 1.0f}};
+    Rig rig(1, 256, sonora::kStripSendSlots);
+    Session& s = *rig.session;
+    DelayLinePool pool(s.delay_lines());
+    std::vector<SendBinding> bindings;
+    std::vector<uint32_t> order;
+    for (uint32_t j = 0; j < sonora::kStripSendSlots; ++j) {
+        if (j < sends) {
+            s.set_send(0, j, 0.1f, 0.0f, true, false, false);
+            bindings.push_back({0, j, j});
+        }
+        s.set_aux(j, 1.0f, 0.0f, false);
+        order.push_back(j);
+    }
+    if (!rig.publish(rig.plan({}, bindings, sonora::kStripSendSlots, order, pool, 0.5f, volume,
+                              pan))) {
+        return ~uint64_t{0};
+    }
+    s.play();
+    rig.block(16);
+    rig.block();
+    const uint64_t before = sonora::SessionTestAccess::lane_evals(s);
+    rig.block();
+    return sonora::SessionTestAccess::lane_evals(s) - before;
+}
+
+// A post-fader, follow-pan send reads what the fader already evaluated:
+// ten of them add no lane search to the block (PR #271 audit, F1). The
+// fader's: 4 grid points x 2 lanes, and the 2 automation_targets() takes
+// at the callback's start. Before, each send repeated the 8.
+int test_sends_add_no_lane_search() {
+    const uint64_t fader = evals_per_block(0);
+    const uint64_t ten = evals_per_block(sonora::kStripSendSlots);
+    if (ten != fader) {
+        std::fprintf(stderr, "  lane searches a block: fader alone %llu, with 10 sends %llu\n",
+                     static_cast<unsigned long long>(fader), static_cast<unsigned long long>(ten));
+    }
+    CHECK(fader == 10);
+    CHECK(ten == fader);
+    return 0;
+}
+
+// 128 tracks, each with volume and pan lanes in Read and 10 post-fader
+// sends that follow its pan, one per bus. All tracks read the same points,
+// which keeps the plan at 2 MiB; the audit found the cost in the compute,
+// not in cache misses.
+struct CostRig {
+    Rig rig;
+    DelayLinePool pool;
+    bool published = false;
+
+    // `read` false: the lanes in the plan, every track in Off, the floor
+    // the sends cost without them.
+    CostRig(bool fresh, bool read, const std::vector<sonora::PlanAutoPoint>& volume,
+            const std::vector<sonora::PlanAutoPoint>& pan)
+        : rig(128, 256, sonora::kStripSendSlots), pool(rig.session->delay_lines()) {
+        Session& s = *rig.session;
+        sonora::SessionTestAccess::set_fresh_lanes(s, fresh);
+        if (!read) {
+            for (auto& t : s.tracks()) t->set_automation(sonora::Track::Automation::Off);
+        }
+        std::vector<SendBinding> sends;
+        for (uint32_t t = 0; t < 128; ++t) {
+            for (uint32_t j = 0; j < sonora::kStripSendSlots; ++j) {
+                s.set_send(t, j, 0.1f, 0.0f, true, false, false);
+                sends.push_back({t, j, j});
+            }
+        }
+        std::vector<uint32_t> order;
+        for (uint32_t b = 0; b < sonora::kStripSendSlots; ++b) {
+            s.set_aux(b, 1.0f, 0.0f, false);
+            order.push_back(b);
+        }
+        published = rig.publish(rig.plan({}, sends, sonora::kStripSendSlots, order, pool, 0.5f,
+                                         volume, pan, 128));
+        s.play();
+        // Off the grid by half a cell: each 64-frame block then spans three
+        // cells, four grid points, the worst without a wrap.
+        rig.block(16);
+    }
+};
+
+double percentile(std::vector<double> v, double q) {
+    std::sort(v.begin(), v.end());
+    return v[static_cast<std::size_t>(q * static_cast<double>(v.size() - 1))];
+}
+
+// The audit's worst block (128 tracks x 10 post-fader follow-pan sends,
+// 65,536-point lanes, 64-frame blocks off the grid), timed against the
+// reference path in the same run. Reported, not asserted: no kernel
+// calibrates a shared CI runner, so a bound in microseconds would be
+// flaky. The lane searches a block are exact, and asserted.
+int test_worst_block_cost() {
+    std::mt19937 rng(65536);
+    const auto volume = random_lane(rng, 65536, 65536 * 8, -40.0f, 0.0f);
+    const auto pan = random_lane(rng, 65536, 65536 * 8, -1.0f, 1.0f);
+    CostRig shared(false, true, volume, pan);
+    CostRig fresh(true, true, volume, pan);
+    CostRig off(false, false, volume, pan);
+    CHECK(shared.published && fresh.published && off.published);
+    CostRig* rigs[3] = {&shared, &fresh, &off};
+    std::vector<double> us[3];
+    uint64_t evals[3] = {0, 0, 0};
+    constexpr int kWarm = 20;
+    constexpr int kBlocks = 300;
+    reset_heap_counts();
+    for (int blk = 0; blk < kWarm + kBlocks; ++blk) {
+        // Interleaved, so a noisy spell of the host lands on both.
+        for (int r = 0; r < 3; ++r) {
+            Rig& rig = rigs[r]->rig;
+            rig.fill(kBlock);
+            const uint64_t e0 = sonora::SessionTestAccess::lane_evals(*rig.session);
+            const auto t0 = std::chrono::steady_clock::now();
+            rig.run(kBlock);
+            const auto t1 = std::chrono::steady_clock::now();
+            if (blk < kWarm) continue;
+            us[r].push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+            evals[r] += sonora::SessionTestAccess::lane_evals(*rig.session) - e0;
+        }
+    }
+    CHECK(heap_untouched());
+    const double deadline = 1e6 * kBlock / 48000.0;
+    const char* name[3] = {"shared", "fresh, as before", "lanes off"};
+    for (int r = 0; r < 3; ++r) {
+        std::printf("  128 tracks x 10 sends, 64 frames, %s: median %.0f us, p99 %.0f us, worst "
+                    "%.0f us of %.0f us; %llu lane searches a block\n",
+                    name[r], percentile(us[r], 0.5), percentile(us[r], 0.99),
+                    percentile(us[r], 1.0), deadline,
+                    static_cast<unsigned long long>(evals[r] / kBlocks));
+    }
+    // The fader's own, as test_sends_add_no_lane_search() counts them; each
+    // send repeated its 8 grid searches before.
+    const auto blocks = static_cast<uint64_t>(kBlocks);
+    CHECK(evals[0] == blocks * 128 * 10);
+    CHECK(evals[1] == blocks * 128 * (10 + 8 * sonora::kStripSendSlots));
+    CHECK(evals[2] == 0);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -851,6 +1147,9 @@ int main() {
     t(test_dry_mix_fits_at_default_sizes);
     t(test_post_fader_send_takes_the_lane_per_frame);
     t(test_follow_pan_send_takes_the_lane_per_frame);
+    t(test_sends_add_no_lane_search);
+    t(test_shared_lanes_are_bit_identical);
+    t(test_worst_block_cost);
     if (failed != 0) {
         std::fprintf(stderr, "sends: %d of %d failed\n", failed, run);
         return 1;
