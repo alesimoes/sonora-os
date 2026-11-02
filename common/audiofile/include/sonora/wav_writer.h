@@ -39,7 +39,9 @@ public:
     bool open(const std::string& path, uint32_t sample_rate, uint16_t channels,
               Format format, uint64_t time_reference);
 
-    // Writes interleaved float frames, converting to the on-disk format.
+    // Writes interleaved float frames, converting to the on-disk format, and
+    // hands them to the OS before returning: the stream is unbuffered, so
+    // frames_written() never counts a frame the OS has not taken.
     // Returns false and marks the take failed when the frames cannot all be
     // written: the file then ends at the last whole frame that was, and
     // every later call writes nothing until the next open().
@@ -57,15 +59,19 @@ public:
     // failed, if the disk reports the data could not be kept.
     bool checkpoint();
 
-    // Hands what write() buffered to the OS, without a sync: a kill -9
-    // after it loses none of it, a power cut may. Cheap, so the disk thread
+    // Hands anything still in stdio to the OS, without a sync: a kill -9
+    // after it loses none of it, a power cut may. write() leaves nothing
+    // there on an unbuffered stream, so this is cheap, and the disk thread
     // calls it every pass. Same thread as write(). False, doing nothing, if
     // no take is open or it has failed; false, marking the take failed, if
     // the write fails.
     bool flush();
 
     // Patches the RIFF/data sizes, pads an odd data chunk, and closes. Safe
-    // to call twice.
+    // to call twice. On a failed take the sizes count only the whole frames
+    // the file holds, measured on disk, and never more than were written; a
+    // pad the disk refuses costs the last frame instead, and fails the take.
+    // frames_written() then says what the header says.
     bool close();
 
     // Replaces the time_reference given to open(); close() writes it. For an

@@ -96,10 +96,12 @@ void put_origination(char* field, const std::tm& t) {
     std::memcpy(field, text, sizeof text);
 }
 
-bool put_frames(std::FILE* f, WavWriter::Format format, const float* in,
-                std::size_t samples) {
+// Returns the bytes fwrite reports written, which on the writer's
+// unbuffered stream are the bytes the OS took.
+std::size_t put_frames(std::FILE* f, WavWriter::Format format, const float* in,
+                       std::size_t samples) {
     if (format == WavWriter::Format::Float32) {
-        return std::fwrite(in, sizeof(float), samples, f) == samples;
+        return std::fwrite(in, sizeof(float), samples, f) * sizeof(float);
     }
     std::vector<uint8_t> packed(samples * 3);
     for (std::size_t i = 0; i < samples; ++i) {
@@ -108,7 +110,7 @@ bool put_frames(std::FILE* f, WavWriter::Format format, const float* in,
         packed[i * 3 + 1] = static_cast<uint8_t>((v >> 8) & 0xFF);
         packed[i * 3 + 2] = static_cast<uint8_t>((v >> 16) & 0xFF);
     }
-    return std::fwrite(packed.data(), 1, packed.size(), f) == packed.size();
+    return std::fwrite(packed.data(), 1, packed.size(), f);
 }
 
 }  // namespace
@@ -138,6 +140,13 @@ bool WavWriter::open(const std::string& path, uint32_t sample_rate,
     // by the interface the engine starts while a take is open.
     file_ = platform::create_exclusive(path);
     if (!file_) return false;
+    // Unbuffered, so a frame write() counts is one the OS has taken. With
+    // stdio's buffer, frames counted there were lost when the disk refused
+    // the flush, and the header claimed them. The disk thread writes whole
+    // chunks and flushed every pass anyway, so this costs no extra calls
+    // where it matters. Must precede any other operation on the stream; if
+    // it fails, close() still measures a failed take on disk.
+    std::setvbuf(file_, nullptr, _IONBF, 0);
     path_ = path;
     format_ = format;
     channels_ = channels;
@@ -232,11 +241,13 @@ bool WavWriter::write(const float* interleaved, std::size_t frames) {
         static_cast<std::size_t>(std::min<uint64_t>(frames, left));
 
     if (fit > 0) {
-        if (!put_frames(file_, format_, interleaved, fit * channels_)) {
+        const std::size_t bytes = put_frames(file_, format_, interleaved, fit * channels_);
+        // A part frame past the last whole one is cut off by close().
+        frames_written_ += bytes / bpf;
+        if (bytes < fit * bpf) {
             fail(std::strerror(errno));
             return false;
         }
-        frames_written_ += fit;
     }
     if (fit < frames) {
         fail(kLimitReason);
@@ -305,31 +316,63 @@ bool WavWriter::flush() {
 
 bool WavWriter::close() {
     if (!file_) return true;
-    const uint64_t data_bytes = frames_written_ * bytes_per_frame();
+    const uint64_t bpf = bytes_per_frame();
+    const uint64_t audio_start = static_cast<uint64_t>(data_size_offset_) + 4;
+    // Bytes past the last whole frame: a part frame a failed write left.
+    // Unknown when the file cannot be measured; a pad is then not written.
+    uint64_t tail = 0;
+    bool tail_known = true;
+    if (failed()) {
+        // The disk is the authority on what it holds. write() counts only
+        // what the OS took, so this changes nothing unless the stream could
+        // not be made unbuffered or the OS took less than it said.
+        std::error_code ec;
+        const uint64_t size = std::filesystem::file_size(path_, ec);
+        if (!ec) {
+            const uint64_t held = size > audio_start ? (size - audio_start) / bpf : 0;
+            frames_written_ = std::min(frames_written_, held);
+            const uint64_t audio_end = audio_start + frames_written_ * bpf;
+            tail = size > audio_end ? size - audio_end : 0;
+        } else {
+            tail_known = false;
+        }
+    }
+    uint64_t data_bytes = frames_written_ * bpf;
     // RIFF chunks start on even offsets, so odd-sized data is followed by a
     // zero byte that the data chunk's size does not count but the RIFF size
     // does. Mono 24-bit with an odd frame count is the case that needs it.
-    const uint64_t pad = data_bytes % 2;
-    const uint64_t riff_bytes = kRiffOverhead + data_bytes + pad;
-
-    if (pad && !failed()) {
-        std::fseek(file_, 0, SEEK_END);
-        std::fputc(0, file_);
+    uint64_t pad = data_bytes % 2;
+    if (pad) {
+        // Right after the last whole frame, over the first byte of a part
+        // frame if there is one, which must read as zero. Sought from the
+        // end, as a long cannot hold a 4 GB offset on every platform.
+        const bool padded = tail_known &&
+                            std::fseek(file_, -static_cast<long>(tail), SEEK_END) == 0 &&
+                            std::fputc(0, file_) != EOF;
+        if (!padded) {
+            // A full disk can refuse even the one byte. The last frame goes
+            // rather than leave a RIFF size larger than the file; with an
+            // odd frame size that leaves the data even, needing no pad.
+            const int err = errno;
+            std::clearerr(file_);
+            --frames_written_;
+            data_bytes -= bpf;
+            pad = 0;
+            if (!failed()) fail(std::strerror(err));
+        }
     }
+    const uint64_t riff_bytes = kRiffOverhead + data_bytes + pad;
     patch_sizes(riff_bytes, data_bytes);
 
     bool ok = std::ferror(file_) == 0;
     ok = std::fclose(file_) == 0 && ok;
     file_ = nullptr;
     if (failed()) {
-        // A failed write can leave part of a frame past the last whole one,
-        // where the pad byte belongs. Cutting the file back to the audio
-        // and then growing it by the pad drops that tail and makes the pad
-        // zero, since a file grown by resize_file reads as zeros.
-        const uint64_t audio_end = 8 + riff_bytes - pad;
+        // Only ever shortens: drops a part frame, or the frame the pad
+        // could not follow. A failed take is never grown, since a full
+        // disk would refuse it and a grown file reads as invented zeros.
         std::error_code ec;
-        std::filesystem::resize_file(path_, audio_end, ec);
-        if (!ec && pad) std::filesystem::resize_file(path_, audio_end + pad, ec);
+        std::filesystem::resize_file(path_, 8 + riff_bytes, ec);
     }
     if (!ok && !failed()) fail("the file could not be finished on disk");
     return ok;

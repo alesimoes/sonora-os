@@ -283,6 +283,66 @@ int main() {
         CHECK(::access(path.c_str(), F_OK) != 0);
     }
 
+    // --- a take the disk refuses mid-way counts only what reached the file ---
+    //
+    // write() counted frames once fwrite had taken them into stdio's buffer.
+    // When the disk then refused the flush, up to a buffer's worth of
+    // counted frames never reached it: the header claimed 87424 frames on a
+    // file that held 87163 (tools/failed-take-quit.py, PR #246), and the
+    // grow close() tried cannot succeed on a full disk. A file-size limit
+    // stands in for the full disk, and stays in force through close().
+    {
+        const auto refused_take = [&](uint16_t channels, sonora::WavWriter::Format format,
+                                      uint32_t bpf, uint64_t room, uint64_t want_frames) {
+            std::remove(path.c_str());
+            const uint64_t header_end = 8 + kEmptyRiffSize;
+            rlimit before{};
+            if (::getrlimit(RLIMIT_FSIZE, &before) != 0) return false;
+            const auto old_handler = std::signal(SIGXFSZ, SIG_IGN);
+            rlimit tiny = before;
+            tiny.rlim_cur = header_end + room;
+
+            sonora::WavWriter w;
+            bool ok = w.open(path, 48000, channels, format, 0);
+            ok = ok && ::setrlimit(RLIMIT_FSIZE, &tiny) == 0;
+            // 0.3 packs to 66 66 26: a part frame left behind is not zero,
+            // so a pad written over it is seen to be.
+            const std::vector<float> block(64 * channels, 0.3f);
+            int refused_at = -1;
+            for (int i = 0; ok && i < 1000 && refused_at < 0; ++i) {
+                if (!w.write(block.data(), 64)) refused_at = i;
+            }
+            w.close();
+            const uint64_t counted = w.frames_written();
+            const bool failed = w.failed();
+            ::setrlimit(RLIMIT_FSIZE, &before);
+            std::signal(SIGXFSZ, old_handler);
+
+            const auto b = slurp(path);
+            const long data = find_chunk(b, "data");
+            if (!ok || refused_at < 0 || !failed || data <= 0) return false;
+            const uint64_t data_bytes = read_u32(b, data - 4);
+            std::fprintf(stderr, "refused take: %u ch, counted %llu, header %llu bytes, "
+                         "file %zu bytes past the header\n", channels,
+                         static_cast<unsigned long long>(counted),
+                         static_cast<unsigned long long>(data_bytes),
+                         b.size() - static_cast<std::size_t>(data));
+            return counted == want_frames && data_bytes == want_frames * bpf &&
+                   read_u32(b, 4) == b.size() - 8 &&
+                   b.size() == static_cast<std::size_t>(data) + data_bytes + data_bytes % 2 &&
+                   (data_bytes % 2 == 0 || b.back() == 0);
+        };
+        // Stereo float: 8 bytes a frame. The 5 bytes past the last whole
+        // frame are part of one, and are cut off.
+        CHECK(refused_take(2, sonora::WavWriter::Format::Float32, 8, 10005, 1250));
+        // Mono 24-bit: 3333 frames fill the room exactly, odd-sized, and the
+        // pad byte cannot be added past the limit. The last frame goes, so
+        // the data is even and the RIFF size is the file's.
+        CHECK(refused_take(1, sonora::WavWriter::Format::Int24, 3, 9999, 3332));
+        // One byte more, a part frame's first: the pad goes over it.
+        CHECK(refused_take(1, sonora::WavWriter::Format::Int24, 3, 10000, 3333));
+    }
+
     // --- bext carries the creation date and time, from the local clock ---
     //
     // The writer zero-filled OriginationDate and OriginationTime, which EBU
