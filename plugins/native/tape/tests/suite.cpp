@@ -26,6 +26,7 @@
 #include <tuple>
 #include <vector>
 
+#include "sonora/dsp/biquad.h"
 #include "sonora/dsp/math.h"
 #include "sonora/dsp/oversampling.h"
 #include "sonora/dsp/tape.h"
@@ -76,9 +77,10 @@ Chans aligned(Processor& p, const Chans& x) {
 
 // ---- against an independent render ------------------------------------------------
 
-// The chain in double with the tape model at 512 substeps a sample.
+// The chain in double with the tape model at 512 substeps a sample, and the
+// head bump (percent, as the processor's parameter) after the oversampler.
 std::vector<float> reference_render(const std::vector<float>& x, double fs, std::uint32_t factor,
-                                    dsp::TapeSpeed speed, dsp::TapeEq eq, double drive_db) {
+                                    dsp::TapeSpeed speed, dsp::TapeEq eq, double drive_db, double bump_pct = 0.0) {
     const double os_rate = fs * factor;
     dsp::Oversampler os;
     os.prepare(factor, 1, 128, std::fmin(0.4535, 20000.0 / fs));
@@ -90,6 +92,13 @@ std::vector<float> reference_render(const std::vector<float>& x, double fs, std:
     dsp::OnePoleZero lp = dsp::design_matched_one_pole(0.0, dsp::tape_head_loss_corner_hz(speed), os_rate);
     const double scale = dsp::db_to_gain(drive_db) * 2.0;
     const double norm = 1.0 / (h.initial_susceptibility() * 2.0);
+    dsp::FilterSpec spec;
+    spec.shape = dsp::Shape::BandPass;
+    spec.freq_hz = dsp::tape_bump_hz(speed);
+    spec.q = dsp::kTapeBumpQ;
+    const dsp::BiquadCoeffs bump = dsp::design_matched(spec, fs);
+    dsp::BiquadState bump_state;
+    const double bump_gain = (dsp::db_to_gain(dsp::kTapeBumpMaxDb) - 1.0) * 0.01 * bump_pct;
     std::vector<float> y(x.size() + os.latency() + 256, 0.0f), in = x, blk(128), out(128);
     in.resize(y.size(), 0.0f);
     for (std::size_t b = 0; b + 128 <= in.size(); b += 128) {
@@ -97,7 +106,10 @@ std::vector<float> reference_render(const std::vector<float>& x, double fs, std:
         double* u = os.up(0, blk.data(), 128);
         for (std::uint32_t i = 0; i < 128 * factor; ++i) u[i] = lp.tick(de.tick(h.tick_with(pre.tick(u[i]), 512)));
         os.down(0, out.data(), 128);
-        for (int k = 0; k < 128; ++k) y[b + k] = static_cast<float>(out[k] * norm);
+        for (int k = 0; k < 128; ++k) {
+            const double w = out[k];
+            y[b + k] = static_cast<float>((w + bump_gain * bump_state.tick(bump, w)) * norm);
+        }
     }
     y.erase(y.begin(), y.begin() + os.latency());
     y.resize(x.size());
@@ -139,6 +151,43 @@ void against_reference(Suite& s) {
         }
     }
     s.data().set("reference_quality_f_error", rows);
+}
+
+// The golden render itself (its input, its settings, standard quality),
+// both channels, against the reference chain. The tones above hold the
+// integrator one frequency at a time; the golden programme (noise burst, a
+// -6 dBFS sweep to 20 kHz, an impulse) reverses at every scale at once,
+// and moving from RK4 to the exponential integrator shifted it by 2.7e-4
+// FS at 44.1 kHz, more than either integrator's tone error (review of PR
+// #256): this says which of the two the goldens now sit on. The golden's
+// speed and EQ (15 in/s, NAB) are the reference's here. Only the
+// first 0.32 s, where the signal is (the rest is its tail into silence),
+// to keep the 512-substep reference inside the PR suite's minute.
+void golden_against_reference(Suite& s, const Config& golden) {
+    const double bar = s.bar("reference.max_error");
+    Config c = golden;
+    c.push_back({"quality", 1.0f});
+    float drive = 0.0f, bump = 0.0f;
+    for (const auto& [id, v] : golden) {
+        if (std::string(id) == "drive") drive = v;
+        if (std::string(id) == "bump") bump = v;
+    }
+    for (double fs : measure::kRates) {
+        // Quick mode: 44.1 kHz, where the RK4-to-exponential shift was largest.
+        if (measure::quick() && fs != 44100.0) continue;
+        auto p = measuring(s, fs, 2, c);
+        Chans x = measure::golden_input(fs, 0.32);
+        const Chans y = aligned(*p, x);
+        double worst = 0.0;
+        // Quick mode: the left channel (the burst and the louder sweep).
+        for (std::size_t ch = 0; ch < (measure::quick() ? 1u : 2u); ++ch) {
+            const auto ref = reference_render(x[ch], fs, 4, dsp::TapeSpeed::Ips15, dsp::TapeEq::Nab, drive, bump);
+            for (std::size_t n = 0; n < x[ch].size(); ++n)
+                worst = std::fmax(worst, std::fabs(static_cast<double>(y[ch][n]) - static_cast<double>(ref[n])));
+        }
+        s.check_le("golden programme against the reference chain, standard, " + hz(fs) + ": max |difference|", worst,
+                   bar, "FS");
+    }
 }
 
 // ---- response ---------------------------------------------------------------------
@@ -474,6 +523,7 @@ int tape(const measure::Args& args) {
     motion(s);
     hot_input(s);
     const Config golden = tape_golden_config();
+    golden_against_reference(s, golden);
     std::vector<std::pair<std::string, Config>> latency;
     for (int q = 0; q < 3; ++q) {
         const float qf = static_cast<float>(q);

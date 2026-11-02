@@ -73,7 +73,7 @@ struct JilesAthertonParams {
     double ms = 1.0;      // saturation magnetisation (units of M)
     double a = 1.0;       // anhysteretic shape, in units of H
     double k = 0.45;      // pinning: loop width, in units of H
-    double c = 0.8;       // reversibility (1: anhysteretic, no loop)
+    double c = 0.8;       // reversibility (1: anhysteretic; kept below, see kMaxReversibility)
     double alpha = 0.2;   // domain coupling (the mean field)
 };
 
@@ -225,8 +225,21 @@ public:
     }
     std::uint32_t max_substeps() const noexcept { return max_substeps_; }
 
+    // The largest reversibility c that set_params keeps. The algebraic form
+    // divides by 1 - c (Mirr = (M - c Man) / (1 - c)), which is 0/0 at the
+    // anhysteretic limit c = 1: a NaN the clamps let through, so the state
+    // never recovered. 1 - 1e-3 keeps that division's rounding amplified by
+    // at most 1e3 (about 1e-13 of Ms) and leaves a loop 1e-3 of the
+    // reversible curve wide, anhysteretic to well under 1 % of Ms
+    // (test_dsp_tape, test_reversibility_limit).
+    static constexpr double kMaxReversibility = 0.999;
+
+    // c outside [0, kMaxReversibility], or NaN, is clamped (NaN to the top);
+    // params() returns what was kept.
     void set_params(const JilesAthertonParams& p) noexcept {
         p_ = p;
+        if (!(p_.c <= kMaxReversibility)) p_.c = kMaxReversibility;
+        if (p_.c < 0.0) p_.c = 0.0;
         inv_a_ = 1.0 / p.a;
         inv_k_ = 1.0 / p.k;
         inv_sub_h_ = 1.0 / (kSubstepH * p.a);

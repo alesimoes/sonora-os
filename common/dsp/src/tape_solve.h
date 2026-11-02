@@ -3,7 +3,7 @@
 // The tape hysteresis' per-sample integrator (tape.h, TapeHysteresis),
 // written once over a lane type V, as triode_solve.h is: one instance
 // (TapeHysteresis::tick(), V of one double, in tape.cpp) and the
-// processor's two channels in lockstep (tape_tick_pair(), V of two
+// processor's two channels in lockstep (tape_run_pair(), V of two
 // doubles, in src/arch/<arch>/tape_pair.cpp) run the same operations in
 // the same order, so a channel's output does not depend on whether it ran
 // alone or beside another (test_dsp_tape checks it to the bit). Every

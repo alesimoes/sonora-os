@@ -278,6 +278,43 @@ int test_matched_pair() {
     return 0;
 }
 
+// c = 1 is the model's anhysteretic limit, but Mirr = (M - c Man) / (1 - c)
+// is 0/0 there: the state went NaN and stayed NaN. set_params clamps c to
+// [0, kMaxReversibility]; a NaN c takes the top. The state stays finite,
+// and at the top the loop has all but closed (a 40 a sweep leaves about
+// 0.6 Ms of remanence at the default c = 0.8; 1.5e-4 Ms here, measured).
+int test_reversibility_limit() {
+    for (double c : {1.0, 1.5, std::nan(""), -0.5}) {
+        JilesAthertonParams p;
+        p.c = c;
+        TapeHysteresis t;
+        t.set_params(p);
+        CHECK(t.params().c >= 0.0 && t.params().c <= TapeHysteresis::kMaxReversibility);
+        CHECK(std::isfinite(t.tick(0.5)));
+        CHECK(std::isfinite(t.tick_with(0.25, 64)));
+        CHECK(std::isfinite(t.initial_susceptibility()));
+        for (int i = 0; i < 2000; ++i) {
+            const double m = t.tick(40.0 * std::sin(kTwoPi * i / 500.0));
+            CHECK(std::isfinite(m));
+            CHECK(std::fabs(m) <= 1.0);
+        }
+    }
+    JilesAthertonParams p;
+    p.c = 1.0;
+    TapeHysteresis t;
+    t.set_params(p);
+    // Saturate, return to H = 0 from above, then from below.
+    for (int i = 0; i <= 100; ++i) t.tick(40.0 * i / 100.0);
+    for (int i = 100; i >= 0; --i) t.tick(40.0 * i / 100.0);
+    const double from_above = t.magnetisation();
+    for (int i = 0; i <= 100; ++i) t.tick(-40.0 * i / 100.0);
+    for (int i = 100; i >= 0; --i) t.tick(-40.0 * i / 100.0);
+    const double from_below = t.magnetisation();
+    std::printf("c = 1 (clamped to %.17g): remanence %.3g Ms\n", t.params().c, 0.5 * (from_above - from_below));
+    CHECK_LE(std::fabs(from_above - from_below), 2e-3, "c = 1 is all but anhysteretic");
+    return 0;
+}
+
 int test_head() {
     for (TapeSpeed s : {TapeSpeed::Ips7_5, TapeSpeed::Ips15, TapeSpeed::Ips30}) {
         CHECK(tape_head_loss(20.0, s) > 0.999);
@@ -303,6 +340,7 @@ int main() {
     failed += test_exp_neg();
     failed += test_integrator_converges();
     failed += test_integrator_bounded();
+    failed += test_reversibility_limit();
     failed += test_pair_matches_tick();
     failed += test_loop();
     failed += test_matched_pair();
