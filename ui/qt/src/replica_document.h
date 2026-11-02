@@ -72,6 +72,8 @@ public:
     bool redo(std::string& why) override;
     bool can_undo() const override { return shown_.can_undo(); }
     bool can_redo() const override { return shown_.can_redo(); }
+    // A Load, or one of its parts, is sent and the engine has not accepted it.
+    bool opening() const override;
     std::string undo_label() const override { return shown_.undo_label(); }
     std::string redo_label() const override { return shown_.redo_label(); }
     // What is shown: the engine's steps with the requests in flight on top.

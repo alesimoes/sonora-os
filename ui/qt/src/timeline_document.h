@@ -58,6 +58,10 @@ public:
     virtual bool redo(std::string& why) = 0;
     virtual bool can_undo() const = 0;
     virtual bool can_redo() const = 0;
+    // A session Open is sent and not yet answered, so every edit, undo and
+    // redo is refused ("still opening"). Read-only: asking changes nothing.
+    // A document held here opens at once.
+    virtual bool opening() const { return false; }
     // What undo and redo would move over (History::undo_label): a
     // compound's label ("Paste"), else the operation's type. Empty when
     // there is nothing to undo or redo.
