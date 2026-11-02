@@ -217,11 +217,14 @@ void draw_autolane(const Snapshot& s, const TrackEdit& t, int i, int l, const Vi
     add(out.rects, 0, std::floor(v.autolane_y(i, l, unity)), v.width, 1, theme::kAutomationGuide);
 
     Frames ra = sel.start, rb = sel.end;
-    bool ranged = sel.autolane == l && sel.track == i && sel.has_range();
-    if (drag.kind == Drag::Kind::Range && drag.autolane == l && drag.track == i && drag.moved) {
+    // A range covers this lane on every track from the first to the last it
+    // reaches, so the operator sees each curve an edit of it will change.
+    bool ranged = sel.autolane == l && sel.covers(i) && sel.has_range();
+    if (drag.kind == Drag::Kind::Range && drag.autolane >= 0 && drag.moved) {
         ra = drag.start;
         rb = drag.end;
-        ranged = rb > ra;
+        ranged = drag.autolane == l && i >= std::min(drag.track, drag.track_end) &&
+                 i <= std::max(drag.track, drag.track_end) && rb > ra;
     }
     if (ranged) {
         const double x0 = std::max(0.0, v.x_of(ra));

@@ -201,10 +201,12 @@ public:
     // (ADR-0027 §7). How the operator works, so kept when a session opens.
     bool automation_follows_edit() const { return automation_follows_edit_; }
     void set_automation_follows_edit(bool on) { automation_follows_edit_ = on; }
-    // The lanes the last region move or clear went ahead without, too full
-    // to follow it (follow_move_ops), named, so the operator learns the
-    // automation did not go with the region. Empty once taken, and when
-    // every lane followed.
+    // What the last edit went ahead without, named, so the operator learns
+    // the automation did not go where the edit implied: the lanes a region
+    // move or clear left behind, too full to follow it (follow_move_ops),
+    // and the tracks a lane range covered but whose lanes are hidden, or a
+    // paste had no track for. Shown held, not on the status line. Empty
+    // once taken, and when nothing was left out.
     std::string take_follow_notice() { return std::exchange(follow_notice_, std::string()); }
 
     // --- selection ---
@@ -327,14 +329,19 @@ public:
     // release. The Smart Tool and the Grabber add a breakpoint where the lane
     // is pressed or move the one there; the Pencil draws freely (thinned at
     // the release); the Selector selects a range of the lane, which Cut,
-    // Copy, Paste and Clear then act on instead of the regions. Clear on a
-    // selected breakpoint deletes it.
+    // Copy, Paste, Clear and Thin then act on instead of the regions.
+    // Dragged across tracks, the range covers that lane on each (shown
+    // tracks only), and their edits go as one Compound, so one undo step.
+    // Clear on a selected breakpoint deletes it.
     bool autolanes_shown(int track) const;
     // Refused on a MIDI track, which has no audio to automate.
     bool toggle_autolanes(int track, std::string& why);
     // The lane under the selection: its track's edit state, or null.
     const model::AutomationLane* selected_lane() const;
-    const AutomationClip& automation_clipboard() const { return auto_clip_; }
+    // One clip a track the copied range covered, top down; a track with
+    // nothing to copy (no automation, its lanes hidden) holds an empty one,
+    // so a paste still lands every other clip on its own track.
+    const std::vector<AutomationClip>& automation_clipboard() const { return auto_clips_; }
 
     // --- markers: Pro Tools' Memory Locations (edit_markers.cpp) ---
     //
@@ -485,7 +492,18 @@ private:
     TimelineDocument& doc_;
     void refresh_rows() const;
     bool autolane_selected() const { return sel_.autolane >= 0; }
-    // Cut, Copy, Paste and Clear on the selected lane's range.
+    // Cut, Copy, Paste and Clear on the selected lane's range: that lane on
+    // every track the range covers that shows its lanes; the others are
+    // appended to `hidden` by name. Several lanes' edits go as one Compound.
+    std::vector<int> lane_range_tracks(std::vector<std::string>& hidden) const;
+    // "Audio 1's Volume lane" on one track, "the selected Volume lanes" on several.
+    std::string lane_range_label() const;
+    bool submit_lane_ops(std::vector<model::EditAutomation> ops, const char* gesture,
+                         const char* nothing_was, std::string& why);
+    // follow_notice_ for the tracks `gesture` left alone, its lanes hidden.
+    void note_lanes_hidden(const char* gesture, const std::vector<std::string>& tracks);
+    // After an undo or redo step.
+    void after_history_step();
     bool automation_copy(bool cut, std::string& why);
     bool automation_paste(std::string& why);
     bool automation_clear(std::string& why);
@@ -508,7 +526,7 @@ private:
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
     Clipboard clipboard_;
-    AutomationClip auto_clip_;
+    std::vector<AutomationClip> auto_clips_;
     std::set<model::Id> autolanes_open_;
     int repeat_count_ = 1;
     Locator locate_;
