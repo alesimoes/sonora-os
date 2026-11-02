@@ -17,6 +17,7 @@
 #include "sonora/api/messages.h"
 #include "sonora/command.h"
 #include "sonora/model/session_file.h"
+#include "sonora/model/session_template.h"
 #include "transport_model.h"
 
 namespace sonora::ui {
@@ -58,6 +59,7 @@ SessionModel::SessionModel(TimelineDocument& doc, const PeakSource& peaks, bool 
       peaks_(peaks),
       synthetic_peaks_(synthetic_peaks),
       sessions_dir_(default_sessions_dir()),
+      templates_dir_(default_templates_dir()),
       saved_revision_(doc.revision()),
       ctl_(doc) {
     updateCounters(true);
@@ -371,8 +373,7 @@ void SessionModel::installCommands(CommandRegistry& local) {
                     why = std::string("stop recording before ") + (copy ? "Save Copy In" : "Save As");
                     return false;
                 }
-                const QString root =
-                    engine_folder_.isEmpty() ? sessions_dir_ : QFileInfo(engine_folder_).absolutePath();
+                const QString root = saveAsRoot();
                 const std::string& n = ctl_.snapshot().settings.name;
                 const QString base = n.empty() ? QStringLiteral("Untitled") : q(n);
                 emit saveAsRequested(copy, unused_session_name(root, copy ? base + QStringLiteral(" copy") : base),
@@ -678,6 +679,7 @@ void SessionModel::documentUpdated() {
         for (SceneItem* item : items_) item->markOverlayDirty();
     }
     sync();
+    saveAfterOpen();
 }
 
 void SessionModel::onTransport(const TransportSnapshot& t, bool alive) {
@@ -1040,6 +1042,14 @@ bool has_inserts(const Snapshot& s) {
 }  // namespace
 
 bool SessionModel::saveSession(std::string& why) {
+    // A New from Template whose Save As failed: the engine is still in the
+    // template's folder, and a plain Save would leave its takes going there
+    // (ADR-0030 §3). The first save moves the session out instead.
+    if (file_.isEmpty() && inTemplateFolder()) {
+        const std::string& n = ctl_.snapshot().settings.name;
+        const QString base = n.empty() ? QStringLiteral("Untitled") : q(n);
+        return saveSessionAs(unused_session_name(sessions_dir_, base), false, why);
+    }
     return flushThenWrite(
         why, [this](std::string& w, std::string caution) { return writeSession(w, std::move(caution)); });
 }
@@ -1061,9 +1071,7 @@ bool SessionModel::saveSessionAs(const QString& name, bool copy, std::string& wh
         why = "cannot save as \"" + wanted.toStdString() + "\": " + bad;
         return false;
     }
-    // Beside the folder the session is in, on its filesystem, so Save As can
-    // link the audio rather than copy it (ADR-0018 §5).
-    const QString root = engine_folder_.isEmpty() ? sessions_dir_ : QFileInfo(engine_folder_).absolutePath();
+    const QString root = saveAsRoot();
     if (QFileInfo::exists(QDir(root).filePath(wanted))) {
         why = "a folder named \"" + wanted.toStdString() + "\" is already in " + root.toStdString() +
               "; choose another name";
@@ -1080,14 +1088,19 @@ bool SessionModel::saveSessionAs(const QString& name, bool copy, std::string& wh
 }
 
 bool SessionModel::writeSessionAs(const SaveAsTarget& target, std::string& why, std::string caution) {
-    Snapshot to_write = ctl_.snapshot();
+    model::TemplateOptions options;
+    options.markers = target.markers;
+    Snapshot to_write = target.as_template ? model::template_of(ctl_.snapshot(), options) : ctl_.snapshot();
     // Save As renames the session to its new folder; a copy is named after
     // its folder too, so the Open list and the file agree.
     to_write.settings.name = target.name.toStdString();
-    if (to_write.settings.session_id.empty()) to_write.settings.session_id = model::new_session_id();
+    // A template is no session: it has no id until a session is made from it.
+    if (!target.as_template && to_write.settings.session_id.empty()) {
+        to_write.settings.session_id = model::new_session_id();
+    }
     model::WriteInfo info;
     info.written_by = "sonora-ui";
-    info.save_generation = save_generation_ + 1;
+    info.save_generation = target.as_template ? 1 : save_generation_ + 1;
     std::string bytes, error;
     if (!model::serialize(to_write, info, bytes, error, &digests_)) {
         why = "the session could not be saved: " + error;
@@ -1116,18 +1129,24 @@ bool SessionModel::writeSessionAs(const SaveAsTarget& target, std::string& why, 
     auto now = std::make_shared<Inline>();
     auto pending = std::make_shared<Written>(std::move(w));
     const bool copy = target.copy;
+    const bool as_template = target.as_template;
     doc_.save_session_as(
         target.file.toStdString(), flags, std::move(bytes),
-        [this, ticket, now, pending, copy](bool ok, const std::string& message) {
+        [this, ticket, now, pending, copy, as_template](bool ok, const std::string& message) {
             if (ticket != write_ticket_) return;
             save_writing_ = false;
             std::string why;
             bool saved = false;
             const QString folder = QFileInfo(pending->file).absolutePath();
             if (!ok) {
-                why = std::string(copy ? "the copy was not saved: " : "the session was not saved as ") +
-                      (copy ? message : QFileInfo(folder).fileName().toStdString() + ": " + message);
+                why = as_template ? "the template was not saved: " + message
+                      : std::string(copy ? "the copy was not saved: " : "the session was not saved as ") +
+                            (copy ? message : QFileInfo(folder).fileName().toStdString() + ": " + message);
                 sync();
+            } else if (as_template) {
+                saved = true;
+                emit notice(QStringLiteral("Saved the template ") + pending->file +
+                            (message.empty() ? QString() : QStringLiteral(", but ") + q(message)));
             } else if (copy) {
                 saved = true;
                 emit notice(QStringLiteral("Saved a copy in ") + pending->file +
@@ -1155,8 +1174,9 @@ bool SessionModel::writeSessionAs(const SaveAsTarget& target, std::string& why, 
         why = now->why;
         return now->saved;
     }
-    emit notice(copy ? QStringLiteral("Saving a copy in ") + target.file
-                     : QStringLiteral("Saving as ") + target.file);
+    emit notice(as_template ? QStringLiteral("Saving the template ") + target.file
+                : copy      ? QStringLiteral("Saving a copy in ") + target.file
+                            : QStringLiteral("Saving as ") + target.file);
     sync();
     return true;
 }
@@ -1438,6 +1458,8 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     }
     ctl_.document_replaced();
     live_.clear();
+    // Another session now: a New from Template's Save As still waiting is not its.
+    after_open_.reset();
     before_open_.valid = true;
     before_open_.opened = file;
     before_open_.file = file_;
@@ -1523,6 +1545,9 @@ void SessionModel::dismissRepair(int index) {
 }
 
 void SessionModel::openWasRefused(const QString& why, bool later_load) {
+    // A New from Template's Save As is for the session the engine refused,
+    // unless a later Load, which may be the template's, is still out.
+    if (!later_load) after_open_.reset();
     if (later_load) {
         // What is shown is the later Open's session, and the window names
         // it. What that Open remembered is the refused session, so its own
@@ -1560,6 +1585,7 @@ void SessionModel::openWasRefused(const QString& why, bool later_load) {
 }
 
 void SessionModel::openWasLost() {
+    after_open_.reset();
     before_open_ = BeforeOpen{};
     const QString lost = file_;
     file_.clear();
@@ -1640,6 +1666,8 @@ bool SessionModel::openRecordingFolder(const QString& folder, bool discard, std:
     }
     ctl_.document_replaced();
     live_.clear();
+    // Another session now: a New from Template's Save As still waiting is not its.
+    after_open_.reset();
     before_open_.valid = true;
     before_open_.opened = folder;
     before_open_.file = file_;
@@ -1665,6 +1693,175 @@ bool SessionModel::openRecordingFolder(const QString& folder, bool discard, std:
     emit notice(QStringLiteral("Opened the unsaved recording ") + name +
                 QStringLiteral("; place its takes, then save to name it"));
     return true;
+}
+
+// --- Session templates (ADR-0030) ---
+
+QString SessionModel::saveAsRoot() const {
+    // Beside the folder the session is in, on its filesystem, so Save As can
+    // link the audio rather than copy it (ADR-0018 §5).
+    if (engine_folder_.isEmpty() || inTemplateFolder()) return sessions_dir_;
+    return QFileInfo(engine_folder_).absolutePath();
+}
+
+bool SessionModel::inTemplateFolder() const {
+    if (engine_folder_.isEmpty() || templates_dir_.isEmpty()) return false;
+    const QString root = QDir::cleanPath(QFileInfo(templates_dir_).absoluteFilePath());
+    const QString folder = QDir::cleanPath(QFileInfo(engine_folder_).absoluteFilePath());
+    return folder.startsWith(root + QLatin1Char('/'));
+}
+
+bool SessionModel::saveSessionAsTemplate(const QString& name, bool markers, std::string& why) {
+    if (overlay_.recording) {
+        why = "stop recording before Save as Template: the take being written belongs to this "
+              "session's folder";
+        return false;
+    }
+    if (save_waiting_ || save_writing_) {
+        why = "a save is still in hand; Save as Template once it is written";
+        return false;
+    }
+    const QString wanted = name.trimmed();
+    const std::string bad = session_name_problem(wanted);
+    if (!bad.empty()) {
+        why = "cannot save the template \"" + wanted.toStdString() + "\": " + bad;
+        return false;
+    }
+    if (QFileInfo::exists(QDir(templates_dir_).filePath(wanted))) {
+        why = "a template named \"" + wanted.toStdString() + "\" is already in " +
+              templates_dir_.toStdString() + "; choose another name";
+        return false;
+    }
+    SaveAsTarget target;
+    target.file = session_file_path(templates_dir_, wanted);
+    target.name = wanted;
+    target.copy = true;
+    target.audio = false;
+    target.as_template = true;
+    target.markers = markers;
+    return flushThenWrite(why, [this, target](std::string& w, std::string caution) {
+        return writeSessionAs(target, w, std::move(caution));
+    });
+}
+
+bool SessionModel::newSessionFromTemplate(const QString& file, const QString& name, bool discard,
+                                          std::string& why) {
+    if (overlay_.recording) {
+        why = "a take is open; stop recording before starting a session from a template";
+        return false;
+    }
+    if (save_waiting_ || save_writing_) {
+        why = "a save is still being written; start the new session once it is saved";
+        return false;
+    }
+    if (dirty() && !discard) {
+        why = "this session has unsaved edits; save it first, or start the new one with \"Discard "
+              "edits\"";
+        return false;
+    }
+    const QString wanted = name.trimmed();
+    const std::string bad = session_name_problem(wanted);
+    if (!bad.empty()) {
+        why = "cannot name the session \"" + wanted.toStdString() + "\": " + bad;
+        return false;
+    }
+    // Checked before the Load, so the Save As after it is refused only by
+    // the medium.
+    if (QFileInfo::exists(QDir(sessions_dir_).filePath(wanted))) {
+        why = "a folder named \"" + wanted.toStdString() + "\" is already in " +
+              sessions_dir_.toStdString() + "; choose another name";
+        return false;
+    }
+    std::string bytes;
+    model::Loaded loaded;
+    if (!read_session_file(file, bytes, loaded, why)) {
+        why = "the template " + file.toStdString() + " could not be read: " + why;
+        return false;
+    }
+    const uint32_t rate = ctl_.snapshot().settings.sample_rate;
+    if (loaded.snapshot.settings.sample_rate != rate) {
+        why = "the template is at " + std::to_string(loaded.snapshot.settings.sample_rate) +
+              " Hz and this system runs at " + std::to_string(rate) +
+              " Hz; it cannot play here until sample-rate conversion exists";
+        return false;
+    }
+    Snapshot made =
+        model::session_from_template(loaded.snapshot, wanted.toStdString(), model::new_session_id());
+    // The template's path: the engine enters its folder, so each plugin
+    // starts from the state the template keeps there (ADR-0030 §3).
+    const std::string path = QFileInfo(file).absoluteFilePath().toStdString();
+    if (!doc_.reset(std::move(made), path, why)) {
+        emit openNotice(file + QStringLiteral(" was not opened: ") + q(why));
+        return false;
+    }
+    ctl_.document_replaced();
+    live_.clear();
+    // Another session now: a New from Template's Save As still waiting is not its.
+    after_open_.reset();
+    before_open_.valid = true;
+    before_open_.opened = file;
+    before_open_.file = file_;
+    before_open_.saved_revision = saved_revision_;
+    before_open_.save_generation = save_generation_;
+    before_open_.saved_bytes = saved_bytes_;
+    before_open_.repairs = repairs_;
+    emit openNotice(QString());
+    // Nothing on disk holds it yet, so it reads as unsaved until the Save As.
+    file_.clear();
+    saved_bytes_.clear();
+    save_generation_ = 0;
+    saved_revision_ = UINT64_MAX;
+    seen_dirty_ = false;
+    seen_revision_ = UINT64_MAX;
+    seen_sel_valid_ = seen_view_valid_ = false;
+    setRepairs({});
+    updateCounters(true);
+    sync();
+    emit sessionChanged();
+    emit sessionOpened();
+
+    SaveAsTarget target;
+    target.file = session_file_path(sessions_dir_, wanted);
+    target.name = wanted;
+    after_open_ = target;
+    emit notice(QStringLiteral("Making the session ") + wanted + QStringLiteral(" from the template ") +
+                QFileInfo(file).dir().dirName());
+    // A document held here has taken the Load already.
+    if (!doc_.opening()) saveAfterOpen();
+    return true;
+}
+
+void SessionModel::saveAfterOpen() {
+    if (!after_open_ || doc_.opening()) return;
+    const SaveAsTarget target = *after_open_;
+    after_open_.reset();
+    std::string why;
+    if (!writeSessionAs(target, why, std::string())) {
+        emit heldNotice(QStringLiteral("The session ") + target.name +
+                        QStringLiteral(" was not made from the template: ") + q(why) +
+                        QStringLiteral(". It is open unsaved; its first save puts it in ") + sessions_dir_);
+    }
+}
+
+QVariantList SessionModel::templateList() const {
+    QVariantList out;
+    for (const SessionEntry& e : list_sessions(templates_dir_)) {
+        QVariantMap m;
+        m.insert(QStringLiteral("name"), e.name);
+        m.insert(QStringLiteral("file"), e.file);
+        out << m;
+    }
+    return out;
+}
+
+bool SessionModel::saveAsTemplate(const QString& name, bool markers) {
+    std::string why;
+    return run(saveSessionAsTemplate(name, markers, why), why);
+}
+
+bool SessionModel::newFromTemplate(const QString& file, const QString& name, bool discard) {
+    std::string why;
+    return run(newSessionFromTemplate(file, name, discard, why), why);
 }
 
 // --- Mix window ---

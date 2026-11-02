@@ -243,6 +243,13 @@ target_link_libraries(test_ui_session_open PRIVATE sonora_ui_qt sonora_session_f
 add_test(NAME ui_session_open COMMAND test_ui_session_open)
 set_tests_properties(ui_session_open PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# Session templates (ADR-0030): Save as Template and New from Template in
+# the window, behind common/session_files and on FakeEngine.
+add_executable(test_ui_session_templates tests/test_session_templates.cpp)
+target_link_libraries(test_ui_session_templates PRIVATE sonora_ui_qt sonora_session_files sonora_sha256)
+add_test(NAME ui_session_templates COMMAND test_ui_session_templates)
+set_tests_properties(ui_session_templates PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # The Mix window on the monitor bus, on FakeEngine: typed gain and pan,
 # strips by display order, fader rides (ParameterChange per step, one SetMix
 # at release), Alt- and Ctrl-clicks on solo and mute; then the QML.

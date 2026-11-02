@@ -55,6 +55,13 @@ public:
                                          const std::vector<api::CommandReply>& replies)>;
     // Called from poll() with what arrived for the model, possibly nothing.
     void setModelSink(ModelSink sink) { model_sink_ = std::move(sink); }
+    // Called from poll() with each SessionFolder event (ADR-0018 §4), before
+    // the model sink: the engine announces a Save As's new folder before its
+    // reply, and the reply's handler decides from the folder whether the
+    // session moved. The shell's own sessionFolder signal comes only after
+    // poll() returns, too late for a reply in the same poll.
+    using FolderSink = std::function<void(const std::string& folder, bool untitled)>;
+    void setFolderSink(FolderSink sink) { folder_sink_ = std::move(sink); }
     uint64_t submitModel(const api::ModelRequest& request);
 
     // Which connection to the engine is up: 0 for none, and a new value for
@@ -83,6 +90,7 @@ private:
     api::EngineControl& engine_;
     EngineInfo info_;
     ModelSink model_sink_;
+    FolderSink folder_sink_;
     ConnectionProbe probe_;
     LinkSink link_sink_;
     LinkError link_error_;

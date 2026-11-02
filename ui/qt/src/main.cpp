@@ -518,6 +518,9 @@ int main(int argc, char** argv) {
     document.on_refused = [&session](const std::string& why) {
         emit session.notice(QString::fromStdString(why));
     };
+    engine.setFolderSink([&session](const std::string& folder, bool untitled) {
+        session.setEngineFolder(QString::fromStdString(folder), untitled);
+    });
     engine.setModelSink([&document, &session](const std::vector<api::ModelUpdate>& updates,
                                               const std::vector<api::CommandReply>& replies) {
         if (document.receive(updates, replies)) session.documentUpdated();

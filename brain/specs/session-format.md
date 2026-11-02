@@ -36,6 +36,15 @@ folder of this shape, its media hard-linked or copied from the old one and
 the session file written last, and the session moves there; the old folder
 is left as it was. Save Copy In does the same and stays.
 
+A **session template** (ADR-0030) is a folder of this shape in the per-user
+templates folder (`$SONORA_TEMPLATES_DIR`, else
+`$XDG_DATA_HOME/sonora/Session Templates`): a session file of the current
+version, with no key of its own, holding the setup and none of the
+material (no region, no source, no `left_takes`, an empty `session_id`),
+and the `Plugin State/` files it names. Save as Template writes it as a Save
+Copy In without audio; New from Template reads it as any session file and
+Saves As out of it, so the version rules below apply to it unchanged.
+
 Two rules govern the relationship between the file and the audio:
 
 1. **A closed audio file is never modified.** Not by a save, not by an edit,

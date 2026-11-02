@@ -28,6 +28,13 @@ namespace sonora::ui {
 // partition keeps across boots (ADR-0005).
 QString default_sessions_dir();
 
+// Where session templates are kept (ADR-0030 §4): $SONORA_TEMPLATES_DIR,
+// else $XDG_DATA_HOME/sonora/Session Templates (~/.local/share/...). Apart
+// from the sessions folder, so Open never lists a template. The layout is
+// the sessions folder's, <dir>/<Name>/<Name>.sonora, so list_sessions()
+// lists them.
+QString default_templates_dir();
+
 // Why `name` cannot name a session folder, or empty when it can. Refused
 // rather than rewritten, so the folder is called what the session is.
 std::string session_name_problem(const QString& name);
