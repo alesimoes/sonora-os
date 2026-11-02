@@ -70,6 +70,13 @@ QString default_sessions_dir() {
         .filePath(QStringLiteral("Sessions"));
 }
 
+QString default_templates_dir() {
+    const QString env = qEnvironmentVariable("SONORA_TEMPLATES_DIR");
+    if (!env.isEmpty()) return env;
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
+        .filePath(QStringLiteral("sonora/Session Templates"));
+}
+
 std::string session_name_problem(const QString& name) {
     if (name.trimmed().isEmpty()) return "a session needs a name";
     if (name != name.trimmed()) return "a session name cannot start or end with a space";

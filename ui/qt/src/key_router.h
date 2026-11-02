@@ -78,6 +78,11 @@ public:
     // range is set). transport.punch_selection gets it, always, as the
     // punch range.
     void setPlayRange(std::function<std::string()> range) { play_range_ = std::move(range); }
+    // Why the window refuses an Engine command before it is sent, or empty.
+    // A refused one is not sent: it comes back Local and Failed, with the
+    // reason as its message.
+    using Refusal = std::function<std::string(const std::string& command)>;
+    void setRefusal(Refusal refusal) { refusal_ = std::move(refusal); }
     // api::Hello::capabilities, replaced on each new Hello.
     void setEngineCapabilities(std::vector<std::string> caps) { caps_ = std::move(caps); }
     const std::vector<std::string>& engineCapabilities() const { return caps_; }
@@ -139,6 +144,7 @@ private:
     std::vector<KeyChord> device_;
     std::function<int()> selected_;
     std::function<std::string()> play_range_;
+    Refusal refusal_;
     std::vector<std::string> caps_;
     bool commands_focus_ = true;
 };

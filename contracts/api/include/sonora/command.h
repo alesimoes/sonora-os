@@ -328,6 +328,28 @@ inline bool is_engine_command(const std::string& id) {
     return spec != nullptr && spec->domain == CommandDomain::Engine;
 }
 
+// The commands that start a take or set up the one a later press starts:
+// transport.record, toggle_record and punch start it (the engine's
+// starts_a_take()); record_ready arms it, after which Play is the take
+// (ADR-0009 update of 2026-11-01); punch_selection and toggle_loop_record
+// choose how the next take records. One list, so a window that must keep
+// every take out of a folder (ADR-0030 §3) refuses them all, and a new
+// command that starts one is added here and covered there.
+inline const std::vector<std::string>& take_commands() {
+    static const std::vector<std::string> ids = {
+        "transport.record",          "transport.toggle_record",   "transport.punch",
+        "transport.record_ready",    "transport.punch_selection", "transport.toggle_loop_record",
+    };
+    return ids;
+}
+
+inline bool is_take_command(const std::string& id) {
+    for (const std::string& t : take_commands()) {
+        if (t == id) return true;
+    }
+    return false;
+}
+
 // The last frame transport.locate moves to. Past the session end is a
 // playhead over silence, as in Pro Tools, and is allowed; this bound keeps
 // the reader's window arithmetic, in int64_t frames, far from overflow. At

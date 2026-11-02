@@ -518,6 +518,9 @@ int main(int argc, char** argv) {
     document.on_refused = [&session](const std::string& why) {
         emit session.notice(QString::fromStdString(why));
     };
+    engine.setFolderSink([&session](const std::string& folder, bool untitled) {
+        session.setEngineFolder(QString::fromStdString(folder), untitled);
+    });
     engine.setModelSink([&document, &session](const std::vector<api::ModelUpdate>& updates,
                                               const std::vector<api::CommandReply>& replies) {
         if (document.receive(updates, replies)) session.documentUpdated();
@@ -580,6 +583,7 @@ int main(int argc, char** argv) {
         [&session]() { return session.controller().selection().insertion; });
     transport.installCommands(router.local());
     router.setSelection([&session]() { return session.selectedTrackForCommands(); });
+    router.setRefusal([&session](const std::string& command) { return session.commandRefusal(command); });
     // Pro Tools plays a timeline selection, with pre- and post-roll.
     router.setPlayRange([&session]() {
         const auto& sel = session.controller().selection();

@@ -91,6 +91,12 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         catalog_ = std::move(inbox_.catalogs.back());
         catalog_new_ = true;
     }
+    if (folder_sink_) {
+        for (const api::EngineEvent& e : inbox_.events) {
+            if (e.kind != api::EventKind::SessionFolder) continue;
+            folder_sink_(e.text, (e.flags & api::kFolderUntitled) != 0);
+        }
+    }
     if (model_sink_) model_sink_(inbox_.model, model_replies_);
 
     // After the sink, so the replies the old connection did bring count.

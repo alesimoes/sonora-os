@@ -18,6 +18,7 @@
 #include <QStringList>
 #include <QVariantList>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -175,6 +176,10 @@ public:
         engine_untitled_ = untitled;
     }
     const QString& engineFolder() const { return engine_folder_; }
+    // Where Save as Template writes and New from Template lists
+    // (session_files.h default_templates_dir(), ADR-0030 §4).
+    void setTemplatesDir(const QString& dir) { templates_dir_ = dir; }
+    const QString& templatesDir() const { return templates_dir_; }
 
     // File > Save: to the file the session came from, or, the first time, to
     // a new folder named after the session ("Untitled" when it has no
@@ -203,6 +208,29 @@ public:
     // folder or names one that exists, while a take is open, and while a
     // save is in hand. A failure the engine reports later is a held notice.
     bool saveSessionAs(const QString& name, bool copy, std::string& why);
+    // File > Save as Template (ADR-0030 §3): model::template_of() of the
+    // session, markers only with `markers`, written by the engine as a Save
+    // Copy In without the audio to <templates>/<name>/<name>.sonora, with
+    // the plugin states it names, after the plugins' state is collected as
+    // for Save. The session stays as it is. Refused as Save Copy In is, and
+    // for a template name in use.
+    bool saveSessionAsTemplate(const QString& name, bool markers, std::string& why);
+    // New from Template (ADR-0030 §3): the template file read as a session
+    // file is, made a new session `name` (model::session_from_template(), a
+    // fresh id), loaded with the template's path so the plugins start from
+    // its states, and, once the engine has taken the Load, saved as
+    // <sessions>/<name>/<name>.sonora, where the session goes on. Refused
+    // while a take is open or a save is in hand, over unsaved edits unless
+    // `discard`, for a name in use in the sessions folder, and for a
+    // template at another sample rate. A Save As the engine refuses later
+    // is a held notice; the session is then open unsaved, and its first
+    // save goes to the sessions folder, never beside the template.
+    bool newSessionFromTemplate(const QString& file, const QString& name, bool discard,
+                                std::string& why);
+    // Why an Engine command must not be sent now, or empty (KeyRouter's
+    // refusal, ADR-0030 §3): Record and Record Ready while the engine is, or
+    // is about to be, in a template's folder, so no take ever lands there.
+    std::string commandRefusal(const std::string& command) const;
     // Save Copy In's "All audio files", kept between copies as Pro Tools does.
     bool copyWithAudio() const { return copy_with_audio_; }
     void setCopyWithAudio(bool on) {
@@ -400,6 +428,10 @@ public:
     // the folder, loaded with the folder's path, so the engine records
     // there and offers its takes for placing.
     Q_INVOKABLE bool openRecording(const QString& folder, bool discard);
+    // [{name, file}]: the templates (ADR-0030), for New from Template.
+    Q_INVOKABLE QVariantList templateList() const;
+    Q_INVOKABLE bool saveAsTemplate(const QString& name, bool markers);
+    Q_INVOKABLE bool newFromTemplate(const QString& file, const QString& name, bool discard);
     bool openRecordingFolder(const QString& folder, bool discard, std::string& why);
 
     // --- Mix window ---
@@ -511,7 +543,19 @@ private:
         QString name;
         bool copy = false;
         bool audio = true;
+        // Save as Template: template_of() is written, never the session.
+        bool as_template = false;
+        bool markers = false;
     };
+    // Where Save As puts a new folder: beside the engine's, on its
+    // filesystem, unless that is a template's folder (a New from Template
+    // whose Save As failed); then, as with no engine folder, the sessions
+    // folder.
+    QString saveAsRoot() const;
+    // The engine's folder is one of the templates folder's.
+    bool inTemplateFolder() const;
+    // Sends after_open_'s Save As once the engine has taken the Load.
+    void saveAfterOpen();
     // saveSession() and saveSessionAs()'s common part: the plugins' state,
     // then `write`.
     bool flushThenWrite(std::string& why, std::function<bool(std::string&, std::string)> write);
@@ -532,6 +576,7 @@ private:
     const PeakSource& peaks_;
     bool synthetic_peaks_;
     QString sessions_dir_;
+    QString templates_dir_;
     QString engine_folder_;
     bool engine_untitled_ = false;
     // What the saves of this window have hashed, so serialize() hashes only
@@ -549,6 +594,13 @@ private:
     QElapsedTimer save_wait_;
     qint64 flush_patience_ms_ = 10'000;
     bool copy_with_audio_ = true;
+    // New from Template's Save As, sent once the engine has taken the Load
+    // of the template's folder: sent with the Load, it would run against the
+    // session the engine kept if it refused the Load.
+    std::optional<SaveAsTarget> after_open_;
+    // From New from Template until its Save As is answered: Record is
+    // refused (commandRefusal), so no take starts in the template's folder.
+    bool making_from_template_ = false;
     EditController ctl_;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");

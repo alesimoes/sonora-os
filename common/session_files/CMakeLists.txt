@@ -19,4 +19,11 @@ if(UNIX)
   target_include_directories(test_session_copies PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
   target_link_libraries(test_session_copies PRIVATE sonora_session_files)
   add_test(NAME session_copies COMMAND test_session_copies)
+
+  # Session templates (ADR-0030): Save as Template and New from Template as
+  # the engine's Save Copy In and Save As run them.
+  add_executable(test_session_templates tests/test_session_templates.cpp)
+  target_include_directories(test_session_templates PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
+  target_link_libraries(test_session_templates PRIVATE sonora_session_files sonora_sha256)
+  add_test(NAME session_templates COMMAND test_session_templates)
 endif()

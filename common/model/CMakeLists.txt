@@ -14,6 +14,7 @@ set(SONORA_MODEL_SOURCES
   src/sequence_file.cpp
   src/replication.cpp
   src/session_file.cpp
+  src/session_template.cpp
 )
 add_library(sonora_model STATIC ${SONORA_MODEL_SOURCES})
 target_include_directories(sonora_model PUBLIC include)
@@ -52,6 +53,12 @@ target_link_libraries(test_model_session_file PRIVATE sonora_model_audited)
 target_compile_definitions(test_model_session_file PRIVATE
   SONORA_MODEL_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 add_test(NAME model_session_file COMMAND test_model_session_file)
+
+# Session templates (ADR-0030): what a template keeps and drops, read as a
+# session file, and a new session made from one.
+add_executable(test_model_session_template tests/test_session_template.cpp)
+target_link_libraries(test_model_session_template PRIVATE sonora_model_audited)
+add_test(NAME model_session_template COMMAND test_model_session_template)
 
 # Plugin inserts (ADR-0012 6): operations, undo under O1, refusals.
 add_executable(test_model_inserts tests/test_inserts.cpp)
