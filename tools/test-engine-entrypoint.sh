@@ -96,7 +96,7 @@ chmod 0700 "$XDG_RUNTIME_DIR"
 eval "$(dbus-launch --sh-syntax)"
 
 cleanup() {
-  for pid in "${PLAY_PID:-}" "${ENGINE_PID:-}" "${ONBOARD_PID:-}" "${HDMI_PID:-}" "${WIREPLUMBER_PID:-}" "${PIPEWIRE_PID:-}"; do
+  for pid in "${PLAY_PID:-}" "${ENGINE_PID:-}" "${ONBOARD_PID:-}" "${HDMI_PID:-}" "${DUP_A_PID:-}" "${DUP_B_PID:-}" "${WIREPLUMBER_PID:-}" "${PIPEWIRE_PID:-}"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
     fi
@@ -437,6 +437,63 @@ for tracks in auto 2; do
 done
 kill "$HDMI_PID" 2>/dev/null || true
 HDMI_PID=""
+
+echo "--- two units under one description: two devices, not one interleaved ---"
+# pipewire-jack names a JACK client after node.description and makes a clash
+# unique with "-<global id>": on each later port for adapter nodes, as ALSA
+# nodes are (the next block), and on the client name for separate JACK
+# clients, as here ("Dup Pro-46"). The engine must name both
+# forms "Dup Pro" and "Dup Pro (2)" (brain/research/
+# multichannel-usb-interfaces.md): unnamed, refused with both listed; named,
+# exactly that unit's two channels.
+DUP_NAME="Dup Pro"
+start_fake fake-dup-a "$DUP_NAME" "alsa:acp:DupA:0:capture"
+DUP_A_PID=$!
+wait_for_node_ports fake-dup-a
+start_fake fake-dup-b "$DUP_NAME" "alsa:acp:DupB:0:capture"
+DUP_B_PID=$!
+wait_for_node_ports fake-dup-b
+run_engine dup-unnamed --tracks auto --wait-for-inputs 2 --record 2
+[[ "$ENGINE_RC" == "1" ]] || fail_with "the engine exited $ENGINE_RC with two units of one model" dup-unnamed
+for listed in "\"$DUP_NAME\"" "\"$DUP_NAME (2)\""; do
+  grep -qF "$listed" /tmp/dup-unnamed.err || fail_with "the refusal does not list $listed" dup-unnamed
+done
+echo "refused: $(tail -1 /tmp/dup-unnamed.err)"
+for unit in "$DUP_NAME" "$DUP_NAME (2)"; do
+  run_engine dup-named --device "$unit" --tracks auto --wait-for-inputs 2 --record 2
+  [[ "$ENGINE_RC" == "0" ]] || fail_with "the engine exited $ENGINE_RC on --device \"$unit\"" dup-named
+  grep -q "^RESULT files=2 connected=2 " /tmp/dup-named.out ||
+    fail_with "--device \"$unit\" did not record exactly that unit's 2 channels" dup-named
+  echo "--device \"$unit\": $(grep "^RESULT" /tmp/dup-named.out)"
+done
+kill "$DUP_A_PID" "$DUP_B_PID" 2>/dev/null || true
+DUP_A_PID=""
+DUP_B_PID=""
+
+echo "--- two adapter nodes under one description: the port-suffix form ---"
+# Nodes as WirePlumber creates ALSA nodes: one JACK client, the later
+# node's ports suffixed ("Twin Pro:capture_AUX1-49"). Unsplit, both read as
+# one device and the engine recorded from it, interleaved. Nothing drives
+# these sinks, so only the refusal is checked here; drivers/fake and
+# test_port_devices check the channels.
+for n in a b; do
+  pw-cli create-node adapter \
+    "{ factory.name=support.null-audio-sink node.name=twin-$n node.description=\"Twin Pro\"
+       media.class=Audio/Source audio.channels=2 audio.position=[ AUX0 AUX1 ]
+       node.physical=true node.terminal=true port.physical=true object.linger=true object.path=\"alsa:acp:Twin$n:0:capture\" }" >/dev/null
+  for _ in $(seq 1 25); do
+    pw-link -o 2>/dev/null | grep -q "^twin-$n:capture_" && break
+    sleep 0.2
+  done
+done
+run_engine twin-unnamed --tracks auto --wait-for-inputs 2 --record 2
+[[ "$ENGINE_RC" == "1" ]] || fail_with "the engine exited $ENGINE_RC with two adapter nodes of one description" twin-unnamed
+for listed in '"Twin Pro"' '"Twin Pro (2)"'; do
+  grep -qF "$listed" /tmp/twin-unnamed.err || fail_with "the refusal does not list $listed" twin-unnamed
+done
+echo "refused: $(tail -1 /tmp/twin-unnamed.err)"
+pw-cli destroy twin-a >/dev/null
+pw-cli destroy twin-b >/dev/null
 
 echo "DEVICE POLICY PASS"
 

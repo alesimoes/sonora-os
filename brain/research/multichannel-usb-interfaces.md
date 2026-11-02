@@ -99,6 +99,53 @@ not report) or the USB port path (which changes when the cable moves) can.
 The fix belongs in the engine: a device whose ports carry that suffix is two
 devices, and is refused or split. Not verified on two real interfaces.
 
+**A second form, for JACK clients** [measured 2026-11-02, runtime
+container, PipeWire 1.4.2]. Two `sonora-fake-capture` clients with one
+`node.description` do not get port suffixes: the later *client* is renamed,
+
+    Dup Pro:capture_AUX0 [physical]
+    Dup Pro-46:capture_AUX0 [physical]
+
+while two `support.null-audio-sink` adapter nodes, re-measured the same
+day, still give `Dup Pro:capture_AUX1` and `Dup Pro:capture_AUX1-49`. ALSA
+nodes are adapter nodes, so the port form is the one two interfaces should
+produce. On 1.4.2 those ports were not JACK-physical with `port.physical`
+alone; on 1.6.9 (trixie-backports, #238), with `node.physical=true
+node.terminal=true` added, they are, and the engine sees them. Nothing
+drives those sinks in the container, so a take from them stalls ("no period
+for over a second"); the refusal is what can be checked there. Unsplit, the
+old engine took the pair as one device and recorded from it ("recording
+from Dup Pro (onboard)"): the bug, reproduced without hardware.
+
+**Split, then refused by the default policy** (2026-11-02). `port_units()`
+in `drivers/support/include/sonora/port_devices.h` takes a port whose name,
+or whose client name, ends in `-<digits>` *and* whose bare name exists too;
+`describe_ports()` calls the units "<description>", "<description> (2)",
+"(3)", ranked by the suffix ids, and numbers each one's channels from 0.
+Two USB units are then two USB devices, so `select_device()` refuses with
+both named unless `--device` picks one. Splitting was chosen over refusing
+in `describe_ports()` itself because it needs no new refusal path: the
+ambiguity refusal that already exists names both. What it does not make
+stable is *which* physical unit is "(2)": that follows the server's
+creation order, as the suffix does. A stable name needs a serial or the
+USB port path, which only the hardware can say whether to trust.
+
+Proven without hardware, twice: drivers/fake now suffixes a second
+same-named device's ports as pipewire-jack does (the conformance injection
+the backlog line asked for, `test_two_identical_units`), and
+`tools/test-engine-entrypoint.sh` starts two `sonora-fake-capture` clients
+with one `node.description` on the container's PipeWire and checks the
+engine refuses, both listed, and records exactly two channels from each
+when named. Measured with that block alone (the full script stopped
+earlier on xruns from a host loaded by other builds): before the change
+the refusal listed `"Dup Pro" "Dup Pro-46"` and `--device "Dup Pro (2)"`
+was not present; after, `"Dup Pro" "Dup Pro (2)"`, and each named unit
+gave `files=2 connected=2 buffer=128 xruns=0`. A second block creates two
+adapter nodes ("Twin Pro") and checks the refusal lists "Twin Pro" and
+"Twin Pro (2)"; on 1.6.9 it does. Both forms re-measured on 1.6.9 with the
+same results. Waits on hardware: two identical USB units, to see the
+suffix on real ALSA nodes and whether they report a usable serial.
+
 ## Verified by booting the image
 
 Measured 2026-10-11 in QEMU with an emulated `intel-hda` card, via
