@@ -3,18 +3,19 @@
 
 #include <cmath>
 
+#include "transformer_solve.h"
+
 namespace sonora::dsp {
 
 namespace {
 
-constexpr double kUMax = 1e6;
+using transformer_detail::kLanPerUnit;
 
-// The Langevin function and its derivative together. The closed form
-// cancels badly near 0 (coth x and 1/x both blow up), so a series takes over
-// under 0.1, where its first four terms are good to 1e-14. Above it one
-// exp serves both: with e = exp(-2|x|), coth|x| = (1 + e) / (1 - e) and
-// 1 / sinh^2 |x| = 4 e / (1 - e)^2, where a tanh and a sinh were two calls.
-void langevin_both(double x, double& l, double& dl) noexcept {
+// The Langevin function and its derivative, exactly, for the table
+// (prepare). The closed form cancels badly near 0 (coth x and 1/x both blow
+// up), so a series takes over under 0.1, where its first four terms are
+// good to 1e-14.
+void langevin_exact(double x, double& l, double& dl) noexcept {
     const double ax = std::fabs(x);
     if (ax < 0.1) {
         const double x2 = x * x;
@@ -22,19 +23,19 @@ void langevin_both(double x, double& l, double& dl) noexcept {
         dl = 1.0 / 3.0 - x2 * (1.0 / 15.0 - x2 * (2.0 / 189.0 - x2 / 675.0));
         return;
     }
-    const double e = std::exp(-2.0 * ax);
-    const double om = 1.0 - e;
-    const double inv = 1.0 / ax;
-    const double mag = (1.0 + e) / om - inv;
+    const double t = std::tanh(ax);
+    const double sh = std::sinh(ax);
+    const double mag = 1.0 / t - 1.0 / ax;
     l = x < 0.0 ? -mag : mag;
-    dl = inv * inv - 4.0 * e / (om * om);
+    dl = 1.0 / (ax * ax) - 1.0 / (sh * sh);
 }
 
 }  // namespace
 
 bool OutputStage::prepare(double sample_rate, std::uint32_t channels, const TransformerCircuit& c,
-                          const CoreParams& p) {
+                          const CoreParams& p, std::uint32_t substeps) {
     if (!(sample_rate > 0.0) || channels < 1 || channels > kMaxChannels) return false;
+    if (substeps < 1 || substeps > kMaxSubsteps) return false;
     if (!(c.volts_per_unit > 0.0) || !(c.r_source > 0.0) || !(c.r_load > 0.0) || !(c.c_reservoir > 0.0) ||
         !(c.v_rail_idle > c.v_knee + 1.0) || !(c.r_supply >= 0.0) || !(c.i_quiescent >= 0.0))
         return false;
@@ -44,146 +45,115 @@ bool OutputStage::prepare(double sample_rate, std::uint32_t channels, const Tran
     ckt_ = c;
     p_ = p;
     channels_ = channels;
+    substeps_ = substeps;
+    inv_substeps_ = 1.0 / substeps;
     t_ = 1.0 / sample_rate;
+    t_step_ = t_ * substeps;
     g_ = c.r_load / (c.r_source + c.r_load);
     rp_ = c.r_source * c.r_load / (c.r_source + c.r_load);
+    half_ = 0.5 * t_step_ * rp_;
+    inv_a_ = 1.0 / p.a;
+    inv_rs_ = 1.0 / c.r_source;
+    inv_out_ = 1.0 / (g_ * c.volts_per_unit);
+    for (std::uint32_t k = 0; k <= kLangevinSegments; ++k)
+        langevin_exact(static_cast<double>(k) / kLanPerUnit, lan_[k].l, lan_[k].dl);
+    set_solve_tolerance(kDefaultSolveTol);
+    // The demagnetised core's slope, on the anhysteretic curve, for the
+    // first step after a reset.
+    inv_slope_rest_ = 1.0 / (p.l_core * (1.0 + p.m_sat / (3.0 * p.a)) + half_);
     v_idle_ = c.v_rail_idle;
+    sag_ = -1.0;  // so set_sag recomputes
     set_sag(1.0);
     reset();
     return true;
 }
 
+void OutputStage::set_solve_tolerance(double output_tol) noexcept {
+    // A step of di in the magnetising current moves the output by
+    // rp di / (g vpu) in signal units (1.0 = full scale).
+    di_tol_ = output_tol * g_ * ckt_.volts_per_unit / rp_;
+}
+
 void OutputStage::reset() noexcept SONORA_RT {
-    for (Core& s : ch_) s = Core{};
+    for (Core& s : ch_) {
+        s = Core{};
+        s.inv_slope = inv_slope_rest_;
+    }
     vres_ = v_idle_;
     rail_ = v_idle_ - ckt_.v_knee;
     max_iter_seen_ = 0;
+    evals_ = steps_ = 0;
 }
 
 void OutputStage::set_sag(double amount) noexcept SONORA_RT {
-    sag_ = amount < 0.0 ? 0.0 : (amount > 1.0 ? 1.0 : amount);
+    amount = amount < 0.0 ? 0.0 : (amount > 1.0 ? 1.0 : amount);
+    // The processor sets it every sample; the divisions below only when it moves.
+    if (amount == sag_) return;
+    sag_ = amount;
     rsup_ = ckt_.r_supply * sag_;
     // The unloaded voltage that leaves v_idle_ at the quiescent current, so
     // the headroom at idle is the same at every sag setting.
     v_open_ = v_idle_ + ckt_.i_quiescent * rsup_;
+    if (rsup_ > 1e-9) {
+        // Backward Euler on C dV/dt = (Vopen - V) / Rsup - I over one step:
+        // V' = (V + a (Vopen / Rsup - I)) / (1 + a / Rsup), a = T / C.
+        sup_a_ = t_step_ / ckt_.c_reservoir;
+        sup_open_ = v_open_ / rsup_;
+        sup_inv_den_ = 1.0 / (1.0 + sup_a_ / rsup_);
+    }
 }
 
-OutputStage::Eval OutputStage::eval(const Core& s, double i) const noexcept SONORA_RT {
-    const double dh = i - s.i;
-    const double he = i + p_.alpha * s.m;
-    const double x = he / p_.a;
-    double lan, dlan;
-    langevin_both(x, lan, dlan);
-    const double man = p_.m_sat * lan;
-    const double dman = p_.m_sat / p_.a * dlan;
-    const double d = man - s.m_irr;
-    const double delta = dh > 0.0 ? 1.0 : (dh < 0.0 ? -1.0 : 0.0);
-    double m_irr = s.m_irr;
-    double dm_irr = 0.0;
-    if (delta * d > 0.0) {
-        // dMirr/dH = (Man - Mirr) / (delta k - alpha (Man - Mirr)). The
-        // denominator's floor is the guard against the non-physical region
-        // (k < alpha |d|) in which the textbook form runs backwards.
-        const double ad = std::fabs(d);
-        double den = p_.k - p_.alpha * ad;
-        const double floor_den = 0.05 * p_.k;
-        if (den < floor_den) den = floor_den;
-        const double f = ad / den;
-        m_irr = s.m_irr + dh * f;
-        if (delta * (m_irr - man) > 0.0) {
-            // A step must not carry Mirr past the curve it is chasing.
-            m_irr = man;
-        } else {
-            dm_irr = f + std::fabs(dh) * dman * p_.k / (den * den);
-        }
+void OutputStage::refine(Core& s, double rhs, double& i, EvalV<Lane1>& e, double& f, double& inv, double& di,
+                         std::uint32_t& n) const noexcept SONORA_RT {
+    const double half = half_;
+    const Core* sp[1] = {&s};
+    double lo, hi;
+    if (f > 0.0) {
+        hi = i;
+        lo = i - f / half;
+    } else {
+        lo = i;
+        hi = i - f / half;
     }
-    Eval e;
-    e.m_irr = m_irr;
-    e.m = m_irr + p_.c * (man - m_irr);
-    e.psi = p_.l_core * (i + e.m);
-    e.dpsi = p_.l_core * (1.0 + (1.0 - p_.c) * dm_irr + p_.c * dman);
-    return e;
+    while (n < kMaxIter) {
+        ++n;
+        double next = i + di;
+        if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
+        i = next;
+        e = eval_lanes<Lane1>(sp, Lane1(i));
+        f = e.psi.x - rhs + half * i;
+        if (f > 0.0) hi = i; else lo = i;
+        inv = 1.0 / (e.dpsi.x + half);
+        di = -(f * inv);
+        if (std::fabs(di) <= di_tol_ || hi - lo <= 1e-15 * (1.0 + std::fabs(i))) break;
+    }
+    // Stopped on the bracket (a kink the step cannot settle on) or on the
+    // bound: no extrapolation past the last evaluated point.
+    if (!(std::fabs(di) <= di_tol_)) di = 0.0;
 }
 
-double OutputStage::step(Core& s, double vs) noexcept SONORA_RT {
-    const double half = 0.5 * t_ * rp_;
-    const double rhs = s.psi + 0.5 * t_ * (g_ * vs + s.v);
-    // F(i) = psi(i) - rhs + half i: strictly increasing with slope >= half,
-    // so from F(i0) the root lies within |F(i0)| / half of i0.
-    // The state is the converged point of the last step, so F(s.i) needs no
-    // evaluation: s.psi is psi there. The first Newton step uses the slope
-    // kept from that step (the core's slope moves little in one sample);
-    // the bracket is then taken at the point it lands on, as before.
-    const double slope = s.slope > 0.0 ? s.slope : p_.l_core;
-    const double f0 = s.psi - rhs + half * s.i;
-    double i = s.i - f0 / (slope + half);
-    Eval e = eval(s, i);
-    double f = e.psi - rhs + half * i;
-    const double tol = 1e-11 * (1.0 + std::fabs(rhs));
-    std::uint32_t n = 1;
-    if (std::fabs(f) > tol) {
-        double lo, hi;
-        if (f > 0.0) {
-            hi = i;
-            lo = i - f / half;
-        } else {
-            lo = i;
-            hi = i - f / half;
-        }
-        while (n < kMaxIter) {
-            ++n;
-            double next = i - f / (e.dpsi + half);
-            if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
-            i = next;
-            e = eval(s, i);
-            f = e.psi - rhs + half * i;
-            if (f > 0.0) hi = i; else lo = i;
-            if (std::fabs(f) <= tol || hi - lo <= 1e-15 * (1.0 + std::fabs(i))) break;
-        }
+void OutputStage::process(const double* const* in, double* const* out) noexcept SONORA_RT {
+    process_block(in, out, 1, nullptr, 1);
+}
+
+void OutputStage::process_block(const double* const* in, double* const* out, std::uint32_t steps, const double* sag,
+                                std::uint32_t steps_per_sag) noexcept SONORA_RT {
+    if (steps_per_sag < 1) steps_per_sag = 1;
+    if (channels_ == 2 && pair_) {
+        transformer_process_pair(*this, in, out, steps, sag, steps_per_sag);
+    } else {
+        process_lanes<Lane1>(in, out, steps, sag, steps_per_sag);
     }
-    if (n > max_iter_seen_) max_iter_seen_ = n;
-    const double v = g_ * vs - rp_ * i;
-    s.psi = e.psi;
-    s.i = i;
-    s.v = v;
-    s.m = e.m;
-    s.m_irr = e.m_irr;
-    s.slope = e.dpsi;
-    return v;
 }
 
 void OutputStage::tick(const double* in, double* out) noexcept SONORA_RT {
-    const double vpu = ckt_.volts_per_unit;
-    const double rail = rail_;
-    double drawn = ckt_.i_quiescent;
-    for (std::uint32_t c = 0; c < channels_; ++c) {
-        double x = in[c];
-        if (!std::isfinite(x)) x = 0.0;
-        // |u| is capped before u^4: past 1e6 the soft clip is flat at the
-        // rail to 1e-6 relative, and u^4 (and x * vpu) can no longer reach
-        // inf, which would make vs = inf / inf = NaN and poison the state.
-        double u = x * vpu / rail;
-        if (!(u < kUMax)) u = kUMax;
-        if (!(u > -kUMax)) u = -kUMax;
-        const double u2 = u * u;
-        const double vs = rail * u / std::sqrt(std::sqrt(1.0 + u2 * u2));
-        const double v = step(ch_[c], vs);
-        // The primary's current, from the driver: push-pull draws it from
-        // the rail on both half cycles.
-        drawn += std::fabs(vs - v) / ckt_.r_source;
-        const double y = v / (g_ * vpu);
-        out[c] = std::isfinite(y) ? y : 0.0;
+    if (substeps_ != 1) {
+        for (std::uint32_t c = 0; c < channels_; ++c) out[c] = 0.0;
+        return;
     }
-    if (rsup_ <= 1e-9) {
-        vres_ = v_idle_;
-    } else {
-        // Backward Euler on C dV/dt = (Vopen - V) / Rsup - I: stable at any
-        // step, however light the source resistance.
-        const double a = t_ / ckt_.c_reservoir;
-        vres_ = (vres_ + a * (v_open_ / rsup_ - drawn)) / (1.0 + a / rsup_);
-    }
-    rail_ = vres_ - ckt_.v_knee;
-    if (rail_ < 10.0) rail_ = 10.0;
+    const double* ip[kMaxChannels] = {in, in + 1};
+    double* op[kMaxChannels] = {out, out + 1};
+    process(ip, op);
 }
 
 }  // namespace sonora::dsp

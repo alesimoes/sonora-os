@@ -766,13 +766,19 @@ void cpu_qualities(Suite& s, const Config& golden) {
         noisy.push_back({"noise", 100.0f});
         noisy.push_back({"hum", 100.0f});
         measure::check_cpu_on(s, noisy, programme, std::string(names[q]) + ", noise and hum 100 %", q == 0);
-        // Slice 3: the output stage in, a Newton solve per oversampled
-        // sample on top of the triode's. Reported, not held: see the PR.
+        // Slice 3: the output stage in, the core's solve once per base
+        // sample (eco) or two (standard, high) on top of the triode's.
+        // Reported, not held: at eco it adds about 14 us to a block on the
+        // reference machine, which leaves the hot programme at about 59 us
+        // against the 60 us bar and over cpu.p999_kernels x 1.15
+        // (brain/research/native-tube-n2.md, "Output stage at class B").
         Config xf = c;
         xf.push_back({"transformer", 100.0f});
         measure::check_cpu_on(s, xf, programme, std::string(names[q]) + ", transformer 100 %", false);
         Config xf_full = full;
         xf_full.push_back({"transformer", 100.0f});
+        measure::check_cpu_on(s, xf_full, hot, std::string(names[q]) + ", programme +12 dB, drive +36 dB, transformer 100 %",
+                              false);
         measure::check_cpu_on(s, xf_full, square, std::string(names[q]) + ", 0 dBFS square, drive +36 dB, transformer 100 %",
                               false);
     }
