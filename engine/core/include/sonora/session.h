@@ -698,8 +698,13 @@ private:
         Track::Monitor monitor = Track::Monitor::Auto;
         uint32_t input = 0;
         Track::Automation automation = Track::Automation::Read;
+        uint8_t touched = 0;   // Track::touched()
     };
     TrackMixView mix_view(const PlaybackPlan& plan, std::size_t e) const noexcept SONORA_RT;
+    // A new plan: what the audio thread keeps per engine track for live
+    // writes moves with the document track the plan's owners say it is
+    // (ADR-0027 §8). A track the last plan did not play starts clear.
+    void follow_track_owners(const PlaybackPlan& plan) noexcept SONORA_RT;
     // Zeroes what render_track() put in `out` at or past play_until_.
     void cut_at_roll_end(float* const out[2], uint32_t offset, uint32_t n) const noexcept SONORA_RT;
     // Step 3: the track's ramped gain and pan, from `in` into stereo `out`.
@@ -956,6 +961,10 @@ private:
     std::unique_ptr<uint8_t[]> auto_live_;
     std::unique_ptr<uint8_t[]> auto_live_last_;
     std::unique_ptr<uint8_t[]> auto_latched_;
+    // The document track the last plan played on each engine track (0:
+    // none), and room for auto_latched_ and auto_live_ while they move.
+    std::unique_ptr<uint64_t[]> auto_owner_;
+    std::unique_ptr<uint8_t[]> auto_moved_;
     static constexpr int64_t kNoReturn = INT64_MIN;
     std::unique_ptr<int64_t[]> return_at_;
     std::unique_ptr<float[]> return_from_;
@@ -967,6 +976,7 @@ private:
     std::atomic<uint32_t> auto_unlatch_{0};
     uint32_t auto_unlatch_seen_ = 0;
     uint64_t auto_pass_ = 0;
+    uint64_t auto_pass_epoch_ = 0;   // AutomationWrite::epoch
     bool pass_rolling_ = false;
 
     // Sends and aux returns (ADR-0022). The atomics are the control

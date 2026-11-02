@@ -455,6 +455,9 @@ private:
     // Write" step, and its Write tracks fall back to Latch.
     void follow_automation();
     void finish_pass();
+    // The pass's lanes as one "Automation Write" step; false, and a held
+    // notice, when the document refuses it.
+    bool apply_pass(std::vector<model::EditAutomation>& edits);
     // A Load: the open pass was written against the old document.
     void drop_pass();
     // Held record replies, once the controller no longer waits to start.
@@ -560,9 +563,9 @@ private:
     // The pass being collected (0: none) and what it holds so far, reserved
     // when it opens; the drain buffer, sized once.
     uint64_t pass_open_ = 0;
-    // The last pass a Load began during; it and every earlier one are never
-    // written.
-    uint64_t pass_dropped_ = 0;
+    // The last plan epoch given out before the last Load: a pass begun on
+    // it or an earlier plan is never written (AutomationWrite::epoch).
+    uint64_t dropped_epoch_ = 0;
     PassWrites pass_writes_;
     std::vector<AutomationWrite> pass_drain_;
     uint64_t write_overruns_said_ = 0;

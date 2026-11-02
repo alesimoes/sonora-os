@@ -414,6 +414,121 @@ int test_a_release_while_moving_reaches_its_track() {
     return 0;
 }
 
+std::vector<sonora::AutomationWrite> drained(Session& s) {
+    std::vector<sonora::AutomationWrite> got(256);
+    got.resize(s.take_automation_writes(got.data(), got.size()));
+    return got;
+}
+
+// A and B, both in `mode`, rolling; then the reorder that puts B over A.
+// Every block, before the plan that moves them is published and after,
+// stamps one volume write of a whole block, on B's engine track only: 1
+// before the swap, 0 from it on.
+bool b_alone_writes_through_the_reorder(History& h, PlaybackController& ctl, Session& s) {
+    Out o;
+    std::string error;
+    if (!h.apply(ReorderTracks{{102, 100}}, error)) {
+        std::fprintf(stderr, "  reorder: %s\n", error.c_str());
+        return false;
+    }
+    if (!show(ctl, h.current()) || !ctl.tracks_moving()) return false;
+    bool swapped = false;
+    int after = 0;
+    for (int i = 0; i < 64 && (ctl.tracks_moving() || after < 6); ++i) {
+        const uint64_t published = ctl.plans_published();
+        s.reader().run_pass();
+        ctl.pump();
+        swapped = swapped || ctl.plans_published() != published;
+        block(s, o);
+        after += swapped ? 1 : 0;
+        const std::vector<sonora::AutomationWrite> w = drained(s);
+        const uint32_t b = swapped ? 0 : 1;
+        bool ok = w.size() == 1;
+        for (const sonora::AutomationWrite& x : w) {
+            ok = ok && x.track == b && x.param == sonora::kAutoVolume && x.frames == kBlock;
+        }
+        if (!ok) {
+            std::fprintf(stderr, "  block %d (%s the swap): %zu writes", i,
+                         swapped ? "after" : "before", w.size());
+            for (const sonora::AutomationWrite& x : w) {
+                std::fprintf(stderr, " {track %u param %u frames %u}", x.track,
+                             static_cast<unsigned>(x.param), x.frames);
+            }
+            std::fprintf(stderr, ", want one on track %u\n", b);
+            return false;
+        }
+    }
+    return swapped && !ctl.tracks_moving() && after >= 6;
+}
+
+// ADR-0027 §8 slice 2: a Latch is its document track's, as its touch is.
+// B latched on engine track 1 and released, then moved over A while
+// rolling: the latch moves to engine track 0 with B, and A, arriving on
+// engine track 1 in Latch as well, writes nothing.
+int test_a_latch_follows_its_track() {
+    auto session = make_session(2);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    AddTrack a = track_op(100, "A", 0.0f, 0);
+    AddTrack b = track_op(102, "B", 0.0f, 1);
+    a.mix.automation = AutomationMode::Latch;
+    b.mix.automation = AutomationMode::Latch;
+    CHECK_APPLY(h, a);
+    CHECK_APPLY(h, b);
+    PlaybackController ctl(s);
+    CHECK(show(ctl, h.current()));
+    CHECK(ctl.settle(2.0));
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Rolling);
+    Out o;
+    block(s, o);
+    ctl.touch(h.current(), 1, sonora::kAutoVolume, true);
+    block(s, o);
+    ctl.touch(h.current(), 1, sonora::kAutoVolume, false);
+    block(s, o);
+    CHECK(s.tracks()[1]->touched() == 0);
+    const std::vector<sonora::AutomationWrite> latched = drained(s);
+    CHECK(latched.size() == 2);
+    for (const sonora::AutomationWrite& x : latched) CHECK(x.track == 1);
+    playback_test::reset_heap_counts();
+    CHECK(b_alone_writes_through_the_reorder(h, ctl, s));
+    CHECK(playback_test::heap_untouched());
+    return 0;
+}
+
+// ADR-0027 §8 slice 2: B held in Touch and moved over A while rolling. The
+// two blocks after the publish read the plan's mix, and the touched flags
+// with it: they must not stamp B's hold on A, which arrives on B's old
+// engine track, nor take the hold leaving that track for A's release.
+int test_a_moving_plan_writes_only_the_held_track() {
+    auto session = make_session(2);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    AddTrack a = track_op(100, "A", 0.0f, 0);
+    AddTrack b = track_op(102, "B", 0.0f, 1);
+    a.mix.automation = AutomationMode::Touch;
+    b.mix.automation = AutomationMode::Touch;
+    CHECK_APPLY(h, a);
+    CHECK_APPLY(h, b);
+    PlaybackController ctl(s);
+    CHECK(show(ctl, h.current()));
+    CHECK(ctl.settle(2.0));
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Rolling);
+    Out o;
+    block(s, o);
+    ctl.touch(h.current(), 1, sonora::kAutoVolume, true);
+    block(s, o);
+    CHECK(drained(s).size() == 1);
+    playback_test::reset_heap_counts();
+    CHECK(b_alone_writes_through_the_reorder(h, ctl, s));
+    CHECK(playback_test::heap_untouched());
+    CHECK(s.tracks()[0]->touched() == 1u << sonora::kAutoVolume && s.tracks()[1]->touched() == 0);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -423,6 +538,8 @@ int main() {
     if (test_sends_move_with_their_tracks() != 0) return 1;
     if (test_a_touch_follows_its_track() != 0) return 1;
     if (test_a_release_while_moving_reaches_its_track() != 0) return 1;
+    if (test_a_latch_follows_its_track() != 0) return 1;
+    if (test_a_moving_plan_writes_only_the_held_track() != 0) return 1;
     std::printf("test_track_structure: ok\n");
     return 0;
 }

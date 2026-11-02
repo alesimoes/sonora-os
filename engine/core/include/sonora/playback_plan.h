@@ -198,6 +198,15 @@ struct PlanTrackMix {
     uint8_t monitor = 0;   // Track::Monitor
     uint32_t input = 0;
     uint8_t automation = 1;   // Track::Automation, Read
+    // Track::touched() of the track that arrives here, as the publish found
+    // it: the atomics still hold the departing track's (ADR-0027 §8).
+    uint8_t touched = 0;
+    // The document track this plan plays on the engine track, 0 for none.
+    // Set in every plan, with or without a mix_serial: the audio thread
+    // moves what it keeps per track (a Latch) by it, and a mix serial
+    // cannot say where a track came from when a block skipped the plan in
+    // between, or when a plan puts the tracks back where the atomics are.
+    uint64_t track = 0;
 };
 
 // One send slot of an engine track, as the same plan places the tracks:

@@ -910,7 +910,7 @@ void EngineControlServer::follow_automation() {
         if (n == 0) break;
         for (std::size_t i = 0; i < n; ++i) {
             const AutomationWrite& w = pass_drain_[i];
-            if (w.pass <= pass_dropped_) continue;
+            if (w.epoch <= dropped_epoch_) continue;
             if (w.pass != pass_open_) {
                 if (pass_open_ != 0) finish_pass();
                 pass_open_ = w.pass;
@@ -969,34 +969,11 @@ void EngineControlServer::finish_pass() {
         }
     }
     pass_writes_.clear();
-    if (edits.empty()) return;
     bool changed = false;
-    if (edits.size() > model::kMaxCompoundMembers) {
-        api::EngineEvent e;
-        e.kind = api::EventKind::Notice;
-        e.text = "automation: a pass wrote " + std::to_string(edits.size()) +
-                 " lanes; only the first " + std::to_string(model::kMaxCompoundMembers) +
-                 " were kept";
-        post_event(e);
-        edits.resize(model::kMaxCompoundMembers);
-    }
-    model::Compound pass;
-    pass.label = kAutomationWriteLabel;
-    for (model::EditAutomation& edit : edits) pass.ops.emplace_back(std::move(edit));
-    model::ReplicationUpdate u;
-    std::string why;
-    if (document_->apply(pass, u, why)) {
-        send_update(u);
-        changed = true;
-    } else {
-        // Held, not the status line: the operator has to know that the
-        // pass just ridden was not kept.
-        api::EngineEvent e;
-        e.kind = api::EventKind::Notice;
-        e.text = "automation: the pass could not be written: " + why;
-        post_event(e);
-    }
-    // Write falls back to Latch after a pass, as Pro Tools' does.
+    if (!edits.empty()) changed = apply_pass(edits);
+    // Write falls back to Latch after a pass, as Pro Tools' does: also when
+    // every lane of it was dropped, or the next Play in Write would write
+    // over the lanes the notice above says were kept (#252 review).
     bool mix_changed = false;
     for (const model::Id id : written) {
         const model::TrackMix* m = document_->current().mix.find(id);
@@ -1013,6 +990,34 @@ void EngineControlServer::finish_pass() {
     if (changed || mix_changed) show_document(mix_changed);
 }
 
+bool EngineControlServer::apply_pass(std::vector<model::EditAutomation>& edits) {
+    if (edits.size() > model::kMaxCompoundMembers) {
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = "automation: a pass wrote " + std::to_string(edits.size()) +
+                 " lanes; only the first " + std::to_string(model::kMaxCompoundMembers) +
+                 " were kept";
+        post_event(e);
+        edits.resize(model::kMaxCompoundMembers);
+    }
+    model::Compound pass;
+    pass.label = kAutomationWriteLabel;
+    for (model::EditAutomation& edit : edits) pass.ops.emplace_back(std::move(edit));
+    model::ReplicationUpdate u;
+    std::string why;
+    if (document_->apply(pass, u, why)) {
+        send_update(u);
+        return true;
+    }
+    // Held, not the status line: the operator has to know that the pass
+    // just ridden was not kept.
+    api::EngineEvent e;
+    e.kind = api::EventKind::Notice;
+    e.text = "automation: the pass could not be written: " + why;
+    post_event(e);
+    return false;
+}
+
 void EngineControlServer::drop_pass() {
     if (pass_drain_.empty()) pass_drain_.resize(1024);
     while (session_.take_automation_writes(pass_drain_.data(), pass_drain_.size()) != 0) {
@@ -1020,8 +1025,10 @@ void EngineControlServer::drop_pass() {
     pass_writes_.clear();
     pass_open_ = 0;
     // Playback goes on through a Load: the rest of this roll is stamped with
-    // the same pass, against tracks the new document numbers otherwise.
-    pass_dropped_ = session_.automation_pass();
+    // the same pass, against tracks the new document numbers otherwise. By
+    // the plan, not the pass number: a Play just before the Load can begin
+    // its roll on the old document's plan after this has run.
+    dropped_epoch_ = session_.plans().last_epoch();
     for (const auto& t : session_.tracks()) {
         t->set_touched(kAutoVolume, false);
         t->set_touched(kAutoPan, false);

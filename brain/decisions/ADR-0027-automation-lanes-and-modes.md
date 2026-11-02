@@ -324,6 +324,18 @@ conformance). Before launching a slice, check its file list against
 | 4 | **Touch's return**: release with no lane glides to the static value; `--automatch-ms` | `engine/core/{include/sonora/session.h,src/session.cpp}` (config field, `lane_param` glide for unautomated params), `engine/app/src/main.cpp`, `ui/qt/src/mix_model.cpp` (no `set_gain`/`set_pan` after a live ride), `engine/core/tests/test_automation.cpp`, `ui/qt/tests/test_mix.cpp` | none (start-up option) | Touch, no lane, ride +6 dB and release: the audio 250 ms later equals the written return lane frame for frame; `--automatch-ms 100` shortens both | Opus (RT) | after slice 3 (same `session.cpp`) |
 | 5 | **Trim** (Touch/Trim) | `common/model/{include/sonora/model/model.h,src/model.cpp,src/checks.h,src/op_codec.cpp,src/session_file.cpp}` (`AutomationParam::VolumeTrim`, `SetMix` accepts Trim), `contracts/api/include/sonora/api/messages.h`, `engine/control/src/plan_builder.cpp` (copy the trim lane), `engine/core/include/sonora/playback_plan.h`, `engine/core/src/session.cpp` (gain = Volume dB + Trim dB, write the trim lane), `ui/qt/src/automation_edit.*`, lane menu and QML | **session format 15, window format 12, protocol: the next free number (38 if nothing lands first)**. A v14 file opens unchanged, and a v14 reader refuses `volume_trim`. No state-block bump | model: v14 round-trip, v15 refused by v14 codec, Trim `SetMix` accepted; engine: Volume lane -6 dB with trim -3 dB plays -9 dB, block-split invariant; a Trim pass writes only the trim lane | Opus (contracts, storage, RT) | after Track 2, Track 4b and slice 4 |
 
+*As built (slice 2, recommended defaults, nobody available):* the pass's
+plan is carried in each `AutomationWrite` (`epoch`, the plan its pass began
+on), not in a `Session` accessor: an accessor names only the current pass,
+and the drain can still hold the one before. A Load drops every pass begun
+on a plan built before it (`PlanExchange::last_epoch()`). `PlanTrackMix`
+carries `touched`, stamped at the publish (not the build, which a held gate
+can keep back), and `track`, the document track, in **every** plan: the
+audio thread moves `auto_latched_` and last callback's live bits by it, as
+a mix serial cannot say where a track came from when a block skipped a
+plan or a plan puts the tracks back where the atomics already are.
+In-process only: no protocol, layout or format bump.
+
 **Merge order:** 1 (now), then #243 and Track 4b, then 2, 3, 4, 5. Slice 1
 is the only one that can run beside the in-flight work, because 2 to 5 all
 edit `session.cpp`. Each slice's diff is small enough for one agent session,

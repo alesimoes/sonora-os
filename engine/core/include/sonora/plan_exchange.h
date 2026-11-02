@@ -61,6 +61,8 @@ public:
     // --- publisher: one non-real-time thread ---
     // Epochs for the plans this exchange will carry, from 1; 0 is "none".
     uint64_t next_epoch() { return ++last_epoch_; }
+    // The last epoch next_epoch() gave: every plan built later is newer.
+    uint64_t last_epoch() const { return last_epoch_; }
 
     bool can_publish() const { return retired_count_ < kRetireCapacity; }
     // Makes `next` the plan the audio thread reads from its next block and

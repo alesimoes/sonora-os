@@ -341,6 +341,8 @@ Session::Session(SessionConfig cfg)
     auto_live_.reset(new uint8_t[tracks + 1]());
     auto_live_last_.reset(new uint8_t[tracks + 1]());
     auto_latched_.reset(new uint8_t[tracks + 1]());
+    auto_owner_.reset(new uint64_t[tracks + 1]());
+    auto_moved_.reset(new uint8_t[2 * static_cast<std::size_t>(tracks) + 2]());
     return_at_.reset(new int64_t[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]);
     for (std::size_t i = 0; i < kAutoParams * (static_cast<std::size_t>(tracks) + 1); ++i) {
         return_at_[i] = kNoReturn;
@@ -1076,6 +1078,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         reseek_ = true;
         plan_valid_ = plan_in_bounds(*plan);
         adopt_param_order(*plan);
+        follow_track_owners(*plan);
         snap_mix_ = plan->mix_serial != 0;
         auto_new_plan_ = true;
         // The monitor ramps too: what an engine track was sending belonged
@@ -1334,6 +1337,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // is published after every write it holds.
     if (rolling && !pass_rolling_) {
         ++auto_pass_;
+        auto_pass_epoch_ = plan->epoch;
         auto_pass_now_.store(auto_pass_, std::memory_order_release);
     }
     if (!rolling && pass_rolling_) auto_passes_ended_.store(auto_pass_, std::memory_order_release);
@@ -1945,11 +1949,12 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
     // writes an empty track's lanes as well.
     for (uint32_t e = 0; e < tracks_.size(); ++e) {
         auto_live_last_[e] = auto_live_[e];
-        const Track::Automation mode = mix_view(plan, e).automation;
+        const TrackMixView view = mix_view(plan, e);
+        const Track::Automation mode = view.automation;
         // What plays its live value instead of its lane (ADR-0027 §3):
         // Touch while held, Latch from a touch until the roll stops, Write
         // always. Stopped, a Latch touch holds only while held.
-        const auto held = static_cast<uint8_t>(tracks_[e]->touched() & kAllParams);
+        const auto held = static_cast<uint8_t>(view.touched & kAllParams);
         uint8_t live = 0;
         if (mode == Track::Automation::Latch && rolling) {
             auto_latched_[e] = static_cast<uint8_t>(auto_latched_[e] | held);
@@ -1979,6 +1984,7 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
             // back: the pass then knows the run ended there by a release.
             AutomationWrite w{};
             w.pass = auto_pass_;
+            w.epoch = auto_pass_epoch_;
             w.frame = start;
             w.track = e;
             w.param = static_cast<uint8_t>(p);
@@ -2049,6 +2055,7 @@ void Session::stamp_writes(uint32_t e, uint8_t bits, uint64_t start) noexcept SO
         if ((bits & (1u << p)) == 0) continue;
         AutomationWrite w{};
         w.pass = auto_pass_;
+        w.epoch = auto_pass_epoch_;
         w.track = e;
         w.param = static_cast<uint8_t>(p);
         w.value = p == kAutoVolume ? track_level_[e] : track_pan_[e];
@@ -2189,8 +2196,10 @@ Session::TrackMixView Session::mix_view(const PlaybackPlan& plan,
         v.automation = m.automation <= static_cast<uint8_t>(Track::Automation::Trim)
                            ? static_cast<Track::Automation>(m.automation)
                            : Track::Automation::Off;
+        v.touched = m.touched;
         return v;
     }
+    v.touched = t.touched();
     v.gain = t.gain();
     v.pan = t.pan();
     v.mute = t.muted();
@@ -2201,6 +2210,39 @@ Session::TrackMixView Session::mix_view(const PlaybackPlan& plan,
     v.input = t.input();
     v.automation = t.automation();
     return v;
+}
+
+void Session::follow_track_owners(const PlaybackPlan& plan) noexcept SONORA_RT {
+    const auto n = static_cast<uint32_t>(tracks_.size());
+    const auto owner = [&](uint32_t e) {
+        return e < plan.track_mix_count ? plan.track_mix[e].track : uint64_t{0};
+    };
+    uint8_t* const latched = auto_moved_.get();
+    uint8_t* const live = auto_moved_.get() + n;
+    // Quadratic in the engine tracks, once per plan: a few thousand
+    // compares at most, and nothing to build beforehand.
+    for (uint32_t e = 0; e < n; ++e) {
+        const uint64_t id = owner(e);
+        uint32_t from = n;
+        if (id == 0) {
+            // A plan that names no track (or a row past the document) keeps
+            // the row's state only where the last plan named none there.
+            if (auto_owner_[e] == 0) from = e;
+        } else {
+            for (uint32_t j = 0; j < n && from == n; ++j) {
+                if (auto_owner_[j] == id) from = j;
+            }
+        }
+        latched[e] = from < n ? auto_latched_[from] : 0;
+        // Last callback's live bits too, or the track leaving a row would
+        // read as a release of the one arriving on it.
+        live[e] = from < n ? auto_live_[from] : 0;
+    }
+    for (uint32_t e = 0; e < n; ++e) {
+        auto_latched_[e] = latched[e];
+        auto_live_[e] = live[e];
+        auto_owner_[e] = owner(e);
+    }
 }
 
 bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
