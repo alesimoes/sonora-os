@@ -211,6 +211,9 @@ struct Rig {
         scanner = std::make_unique<PluginScanner>(sc);
         hosting = std::make_unique<PluginHosting>(*session, hc, *scanner);
         ctl->set_chain_resolver([this](const TrackEdit& t, uint32_t e, ChainBinding& b) { hosting->resolve(t, e, b); });
+        ctl->set_lane_resolver([this](const TrackEdit& t, Id insert, const std::string& key, LaneTarget& target) {
+            return hosting->resolve_lane(t, insert, key, target);
+        });
     }
     ~Rig() {
         hosting.reset();
@@ -463,6 +466,38 @@ int scenario_params(const Args& a) {
     check(!rig.hosting->set_param(999, "gain", 0.f, why), "an insert that is not running is refused");
     for (int i = 0; i < 10; ++i) rig.turn();
     check(rig.session->plugin_params_dropped() == dropped, "the change reached the node");
+    return failures ? 1 : 0;
+}
+
+// ADR-0027 §5, the follow-ups of #212 and #226: a plugin lane's key is
+// resolved against the running host's own table, and the lane drives that
+// parameter; a lane whose key the plugin lacks is left out of the plan, not
+// mapped to another parameter.
+int scenario_lanes(const Args& a) {
+    std::printf("lanes: eg-amp's gain automated, and a lane on a key it does not have\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    EditAutomation gain{100, AutomationParam::Plugin, 0, kMaxInteger, {{0, -12.f}}};
+    gain.insert = 500;
+    gain.key = "gain";
+    rig.apply(gain);
+    EditAutomation other{100, AutomationParam::Plugin, 0, kMaxInteger, {{0, 1.f}}};
+    other.insert = 500;
+    other.key = "no_such_key";
+    rig.apply(other);
+    rig.show(true);
+    check(rig.until([&] { return rig.session->plans().current() != nullptr && rig.chain_node(0); }, 2000),
+          "a plan with the chain node is playing");
+    check(rig.chain_node(0)->plugin_lane_count == 0, "no lane while the host starts: no store to reach");
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.chain_node(0)->plugin_lane_count != 0; }, 15000),
+          "bound, with its lane, once Ready");
+    const PlaybackPlan* p = rig.session->plans().current();
+    check(p != nullptr && rig.chain_node(0)->plugin_lane_count == 1, "only the gain lane is carried");
+    float v = 0.f;
+    check(rig.until([&] { return rig.hosting->host_value(500, "gain", v) && v == -12.f; }, 5000),
+          "the host reads the lane's value for gain");
+    if (v != -12.f) std::printf("  gain: %g\n", double(v));
     return failures ? 1 : 0;
 }
 
@@ -1893,6 +1928,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "missing") rc = scenario_missing(a);
     else if (a.scenario == "refused") rc = scenario_refused(a);
     else if (a.scenario == "params") rc = scenario_params(a);
+    else if (a.scenario == "lanes") rc = scenario_lanes(a);
     else if (a.scenario == "down_keeps_latency") rc = scenario_down_keeps_latency(a);
     else if (a.scenario == "gestures") rc = scenario_gestures(a);
     else if (a.scenario == "server") rc = scenario_server(a);

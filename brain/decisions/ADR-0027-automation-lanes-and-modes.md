@@ -206,6 +206,18 @@ the write slice.
   keys). The plan builder's resolution of key to dense index (slice 1's
   `PlanPluginLane::param`) is a later engine slice; until it lands a plugin
   lane is saved, undone and replicated but not played.
+- *As built (key resolution, 2026-11-02):* the builder takes a
+  `LaneResolver` beside the `ChainResolver`; `PluginHosting::resolve_lane`
+  answers from the running host's own instance table, the one whose store
+  the chain node names, and gives the parameter's range, to which the
+  points are clamped as a knob's value is. A lane is carried only on a
+  chain bound with a store, and only when its key resolves: a key the
+  plugin lacks, an insert that is missing, refused or not yet running, is
+  left out of the plan, never mapped to another index. More than
+  `max_plugin_lanes` is refused at build, naming the limit. Restoring the
+  knob when a parameter leaves lane play (mode to Off or Write, a lane
+  removed) is not built: the plugin keeps the lane's last value until the
+  knob next moves.
 
 ### §6 First slice, format, protocol
 

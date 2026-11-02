@@ -35,6 +35,8 @@ struct BuildLimits {
     uint32_t delay_lines = 0;
     // The session's aux buses (PlaybackConfig::max_buses, ADR-0022 §8).
     uint32_t max_buses = 0;
+    // PlaybackConfig::max_plugin_lanes: the session refuses a plan with more.
+    uint32_t max_plugin_lanes = 0;
 };
 
 // What the control thread knows of a track's chain when it builds: the host
@@ -46,6 +48,24 @@ struct BuildLimits {
 // Until checklist 5's resolver nothing binds a slot; tests bind one here.
 using ChainResolver = std::function<void(const model::TrackEdit& track, uint32_t engine_track,
                                          ChainBinding& binding)>;
+
+// Where a plugin lane lands in the chain the resolver bound (ADR-0027 §5):
+// the instance's position in that chain and the dense index its host's scan
+// gave the key, with the parameter's range, to which the builder clamps the
+// lane's points as a knob's value is clamped.
+struct LaneTarget {
+    uint32_t instance = 0;
+    uint32_t param = 0;
+    float min = 0.0f;
+    float max = 1.0f;
+};
+// Resolves ADR-0012's stable key of a lane on `insert`, an insert of
+// `track`, against the instance table of the chain bound for it in the same
+// build. False when that chain has no such insert or its plugin no such
+// parameter: the lane is left out of the plan, never mapped to some other
+// index.
+using LaneResolver = std::function<bool(const model::TrackEdit& track, model::Id insert,
+                                        const std::string& key, LaneTarget& target)>;
 
 // What one build hands the next, so a swap keeps each track's channel state:
 // the delay line of each pair of stable ids, and the stable key of each
@@ -112,6 +132,15 @@ struct PlanReport {
 // display order; a track with a send is split at its pre-fader point
 // (ADR-0022 §5). More buses than limits.max_buses, or sends that loop, are
 // refused.
+//
+// A plugin lane is carried only on a chain bound to a host with a parameter
+// store, and only when `lanes` resolves its key; more than
+// limits.max_plugin_lanes carried is refused. Without `lanes` no plugin lane
+// is played.
+bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
+                const SourceSlot& source_slot, const ChainResolver& chains,
+                const LaneResolver& lanes, PlanContinuity& continuity, uint64_t epoch,
+                PlaybackPlan*& out, PlanReport& report, std::string& error);
 bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, const ChainResolver& chains,
                 PlanContinuity& continuity, uint64_t epoch, PlaybackPlan*& out,
