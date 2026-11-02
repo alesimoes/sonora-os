@@ -277,6 +277,7 @@ struct Rig {
         QObject::connect(&session, &SessionModel::openNotice, &shell, &ShellModel::setOpenNotice);
         QObject::connect(&shell, &ShellModel::sessionFolder, &session, &SessionModel::setEngineFolder);
         session.installCommands(router.local());
+        router.setRefusal([this](const std::string& command) { return session.commandRefusal(command); });
         router.prepare({});
     }
     bool connect() {
@@ -327,12 +328,88 @@ int the_save_as_waits_for_the_load() {
     return 0;
 }
 
+bool no_take_in(const Rig& r, const QString& folder) {
+    for (int32_t take = 0; take < 4; ++take) {
+        if (QDir::cleanPath(QString::fromStdString(r.fake.take_folder(take))) == QDir::cleanPath(folder)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// #272 review B1: the Save As after New from Template fails, so the engine
+// stays in the template's folder. Record and Record Ready are refused,
+// held, from a key's command as from the button, and the template's folder
+// gains nothing: no take, no "Audio Files/" growth.
+int record_is_refused_in_a_template_folder() {
+    Rig r;
+    CHECK(r.connect());
+    std::string why;
+    CHECK(r.session.saveSessionAsTemplate(QStringLiteral("Band"), false, why));
+    r.settle();
+    const QString tfile = QDir(r.templates.path()).filePath(QStringLiteral("Band/Band.sonora"));
+    const QString tdir = QFileInfo(tfile).absolutePath();
+    CHECK(QFileInfo(tfile).isFile());
+
+    r.fake.script_save_failure("the medium is full");
+    CHECK(r.session.newSessionFromTemplate(tfile, QStringLiteral("Gig"), true, why));
+    r.settle();
+    r.fake.script_save_failure("");
+    CHECK(QDir::cleanPath(QString::fromStdString(r.fake.folder())) == QDir::cleanPath(tdir));
+    CHECK(r.session.sessionFile().isEmpty());
+    const auto before = tree(tdir);
+
+    r.shell.invoke(QStringLiteral("transport.record"), -1);
+    r.settle();
+    CHECK(r.shell.recordRefusal().contains(QStringLiteral("template")));
+    const RouteResult ready = r.router.invoke("transport.record_ready", CommandContext{});
+    CHECK(ready.kind != RouteResult::Kind::Sent && ready.message.find("template") != std::string::npos);
+    r.settle();
+    CHECK(no_take_in(r, tdir));
+    CHECK(tree(tdir) == before);
+
+    // Saved out of the template's folder: Record goes to the engine again.
+    CHECK(r.session.saveSession(why));
+    r.settle();
+    CHECK(!r.session.sessionFile().isEmpty());
+    CHECK(r.session.commandRefusal("transport.record").empty());
+    CHECK(tree(tdir) == before);
+    return 0;
+}
+
+// The round trip between the Load of the template's folder and the Save As
+// out of it: Record pressed there is refused too, before it is sent, so
+// the engine never starts a take that would then refuse the Save As.
+int record_is_refused_during_the_round_trip() {
+    Rig r;
+    CHECK(r.connect());
+    std::string why;
+    CHECK(r.session.saveSessionAsTemplate(QStringLiteral("Band"), false, why));
+    r.settle();
+    const QString tfile = QDir(r.templates.path()).filePath(QStringLiteral("Band/Band.sonora"));
+    const QString tdir = QFileInfo(tfile).absolutePath();
+    const auto before = tree(tdir);
+
+    CHECK(r.session.newSessionFromTemplate(tfile, QStringLiteral("Gig"), true, why));
+    r.shell.invoke(QStringLiteral("transport.record"), -1);
+    CHECK(r.shell.recordRefusal().contains(QStringLiteral("template")));
+    r.settle();
+    const QString gig = QDir(r.sessions.path()).filePath(QStringLiteral("Gig/Gig.sonora"));
+    CHECK(r.session.sessionFile() == gig);
+    CHECK(no_take_in(r, tdir));
+    CHECK(tree(tdir) == before);
+    CHECK(r.session.commandRefusal("transport.record").empty());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (save_as_template_and_new_from_it() != 0) return 1;
     if (the_save_as_waits_for_the_load() != 0) return 1;
+    if (record_is_refused_in_a_template_folder() != 0) return 1;
+    if (record_is_refused_during_the_round_trip() != 0) return 1;
     std::printf("session templates: ok\n");
     return 0;
 }

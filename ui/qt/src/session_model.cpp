@@ -1133,6 +1133,9 @@ bool SessionModel::writeSessionAs(const SaveAsTarget& target, std::string& why, 
     doc_.save_session_as(
         target.file.toStdString(), flags, std::move(bytes),
         [this, ticket, now, pending, copy, as_template](bool ok, const std::string& message) {
+            // Answered: the engine has left the template's folder, or a
+            // failed Save As left it there and commandRefusal() says so.
+            if (!as_template) making_from_template_ = false;
             if (ticket != write_ticket_) return;
             save_writing_ = false;
             std::string why;
@@ -1460,6 +1463,7 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     live_.clear();
     // Another session now: a New from Template's Save As still waiting is not its.
     after_open_.reset();
+    making_from_template_ = false;
     before_open_.valid = true;
     before_open_.opened = file;
     before_open_.file = file_;
@@ -1547,7 +1551,10 @@ void SessionModel::dismissRepair(int index) {
 void SessionModel::openWasRefused(const QString& why, bool later_load) {
     // A New from Template's Save As is for the session the engine refused,
     // unless a later Load, which may be the template's, is still out.
-    if (!later_load) after_open_.reset();
+    if (!later_load) {
+        after_open_.reset();
+        making_from_template_ = false;
+    }
     if (later_load) {
         // What is shown is the later Open's session, and the window names
         // it. What that Open remembered is the refused session, so its own
@@ -1586,6 +1593,7 @@ void SessionModel::openWasRefused(const QString& why, bool later_load) {
 
 void SessionModel::openWasLost() {
     after_open_.reset();
+    making_from_template_ = false;
     before_open_ = BeforeOpen{};
     const QString lost = file_;
     file_.clear();
@@ -1668,6 +1676,7 @@ bool SessionModel::openRecordingFolder(const QString& folder, bool discard, std:
     live_.clear();
     // Another session now: a New from Template's Save As still waiting is not its.
     after_open_.reset();
+    making_from_template_ = false;
     before_open_.valid = true;
     before_open_.opened = folder;
     before_open_.file = file_;
@@ -1798,6 +1807,7 @@ bool SessionModel::newSessionFromTemplate(const QString& file, const QString& na
     live_.clear();
     // Another session now: a New from Template's Save As still waiting is not its.
     after_open_.reset();
+    making_from_template_ = false;
     before_open_.valid = true;
     before_open_.opened = file;
     before_open_.file = file_;
@@ -1824,6 +1834,7 @@ bool SessionModel::newSessionFromTemplate(const QString& file, const QString& na
     target.file = session_file_path(sessions_dir_, wanted);
     target.name = wanted;
     after_open_ = target;
+    making_from_template_ = true;
     emit notice(QStringLiteral("Making the session ") + wanted + QStringLiteral(" from the template ") +
                 QFileInfo(file).dir().dirName());
     // A document held here has taken the Load already.
@@ -1837,10 +1848,25 @@ void SessionModel::saveAfterOpen() {
     after_open_.reset();
     std::string why;
     if (!writeSessionAs(target, why, std::string())) {
+        making_from_template_ = false;
         emit heldNotice(QStringLiteral("The session ") + target.name +
                         QStringLiteral(" was not made from the template: ") + q(why) +
                         QStringLiteral(". It is open unsaved; its first save puts it in ") + sessions_dir_);
     }
+}
+
+std::string SessionModel::commandRefusal(const std::string& command) const {
+    if (command != "transport.record" && command != "transport.record_ready") return {};
+    if (making_from_template_) {
+        return "the new session is still being made from its template; record once it is saved "
+               "in the sessions folder";
+    }
+    if (file_.isEmpty() && inTemplateFolder()) {
+        return "the engine is still in the template's folder, and a take there would stay in the "
+               "template; save the session first, which puts it in " +
+               sessions_dir_.toStdString();
+    }
+    return {};
 }
 
 QVariantList SessionModel::templateList() const {

@@ -227,6 +227,10 @@ public:
     // save goes to the sessions folder, never beside the template.
     bool newSessionFromTemplate(const QString& file, const QString& name, bool discard,
                                 std::string& why);
+    // Why an Engine command must not be sent now, or empty (KeyRouter's
+    // refusal, ADR-0030 §3): Record and Record Ready while the engine is, or
+    // is about to be, in a template's folder, so no take ever lands there.
+    std::string commandRefusal(const std::string& command) const;
     // Save Copy In's "All audio files", kept between copies as Pro Tools does.
     bool copyWithAudio() const { return copy_with_audio_; }
     void setCopyWithAudio(bool on) {
@@ -594,6 +598,9 @@ private:
     // of the template's folder: sent with the Load, it would run against the
     // session the engine kept if it refused the Load.
     std::optional<SaveAsTarget> after_open_;
+    // From New from Template until its Save As is answered: Record is
+    // refused (commandRefusal), so no take starts in the template's folder.
+    bool making_from_template_ = false;
     EditController ctl_;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");

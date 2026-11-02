@@ -583,6 +583,7 @@ int main(int argc, char** argv) {
         [&session]() { return session.controller().selection().insertion; });
     transport.installCommands(router.local());
     router.setSelection([&session]() { return session.selectedTrackForCommands(); });
+    router.setRefusal([&session](const std::string& command) { return session.commandRefusal(command); });
     // Pro Tools plays a timeline selection, with pre- and post-roll.
     router.setPlayRange([&session]() {
         const auto& sel = session.controller().selection();

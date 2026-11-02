@@ -160,6 +160,12 @@ RouteResult KeyRouter::invoke(const std::string& command, const CommandContext& 
     // Engine command, the window's stand-in for it is no longer used.
     if (spec != nullptr && !is_interface(spec) &&
         std::find(engine_.begin(), engine_.end(), command) != engine_.end()) {
+        if (std::string refused = refusal_ ? refusal_(command) : std::string(); !refused.empty()) {
+            r.kind = RouteResult::Kind::Local;
+            r.result = DispatchResult::Failed;
+            r.message = command + ": " + refused;
+            return r;
+        }
         if ((command == "transport.play" || command == "transport.toggle_play") &&
             ctx.argument.empty() && play_range_ &&
             std::find(caps_.begin(), caps_.end(), api::kCapabilityPlayRange) != caps_.end()) {

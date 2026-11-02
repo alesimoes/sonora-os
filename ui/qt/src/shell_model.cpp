@@ -280,13 +280,7 @@ bool ShellModel::eventFilter(QObject* watched, QEvent* event) {
 void ShellModel::invoke(const QString& command, int target) {
     CommandContext ctx;
     ctx.target = target;
-    const RouteResult r = router_.invoke(command.toStdString(), ctx);
-    report(r);
-    // Refused before it left (not implemented): held as the engine's is.
-    if (isRecordCommand(command.toStdString()) && r.kind != RouteResult::Kind::Sent &&
-        !r.message.empty()) {
-        holdRecordRefusal(QString::fromStdString(r.message));
-    }
+    report(router_.invoke(command.toStdString(), ctx));
 }
 
 // What ends a refusal: the operator moved on (Stop, Play), or took the Record
@@ -386,6 +380,11 @@ QList<qreal> ShellModel::scaleMarks() const {
 void ShellModel::report(const RouteResult& r) {
     if (r.kind == RouteResult::Kind::Sent && clearsRecordRefusal(r.command)) {
         holdRecordRefusal(QString());
+    }
+    // Refused before it left (not implemented, or by the window): held as
+    // the engine's is, from a key as from a button.
+    if (isRecordCommand(r.command) && r.kind != RouteResult::Kind::Sent && !r.message.empty()) {
+        holdRecordRefusal(QString::fromStdString(r.message));
     }
     if (router_.commandsFocus() != seen_focus_) {
         seen_focus_ = router_.commandsFocus();

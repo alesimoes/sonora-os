@@ -145,16 +145,28 @@ make the new folder first and never enter the template's), but it changes
 `engine_control_server.cpp` and the wire, which Track 1 holds this round.
 It is kept as the follow-up if §3's window (below) is ever seen to matter.
 
-The window between 1 and 2: the engine is in the template's folder for one
-round trip to the interface. A take started in it would land in the
-template's `Audio Files/`; the engine refuses the Save As while a take is
-open, and the window would then say so, held. Record during that round
-trip needs a key pressed within a tick of New from Template. If the Save
-As fails, the window keeps the new session unsaved, a held notice says
-why, and its first Save or Save As goes to the sessions folder, never
-beside the template (`SessionModel::saveAsRoot()`). An engine autosave in
-that state would go to the template's `Session File Backups/`, never over
-the template file. The `NewFromTemplate` action above closes all of this.
+**No take in a template's folder** (rule added after #272 review B1). A
+take recorded there would stay in the template's `Audio Files/`, and every
+later New from Template would link it into its new session and offer it as
+an orphan. A take there is also outside the sessions folder, so an
+unsaved one is never listed as an unsaved recording. So the window
+refuses `transport.record` and `transport.record_ready` before they are
+sent (`KeyRouter::setRefusal`, `SessionModel::commandRefusal`), with the
+reason held in the transport's record refusal, from a key as from the
+button:
+
+- from New from Template until its Save As is answered, which covers the
+  round trip between the Load and the Save As: a take started there would
+  also make the engine refuse the Save As;
+- whenever the session has no file and the engine's folder is in the
+  templates folder, which is the state a failed Save As leaves.
+
+If the Save As fails, the window keeps the new session unsaved and a held
+notice says why. Its first Save or Save As goes to the sessions folder,
+never beside the template (`SessionModel::saveAsRoot()`), and Record works
+again from there. An engine autosave in that state would go to the
+template's `Session File Backups/`, never over the template file. The
+`NewFromTemplate` action above closes all of this at the engine.
 
 ### 4. Where templates live
 
