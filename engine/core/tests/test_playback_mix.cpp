@@ -6,7 +6,8 @@
 // ramped across the block, bus gain, the other outputs silent; a missing
 // chunk is silence and counted; a locate sent once its window is resident
 // plays the target from the next block; a plan swap and a delay line keep
-// going across the swap; input monitoring by the track's mode.
+// going across the swap; input monitoring by the track's mode; a plan that
+// moves tracks snaps only the rows whose track changed.
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -545,6 +546,57 @@ int test_moved_tracks_keep_their_mix() {
     return 0;
 }
 
+// #267 review L2: a plan built while an adopt is pending carries its own
+// mix even for the tracks it leaves on their rows. Only a row whose
+// document track changed starts at its target; one that kept its track
+// ramps from what it played, as for any other change (ADR-0023 §4).
+// Track 10 stays on row 0 and its gain goes 1 to 0.25; row 1 changes from
+// track 20 to track 30, at 0.5.
+int test_unmoved_rows_ramp_under_a_moving_plan() {
+    Rig rig(2);
+    Session& s = *rig.session;
+    const uint32_t a = rig.source(1, 1, 16 * kChunk);
+    const uint32_t b = rig.source(2, 1, 16 * kChunk);
+    SegmentSpec sa;
+    sa.end = 16 * kChunk;
+    sa.source_slot = a;
+    SegmentSpec sb = sa;
+    sb.track = 1;
+    sb.source_slot = b;
+    PlaybackPlan* first = make_plan(s.plans().next_epoch(), 2, {sa, sb}, kChunk, 0, 2);
+    first->track_mix[0].track = 10;
+    first->track_mix[1].track = 20;
+    CHECK(rig.publish(first));
+    s.tracks()[0]->set_pan(-1.0f);
+    s.tracks()[1]->set_pan(1.0f);
+    s.play();
+    for (int blk = 0; blk < 3; ++blk) rig.block(kBlock);
+
+    PlaybackPlan* moved = make_plan(s.plans().next_epoch(), 2, {sa, sb}, kChunk, 0, 2);
+    moved->mix_serial = 7;
+    moved->track_mix[0].track = 10;
+    moved->track_mix[0].gain = 0.25f;
+    moved->track_mix[0].pan = -1.0f;
+    moved->track_mix[1].track = 30;
+    moved->track_mix[1].gain = 0.5f;
+    moved->track_mix[1].pan = 1.0f;
+    CHECK(rig.publish(moved));
+    const uint64_t at = s.transport().playhead();
+    rig.block(kBlock);
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        const auto t = static_cast<int64_t>(at + i);
+        const float g = 1.0f + (0.25f - 1.0f) * static_cast<float>(i + 1) / kBlock;
+        const float left = source_value(1, 0, t) * g;
+        const float right = source_value(2, 0, t) * 0.5f;
+        if (!near(rig.out[0][i], left, 1e-4f) || !near(rig.out[1][i], right, 1e-4f)) {
+            std::fprintf(stderr, "  frame %u: L %f want %f, R %f want %f\n", i, rig.out[0][i],
+                         left, rig.out[1][i], right);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // Auto monitoring: an armed track hears its input while stopped, and its
 // playback while rolling; Off hears nothing; Input always the input.
 int test_input_monitoring() {
@@ -692,6 +744,7 @@ int main() {
     if (test_locate_without_dropping_a_block()) return 1;
     if (test_swap_and_delay_continuity()) return 1;
     if (test_moved_tracks_keep_their_mix()) return 1;
+    if (test_unmoved_rows_ramp_under_a_moving_plan()) return 1;
     if (test_input_monitoring()) return 1;
     if (test_large_block_and_other_outputs()) return 1;
     if (test_cursor_after_monitor_switch()) return 1;

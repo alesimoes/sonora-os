@@ -908,15 +908,17 @@ void EngineControlServer::follow_automation() {
     for (;;) {
         const std::size_t n = session_.take_automation_writes(pass_drain_.data(), pass_drain_.size());
         if (n == 0) break;
-        // The last id found in the document: a finished pass can replace
-        // the document, so it is forgotten when one is.
-        model::Id known_track = 0;
+        // The document's track ids, sorted, taken once per document: a
+        // write per engine track interleaves the tracks, so a one-entry
+        // cache missed on almost every write (#267 review). A finished pass
+        // can replace the document, so they are taken again after one.
+        bool ids_current = false;
         for (std::size_t i = 0; i < n; ++i) {
             const AutomationWrite& w = pass_drain_[i];
             if (w.epoch <= dropped_epoch_) continue;
             if (w.pass != pass_open_) {
                 if (pass_open_ != 0) finish_pass();
-                known_track = 0;
+                ids_current = false;
                 pass_open_ = w.pass;
                 pass_writes_.clear();
                 // A minute of 256-frame blocks on one lane: what most passes
@@ -925,19 +927,19 @@ void EngineControlServer::follow_automation() {
             }
             // By the track the write's own plan played on its row: the
             // document read here may already hold a reorder or a removal
-            // that plan had not caught up with (#262 review N1). Fetched
-            // per write, as a finished pass replaces the document.
+            // that plan had not caught up with (#262 review N1).
             if (w.track_id == 0) continue;
-            if (w.track_id != known_track) {
-                bool found = false;
+            if (!ids_current) {
+                drain_track_ids_.clear();
                 for (const auto& t : document_->current().edit->tracks) {
-                    found = found || t->id == w.track_id;
+                    drain_track_ids_.push_back(t->id);
                 }
-                if (!found) {
-                    orphan_writes_.fetch_add(1, std::memory_order_relaxed);
-                    continue;
-                }
-                known_track = w.track_id;
+                std::sort(drain_track_ids_.begin(), drain_track_ids_.end());
+                ids_current = true;
+            }
+            if (!std::binary_search(drain_track_ids_.begin(), drain_track_ids_.end(), w.track_id)) {
+                orphan_writes_.fetch_add(1, std::memory_order_relaxed);
+                continue;
             }
             PassWrite p;
             if (live_pass_write(w, w.track_id, p)) pass_writes_.add(p);

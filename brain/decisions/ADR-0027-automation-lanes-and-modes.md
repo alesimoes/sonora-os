@@ -347,6 +347,20 @@ grows 40 to 48 bytes. A plan built while a published plan's mix waits to
 be adopted always carries its own mix (ADR-0023 §4), as the atomics may
 change order before the gate lets it out.
 
+*As built (slice 3, recommended defaults, nobody available):* a lagged
+lane read goes back across the wrap only once the roll has wrapped
+(`Session::auto_wrapped_`, cleared by a stop, a jump or a new loop). Before
+that the frames after A were taken in before A, so they read the lane
+there, `t - L`, as a roll that never loops does; a lane that starts at A
+holds A's value. A post-fader send under a volume lane and a follow-pan
+send under a pan lane take the lanes per frame on the fader's grid and at
+the fader's lane frame, behind a chain too (the chain's latency, as for
+its fader). They crossfade from what they last applied only when their own
+level, mute, mode or static part changed, or when the fader itself would.
+A plan that carries a mix snaps only the rows whose document track changed
+(and every row of a plan that names no owners, as before); a track left on
+its row ramps (#267 review L2). In-process only: no bump.
+
 **Merge order:** 1 (now), then #243 and Track 4b, then 2, 3, 4, 5. Slice 1
 is the only one that can run beside the in-flight work, because 2 to 5 all
 edit `session.cpp`. Each slice's diff is small enough for one agent session,

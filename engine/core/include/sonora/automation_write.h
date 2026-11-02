@@ -31,8 +31,10 @@ struct AutomationWrite {
 };
 
 static_assert(std::is_trivially_copyable<AutomationWrite>::value, "RingBuffer memsets its slots");
-// The ring holds 2 * 512 * (tracks + 1) of these, pre-faulted: 6.3 MB at 128
-// tracks. A field more is that much more locked memory.
+// The ring asks for 2 * 512 * (tracks + 1) of these, pre-faulted, and
+// RingBuffer rounds that up to a power of two: 132,096 becomes 262,144 at
+// 128 tracks, 12 MiB of locked memory (#267 review). A field more is that
+// much more.
 static_assert(sizeof(AutomationWrite) <= 48, "AutomationWrite grew");
 
 }  // namespace sonora

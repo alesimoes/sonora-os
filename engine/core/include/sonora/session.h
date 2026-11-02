@@ -704,6 +704,7 @@ private:
     // A new plan: what the audio thread keeps per engine track for live
     // writes moves with the document track the plan's owners say it is
     // (ADR-0027 §8). A track the last plan did not play starts clear.
+    // snap_row_ marks each engine track whose document track changed.
     void follow_track_owners(const PlaybackPlan& plan) noexcept SONORA_RT;
     // Zeroes what render_track() put in `out` at or past play_until_.
     void cut_at_roll_end(float* const out[2], uint32_t offset, uint32_t n) const noexcept SONORA_RT;
@@ -717,6 +718,11 @@ private:
     void apply_track_fader(const PlaybackPlan& plan, const PlanTrack& pt, bool stereo,
                            const float* const in[2], float* const out[2], uint32_t n,
                            uint64_t from, uint32_t lag) noexcept SONORA_RT;
+    // The lane frame the audio at timeline frame `from` was taken in at,
+    // `lag` frames behind it: back across the loop's wrap only once the
+    // playhead has wrapped, before the loop start on its first pass
+    // (ADR-0027 §8). Stopped, the playhead's, lag frames back.
+    int64_t lane_frame(uint64_t from, uint32_t lag) const noexcept SONORA_RT;
     // The coefficients of engine track e at timeline frame t, L and R,
     // before mute and solo.
     void auto_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, int64_t t,
@@ -747,9 +753,16 @@ private:
     void sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const float* const in[2],
                   float* const out[2], uint32_t n) noexcept SONORA_RT;
     // A send edge: `in` scaled by the send's ramped coefficient, then
-    // sum_edge(). `mono`: the source's side 0 feeds both sides.
+    // sum_edge(). `mono`: the source's side 0 feeds both sides. A send that
+    // takes its track's lanes takes them per frame from `from`, `lag`
+    // frames back, as the fader does (ADR-0027 §8).
     void sum_send(const PlaybackPlan& plan, const PlanEdge& edge, bool mono,
-                  const float* const in[2], float* const out[2], uint32_t n) noexcept SONORA_RT;
+                  const float* const in[2], float* const out[2], uint32_t n, uint64_t from,
+                  uint32_t lag) noexcept SONORA_RT;
+    // Send k's coefficients at lane frame t, L and R, before its own level
+    // and mute: the lanes its SendLane bits name, the static values else.
+    void send_lane_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t k, int64_t t,
+                         float& l, float& r) const noexcept SONORA_RT;
     // This block's send and return targets, from the mix state (ADR-0022
     // §6). A send or return the last callback did not play starts from
     // silence.
@@ -953,6 +966,12 @@ private:
     uint64_t auto_start_ = 0;
     bool auto_rolling_ = false;
     bool auto_new_plan_ = true;
+    // The roll has wrapped from B to A since it last started or jumped, in
+    // the loop it wrapped in: only then did the frames a lagged lane reads
+    // just after A come from the loop's end.
+    bool auto_wrapped_ = false;
+    uint64_t auto_loop_from_ = 0;
+    uint64_t auto_loop_to_ = 0;
     // Live writes (ADR-0027 §3), per engine track, a bit per parameter:
     // what plays its live value instead of its lane this callback and last;
     // what a Latch touch has held since the roll began. Per track and
@@ -1009,7 +1028,20 @@ private:
     // The AuxSum's stable id it last fed: Assign Send keeps the slot and
     // changes the bus, and the new bus must hear it ramp in from silence.
     std::unique_ptr<uint32_t[]> send_dest_;
-    std::unique_ptr<float[]> aux_gain_;      // per bus, L and R, end of last block
+    // A track's send under its lanes (ADR-0027 §8), per send, this block:
+    // bit kAutoVolume, a post-fader send under a volume lane; bit kAutoPan,
+    // a follow-pan send under a pan lane. Its level, mute and open folded
+    // in `g`; the fader and pan a bit leaves static (0 where a bit is set);
+    // 1 when it crossfades from send_gain_ instead of playing the lanes.
+    struct SendLane {
+        float g = 0.0f;
+        float fader = 0.0f;
+        float pan = 0.0f;
+        uint8_t bits = 0;
+        uint8_t ramp = 0;
+    };
+    std::unique_ptr<SendLane[]> send_lane_;
+    std::unique_ptr<float[]> aux_gain_;     // per bus, L and R, end of last block
     std::unique_ptr<float[]> aux_target_;
     std::unique_ptr<uint64_t[]> aux_stamp_;
     std::unique_ptr<float[]> aux_open_;      // per bus this block, as track_open_
@@ -1020,8 +1052,11 @@ private:
     uint64_t seen_epoch_ = 0;
     // A plan that moved tracks between engine tracks has just been adopted:
     // this block's faders start at their targets instead of ramping from
-    // what another track left on the engine track (ADR-0023 §4).
+    // what another track left on the engine track (ADR-0023 §4). Per
+    // engine track, only where the track changed, or where a plan carrying
+    // a mix names none: a track left on its row ramps (#267 review L2).
     bool snap_mix_ = false;
+    std::unique_ptr<uint8_t[]> snap_row_;
     uint64_t expected_playhead_ = 0;
     bool reseek_ = true;
     uint32_t block_frames_ = 0;              // the whole block, for ramps

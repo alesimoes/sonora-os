@@ -7,13 +7,17 @@
 // clamped and reported, not refused; the delay-line pool is capped and
 // never indexed past (auditor L3); a latency change arrives as a new plan
 // and the swap keeps every delay line's past; and Session::process()
-// allocates nothing through any of it.
+// allocates nothing through any of it. A looped track behind a chain reads
+// its lane at the frames its output came from, on the loop's first pass as
+// across each wrap (ADR-0027 §8, slice 3).
 //
 // The chains run on a test runner that behaves like a host with a declared
 // latency: it returns its input latency_frames late, exactly. No host is
 // involved; engine/plugin_client is the real runner.
+#include <cmath>
 #include <cstdio>
 #include <memory>
+#include <string>
 #include <vector>
 
 // The heap counter (playback_test.h): operator new/delete and, outside the
@@ -664,6 +668,89 @@ int test_zero_frame_callback_neither_begins_nor_ends() {
     return 0;
 }
 
+// ADR-0027 §8 slice 3: behind a chain of latency L, the fader reads its lane
+// L frames back, where the audio it scales was taken in. A roll from the
+// loop start has not wrapped yet: its first L frames came from before A, so
+// they play the lane there (held at A's value), not the loop end's, which
+// is where they come from only once the playhead has wrapped.
+int test_looped_lane_behind_a_chain() {
+    constexpr uint32_t kLag = 100;
+    constexpr int64_t kA = 1000;
+    constexpr int64_t kB = 3000;
+    Rig rig(1, 4096);
+    DelayRunner runner(1, 4096);
+    Session& s = *rig.session;
+    s.set_insert_chains(&runner);
+    // Mono, hard left: out[0] is the signal times the volume.
+    s.tracks()[0]->set_pan(-1.0f);
+    const std::vector<sonora::PlanAutoPoint> lane = {{kA, 0.0f}, {kB, -40.0f}};
+    DelayLinePool pool(s.delay_lines());
+    PlaybackPlan* p = playback_test::chain_plan(s, {chain(0, kLag)}, pool, nullptr, nullptr, 1,
+                                                static_cast<uint32_t>(lane.size()));
+    p->tracks[0].auto_first[sonora::kAutoVolume] = 0;
+    p->tracks[0].auto_count[sonora::kAutoVolume] = static_cast<uint32_t>(lane.size());
+    for (std::size_t k = 0; k < lane.size(); ++k) p->auto_points[k] = lane[k];
+    CHECK(rig.publish(p));
+    std::string error;
+    CHECK(s.set_loop(kA, kB, &error));
+    for (int k = 0; k < 8 && s.loop_pending(); ++k) {
+        s.reader().run_pass();
+        s.pump_loop();
+    }
+    CHECK(!s.loop_pending());
+    CHECK(s.post_locate(kA));
+    // Parked long enough that what the chain returns is signal, not lead-in.
+    for (int k = 0; k < 8; ++k) {
+        s.reader().run_pass();
+        rig.block();
+    }
+    CHECK(s.transport().playhead() == static_cast<uint64_t>(kA));
+    const auto gain_at = [&](int64_t t) {
+        const auto n = static_cast<uint32_t>(lane.size());
+        const int64_t g0 = t - t % sonora::kAutoGridFrames;
+        const float c0 = std::pow(10.0f, sonora::auto_lane_value(lane.data(), n, g0) / 20.0f);
+        const float c1 = std::pow(
+            10.0f, sonora::auto_lane_value(lane.data(), n, g0 + sonora::kAutoGridFrames) / 20.0f);
+        return c0 + (c1 - c0) * static_cast<float>(t - g0) /
+                        static_cast<float>(sonora::kAutoGridFrames);
+    };
+
+    s.play();
+    reset_heap_counts();
+    int64_t head = kA;
+    bool wrapped = false;
+    long early = 0;
+    // Two and a half passes; 2000 is no multiple of 64, so B falls inside
+    // blocks at different offsets.
+    for (int blk = 0; blk < 80; ++blk) {
+        const int64_t at = rig.frame;
+        s.reader().run_pass();
+        rig.block();
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            int64_t from = head - kLag;
+            if (wrapped && head < kA + kLag) from = kB - (kA + kLag - head);
+            const float want = signal(at + i - kLag) * gain_at(from);
+            const float got = rig.out[0][i];
+            const float scale = std::fabs(want) > 1.0f ? std::fabs(want) : 1.0f;
+            if (std::fabs(got - want) > 2e-5f * scale) {
+                std::fprintf(stderr, "  block %d frame %u (head %lld, lane at %lld): %.7f, want %.7f\n",
+                             blk, i, static_cast<long long>(head), static_cast<long long>(from),
+                             static_cast<double>(got), static_cast<double>(want));
+                return 1;
+            }
+            if (head < kA + kLag && !wrapped) ++early;
+            if (++head == kB) {
+                head = kA;
+                wrapped = true;
+            }
+        }
+    }
+    CHECK(early == kLag);
+    CHECK(wrapped);
+    CHECK(heap_untouched());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -681,6 +768,7 @@ int main() {
     if (test_out_of_bounds_plan_is_silence()) return 1;
     if (test_zero_frame_callback_neither_begins_nor_ends()) return 1;
     if (test_no_node_state_is_unbound_and_never_early()) return 1;
+    if (test_looped_lane_behind_a_chain()) return 1;
     std::printf("plan_pdc: ok\n");
     return 0;
 }
