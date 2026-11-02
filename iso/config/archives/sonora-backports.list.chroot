@@ -1,0 +1,17 @@
+# PipeWire and WirePlumber come from trixie-backports (ADR-0002), through a
+# dated snapshot rather than deb.debian.org. Backports keeps only its newest
+# upload, so a live backports source makes the image depend on the day it was
+# built, and the exact pin in sonora-backports.pref.chroot would stop
+# resolving on the next upload. The snapshot keeps the pinned version
+# available.
+#
+# check-valid-until=no: a snapshot's Release file expires a week after its
+# date, and apt would otherwise reject it as stale.
+#
+# Build-time only. live-build removes *.chroot archives after the hooks have
+# run, so the shipped system carries no snapshot source.
+#
+# tools/Dockerfile.runtime installs this same file, so the container tests run
+# against the PipeWire the image ships. Bump the timestamp together with the
+# versions in the .pref file, the hook and tools/test-image-config.sh.
+deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20261101T000000Z trixie-backports main

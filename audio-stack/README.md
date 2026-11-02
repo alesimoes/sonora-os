@@ -10,6 +10,9 @@ machine that records and a machine that drops samples.
 | `wireplumber-sonora.conf` | `/etc/wireplumber/wireplumber.conf.d/99-sonora.conf` | Pro Audio profile, and no remembered state |
 | `sysctl-sonora.conf` | `/etc/sysctl.d/99-sonora.conf` | Kernel knobs that affect latency |
 
+The PipeWire these files configure is 1.6.9 with WirePlumber 0.5.12, from
+trixie-backports at exact versions (`iso/README.md`, "Versions").
+
 ## Why each knob
 
 **`rtprio 95`** — the audio thread must preempt everything else. Not 99, so a

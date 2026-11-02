@@ -17,6 +17,35 @@ passwd -d sonora
 
 install -d -o sonora -g sonora /home/sonora/Sessions
 
+# --- the PipeWire the image was meant to get ---
+# config/archives/sonora-backports.pref.chroot pins these. A pin whose version
+# the source no longer has is ignored without a word, and apt installs
+# trixie's PipeWire instead. tools/test-image-config.sh keeps these numbers
+# equal to the .pref file's.
+SONORA_PIPEWIRE_VERSION=1.6.9-2~bpo13+1
+SONORA_WIREPLUMBER_VERSION=0.5.12-1~bpo13+1
+for pkg in pipewire pipewire-jack libspa-0.2-modules; do
+  got="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)"
+  if [ "$got" != "$SONORA_PIPEWIRE_VERSION" ]; then
+    echo "E: $pkg is '$got', expected $SONORA_PIPEWIRE_VERSION from the pinned backports snapshot." >&2
+    exit 1
+  fi
+done
+got="$(dpkg-query -W -f='${Version}' wireplumber 2>/dev/null || true)"
+if [ "$got" != "$SONORA_WIREPLUMBER_VERSION" ]; then
+  echo "E: wireplumber is '$got', expected $SONORA_WIREPLUMBER_VERSION." >&2
+  exit 1
+fi
+
+# --- no display manager ---
+# A display manager would take tty1 or tty7 with a greeter and put a login
+# between the operator and the engine. None is listed, but a Recommends or a
+# future package can pull one in, so check what actually got installed.
+if [ -e /etc/systemd/system/display-manager.service ]; then
+  echo "E: a display manager is installed: $(readlink -f /etc/systemd/system/display-manager.service)" >&2
+  exit 1
+fi
+
 # --- make pipewire-jack the system-wide JACK ---
 # pipewire-jack installs its libjack into pipewire-0.3/jack/ rather than the
 # default library path, and ships the drop-in that fixes that as an example
