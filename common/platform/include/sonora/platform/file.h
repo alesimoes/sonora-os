@@ -43,6 +43,13 @@ std::string user_cache_dir();
 // 2026-10-26).
 std::string user_config_dir();
 
+// Where this user's own data goes, the application's own folder in it, not
+// created: POSIX $XDG_DATA_HOME/sonora when that is an absolute path, else
+// $HOME/.local/share/sonora; empty when neither is known. (Windows, later:
+// %APPDATA%\Sonora, ADR-0029 §1.) Unlike the cache, nothing here can be
+// rebuilt: the user's presets live here.
+std::string user_data_dir();
+
 // What a fingerprint needs of one path, following symlinks to their
 // target (a yabridge bundle links into a Wine prefix).
 struct PathStatus {
