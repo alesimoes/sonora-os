@@ -79,6 +79,8 @@ std::string user_cache_dir() { return {}; }
 
 std::string user_config_dir() { return {}; }
 
+std::string user_data_dir() { return {}; }
+
 // Standard C++ has no change time; the modification time stands for both.
 bool path_status(const std::string& path, PathStatus& out) {
     std::error_code ec;

@@ -182,6 +182,16 @@ std::string user_config_dir() {
     return {};
 }
 
+std::string user_data_dir() {
+    if (const char* x = std::getenv("XDG_DATA_HOME"); x != nullptr && x[0] == '/') {
+        return std::string(x) + "/sonora";
+    }
+    if (const char* h = std::getenv("HOME"); h != nullptr && *h != '\0') {
+        return std::string(h) + "/.local/share/sonora";
+    }
+    return {};
+}
+
 bool path_status(const std::string& path, PathStatus& out) {
     struct stat st {};
     if (::stat(path.c_str(), &st) != 0) return false;

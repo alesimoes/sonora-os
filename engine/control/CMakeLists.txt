@@ -18,6 +18,7 @@ add_library(sonora_control STATIC
   src/session_saver.cpp
   src/active_folder.cpp
   src/machine_latency.cpp
+  src/preset_store.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -46,6 +47,15 @@ endif()
 add_executable(test_machine_latency tests/test_machine_latency.cpp)
 target_link_libraries(test_machine_latency PRIVATE sonora_control)
 add_test(NAME machine_latency COMMAND test_machine_latency)
+
+# The user preset store (ADR-0029 slice 4): layout, names, hashes checked at
+# load, newer and hostile sidecars, shared blobs through cleanup, a missing
+# plugin's presets kept. setenv for the XDG folder, so POSIX's.
+if(UNIX)
+  add_executable(test_preset_store tests/test_preset_store.cpp)
+  target_link_libraries(test_preset_store PRIVATE sonora_control sonora_plugin_host_control sonora_sha256)
+  add_test(NAME preset_store COMMAND test_preset_store)
+endif()
 
 # Here rather than in engine/core because it also drives the session through
 # the installed commands, and control may link core but not the reverse.
