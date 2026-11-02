@@ -9,7 +9,7 @@
 // are selects, so the two channels share every instruction, and a step the
 // first evaluation does not settle leaves the lanes for the scalar loop.
 //
-// V provides: kLanes; V(double), a broadcast; V::pack(p), lanes from
+// V provides: kLanes; V(double), a broadcast; V::load(p), lanes from
 // p[0..kLanes); get(i); + - * /; neg(); abs(); sqrt(); V::select(mask, a,
 // b); <, >, <= giving a Mask (ordered: false on a NaN); Mask &, lane(i).
 #pragma once
@@ -43,7 +43,7 @@ struct OutputStage::Lane1 {
     double x;
     Lane1() noexcept : x(0.0) {}
     explicit Lane1(double v) noexcept : x(v) {}
-    static Lane1 pack(const double* p) noexcept { return Lane1(p[0]); }
+    static Lane1 load(const double* p) noexcept { return Lane1(p[0]); }
     double get(int) const noexcept { return x; }
     Lane1 operator+(Lane1 o) const noexcept { return Lane1(x + o.x); }
     Lane1 operator-(Lane1 o) const noexcept { return Lane1(x - o.x); }
@@ -76,7 +76,7 @@ OutputStage::EvalV<V> OutputStage::eval_lanes(const Core* const* s, V i) const n
         a_m[l] = s[l]->m;
         a_mirr[l] = s[l]->m_irr;
     }
-    const V si = V::pack(a_i), sm = V::pack(a_m), smirr = V::pack(a_mirr);
+    const V si = V::load(a_i), sm = V::load(a_m), smirr = V::load(a_mirr);
     const V zero(0.0), one(1.0);
     const V dh = i - si;
     const V he = i + V(p_.alpha) * sm;
@@ -101,10 +101,10 @@ OutputStage::EvalV<V> OutputStage::eval_lanes(const Core* const* s, V i) const n
         lb[l] = lan_[k + 1].l;
         db[l] = lan_[k + 1].dl;
     }
-    const V u = p - V::pack(kf);
+    const V u = p - V::load(kf);
     const V h(1.0 / kLanPerUnit);
-    const V al = V::pack(la), bl = V::pack(lb);
-    const V ta = h * V::pack(da), tb = h * V::pack(db);
+    const V al = V::load(la), bl = V::load(lb);
+    const V ta = h * V::load(da), tb = h * V::load(db);
     const V dlv = al - bl;
     // p(u) = a.l + u ta + u^2 (3 (b.l - a.l) - 2 ta - tb) + u^3 (2 (a.l - b.l) + ta + tb)
     const V c2 = V(-3.0) * dlv - V(2.0) * ta - tb;
@@ -171,9 +171,9 @@ void OutputStage::step_lanes(Core* const* s, const double* rhs_in) noexcept SONO
         a_inv[l] = s[l]->inv_slope;
     }
     const V half(half_);
-    const V rhs = V::pack(rhs_in);
-    const V f0 = V::pack(a_psi) - rhs + half * V::pack(a_i);
-    const V i = V::pack(a_i) - f0 * V::pack(a_inv);
+    const V rhs = V::load(rhs_in);
+    const V f0 = V::load(a_psi) - rhs + half * V::load(a_i);
+    const V i = V::load(a_i) - f0 * V::load(a_inv);
     const EvalV<V> e = eval_lanes<V>(s, i);
     const V f = e.psi - rhs + half * i;
     const V inv = V(1.0) / (e.dpsi + half);
@@ -230,7 +230,7 @@ void OutputStage::process_lanes(const double* const* in, double* const* out, std
                 // and vs collapsed to rail u / inf = 0 (the stage went silent
                 // under a huge input instead of clipping); above about 7.2e305
                 // x * vpu itself overflowed and vs = inf / inf was NaN.
-                V u = V::pack(xs) * u_per_x;
+                V u = V::load(xs) * u_per_x;
                 u = V::select(u < V(kUMax), u, V(kUMax));
                 u = V::select(u > V(-kUMax), u, V(-kUMax));
                 const V u2 = u * u;
@@ -246,10 +246,10 @@ void OutputStage::process_lanes(const double* const* in, double* const* out, std
                 a_psi[l] = s[l]->psi;
                 a_i[l] = s[l]->i;
             }
-            V sum = V(0.5) * (V::pack(a_last) + vs[ns - 1]);
+            V sum = V(0.5) * (V::load(a_last) + vs[ns - 1]);
             for (std::uint32_t j = 0; j + 1 < ns; ++j) sum = sum + vs[j];
-            const V i0 = V::pack(a_i);
-            const V rhs = V::pack(a_psi) + V(t_ * g_) * sum - V(half_) * i0;
+            const V i0 = V::load(a_i);
+            const V rhs = V::load(a_psi) + V(t_ * g_) * sum - V(half_) * i0;
             double a_rhs[L];
             for (int l = 0; l < L; ++l) a_rhs[l] = rhs.get(l);
             step_lanes<V>(s, a_rhs);
@@ -258,7 +258,7 @@ void OutputStage::process_lanes(const double* const* in, double* const* out, std
                 s[l]->vs_last = vs[ns - 1].get(l);
                 a_i1[l] = s[l]->i;
             }
-            const V di = (V::pack(a_i1) - i0) * V(inv_substeps_);
+            const V di = (V::load(a_i1) - i0) * V(inv_substeps_);
             V load(0.0);
             for (std::uint32_t j = 0; j < ns; ++j) {
                 const V v = V(g_) * vs[j] - V(rp_) * (i0 + V(static_cast<double>(j + 1)) * di);
