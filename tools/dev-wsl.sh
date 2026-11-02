@@ -514,8 +514,7 @@ do_stop() {
   # Engine and UI only: PipeWire stays up.
   pkill -TERM -x sonora-ui 2>/dev/null || true
   pkill -TERM -x sonora-engine 2>/dev/null || true
-  local i
-  for i in $(seq 50); do  # up to 5 s for the engine to write its session
+  for _ in $(seq 50); do  # up to 5 s for the engine to write its session
     pgrep -x sonora-engine >/dev/null || pgrep -x sonora-ui >/dev/null || break
     sleep 0.1
   done
