@@ -62,12 +62,27 @@ docker build -t "$IMAGE" --label org.sonora=1 \
   -f "$(host_path "$ROOT/tools")/Dockerfile.livebuild" \
   "$(host_path "$ROOT/tools")"
 
+# The engine and UI builds print thousands of lines, so they go to a log
+# under iso/ (ignored by git) rather than the terminal. Not to /dev/null: a
+# failure there was silent apart from the exit status, which left nothing to
+# diagnose from (#217 review). On failure the tail is shown and the build stops.
+run_logged() {
+  local name="$1" log="$ROOT/iso/$1.log"
+  shift
+  if ! "$@" >"$log" 2>&1; then
+    echo "error: $name failed; the last 40 lines of $log:" >&2
+    tail -n 40 "$log" >&2
+    exit 1
+  fi
+  echo "$name: ok (log: $log)"
+}
+
 # The systemd unit runs /usr/local/bin/sonora-engine. Nothing in live-build
 # produces that, so the engine is built first and staged into
 # config/includes.chroot, where live-build copies it into the image verbatim.
 # Without this the image boots into a restart loop on a missing binary.
 echo "Building the engine for the image..."
-"$ROOT/tools/build-engine.sh" >/dev/null
+run_logged build-engine "$ROOT/tools/build-engine.sh"
 
 STAGE="$ROOT/iso/config/includes.chroot/usr/local/bin"
 mkdir -p "$STAGE"
@@ -94,7 +109,7 @@ echo "staged the engine and sonora-tui into includes.chroot/usr/local/bin/"
 rm -f "$STAGE/sonora-ui"
 if [[ "${SONORA_WITH_UI:-0}" == 1 ]]; then
   echo "Building the interface for the image..."
-  "$ROOT/tools/build-ui.sh" >/dev/null
+  run_logged build-ui "$ROOT/tools/build-ui.sh"
   UI="$(find "$ROOT/build-ui-container" -name sonora-ui -type f 2>/dev/null | head -n 1)"
   [[ -n "$UI" ]] || {
     echo "error: SONORA_WITH_UI=1 but no sonora-ui binary was found to stage." >&2

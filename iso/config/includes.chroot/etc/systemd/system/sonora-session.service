@@ -9,8 +9,11 @@ Conflicts=getty@tty1.service
 # The default start limit (5 in 10 s) would stop a crash-looping engine for
 # good and leave tty1 blank with no way back. Never give up.
 StartLimitIntervalSec=0
-# ADR-0010 stage 1: under sonora.gui the compositor owns tty1.
-ConditionKernelCommandLine=!sonora.gui
+# ADR-0010 stage 1: under sonora.gui the compositor owns tty1, unless the
+# display stack failed and sonora-display-fallback.service handed tty1 back.
+# The '|' makes these two alternatives: either one lets the session start.
+ConditionKernelCommandLine=|!sonora.gui
+ConditionPathExists=|/run/sonora-display-failed
 
 [Service]
 Type=simple
