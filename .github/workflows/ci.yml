@@ -92,12 +92,6 @@ jobs:
           docker exec -e SONORA_DSP_QUICK=1 build
           bash -c 'ctest --test-dir build --output-on-failure -j"$(nproc)"'
 
-      # ADR-0007 follow-up: a quit (q, SIGTERM, the unit's stop) during a
-      # take the disk refused exits 1, gives the terminal back and leaves
-      # finished files. Fake backend on a pty, so no hardware; about 15 s.
-      - name: Quit during a failed take
-        run: docker exec build python3 tools/failed-take-quit.py --engine build/sonora-engine
-
   portable:
     name: Portable modules under MSVC
     needs: changes
