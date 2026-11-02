@@ -568,7 +568,7 @@ playback can follow edits; it is in flight.
         behind, named in a held notice (ADR-0027 §7, update 2026-11-02).
   - [x] (#263) #254 review: a document-level test that thins a lane through `EditController`
         and undoes it in one step.
-  - [ ] #254 review: remove the doubled `//` line in `automation_edit.h` (if still there).
+  - [x] (#263) #254 review: the doubled `//` line in `automation_edit.h` is removed.
   - [ ] #254 review: sloped collinear points are not dropped, only flat runs; a linear-time
         tolerance thinning would let more full lanes follow. A Range clear on several tracks
         puts every lane left behind in one notice; per-track wording may read better.
