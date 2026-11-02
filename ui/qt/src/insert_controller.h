@@ -82,6 +82,18 @@ int param_step(const api::PluginParam& p, float value);
 // The value of step `i`.
 float param_step_value(const api::PluginParam& p, int i);
 
+// How the generic editor draws a parameter (ADR-0011 §2.6), from the
+// catalog alone, so no plugin needs a hand-drawn panel. A toggle is a
+// switch; a few labelled steps are a row of choices, all of them in view;
+// anything else is a knob, which snaps when the parameter has steps (an
+// enum of twelve values would not fit as a row).
+enum class ParamControl { Knob, Toggle, Choices };
+constexpr int kMaxChoicesInRow = 6;
+ParamControl param_control(const api::PluginParam& p);
+// Where a knob's lit arc starts, 0..1: the zero of a range that spans it
+// (a gain of -24 to +24 dB lights from the top), else the bottom.
+float param_origin(const api::PluginParam& p);
+
 class InsertController {
 public:
     explicit InsertController(TimelineDocument& doc);

@@ -365,6 +365,14 @@ int parameters_and_delay() {
     CHECK(r.inserts.panelOpen() && r.inserts.panelTitle() == QStringLiteral("Fake Compressor"));
     CHECK(r.inserts.panelSubtitle().contains(QStringLiteral(" · Windows (Wine)")));
     CHECK(r.inserts.panelParams().size() == 3);
+    // Each parameter's control comes from the catalog alone.
+    const auto control = [&](int i) {
+        return r.inserts.panelParams()[i].toMap()[QStringLiteral("control")].toString();
+    };
+    CHECK(control(0) == QStringLiteral("knob") && control(1) == QStringLiteral("knob") &&
+          control(2) == QStringLiteral("choices"));
+    CHECK(r.inserts.panelParams()[2].toMap()[QStringLiteral("labels")].toStringList().size() == 3);
+    CHECK(r.inserts.panelParams()[0].toMap()[QStringLiteral("defaultPosition")].toReal() == 0.5);
     // A drag: changes go to the plugin while it runs, the document at the end.
     r.inserts.paramBegin();
     r.inserts.paramPosition(QStringLiteral("0"), 0.25);
@@ -418,6 +426,20 @@ int parameters_and_delay() {
     CHECK(std::fabs(mid - std::sqrt(0.001f * 1.0f)) < 1e-4f);
     CHECK(std::fabs(param_position(rel, mid) - 0.5f) < 1e-4f);
     CHECK(param_step(cat[kComp].params[2], 1.0f) == 2);
+    // The editor's controls: a toggle is a switch, a few steps a row, the
+    // rest a knob; a knob over a range through zero lights from zero.
+    CHECK(param_control(g) == ParamControl::Knob && param_control(inv) == ParamControl::Toggle);
+    CHECK(param_control(cat[kComp].params[2]) == ParamControl::Choices);
+    api::PluginParam many = cat[kComp].params[2];
+    many.steps = kMaxChoicesInRow + 1;
+    many.labels.clear();
+    CHECK(param_control(many) == ParamControl::Knob);
+    api::PluginParam two = cat[kComp].params[2];
+    two.steps = 2;
+    two.flags &= ~api::kParamToggle;
+    CHECK(param_control(two) == ParamControl::Choices);
+    CHECK(std::fabs(param_origin(g) - 0.5f) < 1e-6f);
+    CHECK(param_origin(rel) == 0.0f && param_origin(cat[kComp].params[0]) == 0.0f);
     CHECK(!r.ctl().param_set(gain, "nope", 1.0f, why) && why.find("no parameter") != std::string::npos);
     CHECK(r.ctl().param_set(gain, "gain", 99.0f, why));   // clamped to the range
     CHECK(r.ctl().param_end(why));
@@ -624,6 +646,51 @@ int qml() {
     QTest::mouseClick(&view, Qt::LeftButton, {}, centre(named(root, QStringLiteral("insert_3_2"))));
     CHECK(r.inserts.panelOpen() && r.inserts.panelTrack() == 3 && r.inserts.panelSlot() == 2);
     CHECK(named(root, QStringLiteral("param_7")) != nullptr);
+
+    // The editor: a vertical drag on a knob moves it, 200 px for the whole
+    // travel, to the plugin while it runs and into the session at the end.
+    QQuickItem* knob = named(root, QStringLiteral("knob_0"));
+    CHECK(knob != nullptr && knob->isVisible());
+    const auto position = [&](const char* key) {
+        return r.inserts.panelValues()[QString::fromLatin1(key)].toMap()[QStringLiteral("position")].toReal();
+    };
+    const qreal p0 = position("0");
+    CHECK(p0 <= 0.75);
+    const QPoint k = centre(knob);
+    QTest::mousePress(&view, Qt::LeftButton, {}, k);
+    QTest::mouseMove(&view, k - QPoint(0, 25));
+    QTest::mouseMove(&view, k - QPoint(0, 50));
+    QTest::mouseRelease(&view, Qt::LeftButton, {}, k - QPoint(0, 50));
+    r.settle();
+    CHECK(std::fabs(position("0") - (p0 + 0.25)) < 1e-3);
+    CHECK(std::fabs(r.fake.plugin_value(comp, "0") - static_cast<float>(p0 + 0.25)) < 1e-3f);
+    CHECK(r.values(comp) != nullptr && !r.values(comp)->params.empty());
+    // Ctrl drags at a tenth of the rate; Alt-click is the default.
+    QTest::mousePress(&view, Qt::LeftButton, Qt::ControlModifier, k);
+    // mouseMove() drops the modifiers; a move event carries them.
+    QTest::mouseEvent(QTest::MouseMove, &view, Qt::LeftButton, Qt::ControlModifier, k + QPoint(0, 100));
+    QTest::mouseRelease(&view, Qt::LeftButton, Qt::ControlModifier, k + QPoint(0, 100));
+    r.settle();
+    CHECK(std::fabs(position("0") - (p0 + 0.2)) < 1e-3);
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::AltModifier, k);
+    r.settle();
+    CHECK(std::fabs(position("0") - 0.5) < 1e-6);
+    // A choice is one click.
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(named(root, QStringLiteral("choice_7_2"))));
+    r.settle();
+    CHECK(std::fabs(r.fake.plugin_value(comp, "7") - 1.0f) < 1e-6f);
+    // A toggle is a switch that says what it is set to.
+    r.inserts.openPanel(1, 2);
+    QTest::qWait(30);
+    QQuickItem* invert = named(root, QStringLiteral("toggle_invert"));
+    CHECK(invert != nullptr && invert->isVisible() &&
+          invert->property("text").toString() == QStringLiteral("Off"));
+    QQuickItem* no_knob = named(root, QStringLiteral("knob_invert"));
+    CHECK(no_knob == nullptr || !no_knob->isVisible());
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(invert));
+    r.settle();
+    CHECK(r.fake.plugin_value(r.slot(1, 2).insert, "invert") == 1.0f);
+    CHECK(invert->property("text").toString() == QStringLiteral("On") && invert->property("active").toBool());
     std::printf("  qml: ok\n");
     return 0;
 }
