@@ -280,13 +280,28 @@ playback can follow edits; it is in flight.
         Track the frames the chain's output came from instead.
   - [x] A Load while rolling must ignore the rest of the open pass: `drop_pass()` resets neither `pass_open_` nor `auto_latched_`, and Load does not stop playback, so writes from the old plan can land on the new session's tracks by engine index. `drop_pass` records the pass to skip and the engine clears `auto_latched_`; test it (on PR #178, #178 review). Done: `pass_dropped_` from `Session::automation_pass()`, `Session::forget_latches()` (`t1-load-drops-pass`).
   - [ ] A roll that begins between `drop_pass()` and the Load's `show_document()` opens a pass on the old plan that is not dropped (play just before a Load, or a count-off ending): its Write tracks' writes land on the new session's tracks by index. Drop by the plan the pass started on, not by the pass number read at `drop_pass()` (`engine_control_server.cpp` ~1372 vs ~2647; narrow window, needs two commands back to back).
-  - [ ] Apply a ParameterChange's Release (clear touched) even while tracks are moving: the flag is only set or cleared when `!tracks_moving()`, so a Release during a track move is lost and the track keeps playing its fader and writing until the client disconnects or a Load (on PR #178, #178 review).
+  - [x] (#225) Apply a ParameterChange's Release (clear touched) even while tracks are moving: the flag is only set or cleared when `!tracks_moving()`, so a Release during a track move is lost and the track keeps playing its fader and writing until the client disconnects or a Load (on PR #178, #178 review).
+  - [ ] Carry each track's touched bits in `PlanTrackMix` so the ~2 blocks between a moving plan's publish and `adopt_track_mix()` do not read the previous occupant's hold (stray `stamp_writes` on the arriving track's lane) (#225 review).
+  - [ ] Move `Session::auto_latched_` with its track when a plan moving tracks is adopted: Latch while rolling through a reorder stays on the engine slot, ADR-0027 §3 (#225 review).
   - [ ] Touch on a track with no lane: make a release's audio and its written return agree. Return the live fader to the static value, or write no return; today the writer writes a 250 ms return to the static fader but the audio keeps the ridden value (on PR #178, #178 review).
   - [ ] A pass whose lane overflows `kMaxAutomationPoints` must keep the other lanes: thin harder or drop only that edit. Today one lane past the limit fails the whole Compound and every lane of the pass is lost (on PR #178, #178 review).
   - [ ] Tests for automation: a Load or a client leaving clears the touched flags; long-pass growth (on PR #178, #178 review).
   - [ ] A merged line's end value `p.at(end)` can differ from the next span's start by one float ulp, which `thin_automation` keeps as a same-frame step pair: snap a line's end to `to` when the line is not cut (suspected; #178 re-review).
   - [ ] `PassWrites::add` finds the lane by a linear scan per write: index by (track, param) if tracks pass ~64 (#178 re-review).
   - [ ] `follow_automation` clamps NaN pan, since `std::clamp` passes NaN through (#178 re-review).
+- [x] (#232) Pro Tools record-ready: Record arms the transport, Play starts the take, Stop
+      cancels; engine state published to every client (state block layout 6,
+      protocol 37, ADR-0009 update of 2026-11-01). Keypad 3 is `transport.record_ready`;
+      Ctrl+Space and F12 stay `transport.record`.
+- [ ] Record-ready follow-ups from #232: (N1) the keymap essentials should count
+      `record_ready` as a way to start a take only when the profile also binds a working
+      Play key (the engine never installs it without Play, so no shipped build is
+      affected). (N2) In Qt a playhead move from a marker, the counter or a timeline click
+      reaches the engine as `transport.locate`, which clears record-ready; check go to end,
+      rewind, fast forward and nudge, and add conformance cases for them. (Review) The
+      numpad_3 research row and the lines ~655/705 of the key-bindings note still carry the
+      old "ambiguous / keeps transport.record" wording ahead of the update sentence.
+      rt-engineer + ui-engineer.
 
 ### Track 2: model (rt-engineer, ui-engineer review)
 
@@ -1043,6 +1058,58 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 - [ ] `test_exit_watchdog` prompt-exit case: arm the watchdog with a ~20 s
       deadline, so the prompt-exit path is tested without load-sensitive
       bounds (#205 dropped those from the other cases).
+- [x] (#231) The take in progress grows on each armed track's lane while the transport records
+      (`ui/qt/src/live_take.{h,cpp}`, the `record` colour, from `take_peak`; screenshot
+      `docs/images/sonora-ui-edit-recording.png`).
+- [ ] Live take follow-ups from #231: (a) the live overview ignores the input latency the
+      engine shifts the take by (`take_latency_`); use the measured latency from the Latency
+      event. (b) Once real peak files exist (`ui.editing.waveform`), the closed take keeps the
+      live peaks until its peak file is written. (c) The fake engine places no region when a
+      take stops, so on the fake the live region disappears after 2 s: have it place one.
+      (d) `documentUpdated()` clears the live region on any update after Stop, not only the
+      take's region (an unrelated edit in the 2 s window drops it early), and a region that
+      arrives before the Stopped tick leaves the live region drawn over it until the 2 s cap.
+      (e) The first tick of a take can carry the pre-record input peak when no meter was
+      reading that ring. ui-engineer.
+- [x] (#234) Qt Record button arms under Pro Tools (`transport.record_ready`), blinks at 1 Hz,
+      held refusal under the bar (`RecordButton.qml`; screenshot
+      `docs/images/sonora-ui-transport-record-ready.png`).
+- [ ] Record button follow-ups from #234: `protools.json` has no Stop chord (only Space),
+      found in #231; a QML tooltip on `RecordButton` (only the accessible description now);
+      wire the reduced-motion setting to `RecordButton.steady`; a Play hint while
+      record-ready. ui-engineer.
+- [ ] Pro Tools parity audit (#229, `brain/research/protools-parity-audit-2026-11.md`); its
+      top-15 lines, minus the three that extend open items (`io_setup` is the hardware
+      output paths and I/O setup page item, `auto_input` and `preroll_toggle` are
+      `ui.record.punch_loop`). Each is ui-engineer unless said, effort in brackets:
+  - [ ] Arm modifiers: click on a track's R button arms it; Option-click arms or disarms all
+        tracks; Shift-click arms the selected tracks; the same on the I button (S).
+  - [ ] An armed track meters its input while stopped so the preamp can be set; unarmed tracks
+        meter playback. Confirm today's behaviour first (M).
+  - [ ] File > New Session dialog: name, location, sample rate (44.1, 48, 88.2, 96 kHz), bit
+        depth (16, 24, 32 float); say how the engine handles a rate change, and whether bit
+        depth is a session field (M).
+  - [ ] New Tracks panel adds mono/stereo, Audio/Aux/Master, and a name (S).
+  - [ ] Tab and Ctrl+Tab move the edit cursor to the next/previous clip boundary and, with Tab
+        to Transients on, the next transient; detection needs a spec first (M).
+  - [ ] Confirm `edit.heal_separation` and `edit.consolidate` act in the Qt UI; wire them or
+        take them off the key map (S).
+  - [ ] Zoom presets 1-5 stored and recalled, Zoom Toggle on E, R/T live where Pro Tools has
+        them (S).
+  - [ ] A visible Link Timeline and Edit Selection toggle (Shift+/) with its state in the
+        toolbar; folds into `ui.editing.selection` (S).
+  - [ ] Recall a memory location by number from the keypad; needs the chord-sequence work in
+        the key-bindings note, section 4 (M).
+  - [ ] Spot mode opens a dialog for a start time in the chosen format; Relative Grid as a
+        second Grid mode (M).
+  - [ ] Promote a playlist or lane to the main playlist, ahead of the lane view in
+        `ui.comping.lanes` (M).
+  - [ ] Setup grows from Latency only to Playback Engine (device, buffer), Click/Countoff and
+        Preferences; folds into `ui.workflow.preferences` (M).
+  - [ ] Correct the audit note: row 11 says zoom in/out are live only in Commands Focus
+        although Ctrl+[ and Ctrl+] are bound in `keymaps/protools.json`; `tool.zoom` (F5) and
+        `tool.scrub` (F9) have no handler in `ui/qt/src/session_model.cpp`, so row 9 "works"
+        overstates (F9 should refuse loudly rather than lie); give each line an owner role.
 
 ### Track 4: plugins (plugin-engineer; rt-engineer for anything in `engine/`)
 
@@ -1702,10 +1769,14 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       silent chain, and a period of another size.
 - [ ] Plan builder and model: refuse non-finite plugin lane values; a NaN
       lane is resent every callback.
-- [ ] Plugin lanes follow-ups from #212: model lanes keyed by insert id with
-      the session, window and protocol bumped; builder key-to-index
-      resolution; restoring knob values on leaving lane play; per-insert
-      latency; touch and write; UI.
+- [x] (#226) Plugin lanes in the model: `AutomationParam::Plugin` keyed by insert id and
+      ParamValue key, session format 14, window format 11, protocol 36; lanes follow their
+      insert (remove, replace, move, duplicate, undo). Saved, undone and replicated.
+- [ ] Plugin lanes follow-ups from #212 and #226: builder key-to-index resolution,
+      skipping a lane whose well-formed key names no parameter of the plugin (the model
+      accepts it, as it accepts a ParamValue; the engine must not map it to a default
+      index); restoring knob values on leaving lane play; per-insert latency; touch and
+      write; mute and send automation; UI.
 
 ### Track 5: dev environment (distro-engineer, researcher)
 
@@ -1720,6 +1791,14 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        on device) in the ASan/UBSan build on a docs-only PR (run 41246994280);
        add a free-disk-space step or prune the build tree between the TSan and
        ASan builds.
+4. [ ] CI follow-ups from #230: `tools/merge-checks.sh` takes its missing-set snapshot before
+       it reads the head SHA, so a push in that narrow gap with only cheap checks registered
+       could pass; recompute the missing set after the head read. Measure the ccache hit rate
+       and the new sanitizer duration over two runs after #230 (the first is cold). Trade-offs
+       #230 left unapplied: move ASan+UBSan of the dsp_/native_ suites to nightly (largest
+       saving, UB in a processor caught a day late); split Thread and address sanitizers into
+       two parallel jobs; merge Record, BWF interop and Quantum into one job (both rename
+       required checks).
 
 ### Later stages, in order (detail in `progress.json`)
 
@@ -1742,7 +1821,7 @@ not start or extend those items before the Complete DAW closes (owner,
       catalog cache's header carries it (ADR-0012, amendment of 2026-10-19,
       change B); every cache is discarded once, with one Notice, when it
       first appears.
-- [ ] The `0100-sonora-system` hook falls back to `BUILD_ID=unstamped` when
+- [x] (#217) The `0100-sonora-system` hook falls back to `BUILD_ID=unstamped` when
       the sanitised id is empty.
 - [ ] Compile the engine on Debian trixie and fix what the compiler finds.
 - [ ] Run `ctest`; make the ring buffer and BWF tests pass.
@@ -1758,10 +1837,17 @@ not start or extend those items before the Complete DAW closes (owner,
       closes the measured `clock.max-quantum` + `clock.force-quantum` gap but
       also sizes the server's ALSA and resampler buffers. Needs a device that
       cannot run at 48 kHz to test against. `brain/research/quantum-pin.md`.
-- [ ] `limits.d` granting `rtprio 95` and `memlock unlimited` to the audio
-      group.
-- [ ] Udev rule naming the first class-compliant USB interface so port
-      auto-connection is stable across reboots.
+- [x] (#216) `limits.d` granting `rtprio 95` and `memlock unlimited` to the audio
+      group. Already shipped; `tools/test-rt-limits.sh` keeps limits.d, the unit and the hook in step.
+- [x] (#235) Udev rule naming the first class-compliant USB interface: not needed. Port
+      auto-connection uses the node description, not the card index
+      (`brain/research/multichannel-usb-interfaces.md`).
+- [ ] Two USB devices with the same node description: pipewire-jack gives them
+      one client name and suffixes the second one's ports `-<global id>`, and
+      `describe_ports()` interleaves them into one device. Detect the suffix, then
+      refuse with a held notice naming both or split them into two devices.
+      Needs a conformance injection in `drivers/fake` first; verify on hardware
+      only when a second identical unit exists. driver-engineer.
 - [x] `tools/write-usb.sh`: write the ISO and create the persistence partition.
       Verified against a loop device and booted in QEMU, with persistence
       surviving a reboot: `tools/test-write-usb.sh`. Not yet run on a
@@ -1949,10 +2035,15 @@ not deferred.
       against labwc 0.8.3: not run yet. distro-engineer.
 - [ ] `sonora-display-fallback` runs `chvt 2`, which reaches no terminal UI
       until stage 2 adds `sonora-tui.service` on tty2.
-- [ ] `sonora-smoketest` checks `BUILD_ID` and the `sonora.gui` path.
-- [ ] `tools/build-iso.sh` needs a `sonora-ui` stage.
-- [ ] `main.cpp` comments at lines 341 and 402 say tty2 runs the terminal UI,
-      which holds only from stage 2; one of them is an over-long line.
+- [x] (#217) `sonora-smoketest` checks `BUILD_ID` and the `sonora.gui` path.
+- [x] (#217) `tools/build-iso.sh` stages `sonora-ui` when `SONORA_WITH_UI=1`.
+- [ ] Qt runtime packages are not in the image package list yet (stage 2).
+- [ ] #217 review: `tools/build-iso.sh` sends `build-ui.sh` output to /dev/null so a
+      failure is silent; the smoketest's `sonora-ui.service` "skipped" check passes if
+      the unit is missing; the `sonora.gui` branch does not assert `sonora-ui` active.
+      distro-engineer.
+- [x] (#217) `main.cpp` comments about tty2 and the terminal UI now say it holds only from
+      stage 2, and the over-long line is shortened.
 - [ ] Bare metal: GPU reset/hang under the compositor vs the audio callback;
       nouveau on NVIDIA; llvmpipe vs GPU xruns (ADR-0006 items 2 and 3).
       researcher.
@@ -2009,7 +2100,8 @@ Order and owners are in ADR-0008 §5.
       distro-engineer.
 - [ ] P7 stays open until the portable job is green and required and its
       first 10 run durations are recorded. Widen its ctest filter to
-      `dsp_|native_|json|measure_`.
+      `dsp_|native_|json|measure_` (`test_dsp_transformer` is in the Build step since
+      #222; the filter waits for the job to be proven).
 - [ ] P8, inside M6: put the ADR-0008 §1 table into OPERATIONS.md and the
       charters, and propose the rule for CLAUDE.md. The CLAUDE.md edit is
       the owner's.
@@ -2073,9 +2165,10 @@ Order and owners are in ADR-0008 §5.
 - [x] State block layout 5 (#213): "Locating...", the monitor bus peaks and
       the playback miss count. Contract PRs of their own (ADR-0009 update,
       item 4, "Not in this port").
-- [ ] Bus meters back in sonora-ui (Qt, in the Mix window and the Transport
-      bar, with screenshots in the PR) and in sonora-tui, from the layout 5
-      bus peaks. ui-engineer with rt-engineer.
+- [x] (#220) Bus meters back in sonora-ui (Qt, in the Mix window and the Transport
+      bar, with screenshots in the PR), from the layout 5 bus peaks.
+- [ ] Bus meters in sonora-tui, from the layout 5 bus peaks. ui-engineer with
+      rt-engineer.
 - [x] Input monitoring with latency compensation measured by a loopback test
       (ADR-0019, `t1-input-monitor`): `LatencyProbe` in the callback, takes
       captured L later on the playhead and labelled P0 − L, drivers/fake's
@@ -2124,7 +2217,7 @@ Order and owners are in ADR-0008 §5.
       null a period early or late. Postmortem
       2026-10-13-loopback-swap-skipped-period.
 - [ ] Locate latency as ADR-0009 §4.4 asks: p99 and max per session in
-      diagnostics, and "Locating…" on screen past 100 ms.
+      diagnostics ("Locating…" on screen past 100 ms is done, #220).
       `PlaybackController` keeps only the last and the max today. rt-engineer
       with ui-engineer.
 - [ ] Show `PlanReport::over_half_pool` when a plan is built (ADR-0009 §4.3:
@@ -2326,11 +2419,17 @@ ADR-0011 "For the owner".
       thread, re-activates on its main thread (`Processor::reactivate`
       exists), publishes the new latency. Only the load-time case
       (`--reactivate`) is tested now. plugin-engineer + rt-engineer.
-- [ ] N1, with M9: how the engine routes a key to a plugin's side-chain.
-      The host takes it today as the last N channels of the region
-      (`sonora-plugin-host --sidechain N`, the header unchanged);
-      `contracts/plugin` should say so, or carry key planes of its own,
-      before the engine writes against it. plugin-engineer + rt-engineer.
+- [x] (#224) N1, with M9: how the engine routes a key to a plugin's side-chain.
+      ADR-0012 amendment of 2026-11-01: the key is the region's last input planes,
+      layout version stays 1; `InsertChainRef::key_channels`, and `process_chain`
+      takes the key planes as their own argument. plugin-engineer + rt-engineer.
+- [ ] N1 side-chain key follow-ups from #224 (bump the session format): the model
+      field for the key source (an aux bus's sum before its return fader, a second input
+      edge of the InsertChain node so PDC aligns it; a key depending on the keyed
+      track's own output is refused as a loop), the key edge in `plan_builder`, and the
+      supervisor spawning a chain with `key_channels` set from it. Until then
+      `engine/core`'s chain runner builds unkeyed refs, so a keyed slot is a counted
+      shape fault (silence). plugin-engineer + rt-engineer.
 - [ ] N1 follow-up (PR #40 RT audit, low): DPF's `lv2_set_options` calls
       `setBufferSize(..., true)`, which deactivates and re-activates, and so
       re-prepares and allocates, on whatever thread the host calls
@@ -2361,8 +2460,17 @@ ADR-0011 "For the owner".
       as an output stage of the tube drive, with the supply sag an output
       stage draws (slice 2 has one preamp stage, which draws too little
       for sag to matter). dsp-engineer.
-- [ ] N2 slice 3 follow-up: `OutputStage::tick` clamps |u| before u^4
-      (x = 1e300 gives NaN until reset).
+- [x] (#219) N2 slice 3 follow-up: `OutputStage::tick` clamps |u| before u^4; cheaper
+      solve (one exp, warm-started Newton).
+- [ ] N2 slice 3 follow-ups from #219: (a) class B is not met with the stage on at eco
+      (about 106 us calibrated against 60 us), standard or high; needs a tabulated core
+      at the base rate (`brain/research/native-tube-n2.md`); until then the stage-on
+      path ships only beside an eco mode that meets the class (ADR-0011 §3.5). (b) The research note and the
+      comment in `tick` get the old failure wrong: x = 1e100 or 1e300 collapsed vs to 0
+      (u^4 overflowed), NaN came only above about 7.2e305. (c) The extremes test does not
+      assert the output stays near the rail during the huge input. (d) The note says eco
+      at stage 0 % still meets class B, but that run's kernel gate failed (1.79 > 1.76):
+      rerun and record. dsp-engineer.
 - [ ] N2 tube follow-ups (slice 2): (a) CPU: eco (2x) meets class B at
       44-48 us p99.9 per q128 stereo block on programme and full-drive
       worst cases (Docker Desktop, i7-11800H); standard (4x) is 72-110 us
