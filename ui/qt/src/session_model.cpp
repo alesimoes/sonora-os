@@ -1659,6 +1659,9 @@ bool SessionModel::openRecordingFolder(const QString& folder, bool discard, std:
     updateCounters(true);
     sync();
     emit sessionChanged();
+    // The recording is another session: the windows' views of the old one
+    // go back to their defaults, as they do for a session file.
+    emit sessionOpened();
     emit notice(QStringLiteral("Opened the unsaved recording ") + name +
                 QStringLiteral("; place its takes, then save to name it"));
     return true;
