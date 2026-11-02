@@ -15,6 +15,7 @@ add_library(sonora_control STATIC
   src/plugin_hosting.cpp
   src/plugin_scanner.cpp
   src/plugin_catalog_cache.cpp
+  src/factory_preset_reader.cpp
   src/session_saver.cpp
   src/active_folder.cpp
   src/machine_latency.cpp
@@ -31,7 +32,8 @@ target_include_directories(sonora_control PUBLIC include)
 # the probes' answers. common/session_files is what the saver thread writes
 # a session folder with (ADR-0015 update of 2026-10-25).
 target_link_libraries(sonora_control PUBLIC sonora_core sonora_api sonora_platform
-  sonora_model sonora_session_files sonora_plugin_client sonora_plugin_probe_record PRIVATE sonora_json)
+  sonora_model sonora_session_files sonora_plugin_client sonora_plugin_probe_record sonora_plugin_host_control
+  PRIVATE sonora_json)
 
 # The saver thread (ADR-0015 §6, update of 2026-10-25): syncs only after a
 # checkpoint while a take is open, cleanup after the transport stops.
@@ -114,7 +116,7 @@ endif()
 # world file: no plugin SDK needed, so it runs in every build.
 if(UNIX)
   add_executable(fake_plugin_host tests/fake_plugin_host.cpp)
-  target_link_libraries(fake_plugin_host PRIVATE sonora_plugin_probe_record)
+  target_link_libraries(fake_plugin_host PRIVATE sonora_plugin_probe_record sonora_plugin_host_control)
   add_executable(test_plugin_scanner tests/test_plugin_scanner.cpp)
   target_link_libraries(test_plugin_scanner PRIVATE sonora_control Threads::Threads)
   add_dependencies(test_plugin_scanner fake_plugin_host)
@@ -125,6 +127,12 @@ if(UNIX)
   target_link_libraries(test_plugin_catalog PRIVATE sonora_control sonora_backend_fake Threads::Threads)
   add_dependencies(test_plugin_catalog fake_plugin_host)
   add_test(NAME plugin_catalog COMMAND test_plugin_catalog --host $<TARGET_FILE:fake_plugin_host>)
+  # --read-preset from the engine's side (ADR-0029 §5): the probe's timeout
+  # and crash rule, and a crashing preset never read again until a rescan.
+  add_executable(test_factory_preset_reader tests/test_factory_preset_reader.cpp)
+  target_link_libraries(test_factory_preset_reader PRIVATE sonora_control)
+  add_dependencies(test_factory_preset_reader fake_plugin_host)
+  add_test(NAME factory_preset_reader COMMAND test_factory_preset_reader --host $<TARGET_FILE:fake_plugin_host>)
   # A real cold and warm scan, timed by hand against the real host (never
   # run by ctest: minutes, and the machine's figure).
   add_executable(measure_plugin_scan tests/measure_plugin_scan.cpp)

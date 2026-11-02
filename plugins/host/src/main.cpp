@@ -7,6 +7,7 @@
 //   sonora-plugin-host --list [--json] [--format lv2|vst3] [--scan-timeout S] [--bundle DIR]...
 //                      [--bundles-only] [--only-given] [--engine-pid PID]
 //   sonora-plugin-host --probe ID [--channels N] [--bundle DIR]... [--engine-pid PID]
+//   sonora-plugin-host --read-preset BUNDLE PRESET-ID --plugin ID [--bundle DIR]... [--engine-pid PID]
 //   sonora-plugin-host --version
 //   sonora-plugin-host --shm-fd FD --clock-fd FD --chain ID[,ID...] [--bundle DIR]...
 //                      [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...
@@ -48,7 +49,7 @@
 // and later when it stops being so (ipc.h, die_with_parent).
 //
 // --version prints the contract versions this binary speaks, the probe
-// record's included (`probe 2`); the engine runs it at start-up (ADR-0012
+// record's included (`probe 3`); the engine runs it at start-up (ADR-0012
 // §5.5) and its plugin scanner before it trusts a record.
 //
 // --list gives every record the bundle it came from (ADR-0012, amendment of
@@ -59,9 +60,23 @@
 // VST3 scan to the --bundle paths given, so a changed bundle is enumerated
 // without running every other one's code again.
 //
-// --probe prints one probe record (contracts/plugin probe_record.h). With
-// --engine-pid, --list and --probe die with the engine as a serving host
+// --probe prints one probe record (contracts/plugin probe_record.h), the
+// plugin's factory presets listed in it (ADR-0029 §5). With --engine-pid,
+// --list, --probe and --read-preset die with the engine as a serving host
 // does: a probe runs third-party code and must not outlive the scan.
+//
+// --read-preset reads one factory preset of the plugin --plugin names, in
+// BUNDLE (searched first, as a --bundle), and writes what a session holds
+// of it (probe_record.h PresetRead: a line, then the StateBlob): an LV2
+// pset:Preset through lilv, a VST3 program selected through its
+// program-change parameter and then getState(), or a .vstpreset's chunks.
+// Every kind is restored into an instance and validated before it is
+// written, so a preset the plugin refuses, or that makes it write NaN or
+// outside its buffers, is refused here and never reaches a session. A
+// preset file is untrusted input and a VST3 program needs the plugin
+// loaded: neither belongs in the engine, so this runs one-shot, under the
+// probe's timeout and crash rule (ADR-0029 §5). Exit 0 with a preset, 5
+// (kHostExitRefused) with a refusal; a crash is the engine's to report.
 //
 // Exit codes in --shm-fd mode (contracts/plugin, kHostExit*): 0 clean
 // shutdown, 2 usage or a channel that is not valid, 3 the engine's layout or
@@ -81,7 +96,9 @@
 #include "ipc.h"
 #include "loader.h"
 #include "lv2_host.h"
+#include "lv2_presets.h"
 #include "state_paths.h"
+#include "vstpreset.h"
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin/probe_record.h"
 #include "sonora/plugin/protocol.h"
@@ -92,6 +109,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -146,6 +164,9 @@ public:
 struct Options {
     bool list = false, json = false, version = false, bundles_only = false, only_given = false;
     std::string probe, format;
+    // --read-preset BUNDLE PRESET-ID --plugin ID
+    std::string preset_bundle, preset_id, preset_plugin;
+    bool read_preset = false;
     int shm_fd = -1, clock_fd = -1, control_fd = -1;
     int64_t engine_pid = 0;
     std::vector<std::string> chain, bundles;
@@ -169,6 +190,8 @@ struct Options {
                  "usage: sonora-plugin-host --list [--json] [--format lv2|vst3] [--scan-timeout S]\n"
                  "                          [--bundle DIR]... [--bundles-only] [--only-given] [--engine-pid PID]\n"
                  "       sonora-plugin-host --probe ID [--channels N] [--bundle DIR]... [--engine-pid PID]\n"
+                 "       sonora-plugin-host --read-preset BUNDLE PRESET-ID --plugin ID [--bundle DIR]...\n"
+                 "                          [--engine-pid PID]\n"
                  "       sonora-plugin-host --version\n"
                  "       sonora-plugin-host --shm-fd FD --clock-fd FD --chain ID[,ID...] [--bundle DIR]...\n"
                  "                          [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...\n"
@@ -211,6 +234,12 @@ Options parse(int argc, char** argv) {
             if (o.format != "lv2" && o.format != "vst3") usage("--format is lv2 or vst3");
         }
         else if (a == "--probe") o.probe = next();
+        else if (a == "--read-preset") {
+            o.read_preset = true;
+            o.preset_bundle = next();
+            o.preset_id = next();
+        }
+        else if (a == "--plugin") o.preset_plugin = next();
         else if (a == "--shm-fd") o.shm_fd = std::atoi(next().c_str());
         else if (a == "--control-fd") o.control_fd = std::atoi(next().c_str());
         else if (a == "--engine-pid") o.engine_pid = std::atoll(next().c_str());
@@ -234,8 +263,11 @@ Options parse(int argc, char** argv) {
                               std::strtof(v.c_str() + eq + 1, nullptr)});
         } else usage(("unknown argument " + a).c_str());
     }
-    const int modes = int(o.list) + int(!o.probe.empty()) + int(o.shm_fd >= 0) + int(o.version);
-    if (modes != 1) usage("choose exactly one of --list, --probe, --shm-fd, --version");
+    const int modes = int(o.list) + int(!o.probe.empty()) + int(o.shm_fd >= 0) + int(o.version) + int(o.read_preset);
+    if (modes != 1) usage("choose exactly one of --list, --probe, --read-preset, --shm-fd, --version");
+    if (o.read_preset && (o.preset_plugin.empty() || o.preset_bundle.empty() || o.preset_id.empty()))
+        usage("--read-preset wants a bundle, a preset id and --plugin ID");
+    if (!o.read_preset && !o.preset_plugin.empty()) usage("--plugin is --read-preset's");
     if (o.control_fd >= 0) {
         if (o.shm_fd < 0) usage("--control-fd needs --shm-fd and --clock-fd");
         if (!o.chain.empty() || !o.sets.empty() || o.sidechain || o.reactivate)
@@ -490,6 +522,26 @@ plugin::probe::Param probe_param(const Chain& chain, uint32_t d) {
     return p;
 }
 
+// The factory presets a usable plugin lists (ADR-0029 §1): an LV2's
+// pset:Presets; a VST3's programs, then the .vstpreset files of its class
+// under the VST3 preset roots. Names only; content is --read-preset's.
+std::vector<plugin::probe::Preset> factory_presets(Catalog& catalog, Chain& chain, const std::string& format,
+                                                   const std::string& id, const PluginInfo& info) {
+    namespace pr = plugin::probe;
+    std::vector<pr::Preset> out;
+    if (format == "lv2") {
+        if (const LilvPlugin* p = catalog.lv2.find(id)) out = lv2_factory_presets(catalog.lv2, p, pr::kMaxRecordPresets);
+        return out;
+    }
+    for (const FactoryProgram& p : chain.processor(0).factory_programs(pr::kMaxRecordPresets))
+        out.push_back({"vst3-program:" + std::to_string(p.unit) + "/" + std::to_string(p.index), p.name});
+    if (out.size() < pr::kMaxRecordPresets)
+        for (vstpreset::Listed& l :
+             vstpreset::list(vstpreset::default_roots(), info.vendor, info.name, id, pr::kMaxRecordPresets - out.size()))
+            out.push_back({"vst3-file:" + l.relative, std::move(l.name)});
+    return out;
+}
+
 // --probe: instantiate one plugin, validate it and report its latency at
 // 48 kHz / 128, as one probe record (contracts/plugin probe_record.h). Runs
 // plugin code, so a scanner runs one probe per process: a plugin that
@@ -569,8 +621,157 @@ int probe(const Options& o) {
     r.outcome = pr::Outcome::Ok;
     r.replicas = chain.replicas(0);
     r.latency_frames = chain.instance_latency(0);
+    r.presets = factory_presets(catalog, chain, r.format, o.probe, info);
     std::printf("%s\n", pr::encode(r).c_str());
     return 0;
+}
+
+// --read-preset (ADR-0029 §5). What it writes is probe_record.h's
+// PresetRead; every refusal names the plugin, the preset and why.
+int read_preset(Options o) {
+    namespace pr = plugin::probe;
+    static_assert(pr::kMaxPresetStateBytes == pc::kMaxStateBytes, "a preset's state is a StateBlob");
+    if (!die_with_parent(o.engine_pid)) {
+        std::fprintf(stderr, "sonora-plugin-host: the engine (pid %lld) is gone; the preset read exits\n",
+                     static_cast<long long>(o.engine_pid));
+        return plugin::kHostExitUsage;
+    }
+    pr::PresetRead r;
+    r.plugin = o.preset_plugin;
+    r.preset = o.preset_id;
+    const auto answer = [&](pr::Outcome outcome, const std::string& why) {
+        r.outcome = outcome;
+        if (outcome != pr::Outcome::Ok) {
+            r.reason = why;
+            r.params.clear();
+            r.state.clear();
+        }
+        const std::string out = pr::encode_preset_read(r);
+        std::fwrite(out.data(), 1, out.size(), stdout);
+        std::fflush(stdout);
+        return outcome == pr::Outcome::Ok ? plugin::kHostExitClean : plugin::kHostExitRefused;
+    };
+    const bool vst3 = is_vst3_id(o.preset_plugin);
+    const std::string format = vst3 ? "vst3" : "lv2";
+    if (!pr::preset_id_fits(format, o.preset_id))
+        return answer(pr::Outcome::Refused, "\"" + o.preset_id + "\" is not a preset id of an " + format + " plugin");
+    o.bundles.insert(o.bundles.begin(), o.preset_bundle);
+    Catalog catalog;
+    load_bundles(catalog, o);
+
+    PluginInfo info;
+    ChainError err;
+    const LilvPlugin* lv2 = nullptr;
+    if (vst3) {
+#ifdef SONORA_HAVE_VST3
+        if (!catalog.vst3.describe(o.preset_plugin, info, err))
+            return answer(err.reason == plugin::Refusal::NotFound ? pr::Outcome::NotInstalled : pr::Outcome::Refused,
+                          err.reason == plugin::Refusal::NotFound ? "not installed" : err.message);
+#else
+        return answer(pr::Outcome::Refused, "this sonora-plugin-host was built without VST3");
+#endif
+    } else {
+        lv2 = catalog.lv2.find(o.preset_plugin);
+        if (!lv2) return answer(pr::Outcome::NotInstalled, "not installed");
+        info = catalog.lv2.describe(lv2);
+    }
+    const std::string who = info.name + " <" + o.preset_plugin + ">, preset " + o.preset_id;
+
+    ChainConfig cfg;
+    cfg.channels = info.audio_in == info.audio_out && info.audio_in ? info.audio_in : 1;
+    // mapPath and freePath as --probe gives them (no folders, no makePath),
+    // so a preset's state is restored through the same features a session's
+    // is. Declared before the chain: the plugin holds them until it goes.
+    StatePaths no_folders("", "");
+    Chain chain(catalog, cfg);
+    if (!chain.add(o.preset_plugin, err, &no_folders)) return answer(pr::Outcome::Refused, err.message);
+    Processor& proc = chain.processor(0);
+    const uint64_t deadline = monotonic_ns() + uint64_t(10) * 1000000000u;
+    std::vector<std::string> sections;
+    std::string why;
+
+    if (!vst3) {
+        Lv2PresetContent c;
+        switch (lv2_read_preset(catalog.lv2, lv2, o.preset_id.substr(4), c, why)) {
+            case Lv2PresetResult::NotFound: return answer(pr::Outcome::NotInstalled, who + ": " + why);
+            case Lv2PresetResult::Refused: return answer(pr::Outcome::Refused, who + ": " + why);
+            case Lv2PresetResult::Ok: break;
+        }
+        if (!c.state.empty()) sections.push_back(std::move(c.state));
+        if (!sections.empty() && !chain.restore_state(0, sections, deadline, why))
+            return answer(pr::Outcome::Refused, who + ": the plugin refused it: " + why);
+        // Port values the plugin no longer has stay in `params` (ADR-0029
+        // §4); the instance is given the ones it has, so validation runs
+        // with the preset as it will sound.
+        for (const pr::PresetValue& v : c.params) chain.set_control(0, v.key, v.value);
+        r.name = c.name;
+        r.params = std::move(c.params);
+    } else if (o.preset_id.rfind("vst3-program:", 0) == 0) {
+        const std::string spec = o.preset_id.substr(std::strlen("vst3-program:"));
+        const auto slash = spec.find('/');
+        int32_t unit = 0, index = 0;
+        const auto parse_i32 = [](const std::string& s, int32_t& v) {
+            const auto res = std::from_chars(s.data(), s.data() + s.size(), v);
+            return !s.empty() && res.ec == std::errc() && res.ptr == s.data() + s.size();
+        };
+        if (slash == std::string::npos || !parse_i32(spec.substr(0, slash), unit) ||
+            !parse_i32(spec.substr(slash + 1), index))
+            return answer(pr::Outcome::Refused, who + ": not <unit id>/<program index>");
+        bool listed = false;
+        for (const FactoryProgram& p : proc.factory_programs(pr::kMaxRecordPresets))
+            if (p.unit == unit && p.index == index) {
+                r.name = p.name;
+                listed = true;
+            }
+        if (!listed) return answer(pr::Outcome::NotInstalled, who + ": the plugin lists no such program");
+        if (!proc.select_program(unit, index, why)) return answer(pr::Outcome::Refused, who + ": " + why);
+    } else {
+        const std::string rel = o.preset_id.substr(std::strlen("vst3-file:"));
+        std::string path, bytes;
+        if (!vstpreset::resolve(vstpreset::default_roots(), rel, path, why))
+            return answer(pr::Outcome::NotInstalled, who + ": " + why);
+        vstpreset::File file;
+        if (!vstpreset::load(path, bytes, why) || !vstpreset::parse(bytes, file, why))
+            return answer(pr::Outcome::Refused, who + ": " + why);
+        if (!vstpreset::same_class(file.class_id, o.preset_plugin))
+            return answer(pr::Outcome::Refused, who + ": the file is a preset of class " + file.class_id +
+                                                    ", another plugin's");
+        sections = {std::move(file.component), std::move(file.controller)};
+        if (!chain.restore_state(0, sections, deadline, why))
+            return answer(pr::Outcome::Refused, who + ": the plugin refused it: " + why);
+        const std::string stem = std::filesystem::path(rel).stem().string();
+        r.name = stem;
+    }
+
+    // A few blocks of silence with the preset in place: what it does to the
+    // plugin is checked here, before any session holds it.
+    if (!chain.validate(err)) return answer(pr::Outcome::Refused, who + ": " + err.message);
+
+    if (vst3) {
+        if (o.preset_id.rfind("vst3-program:", 0) == 0) {
+            switch (chain.save_state(0, sections, why)) {
+                case SaveResult::Saved: break;
+                case SaveResult::Empty: sections.clear(); break;
+                case SaveResult::Failed: return answer(pr::Outcome::Refused, who + ": " + why);
+            }
+        }
+        // The controller's values once the state is in: the document's
+        // params, so a session does not apply stale ones over the preset.
+        for (uint32_t d = 0; d < proc.param_count() && r.params.size() < pr::kMaxRecordParams; ++d) {
+            float v = 0.f;
+            if (proc.is_program_change(d) || !proc.current_value(d, v) || !std::isfinite(v)) continue;
+            r.params.push_back({proc.param_key(d), v});
+        }
+    }
+    if (!sections.empty()) {
+        pc::StateBlob blob;
+        blob.format = vst3 ? pc::Format::Vst3 : pc::Format::Lv2;
+        // As LoadInstance names it: a VST3 class id without "vst3:".
+        blob.id = vst3 ? o.preset_plugin.substr(5) : o.preset_plugin;
+        blob.sections = std::move(sections);
+        if (!pc::encode_state_blob(blob, r.state, why)) return answer(pr::Outcome::Refused, who + ": " + why);
+    }
+    return answer(pr::Outcome::Ok, "");
 }
 
 int refuse(plugin::ChannelHeader& h, const ChainError& err, plugin::HostState state) {
@@ -1486,5 +1687,6 @@ int main(int argc, char** argv) {
         return list(o);
     }
     if (!o.probe.empty()) return probe(o);
+    if (o.read_preset) return read_preset(o);
     return serve(o);
 }

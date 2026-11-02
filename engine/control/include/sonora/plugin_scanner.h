@@ -8,7 +8,7 @@
 // What it does, on its own thread, which may block (it is not the control
 // thread, and never the audio thread):
 //   - at start: `sonora-plugin-host --version` (it must name probe record
-//     2, kProbeRecordVersion), the cache read and every cached bundle fingerprinted again, then
+//     3, kProbeRecordVersion), the cache read and every cached bundle fingerprinted again, then
 //     the catalog published (generation 1);
 //   - a scan: `--list --bundles-only` (no plugin code), each bundle
 //     fingerprinted; new or changed ones enumerated (`--list --format lv2`,

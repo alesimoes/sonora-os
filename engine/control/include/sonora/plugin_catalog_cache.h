@@ -7,7 +7,7 @@
 // thread's turn: everything here touches the filesystem. The scan worker's
 // thread (plugin_scanner.h) is its only caller in the engine.
 //
-//   {"version": 1, "host": "<--version line>", "build": "<image build id>",
+//   {"version": 2, "host": "<--version line>", "build": "<image build id>",
 //    "bundles": {"<path>": {"format": "lv2"|"vst3",
 //                           "fingerprint": {"files", "bytes", "newest_ns", "complete"},
 //                           "failed": "<why the bundle could not be scanned>",   (optional)
@@ -29,7 +29,8 @@
 
 namespace sonora {
 
-inline constexpr uint32_t kPluginCacheVersion = 1;
+// 2: records carry their factory presets (probe record 3, ADR-0029 §5).
+inline constexpr uint32_t kPluginCacheVersion = 2;
 inline constexpr std::size_t kMaxPluginCacheBytes = std::size_t{32} << 20;
 // Entries walked per bundle before the fingerprint gives up (complete =
 // false): such a bundle is probed again at every scan.

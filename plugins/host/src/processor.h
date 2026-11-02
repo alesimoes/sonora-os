@@ -113,6 +113,14 @@ public:
 // StateBlob). Empty: the plugin keeps no state of its own.
 enum class SaveResult { Saved, Empty, Failed };
 
+// A factory program the plugin lists through its own interface (VST3
+// IUnitInfo), selectable through a program-change parameter (ADR-0029 §1).
+struct FactoryProgram {
+    int32_t unit = 0;
+    int32_t index = 0;
+    std::string name;
+};
+
 class Processor {
 public:
     virtual ~Processor() = default;
@@ -207,6 +215,19 @@ public:
         error = "this plugin keeps no state of its own";
         return false;
     }
+    // The main thread. Factory programs, at most `cap`, each one a unit's
+    // program list entry with a program-change parameter that selects it.
+    virtual std::vector<FactoryProgram> factory_programs(std::size_t /*cap*/) const { return {}; }
+    // The main thread, before the processing thread starts: select a
+    // program for the next run(), on the controller and the processor
+    // alike. False, with the reason, when the plugin lists no such program.
+    virtual bool select_program(int32_t /*unit*/, int32_t /*index*/, std::string& error) {
+        error = "this plugin lists no programs";
+        return false;
+    }
+    // Whether a dense parameter is a program change (VST3
+    // kIsProgramChange): never one a preset sets again over a state.
+    virtual bool is_program_change(uint32_t /*dense*/) const { return false; }
     // Display text for a value (host_control.h DescribeValue). The main thread.
     virtual bool describe_value(uint32_t dense, float value, std::string& out) const {
         if (dense >= param_count()) return false;

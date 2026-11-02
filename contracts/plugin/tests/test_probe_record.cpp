@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The probe record, version 2 (probe_record.h): the golden line is pinned,
+// The probe record, version 3 (probe_record.h): the golden line is pinned,
 // every record round-trips exactly, a version-1 record still reads (as a
 // native plugin's), a record of another version is refused as that, and
 // malformed, mistyped, inconsistent or over-cap records are refused rather
@@ -12,7 +12,7 @@
 
 using namespace sonora::plugin::probe;
 
-static_assert(kProbeRecordVersion == 2, "the golden lines below describe record version 2");
+static_assert(kProbeRecordVersion == 3, "the golden lines below describe record version 3");
 
 namespace {
 
@@ -27,7 +27,7 @@ int failures = 0;
 
 Record sample() {
     Record r;
-    r.host = "sonora-plugin-host layout 1 clock 1 wire 1 probe 2";
+    r.host = "sonora-plugin-host layout 1 clock 1 wire 1 probe 3";
     r.uri = "urn:sonora:test#gain";
     r.format = "lv2";
     r.bundle = "/usr/lib/lv2/sonora-test.lv2";
@@ -62,11 +62,14 @@ Record sample() {
     m.steps = 3;
     m.labels = {"Off", "Peak", "RMS é"};
     r.params = {g, m};
+    r.presets = {{"lv2:urn:sonora:test:presets#quiet", "Quiet"}};
     return r;
 }
 
 bool same(const Record& a, const Record& b) {
-    if (a.params.size() != b.params.size()) return false;
+    if (a.params.size() != b.params.size() || a.presets.size() != b.presets.size()) return false;
+    for (std::size_t i = 0; i < a.presets.size(); ++i)
+        if (a.presets[i].id != b.presets[i].id || a.presets[i].name != b.presets[i].name) return false;
     for (std::size_t i = 0; i < a.params.size(); ++i) {
         const Param& p = a.params[i];
         const Param& q = b.params[i];
@@ -86,7 +89,7 @@ bool same(const Record& a, const Record& b) {
 
 void golden() {
     const std::string want =
-        "{\"record\":2,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 1 probe 2\",\"uri\":\"urn:sonora:test#gain\","
+        "{\"record\":3,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 1 probe 3\",\"uri\":\"urn:sonora:test#gain\","
         "\"format\":\"lv2\",\"bundle\":\"/usr/lib/lv2/sonora-test.lv2\",\"name\":\"Gain \\\"test\\\"\","
         "\"vendor\":\"Sonora\",\"version\":\"1.2\",\"categories\":[\"Utility\",\"Amplifier\"],\"has_editor\":false,"
         "\"audio_in\":1,\"audio_out\":1,\"sidechain_in\":0,\"ok\":true,\"channels\":2,\"replicas\":2,"
@@ -94,7 +97,8 @@ void golden() {
         "{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,\"default\":0.0,"
         "\"flags\":1,\"unit\":\"dB\",\"steps\":0,\"labels\":[]},"
         "{\"key\":\"mode\",\"symbol\":\"mode\",\"name\":\"Mode\\tA\",\"min\":0.0,\"max\":2.0,\"default\":1.0,"
-        "\"flags\":5,\"unit\":\"\",\"steps\":3,\"labels\":[\"Off\",\"Peak\",\"RMS é\"]}]}";
+        "\"flags\":5,\"unit\":\"\",\"steps\":3,\"labels\":[\"Off\",\"Peak\",\"RMS é\"]}],\"presets\":["
+        "{\"id\":\"lv2:urn:sonora:test:presets#quiet\",\"name\":\"Quiet\"}]}";
     const std::string got = encode(sample());
     if (got != want) std::printf("golden:\n  got  %s\n  want %s\n", got.c_str(), want.c_str());
     CHECK(got == want);
@@ -106,7 +110,11 @@ void golden() {
     r.bundle = "/home/op/.vst3/yabridge/sonora-test-state.vst3";
     r.bridge = "yabridge";
     r.params.clear();
+    r.presets = {{"vst3-program:0/2", "Bright"}, {"vst3-file:SonoraOS tests/State/Warm.vstpreset", "Warm"}};
     const std::string bridged = encode(r);
+    CHECK(bridged.find("\"params\":[],\"presets\":[{\"id\":\"vst3-program:0/2\",\"name\":\"Bright\"},"
+                       "{\"id\":\"vst3-file:SonoraOS tests/State/Warm.vstpreset\",\"name\":\"Warm\"}]}") !=
+          std::string::npos);
     CHECK(bridged.find("\"bundle\":\"/home/op/.vst3/yabridge/sonora-test-state.vst3\",\"bridge\":\"yabridge\","
                        "\"name\":") != std::string::npos);
 }
@@ -152,6 +160,7 @@ void round_trips() {
     r.format = "vst3";
     r.uri = "vst3:534F4E4F524156535433544553540009";
     r.bridge = "yabridge";
+    r.presets = {{"vst3-program:-1/0", "Init"}};
     CHECK(decode(encode(r), back, e) && same(r, back) && back.bridge == "yabridge");
     r.outcome = Outcome::Blocked;
     r.reason = "its probe did not answer within 30 s";
@@ -173,14 +182,18 @@ void refusals() {
         if (at != std::string::npos) s.replace(at, from.size(), to);
         return s;
     };
-    CHECK(refused(swap("\"record\":2", "\"record\":3"), "version 3"));
-    CHECK(refused(swap("\"record\":2", "\"record\":0"), "version 0"));
-    CHECK(refused(swap("\"record\":2,", ""), "no \"record\""));
+    CHECK(refused(swap("\"record\":3", "\"record\":4"), "version 4"));
+    CHECK(refused(swap("\"record\":3", "\"record\":0"), "version 0"));
+    CHECK(refused(swap("\"record\":3,", ""), "no \"record\""));
     // `bridge`: version 2's only, "yabridge" only, a VST3's only.
     const std::string bridged_lv2 = swap("\"name\":", "\"bridge\":\"yabridge\",\"name\":");
     CHECK(refused(bridged_lv2, "not a VST3"));
     std::string vst3 = good;
     vst3.replace(vst3.find("\"format\":\"lv2\""), 14, "\"format\":\"vst3\"");
+    // An LV2 preset on a VST3 record is refused; the VST3 kinds are not.
+    CHECK(refused(vst3, "not one a vst3 plugin lists"));
+    vst3.replace(vst3.find("\"lv2:urn:sonora:test:presets#quiet\""), 35, "\"vst3-program:0/1\"");
+    CHECK(decode(vst3, back, e) && back.presets.size() == 1 && back.presets[0].id == "vst3-program:0/1");
     const auto with_bridge = [&](const std::string& line, const std::string& value) {
         std::string s = line;
         s.replace(s.find("\"name\":"), 7, "\"bridge\":" + value + ",\"name\":");
@@ -191,8 +204,31 @@ void refusals() {
     CHECK(refused(with_bridge(vst3, "\"\""), "bridge is \"\""));
     CHECK(refused(with_bridge(vst3, "1"), "bridge is not a string"));
     std::string v1 = with_bridge(vst3, "\"yabridge\"");
-    v1.replace(v1.find("\"record\":2"), 10, "\"record\":1");
+    v1.replace(v1.find("\"record\":3"), 10, "\"record\":1");
     CHECK(refused(v1, "unknown key \"bridge\""));
+    // `presets`: version 3's only, and there it must be.
+    const std::string presets_part = ",\"presets\":[{\"id\":\"lv2:urn:sonora:test:presets#quiet\",\"name\":\"Quiet\"}]";
+    CHECK(refused(swap("\"record\":3", "\"record\":2"), "unknown key \"presets\""));
+    std::string v2 = swap(presets_part, "");
+    v2.replace(v2.find("\"record\":3"), 10, "\"record\":2");
+    CHECK(decode(v2, back, e) && back.record == 2 && back.presets.empty());
+    CHECK(refused(swap(presets_part, ""), "no \"presets\""));
+    CHECK(refused(swap("\"name\":\"Quiet\"}", "\"name\":\"Quiet\"},{\"id\":\"lv2:urn:sonora:test:presets#quiet\",\"name\":\"Again\"}"),
+                  "listed twice"));
+    CHECK(refused(swap("\"id\":\"lv2:urn:sonora:test:presets#quiet\"", "\"id\":\"lv2:\""), "not one a lv2 plugin lists"));
+    CHECK(refused(swap("\"id\":\"lv2:urn:sonora:test:presets#quiet\"", "\"id\":\"vst3-file:a.vstpreset\""),
+                  "not one a lv2 plugin lists"));
+    CHECK(refused(swap("\"name\":\"Quiet\"}", "\"name\":\"Quiet\",\"bank\":\"A\"}"), "unknown key \"bank\""));
+    CHECK(refused(swap("\"name\":\"Quiet\"}", "\"name\":7}"), "wrong type"));
+    {
+        Record many = sample();
+        many.presets.clear();
+        for (std::size_t k = 0; k <= kMaxRecordPresets; ++k)
+            many.presets.push_back({"lv2:urn:p#" + std::to_string(k), "p"});
+        CHECK(refused(encode(many), "too many presets"));
+        many.presets.pop_back();
+        CHECK(decode(encode(many), back, e) && back.presets.size() == kMaxRecordPresets);
+    }
     CHECK(refused(swap("\"ok\":true", "\"ok\":false"), "disagree"));
     CHECK(refused(swap("\"outcome\":\"ok\"", "\"outcome\":\"maybe\""), "outcome"));
     CHECK(refused(swap("\"format\":\"lv2\"", "\"format\":\"au\""), "format"));
@@ -225,6 +261,86 @@ void refusals() {
     r.params[1].steps = uint32_t(kMaxRecordLabels + 1);
     r.params[1].labels.assign(kMaxRecordLabels + 1, "l");
     CHECK(refused(encode(r), "more than"));
+}
+
+// --read-preset's output (ADR-0029 §5): a line, then the raw blob.
+void preset_reads() {
+    PresetRead r;
+    r.plugin = "urn:sonora:test#state";
+    r.preset = "lv2:urn:sonora:test:presets#count-1000";
+    r.outcome = Outcome::Ok;
+    r.name = "Count \"1000\"";
+    r.params = {{"gain", -6.f}, {"mode", 0.1f}};
+    r.state = std::string("SNST\0\n\r\xff", 8) + std::string(1000, '\n');
+    const std::string out = encode_preset_read(r);
+    const std::string line = out.substr(0, out.find('\n'));
+    CHECK(line ==
+          "{\"preset_read\":1,\"plugin\":\"urn:sonora:test#state\",\"preset\":\"lv2:urn:sonora:test:presets#count-1000\","
+          "\"outcome\":\"ok\",\"name\":\"Count \\\"1000\\\"\",\"params\":[{\"key\":\"gain\",\"value\":-6.0},"
+          "{\"key\":\"mode\",\"value\":0.1}],\"state_bytes\":1008}");
+    PresetRead back;
+    std::string e;
+    CHECK(decode_preset_read(out, back, e) && back.plugin == r.plugin && back.preset == r.preset && back.ok() &&
+          back.name == r.name && back.params.size() == 2 && back.params[1].value == 0.1f && back.state == r.state);
+    // No state at all is a preset of port values only.
+    PresetRead bare = r;
+    bare.state.clear();
+    CHECK(decode_preset_read(encode_preset_read(bare), back, e) && back.state.empty());
+    // A refusal carries neither, whatever the writer had in hand.
+    PresetRead no = r;
+    no.outcome = Outcome::Refused;
+    no.reason = "the file's class is another plugin's";
+    const std::string refused_out = encode_preset_read(no);
+    CHECK(refused_out.find("\"params\":[],\"state_bytes\":0}\n") != std::string::npos &&
+          refused_out.back() == '\n');
+    CHECK(decode_preset_read(refused_out, back, e) && !back.ok() && back.reason == no.reason && back.state.empty());
+
+    const auto refused = [&](const std::string& s, const char* says) {
+        const bool ok = !decode_preset_read(s, back, e) && e.find(says) != std::string::npos;
+        if (!ok) std::printf("  wanted a preset read refusal saying \"%s\", got \"%s\"\n", says, e.c_str());
+        return ok;
+    };
+    const auto swap = [&](std::string s, const std::string& from, const std::string& to) {
+        const auto at = s.find(from);
+        if (at != std::string::npos) s.replace(at, from.size(), to);
+        return s;
+    };
+    CHECK(refused(out.substr(0, out.size() - 1), "1008 state bytes and 1007 follow"));
+    CHECK(refused(out + "x", "1008 state bytes and 1009 follow"));
+    CHECK(refused(line, "no line end"));
+    CHECK(refused(swap(out, "\"preset_read\":1", "\"preset_read\":2"), "version 2"));
+    CHECK(refused(swap(out, "\"name\":", "\"bank\":\"A\",\"name\":"), "unknown key \"bank\""));
+    CHECK(refused(swap(out, "\"state_bytes\":1008", "\"state_bytes\":16777217"), "over the cap"));
+    CHECK(refused(swap(out, "\"state_bytes\":1008", "\"state_bytes\":-1"), "not a count"));
+    CHECK(refused(swap(out, "\"key\":\"mode\"", "\"key\":\"gain\""), "given twice"));
+    CHECK(refused(swap(out, "\"key\":\"mode\"", "\"key\":\"\""), "empty key"));
+    CHECK(refused(swap(out, "\"value\":-6.0", "\"value\":1e99"), "finite"));
+    CHECK(refused(swap(out, "\"preset\":\"lv2:", "\"preset\":\"vst3-file:"), "not one a lv2 plugin lists"));
+    CHECK(refused(swap(out, "\"plugin\":\"urn:sonora:test#state\"", "\"plugin\":\"vst3:00\""),
+                  "not one a vst3 plugin lists"));
+    CHECK(refused(swap(out, "\"outcome\":\"ok\"", "\"outcome\":\"refused\""), "gives no reason"));
+    CHECK(refused(swap(out, "\"outcome\":\"ok\"", "\"outcome\":\"refused\",\"reason\":\"r\""),
+                  "carries a state or parameters"));
+    CHECK(refused(swap(out, "\"outcome\":\"ok\"", "\"outcome\":\"ok\",\"reason\":\"r\""), "gives a reason"));
+    CHECK(refused(swap(out, "\"plugin\":\"urn:sonora:test#state\"", "\"plugin\":\"\""), "names no plugin"));
+    CHECK(refused(std::string(kMaxRecordBytes + 1, ' ') + "\n", "over the cap"));
+
+    // Fuzzed lines and blobs never crash the decoder.
+    std::mt19937 rng(11);
+    for (int i = 0; i < 20000; ++i) {
+        std::string s = out.substr(0, line.size() + 1 + 16);
+        const int edits = 1 + int(rng() % 4);
+        for (int k = 0; k < edits; ++k) {
+            const std::size_t at = rng() % s.size();
+            switch (rng() % 3) {
+                case 0: s[at] = char(rng() % 256); break;
+                case 1: s.erase(at, 1 + rng() % 8); break;
+                default: s.insert(at, 1, "{}[]\",:\\0e\n"[rng() % 11]); break;
+            }
+            if (s.empty()) s = "{";
+        }
+        decode_preset_read(s, back, e);
+    }
 }
 
 void version_line() {
@@ -266,6 +382,7 @@ int main() {
     round_trips();
     refusals();
     version_line();
+    preset_reads();
     fuzz();
     if (failures) {
         std::printf("test_probe_record: %d failure(s)\n", failures);

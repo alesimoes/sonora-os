@@ -2,8 +2,9 @@
 #pragma once
 
 // ============================================================================
-//  The probe record, record version 2 (ADR-0012, amendment of 2026-10-19,
-//  item 2; version 2: ADR-0017 Y2, `bridge`).
+//  The probe record, record version 3 (ADR-0012, amendment of 2026-10-19,
+//  item 2; version 2: ADR-0017 Y2, `bridge`; version 3: ADR-0029 §5,
+//  `presets`), and the output of `--read-preset` (ADR-0029 §5).
 //
 //  Owned jointly by plugin-engineer and rt-engineer (ADR-0007 §4.3, §6),
 //  like protocol.h and host_control.h. A change to a field, its meaning or
@@ -22,9 +23,10 @@
 // version it writes as `probe <kProbeRecordVersion>`, after layout, clock
 // and wire (parse_probe_version). decode() reads versions
 // kOldestProbeRecordVersion to kProbeRecordVersion: version 1 is version 2
-// with no `bridge`, so it reads as a native plugin's. A record of any other
-// version is refused, never guessed at: for the engine's cache it is a
-// miss, and the plugin is probed again. encode() writes only the current
+// with no `bridge`, so it reads as a native plugin's; versions 1 and 2 have
+// no `presets`, so they read as a plugin that lists none. A record of any
+// other version is refused, never guessed at: for the engine's cache it is
+// a miss, and the plugin is probed again. encode() writes only the current
 // version.
 //
 // The line. One JSON object, UTF-8, no newline inside, its keys in this
@@ -34,9 +36,11 @@
 //   bridged), name, vendor, version, categories,
 //   has_editor, audio_in, audio_out, sidechain_in, ok, reason (only when
 //   ok is false), channels, replicas, latency_frames, sample_rate, outcome,
-//   bypass, params
+//   bypass, params, presets (version 3)
 // and each parameter's
-//   key, symbol, name, min, max, default, flags, unit, steps, labels.
+//   key, symbol, name, min, max, default, flags, unit, steps, labels
+// and each preset's
+//   id, name.
 // Numbers are integers or finite floats; a float is written shortest
 // round-trip (std::to_chars), so a record read back is the record written.
 //
@@ -58,7 +62,7 @@
 
 namespace sonora::plugin::probe {
 
-inline constexpr uint32_t kProbeRecordVersion = 2;
+inline constexpr uint32_t kProbeRecordVersion = 3;
 inline constexpr uint32_t kOldestProbeRecordVersion = 1;
 
 // Caps a reader enforces: a record over any of them is refused whole.
@@ -67,6 +71,9 @@ inline constexpr std::size_t kMaxRecordParams = 65536;   // host_control.h kMaxP
 inline constexpr std::size_t kMaxRecordLabels = 4096;    // per parameter
 inline constexpr std::size_t kMaxRecordCategories = 16;
 inline constexpr std::size_t kMaxRecordText = std::size_t{64} << 10;  // any one string
+// Factory presets listed per plugin. A plugin that ships more is listed up
+// to the cap, in the host's order.
+inline constexpr std::size_t kMaxRecordPresets = 4096;
 
 enum class Outcome : uint8_t {
     Ok = 0,            // validated; usable at `channels`
@@ -109,6 +116,20 @@ struct Param {
     std::vector<std::string> labels;
 };
 
+// A factory preset as the plugin's own files or interfaces list it
+// (ADR-0029 §1, §5). Listing only: the content is read on demand, by
+// `--read-preset`. `id` is ADR-0029 §2's, opaque to clients:
+//   lv2:<preset URI>                         an LV2 pset:Preset
+//   vst3-program:<unit id>/<program index>   a VST3 program (IUnitInfo)
+//   vst3-file:<path>                         a .vstpreset, its path relative
+//                                            to the VST3 preset root it was
+//                                            found under
+// Only the LV2 kind on an LV2 record, only the VST3 kinds on a VST3 one.
+struct Preset {
+    std::string id;
+    std::string name;
+};
+
 struct Record {
     uint32_t record = kProbeRecordVersion;
     // The --version line of the host that wrote it, without the newline.
@@ -146,6 +167,8 @@ struct Record {
     // lv2:enabled), or host-side.
     bool plugin_bypass = false;
     std::vector<Param> params;
+    // Version 3: ids unique, at most kMaxRecordPresets.
+    std::vector<Preset> presets;
 
     bool ok() const { return outcome == Outcome::Ok; }
 };
@@ -154,12 +177,73 @@ struct Record {
 // and no range or default a reader could use is one.
 std::string encode(const Record& r);
 
-// False, with `error`, for a line that is not a version-1 or version-2
+// False, with `error`, for a line that is not a version-1 to version-3
 // record within the caps: another `record` version, a missing or mistyped
 // field, an unknown outcome, ok disagreeing with outcome, steps of 1, more
-// labels than steps, a bridge other than "yabridge" or on an LV2.
+// labels than steps, a bridge other than "yabridge" or on an LV2, a preset
+// id of another format's kind, or listed twice.
 // Unknown keys are refused too: a record is the contract's or it is not.
 bool decode(std::string_view line, Record& out, std::string& error);
+
+// Whether `id` is a preset id of a kind `format` ("lv2" or "vst3") lists,
+// with something after its prefix.
+bool preset_id_fits(std::string_view format, std::string_view id);
+
+// ---------------------------------------------------------------------------
+// What `sonora-plugin-host --read-preset <bundle> <preset id> --plugin ID`
+// writes on stdout (ADR-0029 §5): one factory preset's content, which the
+// engine copies into a session (ADR-0029 §3 step 3).
+//
+//   {"preset_read":1,"plugin":"<host id>","preset":"<preset id>",
+//    "outcome":"ok"|"refused"|"not_installed"|"blocked",
+//    "reason":"..." (only when not ok),"name":"...",
+//    "params":[{"key":"gain","value":-6.0}],"state_bytes":N}
+//   a newline, then exactly N bytes: a StateBlob (host_control.h), none
+//   when N is 0.
+//
+// The blob follows raw, not escaped into the JSON: it is the plugin's own
+// state and can be megabytes. `params` are the values the preset sets, by
+// the stable key (LV2 port symbol, VST3 ParamID in decimal), format-native
+// (LV2 plain, VST3 normalised): they become the insert's params in the
+// document, which an LV2 blob does not hold (ADR-0029 §2). A VST3
+// program-change parameter is never among them: applied again over a
+// restored state, it would load the factory program over the operator's
+// edits.
+//
+// The host writes Ok, Refused (the preset or the plugin is not usable, and
+// the reason says why) and NotInstalled (no such plugin, or no such preset
+// of it). Blocked is the engine's, for a reader that crashed or did not
+// answer in time (ADR-0029 §5: the probe's timeout and crash rule).
+
+inline constexpr uint32_t kPresetReadVersion = 1;
+// host_control.h kMaxStateBytes. This header does not include it; the host
+// static_asserts that the two agree.
+inline constexpr std::size_t kMaxPresetStateBytes = std::size_t{16} << 20;
+
+struct PresetValue {
+    std::string key;
+    float value = 0.f;
+};
+
+struct PresetRead {
+    std::string plugin;  // the host id asked for
+    std::string preset;  // the preset id asked for
+    Outcome outcome = Outcome::Refused;
+    std::string reason;  // only when outcome is not Ok
+    std::string name;
+    std::vector<PresetValue> params;  // at most kMaxRecordParams, keys unique
+    std::string state;                // a StateBlob, or empty
+    bool ok() const { return outcome == Outcome::Ok; }
+};
+
+// The whole output: the line, its newline and the blob.
+std::string encode_preset_read(const PresetRead& r);
+
+// False, with `error`, for anything but one version-1 line within the caps
+// followed by exactly `state_bytes` bytes; a refusal that carries params or
+// a state; no preset id, or a usable read of an id that does not fit the
+// plugin's format (a refusal may name any id: it is what it refuses).
+bool decode_preset_read(std::string_view out, PresetRead& r, std::string& error);
 
 // The record version a host's --version line names (`probe N`), or false
 // when it names none: a host from before records were versioned.

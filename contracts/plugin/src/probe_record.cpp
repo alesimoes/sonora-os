@@ -9,6 +9,7 @@
 #include <initializer_list>
 #include <cmath>
 #include <memory>
+#include <set>
 #include <utility>
 
 namespace sonora::plugin::probe {
@@ -413,10 +414,16 @@ struct Reader {
                       "latency_frames", "sample_rate", "outcome", "bypass", "params"},
                   w))
             return false;
-        if (r.record >= 2 &&
+        if (r.record == 2 &&
             !only(o, {"record", "host", "uri", "format", "bundle", "bridge", "name", "vendor", "version",
                       "categories", "has_editor", "audio_in", "audio_out", "sidechain_in", "ok", "reason", "channels",
                       "replicas", "latency_frames", "sample_rate", "outcome", "bypass", "params"},
+                  w))
+            return false;
+        if (r.record >= 3 &&
+            !only(o, {"record", "host", "uri", "format", "bundle", "bridge", "name", "vendor", "version",
+                      "categories", "has_editor", "audio_in", "audio_out", "sidechain_in", "ok", "reason", "channels",
+                      "replicas", "latency_frames", "sample_rate", "outcome", "bypass", "params", "presets"},
                   w))
             return false;
         bool ok = false;
@@ -466,6 +473,92 @@ struct Reader {
         for (const Node& p : params->items) {
             r.params.emplace_back();
             if (!param(p, r.params.back())) return false;
+        }
+        r.presets.clear();
+        if (r.record < 3) return true;
+        const Node* presets = need(o, "presets", Node::Type::Array, w);
+        if (!presets) return false;
+        if (presets->items.size() > kMaxRecordPresets) return fail("the record has too many presets");
+        r.presets.reserve(presets->items.size());
+        std::set<std::string> ids;
+        for (const Node& p : presets->items) {
+            const char* pw = "a preset";
+            if (p.type != Node::Type::Object) return fail("a preset is not an object");
+            if (!only(p, {"id", "name"}, pw)) return false;
+            Preset entry;
+            if (!str(p, "id", entry.id, pw) || !str(p, "name", entry.name, pw)) return false;
+            if (!preset_id_fits(r.format, entry.id))
+                return fail("preset id \"" + entry.id + "\" is not one a " + r.format + " plugin lists");
+            r.presets.push_back(std::move(entry));
+            if (!ids.insert(r.presets.back().id).second)
+                return fail("preset id \"" + r.presets.back().id + "\" is listed twice");
+        }
+        return true;
+    }
+
+    bool preset_read(const Node& o, PresetRead& r, uint64_t& state_bytes) {
+        const char* w = "the preset read";
+        if (o.type != Node::Type::Object) return fail("the preset read is not a JSON object");
+        uint32_t version = 0;
+        if (!u32(o, "preset_read", version, w)) return false;
+        if (version != kPresetReadVersion)
+            return fail("a preset read of version " + std::to_string(version) + ", not " +
+                        std::to_string(kPresetReadVersion));
+        if (!only(o, {"preset_read", "plugin", "preset", "outcome", "reason", "name", "params", "state_bytes"}, w))
+            return false;
+        std::string outcome;
+        if (!str(o, "plugin", r.plugin, w) || !str(o, "preset", r.preset, w) || !str(o, "outcome", outcome, w) ||
+            !str(o, "name", r.name, w))
+            return false;
+        const Node* bytes = need(o, "state_bytes", Node::Type::Number, w);
+        if (!bytes) return false;
+        {
+            const char* b = bytes->text.data();
+            const char* e = b + bytes->text.size();
+            const auto res = std::from_chars(b, e, state_bytes);
+            if (res.ec != std::errc() || res.ptr != e) return fail("the preset read's state_bytes is not a count");
+        }
+        if (state_bytes > kMaxPresetStateBytes)
+            return fail("a preset state of " + std::to_string(state_bytes) + " bytes, over the cap of " +
+                        std::to_string(kMaxPresetStateBytes));
+        if (r.plugin.empty()) return fail("the preset read names no plugin");
+        if (r.preset.empty()) return fail("the preset read names no preset");
+        if (outcome == "ok") r.outcome = Outcome::Ok;
+        else if (outcome == "refused") r.outcome = Outcome::Refused;
+        else if (outcome == "not_installed") r.outcome = Outcome::NotInstalled;
+        else if (outcome == "blocked") r.outcome = Outcome::Blocked;
+        else return fail("the preset read's outcome is \"" + outcome + "\"");
+        // A refusal may be of an id that is no preset id at all: that is
+        // what it refuses.
+        const std::string format = r.plugin.rfind("vst3:", 0) == 0 ? "vst3" : "lv2";
+        if (r.ok() && !preset_id_fits(format, r.preset))
+            return fail("preset id \"" + r.preset + "\" is not one a " + format + " plugin lists");
+        r.reason.clear();
+        if (const Node* reason = o.find("reason")) {
+            if (r.ok()) return fail("a usable preset read gives a reason");
+            if (reason->type != Node::Type::String) return fail("the preset read's reason is not a string");
+            r.reason = reason->text;
+        } else if (!r.ok()) {
+            return fail("a refused preset read gives no reason");
+        }
+        const Node* params = need(o, "params", Node::Type::Array, w);
+        if (!params) return false;
+        if (params->items.size() > kMaxRecordParams) return fail("the preset read has too many parameters");
+        if (!r.ok() && (state_bytes != 0 || !params->items.empty()))
+            return fail("a refused preset read carries a state or parameters");
+        r.params.clear();
+        r.params.reserve(params->items.size());
+        std::set<std::string> keys;
+        for (const Node& p : params->items) {
+            const char* pw = "a preset value";
+            if (p.type != Node::Type::Object) return fail("a preset value is not an object");
+            if (!only(p, {"key", "value"}, pw)) return false;
+            PresetValue v;
+            if (!str(p, "key", v.key, pw) || !f32(p, "value", v.value, pw)) return false;
+            if (v.key.empty()) return fail("a preset value has an empty key");
+            r.params.push_back(std::move(v));
+            if (!keys.insert(r.params.back().key).second)
+                return fail("preset value \"" + r.params.back().key + "\" is given twice");
         }
         return true;
     }
@@ -562,8 +655,93 @@ std::string encode(const Record& r) {
         }
         out += "]}";
     }
+    out += ']';
+    key(out, "presets");
+    out += '[';
+    for (std::size_t i = 0; i < r.presets.size(); ++i) {
+        if (i) out += ',';
+        out += '{';
+        key(out, "id", true);
+        put_string(out, r.presets[i].id);
+        key(out, "name");
+        put_string(out, r.presets[i].name);
+        out += '}';
+    }
     out += "]}";
     return out;
+}
+
+bool preset_id_fits(std::string_view format, std::string_view id) {
+    const auto after = [&](std::string_view prefix) { return id.size() > prefix.size() && id.substr(0, prefix.size()) == prefix; };
+    if (format == "lv2") return after("lv2:");
+    if (format == "vst3") return after("vst3-program:") || after("vst3-file:");
+    return false;
+}
+
+std::string encode_preset_read(const PresetRead& r) {
+    std::string out = "{";
+    key(out, "preset_read", true);
+    put_uint(out, kPresetReadVersion);
+    key(out, "plugin");
+    put_string(out, r.plugin);
+    key(out, "preset");
+    put_string(out, r.preset);
+    key(out, "outcome");
+    put_string(out, outcome_name(r.outcome));
+    if (!r.ok()) {
+        key(out, "reason");
+        put_string(out, r.reason);
+    }
+    key(out, "name");
+    put_string(out, r.name);
+    key(out, "params");
+    out += '[';
+    if (r.ok()) {
+        for (std::size_t i = 0; i < r.params.size(); ++i) {
+            if (i) out += ',';
+            out += '{';
+            key(out, "key", true);
+            put_string(out, r.params[i].key);
+            key(out, "value");
+            put_float(out, r.params[i].value);
+            out += '}';
+        }
+    }
+    out += ']';
+    key(out, "state_bytes");
+    put_uint(out, r.ok() ? r.state.size() : 0);
+    out += "}\n";
+    if (r.ok()) out += r.state;
+    return out;
+}
+
+bool decode_preset_read(std::string_view all, PresetRead& out, std::string& error) {
+    error.clear();
+    const std::size_t nl = all.find('\n');
+    if (nl == std::string_view::npos) {
+        error = all.size() > kMaxRecordBytes ? "a preset read line over the cap" : "a preset read with no line end";
+        return false;
+    }
+    if (nl > kMaxRecordBytes) {
+        error = "a preset read line of " + std::to_string(nl) + " bytes, over the cap of " +
+                std::to_string(kMaxRecordBytes);
+        return false;
+    }
+    Node root;
+    if (!Parser(all.substr(0, nl), error).document(root)) return false;
+    PresetRead r;
+    uint64_t state_bytes = 0;
+    Reader rd{error};
+    if (!rd.preset_read(root, r, state_bytes)) return false;
+    const std::string_view rest = all.substr(nl + 1);
+    if (rest.size() != state_bytes) {
+        error = "the preset read announces " + std::to_string(state_bytes) + " state bytes and " +
+                std::to_string(rest.size()) + " follow";
+        return false;
+    }
+    r.state = std::string(rest);
+    out = std::move(r);
+    return true;
 }
 
 bool decode(std::string_view line, Record& out, std::string& error) {

@@ -14,6 +14,11 @@
 //                                           `late`, system.reg appears only
 //                                           when --fake-wineserver-wait ends;
 //                                           `nocreate`: it never appears)
+//   preset <plugin> <preset id> <behaviour> [ms]   (what --read-preset answers;
+//                                           behaviours ok, refuse, crash,
+//                                           hang, sleep, garbage, liar (a
+//                                           state of another plugin), term
+//                                           (ends by SIGTERM), blocked)
 // behaviours: ok, refuse, crash, hang, sleep (then ok after `ms`), wine (a
 // plugin under Wine: hangs, as the first Wine start does while it creates
 // its prefix, unless $WINEPREFIX/system.reg exists; then ok).
@@ -43,6 +48,7 @@
 #include <thread>
 #include <vector>
 
+#include "sonora/plugin/host_control.h"
 #include "sonora/plugin/probe_record.h"
 
 namespace pr = sonora::plugin::probe;
@@ -58,6 +64,11 @@ struct World {
     std::string version =
         "sonora-plugin-host layout 1 clock 1 wire 4 probe " + std::to_string(pr::kProbeRecordVersion);
     std::vector<Plugin> plugins;
+    struct Preset {
+        std::string plugin, id, behaviour;
+        uint32_t ms = 0;
+    };
+    std::vector<Preset> presets;
     std::vector<std::pair<std::string, std::string>> listfail;
     std::set<std::string> bridged;
     uint32_t wineboot_ms = 0;
@@ -93,6 +104,10 @@ World read_world() {
             Plugin p;
             in >> p.uri >> p.bundle >> p.format >> p.in >> p.out >> p.behaviour >> p.ms;
             w.plugins.push_back(p);
+        } else if (kind == "preset") {
+            World::Preset p;
+            in >> p.plugin >> p.id >> p.behaviour >> p.ms;
+            w.presets.push_back(p);
         } else if (kind == "listfail") {
             std::string b, reason;
             in >> b;
@@ -150,6 +165,47 @@ std::string esc(const std::string& s) {
     return o;
 }
 
+// --read-preset BUNDLE PRESET --plugin ID (ADR-0029 §5), as the world says.
+int answer_preset(const World& w, const std::string& bundle, const std::string& plugin, const std::string& id) {
+    pr::PresetRead r;
+    r.plugin = plugin;
+    r.preset = id;
+    const World::Preset* found = nullptr;
+    for (const World::Preset& p : w.presets)
+        if (p.plugin == plugin && p.id == id) found = &p;
+    const auto say = [&](pr::Outcome o, const std::string& why) {
+        r.outcome = o;
+        r.reason = o == pr::Outcome::Ok ? std::string() : why;
+        const std::string out = pr::encode_preset_read(r);
+        std::fwrite(out.data(), 1, out.size(), stdout);
+        return o == pr::Outcome::Ok ? 0 : 5;
+    };
+    if (!found) return say(pr::Outcome::NotInstalled, "no such preset in " + bundle);
+    const std::string& b = found->behaviour;
+    if (b == "crash") ::kill(::getpid(), SIGKILL);
+    if (b == "term") ::kill(::getpid(), SIGTERM);
+    if (b == "hang")
+        for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+    if (b == "sleep") std::this_thread::sleep_for(std::chrono::milliseconds(found->ms));
+    if (b == "garbage") {
+        std::printf("not a preset\n");
+        return 0;
+    }
+    if (b == "refuse") return say(pr::Outcome::Refused, "the plugin refused it");
+    if (b == "blocked") return say(pr::Outcome::Blocked, "a host may not say this");
+    namespace pc = sonora::plugin::control;
+    pc::StateBlob blob;
+    const bool vst3 = plugin.rfind("vst3:", 0) == 0;
+    blob.format = vst3 ? pc::Format::Vst3 : pc::Format::Lv2;
+    blob.id = b == "liar" ? std::string("urn:someone:else") : vst3 ? plugin.substr(5) : plugin;
+    blob.sections = {"state of " + id};
+    std::string e;
+    pc::encode_state_blob(blob, r.state, e);
+    r.name = "Fake " + id;
+    r.params = {{"gain", -6.f}};
+    return say(pr::Outcome::Ok, "");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -159,7 +215,7 @@ int main(int argc, char** argv) {
     log_run(argc, argv);
     const World w = read_world();
     bool list = false, bundles_only = false, only_given = false, version = false, wineboot = false, wineserver_wait = false;
-    std::string format, probe;
+    std::string format, probe, read_bundle, read_preset, read_plugin;
     uint32_t channels = 0;
     std::set<std::string> given;
     for (int i = 1; i < argc; ++i) {
@@ -175,7 +231,12 @@ int main(int argc, char** argv) {
         else if (a == "--channels" && i + 1 < argc) channels = uint32_t(std::atoi(argv[++i]));
         else if (a == "--bundle" && i + 1 < argc) given.insert(argv[++i]);
         else if (a == "--engine-pid" && i + 1 < argc) ++i;
+        else if (a == "--read-preset" && i + 2 < argc) {
+            read_bundle = argv[++i];
+            read_preset = argv[++i];
+        } else if (a == "--plugin" && i + 1 < argc) read_plugin = argv[++i];
     }
+    if (!read_preset.empty()) return answer_preset(w, read_bundle, read_plugin, read_preset);
     if (version) {
         std::printf("%s\n", w.version.c_str());
         return 0;

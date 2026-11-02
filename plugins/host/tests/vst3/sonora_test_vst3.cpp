@@ -23,7 +23,12 @@
 //   vst3:534F4E4F524156535433544553540009  state        mono pass-through; counts its blocks
 //                                                       and keeps the count in its state
 //                                                       ("SNTS" + int64); refuses another
-//                                                       magic in setState
+//                                                       magic in setState. Lists three
+//                                                       factory programs in its root unit
+//                                                       (IUnitInfo), selected by ParamID 1
+//                                                       (kIsProgramChange): program k sets
+//                                                       the count to k * 1000 when the
+//                                                       processor sees the change
 //   vst3:534F4E4F52415653543354455354000A  touch        gain on ParamID 7 "level" (and a
 //                                                       read-only ParamID 9); 300 ms after
 //                                                       it is given a component handler,
@@ -45,6 +50,7 @@
 #include "pluginterfaces/vst/ivstcomponent.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
+#include "pluginterfaces/vst/ivstunits.h"
 #include "pluginterfaces/vst/vstspeaker.h"
 
 #include <atomic>
@@ -85,7 +91,11 @@ void copy16(String128 dst, const char* src) {
     dst[i] = 0;
 }
 
-class TestEffect final : public IComponent, public IAudioProcessor, public IEditController {
+constexpr ParamID kStateProgram = 1;
+constexpr ProgramListID kStatePrograms = 1;
+constexpr int32 kStateProgramCount = 3;
+
+class TestEffect final : public IComponent, public IAudioProcessor, public IEditController, public IUnitInfo {
 public:
     explicit TestEffect(Kind kind) : kind_(kind) {
         const bool stereo = kind != Kind::Crash && kind != Kind::Params && kind != Kind::Latency &&
@@ -101,6 +111,8 @@ public:
             *obj = static_cast<IAudioProcessor*>(this);
         else if (same(iid, IEditController_iid))
             *obj = static_cast<IEditController*>(this);
+        else if (same(iid, IUnitInfo_iid) && kind_ == Kind::State)
+            *obj = static_cast<IUnitInfo*>(this);
         else {
             *obj = nullptr;
             return kNoInterface;
@@ -222,6 +234,17 @@ public:
                     offset0 = offset;
                 }
                 if (kind_ == Kind::Touch && q->getParameterId() == kTouchLevel) level_ = float(v);
+                if (kind_ == Kind::State && q->getParameterId() == kStateProgram) {
+                    // A program loads when the selection changes, as in
+                    // the SDK's program-list parameter: a host writing the
+                    // current program again over a restored state loads
+                    // nothing.
+                    const auto p = static_cast<int32>(v * (kStateProgramCount - 1) + 0.5);
+                    if (p != program_) {
+                        program_ = p;
+                        blocks_.store(int64(program_) * 1000, std::memory_order_relaxed);
+                    }
+                }
             }
         }
         if (kind_ == Kind::Crash && trigger_ > 0.5) {
@@ -283,11 +306,20 @@ public:
     // the params class has kParamsCount of them, ids 0 up, titled "#id".
     tresult PLUGIN_API setComponentState(IBStream*) override { return kResultOk; }
     int32 PLUGIN_API getParameterCount() override {
-        return kind_ == Kind::Params ? kParamsCount : kind_ == Kind::Touch ? 2 : 1;
+        return kind_ == Kind::Params ? kParamsCount : kind_ == Kind::Touch || kind_ == Kind::State ? 2 : 1;
     }
     tresult PLUGIN_API getParameterInfo(int32 index, ParameterInfo& info) override {
         if (index < 0 || index >= getParameterCount()) return kInvalidArgument;
         std::memset(&info, 0, sizeof info);
+        if (kind_ == Kind::State && index == 1) {
+            info.id = kStateProgram;
+            copy16(info.title, "program");
+            copy16(info.shortTitle, "program");
+            info.stepCount = kStateProgramCount - 1;
+            info.unitId = kRootUnitId;
+            info.flags = ParameterInfo::kCanAutomate | ParameterInfo::kIsProgramChange | ParameterInfo::kIsList;
+            return kResultOk;
+        }
         if (kind_ == Kind::Touch) {
             info.id = index == 0 ? kTouchLevel : kTouchMeter;
             copy16(info.title, index == 0 ? "level" : "meter");
@@ -324,6 +356,7 @@ public:
     ParamValue PLUGIN_API plainParamToNormalized(ParamID, ParamValue v) override { return v; }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
         if (kind_ == Kind::Touch) return id == kTouchLevel ? edited_.load() : 0.0;
+        if (kind_ == Kind::State && id == kStateProgram) return double(program_) / (kStateProgramCount - 1);
         return trigger_;
     }
     tresult PLUGIN_API setParamNormalized(ParamID, ParamValue) override { return kResultOk; }
@@ -335,6 +368,45 @@ public:
         return kResultOk;
     }
     IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
+
+    // IUnitInfo (the state class only): the root unit and its program list.
+    int32 PLUGIN_API getUnitCount() override { return 1; }
+    tresult PLUGIN_API getUnitInfo(int32 index, UnitInfo& info) override {
+        if (index != 0) return kInvalidArgument;
+        std::memset(&info, 0, sizeof info);
+        info.id = kRootUnitId;
+        info.parentUnitId = kNoParentUnitId;
+        copy16(info.name, "Root");
+        info.programListId = kStatePrograms;
+        return kResultOk;
+    }
+    int32 PLUGIN_API getProgramListCount() override { return 1; }
+    tresult PLUGIN_API getProgramListInfo(int32 index, ProgramListInfo& info) override {
+        if (index != 0) return kInvalidArgument;
+        std::memset(&info, 0, sizeof info);
+        info.id = kStatePrograms;
+        copy16(info.name, "Factory");
+        info.programCount = kStateProgramCount;
+        return kResultOk;
+    }
+    tresult PLUGIN_API getProgramName(ProgramListID list, int32 index, String128 name) override {
+        static const char* const names[kStateProgramCount] = {"Count 0", "Count 1000", "Count 2000"};
+        if (list != kStatePrograms || index < 0 || index >= kStateProgramCount) return kInvalidArgument;
+        copy16(name, names[index]);
+        return kResultOk;
+    }
+    tresult PLUGIN_API getProgramInfo(ProgramListID, int32, Steinberg::Vst::CString, String128) override {
+        return kNotImplemented;
+    }
+    tresult PLUGIN_API hasProgramPitchNames(ProgramListID, int32) override { return kResultFalse; }
+    tresult PLUGIN_API getProgramPitchName(ProgramListID, int32, int16, String128) override { return kNotImplemented; }
+    UnitID PLUGIN_API getSelectedUnit() override { return kRootUnitId; }
+    tresult PLUGIN_API selectUnit(UnitID) override { return kResultOk; }
+    tresult PLUGIN_API getUnitByBus(MediaType, BusDirection, int32, int32, UnitID& unit) override {
+        unit = kRootUnitId;
+        return kResultOk;
+    }
+    tresult PLUGIN_API setUnitProgramData(int32, int32, IBStream*) override { return kNotImplemented; }
 
 private:
     ~TestEffect() { stop_notifier(); }
@@ -397,6 +469,7 @@ private:
     int32 write_ = 0;
     int activations_ = 0;  // the once class
     std::atomic<int64> blocks_{0};  // the state class
+    int32 program_ = 0;             // the state class: the processor's last program change
     float level_ = 1.f;             // the touch class: the processor's
     std::atomic<double> edited_{1.0};  // the touch class: the controller's
 };
