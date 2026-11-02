@@ -116,14 +116,23 @@ bool paste_op(model::Id track, const AutomationClip& clip, model::Frames at,
 // after on the other. A flat lane, and a move to where the region is, add
 // nothing.
 //
+//
+// A lane at model::kMaxAutomationPoints has no room for the edge points,
+// and one lane edit apply() refuses refuses the whole Compound, region edit
+// included. Such a lane first loses the points inside the edit's span that
+// play nothing (inside a straight run); one that still would not fit is
+// left out of the result and appended to `left_behind`, when given, so the
+// region edit goes ahead and the caller can say which lane stayed.
+//
 // The region moved from [from, to) to `at`: its part of each lane goes
 // with it, and the place it left runs straight across, as a clear leaves it.
-std::vector<model::EditAutomation> follow_move_ops(const model::TrackEdit& track,
-                                                   model::Frames from, model::Frames to,
-                                                   model::Frames at);
+std::vector<model::EditAutomation> follow_move_ops(
+    const model::TrackEdit& track, model::Frames from, model::Frames to, model::Frames at,
+    std::vector<const model::AutomationLane*>* left_behind = nullptr);
 // [from, to) cleared on every lane with a point in [from, to]: it runs
 // straight from the value before `from` to the value at `to`.
-std::vector<model::EditAutomation> follow_clear_ops(const model::TrackEdit& track,
-                                                    model::Frames from, model::Frames to);
+std::vector<model::EditAutomation> follow_clear_ops(
+    const model::TrackEdit& track, model::Frames from, model::Frames to,
+    std::vector<const model::AutomationLane*>* left_behind = nullptr);
 
 }  // namespace sonora::ui

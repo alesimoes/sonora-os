@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QTemporaryDir>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -2325,6 +2326,48 @@ int test_automation_follows_edit() {
     OK(!c.automation_follows_edit());
     OK(local.dispatch("automation.toggle_follows_edit") == DispatchResult::Ok);
     OK(c.automation_follows_edit());
+
+    // A lane at kMaxAutomationPoints with no point to spare and none under
+    // the region or where it goes: the edges the move adds would make
+    // apply() refuse the whole Compound, region and all. The region moves;
+    // the lane stays as it was, and a held notice says so, since the
+    // operator is watching the region, not a status line.
+    QStringList held;
+    QObject::connect(&session, &SessionModel::heldNotice, [&](const QString& t) { held << t; });
+    EditAutomation full = seed;
+    full.points.clear();
+    for (Frames f = 5; full.points.size() < kMaxAutomationPoints; f += 4) {
+        if (f >= kBar && f <= 3 * kBar) continue;
+        full.points.push_back({f, ((f - 5) / 4) % 2 ? -6.0f : 0.0f});
+    }
+    OK(doc.submit(full, why));
+    const auto full_lane = doc.snapshot().edit->tracks[0]->lane(AutomationParam::Volume);
+    CHECK(full_lane != nullptr && full_lane->points.size() == kMaxAutomationPoints);
+    const std::vector<AutomationPoint> full_points = full_lane->points;
+    const auto lane_kept = [&]() {
+        const AutomationLane* l = doc.snapshot().edit->tracks[0]->lane(AutomationParam::Volume);
+        return l != nullptr && l->points.size() == full_points.size() &&
+               std::equal(full_points.begin(), full_points.end(), l->points.begin(),
+                          [](const AutomationPoint& a, const AutomationPoint& b) {
+                              return a.at == b.at && a.value == b.value;
+                          });
+    };
+    // Dragged six bars on, past the lane's last point.
+    r = doc.snapshot().revision;
+    session.press(a_mid, th * 0.75);
+    session.drag(a_mid + 480, th * 0.75);
+    session.release(a_mid + 480, th * 0.75);
+    OK(doc.snapshot().revision == r + 1);
+    OK(region(doc.snapshot(), 10)->position == 7 * kBar);
+    OK(lane_kept());
+    OK(held.size() == 1 && held.back().contains(QStringLiteral("Volume")) &&
+       held.back().contains(QString::fromStdString(doc.snapshot().edit->tracks[0]->name)));
+    // A clear that leaves no lane behind holds nothing.
+    OK(c.select_region(10));
+    OK(local.dispatch("edit.clear") == DispatchResult::Ok);
+    OK(region(doc.snapshot(), 10) == nullptr);
+    OK(lane_kept());
+    OK(held.size() == 1);
     return 0;
 }
 

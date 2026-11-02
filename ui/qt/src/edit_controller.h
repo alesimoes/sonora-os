@@ -25,6 +25,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "automation_edit.h"
@@ -200,6 +201,11 @@ public:
     // (ADR-0027 §7). How the operator works, so kept when a session opens.
     bool automation_follows_edit() const { return automation_follows_edit_; }
     void set_automation_follows_edit(bool on) { automation_follows_edit_ = on; }
+    // The lanes the last region move or clear went ahead without, too full
+    // to follow it (follow_move_ops), named, so the operator learns the
+    // automation did not go with the region. Empty once taken, and when
+    // every lane followed.
+    std::string take_follow_notice() { return std::exchange(follow_notice_, std::string()); }
 
     // --- selection ---
     const Selection& selection() const { return sel_; }
@@ -471,6 +477,8 @@ private:
     // Compound labelled `gesture`, so one undo step.
     bool submit_following(model::Member op, std::vector<model::EditAutomation> follow,
                           const char* gesture, const char* nothing_was, std::string& why);
+    // follow_notice_ for `lanes` (lane_labels), once `gesture` went through.
+    void note_left_behind(const char* gesture, const std::vector<std::string>& lanes);
     // A region move, its lanes following when Automation Follows Edit is on.
     bool submit_move(const model::MoveRegion& op, std::string& why);
 
@@ -492,6 +500,7 @@ private:
     bool has_saved_view_ = false;
     EditMode mode_ = EditMode::Slip;
     bool automation_follows_edit_ = true;
+    std::string follow_notice_;
     Tool tool_ = Tool::Smart;
     GridValue grid_ = GridValue::Beat;
     Selection sel_;

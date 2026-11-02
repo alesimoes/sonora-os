@@ -4,6 +4,7 @@
 // without a window: the operations a gesture is built into, the controller's
 // mouse and Edit-command paths, the rows lanes make taller, and what the
 // timeline draws. Every edit must be one EditAutomation, so one undo step.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -529,6 +530,78 @@ int test_follow_ops() {
     return 0;
 }
 
+// `op` spliced into `lane` as apply() splices it.
+AutomationLane spliced(const AutomationLane& lane, const EditAutomation& op) {
+    AutomationLane out = lane;
+    out.points.clear();
+    for (const AutomationPoint& p : lane.points) {
+        if (p.at < op.from) out.points.push_back(p);
+    }
+    for (const AutomationPoint& p : op.points) out.points.push_back(p);
+    for (const AutomationPoint& p : lane.points) {
+        if (p.at >= op.to) out.points.push_back(p);
+    }
+    return out;
+}
+
+// Automation Follows Edit on a lane at kMaxAutomationPoints: the edge
+// points a move or clear adds would make apply() refuse the lane's edit and
+// with it the whole Compound. Points that play nothing (inside a flat run)
+// go first; a lane that still would not fit is left behind and named, and
+// the region edit goes ahead without it (BACKLOG, ADR-0027 §7).
+int test_follow_at_the_lane_cap() {
+    // A move leaves its old span straight, so it frees the points under it;
+    // only a region over a sparse part of a full lane needs more. Here every
+    // 10 frames, none in [1000, 1990] or [5000, 5990], a zigzag (no point
+    // redundant, the gaps sloped) but over [flat_from, flat_to], at -3.
+    const auto full = [](Frames flat_from, Frames flat_to) {
+        std::vector<AutomationPoint> pts;
+        for (Frames f = 0; pts.size() < kMaxAutomationPoints; f += 10) {
+            if ((f >= 1000 && f <= 1990) || (f >= 5000 && f <= 5990)) continue;
+            const bool flat = f >= flat_from && f <= flat_to;
+            pts.push_back({f, flat ? -3.0f : ((f / 10) % 2 ? -6.0f : 0.0f)});
+        }
+        return std::make_shared<AutomationLane>(lane_of(AutomationParam::Volume, pts));
+    };
+    TrackEdit t;
+    t.id = 7;
+    t.automation = {full(-1, -1), std::make_shared<AutomationLane>(
+                                      lane_of(AutomationParam::Pan, {{0, -1.0f}, {9000, 1.0f}}))};
+    std::vector<const AutomationLane*> left;
+    const std::vector<EditAutomation> moved = follow_move_ops(t, 1005, 1995, 5005, &left);
+    // The pan lane still follows; the full volume lane stays and is named.
+    OK(moved.size() == 1 && moved[0].param == AutomationParam::Pan);
+    OK(left.size() == 1 && left[0] == t.automation[0].get());
+    // A clear over one point puts two in its place.
+    left.clear();
+    const std::vector<EditAutomation> cleared = follow_clear_ops(t, 2008, 2012, &left);
+    OK(cleared.empty() && left.size() == 1 && left[0] == t.automation[0].get());
+
+    // A flat run inside the edit's span: its inner points play nothing, so
+    // they go and the lane follows, still playing as it did.
+    t.automation[0] = full(3000, 3500);
+    left.clear();
+    const std::vector<EditAutomation> fit = follow_move_ops(t, 1005, 1995, 5005, &left);
+    OK(left.empty() && fit.size() == 2 && fit[0].param == AutomationParam::Volume);
+    const AutomationLane& was = *t.automation[0];
+    const AutomationLane after = spliced(was, fit[0]);
+    OK(after.points.size() <= kMaxAutomationPoints);
+    for (Frames f : {Frames(0), Frames(995), Frames(1004), Frames(1996), Frames(2995), Frames(3000),
+                     Frames(3255), Frames(3500), Frames(3505), Frames(4990), Frames(5996),
+                     Frames(7015), Frames(600000)}) {
+        OK(near(lane_value_at(&after, f, 9.0f), lane_value_at(&was, f, 9.0f), 1e-5f));
+    }
+    for (Frames f : {Frames(5005), Frames(5500), Frames(5994)}) {
+        OK(near(lane_value_at(&after, f, 9.0f), lane_value_at(&was, f - 4000, 9.0f), 1e-5f));
+    }
+    // Outside the edit's span nothing is dropped: a flat run there stays,
+    // and the lane with it.
+    t.automation[0] = full(100000, 100500);
+    left.clear();
+    OK(follow_move_ops(t, 1005, 1995, 5005, &left).size() == 1 && left.size() == 1);
+    return 0;
+}
+
 int test_scene() {
     ModelDocument doc(make_empty_session(2, kRate));
     EditController ctl(doc);
@@ -587,7 +660,8 @@ int test_scene() {
 
 int main() {
     if (test_values() || test_operations() || test_stroke() || test_clip() || test_rows() || test_lane_height_follows_zoom() ||
-        test_gestures() || test_range_commands() || test_follow_ops() || test_scene()) {
+        test_gestures() || test_range_commands() || test_follow_ops() || test_follow_at_the_lane_cap() ||
+        test_scene()) {
         return 1;
     }
     std::printf("ui automation: %d checks passed\n", checks);

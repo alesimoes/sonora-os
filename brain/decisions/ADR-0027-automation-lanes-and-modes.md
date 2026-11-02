@@ -237,6 +237,18 @@ the write slice.
 - Per track (§1, alternatives): a move on the active playlist moves the
   track's lanes. Cut, Copy, Paste, Duplicate, Shuffle-mode moves, trims and
   MIDI regions do not follow yet (BACKLOG).
+- A full lane (update, 2026-11-02). The edge points can take a lane past
+  `kMaxAutomationPoints`, and `apply` then refuses its `EditAutomation` and
+  the whole `Compound` with it, region edit included. Decided, on the
+  recommended default (no owner available): the region edit goes ahead.
+  Such a lane first drops the points inside the edit's span that play
+  nothing, those inside a flat run (found in one pass, no tolerance; a
+  step's two points stay); if it still does not fit it is left out of the
+  `Compound`, unchanged, and the interface names it in a held notice
+  ("Automation did not follow the Move: ..."), since a lane that no longer
+  matches its region must not be said only on the status line. Refusing
+  the whole edit was rejected: the operator asked for the region edit, and
+  one full lane on a track should not block it.
 
 ## Consequences
 
