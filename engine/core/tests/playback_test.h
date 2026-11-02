@@ -298,13 +298,15 @@ inline sonora::PlaybackPlan* make_plan(uint64_t epoch, uint32_t tracks,
 
 // A plan with no regions over `session`'s tracks, each `track_channels`
 // wide, the chains as given, laid out and compensated as engine/control's
-// builder does it, against the session's own pool and maximum.
+// builder does it, against the session's own pool and maximum, with room
+// for `auto_points` lane points for the caller to fill.
 inline sonora::PlaybackPlan* chain_plan(sonora::Session& session,
                                         const std::vector<sonora::ChainBinding>& chains,
                                         sonora::DelayLinePool& pool,
                                         sonora::Compensation* comp = nullptr,
                                         std::vector<uint32_t>* shortfall = nullptr,
-                                        uint16_t track_channels = 1) {
+                                        uint16_t track_channels = 1,
+                                        uint32_t auto_points = 0) {
     const auto tracks = static_cast<uint32_t>(session.tracks().size());
     uint32_t active = 0;
     for (const sonora::ChainBinding& c : chains) active += c.active ? 1 : 0;
@@ -312,6 +314,7 @@ inline sonora::PlaybackPlan* chain_plan(sonora::Session& session,
     sizes.tracks = tracks;
     sizes.nodes = sonora::graph_nodes(tracks, active);
     sizes.edges = sonora::graph_edges(tracks, active);
+    sizes.auto_points = auto_points;
     sonora::PlaybackPlan* p = sonora::create_plan(sizes);
     p->epoch = session.plans().next_epoch();
     p->chunk_frames = 256;

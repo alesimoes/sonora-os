@@ -335,6 +335,7 @@ Session::Session(SessionConfig cfg)
     track_auto_.reset(new uint8_t[tracks + 1]());
     track_auto_last_.reset(new uint8_t[tracks + 1]());
     track_ramp_.reset(new uint8_t[tracks + 1]());
+    snap_row_.reset(new uint8_t[tracks + 1]());
     track_open_last_.reset(new float[tracks + 1]());
     auto_level_.reset(new float[tracks + 1]());
     auto_pan_.reset(new float[tracks + 1]());
@@ -360,6 +361,7 @@ Session::Session(SessionConfig cfg)
     send_target_.reset(new float[2 * static_cast<std::size_t>(send_states_) + 2]());
     send_stamp_.reset(new uint64_t[send_states_ + 1]());
     send_dest_.reset(new uint32_t[send_states_ + 1]());
+    send_lane_.reset(new SendLane[send_states_ + 1]());
     feeds_node_.reset(new uint8_t[scratch_buffers_ + 1]());
     feeds_track_.reset(new uint8_t[tracks + 1]());
     aux_gain_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
@@ -1079,12 +1081,20 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         plan_valid_ = plan_in_bounds(*plan);
         adopt_param_order(*plan);
         follow_track_owners(*plan);
-        snap_mix_ = plan->mix_serial != 0;
+        snap_mix_ = false;
+        for (std::size_t e = 0; e < tracks_.size(); ++e) {
+            const bool named = e < plan->track_mix_count && plan->track_mix[e].track != 0;
+            // A plan with no owners says nothing of who stayed: every row
+            // of one that carries a mix starts at its target, as before
+            // owners existed.
+            snap_row_[e] = plan->mix_serial != 0 && (snap_row_[e] != 0 || !named) ? 1 : 0;
+            snap_mix_ = snap_mix_ || snap_row_[e] != 0;
+        }
         auto_new_plan_ = true;
         // The monitor ramps too: what an engine track was sending belonged
         // to the track that was on it.
-        if (snap_mix_) {
-            for (std::size_t e = 0; e < tracks_.size(); ++e) monitor_stamp_[e] = 0;
+        for (std::size_t e = 0; snap_mix_ && e < tracks_.size(); ++e) {
+            if (snap_row_[e] != 0) monitor_stamp_[e] = 0;
         }
     }
     ++callbacks_;
@@ -1328,8 +1338,10 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         track_level_[e] = level;
         track_pan_[e] = pan;
     }
-    if (snap_mix_) {
-        for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
+    for (std::size_t e = 0; snap_mix_ && e < tracks_.size(); ++e) {
+        if (snap_row_[e] == 0) continue;
+        track_gain_[2 * e] = track_target_[2 * e];
+        track_gain_[2 * e + 1] = track_target_[2 * e + 1];
     }
     // Before the sends: they follow a lane's value at the callback's start
     // (ADR-0027 §2).
@@ -1365,9 +1377,11 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         for (uint32_t ei = 0; plan_valid_ && ei < plan->edge_count; ++ei) {
             const uint32_t k = plan->edges[ei].send;
             if (k == kNoSend || k / kStripSendSlots >= tracks_n) continue;
+            if (snap_row_[k / kStripSendSlots] == 0) continue;
             send_gain_[2 * k] = send_target_[2 * k];
             send_gain_[2 * k + 1] = send_target_[2 * k + 1];
         }
+        std::memset(snap_row_.get(), 0, tracks_.size());
     }
 
     if (playhead != expected_playhead_) reseek_ = true;
@@ -1420,6 +1434,10 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     }
     expected_playhead_ = next;
     auto_next_ = next;
+    if (plan_valid_ && rolling && loop_to_ > loop_from_ && !roll_stops &&
+        auto_start_ + play_until_ >= loop_to_) {
+        auto_wrapped_ = true;
+    }
     // Release is enough here, not at entry: a stop() whose load reads this
     // value reads it before the next callback's seq_cst entry in the single
     // total order, so that callback's transport load sees Stopped.
@@ -1754,16 +1772,20 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 std::memset(R, 0, n * sizeof(float));
                 for (uint32_t k = 0; k < node.input_edge_count; ++k) {
                     const PlanEdge& edge = plan.edges[node.first_input_edge + k];
-                    const PlanNode& from = plan.nodes[edge.from_node];
-                    const float* const in[2] = {scratch(from.scratch_buffer, 0),
-                                                scratch(from.scratch_buffer, 1)};
+                    const PlanNode& src = plan.nodes[edge.from_node];
+                    const float* const in[2] = {scratch(src.scratch_buffer, 0),
+                                                scratch(src.scratch_buffer, 1)};
                     if (edge.send == kNoSend) {
                         sum_edge(plan, edge, in, out, n);
                         continue;
                     }
-                    const bool mono = from.kind != NodeKind::AuxSum &&
-                                      plan.tracks[from.track].channels < 2;
-                    sum_send(plan, edge, mono, in, out, n);
+                    const bool mono = src.kind != NodeKind::AuxSum &&
+                                      plan.tracks[src.track].channels < 2;
+                    // A chain's output is its latency late, as for the
+                    // fader after it.
+                    const uint32_t lag =
+                        src.kind == NodeKind::InsertChain ? src.latency_frames : 0;
+                    sum_send(plan, edge, mono, in, out, n, from, lag);
                 }
                 continue;
             }
@@ -1941,6 +1963,14 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
     const uint64_t start = rolling ? loop_frame(playhead, 0) : playhead;
     const bool jumped = auto_new_plan_ || start != auto_next_;
     auto_new_plan_ = false;
+    // A new plan leaves the audio where it was: only a stop, a jump or a
+    // new loop makes the frames behind A the timeline's again.
+    if (!rolling || start != auto_next_ || loop_from_ != auto_loop_from_ ||
+        loop_to_ != auto_loop_to_) {
+        auto_wrapped_ = false;
+    }
+    auto_loop_from_ = loop_from_;
+    auto_loop_to_ = loop_to_;
     auto_start_ = start;
     auto_rolling_ = rolling;
     std::memset(track_auto_.get(), 0, tracks_.size());
@@ -2019,7 +2049,7 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         auto_pan_[e] = track_pan_[e];
         // A moved track starts at its lane, as a static fader starts at its
         // target (ADR-0023 §4).
-        track_ramp_[e] = !snap_mix_ && (jumped || static_moved || flags != track_auto_last_[e] ||
+        track_ramp_[e] = snap_row_[e] == 0 && (jumped || static_moved || flags != track_auto_last_[e] ||
                                         track_open_[e] != track_open_last_[e]);
         const auto t = static_cast<int64_t>(start);
         if ((flags & (1u << kAutoVolume)) != 0) {
@@ -2105,20 +2135,7 @@ void Session::apply_track_fader(const PlaybackPlan& plan, const PlanTrack& pt, b
     const auto loop_a = static_cast<int64_t>(loop_from_);
     const auto loop_b = static_cast<int64_t>(loop_to_);
     const bool looping = loop_b > loop_a;
-    // Stopped, every frame takes the lane at the playhead.
-    int64_t t = auto_rolling_ ? static_cast<int64_t>(from) : static_cast<int64_t>(auto_start_);
-    if (lag != 0) {
-        if (looping && auto_rolling_ && t >= loop_a && t < loop_b) {
-            // Back across the wrap: what plays L frames after A came from
-            // the end of the loop.
-            const int64_t len = loop_b - loop_a;
-            int64_t x = (t - loop_a - static_cast<int64_t>(lag)) % len;
-            if (x < 0) x += len;
-            t = loop_a + x;
-        } else {
-            t = t > static_cast<int64_t>(lag) ? t - static_cast<int64_t>(lag) : 0;
-        }
-    }
+    int64_t t = lane_frame(from, lag);
     const bool ramp = track_ramp_[e] != 0;
     const float open = track_open_[e];
     const float inv_block = 1.0f / static_cast<float>(block_frames_);
@@ -2166,6 +2183,28 @@ void Session::apply_track_fader(const PlaybackPlan& plan, const PlanTrack& pt, b
         track_target_[2 * e] = tl;
         track_target_[2 * e + 1] = tr;
     }
+}
+
+int64_t Session::lane_frame(uint64_t from, uint32_t lag) const noexcept SONORA_RT {
+    // Stopped, every frame takes the lane at the playhead.
+    const auto t = static_cast<int64_t>(auto_rolling_ ? from : auto_start_);
+    const auto l = static_cast<int64_t>(lag);
+    if (l == 0) return t;
+    const auto loop_a = static_cast<int64_t>(loop_from_);
+    const auto loop_b = static_cast<int64_t>(loop_to_);
+    // Wrapped in an earlier callback, or earlier in this one.
+    const bool wrapped = auto_wrapped_ || auto_start_ + block_done_ >= loop_to_;
+    if (auto_rolling_ && loop_b > loop_a && wrapped && t >= loop_a && t < loop_b) {
+        // Back across the wrap: what plays L frames after A came from the
+        // end of the loop.
+        const int64_t len = loop_b - loop_a;
+        int64_t x = (t - loop_a - l) % len;
+        if (x < 0) x += len;
+        return loop_a + x;
+    }
+    // The first pass from the loop start: those frames were taken in
+    // before A, so they play the lane before A, not the loop end's.
+    return t > l ? t - l : 0;
 }
 
 uint32_t Session::newest_punch(uint32_t take) const noexcept SONORA_RT {
@@ -2243,6 +2282,7 @@ void Session::follow_track_owners(const PlaybackPlan& plan) noexcept SONORA_RT {
         // Last callback's live bits too, or the track leaving a row would
         // read as a release of the one arriving on it.
         live[e] = from < n ? auto_live_[from] : 0;
+        snap_row_[e] = from != e ? 1 : 0;
     }
     for (uint32_t e = 0; e < n; ++e) {
         auto_latched_[e] = latched[e];
@@ -2423,10 +2463,85 @@ void Session::sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const flo
     line_filled_[line] = filled;
 }
 
+void Session::send_lane_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t k, int64_t t,
+                              float& l, float& r) const noexcept SONORA_RT {
+    const SendLane& sl = send_lane_[k];
+    const uint32_t e = pt.engine_track;
+    float fader = sl.fader;
+    float pan = sl.pan;
+    if ((sl.bits & (1u << kAutoVolume)) != 0) {
+        fader = auto_gain_of_db(lane_param(plan, pt, e, kAutoVolume, t));
+    }
+    if ((sl.bits & (1u << kAutoPan)) != 0) pan = lane_param(plan, pt, e, kAutoPan, t);
+    pan_gains(pan, tracks_[e]->channels() >= 2, plan.pan_exponent, l, r);
+    l *= fader;
+    r *= fader;
+}
+
 void Session::sum_send(const PlaybackPlan& plan, const PlanEdge& edge, bool mono,
-                       const float* const in[2], float* const out[2], uint32_t n) noexcept SONORA_RT {
+                       const float* const in[2], float* const out[2], uint32_t n, uint64_t from,
+                       uint32_t lag) noexcept SONORA_RT {
     const uint32_t k = edge.send;
     const float inv_block = 1.0f / static_cast<float>(block_frames_);
+    const SendLane& sl = send_lane_[k];
+    const uint32_t row = plan.nodes[edge.from_node].track;
+    if (sl.bits != 0 && row < plan.track_count &&
+        plan.tracks[row].engine_track == k / kStripSendSlots) {
+        // The fader's grid and the same lane frames (apply_track_fader()),
+        // so a post-fader send is the fader's curve times its level.
+        const PlanTrack& pt = plan.tracks[row];
+        const auto loop_a = static_cast<int64_t>(loop_from_);
+        const auto loop_b = static_cast<int64_t>(loop_to_);
+        const bool looping = loop_b > loop_a;
+        int64_t t = lane_frame(from, lag);
+        const bool ramp = sl.ramp != 0;
+        const float l0 = send_gain_[2 * k];
+        const float r0 = send_gain_[2 * k + 1];
+        const float* right_in = mono ? in[0] : in[1];
+        float* const tb[2] = {track_buf_.get(), track_buf_.get() + max_block_};
+        constexpr float kInvGrid = 1.0f / static_cast<float>(kAutoGridFrames);
+        int64_t grid = -1;
+        float c0l = 0.0f;
+        float c0r = 0.0f;
+        float c1l = 0.0f;
+        float c1r = 0.0f;
+        float tl = 0.0f;
+        float tr = 0.0f;
+        for (uint32_t i = 0; i < n; ++i) {
+            const int64_t g0 = t - t % kAutoGridFrames;
+            if (g0 != grid) {
+                if (g0 == grid + kAutoGridFrames) {
+                    c0l = c1l;
+                    c0r = c1r;
+                } else {
+                    send_lane_gains(plan, pt, k, g0, c0l, c0r);
+                }
+                send_lane_gains(plan, pt, k, g0 + kAutoGridFrames, c1l, c1r);
+                grid = g0;
+            }
+            const float x = static_cast<float>(t - g0) * kInvGrid;
+            tl = sl.g * (c0l + (c1l - c0l) * x);
+            tr = sl.g * (c0r + (c1r - c0r) * x);
+            float gl = tl;
+            float gr = tr;
+            if (ramp) {
+                const float a = static_cast<float>(block_done_ + i + 1) * inv_block;
+                gl = l0 + (tl - l0) * a;
+                gr = r0 + (tr - r0) * a;
+            }
+            tb[0][i] = in[0][i] * gl;
+            tb[1][i] = right_in[i] * gr;
+            if (auto_rolling_ && ++t == loop_b && looping) t = loop_a;
+        }
+        // Where the next callback's crossfade, if any, starts from.
+        if (n != 0 && block_done_ + n == block_frames_) {
+            send_target_[2 * k] = tl;
+            send_target_[2 * k + 1] = tr;
+        }
+        const float* const scaled[2] = {tb[0], tb[1]};
+        sum_edge(plan, edge, scaled, out, n);
+        return;
+    }
     const float l0 = send_gain_[2 * k];
     const float r0 = send_gain_[2 * k + 1];
     const float dl = send_target_[2 * k] - l0;
@@ -2520,12 +2635,35 @@ void Session::send_targets(const PlaybackPlan& plan) noexcept SONORA_RT {
         pan_gains(follow ? strip_pan : own_pan, stereo, plan.pan_exponent, l, r);
         send_target_[2 * k] = g * l;
         send_target_[2 * k + 1] = g * r;
-        if (send_stamp_[k] + 1 < callbacks_ || send_dest_[k] != dest) {
+        const bool fresh = send_stamp_[k] + 1 < callbacks_ || send_dest_[k] != dest;
+        if (fresh) {
             send_gain_[2 * k] = 0.0f;
             send_gain_[2 * k + 1] = 0.0f;
         }
         send_stamp_[k] = callbacks_;
         send_dest_[k] = dest;
+        // What of the send follows its track's lanes (ADR-0027 §8): the
+        // fader unless pre-fader, the pan if it follows the track's.
+        // track_level_ and track_pan_ hold the lane's value at the
+        // callback's start where one plays, the static value elsewhere.
+        const uint8_t flags = strip < tracks_n ? track_auto_[strip] : 0;
+        uint8_t bits = 0;
+        if (!pre) bits |= static_cast<uint8_t>(flags & (1u << kAutoVolume));
+        if (follow) bits |= static_cast<uint8_t>(flags & (1u << kAutoPan));
+        SendLane next;
+        next.g = mute ? 0.0f : level * open;
+        next.fader = (bits & (1u << kAutoVolume)) != 0 ? 0.0f : (pre ? 1.0f : fader);
+        next.pan = (bits & (1u << kAutoPan)) != 0 ? 0.0f : (follow ? strip_pan : own_pan);
+        next.bits = bits;
+        SendLane& sl = send_lane_[k];
+        // As the fader's crossfade: whatever of it changed but the lanes,
+        // or the fader's own reasons (a jump, the lanes starting).
+        const bool changed = fresh || next.g != sl.g || next.fader != sl.fader ||
+                             next.pan != sl.pan || bits != sl.bits ||
+                             (bits != 0 && track_ramp_[strip] != 0);
+        const bool snapped = snap_mix_ && strip < tracks_n && snap_row_[strip] != 0;
+        next.ramp = changed && !snapped ? 1 : 0;
+        sl = next;
     }
 }
 

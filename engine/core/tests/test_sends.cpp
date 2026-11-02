@@ -8,7 +8,9 @@
 // touched on the audio thread through any of it. Then #163's review: a send
 // reassigned to another bus ramps in, a first send keeps the dry path's
 // delay line, a kept send survives a swap, and the PDC line budget. And a
-// send's level and an aux's gain ridden alone, as live parameters.
+// send's level and an aux's gain ridden alone, as live parameters. And a
+// post-fader or follow-pan send under a lane takes it per frame, as the
+// fader does, behind a chain too (ADR-0027 §8).
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -109,7 +111,9 @@ struct Rig {
     // that are exact.
     PlaybackPlan* plan(const std::vector<ChainBinding>& chains, const std::vector<SendBinding>& sends,
                        uint32_t buses, const std::vector<uint32_t>& order, DelayLinePool& pool,
-                       float pan_exponent = 0.5f) {
+                       float pan_exponent = 0.5f,
+                       const std::vector<sonora::PlanAutoPoint>& volume = {},
+                       const std::vector<sonora::PlanAutoPoint>& pan = {}) {
         const auto tracks = static_cast<uint32_t>(session->tracks().size());
         std::vector<ChainBinding> c = chains;
         c.resize(tracks);
@@ -123,6 +127,7 @@ struct Rig {
         sizes.tracks = tracks;
         sizes.nodes = g.nodes;
         sizes.edges = g.edges;
+        sizes.auto_points = static_cast<uint32_t>(volume.size() + pan.size());
         PlaybackPlan* p = sonora::create_plan(sizes);
         p->epoch = session->plans().next_epoch();
         p->chunk_frames = 256;
@@ -131,6 +136,14 @@ struct Rig {
             p->tracks[t].engine_track = t;
             p->tracks[t].channels = 1;
         }
+        // The lanes are track 0's.
+        uint32_t at = 0;
+        p->tracks[0].auto_first[sonora::kAutoVolume] = at;
+        p->tracks[0].auto_count[sonora::kAutoVolume] = static_cast<uint32_t>(volume.size());
+        for (const sonora::PlanAutoPoint& v : volume) p->auto_points[at++] = v;
+        p->tracks[0].auto_first[sonora::kAutoPan] = at;
+        p->tracks[0].auto_count[sonora::kAutoPan] = static_cast<uint32_t>(pan.size());
+        for (const sonora::PlanAutoPoint& v : pan) p->auto_points[at++] = v;
         sonora::layout_mix_graph(*p, c.data(), mix);
         sonora::compensate(*p, session->max_delay_frames(), pool);
         return p;
@@ -221,6 +234,106 @@ int test_post_and_pre_fader() {
     s.set_send(0, 0, 0.25f, 1.0f, true, false, true);
     settle();
     CHECK(check(0.125f + 0.25f * 2.0f, 0.0f));
+    CHECK(heap_untouched());
+    return 0;
+}
+
+// ADR-0027 §8 slice 3: a post-fader send under a volume lane takes the
+// lane per frame, as the fader does, not its value at the callback's start.
+// Dry hard left, wet hard right on its own pan: the wet is the send level
+// times the dry at every frame. Behind a chain, both read the lane at the
+// frames the chain's output came from.
+int lane_send_tracks_the_fader(uint32_t latency) {
+    Rig rig(1);
+    Session& s = *rig.session;
+    DelayRunner runner(1, 4096);
+    s.set_insert_chains(&runner);
+    s.tracks()[0]->set_pan(-1.0f);
+    s.set_send(0, 0, 0.25f, 1.0f, false, false, false);
+    s.set_aux(0, 1.0f, 0.0f, false);
+    DelayLinePool pool(s.delay_lines());
+    const std::vector<uint32_t> order{0};
+    std::vector<ChainBinding> chains;
+    if (latency != 0) {
+        ChainBinding c;
+        c.active = true;
+        c.chain_id = 100;
+        c.channel_slot = 0;
+        c.param_store = 7;
+        c.node_state = 0;
+        c.latency_frames = latency;
+        chains.push_back(c);
+    }
+    // 40 dB over 4096 frames: a callback of 64 moves the gain by about 7%.
+    CHECK(rig.publish(rig.plan(chains, {{0, 0, 0}}, 1, order, pool, 0.5f,
+                               {{0, 0.0f}, {4096, -40.0f}})));
+    s.play();
+    reset_heap_counts();
+    rig.block();
+    rig.block();
+    long heard = 0;
+    for (int blk = 0; blk < 60; ++blk) {
+        rig.block();
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const float dry = rig.out[0][i];
+            const float want = 0.25f * dry;
+            if (std::fabs(rig.out[1][i] - want) > 1e-6f) {
+                std::fprintf(stderr, "  latency %u block %d frame %u: wet %.8f, want %.8f\n",
+                             latency, blk, i, static_cast<double>(rig.out[1][i]),
+                             static_cast<double>(want));
+                return 1;
+            }
+            if (dry > 0.05f) ++heard;
+        }
+    }
+    CHECK(heard > 30 * static_cast<long>(kBlock));
+    CHECK(heap_untouched());
+    return 0;
+}
+
+int test_post_fader_send_takes_the_lane_per_frame() {
+    CHECK(lane_send_tracks_the_fader(0) == 0);
+    CHECK(lane_send_tracks_the_fader(100) == 0);
+    return 0;
+}
+
+// The same for a send that follows the track's pan under a pan lane: a
+// pre-fader send of 0.5 into a centred return plays what the dry path
+// would at gain 0.5, frame for frame, while the pan sweeps.
+int test_follow_pan_send_takes_the_lane_per_frame() {
+    const std::vector<sonora::PlanAutoPoint> sweep = {{0, -1.0f}, {4096, 1.0f}};
+    const std::vector<uint32_t> order{0};
+    // Dry only.
+    Rig dry(1);
+    dry.session->tracks()[0]->set_gain(0.5f);
+    DelayLinePool dry_pool(dry.session->delay_lines());
+    CHECK(dry.publish(dry.plan({}, {}, 1, order, dry_pool, 0.5f, {}, sweep)));
+    // Wet only: the fader shut, the send before it.
+    Rig wet(1);
+    wet.session->tracks()[0]->set_gain(0.0f);
+    wet.session->set_send(0, 0, 0.5f, 0.0f, true, false, true);
+    wet.session->set_aux(0, 1.0f, 0.0f, false);
+    DelayLinePool wet_pool(wet.session->delay_lines());
+    CHECK(wet.publish(wet.plan({}, {{0, 0, 0}}, 1, order, wet_pool, 0.5f, {}, sweep)));
+    dry.session->play();
+    wet.session->play();
+    reset_heap_counts();
+    for (int blk = 0; blk < 60; ++blk) {
+        dry.block();
+        wet.block();
+        if (blk < 2) continue;
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            for (int side = 0; side < 2; ++side) {
+                const float want = dry.out[side][i];
+                if (std::fabs(wet.out[side][i] - want) > 1e-6f) {
+                    std::fprintf(stderr, "  block %d frame %u side %d: wet %.8f, want %.8f\n", blk,
+                                 i, side, static_cast<double>(wet.out[side][i]),
+                                 static_cast<double>(want));
+                    return 1;
+                }
+            }
+        }
+    }
     CHECK(heap_untouched());
     return 0;
 }
@@ -736,6 +849,8 @@ int main() {
     t(test_kept_send_survives_a_swap);
     t(test_dry_edges_come_first_for_lines);
     t(test_dry_mix_fits_at_default_sizes);
+    t(test_post_fader_send_takes_the_lane_per_frame);
+    t(test_follow_pan_send_takes_the_lane_per_frame);
     if (failed != 0) {
         std::fprintf(stderr, "sends: %d of %d failed\n", failed, run);
         return 1;

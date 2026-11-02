@@ -574,6 +574,8 @@ private:
     uint64_t dropped_epoch_ = 0;
     PassWrites pass_writes_;
     std::vector<AutomationWrite> pass_drain_;
+    // follow_automation()'s sorted document track ids, kept for capacity.
+    std::vector<model::Id> drain_track_ids_;
     uint64_t write_overruns_said_ = 0;
     // Events that still stand, encoded, for a client that attaches later:
     // what a restarted interface must find on screen.
