@@ -71,6 +71,10 @@
 //                        not into the folder the engine started in
 //   flush_read_across_load  a flush whose reads end after a Load writes
 //                        nothing, in the old folder or the new one
+//   state_read_timeout   a plug-in whose save() outlasts kReplyTimeoutMs:
+//                        its read fails by name at the deadline, its host is
+//                        killed and restarts from the document, the other
+//                        track's state is still saved, and no turn waited
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
@@ -1267,6 +1271,91 @@ int scenario_flush_read_across_load(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// BACKLOG Track 4 item 5, "Untested: the GetState timeout". A plug-in whose
+// save() never comes back (here: the worker plugin's, slowed past
+// kReplyTimeoutMs) must not hold File > Save: at the deadline its read fails
+// by name, its host is killed and takes the crash path, and the flush ends
+// with the states it did get. The callback and poll() never wait for it.
+int scenario_state_read_timeout(const Args& a) {
+    namespace pc = plugin::control;
+    std::printf("state_read_timeout: the worker plugin's save() outlasts the GetState deadline\n");
+    // Read by the host's save(), so set before any host is spawned.
+    const std::string slow_ms = std::to_string(pc::kReplyTimeoutMs + 3000);
+    ::setenv("SONORA_TEST_SLOW_SAVE_MS", slow_ms.c_str(), 1);
+    struct Unset {
+        ~Unset() { ::unsetenv("SONORA_TEST_SLOW_SAVE_MS"); }
+    } unset;
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(track_op(102, 103, "B"));
+    rig.apply(insert_op(100, 500, 0, "urn:sonora:test#state"));
+    rig.apply(insert_op(102, 501, 0, kWorker, {{"gain", 0.5f}}));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.bound_at(1, kBlock); }, 15000), "both running");
+    for (int i = 0; i < 200; ++i) rig.turn();
+
+    const uint64_t started = now_ms();
+    const uint64_t id = rig.hosting->request_states(0, rig.history.current());
+    std::vector<PluginHosting::Flush> done;
+    // The gap between two looks is one turn: the callback, poll(), the plan.
+    uint64_t longest_turn = 0, last_look = now_ms();
+    bool a_bound = true;
+    rig.until(
+        [&] {
+            const uint64_t t = now_ms();
+            longest_turn = std::max(longest_turn, t - last_look);
+            last_look = t;
+            for (PluginHosting::Flush& f : rig.hosting->take_flushes()) done.push_back(std::move(f));
+            a_bound = a_bound && rig.bound_at(0, kBlock);
+            return !done.empty();
+        },
+        uint64_t(pc::kReplyTimeoutMs) + 5000);
+    std::printf("  the longest turn while the save() slept: %llu ms\n", (unsigned long long)longest_turn);
+    check(longest_turn < 100, "  no turn waited on the plug-in");
+    const uint64_t took = now_ms() - started;
+    std::printf("  the flush ended after %llu ms\n", (unsigned long long)took);
+    check(done.size() == 1 && done[0].id == id, "the flush ends");
+    if (done.size() != 1) return 1;
+    const PluginHosting::Flush& f = done[0];
+    check(took >= uint64_t(pc::kReplyTimeoutMs) - 50 && took < uint64_t(pc::kReplyTimeoutMs) + 2000,
+          "  at the GetState deadline, not before and not at the end of save()");
+    for (const std::string& line : f.failed) std::printf("  failed: %s\n", line.c_str());
+    check(f.failed.size() == 1 && f.failed[0].find(std::string(kWorker) + " (B, slot ") == 0 &&
+              f.failed[0].find("did not hand over its state within") != std::string::npos,
+          "  Failed names B's insert and why");
+    bool a_read = false, b_read = false;
+    for (const auto& s : f.states) {
+        a_read = a_read || (s.insert == 500 && !s.sha256.empty());
+        b_read = b_read || s.insert == 501;
+    }
+    check(a_read && !b_read, "  A's state was read, B's is not in the flush");
+    check(a_bound, "  A played bound all along");
+
+    // The rest of FlushPluginState, as the server runs it.
+    std::vector<session_files::StateFile> files;
+    for (const auto& s : f.states)
+        if (!s.sha256.empty()) files.push_back({s.sha256, s.bytes});
+    session_files::SessionFolder folder;
+    std::string why;
+    check(folder.write_states(kDir, files, why), "A's state written");
+    for (const model::Operation& op : rig.hosting->states_saved(f, rig.history.current())) {
+        rig.ops_seen.push_back(op);
+        rig.apply(op);
+    }
+    rig.show(false);
+    const InsertMix* am = rig.history.current().mix.find_insert(500);
+    const InsertMix* bm = rig.history.current().mix.find_insert(501);
+    check(am && am->state, "  A's insert names its state");
+    check(!bm || !bm->state, "  B's names none: the document keeps what it had");
+
+    // The kill takes the crash path: B restarts from the document and runs.
+    check(rig.until([&] { return (rig.hosting->insert_flags(501) & api::kInsertRestarting) != 0; }, 5000),
+          "B's host was killed: restarting");
+    check(rig.until([&] { return (rig.hosting->insert_flags(501) & api::kInsertRunning) != 0; }, 15000),
+          "  and B runs again");
+    return failures ? 1 : 0;
+}
+
 // BACKLOG Track 4 item 5: the worker's refused messages were counted in the
 // host and told to nobody, so a sampler that never got its sample played on
 // as if it had. ADR-0012 change G, as for non-finite output: one Notice the
@@ -1952,6 +2041,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "rescan_blocks_running") rc = scenario_rescan_blocks_running(a);
     else if (a.scenario == "state_flush") rc = scenario_state_flush(a);
     else if (a.scenario == "server_state_flush") rc = scenario_server_state_flush(a);
+    else if (a.scenario == "state_read_timeout") rc = scenario_state_read_timeout(a);
     else if (a.scenario == "flush_active_folder") rc = scenario_flush_active_folder(a);
     else if (a.scenario == "flush_read_across_load") rc = scenario_flush_read_across_load(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
