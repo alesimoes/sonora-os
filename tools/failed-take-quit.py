@@ -184,11 +184,20 @@ def chunks(path):
 # cannot grow the file to match on a disk that is full, and the next open
 # reports the take shorter than its header and plays what is there. Whether
 # a run hits it depends on where the limit falls in the buffer, so it is
-# reported as "xfail" and never fails the run; remove it with the fix.
+# reported as "xfail" and never fails the run.
+# Delete KNOWN_SHORT, MAX_KNOWN_SHORT_BYTES and their branch in check_take()
+# when the WavWriter fix lands: from then on any shortfall is a failure.
 KNOWN_SHORT = "header counts audio the file does not hold (WavWriter counts buffered frames)"
+# The most that defect can lose: one stdio buffer, which glibc sizes from the
+# file's st_blksize (4 KiB on ext4, 128 KiB at most on the filesystems we
+# ship onto; seen: under 1 KB). 64 KiB is sixteen ext4 buffers of margin and
+# still under half a second of one track, so a take that lost real audio --
+# a writer that stopped counting, a truncation, a lost flush of megabytes --
+# is a failure, not this defect.
+MAX_KNOWN_SHORT_BYTES = 64 * 1024
 
 
-def check_take(path):
+def check_take(path, max_short=MAX_KNOWN_SHORT_BYTES):
     """(None, None) for a finished WAV; else (known, what is wrong)."""
     found, blob = chunks(path)
     if found is None:
@@ -210,9 +219,59 @@ def check_take(path):
         return False, (f"{len(blob) - data_end} bytes past the counted audio, "
                        "which close() should have cut")
     if data_end > len(blob):
-        short = (data_end - len(blob)) // block_align
-        return True, f"{KNOWN_SHORT}: {short} frames"
+        # The pad byte is not audio: what the header declares and the disk
+        # does not hold.
+        missing = data_at + data - len(blob)
+        frames = -(-missing // block_align)
+        if 0 < missing <= max_short:
+            return True, f"{KNOWN_SHORT}: {frames} frames"
+        return False, (f"the header counts {missing} bytes ({frames} frames) the file "
+                       f"does not hold, more than the {max_short} a stdio "
+                       "buffer can explain")
     return None, None
+
+
+def self_test(max_short=MAX_KNOWN_SHORT_BYTES):
+    """check_take() against files built here, so its verdicts are checked
+    with no engine: what passes, what is the known defect, what fails.
+    The files are always built around MAX_KNOWN_SHORT_BYTES; max_short only
+    loosens or tightens the rule they are judged by, for a control run."""
+    def wav(path, frames, held, tail=0):
+        # 24-bit mono, the engine's take format, with no bext: check_take()
+        # needs only fmt and data.
+        block = 3
+        data = frames * block
+        pad = data % 2
+        fmt = struct.pack("<HHIIHH", 1, 1, 48000, 48000 * block, block, 24)
+        head = (b"RIFF" + struct.pack("<I", 4 + 8 + len(fmt) + 8 + data + pad) +
+                b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt +
+                b"data" + struct.pack("<I", data))
+        body = b"\0" * (held * block) + (b"\0" * pad if held == frames else b"")
+        with open(path, "wb") as f:
+            f.write(head + body + b"\1" * tail)
+
+    cases = [
+        # name, frames declared, frames held, trailing bytes, expected
+        ("finished", 48000, 48000, 0, None),
+        ("odd frames, padded", 48001, 48001, 0, None),
+        ("one buffer short", 87424, 87163, 0, True),
+        ("at the bound", 48000, 48000 - MAX_KNOWN_SHORT_BYTES // 3, 0, True),
+        ("past the bound", 48000, 48000 - MAX_KNOWN_SHORT_BYTES // 3 - 1, 0, False),
+        ("megabytes short", 1_000_000, 100_000, 0, False),
+        ("bytes past the audio", 48000, 48000, 5, False),
+    ]
+    failures = []
+    with tempfile.TemporaryDirectory(prefix="sonora-quit-self-") as d:
+        for name, frames, held, tail, expected in cases:
+            path = os.path.join(d, "take.wav")
+            wav(path, frames, held, tail)
+            known, why = check_take(path, max_short)
+            if known is not expected:
+                failures.append(f"check_take on '{name}': {known!r} ({why}), not {expected!r}")
+    for f in failures:
+        print(f"FAIL (self-test): {f}", file=sys.stderr)
+    print(f"self-test: {len(cases) - len(failures)} of {len(cases)} file verdicts right")
+    return failures
 
 
 def kill_all(pids):
@@ -345,8 +404,10 @@ def run_one(args, mode, log_path):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--engine", required=True,
+    p.add_argument("--engine",
                    help="sonora-engine, with sonora-tui beside it")
+    p.add_argument("--self-test", action="store_true",
+                   help="only check the file verdicts on built files; no engine")
     p.add_argument("--mode", action="append",
                    choices=["key", "engine", "session"],
                    help="how to quit (repeatable; default: all three)")
@@ -361,9 +422,15 @@ def main():
     args = p.parse_args()
     # In order with the FAIL lines on stderr when CI captures both.
     sys.stdout.reconfigure(line_buffering=True)
-    args.engine = os.path.abspath(args.engine)
     started = time.monotonic()
-    failed = 0
+    # Always first: a check_take() that waved through a broken file would
+    # make every engine run below pass for the wrong reason.
+    failed = bool(self_test())
+    if args.self_test:
+        return 1 if failed else 0
+    if not args.engine:
+        p.error("--engine is required without --self-test")
+    args.engine = os.path.abspath(args.engine)
     for mode in args.mode or ["key", "engine", "session"]:
         failed += bool(run(args, mode))
     print(f"{'FAIL' if failed else 'PASS'} in {time.monotonic() - started:.1f} s")
