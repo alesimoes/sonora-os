@@ -33,6 +33,10 @@
 //                        the next block (ADR-0011 Amendment 2). Held as a
 //                        test so that a DPF update that changes it, for
 //                        better or worse, is seen and the ADR follows.
+//   --scenario options   (LV2) options:set with a new block length and
+//                        rate between two run() calls: prepared inside
+//                        set(), nothing allocated in run(), and the sound of
+//                        an instance instantiated with those options.
 //
 // Every scenario reads the bundle's layout (stereo or mono, with or without
 // a key input) from the bundle itself: VST3 from its main bus, LV2 from
@@ -60,6 +64,7 @@
 #include "lv2/buf-size.h"
 #include "lv2/lv2.h"
 #include "lv2/options.h"
+#include "lv2/parameters.h"
 #include "lv2/urid.h"
 #include "travesty/audio_processor.h"
 #include "travesty/component.h"
@@ -697,7 +702,10 @@ int vst3_wide(const char* path) {
 
 // The only feature run() might use is the map, and only at instantiate.
 struct UridMap {
-    std::map<std::string, LV2_URID> ids;
+    // Transparent, so that looking up a URI already mapped builds no
+    // std::string: --scenario options counts the allocations around a
+    // set() that calls this.
+    std::map<std::string, LV2_URID, std::less<>> ids;
     static LV2_URID map(LV2_URID_Map_Handle h, const char* uri) {
         auto& ids = static_cast<UridMap*>(h)->ids;
         const auto it = ids.find(uri);
@@ -765,6 +773,169 @@ int lv2_lazy(const char* path, const char* bundle, uint32_t inputs, uint32_t out
     return 0;
 }
 
+// One LV2 instance, instantiated with a rate, a max block length and a
+// nominal one, and activated: what a host has before it starts running.
+struct Lv2Instance {
+    void* lib = nullptr;
+    const LV2_Descriptor* desc = nullptr;
+    LV2_Handle h = nullptr;
+    const LV2_Options_Interface* opts = nullptr;
+    UridMap urids;
+    LV2_URID_Map map{&urids, UridMap::map};
+    int32_t max_block, nominal;
+    Block b;
+    alignas(8) std::uint8_t extra[64] = {};
+
+    Lv2Instance(const char* path, const char* bundle, uint32_t inputs, uint32_t outputs, double rate,
+                int32_t max, int32_t nom)
+        : max_block(max), nominal(nom), b(max, static_cast<int32_t>(inputs), static_cast<int32_t>(outputs)) {
+        lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+        if (lib == nullptr) {
+            std::fprintf(stderr, "dlopen %s: %s\n", path, dlerror());
+            return;
+        }
+        using Get = const LV2_Descriptor* (*)(uint32_t);
+        const auto get = reinterpret_cast<Get>(dlsym(lib, "lv2_descriptor"));
+        desc = get != nullptr ? get(0) : nullptr;
+        if (desc == nullptr) return;
+        const LV2_URID atom_int = UridMap::map(&urids, LV2_ATOM__Int);
+        // Mapped now, so that set() maps nothing new: the allocation count
+        // around it is then the plugin's alone.
+        UridMap::map(&urids, LV2_ATOM__Float);
+        UridMap::map(&urids, LV2_PARAMETERS__sampleRate);
+        const LV2_Options_Option options[] = {
+            {LV2_OPTIONS_INSTANCE, 0, UridMap::map(&urids, LV2_BUF_SIZE__maxBlockLength), sizeof(int32_t),
+             atom_int, &max_block},
+            {LV2_OPTIONS_INSTANCE, 0, UridMap::map(&urids, LV2_BUF_SIZE__nominalBlockLength), sizeof(int32_t),
+             atom_int, &nominal},
+            {LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, nullptr},
+        };
+        const LV2_Feature map_feature{LV2_URID__map, &map};
+        const LV2_Feature options_feature{LV2_OPTIONS__options, const_cast<LV2_Options_Option*>(options)};
+        const LV2_Feature* features[] = {&map_feature, &options_feature, nullptr};
+        h = desc->instantiate(desc, rate, bundle, features);
+        if (h == nullptr) return;
+        if (desc->extension_data != nullptr)
+            opts = static_cast<const LV2_Options_Interface*>(desc->extension_data(LV2_OPTIONS__interface));
+        // The port order of lv2_lazy above.
+        LV2_Atom_Sequence* seq = reinterpret_cast<LV2_Atom_Sequence*>(extra);
+        seq->atom.size = sizeof(LV2_Atom_Sequence_Body);
+        seq->atom.type = UridMap::map(&urids, LV2_ATOM__Sequence);
+        uint32_t port = 0;
+        for (float* in : b.ins) desc->connect_port(h, port++, in);
+        for (float* out : b.outs) desc->connect_port(h, port++, out);
+        desc->connect_port(h, port, extra);
+        if (desc->activate != nullptr) desc->activate(h);
+    }
+    ~Lv2Instance() {
+        if (h != nullptr) {
+            if (desc->deactivate != nullptr) desc->deactivate(h);
+            desc->cleanup(h);
+        }
+        if (lib != nullptr) dlclose(lib);
+    }
+    Lv2Instance(const Lv2Instance&) = delete;
+    Lv2Instance& operator=(const Lv2Instance&) = delete;
+    bool ok() const { return h != nullptr && opts != nullptr && opts->set != nullptr; }
+
+    // What Ardour (Session::set_block_size) and Carla (bufferSizeChanged,
+    // sampleRateChanged) send: the new nominal block length and rate.
+    uint32_t set(int32_t new_nominal, float new_rate) {
+        nominal = new_nominal;
+        rate_ = new_rate;
+        const LV2_Options_Option options[] = {
+            {LV2_OPTIONS_INSTANCE, 0, UridMap::map(&urids, LV2_BUF_SIZE__nominalBlockLength), sizeof(int32_t),
+             UridMap::map(&urids, LV2_ATOM__Int), &nominal},
+            {LV2_OPTIONS_INSTANCE, 0, UridMap::map(&urids, LV2_PARAMETERS__sampleRate), sizeof(float),
+             UridMap::map(&urids, LV2_ATOM__Float), &rate_},
+            {LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, nullptr},
+        };
+        return opts->set(h, options);
+    }
+
+    // Runs `blocks` full blocks and appends the outputs, channel-interleaved
+    // block by block, to `rendered`.
+    void run(int blocks, std::vector<float>* rendered) {
+        for (int k = 0; k < blocks; ++k) {
+            desc->run(h, static_cast<uint32_t>(max_block));
+            if (rendered == nullptr) continue;
+            for (const auto& c : b.out) rendered->insert(rendered->end(), c.begin(), c.end());
+        }
+    }
+
+private:
+    float rate_ = 0.0f;
+};
+
+// --scenario options (LV2): the host changes the block length and the rate
+// through the options interface (options:set) while the instance is
+// active, between two run() calls. The LV2 options interface puts set() in
+// the "instantiation" threading class (lv2/options.h): never concurrent
+// with run(). Ardour calls it from Session::set_block_size, which its
+// engine guarantees is never inside process(); Carla from its engine's
+// buffer-size and rate callbacks (JACK delivers those on its non-RT
+// notification thread); our host never calls it. So DPF re-preparing
+// there, at once (DistrhoPluginLV2.cpp lv2_set_options, setBufferSize(n,
+// true)), is on a thread that may allocate, and deferring the change to the
+// next activate() would be worse: DPF reaches activate() lazily from inside
+// run() (--scenario lazy). This holds what that leaves to check:
+// - options that repeat the current ones cost nothing (no allocation);
+// - run() after a real change allocates nothing: the change was prepared
+//   inside set();
+// - the instance then sounds exactly like one instantiated with the new
+//   options, even with a nominal length under the blocks the host runs
+//   (nominal is only "typical", buf-size.ttl; the max still holds).
+int lv2_options(const char* path, const char* bundle, uint32_t inputs, uint32_t outputs) {
+    constexpr int32_t kMax = 256;
+    constexpr int32_t kNominalAfter = 64;
+    constexpr float kRateAfter = 44100.0f;
+    constexpr int kAfter = 16;
+
+    Lv2Instance moved(path, bundle, inputs, outputs, 48000.0, kMax, kMax);
+    CHECK(moved.ok());
+    moved.run(8, nullptr);
+
+    g_allocations.store(0);
+    g_counting.store(true);
+    const uint32_t same = moved.set(kMax, 48000.0f);
+    g_counting.store(false);
+    CHECK(same == LV2_OPTIONS_SUCCESS);
+    if (g_allocations.load() != 0)
+        std::fprintf(stderr, "%ld allocations in a set() that changes nothing\n", g_allocations.load());
+    CHECK(g_allocations.load() == 0);
+
+    CHECK(moved.set(kNominalAfter, kRateAfter) == LV2_OPTIONS_SUCCESS);
+    std::vector<float> after;
+    after.reserve(static_cast<std::size_t>(kAfter) * outputs * kMax);
+    g_allocations.store(0);
+    g_counting.store(true);
+    moved.run(kAfter, &after);
+    g_counting.store(false);
+    if (g_allocations.load() != 0)
+        std::fprintf(stderr, "%ld allocations inside run() after set()\n", g_allocations.load());
+    CHECK(g_allocations.load() == 0);
+
+    Lv2Instance fresh(path, bundle, inputs, outputs, kRateAfter, kMax, kNominalAfter);
+    CHECK(fresh.ok());
+    std::vector<float> want;
+    fresh.run(kAfter, &want);
+
+    CHECK(after.size() == want.size());
+    std::size_t first = after.size();
+    for (std::size_t i = 0; i < after.size(); ++i) {
+        CHECK(std::isfinite(after[i]));
+        if (first == after.size() && after[i] != want[i]) first = i;
+    }
+    if (first != after.size())
+        std::fprintf(stderr, "differs from a fresh instance at value %zu: %.9g, want %.9g\n", first,
+                     static_cast<double>(after[first]), static_cast<double>(want[first]));
+    CHECK(first == after.size());
+    // The port after the audio: the latency output in a bundle that does not
+    // follow the host tempo, which must then match too.
+    CHECK(std::memcmp(moved.extra, fresh.extra, sizeof(float)) == 0);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -789,9 +960,11 @@ int main(int argc, char** argv) {
     else if (vst3 != nullptr && scenario == "nokey") r = vst3_nokey(vst3);
     else if (vst3 != nullptr && scenario == "wide") r = vst3_wide(vst3);
     else if (lv2 != nullptr && bundle != nullptr && scenario == "lazy") r = lv2_lazy(lv2, bundle, inputs, outputs);
+    else if (lv2 != nullptr && bundle != nullptr && scenario == "options")
+        r = lv2_options(lv2, bundle, inputs, outputs);
     else
         std::fprintf(stderr, "usage: %s (--vst3 BINARY --scenario lazy|oversize|threads|late|nokey|wide |"
-                             " --lv2 BINARY --bundle DIR [--inputs N --outputs N] --scenario lazy)\n",
+                             " --lv2 BINARY --bundle DIR [--inputs N --outputs N] --scenario lazy|options)\n",
                      argv[0]);
     if (r == 0) std::printf("bundle_driver %s: pass\n", scenario.c_str());
     return r;

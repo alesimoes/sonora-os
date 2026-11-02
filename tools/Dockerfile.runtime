@@ -11,6 +11,12 @@
 # Build context is the repository root, so audio-stack/ can be copied in.
 FROM debian:trixie
 
+# The image takes PipeWire and WirePlumber from a dated trixie-backports
+# snapshot at exact versions. These are the image's own files, not copies, so
+# a version bump cannot reach one and miss the other.
+COPY iso/config/archives/sonora-backports.list.chroot /etc/apt/sources.list.d/sonora-backports.list
+COPY iso/config/archives/sonora-backports.pref.chroot /etc/apt/preferences.d/sonora-backports.pref
+
 # libjack-jackd2-0 is deliberately absent, exactly as in the ISO package list:
 # it installs a libjack.so.0 into the default library path that wins over the
 # one pipewire-jack ships, and the engine then looks for a jackd that is not
@@ -31,6 +37,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       procps \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# A pin that matches nothing falls back to trixie's PipeWire silently; a pass
+# against that would say nothing about the image.
+RUN dpkg-query -W -f='${Version}\n' pipewire pipewire-jack libspa-0.2-modules wireplumber \
+    && dpkg-query -W -f='${Version}\n' pipewire | grep -q '~bpo13' \
+    && dpkg-query -W -f='${Version}\n' wireplumber | grep -q '~bpo13'
 
 # The same drop-in the chroot hook installs, for the same reason. Testing
 # against a different JACK than the image ships would make a pass meaningless.

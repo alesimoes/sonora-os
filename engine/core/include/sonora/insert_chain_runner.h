@@ -38,7 +38,10 @@
 // The events are the parameter changes the control thread posted for the
 // node's param_store since the last callback (Session::post_plugin_param;
 // ADR-0012 §5.1: the audio thread is the parameter ring's only producer),
-// in the order they were posted, each at offset 0.
+// in the order they were posted, followed by the values of the node's plan
+// plugin lanes (ADR-0027 §5) that this callback sends: after the posted
+// changes, so an automated parameter ends on its lane, not its knob. Each
+// is at offset 0.
 //   end()          -> PluginClient::end_callback()
 // and engine/control's ChainResolver fills ChainBinding::latency_frames from
 // PluginClient::latency_frames(slot), with the slot, generation, store and
@@ -79,8 +82,9 @@ public:
     // stereo planes; a mono chain (node.channels == 1) reads and writes
     // side 0 only. Must not wait: a host that is not done is a miss,
     // played as the implementation's silence. `events`: this callback's
-    // parameter changes for node.param_store, `event_count` of them (0 with
-    // `events` null when there are none).
+    // parameter changes for node.param_store, posted changes then plan lane
+    // values, `event_count` of them (0 with `events` null when there are
+    // none).
     virtual void run(const PlanNode& node, const float* const in[2], float* const out[2],
                      uint32_t frames, const ChainParamEvent* events,
                      uint32_t event_count) noexcept SONORA_RT = 0;

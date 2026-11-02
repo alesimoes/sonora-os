@@ -378,15 +378,32 @@ bool runs_member(const Binding& b, const std::vector<std::string>& group,
     return false;
 }
 
+// transport.record_ready starts nothing on its own: Play does. So it reaches
+// a group only in a profile that also has a working Play key; the engine
+// never installs it without one, but a profile can leave Play unbound.
+bool group_reached(const std::vector<Binding>& bindings, const std::vector<std::string>& group,
+                   const std::vector<KeyChord>& device,
+                   const std::function<bool(const std::string&)>& implemented) {
+    static const std::vector<std::string> plays = {"transport.play", "transport.toggle_play"};
+    bool has_ready = false;
+    for (const Binding& b : bindings) {
+        if (!runs_member(b, group, device, implemented)) continue;
+        if (b.command != "transport.record_ready") return true;
+        has_ready = true;
+    }
+    if (!has_ready) return false;
+    for (const Binding& b : bindings) {
+        if (runs_member(b, plays, device, implemented)) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 bool KeyMap::reaches(
     const std::vector<std::string>& group, const std::vector<KeyChord>& device,
     const std::function<bool(const std::string&)>& implemented) const {
-    for (const Binding& b : bindings_) {
-        if (runs_member(b, group, device, implemented)) return true;
-    }
-    return false;
+    return group_reached(bindings_, group, device, implemented);
 }
 
 bool KeyMap::parse_chord(const std::string& spec, KeyChord& out,
@@ -893,9 +910,9 @@ const std::vector<std::vector<std::string>>& KeyMap::essential_commands() {
     // transport.toggle_play is in the stop group:
     // its handler closes a running take (session_commands.cpp), and where a
     // build cannot run it, it does not count.
-    // transport.record_ready starts nothing itself, but the engine installs
-    // it only beside transport.play and transport.toggle_play, and a profile
-    // with it reaches Play on the key the stop group asks for.
+    // transport.record_ready starts nothing itself, so it counts only in a
+    // profile that also binds a working transport.play or toggle_play
+    // (group_reached()).
     static const std::vector<std::vector<std::string>> groups = {
         {"track.toggle_arm", "track.arm", "track.arm_all"},
         {"transport.toggle_record", "transport.record", "transport.punch",
@@ -957,10 +974,7 @@ std::vector<std::string> KeyMap::ensure_essentials(
     };
     const auto satisfied = [&](const std::vector<Binding>& bindings,
                                const Group& group) {
-        for (const auto& b : bindings) {
-            if (usable(b, group)) return true;
-        }
-        return false;
+        return group_reached(bindings, group, device, implemented);
     };
     const auto keeps_what_works = [&](const std::vector<Binding>& after) {
         for (const auto& g : groups) {
