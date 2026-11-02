@@ -106,6 +106,11 @@ std::vector<float> reference_render(const std::vector<float>& x, double fs, std:
 
 void against_reference(Suite& s) {
     const double bar = s.bar("reference.max_error");
+    // Eco integrates one step per oversampled sample (CPU class B), and a
+    // 15 kHz tone at its 2x rate moves the field several units of a in
+    // one step: there it has a bar of its own, under its aliasing at
+    // that tone (brain/research/native-tape-n2.md, "CPU class B").
+    const double eco_hf = s.bar("reference.eco_hf_max_error");
     const double fs = 48000.0;
     json::Value rows = json::Value::array();
     // Quick mode: eco only (its error is the largest) and two tones.
@@ -125,7 +130,7 @@ void against_reference(Suite& s) {
                 worst = std::fmax(worst, std::fabs(static_cast<double>(y[0][n]) - static_cast<double>(ref[n])));
             s.check_le(fmt("processor against the reference chain, %.0f Hz, ", f) + kQualityIds[q] +
                            fmt(", %.0f dBFS, drive %.0f dB: max |difference|", level, drive),
-                       worst, bar, "FS");
+                       worst, q == 0 && f > 8000.0 ? eco_hf : bar, "FS");
             json::Value r = json::Value::array();
             r.push(json::Value::integer(q));
             r.push(jf(f));
@@ -494,7 +499,13 @@ int tape(const measure::Args& args) {
     measure::check_latency(s, latency);
     measure::check_nonfinite(s, golden);
     measure::check_reset(s, golden);
-    measure::check_denormals(s, golden);
+    // The denormal check renders two 20 s signals side by side, up to
+    // three times: in quick mode at eco, the same chain at half the
+    // oversampled rate, so the PR suite stays well inside its minute; the
+    // nightly run keeps the golden settings (standard).
+    Config denormal = golden;
+    if (measure::quick()) denormal.push_back({"quality", 0.0f});
+    measure::check_denormals(s, denormal);
     // Zipper sweeps with the motion on, so wow and flutter are swept too;
     // drive 12 dB so the tone is in the curve.
     measure::check_zipper(s, {{"motion", 1.0f}, {"drive", 12.0f}}, "");

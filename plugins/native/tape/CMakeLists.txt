@@ -13,5 +13,7 @@ sonora_native_quality_test(tape)
 set_tests_properties(native_tape PROPERTIES LABELS slow)
 
 # The LV2 and VST3 bundles, stereo and mono, through N1's format layer.
+# Installed: eco holds CPU class B (quality.json cpu.held), so the
+# processor ships beside it (ADR-0011 3.5).
 sonora_native_plugin(tape FACTORY make_tape DISPLAY "Sonora Tape" UID SNtp MONO_UID SMtp
-  EXPERIMENTAL LV2_CATEGORY "lv2:DistortionPlugin" VST3_CATEGORIES "Fx|Distortion")
+  LV2_CATEGORY "lv2:DistortionPlugin" VST3_CATEGORIES "Fx|Distortion")

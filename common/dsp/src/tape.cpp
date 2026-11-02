@@ -4,7 +4,22 @@
 #include <cmath>
 #include <complex>
 
+#include "tape_solve.h"
+
 namespace sonora::dsp {
+
+double TapeHysteresis::tick(double h) noexcept {
+    TapeHysteresis* st[1] = {this};
+    double* x[1] = {&h};
+    TapeSolve<tape_detail::V1>::run(st, x, 1);
+    return h;
+}
+
+void TapeHysteresis::run(double* x, std::uint32_t n) noexcept {
+    TapeHysteresis* st[1] = {this};
+    double* xs[1] = {x};
+    TapeSolve<tape_detail::V1>::run(st, xs, n);
+}
 
 OnePoleZero design_matched_one_pole(double zero_hz, double pole_hz, double sample_rate) noexcept {
     OnePoleZero f;

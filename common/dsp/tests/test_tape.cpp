@@ -13,6 +13,8 @@
 #include "check.h"
 #include "sonora/dsp/math.h"
 #include "sonora/dsp/tape.h"
+// The integrator's internals, for test_exp_neg.
+#include "../src/tape_solve.h"
 
 namespace {
 
@@ -33,6 +35,142 @@ int test_langevin() {
     // The series meets the closed form at the switch.
     CHECK_LE(std::fabs(langevin(0.2499999) - langevin(0.2500001)), 1e-6, "langevin continuity");
     CHECK_LE(std::fabs(langevin_slope(0.2499999) - langevin_slope(0.2500001)), 1e-6, "langevin slope continuity");
+    return 0;
+}
+
+// The tabulated Langevin function the integrator uses, against the exact
+// one: value and slope over 2e6 points of [-20, 20] (both sides of the
+// table's end at 16), exact odd symmetry, and no step at the cell edges.
+int test_langevin_table() {
+    const LangevinTable t;
+    double ev = 0.0, es = 0.0;
+    constexpr int kPoints = 2000000;
+    for (int i = 0; i <= kPoints; ++i) {
+        const double x = -20.0 + 40.0 * i / kPoints;
+        double l, dl;
+        t.eval(x, l, dl);
+        ev = std::fmax(ev, std::fabs(l - langevin(x)));
+        ev = std::fmax(ev, std::fabs(t.value(x) - langevin(x)));
+        es = std::fmax(es, std::fabs(dl - langevin_slope(x)));
+        double ln, dln;
+        t.eval(-x, ln, dln);
+        CHECK(ln == -l && dln == dl);
+    }
+    std::printf("Langevin table, [-20, 20]: value error %.3g, slope error %.3g\n", ev, es);
+    CHECK_LE(ev, LangevinTable::kValueError, "table value error");
+    CHECK_LE(es, LangevinTable::kSlopeError, "table slope error");
+    // Continuity: a cell's cubic meets the next one's at the node, and
+    // the last cell meets the asymptote at kMax (to coth 16 - 1, 2.5e-14).
+    double jump = 0.0;
+    for (int i = 1; i <= LangevinTable::kCells; ++i) {
+        const double x = static_cast<double>(i) / LangevinTable::kPerUnit;
+        jump = std::fmax(jump, std::fabs(t.value(std::nextafter(x, 0.0)) - t.value(x)));
+    }
+    CHECK_LE(jump, 5e-14, "table continuity at the nodes");
+    // Odd, exactly: the integrator's symmetry (test_loop) rests on it.
+    CHECK(t.value(0.0) == 0.0);
+    return 0;
+}
+
+// The integrator's own e^-tau (tape_solve.h) against std::exp on the range
+// it is called with.
+int test_exp_neg() {
+    using S = TapeSolve<tape_detail::V1>;
+    double worst = 0.0;
+    for (int i = 0; i <= 400000; ++i) {
+        const double tau = tape_detail::kTauMax * i / 400000.0;
+        const double want = std::exp(-tau);
+        worst = std::fmax(worst, std::fabs(S::exp_neg(tape_detail::V1(tau)).x - want) / want);
+    }
+    std::printf("e^-tau, tau in [0, %g]: relative error %.3g\n", tape_detail::kTauMax, worst);
+    CHECK_LE(worst, 5e-10, "exp_neg relative error");
+    return 0;
+}
+
+// The integrator at the substep caps the processor uses (eco 1, standard
+// and high 4) against 512 RK4 substeps of the exact equations, at 2x of
+// 48 kHz, on tones and levels of the suite's reference chain. The bars
+// are the figures measured when this integrator came in, with headroom: a
+// change that makes it less accurate fails here first. A hot field stays
+// finite and inside Ms, and a non-finite one leaves the state as it was.
+int test_integrator_bounded() {
+    const double fs = 96000.0;
+    struct Case {
+        double f, amp;
+        std::uint32_t cap;
+        double bar;
+    };
+    // Amplitudes in units of a: the suite's 8 kHz, -12 dBFS at drive 12 dB
+    // through the 15 in/s pre-emphasis is about 5 a; its 15 kHz, -18 dBFS
+    // at drive 18 dB about 8 a.
+    for (const Case& c : {Case{1000.0, 2.0, 1, 1e-7}, Case{8000.0, 5.0, 1, 2e-4}, Case{8000.0, 5.0, 4, 5e-6},
+                          Case{15000.0, 8.0, 4, 1e-4}, Case{1000.0, 40.0, 1, 3e-4}}) {
+        TapeHysteresis fast, ref;
+        fast.set_max_substeps(c.cap);
+        double worst = 0.0;
+        const int n = static_cast<int>(0.01 * fs);
+        for (int i = 0; i < n; ++i) {
+            const double h = c.amp * std::sin(kTwoPi * c.f * i / fs);
+            const double m = fast.tick(h);
+            const double r = ref.tick_with(h, 512);
+            if (i > n / 4) worst = std::fmax(worst, std::fabs(m - r));
+        }
+        std::printf("integrator, %u substeps at most, %g Hz at 96 kHz, H amplitude %g a: %.3g Ms\n", c.cap, c.f, c.amp,
+                    worst);
+        CHECK_LE(worst, c.bar, "bounded integrator error");
+    }
+    TapeHysteresis t;
+    t.set_max_substeps(2);
+    CHECK(t.max_substeps() == 2);
+    for (int i = 0; i < 4000; ++i) {
+        const double m = t.tick(1e4 * std::sin(kTwoPi * 19000.0 * i / fs));
+        CHECK(std::isfinite(m));
+        CHECK(std::fabs(m) <= 1.0);
+    }
+    const double before = t.tick(0.5);
+    CHECK(t.tick(std::nan("")) == before);
+    CHECK(t.tick(INFINITY) == before);
+    CHECK(std::isfinite(t.tick(0.25)));
+    return 0;
+}
+
+// The two-channel integrator gives each channel the bits tick() gives it
+// alone: on signals that take different substep counts in the two lanes,
+// reverse at different samples, cross the table's end, go silent, and
+// meet a non-finite field in one lane only.
+int test_pair_matches_tick() {
+    const double fs = 96000.0;
+    for (std::uint32_t cap : {1u, 2u, 4u, 16u}) {
+        TapeHysteresis a, b, sa, sb;
+        for (TapeHysteresis* t : {&a, &b, &sa, &sb}) t->set_max_substeps(cap);
+        std::uint32_t lcg = 12345u;
+        std::size_t mismatches = 0;
+        constexpr int kBlock = 100;
+        for (int blk = 0; blk < 200; ++blk) {
+            double xa[kBlock], xb[kBlock], ra[kBlock], rb[kBlock];
+            for (int k = 0; k < kBlock; ++k) {
+                const int i = blk * kBlock + k;
+                lcg = lcg * 1664525u + 1013904223u;
+                const double noise = (static_cast<double>(lcg >> 8) / 16777216.0 - 0.5);
+                xa[k] = 3.0 * std::sin(kTwoPi * 997.0 * i / fs) + 0.5 * noise;
+                xb[k] = (i / 4000 % 2 == 0 ? 60.0 : 0.02) * std::sin(kTwoPi * 7993.0 * i / fs);
+                if (i >= 12000 && i < 12500) xb[k] = 0.0;
+                if (i == 15000) xa[k] = std::nan("");
+                // One channel alone: tick() for half the blocks, run() for
+                // the other half.
+                ra[k] = blk % 2 == 0 ? sa.tick(xa[k]) : xa[k];
+                rb[k] = blk % 2 == 0 ? sb.tick(xb[k]) : xb[k];
+            }
+            if (blk % 2 != 0) {
+                sa.run(ra, kBlock);
+                sb.run(rb, kBlock);
+            }
+            tape_run_pair(a, b, xa, xb, kBlock);
+            for (int k = 0; k < kBlock; ++k) mismatches += (xa[k] != ra[k]) + (xb[k] != rb[k]);
+        }
+        std::printf("pair against tick, %u substeps at most: %zu mismatching samples of 40000\n", cap, mismatches);
+        CHECK(mismatches == 0);
+    }
     return 0;
 }
 
@@ -161,7 +299,11 @@ int test_head() {
 int main() {
     int failed = 0;
     failed += test_langevin();
+    failed += test_langevin_table();
+    failed += test_exp_neg();
     failed += test_integrator_converges();
+    failed += test_integrator_bounded();
+    failed += test_pair_matches_tick();
     failed += test_loop();
     failed += test_matched_pair();
     failed += test_head();
