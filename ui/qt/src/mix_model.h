@@ -171,8 +171,13 @@ private:
     // False, with the ride dropped and the reason said, when the ride's
     // track is no longer the strip it began on or its session was replaced.
     bool rideStillHolds();
-    // If the ride's steps reached the engine, its index goes back to the
-    // gain the document holds for the track now there.
+    // A dropped hold always ends with a Release to the engine index it
+    // touched, so that index is never left touched (Latch and Write would
+    // keep writing the held value into whatever track takes the index).
+    // The Release carries the value the document holds for the track now
+    // at that index; past the document's tracks it carries the hold's own
+    // last value, so what the engine plays does not jump. dropRide sends
+    // only when the ride touched or stepped the engine.
     void dropRide(const std::string& why);
     // The same for a pan hold: false, with a Release to the touched index.
     bool panStillHolds();
@@ -192,6 +197,7 @@ private:
     int pan_track_ = kNoRide;     // the engine track whose pan the hand holds
     model::Id pan_id_ = 0;
     uint64_t pan_generation_ = 0;
+    float pan_value_ = 0.0f;      // the held pan's last value sent
     uint64_t live_steps_ = 0;
     bool show_io_ = true;
     bool show_inserts_ae_ = true;

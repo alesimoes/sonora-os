@@ -35,6 +35,12 @@ std::string pan_text(float pan);
 // until the drag moves back onto it.
 float fader_drag(float db, float dy, float travel, bool fine);
 
+// One step of a pan drag: `dx` pixels (positive is right) across a knob
+// `width` pixels wide, the whole width being the full sweep from hard left
+// to hard right. Clamped to -1 .. +1. The document's step and the Move the
+// engine is told are both this, so a lane writes the value the cap shows.
+float pan_drag(float pan, float dx, float width);
+
 // What the operator typed into a fader's readout: "-6", "-6.5 dB", "+3",
 // "0", "-inf" (any case, spaces allowed). The result is clamped to nothing:
 // a gain off the travel (above +12 dB) is refused with the range in `why`,

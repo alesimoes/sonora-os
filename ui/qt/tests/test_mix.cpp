@@ -92,6 +92,7 @@ struct Rig {
         uint32_t track;
         api::ParamId param;
         api::Gesture gesture;
+        float value;
     };
     std::vector<Sent> sent;
     // The engine's track count as the latest Hello says it.
@@ -111,7 +112,7 @@ struct Rig {
                                 : [this](uint32_t t, api::ParamId p, float g, api::Gesture ge) {
                                       if (!link) return;
                                       engine.send_track_param(t, p, g, ge);
-                                      sent.push_back({t, p, ge});
+                                      sent.push_back({t, p, ge, g});
                                       ++gain_sends;
                                   },
                 [this]() { return engine_tracks; }, true),
@@ -189,6 +190,17 @@ int typed_text() {
 }
 
 // --- strips by display order -------------------------------------------------
+
+int pan_steps() {
+    // One formula for the document's step and the engine's Move.
+    CHECK(near(pan_drag(0.0f, 10.0f, 100.0f), 0.2));
+    CHECK(near(pan_drag(-0.5f, -10.0f, 100.0f), -0.7));
+    CHECK(pan_drag(0.9f, 50.0f, 100.0f) == 1.0f);
+    CHECK(pan_drag(-0.9f, -50.0f, 100.0f) == -1.0f);
+    CHECK(pan_drag(0.3f, 10.0f, 0.0f) == 0.3f);
+    std::printf("  pan steps: ok\n");
+    return 0;
+}
 
 int display_order() {
     // Regression: gains(), pans(), mutes() and solos() walked MixState's
@@ -861,6 +873,49 @@ int qml() {
     CHECK(!input->property("active").toBool());
     CHECK(r.session.inputMonitors() == QList<bool>({false, true, false, false}));
     CHECK(r.refused.empty());
+
+    // The automation mode list closes as a menu does (#187 review): a press
+    // off it, Escape, or any other key, and the press or key that closed it
+    // does nothing else.
+    QQuickItem* mode0 = named(root, QStringLiteral("autoMode0"));
+    CHECK(mode0 != nullptr);
+    const auto list_open = [&]() { return mode0->property("open").toBool(); };
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(mode0));
+    CHECK(list_open() && r.shell.textEntry());
+    QQuickItem* touch0 = named(root, QStringLiteral("autoMode0Touch"));
+    CHECK(touch0 != nullptr && touch0->isVisible());
+    const QList<bool> solos_before = r.session.solos();
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(solo));
+    r.settle();
+    CHECK(!list_open() && !r.shell.textEntry());
+    CHECK(r.session.solos() == solos_before);
+    const QString tool = r.session.tool();
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(mode0));
+    CHECK(list_open());
+    QTest::keyClick(&view, Qt::Key_Escape);
+    CHECK(!list_open() && !r.shell.textEntry() && r.session.tool() == tool);
+    // Any other key closes it and says so, rather than reaching the profile
+    // unseen: "s" here is no solo.
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(mode0));
+    CHECK(list_open());
+    QTest::keyClick(&view, Qt::Key_S);
+    r.settle();
+    CHECK(!list_open() && !r.shell.textEntry() && r.session.solos() == solos_before);
+    CHECK(r.shell.statusText().contains(QStringLiteral("closed")));
+    // The keyboard chooses too: Down from the current mode, then Return.
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(mode0));
+    CHECK(list_open());
+    QTest::keyClick(&view, Qt::Key_Down);
+    QTest::keyClick(&view, Qt::Key_Return);
+    r.settle();
+    CHECK(!list_open() && !r.shell.textEntry());
+    CHECK(r.session.automationModes()[0] == QStringLiteral("Touch"));
+    // A click on an item still chooses it.
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(mode0));
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(named(root, QStringLiteral("autoMode0Read"))));
+    r.settle();
+    CHECK(!list_open() && r.session.automationModes()[0] == QStringLiteral("Read"));
+    CHECK(r.refused.empty());
     std::printf("  qml: ok\n");
     return 0;
 }
@@ -956,6 +1011,55 @@ int automation_gestures() {
         q.mixer.endPan(1);
         CHECK(q.sent.size() == 1);
     }
+    {
+        // A step the clamp turns into no step is no Move: the pan is hard
+        // right and the hand pushes further right.
+        Rig q;
+        CHECK(q.connect());
+        std::string why;
+        CHECK(q.session.controller().set_pan(0, 1.0f, why));
+        q.settle();
+        q.mixer.beginPan(0);
+        q.mixer.panDrag(0, 10, 100, false);
+        q.mixer.panDrag(0, -10, 100, false);
+        q.settle();
+        CHECK(q.sent.size() == 2 && q.sent[0].gesture == Gesture::Touch &&
+              q.sent[1].gesture == Gesture::Move && near(q.sent[1].value, 0.8));
+        CHECK(near(q.session.stripPan(0), 0.8));
+        q.mixer.endPan(0);
+    }
+    {
+        // A held track removed past the document's end still gets its
+        // Release, so the engine index is not left touched; it carries the
+        // hold's own last value, so what the engine plays does not jump.
+        Rig q;
+        CHECK(q.connect());
+        std::string why;
+        CHECK(q.session.controller().set_pan(3, 0.5f, why));
+        q.settle();
+        q.mixer.beginPan(3);
+        q.sent.clear();
+        CHECK(q.doc.submit(model::RemoveTrack{q.doc.snapshot().edit->tracks[3]->id}, why));
+        q.settle();
+        CHECK(q.sent.size() == 1 && q.sent[0].gesture == Gesture::Release &&
+              q.sent[0].param == ParamId::Pan && q.sent[0].track == 3 &&
+              near(q.sent[0].value, 0.5));
+    }
+    {
+        // The same for a fader: dropRide and dropPan agree.
+        Rig q;
+        CHECK(q.connect());
+        std::string why;
+        q.mixer.beginRide(3);
+        q.mixer.ride(3, -20, 200, false);
+        const float held = fader_linear_gain(static_cast<float>(q.mixer.rideGain()));
+        q.sent.clear();
+        CHECK(q.doc.submit(model::RemoveTrack{q.doc.snapshot().edit->tracks[3]->id}, why));
+        q.settle();
+        CHECK(q.sent.size() == 1 && q.sent[0].gesture == Gesture::Release &&
+              q.sent[0].param == ParamId::Gain && q.sent[0].track == 3 &&
+              near(q.sent[0].value, held));
+    }
     std::printf("  automation gestures: ok\n");
     return 0;
 }
@@ -1000,6 +1104,7 @@ int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (typed_text() != 0) return 1;
+    if (pan_steps() != 0) return 1;
     if (display_order() != 0) return 1;
     if (track_ride() != 0) return 1;
     if (ride_through_the_document() != 0) return 1;

@@ -15,8 +15,8 @@
 //   EngineAdapter::frame        StateView::frame      (one publish)
 //   EngineAdapter::take_peak    StateView::take_peak  (per-reader cursor)
 //   EngineAdapter::engine_alive StateView::engine_alive (heartbeat)
-//   EngineAdapter::send_track_gain
-//                               EngineControl::send(ParameterChange), Gain
+//   EngineAdapter::send_track_param
+//                               EngineControl::send(ParameterChange), Gain or Pan
 //   EngineAdapter::send_plugin_parameter
 //                               EngineControl::send(PluginParameterChange)
 //   EngineAdapter::take_catalog EngineControl::poll (PluginCatalog, the latest)

@@ -77,6 +77,11 @@ float fader_drag(float db, float dy, float travel, bool fine) {
     return fader_db_from_position(std::clamp(fader_position_from_db(db) + dp, 0.0f, 1.0f));
 }
 
+float pan_drag(float pan, float dx, float width) {
+    if (width <= 0) return pan;
+    return std::clamp(pan + 2.0f * dx / width, -1.0f, 1.0f);
+}
+
 namespace {
 
 std::string trimmed_lower(const std::string& text) {
