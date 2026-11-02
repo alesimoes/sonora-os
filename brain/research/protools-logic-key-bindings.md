@@ -61,7 +61,7 @@ Section references are to PT-A unless noted.
 | `numpad_0` | `transport.toggle_play` | **Confirmed** | Ch.7 *Transport Mode (Numeric Keypad)*: "Play/Stop — 0". Only when Preferences → Operations → Numeric Keypad is set to **Transport**. |
 | `numpad_1` | `transport.rewind` | **Confirmed** | Same table: "Rewind — 1". |
 | `numpad_2` | `transport.fast_forward` | **Confirmed** | Same table: "Fast Forward — 2". |
-| `numpad_3` | `transport.record_ready` | **Confirmed (chord); command ambiguous in Avid's own guide** | *Transport Mode (Numeric Keypad)* calls keypad 3 "**Record Enable**" (arms the transport, does not roll). *Recording* lists "3 (on numeric keypad)" under "**Start record**". The same document says both. I could not resolve it from the documentation; keeping `transport.record` matches one table and contradicts the other. Flagged rather than silently chosen. Update 2026-11-01: resolved for Transport keypad mode, which this profile assumes. That table calls keypad 3 "Record Enable", and record-ready is that (ADR-0009 update of 2026-11-01), so it is now **`transport.record_ready`**. The *Recording* table's "Start record" stays with Command+Spacebar and F12. |
+| `numpad_3` | `transport.record_ready` | **Confirmed (chord); command resolved 2026-11-01 for Transport keypad mode** | *Transport Mode (Numeric Keypad)*, the mode this profile assumes, calls keypad 3 "**Record Enable**" (arms the transport, does not roll), and record-ready is that (ADR-0009 update of 2026-11-01), so the command is **`transport.record_ready`**. *Recording* lists "3 (on numeric keypad)" under "**Start record**"; that table's start stays with Command+Spacebar and F12 (`transport.record`). Before the update the two tables were read as ambiguous and the row kept `transport.record`. |
 | `numpad_4` | `transport.toggle_loop` | **Confirmed** | *Transport Mode (Numeric Keypad)*: "Loop Playback mode on/off — 4". |
 | `ctrl+shift+l` | `transport.toggle_loop` | **Confirmed** | Ch.7 *Playback*: "Loop playback toggle — Command+Shift+L, or Control-click on Transport Play button (Mac) / Control+Shift+L (Windows)". Was unverified; it is right. Two chords on one command is fine — both are real. |
 
@@ -532,7 +532,7 @@ Commands Keyboard Focus should also be able to express "T, then P".
    Many rows above are "chord confirmed, command approximate" — `period` in
    Logic (Forward vs Fast Forward), `p`/`semicolon` in Pro Tools (move edit
    insertion vs select track), `z` in Logic (toggle vs fit), `numpad_3` in
-   Pro Tools (Avid's own tables disagree). A tri-state, or separate
+   Pro Tools (Avid's own tables disagreed until the 2026-11-01 update). A tri-state, or separate
    `chord_verified` / `command_verified`, would stop the next reader re-doing
    this work.
 
@@ -652,7 +652,9 @@ Grabber or Smart Tool, as our profile says.
 - **Pro Tools Quit/Exit.** Not in the *File Menu* table of any of the three
   Shortcuts Guides, and not anywhere in their text. `ctrl+q` rests on macOS
   convention alone.
-- **Pro Tools `numpad_3`.** "Record Enable" in one Avid table, "Start record" in
+- **Pro Tools `numpad_3`.** Resolved 2026-11-01: Transport keypad mode's "Record
+  Enable" is `transport.record_ready` (ADR-0009 update of 2026-11-01). Until then
+  it was open here, "Record Enable" in one Avid table and "Start record" in
   another, same document.
 - **Pro Tools vertical zoom direction.** Avid prints "Command+Option+[ or
   Command+Option+]" without splitting in from out.
@@ -702,8 +704,9 @@ recorded under "Applied" at the end of this section.
 7. Add, all Confirmed: **`shift+r`** → `track.toggle_arm`, **`shift+s`** →
    `track.toggle_solo`, **`shift+m`** → `track.toggle_mute`, **`shift+i`** →
    `track.toggle_input_monitor` (no `target`, so they act on the selection).
-8. `numpad_3` keeps its chord; add a comment recording that Avid's two tables
-   disagree about the command.
+8. `numpad_3` keeps its chord and is `transport.record_ready` since the
+   2026-11-01 update (Transport mode's Record Enable); its comment records that
+   Avid's two tables once read as disagreeing about the command.
 9. `ctrl+q` keeps `"verified": false` with the comment changed to "not listed in
    Avid's Shortcuts Guide; macOS convention".
 
