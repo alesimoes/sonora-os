@@ -362,6 +362,14 @@ Session::Session(SessionConfig cfg)
     send_stamp_.reset(new uint64_t[send_states_ + 1]());
     send_dest_.reset(new uint32_t[send_states_ + 1]());
     send_lane_.reset(new SendLane[send_states_ + 1]());
+    // A mix call visits at most max_block_ / 32 + 2 grid points in a run:
+    // that many slots or more keep a run whole. A power of two, for a mask.
+    lane_grid_slots_ = 1;
+    while (lane_grid_slots_ < max_block_ / static_cast<uint32_t>(kAutoGridFrames) + 3) {
+        lane_grid_slots_ *= 2;
+    }
+    lane_grid_.reset(new LaneGrid[static_cast<std::size_t>(lane_grid_slots_) *
+                                  (static_cast<std::size_t>(tracks) + 1)]());
     feeds_node_.reset(new uint8_t[scratch_buffers_ + 1]());
     feeds_track_.reset(new uint8_t[tracks + 1]());
     aux_gain_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
@@ -1687,6 +1695,7 @@ void Session::gather_lanes(const PlaybackPlan& plan, uint64_t frame) noexcept SO
 
 void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, uint32_t offset,
                   uint32_t n, bool rolling, bool recording, uint64_t from) noexcept SONORA_RT {
+    ++mix_stamp_;
     // A backend buffer holds whatever its last cycle left; HardwareOut
     // overwrites its two below.
     for (uint32_t o = 0; o < block.output_count; ++o) {
@@ -2061,6 +2070,7 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
 
 float Session::lane_param(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, uint32_t p,
                           int64_t t) const noexcept SONORA_RT {
+    ++lane_evals_;
     const float lane = auto_lane_value(plan.auto_points + pt.auto_first[p], pt.auto_count[p], t);
     const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
     const int64_t at = return_at_[k];
@@ -2108,8 +2118,52 @@ void Session::stamp_writes(uint32_t e, uint8_t bits, uint64_t start) noexcept SO
     }
 }
 
+const Session::LaneGrid& Session::lane_grid(const PlaybackPlan& plan, const PlanTrack& pt,
+                                            uint32_t e, int64_t t,
+                                            uint8_t want) noexcept SONORA_RT {
+    const auto cell = static_cast<uint64_t>(t / kAutoGridFrames) & (lane_grid_slots_ - 1);
+    LaneGrid& g = lane_grid_[static_cast<std::size_t>(e) * lane_grid_slots_ + cell];
+    const auto row = static_cast<uint32_t>(&pt - plan.tracks);
+    if (g.stamp != mix_stamp_ || g.t != t || g.row != row) {
+        g.stamp = mix_stamp_;
+        g.t = t;
+        g.row = row;
+        g.have = 0;
+    }
+    const auto missing = static_cast<uint8_t>(want & ~g.have);
+    if ((missing & (1u << kAutoVolume)) != 0) {
+        g.gain = auto_gain_of_db(lane_param(plan, pt, e, kAutoVolume, t));
+    }
+    if ((missing & (1u << kAutoPan)) != 0) {
+        pan_gains(lane_param(plan, pt, e, kAutoPan, t), tracks_[e]->channels() >= 2,
+                  plan.pan_exponent, g.pan_l, g.pan_r);
+    }
+    g.have = static_cast<uint8_t>(g.have | missing);
+    return g;
+}
+
 void Session::auto_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, int64_t t,
-                         float& l, float& r) const noexcept SONORA_RT {
+                         float& l, float& r) noexcept SONORA_RT {
+    if (fresh_lanes_) {
+        auto_gains_fresh(plan, pt, e, t, l, r);
+        return;
+    }
+    constexpr unsigned kLanes = (1u << kAutoVolume) | (1u << kAutoPan);
+    const auto flags = static_cast<uint8_t>(track_auto_[e] & kLanes);
+    const LaneGrid& g = lane_grid(plan, pt, e, t, flags);
+    const float level = (flags & (1u << kAutoVolume)) != 0 ? g.gain : auto_level_[e];
+    if ((flags & (1u << kAutoPan)) != 0) {
+        l = g.pan_l;
+        r = g.pan_r;
+    } else {
+        pan_gains(auto_pan_[e], tracks_[e]->channels() >= 2, plan.pan_exponent, l, r);
+    }
+    l *= level;
+    r *= level;
+}
+
+void Session::auto_gains_fresh(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e,
+                               int64_t t, float& l, float& r) const noexcept SONORA_RT {
     const uint8_t flags = track_auto_[e];
     float level = auto_level_[e];
     float pan = auto_pan_[e];
@@ -2464,7 +2518,27 @@ void Session::sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const flo
 }
 
 void Session::send_lane_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t k, int64_t t,
-                              float& l, float& r) const noexcept SONORA_RT {
+                              float sl_l, float sl_r, float& l, float& r) noexcept SONORA_RT {
+    if (fresh_lanes_) {
+        send_lane_gains_fresh(plan, pt, k, t, l, r);
+        return;
+    }
+    const SendLane& sl = send_lane_[k];
+    const LaneGrid& g = lane_grid(plan, pt, pt.engine_track, t, sl.bits);
+    const float fader = (sl.bits & (1u << kAutoVolume)) != 0 ? g.gain : sl.fader;
+    if ((sl.bits & (1u << kAutoPan)) != 0) {
+        l = g.pan_l;
+        r = g.pan_r;
+    } else {
+        l = sl_l;
+        r = sl_r;
+    }
+    l *= fader;
+    r *= fader;
+}
+
+void Session::send_lane_gains_fresh(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t k,
+                                    int64_t t, float& l, float& r) const noexcept SONORA_RT {
     const SendLane& sl = send_lane_[k];
     const uint32_t e = pt.engine_track;
     float fader = sl.fader;
@@ -2500,6 +2574,12 @@ void Session::sum_send(const PlaybackPlan& plan, const PlanEdge& edge, bool mono
         const float* right_in = mono ? in[0] : in[1];
         float* const tb[2] = {track_buf_.get(), track_buf_.get() + max_block_};
         constexpr float kInvGrid = 1.0f / static_cast<float>(kAutoGridFrames);
+        float sl_l = 0.0f;
+        float sl_r = 0.0f;
+        if ((sl.bits & (1u << kAutoPan)) == 0) {
+            pan_gains(sl.pan, tracks_[pt.engine_track]->channels() >= 2, plan.pan_exponent, sl_l,
+                      sl_r);
+        }
         int64_t grid = -1;
         float c0l = 0.0f;
         float c0r = 0.0f;
@@ -2507,16 +2587,76 @@ void Session::sum_send(const PlaybackPlan& plan, const PlanEdge& edge, bool mono
         float c1r = 0.0f;
         float tl = 0.0f;
         float tr = 0.0f;
-        for (uint32_t i = 0; i < n; ++i) {
+        // By runs of frames within one grid cell and before the wrap, with
+        // the members read once, since tb could alias them: at 10 sends a
+        // track the per-frame loop below was most of what the lanes cost
+        // once their evaluations were shared (PR #271 audit, F1). The same
+        // expressions per frame; that loop stays as the test's reference.
+        const bool rolling = auto_rolling_;
+        const uint32_t done = block_done_;
+        const float g = sl.g;
+        for (uint32_t i = 0; !fresh_lanes_ && i < n;) {
             const int64_t g0 = t - t % kAutoGridFrames;
             if (g0 != grid) {
                 if (g0 == grid + kAutoGridFrames) {
                     c0l = c1l;
                     c0r = c1r;
                 } else {
-                    send_lane_gains(plan, pt, k, g0, c0l, c0r);
+                    send_lane_gains(plan, pt, k, g0, sl_l, sl_r, c0l, c0r);
                 }
-                send_lane_gains(plan, pt, k, g0 + kAutoGridFrames, c1l, c1r);
+                send_lane_gains(plan, pt, k, g0 + kAutoGridFrames, sl_l, sl_r, c1l, c1r);
+                grid = g0;
+            }
+            // Stopped, t stays put and one run takes the rest.
+            uint32_t run = n - i;
+            if (rolling) {
+                int64_t cell = g0 + kAutoGridFrames - t;
+                if (looping && t < loop_b && loop_b - t < cell) cell = loop_b - t;
+                if (cell < static_cast<int64_t>(run)) run = static_cast<uint32_t>(cell);
+            }
+            const int64_t at = t - g0;
+            const int64_t step = rolling ? 1 : 0;
+            const float dl = c1l - c0l;
+            const float dr = c1r - c0r;
+            float* const o0 = tb[0] + i;
+            float* const o1 = tb[1] + i;
+            const float* const i0 = in[0] + i;
+            const float* const i1 = right_in + i;
+            if (ramp) {
+                for (uint32_t j = 0; j < run; ++j) {
+                    const float x = static_cast<float>(at + step * j) * kInvGrid;
+                    const float jl = g * (c0l + dl * x);
+                    const float jr = g * (c0r + dr * x);
+                    const float a = static_cast<float>(done + i + j + 1) * inv_block;
+                    o0[j] = i0[j] * (l0 + (jl - l0) * a);
+                    o1[j] = i1[j] * (r0 + (jr - r0) * a);
+                }
+            } else {
+                for (uint32_t j = 0; j < run; ++j) {
+                    const float x = static_cast<float>(at + step * j) * kInvGrid;
+                    o0[j] = i0[j] * (g * (c0l + dl * x));
+                    o1[j] = i1[j] * (g * (c0r + dr * x));
+                }
+            }
+            const float x = static_cast<float>(at + step * (run - 1)) * kInvGrid;
+            tl = g * (c0l + dl * x);
+            tr = g * (c0r + dr * x);
+            i += run;
+            if (rolling) {
+                t += run;
+                if (t == loop_b && looping) t = loop_a;
+            }
+        }
+        for (uint32_t i = 0; fresh_lanes_ && i < n; ++i) {
+            const int64_t g0 = t - t % kAutoGridFrames;
+            if (g0 != grid) {
+                if (g0 == grid + kAutoGridFrames) {
+                    c0l = c1l;
+                    c0r = c1r;
+                } else {
+                    send_lane_gains(plan, pt, k, g0, sl_l, sl_r, c0l, c0r);
+                }
+                send_lane_gains(plan, pt, k, g0 + kAutoGridFrames, sl_l, sl_r, c1l, c1r);
                 grid = g0;
             }
             const float x = static_cast<float>(t - g0) * kInvGrid;
