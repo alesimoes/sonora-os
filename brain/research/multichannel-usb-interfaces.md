@@ -43,6 +43,62 @@ interface records channel 10 onto track 3 with nothing looking wrong. Hence
 `sonora::natural_less` in `engine/include/sonora/port_order.h`, with the
 18-channel case as a test in `engine/tests/test_port_order.cpp`.
 
+## Which name auto-connection depends on, and why no udev rule is needed
+
+Asked by the Phase 1 item "udev rule naming the first class-compliant USB
+interface so port auto-connection is stable across reboots". Read from
+PipeWire 1.4.2 and WirePlumber 0.5.8 as trixie ships them, and measured in
+the runtime container on 2026-11-01. Not booted, and no udev runs in the
+container, so nothing here touched a USB device.
+
+**The chain, from the kernel to the engine's device name.**
+
+1. `spa/plugins/alsa/alsa-udev.c` (1.4.2, lines 591-603) sets
+   `device.product.name` from the udev properties `ID_MODEL_FROM_DATABASE`,
+   else `ID_MODEL_ENC`, else `ID_MODEL`. All three come from the USB
+   descriptor or hwdb, never from the card index. `ID_PATH` and `ID_ID` give
+   `device.bus-path` and `device.bus-id`, which are stable too.
+2. `scripts/monitors/alsa.lua` (0.5.8, `prepareDevice`) sets
+   `device.description` to `device.product.name` when the device has none,
+   and `createNode` (lines 278-293) makes each node's description
+   `"<device.description> <device.profile.description>"`, hence "UMC1820
+   Pro".
+3. `pipewire-jack/src/pipewire-jack.c` (1.4.2, lines 3738-3767) names the
+   JACK client part of every port after `node.description` (`node.nick`
+   only with `jack.short-name`).
+4. `describe_ports()` (`drivers/support/include/sonora/port_devices.h`)
+   takes the device as the client part, and ADR-0007 item 8 selects by it,
+   by USB-ness (`/proc/asound/<id>/usbid`, from the alias), and by channel
+   order within it.
+
+Nothing on that path reads the ALSA card index (`cardN`, `hw:N`), which is
+the one name that changes with enumeration order. Renaming the card id
+through udev (`ATTR{id}`) would change only the `alsa:acp:<id>` alias, and
+`alsa_card_is_usb()` follows `/proc/asound/<id>` whatever the id is. So with
+one interface the name auto-connection uses is already the same on every
+boot, and a naming rule would change no behaviour. The image ships none.
+
+**What is not stable: two devices with the same description** [measured].
+Two capture nodes sharing `node.description` (`support.null-audio-sink`,
+`port.physical=true`), first from one client as WirePlumber creates ALSA
+nodes, then from two clients. `jack_get_ports(..., JackPortIsOutput)` gave
+in both cases:
+
+    Dup Pro:capture_AUX1
+    Dup Pro:capture_AUX1-48
+
+pipewire-jack keeps one client name and makes the second node's port unique
+by appending `-<port global id>`. Global ids are handed out in creation
+order, so the suffix, and which unit gets the bare names, can change from one
+boot to the next. `describe_ports()` then sees one device with both units'
+ports, and `natural_less` interleaves them (`AUX0`, `AUX0-<id>`, `AUX1`,
+...): with two UMC1820s, track 2 records the second unit's channel 1 with
+nothing looking wrong. A udev rule cannot fix this on its own: it would have
+to make the description unique, and only a serial (which Behringer units may
+not report) or the USB port path (which changes when the cable moves) can.
+The fix belongs in the engine: a device whose ports carry that suffix is two
+devices, and is refused or split. Not verified on two real interfaces.
+
 ## Verified by booting the image
 
 Measured 2026-10-11 in QEMU with an emulated `intel-hda` card, via
