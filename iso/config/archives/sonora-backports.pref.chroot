@@ -1,0 +1,19 @@
+# Exact versions, not "prefer backports". Backports sits at priority 100, so
+# without these stanzas apt installs trixie's PipeWire and nothing says so.
+# With "Pin: release n=trixie-backports" instead, a newer upload would ship in
+# the next image unreviewed, which is the drift ADR-0002 rules out.
+#
+# A version pin that matches nothing is silently ignored and apt falls back
+# to trixie's 1.4.2. The chroot hook therefore checks the installed versions
+# and fails the build when they differ.
+#
+# Only the PipeWire family is pinned. The RT kernel stays on trixie and its
+# security updates; backports' 7.x kernel is not wanted.
+
+Package: pipewire* libpipewire-0.3* libspa-0.2*
+Pin: version 1.6.9-2~bpo13+1
+Pin-Priority: 1001
+
+Package: wireplumber libwireplumber-0.5*
+Pin: version 0.5.12-1~bpo13+1
+Pin-Priority: 1001
