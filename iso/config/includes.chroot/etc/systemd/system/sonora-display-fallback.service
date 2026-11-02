@@ -1,8 +1,24 @@
 [Unit]
-Description=Switch to tty2 after the display stack failed (the terminal UI lives there from ADR-0010 stage 2)
+Description=Hand tty1 back to the recording session after the display stack failed
 ConditionKernelCommandLine=sonora.gui
 
+# Started only by OnFailure= of the compositor and UI units.
+#
+# Until ADR-0010 stage 2 nothing listens on tty2, so switching there (what this
+# unit used to do) left the operator on an empty console with no engine
+# running. Instead it does what a boot without sonora.gui does: the flag file
+# lifts sonora-session.service's sonora.gui condition, the compositor is
+# stopped so tty1 is free, and the session takes tty1 with the engine and its
+# terminal UI. The flag lives in /run, so the next boot tries the display again.
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/chvt 2
-# Started only by OnFailure= of the compositor and UI units.
+ExecStart=/usr/bin/touch /run/sonora-display-failed
+# Stopped first and synchronously: both units want tty1. The UI is BindsTo= the
+# compositor, so it goes too; it is named in case the compositor already failed.
+ExecStart=/usr/bin/systemctl stop sonora-compositor.service sonora-ui.service
+# --no-block: the session waits up to a minute for the audio server and inputs,
+# and nothing here should be held up by that.
+ExecStart=/usr/bin/systemctl --no-block start sonora-session.service
+# labwc leaves tty1 the active VT when it exits, but a crash part-way through a
+# VT switch may not; the leading '-' keeps a failed chvt from failing the unit.
+ExecStart=-/usr/bin/chvt 1
