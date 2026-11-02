@@ -2371,6 +2371,82 @@ int test_automation_follows_edit() {
     return 0;
 }
 
+// Automation Follows Edit through the controller on a lane at
+// kMaxAutomationPoints that a flat run lets follow (#254 review): the drag
+// is one undo step, region and thinned lane together, and that one undo
+// gives back every point the thinning dropped, not just the moved part.
+int test_follow_edit_thins_a_full_lane() {
+    ModelDocument doc(two_tracks());
+    FlatPeaks peaks;
+    SessionModel session(doc, peaks, false);
+    EditController& c = session.controller();
+    c.set_viewport(1000, 200);
+    std::string why;
+    QStringList held;
+    QObject::connect(&session, &SessionModel::heldNotice, [&](const QString& t) { held << t; });
+    // A zigzag with no point under region A [1 bar, 3 bars) or where it goes
+    // [7 bars, 9 bars), so the move frees none, but flat at -3 dB over
+    // [4 bars, 5 bars], inside the edit's span: only those points can go.
+    EditAutomation full;
+    full.track = doc.snapshot().edit->tracks[0]->id;
+    full.param = AutomationParam::Volume;
+    full.from = 0;
+    full.to = kMaxInteger;
+    for (Frames f = 0; full.points.size() < kMaxAutomationPoints; f += 16) {
+        if ((f >= kBar && f <= 3 * kBar) || (f >= 7 * kBar && f <= 9 * kBar)) continue;
+        const bool flat = f >= 4 * kBar && f <= 5 * kBar;
+        full.points.push_back({f, flat ? -3.0f : ((f / 16) % 2 ? -6.0f : 0.0f)});
+    }
+    OK(doc.submit(full, why));
+    const AutomationLane before = *doc.snapshot().edit->tracks[0]->lane(AutomationParam::Volume);
+    CHECK(before.points.size() == kMaxAutomationPoints);
+    const auto lane = [&]() { return doc.snapshot().edit->tracks[0]->lane(AutomationParam::Volume); };
+    const auto same = [](float a, float b) { return std::fabs(a - b) < 1e-5f; };
+
+    // Dragged six bars on with the Grabber.
+    const double th = c.view().track_height;
+    const double a_mid = c.view().x_of(2 * kBar);
+    const uint64_t r = doc.snapshot().revision;
+    session.press(a_mid, th * 0.75);
+    session.drag(a_mid + 480, th * 0.75);
+    session.release(a_mid + 480, th * 0.75);
+    OK(doc.snapshot().revision == r + 1);
+    OK(region(doc.snapshot(), 10)->position == 7 * kBar);
+    OK(held.isEmpty());
+    CHECK(lane() != nullptr);
+    const AutomationLane moved = *lane();
+    const AutomationLane* thinned = &moved;
+    OK(thinned->points.size() < kMaxAutomationPoints);
+    // The flat run kept its ends and plays as it did; the rest of the lane
+    // outside the spans is untouched, and the moved part went with A.
+    OK(std::count_if(thinned->points.begin(), thinned->points.end(), [](const AutomationPoint& p) {
+           return p.at > 4 * kBar && p.at < 5 * kBar;
+       }) == 0);
+    for (Frames f : {Frames(0), kBar - 1, 3 * kBar + 1, 4 * kBar, 4 * kBar + kBeat, 5 * kBar,
+                     6 * kBar, 7 * kBar - 1, 9 * kBar + 1, 10 * kBar, 12 * kBar}) {
+        OK(same(lane_value_at(thinned, f, 99.0f), lane_value_at(&before, f, 99.0f)));
+    }
+    for (Frames f : {7 * kBar, 8 * kBar, 9 * kBar - 1}) {
+        OK(same(lane_value_at(thinned, f, 99.0f), lane_value_at(&before, f - 6 * kBar, 99.0f)));
+    }
+    OK(valid(doc.snapshot()));
+
+    // One undo: the region back and the lane exactly as it was.
+    OK(c.undo(why));
+    OK(region(doc.snapshot(), 10)->position == kBar);
+    const AutomationLane* restored = lane();
+    CHECK(restored != nullptr);
+    OK(restored->points.size() == before.points.size() &&
+       std::equal(before.points.begin(), before.points.end(), restored->points.begin(),
+                  [](const AutomationPoint& a, const AutomationPoint& b) {
+                      return a.at == b.at && a.value == b.value;
+                  }));
+    // And redone, as one step again.
+    OK(c.redo(why));
+    OK(region(doc.snapshot(), 10)->position == 7 * kBar && lane()->points.size() == thinned->points.size());
+    return 0;
+}
+
 // daw.model.session_mgmt in the window: Save As goes on in a new folder
 // under the new name once the engine says it moved there, the old file as
 // it was; a name already taken is refused; Save Copy In writes a copy and
@@ -2465,7 +2541,7 @@ int main(int argc, char** argv) {
         test_midi_sequence_files() ||
         test_midi_sequence_cleanup_follow_ups() || test_input_monitor() ||
         test_step_automation_mode() || test_save_as_and_copy() ||
-        test_automation_follows_edit()) {
+        test_automation_follows_edit() || test_follow_edit_thins_a_full_lane()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);

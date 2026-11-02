@@ -116,7 +116,6 @@ bool paste_op(model::Id track, const AutomationClip& clip, model::Frames at,
 // after on the other. A flat lane, and a move to where the region is, add
 // nothing.
 //
-//
 // A lane at model::kMaxAutomationPoints has no room for the edge points,
 // and one lane edit apply() refuses refuses the whole Compound, region edit
 // included. Such a lane first loses the points inside the edit's span that
