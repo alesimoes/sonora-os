@@ -39,7 +39,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${SONORA_BUILD:-$HOME/.cache/sonora/build-wsl}"
 SESSION_DIR="${SONORA_DIR:-$HOME/Sessions/Untitled}"
-WSLG_PULSE=/mnt/wslg/PulseServer
+# Overridable only so the "WSLg does not answer" path can be tested.
+WSLG_PULSE="${SONORA_WSLG_PULSE:-/mnt/wslg/PulseServer}"
 SPEAKERS=wslg-speakers
 MIC=wslg-mic
 
@@ -69,6 +70,15 @@ check_wslg() {
         "(wsl --update) and reopen the distro; WSLg needs WSL from the Store."
   [[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]] ||
     die "no WAYLAND_DISPLAY or DISPLAY: WSLg's display is not available."
+  # A socket whose server is wedged is worse than none: the tunnel connects,
+  # then nothing plays and the patching waits for ports that never come.
+  if command -v pactl >/dev/null &&
+     ! timeout 5 pactl -s "unix:$WSLG_PULSE" info >/dev/null 2>&1; then
+    die "WSLg's PulseAudio server ($WSLG_PULSE) does not answer, so there is" \
+        "no sound. From Windows run \`wsl --terminate ${WSL_DISTRO_NAME:-Debian}\`" \
+        "(only this distro; never \`wsl --shutdown\`, it stops Docker Desktop)," \
+        "then start Sonora again. If it still fails: \`wsl --update\`."
+  fi
 }
 
 # --- deps ------------------------------------------------------------------
@@ -187,7 +197,7 @@ context.modules = [
 EOF
 }
 
-pw_up() { pw-cli info 0 >/dev/null 2>&1; }
+pw_up() { timeout 3 pw-cli info 0 >/dev/null 2>&1; }
 
 wait_for() {  # seconds, then a command
   local n=$(( $1 * 5 ))
@@ -200,13 +210,25 @@ node_ports() {  # node, -o|-i: its ports, monitor ports excluded
   pw-link "$2" 2>/dev/null | grep "^$1:" | grep -v ":monitor_" || true
 }
 
+# A unix:path bus whose socket is gone. WSL exports
+# unix:path=/run/user/N/bus even when nothing listens there (no systemd), and
+# PipeWire and WirePlumber then fail to reach a bus.
+bus_dead() {
+  local a="${DBUS_SESSION_BUS_ADDRESS:-}"
+  [[ -z $a ]] && return 0
+  [[ $a == unix:path=* ]] || return 1
+  a="${a#unix:path=}"
+  [[ ! -S ${a%%,*} ]]
+}
+
 have_bus() {
-  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" && -f "$STATE/dbus.env" ]]; then
+  if bus_dead && [[ -f "$STATE/dbus.env" ]]; then
     # shellcheck disable=SC1091
     . "$STATE/dbus.env"
   fi
-  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+  if bus_dead; then
     # WirePlumber needs a session bus; WSL without systemd has none.
+    unset DBUS_SESSION_BUS_ADDRESS
     eval "$(dbus-launch --sh-syntax)"
     echo "export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'" >"$STATE/dbus.env"
   fi
@@ -365,7 +387,7 @@ do_run() {
   # A fresh WSL Debian sets no locale, and Qt warns without a UTF-8 one.
   export LANG="${LANG:-C.UTF-8}"
   patch_engine "$MIC" >"$STATE/patch.log" 2>&1 &
-  mkdir -p "$(dirname "$SESSION_DIR")"
+  mkdir -p "$(dirname "$SESSION_DIR")"  # the engine creates only the last path component
   say "engine + Qt UI; session in $SESSION_DIR"
   SONORA_BUILD="$BUILD" SONORA_ENGINE_ARGS="${ENGINE_EXTRA[*]}" \
     "$ROOT/tools/run-sonora.sh" --backend jack --tracks 2 --dir "$SESSION_DIR" "$@"

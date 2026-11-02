@@ -47,8 +47,8 @@ function InDistro([string]$Cmd) {
 
 # --- steps that need no distro ---------------------------------------------
 
+# `-Step run` binds by name, so "-Step" itself never reaches this array.
 [string[]]$Step = @($Step | Where-Object { $_ })
-if ($Step.Count -gt 0 -and $Step[0] -eq "-Step") { $Step = if ($Step.Count -gt 1) { @($Step[1..($Step.Count - 1)]) } else { @() } }
 
 if ($Step.Count -gt 0 -and $Step[0] -eq 'shortcut') {
     $cmd = Join-Path $PSScriptRoot 'sonora-wsl.cmd'
