@@ -258,7 +258,9 @@ int an_edit_while_an_open_is_unanswered_is_refused() {
     const std::size_t tracks = r.doc.snapshot().edit->tracks.size();
     const QString b = saved_midi_session(r.dir.path(), "Big", kCap + 1);
     CHECK(!b.isEmpty());
+    CHECK(!r.doc.opening());
     CHECK(r.session.openSessionFile(b, false, why));
+    CHECK(r.doc.opening());
 
     model::AddMarker m;
     m.marker.id = r.doc.reserve_id();
@@ -272,8 +274,11 @@ int an_edit_while_an_open_is_unanswered_is_refused() {
     why.clear();
     CHECK(!r.doc.redo(why) && why.find("still opening") != std::string::npos);
     CHECK(r.doc.in_flight() == 2);   // the Load and its one sequence file's part
+    CHECK(r.doc.opening());   // asking sends nothing and answers nothing
+    CHECK(r.doc.in_flight() == 2);
 
     r.settle();   // the engine refuses B
+    CHECK(!r.doc.opening());
     CHECK(r.session.sessionFile() == a);
     CHECK(r.doc.in_flight() == 0);
     CHECK(r.doc.snapshot().edit->markers->markers.size() == markers);

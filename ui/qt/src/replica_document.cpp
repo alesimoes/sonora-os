@@ -61,6 +61,12 @@ void ReplicaDocument::request_resync() {
     ++resyncs_sent_;
 }
 
+bool ReplicaDocument::opening() const {
+    return std::any_of(pending_.begin(), pending_.end(), [](const Pending& p) {
+        return (p.kind == Pending::Kind::Load && !p.answered) || p.kind == Pending::Kind::LoadPart;
+    });
+}
+
 bool ReplicaDocument::refuse_while_lost(std::string& why) {
     if (offline_) {
         why = kOffline;
@@ -69,10 +75,7 @@ bool ReplicaDocument::refuse_while_lost(std::string& why) {
     // A request carries no session tag: sent before the engine answers a
     // Load, it would be applied to the session the engine kept if it refuses
     // that Load, where the same ids usually name other things.
-    const bool opening = std::any_of(pending_.begin(), pending_.end(), [](const Pending& p) {
-        return (p.kind == Pending::Kind::Load && !p.answered) || p.kind == Pending::Kind::LoadPart;
-    });
-    if (opening) {
+    if (opening()) {
         why = "the session is still opening; nothing was changed";
         return true;
     }

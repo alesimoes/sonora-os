@@ -15,7 +15,7 @@ const ShotRegistrar registrar{[] {
     s.name = QStringLiteral("mix-automation-write");
     s.window = QStringLiteral("mix");
     s.take = false;
-    s.setup = [](ShotContext& c) {
+    s.apply = [](ShotContext& c0) { when_open(c0, [](ShotContext& c) {
         EditController& edit = c.session.controller();
         std::string why;
         const model::AutomationMode modes[] = {model::AutomationMode::Write,
@@ -26,7 +26,7 @@ const ShotRegistrar registrar{[] {
             if (!edit.set_automation_mode(t, modes[t], why))
                 std::fprintf(stderr, "sonora-ui: automation mode: %s\n", why.c_str());
         }
-    };
+    }); };
     return s;
 }()};
 

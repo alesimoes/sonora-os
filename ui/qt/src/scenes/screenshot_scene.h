@@ -14,6 +14,7 @@
 #include <QQuickView>
 #include <QString>
 #include <QTimer>
+#include <cstdio>
 #include <functional>
 #include <string>
 #include <vector>
@@ -42,14 +43,20 @@ struct ShotContext {
 // The engine answers the demo session's Load a moment after the window is
 // up, and an edit before that is refused ("still opening"). Runs `then`
 // once it has answered, asking again every 100 ms within the capture's
-// wait. Undo is the probe: it refuses with that reason while opening and
-// changes nothing, since the demo session has no history to undo. The
-// playlist pointer is taken again, as the Load left it dangling.
+// wait; the question (TimelineDocument::opening) changes nothing, so a
+// scene with history of its own may wait too. Past 3 s it runs `then`
+// anyway and says so on stderr, where the capture's log shows why the
+// picture is wrong. The playlist pointer is taken again, as the Load left
+// it dangling.
 inline void when_open(ShotContext c, std::function<void(ShotContext&)> then, int tries = 0) {
-    std::string why;
-    const bool opening = !c.session.controller().document().undo(why) &&
-                         why.find("still opening") != std::string::npos;
-    if (!opening || tries >= 30) {
+    constexpr int kTries = 30;
+    const bool opening = c.session.controller().document().opening();
+    if (!opening || tries >= kTries) {
+        if (opening)
+            std::fprintf(stderr,
+                         "sonora-ui: scene: the session was still opening after %d ms; "
+                         "going on, and its edits will be refused\n",
+                         kTries * 100);
         // The Load replaced the snapshot the playlist pointer was taken from.
         const auto& tracks = c.session.controller().snapshot().edit->tracks;
         if (c.track >= 0 && c.track < static_cast<int>(tracks.size()))
