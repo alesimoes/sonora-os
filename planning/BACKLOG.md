@@ -1771,8 +1771,7 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       lane is resent every callback.
 - [x] (#226) Plugin lanes in the model: `AutomationParam::Plugin` keyed by insert id and
       ParamValue key, session format 14, window format 11, protocol 36; lanes follow their
-      insert (remove, replace, move, duplicate, undo). Saved, undone and replicated; playing
-      them is the next line.
+      insert (remove, replace, move, duplicate, undo). Saved, undone and replicated.
 - [ ] Plugin lanes follow-ups from #212 and #226: builder key-to-index resolution,
       skipping a lane whose well-formed key names no parameter of the plugin (the model
       accepts it, as it accepts a ParamValue; the engine must not map it to a default
@@ -2037,15 +2036,14 @@ not deferred.
 - [ ] `sonora-display-fallback` runs `chvt 2`, which reaches no terminal UI
       until stage 2 adds `sonora-tui.service` on tty2.
 - [x] (#217) `sonora-smoketest` checks `BUILD_ID` and the `sonora.gui` path.
-- [x] (#217) `tools/build-iso.sh` stages `sonora-ui` when `SONORA_WITH_UI=1`. The Qt
-      runtime is a separate item below.
+- [x] (#217) `tools/build-iso.sh` stages `sonora-ui` when `SONORA_WITH_UI=1`.
 - [ ] Qt runtime packages are not in the image package list yet (stage 2).
 - [ ] #217 review: `tools/build-iso.sh` sends `build-ui.sh` output to /dev/null so a
       failure is silent; the smoketest's `sonora-ui.service` "skipped" check passes if
       the unit is missing; the `sonora.gui` branch does not assert `sonora-ui` active.
       distro-engineer.
-- [x] (#217) `main.cpp` comments at lines 341 and 402 say tty2 runs the terminal UI,
-      which holds only from stage 2; one of them is an over-long line.
+- [x] (#217) `main.cpp` comments about tty2 and the terminal UI now say it holds only from
+      stage 2, and the over-long line is shortened.
 - [ ] Bare metal: GPU reset/hang under the compositor vs the audio callback;
       nouveau on NVIDIA; llvmpipe vs GPU xruns (ADR-0006 items 2 and 3).
       researcher.
