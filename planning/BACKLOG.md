@@ -276,19 +276,40 @@ playback can follow edits; it is in flight.
   - [ ] Latch/Trim and Write/Trim (mode pair, session format bump), slice 5 of
         ADR-0027 §8. Researcher first checks Pro Tools' Trim range.
   - [ ] Automation write slice, ADR-0027 §8 order: (1) writer hardening (done, #252), (2) plan-move and
-        Load state (done, #262), (3) per-frame sends and PDC-aligned lanes, (4) Touch's return,
-        (5) Trim; slices 2 to 5 all touch `session.cpp`, so one after another.
+        Load state (done, #262), (3) per-frame sends and PDC-aligned lanes (done, #271, #279),
+        (4) Touch's return and AutoMatch (open), (5) Trim (open); slices 4 and 5 touch `session.cpp`,
+        so one after another. Slice 5 must take session format 16, window 13, protocol 39: #277
+        (names and colours) took 15, 12 and 38.
   - [x] (#262) `finish_pass` returns before Write->Latch when every lane of the pass is dropped
         (#252 review).
-  - [ ] #262 review (automation, RT): `follow_track_owners()` is O(n^2) per new epoch, add a fast path when the owners are unchanged, and fix its stale comment. `AutomationWrite` grew from 32 to 40 bytes and `RingBuffer` has no `std::is_trivially_copyable` static_assert: add one. A touch or release in the ~2 blocks between publish and `adopt_track_mix()` reaches the audio thread late; make it live if adopt can move the atomics without the race.
-  - [ ] #262 review (N2): suspected `adopt_track_mix` race with the residency gate (ADR-0023 §4): write a test or rule it out.
-  - [ ] Sends follow automated volume and pan per frame; today post-fader
-        and follow-pan sends take the lane at the callback's first frame
-        (ADR-0027 §2).
-  - [ ] A track behind an insert chain reads its lanes `L` frames early,
-        folded into the loop; on the loop's first pass the audio of the
-        pre-roll is scaled by the lane at the loop's end for `L` frames.
-        Track the frames the chain's output came from instead.
+  - [x] (#267, #262 review) `follow_track_owners()` has a fast path when the owners are unchanged;
+        `AutomationWrite` has the `is_trivially_copyable` and `sizeof <= 48` static_asserts; each write
+        carries its plan row's document track id (`track_id`), so a reorder never files a ride in another
+        track's lane.
+        - [ ] Bound `follow_track_owners()` for Load and full reorders (still n*n) if engine track counts
+          go past ~128 (#262 review N3).
+        - [ ] The touch or release in the ~2 blocks between publish and `adopt_track_mix()` reaches the
+          audio thread late; make it live if adopt can move the atomics without the race.
+  - [x] (#267, #262 review N2) `adopt_track_mix` ran against the residency gate; fixed in
+        `PlaybackController::show()` (a plan built in the adopt window now carries its own mix serial),
+        with tests that fail on main.
+  - [x] (#271, #279) Sends follow automated volume and pan per frame (ADR-0027 §2), and share the
+        fader's per-grid lane evaluation (memo per mix call; ctest `sends`
+        `test_shared_lanes_are_bit_identical`, `test_worst_block_cost` at 128 tracks x 10 sends).
+  - [x] (#271) A track behind an insert chain reads its lanes `L` frames late, aligned across the loop
+        wrap (`lane_frame`); only the rows whose owner moved snap their mix (`snap_row_`), the others ramp.
+  - [x] (#271) The `AutomationWrite` ring comment says 12 MiB at 128 tracks after the power-of-two
+        round-up; `follow_automation` looks ids up in a per-drain sorted id list.
+  - [ ] (#271 review) `Session`: mark `auto_wrapped_` from the playhead (not `auto_start_`) so a wrap
+        during an invalid-plan callback still counts for lagged lanes (at most `L` frames wrong).
+  - [ ] (#267 audit) `orphan_writes_` does not count writes with `track_id == 0` (a roll on the initial
+        empty plan); count them or say why not.
+  - [ ] (#279 review) `engine.core`: `test_shared_lanes_are_bit_identical` also covers a Touch release
+        mid-roll (the `return_at_` return ramp) and a plan republished mid-roll with different lanes,
+        both while the lane memo is warm.
+  - [ ] (#279 review) `engine.core`: `test_worst_block_cost` (3 x 128-track rigs, 65,536-point lanes,
+        320 blocks each) is timed under the sanitizer jobs; cut its block count when sanitized if it
+        adds more than a few seconds there.
   - [x] A Load while rolling must ignore the rest of the open pass: `drop_pass()` resets neither `pass_open_` nor `auto_latched_`, and Load does not stop playback, so writes from the old plan can land on the new session's tracks by engine index. `drop_pass` records the pass to skip and the engine clears `auto_latched_`; test it (on PR #178, #178 review). Done: `pass_dropped_` from `Session::automation_pass()`, `Session::forget_latches()` (`t1-load-drops-pass`).
   - [x] (#262) A roll that begins between `drop_pass()` and the Load's `show_document()` opens a pass on the old plan that is not dropped (play just before a Load, or a count-off ending): its Write tracks' writes land on the new session's tracks by index. Drop by the plan the pass started on, not by the pass number read at `drop_pass()` (`engine_control_server.cpp` ~1372 vs ~2647; narrow window, needs two commands back to back).
   - [x] (#225) Apply a ParameterChange's Release (clear touched) even while tracks are moving: the flag is only set or cleared when `!tracks_moving()`, so a Release during a track move is lost and the track keeps playing its fader and writing until the client disconnects or a Load (on PR #178, #178 review).
@@ -333,11 +354,33 @@ playback can follow edits; it is in flight.
              by default (`--backups`), pruning only this stem's rotated
              backups and never a symlink. File menu, Save As dialog,
              Shift+Ctrl/Cmd+S (unverified).
-       - [ ] Session templates (`daw.model.session_mgmt` follow-up): File >
-             Save as Template (a Save Copy In without audio into a
-             templates folder, regions and sources dropped) and New from
-             Template (its bytes loaded as a new session); a template
-             browser beside Open.
+       - [x] Session templates, model half (`daw.model.session_mgmt`, ADR-0030, #272): the
+             on-disk layout, `SessionModel::saveAsTemplate`/`templateList`/`newFromTemplate`
+             (regions and sources dropped), no format or protocol bump. Record and the other
+             take-starting commands are refused while the engine sits in a template's folder
+             (`take_commands()` in `contracts/api/command.h`).
+       - [ ] (ui-engineer) Template menu and browser: File > Save as Template... with a name and a
+             "Markers" check box calling `saveAsTemplate`; New from Template, a list beside Open,
+             calling `templateList` and `newFromTemplate`; a command id in `contracts/api/command.h`
+             and keymap entries; screenshots.
+       - [ ] `NewFromTemplate` engine action (protocol bump): the engine makes the new folder from the
+             template and enters it, never the template's folder (ADR-0030 §3). Until then New from
+             Template writes into the template folder on every use (`ActiveFolder::enter` makes
+             `Audio Files/`, an engine autosave goes to its `Session File Backups/`) (#272 review).
+       - [ ] Template categories (one subfolder each, Pro Tools' template groups); grey out a template
+             newer than this build (`file_format_version`) in the browser.
+       - [ ] (#272 review) `SessionModel::inTemplateFolder` compares `cleanPath`, not canonical paths; a
+             symlinked templates dir (or `$SONORA_TEMPLATES_DIR` == sessions dir) misroutes Save As
+             after a failed New from Template.
+       - [ ] (#272 review) Template names accept Windows-reserved names (CON, NUL), trailing dots and
+             spaces before the extension; refuse them in `session_name_problem` before the ASIO port (ADR-0008).
+       - [ ] (#272 re-review) `take_commands()`: `transport.toggle_cycle` (and `cycle_selection`) turn on
+             loop record like `toggle_loop_record` but are not in the list, and the catalog test filters
+             by id substring so it misses them; add them or match on what a command does, not its name.
+       - [ ] (#272 re-review) The engine's `starts_a_take()` and the conformance list name the take-starting
+             commands separately from `take_commands()`; derive them from it.
+       - [ ] (#272 re-review, suspected) `making_from_template_` may stay set if the engine dies with the
+             Save As in flight; make sure the disconnect path calls `openWasLost`.
        - [ ] Save Copy In's session-format option: write an older format
              version for an older build; needs a downgrading writer in
              common/model.
@@ -601,7 +644,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
   - [x] (#255) Print a stderr line when `when_open()` gives up after 30 tries, so a missing open is not silent.
   - [x] (#255) `when_open()` probes with Undo, which is unsafe with a non-empty history: probe with a read-only is-opening query, or document the empty-history precondition.
   - [ ] A helper that wraps `apply` to remove the awkward nested-lambda form in the scenes.
-  - [ ] #255 review: the mix-automation-write scene shows three distinct modes, not four: make the second strip Trim/Off. `docs/images/sonora-ui-mix-automation-selector.png` is missing on main: regenerate and commit it.
+  - [ ] #255 review: the mix-automation-write scene shows three distinct modes, not four: make the second strip Trim/Off.
+  - [x] (#268) #255 review: `docs/images/sonora-ui-mix-automation-selector.png` was missing on main; regenerated and committed.
 - [ ] `ui.mixer.sends` follow-ups (ADR-0022):
   - [x] Send and aux fader rides as live parameters (`ParamId` for send level and aux gain): today each step is a SetSendMix or SetBusMix, a revision per step.
         Done (engine side, protocol 34, ADR-0022 update of 2026-10-31): `ParamId::SendLevel` and `AuxGain`, addressed by `ParameterChange::id`.
@@ -1052,23 +1096,28 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       Read, Touch, Latch, Write; Trim listed and refused until the engine has
       it), the fader and the pan sending Touch on press, Move per step and
       Release on let go, the lane header's label following the mode.
-      Left: the selector on the Edit window's track header, the fader and pan
-      following the lane while playing in Read (needs the engine to publish
-      the played value), and a key binding to step a strip's mode (no
-      command exists for it).
+      Left: the fader and pan following the lane while playing in Read
+      (needs the engine to publish the played value). The Edit header
+      selector and the step-mode key binding are done (#203); the list closes
+      as a menu (#268).
 - [ ] `ui.mixer.automation` follow-ups from the #187 reviews:
-  - [ ] The `engine_adapter.h` header table (about line 18) still names `send_track_gain`; rename it to `send_track_param`.
-  - [ ] The automation selector list closes only on a click of an item or the button; close it on click-away and on Escape.
-  - [ ] `panDrag` sends a Move even when the clamped pan equals the current one: skip it, and have one function give both the Move value and `SessionModel::panDrag`'s formula.
-  - [ ] `scenes/mix_automation_selector.cpp` includes `<QCoreApplication>`, `<QEventLoop>` and `<QThread>` twice.
-  - [ ] `dropRide` sends no Release when the ridden index is past the document's tracks, but `dropPan` does: make them agree, and say which is right in the header.
+  - [x] (#268) The `engine_adapter.h` header table names `send_track_param`.
+  - [x] (#268) The automation selector list closes on click-away and on Escape (focus-loss too).
+  - [x] (#268) `panDrag` skips a Move when the clamped pan equals the current one; `pan_drag()` gives both the Move value and `SessionModel::panDrag`'s formula.
+  - [x] (#268) `scenes/mix_automation_selector.cpp` no longer includes `<QCoreApplication>`, `<QEventLoop>` and `<QThread>` twice.
+  - [x] (#268) `dropRide` and `dropPan` agree: a Release for an index past the document's tracks carries the hold's last value.
+  - [ ] (#268 review) `AutomationModeButton.onOpenChanged(false)` sets `setTextEntry(false)` even when a text field took focus in the same turn; set it only if `list.activeFocus` was the holder.
   - [ ] After a track removal, a dropped hold's Release lands on whichever engine track now has that index and can end another interface's Touch: send it by track id once the protocol carries one (suspected).
   - [ ] No test covers `Component.onDestruction` -> `finish()`: a QQmlComponent test loading `ChannelStrip.qml` with a MixModel is feasible but needs a small QML test rig.
+  - [ ] (#268) `test_ui_mix` prints `SendWindow.qml:177: TypeError: Cannot call method 'endLevelRide' of null` (also on main): add a null guard.
 - [ ] `session.cpp:1916`: while `from` is less than the chain latency and not
       looping, `t` clamps to 0 and then advances, so a lane changing in the
       first frames saws. Hold at frame 0 until `from + i` reaches the latency.
 - [ ] `test_automation.cpp`: add a test that a track behind an insert chain
       reads its lanes `chain.latency_frames` early; the `lag` path has no test.
+- [ ] (#274) `test_inserts` (`ui_inserts`): the knob-drag flake (CI run 41518271936) now prints a
+      "knob drag:" stderr diagnostic when the check fails. Once the flake is understood, remove the
+      diagnostic or turn it into a CHECK message.
 - [ ] Test hygiene: audit fixed sleeps before SIGKILL/deadline checks in
       engine/app/tests/test_exit_watchdog.cpp and
       engine/control/tests/fake_plugin_host.cpp for the ctest -j + TSan load
@@ -1672,8 +1721,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          `session_folder`, `session_saver`. The LV2 host's save/restore
          and `worker:schedule` were already in (`plugin_host_state_lv2`,
          `plugin_host_worker_restore`). No protocol change.
-       - [ ] Untested: the GetState timeout (no test plugin hangs in
-         save()); add a `#state` variant whose save() sleeps past 5 s.
+       - [x] (#269) The GetState timeout is tested: ctest
+         `plugin_hosting_state_read_timeout` slows the worker plugin's save() past 5 s through
+         `SONORA_TEST_SLOW_SAVE_MS`; it fails with the deadline disabled.
+         - [ ] (#269 review) It asserts `longest_turn < 100` ms; on the 50-minute sanitizer job a
+           loaded runner could stall a turn that long: measure it there or raise the bound to about 500 ms.
        - [x] States go to the engine's session folder, the session file
          wherever the UI saves it: the saver now copies each state the
          file names into its own folder (tmp, fdatasync, rename, one
@@ -1688,16 +1740,62 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          does not hold. Fix at the root: the engine follows the session
          folder (open/save moves `--dir`), which would also retire the
          state copy above.
-       - [ ] LV2 states that hold files (`state:mapPath`, `makePath`,
-         `freePath`): the host offers none, so such plugins save absolute
-         paths or fail. Map into the session folder.
+       - [x] LV2 states that hold files, in the host (ADR-0029 slice 1, #276):
+         `makePath`, `mapPath`, `freePath`, HostControl wire 4, ctest `plugins_host_state_files`.
+       - [ ] LV2 states that hold files, in the session (ADR-0029 slice 2): the engine sends
+         `scratch_dir`/`session_dir`/`save_dir` and `kGetStateNoCopy` during a take, `StateRef.files`,
+         Save As and cleanup. Needs session format +1 and protocol +1; shares `plugin_hosting.cpp`
+         with the ADR-0027 lane work, so not in parallel with it.
+         - [ ] Engine: wait `kStateReplyTimeoutMs` (60 s) for a `State`, not `kReplyTimeoutMs`.
+         - [ ] Engine: show an operator notice for a counted `Fault{Plugin}` (path refusals);
+           `plugin_hosting.cpp` ignores it today.
+         - [ ] `-Wmissing-field-initializers`: positional brace inits of `GetState`/`State`/`LoadInstance`
+           warn (`contracts/plugin/tests/test_host_control.cpp`, `plugin_hosting.cpp:1150`).
+       - [ ] plugins.host.state follow-ups from the #276 review:
+         - [ ] **Required before slice 2 sends a real `save_dir`:** N1, cap the bytes one GetState may
+           copy and hash (per file and in total, a constant in `host_control.h`), fail that instance's
+           State with a clear text past it, and check free space before copying.
+         - [ ] N2: sweep `Plugin Files/.incoming-*` left by a host killed mid-copy (session open or ADR-0029 cleanup).
+         - [ ] N3: keep saved plugin files immutable: read-only (0444) after the rename, and/or re-hash
+           a `Plugin Files/<sha>/` file whose mtime or size changed since restore before naming it by that sha.
+         - [ ] N4: refuse to save plugin files through a symlinked `Plugin Files/` or `<sha256>/` directory
+           (lstat each component, O_NOFOLLOW on the final rename target's parent).
+         - [ ] N5: amend ADR-0029 §6 for `absolute_path`'s passthrough of absolute paths from pre-wire-4
+           states, and decide whether `abstract_path` may copy a file that only the restored state named.
+         - [ ] N6: `plugins_host_state_files`: add a makePath through a symlink that leads out of the
+           scratch folder, refused and counted.
+         - [ ] Probe: give `--probe` a scratch folder, so a plugin that requires `state:makePath` can be
+           scanned as usable.
+         - [ ] Copy plugin files with reflink (`FICLONE`) where the filesystem supports it.
+         - [ ] lilv prints three warning lines to the host's stderr for each saved `atom:Path`: filter
+           them, or pass a base URI, once host stderr reaches the operator's log.
+         - [ ] Slice 5: a `GetState` whose `save_dir` is a preset store also becomes the host's session
+           folder (ADR §6 as written); presets should get a flag, or the host should not move its session folder.
        - [ ] `SetInsertParams` for editor values moved mid-gesture at flush
          time: no editors are hosted yet, so nothing is moved outside a
          gesture end; do it with editors under WSLg.
        - [ ] Presets: LV2 `pset:Preset` listing and load (lilv), VST3
          `.vstpreset` (published SDK format), user presets saved as
          StateBlobs beside the catalog cache; a load is a make-before-break
-         restart with the preset as the instance's state.
+         restart with the preset as the instance's state. ADR-0029 (#270)
+         sets the slices: user presets live in `$XDG_DATA_HOME/sonora/presets/`, not the cache.
+         - [x] Slice 1 (host files, #276, above) and slice 4 (user preset store,
+           `preset_store.{h,cpp}`, `sonora_preset 1`, #275).
+         - [ ] Slice 2: plugin files in the session (above).
+         - [ ] Slice 3: factory preset listing and `--read-preset` in the host (in flight, #278).
+         - [ ] Slice 5: the `LoadInsertPreset` op through `engine_control_server.cpp`.
+         - [ ] Slice 6: the preset menu in the insert panel (ui-engineer).
+         - [ ] Slice 7: mix undo for a preset load (Track 2 item 6).
+         - [ ] preset_store follow-ups (#275 review): fsync the parent of every folder `save` creates
+           (`<key>` in the root, `<sha>` in Plugin Files); refuse to read through a symlinked plugin,
+           Plugin State or `Plugin Files/<sha>` folder in `load`, not only in cleanup and `save`; `save`
+           returns IoError when only the post-rename directory sync fails although the preset exists
+           (report saved-unsynced); reject Windows-reserved basenames (CON, NUL, COM1, trailing dot or
+           space) before the Windows port.
+         - [ ] (#275 re-review N1) `PresetStore::save` checks `real_dir` on each store folder before
+           `make_dir`, so a linked Plugin Files or plugin folder never gets an empty folder created in its target.
+         - [ ] (#275 re-review N2) `PresetStore::remove` and `rename` refuse a linked plugin folder
+           (`real_dir` check, as `save` does).
        - [ ] Plugin manager (ui/qt): the catalog with refusals, rescan,
          per-plugin block list, the yabridge bundles; screenshots.
 6. [ ] **Windows VST through yabridge** (in progress, plugin-engineer;
@@ -1839,6 +1937,23 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          expect `known=True`, now that #251 fixed the miscount. OS 2.
    - [ ] #251 review: build the 654-byte header in memory and write it with one `fwrite`;
          run the refused-take path on MSVC (`setvbuf` and the `SEEK_END` pad seek are untested there).
+8. [x] (#273) `tools/clean.sh --worktrees-only`: judges every worktree under `.claude/worktrees/` in
+       parallel, then removes the merged, clean, idle ones; `--dry-run` lists the candidates.
+   - [ ] `tools/clean.sh --worktrees-only` does not cover the old worktrees outside `.claude/worktrees/`
+         (`C:/source/sound-*` and `C:/source/wt-*`, about 6 GB): extend it to them with the same safety
+         rules (not locked, clean status, idle for `ACTIVE_MINUTES`, merged into origin/main, never
+         the primary checkout, never a branch delete).
+   - [ ] (#273 review) Re-check lock, status and the active-minutes mtime right before each worktree
+         remove; judging all first widens the check-to-remove gap to minutes.
+   - [ ] (#273 review) Refuse `--worktrees-only` combined with `--deep` or `--host-build-cache` (ignored
+         silently today, and the dry-run SUMMARY claims a host cache prune).
+   - [ ] (#273 review) Count only successful removals in the SUMMARY "from N worktree(s)"; `WT_COUNT`
+         goes up before `act`, so a failed removal is counted.
+   - [ ] (#273 review) Pass candidates between the judge jobs and the parent with a separator a path
+         cannot hold (tab or NUL), not `|` (`w="${c%%|*}"` cuts a path at its first `|`).
+   - [ ] (#273 review) Report a judge job that exited non-zero as "keep (could not judge)" and
+         trap-remove the temp dir on exit (a bare `wait` reaps a failed job silently; an abort through
+         `wait -n` leaves `$JDIR`).
 
 ### Later stages, in order (detail in `progress.json`)
 
