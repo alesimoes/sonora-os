@@ -275,9 +275,11 @@ playback can follow edits; it is in flight.
   - [ ] AutoMatch time in the UI Preferences (a protocol message).
   - [ ] Latch/Trim and Write/Trim (mode pair, session format bump), slice 5 of
         ADR-0027 §8. Researcher first checks Pro Tools' Trim range.
-  - [ ] Automation write slice, ADR-0027 §8 order: (1) writer hardening, (2) plan-move and
+  - [ ] Automation write slice, ADR-0027 §8 order: (1) writer hardening (done, #252), (2) plan-move and
         Load state, (3) per-frame sends and PDC-aligned lanes, (4) Touch's return,
         (5) Trim; slices 2 to 5 all touch `session.cpp`, so one after another.
+  - [ ] `finish_pass` returns before Write->Latch when every lane of the pass is dropped
+        (#252 review; being fixed in the slice-2 PR in flight, keep open until it merges).
   - [ ] Sends follow automated volume and pan per frame; today post-fader
         and follow-pan sends take the lane at the callback's first frame
         (ADR-0027 §2).
@@ -291,11 +293,11 @@ playback can follow edits; it is in flight.
   - [ ] Carry each track's touched bits in `PlanTrackMix` so the ~2 blocks between a moving plan's publish and `adopt_track_mix()` do not read the previous occupant's hold (stray `stamp_writes` on the arriving track's lane) (#225 review).
   - [ ] Move `Session::auto_latched_` with its track when a plan moving tracks is adopted: Latch while rolling through a reorder stays on the engine slot, ADR-0027 §3 (#225 review).
   - [ ] Touch on a track with no lane: make a release's audio and its written return agree. Return the live fader to the static value, or write no return; today the writer writes a 250 ms return to the static fader but the audio keeps the ridden value (on PR #178, #178 review).
-  - [ ] A pass whose lane overflows `kMaxAutomationPoints` must keep the other lanes: thin harder or drop only that edit. Today one lane past the limit fails the whole Compound and every lane of the pass is lost (on PR #178, #178 review).
-  - [ ] Tests for automation: a Load or a client leaving clears the touched flags; long-pass growth (on PR #178, #178 review).
-  - [ ] A merged line's end value `p.at(end)` can differ from the next span's start by one float ulp, which `thin_automation` keeps as a same-frame step pair: snap a line's end to `to` when the line is not cut (suspected; #178 re-review).
+  - [x] (#252) A pass whose lane overflows `kMaxAutomationPoints` must keep the other lanes: thin harder or drop only that edit. Done: thinned again at twice the tolerance up to 4 times, then the lane alone is dropped and named in a held notice (on PR #178, #178 review).
+  - [x] (#252) Tests for automation: a Load or a client leaving clears the touched flags; long-pass growth (on PR #178, #178 review).
+  - [x] (#252) A merged line's end value `p.at(end)` can differ from the next span's start by one float ulp, which `thin_automation` keeps as a same-frame step pair: snap a line's end to `to` when the line is not cut (suspected; #178 re-review).
   - [ ] `PassWrites::add` finds the lane by a linear scan per write: index by (track, param) if tracks pass ~64 (#178 re-review).
-  - [ ] `follow_automation` clamps NaN pan, since `std::clamp` passes NaN through (#178 re-review).
+  - [x] (#252) `follow_automation` clamps NaN pan, since `std::clamp` passes NaN through (#178 re-review).
 - [x] (#232) Pro Tools record-ready: Record arms the transport, Play starts the take, Stop
       cancels; engine state published to every client (state block layout 6,
       protocol 37, ADR-0009 update of 2026-11-01). Keypad 3 is `transport.record_ready`;
@@ -558,10 +560,15 @@ playback can follow edits; it is in flight.
   - [x] Automation follows edits: moving, cutting, pasting or deleting
         regions moves the automation under them, as Pro Tools' "Automation
         Follows Edit" option, one `Compound` with the region edit.
-  - [ ] Automation Follows Edit on a lane at `kMaxAutomationPoints` (65536)
-        makes apply refuse the whole Move or Clear Compound (the apply.cpp
-        lane cap): move the region and report the lane left behind, or drop
-        redundant points first.
+  - [x] (#254) Automation Follows Edit on a lane at `kMaxAutomationPoints` (65536)
+        made apply refuse the whole Move or Clear Compound. Done: the region edit
+        goes ahead; flat-run points in the span go first; a lane still over is left
+        behind, named in a held notice (ADR-0027 §7, update 2026-11-02).
+  - [ ] #254 review: a document-level test that thins a lane through `EditController`
+        and undoes it in one step; remove the doubled `//` line in `automation_edit.h`.
+  - [ ] #254 review: sloped collinear points are not dropped, only flat runs; a linear-time
+        tolerance thinning would let more full lanes follow. A Range clear on several tracks
+        puts every lane left behind in one notice; per-track wording may read better.
   - [x] Owner question, default taken: automation per track (Logic) rather
         than per edit playlist (Pro Tools); revisit if the comping workflow
         wants Pro Tools' behaviour (ADR-0027, alternatives).
@@ -1783,11 +1790,16 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 - [x] (#226) Plugin lanes in the model: `AutomationParam::Plugin` keyed by insert id and
       ParamValue key, session format 14, window format 11, protocol 36; lanes follow their
       insert (remove, replace, move, duplicate, undo). Saved, undone and replicated.
-- [ ] Plugin lanes follow-ups from #212 and #226: builder key-to-index resolution,
-      skipping a lane whose well-formed key names no parameter of the plugin (the model
-      accepts it, as it accepts a ParamValue; the engine must not map it to a default
-      index); restoring knob values on leaving lane play; per-insert latency; touch and
-      write; mute and send automation; UI.
+- [x] (#250) Plugin lanes: builder key-to-index resolution; a lane whose key names no
+      parameter of the plugin is skipped (`LaneResolver`, `PluginHosting::resolve_lane`;
+      over `max_plugin_lanes` the build is refused).
+- [ ] Plugin lanes follow-ups from #212 and #226: restoring knob values on leaving lane
+      play (post to the first plan without the lane; shares Touch release with the write
+      slice); per-insert latency; touch and write; mute and send automation; UI.
+  - [ ] #250 review: a scenario with two inserts automating a parameter of the second
+        instance.
+  - [ ] #250 review: stepped, integer and enum parameters carried as a flag in `ParamDesc`,
+        so a lane holds between points instead of interpolating.
 
 ### Track 5: dev environment (distro-engineer, researcher)
 
@@ -1810,16 +1822,19 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        saving, UB in a processor caught a day late); split Thread and address sanitizers into
        two parallel jobs; merge Record, BWF interop and Quantum into one job (both rename
        required checks).
-5. [ ] `ci.yml` hunks of #242 and #247 wait on the owner running
-       `gh auth refresh -s workflow` (the agent token has gist, read:org and repo only; it
-       cannot merge a PR that edits workflows). Same blocker as the `ci/image-config-step`
-       line under Phase 1. Waits on the owner.
+5. [x] `ci.yml` hunks of #242 and #247 (merged).
 6. [ ] #223 review: `bus_dead` in `tools/dev-wsl.sh` treats a saved `unix:abstract=` bus as
        alive (check `DBUS_SESSION_BUS_PID` with `kill -0`); `tools/sonora-wsl.cmd` breaks
        on `)` in an argument. Not run on the laptop yet: `dev-wsl.ps1 status`, `run`,
        `stop`, `shortcut` are unverified.
-7. [ ] `WavWriter` header miscounts the frames after a failed flush (fix PR in flight);
-       keep open until it merges. rt-engineer.
+7. [x] (#251) `WavWriter` counts only frames that reached the file; a failed flush never
+       leaves a header claiming audio the disk refused (unbuffered stream, `close()` clamps
+       to the file).
+   - [ ] #246/#251: delete `KNOWN_SHORT`, `MAX_KNOWN_SHORT_BYTES` and their branch in
+         `check_take()` from `tools/failed-take-quit.py`, and the `self_test` cases that
+         expect `known=True`, now that #251 fixed the miscount. OS 2.
+   - [ ] #251 review: build the 654-byte header in memory and write it with one `fwrite`;
+         run the refused-take path on MSVC (`setvbuf` and the `SEEK_END` pad seek are untested there).
 
 ### Later stages, in order (detail in `progress.json`)
 
@@ -1862,9 +1877,7 @@ not start or extend those items before the Complete DAW closes (owner,
   - [ ] Build the ISO and boot it in QEMU with the pins (`tools/build-iso.sh`,
         `tools/test-boot-qemu.sh`); confirm the "no VT login prompts" smoke check.
   - [ ] `tools/test-image-config.sh` fails if `getty@tty2..6` is enabled.
-  - [ ] Add `tools/test-image-config.sh` to the CI "Shell scripts" job: the `ci.yml` hunk
-        was moved out of #238 (branch `ci/image-config-step`); waits on the owner's
-        `gh auth refresh -s workflow`.
+  - [x] (#242) `tools/test-image-config.sh` runs in the CI "Shell scripts" job.
 - [x] `sonora-session.service`: autologin on tty1 into the engine, respawn on
       exit, no display manager. (#238) Closes the VT getty gap: `NAutoVTs=0`,
       `ReserveVT=0`.
@@ -1873,21 +1886,26 @@ not start or extend those items before the Complete DAW closes (owner,
 - [ ] Repeat `tools/test-quantum-pin.sh`'s routes with the UMC1820 as the
       graph driver instead of the dummy driver. A real ALSA node may have
       period-size constraints the container cannot show.
-- [ ] Decide whether to ship `default.clock.quantum-limit = 128`, which
-      closes the measured `clock.max-quantum` + `clock.force-quantum` gap but
-      also sizes the server's ALSA and resampler buffers. Needs a device that
-      cannot run at 48 kHz to test against. `brain/research/quantum-pin.md`.
+- [x] (#253) Decide whether to ship `default.clock.quantum-limit = 128`: not shipped yet
+      (ADR-0028).
+- [ ] Run `tools/test-quantum-pin.sh` with and without `quantum-limit = 128` on the UMC1820 and
+      on a device that cannot run at 48 kHz; ship it if both are clean (reopens ADR-0028).
+      Waits on hardware.
 - [x] (#216) `limits.d` granting `rtprio 95` and `memlock unlimited` to the audio
       group. Already shipped; `tools/test-rt-limits.sh` keeps limits.d, the unit and the hook in step.
 - [x] (#235) Udev rule naming the first class-compliant USB interface: not needed. Port
       auto-connection uses the node description, not the card index
       (`brain/research/multichannel-usb-interfaces.md`).
-- [ ] Two USB devices with the same node description: pipewire-jack gives them
-      one client name and suffixes the second one's ports `-<global id>`, and
-      `describe_ports()` interleaves them into one device. Detect the suffix, then
-      refuse with a held notice naming both or split them into two devices.
-      Needs a conformance injection in `drivers/fake` first; verify on hardware
-      only when a second identical unit exists. driver-engineer.
+- [x] (#253) Two USB devices with the same node description: split into "<desc>", "<desc> (2)",
+      recognising both pipewire-jack suffix forms (adapter-node port suffix, renamed client);
+      `drivers/fake` injection; container checks in `tools/test-engine-entrypoint.sh`.
+- [ ] Verify on two identical USB interfaces: the suffix form on real ALSA nodes, and whether
+      they report a usable serial (which would make "(2)" stable across boots). Waits on
+      hardware. driver-engineer.
+  - [ ] #253 review: reconnect when one of two same-model units is unplugged before connect
+        (`jack_backend.cpp:479`); the twin block in `tools/test-engine-entrypoint.sh` greps
+        `^twin-$n:capture_` but the client is named "Twin Pro"; log the chosen unit at startup;
+        the DeviceGone reason names the raw client part, not "(2)".
 - [x] `tools/write-usb.sh`: write the ISO and create the persistence partition.
       Verified against a loop device and booted in QEMU, with persistence
       surviving a reboot: `tools/test-write-usb.sh`. Not yet run on a
@@ -1963,9 +1981,8 @@ not start or extend those items before the Complete DAW closes (owner,
 
 ## ADR-0007 follow-ups
 
-- [ ] A pty-driven check (as in `tools/bwf-interop.py drive`) that a quit
-      during a failed take exits 1 with the terminal restored. Only the
-      `Session::take_failure()` half is unit-tested today.
+- [x] (#246, #247) A pty-driven check that a quit during a failed take exits 1 with the
+      terminal restored: `tools/failed-take-quit.py`, in the CI `engine` job.
 
 - [x] RTSan CI job: `clang-22` from trixie main, its own build
       (`-fsanitize=realtime`, which cannot be combined with ASan or TSan),
@@ -2479,12 +2496,20 @@ ADR-0011 "For the owner".
       supervisor spawning a chain with `key_channels` set from it. Until then
       `engine/core`'s chain runner builds unkeyed refs, so a keyed slot is a counted
       shape fault (silence). plugin-engineer + rt-engineer.
-- [ ] N1 follow-up (PR #40 RT audit, low): DPF's `lv2_set_options` calls
+- [x] (#249) N1 follow-up (PR #40 RT audit, low): DPF's `lv2_set_options` calls
       `setBufferSize(..., true)`, which deactivates and re-activates, and so
       re-prepares and allocates, on whatever thread the host calls
       `options:set` from. Check the LV2 options interface's threading class
       and what Ardour, Carla and our host do. If a host can call it beside
       `run()`, defer the change to the next `activate()`. dsp-engineer.
+      Done: `options` is instantiation-class, Ardour and Carla call it off the audio thread, ours
+      never; kept immediate (deferring would move the allocation into `run()` on a lazy
+      activate); held by `native_format_options_lv2_*`.
+  - [ ] #249 review: add a state-dependent input (a decaying tail) to the options sub-check so
+        dropping `reset()` on the same-configuration path fails; the alloc counter sees
+        `operator new` only.
+  - [ ] #249: a VST3 counterpart: `setupProcessing` with a new rate or block size between two
+        `process()` calls on an active component, held to a fresh instance.
 - [ ] N1, with M9: plugin-parameter target on `ParameterChange` and the
       read-only telemetry region in `contracts/plugin`. plugin-engineer +
       rt-engineer + ui-engineer.
