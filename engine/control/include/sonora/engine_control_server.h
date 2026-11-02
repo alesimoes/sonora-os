@@ -300,6 +300,12 @@ public:
     // Snapshots asked for, one per client an attach, Resync or Load is for:
     // each has been answered, shared or queued by the time it is counted.
     uint64_t snapshots_asked() const { return snapshots_asked_.load(std::memory_order_acquire); }
+    // Live automation writes dropped since construction because the track
+    // their plan played had left the document by the drain: a track
+    // removed while rolling (#262 review N1).
+    uint64_t automation_writes_orphaned() const {
+        return orphan_writes_.load(std::memory_order_acquire);
+    }
     // Autosaves written (Options::autosave_period_ms), for the tests.
     uint64_t autosaves() const;
     uint64_t longest_snapshot_copy_us() const {
@@ -715,6 +721,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<std::size_t> client_count_{0};
     std::atomic<uint64_t> refused_{0};
+    std::atomic<uint64_t> orphan_writes_{0};
     std::thread thread_;
 
     struct HeldReply {

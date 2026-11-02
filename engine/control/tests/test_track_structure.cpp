@@ -315,6 +315,65 @@ int test_atomics_wait_for_the_old_plans_last_block() {
     return 0;
 }
 
+// #262 review N2: B over A is published, and before its mix is adopted
+// the reorder is undone. The plan that puts the tracks back is built
+// against the atomics as they are, in the old order, and is held at the
+// residency gate while the two blocks pass and the first plan's mix is
+// adopted: published with no mix of its own, it would play A on engine
+// track 0 with B's hard-right pan there. Each track keeps its pan
+// throughout, and the atomics end in the old order.
+int test_a_plan_back_while_adopting_keeps_each_mix() {
+    auto session = make_session(2);
+    Session& s = *session;
+    CHECK(write_source(1) && write_source(2));
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, source_op(1));
+    CHECK_APPLY(h, source_op(2));
+    CHECK_APPLY(h, track_op(100, "A", -1.0f, 0));
+    CHECK_APPLY(h, track_op(102, "B", 1.0f, 1));
+    CHECK_APPLY(h, (PlaceRegion{101, region(110, 1), 0}));
+    CHECK_APPLY(h, (PlaceRegion{103, region(111, 2), 0}));
+    PlaybackController ctl(s);
+    CHECK(show(ctl, h.current()));
+    CHECK(ctl.settle(2.0));
+    Out o;
+    block(s, o);
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Rolling);
+    for (int blk = 0; blk < 4; ++blk) CHECK(heard(s, o, 1.0f, 1.0f));
+
+    CHECK_APPLY(h, (ReorderTracks{{102, 100}}));
+    CHECK(show(ctl, h.current()));
+    const uint64_t published = ctl.plans_published();
+    for (int i = 0; i < 64 && ctl.plans_published() == published; ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+    }
+    CHECK(ctl.plans_published() == published + 1);
+    CHECK(ctl.tracks_moving());
+    CHECK_APPLY(h, (ReorderTracks{{100, 102}}));
+    CHECK(show(ctl, h.current()));
+    // No reader pass: the plan back waits at the gate while the moving
+    // plan plays its two blocks and its mix is due.
+    for (int blk = 0; blk < 3; ++blk) {
+        CHECK(heard(s, o, 1.0f, 1.0f));
+        ctl.pump();
+    }
+    CHECK(ctl.plans_published() == published + 1);
+    for (int i = 0; i < 64 && (ctl.tracks_moving() || ctl.plans_published() == published + 1);
+         ++i) {
+        s.reader().run_pass();
+        ctl.pump();
+        CHECK(heard(s, o, 1.0f, 1.0f));
+    }
+    CHECK(ctl.plans_published() == published + 2 && !ctl.tracks_moving());
+    for (int blk = 0; blk < 4; ++blk) CHECK(heard(s, o, 1.0f, 1.0f));
+    CHECK(s.tracks()[0]->pan() == -1.0f && s.tracks()[1]->pan() == 1.0f);
+    CHECK(s.playback_misses() == 0);
+    return 0;
+}
+
 // Stopped, with nothing rolling: the arm and the input stay with their
 // document track, and only once the plan that moves it is published.
 int test_arm_and_input_follow_the_track() {
@@ -540,6 +599,7 @@ int main() {
     if (test_a_release_while_moving_reaches_its_track() != 0) return 1;
     if (test_a_latch_follows_its_track() != 0) return 1;
     if (test_a_moving_plan_writes_only_the_held_track() != 0) return 1;
+    if (test_a_plan_back_while_adopting_keeps_each_mix() != 0) return 1;
     std::printf("test_track_structure: ok\n");
     return 0;
 }

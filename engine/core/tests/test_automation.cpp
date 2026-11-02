@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sonora/session.h"
@@ -621,7 +622,7 @@ int test_a_latch_moves_with_its_owner() {
     rig.block();
     std::vector<AutomationWrite> w = drained(s);
     CHECK(w.size() == 2);
-    for (const AutomationWrite& x : w) CHECK(x.track == 1);
+    for (const AutomationWrite& x : w) CHECK(x.track == 1 && x.track_id == 102);
 
     CHECK(rig.publish({{0, -40.0f}}, {}, {102, 100}));
     for (int b = 0; b < 3; ++b) {
@@ -630,12 +631,54 @@ int test_a_latch_moves_with_its_owner() {
         CHECK(heap_untouched());
         w = drained(s);
         CHECK(w.size() == 1);
-        for (const AutomationWrite& x : w) CHECK(x.track == 0 && x.frames == kBlock);
+        // Its document track with it: the drain files it by that (#262
+        // review N1).
+        for (const AutomationWrite& x : w) {
+            CHECK(x.track == 0 && x.track_id == 102 && x.frames == kBlock);
+        }
     }
     // A track the plan does not name keeps no latch: none came with it.
     CHECK(rig.publish({{0, -40.0f}}, {}, {104, 100}));
     rig.block();
     CHECK(drained(s).empty());
+    return 0;
+}
+
+// #262 review L1: a track still on its row keeps its latch without the
+// scan, and the remap gives what the scan gave: a plan that moves nothing,
+// one that moves every track, and one that drops a track for a row naming
+// none. Latches on 102 and 106; which engine tracks write, and for whom.
+int test_owners_remap_on_and_off_their_rows() {
+    Rig rig("owner_rows", 4);
+    CHECK(rig.load({{0, -40.0f}}));
+    Session& s = *rig.session;
+    CHECK(rig.publish({{0, -40.0f}}, {}, {100, 102, 104, 106}));
+    for (const auto& t : s.tracks()) t->set_automation(Track::Automation::Latch);
+    CHECK(rig.park(2000));
+    s.play();
+    rig.block();
+    s.tracks()[1]->set_touched(kAutoVolume, true);
+    s.tracks()[3]->set_touched(kAutoVolume, true);
+    rig.block();
+    s.tracks()[1]->set_touched(kAutoVolume, false);
+    s.tracks()[3]->set_touched(kAutoVolume, false);
+    rig.block();
+    (void)drained(s);
+    // {engine track, document track} of each write in the next block.
+    const auto writes_after = [&](const std::vector<uint64_t>& owners) {
+        std::vector<std::pair<uint32_t, uint64_t>> got;
+        if (!rig.publish({{0, -40.0f}}, {}, owners)) return got;
+        reset_heap_counts();
+        rig.block();
+        if (!heap_untouched()) got.push_back({99, 0});
+        for (const AutomationWrite& x : drained(s)) got.push_back({x.track, x.track_id});
+        return got;
+    };
+    using Got = std::vector<std::pair<uint32_t, uint64_t>>;
+    CHECK((writes_after({100, 102, 104, 106}) == Got{{1, 102}, {3, 106}}));
+    CHECK((writes_after({106, 100, 102, 104}) == Got{{0, 106}, {2, 102}}));
+    CHECK((writes_after({106, 100, 102, 104}) == Got{{0, 106}, {2, 102}}));
+    CHECK((writes_after({106, 104, 0, 100}) == Got{{0, 106}}));
     return 0;
 }
 
@@ -708,6 +751,7 @@ int main() {
     t(test_latch_holds_until_stop, "test_latch_holds_until_stop");
     t(test_forgotten_latches_play_the_lane, "test_forgotten_latches_play_the_lane");
     t(test_a_latch_moves_with_its_owner, "test_a_latch_moves_with_its_owner");
+    t(test_owners_remap_on_and_off_their_rows, "test_owners_remap_on_and_off_their_rows");
     t(test_write_writes_every_parameter_and_splits_at_the_wrap,
       "test_write_writes_every_parameter_and_splits_at_the_wrap");
     t(test_a_full_ring_is_counted, "test_a_full_ring_is_counted");

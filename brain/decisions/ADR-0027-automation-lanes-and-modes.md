@@ -336,6 +336,17 @@ a mix serial cannot say where a track came from when a block skipped a
 plan or a plan puts the tracks back where the atomics already are.
 In-process only: no protocol, layout or format bump.
 
+*As built (#262 review follow-ups, recommended defaults):* each
+`AutomationWrite` also carries `track_id`, its plan row's document track,
+and the drain files a pass write by it, never by the row of the document
+as it is at the drain: a reorder or removal applied while rolling would
+otherwise put the old plan's blocks on the track now on that row. A write
+whose track has left the document is dropped and counted
+(`EngineControlServer::automation_writes_orphaned()`). `AutomationWrite`
+grows 40 to 48 bytes. A plan built while a published plan's mix waits to
+be adopted always carries its own mix (ADR-0023 §4), as the atomics may
+change order before the gate lets it out.
+
 **Merge order:** 1 (now), then #243 and Track 4b, then 2, 3, 4, 5. Slice 1
 is the only one that can run beside the in-flight work, because 2 to 5 all
 edit `session.cpp`. Each slice's diff is small enough for one agent session,

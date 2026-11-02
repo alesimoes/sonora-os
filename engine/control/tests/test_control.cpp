@@ -1440,6 +1440,159 @@ void a_pass_with_every_lane_dropped_leaves_write() {
     CHECK(named == 2);
 }
 
+// #262 review N1: a pass write is its plan row's document track's, not the
+// track on that row when the write is drained. B, engine track 1, latched
+// while rolling; then `op` (a reorder or B's removal) is applied with the
+// reader held, so the old plan, B still on row 1, plays on for 0.2 s after
+// the document has changed. `check` gets the replica once the pass is in,
+// and the playhead the new plan was seen at.
+template <typename Op, typename Check>
+void latched_pass_through(const char* name, Op make_op, Check check) {
+    RealEngine real(fresh_dir(name), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            std::string why;
+            CHECK(replica.receive(from_wire(in.model[fed]), why));
+        }
+    };
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        feed();
+        return got;
+    };
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    feed();
+    CHECK(replica.synced());
+    if (!replica.synced() || replica.current().edit->tracks.size() < 2) return;
+    std::vector<model::Id> ids;
+    for (const auto& t : replica.current().edit->tracks) ids.push_back(t->id);
+    model::TrackMix mix = *replica.current().mix.find(ids[1]);
+    mix.automation = model::AutomationMode::Latch;
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(model::SetMix{mix}, m.op, error));
+    api::CommandReply r;
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return real.session().tracks()[1]->automation() == Track::Automation::Latch;
+    }));
+
+    api::CommandRequest play;
+    play.command = "transport.play";
+    CHECK(reply_to(real.send(play), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return real.session().transport().state() == sonora::TransportState::Rolling;
+    }));
+    api::ParameterChange touch;
+    touch.track = 1;
+    touch.value = 0.5f;
+    touch.gesture = api::Gesture::Touch;
+    CHECK(reply_to(real.send(touch), r) && r.result == DispatchResult::Ok);
+    const uint64_t touched_at = real.state().transport().playhead;
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= touched_at + 4800; }));
+    touch.gesture = api::Gesture::Release;
+    CHECK(reply_to(real.send(touch), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() { return real.session().tracks()[1]->touched() == 0; }));
+
+    real.hold_reader(true);
+    // Compared, never read through: the plan is the audio thread's.
+    const void* const published = real.session().plans().current();
+    m.op.clear();
+    CHECK(model::encode_operation(make_op(ids), m.op, error));
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    const uint64_t held_at = real.state().transport().playhead;
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= held_at + 9600; }));
+    // Still the old plan: every write so far was stamped on B's old row.
+    CHECK(real.session().plans().current() == published);
+    real.hold_reader(false);
+    CHECK(until(real, in, [&]() {
+        return real.session().plans().current() != published;
+    }));
+    const uint64_t moved_at = real.state().transport().playhead;
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= moved_at + 9600; }));
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(reply_to(real.send(stop), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() { return real.session().automation_passes_ended() >= 1; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    real.poll(in);
+    feed();
+    check(real, replica.current(), ids, static_cast<model::Frames>(moved_at));
+    CHECK(real.session().automation_write_overruns() == 0);
+}
+
+const model::AutomationLane* volume_lane(const model::Snapshot& doc, model::Id id) {
+    for (const auto& t : doc.edit->tracks) {
+        if (t->id == id) return t->lane(model::AutomationParam::Volume);
+    }
+    return nullptr;
+}
+
+// B over A while B's latch rides: all of it lands in B's volume lane, from
+// the touch to the stop, and every other track's lanes stay empty.
+void a_reorder_while_latched_files_the_ride_under_its_track() {
+    latched_pass_through(
+        "automation_reorder",
+        [](const std::vector<model::Id>& ids) {
+            std::vector<model::Id> order = ids;
+            std::swap(order[0], order[1]);
+            return model::ReorderTracks{order};
+        },
+        [](RealEngine& real, const model::Snapshot& doc, const std::vector<model::Id>& ids,
+           model::Frames moved_at) {
+            for (std::size_t i = 0; i < ids.size(); ++i) {
+                if (i == 1) continue;
+                CHECK(volume_lane(doc, ids[i]) == nullptr);
+                for (const auto& t : doc.edit->tracks) {
+                    if (t->id == ids[i]) CHECK(t->lane(model::AutomationParam::Pan) == nullptr);
+                }
+            }
+            const model::AutomationLane* b = volume_lane(doc, ids[1]);
+            CHECK(b != nullptr);
+            if (b == nullptr) return;
+            // In at the touch, held through the old plan's blocks and the
+            // new plan's, to the stop.
+            const float half = 20.0f * std::log10(0.5f);
+            bool held = false;
+            for (const model::AutomationPoint& p : b->points) {
+                held = held || std::fabs(p.value - half) < 1e-3f;
+            }
+            CHECK(held);
+            CHECK(!b->points.empty() && b->points.back().at >= moved_at);
+            CHECK(real.engine().server().automation_writes_orphaned() == 0);
+        });
+}
+
+// B removed while its latch rides: what the old plan stamped for it is
+// dropped and counted, never filed under the track that takes its row.
+void a_removal_while_latched_drops_the_ride() {
+    latched_pass_through(
+        "automation_remove",
+        [](const std::vector<model::Id>& ids) { return model::RemoveTrack{ids[1]}; },
+        [](RealEngine& real, const model::Snapshot& doc, const std::vector<model::Id>& ids,
+           model::Frames) {
+            for (const auto& t : doc.edit->tracks) {
+                CHECK(t->id != ids[1]);
+                CHECK(t->lane(model::AutomationParam::Volume) == nullptr);
+                CHECK(t->lane(model::AutomationParam::Pan) == nullptr);
+            }
+            CHECK(real.engine().server().automation_writes_orphaned() > 0);
+        });
+}
+
 // ADR-0016 end to end: with the document's loop range set, transport.record
 // starts a loop take; while it records, a SetSettings that moves the loop
 // range or clears it is refused by name, as is opening a session, and any
@@ -3145,6 +3298,8 @@ int main() {
     a_load_while_rolling_writes_nothing();
     play_then_load_writes_nothing();
     a_pass_with_every_lane_dropped_leaves_write();
+    a_reorder_while_latched_files_the_ride_under_its_track();
+    a_removal_while_latched_drops_the_ride();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;
