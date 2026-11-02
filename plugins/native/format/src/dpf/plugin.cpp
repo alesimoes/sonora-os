@@ -162,7 +162,10 @@ protected:
     // DPF calls these on the host's main thread (VST3 setupProcessing, LV2
     // instantiate and options), whether or not the instance is active.
     // Preparing here, rather than at the next activate(), keeps a lazy
-    // activation on the audio thread free.
+    // activation on the audio thread free. LV2's options:set is in the
+    // "instantiation" threading class (lv2/options.h), never beside run();
+    // Ardour and Carla call it from their buffer-size and rate callbacks,
+    // off the audio thread (bundle_driver.cpp, --scenario options).
     void bufferSizeChanged(uint32_t) override {
         bridge_.activate(getSampleRate(), getBufferSize());
         setLatency(bridge_.latency());
