@@ -413,10 +413,25 @@ bool EditController::zoom_toggle(std::string& why) {
 }
 
 void EditController::vertical_zoom(bool in) {
+    refresh_rows();
+    // Every open lane above the selection grows too, so a kept scroll_y
+    // would carry the lane being edited down and off screen: the selected
+    // lane, else the selected track, stays where it is.
+    const bool anchored = !view_.tops.empty() && track(sel_.track) != nullptr;
+    const auto anchor_y = [&] {
+        return sel_.autolane >= 0 && view_.autolanes_open(sel_.track)
+                   ? view_.y_of_autolane(sel_.track, sel_.autolane)
+                   : view_.y_of_track(sel_.track);
+    };
+    const double before = anchored ? anchor_y() : 0.0;
     view_.wave_scale = std::clamp(view_.wave_scale * (in ? 1.5f : 1.0f / 1.5f), 0.25f, 8.0f);
     // Lanes grow with the waveforms so a curve can be edited as finely as a
     // clip is read; the clamp keeps a lane usable at both ends.
     view_.autolane_height = std::clamp(ViewState::kAutolaneBaseHeight * view_.wave_scale, 32.0, 224.0);
+    if (anchored) {
+        refresh_rows();
+        view_.scroll_y += anchor_y() - before;
+    }
     clamp_scroll();
 }
 
@@ -448,7 +463,10 @@ void EditController::next_mode() {
     mode_ = static_cast<EditMode>((static_cast<int>(mode_) + 1) % 4);
 }
 
-void EditController::next_tool() { tool_ = static_cast<Tool>((static_cast<int>(tool_) + 1) % 4); }
+// Every tool, the Pencil included (keymaps/README.md, "The tool cycle").
+void EditController::next_tool() {
+    tool_ = static_cast<Tool>((static_cast<int>(tool_) + 1) % (static_cast<int>(Tool::Pencil) + 1));
+}
 
 Frames EditController::snapped(Frames f) const {
     if (mode_ == EditMode::Grid) return snap_to_grid(f, grid_, snapshot().settings);
@@ -711,9 +729,9 @@ void EditController::move(double x, double y) {
             // Above or below the lanes is the first or the last track, so
             // a drag past the edge still reaches it.
             const int n = static_cast<int>(s.edit->tracks.size());
-            drag_.track_end = drag_.autolane >= 0
-                                  ? drag_.track
-                                  : std::clamp(view_.track_at(y), 0, std::max(0, n - 1));
+            // On an automation lane too: the range then covers the same
+            // lane on each track it reaches.
+            drag_.track_end = std::clamp(view_.track_at(y), 0, std::max(0, n - 1));
             const Frames f = snapped(view_.frame_at(x));
             drag_.start = std::min(drag_.press_frame, f);
             drag_.end = std::max(drag_.press_frame, f);
@@ -1516,15 +1534,22 @@ bool EditController::clear_fade_at_selection(bool& done, std::string& why) {
 bool EditController::undo(std::string& why) {
     drag_ = Drag{};
     if (!doc_.undo(why)) return false;
-    if (sel_.region != kNoId && find_region(snapshot(), sel_.region) == nullptr) clear_selection();
+    after_history_step();
     return true;
 }
 
 bool EditController::redo(std::string& why) {
     drag_ = Drag{};
     if (!doc_.redo(why)) return false;
-    if (sel_.region != kNoId && find_region(snapshot(), sel_.region) == nullptr) clear_selection();
+    after_history_step();
     return true;
+}
+
+void EditController::after_history_step() {
+    if (sel_.region != kNoId && find_region(snapshot(), sel_.region) == nullptr) clear_selection();
+    // A breakpoint is picked by its index, and the step may have added or
+    // removed points before it: Clear would then delete a different one.
+    sel_.point = -1;
 }
 
 bool EditController::undo_to(std::size_t depth, std::string& why) {

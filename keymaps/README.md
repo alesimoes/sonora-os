@@ -298,6 +298,17 @@ used at the next start unless `--keymap` is given. If it cannot be written
 the menu still switches, and a notice says the choice will not survive a
 restart.
 
+## The tool cycle
+
+`tool.next` (Escape in `protools.json`, Option+Page Down in `logic.json`)
+steps through every Edit tool in the order the toolbar shows them: Smart,
+Trim, Selector, Grabber, Pencil, then Smart again. The Pencil is in the
+cycle because it is the tool that draws on an automation lane; a cycle that
+skipped it would leave F10 as the only way to it, and a key that cycles
+"through the tools" but never reaches one is a key that misleads. Pro Tools'
+Scrubber (`tool.scrub`) is not in it: this build has no Scrubber, and that
+key says so when pressed.
+
 ## Known but unimplemented
 
 A command in the catalog with no handler in this build is a different thing

@@ -199,7 +199,60 @@ bool EditController::release_autolane(const Drag& d, std::string& why) {
     return true;
 }
 
-// --- Cut, Copy, Paste and Clear on a lane's range ---
+// --- Cut, Copy, Paste, Clear and Thin on a lane's range ---
+//
+// A range dragged across tracks covers the same lane (the same parameter)
+// on each of them, as Pro Tools' Edit selection covers each track's shown
+// view. A track in the range whose lanes are hidden shows no curve, so no
+// edit touches it: what the operator did not see is not what changes.
+
+namespace {
+
+std::string joined(const std::vector<std::string>& names) {
+    std::string out;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (i > 0) out += i + 1 == names.size() ? " and " : ", ";
+        out += names[i];
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<int> EditController::lane_range_tracks(std::vector<std::string>& hidden) const {
+    std::vector<int> out;
+    const int n = span();
+    for (int i = sel_.track; i < sel_.track + n; ++i) {
+        if (autolanes_shown(i)) out.push_back(i);
+        else if (const TrackEdit* t = track(i)) hidden.push_back(t->name);
+    }
+    return out;
+}
+
+std::string EditController::lane_range_label() const {
+    const AutomationParam p = lane_param(sel_.autolane);
+    const TrackEdit* t = track(sel_.track);
+    if (span() <= 1 && t != nullptr) return lane_label(*t, p);
+    return std::string("the selected ") + lane_name(p) + " lanes";
+}
+
+bool EditController::submit_lane_ops(std::vector<EditAutomation> ops, const char* gesture,
+                                     const char* nothing_was, std::string& why) {
+    if (ops.size() == 1) return submit(ops.front(), why);
+    std::vector<Member> members;
+    members.reserve(ops.size());
+    for (EditAutomation& op : ops) members.emplace_back(std::move(op));
+    return submit_compound(std::move(members), gesture, nothing_was, why);
+}
+
+void EditController::note_lanes_hidden(const char* gesture,
+                                       const std::vector<std::string>& tracks) {
+    if (tracks.empty()) return;
+    const bool one = tracks.size() == 1;
+    follow_notice_ = joined(tracks) + (one ? " shows" : " show") +
+                     " no automation lanes, so " + gesture + " left " + (one ? "it" : "them") +
+                     " alone; show its lanes to include it";
+}
 
 bool EditController::automation_copy(bool cut, std::string& why) {
     const char* verb = cut ? "cut" : "copied";
@@ -210,25 +263,45 @@ bool EditController::automation_copy(bool cut, std::string& why) {
     }
     const AutomationParam p = lane_param(sel_.autolane);
     if (!sel_.has_range()) {
-        why = "select a range of " + lane_label(*t, p) + " first; nothing was " + verb;
+        why = "select a range of " + lane_range_label() + " first; nothing was " + verb;
         return false;
     }
-    AutomationClip clip;
-    if (!copy_lane_range(t->lane(p), sel_.start, sel_.end, clip)) {
-        why = "there is no automation on " + lane_label(*t, p) + "; nothing was " + verb;
+    std::vector<std::string> hidden;
+    const std::vector<int> rows = lane_range_tracks(hidden);
+    // One slot a covered track, so each clip keeps its place below the first.
+    std::vector<AutomationClip> clips(static_cast<std::size_t>(span()));
+    std::vector<EditAutomation> ops;
+    bool any = false;
+    for (int i : rows) {
+        const TrackEdit* ti = track(i);
+        AutomationClip& clip = clips[static_cast<std::size_t>(i - sel_.track)];
+        if (!copy_lane_range(ti->lane(p), sel_.start, sel_.end, clip)) continue;
+        any = true;
+        EditAutomation op;
+        if (cut && clear_range_op(ti->id, *ti->lane(p), sel_.start, sel_.end, op)) {
+            ops.push_back(std::move(op));
+        }
+    }
+    if (!any) {
+        why = "there is no automation on " + lane_range_label() + "; nothing was " + verb;
         return false;
     }
     if (cut) {
-        EditAutomation op;
-        if (!clear_range_op(t->id, *t->lane(p), sel_.start, sel_.end, op)) {
-            why = "there is no breakpoint in the selection on " + lane_label(*t, p) +
+        if (ops.empty()) {
+            why = "there is no breakpoint in the selection on " + lane_range_label() +
                   "; nothing was cut";
             return false;
         }
-        if (!submit(op, why)) return false;
+        if (!submit_lane_ops(std::move(ops), "Cut Automation", "cut", why)) return false;
     }
-    auto_clip_ = std::move(clip);
+    for (AutomationClip& c : clips) {
+        // An empty slot still says what it would have held, for Paste's check.
+        c.param = p;
+        c.length = sel_.end - sel_.start;
+    }
+    auto_clips_ = std::move(clips);
     sel_.point = -1;
+    note_lanes_hidden(cut ? "Cut" : "Copy", hidden);
     return true;
 }
 
@@ -238,27 +311,63 @@ bool EditController::automation_paste(std::string& why) {
         why = "select a track first; nothing was pasted";
         return false;
     }
-    if (auto_clip_.empty()) {
+    const bool held = std::any_of(auto_clips_.begin(), auto_clips_.end(),
+                                  [](const AutomationClip& c) { return !c.empty(); });
+    if (!held) {
         why = "the automation clipboard is empty; copy a range of a lane first";
         return false;
     }
     const AutomationParam p = lane_param(sel_.autolane);
-    if (auto_clip_.param != p) {
-        why = std::string("the clipboard holds ") + lane_name(auto_clip_.param) +
-              " automation; select a " + lane_name(auto_clip_.param) +
-              " lane to paste it. Nothing was pasted.";
+    const AutomationParam had = auto_clips_.front().param;
+    if (had != p) {
+        why = std::string("the clipboard holds ") + lane_name(had) + " automation; select a " +
+              lane_name(had) + " lane to paste it. Nothing was pasted.";
         return false;
     }
+    // Pro Tools' order: the first clip on the selected track, each next one
+    // on the track below.
     const Frames at = sel_.has_range() ? sel_.start : sel_.insertion;
-    EditAutomation op;
-    if (!paste_op(t->id, auto_clip_, at, op)) {
-        why = "the automation does not fit there; nothing was pasted";
+    const int n = static_cast<int>(snapshot().edit->tracks.size());
+    std::vector<EditAutomation> ops;
+    std::vector<std::string> hidden;
+    std::size_t beyond = 0;
+    for (std::size_t k = 0; k < auto_clips_.size(); ++k) {
+        if (auto_clips_[k].empty()) continue;
+        const int i = sel_.track + static_cast<int>(k);
+        if (i >= n) {
+            ++beyond;
+            continue;
+        }
+        if (!autolanes_shown(i)) {
+            hidden.push_back(track(i)->name);
+            continue;
+        }
+        EditAutomation op;
+        if (!paste_op(track(i)->id, auto_clips_[k], at, op)) {
+            why = "the automation does not fit there; nothing was pasted";
+            return false;
+        }
+        ops.push_back(std::move(op));
+    }
+    if (ops.empty()) {
+        why = "no track below shows its " + std::string(lane_name(p)) +
+              " lane to paste onto; nothing was pasted";
         return false;
     }
-    if (!submit(op, why)) return false;
-    sel_.start = sel_.insertion = op.from;
-    sel_.end = op.to;
+    const Frames length = auto_clips_.front().length;
+    if (!submit_lane_ops(std::move(ops), "Paste Automation", "pasted", why)) return false;
+    sel_.start = sel_.insertion = at;
+    sel_.end = at + length;
+    sel_.tracks = std::clamp(static_cast<int>(auto_clips_.size()), 1, n - sel_.track);
     sel_.point = -1;
+    follow_notice_.clear();
+    note_lanes_hidden("Paste", hidden);
+    if (beyond > 0) {
+        const bool one = beyond == 1;
+        follow_notice_ += (follow_notice_.empty() ? "" : ". ") + std::to_string(beyond) +
+                          (one ? " lane" : " lanes") + " of the clipboard had no track to land on and " +
+                          (one ? "was" : "were") + " not pasted";
+    }
     return true;
 }
 
@@ -279,20 +388,32 @@ bool EditController::automation_clear(std::string& why) {
         return true;
     }
     if (!sel_.has_range()) {
-        why = "select a breakpoint or a range of " + lane_label(*t, p) +
+        why = "select a breakpoint or a range of " + lane_range_label() +
               " first; nothing was cleared";
         return false;
     }
-    if (lane == nullptr) {
-        why = "there is no automation on " + lane_label(*t, p) + "; nothing was cleared";
+    std::vector<std::string> hidden;
+    std::vector<EditAutomation> ops;
+    bool any_lane = false;
+    for (int i : lane_range_tracks(hidden)) {
+        const TrackEdit* ti = track(i);
+        const AutomationLane* l = ti->lane(p);
+        if (l == nullptr) continue;
+        any_lane = true;
+        if (clear_range_op(ti->id, *l, sel_.start, sel_.end, op)) ops.push_back(std::move(op));
+    }
+    if (!any_lane) {
+        why = "there is no automation on " + lane_range_label() + "; nothing was cleared";
         return false;
     }
-    if (!clear_range_op(t->id, *lane, sel_.start, sel_.end, op)) {
-        why = "there is no breakpoint in the selection on " + lane_label(*t, p) +
+    if (ops.empty()) {
+        why = "there is no breakpoint in the selection on " + lane_range_label() +
               "; nothing was cleared";
         return false;
     }
-    return submit(op, why);
+    if (!submit_lane_ops(std::move(ops), "Clear Automation", "cleared", why)) return false;
+    note_lanes_hidden("Clear", hidden);
+    return true;
 }
 
 bool EditController::thin_automation(std::string& why) {
@@ -302,14 +423,24 @@ bool EditController::thin_automation(std::string& why) {
         return false;
     }
     const AutomationParam p = lane_param(sel_.autolane);
-    const AutomationLane* lane = t->lane(p);
-    EditAutomation op;
-    if (lane == nullptr || !thin_range_op(t->id, *lane, sel_.start, sel_.end, op)) {
-        why = "there is nothing to thin in the selection on " + lane_label(*t, p) +
+    std::vector<std::string> hidden;
+    std::vector<EditAutomation> ops;
+    for (int i : lane_range_tracks(hidden)) {
+        const TrackEdit* ti = track(i);
+        const AutomationLane* l = ti->lane(p);
+        EditAutomation op;
+        if (l != nullptr && thin_range_op(ti->id, *l, sel_.start, sel_.end, op)) {
+            ops.push_back(std::move(op));
+        }
+    }
+    if (ops.empty()) {
+        why = "there is nothing to thin in the selection on " + lane_range_label() +
               "; nothing was thinned";
         return false;
     }
-    return submit(op, why);
+    if (!submit_lane_ops(std::move(ops), "Thin Automation", "thinned", why)) return false;
+    note_lanes_hidden("Thin", hidden);
+    return true;
 }
 
 }  // namespace sonora::ui

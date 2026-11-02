@@ -76,6 +76,12 @@ bool stroke_op(model::Id track, model::AutomationParam p,
 // passes within `tolerance` (lane units) removed; the first and last stay.
 std::vector<model::AutomationPoint> thin_points(const std::vector<model::AutomationPoint>& points,
                                                 float tolerance);
+// 0.25 dB for volume, 0.005 for pan, for the Pencil and for automation.thin
+// alike. Not the engine writer's 0.1 dB (engine/control's
+// automation_writer.cpp): that one keeps a written pass as played, while
+// Thin is asked for when a lane has too many points to edit by hand, and
+// one Thin that left most of them would only be pressed again. 0.25 dB is
+// still under what an ear tells apart on a fader ride.
 float thin_tolerance(model::AutomationParam p);
 
 // What Copy and Cut hold: the lane's part of [a, b), positions from the

@@ -123,6 +123,7 @@ target_link_libraries(test_ui_edit PRIVATE sonora_ui_qt sonora_session_files)
 target_compile_definitions(test_ui_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_edit COMMAND test_ui_edit)
+set_tests_properties(ui_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The take being recorded, drawn growing on the armed tracks' lanes.
 add_executable(test_ui_live_take tests/test_live_take.cpp)
@@ -135,7 +136,6 @@ set_tests_properties(ui_live_take PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscr
 add_executable(test_ui_automation tests/test_automation.cpp)
 target_link_libraries(test_ui_automation PRIVATE sonora_ui_qt)
 add_test(NAME ui_automation COMMAND test_ui_automation)
-set_tests_properties(ui_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Cut, Copy, Paste, Duplicate and Clear as compounds, at the member limit
 # and one past it, and Shuffle refused; then the Edit menu in the real QML.

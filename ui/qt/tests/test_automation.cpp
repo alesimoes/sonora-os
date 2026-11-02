@@ -266,7 +266,8 @@ int test_lane_height_follows_zoom() {
     OK(ctl.view().autolane_height > base);
     OK(std::fabs(ctl.view().autolane_height - base * 1.5) < 1e-6);
     // The rows below follow it.
-    OK(std::fabs(ctl.view().y_of_track(1) - (ctl.view().track_height + 2 * base * 1.5)) < 1e-6);
+    OK(std::fabs(ctl.view().y_of_track(1) - (ctl.view().track_height + kLaneCount * base * 1.5)) <
+       1e-6);
     ctl.vertical_zoom(false);
     ctl.vertical_zoom(false);
     OK(ctl.view().autolane_height < base);
@@ -378,13 +379,16 @@ int test_range_commands() {
     const double y = v.autolane_y(0, 0, 0.5f);
     const uint64_t r0 = doc.snapshot().revision;
     OK(ctl.press(xf(60000), y, why));
-    ctl.move(xf(300000), y + 2000);   // other tracks and lanes are not reachable
+    // Past the last track the range still reaches it, on the same lane: the
+    // other lane is not reachable.
+    ctl.move(xf(300000), y + 2000);
     OK(ctl.release(xf(300000), y + 2000, why));
-    OK(ctl.selection().autolane == 0 && ctl.selection().track == 0 && ctl.selection().tracks == 1);
+    OK(ctl.selection().autolane == 0 && ctl.selection().track == 0 && ctl.selection().tracks == 2);
     OK(ctl.selection().start == 60000 && ctl.selection().end == 300000);
     OK(ctl.copy(why));
-    OK(doc.snapshot().revision == r0 && !ctl.automation_clipboard().empty());
-    OK(ctl.automation_clipboard().param == AutomationParam::Volume);
+    OK(doc.snapshot().revision == r0 && ctl.automation_clipboard().size() == 2);
+    OK(!ctl.automation_clipboard()[0].empty() && ctl.automation_clipboard()[1].empty());
+    OK(ctl.automation_clipboard().front().param == AutomationParam::Volume);
 
     // Paste on another track's lane is one edit.
     OK(ctl.press(xf(30000), v.autolane_y(1, 0, 0.5f), why));
@@ -403,7 +407,7 @@ int test_range_commands() {
     ctl.move(xf(90000), v.autolane_y(0, 1, 0.5f));
     OK(ctl.release(xf(90000), v.autolane_y(0, 1, 0.5f), why));
     OK(ctl.selection().autolane == 1 && ctl.copy(why));
-    OK(ctl.automation_clipboard().param == AutomationParam::Pan);
+    OK(ctl.automation_clipboard().front().param == AutomationParam::Pan);
     OK(ctl.press(xf(10000), v.autolane_y(1, 0, 0.5f), why) && ctl.release(xf(10000), v.autolane_y(1, 0, 0.5f), why));
     const uint64_t r1 = doc.snapshot().revision;
     OK(!ctl.paste(why) && why.find("Pan automation") != std::string::npos);
@@ -418,7 +422,7 @@ int test_range_commands() {
     OK(doc.snapshot().revision == r1 + 1);
     const AutomationLane* after = lane(doc, 0, AutomationParam::Volume);
     for (const AutomationPoint& p : after->points) OK(p.at <= 60000 || p.at >= 299999);
-    OK(ctl.automation_clipboard().param == AutomationParam::Volume);
+    OK(ctl.automation_clipboard().front().param == AutomationParam::Volume);
     OK(!ctl.clear(why) && why.find("no breakpoint") != std::string::npos);
     OK(doc.snapshot().revision == r1 + 1);
     // A track's own row goes back to the regions: no range, no automation.
@@ -602,6 +606,252 @@ int test_follow_at_the_lane_cap() {
     return 0;
 }
 
+// The Selector on track `track`'s lane `lane` from frame `a`, let go over
+// lane `lane_end` of track `track_end` at frame `b`.
+bool drag_lane_range(EditController& ctl, int track, int lane, Frames a, int track_end,
+                     int lane_end, Frames b, std::string& why) {
+    const ViewState& v = ctl.view();
+    const auto xf = [&](Frames f) { return static_cast<double>(f) / v.fpp; };
+    ctl.set_tool(Tool::Select);
+    if (!ctl.press(xf(a), v.autolane_y(track, lane, 0.5f), why)) return false;
+    ctl.move(xf(b), v.autolane_y(track_end, lane_end, 0.5f));
+    return ctl.release(xf(b), v.autolane_y(track_end, lane_end, 0.5f), why);
+}
+
+// automation.thin keeps exactly what the curve needs (#199 review).
+int test_thin_exact() {
+    ModelDocument doc(make_empty_session(1, kRate));
+    EditController ctl(doc);
+    ctl.set_viewport(1000, 600);
+    std::string why;
+    OK(ctl.toggle_autolanes(0, why));
+    const auto points = [&](AutomationParam p) { return lane(doc, 0, p)->points; };
+    // A collinear 11-point ramp keeps its two ends and nothing else.
+    std::vector<AutomationPoint> ramp;
+    for (int i = 0; i <= 10; ++i) ramp.push_back({i * 10000, -40.0f + 2.0f * i});
+    OK(seed(doc, 0, AutomationParam::Volume, ramp));
+    OK(drag_lane_range(ctl, 0, 0, 0, 0, 0, 200000, why));
+    OK(ctl.thin_automation(why));
+    OK(points(AutomationParam::Volume) ==
+       (std::vector<AutomationPoint>{{0, -40.0f}, {100000, -20.0f}}));
+    // A step inside the range survives: each side of it is thinned alone.
+    OK(seed(doc, 0, AutomationParam::Volume,
+            {{0, -40.0f}, {10000, -38.0f}, {20000, -36.0f}, {20000, -10.0f}, {30000, -10.0f},
+             {40000, -10.0f}, {50000, -10.0f}}));
+    OK(ctl.thin_automation(why));
+    OK(points(AutomationParam::Volume) ==
+       (std::vector<AutomationPoint>{{0, -40.0f}, {20000, -36.0f}, {20000, -10.0f}, {50000, -10.0f}}));
+    // Pan has its own tolerance: 0.01 off the line is nothing on a fader in
+    // dB, and twice what a pan lane lets go.
+    OK(seed(doc, 0, AutomationParam::Volume, {{0, -20.0f}, {10000, -9.99f}, {20000, 0.0f}}));
+    OK(seed(doc, 0, AutomationParam::Pan, {{0, -0.5f}, {10000, 0.01f}, {20000, 0.5f}}));
+    OK(ctl.thin_automation(why) && points(AutomationParam::Volume).size() == 2);
+    OK(drag_lane_range(ctl, 0, 1, 0, 0, 1, 200000, why) && ctl.selection().autolane == 1);
+    OK(!ctl.thin_automation(why) && why.find("nothing to thin") != std::string::npos);
+    OK(points(AutomationParam::Pan).size() == 3);
+    OK(seed(doc, 0, AutomationParam::Pan, {{0, -0.5f}, {10000, 0.004f}, {20000, 0.5f}}));
+    OK(ctl.thin_automation(why) && points(AutomationParam::Pan).size() == 2);
+    return 0;
+}
+
+// Undo and redo change the lane under a picked breakpoint: the pick goes,
+// so Clear cannot delete whichever point now has its index (#181 review).
+int test_undo_drops_the_picked_point() {
+    ModelDocument doc(make_empty_session(1, kRate));
+    EditController ctl(doc);
+    ctl.set_viewport(1000, 600);
+    std::string why;
+    OK(ctl.toggle_autolanes(0, why));
+    const ViewState& v = ctl.view();
+    const auto xf = [&](Frames f) { return static_cast<double>(f) / v.fpp; };
+    const double y = v.autolane_y(0, 0, 0.5f);
+    for (Frames f : {Frames(120000), Frames(240000), Frames(360000)}) {
+        OK(ctl.press(xf(f), y, why) && ctl.release(xf(f), y, why));
+    }
+    OK(lane(doc, 0, AutomationParam::Volume)->points.size() == 3);
+    const double x0 = xf(lane(doc, 0, AutomationParam::Volume)->points[0].at);
+    const double y0 = v.autolane_y(
+        0, 0, lane_position(AutomationParam::Volume, lane(doc, 0, AutomationParam::Volume)->points[0].value));
+    OK(ctl.press(x0, y0, why) && ctl.release(x0, y0, why));
+    OK(ctl.selection().point == 0);
+    OK(ctl.undo(why));
+    OK(ctl.selection().point == -1);
+    const uint64_t r = doc.snapshot().revision;
+    OK(!ctl.clear(why) && doc.snapshot().revision == r);
+    OK(lane(doc, 0, AutomationParam::Volume)->points.size() == 2);
+    OK(ctl.press(x0, y0, why) && ctl.release(x0, y0, why) && ctl.selection().point == 0);
+    OK(ctl.redo(why));
+    OK(ctl.selection().point == -1);
+    OK(lane(doc, 0, AutomationParam::Volume)->points.size() == 3);
+    return 0;
+}
+
+// tool.next (Pro Tools' Escape) reaches every tool, the Pencil included.
+int test_tool_cycle() {
+    ModelDocument doc(make_empty_session(1, kRate));
+    EditController ctl(doc);
+    OK(ctl.tool() == Tool::Smart);
+    for (Tool t : {Tool::Trim, Tool::Select, Tool::Grab, Tool::Pencil, Tool::Smart}) {
+        ctl.next_tool();
+        OK(ctl.tool() == t);
+    }
+    return 0;
+}
+
+// Vertical zoom grows every lane above the selection too; the selected
+// track, or its selected lane, stays where it was on screen (#192 review).
+int test_zoom_keeps_the_selection_still() {
+    ModelDocument doc(make_empty_session(8, kRate));
+    EditController ctl(doc);
+    ctl.set_viewport(1000, 400);
+    std::string why;
+    for (int i = 0; i < 8; ++i) OK(ctl.toggle_autolanes(i, why));
+    ctl.select_track(5);
+    ctl.scroll_by(0, ctl.view().y_of_track(5) - 100);
+    OK(std::fabs(ctl.view().y_of_track(5) - 100) < 1e-6);
+    ctl.vertical_zoom(true);
+    OK(std::fabs(ctl.view().y_of_track(5) - 100) < 1e-6);
+    ctl.vertical_zoom(false);
+    ctl.vertical_zoom(false);
+    OK(std::fabs(ctl.view().y_of_track(5) - 100) < 1e-6);
+    // A lane selected: that lane is what stays.
+    OK(drag_lane_range(ctl, 5, 1, 1000, 5, 1, 1000, why));
+    OK(ctl.selection().track == 5 && ctl.selection().autolane == 1);
+    const double lane_y = ctl.view().y_of_autolane(5, 1);
+    ctl.vertical_zoom(true);
+    OK(std::fabs(ctl.view().y_of_autolane(5, 1) - lane_y) < 1e-6);
+    // At the top the scroll cannot go above the first track, and stops there.
+    ctl.select_track(0);
+    ctl.scroll_by(0, -1e9);
+    ctl.vertical_zoom(true);
+    OK(ctl.view().scroll_y == 0);
+    return 0;
+}
+
+// A Selector range dragged across tracks covers the same lane on each, and
+// Cut, Copy, Paste, Clear and Thin act on every one of them as one undo
+// step. A track in the range whose lanes are hidden shows no curve to have
+// edited, so it is left alone and a held notice says so.
+int test_range_across_tracks() {
+    ModelDocument doc(make_empty_session(4, kRate));
+    EditController ctl(doc);
+    ctl.set_viewport(1000, 900);
+    std::string why;
+    for (int i : {0, 1, 3}) OK(ctl.toggle_autolanes(i, why));
+    const ViewState& v = ctl.view();
+    const auto xf = [&](Frames f) { return static_cast<double>(f) / v.fpp; };
+    const std::vector<AutomationPoint> shape{
+        {0, -20.0f}, {120000, -10.0f}, {240000, 0.0f}, {360000, -30.0f}};
+    for (int i = 0; i < 4; ++i) OK(seed(doc, i, AutomationParam::Volume, shape));
+    const std::string hidden = doc.snapshot().edit->tracks[2]->name;
+
+    Scene scene;
+    class Flat final : public PeakSource {
+    public:
+        void peaks(Id, uint16_t, Frames, double, int count, PeakPair* out) const override {
+            for (int i = 0; i < count; ++i) out[i] = {0.0f, 0.0f};
+        }
+    } peaks;
+    const auto fills = [&]() {
+        build_timeline_scene(doc.snapshot(), v, ctl.selection(), ctl.drag(), false,
+                             GridValue::Beat, peaks, scene);
+        int n = 0;
+        for (const SceneRect& r : scene.rects) n += r.argb == theme::kSelectionFill;
+        return n;
+    };
+
+    // From track 0's Volume lane to track 3's Pan lane: four tracks, the
+    // Volume lane on each, drawn on the three that show it.
+    ctl.set_tool(Tool::Select);
+    OK(ctl.press(xf(60000), v.autolane_y(0, 0, 0.5f), why));
+    ctl.move(xf(300000), v.autolane_y(3, 1, 0.5f));
+    OK(ctl.drag().track_end == 3);
+    OK(fills() == 3);
+    OK(ctl.release(xf(300000), v.autolane_y(3, 1, 0.5f), why));
+    const Selection& sel = ctl.selection();
+    OK(sel.track == 0 && sel.tracks == 4 && sel.autolane == 0);
+    OK(sel.start == 60000 && sel.end == 300000);
+    OK(fills() == 3);
+
+    // Clear: one undo step over the three shown lanes; the hidden one stays.
+    const uint64_t r0 = doc.snapshot().revision;
+    OK(ctl.clear(why));
+    OK(doc.snapshot().revision == r0 + 1 && doc.undo_label() == "Clear Automation");
+    for (int i : {0, 1, 3}) {
+        for (const AutomationPoint& p : lane(doc, i, AutomationParam::Volume)->points) {
+            OK(p.at <= 60000 || p.at >= 299999);
+        }
+    }
+    OK(lane(doc, 2, AutomationParam::Volume)->points == shape);
+    const std::string notice = ctl.take_follow_notice();
+    OK(notice.find(hidden) != std::string::npos && notice.find("Clear") != std::string::npos);
+    OK(ctl.take_follow_notice().empty());
+    OK(ctl.undo(why));
+    for (int i = 0; i < 4; ++i) OK(lane(doc, i, AutomationParam::Volume)->points == shape);
+    OK(valid(doc.snapshot()));
+
+    // Copy holds one slot a track, the hidden one's empty, so a paste lands
+    // each where it came from relative to the first.
+    OK(drag_lane_range(ctl, 0, 0, 60000, 3, 0, 300000, why) && ctl.selection().tracks == 4);
+    OK(ctl.copy(why));
+    const std::vector<AutomationClip>& clips = ctl.automation_clipboard();
+    OK(clips.size() == 4 && !clips[0].empty() && !clips[1].empty() && clips[2].empty() &&
+       !clips[3].empty());
+    OK(ctl.take_follow_notice().find(hidden) != std::string::npos);
+
+    // Pasted on track 0 at 600000: one step, the slots on tracks 0 to 3.
+    OK(drag_lane_range(ctl, 0, 0, 600000, 0, 0, 600000, why) && ctl.selection().tracks == 1);
+    const uint64_t r1 = doc.snapshot().revision;
+    OK(ctl.paste(why));
+    OK(doc.snapshot().revision == r1 + 1 && doc.undo_label() == "Paste Automation");
+    for (int i : {0, 1, 3}) OK(lane(doc, i, AutomationParam::Volume)->points.back().at == 839999);
+    OK(lane(doc, 2, AutomationParam::Volume)->points == shape);
+    OK(ctl.selection().start == 600000 && ctl.selection().end == 840000 &&
+       ctl.selection().tracks == 4);
+    OK(valid(doc.snapshot()));
+    OK(ctl.undo(why));
+
+    // Pasted on track 1: slot 1 lands on the hidden track and slot 3 has no
+    // track to land on; both are named, the rest goes ahead.
+    OK(drag_lane_range(ctl, 1, 0, 600000, 1, 0, 600000, why));
+    const uint64_t r2 = doc.snapshot().revision;
+    OK(ctl.paste(why));
+    OK(doc.snapshot().revision == r2 + 1);
+    OK(lane(doc, 1, AutomationParam::Volume)->points.back().at == 839999);
+    OK(lane(doc, 2, AutomationParam::Volume)->points == shape);
+    const std::string left = ctl.take_follow_notice();
+    OK(left.find(hidden) != std::string::npos && left.find("no track") != std::string::npos);
+    OK(ctl.undo(why));
+
+    // Cut: every shown lane cleared as one step, held as Copy holds it.
+    OK(drag_lane_range(ctl, 0, 0, 60000, 1, 0, 300000, why) && ctl.selection().tracks == 2);
+    const uint64_t r3 = doc.snapshot().revision;
+    OK(ctl.cut(why));
+    OK(doc.snapshot().revision == r3 + 1 && doc.undo_label() == "Cut Automation");
+    OK(ctl.automation_clipboard().size() == 2);
+    OK(ctl.take_follow_notice().empty());
+    OK(ctl.undo(why));
+
+    // Thin over two dense ramps: one step.
+    std::vector<AutomationPoint> ramp;
+    for (int i = 0; i <= 10; ++i) ramp.push_back({i * 10000, -40.0f + 2.0f * i});
+    OK(seed(doc, 0, AutomationParam::Volume, ramp));
+    OK(seed(doc, 1, AutomationParam::Volume, ramp));
+    OK(drag_lane_range(ctl, 0, 0, 0, 1, 0, 200000, why));
+    const uint64_t r4 = doc.snapshot().revision;
+    OK(ctl.thin_automation(why));
+    OK(doc.snapshot().revision == r4 + 1 && doc.undo_label() == "Thin Automation");
+    OK(lane(doc, 0, AutomationParam::Volume)->points.size() == 2);
+    OK(lane(doc, 1, AutomationParam::Volume)->points.size() == 2);
+
+    // No breakpoint on any covered lane: refused by name, nothing sent.
+    OK(drag_lane_range(ctl, 0, 0, 700000, 3, 0, 1000000, why) && ctl.selection().tracks == 4);
+    const uint64_t r5 = doc.snapshot().revision;
+    OK(!ctl.clear(why) && why.find("Volume lanes") != std::string::npos);
+    OK(!ctl.thin_automation(why) && doc.snapshot().revision == r5);
+    return 0;
+}
+
 int test_scene() {
     ModelDocument doc(make_empty_session(2, kRate));
     EditController ctl(doc);
@@ -659,9 +909,15 @@ int test_scene() {
 }  // namespace
 
 int main() {
-    if (test_values() || test_operations() || test_stroke() || test_clip() || test_rows() || test_lane_height_follows_zoom() ||
-        test_gestures() || test_range_commands() || test_follow_ops() || test_follow_at_the_lane_cap() ||
-        test_scene()) {
+    // Every test runs, so one failure does not hide the next.
+    const int failed = test_values() + test_operations() + test_stroke() + test_clip() +
+                       test_rows() + test_lane_height_follows_zoom() + test_gestures() +
+                       test_range_commands() + test_follow_ops() + test_follow_at_the_lane_cap() +
+                       test_thin_exact() + test_undo_drops_the_picked_point() + test_tool_cycle() +
+                       test_zoom_keeps_the_selection_still() + test_range_across_tracks() +
+                       test_scene();
+    if (failed != 0) {
+        std::fprintf(stderr, "ui automation: %d tests failed\n", failed);
         return 1;
     }
     std::printf("ui automation: %d checks passed\n", checks);
