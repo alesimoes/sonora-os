@@ -362,8 +362,23 @@ int record_is_refused_in_a_template_folder() {
     r.shell.invoke(QStringLiteral("transport.record"), -1);
     r.settle();
     CHECK(r.shell.recordRefusal().contains(QStringLiteral("template")));
-    const RouteResult ready = r.router.invoke("transport.record_ready", CommandContext{});
-    CHECK(ready.kind != RouteResult::Kind::Sent && ready.message.find("template") != std::string::npos);
+    // #272 re-review: every command that starts or sets up a take, through
+    // the one shared list, so a command added to it is covered here.
+    for (const std::string& id : take_commands()) {
+        r.shell.invoke(QString::fromStdString(id), -1);
+        CHECK(r.shell.recordRefusal().contains(QStringLiteral("template")));
+        r.shell.invoke(QStringLiteral("transport.stop"), -1);
+        r.settle();
+        const RouteResult refused = r.router.invoke(id, CommandContext{});
+        if (refused.kind == RouteResult::Kind::Sent || refused.message.find("template") == std::string::npos) {
+            std::fprintf(stderr, "  %s was not refused\n", id.c_str());
+            return 1;
+        }
+    }
+    // Space under the default profile the window starts on.
+    const RouteResult space = r.router.route(KeyChord{"space", kModNone});
+    CHECK(space.command == "transport.toggle_record");
+    CHECK(space.kind != RouteResult::Kind::Sent && space.message.find("template") != std::string::npos);
     r.settle();
     CHECK(no_take_in(r, tdir));
     CHECK(tree(tdir) == before);
@@ -402,6 +417,23 @@ int record_is_refused_during_the_round_trip() {
     return 0;
 }
 
+// The shared list holds every catalog command that records or punches, so
+// one added to the catalog cannot start a take in a template's folder
+// unseen. transport.clear_punch only removes the range.
+int every_record_or_punch_command_is_a_take_command() {
+    for (const CommandSpec& spec : command_catalog()) {
+        const std::string id = spec.id;
+        const bool records = id.find("record") != std::string::npos || id.find("punch") != std::string::npos;
+        if (!records || id == "transport.clear_punch") continue;
+        if (!is_take_command(id)) {
+            std::fprintf(stderr, "  %s records or punches and is not in take_commands()\n", id.c_str());
+            return 1;
+        }
+    }
+    for (const std::string& id : take_commands()) CHECK(find_command(id) != nullptr);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -410,6 +442,7 @@ int main(int argc, char** argv) {
     if (the_save_as_waits_for_the_load() != 0) return 1;
     if (record_is_refused_in_a_template_folder() != 0) return 1;
     if (record_is_refused_during_the_round_trip() != 0) return 1;
+    if (every_record_or_punch_command_is_a_take_command() != 0) return 1;
     std::printf("session templates: ok\n");
     return 0;
 }

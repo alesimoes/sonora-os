@@ -1856,7 +1856,9 @@ void SessionModel::saveAfterOpen() {
 }
 
 std::string SessionModel::commandRefusal(const std::string& command) const {
-    if (command != "transport.record" && command != "transport.record_ready") return {};
+    // Play is not refused: it is a take only while record-ready, and a Load
+    // clears record-ready at the engine, while record_ready is refused here.
+    if (!is_take_command(command)) return {};
     if (making_from_template_) {
         return "the new session is still being made from its template; record once it is saved "
                "in the sessions folder";

@@ -382,8 +382,9 @@ void ShellModel::report(const RouteResult& r) {
         holdRecordRefusal(QString());
     }
     // Refused before it left (not implemented, or by the window): held as
-    // the engine's is, from a key as from a button.
-    if (isRecordCommand(r.command) && r.kind != RouteResult::Kind::Sent && !r.message.empty()) {
+    // the engine's is, from a key as from a button, for every command that
+    // starts or sets up a take (Space under the default profile included).
+    if (is_take_command(r.command) && r.kind != RouteResult::Kind::Sent && !r.message.empty()) {
         holdRecordRefusal(QString::fromStdString(r.message));
     }
     if (router_.commandsFocus() != seen_focus_) {

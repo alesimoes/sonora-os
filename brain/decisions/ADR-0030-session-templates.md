@@ -150,10 +150,27 @@ take recorded there would stay in the template's `Audio Files/`, and every
 later New from Template would link it into its new session and offer it as
 an orphan. A take there is also outside the sessions folder, so an
 unsaved one is never listed as an unsaved recording. So the window
-refuses `transport.record` and `transport.record_ready` before they are
-sent (`KeyRouter::setRefusal`, `SessionModel::commandRefusal`), with the
-reason held in the transport's record refusal, from a key as from the
-button:
+refuses every command in `take_commands()` (contracts/api `command.h`)
+before it is sent (`KeyRouter::setRefusal`, `SessionModel::commandRefusal`),
+with the reason held in the transport's record refusal, from a key as
+from the button. That list is the one place a take-starting command is
+named:
+
+- `record`, `toggle_record` and `punch` start a take. They are the
+  engine's `starts_a_take()`, and `toggle_record` is Space in the default
+  profile;
+- `record_ready` arms one;
+- `punch_selection` and `toggle_loop_record` set up how the next take
+  records. They start nothing themselves, but they are refused with the
+  others.
+
+A test holds every catalog command that records or punches to be in the
+list. Play is not refused. It starts a take only while record-ready
+(ADR-0009 update of 2026-11-01), and the engine clears record-ready at
+every Load (`engine_control_server.cpp`, "the opened session is not
+record-ready"), while `record_ready` itself is refused here.
+
+The refusal applies:
 
 - from New from Template until its Save As is answered, which covers the
   round trip between the Load and the Save As: a take started there would
