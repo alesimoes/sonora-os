@@ -10,6 +10,12 @@
 #                               also Docker's build cache older than 24 h. It
 #                               cannot be filtered by label, so this clears
 #                               every project's cache on this host, not ours.
+#   tools/clean.sh --worktrees-only
+#                               only the worktree rules below. No Docker call
+#                               at all (docker need not be installed) and no
+#                               build-*/ section, so it is safe while another
+#                               agent's container runs. Sizes are measured in
+#                               parallel at the end and may be approximate.
 #
 # Ours means: a Docker object labelled org.sonora=1 or named sonora-*, a git
 # worktree under .claude/worktrees, a build-*/ directory in the main checkout.
@@ -27,6 +33,7 @@
 #
 # Refuses to remove anything while a container of ours is running: that is
 # another agent's test, and its volume or image would go from under it.
+# --worktrees-only touches no Docker object, so it does not refuse.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,16 +52,19 @@ DRY=0
 DEEP=0
 HOST_CACHE=0
 DAYS=3
+WT_ONLY=0
+WT_COUNT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run|-n) DRY=1 ;;
     --deep)       DEEP=1 ;;
+    --worktrees-only) WT_ONLY=1 ;;
     --host-build-cache) HOST_CACHE=1 ;;
     --days)
       [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "error: --days needs a number" >&2; exit 2; }
       DAYS="$2"
       shift ;;
-    -h|--help) sed -n '2,29p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "error: unknown argument $1" >&2; exit 2 ;;
   esac
   shift
@@ -112,7 +122,9 @@ in_list() {
 
 # --- Docker ---
 DOCKER=0
-if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+if [[ "$WT_ONLY" == 1 ]]; then
+  echo "worktrees only: Docker and build-*/ are not touched."
+elif command -v docker >/dev/null && docker info >/dev/null 2>&1; then
   DOCKER=1
 else
   echo "docker: not reachable, Docker cleanup skipped."
@@ -254,6 +266,7 @@ judge_worktree() {
   [[ "$wt" == "$MAIN/.claude/worktrees/"* ]] || return 0
   if [[ "$wt" == "$SELF" ]]; then keep "worktree $wt" "this script runs from it"; return; fi
   if [[ ! -d "$wt" ]]; then
+    if [[ "$WT_ONLY" == 1 ]]; then echo "STALE|$wt"; return; fi
     act 0 "stale worktree entry $wt (directory gone)" git -C "$MAIN" worktree prune
     return
   fi
@@ -272,24 +285,76 @@ judge_worktree() {
     keep "worktree $wt [$branch]" "LIST: $ahead commit(s) not on origin/main"
     return
   fi
+  if [[ "$WT_ONLY" == 1 ]]; then
+    # Sized later, four at a time: a du per worktree dominated the scan.
+    echo "CAND|$wt|$branch"
+    return
+  fi
   act "$(du_bytes "$wt")" "worktree $wt [$branch], merged" git -C "$MAIN" worktree remove "$wt"
 }
 
+# Size the candidates in parallel, then act on each in order.
+act_candidates() {
+  local c w b kb
+  declare -A KB=()
+  [[ "${#CANDS[@]}" -gt 0 ]] || return 0
+  while IFS=$'\t' read -r kb w; do KB["$w"]="$kb"; done < <(
+    for c in "${CANDS[@]}"; do printf '%s\0' "${c%%|*}"; done \
+      | xargs -0 -n1 -P4 du -sk 2>/dev/null)
+  for c in "${CANDS[@]}"; do
+    w="${c%%|*}"; b="${c#*|}"
+    WT_COUNT=$((WT_COUNT + 1))
+    act "$(( ${KB[$w]:-0} * 1024 ))" "worktree $w [$b], merged (size approximate)" git -C "$MAIN" worktree remove "$w"
+  done
+}
+
 echo "Worktrees under .claude/worktrees:"
+CANDS=()
+N=0
+JDIR=""
+[[ "$WT_ONLY" != 1 ]] || JDIR="$(mktemp -d)"
 wt=""; branch=""; locked=0
 while IFS= read -r line; do
   case "$line" in
     "worktree "*) wt="${line#worktree }"; branch="(detached)"; locked=0 ;;
     "branch refs/heads/"*) branch="${line#branch refs/heads/}" ;;
     locked*) locked=1 ;;
-    "") [[ -z "$wt" ]] || judge_worktree "$wt" "$branch" "$locked"; wt="" ;;
+    "")
+      if [[ -z "$wt" ]]; then :
+      elif [[ "$WT_ONLY" == 1 ]]; then
+        # git status over ~100 worktrees is the slow part: judge four at a time,
+        # each into its own file, printed in list order afterwards.
+        [[ "$(jobs -rp | wc -l)" -lt 4 ]] || wait -n
+        N=$((N + 1))
+        judge_worktree "$wt" "$branch" "$locked" >"$JDIR/$(printf '%05d' "$N")" 2>&1 &
+      else
+        judge_worktree "$wt" "$branch" "$locked"
+      fi
+      wt="" ;;
   esac
 done < <(git -C "$MAIN" worktree list --porcelain; echo)
+if [[ "$WT_ONLY" == 1 ]]; then
+  wait
+  for f in "$JDIR"/*; do
+    [[ -f "$f" ]] || continue
+    while IFS= read -r line; do
+      case "$line" in
+        CAND\|*) CANDS+=("${line#CAND|}") ;;
+        STALE\|*) act 0 "stale worktree entry ${line#STALE|} (directory gone)" git -C "$MAIN" worktree prune ;;
+        *) printf '%s\n' "$line" ;;
+      esac
+    done <"$f"
+  done
+  rm -rf "$JDIR"
+  act_candidates
+fi
 
 # --- build output in the main checkout ---
 echo "build-*/ in the main checkout untouched for $DAYS day(s):"
 found=0
+[[ "$WT_ONLY" != 1 ]] || echo "  skipped (--worktrees-only)"
 for d in "$MAIN"/build-*/; do
+  [[ "$WT_ONLY" != 1 ]] || break
   [[ -d "$d" ]] || continue
   d="${d%/}"
   if [[ -n "$(find "$d" -mtime "-$DAYS" -print -quit 2>/dev/null)" ]]; then
@@ -299,18 +364,20 @@ for d in "$MAIN"/build-*/; do
   found=1
   act "$(du_bytes "$d")" "$d" rm -rf "$d"
 done
-[[ "$found" == 1 ]] || echo "  none to remove"
+[[ "$found" == 1 || "$WT_ONLY" == 1 ]] || echo "  none to remove"
 
 echo
+wtinfo=""
+[[ "$WT_ONLY" != 1 ]] || wtinfo=" from $WT_COUNT worktree(s) (sizes approximate)"
 if [[ "$DRY" == 1 ]]; then
   extra=""; [[ "$HOST_CACHE" == 1 ]] && extra=" (plus host build cache older than 24 h)"
-  echo "SUMMARY would reclaim $(human "$RECLAIMED")$extra"
+  echo "SUMMARY would reclaim $(human "$RECLAIMED")$wtinfo$extra"
 else
   if [[ "$DOCKER" == 1 ]]; then
     echo "docker system df after:"
     docker system df | sed 's/^/  /'
   fi
-  echo "SUMMARY reclaimed $(human "$RECLAIMED"), $FAILURES failure(s)"
+  echo "SUMMARY reclaimed $(human "$RECLAIMED")$wtinfo, $FAILURES failure(s)"
   echo "Docker Desktop's disk file does not shrink by itself; compacting it is an owner step (.claude/agents/janitor.md)."
 fi
 [[ "$FAILURES" == 0 ]]
