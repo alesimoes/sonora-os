@@ -95,7 +95,19 @@ protected:
         inv_pre_.assign(max_frames(), 1.0);
         xf_amount_.assign(max_frames(), 0.0);
         sag_amount_.assign(max_frames(), 0.0);
-        if (!out_stage_.prepare(os_rate, chs)) return false;
+        // The driver's clip at the oversampled rate, the core slower: its
+        // current is the low-passed integral of the node voltage, and its
+        // solve is the stage's cost. Eco steps it once per base sample;
+        // standard and high at twice the base rate, where the core's own
+        // aliasing stays well under their -90 dBc bar (at the base rate it
+        // read -92). transformer.h; brain/research/native-tube-n2.md,
+        // "Output stage at class B".
+        xf_sub_ = factor_ == 2 ? 2 : factor_ / 2;
+        if (!out_stage_.prepare(os_rate, chs, {}, {}, xf_sub_)) return false;
+        for (std::uint32_t c = 0; c < 2; ++c) {
+            xf_in_[c].assign(static_cast<std::size_t>(max_frames()) * factor_, 0.0);
+            xf_out_[c].assign(static_cast<std::size_t>(max_frames()) * factor_, 0.0);
+        }
         pre_coef_ = 1.0 - std::exp(-1.0 / (0.003 * sample_rate()));
         pre_state_ = norm_;
         xf_active_ = false;
@@ -251,14 +263,23 @@ protected:
         if (level_active(kTransformer, xf_amount_.data(), frames)) {
             for (std::uint32_t k = 0; k < frames; ++k) inv_pre_[k] = 1.0 / pre_[k];
             xf_active_ = true;
-            for (std::uint32_t k = 0; k < frames; ++k) {
-                out_stage_.set_sag(sag_amount_[k]);
-                const double pre = pre_[k], inv = inv_pre_[k], a = xf_amount_[k];
-                for (std::uint32_t j = 0; j < factor_; ++j) {
-                    const std::uint32_t i = k * factor_ + j;
-                    double in2[2] = {x[0][i] * pre, chs > 1 ? x[1][i] * pre : 0.0}, y2[2];
-                    out_stage_.tick(in2, y2);
-                    for (std::uint32_t c = 0; c < chs; ++c) x[c][i] += a * (y2[c] * inv - x[c][i]);
+            for (std::uint32_t c = 0; c < chs; ++c) {
+                double* xin = xf_in_[c].data();
+                for (std::uint32_t k = 0; k < frames; ++k)
+                    for (std::uint32_t j = 0; j < factor_; ++j) xin[k * factor_ + j] = x[c][k * factor_ + j] * pre_[k];
+            }
+            // The whole block in one call, the sag per base sample.
+            const double* ip[2] = {xf_in_[0].data(), xf_in_[1].data()};
+            double* op[2] = {xf_out_[0].data(), xf_out_[1].data()};
+            out_stage_.process_block(ip, op, n / xf_sub_, sag_amount_.data(), factor_ / xf_sub_);
+            for (std::uint32_t c = 0; c < chs; ++c) {
+                const double* y = op[c];
+                for (std::uint32_t k = 0; k < frames; ++k) {
+                    const double inv = inv_pre_[k], a = xf_amount_[k];
+                    for (std::uint32_t j = 0; j < factor_; ++j) {
+                        const std::uint32_t i = k * factor_ + j;
+                        x[c][i] += a * (y[i] * inv - x[c][i]);
+                    }
                 }
             }
         } else if (xf_active_) {
@@ -306,6 +327,8 @@ private:
     // The output stage (slice 3) and its per-sample controls.
     dsp::OutputStage out_stage_;
     bool xf_active_ = false;
+    std::uint32_t xf_sub_ = 2;  // oversampled samples per core step
+    std::vector<double> xf_in_[2], xf_out_[2];  // the stage's input and output, a block oversampled
     std::vector<double> pre_, inv_pre_, xf_amount_, sag_amount_;
     double pre_state_ = -1.0, pre_coef_ = 0.0;
 };

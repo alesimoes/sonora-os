@@ -461,11 +461,16 @@ quality.
 ## Output stage: finite for any input, and a cheaper solve
 
 - `OutputStage::tick` caps |u| at 1e6 before u^4. Past that the soft clip is
-  flat at the rail to 1e-6 relative; before, x = 1e300 made u^4 infinite,
-  vs = inf / inf = NaN, and the core state and the rail were poisoned.
-  Regression test: `test_dsp_transformer` extremes, inputs of +-1e100,
-  +-1e300 and 1.7e308 keep the output, the rail and the core finite and the
-  stage usable afterwards.
+  flat at the rail to 1e-6 relative. Before (corrected in the follow-up
+  below; this line first said x = 1e300 gave NaN): from |x| of about 1.3e77
+  u^4 overflowed to infinity and vs = rail u / inf = 0, finite but silent,
+  so x = 1e100 or 1e300 dropped the output to 0 instead of holding it at
+  the rail; vs was NaN (inf / inf) only above about 7.2e305, where x * vpu
+  itself overflowed. Regression test: `test_dsp_transformer` extremes,
+  squares of +-1e100, +-1e300 and 1.7e308 keep the output, the rail and the
+  core finite, hold the output to within 1e-6 of the rail's level of what a
+  square that merely clips (1000 of full scale) gives, and leave the stage
+  usable afterwards.
 - The solve is cheaper: one exp serves the Langevin function and its slope
   (was tanh and sinh), and the Newton start uses the previous step's
   stored slope and psi instead of an extra evaluation.
@@ -483,4 +488,94 @@ rate in eco is the next candidate, and needs its own SPICE reference
 for the core. ADR-0011 section 3.5 lets standard and high ship over the bar
 beside an eco that meets it; with the stage off eco still does (150.6 us
 against 154.5 us calibrated bar, 1.79 kernels against 1.76 in this run:
-host noise, not a change, as the stage is not in that path).
+host noise, not a change, as the stage is not in that path). Corrected in
+the follow-up below: that run failed its kernel gate, so it did not show
+eco meeting class B; the rerun there does.
+
+## Output stage at class B (follow-up of #219)
+
+**What changed** (`transformer.h`, `src/transformer_solve.h`,
+`src/arch/*/transformer_pair.cpp`):
+- **The core steps at the base rate in eco**, the driver's clip stays
+  oversampled. `OutputStage::prepare(..., substeps)`: the clip runs on
+  every sample, the core once per `substeps`, with its current taken
+  linear across the step and the driver's flux summed sample by sample
+  (with one substep, the plain trapezoid as before). The magnetising
+  current is the integral of the node voltage through the core, low-passed
+  (low-field corner near 40 Hz), so it does not need the oversampled rate.
+  Eco steps the core at 48 kHz (2 substeps); standard and high at 96 kHz
+  (2 and 4), because at 48 kHz their aliasing with the stage in read
+  -92.1 and -91.8 dBc, too close to their -90 bar; at 96 kHz it reads -97.7
+  and -97.2 (it was -113 and -123 with the core oversampled). Eco reads
+  -87.7 dBc against -70, as before (-88): its floor is the oversampler's.
+  Against the core at the full rate, 0.5 FS sines at 40 Hz and 1 kHz
+  differ by 2.0e-4 to 4.0e-4 of full scale (-68 to -62 dB) and keep their
+  THD (2.31 % and 0.49 %) and gain.
+- **One evaluation per step.** The Newton step left after the first
+  evaluation is taken along the slope just evaluated instead of
+  evaluating again, and the solve stops when that step stands for under
+  1e-4 of full scale at the output. Against the same solve converged to
+  -200 dB the output differs by -94 dB of its peak at worst (programme
+  12 dB into the rail, 48 kHz), 25 dB under what stepping the core at 48
+  rather than 96 kHz changes; 1.000 to 1.088 evaluations per step at
+  48 kHz (2.04 to 2.76 converged). `test_dsp_transformer` holds both
+  (-90 dB, and 1.02 and 1.15 evaluations per step) so the cost cannot creep
+  back on any machine.
+- **The Langevin function from a table**: cubic Hermite on L and L' at
+  641 nodes over [0, 20] (h = 1/32), exact at the nodes, C1, its slope the
+  interpolant's own; error under 1e-9, about 1e-12 of full scale at the
+  output; 1 - 1/x above 20 (exact in doubles). It replaced an exp and a
+  division on the chain of dependent operations.
+- **The two channels as the two lanes of one solve**, as the triode does:
+  the template in `src/transformer_solve.h`, SSE2 on x86-64, two doubles
+  elsewhere, the hysteresis branches as selects; a lane the first
+  evaluation does not settle takes the scalar loop. Bit-identical to the
+  one-channel solve on both lane types (`test_dsp_transformer`, "two
+  channels in lockstep"), and the processor runs a block per call
+  (`process_block`), identical to step-by-step calls with the sag moving.
+- Fewer divisions in the clip and the supply (reciprocals at `prepare`
+  and `set_sag`, which now returns early when the sag has not moved).
+
+**Measured** (i7-11800H, Docker Desktop, GCC 14 Release; the host's speed
+moved by up to 2.4x between runs, so the figures are the stage-on against
+stage-off ratio inside one process, renders interleaved, per-block minimum
+of 5-7 runs of 5 s, q128 48 kHz stereo; the scratch harness renders the
+suite's CPU loads):
+
+| p99.9 on/off | origin/main | this change |
+|---|---|---|
+| eco, programme | 2.64 | 1.34 |
+| eco, programme +12 dB, drive +36 dB | 2.05 | 1.31 |
+| eco, 0 dBFS square, drive +36 dB | 2.05 | 1.37 |
+| standard, programme / hot / square | 2.00 / 2.49 / 1.73 | 1.33 / 1.33 / 1.42 |
+| high, programme / hot / square | 2.34 / 2.04 / 2.21 | 1.23 / 1.21 / 1.22 |
+
+At eco the stage adds 35.4-36.7 us of host time per block where it added
+99-174 us: 2.8x to 4.7x cheaper. On a run where the host tracked the
+reference kernel (scale 2.56, stage-off eco 1.28 kernels as on the quiet
+reference machine), that is about 14 us on the reference machine. Added to
+the recorded quiet-reference stage-off figures (The gate): programme 41.4
++ 14 = 55 us, square 37.1 + 14 = 51 us, hot programme 45.0 + 14 = 59 us,
+against 60 us; the hot programme is 1.81 kernels, over the 1.76 the gate
+holds eco to (cpu.p999_kernels x 1.15) and near the 1.84 kernels of the
+class bar itself, and the EPYC 7763 runner tracks about 9 % worse.
+
+**So class B is not claimed for the stage on.** It is within the bar on
+the projection but without margin on the hot programme, the projection is
+not a measurement on the reference machine, and holding it would turn the
+nightly red on the slowest runner. The stage-on loads stay reported, not
+held (now with the hot programme too); the default (stage off) eco is the
+mode that meets the class, as ADR-0011 section 3.5 allows. What is left: an
+instruction count of about 660 per stereo step at eco (callgrind), spread
+over the step (no line over 3 %); the next candidates are the state kept in
+lane layout across a block instead of reloaded per step, and the clip's two
+square roots. Then a quiet reference-machine run decides.
+
+**Eco with the stage off, rerun** (item (d)): `sonora-dsp-measure --cpu
+--cpu-calibrate --cpu-seconds 10`, scale 2.558, kernel before/after 0.33 %
+apart: p99.9 106.99 us (bar 153.5), 1.28 kernels; +12 dB programme 1.39;
+square 1.14; noise and hum 1.35; all against 1.76: eco meets class B with
+the stage off. A run on the same build at a load average of 19 read 1.80 to
+2.20 kernels and failed, as did origin/main's build in the run beside it
+(1.67 to 1.93): host load, not the code, which this change leaves
+bit-identical with the stage off (the golden holds).

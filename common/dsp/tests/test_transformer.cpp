@@ -206,19 +206,55 @@ int test_extremes() {
         std::printf("  square at %g of full scale: solve <= %u iterations\n", amp, st.max_iterations_seen());
         CHECK(st.max_iterations_seen() <= OutputStage::kMaxIter);
     }
-    // A finite input so large that u^4 overflows: the drive voltage, the
-    // core and the rail stay finite, and the stage works afterwards.
+    // A finite input so large that u^4 overflows. Before the cap, |x| of
+    // 1e100 or 1e300 made u^4 infinite and the drive voltage rail u / inf = 0:
+    // finite, but the stage went silent under the loudest input instead of
+    // sitting at the rail; only above about 7.2e305 was it NaN (x * vpu
+    // overflowing). So the output is held, sample by sample, to what an
+    // input that merely clips (1000 of full scale) gives, which sits at the
+    // rail: a 1 kHz square, so the core does not short the drive as it
+    // would a held level.
+    OutputStage clip = make(1.0);
+    std::vector<double> ref;
+    double ref_peak = 0.0;
+    {
+        double cin[2], cout[2];
+        for (int n = 0; n < 1920; ++n) {
+            cin[0] = cin[1] = 1000.0 * ((n / 96) % 2 == 0 ? 1.0 : -1.0);
+            clip.tick(cin, cout);
+            ref.push_back(cout[0]);
+            if (n >= 960) ref_peak = std::fmax(ref_peak, std::fabs(cout[0]));
+        }
+    }
+    // The clipped peak is the rail's, as a signal level (1.0 = vpu volts at
+    // the driver), within what the sag takes off it.
+    const double rail_level = (clip.idle_rail_voltage() - 40.0) / 250.0;
+    std::printf("  1 kHz square at 1000 of full scale: peak %.4f, the rail at idle %.4f\n", ref_peak, rail_level);
+    CHECK(ref_peak > 0.8 * rail_level && ref_peak < 1.05 * rail_level);
     for (double big : {1e100, 1e300, -1e300, 1.7e308}) {
         OutputStage hot = make(1.0);
-        double hin[2] = {big, -big}, hout[2];
-        for (int n = 0; n < 2000; ++n) {
+        double hin[2], hout[2];
+        double worst = 0.0;
+        for (int n = 0; n < 1920; ++n) {
+            const double sq = (n / 96) % 2 == 0 ? 1.0 : -1.0;
+            hin[0] = hin[1] = (big > 0.0 ? sq : -sq) * std::fabs(big);
             hot.tick(hin, hout);
             CHECK(std::isfinite(hout[0]) && std::isfinite(hout[1]));
             CHECK(std::isfinite(hot.rail_voltage()) && hot.rail_voltage() >= 10.0);
+            worst = std::fmax(worst, std::fabs(std::fabs(hout[0]) - std::fabs(ref[n])));
         }
-        hin[0] = hin[1] = 0.1;
-        for (int n = 0; n < 4800; ++n) hot.tick(hin, hout);
-        CHECK(std::isfinite(hout[0]) && std::fabs(hout[0]) > 0.01);
+        std::printf("  square at %g: largest |output| difference from the clipping square %.3g\n", big, worst);
+        CHECK_LE(worst, 1e-6 * rail_level, "huge input: output at the rail, as for one that merely clips");
+        // Usable afterwards: a 1 kHz tone at 0.1 comes out at 0.1 (the mid
+        // band is unity) once the core has settled from the overload.
+        double pk = 0.0;
+        for (int n = 0; n < 9600; ++n) {
+            hin[0] = hin[1] = 0.1 * std::sin(kTwoPi * n / 192.0);
+            hot.tick(hin, hout);
+            CHECK(std::isfinite(hout[0]) && std::isfinite(hout[1]));
+            if (n >= 9600 - 192) pk = std::fmax(pk, std::fabs(hout[0]));
+        }
+        CHECK(std::fabs(pk - 0.1) < 0.01);
     }
     OutputStage st = make(1.0);
     double in[2] = {std::nan(""), HUGE_VAL}, out[2];
@@ -259,6 +295,188 @@ int test_rate_convergence() {
     return 0;
 }
 
+// A programme-like load (bass, a mid tone and filtered noise under a slow
+// envelope) at `gain`, `n` samples at `fs`, channel 1 a variant of 0.
+std::vector<double> programme(int n, double fs, double gain, int ch) {
+    std::vector<double> x(n);
+    std::uint32_t s = 1;
+    double lp = 0.0;
+    for (int k = 0; k < n; ++k) {
+        s = s * 1664525u + 1013904223u;
+        lp += 0.05 * (static_cast<double>(s >> 8) / 16777216.0 - 0.5 - lp);
+        const double t = k / fs;
+        const double env = 0.5 + 0.5 * std::sin(kTwoPi * 0.5 * t);
+        const double v = gain * env * (0.5 * std::sin(kTwoPi * 55.0 * t) + 0.3 * std::sin(kTwoPi * 440.0 * t) + 2.0 * lp);
+        x[k] = ch == 0 ? v : 0.8 * v + 0.2 * gain * std::sin(kTwoPi * 3000.0 * t);
+    }
+    return x;
+}
+
+// Runs a two-channel stage over x0, x1 one step (`sub` samples) at a time.
+void run(OutputStage& st, std::uint32_t sub, const std::vector<double>& x0, const std::vector<double>& x1,
+         std::vector<double>& y0, std::vector<double>& y1) {
+    y0.assign(x0.size(), 0.0);
+    y1.assign(x1.size(), 0.0);
+    for (std::size_t k = 0; k + sub <= x0.size(); k += sub) {
+        const double* in[2] = {&x0[k], &x1[k]};
+        double* out[2] = {&y0[k], &y1[k]};
+        st.process(in, out);
+    }
+}
+
+// The solve at its default tolerance (one evaluation per step, the last
+// Newton step along the slope) against the same solve converged to
+// -200 dB of full scale, on programme from -18 dBFS to +12 dB over, at
+// the rates the tube drive runs it. The mean is the cost bar: a solve
+// that needs more evaluations than this is a CPU regression on any
+// machine.
+int test_solve() {
+    const bool quick = dsp_quick();
+    double worst_db = -400.0, worst_mean = 0.0, worst_mean_hot = 0.0;
+    for (double fs : {48000.0, 96000.0}) {
+        for (double gain : {0.125, 0.5, 2.0, 4.0}) {
+            const int n = static_cast<int>(fs * (quick ? 1.0 : 4.0));
+            const std::vector<double> x0 = programme(n, fs, gain, 0), x1 = programme(n, fs, gain, 1);
+            OutputStage fast, tight;
+            fast.prepare(fs, 2);
+            tight.prepare(fs, 2);
+            tight.set_solve_tolerance(1e-10);
+            std::vector<double> a0, a1, b0, b1;
+            run(fast, 1, x0, x1, a0, a1);
+            run(tight, 1, x0, x1, b0, b1);
+            double err = 0.0, peak = 0.0;
+            for (int k = 0; k < n; ++k) {
+                err = std::fmax(err, std::fmax(std::fabs(a0[k] - b0[k]), std::fabs(a1[k] - b1[k])));
+                peak = std::fmax(peak, std::fabs(b0[k]));
+            }
+            const double db = 20.0 * std::log10(err / peak + 1e-300);
+            std::printf("  %5.0f Hz, programme x%-5g: error %.1f dB re peak, %.3f evaluations per step (converged: %.3f), at most %u\n",
+                        fs, gain, db, fast.mean_iterations(), tight.mean_iterations(), fast.max_iterations_seen());
+            worst_db = std::fmax(worst_db, db);
+            double& worst = gain <= 0.5 ? worst_mean : worst_mean_hot;
+            worst = std::fmax(worst, fast.mean_iterations());
+            CHECK(fast.max_iterations_seen() <= OutputStage::kMaxIter);
+        }
+    }
+    // 20 dB under the core's own discretisation at 48 kHz (test_substeps:
+    // -55 dB and more against the core at 96 kHz).
+    CHECK_LE(worst_db, -90.0, "default solve against the converged one, dB re peak");
+    // Into saturation the slope moves most between steps, and at 48 kHz
+    // (the tube drive's eco) the predictor misses more often.
+    CHECK_LE(worst_mean, 1.02, "core evaluations per step, mean, programme x0.125 and x0.5");
+    CHECK_LE(worst_mean_hot, 1.15, "core evaluations per step, mean, programme x2 and x4 (into the rail)");
+    return 0;
+}
+
+// Two channels as the two lanes of one solve (the default) give the bits
+// each gives through the one-channel solve, on programme from quiet to 12 dB
+// into the rail, with the core at every sample and once per two: the pair
+// is the same arithmetic, not an approximation of it.
+int test_pair() {
+    for (std::uint32_t sub : {1u, 2u}) {
+        for (double gain : {0.125, 2.0, 4.0}) {
+            const double fs = 96000.0;
+            const int n = static_cast<int>(fs * (dsp_quick() ? 0.5 : 2.0));
+            const std::vector<double> x0 = programme(n, fs, gain, 0), x1 = programme(n, fs, gain, 1);
+            OutputStage pair, scalar;
+            pair.prepare(fs, 2, {}, {}, sub);
+            scalar.prepare(fs, 2, {}, {}, sub);
+            scalar.set_pair_solve(false);
+            std::vector<double> a0, a1, b0, b1;
+            run(pair, sub, x0, x1, a0, a1);
+            run(scalar, sub, x0, x1, b0, b1);
+            std::size_t differ = 0;
+            for (int k = 0; k < n; ++k) differ += (a0[k] != b0[k]) + (a1[k] != b1[k]);
+            std::printf("  %u substep(s), programme x%g: %zu samples differ, rail %.6f against %.6f V, "
+                        "%.3f evaluations per step\n",
+                        sub, gain, differ, pair.rail_voltage(), scalar.rail_voltage(), pair.mean_iterations());
+            CHECK(differ == 0);
+            CHECK(pair.rail_voltage() == scalar.rail_voltage() && pair.flux(1) == scalar.flux(1));
+            CHECK(pair.mean_iterations() == scalar.mean_iterations());
+        }
+    }
+    // process_block (the tube drive's call: a block of steps, the sag per
+    // base sample) is process() step by step, to the bit, with the sag
+    // moving; on two channels (the pair) and on one.
+    for (std::uint32_t chs : {2u, 1u}) {
+        const double fs = 96000.0;
+        const std::uint32_t sub = 2, per_sag = 1, steps = 64;
+        const int n = static_cast<int>(steps * sub * 40);
+        const std::vector<double> x0 = programme(n, fs, 2.0, 0), x1 = programme(n, fs, 2.0, 1);
+        std::vector<double> sag(n / sub);
+        for (std::size_t t = 0; t < sag.size(); ++t) sag[t] = 0.5 + 0.5 * std::sin(0.01 * static_cast<double>(t));
+        OutputStage blk, one;
+        blk.prepare(fs, chs, {}, {}, sub);
+        one.prepare(fs, chs, {}, {}, sub);
+        std::vector<double> a0(n), a1(n), b0(n), b1(n);
+        for (int k = 0; k < n; k += static_cast<int>(steps * sub)) {
+            const double* in[2] = {&x0[k], &x1[k]};
+            double* out[2] = {&a0[k], &a1[k]};
+            blk.process_block(in, out, steps, &sag[k / sub], per_sag);
+        }
+        for (int k = 0; k < n; k += static_cast<int>(sub)) {
+            one.set_sag(sag[k / sub]);
+            const double* in[2] = {&x0[k], &x1[k]};
+            double* out[2] = {&b0[k], &b1[k]};
+            one.process(in, out);
+        }
+        std::size_t differ = 0;
+        for (int k = 0; k < n; ++k) differ += (a0[k] != b0[k]) + (chs == 2 && a1[k] != b1[k]);
+        std::printf("  process_block against process, %u channel(s), sag moving: %zu samples differ\n", chs, differ);
+        CHECK(differ == 0 && blk.rail_voltage() == one.rail_voltage());
+    }
+    return 0;
+}
+
+// The core stepping once per `sub` samples (the tube drive: once per base
+// sample, the clip oversampled): silent at rest, the same circuit to
+// within the discretisation as the core stepping every sample, and the
+// physics the suite holds above (unity mid band, LF first) unchanged.
+int test_substeps() {
+    {
+        OutputStage st;
+        CHECK(!st.prepare(96000.0, 2, {}, {}, 0) && !st.prepare(96000.0, 2, {}, {}, OutputStage::kMaxSubsteps + 1));
+        CHECK(st.prepare(96000.0, 2, {}, {}, 2));
+        std::vector<double> z(960, 0.0), y0, y1;
+        run(st, 2, z, z, y0, y1);
+        for (std::size_t k = 0; k < z.size(); ++k) CHECK(y0[k] == 0.0 && y1[k] == 0.0);
+    }
+    const double base = 48000.0;
+    for (std::uint32_t sub : {2u, 4u, 8u}) {
+        const double fs = base * sub;
+        double thd_at[2];
+        const double freqs[2] = {1000.0, 40.0};
+        for (int f = 0; f < 2; ++f) {
+            const int per = static_cast<int>(std::lround(fs / freqs[f]));
+            const int n = 14 * per;
+            std::vector<double> x(n);
+            for (int k = 0; k < n; ++k) x[k] = 0.5 * std::sin(kTwoPi * k / per);
+            OutputStage coarse, fine;
+            coarse.prepare(fs, 2, {}, {}, sub);
+            coarse.set_sag(0.0);
+            fine.prepare(fs, 2, {}, {}, 1);
+            fine.set_sag(0.0);
+            std::vector<double> a0, a1, b0, b1;
+            run(coarse, sub, x, x, a0, a1);
+            run(fine, 1, x, x, b0, b1);
+            const std::vector<double> tail(a0.begin() + 6 * per, a0.end());
+            double h1 = 0.0, err = 0.0;
+            thd_at[f] = thd(tail, per, &h1);
+            for (int k = 6 * per; k < n; ++k) err = std::fmax(err, std::fabs(a0[k] - b0[k]));
+            std::printf("  core at %.0f Hz, %u substeps, %4.0f Hz at 0.5 FS: gain %.3f dB, THD %.3f %%, "
+                        "largest difference from the core at %.0f Hz %.3g\n",
+                        base, sub, freqs[f], 20.0 * std::log10(h1 / 0.5), 100.0 * thd_at[f], fs, err);
+            if (f == 0) CHECK(std::fabs(20.0 * std::log10(h1 / 0.5)) < 0.5);
+            // The bass loop at a step of 1/48 kHz: within 1 % of full scale
+            // of the core at the full rate.
+            CHECK_LE(err, 0.01, "core at the base rate against the full rate, 0.5 FS");
+        }
+        CHECK_LE(thd_at[0], 0.02, "THD at 1 kHz, 0.5 FS, core at the base rate");
+        CHECK(thd_at[1] > 3.0 * thd_at[0]);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -279,5 +497,11 @@ int main() {
     fails += test_extremes();
     std::printf("rate convergence\n");
     fails += test_rate_convergence();
+    std::printf("solve\n");
+    fails += test_solve();
+    std::printf("two channels in lockstep\n");
+    fails += test_pair();
+    std::printf("core at the base rate\n");
+    fails += test_substeps();
     return fails == 0 ? 0 : 1;
 }

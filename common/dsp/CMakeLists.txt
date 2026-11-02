@@ -28,6 +28,7 @@ add_library(sonora_dsp STATIC
   src/arch/${SONORA_DSP_ARCH}/denormals.cpp
   src/arch/${SONORA_DSP_ARCH}/tape_pair.cpp
   src/arch/${SONORA_DSP_ARCH}/triode_pair.cpp
+  src/arch/${SONORA_DSP_ARCH}/transformer_pair.cpp
 )
 target_include_directories(sonora_dsp PUBLIC include)
 target_link_libraries(sonora_dsp PUBLIC sonora_base)
