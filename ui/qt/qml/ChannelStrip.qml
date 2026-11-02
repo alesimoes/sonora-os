@@ -255,6 +255,7 @@ Rectangle {
             visible: !strip.isBus && strip.mixer !== null
             anchors.horizontalCenter: parent.horizontalCenter
             width: parent.width - 2 * Theme.space2
+            shell: strip.shell
             mixer: strip.mixer
             track: strip.track
             mode: strip.isBus || strip.track >= strip.session.automationModes.length

@@ -52,10 +52,11 @@ void MixModel::dropPan(const std::string& why) {
     // The Touch went to an engine index; that index gets its Release, or
     // the track stays touched and the engine keeps writing the held value.
     const int index = pan_track_;
+    const float held = pan_value_;
     pan_track_ = kNoRide;
     pan_id_ = 0;
     if (live(index)) {
-        const float value = index < session_.trackCount() ? session_.stripPan(index) : 0.0f;
+        const float value = index < session_.trackCount() ? session_.stripPan(index) : held;
         sender_(static_cast<uint32_t>(index), api::ParamId::Pan, value, api::Gesture::Release);
     }
     if (!why.empty()) session_.reportEdit(false, why);
@@ -84,6 +85,7 @@ bool MixModel::rideStillHolds() {
 
 void MixModel::dropRide(const std::string& why) {
     const int index = ride_track_;
+    const float ride_db_held = ride_db_;
     const bool sent = ride_sent_live_;
     const bool touched = ride_touched_;
     ride_track_ = kNoRide;
@@ -93,10 +95,10 @@ void MixModel::dropRide(const std::string& why) {
     // The steps went to an engine gain atomic by index, and one that
     // crossed another interface's edit may sit on whichever track is there
     // now (the header says why the engine cannot see it). Past the
-    // document's tracks nothing is sent: the engine keeps that fader until
-    // the plan stops rendering it.
-    if ((sent || touched) && live(index) && index < session_.trackCount()) {
-        sendLive(index, session_.stripGain(index), api::Gesture::Release);
+    // document's tracks the Release carries the ride's own last value.
+    if ((sent || touched) && live(index)) {
+        const float db = index < session_.trackCount() ? session_.stripGain(index) : ride_db_held;
+        sendLive(index, db, api::Gesture::Release);
     }
     session_.reportEdit(false, why);
     emit rideChanged();
@@ -206,8 +208,8 @@ void MixModel::beginPan(int track) {
     pan_track_ = track;
     pan_id_ = session_.trackId(track);
     pan_generation_ = session_.sessionGeneration();
-    sender_(static_cast<uint32_t>(track), api::ParamId::Pan, session_.stripPan(track),
-            api::Gesture::Touch);
+    pan_value_ = session_.stripPan(track);
+    sender_(static_cast<uint32_t>(track), api::ParamId::Pan, pan_value_, api::Gesture::Touch);
 }
 
 void MixModel::endPan(int track) {
@@ -223,10 +225,15 @@ void MixModel::panDrag(int track, qreal dx, qreal width, bool fine) {
     const qreal w = fine ? width * 10.0 : width;
     // The step the document will take, told to the engine as a Move so a
     // lane in Write or Touch records it; the SetMix below saves it.
+    // A step the clamp turns into none (hard over, pushed further) is no
+    // Move: a lane in Write would record the same value again.
     if (track == pan_track_ && pan_track_ != kNoRide && w > 0 && live(track)) {
-        const float next = std::clamp(session_.stripPan(track) + static_cast<float>(2.0 * dx / w),
-                                      -1.0f, 1.0f);
-        sender_(static_cast<uint32_t>(track), api::ParamId::Pan, next, api::Gesture::Move);
+        const float now = session_.stripPan(track);
+        const float next = pan_drag(now, static_cast<float>(dx), static_cast<float>(w));
+        if (next != now) {
+            pan_value_ = next;
+            sender_(static_cast<uint32_t>(track), api::ParamId::Pan, next, api::Gesture::Move);
+        }
     }
     session_.panDrag(track, dx, w);
 }

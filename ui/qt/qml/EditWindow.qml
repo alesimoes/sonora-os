@@ -413,6 +413,7 @@ Item {
                             objectName: "editAutoMode" + header.index
                             visible: edit.mixer !== null
                             width: 38; height: 20
+                            shell: edit.shell
                             mixer: edit.mixer
                             track: header.index
                             mode: header.index < edit.session.automationModes.length

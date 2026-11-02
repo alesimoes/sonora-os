@@ -1722,7 +1722,7 @@ void SessionModel::panDrag(int track, qreal dx, qreal width) {
     if (m == nullptr || width <= 0) return;
     const float now = m->pan;
     std::string why;
-    run(ctl_.set_pan(track, std::clamp(now + static_cast<float>(2.0 * dx / width), -1.0f, 1.0f), why),
+    run(ctl_.set_pan(track, pan_drag(now, static_cast<float>(dx), static_cast<float>(width)), why),
         why);
 }
 
