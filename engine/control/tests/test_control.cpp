@@ -1222,11 +1222,23 @@ void a_load_while_rolling_writes_nothing() {
     api::CommandRequest play;
     play.command = "transport.play";
     CHECK(reply_to(real.send(play), r) && r.result == DispatchResult::Ok);
+    // A fader and a pan held through the Load (#178 review): the new
+    // session's track 1 is not the one they were holding.
+    api::ParameterChange touch;
+    touch.track = 0;
+    touch.value = 0.5f;
+    touch.gesture = api::Gesture::Touch;
+    CHECK(reply_to(real.send(touch), r) && r.result == DispatchResult::Ok);
+    touch.param = api::ParamId::Pan;
+    touch.value = 0.25f;
+    CHECK(reply_to(real.send(touch), r) && r.result == DispatchResult::Ok);
+    CHECK(real.session().tracks()[0]->touched() == ((1u << kAutoVolume) | (1u << kAutoPan)));
     CHECK(until(real, in, [&]() { return real.state().transport().playhead >= 4800; }));
     api::ModelRequest load;
     load.action = api::ModelAction::Load;
     load.op = api::wire::encode_load("", bytes);
     CHECK(reply_to(real.submit(load), r) && r.result == DispatchResult::Ok);
+    CHECK(real.session().tracks()[0]->touched() == 0);
     CHECK(real.session().transport().state() == sonora::TransportState::Rolling);
     const uint64_t loaded_at = real.state().transport().playhead;
     // The new plan in place and writing for a while.
@@ -1817,6 +1829,55 @@ void resync_applies_the_mix() {
     // Only the tracks it rode: track 0's ride, the first client's, stays.
     CHECK(settled());
     CHECK(real.state().track(0).gain == 0.25f);
+}
+
+// #178 review: a client that leaves with a fader and a pan touched and never
+// released frees them, or the track would stay off its lanes for good. Only
+// the tracks it touched: another client's touch stays held.
+void a_client_leaving_releases_its_touches() {
+    RealEngine real(fresh_dir("touch_leave"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto answered = [&](uint64_t seq) {
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return r.result == DispatchResult::Ok;
+            }
+            return false;
+        });
+    };
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    api::ParameterChange mine;
+    mine.track = 0;
+    mine.value = 0.5f;
+    mine.gesture = api::Gesture::Touch;
+    CHECK(answered(real.send(mine)));
+
+    EngineControlServer& server = real.engine().server();
+    const auto rider = server.attach([](EngineControlServer::Frame) {}, {});
+    const auto deliver = [&](const api::ParameterChange& c) {
+        std::string bytes;
+        api::wire::encode(c, bytes);
+        std::vector<std::string> frames;
+        CHECK(api::wire::split_frames(bytes, frames, error));
+        for (std::string& f : frames) server.deliver(rider, std::move(f));
+    };
+    api::ParameterChange theirs;
+    theirs.seq = 1;
+    theirs.track = 1;
+    theirs.value = 0.75f;
+    theirs.gesture = api::Gesture::Touch;
+    deliver(theirs);
+    theirs.seq = 2;
+    theirs.param = api::ParamId::Pan;
+    theirs.value = -0.5f;
+    deliver(theirs);
+    const uint8_t both = (1u << kAutoVolume) | (1u << kAutoPan);
+    CHECK(until(real, in, [&]() { return real.session().tracks()[1]->touched() == both; }));
+    server.detach(rider);
+    CHECK(until(real, in, [&]() { return real.session().tracks()[1]->touched() == 0; }));
+    CHECK(real.session().tracks()[0]->touched() == 1u << kAutoVolume);
 }
 
 // ADR-0022 update of 2026-10-31 on the real engine: a send's level and an
@@ -2883,6 +2944,7 @@ int main() {
     housekeeping_and_early_events();
     no_plugin_hosting_yet();
     resync_applies_the_mix();
+    a_client_leaving_releases_its_touches();
     live_send_and_aux_rides();
     midi_budget_at_open_and_its_notice();
     snapshot_parts_are_paced_and_held();

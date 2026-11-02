@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "sonora/automation_write.h"
 #include "sonora/model/model.h"
 #include "sonora/model/operations.h"
 
@@ -59,16 +60,34 @@ private:
 // The label of a pass's one undo step.
 inline constexpr const char* kAutomationWriteLabel = "Automation Write";
 
+// The engine's live write `w` on document track `track`, in the lane's unit
+// (dB clamped to the fader's range, pan to -1..1). False for a parameter
+// with no lane or a value that is not finite: that write is skipped, not
+// clamped, as std::clamp passes a NaN through.
+bool live_pass_write(const AutomationWrite& w, model::Id track, PassWrite& out);
+
+// A lane whose pass is left out because, thinned at up to 16 times its
+// tolerance, it would still hold `points` points, past kMaxAutomationPoints.
+struct DroppedLane {
+    model::Id track = 0;
+    model::AutomationParam param = model::AutomationParam::Volume;
+    std::size_t points = 0;
+};
+
 // The pass as one thinned EditAutomation per written lane, in the order the
 // lanes were first written. Where a later write covers an earlier one (a
 // loop's next turn), the later wins. Outside what was written each lane
 // keeps what it played: its old points in the gaps between runs, its old
 // value (or, with no lane, the static fader or pan) on each run's edges,
 // and a release ramps back to it over `return_frames`, as the audio did.
-// Writes on a track the document does not hold are dropped.
+// Writes on a track the document does not hold are dropped. A lane that
+// would pass kMaxAutomationPoints is thinned again at twice the tolerance,
+// up to 4 times; one still over is left out and added to `dropped`, so the
+// other lanes of the pass still land.
 std::vector<model::EditAutomation> automation_pass_edits(const model::Snapshot& doc,
                                                          const std::vector<PassWrite>& writes,
-                                                         model::Frames return_frames);
+                                                         model::Frames return_frames,
+                                                         std::vector<DroppedLane>* dropped = nullptr);
 
 // Removes the points of a run that lie within `tolerance` of the line
 // between the points kept either side of them. The first and last points,

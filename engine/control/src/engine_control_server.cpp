@@ -917,23 +917,9 @@ void EngineControlServer::follow_automation() {
             // Engine track i plays the document's track i in display order;
             // fetched per write, as a finished pass replaces the document.
             const auto& tracks = document_->current().edit->tracks;
-            if (w.track >= tracks.size() || w.param >= kAutoParams) continue;
+            if (w.track >= tracks.size()) continue;
             PassWrite p;
-            p.track = tracks[w.track]->id;
-            p.param = w.param == kAutoVolume ? model::AutomationParam::Volume
-                                             : model::AutomationParam::Pan;
-            p.frame = static_cast<model::Frames>(w.frame);
-            p.frames = w.frames;
-            if (w.param == kAutoVolume) {
-                const double db = w.value > 0.0f ? 20.0 * std::log10(static_cast<double>(w.value))
-                                                 : static_cast<double>(model::kMinGainDb);
-                p.value = static_cast<float>(
-                    std::clamp(db, static_cast<double>(model::kMinGainDb),
-                               static_cast<double>(model::kMaxGainDb)));
-            } else {
-                p.value = std::clamp(w.value, -1.0f, 1.0f);
-            }
-            pass_writes_.add(p);
+            if (live_pass_write(w, tracks[w.track]->id, p)) pass_writes_.add(p);
         }
     }
     if (pass_open_ != 0 && ended >= pass_open_) {
@@ -952,8 +938,25 @@ void EngineControlServer::follow_automation() {
 }
 
 void EngineControlServer::finish_pass() {
+    std::vector<DroppedLane> dropped;
     std::vector<model::EditAutomation> edits = automation_pass_edits(
-        document_->current(), pass_writes_.writes(), session_.touch_return_frames());
+        document_->current(), pass_writes_.writes(), session_.touch_return_frames(), &dropped);
+    // Held, not the status line: that lane's ride is gone, the rest of the
+    // pass is kept.
+    for (const DroppedLane& d : dropped) {
+        std::string name = "a track";
+        for (const auto& t : document_->current().edit->tracks) {
+            if (t->id == d.track) name = "\"" + t->name + "\"";
+        }
+        api::EngineEvent e;
+        e.kind = api::EventKind::Notice;
+        e.text = "automation: the pass on " + name + "'s " +
+                 (d.param == model::AutomationParam::Volume ? "volume" : "pan") +
+                 " lane was not kept: it would hold " + std::to_string(d.points) +
+                 " points, and a lane holds at most " +
+                 std::to_string(model::kMaxAutomationPoints);
+        post_event(e);
+    }
     std::vector<model::Id> written;
     for (const PassWrite& w : pass_writes_.writes()) {
         if (std::find(written.begin(), written.end(), w.track) == written.end()) {

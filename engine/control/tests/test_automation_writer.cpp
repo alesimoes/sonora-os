@@ -8,18 +8,22 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include "model_test.h"
 #include "sonora/automation_writer.h"
 #include "sonora/model/history.h"
+#include "sonora/playback_plan.h"
 
 namespace {
 
 using namespace model_test;
 using sonora::automation_pass_edits;
+using sonora::DroppedLane;
 using sonora::kAutomationWriteLabel;
+using sonora::live_pass_write;
 using sonora::PassWrite;
 using sonora::PassWrites;
 using sonora::thin_automation;
@@ -232,6 +236,154 @@ int test_a_later_turn_over_a_merged_run() {
     return 0;
 }
 
+// #178 review: one lane past kMaxAutomationPoints after thinning failed the
+// whole Compound, losing every lane of the pass. Only that lane's edit is
+// dropped now, and named. Its 70,000 writes also outgrow the 16,384 the
+// server reserves: a long pass keeps every write (long-pass growth).
+int test_an_overfull_lane_is_dropped_alone() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    const AddTrack gtr = add_track(ids, "Gtr");
+    CHECK_APPLY(h, gtr);
+    PassWrites w;
+    w.reserve(16384);
+    constexpr int kWrites = 70000;
+    for (int i = 0; i < kWrites; ++i) {
+        // A 12 dB zigzag: no tolerance the writer tries flattens it.
+        const Frames f = static_cast<Frames>(i) * 64;
+        w.add({vox.track, AutomationParam::Volume, f, 64, i % 2 == 0 ? -6.0f : 6.0f});
+        w.add({gtr.track, AutomationParam::Pan, f, 64, -0.5f});
+    }
+    std::size_t vox_writes = 0;
+    for (const PassWrite& p : w.writes()) vox_writes += p.track == vox.track ? 1 : 0;
+    CHECK(vox_writes == static_cast<std::size_t>(kWrites));
+    std::vector<DroppedLane> dropped;
+    const std::vector<EditAutomation> edits = automation_pass_edits(h.current(), w.writes(), 0, &dropped);
+    CHECK(edits.size() == 1);
+    if (edits.size() != 1) return 1;
+    CHECK(edits[0].track == gtr.track && edits[0].param == AutomationParam::Pan);
+    CHECK(dropped.size() == 1);
+    if (dropped.size() != 1) return 1;
+    CHECK(dropped[0].track == vox.track && dropped[0].param == AutomationParam::Volume);
+    CHECK(dropped[0].points > kMaxAutomationPoints);
+    Compound pass;
+    pass.label = kAutomationWriteLabel;
+    for (const EditAutomation& e : edits) pass.ops.emplace_back(e);
+    CHECK_APPLY(h, pass);
+    CHECK(h.current().edit->tracks[1]->lane(AutomationParam::Pan) != nullptr);
+    CHECK(h.current().edit->tracks[0]->lane(AutomationParam::Volume) == nullptr);
+    return 0;
+}
+
+// A lane whose old points leave too little room for the pass at the lane's
+// tolerance is thinned again at a wider one, and lands whole.
+int test_a_crowded_lane_is_thinned_harder() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    constexpr std::size_t kRoom = 50;
+    std::vector<AutomationPoint> old;
+    for (std::size_t i = 0; i < kMaxAutomationPoints - kRoom; ++i) {
+        old.push_back({100000 + static_cast<Frames>(i) * 10, i % 2 == 0 ? -20.0f : -19.0f});
+    }
+    CHECK_APPLY(h, (EditAutomation{vox.track, AutomationParam::Volume, 0, kMaxInteger, old}));
+    // A 0.3 dB wobble: kept point by point at 0.1 and 0.2 dB, not at 0.4.
+    std::vector<PassWrite> w;
+    for (int i = 0; i < 1000; ++i) {
+        w.push_back({vox.track, AutomationParam::Volume, static_cast<Frames>(i) * 64, 64,
+                     i % 2 == 0 ? -6.0f : -5.7f});
+    }
+    std::vector<DroppedLane> dropped;
+    const std::vector<EditAutomation> edits = automation_pass_edits(h.current(), w, 0, &dropped);
+    CHECK(dropped.empty());
+    CHECK(edits.size() == 1);
+    if (edits.size() != 1) return 1;
+    CHECK(edits[0].points.size() <= kRoom);
+    CHECK_APPLY(h, edits[0]);
+    const AutomationLane* lane = h.current().edit->tracks[0]->lane(AutomationParam::Volume);
+    CHECK(lane != nullptr && lane->points.size() <= kMaxAutomationPoints);
+    if (lane != nullptr) CHECK(std::fabs(value_at(lane->points, 32000) - -5.85f) <= 0.6f);
+    return 0;
+}
+
+// #178 re-review: a merged line's end, value + (to - value) in float, can
+// miss `to` by an ulp, and the next span then starts with a same-frame pair
+// that thinning keeps as a step. An uncut line ends on `to` exactly.
+int test_a_merged_line_ends_on_its_value() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    float from = 0.0f;
+    float to = 0.0f;
+    const float tries[] = {-20.0f, -13.7f, -0.3f, 0.7f, 1.1f, 3.3f, 0.1f, -7.9f, 11.9f};
+    for (const float a : tries) {
+        for (const float b : tries) {
+            volatile float d = b - a;
+            volatile float end = a + d;
+            if (end != b && from == to) {
+                from = a;
+                to = b;
+            }
+        }
+    }
+    CHECK(from != to);
+    std::vector<PassWrite> w;
+    PassWrite line{vox.track, AutomationParam::Volume, 0, 1000, from};
+    line.to = to;
+    line.line = true;
+    w.push_back(line);
+    w.push_back({vox.track, AutomationParam::Volume, 1000, 1000, to});
+    const std::vector<EditAutomation> edits = automation_pass_edits(h.current(), w, 0);
+    CHECK(edits.size() == 1);
+    if (edits.size() != 1) return 1;
+    std::size_t at_join = 0;
+    for (const AutomationPoint& p : edits[0].points) at_join += p.at == 1000 ? 1 : 0;
+    CHECK(at_join == 1);
+    CHECK(has(edits[0].points, 1000, to));
+    return 0;
+}
+
+// #178 re-review: std::clamp passes NaN through, so a NaN pan reached the
+// lane. A non-finite live value is never written, on either parameter.
+int test_a_non_finite_live_value_is_dropped() {
+    sonora::AutomationWrite a{};
+    a.pass = 1;
+    a.frame = 640;
+    a.frames = 64;
+    a.param = sonora::kAutoPan;
+    PassWrite p;
+    a.value = std::nanf("");
+    CHECK(!live_pass_write(a, 7, p));
+    a.value = std::numeric_limits<float>::infinity();
+    CHECK(!live_pass_write(a, 7, p));
+    a.param = sonora::kAutoVolume;
+    a.value = std::nanf("");
+    CHECK(!live_pass_write(a, 7, p));
+    a.value = std::numeric_limits<float>::infinity();
+    CHECK(!live_pass_write(a, 7, p));
+    a.param = sonora::kAutoParams;
+    a.value = 0.5f;
+    CHECK(!live_pass_write(a, 7, p));
+
+    // What is finite is written in the lane's unit, clamped to its range.
+    a.param = sonora::kAutoPan;
+    a.value = 1.5f;
+    CHECK(live_pass_write(a, 7, p));
+    CHECK(p.track == 7 && p.param == AutomationParam::Pan && p.value == 1.0f);
+    CHECK(p.frame == 640 && p.frames == 64 && !p.line);
+    a.param = sonora::kAutoVolume;
+    a.value = 0.5f;
+    CHECK(live_pass_write(a, 7, p));
+    CHECK(p.param == AutomationParam::Volume && std::fabs(p.value - -6.0206f) < 1e-3f);
+    a.value = 0.0f;
+    CHECK(live_pass_write(a, 7, p) && p.value == kMinGainDb);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -243,6 +395,10 @@ int main() {
     failed += test_a_held_pass_stays_small();
     failed += test_a_moving_ride_stays_small_and_close();
     failed += test_a_later_turn_over_a_merged_run();
+    failed += test_an_overfull_lane_is_dropped_alone();
+    failed += test_a_crowded_lane_is_thinned_harder();
+    failed += test_a_merged_line_ends_on_its_value();
+    failed += test_a_non_finite_live_value_is_dropped();
     if (failed != 0) {
         std::fprintf(stderr, "automation_writer: %d failed\n", failed);
         return 1;
