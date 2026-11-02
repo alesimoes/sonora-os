@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
 
 namespace sonora {
 
@@ -17,11 +18,21 @@ struct AutomationWrite {
     // begun before it by this, as the pass number the Load reads can be
     // the one before a roll about to begin on the old document's plan.
     uint64_t epoch;
+    // The document track the plan played on `track` (PlanTrackMix::track),
+    // 0 for none: a reorder or a removal applied while rolling must not
+    // file the writes stamped on the old plan under the track that now
+    // holds the row when they are drained (#262 review N1).
+    uint64_t track_id;
     uint64_t frame;   // timeline
     uint32_t frames;
     uint32_t track;   // engine track
     uint8_t param;    // PlanAutoParam
     float value;      // volume linear, as Track::gain(); pan -1 to +1
 };
+
+static_assert(std::is_trivially_copyable<AutomationWrite>::value, "RingBuffer memsets its slots");
+// The ring holds 2 * 512 * (tracks + 1) of these, pre-faulted: 6.3 MB at 128
+// tracks. A field more is that much more locked memory.
+static_assert(sizeof(AutomationWrite) <= 48, "AutomationWrite grew");
 
 }  // namespace sonora

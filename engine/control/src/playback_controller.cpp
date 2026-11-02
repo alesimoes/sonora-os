@@ -345,7 +345,12 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
     for (uint32_t e = 0; e < plan->track_mix_count; ++e) {
         plan->track_mix[e].track = e < order.size() ? order[e] : 0;
     }
-    const bool moves = atoms_order_ && *atoms_order_ != order;
+    // While a published plan's mix waits to be adopted, the atomics are
+    // about to change order: a plan matching them now may still be held
+    // at the gate when they do, and would then play against the adopted
+    // order. So it carries its own mix, whatever order it has (#262
+    // review N2).
+    const bool moves = atoms_order_ && (*atoms_order_ != order || adopting_ != nullptr);
     if (moves) {
         if (++mix_serial_ == 0) ++mix_serial_;   // 0 means "no mix"
         plan->mix_serial = mix_serial_;

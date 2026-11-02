@@ -1985,6 +1985,7 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
             AutomationWrite w{};
             w.pass = auto_pass_;
             w.epoch = auto_pass_epoch_;
+            w.track_id = auto_owner_[e];
             w.frame = start;
             w.track = e;
             w.param = static_cast<uint8_t>(p);
@@ -2056,6 +2057,7 @@ void Session::stamp_writes(uint32_t e, uint8_t bits, uint64_t start) noexcept SO
         AutomationWrite w{};
         w.pass = auto_pass_;
         w.epoch = auto_pass_epoch_;
+        w.track_id = auto_owner_[e];
         w.track = e;
         w.param = static_cast<uint8_t>(p);
         w.value = p == kAutoVolume ? track_level_[e] : track_pan_[e];
@@ -2219,8 +2221,10 @@ void Session::follow_track_owners(const PlaybackPlan& plan) noexcept SONORA_RT {
     };
     uint8_t* const latched = auto_moved_.get();
     uint8_t* const live = auto_moved_.get() + n;
-    // Quadratic in the engine tracks, once per plan: a few thousand
-    // compares at most, and nothing to build beforehand.
+    // Once per plan. A track still on its row is found without a scan, so a
+    // plan that moves nothing costs n compares; each moved or new track
+    // scans the last plan's n rows, up to n * n (16k at 128 tracks) for a
+    // Load or a reversal (#262 review L1).
     for (uint32_t e = 0; e < n; ++e) {
         const uint64_t id = owner(e);
         uint32_t from = n;
@@ -2228,6 +2232,8 @@ void Session::follow_track_owners(const PlaybackPlan& plan) noexcept SONORA_RT {
             // A plan that names no track (or a row past the document) keeps
             // the row's state only where the last plan named none there.
             if (auto_owner_[e] == 0) from = e;
+        } else if (auto_owner_[e] == id) {
+            from = e;
         } else {
             for (uint32_t j = 0; j < n && from == n; ++j) {
                 if (auto_owner_[j] == id) from = j;
