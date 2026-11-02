@@ -198,6 +198,7 @@ public:
 
 private:
     ListedPlugin list_folder(const std::string& key) const;
+    bool no_root(std::string& why) const;
 
     std::string root_;
     bool cleaned_ = false;

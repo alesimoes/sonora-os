@@ -75,10 +75,12 @@ bool valid_name(const std::string& name, std::string& why) {
 bool valid_text(const std::string& s) { return s.size() <= kMaxPluginTextBytes && json::valid_utf8(s); }
 
 // One path component: nothing that climbs out of its folder or names a
-// folder of its own.
+// folder of its own, and nothing cleanup could take for a temporary (#275
+// review B1).
 bool valid_basename(std::string_view b) {
     if (b.empty() || b.size() > kMaxBasenameBytes || b == "." || b == "..") return false;
     if (b.find('/') != std::string_view::npos || b.find('\\') != std::string_view::npos) return false;
+    if (b.find(kTempMark) != std::string_view::npos) return false;
     return json::valid_utf8(b) && !has_control(b);
 }
 
@@ -297,13 +299,64 @@ PresetResult read_sidecar(const fs::path& path, const std::string& key, const st
     return PresetResult::Ok;
 }
 
-void remove_temporaries(const fs::path& dir, PresetCleanup& report) {
+// Cleanup deletes only inside folders the store made and only files it
+// wrote: a symlink, to a folder or to a file, is never followed and never
+// removed (#275 review B2).
+bool real_dir(const fs::path& p) {
     std::error_code ec;
-    fs::recursive_directory_iterator it(dir, ec);
-    for (const fs::recursive_directory_iterator end; !ec && it != end; it.increment(ec)) {
-        const std::string name = it->path().filename().string();
+    return fs::is_directory(fs::symlink_status(p, ec));
+}
+
+bool real_dir(const fs::directory_entry& e) {
+    std::error_code ec;
+    return fs::is_directory(e.symlink_status(ec));
+}
+
+bool real_file(const fs::directory_entry& e) {
+    std::error_code ec;
+    return fs::is_regular_file(e.symlink_status(ec));
+}
+
+bool all_digits(std::string_view s) {
+    if (s.empty()) return false;
+    for (const char c : s)
+        if (c < '0' || c > '9') return false;
+    return true;
+}
+
+// The exact name temp_name() gives a target, "<target>.tmp-<pid>-<n>",
+// never a name that merely holds the mark.
+bool temp_target(std::string_view name, std::string& target) {
+    const std::size_t at = name.rfind(kTempMark);
+    if (at == std::string_view::npos || at == 0) return false;
+    const std::string_view tail = name.substr(at + std::strlen(kTempMark));
+    const std::size_t dash = tail.find('-');
+    if (dash == std::string_view::npos || !all_digits(tail.substr(0, dash)) || !all_digits(tail.substr(dash + 1)))
+        return false;
+    target = std::string(name.substr(0, at));
+    return true;
+}
+
+bool is_state_name(std::string_view name) {
+    return ends_with(name, ".state") && is_lower_hex(name.substr(0, name.size() - 6), 64);
+}
+
+bool is_sidecar_name(std::string_view name) {
+    return ends_with(name, kSidecarSuffix) &&
+           is_user_preset_id(name.substr(0, name.size() - std::strlen(kSidecarSuffix)));
+}
+
+// Removes the temporaries a save left directly in `dir` (no recursion) for
+// targets that belong there.
+template <class Ours>
+void remove_temporaries(const fs::path& dir, const Ours& ours, PresetCleanup& report) {
+    std::error_code ec;
+    fs::directory_iterator it(dir, ec);
+    for (const fs::directory_iterator end; !ec && it != end; it.increment(ec)) {
+        std::string target;
         std::error_code e2;
-        if (name.find(kTempMark) != std::string::npos && it->is_regular_file(e2) && fs::remove(it->path(), e2))
+        if (real_file(*it) && temp_target(it->path().filename().string(), target) && ours(target) &&
+            fs::remove(it->path(), e2))
             ++report.temporaries_removed;
     }
 }
@@ -476,6 +529,7 @@ bool PresetStore::open(std::string& error) {
 ListedPlugin PresetStore::list_folder(const std::string& key) const {
     ListedPlugin out;
     out.key = key;
+    if (root_.empty()) return out;
     const fs::path dir = fs::path(root_) / key;
     bool all_named = true;
     const std::vector<FolderEntry> entries = sidecar_entries(dir, out.cut, all_named);
@@ -521,12 +575,12 @@ ListedPlugin PresetStore::list(std::string_view format, std::string_view plugin_
 std::vector<ListedPlugin> PresetStore::list_all(
     const std::function<bool(const std::string& format, const std::string& id)>& installed) const {
     std::vector<ListedPlugin> out;
+    if (root_.empty()) return out;
     std::error_code ec;
     fs::directory_iterator it(root_, ec);
     for (const fs::directory_iterator end; !ec && it != end; it.increment(ec)) {
         const std::string key = it->path().filename().string();
-        std::error_code e2;
-        if (!is_lower_hex(key, 32) || !it->is_directory(e2)) continue;
+        if (!is_lower_hex(key, 32) || !real_dir(*it)) continue;
         ListedPlugin l = list_folder(key);
         if (l.presets.empty()) continue;
         l.plugin_missing = l.plugin.id.empty() || !installed || !installed(l.plugin.format, l.plugin.id);
@@ -538,7 +592,15 @@ std::vector<ListedPlugin> PresetStore::list_all(
     return out;
 }
 
+bool PresetStore::no_root(std::string& why) const {
+    // An empty root would resolve every path against the working directory.
+    if (!root_.empty()) return false;
+    why = "no folder for this user's data, so no user presets";
+    return true;
+}
+
 PresetResult PresetStore::save(const PresetSave& r, std::string& id_out, std::string& why) {
+    if (no_root(why)) return PresetResult::IoError;
     pc::Format format;
     if (!known_format(r.plugin.format, format)) {
         why = "presets are kept for LV2 and VST3 plugins only";
@@ -609,6 +671,13 @@ PresetResult PresetStore::save(const PresetSave& r, std::string& id_out, std::st
 
     // Everything the sidecar names is durable before the sidecar exists.
     if (!make_dir(dir / kStateDir, why)) return PresetResult::IoError;
+    // Never written through a link: the store's folders are its own.
+    const auto linked = [&](const fs::path& p) {
+        why = p.string() + " is not a folder of the preset store (a link?); nothing was written";
+        return PresetResult::IoError;
+    };
+    if (!real_dir(dir)) return linked(dir);
+    if (!real_dir(dir / kStateDir)) return linked(dir / kStateDir);
     PresetSidecar s;
     for (const PresetFileSource& f : r.files) {
         std::string bytes;
@@ -625,7 +694,10 @@ PresetResult PresetStore::save(const PresetSave& r, std::string& id_out, std::st
         ref.path = std::string(kFilesDir) + "/" + ref.sha256 + "/" + f.basename;
         ref.bytes = bytes.size();
         const fs::path target = dir / kFilesDir / ref.sha256 / f.basename;
-        if (!make_dir(target.parent_path(), why) || !put_content(target, bytes, why)) return PresetResult::IoError;
+        if (!make_dir(target.parent_path(), why)) return PresetResult::IoError;
+        if (!real_dir(dir / kFilesDir)) return linked(dir / kFilesDir);
+        if (!real_dir(target.parent_path())) return linked(target.parent_path());
+        if (!put_content(target, bytes, why)) return PresetResult::IoError;
         s.files.push_back(std::move(ref));
     }
     s.state_sha256 = sha256_hex(r.blob);
@@ -657,6 +729,7 @@ PresetResult PresetStore::save(const PresetSave& r, std::string& id_out, std::st
 
 PresetResult PresetStore::rename(std::string_view format, std::string_view plugin_id, std::string_view preset_id,
                                  const std::string& new_name, std::string& why) {
+    if (no_root(why)) return PresetResult::IoError;
     if (!valid_name(new_name, why)) return PresetResult::Invalid;
     if (!is_user_preset_id(preset_id)) {
         why = "no such preset";
@@ -683,6 +756,7 @@ PresetResult PresetStore::rename(std::string_view format, std::string_view plugi
 
 PresetResult PresetStore::remove(std::string_view format, std::string_view plugin_id, std::string_view preset_id,
                                  std::string& why) {
+    if (no_root(why)) return PresetResult::IoError;
     if (!is_user_preset_id(preset_id)) {
         why = "no such preset";
         return PresetResult::NotFound;
@@ -710,6 +784,7 @@ PresetResult PresetStore::remove(std::string_view format, std::string_view plugi
 PresetResult PresetStore::load(std::string_view format, std::string_view plugin_id, std::string_view preset_id,
                                LoadedPreset& out, std::string& why) {
     out = LoadedPreset{};
+    if (no_root(why)) return PresetResult::IoError;
     if (!is_user_preset_id(preset_id)) {
         why = "no such preset";
         return PresetResult::NotFound;
@@ -752,15 +827,27 @@ PresetResult PresetStore::load(std::string_view format, std::string_view plugin_
 
 PresetCleanup PresetStore::cleanup() {
     PresetCleanup report;
+    if (root_.empty()) return report;
     std::error_code ec;
     fs::directory_iterator it(root_, ec);
     for (const fs::directory_iterator end; !ec && it != end; it.increment(ec)) {
         const std::string key = it->path().filename().string();
         std::error_code e2;
-        if (!is_lower_hex(key, 32) || !it->is_directory(e2)) continue;
+        if (!is_lower_hex(key, 32) || !real_dir(*it)) continue;
         const fs::path dir = it->path();
+        const bool state_dir = real_dir(dir / kStateDir);
+        const bool files_dir = real_dir(dir / kFilesDir);
         // A temporary is a save that never reached its rename: nothing names it.
-        remove_temporaries(dir, report);
+        remove_temporaries(
+            dir, [](const std::string& t) { return t == kPluginFile || is_sidecar_name(t); }, report);
+        if (state_dir) remove_temporaries(dir / kStateDir, [](const std::string& t) { return is_state_name(t); }, report);
+        if (files_dir) {
+            fs::directory_iterator fd(dir / kFilesDir, e2);
+            for (const fs::directory_iterator end2; !e2 && fd != end2; fd.increment(e2)) {
+                if (is_lower_hex(fd->path().filename().string(), 64) && real_dir(*fd))
+                    remove_temporaries(fd->path(), [](const std::string& t) { return valid_basename(t); }, report);
+            }
+        }
         bool cut = false, all_named = true;
         std::set<std::string> named;
         bool readable = true;
@@ -779,30 +866,33 @@ PresetCleanup PresetStore::cleanup() {
             continue;
         }
         // Only names this store writes are removed; anything else is left.
-        fs::directory_iterator st(dir / kStateDir, e2);
-        for (const fs::directory_iterator end2; !e2 && st != end2; st.increment(e2)) {
-            const std::string name = st->path().filename().string();
-            std::error_code e3;
-            if (!ends_with(name, ".state") || !is_lower_hex(name.substr(0, name.size() - 6), 64) ||
-                !st->is_regular_file(e3))
-                continue;
-            if (!named.count(std::string(kStateDir) + "/" + name) && fs::remove(st->path(), e3)) ++report.blobs_removed;
+        if (state_dir) {
+            fs::directory_iterator st(dir / kStateDir, e2);
+            for (const fs::directory_iterator end2; !e2 && st != end2; st.increment(e2)) {
+                const std::string name = st->path().filename().string();
+                std::error_code e3;
+                if (!is_state_name(name) || !real_file(*st)) continue;
+                if (!named.count(std::string(kStateDir) + "/" + name) && fs::remove(st->path(), e3))
+                    ++report.blobs_removed;
+            }
+            platform::sync_directory((dir / kStateDir).string());
         }
+        if (!files_dir) continue;
         fs::directory_iterator fd(dir / kFilesDir, e2);
         for (const fs::directory_iterator end2; !e2 && fd != end2; fd.increment(e2)) {
             const std::string sha = fd->path().filename().string();
             std::error_code e3;
-            if (!is_lower_hex(sha, 64) || !fd->is_directory(e3)) continue;
+            if (!is_lower_hex(sha, 64) || !real_dir(*fd)) continue;
             fs::directory_iterator ff(fd->path(), e3);
             for (const fs::directory_iterator end3; !e3 && ff != end3; ff.increment(e3)) {
-                const std::string rel = std::string(kFilesDir) + "/" + sha + "/" + ff->path().filename().string();
+                const std::string name = ff->path().filename().string();
+                const std::string rel = std::string(kFilesDir) + "/" + sha + "/" + name;
                 std::error_code e4;
-                if (!ff->is_regular_file(e4) || named.count(rel)) continue;
+                if (!real_file(*ff) || !valid_basename(name) || named.count(rel)) continue;
                 if (fs::remove(ff->path(), e4)) ++report.files_removed;
             }
-            fs::remove(fd->path(), e3);  // only when empty
+            fs::remove(fd->path(), e3);  // a real, empty folder only: remove() never empties one
         }
-        platform::sync_directory((dir / kStateDir).string());
     }
     return report;
 }

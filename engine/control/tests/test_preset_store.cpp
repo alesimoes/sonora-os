@@ -321,12 +321,12 @@ int failed_save_leaves_no_half_preset() {
     // next run's cleanup, the real sidecar untouched.
     const fs::path dir = root / preset_plugin_key("lv2", kDpl);
     write_file(dir / (id + ".preset.json.tmp-123-456"), "{\"sonora_preset\": 1, \"na");
-    write_file(dir / "Plugin State" / "abc.state.tmp-1-2", "half");
+    write_file(dir / "Plugin State" / (std::string(64, '9') + ".state.tmp-1-2"), "half");
     CHECK(store.list("lv2", kDpl).presets.size() == 1);
     PresetStore next(root.string());
     CHECK(next.open(why));
     CHECK(!fs::exists(dir / (id + ".preset.json.tmp-123-456")));
-    CHECK(!fs::exists(dir / "Plugin State" / "abc.state.tmp-1-2"));
+    CHECK(!fs::exists(dir / "Plugin State" / (std::string(64, '9') + ".state.tmp-1-2")));
     CHECK(next.load("lv2", kDpl, id, got, why) == PresetResult::Ok);
     fs::remove_all(root);
     return 0;
@@ -529,6 +529,136 @@ int sidecar_codec() {
     return 0;
 }
 
+// #275 review B1: cleanup removed every file whose name held ".tmp-", and a
+// state could name such a file, so the next open deleted the user's sample.
+int temp_shaped_names_kept() {
+    const fs::path root = fresh("tempnames");
+    const fs::path src = fresh("tempnames_src");
+    const std::string kick(2048, 'k');
+    write_file(src / "kick.tmp-1.wav", kick);
+    write_file(src / "kick.wav", kick);
+    const std::string sha = sha256_hex(kick);
+    std::string why, id, plain;
+    {
+        PresetStore store(root.string());
+        CHECK(store.open(why));
+        PresetSave req = save_of("Temp named");
+        req.files = {{"kick.tmp-1.wav", (src / "kick.tmp-1.wav").string()}};
+        CHECK(store.save(req, id, why) == PresetResult::Invalid);
+        req = save_of("Plain");
+        req.files = {{"kick.wav", (src / "kick.wav").string()}};
+        CHECK(store.save(req, plain, why) == PresetResult::Ok);
+    }
+    const fs::path dir = root / preset_plugin_key("lv2", kDpl);
+    // Only the exact shape a save leaves is a temporary; anything else that
+    // merely holds the mark is someone's file.
+    write_file(dir / "notes.tmp-final", "mine");
+    write_file(dir / "Plugin State" / "readme.tmp-1-2", "mine");
+    write_file(dir / "Plugin State" / (std::string(64, 'a') + ".state.tmp-7-8"), "half");
+    {
+        PresetStore store(root.string());
+        CHECK(store.open(why));
+        CHECK(fs::exists(dir / "notes.tmp-final"));
+        CHECK(fs::exists(dir / "Plugin State" / "readme.tmp-1-2"));
+        CHECK(!fs::exists(dir / "Plugin State" / (std::string(64, 'a') + ".state.tmp-7-8")));
+        LoadedPreset got;
+        CHECK(store.load("lv2", kDpl, plain, got, why) == PresetResult::Ok);
+    }
+    // A sidecar naming such a file (written by hand, or by an older build):
+    // not loaded, and the file survives every reopen.
+    const fs::path side = dir / (plain + ".preset.json");
+    std::string text = read_file(side);
+    const std::string from = "/kick.wav\"";
+    CHECK(text.find(from) != std::string::npos);
+    text.replace(text.find(from), from.size(), "/kick.tmp-1.wav\"");
+    write_file(side, text);
+    const fs::path forged = dir / "Plugin Files" / sha / "kick.tmp-1.wav";
+    write_file(forged, kick);
+    for (int i = 0; i < 2; ++i) {
+        PresetStore store(root.string());
+        CHECK(store.open(why));
+        CHECK(fs::exists(forged) && read_file(forged) == kick);
+    }
+    fs::remove_all(root);
+    fs::remove_all(src);
+    return 0;
+}
+
+// #275 review B2: cleanup followed symlinks, so a link inside the store
+// emptied the folder it pointed at.
+int symlinks_never_followed() {
+    const fs::path root = fresh("symlinks");
+    const fs::path outside = fresh("symlinks_outside");
+    const std::string blob_name = std::string(64, 'b') + ".state";
+    write_file(outside / "state" / blob_name, "keep");
+    write_file(outside / "files" / "a.wav", "keep");
+    write_file(outside / "files" / (std::string(64, 'c') + ".state"), "keep");
+    write_file(outside / "files" / "x.wav.tmp-1-2", "keep");
+    write_file(outside / "folder" / "Plugin State" / (std::string(64, 'd') + ".state"), "keep");
+    write_file(outside / "folder" / "Plugin State" / "y.state.tmp-1-2", "keep");
+    std::string why, a, b;
+    {
+        PresetStore store(root.string());
+        CHECK(store.open(why));
+        CHECK(store.save(save_of("A"), a, why) == PresetResult::Ok);
+        PresetSave other = save_of("B");
+        other.plugin.id = "urn:other";
+        other.blob = blob_of("urn:other", "b");
+        CHECK(store.save(other, b, why) == PresetResult::Ok);
+    }
+    const fs::path dir_a = root / preset_plugin_key("lv2", kDpl);
+    const fs::path dir_b = root / preset_plugin_key("lv2", "urn:other");
+    fs::create_directories(dir_a / "Plugin Files");
+    fs::create_directory_symlink(outside / "files", dir_a / "Plugin Files" / std::string(64, 'e'));
+    fs::remove_all(dir_b / "Plugin State");
+    fs::create_directory_symlink(outside / "state", dir_b / "Plugin State");
+    fs::create_directory_symlink(outside / "folder", root / std::string(32, 'f'));
+    {
+        PresetStore store(root.string());
+        CHECK(store.open(why));
+        // Nor is a save written through the link.
+        PresetSave other = save_of("B2");
+        other.plugin.id = "urn:other";
+        other.blob = blob_of("urn:other", "b2");
+        std::string id;
+        CHECK(store.save(other, id, why) == PresetResult::IoError);
+        CHECK(count_files(outside / "state") == 1);
+    }
+    CHECK(read_file(outside / "state" / blob_name) == "keep");
+    CHECK(read_file(outside / "files" / "a.wav") == "keep");
+    CHECK(read_file(outside / "files" / (std::string(64, 'c') + ".state")) == "keep");
+    CHECK(read_file(outside / "files" / "x.wav.tmp-1-2") == "keep");
+    CHECK(read_file(outside / "folder" / "Plugin State" / (std::string(64, 'd') + ".state")) == "keep");
+    CHECK(read_file(outside / "folder" / "Plugin State" / "y.state.tmp-1-2") == "keep");
+    std::error_code ec;
+    CHECK(fs::is_symlink(fs::symlink_status(dir_a / "Plugin Files" / std::string(64, 'e'), ec)));
+    CHECK(fs::is_symlink(fs::symlink_status(dir_b / "Plugin State", ec)));
+    fs::remove_all(root);
+    fs::remove_all(outside);
+    return 0;
+}
+
+// #275 review: a store whose root is empty (open() skipped or failed) must
+// not resolve its paths against the working directory.
+int empty_root_refused() {
+    std::error_code gone;
+    fs::remove_all(fs::current_path() / preset_plugin_key("lv2", kDpl), gone);
+    PresetStore store("");
+    std::string why, id;
+    CHECK(store.save(save_of("Nowhere"), id, why) == PresetResult::IoError && !why.empty());
+    LoadedPreset got;
+    const std::string some = "u-0123456789abcdef0123456789abcdef";
+    CHECK(store.load("lv2", kDpl, some, got, why) == PresetResult::IoError);
+    CHECK(store.rename("lv2", kDpl, some, "X", why) == PresetResult::IoError);
+    CHECK(store.remove("lv2", kDpl, some, why) == PresetResult::IoError);
+    CHECK(store.list("lv2", kDpl).presets.empty());
+    const bool in_cwd = fs::exists(fs::current_path() / preset_plugin_key("lv2", kDpl));
+    std::error_code ec;
+    fs::remove_all(fs::current_path() / preset_plugin_key("lv2", kDpl), ec);
+    CHECK(!in_cwd);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -545,6 +675,9 @@ int main() {
     failed += hostile_files_reported_and_skipped();
     failed += shared_blob_kept_by_cleanup();
     failed += missing_plugin_presets_kept();
+    failed += temp_shaped_names_kept();
+    failed += symlinks_never_followed();
+    failed += empty_root_refused();
     if (failed == 0) std::printf("preset_store: all tests passed\n");
     return failed == 0 ? 0 : 1;
 }
