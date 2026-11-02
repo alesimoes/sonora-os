@@ -47,6 +47,13 @@ constexpr double kFieldScale = 2.0;
 constexpr double kMotionSwingS = kWowMaxPercent * 0.01 / (dsp::kTwoPi * kWowHz) +
                                  kFlutterMaxPercent * 0.01 / (dsp::kTwoPi * kFlutterHz);
 constexpr std::uint32_t kMotionMargin = 3;
+// The hysteresis' substeps per oversampled sample, at most, per quality.
+// Eco takes one, which is what holds it to CPU class B (a second costs
+// about as much as the first, on every sample of a hot input); standard
+// and high take up to four, which keeps their integrator error under the
+// reference bar at every tone the suite plays (brain/research/
+// native-tape-n2.md, "CPU class B").
+constexpr std::uint32_t kSubsteps[] = {1, 4, 4};
 
 class Tape final : public ProcessorBase {
 public:
@@ -74,7 +81,10 @@ protected:
                 pre_[s][e] = dsp::design_matched_one_pole(1.0 / (dsp::kTwoPi * tau), dsp::kTapePreemphasisLimitHz, os_rate);
             }
         }
-        for (auto& h : hyst_) h.set_params(dsp::JilesAthertonParams{});
+        for (auto& h : hyst_) {
+            h.set_params(dsp::JilesAthertonParams{});
+            h.set_max_substeps(kSubsteps[q]);
+        }
         // Unity small-signal gain: what a tiny input makes, divided out.
         norm_ = 1.0 / (hyst_[0].initial_susceptibility() * kFieldScale);
         motion_ = value(kMotion) >= 0.5f;
@@ -118,35 +128,55 @@ protected:
         const double bump_gain = dsp::db_to_gain(dsp::kTapeBumpMaxDb) - 1.0;
         const double fs = sample_rate();
         const double wow_inc = tape::kWowHz / fs, flutter_inc = tape::kFlutterHz / fs;
-        for (std::uint32_t k = 0; k < frames; ++k) {
-            drive_[k] = dsp::db_to_gain(smoother(kDrive).next()) * kFieldScale;
-            post_[k] = norm_ * dsp::db_to_gain(smoother(kOutput).next());
-            bump_[k] = bump_gain * 0.01 * smoother(kBump).next();
-            if (motion_) {
-                // Delay in samples: the integral of the speed deviation,
-                // eps / (2 pi f) in seconds for a sine of peak eps.
-                const double wow = 0.01 * smoother(kWow).next() * fs / (dsp::kTwoPi * tape::kWowHz);
-                const double flt = 0.01 * smoother(kFlutter).next() * fs / (dsp::kTwoPi * tape::kFlutterHz);
-                tau_[k] = wow * std::sin(dsp::kTwoPi * wow_phase_) + flt * std::sin(dsp::kTwoPi * flutter_phase_);
-                wow_phase_ += wow_inc;
-                if (wow_phase_ >= 1.0) wow_phase_ -= 1.0;
-                flutter_phase_ += flutter_inc;
-                if (flutter_phase_ >= 1.0) flutter_phase_ -= 1.0;
+        // A parameter that is not moving gives the same value every sample:
+        // its gain once per block, the same bits as once per sample.
+        auto gains = [frames](ParamSmoother& sm, double* dst, auto&& f) noexcept {
+            if (sm.moving()) {
+                for (std::uint32_t k = 0; k < frames; ++k) dst[k] = f(sm.next());
+            } else {
+                const double g = f(sm.next());
+                for (std::uint32_t k = 0; k < frames; ++k) dst[k] = g;
             }
+        };
+        gains(smoother(kDrive), drive_.data(), [](double v) noexcept { return dsp::db_to_gain(v) * kFieldScale; });
+        gains(smoother(kOutput), post_.data(), [this](double v) noexcept { return norm_ * dsp::db_to_gain(v); });
+        gains(smoother(kBump), bump_.data(), [bump_gain](double v) noexcept { return bump_gain * 0.01 * v; });
+        for (std::uint32_t k = 0; motion_ && k < frames; ++k) {
+            // Delay in samples: the integral of the speed deviation,
+            // eps / (2 pi f) in seconds for a sine of peak eps.
+            const double wow = 0.01 * smoother(kWow).next() * fs / (dsp::kTwoPi * tape::kWowHz);
+            const double flt = 0.01 * smoother(kFlutter).next() * fs / (dsp::kTwoPi * tape::kFlutterHz);
+            tau_[k] = wow * std::sin(dsp::kTwoPi * wow_phase_) + flt * std::sin(dsp::kTwoPi * flutter_phase_);
+            wow_phase_ += wow_inc;
+            if (wow_phase_ >= 1.0) wow_phase_ -= 1.0;
+            flutter_phase_ += flutter_inc;
+            if (flutter_phase_ >= 1.0) flutter_phase_ -= 1.0;
         }
         const std::uint32_t chs = channels();
         const std::uint32_t n = frames * factor_;
+        double* x[2] = {nullptr, nullptr};
         for (std::uint32_t c = 0; c < chs; ++c) {
             for (std::uint32_t k = 0; k < frames; ++k) scaled_[k] = static_cast<float>(in[c][k] * drive_[k]);
-            double* x = os_.up(c, scaled_.data(), frames);
-            dsp::TapeHysteresis& h = hyst_[c];
-            dsp::OnePoleZero& pre = pre_state_[c];
-            dsp::OnePoleInverse& de = de_state_[c];
-            dsp::OnePoleZero& lp = lp_state_[c];
-            for (std::uint32_t i = 0; i < n; ++i) {
-                const double m = h.tick(pre.tick(x[i]));
-                x[i] = lp.tick(de.tick(m));
-            }
+            x[c] = os_.up(c, scaled_.data(), frames);
+        }
+        // The hysteresis of the two channels in lockstep, in the lanes of
+        // one register (common/dsp tape_run_pair), with the same bits as
+        // one channel alone; the linear filters around it in their own
+        // passes.
+        for (std::uint32_t c = 0; c < chs; ++c) {
+            double* xc = x[c];
+            for (std::uint32_t i = 0; i < n; ++i) xc[i] = pre_state_[c].tick(xc[i]);
+        }
+        if (chs == 2) {
+            dsp::tape_run_pair(hyst_[0], hyst_[1], x[0], x[1], n);
+        } else {
+            for (std::uint32_t c = 0; c < chs; ++c) hyst_[c].run(x[c], n);
+        }
+        for (std::uint32_t c = 0; c < chs; ++c) {
+            double* xc = x[c];
+            for (std::uint32_t i = 0; i < n; ++i) xc[i] = lp_state_[c].tick(de_state_[c].tick(xc[i]));
+        }
+        for (std::uint32_t c = 0; c < chs; ++c) {
             os_.down(c, wet_.data(), frames);
             dsp::BiquadState& bp = bump_state_[c];
             for (std::uint32_t k = 0; k < frames; ++k) {

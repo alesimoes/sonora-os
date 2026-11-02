@@ -26,6 +26,7 @@ add_library(sonora_dsp STATIC
   src/triode.cpp
   src/true_peak.cpp
   src/arch/${SONORA_DSP_ARCH}/denormals.cpp
+  src/arch/${SONORA_DSP_ARCH}/tape_pair.cpp
   src/arch/${SONORA_DSP_ARCH}/triode_pair.cpp
 )
 target_include_directories(sonora_dsp PUBLIC include)
@@ -53,6 +54,13 @@ if(NOT SONORA_DSP_ARCH STREQUAL "generic")
   target_compile_options(test_dsp_triode_generic PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off> $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
   add_test(NAME dsp_triode_generic COMMAND test_dsp_triode_generic)
+  # The same for the tape's two-channel integrator (tape_tick_pair).
+  add_executable(test_dsp_tape_generic tests/test_tape.cpp src/tape.cpp src/arch/generic/tape_pair.cpp)
+  target_include_directories(test_dsp_tape_generic PRIVATE include)
+  target_link_libraries(test_dsp_tape_generic PRIVATE sonora_base)
+  target_compile_options(test_dsp_tape_generic PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off> $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
+  add_test(NAME dsp_tape_generic COMMAND test_dsp_tape_generic)
 endif()
 # The two slow ones (tens of seconds in Release, minutes under ASan) carry
 # the "slow" label: PR CI runs them with SONORA_DSP_QUICK=1 (one rate, one

@@ -20,10 +20,11 @@
 // Magn. 28(1), 1992). Applying it to audio follows J. Chowdhury,
 // "Real-time physical modelling for analog tape machines", DAFx-19, 2019:
 // the same equations, integrated per sample, with the sign of the field's
-// step as delta. The integrator here is classical RK4 over a number of
-// substeps chosen from the field's step against the stiffness k, so the
-// error does not depend on how hard the signal is driven; it is bounded
-// (kMaxSubsteps), so the cost per sample is too.
+// step as delta. The processor's integrator is an exponential integrator
+// of the equivalent differential-algebraic form, with a bounded number of
+// substeps and a tabulated Langevin function (TapeHysteresis, below);
+// classical RK4 of the ODE as written, with the exact Langevin function,
+// is kept as the reference the tests hold it to (tick_with()).
 //
 // Biased tape. A recorder adds a high-frequency bias so that the tape
 // follows the anhysteretic curve (W. K. Westmijze, 1953; R. Mallinson, "The
@@ -99,18 +100,143 @@ inline double langevin_slope(double x) noexcept SONORA_RT {
     return 1.0 / (x * x) - (1.0 - t * t) / (t * t);
 }
 
+// The Langevin function for the processor's integrator: on |x| < kMax a
+// cubic per cell of width 1/kPerUnit, the Hermite interpolant of L and L'
+// at the nodes (so value and slope are continuous across cells), mirrored
+// for x < 0 so the curve stays exactly odd; beyond kMax the asymptote
+// 1 - 1/x, where coth x is 1 to 2.5e-14. The slope is the cubic's own
+// derivative. Built in the constructor; a lookup is a multiply, a
+// truncation and a cubic, against a tanh and three divisions for
+// langevin(). Its error against langevin() and langevin_slope() is held
+// by test_dsp_tape to kValueError and kSlopeError.
+class LangevinTable {
+public:
+    static constexpr double kMax = 16.0;
+    static constexpr int kPerUnit = 16;
+    static constexpr int kCells = 256;  // kMax * kPerUnit
+    // Bounds over 2e6 points of [-20, 20] (test_dsp_tape), with headroom
+    // over the measured figures.
+    static constexpr double kValueError = 1e-8;
+    static constexpr double kSlopeError = 5e-7;
+
+    LangevinTable() noexcept {
+        constexpr double h = 1.0 / kPerUnit;
+        for (int i = 0; i < kCells; ++i) {
+            const double x0 = i * h, x1 = (i + 1) * h;
+            const double y0 = langevin(x0), y1 = langevin(x1);
+            const double d0 = langevin_slope(x0) * h, d1 = langevin_slope(x1) * h;
+            c_[i][0] = y0;
+            c_[i][1] = d0;
+            c_[i][2] = 3.0 * (y1 - y0) - 2.0 * d0 - d1;
+            c_[i][3] = 2.0 * (y0 - y1) + d0 + d1;
+        }
+    }
+
+    double value(double x) const noexcept SONORA_RT {
+        const double ax = std::fabs(x);
+        double v;
+        if (!(ax < kMax)) {
+            v = 1.0 - 1.0 / ax;
+        } else {
+            const double u = ax * kPerUnit;
+            const int i = static_cast<int>(u);
+            const double t = u - i;
+            const double* c = c_[i];
+            v = (c[0] + t * c[1]) + (t * t) * (c[2] + t * c[3]);
+        }
+        return x < 0.0 ? -v : v;
+    }
+    // L(x) and L'(x) together, from the same cell.
+    void eval(double x, double& l, double& dl) const noexcept SONORA_RT {
+        const double ax = std::fabs(x);
+        double v;
+        if (!(ax < kMax)) {
+            const double r = 1.0 / ax;
+            v = 1.0 - r;
+            dl = r * r;
+        } else {
+            const double u = ax * kPerUnit;
+            const int i = static_cast<int>(u);
+            const double t = u - i;
+            const double* c = c_[i];
+            const double t2 = t * t;
+            v = (c[0] + t * c[1]) + t2 * (c[2] + t * c[3]);
+            dl = ((c[1] + 2.0 * t * c[2]) + 3.0 * t2 * c[3]) * kPerUnit;
+        }
+        l = x < 0.0 ? -v : v;
+    }
+
+    // Cell i's cubic in t = kPerUnit x - i: c[0] + c[1] t + c[2] t^2 + c[3] t^3.
+    const double* cell(int i) const noexcept { return c_[i]; }
+
+private:
+    double c_[kCells][4];
+};
+
+template <class V>
+struct TapeSolve;  // src/tape_solve.h
+
+// The processor's integrator. The ODE above is equivalent to the
+// differential-algebraic form
+//   He = H + alpha M,   M = c Man(He) + (1 - c) Mirr,
+//   dMirr/ds = (Man(He) - Mirr) / k   while delta (Man - Mirr) > 0,
+//   Mirr held                         otherwise,
+// with s = |He - He0| the distance the effective field has travelled
+// (He moves with H: dHe/dH = 1 / (1 - alpha A) > 0). Mirr is a first-order
+// relaxation towards the anhysteretic curve, linear in Mirr, so over a
+// step it is integrated exactly for Man taken as a polynomial in the
+// distance: exponential time differencing (S. M. Cox and P. C. Matthews,
+// "Exponential time differencing for stiff systems", J. Comput. Phys.
+// 176, 2002; M. Hochbruck and A. Ostermann, "Exponential integrators",
+// Acta Numerica 19, 2010), here in He rather than in time. With
+// sigma = s / D, tau = D / k and Man = sum_j p_j sigma^j over the step,
+//   Mirr(D) = exp(-tau) Mirr(0) + sum_j p_j w_j(tau),
+//   w_j(tau) = integral over [0, 1] of tau exp(-tau (1 - sigma)) sigma^j,
+// w_0 = 1 - exp(-tau), w_j = 1 - (j / tau) w_(j-1). The polynomial is the
+// quartic through Man and its slope at both ends and Man halfway (the
+// start's are the last step's; the two lookups, at the end and halfway,
+// do not wait on each other). Mirr is a weighted mean of its start and of
+// Man, so it stays inside the curve's range at any step: no step makes it
+// unstable, and none needs the RK4's growing substep count to stay
+// bounded. Where Mirr
+// leads Man (after a reversal) it holds until Man reaches it, and relaxes
+// from there. The end field He1 is implicit (Man and Mirr depend on it):
+// one Newton step on F(He1) = H1 + alpha M(He1) - He1, from the step the
+// previous susceptibility predicts, applied to the state to first order.
+// The substeps take tape_solve.h's code, written once for one instance
+// and for two in lockstep.
+//
+// Accuracy, against tick_with() at 512 RK4 substeps of the exact
+// Langevin function: test_dsp_tape and the suite's reference chain;
+// brain/research/native-tape-n2.md, "CPU class B", has the figures.
 class TapeHysteresis {
 public:
-    static constexpr std::uint32_t kMaxSubsteps = 32;
+    // A substep for every kSubstepH (units of a) the field moves in a
+    // sample, up to max_substeps() (at most kMaxSubsteps): the cost per
+    // sample is bounded by it.
+    static constexpr std::uint32_t kMaxSubsteps = 16;
+    static constexpr double kSubstepH = 1.0;
+
+    TapeHysteresis() noexcept { set_params(JilesAthertonParams{}); }
+
+    // The processor's quality chooses it: the substeps a sample may take.
+    void set_max_substeps(std::uint32_t n) noexcept {
+        max_substeps_ = n < 1 ? 1 : (n > kMaxSubsteps ? kMaxSubsteps : n);
+    }
+    std::uint32_t max_substeps() const noexcept { return max_substeps_; }
 
     void set_params(const JilesAthertonParams& p) noexcept {
         p_ = p;
-        sub_h_ = 0.8 * p.k;
+        inv_a_ = 1.0 / p.a;
+        inv_k_ = 1.0 / p.k;
+        inv_sub_h_ = 1.0 / (kSubstepH * p.a);
+        sync();
     }
     const JilesAthertonParams& params() const noexcept { return p_; }
     void reset() noexcept {
         m_ = 0.0;
         h_ = 0.0;
+        sync();
     }
     double magnetisation() const noexcept { return m_; }
 
@@ -122,17 +248,16 @@ public:
         return s / (1.0 - p_.alpha * s);
     }
 
-    // The field moves to `h` over one sample; returns M. The substep count
-    // follows the step against the pinning stiffness.
-    double tick(double h) noexcept SONORA_RT {
-        const double dh = h - h_;
-        double n = std::ceil(std::fabs(dh) / sub_h_);
-        if (!(n >= 1.0)) n = 1.0;
-        if (n > static_cast<double>(kMaxSubsteps)) n = static_cast<double>(kMaxSubsteps);
-        return tick_with(h, static_cast<std::uint32_t>(n));
-    }
-    // The same with a given substep count: the reference render of the
-    // tests uses hundreds.
+    // The field moves to `h` over one sample; returns M.
+    double tick(double h) noexcept SONORA_RT;
+    // tick() over a block, in place: x[i], the field, becomes M. Two
+    // instances with the same parameters run together through
+    // tape_run_pair(), to the same bits.
+    void run(double* x, std::uint32_t n) noexcept SONORA_RT;
+
+    // The ODE by classical RK4 over a given number of substeps, with the
+    // exact Langevin function: the reference the tests hold tick() to, at
+    // hundreds of substeps.
     double tick_with(double h, std::uint32_t substeps) noexcept SONORA_RT {
         const double dh = h - h_;
         if (dh != 0.0) {
@@ -152,6 +277,7 @@ public:
             m_ = m;
         }
         h_ = h;
+        sync();
         return m_;
     }
 
@@ -170,12 +296,40 @@ public:
         return a / den;
     }
 
+    const LangevinTable& table() const noexcept { return table_; }
+
 private:
+    template <class V>
+    friend struct TapeSolve;
+    // The algebraic form's state from (H, M).
+    void sync() noexcept {
+        he_ = h_ + p_.alpha * m_;
+        double l, dl;
+        table_.eval(he_ * inv_a_, l, dl);
+        man_ = p_.ms * l;
+        dman_ = p_.ms * inv_a_ * dl;
+        mirr_ = (m_ - p_.c * man_) / (1.0 - p_.c);
+        // The reversible part alone: the next step's guess, corrected by
+        // its Newton step.
+        inv_den_ = 1.0 / (1.0 - p_.alpha * p_.c * dman_);
+    }
+
     JilesAthertonParams p_;
-    double sub_h_ = 0.36;
-    double m_ = 0.0;
-    double h_ = 0.0;
+    LangevinTable table_;
+    double inv_a_ = 1.0, inv_k_ = 1.0, inv_sub_h_ = 1.0;
+    std::uint32_t max_substeps_ = kMaxSubsteps;
+    double m_ = 0.0, h_ = 0.0;
+    // The algebraic form's state: the effective field, Man, its slope and
+    // Mirr there, and 1 / (1 - alpha dM/dHe) at the end of the last step
+    // (dHe/dH, the next step's guess).
+    double he_ = 0.0, man_ = 0.0, dman_ = 0.0, mirr_ = 0.0, inv_den_ = 1.0;
 };
+
+// a.run(xa, n) and b.run(xb, n) at once, to the same bits, for two
+// instances with the same parameters and substep cap (the processor's two
+// channels): the operations of each run in the lanes of one register on
+// x86-64 (src/arch/x86_64/tape_pair.cpp), side by side elsewhere.
+void tape_run_pair(TapeHysteresis& a, TapeHysteresis& b, double* xa, double* xb, std::uint32_t n) noexcept SONORA_RT;
 
 // y[n] = b0 x[n] + b1 x[n-1] + p y[n-1].
 struct OnePoleZero {
