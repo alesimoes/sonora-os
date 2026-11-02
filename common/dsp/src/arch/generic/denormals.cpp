@@ -2,8 +2,8 @@
 //
 // Portable fallback: standard C++ has no way to set FTZ/DAZ. Callers learn
 // that from flush_to_zero_supported(); the denormal test reports it rather
-// than passing silently. An arm64 implementation (FPCR.FZ) belongs in
-// src/arch/aarch64/ when that target is built.
+// than passing silently. AArch64 with GCC/Clang has its own
+// (src/arch/aarch64/denormals.cpp, FPCR.FZ).
 #include "sonora/dsp/denormals.h"
 
 namespace sonora::dsp {
