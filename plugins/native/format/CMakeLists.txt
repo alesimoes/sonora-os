@@ -97,8 +97,9 @@ target_compile_options(sonora_native_bundle_driver PRIVATE $<$<CXX_COMPILER_ID:G
 # plugin words: never change one, saved sessions find the plugin by it.
 # SIDECHAIN: the processor takes a key (Descriptor::sidechain), and each
 # layout gets a key input with as many channels as its main input.
+option(SONORA_INSTALL_EXPERIMENTAL "Install bundles marked EXPERIMENTAL" OFF)
 function(sonora_native_plugin name)
-  cmake_parse_arguments(P "TIMEPOS;SIDECHAIN" "FACTORY;DISPLAY;UID;MONO_UID;LV2_CATEGORY;VST3_CATEGORIES" "" ${ARGN})
+  cmake_parse_arguments(P "TIMEPOS;SIDECHAIN;EXPERIMENTAL" "FACTORY;DISPLAY;UID;MONO_UID;LV2_CATEGORY;VST3_CATEGORIES" "" ${ARGN})
   foreach(uid "${P_UID}" "${P_MONO_UID}")
     string(LENGTH "${uid}" uid_len)
     if(NOT uid_len EQUAL 4)
@@ -254,8 +255,12 @@ function(_sonora_native_bundle name suffix channels uid display)
     set_tests_properties(native_vst3_validator_${b} PROPERTIES LABELS plugins)
   endif()
 
-  install(DIRECTORY ${lv2_bundle} DESTINATION lib/lv2)
-  install(DIRECTORY ${vst3_bundle} DESTINATION lib/vst3)
+  # EXPERIMENTAL: built and tested, not installed, until the processor holds
+  # its ADR-0011 3.5 CPU class (a processor over its class does not ship).
+  if(NOT P_EXPERIMENTAL OR SONORA_INSTALL_EXPERIMENTAL)
+    install(DIRECTORY ${lv2_bundle} DESTINATION lib/lv2)
+    install(DIRECTORY ${vst3_bundle} DESTINATION lib/vst3)
+  endif()
 
   # For the host tests and the validators (plugins/host/CMakeLists.txt):
   # where the bundles are, and the VST3 class ID the host loads by.

@@ -129,6 +129,7 @@ add_subdirectory(plugins/native/reverb)
 add_subdirectory(plugins/native/tube)
 add_subdirectory(plugins/native/opto)
 add_subdirectory(plugins/native/fet)
+add_subdirectory(plugins/native/tape)
 add_subdirectory(plugins/native/measure/app)
 
 # Everything below is POSIX or Qt: the neutral build stops here.
