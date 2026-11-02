@@ -59,7 +59,7 @@ float* Chain::buffer(std::size_t stage, uint32_t channel) {
     return stages_[stage].data() + std::size_t(channel) * stride_;
 }
 
-bool Chain::add(const std::string& id, ChainError& error) {
+bool Chain::add(const std::string& id, ChainError& error, StatePaths* paths) {
     const int index = static_cast<int>(slots_.size());
     error.instance = index;
     if (slots_.size() >= plugin::kMaxInstances) {
@@ -76,7 +76,9 @@ bool Chain::add(const std::string& id, ChainError& error) {
         out.push_back(buffer(out_stage, c));
     }
     for (uint32_t c = 0; c < key_channels_; ++c) key.push_back(key_.data() + std::size_t(c) * stride_);
-    std::unique_ptr<Processor> p = source_.instantiate(id, config_, in, out, key, error);
+    ChainConfig config = config_;
+    config.state_paths = paths;
+    std::unique_ptr<Processor> p = source_.instantiate(id, config, in, out, key, error);
     if (!p) {
         error.instance = index;
         stages_.pop_back();

@@ -40,6 +40,7 @@
 #include "sonora/platform/wake.h"
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin/protocol.h"
+#include "sonora/sha256.h"
 
 #include <algorithm>
 #include <array>
@@ -51,7 +52,9 @@
 #include <cstring>
 #include <ctime>
 #include <deque>
+#include <filesystem>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -2831,6 +2834,200 @@ int scenario_state(const Args& a) {
     return 0;
 }
 
+// The integer after `key` in an LV2 state's Turtle, or `fallback`.
+int64_t turtle_int(const std::string& turtle, const std::string& key, int64_t fallback = std::numeric_limits<int64_t>::min()) {
+    const std::size_t at = turtle.find(key);
+    if (at == std::string::npos) return fallback;
+    const std::size_t d = turtle.find_first_of("-0123456789", at + key.size());
+    return d == std::string::npos ? fallback : std::strtoll(turtle.c_str() + d, nullptr, 10);
+}
+
+std::string lv2_section(const std::string& blob_bytes) {
+    pc::StateBlob b;
+    std::string e;
+    return pc::decode_state_blob(blob_bytes, b, e) && b.sections.size() == 1 ? b.sections[0] : std::string();
+}
+
+// The next Fault{Plugin} with a count from this host, within `ms`.
+bool counted_plugin_fault(Host& host, pc::Fault& f, int ms) {
+    const uint64_t end = monotonic_ns() + uint64_t(ms) * 1000000ull;
+    for (;;) {
+        const uint64_t now = monotonic_ns();
+        if (now >= end) return false;
+        if (!host.expect_message(pc::Type::Fault, f, int((end - now) / 1000000ull) + 1)) return false;
+        if (f.kind == pc::FaultKind::Plugin && f.count > 0) return true;
+    }
+}
+
+// LV2 states that hold files (ADR-0029 §6, slice 1). The test plugin makes
+// a scratch file through makePath at instantiation; a GetState into session
+// folder A copies it into "A/Plugin Files/<sha256>/sample.bin" and the state
+// names it relative to A. Then A's "Plugin Files/" is carried to folder B
+// (what Save As does), A and the scratch folder are deleted, and a new host
+// loaded from B with the saved state reads the same bytes back. Plus: an
+// absolute and a ".." makePath refused and counted; makePath from run()
+// refused there and counted; a GetState with kGetStateNoCopy failing while
+// the file still needs a copy, and passing once it is in the folder; and a
+// state whose path escapes the folder refused at restore.
+int scenario_state_files(const Args& a) {
+    namespace fs = std::filesystem;
+    Args ca = a;
+    ca.control = true;
+    const std::string kFiles = "urn:sonora:test#files";
+    const std::vector<std::string> chain = {kFiles};
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    const fs::path base = fs::temp_directory_path() / ("sonora-state-files-" + std::to_string(getpid()));
+    const fs::path scratch_a = base / "scratch" / "run-1" / "insert-1", scratch_b = base / "scratch" / "run-2" / "insert-1";
+    const fs::path sess_a = base / "Session A", sess_b = base / "Session B";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    for (const fs::path& d : {scratch_a, scratch_b, sess_a, sess_b}) fs::create_directories(d, ec);
+    std::printf("state_files: %s, scratch %s, sessions in %s\n", kFiles.c_str(), scratch_a.c_str(), base.c_str());
+    const int mode = dense_param(a, kFiles, "mode");
+    if (mode < 0) return 1;
+
+    std::string pattern;
+    for (uint32_t i = 0; i < 40000; ++i) pattern.push_back(char((i * 7u + 3u) & 0xFFu));
+    const std::string sha = sonora::sha256_hex(pattern);
+    const std::string rel = pc::plugin_file_path(sha, "sample.bin");
+
+    Host::StartOptions oa;
+    oa.load = [&](pc::Load& l) {
+        l.session_dir = sess_a.string();
+        l.instances[0].scratch_dir = scratch_a.string();
+    };
+    Host first;
+    if (int r = start_ready(first, ca, clock, chain, oa)) return r;
+    check(fs::file_size(scratch_a / "takes" / "sample.bin", ec) == pattern.size() && !ec,
+          "makePath at instantiation: the file is made under the instance's scratch folder, parents created");
+    check(!fs::exists(sess_a / "takes", ec) && !fs::exists(base / "escape.bin", ec) &&
+              !fs::exists(base / "scratch" / "run-1" / "escape.bin", ec),
+          "nothing is made in the session folder, nor outside the scratch folder");
+    pc::Fault f;
+    check(counted_plugin_fault(first, f, 3000) && f.instance == 0 && f.count == 2 &&
+              f.text.find("makePath refused ../escape.bin") != std::string::npos,
+          "an absolute and a \"..\" makePath: refused, counted (2) as Fault{Plugin} naming the instance");
+    std::printf("  Fault{Plugin} count %llu: %s\n", (unsigned long long)f.count, f.text.c_str());
+
+    play(first, clock, a.channels, 20);
+    first.send(0, uint32_t(mode), 0, 1.f);
+    play(first, clock, a.channels, 50, 20);
+    check(counted_plugin_fault(first, f, 3000) && f.instance == 0 &&
+              f.text.find("processing thread") != std::string::npos,
+          "makePath from run(): refused on the processing thread and counted");
+    std::printf("  Fault{Plugin} count %llu: %s\n", (unsigned long long)f.count, f.text.c_str());
+    first.send(0, uint32_t(mode), 0, 0.f);
+    play(first, clock, a.channels, 20, 70);
+
+    pc::State held;
+    first.queue(pc::GetState{1, 0, sess_a.string(), pc::kGetStateNoCopy});
+    check(first.expect_message(pc::Type::State, held, pc::kStateReplyTimeoutMs) && held.request == 1 &&
+              held.status == pc::StateStatus::Failed && held.files.empty() &&
+              held.text.find("after the take") != std::string::npos,
+          "GetState with kGetStateNoCopy and a file still to copy: Failed (\"saved after the take\")");
+    std::printf("  no-copy State: %s\n", held.text.c_str());
+    check(!fs::exists(sess_a / "Plugin Files", ec), "  and nothing was copied");
+
+    pc::State saved;
+    first.queue(pc::GetState{2, 0, sess_a.string(), 0});
+    check(first.expect_message(pc::Type::State, saved, pc::kStateReplyTimeoutMs) && saved.request == 2 &&
+              saved.status == pc::StateStatus::Ok,
+          "GetState into session folder A: Ok");
+    if (saved.status != pc::StateStatus::Ok) {
+        std::printf("  State failed: %s\n", saved.text.c_str());
+        first.stop();
+        return 0;
+    }
+    check(saved.files.size() == 1 && saved.files[0].path == rel && saved.files[0].sha256 == sha &&
+              saved.files[0].bytes == pattern.size(),
+          "State.files names \"Plugin Files/<sha256>/sample.bin\", its hash and size");
+    std::string copied;
+    if (std::FILE* fp = std::fopen((sess_a / rel).c_str(), "rb")) {
+        char buf[65536];
+        for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, fp)) > 0;) copied.append(buf, n);
+        std::fclose(fp);
+    }
+    check(copied == pattern, "the file is in A's Plugin Files, byte for byte");
+    const std::string turtle = lv2_section(saved.bytes);
+    const std::size_t named = turtle.find(rel);
+    check(named != std::string::npos && turtle.find(scratch_a.string()) == std::string::npos &&
+              turtle.find(sess_a.string()) == std::string::npos,
+          "the state names the file relative to the folder, never the scratch or session path");
+    {
+        // ADR-0029 Unverified 1: what lilv_state_to_string writes for an
+        // atom:Path the host's own mapPath abstracted.
+        const std::size_t line = turtle.rfind('\n', named == std::string::npos ? 0 : named);
+        const std::size_t end = turtle.find('\n', named == std::string::npos ? 0 : named);
+        std::printf("  lilv wrote: %s\n",
+                    turtle.substr(line == std::string::npos ? 0 : line + 1, end == std::string::npos ? 120 : end - line)
+                        .c_str());
+    }
+    const int64_t checks = turtle_int(turtle, "test#checks", 0);
+    check((checks & 1) && (checks & 2), "the plugin saw both makePath refusals as NULL");
+    check((checks & 4) && !(checks & 8), "the plugin got NULL from makePath in run(), never a path");
+    std::printf("  save() was handed %lld mapPath feature(s) by lilv and the host\n",
+                (long long)turtle_int(turtle, "test#map_offers"));
+    first.stop();
+
+    // Save As: the session's Plugin Files go with it; the old folder and the
+    // scratch folder are gone, so only B can serve the restored state.
+    fs::copy(sess_a / "Plugin Files", sess_b / "Plugin Files", fs::copy_options::recursive, ec);
+    check(!ec, "A's Plugin Files copied to B");
+    fs::remove_all(sess_a, ec);
+    fs::remove_all(base / "scratch" / "run-1", ec);
+
+    Host::StartOptions ob;
+    ob.states = {saved.bytes};
+    ob.load = [&](pc::Load& l) {
+        l.session_dir = sess_b.string();
+        l.instances[0].scratch_dir = scratch_b.string();
+    };
+    Host second;
+    if (int r = start_ready(second, ca, clock, chain, ob)) return r;
+    check(second.loaded().instances[0].state == pc::StateResult::Restored, "a new host loaded from B: Restored");
+    play(second, clock, a.channels, 20);
+    pc::State again;
+    second.queue(pc::GetState{1, 0, sess_b.string(), pc::kGetStateNoCopy});
+    check(second.expect_message(pc::Type::State, again, pc::kStateReplyTimeoutMs) &&
+              again.status == pc::StateStatus::Ok,
+          "a no-copy GetState passes once the file is in the folder");
+    if (again.status != pc::StateStatus::Ok) std::printf("  State failed: %s\n", again.text.c_str());
+    const std::string turtle_b = lv2_section(again.bytes);
+    check(turtle_int(turtle_b, "test#verified") == int64_t(pattern.size()),
+          "restore() resolved the path under B and read the same bytes back");
+    check(turtle_int(turtle_b, "test#checks", 0) & 16, "and the property came back as an atom:Path");
+    check(again.files.size() == 1 && again.files[0].path == rel && again.files[0].sha256 == sha &&
+              turtle_b.find(rel) != std::string::npos,
+          "the restored state names the same file again, without a copy");
+    std::printf("  restore() was handed %lld mapPath feature(s)\n",
+                (long long)turtle_int(turtle_b, "test#restore_map_offers"));
+    second.stop();
+
+    // A state whose path escapes the session folder: absolute_path refuses it.
+    std::string forged = lv2_section(saved.bytes);
+    if (const std::size_t at = forged.find(rel); at != std::string::npos) forged.replace(at, rel.size(), "../outside.bin");
+    pc::StateBlob fb{pc::Format::Lv2, kFiles, {forged}};
+    std::string forged_bytes, e;
+    pc::encode_state_blob(fb, forged_bytes, e);
+    Host::StartOptions oc;
+    oc.states = {forged_bytes};
+    oc.load = [&](pc::Load& l) { l.session_dir = sess_b.string(); };
+    Host third;
+    if (int r = start_ready(third, ca, clock, chain, oc)) return r;
+    check(counted_plugin_fault(third, f, 3000) && f.text.find("absolute_path refused ../outside.bin") != std::string::npos,
+          "a state path with \"..\": absolute_path refused and counted");
+    std::printf("  Fault{Plugin}: %s\n", f.text.c_str());
+    pc::State st3;
+    third.queue(pc::GetState{1, 0, "", 0});
+    check(third.expect_message(pc::Type::State, st3, pc::kStateReplyTimeoutMs) &&
+              (turtle_int(lv2_section(st3.bytes), "test#checks", 0) & 32),
+          "the plugin got NULL for it");
+    third.stop();
+    fs::remove_all(base, ec);
+    return 0;
+}
+
 // A state restored through the worker (LV2 worker 1.2): the test plugin's
 // restore() schedules the gain its saved instance had applied, from the
 // schedule feature restore() is handed, and the new host's first blocks
@@ -3254,6 +3451,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "control") r = scenario_control(a);
     else if (a.scenario == "control_incompatible") r = scenario_control_incompatible(a);
     else if (a.scenario == "state") r = scenario_state(a);
+    else if (a.scenario == "state_files") r = scenario_state_files(a);
     else if (a.scenario == "gesture") r = scenario_gesture(a);
     else if (a.scenario == "reconfigure") r = scenario_reconfigure(a);
     else std::fprintf(stderr, "plugin_driver: unknown scenario %s\n", a.scenario.c_str());
