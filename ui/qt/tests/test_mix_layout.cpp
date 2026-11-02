@@ -13,9 +13,15 @@
 //     collapsed; at least 240 px of throw throughout;
 //   - the insert frame keeps slots A to E in view, the sends their five
 //     rows, and nothing overlaps the fader zone;
-//   - another session opening resets the views;
+//   - another session opening resets the views, an Open of a session file
+//     and of an unsaved recording alike, and a refused Open does not;
+//   - at 1280x720 the header's controls sit apart, and the elided note
+//     ends before the first of them;
 //   - no QML "Binding loop" warning is raised while it runs.
+#include <QDir>
 #include <QGuiApplication>
+#include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QQuickItem>
 #include <QQuickView>
 #include <QTest>
@@ -65,6 +71,7 @@ struct Rig {
     InsertModel inserts{doc, session};
     SendModel sends{doc, session};
     MixModel mixer;
+    QTemporaryDir dir;
 
     static api::testing::FakeEngine::Config config(int tracks) {
         api::testing::FakeEngine::Config c;
@@ -81,6 +88,7 @@ struct Rig {
                                    const std::vector<api::CommandReply>& r) {
             if (doc.receive(u, r)) session.documentUpdated();
         });
+        session.setSessionsDir(dir.path());
         session.installCommands(router.local());
         router.prepare({});
     }
@@ -93,6 +101,12 @@ struct Rig {
     void settle() {
         for (int i = 0; i < 8; ++i) shell.tick();
     }
+    bool save(std::string& why) {
+        // Save asks the engine for the plugins' state and writes on its reply.
+        if (!session.saveSession(why)) return false;
+        settle();
+        return !session.saveWaiting();
+    }
 };
 
 QQuickItem* named(QQuickItem* item, const QString& name) {
@@ -103,14 +117,9 @@ QQuickItem* named(QQuickItem* item, const QString& name) {
     return nullptr;
 }
 
-int layout(int tracks) {
-    Rig r(tracks);
-    CHECK(r.connect());
-    CHECK(r.session.trackCount() == tracks);
-    r.sends.newBus();
-    r.settle();
-
-    QQuickView view;
+// The Mix window of `r`, its root item sized `w` x `h`; null if it did not
+// load.
+QQuickItem* show_mix(Rig& r, QQuickView& view, int w, int h) {
     // The offscreen screen is smaller than the reference, and a window is
     // clamped to it, so the root item is sized instead: layout is its own.
     view.setResizeMode(QQuickView::SizeViewToRootObject);
@@ -121,15 +130,32 @@ int layout(int tracks) {
                                {QStringLiteral("mixer"), QVariant::fromValue(&r.mixer)}});
     view.setSource(QUrl(QStringLiteral("qrc:/sonora/qml/Main.qml")));
     for (const auto& e : view.errors()) std::fprintf(stderr, "%s\n", qPrintable(e.toString()));
-    CHECK(view.status() == QQuickView::Ready);
+    if (view.status() != QQuickView::Ready) return nullptr;
     r.session.setWindow(QStringLiteral("mix"));
     view.show();
-    CHECK(QTest::qWaitForWindowExposed(&view));
+    if (!QTest::qWaitForWindowExposed(&view)) return nullptr;
     r.settle();
     QTest::qWait(50);
     QQuickItem* root = view.rootObject();
-    root->setSize(QSizeF(1920, 1080));
+    root->setSize(QSizeF(w, h));
     QTest::qWait(50);
+    return root;
+}
+
+int layout(int tracks) {
+    Rig r(tracks);
+    CHECK(r.connect());
+    CHECK(r.session.trackCount() == tracks);
+    r.sends.newBus();
+    r.settle();
+    std::string why;
+    CHECK(r.save(why));
+    const QString saved = r.session.sessionFile();
+    CHECK(!saved.isEmpty());
+
+    QQuickView view;
+    QQuickItem* root = show_mix(r, view, 1920, 1080);
+    CHECK(root != nullptr);
 
     QQuickItem* flick = named(root, QStringLiteral("mixStrips"));
     CHECK(flick != nullptr);
@@ -217,7 +243,7 @@ int layout(int tracks) {
         QQuickItem* snd = named(root, QStringLiteral("sendBankFJ"));
         CHECK(ins != nullptr && snd != nullptr);
         CHECK(ins->property("text").toString() == QStringLiteral("Ins F-J"));
-        CHECK(snd->property("text").toString() != ins->property("text").toString());
+        CHECK(snd->property("text").toString() == QStringLiteral("Sends F-J"));
     }
 
     // Defaults: inserts A-E, sends A-E, I/O.
@@ -254,13 +280,69 @@ int layout(int tracks) {
     settle_views();
     CHECK(named(root, QStringLiteral("insertFrame0"))->isVisible());
 
-    // Another session opening puts the views back to their defaults.
-    r.mixer.setShowIO(false);
-    r.mixer.setShowInsertsFJ(true);
-    r.sends.setBank(5);
-    emit r.session.sessionOpened();
-    CHECK(r.mixer.showIO() && r.mixer.showInsertsAE() && r.mixer.showSends());
-    CHECK(!r.mixer.showInsertsFJ() && r.sends.bank() == 0);
+    // Another session opening puts the views back to their defaults; an Open
+    // refused before anything is replaced leaves them as they are.
+    QSignalSpy opened(&r.session, &SessionModel::sessionOpened);
+    const auto change_views = [&]() {
+        r.mixer.setShowIO(false);
+        r.mixer.setShowInsertsFJ(true);
+        r.sends.setBank(5);
+    };
+    const auto views_changed = [&]() {
+        return !r.mixer.showIO() && r.mixer.showInsertsFJ() && r.sends.bank() == 5;
+    };
+    const auto views_reset = [&]() {
+        return r.mixer.showIO() && r.mixer.showInsertsAE() && r.mixer.showSends() &&
+               !r.mixer.showInsertsFJ() && r.sends.bank() == 0;
+    };
+    change_views();
+    CHECK(!r.session.openSessionFile(QDir(r.dir.path()).filePath(QStringLiteral("None.sonora")),
+                                     true, why));
+    r.settle();
+    CHECK(opened.isEmpty() && views_changed());
+    CHECK(r.session.openSessionFile(saved, true, why));
+    r.settle();
+    CHECK(opened.size() == 1 && views_reset());
+
+    // The recovery path's Open, of an unsaved recording, is another session.
+    change_views();
+    const QDir sessions(r.dir.path());
+    CHECK(sessions.mkpath(QStringLiteral("Untitled 2/Audio Files")));
+    CHECK(r.session.openRecording(sessions.filePath(QStringLiteral("Untitled 2")), true));
+    r.settle();
+    CHECK(opened.size() == 2 && views_reset());
+    return 0;
+}
+
+// At 1280x720 the header holds the note, the views, the sends' switch and
+// the delay compensation on one line: each control apart from the next, and
+// the note, elided, ending before the views begin (PR #182 review).
+int header_at_1280() {
+    Rig r(18);
+    CHECK(r.connect());
+    QQuickView view;
+    QQuickItem* root = show_mix(r, view, 1280, 720);
+    CHECK(root != nullptr);
+    const auto left = [](QQuickItem* i) { return i->mapToScene(QPointF(0, 0)).x(); };
+    const auto right = [](QQuickItem* i) { return i->mapToScene(QPointF(i->width(), 0)).x(); };
+    QQuickItem* note = named(root, QStringLiteral("mixNote"));
+    QQuickItem* views = named(root, QStringLiteral("viewControls"));
+    QQuickItem* sendsRow = named(root, QStringLiteral("sendControls"));
+    QQuickItem* comp = named(root, QStringLiteral("compensation"));
+    CHECK(note != nullptr && views != nullptr && sendsRow != nullptr && comp != nullptr);
+    CHECK(note->isVisible() && views->isVisible() && sendsRow->isVisible() && comp->isVisible());
+    std::printf("  1280: note %.0f-%.0f (text %.0f px), views %.0f-%.0f, sends %.0f-%.0f, "
+                "delay %.0f-%.0f\n",
+                left(note), right(note), note->implicitWidth(), left(views), right(views),
+                left(sendsRow), right(sendsRow), left(comp), right(comp));
+    CHECK(note->width() > 0.0);
+    CHECK(right(note) <= left(views));
+    CHECK(right(views) <= left(sendsRow));
+    CHECK(right(sendsRow) <= left(comp));
+    CHECK(right(comp) <= root->width());
+    // Longer than its room, the note is cut short, not drawn under the
+    // buttons.
+    CHECK(note->implicitWidth() <= note->width() || note->property("truncated").toBool());
     return 0;
 }
 
@@ -279,6 +361,7 @@ int main(int argc, char** argv) {
     qInstallMessageHandler(count_binding_loops);
     if (layout(18) != 0) return 1;
     if (layout(48) != 0) return 1;
+    if (header_at_1280() != 0) return 1;
     // QML warns, and carries on with a binding that never settles.
     if (g_binding_loops != 0) {
         std::fprintf(stderr, "FAIL: %d \"Binding loop\" warnings\n", g_binding_loops);
