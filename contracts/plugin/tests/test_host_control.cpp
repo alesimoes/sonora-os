@@ -21,7 +21,7 @@
 using namespace sonora::plugin;
 using namespace sonora::plugin::control;
 
-static_assert(kHostWireVersion == 3, "the golden encodings below describe wire version 3");
+static_assert(kHostWireVersion == 4, "the golden encodings below describe wire version 4");
 
 namespace {
 
@@ -93,14 +93,14 @@ M round_trip(const M& m, const char* name) {
 void hellos_are_pinned() {
     std::string b;
     encode(EngineHello{}, b);
-    CHECK(hex(b) == "01" "03000000" "01000000" "01000000");
+    CHECK(hex(b) == "01" "04000000" "01000000" "01000000");
     uint32_t w = 0;
-    CHECK(decode_wire_version(b, w) && w == 3);
+    CHECK(decode_wire_version(b, w) && w == 4);
     Hello h;
     h.pid = 0x0102030405060708ull;
     encode(h, b);
-    CHECK(hex(b) == "40" "03000000" "01000000" "01000000" "0807060504030201");
-    CHECK(decode_wire_version(b, w) && w == 3);
+    CHECK(hex(b) == "40" "04000000" "01000000" "01000000" "0807060504030201");
+    CHECK(decode_wire_version(b, w) && w == 4);
     // A newer engine's hello with fields this version does not know: the
     // version is still readable, the message is not.
     std::string newer;
@@ -125,10 +125,16 @@ void every_message_round_trips() {
     load.flags = kLoadReactivate;
     load.instances.push_back({Format::Lv2, "http://lv2plug.in/plugins/eg-amp", 1, ""});
     load.instances.push_back({Format::Vst3, kVstId, 3, std::string("\0state\xff", 7)});
+    load.instances[0].scratch_dir = "/home/op/.local/state/sonora/plugin-scratch/run-7/insert-12";
+    load.session_dir = "/home/op/Sessions/Take Five";
     const Load lb = round_trip(load, "Load");
     CHECK(lb.instances.size() == 2 && lb.instances[1].state == load.instances[1].state &&
           lb.instances[1].id == kVstId && lb.flags == kLoadReactivate && lb.key_channels == 1);
+    CHECK(lb.session_dir == load.session_dir && lb.instances[0].scratch_dir == load.instances[0].scratch_dir &&
+          lb.instances[1].scratch_dir.empty());
     round_trip(GetState{7, 2}, "GetState");
+    const GetState gs = round_trip(GetState{7, 2, "/home/op/Sessions/Take Five", kGetStateNoCopy}, "GetState save_dir");
+    CHECK(gs.save_dir == "/home/op/Sessions/Take Five" && gs.flags == kGetStateNoCopy);
     const DescribeValue dv = round_trip(DescribeValue{1, 2, 3, -6.5f}, "DescribeValue");
     CHECK(dv.value == -6.5f && dv.param == 3);
     round_trip(OpenEditor{4, 1, "x11:0x3a00007"}, "OpenEditor");
@@ -156,6 +162,14 @@ void every_message_round_trips() {
     round_trip(Refused{Refusal::ParamMismatch, 1, "has 3 parameters; the engine expects 4"}, "Refused");
     round_trip(State{3, 0, StateStatus::Ok, "blob", ""}, "State");
     round_trip(State{3, 0, StateStatus::Failed, "", "getState returned kResultFalse"}, "State failed");
+    const std::string sha(64, 'a'), sha2(64, '0');
+    State files{3, 0, StateStatus::Ok, "blob", "", {}};
+    files.files.push_back({plugin_file_path(sha, "kick.wav"), sha, 48000});
+    files.files.push_back({plugin_file_path(sha2, "ir 2.wav"), sha2, 0});
+    const State fb = round_trip(files, "State files");
+    CHECK(fb.files.size() == 2 && fb.files[0].path == "Plugin Files/" + sha + "/kick.wav" &&
+          fb.files[0].bytes == 48000 && fb.files[1].sha256 == sha2);
+    round_trip(Fault{FaultKind::Plugin, 0, 3, "makePath refused ../x"}, "Fault counted Plugin");
     round_trip(ValueText{5, true, "-6.0 dB"}, "ValueText");
     round_trip(EditorOpened{6, 0}, "EditorOpened");
     round_trip(EditorFailed{6, 0, "editors are not hosted"}, "EditorFailed");
@@ -204,6 +218,46 @@ void untrusted_fields_are_refused() {
     refuse(Fault{FaultKind::EventsDropped, -1, 0, ""}, "an EventsDropped fault counting nothing");
     refuse(Fault{static_cast<FaultKind>(5), 0, 1, ""}, "an unknown fault kind");
     refuse(State{0, 0, StateStatus::Empty, "bytes", ""}, "state bytes with status Empty");
+    // Plugin files and folders (wire 4).
+    refuse(Fault{FaultKind::Plugin, -1, 2, ""}, "a counted Plugin fault naming no plugin");
+    {
+        const std::string sha(64, 'b');
+        const auto with = [&](StateFile f, StateStatus st = StateStatus::Ok) {
+            State s{0, 0, st, st == StateStatus::Ok ? "blob" : "", "", {}};
+            s.files.push_back(std::move(f));
+            return s;
+        };
+        refuse(with({plugin_file_path(sha, "a.wav"), sha, 1}, StateStatus::Failed), "files with status Failed");
+        refuse(with({"Plugin Files/" + sha + "/../a.wav", sha, 1}), "a file path with ..");
+        refuse(with({"Plugin Files/" + sha + "/sub/a.wav", sha, 1}), "a file path one level too deep");
+        refuse(with({"/abs/Plugin Files/" + sha + "/a.wav", sha, 1}), "an absolute file path");
+        refuse(with({"Plugin State/" + sha + "/a.wav", sha, 1}), "a file outside Plugin Files");
+        refuse(with({plugin_file_path(sha, "a.wav"), std::string(64, 'c'), 1}), "a path whose directory is not its hash");
+        refuse(with({plugin_file_path(sha, "a.wav"), std::string(64, 'B'), 1}), "an upper-case hash");
+        refuse(with({"Plugin Files/" + sha + "/", sha, 1}), "a file with no name");
+        State twice = with({plugin_file_path(sha, "a.wav"), sha, 1});
+        twice.files.push_back(twice.files[0]);
+        refuse(twice, "a file listed twice");
+        State many{0, 0, StateStatus::Ok, "blob", "", {}};
+        for (uint32_t i = 0; i <= kMaxStateFiles; ++i)
+            many.files.push_back({plugin_file_path(sha, "f" + std::to_string(i)), sha, 1});
+        refuse(many, "more files than a State may name");
+        refuse(GetState{0, 0, "relative/dir", 0}, "a relative save_dir");
+        refuse(GetState{0, 0, "/a/../b", 0}, "a save_dir with ..");
+        refuse(GetState{0, 0, "/a", 0x80}, "unknown GetState flags");
+        refuse(GetState{0, 0, "/" + std::string(kMaxPathBytes, 'p'), 0}, "a save_dir over the cap");
+        Load l;
+        l.instances.push_back({Format::Lv2, "urn:x", 0, "", "scratch"});
+        refuse(l, "a relative scratch_dir");
+        l.instances[0].scratch_dir = "/s";
+        l.session_dir = "Sessions/x";
+        refuse(l, "a relative session_dir");
+        CHECK(plugin_file_path(sha, "..").empty() && plugin_file_path(sha, "a/b").empty() &&
+              plugin_file_path(sha, "").empty() && plugin_file_path("abc", "a").empty() &&
+              plugin_file_path(sha, std::string("a\0b", 3)).empty());
+        CHECK(valid_folder("") && valid_folder("/") && valid_folder("/a/..b/c") && !valid_folder("/a/..") &&
+              !valid_folder("a"));
+    }
     // Plugin ids.
     Load bad;
     bad.instances.push_back({Format::Vst3, "vst3:" + kVstId, 0, ""});
@@ -605,7 +659,7 @@ void state_blob_and_files() {
 void version_line() {
     char buf[96];
     CHECK(format_host_version_line(buf, sizeof buf) > 0);
-    CHECK(std::string(buf) == "sonora-plugin-host layout 1 clock 1 wire 3");
+    CHECK(std::string(buf) == "sonora-plugin-host layout 1 clock 1 wire 4");
     uint32_t l = 0, c = 0, w = 0;
     CHECK(parse_host_version_line(buf, l, c, w) && l == kLayoutVersion && c == kClockLayoutVersion &&
           w == kHostWireVersion);

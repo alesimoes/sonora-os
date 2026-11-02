@@ -2,6 +2,7 @@
 #include "lv2_host.h"
 
 #include "lv2_worker.h"
+#include "state_paths.h"
 
 #include "sonora/plugin/protocol.h"
 
@@ -128,6 +129,11 @@ bool Lv2World::feature_supported(const std::string& uri) {
         LV2_CORE__isLive,
         // Inputs and outputs are always separate buffers here.
         LV2_CORE__inPlaceBroken,
+        // Offered to every instance a chain loads (state_paths.h). makePath
+        // only with a scratch folder, which a probe has none of, so a plugin
+        // that requires it stays unsupported.
+        LV2_STATE__mapPath,
+        LV2_STATE__freePath,
     };
     for (const char* s : kSupported)
         if (uri == s) return true;
@@ -324,6 +330,16 @@ public:
         bounded_f_ = {LV2_BUF_SIZE__boundedBlockLength, nullptr};
         atom_sequence_ = u.map(LV2_ATOM__Sequence);
         atom_chunk_ = u.map(LV2_ATOM__Chunk);
+        // Ours come first in every list, ahead of the ones lilv adds to
+        // save() and restore() (ADR-0029 §6, "Lilv").
+        if (StatePaths* sp = config.state_paths) {
+            for (const LV2_Feature* each : {sp->make_path_feature(), sp->map_path_feature(), sp->free_path_feature()})
+                if (each) path_features_.push_back(each);
+        }
+        std::size_t k = 0;
+        for (const LV2_Feature* each : {&map_f_, &unmap_f_, &options_f_, &bounded_f_}) save_features_[k++] = each;
+        for (const LV2_Feature* each : path_features_) save_features_[k++] = each;
+        save_features_[k] = nullptr;
     }
 
     ~Lv2Processor() override {
@@ -395,6 +411,7 @@ public:
             std::size_t k = 0;
             for (const LV2_Feature* each : {&map_f_, &unmap_f_, &options_f_, &bounded_f_}) f.list[k++] = each;
             if (worker_) f.list[k++] = worker_->feature(r);
+            for (const LV2_Feature* each : path_features_) f.list[k++] = each;
             f.list[k] = nullptr;
         }
 
@@ -651,12 +668,14 @@ private:
     // Per replica, since the worker's schedule handle is per instance.
     // Sized once in init, before any instance holds a pointer into it.
     struct Features {
-        const LV2_Feature* list[6];
+        const LV2_Feature* list[9];
     };
     std::vector<Features> features_;
+    // makePath, mapPath, freePath (state_paths.h), when the chain gave them.
+    std::vector<const LV2_Feature*> path_features_;
     // save() runs beside run(), and only run() and restore() may schedule:
     // a second producer would break the request ring, so no worker here.
-    const LV2_Feature* save_features_[5] = {&map_f_, &unmap_f_, &options_f_, &bounded_f_, nullptr};
+    const LV2_Feature* save_features_[8] = {};
     std::unique_ptr<Lv2Worker> worker_;
     LV2_URID atom_sequence_, atom_chunk_;
 };

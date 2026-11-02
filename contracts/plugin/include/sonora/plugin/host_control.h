@@ -2,7 +2,8 @@
 #pragma once
 
 // ============================================================================
-//  HostControl, wire version 3 (ADR-0012 §4, §5.5; checklist item 1).
+//  HostControl, wire version 4 (ADR-0012 §4, §5.5; checklist item 1;
+//  ADR-0029 §6 for the plugin files a state names).
 //
 //  Owned jointly by plugin-engineer and rt-engineer (ADR-0007 §4.3, §6), like
 //  protocol.h. A change to a message, a field, a cap or an ordering rule
@@ -89,7 +90,7 @@
 //  so either side can name a mismatch whatever changed after them.
 //
 // The start-up check (ADR-0012 §5.5): `sonora-plugin-host --version` prints
-// format_host_version_line, "sonora-plugin-host layout 1 clock 1 wire 3",
+// format_host_version_line, "sonora-plugin-host layout 1 clock 1 wire 4",
 // and the engine parses it with parse_host_version_line, which requires all
 // three; a mismatch disables plugin hosting for the run, loudly.
 //
@@ -218,6 +219,24 @@
 // chain: Loaded says StateResult::Refused for that instance and the engine
 // shows it loaded with defaults plus its params, as for a hash mismatch.
 //
+// Plugin files (ADR-0029 §6; LV2 state:makePath, mapPath, freePath). Load
+// names the session folder the states it carries were saved from
+// (`session_dir`) and, per instance, a scratch folder outside the session
+// folder (`scratch_dir`) for what the plugin makes with makePath. GetState
+// names the folder to save into (`save_dir`): the host copies every file the
+// state names that is not already there into
+// "<save_dir>/Plugin Files/<sha256>/<basename>" (tmp, fdatasync, rename; the
+// engine syncs the directory), the state names it relative to that folder,
+// and State lists each such file in `files`. A GetState with a save_dir
+// also becomes the host's session folder; the one before it stays known, so
+// a file restored from it is named by the same relative path. With
+// kGetStateNoCopy (a take is open or closing) the host copies and hashes
+// nothing: a file not already in the folder fails that instance's State.
+// Empty folders keep wire 3's behaviour: no makePath, and a path the plugin
+// names stays as it gave it. All of it runs on the host's main or worker
+// thread; a call from its processing thread is refused in constant time
+// and reported later as Fault{Plugin} with a count.
+//
 // Reconfigure (BACKLOG N1: a latency-changing value moved during playback).
 // The host pauses its processing thread at a block boundary (it keeps
 // bumping heartbeat), re-activates every plugin on its main thread,
@@ -252,7 +271,8 @@
 // Timeouts the engine applies (control thread, never a wait on any audio
 // path): Hello within kHelloTimeoutMs of the fork; Loaded or Refused within
 // kLoadTimeoutMs of Load (ADR-0012 §5.3's 10 s); a GetState, DescribeValue
-// or OpenEditor reply within kReplyTimeoutMs; Reconfigured within
+// or OpenEditor reply within kReplyTimeoutMs (a State within
+// kStateReplyTimeoutMs: a save may copy plugin files); Reconfigured within
 // kReconfigureTimeoutMs. Past one, the host is hung: SIGKILL, crash path.
 // The same for a host whose queue of unsent frames would pass
 // kMaxQueuedBytes (it is not reading its socket), and for one with a
@@ -285,7 +305,9 @@ namespace sonora::plugin::control {
 // 3: Fault{ParamUnmapped} split from EventsDropped, which now counts only
 // touches lost on the way, so each can be told to the operator for what it
 // is (Track 4 item 5).
-inline constexpr uint32_t kHostWireVersion = 3;
+// 4: plugin files (ADR-0029 §6): Load.session_dir, LoadInstance.scratch_dir,
+// GetState.save_dir and flags, State.files; Fault{Plugin} with a count.
+inline constexpr uint32_t kHostWireVersion = 4;
 
 // --- caps (untrusted input is checked against these before anything is held)
 inline constexpr std::size_t kMaxIdBytes = 1024;            // LV2 URI; VST3 is 32 hex digits
@@ -296,6 +318,8 @@ inline constexpr std::size_t kMaxKeyBytes = 256;            // a parameter's sta
 inline constexpr uint32_t kMaxParamsPerInstance = 65536;    // dense parameters one instance may list
 inline constexpr std::size_t kMaxStateBytes = std::size_t{16} << 20;  // one instance's StateBlob
 inline constexpr std::size_t kMaxStateSections = 4;
+inline constexpr std::size_t kMaxPathBytes = 4096;          // a folder or a plugin file's relative path (PATH_MAX)
+inline constexpr uint32_t kMaxStateFiles = 1024;            // files one State may name
 inline constexpr std::size_t kMaxFrameBytes = std::size_t{64} << 10;  // one datagram
 inline constexpr std::size_t kFrameHeaderBytes = 8;
 // Caps per direction (rt-engineer M1 on PR #51): what one host can make the
@@ -307,12 +331,14 @@ inline constexpr std::size_t kFrameHeaderBytes = 8;
 // Link::queue refuses it, and the engine reports a PluginFault naming the
 // insert ("the chain's plugin states exceed the 64 MiB Load cap").
 inline constexpr std::size_t kMaxMessageBytes = std::size_t{64} << 20;
-// Host -> engine: a State at its cap, or a Loaded whose key tables fit,
-// with room for the fixed fields. The engine's Reassembler refuses a
-// longer length at the first frame, before anything is held. A host whose
-// Loaded would pass it refuses the chain instead of sending it
-// (Refusal::UnsupportedFeature, "parameter table too large").
-inline constexpr std::size_t kMaxHostMessageBytes = kMaxStateBytes + (std::size_t{1} << 20);
+// Host -> engine: a State at its cap with its file list at its cap, or a
+// Loaded whose key tables fit, with room for the fixed fields. The engine's
+// Reassembler refuses a longer length at the first frame, before anything
+// is held. A host whose Loaded would pass it refuses the chain instead of
+// sending it (Refusal::UnsupportedFeature, "parameter table too large").
+inline constexpr std::size_t kMaxStateFileEntryBytes = 4 + kMaxPathBytes + 4 + 64 + 8;
+inline constexpr std::size_t kMaxHostMessageBytes =
+    kMaxStateBytes + kMaxStateFiles * kMaxStateFileEntryBytes + (std::size_t{1} << 20);
 // Unsent frames the engine holds for one host before the host counts as not
 // reading its socket: one Load at its cap and the small requests behind it.
 // A host sends blocking (it has one peer), so it keeps no queue.
@@ -323,6 +349,9 @@ inline constexpr uint32_t kMaxDatagramsPerDrain = 64;
 inline constexpr int kHelloTimeoutMs = 10000;
 inline constexpr int kLoadTimeoutMs = 10000;
 inline constexpr int kReplyTimeoutMs = 5000;
+// A State only: the save may hash and copy the plugin's files (ADR-0029 §6).
+// The host's processing thread keeps bumping the heartbeat meanwhile.
+inline constexpr int kStateReplyTimeoutMs = 60000;
 inline constexpr int kReconfigureTimeoutMs = 10000;
 inline constexpr int kTouchIntervalMs = 10;  // 100 Hz, ADR-0012 §4
 // A message half received that has not grown for this long: the host is
@@ -382,12 +411,15 @@ struct EngineHello {
 // One chain instance. `id` is the LV2 URI, or the VST3 class id as 32 hex
 // digits (ADR-0012 §6.1, without the "vst3:" the command line uses).
 // `params` must equal the header's instance_params[i]. `state` is a
-// StateBlob from an earlier GetState, or empty.
+// StateBlob from an earlier GetState, or empty. `scratch_dir`: absolute, the
+// folder this instance's makePath resolves under (ADR-0029 §6: outside the
+// session folder, per engine run and insert), or empty for no makePath.
 struct LoadInstance {
     Format format = Format::Lv2;
     std::string id;
     uint32_t params = 0;
     std::string state;
+    std::string scratch_dir;
 };
 
 inline constexpr uint32_t kLoadReactivate = 1u << 0;  // re-activate after the first validation
@@ -398,16 +430,28 @@ inline constexpr uint32_t kLoadKnownFlags = kLoadReactivate;
 // Fewer than the region's channels. The host never writes a key channel's
 // output plane and the engine never reads one; the header has no key count,
 // so this is the only place the split is said (ADR-0012 amendment
-// 2026-11-01, and protocol.h's channel region).
+// 2026-11-01, and protocol.h's channel region). `session_dir`: absolute, the
+// folder the states' relative file paths resolve under, or empty for a
+// session that has no folder (then a state names no file of its own).
 struct Load {
     uint32_t key_channels = 0;
     uint32_t flags = 0;
     std::vector<LoadInstance> instances;  // 1 .. kMaxInstances, the header's instance_count
+    std::string session_dir;
 };
 
+// Set while a take is open or closing: copy and hash nothing (ADR-0029 §6).
+inline constexpr uint32_t kGetStateNoCopy = 1u << 0;
+inline constexpr uint32_t kGetStateKnownFlags = kGetStateNoCopy;
+
+// `save_dir`: absolute, the folder the state's files are saved into and
+// named relative to (the active session folder, or a preset store's), or
+// empty to copy nothing and leave paths as the plugin gave them.
 struct GetState {
     uint32_t request = 0;
     uint32_t instance = 0;
+    std::string save_dir;
+    uint32_t flags = 0;
 };
 
 struct DescribeValue {
@@ -493,12 +537,23 @@ enum class StateStatus : uint8_t {
     Failed = 2,  // text says why
 };
 
+// One file a saved state names (ADR-0029 §6). `path` is relative to the
+// GetState's save_dir and is "Plugin Files/<sha256>/<basename>"
+// (state_file_path_valid); `sha256` and `bytes` are its content's. The
+// engine checks the file is there with that size before it names it.
+struct StateFile {
+    std::string path;
+    std::string sha256;  // 64 lower-case hex digits, the path's directory
+    uint64_t bytes = 0;
+};
+
 struct State {
     uint32_t request = 0;
     uint32_t instance = 0;
     StateStatus status = StateStatus::Ok;
     std::string bytes;  // a StateBlob, at most kMaxStateBytes
     std::string text;
+    std::vector<StateFile> files;  // Ok only; at most kMaxStateFiles, no path twice
 };
 
 struct ValueText {
@@ -568,7 +623,13 @@ struct Reconfigured {
 };
 
 enum class FaultKind : uint8_t {
-    Plugin = 0,         // a plugin misbehaved; the host exits kHostExitFaulted
+    // A plugin misbehaved. With count 0 the host exits kHostExitFaulted.
+    // With a count (wire 4), `instance` is the plugin's and the host plays
+    // on: path-feature calls refused (ADR-0029 §6: a makePath out of its
+    // folder, an absolute_path that escapes the session folder, any call
+    // from the processing thread), `count` more since the last, at most
+    // once per kCountedFaultIntervalMs, `text` naming the last one.
+    Plugin = 0,
     Protocol = 1,       // the engine broke this contract; the host exits kHostExitUsage
     // Touches the host could not queue (its ring full, or the main thread
     // holding it), `count` more since the last; `instance` is -1, the queue
@@ -703,8 +764,9 @@ enum class Io { Ok, WouldBlock, Closed, Error };
 
 // The defaults are the engine's side of one host: it receives at most
 // kMaxHostMessageBytes per message and queues at most kMaxQueuedBytes. So
-// one host can make the engine hold at most about 82 MiB, and that only
-// while a Load at its cap is in flight; otherwise about 17 MiB.
+// one host can make the engine hold at most about 86 MiB, and that only
+// while a Load at its cap is in flight; otherwise about 21 MiB (a State at
+// its cap with 1,024 files at theirs, wire 4).
 class Link {
 public:
     explicit Link(std::size_t max_receive_message = kMaxHostMessageBytes,
@@ -802,6 +864,17 @@ bool decode_state_blob(std::string_view bytes, StateBlob& out, std::string& erro
 std::string state_file_name(std::string_view sha256);
 // The check at open: the file's bytes hash to the name the session gives.
 bool state_matches(std::string_view bytes, std::string_view sha256);
+
+// "Plugin Files/<sha256>/<basename>", relative to a session folder or a
+// preset store (ADR-0029 §6). Empty when `sha256` is not 64 lowercase hex
+// digits or `basename` is not one path component (empty, ".", "..", a '/',
+// a NUL, or longer than fits kMaxPathBytes).
+std::string plugin_file_path(std::string_view sha256, std::string_view basename);
+// True for a path plugin_file_path would give, the directory being `sha256`.
+bool state_file_path_valid(std::string_view path, std::string_view sha256);
+// An absolute folder a message may name: empty, or '/' then at most
+// kMaxPathBytes bytes with no NUL and no ".." component.
+bool valid_folder(std::string_view dir);
 
 // --- `sonora-plugin-host --version` -------------------------------------------
 

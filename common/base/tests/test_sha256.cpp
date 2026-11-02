@@ -3,6 +3,7 @@
 // sha256_hex against FIPS 180-4's examples and around the padding boundary.
 #include "sonora/sha256.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -34,6 +35,20 @@ int main() {
     for (std::size_t n : {63u, 65u, 119u, 120u}) {
         const std::string x(n, 'q');
         CHECK(sha256_hex(x).size() == 64);
+    }
+    // In pieces of every size from 1 to 130 bytes, across block edges: the
+    // same digest as whole.
+    {
+        std::string x;
+        for (int i = 0; i < 3000; ++i) x.push_back(static_cast<char>(i * 131 + 7));
+        const std::string whole = sha256_hex(x);
+        for (std::size_t piece = 1; piece <= 130; ++piece) {
+            sonora::Sha256 s;
+            for (std::size_t at = 0; at < x.size(); at += piece) s.update(x.data() + at, std::min(piece, x.size() - at));
+            CHECK(s.hex() == whole);
+        }
+        sonora::Sha256 empty;
+        CHECK(empty.hex() == sha256_hex(""));
     }
     std::printf("sha256: ok\n");
     return 0;

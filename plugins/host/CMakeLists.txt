@@ -61,7 +61,7 @@ target_link_libraries(sonora_plugin_loader PUBLIC sonora_plugin_ipc ${CMAKE_DL_L
 
 add_executable(sonora-plugin-host src/main.cpp src/processor.h src/chain.cpp src/chain.h
                src/lv2_host.cpp src/lv2_host.h src/lv2_worker.cpp src/lv2_worker.h
-               src/control.cpp src/control.h)
+               src/state_paths.cpp src/state_paths.h src/control.cpp src/control.h)
 target_link_libraries(sonora-plugin-host PRIVATE sonora_plugin_ipc sonora_plugin_loader
                       sonora_urid_map sonora_plugin_host_control sonora_plugin_probe_record PkgConfig::LILV)
 if(VST3SDK_INCLUDE_DIR)
@@ -134,7 +134,7 @@ set_tests_properties(plugin_host_list_bundles_only PROPERTIES PASS_REGULAR_EXPRE
 # lv2-examples.
 add_test(NAME plugin_host_probe_record COMMAND sonora-plugin-host --probe http://lv2plug.in/plugins/eg-amp --channels 2)
 set_tests_properties(plugin_host_probe_record PROPERTIES PASS_REGULAR_EXPRESSION
-  "^{\"record\":2,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 3 probe 2\",\"uri\":\"http://lv2plug.in/plugins/eg-amp\",\"format\":\"lv2\",\"bundle\":\"/[^\"]+\",\"name\":\"[^\"]+\"[^\n]*\"ok\":true,\"channels\":2,\"replicas\":2,[^\n]*\"params\":\\[{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,")
+  "^{\"record\":2,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 4 probe 2\",\"uri\":\"http://lv2plug.in/plugins/eg-amp\",\"format\":\"lv2\",\"bundle\":\"/[^\"]+\",\"name\":\"[^\"]+\"[^\n]*\"ok\":true,\"channels\":2,\"replicas\":2,[^\n]*\"params\":\\[{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,")
 add_test(NAME plugin_host_probe_not_installed COMMAND sonora-plugin-host --probe "urn:sonora:test#absent")
 set_tests_properties(plugin_host_probe_not_installed PROPERTIES PASS_REGULAR_EXPRESSION
   "\"ok\":false,\"reason\":\"not installed\"[^\n]*\"outcome\":\"not_installed\"")
@@ -154,7 +154,7 @@ set_tests_properties(plugin_host_orphan PROPERTIES PASS_REGULAR_EXPRESSION "is n
                      LABELS plugins)
 # The versions the engine checks at start-up (ADR-0012 §5.5).
 add_test(NAME plugin_host_version COMMAND sonora-plugin-host --version)
-set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire 3 probe 2\n$"
+set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire 4 probe 2\n$"
                      LABELS plugins)
 # Hosts are timer-paced by default: the audio thread's futex wake ships gated
 # off (contracts/plugin kHostWakeEnabled, ADR-0012 §1.3-1.4). The *_futex
@@ -169,7 +169,7 @@ set(_plugin_tests
   plugin_host_bypass plugin_host_bypass_latency plugin_host_bypass_lv2_enabled plugin_host_swap
   plugin_host_rtt plugin_host_key
   plugin_host_control plugin_host_control_incompatible plugin_host_control_gain plugin_host_control_crash
-  plugin_host_control_latency_chain plugin_host_state_lv2
+  plugin_host_control_latency_chain plugin_host_state_lv2 plugins_host_state_files
   plugin_host_worker plugin_host_worker_futex plugin_host_worker_control plugin_host_worker_restore
   plugin_host_worker_hang plugin_host_worker_slow_exit plugin_host_worker_flood)
 # HostControl (contracts/plugin host_control.h, ADR-0012 §4): the socket on
@@ -186,6 +186,9 @@ add_test(NAME plugin_host_control_latency_chain COMMAND ${_drive} --scenario lat
          --chain "http://gareus.org/oss/lv2/dpl#mono,http://lsp-plug.in/plugins/lv2/limiter_mono,http://lv2plug.in/plugins/eg-amp")
 add_test(NAME plugin_host_state_lv2 COMMAND ${_drive} --scenario state --chain "urn:sonora:test#state"
          --expect-state counter)
+# LV2 states that hold files (ADR-0029 §6): makePath, mapPath and freePath,
+# a scratch file saved into one session folder and restored from another.
+add_test(NAME plugins_host_state_files COMMAND ${_drive} --scenario state_files)
 add_test(NAME plugin_host_refusals COMMAND ${_drive} --scenario refusals)
 add_test(NAME plugin_host_incompatible COMMAND ${_drive} --scenario incompatible)
 # The key channels: re-copied for every plugin, and a key input with no key

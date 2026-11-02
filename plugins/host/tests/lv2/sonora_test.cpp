@@ -37,6 +37,19 @@
 //                          SONORA_TEST_SLOW_SAVE_MS set, its save() takes
 //                          that long, so a state read is still out while
 //                          the engine does something else
+//   urn:sonora:test#files  mono pass-through whose state names a file
+//                          (ADR-0029 §6): at instantiation it makes
+//                          "takes/sample.bin" with makePath and writes
+//                          kFileBytes of a known pattern there, and asks
+//                          for an absolute and a ".." path, which must be
+//                          refused. save() names the file through mapPath
+//                          as an atom:Path; restore() resolves it, reads it
+//                          back and keeps how many bytes matched
+//                          (`verified`, -1 for none read). With `mode` > 0.5
+//                          every run() calls makePath, which the host must
+//                          refuse there. Its state also says how many
+//                          mapPath features save() was handed and what it
+//                          saw (`checks`)
 
 #include <lv2/atom/atom.h>
 #include <lv2/core/lv2.h>
@@ -49,10 +62,12 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <limits>
+#include <string>
 
 #if defined(__has_feature)
 #if __has_feature(realtime_sanitizer)
@@ -63,7 +78,7 @@
 
 namespace {
 
-enum Kind { kCrash, kSleep, kLiar, kNan, kLookahead, kKey, kKeyLiar, kState, kWorker };
+enum Kind { kCrash, kSleep, kLiar, kNan, kLookahead, kKey, kKeyLiar, kState, kWorker, kFiles };
 
 constexpr const char* kBlocksUri = "urn:sonora:test#blocks";
 constexpr const char* kLoadedUri = "urn:sonora:test#loaded";
@@ -99,7 +114,41 @@ struct Plugin {
     const LV2_URID_Map* map = nullptr;
     std::atomic<pthread_t> run_thread{};
     std::atomic<bool> run_seen{false}, broken{false};
+    // The files plugin. `file` is the path its state names, absolute.
+    const LV2_State_Make_Path* make_path = nullptr;
+    std::string file;
+    std::atomic<int32_t> checks{0};
+    int32_t verified = -1, map_offers = 0, restore_map_offers = 0;
+    LV2_URID file_urid = 0, verified_urid = 0, checks_urid = 0, offers_urid = 0, restore_offers_urid = 0;
+    LV2_URID path_urid = 0, int_urid = 0;
 };
+
+// What the files plugin's `checks` holds.
+constexpr int32_t kAbsoluteRefused = 1, kEscapeRefused = 2, kRunRefused = 4, kRunGotPath = 8,
+                  kRestoredPathType = 16, kAbsolutePathNull = 32;
+constexpr uint32_t kFileBytes = 40000;
+
+unsigned char file_byte(uint32_t i) { return static_cast<unsigned char>((i * 7u + 3u) & 0xFFu); }
+
+// The first feature with this URI, as lv2_features_data does.
+const void* feature(const LV2_Feature* const* features, const char* uri, int* count = nullptr) {
+    const void* first = nullptr;
+    int n = 0;
+    for (int i = 0; features && features[i]; ++i)
+        if (std::strcmp(features[i]->URI, uri) == 0) {
+            if (!first) first = features[i]->data;
+            ++n;
+        }
+    if (count) *count = n;
+    return first;
+}
+
+void free_given(const LV2_Feature* const* features, char* path) {
+    if (const auto* f = static_cast<const LV2_State_Free_Path*>(feature(features, LV2_STATE__freePath)))
+        f->free_path(f->handle, path);
+    else
+        std::free(path);
+}
 
 // Read through a volatile so the compiler cannot prove the address is null
 // and replace the store with a trap: the test wants a genuine SIGSEGV.
@@ -137,8 +186,107 @@ LV2_Handle instantiate(const LV2_Descriptor*, double, const char*, const LV2_Fea
         p->loaded_urid = map->map(map->handle, kLoadedUri);
         p->float_urid = map->map(map->handle, LV2_ATOM__Float);
     }
+    if (K == kFiles) {
+        const auto* map = static_cast<const LV2_URID_Map*>(feature(features, LV2_URID__map));
+        if (!map) {
+            delete p;
+            return nullptr;
+        }
+        p->file_urid = map->map(map->handle, "urn:sonora:test#file");
+        p->verified_urid = map->map(map->handle, "urn:sonora:test#verified");
+        p->checks_urid = map->map(map->handle, "urn:sonora:test#checks");
+        p->offers_urid = map->map(map->handle, "urn:sonora:test#map_offers");
+        p->restore_offers_urid = map->map(map->handle, "urn:sonora:test#restore_map_offers");
+        p->path_urid = map->map(map->handle, LV2_ATOM__Path);
+        p->int_urid = map->map(map->handle, LV2_ATOM__Int);
+        p->make_path = static_cast<const LV2_State_Make_Path*>(feature(features, LV2_STATE__makePath));
+        if (p->make_path) {
+            int32_t checks = 0;
+            char* abs = p->make_path->path(p->make_path->handle, "/tmp/sonora-test-absolute.bin");
+            if (!abs) checks |= kAbsoluteRefused;
+            else free_given(features, abs);
+            char* esc = p->make_path->path(p->make_path->handle, "../escape.bin");
+            if (!esc) checks |= kEscapeRefused;
+            else free_given(features, esc);
+            if (char* made = p->make_path->path(p->make_path->handle, "takes/sample.bin")) {
+                if (std::FILE* f = std::fopen(made, "wb")) {
+                    for (uint32_t i = 0; i < kFileBytes; ++i) std::fputc(file_byte(i), f);
+                    std::fclose(f);
+                    p->file = made;
+                }
+                free_given(features, made);
+            }
+            p->checks.store(checks, std::memory_order_relaxed);
+        }
+    }
     p->rtsan_checks_sleep = std::getenv("SONORA_TEST_RTSAN_SLEEP") != nullptr;
     return p;
+}
+
+// The files plugin's state: the file through mapPath, and what it saw.
+LV2_State_Status files_save(LV2_Handle h, LV2_State_Store_Function store, LV2_State_Handle handle, uint32_t,
+                            const LV2_Feature* const* features) {
+    auto* p = static_cast<Plugin*>(h);
+    const auto* map = static_cast<const LV2_State_Map_Path*>(feature(features, LV2_STATE__mapPath, &p->map_offers));
+    const uint32_t pod = LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE;
+    if (map && !p->file.empty()) {
+        char* abstract = map->abstract_path(map->handle, p->file.c_str());
+        if (!abstract) return LV2_STATE_ERR_UNKNOWN;
+        const LV2_State_Status s =
+            store(handle, p->file_urid, abstract, std::strlen(abstract) + 1, p->path_urid, pod);
+        free_given(features, abstract);
+        if (s) return s;
+    }
+    const int32_t checks = p->checks.load(std::memory_order_relaxed);
+    store(handle, p->verified_urid, &p->verified, sizeof p->verified, p->int_urid, pod);
+    store(handle, p->checks_urid, &checks, sizeof checks, p->int_urid, pod);
+    store(handle, p->offers_urid, &p->map_offers, sizeof p->map_offers, p->int_urid, pod);
+    return store(handle, p->restore_offers_urid, &p->restore_map_offers, sizeof p->restore_map_offers, p->int_urid,
+                 pod);
+}
+
+LV2_State_Status files_restore(LV2_Handle h, LV2_State_Retrieve_Function retrieve, LV2_State_Handle handle,
+                               uint32_t, const LV2_Feature* const* features) {
+    auto* p = static_cast<Plugin*>(h);
+    const auto* map =
+        static_cast<const LV2_State_Map_Path*>(feature(features, LV2_STATE__mapPath, &p->restore_map_offers));
+    size_t size = 0;
+    uint32_t type = 0, flags = 0;
+    const void* v = retrieve(handle, p->file_urid, &size, &type, &flags);
+    if (!v || !map) return LV2_STATE_ERR_NO_PROPERTY;
+    int32_t checks = p->checks.load(std::memory_order_relaxed);
+    if (type == p->path_urid) checks |= kRestoredPathType;
+    // An atom:Path is a NUL-terminated string; whatever lilv handed back,
+    // read it as one.
+    const std::string abstract(static_cast<const char*>(v), strnlen(static_cast<const char*>(v), size));
+    char* abs = map->absolute_path(map->handle, abstract.c_str());
+    p->verified = -1;
+    if (!abs) {
+        checks |= kAbsolutePathNull;
+    } else {
+        p->file = abs;
+        if (std::FILE* f = std::fopen(abs, "rb")) {
+            int32_t same = 0;
+            for (uint32_t i = 0;; ++i) {
+                const int c = std::fgetc(f);
+                if (c == EOF) break;
+                if (i < kFileBytes && static_cast<unsigned char>(c) == file_byte(i)) ++same;
+                else same = -2;
+                if (same < 0) break;
+            }
+            std::fclose(f);
+            p->verified = same;
+        }
+        free_given(features, abs);
+    }
+    p->checks.store(checks, std::memory_order_relaxed);
+    return LV2_STATE_SUCCESS;
+}
+
+const LV2_State_Interface kFilesStateInterface = {files_save, files_restore};
+
+const void* files_extension_data(const char* uri) {
+    return std::strcmp(uri, LV2_STATE__interface) == 0 ? &kFilesStateInterface : nullptr;
 }
 
 LV2_State_Status save(LV2_Handle h, LV2_State_Store_Function store, LV2_State_Handle handle, uint32_t,
@@ -288,6 +436,13 @@ void connect(LV2_Handle h, uint32_t port, void* data) {
         else if (port < 4) p->out[port - 2] = static_cast<float*>(data);
         return;
     }
+    if (p->kind == kFiles) {
+        // 0: mode. 1: in. 2: out.
+        if (port == 0) p->control = static_cast<const float*>(data);
+        else if (port == 1) p->in[0] = static_cast<const float*>(data);
+        else if (port == 2) p->out[0] = static_cast<float*>(data);
+        return;
+    }
     if (p->kind == kState) {
         if (port == 0) p->in[0] = static_cast<const float*>(data);
         else if (port == 1) p->out[0] = static_cast<float*>(data);
@@ -384,6 +539,15 @@ void run(LV2_Handle h, uint32_t n) {
         std::memcpy(p->out[0], p->in[0], n * sizeof(float));
         p->blocks.fetch_add(1, std::memory_order_relaxed);
         break;
+    case kFiles:
+        std::memcpy(p->out[0], p->in[0], n * sizeof(float));
+        // File work in run() is a broken plugin's; the host must refuse it
+        // here without allocating, locking or touching the disk.
+        if (p->control && *p->control > 0.5f && p->make_path) {
+            char* got = p->make_path->path(p->make_path->handle, "from-run.bin");
+            p->checks.fetch_or(got ? kRunGotPath : kRunRefused, std::memory_order_relaxed);
+        }
+        break;
     case kKey:
     case kKeyLiar:
         std::memcpy(p->out[0], p->key, n * sizeof(float));
@@ -414,6 +578,7 @@ const LV2_Descriptor kDescriptors[] = {
     {"urn:sonora:test#state", instantiate<kState>, connect, nullptr, run, nullptr, cleanup, extension_data},
     {"urn:sonora:test#worker", instantiate<kWorker>, connect, nullptr, run, nullptr, cleanup,
      worker_extension_data},
+    {"urn:sonora:test#files", instantiate<kFiles>, connect, nullptr, run, nullptr, cleanup, files_extension_data},
 };
 
 }  // namespace

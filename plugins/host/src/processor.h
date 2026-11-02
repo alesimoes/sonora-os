@@ -17,6 +17,8 @@
 
 namespace sonora::plugin_host {
 
+class StatePaths;  // state_paths.h
+
 enum class PortKind { Audio, Control, Atom, CV, Other };
 
 // One row of --list. For LV2 a port; for VST3 an audio bus (with its
@@ -82,6 +84,9 @@ struct ChainConfig {
     // feeding every channel. 0: no key; a key input reads the plugin's own
     // input, which keys like no key at all (ADR-0011 Amendment 2 item 3).
     uint32_t sidechain_channels = 0;
+    // The instance's plugin-file folders (LV2 makePath, mapPath, freePath;
+    // ADR-0029 §6), or null. Per instance: Chain::add sets it.
+    StatePaths* state_paths = nullptr;
 };
 
 struct ChainError {

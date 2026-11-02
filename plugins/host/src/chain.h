@@ -29,7 +29,9 @@ public:
     Chain(const Chain&) = delete;
     Chain& operator=(const Chain&) = delete;
 
-    bool add(const std::string& id, ChainError& error);
+    // `paths`: this instance's plugin-file folders (state_paths.h), or null
+    // for none (--probe, --list). Outlives the chain.
+    bool add(const std::string& id, ChainError& error, StatePaths* paths = nullptr);
     // Run blocks of silence and check what each plugin did against what it
     // declared. Must pass before the chain is offered to the engine.
     bool validate(ChainError& error);

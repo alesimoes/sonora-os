@@ -81,6 +81,7 @@
 #include "ipc.h"
 #include "loader.h"
 #include "lv2_host.h"
+#include "state_paths.h"
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin/probe_record.h"
 #include "sonora/plugin/protocol.h"
@@ -547,8 +548,10 @@ int probe(const Options& o) {
     ChainConfig cfg;
     cfg.channels = o.channels ? o.channels : (info.audio_in == info.audio_out && info.audio_in ? info.audio_in : 1);
     r.channels = cfg.channels;
+    // mapPath and freePath, as a chain is given them; no folders, no makePath.
+    StatePaths no_folders("", "");
     Chain chain(catalog, cfg);
-    const bool added = chain.add(o.probe, err);
+    const bool added = chain.add(o.probe, err, &no_folders);
     const bool ok = added && chain.validate(err);
     // The dense parameter list the engine's catalog keeps (ADR-0012 §8):
     // the index is the position, the key what the session file stores.
@@ -803,6 +806,10 @@ struct ChainSpec {
     std::vector<pc::StateResult> state_results;
     uint32_t sidechain = 0;
     bool reactivate = false;
+    // ADR-0029 §6: the folder the states' files resolve under, and each
+    // instance's scratch folder. Empty from the command line.
+    std::string session_dir;
+    std::vector<std::string> scratch_dirs;
 };
 
 // Host side of the socket's first exchange (host_control.h, Handshake 2):
@@ -868,8 +875,10 @@ int read_load(ControlLink& link, const plugin::ChannelHeader& h, uint32_t channe
                                          " key channels of " + std::to_string(channels));
     spec.sidechain = load.key_channels;
     spec.reactivate = (load.flags & pc::kLoadReactivate) != 0;
+    spec.session_dir = load.session_dir;
     for (std::size_t i = 0; i < load.instances.size(); ++i) {
         const pc::LoadInstance& in = load.instances[i];
+        spec.scratch_dirs.push_back(in.scratch_dir);
         if (in.params != h.instance_params[i])
             return protocol_error(&link, "Load gives instance " + std::to_string(i) + " " +
                                              std::to_string(in.params) + " parameters; the header " +
@@ -1024,10 +1033,15 @@ int serve(const Options& o) {
     cfg.channels = layout.channels - spec.sidechain;
     cfg.sidechain_channels = spec.sidechain;
     const int rt_priority = h.host_rt_priority;
+    // Before the chain, so they outlive every plugin that holds a feature.
+    std::vector<std::unique_ptr<StatePaths>> paths;
+    for (std::size_t i = 0; i < spec.ids.size(); ++i)
+        paths.push_back(std::make_unique<StatePaths>(i < spec.scratch_dirs.size() ? spec.scratch_dirs[i] : "",
+                                                     spec.session_dir));
     Chain chain(catalog, cfg);
     ChainError cerr;
-    for (const std::string& id : spec.ids)
-        if (!chain.add(id, cerr)) return refused(cerr);
+    for (std::size_t i = 0; i < spec.ids.size(); ++i)
+        if (!chain.add(spec.ids[i], cerr, paths[i].get())) return refused(cerr);
     // The engine addresses parameters by the dense list its scan saw. A
     // plugin that now has a different list (another version installed
     // since the scan) would get every change on the wrong parameter.
@@ -1125,6 +1139,8 @@ int serve(const Options& o) {
     int exit_code = 0;
     std::atomic<bool> finished{false};
     auto body = [&] {
+        // Before any plugin runs here: path features refuse this thread.
+        mark_processing_thread();
         uint32_t f = flags;
         if (make_current_thread_realtime(rt_priority)) f |= plugin::kHostRealtime;
         // Validation ran without the flags, so what a plugin did with
@@ -1178,7 +1194,7 @@ int serve(const Options& o) {
         uint64_t sent = 0, at = 0;
     };
     Said lost_said;
-    std::vector<Said> refused_said(chain.size()), unmapped_said(chain.size());
+    std::vector<Said> refused_said(chain.size()), unmapped_said(chain.size()), path_said(chain.size());
     // The plugin's value now, on this (its main) thread, for a gesture
     // ended without its own end.
     auto current = [&](uint32_t instance, uint32_t param, float& v) {
@@ -1217,6 +1233,10 @@ int serve(const Options& o) {
                         refused_said[i], now, "worker messages refused because the plugin's worker queue was full");
             say_counted(pc::FaultKind::ParamUnmapped, static_cast<int32_t>(i), touches.unmapped(uint32_t(i)),
                         unmapped_said[i], now, "touches of a parameter with no dense index (read-only or unknown)");
+            // Path features refused (ADR-0029 §6): the plugin plays on.
+            if (paths[i]->refused() != path_said[i].sent)
+                say_counted(pc::FaultKind::Plugin, static_cast<int32_t>(i), paths[i]->refused(), path_said[i], now,
+                            paths[i]->refusal_text().c_str());
         }
     };
     auto recover = [&] {
@@ -1296,15 +1316,26 @@ int serve(const Options& o) {
         case pc::Type::GetState: {
             pc::GetState g;
             if (!pc::decode(m, g, why)) break;
-            pc::State reply{g.request, g.instance, pc::StateStatus::Failed, {}, {}};
+            pc::State reply{g.request, g.instance, pc::StateStatus::Failed, {}, {}, {}};
             std::vector<std::string> sections;
             if (g.instance >= chain.size()) {
                 reply.text = "no instance " + std::to_string(g.instance);
             } else {
-                switch (chain.save_state(g.instance, sections, reply.text)) {
+                // The files the state names are copied into save_dir as
+                // save() names them (state_paths.h), on this thread.
+                StatePaths& sp = *paths[g.instance];
+                sp.begin_save(g.save_dir, (g.flags & pc::kGetStateNoCopy) != 0);
+                const SaveResult saved = chain.save_state(g.instance, sections, reply.text);
+                std::string files_failed;
+                const bool files_ok = sp.end_save(reply.files, files_failed);
+                switch (saved) {
                 case SaveResult::Empty: reply.status = pc::StateStatus::Empty; break;
                 case SaveResult::Failed: break;
                 case SaveResult::Saved: {
+                    if (!files_ok) {
+                        reply.text = files_failed;
+                        break;
+                    }
                     const bool vst3 = spec.ids[g.instance].rfind("vst3:", 0) == 0;
                     const pc::StateBlob blob{vst3 ? pc::Format::Vst3 : pc::Format::Lv2,
                                              vst3 ? spec.ids[g.instance].substr(5) : spec.ids[g.instance],
@@ -1313,6 +1344,7 @@ int serve(const Options& o) {
                     break;
                 }
                 }
+                if (reply.status != pc::StateStatus::Ok) reply.files.clear();
             }
             reply.text = reply.text.substr(0, pc::kMaxTextBytes);
             pc::encode(reply, out);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/plugin/host_control.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <set>
@@ -220,7 +221,9 @@ void encode(const Load& m, std::string& out) {
         put_bytes(out, i.id);
         put_u32(out, i.params);
         put_bytes(out, i.state);
+        put_bytes(out, i.scratch_dir);
     }
+    put_bytes(out, m.session_dir);
 }
 
 bool decode(std::string_view b, Load& m, std::string& error) {
@@ -230,7 +233,7 @@ bool decode(std::string_view b, Load& m, std::string& error) {
     r.u32(m.flags, "flags");
     if (r.ok() && (m.flags & ~kLoadKnownFlags)) r.fail("flags " + std::to_string(m.flags) + " has unknown bits");
     uint32_t n = 0;
-    r.count(n, kMaxInstances, 13, "instance count");
+    r.count(n, kMaxInstances, 17, "instance count");
     if (r.ok() && n == 0) r.fail("a Load with no instance");
     m.instances.clear();
     for (uint32_t k = 0; k < n && r.ok(); ++k) {
@@ -239,9 +242,14 @@ bool decode(std::string_view b, Load& m, std::string& error) {
         r.bytes(i.id, kMaxIdBytes, "id");
         r.u32(i.params, "params");
         r.bytes(i.state, kMaxStateBytes, "state");
+        r.bytes(i.scratch_dir, kMaxPathBytes, "scratch_dir");
         if (r.ok() && !valid_plugin_id(i.format, i.id)) r.fail("instance " + std::to_string(k) + ": not a plugin id");
+        if (r.ok() && !valid_folder(i.scratch_dir))
+            r.fail("instance " + std::to_string(k) + ": scratch_dir is not an absolute folder");
         m.instances.push_back(std::move(i));
     }
+    r.bytes(m.session_dir, kMaxPathBytes, "session_dir");
+    if (r.ok() && !valid_folder(m.session_dir)) r.fail("session_dir is not an absolute folder");
     return r.done();
 }
 
@@ -249,6 +257,8 @@ void encode(const GetState& m, std::string& out) {
     put_type(out, Type::GetState);
     put_u32(out, m.request);
     put_u32(out, m.instance);
+    put_bytes(out, m.save_dir);
+    put_u32(out, m.flags);
 }
 
 bool decode(std::string_view b, GetState& m, std::string& error) {
@@ -256,6 +266,11 @@ bool decode(std::string_view b, GetState& m, std::string& error) {
     r.expect_type(Type::GetState);
     r.u32(m.request, "request");
     r.u32(m.instance, "instance");
+    r.bytes(m.save_dir, kMaxPathBytes, "save_dir");
+    if (r.ok() && !valid_folder(m.save_dir)) r.fail("save_dir is not an absolute folder");
+    r.u32(m.flags, "flags");
+    if (r.ok() && (m.flags & ~kGetStateKnownFlags))
+        r.fail("GetState flags " + std::to_string(m.flags) + " has unknown bits");
     return r.done();
 }
 
@@ -431,6 +446,12 @@ void encode(const State& m, std::string& out) {
     put_u8(out, static_cast<uint8_t>(m.status));
     put_bytes(out, m.bytes);
     put_bytes(out, m.text);
+    put_u32(out, static_cast<uint32_t>(m.files.size()));
+    for (const StateFile& f : m.files) {
+        put_bytes(out, f.path);
+        put_bytes(out, f.sha256);
+        put_u64(out, f.bytes);
+    }
 }
 
 bool decode(std::string_view b, State& m, std::string& error) {
@@ -442,6 +463,21 @@ bool decode(std::string_view b, State& m, std::string& error) {
     r.bytes(m.bytes, kMaxStateBytes, "bytes");
     r.bytes(m.text, kMaxTextBytes, "text");
     if (r.ok() && m.status != StateStatus::Ok && !m.bytes.empty()) r.fail("state bytes with a status not Ok");
+    uint32_t n = 0;
+    r.count(n, kMaxStateFiles, 4 + 4 + 64 + 8, "file count");
+    if (r.ok() && n != 0 && m.status != StateStatus::Ok) r.fail("state files with a status not Ok");
+    m.files.clear();
+    std::set<std::string> seen;
+    for (uint32_t k = 0; k < n && r.ok(); ++k) {
+        StateFile f;
+        r.bytes(f.path, kMaxPathBytes, "file path");
+        r.bytes(f.sha256, 64, "file sha256");
+        r.u64(f.bytes, "file bytes");
+        if (r.ok() && !state_file_path_valid(f.path, f.sha256))
+            r.fail("file " + std::to_string(k) + " is not \"Plugin Files/<its sha256>/<name>\"");
+        if (r.ok() && !seen.insert(f.path).second) r.fail("file " + std::to_string(k) + " is listed twice");
+        m.files.push_back(std::move(f));
+    }
     return r.done();
 }
 
@@ -619,6 +655,9 @@ bool decode(std::string_view b, Fault& m, std::string& error) {
     if (r.ok() && (m.kind == FaultKind::WorkRefused || m.kind == FaultKind::ParamUnmapped) &&
         (m.instance < 0 || m.count == 0))
         r.fail("a counted plugin fault names no instance or counts nothing");
+    // Counted path refusals (wire 4) are one plugin's.
+    if (r.ok() && m.kind == FaultKind::Plugin && m.count != 0 && m.instance < 0)
+        r.fail("a counted Plugin fault names no instance");
     // The touch queue is the host's, not one plugin's.
     if (r.ok() && m.kind == FaultKind::EventsDropped && (m.instance != -1 || m.count == 0))
         r.fail("an EventsDropped fault names a plugin or counts nothing");
@@ -774,6 +813,46 @@ std::string state_file_name(std::string_view sha256) {
 }
 
 bool state_matches(std::string_view bytes, std::string_view sha256) { return sha256_hex(bytes) == sha256; }
+
+namespace {
+constexpr std::string_view kPluginFilesDir = "Plugin Files/";
+
+bool lower_hex64(std::string_view s) {
+    if (s.size() != 64) return false;
+    for (char c : s)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    return true;
+}
+}  // namespace
+
+std::string plugin_file_path(std::string_view sha256, std::string_view basename) {
+    if (!lower_hex64(sha256) || basename.empty() || basename == "." || basename == "..") return {};
+    if (basename.find('/') != std::string_view::npos || basename.find('\0') != std::string_view::npos) return {};
+    if (kPluginFilesDir.size() + 64 + 1 + basename.size() > kMaxPathBytes) return {};
+    std::string out(kPluginFilesDir);
+    out.append(sha256.data(), sha256.size());
+    out += '/';
+    out.append(basename.data(), basename.size());
+    return out;
+}
+
+bool state_file_path_valid(std::string_view path, std::string_view sha256) {
+    if (path.size() <= kPluginFilesDir.size() + 65 || path.substr(0, kPluginFilesDir.size()) != kPluginFilesDir)
+        return false;
+    if (path.substr(kPluginFilesDir.size(), 64) != sha256 || path[kPluginFilesDir.size() + 64] != '/') return false;
+    return plugin_file_path(sha256, path.substr(kPluginFilesDir.size() + 65)) == path;
+}
+
+bool valid_folder(std::string_view dir) {
+    if (dir.empty()) return true;
+    if (dir.size() > kMaxPathBytes || dir[0] != '/' || dir.find('\0') != std::string_view::npos) return false;
+    for (std::size_t at = 0; at < dir.size();) {
+        const std::size_t end = std::min(dir.find('/', at), dir.size());
+        if (dir.substr(at, end - at) == "..") return false;
+        at = end + 1;
+    }
+    return true;
+}
 
 // --- --version ----------------------------------------------------------------
 
