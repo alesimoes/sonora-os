@@ -461,7 +461,7 @@
             {"id": "drivers.usb.pro_audio", "title": "Pro Audio profile applied, AUX ports in channel order", "size": "M", "phase": 0, "status": "done", "evidence": "PR #1; QEMU boot test sees ...pro-input-0:capture_AUX0"},
             {"id": "system.usb.physical", "title": "Physical stick boots on a physical machine, BIOS and UEFI, session survives reboot", "size": "S", "phase": 12, "status": "todo", "note": "Blocked on hardware time"},
             {"id": "system.usb.windows", "title": "Verified way to write the stick from Windows", "size": "M", "phase": 12, "status": "todo"},
-            {"id": "drivers.usb.udev", "title": "Udev rule naming the first class-compliant interface", "size": "S", "phase": 12, "status": "todo"},
+            {"id": "drivers.usb.udev", "title": "Udev rule naming the first class-compliant interface", "size": "S", "phase": 12, "status": "done", "evidence": "PR #235: Superseded: auto-connection uses the node description, not the card index; no udev rule ships (brain/research/multichannel-usb-interfaces.md)"},
             {"id": "drivers.usb.virtual_card", "title": "Virtual-card QEMU test: snd-dummy rme9652 through ALSA -> PipeWire -> JACK, recording", "size": "M", "phase": 12, "status": "todo"}
           ]
         },
