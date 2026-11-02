@@ -276,10 +276,12 @@ playback can follow edits; it is in flight.
   - [ ] Latch/Trim and Write/Trim (mode pair, session format bump), slice 5 of
         ADR-0027 §8. Researcher first checks Pro Tools' Trim range.
   - [ ] Automation write slice, ADR-0027 §8 order: (1) writer hardening (done, #252), (2) plan-move and
-        Load state, (3) per-frame sends and PDC-aligned lanes, (4) Touch's return,
+        Load state (done, #262), (3) per-frame sends and PDC-aligned lanes, (4) Touch's return,
         (5) Trim; slices 2 to 5 all touch `session.cpp`, so one after another.
-  - [ ] `finish_pass` returns before Write->Latch when every lane of the pass is dropped
-        (#252 review; being fixed in the slice-2 PR in flight, keep open until it merges).
+  - [x] (#262) `finish_pass` returns before Write->Latch when every lane of the pass is dropped
+        (#252 review).
+  - [ ] #262 review (automation, RT): `follow_track_owners()` is O(n^2) per new epoch, add a fast path when the owners are unchanged, and fix its stale comment. `AutomationWrite` grew from 32 to 40 bytes and `RingBuffer` has no `std::is_trivially_copyable` static_assert: add one. A touch or release in the ~2 blocks between publish and `adopt_track_mix()` reaches the audio thread late; make it live if adopt can move the atomics without the race.
+  - [ ] #262 review (N2): suspected `adopt_track_mix` race with the residency gate (ADR-0023 §4): write a test or rule it out.
   - [ ] Sends follow automated volume and pan per frame; today post-fader
         and follow-pan sends take the lane at the callback's first frame
         (ADR-0027 §2).
@@ -288,10 +290,10 @@ playback can follow edits; it is in flight.
         pre-roll is scaled by the lane at the loop's end for `L` frames.
         Track the frames the chain's output came from instead.
   - [x] A Load while rolling must ignore the rest of the open pass: `drop_pass()` resets neither `pass_open_` nor `auto_latched_`, and Load does not stop playback, so writes from the old plan can land on the new session's tracks by engine index. `drop_pass` records the pass to skip and the engine clears `auto_latched_`; test it (on PR #178, #178 review). Done: `pass_dropped_` from `Session::automation_pass()`, `Session::forget_latches()` (`t1-load-drops-pass`).
-  - [ ] A roll that begins between `drop_pass()` and the Load's `show_document()` opens a pass on the old plan that is not dropped (play just before a Load, or a count-off ending): its Write tracks' writes land on the new session's tracks by index. Drop by the plan the pass started on, not by the pass number read at `drop_pass()` (`engine_control_server.cpp` ~1372 vs ~2647; narrow window, needs two commands back to back).
+  - [x] (#262) A roll that begins between `drop_pass()` and the Load's `show_document()` opens a pass on the old plan that is not dropped (play just before a Load, or a count-off ending): its Write tracks' writes land on the new session's tracks by index. Drop by the plan the pass started on, not by the pass number read at `drop_pass()` (`engine_control_server.cpp` ~1372 vs ~2647; narrow window, needs two commands back to back).
   - [x] (#225) Apply a ParameterChange's Release (clear touched) even while tracks are moving: the flag is only set or cleared when `!tracks_moving()`, so a Release during a track move is lost and the track keeps playing its fader and writing until the client disconnects or a Load (on PR #178, #178 review).
-  - [ ] Carry each track's touched bits in `PlanTrackMix` so the ~2 blocks between a moving plan's publish and `adopt_track_mix()` do not read the previous occupant's hold (stray `stamp_writes` on the arriving track's lane) (#225 review).
-  - [ ] Move `Session::auto_latched_` with its track when a plan moving tracks is adopted: Latch while rolling through a reorder stays on the engine slot, ADR-0027 §3 (#225 review).
+  - [x] (#262) Carry each track's touched bits in `PlanTrackMix` so the ~2 blocks between a moving plan's publish and `adopt_track_mix()` do not read the previous occupant's hold (stray `stamp_writes` on the arriving track's lane) (#225 review).
+  - [x] (#262) Move `Session::auto_latched_` with its track when a plan moving tracks is adopted: Latch while rolling through a reorder stays on the engine slot, ADR-0027 §3 (#225 review).
   - [ ] Touch on a track with no lane: make a release's audio and its written return agree. Return the live fader to the static value, or write no return; today the writer writes a 250 ms return to the static fader but the audio keeps the ridden value (on PR #178, #178 review).
   - [x] (#252) A pass whose lane overflows `kMaxAutomationPoints` must keep the other lanes: thin harder or drop only that edit. Done: thinned again at twice the tolerance up to 4 times, then the lane alone is dropped and named in a held notice (on PR #178, #178 review).
   - [x] (#252) Tests for automation: a Load or a client leaving clears the touched flags; long-pass growth (on PR #178, #178 review).
@@ -564,8 +566,9 @@ playback can follow edits; it is in flight.
         made apply refuse the whole Move or Clear Compound. Done: the region edit
         goes ahead; flat-run points in the span go first; a lane still over is left
         behind, named in a held notice (ADR-0027 §7, update 2026-11-02).
-  - [ ] #254 review: a document-level test that thins a lane through `EditController`
-        and undoes it in one step; remove the doubled `//` line in `automation_edit.h`.
+  - [x] (#263) #254 review: a document-level test that thins a lane through `EditController`
+        and undoes it in one step.
+  - [x] (#263) #254 review: the doubled `//` line in `automation_edit.h` is removed.
   - [ ] #254 review: sloped collinear points are not dropped, only flat runs; a linear-time
         tolerance thinning would let more full lanes follow. A Range clear on several tracks
         puts every lane left behind in one notice; per-track wording may read better.
@@ -593,11 +596,12 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 - [x] (#215) Fold the edit-markers and edit-markers-timecode capture scenes into one scene with a counter-format parameter (PR #179 review).
 - [ ] Screenshot scenes edit-markers, edit-nudge and edit-repeat fail with "session is still opening" because they send commands before the engine answers Load: give ShotContext a shared wait-for-open helper instead of per-scene retries (PR #179 review).
 - [x] Capture scenes edit-markers, edit-nudge, edit-repeat failed with "session is still opening": ShotContext got a shared when_open() (screenshot_scene.h), used by them and by edit-tracks and edit-markers-timecode in place of the per-scene retries; edit-markers picture regenerated.
-- [ ] Same "still opening" refusal remains in the edit-undo-history scene (edit.repeat) and mix-solo-safe (solo safe); wrap their apply in when_open().
+- [x] (#255) Same "still opening" refusal remains in the edit-undo-history scene (edit.repeat) and mix-solo-safe (solo safe); wrap their apply in when_open().
 - [ ] Capture rig `when_open()` (`screenshot_scene.h`) follow-ups (PR #184 review):
-  - [ ] Print a stderr line when `when_open()` gives up after 30 tries, so a missing open is not silent.
-  - [ ] `when_open()` probes with Undo, which is unsafe with a non-empty history: probe with a read-only is-opening query, or document the empty-history precondition.
+  - [x] (#255) Print a stderr line when `when_open()` gives up after 30 tries, so a missing open is not silent.
+  - [x] (#255) `when_open()` probes with Undo, which is unsafe with a non-empty history: probe with a read-only is-opening query, or document the empty-history precondition.
   - [ ] A helper that wraps `apply` to remove the awkward nested-lambda form in the scenes.
+  - [ ] #255 review: the mix-automation-write scene shows three distinct modes, not four: make the second strip Trim/Off. `docs/images/sonora-ui-mix-automation-selector.png` is missing on main: regenerate and commit it.
 - [ ] `ui.mixer.sends` follow-ups (ADR-0022):
   - [x] Send and aux fader rides as live parameters (`ParamId` for send level and aux gain): today each step is a SetSendMix or SetBusMix, a revision per step.
         Done (engine side, protocol 34, ADR-0022 update of 2026-10-31): `ParamId::SendLevel` and `AuxGain`, addressed by `ParameterChange::id`.
@@ -2513,7 +2517,10 @@ ADR-0011 "For the owner".
 - [ ] N1, with M9: plugin-parameter target on `ParameterChange` and the
       read-only telemetry region in `contracts/plugin`. plugin-engineer +
       rt-engineer + ui-engineer.
-- [ ] N1: descriptor-driven Qt editor panels in `sonora-ui`. ui-engineer.
+- [x] (#257) N1: descriptor-driven Qt editor panels in `sonora-ui`: `Knob.qml`, toggle and choices row from the catalog's `api::PluginParam`, no per-plugin QML. ui-engineer.
+  - [ ] Plugin knob lane awareness: a knob under a Read/Touch/Latch/Trim lane lies now that #250 plays lanes: show the lane value at the playhead, mark the knob automated, hold a notice on a move (ADR-0027 §2). ui-engineer.
+  - [ ] `Knob.qml`: keyboard control and `Accessible` roles; `param_origin()`/`param_position()` return NaN for an infinite min or max (#257 review).
+  - [ ] Meters in the generic editor wait for the telemetry region (the line above).
 - [ ] N1: engine track and master meters on `common/dsp` (peak, loudness,
       true-peak), gated by rt-safety-auditor. rt-engineer.
 - [x] N2 slice 1, `feature/dsp-n2`: the FDN reverb end to end.
@@ -2545,6 +2552,11 @@ ADR-0011 "For the owner".
       assert the output stays near the rail during the huge input. (d) The note says eco
       at stage 0 % still meets class B, but that run's kernel gate failed (1.79 > 1.76):
       rerun and record. dsp-engineer.
+      Update (#258): (b), (c), (d) done and the stage runs once per step at the base rate; class B with the stage on is still
+      NOT met (1.81 kernels hot against 1.76). The gate stays.
+  - [ ] Transformer stage-on eco CPU gate (#258 review): keep the stage state in registers across a block, then a quiet
+        reference-machine run, then lift the gate in `cpu_qualities`. dsp-engineer.
+  - [x] (#260) `test_dsp_transformer_generic` and the shared `f64x2.h`.
 - [ ] N2 tube follow-ups (slice 2): (a) CPU: eco (2x) meets class B at
       44-48 us p99.9 per q128 stereo block on programme and full-drive
       worst cases (Docker Desktop, i7-11800H); standard (4x) is 72-110 us
@@ -2566,9 +2578,17 @@ ADR-0011 "For the owner".
       NAB and IEC record and playback EQ, wow and flutter) (#227). The bundles are
       `EXPERIMENTAL` (built and tested, installed only with
       `-DSONORA_INSTALL_EXPERIMENTAL=ON`) until the CPU class is held. dsp-engineer.
-  - [ ] Tape CPU class B (60 us p99.9): eco measures about 2.0 ms p99.9 per block. Needs a
-        tabulated Langevin or a cheaper integrator; then hold `cpu.held` and drop
-        EXPERIMENTAL. In progress (open PR); keep open.
+  - [x] (#256) Tape CPU class B (60 us p99.9) held in eco: Langevin table and a differential-algebraic
+        integrator, one substep per sample in eco, `tape_run_pair`; EXPERIMENTAL lifted. Standard and high are
+        reported, not held (ADR-0011 §3.5).
+  - [x] (#261) Tape follow-ups from #256: c clamp, aarch64 FPCR.FZ denormals, golden against the 512-substep reference.
+  - [ ] Tape follow-ups (#256 review): `SONORA_RT` on `TapeHysteresis::sync()`/`reset()`; record the standard/high CPU
+        bars measured on the hot case (the eco hot case has about 10 % to spare; a quiet reference-machine run is still to record).
+  - [ ] Tape follow-ups (#261 review): `cpu.p999_kernels` (1.66 x 1.15 = 1.91) is looser than the calibrated class bar (1.84), so it
+        never trips: re-measure unloaded and fix the value or the note; add tape to the nightly calibrated gate if it should be held.
+        `test_reversibility_limit` should assert near the measured 1.5e-4 Ms remanence (bar about 5e-4). Run `test_dsp_dynamics` and
+        `test_dsp_tape` on real aarch64 hardware.
+  - [ ] Move the tape pair file onto the shared `f64x2.h` (#260), and document the V interface or add a `static_assert` concept check.
   - [ ] Tape aliasing above 8 kHz is a real defect (19 kHz tone, drive 12 dB: eco -4 to
         -11 dBc, standard -23 to -37, high -52 to -62 at 44.1/48 kHz): reduce it and
         extend the aliasing bar to 19 kHz.
