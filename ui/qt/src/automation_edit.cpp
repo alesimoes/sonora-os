@@ -131,6 +131,39 @@ EditAutomation window_op(Id track, const AutomationLane& lane, Frames lo, Frames
     return op;
 }
 
+// `pts` without the points in [lo, hi] that play nothing: those holding
+// the value the lane already holds on both sides, inside a flat run. Only
+// flat runs, because they are found in one pass with no tolerance (a full
+// lane must not cost Thin's quadratic worst case on a gesture), and a
+// step's two points always stay.
+std::vector<AutomationPoint> without_redundant(const std::vector<AutomationPoint>& pts, Frames lo,
+                                               Frames hi) {
+    std::vector<AutomationPoint> out;
+    out.reserve(pts.size());
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+        const AutomationPoint& p = pts[i];
+        const bool flat_inside = p.at >= lo && p.at <= hi && !out.empty() &&
+                                 i + 1 < pts.size() && !has_partner(pts, i) &&
+                                 out.back().value == p.value && pts[i + 1].value == p.value;
+        if (!flat_inside) out.push_back(p);
+    }
+    return out;
+}
+
+// The edit making `lane` into `after` over [lo, hi], appended to `out`. A
+// lane the cap leaves no room in goes to `left_behind` instead: apply()
+// would refuse its edit, and with it the region edit beside it.
+void follow_lane(Id track, const AutomationLane& lane, Frames lo, Frames hi,
+                 std::vector<AutomationPoint> after, std::vector<EditAutomation>& out,
+                 std::vector<const AutomationLane*>* left_behind) {
+    if (after.size() > kMaxAutomationPoints) after = without_redundant(after, lo, hi);
+    if (after.size() > kMaxAutomationPoints) {
+        if (left_behind != nullptr) left_behind->push_back(&lane);
+        return;
+    }
+    out.push_back(window_op(track, lane, lo, hi, after));
+}
+
 }  // namespace
 
 float lane_value_at(const AutomationLane* lane, Frames at, float fallback) {
@@ -360,7 +393,8 @@ bool paste_op(Id track, const AutomationClip& clip, Frames at, EditAutomation& o
 }
 
 std::vector<EditAutomation> follow_move_ops(const TrackEdit& track, Frames from, Frames to,
-                                            Frames at) {
+                                            Frames at,
+                                            std::vector<const AutomationLane*>* left_behind) {
     std::vector<EditAutomation> out;
     if (to <= from || at == from || at < 0) return out;
     const Frames end = at + (to - from);
@@ -375,13 +409,14 @@ std::vector<EditAutomation> follow_move_ops(const TrackEdit& track, Frames from,
             if (p.at > from && p.at < to) carried.push_back({p.at - from + at, p.value});
         }
         carried.push_back({end, value_before(pts, to)});
-        const auto moved = overlaid(overlaid(pts, from, to, {}), at, end, carried);
-        out.push_back(window_op(track.id, *lane, lo, hi, moved));
+        follow_lane(track.id, *lane, lo, hi, overlaid(overlaid(pts, from, to, {}), at, end, carried),
+                    out, left_behind);
     }
     return out;
 }
 
-std::vector<EditAutomation> follow_clear_ops(const TrackEdit& track, Frames from, Frames to) {
+std::vector<EditAutomation> follow_clear_ops(const TrackEdit& track, Frames from, Frames to,
+                                             std::vector<const AutomationLane*>* left_behind) {
     std::vector<EditAutomation> out;
     if (to <= from || from < 0 || to >= kMaxInteger - 1) return out;
     for (const auto& lane : track.automation) {
@@ -392,7 +427,7 @@ std::vector<EditAutomation> follow_clear_ops(const TrackEdit& track, Frames from
             return p.at >= from && p.at <= to;
         });
         if (!inside) continue;
-        out.push_back(window_op(track.id, *lane, from, to, overlaid(pts, from, to, {})));
+        follow_lane(track.id, *lane, from, to, overlaid(pts, from, to, {}), out, left_behind);
     }
     return out;
 }

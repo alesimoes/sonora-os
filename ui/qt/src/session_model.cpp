@@ -400,6 +400,10 @@ void SessionModel::detachItem(SceneItem* item) {
 }
 
 void SessionModel::sync() {
+    // Held: the operator is watching the region that moved, not the status
+    // line, and the lane it left behind no longer matches what plays there.
+    const std::string left_behind = ctl_.take_follow_notice();
+    if (!left_behind.empty()) emit heldNotice(q(left_behind));
     const Snapshot& s = ctl_.snapshot();
     bool content = false;
     if (s.revision != seen_revision_) {

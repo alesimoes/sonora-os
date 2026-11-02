@@ -22,6 +22,18 @@ constexpr double kFadeZonePx = 12.0;  // the Smart Tool's fade corners, in the l
 
 const Playlist* active(const TrackEdit* t) { return active_playlist(t); }
 
+// "Gtr Volume", "Gtr Plugin threshold": a lane as a notice names it.
+std::vector<std::string> lane_labels(const TrackEdit& track,
+                                     const std::vector<const AutomationLane*>& lanes) {
+    std::vector<std::string> out;
+    for (const AutomationLane* l : lanes) {
+        std::string label = track.name + " " + lane_name(l->param);
+        if (l->param == AutomationParam::Plugin) label += " " + l->key;
+        out.push_back(std::move(label));
+    }
+    return out;
+}
+
 }  // namespace
 
 const char* edit_mode_name(EditMode m) {
@@ -278,6 +290,7 @@ EditController::EditController(TimelineDocument& doc) : doc_(doc) {
 
 void EditController::document_replaced() {
     drag_ = Drag{};
+    follow_notice_.clear();
     sel_ = Selection{};
     autolanes_open_.clear();
     if (!snapshot().edit->tracks.empty()) sel_.track = 0;
@@ -883,9 +896,15 @@ bool EditController::clear(std::string& why) {
             return false;
         }
         std::vector<EditAutomation> follow;
-        if (automation_follows_edit_) follow = follow_clear_ops(*t, r->position, r->end());
-        return submit_following(RemoveRegion{t->active_playlist, sel_.region}, std::move(follow),
-                                "Clear", "cleared", why);
+        std::vector<const AutomationLane*> left;
+        if (automation_follows_edit_) follow = follow_clear_ops(*t, r->position, r->end(), &left);
+        const std::vector<std::string> left_names = lane_labels(*t, left);
+        if (!submit_following(RemoveRegion{t->active_playlist, sel_.region}, std::move(follow),
+                              "Clear", "cleared", why)) {
+            return false;
+        }
+        note_left_behind("Clear", left_names);
+        return true;
     }
     if (!sel_.has_range()) {
         why = "nothing is selected";
@@ -900,10 +919,15 @@ bool EditController::clear(std::string& why) {
     }
     // After the regions' members, which reserve ids in order; a lane edit
     // reserves none.
+    std::vector<std::string> left_names;
     if (automation_follows_edit_) {
         for (int i = 0; i < e.count; ++i) {
-            for (EditAutomation& f : follow_clear_ops(*track(e.first + i), e.a, e.b)) {
+            std::vector<const AutomationLane*> left;
+            for (EditAutomation& f : follow_clear_ops(*track(e.first + i), e.a, e.b, &left)) {
                 members.push_back(std::move(f));
+            }
+            for (std::string& n : lane_labels(*track(e.first + i), left)) {
+                left_names.push_back(std::move(n));
             }
         }
     }
@@ -914,7 +938,9 @@ bool EditController::clear(std::string& why) {
         why += "; nothing was cleared";
         return false;
     }
-    return submit_compound(std::move(members), "Clear", "cleared", why);
+    if (!submit_compound(std::move(members), "Clear", "cleared", why)) return false;
+    note_left_behind("Clear", left_names);
+    return true;
 }
 
 bool EditController::nudge(int direction, std::string& why) {
@@ -1044,10 +1070,29 @@ bool EditController::submit_following(Member op, std::vector<EditAutomation> fol
 
 bool EditController::submit_move(const MoveRegion& op, std::string& why) {
     std::vector<EditAutomation> follow;
+    std::vector<std::string> left_names;
     const TrackEdit* t = nullptr;
     const Region* r = automation_follows_edit_ ? find_region(snapshot(), op.region, &t) : nullptr;
-    if (r != nullptr) follow = follow_move_ops(*t, r->position, r->end(), op.position);
-    return submit_following(op, std::move(follow), "Move", "moved", why);
+    if (r != nullptr) {
+        std::vector<const AutomationLane*> left;
+        follow = follow_move_ops(*t, r->position, r->end(), op.position, &left);
+        left_names = lane_labels(*t, left);
+    }
+    if (!submit_following(op, std::move(follow), "Move", "moved", why)) return false;
+    note_left_behind("Move", left_names);
+    return true;
+}
+
+void EditController::note_left_behind(const char* gesture, const std::vector<std::string>& lanes) {
+    follow_notice_.clear();
+    if (lanes.empty()) return;
+    std::string names;
+    for (const std::string& n : lanes) names += (names.empty() ? "" : ", ") + n;
+    const bool one = lanes.size() == 1;
+    follow_notice_ = std::string("Automation did not follow the ") + gesture + ": " + names +
+                     (one ? " holds " : " hold ") + std::to_string(kMaxAutomationPoints) +
+                     " points, the most a lane holds, and " + (one ? "stays" : "stay") +
+                     " as it was";
 }
 
 bool EditController::copy(std::string& why) {
