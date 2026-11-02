@@ -403,9 +403,44 @@ bool v13_to_v14(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v14 -> v15 (ADR-0023, update of 2026-11-02): every track gains "colour",
+// the one the window gave it by its display position, so a version 14
+// session opens looking as it did. Its regions wear their track's, which is
+// what a region without the key means.
+bool v14_to_v15(Value& root, std::vector<Repair>&, std::string& error) {
+    Value* list = root.find("tracks");
+    if (list == nullptr || !list->is_array()) return true;   // the reader names it
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        Value& t = list->items()[i];
+        if (!t.is_object()) continue;
+        if (t.find("colour") != nullptr) {
+            error = "tracks[" + std::to_string(i) +
+                    "] has \"colour\", which version 14 does not define";
+            return false;
+        }
+        const Value* pls = t.find("playlists");
+        if (pls != nullptr && pls->is_array()) {
+            for (const Value& pl : pls->items()) {
+                const Value* rs = pl.is_object() ? pl.find("regions") : nullptr;
+                if (rs == nullptr || !rs->is_array()) continue;
+                for (const Value& r : rs->items()) {
+                    if (r.is_object() && r.find("colour") != nullptr) {
+                        error = "tracks[" + std::to_string(i) +
+                                "] has a region with \"colour\", which version 14 does not "
+                                "define";
+                        return false;
+                    }
+                }
+            }
+        }
+        t.set("colour", Value::integer(auto_colour(i)));
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
-     v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14}};
+     v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -438,6 +473,8 @@ Value region_value(const Region& r) {
     Value v = Value::object();
     v.set("id", id_value(r.id));
     v.set("name", Value::string(r.name));
+    // Only a colour of its own: without the key it wears its track's.
+    if (r.colour != kTrackColour) v.set("colour", integer(r.colour));
     v.set("position", integer(r.position));
     v.set("length", integer(r.length));
     Value& src = v.set("source", Value::array());
@@ -511,6 +548,7 @@ Value midi_region_value(const MidiRegion& r, SequenceDigests& digests) {
     Value v = Value::object();
     v.set("id", id_value(r.id));
     v.set("name", Value::string(r.name));
+    if (r.colour != kTrackColour) v.set("colour", integer(r.colour));
     v.set("position_ticks", integer(r.position));
     v.set("length_ticks", integer(r.length));
     v.set("offset_ticks", integer(r.offset));
@@ -1092,15 +1130,32 @@ bool read_sequence_ref(Reader& rd, const Value& data, const std::string& p, Sequ
     return true;
 }
 
+// Absent, the region wears its track's colour; present, it is one of the
+// palette's, so "the track's" has one spelling.
+bool read_region_colour(Reader& rd, const Value& v, const std::string& p, std::uint8_t& out) {
+    out = kTrackColour;
+    const Value* c = v.find("colour");
+    if (c == nullptr) return true;
+    std::uint8_t n = 0;
+    if (!rd.small(v, p, "colour", n)) return false;
+    if (n >= kColours) {
+        return rd.fail(*c, p + ".colour",
+                       detail::track_colour_problem() + "; leave it out for the track's");
+    }
+    out = n;
+    return true;
+}
+
 bool read_midi_region(Reader& rd, const Value& v, const std::string& p, const SourcePool& pool,
                       SequenceFiles& files, MidiRegion& r) {
     if (!rd.keys(v, p,
                  {"id", "name", "position_ticks", "length_ticks", "offset_ticks", "mute", "data"},
-                 {"source"})) {
+                 {"colour", "source"})) {
         return false;
     }
     if (!rd.id(v, p, "id", r.id)) return false;
     if (!rd.text(v, p, "name", r.name)) return false;
+    if (!read_region_colour(rd, v, p, r.colour)) return false;
     if (!rd.frames(v, p, "position_ticks", r.position)) return false;
     if (!rd.frames(v, p, "length_ticks", r.length)) return false;
     if (!rd.frames(v, p, "offset_ticks", r.offset)) return false;
@@ -1161,11 +1216,13 @@ bool read_fade(Reader& rd, const Value& region, const std::string& path, const c
 bool read_region(Reader& rd, const Value& v, const std::string& p, Region& r) {
     if (!rd.keys(v, p,
                  {"id", "name", "position", "length", "source", "source_offset",
-                  "gain_db", "mute", "fade_in", "fade_out"})) {
+                  "gain_db", "mute", "fade_in", "fade_out"},
+                 {"colour"})) {
         return false;
     }
     if (!rd.id(v, p, "id", r.id)) return false;
     if (!rd.text(v, p, "name", r.name)) return false;
+    if (!read_region_colour(rd, v, p, r.colour)) return false;
     if (!rd.frames(v, p, "position", r.position)) return false;
     if (!rd.frames(v, p, "length", r.length)) return false;
     const Value* src = nullptr;
@@ -1434,19 +1491,21 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
         bool keys_ok = false;
         if (audio) {
             keys_ok = rd.keys(v, p,
-                              {"id", "kind", "name", "channels", "input", "monitor", "gain_db",
-                               "pan", "mute", "solo", "solo_safe", "active_playlist", "inserts",
-                               "sends", "output", "automation", "automation_mode", "playlists"});
-        } else if (midi) {
-            keys_ok = rd.keys(v, p,
-                              {"id", "kind", "name", "midi_input", "midi_output", "monitor",
-                               "mute", "solo", "solo_safe", "active_playlist", "playlists"});
-        } else {
-            keys_ok = rd.keys(v, p,
-                              {"id", "kind", "name", "channels", "midi_input", "monitor",
+                              {"id", "kind", "name", "colour", "channels", "input", "monitor",
                                "gain_db", "pan", "mute", "solo", "solo_safe", "active_playlist",
                                "inserts", "sends", "output", "automation", "automation_mode",
                                "playlists"});
+        } else if (midi) {
+            keys_ok = rd.keys(v, p,
+                              {"id", "kind", "name", "colour", "midi_input", "midi_output",
+                               "monitor", "mute", "solo", "solo_safe", "active_playlist",
+                               "playlists"});
+        } else {
+            keys_ok = rd.keys(v, p,
+                              {"id", "kind", "name", "colour", "channels", "midi_input",
+                               "monitor", "gain_db", "pan", "mute", "solo", "solo_safe",
+                               "active_playlist", "inserts", "sends", "output", "automation",
+                               "automation_mode", "playlists"});
         }
         if (!keys_ok) return false;
         TrackMix m;
@@ -1457,6 +1516,10 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
         if (!rd.checked(detail::valid_text(t->name) ? "" : "is not valid UTF-8", v,
                         p + ".name", "")) {
             return false;
+        }
+        if (!rd.small(v, p, "colour", t->colour)) return false;
+        if (t->colour >= kColours) {
+            return rd.fail(*v.find("colour"), p + ".colour", detail::track_colour_problem());
         }
         if (!midi) {
             if (!rd.small(v, p, "channels", t->channels)) return false;
@@ -1667,6 +1730,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
         tv.set("id", id_value(t.id));
         tv.set("kind", Value::string(name_of(kTrackKinds, t.kind)));
         tv.set("name", Value::string(t.name));
+        tv.set("colour", integer(t.colour));
         if (!midi) tv.set("channels", integer(t.channels));
         if (audio) {
             Value& input = tv.set("input", Value::array());

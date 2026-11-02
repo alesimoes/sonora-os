@@ -110,12 +110,23 @@ Rectangle {
     radius: Theme.radius
     border.color: selected ? Theme.borderStrong : Theme.borderSubtle
 
-    // Colour cap: the track's region colour.
+    // Colour cap: the track's stored colour, as its regions wear it; a
+    // click opens the palette on the track.
     Rectangle {
+        objectName: strip.isBus ? "busColourCap" : "stripColour" + strip.track
         anchors { left: parent.left; right: parent.right; top: parent.top; margins: 1 }
         height: 3
         radius: Theme.radiusSmall
-        color: strip.isBus ? Theme.textSecondary : Theme.trackColour(strip.track)
+        color: strip.isBus ? Theme.textSecondary
+                           : Theme.paletteColour(strip.session.trackColours[strip.track] || 0)
+        MouseArea {
+            width: parent.width; height: Theme.space2
+            enabled: !strip.isBus
+            onClicked: {
+                strip.session.selectTrack(strip.track)
+                strip.shell.invoke("track.colour", strip.track)
+            }
+        }
     }
 
     Column {
@@ -527,9 +538,12 @@ Rectangle {
             font { family: Theme.fontFamily; pixelSize: Theme.textSmall; weight: Font.DemiBold }
         }
         MouseArea {
+            objectName: strip.isBus ? "" : "stripName" + strip.track
             anchors.fill: parent
             enabled: !strip.isBus
             onClicked: strip.session.selectTrack(strip.track)
+            // As on the Edit window's track name: a double-click renames.
+            onDoubleClicked: strip.shell.invoke("track.rename", strip.track)
         }
     }
 }

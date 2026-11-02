@@ -396,6 +396,26 @@ public:
     // One row up (delta -1) or down (+1); the selection goes with it.
     bool move_track(int track, int delta, std::string& why);
 
+    // --- names and colours (ADR-0023, update of 2026-11-02) ---
+    // Each one undo step. A track name is refused empty or as another
+    // track is named, as Pro Tools refuses it; surrounding spaces go.
+    bool rename_track(int track, const std::string& name, std::string& why);
+    // `colour` a palette index (model::kColours of them), on `count`
+    // tracks from `track` down, as one step: Pro Tools colours every
+    // selected track at once.
+    bool set_track_colour(int track, int count, int colour, std::string& why);
+    // The region Rename and Colour act on: the one selected, or why there
+    // is none. Never the one under the insertion point, which the operator
+    // did not pick.
+    const model::Region* selected_region(std::string& why) const;
+    bool rename_region(const std::string& name, std::string& why);
+    // A palette index, or model::kTrackColour for the track's.
+    bool set_region_colour(int colour, std::string& why);
+    // The palette index a region is drawn in: its own, else its track's.
+    static int region_colour(const model::TrackEdit& t, const model::Region& r) {
+        return r.colour == model::kTrackColour ? t.colour : r.colour;
+    }
+
     // --- playlists: the track's playlist selector (ADR-0026) ---
     // Each one undo step. New and Duplicate name the playlist
     // "<track>.<nn>" (next_playlist_name()) and make it the active one.

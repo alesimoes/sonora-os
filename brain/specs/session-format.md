@@ -317,6 +317,7 @@ not referenced by any region in any playlist is *unused*. It stays.
   {
     "id": 3,
     "name": "Lead Vox",
+    "colour": 4,
     "channels": 1,
     "input": [2],
     "monitor": "auto",
@@ -354,6 +355,10 @@ not referenced by any region in any playlist is *unused*. It stays.
   (Phase 3); the format carries them from the start so the Phase 3 change is
   behaviour, not format.
 - `inserts` (version 2): the track's plugin inserts. See "Inserts".
+- `colour` (version 15, every kind, after `name`; ADR-0023, update of
+  2026-11-02): an index into the interface's palette, 0 to 15. Stored, so a
+  track keeps its colour when it moves; undoable. A new track gets the
+  first eight in turn by how many tracks the session already has.
 - `automation_mode` and `automation` (version 13, tracks with audio,
   ADR-0027): the mode, `"off"` or `"read"` (`"touch"`, `"latch"`,
   `"write"`, `"trim"` are reserved for the write slice and refused), is mix
@@ -456,6 +461,10 @@ Ordered by `slot`. Empty for a track with none, never absent.
   `fade_in.length + fade_out.length ≤ length`.
 - Fade `shape`: `"linear"`, `"equal_power"`, `"s_curve"`. Append-only
   enumeration.
+- `colour` (version 15, optional, after `name`, audio and MIDI regions):
+  the region's own palette colour, 0 to 15. Absent, the region wears its
+  track's, as a Pro Tools clip does until it is coloured; there is no other
+  spelling for that.
 
 Non-overlapping is a decision, not a simplification (ADR-0009 §3). Laying a
 region over another trims or splits the one beneath it in the edit operation
@@ -969,6 +978,14 @@ byte.
 version changes. A version 13 file cannot carry a lane of param
 `"plugin"`, nor `insert` or `key` on a lane. The frozen v13 fixture loads
 through it and saves as `v14-plugin-lanes.sonora`, byte for byte.
+
+**v14→v15 (names and colours, ADR-0023 update of 2026-11-02):** every
+track gains `"colour"`, after `name`: `index % 8`, its position in the
+file, which is the colour the window drew it in, so a version 14 session
+opens looking as it did. No region gains a key: without one it wears its
+track's colour. A version 14 file cannot carry `colour` on a track or a
+region. The frozen v14 fixture loads through it and saves as
+`v15-colours.sonora`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

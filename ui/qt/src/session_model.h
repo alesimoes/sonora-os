@@ -48,6 +48,9 @@ class SessionModel : public QObject {
     Q_PROPERTY(QString sessionFile READ sessionFile NOTIFY sessionChanged)
     Q_PROPERTY(int trackCount READ trackCount NOTIFY contentChanged)
     Q_PROPERTY(QStringList trackNames READ trackNames NOTIFY contentChanged)
+    // Each track's palette colour (Theme.paletteColour), stored on the track
+    // so it moves with it (ADR-0023, update of 2026-11-02).
+    Q_PROPERTY(QList<int> trackColours READ trackColours NOTIFY contentChanged)
     // Each track's active playlist, by row: what its selector shows.
     Q_PROPERTY(QStringList playlistNames READ playlistNames NOTIFY contentChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY contentChanged)
@@ -270,6 +273,7 @@ public:
     QString sessionFile() const { return file_; }
     int trackCount() const;
     QStringList trackNames() const;
+    QList<int> trackColours() const;
     QStringList playlistNames() const;
     QVariantList trackRows() const;
     qreal autolaneHeight() const { return ctl_.view().autolane_height; }
@@ -349,6 +353,9 @@ public:
     Q_INVOKABLE void press(qreal x, qreal y);
     Q_INVOKABLE void drag(qreal x, qreal y);
     Q_INVOKABLE void release(qreal x, qreal y);
+    // Pro Tools' double-click on a region with the Grabber (the Smart
+    // Tool's lower half): the Name dialog for it, as region.rename asks.
+    Q_INVOKABLE void doubleClick(qreal x, qreal y);
     // A wheel step: vertical scrolls the lanes, horizontal (or Shift)
     // scrolls time, Ctrl zooms about the pointer.
     Q_INVOKABLE void wheel(qreal x, qreal dx, qreal dy, bool shift, bool ctrl);
@@ -471,6 +478,13 @@ signals:
     // track.playlist_rename without a name: the window asks, offering the
     // active playlist's.
     void playlistRenameRequested(int track, const QString& current);
+    // track.rename or region.rename without a name: the window asks,
+    // offering the current one. `track` is -1 for the selected region.
+    void nameRequested(int track, const QString& current);
+    // track.colour or region.colour without a colour: the palette opens on
+    // the track (or, -1, the selected region), its colour marked; `current`
+    // is a palette index, or -1 for a region wearing its track's.
+    void colourRequested(int track, int current);
     void trackRefusalChanged();
     // app.save_as or app.save_copy_in without a name: the window asks for
     // one, offering `name` (the first free one), and says where it goes.

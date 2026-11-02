@@ -54,6 +54,7 @@ add_library(sonora_ui_qt STATIC
   src/edit_controller.h src/edit_controller.cpp
   src/edit_clipboard.h src/edit_clipboard.cpp
   src/edit_markers.cpp
+  src/edit_names.cpp
   src/automation_edit.h src/automation_edit.cpp
   src/edit_automation.cpp
   src/live_take.h src/live_take.cpp
@@ -182,6 +183,16 @@ target_compile_definitions(test_ui_playlists PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_playlists COMMAND test_ui_playlists)
 set_tests_properties(ui_playlists PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Names and colours (ADR-0023, update of 2026-11-02): rename a track or a
+# region, a palette colour per track and per region, kept through a move;
+# then the real QML: the double-clicks, the Name dialog, the palette.
+add_executable(test_ui_names_colours tests/test_names_colours.cpp)
+target_link_libraries(test_ui_names_colours PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_names_colours PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_names_colours COMMAND test_ui_names_colours)
+set_tests_properties(ui_names_colours PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
 # measurement, its figure by hand, and refusals held in the window.

@@ -69,9 +69,12 @@ constexpr uint32_t kFadeShade = 0x8c000000;       // black at 55 %
 constexpr uint32_t kCrossfadeFill = 0x1fe8ebef;   // text at 12 %
 constexpr uint32_t kCrossfadeEdge = 0x80e8ebef;   // text at 50 %
 
-// Region colours, by track, cycling. Muted mid-tones so a session of 18
-// tracks reads as calm; the waveform is drawn lighter than the body.
-constexpr int kRegionPaletteSize = 8;
+// The colour palette (ADR-0023, update of 2026-11-02): what a track's or a
+// region's stored colour, model::kColours of them, indexes. Muted mid-tones
+// so a session of 18 tracks reads as calm; the waveform is drawn lighter
+// than the body. New tracks cycle the first eight (model::kAutoColours),
+// the set the window used before colours were stored.
+constexpr int kRegionPaletteSize = 16;
 constexpr uint32_t kRegionPalette[kRegionPaletteSize] = {
     0xff4c7fd9,  // blue
     0xff2fa39a,  // teal
@@ -81,6 +84,18 @@ constexpr uint32_t kRegionPalette[kRegionPaletteSize] = {
     0xffc9545a,  // red
     0xff8c6bd1,  // violet
     0xff6b8299,  // slate
+    0xff3fa7d6,  // sky
+    0xff4fbf8a,  // mint
+    0xff8fb83f,  // lime
+    0xffd1ad3a,  // gold
+    0xffe0705b,  // coral
+    0xffc2569e,  // magenta
+    0xff5a63c9,  // indigo
+    0xffa68b6b,  // sand
+};
+constexpr const char* kPaletteNames[kRegionPaletteSize] = {
+    "Blue", "Teal", "Green", "Olive", "Orange", "Red",     "Violet", "Slate",
+    "Sky",  "Mint", "Lime",  "Gold",  "Coral",  "Magenta", "Indigo", "Sand",
 };
 
 // --- meters (meter_model.cpp) ---
@@ -141,9 +156,10 @@ constexpr int kFaderShareExpandedPercent = 35;
 // The fewest insert slots a strip shows, A to E, before the fader gives way.
 constexpr int kStripMinSlots = 5;
 
-// The colour a region on display-order track `index` gets.
+// Palette colour `index`, a stored track or region colour. Out of range is
+// the first: the model refuses such a colour, so it is never drawn.
 constexpr uint32_t region_colour(int index) {
-    return kRegionPalette[(index < 0 ? 0 : index) % kRegionPaletteSize];
+    return kRegionPalette[index < 0 || index >= kRegionPaletteSize ? 0 : index];
 }
 
 // Mixes `a` toward `b` by `t` (0..1), opaque. For the region body (palette

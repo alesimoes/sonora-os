@@ -4,6 +4,7 @@
 // brings back, the ids a duplicate takes, what it copies and shares, and
 // both operations through the codec and the session file.
 #include <memory>
+#include <optional>
 
 #include "model_test.h"
 #include "sonora/model/op_codec.h"
@@ -420,6 +421,146 @@ int test_order_after_and_pinned_tracks() {
     return 0;
 }
 
+// Names and colours (ADR-0023, update of 2026-11-02): a track's colour is
+// stored on it, never taken from where it sits, so a move keeps it; a
+// region wears its track's until it is given its own. Each change is one
+// undoable operation, through the codec, the undo window and the file.
+int test_names_and_colours() {
+    Session s;
+    if (build(s) != 0) return 1;
+    const auto colour_of = [&](Id track) {
+        for (const auto& t : s.h.current().edit->tracks)
+            if (t->id == track) return static_cast<int>(t->colour);
+        return -1;
+    };
+    // Added in turn, the colours the window used to give by position.
+    CHECK(colour_of(s.kick.track) == 0 && colour_of(s.vox.track) == 1 &&
+          colour_of(s.bass.track) == 2);
+    CHECK_APPLY(s.h, (ReorderTracks{{s.bass.track, s.kick.track, s.vox.track}}));
+    CHECK(colour_of(s.kick.track) == 0 && colour_of(s.vox.track) == 1 &&
+          colour_of(s.bass.track) == 2);
+
+    const Snapshot before = s.h.current();
+    CHECK(is_undoable(SetTrackColour{s.vox.track, 9}));
+    CHECK_APPLY(s.h, (SetTrackColour{s.vox.track, 9}));
+    CHECK(colour_of(s.vox.track) == 9);
+    CHECK(s.h.undo());
+    CHECK(*s.h.current().edit == *before.edit);
+    CHECK(s.h.redo());
+    CHECK(refused(s.h, SetTrackColour{s.vox.track, kColours}, "palette colour from 0 to 15"));
+    CHECK(refused(s.h, SetTrackColour{s.vox.track, kTrackColour}, "palette colour"));
+    CHECK(refused(s.h, SetTrackColour{999, 3}, "does not exist"));
+
+    // A duplicate keeps its source's colour, as Pro Tools' does.
+    DuplicateTrack d;
+    d.source = s.vox.track;
+    d.track = s.h.current().next_id;
+    d.name = duplicate_track_name(s.h.current(), s.vox.track);
+    CHECK_APPLY(s.h, d);
+    CHECK(colour_of(d.track) == 9);
+
+    const auto vox_region = [&](Id id) -> const Region* {
+        for (const auto& t : s.h.current().edit->tracks)
+            for (const auto& p : t->playlists)
+                for (const Region& r : p->regions)
+                    if (r.id == id && p->id == s.vox.playlist) return &r;
+        return nullptr;
+    };
+    CHECK(vox_region(s.left)->colour == kTrackColour);
+    CHECK_APPLY(s.h, (SetRegionName{s.vox.playlist, s.left, "Vox verse"}));
+    CHECK(vox_region(s.left)->name == "Vox verse");
+    CHECK_APPLY(s.h, (SetRegionColour{s.vox.playlist, s.left, 12}));
+    CHECK(vox_region(s.left)->colour == 12);
+    // Its neighbour, the crossfade between them and its fade are untouched.
+    CHECK(vox_region(s.right)->colour == kTrackColour);
+    CHECK(playlist_of(s.h.current(), 2).crossfades.size() == 1);
+    CHECK(vox_region(s.left)->fade_in.length == 480);
+    CHECK(s.h.undo());
+    CHECK(vox_region(s.left)->colour == kTrackColour && vox_region(s.left)->name == "Vox verse");
+    CHECK(s.h.redo());
+    CHECK(refused(s.h, SetRegionColour{s.vox.playlist, s.left, kColours}, "for the track's"));
+    CHECK(refused(s.h, SetRegionColour{s.vox.playlist, 999, 1}, "999"));
+    CHECK(refused(s.h, SetRegionName{999, s.left, "x"}, "does not exist"));
+    CHECK(refused(s.h, SetRegionName{s.vox.playlist, s.left, std::string("\xff", 1)}, "UTF-8"));
+    CHECK(invariants_hold(s.h.current()));
+
+    // A MIDI region, by the same operations.
+    Ids ids(s.h.current());
+    AddTrack keys = add_track(ids, "Keys");
+    keys.kind = TrackKind::Midi;
+    keys.channels = 0;
+    keys.mix.input.clear();
+    CHECK_APPLY(s.h, keys);
+    PlaceMidiRegion place;
+    place.playlist = keys.playlist;
+    place.region.id = ids();
+    place.region.name = "m";
+    place.region.length = 960;
+    place.region.data = std::make_shared<const MidiSequence>(MidiLists{});
+    CHECK_APPLY(s.h, place);
+    CHECK_APPLY(s.h, (SetRegionName{keys.playlist, place.region.id, "Keys riff"}));
+    CHECK_APPLY(s.h, (SetRegionColour{keys.playlist, place.region.id, 3}));
+    const MidiRegion& m = s.h.current().edit->tracks.back()->midi_playlists[0]->regions[0];
+    CHECK(m.name == "Keys riff" && m.colour == 3);
+
+    // The codec carries each one and a region's colour inside a placement.
+    Region coloured = region(ids(), s.source, 200000, 1000);
+    coloured.colour = 5;
+    for (const Operation& op :
+         {Operation{SetTrackColour{s.kick.track, 15}},
+          Operation{SetRegionName{s.vox.playlist, s.right, "Chorus"}},
+          Operation{SetRegionColour{s.vox.playlist, s.right, kTrackColour}},
+          Operation{PlaceRegion{s.vox.playlist, coloured, 0}}}) {
+        std::string bytes, error;
+        CHECK(encode_operation(op, bytes, error));
+        Operation back;
+        CHECK(decode_operation(bytes, back, error));
+        Snapshot a, b;
+        CHECK(apply(s.h.current(), op, a, error));
+        CHECK(apply(s.h.current(), back, b, error));
+        CHECK(a == b);
+    }
+    std::string error;
+    Operation out;
+    CHECK(!decode_operation(R"({"op": "SetTrackColour", "track": 1, "colour": 16})", out, error));
+    CHECK(mentions(error, "palette colour"));
+    CHECK(!decode_operation(R"({"op": "SetRegionColour", "playlist": 1, "region": 2})", out,
+                            error));
+    CHECK(std::string(operation_name(Operation{SetRegionName{}})) == "SetRegionName");
+
+    // The undo window: the replica sees the colours the engine has.
+    WindowParts w;
+    CHECK(encode_window(s.h, w, error));
+    std::optional<History> replica;
+    CHECK(decode_window(w, replica, error));
+    CHECK(replica && same_document(replica->current(), s.h.current()));
+    CHECK(replica->current().edit->tracks.back()->midi_playlists[0]->regions[0].colour == 3);
+
+    // The file: every track's colour, a region's only when it has its own.
+    std::string bytes;
+    CHECK(serialize(s.h.current(), WriteInfo{"test", 1}, bytes, error));
+    CHECK(bytes.find("\"colour\": 9") != std::string::npos);
+    CHECK(bytes.find("\"colour\": 12") != std::string::npos);
+    CHECK(bytes.find("\"colour\": 255") == std::string::npos);
+    Loaded l;
+    LoadError le;
+    CHECK(deserialize(bytes, l, le));
+    // Read without its folder, so the MIDI region's sequence is not there;
+    // every colour and every audio playlist is.
+    const auto& saved = s.h.current().edit->tracks;
+    const auto& read = l.snapshot.edit->tracks;
+    CHECK(read.size() == saved.size());
+    for (std::size_t i = 0; i < read.size(); ++i) {
+        CHECK(read[i]->colour == saved[i]->colour && read[i]->name == saved[i]->name);
+        CHECK(read[i]->playlists.size() == saved[i]->playlists.size());
+        for (std::size_t k = 0; k < read[i]->playlists.size(); ++k)
+            CHECK(*read[i]->playlists[k] == *saved[i]->playlists[k]);
+    }
+    CHECK(read.back()->midi_playlists[0]->regions[0].colour == 3);
+    CHECK(read.back()->midi_playlists[0]->regions[0].name == "Keys riff");
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -437,6 +578,7 @@ int main() {
     t(test_codec_round_trip);
     t(test_order_after_and_pinned_tracks);
     t(test_sends_go_with_the_track);
+    t(test_names_and_colours);
     if (failed != 0) {
         std::fprintf(stderr, "model_tracks: %d of %d failed\n", failed, run);
         return 1;

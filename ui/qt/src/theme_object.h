@@ -71,6 +71,7 @@ class ThemeObject : public QObject {
     Q_PROPERTY(int rulerHeight READ rulerHeight CONSTANT)
     Q_PROPERTY(int trackHeaderWidth READ trackHeaderWidth CONSTANT)
     Q_PROPERTY(int trackHeight READ trackHeight CONSTANT)
+    Q_PROPERTY(int paletteSize READ paletteSize CONSTANT)
     Q_PROPERTY(QString fontFamily READ fontFamily CONSTANT)
 
 public:
@@ -132,10 +133,17 @@ public:
     int trackHeight() const { return theme::kTrackHeight; }
     QString fontFamily() const { return QString::fromLatin1(theme::kFontFamily); }
 
-    // The region colour of display track `index`, for its header swatch.
-    Q_INVOKABLE QColor trackColour(int index) const {
+    // Palette colour `index` (theme::kRegionPalette), as a track or region
+    // stores it; SessionModel::trackColours holds each track's index.
+    Q_INVOKABLE QColor paletteColour(int index) const {
         return QColor::fromRgba(theme::region_colour(index));
     }
+    Q_INVOKABLE QString paletteName(int index) const {
+        return index >= 0 && index < theme::kRegionPaletteSize
+                   ? QString::fromLatin1(theme::kPaletteNames[index])
+                   : QString();
+    }
+    int paletteSize() const { return theme::kRegionPaletteSize; }
 };
 
 }  // namespace sonora::ui

@@ -200,6 +200,8 @@ std::string step_text(const std::string& label) {
         {"SetOutput", "Set Output"},
         {"DuplicatePlaylist", "Duplicate Playlist"}, {"SetPlaylistName", "Rename Playlist"},
         {"RemovePlaylist", "Delete Playlist"},       {"EditAutomation", "Automation Edit"},
+        {"SetTrackColour", "Colour Track"},          {"SetRegionName", "Rename Region"},
+        {"SetRegionColour", "Colour Region"},
     };
     const auto it = kWords.find(label);
     return it != kWords.end() ? it->second : label;
