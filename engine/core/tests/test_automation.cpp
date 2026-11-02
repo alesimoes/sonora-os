@@ -67,12 +67,12 @@ struct Rig {
     float* out_ptrs[2];
     uint32_t slot = 0;
 
-    explicit Rig(const std::string& name) {
+    explicit Rig(const std::string& name, int tracks = 1) {
         dir = fs::temp_directory_path() / ("sonora_test_automation_" + name);
         fs::remove_all(dir);
         sonora::SessionConfig cfg;
         cfg.dir = dir.string();
-        cfg.track_count = 1;
+        cfg.track_count = tracks;
         cfg.format = sonora::WavWriter::Format::Float32;
         cfg.ring_seconds = 1.0;
         cfg.playback.chunk_frames = kChunk;
@@ -87,7 +87,7 @@ struct Rig {
             out[o].assign(kMaxBlock, 0.0f);
             out_ptrs[o] = out[o].data();
         }
-        session->tracks()[0]->set_rec_armed(false);
+        for (const auto& t : session->tracks()) t->set_rec_armed(false);
         // Mono, hard left: out[0] is the signal times the volume, exactly.
         session->tracks()[0]->set_pan(-1.0f);
     }
@@ -108,14 +108,19 @@ struct Rig {
         return publish(volume, pan);
     }
 
+    // With `owners`, the document track each engine track plays, as
+    // PlaybackController fills them in every plan; none: 0 on each.
     bool publish(const std::vector<PlanAutoPoint>& volume,
-                 const std::vector<PlanAutoPoint>& pan) {
+                 const std::vector<PlanAutoPoint>& pan,
+                 const std::vector<uint64_t>& owners = {}) {
         Session& s = *session;
         SegmentSpec sp;
         sp.end = kSourceFrames;
         sp.source_slot = slot;
         const auto total = static_cast<uint32_t>(volume.size() + pan.size());
-        sonora::PlaybackPlan* p = make_plan(s.plans().next_epoch(), 1, {sp}, kChunk, 0, 0, total);
+        const auto mix = static_cast<uint32_t>(owners.size());
+        sonora::PlaybackPlan* p = make_plan(s.plans().next_epoch(), 1, {sp}, kChunk, 0, mix, total);
+        for (uint32_t e = 0; e < mix; ++e) p->track_mix[e].track = owners[e];
         uint32_t at = 0;
         p->tracks[0].auto_first[kAutoVolume] = at;
         p->tracks[0].auto_count[kAutoVolume] = static_cast<uint32_t>(volume.size());
@@ -595,6 +600,45 @@ int test_forgotten_latches_play_the_lane() {
     return 0;
 }
 
+// ADR-0027 §8 slice 2: a Latch belongs to the document track that took it,
+// and the audio thread knows the tracks by the plan's owners, not by a mix
+// serial: a plan that puts them back where the atomics already hold them
+// carries none, and a block may never see the plan in between. Track 102
+// latched on engine track 1; the next plan puts it on engine track 0: the
+// latch goes there, and 100, arriving on 1, writes nothing.
+int test_a_latch_moves_with_its_owner() {
+    Rig rig("owner", 2);
+    CHECK(rig.load({{0, -40.0f}}));
+    Session& s = *rig.session;
+    CHECK(rig.publish({{0, -40.0f}}, {}, {100, 102}));
+    for (const auto& t : s.tracks()) t->set_automation(Track::Automation::Latch);
+    CHECK(rig.park(2000));
+    s.play();
+    rig.block();
+    s.tracks()[1]->set_touched(kAutoVolume, true);
+    rig.block();
+    s.tracks()[1]->set_touched(kAutoVolume, false);
+    rig.block();
+    std::vector<AutomationWrite> w = drained(s);
+    CHECK(w.size() == 2);
+    for (const AutomationWrite& x : w) CHECK(x.track == 1);
+
+    CHECK(rig.publish({{0, -40.0f}}, {}, {102, 100}));
+    for (int b = 0; b < 3; ++b) {
+        reset_heap_counts();
+        rig.block();
+        CHECK(heap_untouched());
+        w = drained(s);
+        CHECK(w.size() == 1);
+        for (const AutomationWrite& x : w) CHECK(x.track == 0 && x.frames == kBlock);
+    }
+    // A track the plan does not name keeps no latch: none came with it.
+    CHECK(rig.publish({{0, -40.0f}}, {}, {104, 100}));
+    rig.block();
+    CHECK(drained(s).empty());
+    return 0;
+}
+
 int test_write_writes_every_parameter_and_splits_at_the_wrap() {
     Rig rig("write");
     CHECK(rig.load({{0, -40.0f}}));
@@ -663,6 +707,7 @@ int main() {
     t(test_touch_plays_and_writes_the_fader, "test_touch_plays_and_writes_the_fader");
     t(test_latch_holds_until_stop, "test_latch_holds_until_stop");
     t(test_forgotten_latches_play_the_lane, "test_forgotten_latches_play_the_lane");
+    t(test_a_latch_moves_with_its_owner, "test_a_latch_moves_with_its_owner");
     t(test_write_writes_every_parameter_and_splits_at_the_wrap,
       "test_write_writes_every_parameter_and_splits_at_the_wrap");
     t(test_a_full_ring_is_counted, "test_a_full_ring_is_counted");

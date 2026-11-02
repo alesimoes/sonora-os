@@ -13,6 +13,10 @@ namespace sonora {
 // clears its slots with memset: value-initialise one, `AutomationWrite w{}`.
 struct AutomationWrite {
     uint64_t pass;    // the roll it belongs to, counted from 1
+    // The epoch of the plan its pass began on: a Load drops the passes
+    // begun before it by this, as the pass number the Load reads can be
+    // the one before a roll about to begin on the old document's plan.
+    uint64_t epoch;
     uint64_t frame;   // timeline
     uint32_t frames;
     uint32_t track;   // engine track

@@ -185,6 +185,9 @@ private:
     // `plan`'s track_mix from `snapshot`, each engine track armed if the
     // document track now on it was armed where it was before.
     void fill_track_mix(PlaybackPlan& plan, const model::Snapshot& snapshot) const;
+    // Just before a plan moving tracks is published: each row's touched
+    // bits from the engine track its document track holds them on now.
+    void stamp_touched(PlaybackPlan& plan) const;
     // Once no block can be on the plan before `plan`: its track_mix to the
     // atomics, stamped with its serial, then any mix deferred meanwhile.
     void adopt_track_mix(const PlaybackPlan& plan);

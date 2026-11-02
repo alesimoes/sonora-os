@@ -342,6 +342,9 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
     // ADR-0023 §4: tracks that land on other engine tracks take their mix
     // with them in the plan, and the atomics follow once it is published.
     std::vector<model::Id> order = model::track_order(*snapshot.edit);
+    for (uint32_t e = 0; e < plan->track_mix_count; ++e) {
+        plan->track_mix[e].track = e < order.size() ? order[e] : 0;
+    }
     const bool moves = atoms_order_ && *atoms_order_ != order;
     if (moves) {
         if (++mix_serial_ == 0) ++mix_serial_;   // 0 means "no mix"
@@ -423,6 +426,22 @@ void PlaybackController::fill_track_mix(PlaybackPlan& plan, const model::Snapsho
             m.mute = v->mute;
             m.pre = v->pre;
         }
+    }
+}
+
+void PlaybackController::stamp_touched(PlaybackPlan& plan) const {
+    const auto& engine = session_.tracks();
+    // At the publish, not the build: a gate held for residency can keep a
+    // plan back long enough for a touch or a release. One made in the two
+    // blocks before adopt_track_mix() reaches the audio thread from then.
+    for (std::size_t e = 0; e < plan.track_mix_count && e < engine.size(); ++e) {
+        uint8_t held = 0;
+        for (std::size_t j = 0; e < pending_order_.size() && atoms_order_ &&
+                                j < atoms_order_->size() && j < engine.size();
+             ++j) {
+            if ((*atoms_order_)[j] == pending_order_[e]) held = engine[j]->touched();
+        }
+        plan.track_mix[e].touched = held;
     }
 }
 
@@ -549,6 +568,7 @@ void PlaybackController::pump() {
         if (ready && plans.can_publish()) {
             PlaybackPlan* const old = plans.current();
             PlaybackPlan* const published = pending_;
+            if (pending_mix_serial_ != 0) stamp_touched(*pending_);
             plans.publish(pending_);
             pending_ = nullptr;
             // The audio thread uses this plan's mix until each track is

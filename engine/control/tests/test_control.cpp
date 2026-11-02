@@ -1265,6 +1265,181 @@ void a_load_while_rolling_writes_nothing() {
     CHECK(real.session().automation_write_overruns() == 0);
 }
 
+// ADR-0027 §8 slice 2: a Play and a Load back to back. The roll begins on
+// the old document's plan after the Load was taken, so the pass number the
+// Load saw is the one before it; the pass is dropped by the plan it began
+// on, and nothing it stamps lands on the new session. The audio thread is
+// stalled until the Load is in, and the reader held, so the roll begins on
+// the old plan every time.
+void play_then_load_writes_nothing() {
+    RealEngine real(fresh_dir("automation_play_load"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            std::string why;
+            CHECK(replica.receive(from_wire(in.model[fed]), why));
+        }
+    };
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        feed();
+        return got;
+    };
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    feed();
+    CHECK(replica.synced());
+    if (!replica.synced()) return;
+    const model::Id track = replica.current().edit->tracks[0]->id;
+    model::TrackMix mix = *replica.current().mix.find(track);
+    mix.automation = model::AutomationMode::Write;
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(model::SetMix{mix}, m.op, error));
+    api::CommandReply r;
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return real.session().tracks()[0]->automation() == Track::Automation::Write;
+    }));
+    std::string bytes;
+    CHECK(model::serialize(replica.current(), model::WriteInfo{"test", 1}, bytes, error));
+    const uint64_t passes = real.session().automation_pass();
+
+    real.audio().set_stalled(true);
+    api::CommandRequest play;
+    play.command = "transport.play";
+    CHECK(reply_to(real.send(play), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return real.session().transport().state() == sonora::TransportState::Rolling;
+    }));
+    real.hold_reader(true);
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    load.op = api::wire::encode_load("", bytes);
+    CHECK(reply_to(real.submit(load), r) && r.result == DispatchResult::Ok);
+    CHECK(real.session().automation_pass() == passes);
+    real.audio().set_stalled(false);
+    CHECK(until(real, in, [&]() { return real.session().automation_pass() == passes + 1; }));
+    const uint64_t rolled_at = real.state().transport().playhead;
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= rolled_at + 4800; }));
+    real.hold_reader(false);
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= rolled_at + 14400; }));
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(reply_to(real.send(stop), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() { return real.session().automation_passes_ended() > passes; }));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    real.poll(in);
+    feed();
+    for (const api::ModelUpdate& u : in.model) CHECK(u.label != "Automation Write");
+    const model::TrackEdit& t = *replica.current().edit->tracks[0];
+    CHECK(t.lane(model::AutomationParam::Volume) == nullptr);
+    CHECK(t.lane(model::AutomationParam::Pan) == nullptr);
+    CHECK(replica.current().mix.find(track)->automation == model::AutomationMode::Write);
+}
+
+// #252 Opus review: a pass whose every lane is dropped over
+// kMaxAutomationPoints left its Write track in Write, so the next Play
+// would have written over the old lanes again. Both lanes hold one point
+// short of the cap, later than the ride: the ride's points overfill each.
+// The track falls back to Latch anyway, the lanes are kept as they were,
+// and each is named in a held notice.
+void a_pass_with_every_lane_dropped_leaves_write() {
+    RealEngine real(fresh_dir("automation_overfull"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            std::string why;
+            CHECK(replica.receive(from_wire(in.model[fed]), why));
+        }
+    };
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        feed();
+        return got;
+    };
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    feed();
+    CHECK(replica.synced());
+    if (!replica.synced()) return;
+    const model::Id track = replica.current().edit->tracks[0]->id;
+    constexpr std::size_t kOld = model::kMaxAutomationPoints - 1;
+    model::EditAutomation vol{track, model::AutomationParam::Volume, 0, model::kMaxInteger, {}};
+    model::EditAutomation pan{track, model::AutomationParam::Pan, 0, model::kMaxInteger, {}};
+    for (std::size_t i = 0; i < kOld; ++i) {
+        // A 40 dB and full-width zigzag: no thinning flattens it.
+        const model::Frames f = 1'000'000 + static_cast<model::Frames>(i) * 4;
+        vol.points.push_back({f, i % 2 == 0 ? -40.0f : 0.0f});
+        pan.points.push_back({f, i % 2 == 0 ? -1.0f : 1.0f});
+    }
+    api::CommandReply r;
+    for (const model::EditAutomation& lane : {vol, pan}) {
+        api::ModelRequest m;
+        m.action = api::ModelAction::Apply;
+        CHECK(model::encode_operation(lane, m.op, error));
+        CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    }
+    model::TrackMix mix = *replica.current().mix.find(track);
+    mix.automation = model::AutomationMode::Write;
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(model::SetMix{mix}, m.op, error));
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return real.session().tracks()[0]->automation() == Track::Automation::Write;
+    }));
+
+    const std::size_t events = in.events.size();
+    api::CommandRequest play;
+    play.command = "transport.play";
+    CHECK(reply_to(real.send(play), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= 4800; }));
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(reply_to(real.send(stop), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        feed();
+        return replica.current().mix.find(track)->automation == model::AutomationMode::Latch;
+    }));
+    const model::TrackEdit& t = *replica.current().edit->tracks[0];
+    const model::AutomationLane* v = t.lane(model::AutomationParam::Volume);
+    const model::AutomationLane* p = t.lane(model::AutomationParam::Pan);
+    CHECK(v != nullptr && v->points.size() == kOld);
+    CHECK(p != nullptr && p->points.size() == kOld);
+    for (const api::ModelUpdate& u : in.model) CHECK(u.label != "Automation Write");
+    int named = 0;
+    for (std::size_t i = events; i < in.events.size(); ++i) {
+        const api::EngineEvent& e = in.events[i];
+        if (e.kind == api::EventKind::Notice && e.text.find("was not kept") != std::string::npos) {
+            ++named;
+        }
+    }
+    CHECK(named == 2);
+}
+
 // ADR-0016 end to end: with the document's loop range set, transport.record
 // starts a loop take; while it records, a SetSettings that moves the loop
 // range or clears it is refused by name, as is opening a session, and any
@@ -2968,6 +3143,8 @@ int main() {
     no_take_while_a_save_as_copies();
     automation_write_on_the_real_engine();
     a_load_while_rolling_writes_nothing();
+    play_then_load_writes_nothing();
+    a_pass_with_every_lane_dropped_leaves_write();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;
