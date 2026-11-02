@@ -45,6 +45,9 @@ public:
     // Lexicographic is the order that put AUX10 before AUX2.
     enum class ListOrder { Natural, Lexicographic, Reversed };
 
+    // Two devices may share a name, as two units of one model do: the later
+    // one's ports then carry pipewire-jack's "-<id>" suffix, and
+    // describe_ports() calls it "<name> (2)".
     struct Device {
         std::string name;  // PortInfo::device, the client part of each port name
         uint32_t capture = 0;
@@ -177,7 +180,8 @@ public:
     void set_stalled(bool stalled);
     // The device's ports go away: unlinked first, then unregistered, in the
     // order pw-jack 1.4.2 delivers them. Fatal if one fed an input. False
-    // if no such device is present.
+    // if no such device is present. `device` is the name PortInfo carries,
+    // "<name> (2)" for a second device of the same name.
     bool unplug(const std::string& device);
     // What reported_latency() says from now on, as a server's figure does
     // once something connects the outputs after open(). Control thread.

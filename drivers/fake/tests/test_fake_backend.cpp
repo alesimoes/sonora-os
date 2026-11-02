@@ -351,6 +351,46 @@ int test_unplug_of_another_device_is_not_fatal() {
     return 0;
 }
 
+// Two UMC1820s: one client name, the second's ports suffixed as
+// pipewire-jack suffixes them, and two devices out of describe_ports. The
+// default policy refuses to guess between them, naming both; the one named
+// is the one connected, all 18 of its channels and none of the other's.
+int test_two_identical_units() {
+    FakeBackend::Config cfg;
+    cfg.devices = {FakeBackend::umc1820(), FakeBackend::umc1820()};
+    FakeBackend f(cfg);
+    const std::vector<PortInfo> in = f.physical_capture_ports();
+    CHECK(in.size() == 36);
+    for (uint32_t c = 0; c < 18; ++c) {
+        CHECK(in[c].device == "UMC1820 Pro" && in[c].channel == c);
+        CHECK(in[c].name == "UMC1820 Pro:capture_AUX" + std::to_string(c));
+        CHECK(in[18 + c].device == "UMC1820 Pro (2)" && in[18 + c].channel == c);
+        CHECK(in[18 + c].name == "UMC1820 Pro:capture_AUX" + std::to_string(c) + "-" +
+                                     std::to_string(f.port_id(in[18 + c].name)));
+        CHECK(in[18 + c].usb);
+    }
+
+    Capture cap(18);
+    std::string error;
+    CHECK(!f.open({"test", 18, 0, 48000, ""}, cap, error));
+    CHECK(error.find("2 USB audio interfaces") == 0);
+    CHECK(error.find("\"UMC1820 Pro\"") != std::string::npos);
+    CHECK(error.find("\"UMC1820 Pro (2)\"") != std::string::npos);
+
+    FakeBackend g(cfg);
+    Capture cap2(18);
+    CHECK(start(g, cap2, 18, 0, "UMC1820 Pro (2)"));
+    CHECK(g.connect_inputs_in_order() == 18);
+    CHECK(g.capture_device() == "UMC1820 Pro (2)");
+    CHECK(g.run_blocks(2) == 2);
+    CHECK(g.unplug("UMC1820 Pro"));
+    CHECK(g.run_blocks(2) == 2);
+    CHECK(!g.fatal());
+    CHECK(g.unplug("UMC1820 Pro (2)"));
+    CHECK(g.fatal());
+    return 0;
+}
+
 // The server's counter wraps at 2^32; frame_time carries on past it.
 int test_frame_time_past_the_wrap() {
     FakeBackend::Config cfg;
@@ -622,6 +662,7 @@ int main() {
     failed += test_unplug_names_the_device();
     failed += test_unplug_after_unpatch_is_not_fatal();
     failed += test_unplug_of_another_device_is_not_fatal();
+    failed += test_two_identical_units();
     failed += test_frame_time_past_the_wrap();
     failed += test_xrun_moves_frame_time();
     failed += test_clock_step_back_holds_frame_time();

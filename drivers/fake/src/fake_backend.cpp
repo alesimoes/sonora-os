@@ -8,6 +8,8 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <set>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -132,6 +134,7 @@ struct FakeBackend::Impl {
             }
         }
         assign_ids();
+        suffix_duplicates();
         port_loop.assign(ports.size(), kNoSource);
         for (std::size_t l = 0; l < cfg.loopbacks.size(); ++l) {
             const Loopback& lb = cfg.loopbacks[l];
@@ -191,6 +194,31 @@ struct FakeBackend::Impl {
         }
         // Not starting at 0: an id is not an index, and 0 would hide it.
         for (uint32_t i = 0; i < order.size(); ++i) ports[order[i]].id = 40 + i;
+    }
+
+    // Two devices with one name, as two units of one model: pipewire-jack
+    // gives them one client name and makes each later port that collides
+    // unique with "-<global id>" (measured, brain/research/
+    // multichannel-usb-interfaces.md). Ports are in creation order.
+    void suffix_duplicates() {
+        std::set<std::string> taken;
+        for (Port& p : ports) {
+            if (taken.insert(p.name).second) continue;
+            p.name += "-" + std::to_string(p.id);
+            taken.insert(p.name);
+        }
+    }
+
+    // The device as describe_ports() names it: a later device with an
+    // earlier one's name is "<name> (2)", "(3)", ... in Config order, which
+    // is the order the ids follow unless ids_out_of_order scrambles them.
+    std::string described_name(uint32_t device) const {
+        uint32_t same = 0;
+        for (uint32_t d = 0; d < device; ++d) {
+            if (cfg.devices[d].name == cfg.devices[device].name) ++same;
+        }
+        const std::string& name = cfg.devices[device].name;
+        return same == 0 ? name : name + " (" + std::to_string(same + 1) + ")";
     }
 
     uint64_t now_ns() const {
@@ -656,7 +684,7 @@ bool FakeBackend::unplug(const std::string& device) {
     Impl& d = *impl_;
     std::lock_guard<std::mutex> lock(d.control);
     uint32_t dev = 0;
-    while (dev < d.cfg.devices.size() && d.cfg.devices[dev].name != device) ++dev;
+    while (dev < d.cfg.devices.size() && d.described_name(dev) != device) ++dev;
     if (dev == d.cfg.devices.size() || !d.present(dev)) return false;
     d.unplugged[dev] = true;
     if (!d.open) return true;

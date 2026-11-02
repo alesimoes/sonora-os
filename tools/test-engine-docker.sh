@@ -9,7 +9,9 @@
 # physical device standing in for a laptop's onboard audio: left alone when
 # the inputs are patched by hand within the wait; recorded from after the
 # wait when it is the only device, with the notice; refused, both listed,
-# beside a second non-USB device; and, killed mid-take, DeviceGone closes the
+# beside a second non-USB device; two units under one node description, in
+# both of pipewire-jack's suffix forms, seen as two devices, not one
+# interleaved; and, killed mid-take, DeviceGone closes the
 # take and names it. Before PipeWire starts, `sonora-engine --backend fake`
 # records 18 tracks with no server, checked by the same verifier. Last, the
 # backend conformance suite (ADR-0007 §7) runs against JackBackend on this
