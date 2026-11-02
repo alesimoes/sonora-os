@@ -662,6 +662,19 @@ int qml() {
     QTest::mouseMove(&view, k - QPoint(0, 50));
     QTest::mouseRelease(&view, Qt::LeftButton, {}, k - QPoint(0, 50));
     r.settle();
+    if (std::fabs(position("0") - (p0 + 0.25)) >= 1e-3) {
+        // Failed once on CI (main, 09fa9814) and in none of 370 local runs,
+        // loaded or not. Which of these is off says where the drag was lost:
+        // the knob never moved (plugin unchanged), the session refused the
+        // record (plugin moved, position back), or the layout moved under it.
+        const QPoint later = centre(knob);
+        std::fprintf(stderr,
+                     "knob drag: p0 %.4f, shown %.4f, plugin %.4f, gesture open %d, panel %d, "
+                     "knob at %d,%d then %d,%d, status \"%s\", last refusal \"%s\"\n",
+                     p0, position("0"), r.fake.plugin_value(comp, "0"), r.ctl().gesture_running(),
+                     r.inserts.panelOpen(), k.x(), k.y(), later.x(), later.y(),
+                     qPrintable(r.shell.statusText()), r.refused.empty() ? "" : r.refused.back().c_str());
+    }
     CHECK(std::fabs(position("0") - (p0 + 0.25)) < 1e-3);
     CHECK(std::fabs(r.fake.plugin_value(comp, "0") - static_cast<float>(p0 + 0.25)) < 1e-3f);
     CHECK(r.values(comp) != nullptr && !r.values(comp)->params.empty());
