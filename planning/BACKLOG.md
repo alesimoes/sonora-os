@@ -266,11 +266,18 @@ playback can follow edits; it is in flight.
         `SetMix` then accepts the four modes.
   - [ ] Trim: a relative dB lane summed with Volume in dB; `SetMix` still
         refuses it.
-  - [ ] The interface: an automation mode selector per track, and the fader
+  - [x] The interface: an automation mode selector per track, and the fader
         and pan knob sending `Gesture::Touch` at press and `Release` at
-        release (they send `Move` only today, so no UI touch is seen).
-  - [ ] Touch's return time as a session setting (Pro Tools' AutoMatch);
-        a constant 250 ms today (`Session::touch_return_frames()`).
+        release (#187; found done by #245).
+  - [ ] Touch's return time as an engine preference `--automatch-ms` (not a session
+        setting, ADR-0027 §8); a constant 250 ms today
+        (`Session::touch_return_frames()`).
+  - [ ] AutoMatch time in the UI Preferences (a protocol message).
+  - [ ] Latch/Trim and Write/Trim (mode pair, session format bump), slice 5 of
+        ADR-0027 §8. Researcher first checks Pro Tools' Trim range.
+  - [ ] Automation write slice, ADR-0027 §8 order: (1) writer hardening, (2) plan-move and
+        Load state, (3) per-frame sends and PDC-aligned lanes, (4) Touch's return,
+        (5) Trim; slices 2 to 5 all touch `session.cpp`, so one after another.
   - [ ] Sends follow automated volume and pan per frame; today post-fader
         and follow-pan sends take the lane at the callback's first frame
         (ADR-0027 §2).
@@ -1763,12 +1770,16 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       After the write slice (Track 1).
   - [x] Slice 1, engine side (#212): lanes are played once per callback into
         the chain. The parent item stays open for the rest.
-- [ ] `insert_chain_runner.h:38-41` comment should say events are posted
-      changes followed by plan plugin lane values.
-- [ ] `test_plugin_automation`: cover Trim mode, a lane on an unbound or
-      silent chain, and a period of another size.
-- [ ] Plan builder and model: refuse non-finite plugin lane values; a NaN
-      lane is resent every callback.
+- [x] `insert_chain_runner.h:38-41` comment says events are posted
+      changes followed by plan plugin lane values (#243).
+- [x] `test_plugin_automation`: Trim mode, a lane on an unbound or
+      silent chain, and a period of another size (#243).
+- [x] Engine never sends a non-finite plugin lane value, so a NaN lane is no longer
+      resent every callback (#243); the model already refused them (#226).
+  - [ ] Track 1/2: the plan builder refuses non-finite plugin lane values when it gains
+        plugin lanes (with key-to-index resolution).
+  - [ ] #243 review: a skipped non-finite lane lets a posted knob win; interpolate in
+        double or clamp so an overflowing pair of finite points still yields a value.
 - [x] (#226) Plugin lanes in the model: `AutomationParam::Plugin` keyed by insert id and
       ParamValue key, session format 14, window format 11, protocol 36; lanes follow their
       insert (remove, replace, move, duplicate, undo). Saved, undone and replicated.
@@ -1799,6 +1810,16 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        saving, UB in a processor caught a day late); split Thread and address sanitizers into
        two parallel jobs; merge Record, BWF interop and Quantum into one job (both rename
        required checks).
+5. [ ] `ci.yml` hunks of #242 and #247 wait on the owner running
+       `gh auth refresh -s workflow` (the agent token has gist, read:org and repo only; it
+       cannot merge a PR that edits workflows). Same blocker as the `ci/image-config-step`
+       line under Phase 1. Waits on the owner.
+6. [ ] #223 review: `bus_dead` in `tools/dev-wsl.sh` treats a saved `unix:abstract=` bus as
+       alive (check `DBUS_SESSION_BUS_PID` with `kill -0`); `tools/sonora-wsl.cmd` breaks
+       on `)` in an argument. Not run on the laptop yet: `dev-wsl.ps1 status`, `run`,
+       `stop`, `shortcut` are unverified.
+7. [ ] `WavWriter` header miscounts the frames after a failed flush (fix PR in flight);
+       keep open until it merges. rt-engineer.
 
 ### Later stages, in order (detail in `progress.json`)
 
@@ -1823,11 +1844,30 @@ not start or extend those items before the Complete DAW closes (owner,
       first appears.
 - [x] (#217) The `0100-sonora-system` hook falls back to `BUILD_ID=unstamped` when
       the sanitised id is empty.
-- [ ] Compile the engine on Debian trixie and fix what the compiler finds.
-- [ ] Run `ctest`; make the ring buffer and BWF tests pass.
-- [ ] `live-build` config: package list, RT kernel, PipeWire from backports.
-- [ ] `sonora-session.service`: autologin on tty1 into the engine, respawn on
-      exit, no display manager.
+- [x] Compile the engine on Debian trixie and fix what the compiler finds. (#240) GCC
+      14.2: one `-Wformat-truncation` in `utc_stamp` fixed.
+  - [ ] Model track: add `data_from` (or `{}`) to the `PlaceMidiRegion` brace-inits in
+        `test_midi.cpp`, `test_midi_chunks.cpp` and `test_sequence_file.cpp` (27 sites,
+        `-Wmissing-field-initializers`).
+  - [ ] `tools/build-engine.sh` passes `SONORA_DSP_QUICK` and `-j` through to the
+        container ctest, as CI does (the local run took about 22 min). Optional.
+- [x] Run `ctest`; make the ring buffer and BWF tests pass. (#240) 276/276 in the
+      trixie container.
+- [x] `live-build` config: package list, RT kernel, PipeWire from backports. (#238)
+      PipeWire 1.6.9 and WirePlumber 0.5.12 pinned from a dated backports snapshot; the
+      hook fails the build if the pins are not what got installed.
+  - [ ] Put trixie and trixie-security on a snapshot too (`lb config --mirror-*`), so a
+        point release cannot change the kernel between two builds of one commit; use
+        https for the snapshot; measure a cold build through snapshot.debian.org first.
+  - [ ] Build the ISO and boot it in QEMU with the pins (`tools/build-iso.sh`,
+        `tools/test-boot-qemu.sh`); confirm the "no VT login prompts" smoke check.
+  - [ ] `tools/test-image-config.sh` fails if `getty@tty2..6` is enabled.
+  - [ ] Add `tools/test-image-config.sh` to the CI "Shell scripts" job: the `ci.yml` hunk
+        was moved out of #238 (branch `ci/image-config-step`); waits on the owner's
+        `gh auth refresh -s workflow`.
+- [x] `sonora-session.service`: autologin on tty1 into the engine, respawn on
+      exit, no display manager. (#238) Closes the VT getty gap: `NAutoVTs=0`,
+      `ReserveVT=0`.
 - [x] PipeWire drop-in pinning quantum to 128 and rate to 48000, and holding
       it against clients: `tools/test-quantum-pin.sh`, in CI.
 - [ ] Repeat `tools/test-quantum-pin.sh`'s routes with the UMC1820 as the
@@ -2033,13 +2073,22 @@ not deferred.
       asserts the engine PID and a growing take file. distro-engineer.
 - [ ] Stage 1 QEMU checks (the list above) and the rc.xml mouse contexts
       against labwc 0.8.3: not run yet. distro-engineer.
-- [ ] `sonora-display-fallback` runs `chvt 2`, which reaches no terminal UI
-      until stage 2 adds `sonora-tui.service` on tty2.
+- [x] `sonora-display-fallback` ran `chvt 2`, which reaches no terminal UI until stage 2
+      adds `sonora-tui.service` on tty2. (#241) The fallback now starts
+      `sonora-session.service` on tty1 (flag file `/run/sonora-display-failed`).
+  - [ ] #241 review: prefix the `systemctl stop` in `sonora-display-fallback` with `-` so
+        a stop failure does not skip the hand-back; ADR-0010 lines ~124 and ~296 and
+        `iso/README.md` line ~55 still describe `chvt 2`.
+  - [ ] A smoketest/QEMU check that boots with `sonora.gui` and a broken `sonora-ui`,
+        then asserts `sonora-session.service` is active on tty1. distro-engineer.
 - [x] (#217) `sonora-smoketest` checks `BUILD_ID` and the `sonora.gui` path.
 - [x] (#217) `tools/build-iso.sh` stages `sonora-ui` when `SONORA_WITH_UI=1`.
-- [ ] Qt runtime packages are not in the image package list yet (stage 2).
-- [ ] #217 review: `tools/build-iso.sh` sends `build-ui.sh` output to /dev/null so a
-      failure is silent; the smoketest's `sonora-ui.service` "skipped" check passes if
+- [x] Qt runtime packages are not in the image package list yet (stage 2). (#241) The
+      block (`qt6-wayland libqt6quick6 qml6-module-qtquick`) is derived from what
+      `ui/qt` uses and checked by an offscreen run on bare trixie.
+- [x] #217 review: `tools/build-iso.sh` sent `build-ui.sh` output to /dev/null so a
+      failure was silent. (#241) Engine and UI builds now log to `iso/build-*.log`.
+- [ ] #217 review: the smoketest's `sonora-ui.service` "skipped" check passes if
       the unit is missing; the `sonora.gui` branch does not assert `sonora-ui` active.
       distro-engineer.
 - [x] (#217) `main.cpp` comments about tty2 and the terminal UI now say it holds only from
@@ -2488,8 +2537,22 @@ ADR-0011 "For the owner".
       (cathode resistor) and a second stage as parameters, each with its
       SPICE cases. (d) Golden files under Clang and MSVC once those jobs
       exist. dsp-engineer.
-- [ ] N2 slice 4: tape (Jiles-Atherton hysteresis, head bump, gap loss,
-      NAB and IEC record and playback EQ, wow and flutter). dsp-engineer.
+- [x] N2 slice 4: tape (Jiles-Atherton hysteresis, head bump, gap loss,
+      NAB and IEC record and playback EQ, wow and flutter) (#227). The bundles are
+      `EXPERIMENTAL` (built and tested, installed only with
+      `-DSONORA_INSTALL_EXPERIMENTAL=ON`) until the CPU class is held. dsp-engineer.
+  - [ ] Tape CPU class B (60 us p99.9): eco measures about 2.0 ms p99.9 per block. Needs a
+        tabulated Langevin or a cheaper integrator; then hold `cpu.held` and drop
+        EXPERIMENTAL. In progress (open PR); keep open.
+  - [ ] Tape aliasing above 8 kHz is a real defect (19 kHz tone, drive 12 dB: eco -4 to
+        -11 dBc, standard -23 to -37, high -52 to -62 at 44.1/48 kHz): reduce it and
+        extend the aliasing bar to 19 kHz.
+  - [ ] `thd.nominal_pct` 5.0 for tape looks far too loose: re-measure, tighten, add a
+        drive-12 dB bar.
+  - [ ] Tape goldens under Clang and MSVC (the substep count is discontinuous);
+        rt-safety-auditor run; RTSan.
+  - [ ] The quick `native_tape` run took about 103 s on a loaded host (target 60 s):
+        re-time it in CI; if over 60 s, a cheaper denormal check. dsp-engineer.
 - [x] N2 slice 5, `feature/dsp-n2-noise-hum-recovered` (PR #141): modelled noise and hum in
       `common/dsp` (`noise.h`: seeded xoshiro256** and near-Gaussian noise,
       a hum oscillator bank; `supply.h`: a bridge rectifier, reservoir and
