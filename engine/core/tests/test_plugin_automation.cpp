@@ -14,13 +14,23 @@
 //                      sent only when it moves; nothing allocated
 //   lane_wins          a posted value for an automated node is followed,
 //                      in the same callback, by its lanes' values
-//   modes              Off and Write play no lane; back to Read resends
+//   modes              Off and Write play no lane; back to Read resends;
+//                      Trim plays the lane as Read does, over a posted knob
 //   new_plan           a plan swap resends every lane once
+//   unrun_chains       a lane on an unbound or a silent chain sends nothing,
+//                      and the plan that binds the chain sends it once
+//   other_period       a callback the runner does not take (another size,
+//                      or past max_block_frames) sends no lane and loses
+//                      none: the next it takes sends the lane where it is
+//   non_finite         a lane that evaluates to NaN or infinity is never
+//                      sent, so it is not resent every callback either
 //   bounds             a lane out of range, on a node that is not a chain,
 //                      or past PlaybackConfig::max_plugin_lanes: the plan is
 //                      refused, never followed
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -57,7 +67,7 @@ class RecordingRunner final : public sonora::InsertChainRunner {
 public:
     void begin(uint64_t) noexcept SONORA_RT override { ++callback; }
     void end() noexcept SONORA_RT override {}
-    uint32_t block_frames() const noexcept SONORA_RT override { return 0; }
+    uint32_t block_frames() const noexcept SONORA_RT override { return fixed; }
     void run(const PlanNode&, const float* const in[2], float* const out[2], uint32_t frames,
              const ChainParamEvent* events, uint32_t event_count) noexcept SONORA_RT override {
         for (uint32_t i = 0; i < frames; ++i) {
@@ -73,6 +83,7 @@ public:
     std::vector<Seen> seen = std::vector<Seen>(512);
     std::size_t count = 0;
     uint64_t callback = 0;
+    uint32_t fixed = 0;
 };
 
 struct LaneSpec {
@@ -293,6 +304,97 @@ int test_modes() {
     track.set_automation(Track::Automation::Latch);
     rig.block();
     CHECK(rig.runner.count == 2);
+    // Trim scales the fader's lane; a plugin parameter has no trim, so it
+    // plays its lane as Read does, and the lane still wins over the knob.
+    track.set_automation(Track::Automation::Trim);
+    rig.block();
+    CHECK(rig.runner.count == 2);
+    CHECK(rig.post(5, 1, 3, 0.1f));
+    rig.block();
+    CHECK(rig.runner.count == 4);
+    CHECK(same(rig.runner.seen[2].event, 1, 3, 0.1f));
+    CHECK(same(rig.runner.seen[3].event, 1, 3, ramp_at(512)));
+    return 0;
+}
+
+int test_unrun_chains() {
+    Rig rig(2);
+    // Track 0's chain is active but bound to no host, track 1's is down.
+    ChainBinding unbound;
+    unbound.active = true;
+    unbound.chain_id = 100;
+    ChainBinding silent = bound(1, 9);
+    silent.channel_slot = sonora::kSilentChannelSlot;
+    const std::vector<LaneSpec> lanes = {{0, 1, 3, kRamp}, {1, 0, 2, kRamp}};
+    CHECK(rig.publish(rig.plan({unbound, silent}, lanes)));
+    CHECK(rig.park(512));
+    rig.session->play();
+    reset_heap_counts();
+    for (int k = 0; k < 4; ++k) rig.block();
+    CHECK(heap_untouched());
+    CHECK(rig.session->invalid_plan_blocks() == 0);
+    CHECK(rig.runner.count == 0);
+    // Bound by the next plan: its lane goes at once, the other stays down.
+    rig.session->stop();
+    rig.block();
+    CHECK(rig.publish(rig.plan({bound(0, 5), silent}, lanes)));
+    rig.block();
+    const uint64_t at = rig.session->transport().playhead();
+    CHECK(rig.runner.count == 1);
+    CHECK(same(rig.runner.seen[0].event, 1, 3, ramp_at(at)));
+    rig.block();
+    CHECK(rig.runner.count == 1);
+    return 0;
+}
+
+int test_other_period() {
+    Rig rig(2);
+    rig.runner.fixed = kBlock;
+    CHECK(rig.publish(rig.plan({bound(0, 5), ChainBinding{}}, {{0, 1, 3, kRamp}})));
+    CHECK(rig.park(256));
+    CHECK(rig.runner.count == 1);
+    rig.session->play();
+    const uint64_t calls = rig.runner.callback;
+    const uint64_t bypassed = rig.session->chain_bypassed_blocks();
+    // Half the runner's block, then past max_block_frames: neither runs the
+    // chain, so neither sends the lane, though it moves under both.
+    reset_heap_counts();
+    rig.block(kBlock / 2);
+    rig.block(512);
+    CHECK(heap_untouched());
+    CHECK(rig.runner.callback == calls);
+    CHECK(rig.session->chain_bypassed_blocks() == bypassed + 2);
+    CHECK(rig.runner.count == 1);
+    // The next callback it takes sends the lane at that callback's frame.
+    const uint64_t at = rig.session->transport().playhead();
+    CHECK(ramp_at(at) != ramp_at(256));
+    rig.block();
+    CHECK(rig.runner.count == 2);
+    CHECK(same(rig.runner.seen[1].event, 1, 3, ramp_at(at)));
+    return 0;
+}
+
+int test_non_finite() {
+    Rig rig(2);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    // A NaN point, and two finite ones whose difference overflows a float,
+    // so every frame between them evaluates to infinity.
+    const std::vector<LaneSpec> lanes = {{0, 0, 1, {{0, nan}}},
+                                         {0, 0, 2, {{0, -FLT_MAX}, {1 << 20, FLT_MAX}}},
+                                         {0, 0, 3, {{0, 0.5f}}}};
+    CHECK(rig.publish(rig.plan({bound(0, 5), ChainBinding{}}, lanes)));
+    CHECK(rig.park(512));
+    rig.block();
+    rig.block();
+    // Only the finite lane, once: the host keeps what it had for the others.
+    CHECK(rig.runner.count == 1);
+    CHECK(same(rig.runner.seen[0].event, 0, 3, 0.5f));
+    rig.session->play();
+    for (int k = 0; k < 4; ++k) rig.block();
+    CHECK(rig.runner.count == 1);
+    for (std::size_t i = 0; i < rig.runner.count; ++i) {
+        CHECK(std::isfinite(rig.runner.seen[i].event.value));
+    }
     return 0;
 }
 
@@ -406,6 +508,9 @@ int main() {
     if (test_lane_wins()) return 1;
     if (test_modes()) return 1;
     if (test_new_plan()) return 1;
+    if (test_unrun_chains()) return 1;
+    if (test_other_period()) return 1;
+    if (test_non_finite()) return 1;
     if (test_bounds()) return 1;
     std::printf("plugin_automation: ok\n");
     return 0;
