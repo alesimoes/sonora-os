@@ -511,6 +511,48 @@ int check_record_ready(Rig& rig) {
                        std::string(cancel) + " after record-ready moved the transport");
             }
 
+            // Every playhead move takes it back, as return to zero does: in
+            // the Qt window a marker, the counter and a timeline click all
+            // arrive as transport.locate. Go to end, rewind and fast forward
+            // are held to the same rule once an engine announces them.
+            const auto announced = [&impl](const char* id) {
+                return std::find(impl.begin(), impl.end(), id) != impl.end();
+            };
+            struct Move {
+                const char* id;
+                const char* argument;
+            };
+            for (const Move m : {Move{"transport.locate", "0"}, Move{"transport.go_to_end", ""},
+                                 Move{"transport.rewind", ""},
+                                 Move{"transport.fast_forward", ""}}) {
+                if (!announced(m.id)) continue;
+                EXPECT(make_ready(r), "record-ready did not show: " + r.message);
+                EXPECT(s.await(rig_, s.command(m.id, -1, m.argument), r) &&
+                           r.result == DispatchResult::Ok,
+                       std::string(m.id) + " failed: " + r.message);
+                EXPECT(s.until(rig_, [&]() { return !ready(); }),
+                       std::string(m.id) + " did not cancel record-ready");
+                EXPECT(v.transport().take == take,
+                       std::string(m.id) + " after record-ready started a take");
+                // Rewind and fast forward may shuttle; nothing records.
+                EXPECT(press("transport.stop", r) && r.result == DispatchResult::Ok,
+                       "stop after " + std::string(m.id) + " failed: " + r.message);
+                EXPECT(s.until(rig_, [&]() { return v.transport().state == TransportState::Stopped; }),
+                       std::string(m.id) + " left the transport moving");
+            }
+            // A nudge moves the selection, not the playhead (Pro Tools'
+            // Nudge): the transport stays ready.
+            for (const char* nudge : {"nudge.forward", "nudge.back"}) {
+                if (!announced(nudge)) continue;
+                EXPECT(make_ready(r), "record-ready did not show: " + r.message);
+                EXPECT(press(nudge, r), "no reply to " + std::string(nudge));
+                EXPECT(s.next_publish(rig_) && ready(),
+                       std::string(nudge) + " cancelled record-ready");
+                EXPECT(press("transport.stop", r) && r.result == DispatchResult::Ok &&
+                           s.until(rig_, [&]() { return !ready(); }),
+                       "stop after " + std::string(nudge) + " did not cancel record-ready");
+            }
+
             // Per-session state: another session opens not ready.
             EXPECT(make_ready(r), "record-ready did not show: " + r.message);
             EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }), "no snapshot");

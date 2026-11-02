@@ -663,6 +663,61 @@ int test_targetless_arm_does_not_count(const std::vector<KeyChord>& device,
     return 0;
 }
 
+// --- record-ready is a way to start a take only beside a Play key ---
+//
+// transport.record_ready starts nothing: Play does. A profile with
+// record_ready and transport.stop, and no play key, was reported as able to
+// start a take (#232 review, N1).
+int test_record_ready_needs_play(const std::vector<KeyChord>& device,
+                                 const Implemented& implemented) {
+    const auto& start = group_containing("transport.record");
+    {
+        KeyMap m;
+        std::string err;
+        CHECK(loads(R"({ "name": "x", "bindings": {
+            "r": "transport.record_ready",
+            "s": "transport.stop",
+            "a": "track.arm_all",
+            "q": "app.quit" } })", m, err));
+        CHECK(!m.reaches(start, device, implemented));
+        const std::vector<std::string> notices = m.ensure_essentials(device, implemented);
+        CHECK(notices.size() == 1);
+        CHECK(!notices.empty() && mentions(notices[0], "transport.record_ready"));
+        // The repair is the default's toggle_record on its free space.
+        CHECK(m.resolve("space") != nullptr);
+        CHECK(m.resolve("space")->command == "transport.toggle_record");
+        CHECK(m.resolve("r")->command == "transport.record_ready");
+    }
+    for (const char* play : {"transport.play", "transport.toggle_play"}) {
+        KeyMap m;
+        std::string err;
+        CHECK(loads(std::string(R"({ "name": "x", "bindings": {
+            "r": "transport.record_ready",
+            "p": ")") + play + R"(",
+            "s": "transport.stop",
+            "a": "track.arm_all",
+            "q": "app.quit" } })", m, err));
+        CHECK(m.reaches(start, device, implemented));
+        CHECK(m.ensure_essentials(device, implemented).empty());
+    }
+    {
+        // A play key this build cannot run is no play key.
+        const Implemented cannot_play = [&implemented](const std::string& id) {
+            return id != "transport.play" && implemented(id);
+        };
+        KeyMap m;
+        std::string err;
+        CHECK(loads(R"({ "name": "x", "bindings": {
+            "r": "transport.record_ready",
+            "p": "transport.play",
+            "s": "transport.stop",
+            "a": "track.arm_all",
+            "q": "app.quit" } })", m, err));
+        CHECK(!m.reaches(start, device, cannot_play));
+    }
+    return 0;
+}
+
 // --- the corrections in brain/research/protools-logic-key-bindings.md §8 ---
 int test_profile_corrections() {
     struct Expect {
@@ -767,6 +822,7 @@ int main() {
         failures += test_repair_keeps_what_works(device, implemented);
         failures += test_targetless_arm_does_not_count(device,
                                                        implemented);
+        failures += test_record_ready_needs_play(device, implemented);
         failures += test_profile_corrections();
         if (failures != 0) {
             std::fprintf(stderr, "FAIL %d regression tests\n", failures);
