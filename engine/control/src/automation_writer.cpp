@@ -7,6 +7,8 @@
 #include <limits>
 #include <map>
 
+#include "sonora/playback_plan.h"
+
 namespace sonora {
 
 namespace {
@@ -28,6 +30,9 @@ struct Painted {
     Frames len = 1;
     float at(Frames t) const {
         if (!ret) return value;
+        // value + (to - value) in float can miss `to` by an ulp, and the
+        // next span, which starts on `to`, would then begin with a step.
+        if (t - origin == len) return to;
         const double x = static_cast<double>(t - origin) / static_cast<double>(len);
         return value + static_cast<float>(x * static_cast<double>(to - value));
     }
@@ -92,6 +97,58 @@ struct LaneWrites {
 
 // About what a fader or a pan knob can be set to by hand.
 float tolerance_of(AutomationParam p) { return p == AutomationParam::Volume ? 0.1f : 0.005f; }
+
+// The lane's edit, its runs thinned at `tolerance`.
+model::EditAutomation lane_edit(const LaneWrites& l, const Original& o, float tolerance) {
+    model::EditAutomation e;
+    e.track = l.track;
+    e.param = l.param;
+    e.from = l.paint.begin()->first;
+    std::vector<AutomationPoint> run;
+    Frames run_end = 0;
+    float last = 0.0f;
+    const auto close_run = [&]() {
+        put(run, run_end, last);
+        put(run, run_end, o.at(run_end));
+        thin_automation(run, tolerance);
+        e.points.insert(e.points.end(), run.begin(), run.end());
+        run.clear();
+    };
+    bool first = true;
+    bool sloped = false;
+    for (const auto& [start, p] : l.paint) {
+        // A line cut short by a later turn ends where it was cut, not
+        // on the next span's value.
+        if (!first && start == run_end && sloped) put(run, run_end, last);
+        if (!first && start != run_end) {
+            close_run();
+            // The gap keeps the points it had.
+            if (o.lane) {
+                for (const AutomationPoint& q : o.lane->points) {
+                    if (q.at > run_end && q.at < start) e.points.push_back(q);
+                }
+            }
+        }
+        if (first || start != run_end) put(run, start, o.at(start));
+        first = false;
+        put(run, start, p.at(start));
+        run_end = p.end;
+        last = p.at(p.end);
+        sloped = p.ret;
+    }
+    close_run();
+    e.to = run_end + 1;
+    return e;
+}
+
+// The points the lane holds once `e` is applied, as the model counts them.
+std::size_t points_after(const Original& o, const model::EditAutomation& e) {
+    std::size_t n = e.points.size();
+    if (o.lane) {
+        for (const AutomationPoint& q : o.lane->points) n += q.at < e.from || q.at >= e.to ? 1 : 0;
+    }
+    return n;
+}
 
 }  // namespace
 
@@ -174,9 +231,28 @@ void thin_automation(std::vector<AutomationPoint>& points, float tolerance) {
     points.swap(kept);
 }
 
+bool live_pass_write(const AutomationWrite& w, model::Id track, PassWrite& p) {
+    if (w.param >= kAutoParams || !std::isfinite(w.value)) return false;
+    p = PassWrite{};
+    p.track = track;
+    p.param = w.param == kAutoVolume ? AutomationParam::Volume : AutomationParam::Pan;
+    p.frame = static_cast<Frames>(w.frame);
+    p.frames = w.frames;
+    if (w.param == kAutoVolume) {
+        const double db = w.value > 0.0f ? 20.0 * std::log10(static_cast<double>(w.value))
+                                         : static_cast<double>(model::kMinGainDb);
+        p.value = static_cast<float>(std::clamp(db, static_cast<double>(model::kMinGainDb),
+                                                static_cast<double>(model::kMaxGainDb)));
+    } else {
+        p.value = std::clamp(w.value, -1.0f, 1.0f);
+    }
+    return true;
+}
+
 std::vector<model::EditAutomation> automation_pass_edits(const model::Snapshot& doc,
                                                          const std::vector<PassWrite>& writes,
-                                                         Frames return_frames) {
+                                                         Frames return_frames,
+                                                         std::vector<DroppedLane>* dropped) {
     std::vector<LaneWrites> lanes;
     const auto original_of = [&](model::Id id, AutomationParam param, bool& found) {
         Original o;
@@ -229,44 +305,21 @@ std::vector<model::EditAutomation> automation_pass_edits(const model::Snapshot& 
         bool found = false;
         const Original o = original_of(l.track, l.param, found);
         if (!found || l.paint.empty()) continue;
-        model::EditAutomation e;
-        e.track = l.track;
-        e.param = l.param;
-        e.from = l.paint.begin()->first;
-        std::vector<AutomationPoint> run;
-        Frames run_end = 0;
-        float last = 0.0f;
-        const auto close_run = [&]() {
-            put(run, run_end, last);
-            put(run, run_end, o.at(run_end));
-            thin_automation(run, tolerance_of(l.param));
-            e.points.insert(e.points.end(), run.begin(), run.end());
-            run.clear();
-        };
-        bool first = true;
-        bool sloped = false;
-        for (const auto& [start, p] : l.paint) {
-            // A line cut short by a later turn ends where it was cut, not
-            // on the next span's value.
-            if (!first && start == run_end && sloped) put(run, run_end, last);
-            if (!first && start != run_end) {
-                close_run();
-                // The gap keeps the points it had.
-                if (o.lane) {
-                    for (const AutomationPoint& q : o.lane->points) {
-                        if (q.at > run_end && q.at < start) e.points.push_back(q);
-                    }
-                }
-            }
-            if (first || start != run_end) put(run, start, o.at(start));
-            first = false;
-            put(run, start, p.at(start));
-            run_end = p.end;
-            last = p.at(p.end);
-            sloped = p.ret;
+        // Twice the tolerance per try, up to 16 times it: a 1.6 dB fader
+        // or a 0.08 pan error is the most a pass is thinned by to fit.
+        constexpr int kWidenings = 4;
+        float tolerance = tolerance_of(l.param);
+        model::EditAutomation e = lane_edit(l, o, tolerance);
+        std::size_t held = points_after(o, e);
+        for (int i = 0; i < kWidenings && held > model::kMaxAutomationPoints; ++i) {
+            tolerance *= 2.0f;
+            e = lane_edit(l, o, tolerance);
+            held = points_after(o, e);
         }
-        close_run();
-        e.to = run_end + 1;
+        if (held > model::kMaxAutomationPoints) {
+            if (dropped != nullptr) dropped->push_back({l.track, l.param, held});
+            continue;
+        }
         edits.push_back(std::move(e));
     }
     return edits;
