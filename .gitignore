@@ -43,7 +43,10 @@ iso/config/chroot
 iso/config/common
 iso/config/source
 iso/config/apt
-iso/config/archives
+# Our backports source and pins are tracked; anything else lb puts there is not.
+iso/config/archives/*
+!iso/config/archives/sonora-backports.list.chroot
+!iso/config/archives/sonora-backports.pref.chroot
 # Our bootloader overrides are tracked; anything else lb puts there is not.
 iso/config/bootloaders/*
 !iso/config/bootloaders/isolinux/

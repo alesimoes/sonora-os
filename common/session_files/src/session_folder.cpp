@@ -192,7 +192,9 @@ std::string utc_stamp(long long t) {
     const long long m = mp < 10 ? mp + 3 : mp - 9;
     long long y = yoe + era * 400 + (m <= 2 ? 1 : 0);
     y = std::min<long long>(std::max<long long>(y, 0), 9999);
-    char out[32];
+    // Room for six full-width fields: GCC 14 cannot bound m and d from the
+    // civil-date arithmetic and warns (-Wformat-truncation) on anything less.
+    char out[64];
     std::snprintf(out, sizeof out, "%04lld%02lld%02lld-%02lld%02lld%02lld", y, m, d, secs / 3600,
                   secs / 60 % 60, secs % 60);
     return out;

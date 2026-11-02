@@ -96,6 +96,17 @@ QEMU with WHPX) now asks the running server rather than grepping the file:
 hypervisor; `settings.c` clamps it to `max-quantum`, so it lands on 128. That
 rule is also why no earlier QEMU boot could have shown the old 64 minimum.
 
+## Re-run on PipeWire 1.6.9 (2026-11-02)
+
+The image moved to PipeWire 1.6.9-2~bpo13+1 and WirePlumber
+0.5.12-1~bpo13+1 from trixie-backports (`iso/README.md`, "Versions"), and
+the runtime container with it. `tools/test-quantum-pin.sh`, same container
+setup, Windows host with Docker 20.10: `RESULT pass`. Every route that held
+on 1.4.2 still held at 128/48000, and the two known gaps are unchanged:
+`clock.max-quantum` 256 + `clock.force-quantum` 256 still gets 256-frame
+blocks, and widening `allowed-rates` then forcing 96000 still moves the
+rate. No QEMU boot or hardware run on 1.6.9 yet.
+
 ## Not verified
 
 - A real ALSA driver. The dummy driver has no period-size opinions; a USB

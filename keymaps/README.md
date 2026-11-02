@@ -106,7 +106,10 @@ a take with `ctrl+space` or `f12`, and `logic.json` with `r`, all three
 `transport.record`. `protools.json`'s keypad 3 is Avid's Transport-mode
 Record Enable (`transport.record_ready`): the transport goes record-ready,
 as with Pro Tools' Record button, and Play (`space` or keypad 0) starts the
-take (ADR-0009 update of 2026-11-01, record-ready). Both profiles stop with
+take (ADR-0009 update of 2026-11-01, record-ready). Since record-ready
+starts nothing itself, the check counts it as a way to start a take only in
+a profile that also has a working `transport.play` or `transport.toggle_play`
+key. Both profiles stop with
 `space`, which is `transport.toggle_play`. The engine plays
 back since ADR-0009's port onto the control server, and `toggle_play` closes
 a running take, so `space` needs no repair in either: it plays, and stops a

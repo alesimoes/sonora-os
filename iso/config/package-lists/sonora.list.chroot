@@ -48,14 +48,15 @@ nano
 libpam-systemd
 labwc
 xwayland
+# Qt runtime for sonora-ui, from what it links and imports rather than from
+# its build image: find_package(Qt6 ... Core Gui Qml Quick) in ui/qt, and the
+# QML imports only QtQuick and the module it registers itself. The rest of
+# what ldd shows (QtQml, QtOpenGL, QtNetwork, QtDBus, the QtQml and
+# WorkerScript QML modules) comes in as dependencies of these three. No
+# Controls, Templates or Widgets: nothing in ui/qt uses them.
 qt6-wayland
-libqt6gui6
-libqt6widgets6
 libqt6quick6
 qml6-module-qtquick
-qml6-module-qtquick-controls
-qml6-module-qtquick-window
-qml6-module-qtquick-templates
 libgl1-mesa-dri
 libglx-mesa0
 libegl-mesa0

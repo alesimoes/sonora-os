@@ -37,6 +37,10 @@
   format 13, window format 10, protocol 32.
 - §7 (update): Automation Follows Edit, computed by the interface into the
   region edit's `Compound`; no format or protocol change.
+- §8 (update, 2026-11-02): the rest of the write slice cut into five PRs:
+  writer hardening, plan-move state, per-frame sends and PDC alignment,
+  Touch's return, Trim. Only Trim bumps formats. AutoMatch time is an
+  engine preference, not a session setting.
 
 ## Context
 
@@ -237,6 +241,75 @@ the write slice.
 - Per track (§1, alternatives): a move on the active playlist moves the
   track's lanes. Cut, Copy, Paste, Duplicate, Shuffle-mode moves, trims and
   MIDI regions do not follow yet (BACKLOG).
+
+### §8 Rest of the write slice: slicing plan (update, 2026-11-02)
+
+Taken on recommended defaults by the architect; nobody was available.
+
+**What is on main (8ce028ca).** Touch, Latch and Write (#178, protocol 33);
+Release while tracks move (#225); a Load drops the open pass (#178
+follow-up, `pass_dropped_`, `forget_latches()`). The **interface** line of
+the BACKLOG item is done too, although its box is still unticked. #187
+shipped the mode selector (`AutomationModeButton.qml`, strip and Edit
+header). It also made `MixModel` send `Touch` at the fader and pan press and
+`Release` at release. The coordinator ticks that line. Still missing: Trim,
+the return time, per-frame sends, PDC-aligned lanes, and the nine #178/#225
+review lines.
+
+**Decisions taken here.**
+
+- AutoMatch time is a **preference, not a session setting**. Pro Tools
+  keeps it in Preferences > Mixing. Carrying it in the session would cost a
+  format bump for nothing the session needs to replay. It becomes an engine
+  start-up option, `--automatch-ms` (default 250, range 10-5000), in the
+  same way as `--autosave-seconds`. A UI Preferences entry needs a protocol
+  message, so it is a later BACKLOG line.
+- Touch with no lane: **the static value wins**. In a writing mode a fader
+  ride does not commit `set_gain`/`set_pan`, because the pass lane holds the
+  move, as in Pro Tools. On release the audio glides back to the static
+  value over the AutoMatch time, which is the return the writer already
+  writes. Audio and lane then agree.
+- A lane that is still over `kMaxAutomationPoints` after thinning is thinned
+  again at twice the tolerance, at most 4 times. If it is still over, only
+  that lane's edit is dropped and the client is told by name. The other
+  lanes of the pass land. A non-finite live value is never written, which
+  matches #243's rule for plugin lanes. NaN pan is dropped, not clamped.
+- Trim is one mode, and it is **Pro Tools' Touch/Trim**. The fader writes a
+  `VolumeTrim` lane from touch to release, and the Volume lane plays as in
+  Read. Latch/Trim and Write/Trim need a mode pair, which is another format
+  bump, so that is a BACKLOG line. The trim lane clamps to [-60, +12] dB.
+  *Unverified:* Pro Tools' trim range. The researcher checks it against the
+  Pro Tools Reference Guide before slice 5 merges.
+- `PassWrites::add`'s linear scan stays until tracks pass about 64. That
+  line stays in the BACKLOG and is not in any slice.
+
+**In flight (do not touch their files):** Track 2, model automation
+(`common/model/*`, presumably also `ui/qt/src/automation_edit.*`). Track 4b,
+plugin-lane key-to-index resolution (`engine/control/src/plan_builder.cpp`,
+presumably also `engine/core/include/sonora/playback_plan.h`). PR #243
+(`engine/core/src/session.cpp` `gather_lanes`,
+`insert_chain_runner.h`, `test_plugin_automation.cpp`). PR #244 (keymap,
+conformance). Before launching a slice, check its file list against
+`gh pr view <n> --json files` of whatever is open at that moment.
+
+| # | Slice (BACKLOG lines) | Files touched | Bump | Test first (fails on main) | Review | Can start |
+|---|---|---|---|---|---|---|
+| 1 | **Writer hardening**: overflow keeps the other lanes; snap a merged line's end (ulp pair); NaN pan dropped in `follow_automation`; tests for Load and client-leave clearing touched flags, and long-pass growth | `engine/control/src/automation_writer.cpp`, `include/sonora/automation_writer.h`, `src/engine_control_server.cpp` (`follow_automation`, pass apply), `tests/test_automation_writer.cpp`, `tests/test_control.cpp` | none | a pass with lane A at `kMaxAutomationPoints`+1 points after thinning and lane B: B lands, A is reported; a merged line ending one ulp off the next span gives no same-frame pair; a NaN pan write leaves the lane finite | Opus (writes the document: storage) | **now**, in parallel with every in-flight item, if Track 4b's PR does not touch `engine_control_server.cpp` |
+| 2 | **Plan-move and Load state** (RT): touched bits carried in `PlanTrackMix`; `auto_latched_` moves with its track on adopt; drop a pass by the plan it started on, not by the pass number | `engine/core/include/sonora/playback_plan.h` (`PlanTrackMix`), `engine/core/{include/sonora/session.h,src/session.cpp}`, `engine/control/src/playback_controller.cpp` (`adopt_track_mix`), `engine/control/src/engine_control_server.cpp` (~1016, ~2647), `engine/core/tests/test_automation.cpp`, `engine/control/tests/test_track_structure.cpp` | none (the plan is in-process; the pass's plan seq is a `Session` accessor, not the state block) | Latch on track 2, reorder while rolling: the latch follows the track; a moving plan's first 2 blocks stamp no write on the arriving track; play then Load back to back: no write lands on the new session | Opus (RT) | after #243, Track 4b and slice 1 merge |
+| 3 | **Per-frame sends and PDC-aligned lanes** (RT): post-fader and follow-pan sends take the lane per frame; a track behind an insert chain reads its lane at the frames its output came from, so the loop's first pass is right | `engine/core/src/session.cpp` (send ramp, lane read offset), `engine/core/tests/test_sends.cpp`, `engine/core/tests/test_plan_pdc.cpp` | none | a send on a lane ramping inside one callback matches the fader's per-frame curve; a looped track with `L` > 0 plays the loop start's lane value, not the loop end's, for its first `L` frames | Opus (RT) | after slice 2 (same `session.cpp`) |
+| 4 | **Touch's return**: release with no lane glides to the static value; `--automatch-ms` | `engine/core/{include/sonora/session.h,src/session.cpp}` (config field, `lane_param` glide for unautomated params), `engine/app/src/main.cpp`, `ui/qt/src/mix_model.cpp` (no `set_gain`/`set_pan` after a live ride), `engine/core/tests/test_automation.cpp`, `ui/qt/tests/test_mix.cpp` | none (start-up option) | Touch, no lane, ride +6 dB and release: the audio 250 ms later equals the written return lane frame for frame; `--automatch-ms 100` shortens both | Opus (RT) | after slice 3 (same `session.cpp`) |
+| 5 | **Trim** (Touch/Trim) | `common/model/{include/sonora/model/model.h,src/model.cpp,src/checks.h,src/op_codec.cpp,src/session_file.cpp}` (`AutomationParam::VolumeTrim`, `SetMix` accepts Trim), `contracts/api/include/sonora/api/messages.h`, `engine/control/src/plan_builder.cpp` (copy the trim lane), `engine/core/include/sonora/playback_plan.h`, `engine/core/src/session.cpp` (gain = Volume dB + Trim dB, write the trim lane), `ui/qt/src/automation_edit.*`, lane menu and QML | **session format 15, window format 12, protocol: the next free number (38 if nothing lands first)**. A v14 file opens unchanged, and a v14 reader refuses `volume_trim`. No state-block bump | model: v14 round-trip, v15 refused by v14 codec, Trim `SetMix` accepted; engine: Volume lane -6 dB with trim -3 dB plays -9 dB, block-split invariant; a Trim pass writes only the trim lane | Opus (contracts, storage, RT) | after Track 2, Track 4b and slice 4 |
+
+**Merge order:** 1 (now), then #243 and Track 4b, then 2, 3, 4, 5. Slice 1
+is the only one that can run beside the in-flight work, because 2 to 5 all
+edit `session.cpp`. Each slice's diff is small enough for one agent session,
+so running them one after another costs less than a rebase fight would.
+
+**ui-engineer:** the `mix_model.cpp` half of slice 4 (rt-engineer leads the
+PR). Also slice 5's interface: the Volume Trim lane in the lane menu and
+`automation_edit`, the Trim entry of `AutomationModeButton` no longer
+refused, the fader showing the trim offset while in Trim, and screenshots
+of the strip and Edit-window scenes. Slices 1 to 3 have no UI.
 
 ## Consequences
 

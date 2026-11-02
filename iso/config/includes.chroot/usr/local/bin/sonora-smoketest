@@ -124,6 +124,9 @@ check "pipewire rate pinned at 48000" test "$PW_RATE" = "48000|[ 48000 ]"
 check "wireplumber pro-audio rule" sh -c 'grep -q "pro-audio" /etc/wireplumber/wireplumber.conf.d/99-sonora.conf'
 check "pipewire running" pgrep -x pipewire
 check "no serial login prompt" sh -c '! systemctl is-active --quiet "serial-getty@ttyS0.service"'
+# Asked of logind, not grepped from the drop-in: a stock file that outranks it
+# would leave Ctrl+Alt+F2 opening a passwordless login.
+check "no VT login prompts" sh -c 'busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager NAutoVTs | grep -qx "u 0"'
 
 # --- 4. how many capture channels the audio server really offers ---
 # Counted and asserted, not just printed. A UMC1820 appearing as two channels
