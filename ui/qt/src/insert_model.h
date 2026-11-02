@@ -49,8 +49,9 @@ class InsertModel : public QObject {
     Q_PROPERTY(QString panelTitle READ panelTitle NOTIFY panelChanged)
     Q_PROPERTY(QString panelSubtitle READ panelSubtitle NOTIFY panelChanged)
     Q_PROPERTY(QVariantMap panelSlotInfo READ panelSlotInfo NOTIFY panelChanged)
-    // [{key, name, steps, labels}]: what the controls are. Apart from the
-    // values, so a slider being dragged is not rebuilt under the hand.
+    // [{key, name, control ("knob", "toggle", "choices"), steps, labels,
+    // origin, defaultPosition}]: what the controls are. Apart from the
+    // values, so a knob being dragged is not rebuilt under the hand.
     Q_PROPERTY(QVariantList panelParams READ panelParams NOTIFY panelChanged)
     // {key: {text, position, step}}: where they stand.
     Q_PROPERTY(QVariantMap panelValues READ panelValues NOTIFY panelValuesChanged)

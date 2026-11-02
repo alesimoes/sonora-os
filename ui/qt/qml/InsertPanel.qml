@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The generic parameter panel of one insert, built from the engine's
-// catalog (ADR-0012 §8): a slider for a continuous parameter, a row of
-// choices for one with a few steps (an enum's labels, a toggle's Off/On),
-// the value in the plugin's unit beside it. Dragging a slider sends
-// PluginParameterChange while it moves and records the end of the gesture
-// in the session; Alt-click returns a parameter to its default.
+// The editor of one insert, built from the engine's catalog alone
+// (ADR-0011 §2.6, ADR-0012 §8), the same for every plugin: a knob for a
+// continuous parameter (and for one with too many steps to show at once),
+// a switch for a toggle, a row of choices for a few labelled steps, in the
+// order the plugin lists them. Dragging a knob sends PluginParameterChange
+// while it moves and records the end of the gesture in the session;
+// Alt-click returns any control to its default.
+//
+// No meters: the read-only telemetry region a plugin's gain reduction
+// would come through is not built yet, and a meter with nothing behind it
+// would read as silence.
 //
 // A faulted insert shows the engine's reason at the top with what can be
 // done about it: retry the chain, take the insert out of it, or remove it.
@@ -28,7 +33,7 @@ Item {
     Rectangle {
         id: panel
         anchors { right: parent.right; top: parent.top; bottom: parent.bottom; margins: Theme.space3 }
-        width: Math.min(420, parent.width - 2 * Theme.space6)
+        width: Math.min(456, parent.width - 2 * Theme.space6)
         radius: Theme.radius
         color: Theme.panel
         border.color: Theme.borderStrong
@@ -168,102 +173,116 @@ Item {
                     color: Theme.textSecondary
                     font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                 }
-                Repeater {
-                    model: panelRoot.inserts !== null ? panelRoot.inserts.panelParams : []
-                    Item {
-                        id: paramRow
-                        required property var modelData
-                        objectName: "param_" + modelData.key
-                        readonly property bool choices: modelData.steps >= 2 && modelData.steps <= 6
-                        readonly property var now: panelRoot.inserts !== null
-                                                   && panelRoot.inserts.panelValues[modelData.key] !== undefined
-                                                   ? panelRoot.inserts.panelValues[modelData.key]
-                                                   : ({ text: "", position: 0, step: -1 })
-                        width: params.width
-                        height: 28
+                Flow {
+                    id: grid
+                    width: params.width
+                    spacing: 0
+                    // As many knob cells as fit, sharing the width evenly.
+                    readonly property int columns: Math.max(1, Math.floor(width / 84))
+                    readonly property real cell: Math.floor(width / columns)
+                    Repeater {
+                        model: panelRoot.inserts !== null ? panelRoot.inserts.panelParams : []
+                        Item {
+                            id: paramCell
+                            required property var modelData
+                            objectName: "param_" + modelData.key
+                            readonly property string control: modelData.control
+                            readonly property bool row: control === "choices"
+                            readonly property var now: panelRoot.inserts !== null
+                                                       && panelRoot.inserts.panelValues[modelData.key] !== undefined
+                                                       ? panelRoot.inserts.panelValues[modelData.key]
+                                                       : ({ text: "", position: 0, step: -1 })
+                            width: row ? grid.width : grid.cell
+                            height: row ? 36 : 108
 
-                        Text {
-                            id: paramName
-                            anchors { left: parent.left; verticalCenter: parent.verticalCenter }
-                            width: 104
-                            elide: Text.ElideRight
-                            text: paramRow.modelData.name
-                            color: Theme.textSecondary
-                            font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
-                        }
+                            Text {
+                                id: cellName
+                                visible: !paramCell.row
+                                anchors { top: parent.top; topMargin: Theme.space1; horizontalCenter: parent.horizontalCenter }
+                                width: parent.width - Theme.space1
+                                horizontalAlignment: Text.AlignHCenter
+                                elide: Text.ElideRight
+                                text: paramCell.modelData.name
+                                color: Theme.textSecondary
+                                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                            }
 
-                        // A few steps: one button per choice.
-                        Row {
-                            visible: paramRow.choices
-                            anchors { left: paramName.right; leftMargin: Theme.space2; verticalCenter: parent.verticalCenter }
-                            spacing: 2
-                            Repeater {
-                                model: paramRow.choices ? paramRow.modelData.labels : []
-                                SButton {
-                                    required property int index
-                                    required property string modelData
-                                    text: modelData
-                                    implicitHeight: 22
-                                    fontPx: Theme.textCaption
-                                    active: paramRow.now.step === index
-                                    onClicked: panelRoot.inserts.paramStep(paramRow.modelData.key, index)
+                            Knob {
+                                objectName: "knob_" + paramCell.modelData.key
+                                visible: paramCell.control === "knob"
+                                anchors { top: cellName.bottom; topMargin: 6; horizontalCenter: parent.horizontalCenter }
+                                position: paramCell.now.position
+                                origin: paramCell.modelData.origin
+                                defaultPosition: paramCell.modelData.defaultPosition
+                                onBegin: panelRoot.inserts.paramBegin()
+                                onMoved: (p) => panelRoot.inserts.paramPosition(paramCell.modelData.key, p)
+                                onEnd: panelRoot.inserts.paramEnd()
+                                onReset: panelRoot.inserts.paramReset(paramCell.modelData.key)
+                            }
+
+                            // A switch: lit when on, a click flips it.
+                            SButton {
+                                objectName: "toggle_" + paramCell.modelData.key
+                                visible: paramCell.control === "toggle"
+                                anchors { verticalCenter: parent.verticalCenter; verticalCenterOffset: 4
+                                          horizontalCenter: parent.horizontalCenter }
+                                implicitWidth: Math.max(52, implicitHeight)
+                                implicitHeight: 26
+                                text: paramCell.now.text
+                                active: paramCell.now.step === 1
+                                onClicked: (m) => {
+                                    if (m.modifiers & Qt.AltModifier)
+                                        panelRoot.inserts.paramReset(paramCell.modelData.key)
+                                    else
+                                        panelRoot.inserts.paramStep(paramCell.modelData.key, paramCell.now.step === 1 ? 0 : 1)
                                 }
                             }
-                        }
 
-                        // Otherwise a slider.
-                        Rectangle {
-                            id: sliderTrack
-                            visible: !paramRow.choices
-                            anchors { left: paramName.right; right: valueText.left; leftMargin: Theme.space2
-                                      rightMargin: Theme.space2; verticalCenter: parent.verticalCenter }
-                            height: 6
-                            radius: Theme.radiusSmall
-                            color: Theme.sunken
-                            border.color: Theme.borderSubtle
-                            Rectangle {
-                                width: Math.max(2, paramRow.now.position * parent.width)
-                                height: parent.height
-                                radius: Theme.radiusSmall
-                                color: Theme.accent
+                            Text {
+                                visible: paramCell.control === "knob"
+                                anchors { bottom: parent.bottom; bottomMargin: Theme.space1; horizontalCenter: parent.horizontalCenter }
+                                width: parent.width - Theme.space1
+                                horizontalAlignment: Text.AlignHCenter
+                                elide: Text.ElideRight
+                                text: paramCell.now.text
+                                color: Theme.text
+                                font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
                             }
-                            Rectangle {
-                                x: paramRow.now.position * (parent.width - width)
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 10; height: 16
-                                radius: Theme.radiusSmall
-                                color: Theme.hover
-                                border.color: Theme.borderStrong
+
+                            // A few choices: all of them in view, one lit.
+                            Text {
+                                id: rowName
+                                visible: paramCell.row
+                                anchors { left: parent.left; leftMargin: Theme.space1; verticalCenter: parent.verticalCenter }
+                                width: 104
+                                elide: Text.ElideRight
+                                text: paramCell.modelData.name
+                                color: Theme.textSecondary
+                                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                             }
-                            MouseArea {
-                                anchors { fill: parent; topMargin: -8; bottomMargin: -8 }
-                                function at(x) { return Math.max(0, Math.min(1, x / width)) }
-                                onPressed: (m) => {
-                                    if (m.modifiers & Qt.AltModifier) {
-                                        panelRoot.inserts.paramReset(paramRow.modelData.key)
-                                        return
+                            Row {
+                                visible: paramCell.row
+                                anchors { left: rowName.right; leftMargin: Theme.space2; verticalCenter: parent.verticalCenter }
+                                spacing: 2
+                                Repeater {
+                                    model: paramCell.row ? paramCell.modelData.labels : []
+                                    SButton {
+                                        required property int index
+                                        required property string modelData
+                                        objectName: "choice_" + paramCell.modelData.key + "_" + index
+                                        text: modelData
+                                        implicitHeight: 24
+                                        fontPx: Theme.textCaption
+                                        active: paramCell.now.step === index
+                                        onClicked: (m) => {
+                                            if (m.modifiers & Qt.AltModifier)
+                                                panelRoot.inserts.paramReset(paramCell.modelData.key)
+                                            else
+                                                panelRoot.inserts.paramStep(paramCell.modelData.key, index)
+                                        }
                                     }
-                                    panelRoot.inserts.paramBegin()
-                                    panelRoot.inserts.paramPosition(paramRow.modelData.key, at(m.x))
                                 }
-                                onPositionChanged: (m) => {
-                                    if (pressed && !(m.modifiers & Qt.AltModifier))
-                                        panelRoot.inserts.paramPosition(paramRow.modelData.key, at(m.x))
-                                }
-                                onReleased: panelRoot.inserts.paramEnd()
-                                onCanceled: panelRoot.inserts.paramEnd()
                             }
-                        }
-                        Text {
-                            id: valueText
-                            anchors { right: parent.right; verticalCenter: parent.verticalCenter }
-                            width: paramRow.choices ? 0 : 76
-                            visible: !paramRow.choices
-                            horizontalAlignment: Text.AlignRight
-                            elide: Text.ElideRight
-                            text: paramRow.now.text
-                            color: Theme.text
-                            font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
                         }
                     }
                 }

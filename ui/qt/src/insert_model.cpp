@@ -39,6 +39,15 @@ QString runs_under(api::PluginBridge b) {
     return b == api::PluginBridge::Yabridge ? QStringLiteral("Windows (Wine)") : QString();
 }
 
+QString control_name(ParamControl c) {
+    switch (c) {
+        case ParamControl::Toggle: return QStringLiteral("toggle");
+        case ParamControl::Choices: return QStringLiteral("choices");
+        case ParamControl::Knob: break;
+    }
+    return QStringLiteral("knob");
+}
+
 QString channels_name(uint32_t n) {
     return n == 1 ? QStringLiteral("Mono") : n == 2 ? QStringLiteral("Stereo")
                                                     : QStringLiteral("%1 ch").arg(n);
@@ -316,19 +325,25 @@ void InsertModel::refreshPanel() {
             }
             const float value = ctl_.value(panel_insert_, each);
             const int step = param_step(each, value);
+            const ParamControl control = param_control(each);
             int steps = 0;
             QStringList labels;
             if (step >= 0) {
                 steps = static_cast<int>(each.steps >= 2 ? each.steps : 2);
-                for (int i = 0; i < steps; ++i) {
+                // A knob shows its step's text as its value; only a row
+                // of choices draws every label.
+                for (int i = 0; control != ParamControl::Knob && i < steps; ++i) {
                     labels << q(param_text(*p, each, param_step_value(each, i)));
                 }
             }
             QVariantMap m;
             m.insert(QStringLiteral("key"), q(each.key));
             m.insert(QStringLiteral("name"), q(each.name));
+            m.insert(QStringLiteral("control"), control_name(control));
             m.insert(QStringLiteral("steps"), steps);
             m.insert(QStringLiteral("labels"), labels);
+            m.insert(QStringLiteral("origin"), param_origin(each));
+            m.insert(QStringLiteral("defaultPosition"), param_position(each, each.default_value));
             params << m;
 
             QVariantMap now;

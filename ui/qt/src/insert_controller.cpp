@@ -135,6 +135,20 @@ float param_value_at(const api::PluginParam& p, float position) {
     return std::clamp(v, p.min, p.max);
 }
 
+ParamControl param_control(const api::PluginParam& p) {
+    const uint32_t steps = effective_steps(p);
+    if (steps == 2 && (p.flags & api::kParamToggle) != 0) return ParamControl::Toggle;
+    if (steps >= 2 && steps <= static_cast<uint32_t>(kMaxChoicesInRow)) return ParamControl::Choices;
+    return ParamControl::Knob;
+}
+
+float param_origin(const api::PluginParam& p) {
+    // A log range never holds zero, and a VST3 value is normalised: the
+    // plugin knows where its zero is, the catalog does not.
+    if (logarithmic(p) || !(p.min < 0.0f && p.max > 0.0f)) return 0.0f;
+    return param_position(p, 0.0f);
+}
+
 std::string param_text(const api::PluginInfo& plugin, const api::PluginParam& p, float value) {
     const uint32_t steps = effective_steps(p);
     if (steps >= 2) {
