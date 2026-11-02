@@ -17,6 +17,7 @@
 
 #include "sonora/api/state_block.h"
 #include "sonora/json/json.h"
+#include "sonora/plan_builder.h"
 #include "sonora/platform/process.h"
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin/probe_record.h"
@@ -938,6 +939,30 @@ void PluginHosting::resolve(const model::TrackEdit& track, uint32_t, ChainBindin
         b.latency_frames = 0;
     }
     // New on the track, or nothing left of it: unbound, dry and aligned.
+}
+
+bool PluginHosting::resolve_lane(const model::TrackEdit& track, model::Id insert, const std::string& key,
+                                 LaneTarget& target) const {
+    if (!ok_) return false;
+    const auto it = chains_.find(track.id);
+    if (it == chains_.end()) return false;
+    const Chain& c = *it->second;
+    // What resolve() binds a store for; a down chain plays silent, with no
+    // store a change could reach.
+    if (!c.running || c.running->down() || !c.running->host()) return false;
+    const pc::Loaded& l = c.running->host()->loaded();
+    for (uint32_t i = 0; i < c.running_spec.size() && i < l.instances.size(); ++i) {
+        if (c.running_spec[i].insert != insert) continue;
+        const auto& keys = l.instances[i].params;
+        const auto d = std::find_if(keys.begin(), keys.end(), [&](const pc::ParamDesc& p) { return p.key == key; });
+        if (d == keys.end()) return false;
+        target.instance = i;
+        target.param = uint32_t(d - keys.begin());
+        target.min = d->min;
+        target.max = d->max;
+        return true;
+    }
+    return false;
 }
 
 void PluginHosting::built(uint64_t epoch) {

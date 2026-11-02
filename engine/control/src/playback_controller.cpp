@@ -56,6 +56,7 @@ PlaybackController::PlaybackController(Session& session) : session_(session) {
     limits_.max_delay_frames = session.max_delay_frames();
     limits_.delay_lines = session.delay_lines();
     limits_.max_buses = session.max_buses();
+    limits_.max_plugin_lanes = pb.max_plugin_lanes;
     playing_continuity_ = PlanContinuity(session.delay_lines());
 }
 
@@ -324,7 +325,7 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
         return registered(s, out, e);
     };
     PlanContinuity continuity = playing_continuity_;
-    if (!build_plan(snapshot, limits_, slot, resolver_, continuity,
+    if (!build_plan(snapshot, limits_, slot, resolver_, lane_resolver_, continuity,
                     session_.plans().next_epoch(), plan, report, error)) {
         return false;
     }

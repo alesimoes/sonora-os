@@ -65,6 +65,7 @@ namespace sonora {
 
 class Session;
 class PluginChainRunner;
+struct LaneTarget;
 class PluginScanner;
 namespace plugin_client {
 class PluginClient;
@@ -133,6 +134,12 @@ public:
 
     // PlaybackController's ChainResolver.
     void resolve(const model::TrackEdit& track, uint32_t engine_track, ChainBinding& binding);
+    // PlaybackController's LaneResolver: the key against the instance table
+    // of the host resolve() binds, never the catalog's, so the index is the
+    // one the bound store has. False while no running host has the insert,
+    // or its plugin has no such key.
+    bool resolve_lane(const model::TrackEdit& track, model::Id insert, const std::string& key,
+                      LaneTarget& target) const;
     // A plan was built with `epoch`, after resolve() was asked for each
     // chain in it.
     void built(uint64_t epoch);

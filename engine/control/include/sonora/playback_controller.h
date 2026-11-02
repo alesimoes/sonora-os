@@ -141,6 +141,9 @@ public:
     // latency changes only through a new plan: after the resolver's answer
     // changes, show() the snapshot again (ADR-0012 §7.3).
     void set_chain_resolver(ChainResolver resolver) { resolver_ = std::move(resolver); }
+    // How plugin lanes' keys reach those chains' dense indices; none set,
+    // no plugin lane plays.
+    void set_lane_resolver(LaneResolver resolver) { lane_resolver_ = std::move(resolver); }
     // The session's folder `from` was renamed to `to` (ADR-0018 §3): each
     // source registered under it is the same open file under its new path,
     // so the next plan reuses its slot instead of opening it again.
@@ -193,6 +196,7 @@ private:
     // another file in another folder (ADR-0018 §1).
     std::unordered_map<std::string, uint32_t> slots_;
     ChainResolver resolver_;
+    LaneResolver lane_resolver_;
     // Each build starts from the playing plan's continuity, so a plan
     // cancelled before it plays cannot move a playing edge to another line
     // (rt-safety audit of PR #48); the pending plan's becomes the playing

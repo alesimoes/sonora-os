@@ -558,6 +558,7 @@ void EngineControlServer::after_deactivate() {
     // One backend activation (amendment item 4): no callback runs now, so
     // the runner, the hosts and their regions may go.
     playback_->set_chain_resolver(ChainResolver());
+    playback_->set_lane_resolver(LaneResolver());
     drop_reading_flushes();
     hosting_.reset();
     // The next activation builds hosting again, for its own period.
@@ -588,6 +589,10 @@ void EngineControlServer::start_hosting() {
     playback_->set_chain_resolver([this](const model::TrackEdit& t, uint32_t engine_track, ChainBinding& b) {
         hosting_->resolve(t, engine_track, b);
     });
+    playback_->set_lane_resolver(
+        [this](const model::TrackEdit& t, model::Id insert, const std::string& key, LaneTarget& target) {
+            return hosting_->resolve_lane(t, insert, key, target);
+        });
     hosting_->show(document_->current(), true);
     open_deadline_ms_ = steady_ms_now() + opts_.plugin_open_wait_ms;
     show_document(false);

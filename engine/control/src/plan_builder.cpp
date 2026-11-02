@@ -115,6 +115,14 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, const ChainResolver& chains,
                 PlanContinuity& continuity, uint64_t epoch, PlaybackPlan*& out,
                 PlanReport& report, std::string& error) {
+    return build_plan(snapshot, limits, source_slot, chains, LaneResolver(), continuity, epoch,
+                      out, report, error);
+}
+
+bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
+                const SourceSlot& source_slot, const ChainResolver& chains,
+                const LaneResolver& lanes, PlanContinuity& continuity, uint64_t epoch,
+                PlaybackPlan*& out, PlanReport& report, std::string& error) {
     out = nullptr;
     report = PlanReport{};
     const auto& tracks = snapshot.edit->tracks;
@@ -412,6 +420,38 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
             }
         }
     }
+    // Plugin lanes (ADR-0027 §5), grouped by track in display order as the
+    // chain nodes are laid out. Only a chain whose node will name a store
+    // takes changes; an unbound or silent one would never play its lanes.
+    struct PluginLane {
+        LaneTarget target;
+        const model::AutomationLane* lane;
+    };
+    std::vector<PluginLane> plugin_lanes;
+    std::vector<uint32_t> lanes_first(limits.engine_tracks, 0);
+    std::vector<uint32_t> lanes_count(limits.engine_tracks, 0);
+    for (std::size_t ti = 0; lanes && ti < tracks.size(); ++ti) {
+        const ChainBinding& b = bindings[ti];
+        const bool bound = b.active && b.channel_slot != kNoChannelSlot &&
+                           b.channel_slot != kSilentChannelSlot && b.node_state != kNoNodeState &&
+                           b.param_store != kNoParamStore;
+        if (!bound) continue;
+        lanes_first[ti] = static_cast<uint32_t>(plugin_lanes.size());
+        for (const auto& lp : tracks[ti]->automation) {
+            if (lp->param != model::AutomationParam::Plugin || lp->points.empty()) continue;
+            LaneTarget target;
+            if (!lanes(*tracks[ti], lp->insert, lp->key, target)) continue;
+            plugin_lanes.push_back(PluginLane{target, lp.get()});
+            auto_total += lp->points.size();
+        }
+        lanes_count[ti] = static_cast<uint32_t>(plugin_lanes.size()) - lanes_first[ti];
+    }
+    if (plugin_lanes.size() > limits.max_plugin_lanes) {
+        error = "the plan needs " + str(plugin_lanes.size()) + " plugin lanes; the session allows " +
+                str(limits.max_plugin_lanes) + " (limit: max_plugin_lanes)";
+        return false;
+    }
+    sizes.plugin_lanes = static_cast<uint32_t>(plugin_lanes.size());
     sizes.auto_points = static_cast<uint32_t>(auto_total);
     PlaybackPlan* plan = create_plan(sizes);
     if (!plan) {
@@ -451,7 +491,27 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
             }
         }
     }
+    for (std::size_t li = 0; li < plugin_lanes.size(); ++li) {
+        const PluginLane& pl = plugin_lanes[li];
+        PlanPluginLane& lane = plan->plugin_lanes[li];
+        lane.instance = pl.target.instance;
+        lane.param = pl.target.param;
+        lane.first = auto_at;
+        lane.count = static_cast<uint32_t>(pl.lane->points.size());
+        for (const model::AutomationPoint& p : pl.lane->points) {
+            const float v = std::min(std::max(p.value, pl.target.min), pl.target.max);
+            plan->auto_points[auto_at++] = PlanAutoPoint{p.at, v};
+        }
+    }
     layout_mix_graph(*plan, bindings.data(), mix);
+    for (uint32_t ni = 0; ni < plan->node_count; ++ni) {
+        PlanNode& n = plan->nodes[ni];
+        if (n.kind != NodeKind::InsertChain || n.param_store == kNoParamStore) continue;
+        const uint32_t t = plan->tracks[n.track].engine_track;
+        if (t >= limits.engine_tracks) continue;
+        n.first_plugin_lane = lanes_first[t];
+        n.plugin_lane_count = lanes_count[t];
+    }
     report.track_shortfall.assign(limits.engine_tracks, 0);
     const Compensation comp =
         compensate(*plan, limits.max_delay_frames, continuity.pool, report.track_shortfall.data());

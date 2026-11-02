@@ -2024,6 +2024,112 @@ int test_build_with_chains() {
     return 0;
 }
 
+EditAutomation plugin_lane_op(Id track, Id insert, const char* key, std::vector<AutomationPoint> points) {
+    EditAutomation op{track, AutomationParam::Plugin, 0, kMaxInteger, std::move(points)};
+    op.insert = insert;
+    op.key = key;
+    return op;
+}
+
+// ADR-0027 §5, the follow-ups of #212 and #226: the builder resolves each
+// plugin lane's key to the bound chain's dense index and lists the lane on
+// that chain's node, its points clamped to the parameter's range. A key the
+// plugin does not have, and a lane on a chain with no store, are left out:
+// never mapped to some default index, where they would drive another
+// parameter.
+int test_build_resolves_plugin_lanes() {
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    CHECK_APPLY(h, track_op(102, 103, "B"));
+    CHECK_APPLY(h, track_op(104, 105, "C"));
+    CHECK_APPLY(h, insert_op(100, 500, 0));
+    CHECK_APPLY(h, insert_op(100, 501, 3));
+    CHECK_APPLY(h, insert_op(102, 502, 1));
+    CHECK_APPLY(h, insert_op(104, 503, 0));
+    CHECK_APPLY(h, plugin_lane_op(100, 500, "gain", {{0, -30.0f}, {4800, 6.0f}}));
+    CHECK_APPLY(h, plugin_lane_op(100, 500, "gone", {{0, 1.0f}}));
+    CHECK_APPLY(h, plugin_lane_op(100, 501, "ceiling", {{0, -1.0f}}));
+    CHECK_APPLY(h, plugin_lane_op(102, 502, "gain", {{0, 2.0f}}));
+    CHECK_APPLY(h, plugin_lane_op(104, 503, "gain", {{0, 3.0f}}));
+
+    sonora::BuildLimits limits;
+    limits.engine_tracks = 3;
+    limits.max_segments = 64;
+    limits.max_chunk_slots = 1024;
+    limits.chunk_frames = kChunk;
+    limits.window_frames = 1024;
+    limits.pool_chunks = 128;
+    limits.max_delay_frames = 16384;
+    limits.delay_lines = 3;
+    limits.max_plugin_lanes = 3;
+    // C is new on its track: unbound, so its node names no store.
+    const sonora::ChainResolver resolve = [](const TrackEdit& t, uint32_t engine_track,
+                                             sonora::ChainBinding& b) {
+        if (t.id == 104) return;
+        b.channel_slot = 10 + engine_track;
+        b.param_store = 20 + engine_track;
+        b.node_state = engine_track;
+    };
+    uint32_t asked = 0;
+    const sonora::LaneResolver lanes = [&](const TrackEdit&, Id insert, const std::string& key,
+                                           sonora::LaneTarget& target) {
+        ++asked;
+        if (key != "gain" && key != "ceiling") return false;
+        target.instance = insert == 501 ? 1 : 0;
+        target.param = key == "gain" ? 3 : 7;
+        target.min = -20.0f;
+        target.max = 10.0f;
+        return true;
+    };
+    sonora::PlanContinuity continuity(limits.delay_lines);
+    const sonora::SourceSlot no_sources = [](const Source&, uint32_t&, std::string& e) {
+        e = "no source expected";
+        return false;
+    };
+    PlaybackPlan* plan = nullptr;
+    sonora::PlanReport report;
+    std::string error;
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, lanes, continuity, 1, plan,
+                             report, error));
+    const PlaybackPlan& p = *plan;
+    CHECK(asked == 4);   // never for C's lane: its chain plays none
+    CHECK(p.plugin_lane_count == 3);
+    CHECK(p.auto_point_count == 4);   // "gone" and C's lane copy nothing
+    const sonora::PlanNode& a = p.nodes[1];
+    CHECK(a.kind == sonora::NodeKind::InsertChain && a.chain_id == 100);
+    CHECK(a.first_plugin_lane == 0 && a.plugin_lane_count == 2);
+    const sonora::PlanPluginLane& gain = p.plugin_lanes[0];
+    CHECK(gain.instance == 0 && gain.param == 3 && gain.count == 2);
+    CHECK(p.auto_points[gain.first].value == -20.0f);   // clamped, as a knob is
+    CHECK(p.auto_points[gain.first + 1].at == 4800 && p.auto_points[gain.first + 1].value == 6.0f);
+    const sonora::PlanPluginLane& ceiling = p.plugin_lanes[1];
+    CHECK(ceiling.instance == 1 && ceiling.param == 7 && ceiling.count == 1);
+    CHECK(p.auto_points[ceiling.first].value == -1.0f);
+    const sonora::PlanNode& b = p.nodes[4];
+    CHECK(b.kind == sonora::NodeKind::InsertChain && b.chain_id == 102);
+    CHECK(b.first_plugin_lane == 2 && b.plugin_lane_count == 1);
+    CHECK(p.plugin_lanes[2].instance == 0 && p.plugin_lanes[2].param == 3);
+    CHECK(p.auto_points[p.plugin_lanes[2].first].value == 2.0f);
+    const sonora::PlanNode& c = p.nodes[7];
+    CHECK(c.kind == sonora::NodeKind::InsertChain && c.chain_id == 104);
+    CHECK(c.param_store == sonora::kNoParamStore && c.plugin_lane_count == 0);
+    sonora::destroy_plan(plan);
+
+    // Past the session's maximum the plan is refused, naming it: the
+    // session would refuse it as out of bounds.
+    limits.max_plugin_lanes = 2;
+    CHECK(!sonora::build_plan(h.current(), limits, no_sources, resolve, lanes, continuity, 2, plan,
+                              report, error));
+    CHECK(plan == nullptr && error.find("max_plugin_lanes") != std::string::npos);
+
+    // No lane resolver: the chains are bound, and no lane plays.
+    CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, continuity, 3, plan, report,
+                             error));
+    CHECK(plan->plugin_lane_count == 0 && plan->nodes[1].plugin_lane_count == 0);
+    sonora::destroy_plan(plan);
+    return 0;
+}
+
 // rt audit of PR #48: a plan cancelled before it plays must leave the
 // delay-line pool as the playing plan left it. Otherwise it can move an
 // edge that is still playing to another line, which restarts from silence.
@@ -2417,6 +2523,7 @@ int main() {
     if (test_midi_tracks_build_silent()) return 1;
     if (test_midi_tracks_are_never_monitored_or_armed()) return 1;
     if (test_build_with_chains()) return 1;
+    if (test_build_resolves_plugin_lanes()) return 1;
     if (test_build_with_sends()) return 1;
     if (test_build_with_outputs()) return 1;
     if (test_removed_bus_leaves_no_solo()) return 1;
