@@ -115,7 +115,9 @@ void against_reference(Suite& s) {
                                               {8000.0, -12.0, 12.0}, {15000.0, -18.0, 18.0}, {100.0, 0.0, 12.0}}) {
             if (measure::quick() && f != 1000.0 && f != 8000.0) continue;
             auto p = measuring(s, fs, 1, {{"quality", static_cast<float>(q)}, {"drive", static_cast<float>(drive)}});
-            const Chans x = measure::sine(fs, f, level, 0.5, 1);
+            // Quick mode: 0.25 s, still 250 cycles at 1 kHz past the
+            // settling; the 512-substep reference is most of this suite's time.
+            const Chans x = measure::sine(fs, f, level, measure::quick() ? 0.25 : 0.5, 1);
             const Chans y = aligned(*p, x);
             const auto ref = reference_render(x[0], fs, factor, dsp::TapeSpeed::Ips15, dsp::TapeEq::Nab, drive);
             double worst = 0.0;
@@ -452,7 +454,10 @@ void cpu_qualities(Suite& s, const Config& golden) {
 }  // namespace
 
 measure::Config tape_golden_config() {
-    return {{"drive", 6.0f}, {"speed", 1.0f}, {"eq", 0.0f}, {"bump", 60.0f}, {"quality", 0.0f}};
+    // No quality: it reconfigures, so the golden renders at the default
+    // (standard) and only the host fixture's reconfigure case moves it,
+    // as through a real host it waits for the next activation.
+    return {{"drive", 6.0f}, {"speed", 1.0f}, {"eq", 0.0f}, {"bump", 60.0f}};
 }
 
 int tape(const measure::Args& args) {
