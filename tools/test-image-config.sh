@@ -67,6 +67,81 @@ done
 grep -qF 'E: build sources outside snapshot' "$HOOK" ||
   bad "hook does not check that every build source is the snapshot"
 
+# The hook's snapshot check itself, run against a scratch /etc/apt. A grep for
+# its error text cannot tell whether a deb822 file slips past it.
+snapcheck="$(awk '/^# --- every package came from the one snapshot ---$/ { on = 1; next }
+                  on && /^# --- / { exit } on' "$HOOK")"
+[ -n "$snapcheck" ] || bad "hook: no '# --- every package came from the one snapshot ---' section"
+apt_tmp="$(mktemp -d)"
+trap 'rm -rf "$apt_tmp"' EXIT
+# hook_snapcheck: 0 when the hook's check accepts $apt_tmp/etc/apt.
+hook_snapcheck() {
+  printf '%s\n' "$snapcheck" | sed "s#/etc/apt/#$apt_tmp/etc/apt/#g" | sh >/dev/null 2>&1
+}
+# apt_case NAME SOURCES_CONTENT [LIST_LINE]: a fresh /etc/apt with the
+# backports list, sources.list.d/debian.sources and an optional sources.list.
+apt_case() {
+  rm -rf "$apt_tmp/etc"
+  mkdir -p "$apt_tmp/etc/apt/sources.list.d"
+  cp "$LIST" "$apt_tmp/etc/apt/sources.list.d/sonora-backports.list"
+  [ -n "$2" ] && printf '%s\n' "$2" > "$apt_tmp/etc/apt/sources.list.d/debian.sources"
+  [ -n "${3:-}" ] && printf '%s\n' "$3" > "$apt_tmp/etc/apt/sources.list"
+  return 0
+}
+S="http://snapshot.debian.org/archive"
+good822="Types: deb
+URIs: $S/debian/$bp_ts/
+Suites: trixie trixie-updates
+Components: main
+
+Types: deb
+URIs: $S/debian-security/$bp_ts/
+Suites: trixie-security
+Components: main"
+apt_case all-snapshot "$good822" "deb $S/debian/$bp_ts/ trixie main"
+hook_snapcheck || bad "hook: rejects sources that are all the snapshot"
+apt_case live-822 "$good822
+
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie
+Components: main"
+hook_snapcheck && bad "hook: a deb822 stanza on deb.debian.org passes the snapshot check"
+apt_case continued-822 "Types: deb
+URIs: $S/debian/$bp_ts/
+  http://deb.debian.org/debian
+Suites: trixie
+Components: main"
+hook_snapcheck && bad "hook: a second URI on a continuation line passes the snapshot check"
+apt_case other-ts-822 "Types: deb
+URIs: $S/debian-security/20250101T000000Z/
+Suites: trixie-security
+Components: main"
+hook_snapcheck && bad "hook: a deb822 stanza at another timestamp passes the snapshot check"
+apt_case disabled-822 "$good822
+
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: trixie
+Components: main
+Enabled: no"
+hook_snapcheck || bad "hook: an 'Enabled: no' stanza, which apt does not read, fails the build"
+apt_case live-list "" "deb http://deb.debian.org/debian trixie main"
+hook_snapcheck && bad "hook: a one-line deb.debian.org source passes the snapshot check"
+
+# The test containers take the base from the same snapshot, on a pinned image.
+KIOSK="$ROOT/tools/test-labwc-kiosk.sh"
+digest_of() { sed -nE 's/^FROM (debian:[^ ]*@sha256:[0-9a-f]{64})$/\1/p' "$1" | head -n 1; }
+rt_from="$(digest_of "$RUNTIME")"
+[ -n "$rt_from" ] || bad "Dockerfile.runtime: base image not pinned by digest"
+[ "$(digest_of "$KIOSK")" = "$rt_from" ] || bad "test-labwc-kiosk.sh: base is not Dockerfile.runtime's '$rt_from'"
+for f in "$RUNTIME" "$KIOSK"; do
+  grep -q 'URIs: http://snapshot.debian.org/archive/debian/' "$f" ||
+    bad "${f#"$ROOT"/}: trixie is read from the live mirror, not the snapshot"
+  grep -q 'URIs: http://snapshot.debian.org/archive/debian-security/' "$f" ||
+    bad "${f#"$ROOT"/}: trixie-security is read from the live mirror, not the snapshot"
+done
+
 # pin_version GLOB: the Pin: version of the stanza whose Package line starts with GLOB.
 pin_version() {
   awk -v pkg="$1" '
@@ -153,7 +228,70 @@ if [ -f "$FALLBACK" ]; then
   grep -q 'chvt 2' "$FALLBACK" && bad "fallback switches to tty2, which has no terminal UI before ADR-0010 stage 2"
 fi
 
+# --- sysctl (audio-stack/sysctl-sonora.conf) ---
+# systemd-sysctl logs a bad line and goes on booting, and the kernel quietly
+# rewrites some combinations, so each of these leaves the default in force
+# with nothing on screen.
+SYSCTL="$ROOT/audio-stack/sysctl-sonora.conf"
+SYSCTL_IMG="$INC/usr/share/sonora/sysctl-sonora.conf"
+declare -A sc=()
+if [ ! -f "$SYSCTL" ]; then
+  bad "missing audio-stack/sysctl-sonora.conf"
+else
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*|';'*) continue ;; esac
+    if [[ "$line" =~ ^([a-z0-9_]+(\.[a-z0-9_]+)+)[[:space:]]*=[[:space:]]*([^[:space:]]+)[[:space:]]*$ ]]; then
+      k="${BASH_REMATCH[1]}"
+      [ -n "${sc[$k]:-}" ] && bad "sysctl: $k set twice; only the last one counts"
+      sc[$k]="${BASH_REMATCH[3]}"
+    else
+      bad "sysctl: line systemd-sysctl cannot parse: '$line'"
+    fi
+  done < "$SYSCTL"
+  # int_in KEY LO HI: KEY is set to an integer in [LO, HI].
+  int_in() {
+    local v="${sc[$1]:-}"
+    [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge "$2" ] && [ "$v" -le "$3" ] ||
+      bad "sysctl: $1='$v', expected an integer in $2..$3"
+  }
+  int_in vm.swappiness 0 200
+  int_in vm.dirty_background_ratio 1 100
+  int_in vm.dirty_ratio 1 100
+  int_in fs.inotify.max_user_watches 8192 4194304
+  # Background at or above the hard limit is halved by the kernel without a word.
+  bgr="${sc[vm.dirty_background_ratio]:-}" dr="${sc[vm.dirty_ratio]:-}"
+  [[ "$bgr" =~ ^[0-9]+$ && "$dr" =~ ^[0-9]+$ ]] && [ "$bgr" -ge "$dr" ] &&
+    bad "sysctl: dirty_background_ratio $bgr is not below dirty_ratio $dr; the kernel uses $dr/2"
+  # Writing a *_bytes knob zeroes its *_ratio twin, whichever line comes later.
+  for k in vm.dirty_bytes vm.dirty_background_bytes; do
+    [ -n "${sc[$k]:-}" ] && bad "sysctl: $k overrides the ratio it pairs with"
+  done
+  # A misspelt key is a boot-time warning nobody reads. Checked against the
+  # running kernel's /proc/sys, which CI's Linux runner has.
+  if [ -d /proc/sys/vm ]; then
+    for k in "${!sc[@]}"; do
+      [ -e "/proc/sys/${k//.//}" ] || bad "sysctl: $k is not a kernel parameter here (/proc/sys/${k//.//})"
+    done
+  else
+    echo "note: no /proc/sys/vm on this host; sysctl key names not checked against a kernel"
+  fi
+  cmp -s "$SYSCTL" "$SYSCTL_IMG" || bad "sysctl: the image's copy differs from audio-stack/ (tools/sync-audio-stack.sh)"
+fi
+# systemd-sysctl reads only *.conf in sysctl.d, and a later name wins per key.
+grep -Eq '^[[:space:]]*/etc/sysctl\.d/99-[a-z0-9-]+\.conf$' "$HOOK" ||
+  bad "hook: sysctl-sonora.conf not installed as /etc/sysctl.d/99-*.conf"
+grep -Eq 'install .*/usr/share/sonora/sysctl-sonora\.conf' "$HOOK" || bad "hook does not install sysctl-sonora.conf"
+for d in "$INC/etc/sysctl.d" "$INC/usr/lib/sysctl.d" "$INC/lib/sysctl.d"; do
+  [ -d "$d" ] || continue
+  for f in "$d"/*.conf; do
+    [ -e "$f" ] || continue
+    for k in "${!sc[@]}"; do
+      grep -Eq "^[[:space:]]*-?${k//./[./]}[[:space:]]*=" "$f" && bad "${f#"$ROOT"/} also sets $k"
+    done
+  done
+done
+
 if [ "$fail" -eq 0 ]; then
-  echo "ok: whole archive from snapshot $auto_ts; pipewire $pw_pin, wireplumber $wp_pin; rt kernel; tty1 owned, no VT gettys"
+  echo "ok: whole archive from snapshot $auto_ts (hook checks .list and deb822); test bases by digest; pipewire $pw_pin, wireplumber $wp_pin; rt kernel; tty1 owned, no VT gettys; sysctl ${#sc[@]} keys"
 fi
 exit "$fail"

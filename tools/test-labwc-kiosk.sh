@@ -25,9 +25,22 @@ src="$ROOT"
 command -v cygpath >/dev/null 2>&1 && src="$(cygpath -w "$ROOT")"
 
 # labwc and wlroots are the versions ADR-0010 was written against; a newer
-# labwc may change what an rc.xml without <default/> loads.
-docker build -q --label org.sonora=1 -t "$IMAGE" - >/dev/null <<'EOF'
-FROM debian:trixie
+# labwc may change what an rc.xml without <default/> loads. The exact versions
+# alone do not hold the run still: their dependencies, and the base, came
+# from whatever trixie had that day. So the base is pinned by digest (the
+# same one as tools/Dockerfile.runtime) and apt reads the image's snapshot
+# timestamp, which also keeps these versions installable after trixie moves.
+snap="$(sed -nE 's/^SONORA_SNAPSHOT=([0-9]{8}T[0-9]{6}Z)$/\1/p' "$ROOT/iso/auto/config")"
+[ -n "$snap" ] || { echo "FAIL: no SONORA_SNAPSHOT in iso/auto/config" >&2; exit 1; }
+docker build -q --label org.sonora=1 --build-arg "SNAP=$snap" -t "$IMAGE" - >/dev/null <<'EOF'
+FROM debian:trixie-20261027@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1
+ARG SNAP
+RUN sed -i -E \
+      -e "s#^URIs: http://deb\.debian\.org/debian-security/?\$#URIs: http://snapshot.debian.org/archive/debian-security/$SNAP/#" \
+      -e "s#^URIs: http://deb\.debian\.org/debian/?\$#URIs: http://snapshot.debian.org/archive/debian/$SNAP/#" \
+      /etc/apt/sources.list.d/debian.sources \
+ && ! grep -E '^URIs:' /etc/apt/sources.list.d/debian.sources | grep -v "snapshot\.debian\.org/archive/debian\(-security\)\?/$SNAP/\$" \
+ && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99sonora-snapshot.conf
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       labwc=0.8.3-1 libwlroots-0.18=0.18.2-3 wev=1.0.0-3 wtype=0.4-3 wlrctl=0.2.2-2 \
