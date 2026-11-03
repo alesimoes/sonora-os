@@ -606,8 +606,7 @@ int touch_returns_to_static(uint32_t block, uint32_t automatch_ms, std::vector<f
 // The audio is the return lane the writer writes (a line in dB from the
 // ride to the static over the return time), frame for frame from the
 // callback after the release; no step at the release; the static after.
-bool glides_like_the_lane(const std::vector<float>& g, uint32_t block, int64_t len,
-                         int64_t ramped_at = -1) {
+bool glides_like_the_lane(const std::vector<float>& g, uint32_t block, int64_t len) {
     const float ride = gain_of_db(kRideDb);
     const float fixed = gain_of_db(kStaticDb);
     for (std::size_t i = 0; i < g.size(); ++i) {
@@ -625,10 +624,7 @@ bool glides_like_the_lane(const std::vector<float>& g, uint32_t block, int64_t l
         const float want = f >= kReleaseAt + len + kAutoGridFrames
                                ? fixed
                                : expected_return(kRideDb, kStaticDb, kReleaseAt, len, f);
-        // A new plan ramps its callback from the last applied gain to the
-        // glide: a hair off the curve in that one callback only.
-        const bool ramped = f >= ramped_at && f < ramped_at + static_cast<int64_t>(block);
-        if (!near(g[i], want, ramped ? 1e-3f : 1e-4f)) {
+        if (!near(g[i], want, 1e-4f)) {
             std::fprintf(stderr, "  return: frame %lld applies %.6f, want %.6f\n",
                          static_cast<long long>(f), static_cast<double>(g[i]),
                          static_cast<double>(want));
@@ -681,7 +677,7 @@ int test_a_new_plan_does_not_cancel_the_return() {
     std::vector<float> g;
     int64_t len = 0;
     CHECK(touch_returns_to_static(kBlock, 250, g, len, false, kReleaseAt + 20 * kBlock) == 0);
-    CHECK(glides_like_the_lane(g, kBlock, len, kReleaseAt + 20 * kBlock));
+    CHECK(glides_like_the_lane(g, kBlock, len));
     return 0;
 }
 

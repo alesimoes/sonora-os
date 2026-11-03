@@ -1984,7 +1984,8 @@ void Session::apply_fader(uint32_t e, bool stereo, const float* const in[2], flo
 void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
                                  uint64_t playhead) noexcept SONORA_RT {
     const uint64_t start = rolling ? loop_frame(playhead, 0) : playhead;
-    const bool jumped = auto_new_plan_ || start != auto_next_;
+    const bool new_plan = auto_new_plan_;
+    const bool jumped = new_plan || start != auto_next_;
     auto_new_plan_ = false;
     // A new plan leaves the audio where it was: only a stop, a jump or a
     // new loop makes the frames behind A the timeline's again.
@@ -2084,8 +2085,16 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         // of the frame as the return the writer writes. The static is read
         // each callback, so an edit mid-return moves its end.
         bool return_moved = false;
+        // A plan that only continues a glide (no lane under it) changes
+        // nothing heard: no crossfade, so the audio is the writer's curve.
+        bool gliding = new_plan && start == auto_next_;
+        for (uint32_t p = 0; p < kAutoParams; ++p) {
+            if (pt.auto_count[p] != 0) gliding = false;
+        }
+        bool in_return = false;
         for (uint32_t p = 0; p < kAutoParams; ++p) {
             const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
+            in_return = in_return || return_at_[k] != kNoReturn;
             if (pt.auto_count[p] != 0 || return_at_[k] == kNoReturn) continue;
             const float fixed = static_param(plan, e, p);
             const auto bit = static_cast<uint8_t>(1u << p);
@@ -2126,7 +2135,7 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         // A moved track starts at its lane, as a static fader starts at its
         // target (ADR-0023 §4).
         track_ramp_[e] = snap_row_[e] == 0 &&
-                         (jumped || static_moved || return_moved || trim_moved ||
+                         ((jumped && !(gliding && in_return)) || static_moved || return_moved || trim_moved ||
                           flags != track_auto_last_[e] || trim != auto_trim_last_[e] ||
                           track_open_[e] != track_open_last_[e]);
         const auto t = static_cast<int64_t>(start);
