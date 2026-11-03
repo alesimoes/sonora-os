@@ -1481,6 +1481,9 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
     // What the autosave is named after and compared with; a folder or a new
     // session has no file until its first Save.
     session_file_ = opened_file;
+    // A Load that stayed in the folder may have opened that very autosave:
+    // from now on it is the operator's file, never discarded on leaving.
+    folder_->set_untitled_autosave({});
     covered_revision_ = document_->current().revision;
     next_autosave_ms_ = steady_ms_now() + opts_.autosave_period_ms;
     autosave_soon_ = false;
@@ -2858,6 +2861,7 @@ bool EngineControlServer::save(ClientId from, const api::ModelRequest& m, std::s
     }
     submitted_revision_ = document_->current().revision;
     saver_->submit(std::move(job));
+    ++saves_in_flight_;
     return true;
 }
 
@@ -2954,10 +2958,9 @@ void EngineControlServer::finish_save_as(const SessionSaver::Done& d) {
 }
 
 void EngineControlServer::autosave_when_due() {
-    if (opts_.autosave_period_ms == 0 || session_file_.empty() || autosave_in_flight_ ||
-        save_as_in_flight_) {
-        return;
-    }
+    if (opts_.autosave_period_ms == 0 || autosave_in_flight_ || save_as_in_flight_) return;
+    const bool untitled = session_file_.empty();
+    if (untitled && (!folder_->untitled() || saves_in_flight_ > 0)) return;
     const uint64_t revision = document_->current().revision;
     if (revision == covered_revision_) return;
     const uint64_t now = steady_ms_now();
@@ -2965,11 +2968,20 @@ void EngineControlServer::autosave_when_due() {
     // Only into the folder the session is in: its lock is held.
     namespace fs = std::filesystem;
     std::error_code ec;
-    const fs::path active = fs::absolute(*session_.folder(), ec).lexically_normal();
-    if (fs::path(session_files::session_folder_of(session_file_)).lexically_normal() != active) return;
+    fs::path active = fs::absolute(*session_.folder(), ec).lexically_normal();
+    if (active.filename().empty()) active = active.parent_path();
+    // As if its file were named after the folder: an Untitled folder is
+    // renamed only by the first Save, which makes it Named, so the name
+    // holds for as long as the session is untitled.
+    const std::string file =
+        untitled ? (active / (active.filename().string() + ".sonora")).string() : session_file_;
+    if (fs::path(session_files::session_folder_of(file)).lexically_normal() != active) return;
+    if (untitled) {
+        folder_->set_untitled_autosave(fs::path(session_files::autosave_file_of(file)).filename().string());
+    }
     SessionSaver::Job job;
     job.kind = SessionSaver::Kind::Autosave;
-    job.file = session_file_;
+    job.file = file;
     job.document = document_->current();
     job.state_source = active.string();
     autosave_in_flight_ = true;
@@ -2979,6 +2991,18 @@ void EngineControlServer::autosave_when_due() {
     covered_revision_ = revision;
     next_autosave_ms_ = now + opts_.autosave_period_ms;
     saver_->submit(std::move(job));
+}
+
+void EngineControlServer::drop_untitled_autosave() {
+    const std::string name = folder_->untitled_autosave();
+    if (name.empty()) return;
+    folder_->set_untitled_autosave({});
+    // The saver is past it: no untitled autosave is handed over while a Save
+    // is in flight, and the ones before the Save were written before it.
+    namespace fs = std::filesystem;
+    const fs::path file = fs::path(*session_.folder()) / session_files::kBackupsDir / name;
+    std::error_code ec;
+    if (fs::is_regular_file(fs::symlink_status(file, ec)) && !ec) fs::remove(file, ec);
 }
 
 uint64_t EngineControlServer::autosaves() const { return saver_->autosaves(); }
@@ -3026,10 +3050,12 @@ void EngineControlServer::follow_saver() {
             }
             continue;
         }
+        if (d.kind == SessionSaver::Kind::Save && saves_in_flight_ > 0) --saves_in_flight_;
         if (d.kind == SessionSaver::Kind::Save && d.seq != 0 && d.ok) {
             session_file_ = d.file;
             covered_revision_ = submitted_revision_;
             next_autosave_ms_ = steady_ms_now() + opts_.autosave_period_ms;
+            drop_untitled_autosave();
         }
         if (d.seq != 0) {
             reply(d.client, d.seq, d.ok ? DispatchResult::Ok : DispatchResult::Failed, d.message);
