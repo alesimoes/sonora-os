@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// File > Save as Template's dialog, as app.save_as_template without a name
+// opens it: the first free name offered, the templates folder it goes in,
+// and the "Markers" check box, off by default (ADR-0030 §2).
+#include "screenshot_scene.h"
+
+namespace sonora::ui {
+namespace {
+
+const ShotRegistrar registrar{[] {
+    ShotScene s;
+    s.name = QStringLiteral("edit-save-as-template");
+    s.take = false;
+    s.apply = [](ShotContext& c) { c.model.invoke(QStringLiteral("app.save_as_template"), -1); };
+    return s;
+}()};
+
+}  // namespace
+}  // namespace sonora::ui

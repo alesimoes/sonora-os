@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "session_model.h"
 
+#include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
+#include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QTimer>
@@ -457,6 +460,26 @@ void SessionModel::installCommands(CommandRegistry& local) {
     };
     simple("app.save_as", save_as(false));
     simple("app.save_copy_in", save_as(true));
+    // Pro Tools' Save As Template asks for the name as Save As does; the
+    // markers are the dialog's check box, kept on the model.
+    simple("app.save_as_template", [this](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) {
+            if (overlay_.recording) {
+                why = "stop recording before Save as Template";
+                return false;
+            }
+            const std::string& n = ctl_.snapshot().settings.name;
+            const QString base = n.empty() ? QStringLiteral("Untitled") : q(n);
+            emit saveAsTemplateRequested(
+                unused_session_name(templates_dir_, base + QStringLiteral(" template")), templates_dir_);
+            return true;
+        }
+        return saveSessionAsTemplate(q(ctx.argument), template_markers_, why);
+    });
+    simple("app.new_from_template", [this](const CommandContext&, Why&) {
+        emit templateBrowserRequested();
+        return true;
+    });
 
     simple("window.toggle_mix_edit", [this](const CommandContext&, Why&) {
         setWindow(window_ == QStringLiteral("edit") ? QStringLiteral("mix") : QStringLiteral("edit"));
@@ -1233,6 +1256,14 @@ bool SessionModel::writeSessionAs(const SaveAsTarget& target, std::string& why, 
                 why = as_template ? "the template was not saved: " + message
                       : std::string(copy ? "the copy was not saved: " : "the session was not saved as ") +
                             (copy ? message : QFileInfo(folder).fileName().toStdString() + ": " + message);
+                // New from Template's Save As (ADR-0030 §3): the operator
+                // must know the engine is still in the template's folder,
+                // and why Record is refused until the session is saved.
+                if (!copy && !as_template && file_.isEmpty() && inTemplateFolder()) {
+                    why += ". The session is open unsaved and the engine is still in the template's "
+                           "folder, so Record is refused until Save puts the session in " +
+                           sessions_dir_.toStdString();
+                }
                 sync();
             } else if (as_template) {
                 saved = true;
@@ -1959,15 +1990,213 @@ std::string SessionModel::commandRefusal(const std::string& command) const {
     return {};
 }
 
+namespace {
+std::vector<SessionEntry> list_templates(const QString& dir);
+}  // namespace
+
 QVariantList SessionModel::templateList() const {
     QVariantList out;
-    for (const SessionEntry& e : list_sessions(templates_dir_)) {
+    const uint32_t rate = ctl_.snapshot().settings.sample_rate;
+    // Never a link: Rename and Delete must not reach past the folder.
+    for (const SessionEntry& e : list_templates(templates_dir_)) {
         QVariantMap m;
         m.insert(QStringLiteral("name"), e.name);
         m.insert(QStringLiteral("file"), e.file);
+        m.insert(QStringLiteral("date"),
+                 QFileInfo(e.file).lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm")));
+        // Read as New from Template reads it, so what the browser offers is
+        // what the click does: one it would refuse says why here instead.
+        std::string bytes, why;
+        model::Loaded loaded;
+        int tracks = -1;
+        QString problem;
+        if (!read_session_file(e.file, bytes, loaded, why)) {
+            problem = QStringLiteral("cannot be read: ") + q(why);
+        } else if (loaded.snapshot.settings.sample_rate != rate) {
+            problem = QStringLiteral("made at %1 Hz; this system runs at %2 Hz")
+                          .arg(loaded.snapshot.settings.sample_rate)
+                          .arg(rate);
+        } else {
+            tracks = static_cast<int>(loaded.snapshot.edit->tracks.size());
+        }
+        m.insert(QStringLiteral("tracks"), tracks);
+        m.insert(QStringLiteral("problem"), problem);
         out << m;
     }
     return out;
+}
+
+QString SessionModel::unusedSessionName(const QString& base) const {
+    const QString b = base.trimmed();
+    return unused_session_name(sessions_dir_, b.isEmpty() ? QStringLiteral("Untitled") : b);
+}
+
+namespace {
+
+// A link of any kind: a symlink, or on Windows a junction, either of which
+// would take a rename or a delete to a folder that is not the template.
+bool is_link(const QFileInfo& i) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
+    if (i.isJunction()) return true;
+#endif
+    return i.isSymLink();
+}
+
+// The canonical path, or the cleaned absolute one for a path not there.
+QString canonical(const QString& path) {
+    const QFileInfo i(path);
+    const QString c = i.canonicalFilePath();
+    return c.isEmpty() ? QDir::cleanPath(i.absoluteFilePath()) : c;
+}
+
+// Removes `path` without following a link: a link inside is removed as a
+// link, never walked into. False when anything is left.
+bool remove_without_following(const QString& path) {
+    bool ok = true;
+    const QDir d(path);
+    for (const QFileInfo& i :
+         d.entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System)) {
+        const QString p = i.absoluteFilePath();
+        if (is_link(i)) {
+            // A link to a directory is removed as a directory entry on Windows.
+            ok = (QFile::remove(p) || QDir().rmdir(p)) && ok;
+        } else if (i.isDir()) {
+            ok = remove_without_following(p) && ok;
+        } else {
+            ok = QFile::remove(p) && ok;
+        }
+    }
+    return QDir().rmdir(path) && ok;
+}
+
+// Any audio in `folder`, links not followed: a template has none, so a
+// folder that has some is a session in the wrong place.
+bool holds_audio(const QString& folder) {
+    if (QFileInfo::exists(QDir(folder).filePath(QStringLiteral("Audio Files")))) return true;
+    QDirIterator it(folder, {QStringLiteral("*.wav"), QStringLiteral("*.bwf"), QStringLiteral("*.flac")},
+                    QDir::Files | QDir::Hidden | QDir::NoSymLinks, QDirIterator::Subdirectories);
+    return it.hasNext();
+}
+
+// The templates of `dir` the browser lists: as list_sessions(), without a
+// folder or a session file that is a link.
+std::vector<SessionEntry> list_templates(const QString& dir) {
+    std::vector<SessionEntry> out;
+    for (const SessionEntry& e : list_sessions(dir)) {
+        if (is_link(QFileInfo(QDir(dir).filePath(e.name))) || is_link(QFileInfo(e.file))) continue;
+        out.push_back(e);
+    }
+    return out;
+}
+
+}  // namespace
+
+bool SessionModel::templateFolderSafe(const QString& name, std::string& why) const {
+    bool listed = !templates_dir_.isEmpty() && session_name_problem(name).empty();
+    if (listed) {
+        listed = false;
+        for (const SessionEntry& e : list_templates(templates_dir_)) {
+            if (e.name == name) listed = true;
+        }
+    }
+    if (!listed) {
+        why = "there is no template named \"" + name.toStdString() + "\" in " + templates_dir_.toStdString();
+        return false;
+    }
+    const QString root = canonical(templates_dir_);
+    if (!sessions_dir_.isEmpty() && root == canonical(sessions_dir_)) {
+        why = "the templates folder " + templates_dir_.toStdString() +
+              " is the sessions folder, so its folders are sessions; nothing is renamed or deleted there";
+        return false;
+    }
+    const QString folder = QDir(templates_dir_).filePath(name);
+    if (is_link(QFileInfo(folder)) || is_link(QFileInfo(session_file_path(templates_dir_, name))) ||
+        QFileInfo(canonical(folder)).absolutePath() != root) {
+        why = "the template \"" + name.toStdString() + "\" is a link to a folder elsewhere; it is left alone";
+        return false;
+    }
+    return true;
+}
+
+bool SessionModel::templateIsFree(const QString& name, std::string& why) const {
+    if (making_from_template_ || after_open_) {
+        why = "a session is being made from a template; rename or delete once it is saved";
+        return false;
+    }
+    if (save_waiting_ || save_writing_) {
+        why = "a save is still in hand; rename or delete the template once it is written";
+        return false;
+    }
+    if (engine_folder_.isEmpty()) return true;
+    const QString folder = canonical(QDir(templates_dir_).filePath(name));
+    const QString engine = canonical(engine_folder_);
+    if (engine == folder || engine.startsWith(folder + QLatin1Char('/'))) {
+        why = "the engine is in this template's folder; save the session first, which moves it to " +
+              sessions_dir_.toStdString();
+        return false;
+    }
+    return true;
+}
+
+bool SessionModel::renameSessionTemplate(const QString& from, const QString& to, std::string& why) {
+    if (!templateFolderSafe(from, why)) return false;
+    const QString wanted = to.trimmed();
+    if (wanted == from) return true;
+    const std::string bad = session_name_problem(wanted);
+    if (!bad.empty()) {
+        why = "cannot rename the template to \"" + wanted.toStdString() + "\": " + bad;
+        return false;
+    }
+    QDir root(templates_dir_);
+    if (QFileInfo::exists(root.filePath(wanted))) {
+        why = "a template named \"" + wanted.toStdString() + "\" is already in " +
+              templates_dir_.toStdString() + "; choose another name";
+        return false;
+    }
+    if (!templateIsFree(from, why)) return false;
+    // The file inside the folder first, then the folder: a failure at the
+    // second step puts the file back, so the template stays listed.
+    const QString folder = root.filePath(from);
+    const QString old_file = session_file_path(templates_dir_, from);
+    const QString moved_file = QDir(folder).filePath(wanted + QStringLiteral(".sonora"));
+    if (!QFile::rename(old_file, moved_file)) {
+        why = "could not rename " + old_file.toStdString();
+        return false;
+    }
+    if (!root.rename(from, wanted)) {
+        QFile::rename(moved_file, old_file);
+        why = "could not rename the folder " + folder.toStdString();
+        return false;
+    }
+    emit notice(QStringLiteral("Renamed the template ") + from + QStringLiteral(" to ") + wanted);
+    return true;
+}
+
+bool SessionModel::deleteSessionTemplate(const QString& name, std::string& why) {
+    if (!templateFolderSafe(name, why)) return false;
+    const QString folder = QDir(templates_dir_).filePath(name);
+    if (holds_audio(folder)) {
+        why = "\"" + name.toStdString() + "\" holds audio, which a template never has: it is a session, "
+              "not deleted from here";
+        return false;
+    }
+    if (!templateIsFree(name, why)) return false;
+    if (!remove_without_following(folder)) {
+        why = "could not delete all of " + folder.toStdString() + "; what is left stays there";
+        return false;
+    }
+    emit notice(QStringLiteral("Deleted the template ") + name);
+    return true;
+}
+
+bool SessionModel::renameTemplate(const QString& from, const QString& to) {
+    std::string why;
+    return run(renameSessionTemplate(from, to, why), why);
+}
+
+bool SessionModel::deleteTemplate(const QString& name) {
+    std::string why;
+    return run(deleteSessionTemplate(name, why), why);
 }
 
 bool SessionModel::saveAsTemplate(const QString& name, bool markers) {

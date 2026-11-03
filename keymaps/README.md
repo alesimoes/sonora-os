@@ -245,8 +245,12 @@ they failed at a tty, which has no selection.
 The window sends a command where its `CommandSpec::domain` says
 (`contracts/api/include/sonora/command.h`, ADR-0007 §5). An Interface command
 (`tool.*`, `zoom.*`, `edit.mode.*`, `focus.*`, `window.transport`,
-`window.undo_history`, `window.memory_locations`, `app.quit`) runs in the window
-and never reaches the engine, even if an engine lists it. An Engine command
+`window.undo_history`, `window.memory_locations`, `app.quit`,
+`app.save_as_template`, `app.new_from_template`) runs in the window
+and never reaches the engine, even if an engine lists it. The two template
+commands have no key in either profile: Pro Tools ships no default shortcut
+for File > Save As Template or for Create From Template, and none is invented
+here; a profile may bind them. An Engine command
 goes to the engine over the control API once the engine's Hello lists it;
 until then a handler the window installed stands in (the Edit window's edits,
 which reach the engine as model requests), and the engine's own takes over

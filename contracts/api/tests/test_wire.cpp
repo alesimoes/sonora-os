@@ -453,7 +453,8 @@ void domains() {
                                id == "automation.toggle_follows_edit" ||
                                id == "window.transport" ||
                                id == "window.undo_history" ||
-                               id == "window.memory_locations" || id == "window.latency";
+                               id == "window.memory_locations" || id == "window.latency" ||
+                               id == "app.save_as_template" || id == "app.new_from_template";
         if (interface != (spec.domain == CommandDomain::Interface)) {
             std::fprintf(stderr, "FAIL %s is in the wrong domain\n", spec.id);
             ++failures;
