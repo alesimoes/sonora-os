@@ -142,3 +142,31 @@ jobs:
         with:
           name: dsp-cpu-reports
           path: build/dsp-reports-cpu/
+
+  usb-writer:
+    name: USB writer against the real ISO (container half)
+    # tools/test-write-usb.sh needs iso/sonora.iso, and building it takes tens
+    # of minutes, so it runs here and not on every PR. WRITE_USB_BOOT=0: the
+    # writer runs against loop devices over sparse files in a privileged
+    # container, every refusal included; the QEMU boots are left to the
+    # owner's machine (they need KVM). Then tools/make-stick-image.sh, the
+    # image Windows writes with tools/write-usb.ps1, made by the same writer.
+    # No real disk is involved anywhere. Cost: the ISO build (about 30-50
+    # runner minutes, most of it live-build) plus about 3 minutes.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the ISO
+        run: tools/build-iso.sh
+
+      - name: write-usb.sh refusals and write, against loop devices
+        env:
+          WRITE_USB_BOOT: "0"
+        run: tools/test-write-usb.sh
+
+      - name: The stick image for Windows, and its sidecar
+        run: |
+          tools/make-stick-image.sh --persistence-mib 256
+          cd iso && sha256sum -c sonora-stick.img.sha256 && rm -f sonora-stick.img

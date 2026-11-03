@@ -3,8 +3,56 @@
 `live-build` configuration for the bootable SonoraOS image. See ADR-0002 and
 ADR-0005.
 
-    tools/build-iso.sh        # produces iso/sonora.iso
-    sudo tools/write-usb.sh /dev/sdX
+    tools/build-iso.sh        # produces iso/sonora.iso and sonora.iso.sha256
+    sudo tools/write-usb.sh /dev/sdX                 # from Linux
+    tools/make-stick-image.sh; tools\write-usb.ps1   # from Windows, below
+
+## Writing the stick from Windows
+
+`tools/write-usb.ps1` (Windows PowerShell 5.1, nothing to install) copies an
+image to the stick byte for byte. It cannot make the ext4 persistence
+partition, so that part is done first, in Docker, by `tools/write-usb.sh`
+itself against a file: `tools/make-stick-image.sh` produces
+`iso/sonora-stick.img` (the ISO, then a 4096 MiB persistence partition) and
+its `.sha256`. Without it the script writes `iso/sonora.iso`, which boots but
+keeps nothing across a reboot.
+
+From Git Bash, with Docker Desktop running:
+
+    tools/build-iso.sh
+    tools/make-stick-image.sh                          # or --persistence-mib 16000
+
+Then plug in the stick and open **PowerShell as administrator** in the
+repository:
+
+    powershell -ExecutionPolicy Bypass -File tools\write-usb.ps1 -SelfTest
+    powershell -ExecutionPolicy Bypass -File tools\write-usb.ps1 -List
+    powershell -ExecutionPolicy Bypass -File tools\write-usb.ps1 -DiskNumber N -DryRun
+    powershell -ExecutionPolicy Bypass -File tools\write-usb.ps1 -DiskNumber N
+
+`-SelfTest` runs `tools/test-write-usb.ps1`, the whole flow against fake disks
+(regular files). `-List` checks the image against its sidecar and lists only
+USB disks, each marked "can be written" or with the reason it is refused: the
+system or boot disk, a disk with a page file, the disk the image is on, any
+bus but USB (an internal SD reader or eMMC included), over 256 GiB without
+`-AllowLarge`, too small, or sectors other than 512 bytes. The last command
+shows the disk's model, size, serial and partitions, says what will be
+erased, and asks you to type `ERASE N XXXX`, where `XXXX` is the last four
+letters or digits of that disk's serial (its size in MiB when it reports
+none). Anything else stops it. A script or scheduled task passes the same
+text with `-Confirm "ERASE N XXXX"`; without it a non-interactive run is
+refused.
+
+The write locks and dismounts every volume on the stick, zeroes its first and
+last MiB, writes the image from the second MiB on and the first MiB last (an
+interrupted write leaves a blank stick, not half an image with a valid
+partition table), checks the SHA-256 of what it read against the sidecar
+before that last step, flushes, and reads back the first and last 64 MiB and
+the zeroed last MiB through an unbuffered handle. Exit code 0 is a verified
+stick; 2 is a refusal, nothing written.
+
+Why not WSL: `wsl --mount` does not take USB sticks, and passing one through
+needs usbipd-win installed on the host.
 
 ## How the pieces fit
 
@@ -66,5 +114,7 @@ container.
 
 The image builds and boots in QEMU, both from the ISO (`tools/test-boot-qemu.sh`)
 and from a stick image written by `tools/write-usb.sh`, through both bootloaders
-(`tools/test-write-usb.sh`). It has never booted on a physical machine or from a
-physical stick. See `planning/STATUS.md`.
+(`tools/test-write-usb.sh`, nightly in CI without the boots). It has never
+booted on a physical machine or from a physical stick, and
+`tools/write-usb.ps1` has written only fake disks (regular files), never a
+real stick. See `planning/STATUS.md`.
