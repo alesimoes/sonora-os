@@ -746,12 +746,56 @@ void layout_5_fields() {
     CHECK(none.take_bus_peak(0) == 0.0f);
 }
 
+// Layout 7 (ADR-0013 amendment of 2026-11-03): each track's post-fader peak,
+// left and right, in rings apart from its input peak, a cursor per reader,
+// per track and per side.
+void layout_7_post_fader_peaks() {
+    CHECK(kStateLayoutVersion == 7);
+    StateBlockMemory mem(2);
+    StateWriter w;
+    CHECK(w.init(mem.data(), mem.bytes(), 2, 2, 10'000'000));
+    StateView a, b;
+    std::string error;
+    CHECK(a.attach(mem.data(), mem.bytes(), error));
+    CHECK(b.attach(mem.data(), mem.bytes(), error));
+    CHECK(a.take_post_peak(0, 0) == 0.0f);
+
+    Publish p(2);
+    p.fill(0);
+    p.peaks = {0.0f, 0.0f};   // an unarmed track playing back: no input
+    const float post[4] = {0.5f, 0.25f, 0.0f, 0.125f};
+    w.publish(p.t, p.tracks.data(), p.peaks.data(), nullptr, post);
+    const float louder[4] = {0.75f, 0.0f, 0.0f, 0.0f};
+    w.publish(p.t, p.tracks.data(), p.peaks.data(), nullptr, louder);
+    CHECK(a.take_post_peak(0, 0) == 0.75f);
+    CHECK(a.take_post_peak(0, 1) == 0.25f);
+    CHECK(a.take_post_peak(1, 0) == 0.0f);
+    CHECK(a.take_post_peak(1, 1) == 0.125f);
+    CHECK(a.take_post_peak(0, 0) == 0.0f);   // nothing new since
+    CHECK(b.take_post_peak(0, 0) == 0.75f);  // A took nothing from B
+    // The input ring and the bus are apart from the post-fader rings.
+    CHECK(a.take_peak(0) == 0.0f);
+    CHECK(a.take_bus_peak(0) == 0.0f);
+
+    // A writer with no post-fader peaks publishes silence, tagged.
+    for (uint32_t i = 0; i < kPeakSlots; ++i) w.publish(p.t, p.tracks.data(), p.peaks.data());
+    CHECK(b.take_post_peak(0, 1) == 0.0f && b.take_post_peak(1, 1) == 0.0f);
+    w.publish(p.t, p.tracks.data(), p.peaks.data(), nullptr, post);
+    CHECK(b.take_post_peak(0, 0) == 0.5f);
+    // Out of range is silence, not a read past the block.
+    CHECK(b.take_post_peak(0, 2) == 0.0f);
+    CHECK(b.take_post_peak(2, 0) == 0.0f);
+    StateView none;
+    CHECK(none.take_post_peak(0, 0) == 0.0f);
+}
+
 }  // namespace
 
 int main() {
     attach_refusals();
     insert_slots_by_track();
     layout_5_fields();
+    layout_7_post_fader_peaks();
     blocked_writer_reads_stale();
     never_torn_unpaced();
     paced_writer_does_not_starve_a_60hz_reader();

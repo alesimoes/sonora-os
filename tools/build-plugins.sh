@@ -61,7 +61,7 @@ docker run --rm --label org.sonora=1 \
   -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -c '
   set -euo pipefail
   cmake -S . -B build-plugins -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON \
-    -DSONORA_REQUIRE_PLUGIN_VALIDATORS=ON >/dev/null
+    -DSONORA_REQUIRE_PLUGIN_VALIDATORS=ON -DSONORA_REQUIRE_PLUGIN_EDITORS=ON >/dev/null
   cmake --build build-plugins -j"$(nproc)"
   ctest --test-dir build-plugins --output-on-failure "$@"
   if [[ "$MEASURE" == 1 ]]; then

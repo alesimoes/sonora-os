@@ -1962,14 +1962,19 @@ void FakeEngine::publish() {
     }
     insert_fields(tracks.data(), cfg_.tracks, tf);
     float loudest = 0.0f;
+    // Layout 7: the level times the published gain, as the engine's meter
+    // reads it after the fader; the fake has no pan, so both sides.
+    std::vector<float> post(std::size_t{cfg_.tracks} * kPostPeakSides, 0.0f);
     for (uint32_t i = 0; i < cfg_.tracks; ++i) {
-        if (!muted_[i]) loudest = std::max(loudest, peaks[i] * gain_[i]);
+        const float p = muted_[i] ? 0.0f : peaks[i] * gain_[i];
+        for (uint32_t side = 0; side < kPostPeakSides; ++side) post[i * kPostPeakSides + side] = p;
+        loudest = std::max(loudest, p);
     }
     float bus[kBusPeakSides];
     for (uint32_t side = 0; side < kBusPeakSides; ++side) {
         bus[side] = bus_peaks_[side] >= 0.0f ? bus_peaks_[side] : loudest;
     }
-    writer_.publish(tf, tracks.data(), peaks.data(), bus);
+    writer_.publish(tf, tracks.data(), peaks.data(), bus, post.data());
 }
 
 }  // namespace sonora::api::testing

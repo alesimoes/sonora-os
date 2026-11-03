@@ -383,6 +383,8 @@ void SessionModel::installCommands(CommandRegistry& local) {
     });
     simple("edit.separate_at_selection",
            [this](const CommandContext&, Why& why) { return ctl_.separate(why); });
+    simple("edit.heal_separation",
+           [this](const CommandContext&, Why& why) { return ctl_.heal_separation(why); });
     simple("edit.trim_start_to_insertion",
            [this](const CommandContext&, Why& why) { return ctl_.trim_start_to_insertion(why); });
     simple("edit.trim_end_to_insertion",
@@ -1094,6 +1096,15 @@ void SessionModel::rulerClick(qreal x) {
 void SessionModel::selectTrack(int index) {
     ctl_.select_track(index);
     sync();
+}
+
+QList<int> SessionModel::selectedTracks() const {
+    const Selection& s = ctl_.selection();
+    const int n = static_cast<int>(ctl_.snapshot().edit->tracks.size());
+    QList<int> out;
+    if (s.track < 0) return out;
+    for (int i = s.track; i < s.track + s.tracks && i < n; ++i) out << i;
+    return out;
 }
 
 QList<int> SessionModel::selectedTracksFor(int track) const {

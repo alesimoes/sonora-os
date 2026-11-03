@@ -21,6 +21,7 @@ StatePublisher::StatePublisher(Session& session, const backend::AudioBackend* au
       track_shortfall_(new std::atomic<uint32_t>[session.tracks().size()]),
       tracks_(session.tracks().size()),
       peaks_(session.tracks().size(), 0.0f),
+      post_peaks_(session.tracks().size() * api::kPostPeakSides, 0.0f),
       clips_(session.tracks().size(), 0) {
     for (std::size_t i = 0; i < session.tracks().size(); ++i) {
         input_connected_[i].store(false, std::memory_order_relaxed);
@@ -129,7 +130,8 @@ void StatePublisher::publish_once() {
                         (record_ready_.load(std::memory_order_relaxed) ? api::kTransportRecordReady
                                                                        : 0u);
     t.playback_misses = static_cast<uint32_t>(session_.playback_misses());
-    const float bus[api::kBusPeakSides] = {session_.take_bus_peak(0), session_.take_bus_peak(1)};
+    const float bus[api::kBusPeakSides] = {session_.master_meter().take_peak(0),
+                                           session_.master_meter().take_peak(1)};
     if (audio_ != nullptr) {
         t.xruns = audio_->xruns();
         t.clock_steps = audio_->clock_discontinuities();
@@ -142,6 +144,9 @@ void StatePublisher::publish_once() {
         const float peak = tr.take_peak();
         if (peak >= 1.0f) ++clips_[i];
         peaks_[i] = peak;
+        for (uint32_t side = 0; side < api::kPostPeakSides; ++side) {
+            post_peaks_[i * api::kPostPeakSides + side] = session_.track_meter(i).take_peak(side);
+        }
         api::TrackFields& f = tracks_[i];
         f.flags = (tr.rec_armed() ? api::kTrackArmed : 0u) |
                   (tr.muted() ? api::kTrackMuted : 0u) |
@@ -163,7 +168,7 @@ void StatePublisher::publish_once() {
                 insert_work_refused_[i * api::kInsertSlots + k].load(std::memory_order_relaxed);
         }
     }
-    writer_.publish(t, tracks_.data(), peaks_.data(), bus);
+    writer_.publish(t, tracks_.data(), peaks_.data(), bus, post_peaks_.data());
     publishes_.fetch_add(1, std::memory_order_relaxed);
 }
 

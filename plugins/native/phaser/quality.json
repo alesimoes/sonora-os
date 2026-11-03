@@ -1,0 +1,19 @@
+{
+  "processor": "org.sonora.phaser",
+  "class": "A",
+  "note": "ADR-0011 §3.2 first bars. Phaser mode is a cascade of first-order allpass stages, linear but time-varying: no THD or aliasing bar applies. Held: |gain| flat across 100 Hz-15 kHz at every stage count (allpass_db), phase -90 degrees per stage at the set frequency (phase_deg), the lowest notch at the frequency theory predicts for 2-12 stages (notch_db), and the notch following the LFO to its top and bottom (sweep_db). Flanger mode: delay exact at zero depth, range (one octave either way at 50 % depth) and period measured from an impulse train. Feedback at +-85 % bounded on full-scale noise, both modes. Zipper runs in both modes.",
+  "phaser": {
+    "allpass_db": 0.001,
+    "phase_deg": 0.01,
+    "notch_db": -60.0,
+    "sweep_db": -20.0
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["rate", "depth", "freq", "delay", "spread", "feedback", "mix"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}

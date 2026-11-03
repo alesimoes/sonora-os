@@ -140,6 +140,10 @@ void deterministic() {
     e.post_event(ev);
     e.poll(in);
     CHECK(e.state().take_peak(2) == 0.75f);
+    // Layout 7: the post-fader peak is the level times the published gain,
+    // on both sides: the fake has no pan.
+    CHECK(e.state().take_post_peak(2, 0) == 0.75f * e.state().track(2).gain);
+    CHECK(e.state().take_post_peak(2, 1) == 0.75f * e.state().track(2).gain);
     // After the Latency event that stands from the start (protocol 22).
     CHECK(in.events.size() == 2 && in.events[0].kind == EventKind::Latency &&
           in.events[1].text == ev.text);

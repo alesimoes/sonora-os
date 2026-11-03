@@ -65,6 +65,8 @@ offset/limit.*
   Amendment 2026-10-19 (accepted): the scan worker and the plugin catalog.
   Amendment 2026-11-01 (accepted): side-chain keys, the region's last
   planes, keyed from an aux bus.
+  Amendment 2026-11-03 (accepted): editor windows on the host's main
+  thread, a watcher thread for the run loop, Xlib toplevels.
 - For the owner: O1 insert edits undoable (default yes), O2 keys while a
   plugin editor has focus.
 
@@ -1334,6 +1336,58 @@ Pro Tools' Plug-in Manager and Logic's Plug-in Manager both have it.
    distinct from refused by its probe) is the UI slice's protocol bump.
    Favourites are the interface's (how the operator looks at the catalog,
    not what the engine may run): not in this amendment.
+
+**Amendment, 2026-11-03: editor windows in the host (BACKLOG
+`plugins.host.editors`, host slice)** (accepted on the recommended
+defaults). §4 fixed the messages (`OpenEditor`, `EditorOpened`,
+`EditorFailed`, `EditorClosed`); this fixes where an editor runs inside
+the host process. No contract change: the wire version (whatever #329 has made it), the layout version and the probe record
+are untouched.
+
+1. **The main thread, never the processing thread.** The view is created,
+   attached, resized and closed on the thread that created the plugins and
+   serves `HostControl` (VST3 asks for its view calls there). An editor that
+   hangs (`attached()` never returns) stops `HostControl`, not the audio:
+   the chain plays on until the engine's `kReplyTimeoutMs` on the
+   `OpenEditor` faults the host. An editor that crashes takes the host with
+   it, which is §3's plugin crash. A separate editor process is not
+   possible for VST3: the view shares the controller's memory.
+2. **A watcher thread for the run loop.** The main thread sleeps on the
+   control word (a futex), not on descriptors, so a small thread (64 KiB
+   stack) polls the X connection and every descriptor a plugin registers
+   through `Linux::IRunLoop`, bumps the control word when one is readable,
+   and waits for the main thread's pass before polling again. It reads
+   nothing and calls no plugin code. Timers cap the main loop's wait.
+   Rejected: polling the display every 10 ms (latency and idle wake-ups in
+   every host), and moving `HostControl` onto `poll` (a rewrite of a loop
+   that is tested and RT-adjacent, for one feature).
+3. **Xlib toplevels, opened at the first `OpenEditor`.** A host whose
+   editors are never opened never connects to a display; one without a
+   display (`DISPLAY` unset, the server refuses) answers `EditorFailed` and
+   plays on, and tries again at the next `OpenEditor` (Xwayland is lazy,
+   ADR-0010). Window class `Sonora`, instance `sonora-plugin-editor`,
+   `_NET_WM_PID`, `WM_DELETE_WINDOW`; a fixed-size editor's window has
+   min = max size hints. A non-empty parent token is an X11 window id the
+   editor is made transient for, never reparented into; anything else is
+   refused. Xlib's default error handler, which exits, is replaced by one
+   that logs.
+4. **What the host trusts of a view.** A size outside 1..16384 is not
+   trusted (the window opens at 640×480, or the resize is refused). The
+   frame holds every handler a view registers (`addRef`) and lets all of
+   them go at close, so a view that forgets to unregister is never called
+   after `removed()`. `resizeView` resizes the window, then calls `onSize`
+   before returning; a view that resizes again from inside its `onSize` is
+   not called back a second time. A second `OpenEditor` for an open editor
+   raises it and answers `EditorFailed` (one `EditorClosed` per
+   `EditorOpened`).
+5. **Done in this amendment's PR:** VST3 editors in the host, with tests on
+   a private Xvfb (lifecycle, operator close, crash, hang, no display).
+   **Follow-ups:** LV2 UIs (suil or `ui:X11UI` with `ui:parent`); the
+   engine and UI command that sends `OpenEditor` (`plugin.editor.open`),
+   which also sets the probe record's `has_editor` and moves its version;
+   O2 (keys while an editor has focus); losing the X server ends the host
+   through Xlib's I/O error exit, so a dead Xwayland costs every chain
+   with an editor open.
 
 ## Rationale
 

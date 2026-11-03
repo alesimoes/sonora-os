@@ -41,6 +41,9 @@
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin/protocol.h"
 #include "sonora/sha256.h"
+#ifdef SONORA_DRIVER_HAVE_X11
+#include "x11_probe.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -2560,13 +2563,33 @@ int scenario_control(const Args& a) {
     check(host.expect_message(pc::Type::ValueText, bad, pc::kReplyTimeoutMs) && bad.request == 2 && !bad.ok,
           "DescribeValue of a parameter that does not exist says so");
 
+    // An LV2 plugin, or any without a display: EditorFailed. A VST3 one with
+    // an editor on a display (a developer's WSLg): EditorOpened.
     host.queue(pc::OpenEditor{3, 0, ""});
-    pc::EditorFailed ef;
-    check(host.expect_message(pc::Type::EditorFailed, ef, pc::kReplyTimeoutMs) && ef.request == 3 && ef.instance == 0,
-          "OpenEditor is answered (EditorFailed: this build hosts no editor)");
-    std::printf("  EditorFailed: %s\n", ef.text.c_str());
-    host.queue(pc::CloseEditor{0});
+    std::string reply;
+    pc::Type replied = pc::Type::EditorFailed;
+    const uint64_t asked = monotonic_ns();
+    while (monotonic_ns() - asked < uint64_t(pc::kReplyTimeoutMs) * 1000000ull) {
+        if (host.expect(pc::Type::EditorFailed, reply, 0)) break;
+        if (host.expect(pc::Type::EditorOpened, reply, 0)) {
+            replied = pc::Type::EditorOpened;
+            break;
+        }
+        host.pump(20);
+    }
     std::string any;
+    if (replied == pc::Type::EditorOpened) {
+        std::printf("  EditorOpened\n");
+        host.queue(pc::CloseEditor{0});
+        check(host.expect(pc::Type::EditorClosed, any, pc::kReplyTimeoutMs), "CloseEditor: EditorClosed");
+    } else {
+        pc::EditorFailed ef;
+        std::string e;
+        check(!reply.empty() && pc::decode(reply, ef, e) && ef.request == 3 && ef.instance == 0,
+              "OpenEditor is answered (EditorFailed)");
+        std::printf("  EditorFailed: %s\n", ef.text.c_str());
+    }
+    host.queue(pc::CloseEditor{0});
     check(!host.expect(pc::Type::EditorClosed, any, 300), "CloseEditor of an editor that is not open is ignored");
 
     pc::State st;
@@ -3435,6 +3458,239 @@ Args parse(int argc, char** argv) {
 
 }  // namespace
 
+// --- Editors (contracts/plugin host_control.h, "Editors"; src/editor.h).
+
+const char* const kVst3Editor = "vst3:534F4E4F52415653543354455354000B";
+
+// `blocks` callbacks from callback `at` on, HostControl pumped after each,
+// as the engine's control thread runs beside its audio thread. The blocks
+// that came back.
+uint64_t play_pumping(Host& host, Clock& clock, uint64_t blocks, uint64_t& at, LoopStats* stats = nullptr) {
+    Signal sig(1);
+    uint64_t got = 0;
+    const uint64_t first = at;
+    const LoopStats st = run_periodic(clock, blocks, [&](uint64_t i) {
+        sig.sine(first + i, 440.0, 0.25f);
+        if (host.run(sig.in.data(), sig.out.data(), kBlock, first + i) >= 0) ++got;
+        host.pump(0);
+        return true;
+    });
+    at += blocks;
+    if (stats) *stats = st;
+    return got;
+}
+
+bool has(const std::string& text, const char* part) { return text.find(part) != std::string::npos; }
+
+// No display: EditorFailed naming why, and the chain plays on.
+int scenario_editor_no_display(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("editor_no_display: %s, DISPLAY %s\n", kVst3Editor, std::getenv("DISPLAY") ? "set" : "unset");
+    Host host;
+    if (int r = start_ready(host, ca, clock, {kVst3Editor}, 1)) return r;
+    uint64_t at = 0;
+    host.queue(pc::OpenEditor{1, 0, ""});
+    pc::EditorFailed ef;
+    check(host.expect_message(pc::Type::EditorFailed, ef, pc::kReplyTimeoutMs) && ef.request == 1 && ef.instance == 0,
+          "OpenEditor without a display: EditorFailed");
+    std::printf("  EditorFailed: %s\n", ef.text.c_str());
+    check(has(ef.text, "DISPLAY") || has(ef.text, "no X11"), "naming why: no display (or no X11 in this build)");
+    check(play_pumping(host, clock, 200, at) > 150, "and the chain plays on");
+    host.queue(pc::Shutdown{});
+    check(host.wait_exit_pumping(5'000'000'000ull) && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == 0,
+          "Shutdown: the host exits 0");
+    bool closed = false;
+    for (const std::string& m : host.take_inbox()) {
+        pc::Type t;
+        closed = closed || (pc::peek_type(m, t) && t == pc::Type::EditorClosed);
+    }
+    check(!closed, "and sends no EditorClosed for an editor that never opened");
+    return 0;
+}
+
+#ifdef SONORA_DRIVER_HAVE_X11
+// The window's life: opened at the view's size and resized by the plugin,
+// closed by the operator, by CloseEditor and by Shutdown, each with exactly
+// one EditorClosed; the view's descriptor and timer called on the host's
+// main thread; what it moved in EditorClosed; refusals that leave the
+// chain playing.
+int scenario_editor(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("editor: %s on DISPLAY=%s\n", kVst3Editor, std::getenv("DISPLAY") ? std::getenv("DISPLAY") : "");
+    Host host;
+    if (int r = start_ready(host, ca, clock, {kVst3Editor}, 1)) return r;
+    uint64_t at = 0;
+    x11_probe::Toplevel w;
+    check(x11_probe::find(host.pid(), w) == 0, "no window before OpenEditor");
+
+    host.queue(pc::OpenEditor{1, 0, ""});
+    pc::EditorOpened eo;
+    check(host.expect_message(pc::Type::EditorOpened, eo, pc::kReplyTimeoutMs) && eo.request == 1 && eo.instance == 0,
+          "OpenEditor: EditorOpened");
+    LoopStats st;
+    const uint64_t got = play_pumping(host, clock, 300, at, &st);
+    report_loop(st);
+    std::printf("  %llu of 300 blocks came back with the editor open\n", (unsigned long long)got);
+    check(got > 250, "the chain plays while its editor is open");
+
+    const int n = x11_probe::find(host.pid(), w);
+    std::printf("  window 0x%llx \"%s\" class %s, %dx%d, %s, %s\n", (unsigned long long)w.id, w.name.c_str(),
+                w.res_class.c_str(), w.width, w.height, w.viewable ? "mapped" : "not mapped",
+                w.fixed_size ? "fixed size" : "resizable");
+    check(n == 1 && w.viewable, "one toplevel of the host's, mapped, a child of the root (parentless)");
+    check(w.name == "Sonora Test Editor" && w.res_class == "Sonora", "titled with the plugin's name, class Sonora");
+    check(w.width == 400 && w.height == 250, "at the size the plugin asked for (resizeView), not its first 320x200");
+    check(w.fixed_size, "and held there: the plugin cannot resize (min = max size hints)");
+    pc::GestureEnd ge;
+    check(host.expect_message(pc::Type::GestureEnd, ge, 1000) && ge.instance == 0 && ge.param == 0 &&
+              ge.value == 0.4f,
+          "the view's knob gesture reached the engine at 0.4: its descriptor, timer and onSize all came on the "
+          "host's main thread, after the resize");
+
+    host.queue(pc::OpenEditor{2, 0, ""});
+    pc::EditorFailed ef;
+    check(host.expect_message(pc::Type::EditorFailed, ef, pc::kReplyTimeoutMs) && ef.request == 2 &&
+              has(ef.text, "already open"),
+          "a second OpenEditor while it is open: EditorFailed (one EditorClosed per EditorOpened)");
+
+    // The operator closes it.
+    check(x11_probe::request_close(w.id), "the window manager's close (WM_DELETE_WINDOW) is sent");
+    pc::EditorClosed ec;
+    check(host.expect_message(pc::Type::EditorClosed, ec, 2000) && ec.instance == 0 &&
+              ec.reason == pc::EditorCloseReason::ByOperator,
+          "EditorClosed{ByOperator}");
+    check(ec.moved.size() == 1 && ec.moved[0].param == 0 && ec.moved[0].value == 0.4f,
+          "listing what the editor moved: level, 0.4");
+    check(x11_probe::find(host.pid(), w) == 0, "the window is gone");
+    // removed() left the view's timer registered; it segfaults if called.
+    check(play_pumping(host, clock, 100, at) > 80 && host.alive(),
+          "the chain plays on, and the timer the editor left behind was dropped with it");
+
+    host.queue(pc::OpenEditor{3, 0, "not-a-window"});
+    check(host.expect_message(pc::Type::EditorFailed, ef, pc::kReplyTimeoutMs) && ef.request == 3 &&
+              has(ef.text, "not an X11 window id"),
+          "a parent token that is no X11 window id: EditorFailed");
+    host.queue(pc::OpenEditor{4, 5, ""});
+    check(host.expect_message(pc::Type::EditorFailed, ef, pc::kReplyTimeoutMs) && ef.request == 4 &&
+              has(ef.text, "no instance 5"),
+          "an instance that does not exist: EditorFailed");
+
+    host.queue(pc::OpenEditor{5, 0, ""});
+    check(host.expect_message(pc::Type::EditorOpened, eo, pc::kReplyTimeoutMs) && eo.request == 5,
+          "opened again: EditorOpened");
+    play_pumping(host, clock, 50, at);
+    host.queue(pc::CloseEditor{0});
+    check(host.expect_message(pc::Type::EditorClosed, ec, pc::kReplyTimeoutMs) &&
+              ec.reason == pc::EditorCloseReason::Requested,
+          "CloseEditor: EditorClosed{Requested}");
+    check(x11_probe::find(host.pid(), w) == 0, "and the window is gone");
+    host.queue(pc::CloseEditor{0});
+    std::string any;
+    check(!host.expect(pc::Type::EditorClosed, any, 300), "CloseEditor of a closed editor is ignored");
+
+    host.queue(pc::OpenEditor{6, 0, ""});
+    check(host.expect_message(pc::Type::EditorOpened, eo, pc::kReplyTimeoutMs) && eo.request == 6,
+          "opened a third time");
+    play_pumping(host, clock, 20, at);
+    host.queue(pc::Shutdown{});
+    const bool exited = host.wait_exit_pumping(5'000'000'000ull);
+    check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) == 0, "Shutdown: the host exits 0");
+    int stopping = 0, closed = 0;
+    for (const std::string& m : host.take_inbox()) {
+        pc::Type t;
+        std::string e;
+        if (!pc::peek_type(m, t) || t != pc::Type::EditorClosed) continue;
+        ++closed;
+        if (pc::decode(m, ec, e) && ec.reason == pc::EditorCloseReason::HostStopping) ++stopping;
+    }
+    check(closed == 1 && stopping == 1, "with exactly one EditorClosed{HostStopping} for the open editor");
+    return 0;
+}
+
+// SONORA_TEST_VST3_EDITOR=crash: the editor segfaults as it attaches. The
+// host dies with it, which the engine treats as any plugin crash; what must
+// hold is what holds for one (scenario_crash): seen at once, no block from a
+// dead host, every callback run, none over the period.
+int scenario_editor_crash(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("editor_crash: %s, its editor segfaults in attached()\n", kVst3Editor);
+    Host host;
+    if (int r = start_ready(host, ca, clock, {kVst3Editor}, 1)) return r;
+    const uint64_t total = 400, trigger = 100;
+    uint64_t gone_at = 0, completed_before = 0, completed_after = 0;
+    Signal sig(1);
+    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+        if (i == trigger) host.queue(pc::OpenEditor{1, 0, ""});
+        sig.sine(i, 440.0, 0.1f);
+        const bool ok = host.run(sig.in.data(), sig.out.data(), kBlock, i) >= 0;
+        if (!ok) sig.silence_out();
+        if (ok && i < trigger) ++completed_before;
+        if (gone_at && ok) ++completed_after;
+        host.pump(0);
+        if (!gone_at && !host.alive()) gone_at = i;
+        return true;
+    });
+    report_loop(st);
+    std::printf("  host gone at block %llu: %s\n", (unsigned long long)gone_at, host.death().c_str());
+    check(completed_before > 90, "the chain played before the editor was asked for");
+    check(gone_at >= trigger && gone_at < trigger + 100, "the host's death was seen within 100 blocks of OpenEditor");
+    check(host.reaped() && WIFSIGNALED(host.status()) && WTERMSIG(host.status()) == SIGSEGV,
+          "the host died of the editor's SIGSEGV");
+    check(completed_after == 0, "no block completed after the host died");
+    check(st.callbacks == total, "the driver ran every callback after the crash");
+    check(st.over_period <= kOsNoiseCallbacks, "no callback overran the period while the host died");
+    return 0;
+}
+
+// SONORA_TEST_VST3_EDITOR=hang: attached() never returns. The editor runs
+// on the host's main thread and the plugin's audio on its processing
+// thread, so the chain plays on; the OpenEditor is never answered, which
+// the engine turns into a fault at kReplyTimeoutMs (host_control.h) and
+// stops the host, as this driver does.
+int scenario_editor_hang(const Args& a) {
+    Args ca = a;
+    ca.control = true;
+    Clock clock;
+    if (!clock.create(wake_of(a))) return 1;
+    std::printf("editor_hang: %s, its editor never returns from attached()\n", kVst3Editor);
+    Host host;
+    if (int r = start_ready(host, ca, clock, {kVst3Editor}, 1)) return r;
+    uint64_t at = 0;
+    check(play_pumping(host, clock, 100, at) > 90, "the chain plays before the editor is asked for");
+    host.queue(pc::OpenEditor{1, 0, ""});
+    LoopStats st;
+    const uint64_t blocks = 600;  // 1.6 s with the main thread stuck
+    const uint64_t got = play_pumping(host, clock, blocks, at, &st);
+    report_loop(st);
+    std::printf("  %llu of %llu blocks came back with the editor hung\n", (unsigned long long)got,
+                (unsigned long long)blocks);
+    check(host.alive(), "the host is alive");
+    check(got >= blocks * 95 / 100, "the chain plays on while its editor hangs the host's main thread");
+    check(st.over_period <= kOsNoiseCallbacks, "no callback overran the period");
+    std::string any;
+    check(!host.expect(pc::Type::EditorOpened, any, 0) && !host.expect(pc::Type::EditorFailed, any, 0),
+          "the OpenEditor is unanswered (the engine's reply timeout stops this host)");
+    host.kill_now();
+    return 0;
+}
+#else
+int scenario_editor(const Args&) {
+    std::printf("SKIP: plugin_driver was built without X11\n");
+    return kSkip;
+}
+int scenario_editor_crash(const Args& a) { return scenario_editor(a); }
+int scenario_editor_hang(const Args& a) { return scenario_editor(a); }
+#endif
+
 int main(int argc, char** argv) {
     const Args a = parse(argc, argv);
     // The host death in the crash scenario must not take the driver along.
@@ -3472,6 +3728,10 @@ int main(int argc, char** argv) {
     else if (a.scenario == "state_files") r = scenario_state_files(a);
     else if (a.scenario == "gesture") r = scenario_gesture(a);
     else if (a.scenario == "reconfigure") r = scenario_reconfigure(a);
+    else if (a.scenario == "editor") r = scenario_editor(a);
+    else if (a.scenario == "editor_no_display") r = scenario_editor_no_display(a);
+    else if (a.scenario == "editor_crash") r = scenario_editor_crash(a);
+    else if (a.scenario == "editor_hang") r = scenario_editor_hang(a);
     else std::fprintf(stderr, "plugin_driver: unknown scenario %s\n", a.scenario.c_str());
 
     if (r != 0) return r;

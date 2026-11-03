@@ -119,3 +119,41 @@ and the Hello check has to name the mismatch.
 2. Whether a reader at 60 Hz with a 100 Hz publisher misses a post-fader
    transient. The ring is the same as the input peaks', so it should not,
    but it has not been measured here.
+
+## Amendment, 2026-11-03: post-fader peaks from `common/dsp`'s meter (state layout 7)
+
+Made by Track 1 for N1 meters, engine half (ADR-0011 §1.3), on the RT
+audit of PR #315. Layout 5 already carries the bus peaks (§1's header
+part). This amendment does §1's track part and §2 differently.
+
+- **No new atomics on `Track`.** §2's `post_peak_[2]` is replaced by one
+  `sonora::dsp::TrackMeter` per engine track and one for the master,
+  owned by `Session`. A track's meter runs on the block
+  `apply_track_fader()` leaves, before the edge into the bus: the
+  `TrackOut` node, or the `TrackFader` after an insert chain. The master's
+  runs where `bus_peak_` was measured, after the bus gain, and replaces it;
+  `Session::take_bus_peak()` is gone, `master_meter().take_peak()` reads
+  the same thing.
+- **Built off the audio thread.** Every meter is constructed and
+  `prepare()`d in `Session`'s constructor, at the session's rate, two
+  channels and `max_block_frames`, and is never prepared again. The track
+  count is fixed for a session's life, so nothing is built while a
+  callback can reach it. The backend starts after the constructor
+  returns, which publishes the meters to the audio thread.
+- **Cost.** A track meter is peak only (`loudness` and `true_peak` off):
+  the per-sample work is the peak and the ballistic. The master meter
+  measures loudness and true-peak as well; its readings reach the state
+  block in the next slice.
+- **Layout 7.** `TrackState` gains `PeakRing post_peaks[kPostPeakSides]`
+  (2, left then right), tagged and read with a cursor per reader exactly
+  as `peaks`; `StateView::take_post_peak(track, side)`. `peaks` keeps its
+  meaning, the input. `StateWriter::publish` takes the post-fader peaks
+  as two floats per track; a null pointer publishes silence, tagged.
+  1 KiB more per track. `FakeEngine` publishes the level times its gain on
+  both sides, as §1 said.
+- **Left for the next slice.** Loudness and true-peak in the block, the
+  control channel's reads and the operator's meter reset. A "reset all"
+  must not clear every meter's histograms in one callback (64 stereo
+  meters are about 3.1 ms, over a 2.67 ms quantum at 128 / 48 kHz), so it
+  is spread at most a few loudness meters per callback. Turning loudness on
+  for track meters belongs with it.
