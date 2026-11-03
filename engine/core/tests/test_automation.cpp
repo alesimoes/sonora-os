@@ -14,6 +14,7 @@
 #include "playback_test.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -198,6 +199,12 @@ int test_lane_value() {
     const PlanAutoPoint one{500, 3.0f};
     CHECK(sonora::auto_lane_value(&one, 1, 0) == 3.0f);
     CHECK(sonora::auto_lane_value(&one, 1, 9000) == 3.0f);
+    // #243 review: two finite points whose difference overflows a float,
+    // as a plugin parameter's range allows, still give a finite value.
+    const std::vector<PlanAutoPoint> wide = {{0, -FLT_MAX}, {1000, FLT_MAX}};
+    CHECK(sonora::auto_lane_value(wide.data(), 2, 500) == 0.0f);
+    const float quarter = sonora::auto_lane_value(wide.data(), 2, 250);
+    CHECK(std::isfinite(quarter) && near(quarter / FLT_MAX, -0.5f));
     return 0;
 }
 
@@ -546,13 +553,16 @@ constexpr int64_t kReleaseAt = 4000;
 constexpr float kStaticDb = -6.0f;
 constexpr float kRideDb = 6.0f;
 
+// `static_late`: the release callback runs before the played value is back
+// at the static, as when it falls between the two stores of
+// PlaybackController::touch(); Track::static_gain() holds it throughout.
 int touch_returns_to_static(uint32_t block, uint32_t automatch_ms, std::vector<float>& out,
-                            int64_t& len) {
+                            int64_t& len, bool static_late = false) {
     Rig rig("touch_no_lane", 1, automatch_ms, 72 * kChunk);
     CHECK(rig.load({}));
     Session& s = *rig.session;
     Track& track = *s.tracks()[0];
-    track.set_gain(gain_of_db(kStaticDb));
+    track.set_mix_gain(gain_of_db(kStaticDb));
     track.set_automation(Track::Automation::Touch);
     const auto start = static_cast<uint64_t>(kReleaseAt - 4 * static_cast<int64_t>(block));
     CHECK(rig.park(start));
@@ -566,13 +576,14 @@ int touch_returns_to_static(uint32_t block, uint32_t automatch_ms, std::vector<f
     CHECK(!drained(s).empty());
 
     track.set_touched(kAutoVolume, false);
-    track.set_gain(gain_of_db(kStaticDb));
+    if (!static_late) track.set_gain(gain_of_db(kStaticDb));
     len = static_cast<int64_t>(s.touch_return_frames());
     out.clear();
     reset_heap_counts();
     for (int64_t t = kReleaseAt; t < kReleaseAt + len + 4 * static_cast<int64_t>(block);
          t += block) {
         rig.block(block);
+        if (static_late && t == kReleaseAt) track.set_gain(gain_of_db(kStaticDb));
         for (uint32_t i = 0; i < block; ++i) {
             out.push_back(rig.out[0][i] / source_value(5, 0, t + i));
         }
@@ -642,6 +653,17 @@ int test_touch_with_no_lane_returns_to_the_static_value() {
             break;
         }
     }
+    return 0;
+}
+
+// The release callback finds the ride still in gain(): it returns to
+// static_gain(), so the audio is the writer's lane from the next callback
+// (#282 review: it aimed one callback at the ride, then crossfaded).
+int test_a_release_before_the_static_returns_to_the_static() {
+    std::vector<float> g;
+    int64_t len = 0;
+    CHECK(touch_returns_to_static(kBlock, 250, g, len, true) == 0);
+    CHECK(glides_like_the_lane(g, kBlock, len));
     return 0;
 }
 
@@ -1076,6 +1098,8 @@ int main() {
     t(test_touch_plays_and_writes_the_fader, "test_touch_plays_and_writes_the_fader");
     t(test_touch_with_no_lane_returns_to_the_static_value,
       "test_touch_with_no_lane_returns_to_the_static_value");
+    t(test_a_release_before_the_static_returns_to_the_static,
+      "test_a_release_before_the_static_returns_to_the_static");
     t(test_automatch_time_sets_the_return, "test_automatch_time_sets_the_return");
     t(test_latch_holds_until_stop, "test_latch_holds_until_stop");
     t(test_forgotten_latches_play_the_lane, "test_forgotten_latches_play_the_lane");

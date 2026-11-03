@@ -119,10 +119,10 @@ jobs:
           cmake --build build --config Release --parallel
           --target sonora_dsp sonora_native_sdk sonora_dsp_measure sonora-dsp-measure
           test_json test_native_sdk test_measure_time_bars
-          test_dsp_filters test_dsp_oversampling test_dsp_loudness test_dsp_dynamics
+          test_dsp_filters test_dsp_convolver test_dsp_oversampling test_dsp_loudness test_dsp_dynamics
           test_dsp_limiter test_dsp_fdn test_dsp_triode test_dsp_triode_generic
           test_dsp_opto test_dsp_fet test_dsp_noise test_dsp_transformer test_dsp_transformer_generic
-          test_dsp_tape test_dsp_tape_generic
+          test_dsp_tape test_dsp_tape_generic test_dsp_convolver_generic test_dsp_neural test_native_ampcab
 
       - name: Test
         env:
@@ -254,6 +254,17 @@ jobs:
         run: >-
           docker exec build bash -c
           'ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -R "^native_format"'
+
+      # Two instrumented RelWithDebInfo trees do not fit on the runner's disk
+      # together: the ASan build died with "No space left on device" (run
+      # 41246994280). Nothing reads build-tsan after its tests, and the objects
+      # worth keeping live in .ccache, which this leaves alone. The files are
+      # root's, so they go from inside the container. df shows the margin.
+      - name: Remove the TSan build tree
+        run: |
+          df -h "$PWD"
+          docker exec build rm -rf build-tsan
+          df -h "$PWD"
 
       - name: Build with ASan and UBSan
         run: |
@@ -573,7 +584,10 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot
+        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest
+
+      - name: Merge gate decisions, against a fake gh
+        run: tools/test-merge-checks.sh
 
       - name: dev-wsl.sh wsl.conf edit, session bus check, --log
         run: sudo apt-get install -y dbus-x11 && tools/test-dev-wsl.sh
@@ -584,10 +598,20 @@ jobs:
       - name: Image config (backports pins, RT kernel, tty1 session, no VT gettys)
         run: tools/test-image-config.sh
 
+      # labwc 0.8.3 headless: Ctrl+Alt+Fn reaches the UI (srvrkeys:none, through
+      # a nested labwc's own keymap); an X11 editor's title bar and close button.
+      - name: labwc input (Ctrl+Alt+Fn, title-bar drag, close button)
+        run: tools/test-labwc-input.sh
+
       # The shipped units under a real systemd (PID 1 in a container): the
       # display fallback hands tty1 back to the session; systemd-analyze verify.
       - name: Display fallback units under systemd
         run: tools/test-display-fallback.sh
+
+      # The shipped rc.xml under headless labwc 0.8.3, against a run with
+      # labwc's defaults: no compositor chord or desktop menu, clicks reach the UI.
+      - name: labwc kiosk bindings (keys, desktop menu, client clicks)
+        run: tools/test-labwc-kiosk.sh
 
       # The image installs the copies under iso/, not audio-stack/ itself, so
       # an edit that skipped tools/sync-audio-stack.sh would ship the old

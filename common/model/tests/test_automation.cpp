@@ -12,6 +12,7 @@
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
+#include "sonora/model/session_template.h"
 
 using namespace model_test;
 
@@ -566,7 +567,7 @@ int test_plugin_lanes_cross_the_wire_and_the_file() {
     CHECK(plugin_lane(late.current(), 0, lim.insert, "threshold")->points.size() == 2);
 
     CHECK(serialize(doc.current(), WriteInfo{"test", 1}, bytes, error));
-    CHECK(mentions(bytes, "\"sonora_session\": 17"));
+    CHECK(mentions(bytes, "\"sonora_session\": 18"));
     CHECK(mentions(bytes, "\"param\": \"plugin\""));
     Loaded l;
     LoadError le;
@@ -584,6 +585,278 @@ int test_plugin_lanes_cross_the_wire_and_the_file() {
     Loaded nope;
     CHECK(!deserialize(broken, nope, le));
     CHECK(mentions(le.text(), "automation[0]") && mentions(le.text(), "not an insert"));
+    return 0;
+}
+
+// --- mute, send and strip lanes (ADR-0027 §9) -------------------------------
+
+AddBus add_bus(Ids& ids, const std::string& name) {
+    AddBus op;
+    op.bus = ids();
+    op.name = name;
+    return op;
+}
+
+AddSend add_send(Ids& ids, Id strip, std::uint8_t slot, Id bus) {
+    AddSend op;
+    op.strip = strip;
+    op.send = ids();
+    op.slot = slot;
+    op.bus = bus;
+    return op;
+}
+
+EditAutomation send_whole(Id strip, AutomationParam param, Id send,
+                          std::vector<AutomationPoint> points) {
+    EditAutomation op{strip, param, 0, kMaxInteger, std::move(points)};
+    op.send = send;
+    return op;
+}
+
+const AutomationLane* send_lane(const AutomationLanes& lanes, AutomationParam param, Id send) {
+    AutomationLane which;
+    which.param = param;
+    which.send = send;
+    return find_lane(lanes, which);
+}
+
+// Mute is a switch: 0 or 1, changing only at a step, so read linearly it
+// never plays between the two. An edit that would leave a ramp where it
+// meets the points it keeps is refused as one with a ramp of its own.
+int test_mute_lane_changes_only_at_a_step() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    CHECK_APPLY(h, whole(vox.track, AutomationParam::Volume, {{0, -6.0f}}));
+    CHECK_APPLY(h, whole(vox.track, AutomationParam::Mute,
+                         {{0, 0.0f}, {48000, 0.0f}, {48000, 1.0f}, {96000, 1.0f}, {96000, 0.0f}}));
+    const TrackEdit& t = *h.current().edit->tracks[0];
+    CHECK(t.automation.size() == 2 && t.automation[1]->param == AutomationParam::Mute);
+    CHECK(t.lane(AutomationParam::Mute)->points.size() == 5);
+    CHECK(invariants_hold(h.current()));
+
+    CHECK(refused(h, whole(vox.track, AutomationParam::Mute, {{0, 0.0f}, {48000, 1.0f}}),
+                  "a mute changes only at a step"));
+    CHECK(refused(h, whole(vox.track, AutomationParam::Mute, {{0, 0.5f}}), "must be 0 or 1"));
+    CHECK(refused(h, whole(vox.track, AutomationParam::Mute, {{0, -0.0f}, {10, 2.0f}}),
+                  "must be 0 or 1"));
+    // [60000, 70000) inside the muted span, unmuted: the kept point at 48000
+    // (1) would run straight to 60000 (0).
+    CHECK(refused(h, (EditAutomation{vox.track, AutomationParam::Mute, 60000, 70000,
+                                     {{60000, 0.0f}}}),
+                  "the lane after the edit: a mute changes only at a step"));
+    // As a step on both sides it goes.
+    CHECK_APPLY(h, (EditAutomation{vox.track, AutomationParam::Mute, 60000, 70000,
+                                   {{60000, 1.0f}, {60000, 0.0f}, {69999, 0.0f}, {69999, 1.0f}}}));
+    CHECK(h.current().edit->tracks[0]->lane(AutomationParam::Mute)->points.size() == 9);
+    CHECK(invariants_hold(h.current()));
+    // A mute lane names no insert and no send.
+    EditAutomation keyed = whole(vox.track, AutomationParam::Mute, {{0, 1.0f}});
+    keyed.send = 5;
+    CHECK(refused(h, keyed, "names no send"));
+    return 0;
+}
+
+// Send level and send pan lanes, keyed by send: they go with RemoveSend and
+// come back with its undo, and a duplicate's lanes key the copy's sends.
+int test_send_lanes_follow_their_send() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    const AddBus verb = add_bus(ids, "Verb");
+    CHECK_APPLY(h, verb);
+    const AddBus delay = add_bus(ids, "Delay");
+    CHECK_APPLY(h, delay);
+    const AddSend a = add_send(ids, vox.track, 0, verb.bus);
+    CHECK_APPLY(h, a);
+    const AddSend b = add_send(ids, vox.track, 1, delay.bus);
+    CHECK_APPLY(h, b);
+
+    CHECK_APPLY(h, send_whole(vox.track, AutomationParam::SendLevel, b.send, {{0, -10.0f}}));
+    CHECK_APPLY(h, send_whole(vox.track, AutomationParam::SendLevel, a.send, {{0, -3.0f}}));
+    CHECK_APPLY(h, send_whole(vox.track, AutomationParam::SendPan, a.send, {{0, -1.0f}}));
+    CHECK(invariants_hold(h.current()));
+    const AutomationLanes& lanes = h.current().edit->tracks[0]->automation;
+    CHECK(lanes.size() == 3);
+    // By param, then send.
+    CHECK(lanes[0]->send == a.send && lanes[1]->send == b.send &&
+          lanes[2]->param == AutomationParam::SendPan);
+    CHECK(h.current().edit->tracks[0]->lane(AutomationParam::SendLevel) == nullptr);
+
+    CHECK(refused(h, send_whole(vox.track, AutomationParam::SendLevel, 0, {{0, 0.0f}}),
+                  "is not a send on track"));
+    CHECK(refused(h, send_whole(vox.track, AutomationParam::SendLevel, verb.bus, {{0, 0.0f}}),
+                  "is not a send on track"));
+    CHECK(refused(h, send_whole(vox.track, AutomationParam::SendLevel, a.send, {{0, 30.0f}}),
+                  "dB"));
+    CHECK(refused(h, send_whole(vox.track, AutomationParam::SendPan, a.send, {{0, 1.5f}}),
+                  "from -1 to 1"));
+    EditAutomation with_insert = send_whole(vox.track, AutomationParam::SendPan, a.send, {});
+    with_insert.insert = 4;
+    CHECK(refused(h, with_insert, "names no insert"));
+
+    // Removed: its lanes go, the other send's stay; undo brings them back.
+    CHECK_APPLY(h, RemoveSend{a.send});
+    CHECK(invariants_hold(h.current()));
+    CHECK(h.current().edit->tracks[0]->automation.size() == 1);
+    CHECK(send_lane(h.current().edit->tracks[0]->automation, AutomationParam::SendLevel,
+                    b.send) != nullptr);
+    CHECK(h.undo());
+    CHECK(h.current().edit->tracks[0]->automation.size() == 3);
+
+    // Duplicated with its sends: the copy's lanes key the copy's sends.
+    DuplicateTrack dup;
+    dup.source = vox.track;
+    dup.name = "Vox.dup1";
+    dup.track = h.current().next_id;
+    CHECK_APPLY(h, dup);
+    CHECK(invariants_hold(h.current()));
+    const TrackEdit& copy = *h.current().edit->tracks[1];
+    CHECK(copy.sends.size() == 2 && copy.automation.size() == 3);
+    const Id a_copy = copy.sends[0].id;
+    CHECK(a_copy != a.send);
+    CHECK(send_lane(copy.automation, AutomationParam::SendPan, a_copy) != nullptr);
+    CHECK(send_lane(copy.automation, AutomationParam::SendLevel, copy.sends[1].id) != nullptr);
+    CHECK(send_lane(copy.automation, AutomationParam::SendLevel, a.send) == nullptr);
+    CHECK(h.undo());
+    // Without its sends: none to key, so no send lane.
+    dup.sends = false;
+    dup.track = h.current().next_id;
+    CHECK_APPLY(h, dup);
+    CHECK(invariants_hold(h.current()));
+    CHECK(h.current().edit->tracks[1]->automation.empty());
+    return 0;
+}
+
+// Lanes on an aux return and on the Master, each the params its strip has:
+// `track` names the strip, kMasterOutput the Master.
+int test_lanes_on_aux_returns_and_the_master() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    const AddBus verb = add_bus(ids, "Verb");
+    CHECK_APPLY(h, verb);
+    const AddBus delay = add_bus(ids, "Delay");
+    CHECK_APPLY(h, delay);
+    const AddSend s = add_send(ids, verb.bus, 0, delay.bus);
+    CHECK_APPLY(h, s);
+
+    const std::size_t depth = h.undo_depth();
+    CHECK_APPLY(h, whole(verb.bus, AutomationParam::Volume, {{0, -6.0f}, {48000, 0.0f}}));
+    CHECK(h.undo_depth() == depth + 1);
+    CHECK_APPLY(h, whole(verb.bus, AutomationParam::Pan, {{0, 0.5f}}));
+    CHECK_APPLY(h, whole(verb.bus, AutomationParam::Mute, {{0, 1.0f}}));
+    CHECK_APPLY(h, send_whole(verb.bus, AutomationParam::SendLevel, s.send, {{0, -12.0f}}));
+    CHECK_APPLY(h, whole(kMasterOutput, AutomationParam::Volume, {{0, -1.0f}}));
+    CHECK(invariants_hold(h.current()));
+    const Bus& bus = h.current().edit->buses[0];
+    CHECK(bus.automation.size() == 4 && bus.automation[0]->points.size() == 2);
+    CHECK(h.current().edit->master_automation.size() == 1);
+    CHECK(h.current().edit->tracks[0]->automation.empty());
+
+    CHECK(refused(h, whole(verb.bus, AutomationParam::VolumeTrim, {{0, 0.0f}}),
+                  "has no volume trim to automate"));
+    EditAutomation plugin = whole(verb.bus, AutomationParam::Plugin, {{0, 0.0f}});
+    plugin.insert = 1;
+    plugin.key = "gain";
+    CHECK(refused(h, plugin, "has no plugin parameter"));
+    CHECK(refused(h, send_whole(delay.bus, AutomationParam::SendLevel, s.send, {{0, 0.0f}}),
+                  "is not a send on aux bus"));
+    for (const AutomationParam p : {AutomationParam::Pan, AutomationParam::Mute,
+                                    AutomationParam::VolumeTrim}) {
+        CHECK(refused(h, whole(kMasterOutput, p, {{0, 0.0f}}), "the Master has no"));
+    }
+    CHECK(refused(h, whole(9999, AutomationParam::Volume, {{0, 0.0f}}), "does not exist"));
+
+    // Removing the send takes the bus's send lane; undo, and the bus's lanes
+    // are back as they were, shared with the step before.
+    const Snapshot full = h.current();
+    CHECK_APPLY(h, RemoveSend{s.send});
+    CHECK(h.current().edit->buses[0].automation.size() == 3);
+    CHECK(h.undo());
+    CHECK(*h.current().edit == *full.edit);
+    // Clearing the Master's lane empties its list; undo restores it.
+    CHECK_APPLY(h, whole(kMasterOutput, AutomationParam::Volume, {}));
+    CHECK(h.current().edit->master_automation.empty());
+    CHECK(h.undo());
+    CHECK(h.current().edit->master_automation.size() == 1);
+    // A template keeps the Master's lanes as it keeps the buses.
+    CHECK(template_of(h.current(), TemplateOptions{}).edit->master_automation.size() == 1);
+    return 0;
+}
+
+// The new lanes cross the operation codec, the undo window (a late replica)
+// and the session file.
+int test_strip_lanes_cross_the_wire_and_the_file() {
+    EditAutomation op = send_whole(5, AutomationParam::SendPan, 9, {{0, 0.25f}});
+    std::string bytes, error;
+    CHECK(encode_operation(op, bytes, error));
+    CHECK(mentions(bytes, "\"send_pan\"") && mentions(bytes, "\"send\": 9"));
+    Operation back;
+    CHECK(decode_operation(bytes, back, error));
+    const auto* e = std::get_if<EditAutomation>(&back);
+    CHECK(e != nullptr && e->param == AutomationParam::SendPan && e->send == 9 && e->track == 5);
+    std::string again;
+    CHECK(encode_operation(back, again, error) && again == bytes);
+    // A send lane carries its send; any other lane does not.
+    CHECK(!decode_operation(
+        R"({"op": "EditAutomation", "track": 5, "param": "send_level", "range": [0, 10],)"
+        R"( "points": [[0, 0.0]]})",
+        back, error));
+    CHECK(mentions(error, "missing required key \"send\""));
+    CHECK(!decode_operation(
+        R"({"op": "EditAutomation", "track": 5, "param": "mute", "send": 9, "range": [0, 10],)"
+        R"( "points": [[0, 0.0]]})",
+        back, error));
+    CHECK(encode_operation(whole(0, AutomationParam::Mute, {{0, 1.0f}}), bytes, error));
+    CHECK(mentions(bytes, "\"mute\"") && !mentions(bytes, "\"send\""));
+
+    Document doc(new_session(settings()), 4096);
+    Replica replica;
+    ReplicationUpdate u;
+    CHECK(doc.snapshot(u, error) && replica.receive(u, error));
+    Ids ids(doc.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    const AddBus verb = add_bus(ids, "Verb");
+    const AddSend s = add_send(ids, vox.track, 0, verb.bus);
+    for (const Operation& o :
+         {Operation(vox), Operation(verb), Operation(s),
+          Operation(send_whole(vox.track, AutomationParam::SendLevel, s.send, {{0, -6.0f}})),
+          Operation(whole(vox.track, AutomationParam::Mute, {{0, 0.0f}, {100, 0.0f}, {100, 1.0f}})),
+          Operation(whole(verb.bus, AutomationParam::Pan, {{0, -0.5f}})),
+          Operation(whole(kMasterOutput, AutomationParam::Volume, {{0, -2.0f}})),
+          Operation(whole(verb.bus, AutomationParam::Volume, {{0, -4.0f}}))}) {
+        CHECK(doc.apply(o, u, error) && replica.receive(u, error));
+    }
+    CHECK(replica.current() == doc.current());
+    Replica late;
+    CHECK(doc.snapshot(u, error) && late.receive(u, error));
+    CHECK(late.current() == doc.current());
+    CHECK(late.current().edit->buses[0].automation.size() == 2);
+    CHECK(late.current().edit->master_automation.size() == 1);
+    // The step before the last holds the bus's pan lane alone, and shares
+    // the Master's lane with the last: each lane crossed once.
+    const History* window = late.history();
+    CHECK(window != nullptr && window->undo_depth() >= 1);
+    const std::size_t d = window->undo_depth();
+    CHECK(window->step_edit(d - 1)->buses[0].automation.size() == 1);
+    CHECK(window->step_edit(d - 1)->master_automation[0].get() ==
+          window->step_edit(d)->master_automation[0].get());
+    CHECK(window->step_edit(d - 1)->buses[0].automation[0].get() ==
+          window->step_edit(d)->buses[0].automation[1].get());
+
+    CHECK(serialize(doc.current(), WriteInfo{"test", 1}, bytes, error));
+    CHECK(mentions(bytes, "\"sonora_session\": 18"));
+    CHECK(mentions(bytes, "\"param\": \"send_level\",\n          \"send\": "));
+    Loaded l;
+    LoadError le;
+    if (!deserialize(bytes, l, le)) std::fprintf(stderr, "  %s\n", le.text().c_str());
+    CHECK(deserialize(bytes, l, le));
+    CHECK(same_document(l.snapshot, doc.current()));
+    CHECK(serialize(l.snapshot, WriteInfo{"test", 1}, again, error) && again == bytes);
     return 0;
 }
 
@@ -605,6 +878,10 @@ int main() {
     t(test_plugin_lane_refusals);
     t(test_plugin_lanes_follow_their_insert);
     t(test_plugin_lanes_cross_the_wire_and_the_file);
+    t(test_mute_lane_changes_only_at_a_step);
+    t(test_send_lanes_follow_their_send);
+    t(test_lanes_on_aux_returns_and_the_master);
+    t(test_strip_lanes_cross_the_wire_and_the_file);
     if (failed != 0) {
         std::fprintf(stderr, "model_automation: %d of %d failed\n", failed, run);
         return 1;

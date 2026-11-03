@@ -47,6 +47,8 @@ EXPECT_CAPTURE=1
 # fallback must have handed tty1 back to the session (ADR-0010 stage 1).
 GUI=0
 EXPECT_FALLBACK=0
+# Words, not lines: /proc/cmdline is one line of parameters.
+# shellcheck disable=SC2013
 for word in $(cat /proc/cmdline); do
   case "$word" in
     sonora.expect_capture=*) EXPECT_CAPTURE="${word#sonora.expect_capture=}" ;;
@@ -211,6 +213,7 @@ if [ "$GUI" = 1 ] && [ "$EXPECT_FALLBACK" = 1 ]; then
   check "sonora-compositor.service stopped after fallback" sh -c '! systemctl is-active --quiet sonora-compositor.service'
   check "sonora-ui.service not running after fallback" sh -c '! systemctl is-active --quiet sonora-ui.service'
   echo "SMOKETEST info  foreground VT $(fgconsole 2>/dev/null)"
+  # shellcheck disable=SC2016 # expanded by the inner sh
   check "tty1 is the foreground VT" sh -c '[ "$(fgconsole)" = 1 ]'
 elif [ "$GUI" = 1 ]; then
   echo "SMOKETEST info  sonora.gui set; display stack expected to run"
@@ -221,6 +224,7 @@ elif [ "$GUI" = 1 ]; then
 else
   # Default boot: the compositor must be enabled (so the flag alone turns it
   # on) yet skipped, and the session must own tty1.
+  # shellcheck disable=SC2016 # expanded by the inner sh
   check "sonora-compositor.service enabled" sh -c '[ "$(systemctl is-enabled sonora-compositor.service)" = enabled ]'
   check "sonora-compositor.service skipped without sonora.gui" sh -c '! systemctl is-active --quiet sonora-compositor.service'
   check "sonora-ui.service skipped without sonora.gui" sh -c '! systemctl is-active --quiet sonora-ui.service'
@@ -241,3 +245,6 @@ else
 fi
 
 sync
+# Non-zero on a failing verdict, so the unit's FailureAction= applies to it
+# and not only to a script that crashed.
+[ "$FAILED" = "0" ] || exit 1

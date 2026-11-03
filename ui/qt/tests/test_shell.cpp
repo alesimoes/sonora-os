@@ -295,6 +295,104 @@ int main(int argc, char** argv) {
     model.invoke(QStringLiteral("track.toggle_arm"), 7);
     CHECK(engine.sent.back().command == "track.toggle_arm" && engine.sent.back().target == 7);
 
+    // --- the R and I buttons read Pro Tools' click modifiers: Alt for every
+    // track, Shift for the selected ones, each taking the clicked track's new
+    // state (parity audit row 1). Driven with mouse clicks on the strips. ---
+    {
+        const auto centre = [](QQuickItem* i) {
+            return i->mapToScene(QPointF(i->width() / 2, i->height() / 2)).toPoint();
+        };
+        const auto click = [&](const QString& name, Qt::KeyboardModifiers m) {
+            QQuickItem* b = named(view.rootObject(), name);
+            if (b == nullptr || !b->isVisible()) return false;
+            QTest::mouseClick(&view, Qt::LeftButton, m, centre(b));
+            return true;
+        };
+        const auto last = [&engine](const char* c, int target) {
+            return engine.sent.back().command == c && engine.sent.back().target == target;
+        };
+        // The arm state is pulled on the refresh, not on every tick.
+        const auto refresh = [&model]() {
+            for (int i = 0; i < 4; ++i) model.tick();
+        };
+        session.setWindow(QStringLiteral("mix"));
+        engine.armed.assign(18, false);
+        refresh();
+
+        CHECK(click(QStringLiteral("stripArm2"), Qt::NoModifier));
+        CHECK(last("track.toggle_arm", 2));
+        CHECK(click(QStringLiteral("stripArm2"), Qt::AltModifier));
+        CHECK(engine.sent.back().command == "track.arm_all");
+        engine.armed[2] = true;
+        refresh();
+        CHECK(click(QStringLiteral("stripArm2"), Qt::AltModifier));
+        CHECK(engine.sent.back().command == "track.disarm_all");
+
+        // Tracks 4-6 selected, track 5 already armed: a Shift-click on 4 arms
+        // 4 and 6 and leaves 5 alone, rather than toggling it off.
+        session.controller().select_range(3, 0, 48000, 3);
+        engine.armed.assign(18, false);
+        engine.armed[4] = true;
+        refresh();
+        std::size_t from = engine.sent.size();
+        CHECK(click(QStringLiteral("stripArm3"), Qt::ShiftModifier));
+        CHECK(engine.sent.size() == from + 2);
+        CHECK(engine.sent[from].command == "track.toggle_arm" && engine.sent[from].target == 3);
+        CHECK(engine.sent[from + 1].command == "track.toggle_arm" &&
+              engine.sent[from + 1].target == 5);
+        // Pro Tools' Alt+Shift is the same selected-tracks click.
+        engine.armed[3] = engine.armed[5] = true;
+        refresh();
+        from = engine.sent.size();
+        CHECK(click(QStringLiteral("stripArm4"), Qt::AltModifier | Qt::ShiftModifier));
+        CHECK(engine.sent.size() == from + 3);
+        // A Shift-click outside the selection acts on that track only.
+        from = engine.sent.size();
+        CHECK(click(QStringLiteral("stripArm9"), Qt::ShiftModifier));
+        CHECK(engine.sent.size() == from + 1 && last("track.toggle_arm", 9));
+        // The Edit window's R buttons read the same modifiers.
+        session.setWindow(QStringLiteral("edit"));
+        int shown = -1;
+        for (int t = 0; t < 18 && shown < 0; ++t) {
+            QQuickItem* b = named(view.rootObject(), QStringLiteral("arm%1").arg(t));
+            if (b != nullptr && b->isVisible()) shown = t;
+        }
+        CHECK(shown >= 0);
+        engine.armed.assign(18, false);
+        refresh();
+        CHECK(click(QStringLiteral("arm%1").arg(shown), Qt::AltModifier));
+        CHECK(engine.sent.back().command == "track.arm_all");
+
+        // The I button: interface state, so the result is read back.
+        session.setWindow(QStringLiteral("mix"));
+        const auto inputs_on = [&session]() {
+            QList<int> on;
+            const QList<bool> now = session.inputMonitors();
+            for (int i = 0; i < now.size(); ++i)
+                if (now[i]) on << i;
+            return on;
+        };
+        CHECK(inputs_on().isEmpty());
+        CHECK(click(QStringLiteral("input4"), Qt::NoModifier));
+        CHECK(inputs_on() == QList<int>({4}));
+        CHECK(click(QStringLiteral("input3"), Qt::ShiftModifier));
+        CHECK(inputs_on() == QList<int>({3, 4, 5}));
+        CHECK(click(QStringLiteral("input9"), Qt::ShiftModifier));
+        CHECK(inputs_on() == QList<int>({3, 4, 5, 9}));
+        CHECK(click(QStringLiteral("input0"), Qt::AltModifier));
+        CHECK(inputs_on().size() == 18);
+        CHECK(click(QStringLiteral("input0"), Qt::AltModifier));
+        CHECK(inputs_on().isEmpty());
+        // The Edit window's I buttons too.
+        session.setWindow(QStringLiteral("edit"));
+        CHECK(click(QStringLiteral("editInput%1").arg(shown), Qt::AltModifier));
+        CHECK(inputs_on().size() == 18);
+        session.inputClick(shown, Qt::AltModifier);
+        CHECK(inputs_on().isEmpty());
+
+        session.selectTrack(14);
+    }
+
     // --- state is pulled, and only re-published when it changes ---
     engine.armed.assign(18, false);
     engine.armed[2] = true;

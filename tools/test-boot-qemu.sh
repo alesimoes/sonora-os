@@ -225,6 +225,25 @@ while [[ "$waited" -lt "$TIMEOUT" ]]; do
   waited=$((waited + 2))
 done
 
+# The verdict is printed before the unit's SuccessAction=/FailureAction= powers
+# the guest off. Killing QEMU at once left that path untested, and boot 3 of
+# tools/test-write-usb.sh depends on the orderly poweroff to get a clean /home.
+# On a pass the guest must also power itself off, within POWEROFF_TIMEOUT.
+POWEROFF_TIMEOUT="${QEMU_POWEROFF_TIMEOUT:-60}"
+powered_off=""
+if grep -q "SMOKETEST RESULT" "$LOG" 2>/dev/null; then
+  verdict_at=$SECONDS
+  while kill -0 "$QEMU_PID" 2>/dev/null && (( SECONDS - verdict_at < POWEROFF_TIMEOUT )); do
+    sleep 1
+  done
+  if kill -0 "$QEMU_PID" 2>/dev/null; then
+    powered_off=no
+  else
+    powered_off=yes
+  fi
+  poweroff_seconds=$((SECONDS - verdict_at))
+fi
+
 if kill -0 "$QEMU_PID" 2>/dev/null; then
   kill "$QEMU_PID" 2>/dev/null || true
   sleep 1
@@ -244,6 +263,16 @@ grep "SMOKETEST" "$LOG" 2>/dev/null || {
 
 verdict=$(grep "SMOKETEST RESULT" "$LOG" 2>/dev/null | tail -1 || true)
 echo
+case "$powered_off" in
+  yes) echo "guest powered itself off ${poweroff_seconds}s after the verdict" ;;
+  no)  echo "guest still running ${poweroff_seconds}s after the verdict; killed" ;;
+esac
+if [[ "$verdict" == *pass* && "$powered_off" == no ]]; then
+  echo "BOOT TEST FAIL: the smoke test passed but the guest did not power off" >&2
+  echo "within ${POWEROFF_TIMEOUT}s (sonora-smoketest.service SuccessAction=)." >&2
+  echo "Full log: $LOG" >&2
+  exit 1
+fi
 if [[ "$verdict" == *pass* ]]; then
   echo "BOOT TEST PASS"
   exit 0

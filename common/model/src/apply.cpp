@@ -840,19 +840,40 @@ public:
                 }
             }
         }
-        // Pro Tools' Duplicate copies automation by default. Volume and pan
-        // lanes are shared, as an undo step shares them; a plugin lane keys
-        // the copy's insert, and without the inserts it has none to key.
+        // The same buses: a bus is fed once per strip, and the copy is
+        // another strip, so no loop or second send can follow.
+        std::vector<SendMix> send_values;
+        std::unordered_map<Id, Id> send_copies;
+        if (op.sends) {
+            for (const Send& sd : src.sends) {
+                Send c = sd;
+                c.id = next++;
+                send_copies.emplace(sd.id, c.id);
+                copy->sends.push_back(c);
+                if (const SendMix* v = before_.mix.find_send(sd.id)) {
+                    SendMix m = *v;
+                    m.send = c.id;
+                    send_values.push_back(m);
+                }
+            }
+        }
+        // Pro Tools' Duplicate copies automation by default. A lane that
+        // names no insert or send is shared, as an undo step shares it; a
+        // plugin or send lane keys the copy's insert or send, and without
+        // the inserts or sends it has none to key.
         if (op.automation) {
             for (const auto& l : src.automation) {
-                if (l->param != AutomationParam::Plugin) {
+                const bool plugin = l->param == AutomationParam::Plugin;
+                const bool send = l->send != 0;
+                if (!plugin && !send) {
                     copy->automation.push_back(l);
                     continue;
                 }
-                const auto c = insert_copies.find(l->insert);
-                if (c == insert_copies.end()) continue;
+                const auto& copies = plugin ? insert_copies : send_copies;
+                const auto c = copies.find(plugin ? l->insert : l->send);
+                if (c == copies.end()) continue;
                 auto lane = std::make_shared<AutomationLane>(*l);
-                lane->insert = c->second;
+                (plugin ? lane->insert : lane->send) = c->second;
                 copy->automation.push_back(std::move(lane));
             }
             // The copies' ids follow slot order, which need not be the
@@ -862,21 +883,6 @@ public:
                          const std::shared_ptr<const AutomationLane>& b) {
                           return lane_before(*a, *b);
                       });
-        }
-        // The same buses: a bus is fed once per strip, and the copy is
-        // another strip, so no loop or second send can follow.
-        std::vector<SendMix> send_values;
-        if (op.sends) {
-            for (const Send& sd : src.sends) {
-                Send c = sd;
-                c.id = next++;
-                copy->sends.push_back(c);
-                if (const SendMix* v = before_.mix.find_send(sd.id)) {
-                    SendMix m = *v;
-                    m.send = c.id;
-                    send_values.push_back(m);
-                }
-            }
         }
         auto edit = std::make_shared<EditState>(*before_.edit);
         edit->tracks.insert(edit->tracks.begin() + static_cast<std::ptrdiff_t>(t) + 1,
@@ -1081,7 +1087,10 @@ public:
         const std::string why = detail::bus_mix_problem(mix, where);
         if (!why.empty()) return fail("mix." + where + ": " + why);
         auto edit = std::make_shared<EditState>(*before_.edit);
-        edit->buses.push_back(Bus{op.bus, op.name, {}});
+        Bus bus;
+        bus.id = op.bus;
+        bus.name = op.name;
+        edit->buses.push_back(std::move(bus));
         after_ = before_;
         after_.edit = std::move(edit);
         set_bus_mix(after_.mix, mix);
@@ -1208,15 +1217,25 @@ public:
             }
             return false;
         };
+        // Its lanes go with it (ADR-0027 §9); undo brings both back.
+        const auto drop_lanes = [&](AutomationLanes& lanes) {
+            lanes.erase(std::remove_if(lanes.begin(), lanes.end(),
+                                       [&](const std::shared_ptr<const AutomationLane>& l) {
+                                           return l->send == op.send;
+                                       }),
+                        lanes.end());
+        };
         bool found = false;
         for (std::size_t t = 0; t < edit->tracks.size() && !found; ++t) {
             if (!has_send(edit->tracks[t]->sends, op.send)) continue;
             auto track = std::make_shared<TrackEdit>(*edit->tracks[t]);
             found = erase(track->sends);
+            drop_lanes(track->automation);
             edit->tracks[t] = std::move(track);
         }
         for (std::size_t b = 0; b < edit->buses.size() && !found; ++b) {
             found = erase(edit->buses[b].sends);
+            if (found) drop_lanes(edit->buses[b].automation);
         }
         if (!found) return no_send(op.send);
         after_ = before_;
@@ -1292,16 +1311,31 @@ public:
 
     // --- automation (ADR-0027 §1): undoable ---
 
+    // `op.track` names the strip (ADR-0027 §9): a track, an aux bus, or the
+    // Master.
     bool operator()(const EditAutomation& op) {
-        const std::size_t t = locate_track(*before_.edit, op.track);
-        if (t == kNone) return fail("track " + str(op.track) + " does not exist");
-        const TrackEdit& before_track = *before_.edit->tracks[t];
-        if (before_track.kind == TrackKind::Midi) {
-            return fail("track " + str(op.track) + " is a MIDI track; it has no audio automation");
+        const std::size_t t =
+            op.track == kMasterOutput ? kNone : locate_track(*before_.edit, op.track);
+        const std::size_t b = op.track == kMasterOutput || t != kNone ? kNone : bus_index(op.track);
+        detail::LaneStrip strip = detail::master_strip();
+        const AutomationLanes* before_lanes = &before_.edit->master_automation;
+        if (t != kNone) {
+            const TrackEdit& before_track = *before_.edit->tracks[t];
+            if (before_track.kind == TrackKind::Midi) {
+                return fail("track " + str(op.track) +
+                            " is a MIDI track; it has no audio automation");
+            }
+            strip = detail::lane_strip(before_track);
+            before_lanes = &before_track.automation;
+        } else if (b != kNone) {
+            strip = detail::lane_strip(before_.edit->buses[b]);
+            before_lanes = &before_.edit->buses[b].automation;
+        } else if (op.track != kMasterOutput) {
+            return fail("track " + str(op.track) + " does not exist, nor an aux bus");
         }
         PluginFormat format = PluginFormat::Lv2;
-        std::string why =
-            detail::automation_target_problem(before_track, op.param, op.insert, op.key, format);
+        std::string why = detail::automation_target_problem(strip, op.param, op.insert, op.send,
+                                                            op.key, format);
         if (!why.empty()) return fail(why);
         if (op.from < 0 || op.to > kMaxInteger || op.from >= op.to) {
             return fail("the range must run forward, from 0 to at most 2^53 - 1");
@@ -1314,10 +1348,13 @@ public:
                 return fail("a point at " + str(p.at) + " lies outside the range it replaces");
             }
         }
+        AutomationLane target;
+        target.param = op.param;
+        target.insert = op.insert;
+        target.key = op.key;
+        target.send = op.send;
         std::vector<AutomationPoint> points;
-        const AutomationLane* old = op.param == AutomationParam::Plugin
-                                        ? before_track.lane(op.insert, op.key)
-                                        : before_track.lane(op.param);
+        const AutomationLane* old = find_lane(*before_lanes, target);
         if (old != nullptr) {
             for (const AutomationPoint& p : old->points) {
                 if (p.at < op.from) points.push_back(p);
@@ -1334,9 +1371,15 @@ public:
                         " points; it holds at most " +
                         str(static_cast<std::int64_t>(kMaxAutomationPoints)));
         }
+        if (op.param == AutomationParam::Mute) {
+            // Where the edit meets the points it keeps, the mute could change
+            // between two frames, which the edit's own points cannot show.
+            why = detail::automation_points_problem(points, op.param, where, format);
+            if (!why.empty()) return fail("the lane after the edit: " + why);
+        }
         if (old == nullptr && !points.empty() && op.param == AutomationParam::Plugin) {
             std::size_t held = 0;
-            for (const auto& l : before_track.automation) {
+            for (const auto& l : *before_lanes) {
                 if (l->param == AutomationParam::Plugin && l->insert == op.insert) ++held;
             }
             if (held >= kMaxInsertParams) {
@@ -1345,12 +1388,16 @@ public:
                             " automated parameters, the most an insert has");
             }
         }
-        AutomationLane target;
-        target.param = op.param;
-        target.insert = op.insert;
-        target.key = op.key;
-        auto track = std::make_shared<TrackEdit>(before_track);
-        auto& lanes = track->automation;
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        std::shared_ptr<TrackEdit> track;
+        AutomationLanes* lanes_out = &edit->master_automation;
+        if (t != kNone) {
+            track = std::make_shared<TrackEdit>(*before_.edit->tracks[t]);
+            lanes_out = &track->automation;
+        } else if (b != kNone) {
+            lanes_out = &edit->buses[b].automation;
+        }
+        auto& lanes = *lanes_out;
         const auto at = std::lower_bound(
             lanes.begin(), lanes.end(), target,
             [](const std::shared_ptr<const AutomationLane>& l, const AutomationLane& x) {
@@ -1368,8 +1415,7 @@ public:
                 lanes.insert(at, std::move(lane));
             }
         }
-        auto edit = std::make_shared<EditState>(*before_.edit);
-        edit->tracks[t] = std::move(track);
+        if (track) edit->tracks[t] = std::move(track);
         after_ = before_;
         after_.edit = std::move(edit);
         return true;

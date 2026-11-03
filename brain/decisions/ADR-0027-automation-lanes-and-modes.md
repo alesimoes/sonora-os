@@ -41,6 +41,9 @@
   writer hardening, plan-move state, per-frame sends and PDC alignment,
   Touch's return, Trim. Only Trim bumps formats. AutoMatch time is an
   engine preference, not a session setting.
+- §9 (update, 2026-11-03): mute, send level and send pan lanes, and lanes
+  on aux returns and the Master, in the model. Session format 18, window
+  format 15, protocol 41. Not played yet.
 
 ## Context
 
@@ -218,6 +221,16 @@ the write slice.
   knob when a parameter leaves lane play (mode to Off or Write, a lane
   removed) is not built: the plugin keeps the lane's last value until the
   knob next moves.
+- *As built (finite lane values, 2026-11-03):* the builder leaves out a
+  plugin lane with a non-finite point, as it does one whose key resolves
+  to nothing (the model refuses such a value, so only a broken document
+  has one, and a NaN passes the range clamp unchanged). Lanes are
+  interpolated in double (`auto_lane_value`, and the writer's
+  `lane_value` with it), so two finite points whose difference overflows
+  a float, as a plugin parameter's range allows, play a finite value
+  between them rather than infinity; such a lane is no longer skipped, so
+  a knob moved under it no longer wins. The session's finite check on the
+  value stays, for a plan not built by the builder.
 
 ### §6 First slice, format, protocol
 
@@ -369,7 +382,11 @@ from the atomic it reads at the release, as the static may already be back.
 The release write carries that same value. A parameter with no lane in its
 return window plays on the lane path, toward the static it reads each
 callback (`return_to_`), so the same function of the frame plays as with a
-lane. A static that changes mid-return is crossfaded over one callback.
+lane. That static is its own atomic (`Track::static_gain()`,
+`static_pan()`), set wherever the mix is applied but never by a ride, and
+`touch()` stores it before it clears `touched` (release order): a callback
+between the release and the played value's return never aims at the ride
+(#282 review). A static that changes mid-return is crossfaded over one callback.
 `SessionConfig::touch_return_ms` (engine option `--automatch-ms`, 10 to
 5000, default 250) sets the return for the audio and the writer.
 `MixModel` saves no static after a ride that played in Touch while
@@ -441,6 +458,51 @@ PR). Also slice 5's interface: the Volume Trim lane in the lane menu and
 `automation_edit`, the Trim entry of `AutomationModeButton` no longer
 refused, the fader showing the trim offset while in Trim, and screenshots
 of the strip and Edit-window scenes. Slices 1 to 3 have no UI.
+
+### §9 Mute, send lanes, and lanes on aux returns and the Master (update, 2026-11-03)
+
+The model half, as §5's update was for plugin lanes: saved, undone and
+replicated, not yet played. Taken on the recommended defaults (no owner
+available), recorded here before the code.
+
+- **Three params, appended** so no existing lane re-sorts: `Mute`,
+  `SendLevel`, `SendPan`. A mute lane's values are 0 (playing) or 1
+  (muted), and two points at different frames in a row hold the same
+  value: a mute changes only at a step (two points at one frame). Read
+  linearly, as every lane is (§1), it is then a switch, so the evaluator
+  needs no mute case, and nothing a lane writer computes by interpolation
+  can land between 0 and 1 unnoticed: `apply` refuses it. A send level
+  lane is dB in the fader's range, as `SendMix::level_db`; a send pan lane
+  -1 to +1, as `SendMix::pan`, played only while the send does not follow
+  its strip's pan (FMP). Send mute stays a static value for now (BACKLOG).
+- **Keyed by send.** `AutomationLane` and `EditAutomation` gain `send`, the
+  id of a send on the lane's strip, set on the two send params and 0 on
+  every other. Lanes sort by (param, insert, send, key). `RemoveSend` drops
+  the send's lanes with it (undo brings them back, as `RemoveInsert` does);
+  `DuplicateTrack` with automation and sends gives the copy's lanes the
+  copied sends' ids, and with automation but no sends drops them.
+- **Strip-keyed lanes.** An aux return (`Bus`, ADR-0022/0024) holds
+  `automation` as a track does, and the Master its own list,
+  `EditState::master_automation`: both undoable, as a track's. Which
+  params a strip takes is what it has: a track every one; an aux return
+  Volume, Pan (its balance), Mute, SendLevel and SendPan (it has no
+  inserts, ADR-0024 §5, and no automation mode yet, so no trim); the
+  Master Volume only (`MonitorBus` has a gain and no pan or mute).
+  `EditAutomation::track` names the strip: a track, an aux bus, or
+  `kMasterOutput` (0, never a track's or a bus's id) for the Master. The
+  field keeps its name so every existing writer stays as it is.
+- **Not in this slice**, each a BACKLOG line: the plan builder and the
+  audio thread playing mute, send and strip lanes; an automation mode on
+  aux returns and the Master (until then they would play as Read);
+  Automation Follows Edit on a mute lane, whose vacated span must step,
+  not ramp (a ramp is refused, so such a move is refused whole today; no
+  writer makes a mute lane yet).
+- Session format **18**: a lane's `param` may be `"mute"`, `"send_level"`
+  or `"send_pan"`, the last two with `"send"`; every bus and
+  `monitor_bus` gain `"automation"`, filled in empty by the migration.
+  Window format **15**: lanes are one table that tracks, buses and the
+  Master's list index, so an unchanged bus's lanes cross once. Protocol
+  **41**: a version-40 peer refuses the new params and keys.
 
 ## Consequences
 

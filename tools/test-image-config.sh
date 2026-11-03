@@ -30,6 +30,43 @@ printf '%s\n' "$src" | grep -Eq 'deb\.debian\.org| (unstable|sid|testing)( |$)' 
 # --backports true would add live deb.debian.org backports beside the snapshot.
 grep -Eq -- '--backports[[:space:]]+true' "$AUTO" && bad "auto/config: --backports true adds an undated backports source"
 
+# --- the rest of the archive: the same snapshot (ADR-0002, 2026-11-02) ---
+# A live trixie mirror lets a point release change the RT kernel between two
+# builds of one commit; a second timestamp lets the base and PipeWire drift apart.
+bp_ts="$(printf '%s\n' "$src" | grep -Eo '[0-9]{8}T[0-9]{6}Z' | head -n 1)"
+auto_ts="$(sed -nE 's/^SONORA_SNAPSHOT=([0-9]{8}T[0-9]{6}Z)$/\1/p' "$AUTO")"
+[ -n "$auto_ts" ] || bad "auto/config: no SONORA_SNAPSHOT=<YYYYMMDDTHHMMSSZ> line"
+[ "$auto_ts" = "$bp_ts" ] || bad "auto/config snapshot '$auto_ts' differs from the backports list's '$bp_ts'"
+# mirror_arg OPTION: the value auto/config passes to `lb config OPTION`.
+mirror_arg() {
+  sed -nE "s/^[[:space:]]*$1[[:space:]]+\"?([^\" ]+)\"?.*$/\1/p" "$AUTO" | head -n 1
+}
+snap='http://snapshot.debian.org/archive'
+# $SONORA_SNAPSHOT is expanded by lb config, not here: compare the text.
+for opt in --mirror-bootstrap --mirror-chroot; do
+  [ "$(mirror_arg "$opt")" = "$snap/debian/\$SONORA_SNAPSHOT/" ] || bad "auto/config: $opt is not $snap/debian/\$SONORA_SNAPSHOT/"
+done
+[ "$(mirror_arg --mirror-chroot-security)" = "$snap/debian-security/\$SONORA_SNAPSHOT/" ] ||
+  bad "auto/config: --mirror-chroot-security is not $snap/debian-security/\$SONORA_SNAPSHOT/"
+# The shipped system's sources: live, or it never sees a security update.
+for opt in --mirror-binary --mirror-binary-security; do
+  v="$(mirror_arg "$opt")"
+  [ -n "$v" ] || bad "auto/config: $opt not set; live-build's default is not ours to rely on"
+  case "$v" in *snapshot.debian.org*) bad "auto/config: $opt ships a frozen source in the image" ;; esac
+done
+# --parent-mirror-* would override the mirrors above for a non-derivative build.
+grep -Eq -- '--parent-mirror-' "$AUTO" && bad "auto/config: a --parent-mirror-* option bypasses the snapshot mirrors"
+# security's Release expires a week after the snapshot date; the override must
+# be build-time only (.conf.chroot), or the shipped system stops checking expiry.
+SNAPCONF="$ROOT/iso/config/archives/sonora-snapshot.conf.chroot"
+grep -Eq '^Acquire::Check-Valid-Until[[:space:]]+"false";' "$SNAPCONF" 2>/dev/null ||
+  bad "archives: sonora-snapshot.conf.chroot does not turn off Check-Valid-Until for the build"
+for f in "$ROOT"/iso/config/archives/*.conf "$ROOT"/iso/config/archives/*.conf.binary "$ROOT"/iso/config/apt/*; do
+  [ -e "$f" ] && grep -qi 'Check-Valid-Until' "$f" && bad "${f#"$ROOT"/} ships Check-Valid-Until in the image"
+done
+grep -qF 'E: build sources outside snapshot' "$HOOK" ||
+  bad "hook does not check that every build source is the snapshot"
+
 # pin_version GLOB: the Pin: version of the stanza whose Package line starts with GLOB.
 pin_version() {
   awk -v pkg="$1" '
@@ -134,6 +171,6 @@ if [ -f "$SMOKE_UNIT" ]; then
 fi
 
 if [ "$fail" -eq 0 ]; then
-  echo "ok: pipewire $pw_pin, wireplumber $wp_pin from $(printf '%s\n' "$src" | grep -Eo '[0-9]{8}T[0-9]{6}Z'); rt kernel; tty1 owned, no VT gettys; smoketest powers off in order"
+  echo "ok: whole archive from snapshot $auto_ts; pipewire $pw_pin, wireplumber $wp_pin; rt kernel; tty1 owned, no VT gettys; smoketest powers off in order"
 fi
 exit "$fail"

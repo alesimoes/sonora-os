@@ -63,3 +63,15 @@ default, taken unattended; the owner may revisit):
 - Not yet applied: `iso/auto/config` belongs to the first ISO build in
   progress, and snapshot.debian.org is rate-limited, so a cold build through
   it has to be timed before it becomes the default. Both are BACKLOG lines.
+
+### Applied, 2026-11-03
+
+As designed above, with one change of place: the expiry override is
+`config/archives/sonora-snapshot.conf.chroot`, not a file under
+`config/apt/`. live-build copies `*.conf.chroot` into `apt.conf.d` for the
+build and deletes it before packing, so the shipped system keeps checking
+`Valid-Until` against the live mirrors. The timestamp is the line
+`SONORA_SNAPSHOT=` in `iso/auto/config`. The chroot hook fails the build when
+any build-time `deb` line is not the snapshot at that timestamp, and
+`tools/build-iso.sh` drops its package cache when the timestamp changes (a
+cached bootstrap would otherwise keep the old base).

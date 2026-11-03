@@ -65,6 +65,8 @@ void DiskThread::run() {
         }
         // Wake often enough that the rings never approach full, but not so
         // often that we spin. Rings hold seconds; this polls every 10 ms.
+        // A wake signalled by the callback would put a system call in it
+        // to save 10 ms of ring (brain/research/disk-write-path.md).
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }

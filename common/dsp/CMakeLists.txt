@@ -24,11 +24,13 @@ message(STATUS "common/dsp: architecture code from src/arch/${SONORA_DSP_ARCH}, 
 
 add_library(sonora_dsp STATIC
   src/biquad.cpp
+  src/convolver.cpp
   src/fdn.cpp
   src/fet.cpp
   src/fft.cpp
   src/limiter.cpp
   src/loudness.cpp
+  src/neural/wavenet.cpp
   src/noise.cpp
   src/opto.cpp
   src/oversampling.cpp
@@ -39,6 +41,7 @@ add_library(sonora_dsp STATIC
   src/triode.cpp
   src/true_peak.cpp
   src/arch/${SONORA_DSP_FP_ARCH}/denormals.cpp
+  src/arch/${SONORA_DSP_ARCH}/convolver_kernels.cpp
   src/arch/${SONORA_DSP_ARCH}/tape_pair.cpp
   src/arch/${SONORA_DSP_ARCH}/triode_pair.cpp
   src/arch/${SONORA_DSP_ARCH}/transformer_pair.cpp
@@ -52,7 +55,14 @@ target_compile_options(sonora_dsp PUBLIC
   $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>
   $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
 
-foreach(t filters oversampling loudness dynamics limiter fdn triode opto fet noise tape transformer)
+# The WaveNet kernel's products are element-wise loops over a block's
+# frames through pointers GCC cannot prove distinct; its -O2 "very cheap"
+# vectoriser will not version a loop for aliasing, -O3 does. Element-wise,
+# so vectorising reorders no sum: the output is the same bits either way.
+set_source_files_properties(src/neural/wavenet.cpp PROPERTIES COMPILE_OPTIONS
+  "$<$<AND:$<CXX_COMPILER_ID:GNU>,$<NOT:$<CONFIG:Debug>>>:-O3>")
+
+foreach(t filters convolver oversampling loudness dynamics limiter fdn triode opto fet noise tape transformer neural)
   add_executable(test_dsp_${t} tests/test_${t}.cpp)
   target_link_libraries(test_dsp_${t} PRIVATE sonora_dsp)
   # The root CMakeLists.txt's SONORA_SANITIZED: timing bars are reported, not held.
@@ -87,6 +97,15 @@ if(NOT SONORA_DSP_ARCH STREQUAL "generic")
   target_compile_options(test_dsp_transformer_generic PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off> $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
   add_test(NAME dsp_transformer_generic COMMAND test_dsp_transformer_generic)
+  # And for the convolver's multiply-adds and head (convolver_kernels.cpp).
+  add_executable(test_dsp_convolver_generic tests/test_convolver.cpp src/convolver.cpp src/fft.cpp src/noise.cpp
+                 src/arch/generic/convolver_kernels.cpp)
+  target_include_directories(test_dsp_convolver_generic PRIVATE include)
+  target_compile_definitions(test_dsp_convolver_generic PRIVATE SONORA_SANITIZED=$<BOOL:${SONORA_SANITIZED}>)
+  target_link_libraries(test_dsp_convolver_generic PRIVATE sonora_base)
+  target_compile_options(test_dsp_convolver_generic PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off> $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
+  add_test(NAME dsp_convolver_generic COMMAND test_dsp_convolver_generic)
 endif()
 # The two slow ones (tens of seconds in Release, minutes under ASan) carry
 # the "slow" label: PR CI runs them with SONORA_DSP_QUICK=1 (one rate, one

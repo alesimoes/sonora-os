@@ -798,7 +798,17 @@ void controls_after_prepare(Suite& s) {
 // opto's are. The shortest period: at a quality a 128-frame block is 128 x
 // factor circuit steps whatever the base rate, so the 48 kHz block must fit
 // 128 frames at 192 kHz, 667 us (RT re-audit of #74, non-blocking 1: B1's
-// regression showed only at the high rates).
+// regression showed only at the high rates). A wall-clock figure, so a
+// host loaded by a parallel ctest pushed high over it (780 us in #312's
+// run) with nothing changed in the code: the period is held on the
+// reference machine's scale (Suite::check_period_le), the reference kernel
+// timed before and after each configuration and the slower timing taken,
+// the host's speed while the configuration ran lying between them. On the
+// reference machine at a load average of 13-22 the kernel read 83-84 us
+// (2.6x its quiet 32.6 us) and high's worst block 449-548 us. The kernel
+// slows more under load than the solve does, so a loaded host holds this
+// bar loosely; the drive-independence it guards is also held exactly, in
+// iterations, by newton_cap.
 // The Newton loops' cost stays flat in the drive, up to the processor's
 // input ceiling: ProcessorBase accepts up to 1e6 FS, so with Input at +24 dB
 // the circuit sees about 2e5 V at R5. Hot squares at +48 dB (3.2 V, the
@@ -890,9 +900,16 @@ void hot_input(Suite& s) {
         return y;
     };
     const double in_gain = std::pow(10.0, 24.0 / 20.0);
+    // One second of the kernel: about 65 ms on the reference machine.
+    double kernel_before = measure::reference_kernel_us(1.0);
     for (std::size_t ci = 0; ci < std::size(configs); ++ci) {
         const bool anti = ci + 1 == std::size(configs);
         const Chans quiet = square(1e-3, anti);
+        struct Block {
+            std::string what;
+            double worst_us;
+        };
+        std::vector<Block> blocks;
         // 0, +12, +24 dBFS, and the input ceiling (999999 FS, about
         // +120 dBFS: RT audit of #74, B1, where high missed the period).
         for (double amp : {1.0, std::pow(10.0, 12.0 / 20.0), std::pow(10.0, 24.0 / 20.0), 999999.0}) {
@@ -925,9 +942,17 @@ void hot_input(Suite& s) {
                            fmt("the gate's forward limit allows %.1f dB", deepest_bar));
             s.check_time_le(what + ": worst block over the quiet median, minimum of 3 runs", w / median, ratio_bar, "x",
                             fmt("worst %.1f us; median %.1f us on a -60 dBFS square", w, median));
-            s.check_time_le(what + ": worst block, minimum of 3 runs", w, 667.0, "us",
-                            "the 128-frame period at 192 kHz: block cost independent of the base rate");
+            blocks.push_back({what + ": worst block, minimum of 3 runs", w});
         }
+        const double kernel_after = measure::reference_kernel_us(1.0);
+        const double kernel = std::fmax(kernel_before, kernel_after);
+        s.info(std::string(names[ci]) + ": reference kernel per block, before and after the hot squares", kernel_before,
+               "us", fmt("after %.2f us; the slower scales the period", kernel_after));
+        for (const Block& b : blocks) {
+            s.check_period_le(b.what, b.worst_us, 667.0, kernel,
+                              "the 128-frame period at 192 kHz: block cost independent of the base rate");
+        }
+        kernel_before = kernel_after;
     }
 }
 

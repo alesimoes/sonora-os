@@ -660,3 +660,41 @@ both `"verified": false`.
 version option (there is no writer for older formats); autosave of
 untitled sessions; Preferences for the interval and the count; restoring
 an autosave over the session file in one step.
+
+## Update, 2026-11-03: autosave of an untitled session (`daw.model.session_mgmt`)
+
+The 2026-10-27 update autosaved only a session with a file, so a crash
+before the first Save kept the takes (orphan offer) and lost every edit.
+Recommended defaults taken by the Track 2 agent, no owner available. No
+format bump, no protocol bump: the file is an ordinary autosave and no
+message changes.
+
+- **Where.** While the active folder is Untitled and the session has no
+  file, the engine autosaves as for a session file named after the
+  folder: `Untitled 2/Session File Backups/Untitled 2.autosave.sonora`,
+  generation 1, by the same steps, period and pacing. An untitled folder
+  is never renamed while it is untitled (the first Save's rename makes it
+  Named), so the name is stable. A `--dir` run (Named, no file) is not
+  autosaved, as before.
+- **It is data.** A folder holding it is not empty: the start-up cleanup
+  (`remove_empty_untitled`) keeps it, as it keeps any `Session File
+  Backups/`, and so does a clean engine exit (`~ActiveFolder`). The engine
+  cannot tell an exit the operator chose from a stop after the interface
+  died, and keeping a folder is the cheaper mistake. Opening it is an Open
+  of the autosave file itself (§2: a file in `Session File Backups/` names
+  the folder above).
+- **A deliberate leave discards it.** A Load of another session, a new
+  session, or a Save As that moves the session: the interface has asked
+  to save or discard first, so `ActiveFolder::enter()` deletes the
+  autosave this engine wrote there (by name; never a crash's, never a
+  symlink), then `Session File Backups/` if that left it empty, and only
+  then decides whether the old folder holds data. A fresh folder then goes
+  as it did before.
+- **The first Save covers it.** Once a Save of the untitled session lands,
+  its untitled autosave is deleted from the (possibly renamed) folder; the
+  session's own autosave follows the file from then on. No untitled
+  autosave is handed to the saver while a Save is in flight, so none lands
+  after it under the old name.
+- **Interface (follow-up).** The Open browser's "Unsaved recordings" lists
+  only folders with takes; listing one that holds an untitled autosave,
+  and offering it, is the interface half.

@@ -22,8 +22,9 @@
 //   other_period       a callback the runner does not take (another size,
 //                      or past max_block_frames) sends no lane and loses
 //                      none: the next it takes sends the lane where it is
-//   non_finite         a lane that evaluates to NaN or infinity is never
-//                      sent, so it is not resent every callback either
+//   non_finite         a NaN lane is never sent, so it is not resent every
+//                      callback either; finite points whose difference
+//                      overflows a float play a finite value, over a knob
 //   bounds             a lane out of range, on a node that is not a chain,
 //                      or past PlaybackConfig::max_plugin_lanes: the plan is
 //                      refused, never followed
@@ -377,23 +378,39 @@ int test_other_period() {
 int test_non_finite() {
     Rig rig(2);
     const float nan = std::numeric_limits<float>::quiet_NaN();
-    // A NaN point, and two finite ones whose difference overflows a float,
-    // so every frame between them evaluates to infinity.
+    // A NaN point, which the builder never carries, is skipped; two finite
+    // points whose difference overflows a float are interpolated in double
+    // and play a finite value between them (#243 review), so a posted knob
+    // on that parameter does not win either.
+    const std::vector<PlanAutoPoint> wide = {{0, -FLT_MAX}, {1 << 20, FLT_MAX}};
     const std::vector<LaneSpec> lanes = {{0, 0, 1, {{0, nan}}},
-                                         {0, 0, 2, {{0, -FLT_MAX}, {1 << 20, FLT_MAX}}},
+                                         {0, 0, 2, wide},
                                          {0, 0, 3, {{0, 0.5f}}}};
     CHECK(rig.publish(rig.plan({bound(0, 5), ChainBinding{}}, lanes)));
     CHECK(rig.park(512));
     rig.block();
     rig.block();
-    // Only the finite lane, once: the host keeps what it had for the others.
-    CHECK(rig.runner.count == 1);
-    CHECK(same(rig.runner.seen[0].event, 0, 3, 0.5f));
+    // The two finite lanes, once each: the host keeps what it had for the NaN.
+    const float wide_at = sonora::auto_lane_value(wide.data(), 2, 512);
+    CHECK(std::isfinite(wide_at) && wide_at > -FLT_MAX && wide_at < 0.0f);
+    CHECK(rig.runner.count == 2);
+    CHECK(same(rig.runner.seen[0].event, 0, 2, wide_at));
+    CHECK(same(rig.runner.seen[1].event, 0, 3, 0.5f));
+    // A knob moved under the wide lane: the lane follows it in the same
+    // callback, so the host keeps the lane's value, not the knob's.
+    CHECK(rig.post(5, 0, 2, 0.0f));
+    rig.block();
+    CHECK(rig.runner.count == 5);
+    CHECK(same(rig.runner.seen[2].event, 0, 2, 0.0f));
+    CHECK(same(rig.runner.seen[3].event, 0, 2, wide_at));
+    CHECK(same(rig.runner.seen[4].event, 0, 3, 0.5f));
     rig.session->play();
+    const std::size_t parked = rig.runner.count;
     for (int k = 0; k < 4; ++k) rig.block();
-    CHECK(rig.runner.count == 1);
+    CHECK(rig.runner.count > parked);
     for (std::size_t i = 0; i < rig.runner.count; ++i) {
         CHECK(std::isfinite(rig.runner.seen[i].event.value));
+        CHECK(rig.runner.seen[i].event.param != 1);
     }
     return 0;
 }

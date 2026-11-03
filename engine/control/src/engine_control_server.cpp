@@ -18,6 +18,7 @@
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
 #include "sonora/playback_controller.h"
+#include "sonora/plugin_block_list.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/plugin_scanner.h"
 #include "sonora/session.h"
@@ -272,6 +273,21 @@ std::string host_id(const model::PluginRef& p) {
     return p.format == model::PluginFormat::Vst3 ? "vst3:" + p.id : p.id;
 }
 
+// plugin.block and plugin.unblock: "<lv2|vst3> <id>", the id as the
+// catalog names it (a VST3 class id without "vst3:").
+bool parse_plugin_argument(const std::string& arg, model::PluginRef& out, std::string& why) {
+    const auto space = arg.find(' ');
+    const std::string format = arg.substr(0, space);
+    const std::string id = space == std::string::npos ? std::string() : arg.substr(space + 1);
+    if ((format != "lv2" && format != "vst3") || id.empty() || id.find(' ') != std::string::npos) {
+        why = "name the plug-in as \"lv2 <uri>\" or \"vst3 <class id>\"";
+        return false;
+    }
+    out.format = format == "vst3" ? model::PluginFormat::Vst3 : model::PluginFormat::Lv2;
+    out.id = id;
+    return true;
+}
+
 // §6.1's "as scanned": the session file stores the catalog's words, never
 // the client's. From the catalog sent, or, as catalog_refusal accepts it,
 // from a probe this run finished (finding 4 on #95: during a first cold
@@ -410,6 +426,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
         sc.host_path = opts_.plugin_host;
         sc.bundles = opts_.plugin_bundles;
         sc.cache_path = opts_.plugin_cache;
+        sc.block_list_path = opts_.plugin_block_list;
         sc.build_id = opts_.plugin_build_id;
         sc.wine_prefix = opts_.plugin_wine_prefix;
         sc.wine_prefix_command = opts_.plugin_wine_prefix_command;
@@ -428,6 +445,32 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                               scanner_->rescan();
                               return true;
                           }));
+        // The operator's block list (ADR-0012, amendment of 2026-11-03).
+        // Allowed during a take: blocking runs nothing, and an unblocked
+        // plug-in waits for the take to end before it is probed. A chain
+        // already running keeps its plug-in until it next starts.
+        const auto block_handler = [this](bool blocked) {
+            return ExplainingHandler([this, blocked](const CommandContext& ctx, std::string& why) {
+                model::PluginRef ref;
+                if (!parse_plugin_argument(ctx.argument, ref, why)) return false;
+                const auto& c = scanner_->catalog();
+                const std::string id = host_id(ref);
+                const api::PluginInfo* p = catalog_find(*c, ref.format, ref.id);
+                const bool listed = c->blocked.count(id) != 0;
+                if (!p && !listed) {
+                    why = "no plug-in " + ref.id + " is in the catalog";
+                    return false;
+                }
+                if (blocked && !listed && c->blocked.size() >= kMaxBlockedPlugins) {
+                    why = "the plug-in block list is full (" + std::to_string(kMaxBlockedPlugins) + ")";
+                    return false;
+                }
+                scanner_->set_blocked(id, p ? p->name : std::string(), blocked);
+                return true;
+            });
+        };
+        registry_.install("plugin.block", block_handler(true));
+        registry_.install("plugin.unblock", block_handler(false));
     }
     // Recovered and orphan takes (session-format.md, "Crash recovery"):
     // placed only when the operator says so, as one undo step per take.
@@ -1438,6 +1481,9 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
     // What the autosave is named after and compared with; a folder or a new
     // session has no file until its first Save.
     session_file_ = opened_file;
+    // A Load that stayed in the folder may have opened that very autosave:
+    // from now on it is the operator's file, never discarded on leaving.
+    folder_->set_untitled_autosave({});
     covered_revision_ = document_->current().revision;
     next_autosave_ms_ = steady_ms_now() + opts_.autosave_period_ms;
     autosave_soon_ = false;
@@ -2815,6 +2861,7 @@ bool EngineControlServer::save(ClientId from, const api::ModelRequest& m, std::s
     }
     submitted_revision_ = document_->current().revision;
     saver_->submit(std::move(job));
+    ++saves_in_flight_;
     return true;
 }
 
@@ -2911,10 +2958,9 @@ void EngineControlServer::finish_save_as(const SessionSaver::Done& d) {
 }
 
 void EngineControlServer::autosave_when_due() {
-    if (opts_.autosave_period_ms == 0 || session_file_.empty() || autosave_in_flight_ ||
-        save_as_in_flight_) {
-        return;
-    }
+    if (opts_.autosave_period_ms == 0 || autosave_in_flight_ || save_as_in_flight_) return;
+    const bool untitled = session_file_.empty();
+    if (untitled && (!folder_->untitled() || saves_in_flight_ > 0)) return;
     const uint64_t revision = document_->current().revision;
     if (revision == covered_revision_) return;
     const uint64_t now = steady_ms_now();
@@ -2922,11 +2968,20 @@ void EngineControlServer::autosave_when_due() {
     // Only into the folder the session is in: its lock is held.
     namespace fs = std::filesystem;
     std::error_code ec;
-    const fs::path active = fs::absolute(*session_.folder(), ec).lexically_normal();
-    if (fs::path(session_files::session_folder_of(session_file_)).lexically_normal() != active) return;
+    fs::path active = fs::absolute(*session_.folder(), ec).lexically_normal();
+    if (active.filename().empty()) active = active.parent_path();
+    // As if its file were named after the folder: an Untitled folder is
+    // renamed only by the first Save, which makes it Named, so the name
+    // holds for as long as the session is untitled.
+    const std::string file =
+        untitled ? (active / (active.filename().string() + ".sonora")).string() : session_file_;
+    if (fs::path(session_files::session_folder_of(file)).lexically_normal() != active) return;
+    if (untitled) {
+        folder_->set_untitled_autosave(fs::path(session_files::autosave_file_of(file)).filename().string());
+    }
     SessionSaver::Job job;
     job.kind = SessionSaver::Kind::Autosave;
-    job.file = session_file_;
+    job.file = file;
     job.document = document_->current();
     job.state_source = active.string();
     autosave_in_flight_ = true;
@@ -2936,6 +2991,18 @@ void EngineControlServer::autosave_when_due() {
     covered_revision_ = revision;
     next_autosave_ms_ = now + opts_.autosave_period_ms;
     saver_->submit(std::move(job));
+}
+
+void EngineControlServer::drop_untitled_autosave() {
+    const std::string name = folder_->untitled_autosave();
+    if (name.empty()) return;
+    folder_->set_untitled_autosave({});
+    // The saver is past it: no untitled autosave is handed over while a Save
+    // is in flight, and the ones before the Save were written before it.
+    namespace fs = std::filesystem;
+    const fs::path file = fs::path(*session_.folder()) / session_files::kBackupsDir / name;
+    std::error_code ec;
+    if (fs::is_regular_file(fs::symlink_status(file, ec)) && !ec) fs::remove(file, ec);
 }
 
 uint64_t EngineControlServer::autosaves() const { return saver_->autosaves(); }
@@ -2983,10 +3050,12 @@ void EngineControlServer::follow_saver() {
             }
             continue;
         }
+        if (d.kind == SessionSaver::Kind::Save && saves_in_flight_ > 0) --saves_in_flight_;
         if (d.kind == SessionSaver::Kind::Save && d.seq != 0 && d.ok) {
             session_file_ = d.file;
             covered_revision_ = submitted_revision_;
             next_autosave_ms_ = steady_ms_now() + opts_.autosave_period_ms;
+            drop_untitled_autosave();
         }
         if (d.seq != 0) {
             reply(d.client, d.seq, d.ok ? DispatchResult::Ok : DispatchResult::Failed, d.message);
