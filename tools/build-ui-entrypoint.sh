@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs inside the sonora-ui container; tools/build-ui.sh is the way in.
 #
-#   $1  test | screenshot | measure
+#   $1  test | screenshot | measure | stage
 #   $2  screenshot file name, written to /out
 #   $3  seconds per measurement run
 set -euo pipefail
@@ -13,6 +13,13 @@ BUILD=build-ui-container
 UI="$BUILD/sonora-ui"
 
 cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release
+
+# The image build needs the binary, not the suite: SONORA_STAGE_ONLY in
+# tools/build-engine.sh says why the suite must not gate it.
+if [[ "$MODE" == stage ]]; then
+  cmake --build "$BUILD" -j"$(nproc)" --target sonora-ui
+  exit 0
+fi
 
 # ui/qt skips itself when Qt or Xvfb is missing, which is right for
 # tools/build-engine.sh and wrong here: this image exists to run the UI tests,

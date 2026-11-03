@@ -123,6 +123,9 @@ if ! grep -qx "BUILD_ID=$BUILD_ID" /etc/os-release; then
 fi
 
 # --- services ---
+# Same Windows-host modes in the other direction: the units arrive 0755 and
+# systemctl warns "marked executable" for each. A unit is configuration.
+chmod 0644 /etc/systemd/system/sonora-*.service
 systemctl enable sonora-session.service
 # Safe to enable unconditionally: the unit carries
 # ConditionKernelCommandLine=sonora.smoketest, so on a shipped image it
@@ -143,4 +146,8 @@ systemctl set-default multi-user.target
 
 # PipeWire runs in the user session, which systemd will not start for a user
 # who never logs in interactively. Lingering starts it at boot instead.
-loginctl enable-linger sonora || true
+# `loginctl enable-linger` needs a running logind, which a chroot has not, so
+# it failed on every build ("System has not been booted with systemd") behind
+# an `|| true`. The flag file is all logind reads at boot; write it directly.
+install -d -m 0755 /var/lib/systemd/linger
+: >/var/lib/systemd/linger/sonora

@@ -7,6 +7,8 @@
 # with the UI ones included -- headless, on Qt's offscreen platform.
 #
 #   tools/build-ui.sh                       build, then ctest
+#   tools/build-ui.sh --stage               only the sonora-ui binary, no
+#                                           tests (for tools/build-iso.sh)
 #   tools/build-ui.sh --screenshot PATH     ... then one picture per scene in
 #                                           ui/qt/src/scenes/ (the Edit window
 #                                           is PATH; sonora-ui --list-scenes
@@ -52,6 +54,10 @@ while [[ $# -gt 0 ]]; do
       MODE=screenshot
       SHOT="$2"
       shift 2
+      ;;
+    --stage)
+      MODE=stage
+      shift
       ;;
     --measure)
       MODE=measure
