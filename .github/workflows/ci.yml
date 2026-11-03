@@ -586,6 +586,9 @@ jobs:
       - name: Check
         run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest
 
+      - name: Merge gate decisions, against a fake gh
+        run: tools/test-merge-checks.sh
+
       - name: dev-wsl.sh wsl.conf edit, session bus check, --log
         run: sudo apt-get install -y dbus-x11 && tools/test-dev-wsl.sh
 

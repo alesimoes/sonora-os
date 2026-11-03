@@ -244,3 +244,6 @@ fi
 
 sync
 systemctl poweroff --no-block
+# Non-zero on a failing verdict, so the unit's FailureAction= applies to it
+# and not only to a script that crashed.
+[ "$FAILED" = "0" ] || exit 1
