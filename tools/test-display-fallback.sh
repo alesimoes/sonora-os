@@ -19,7 +19,7 @@ export MSYS_NO_PATHCONV=1
 src="$ROOT"
 command -v cygpath >/dev/null 2>&1 && src="$(cygpath -w "$ROOT")"
 
-docker build -q -t "$IMAGE" - >/dev/null <<'EOF'
+docker build -q --label org.sonora=1 -t "$IMAGE" - >/dev/null <<'EOF'
 FROM debian:trixie
 RUN apt-get update \
  && apt-get install -y --no-install-recommends systemd systemd-sysv dbus kbd procps \
@@ -61,11 +61,18 @@ systemctl enable sonora-compositor.service sonora-session.service >/dev/null 2>&
 exec /sbin/init "$@"
 '
 
+# set -e or an interrupt can leave a scenario half way; a privileged systemd
+# container left behind keeps running until someone notices. tools/clean.sh
+# finds anything that escapes this by the label.
+cid=
+trap '[ -z "$cid" ] || docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+trap 'exit 130' INT TERM
+
 fail=0
 bad() { echo "FAIL [$scenario]: $*" >&2; fail=1; }
 
 echo "--- systemd-analyze verify"
-if ! out="$(docker run --rm -v "$src:/src:ro" "$IMAGE" sh -c "$setup" sh verify 2>&1)"; then
+if ! out="$(docker run --rm --label org.sonora=1 -v "$src:/src:ro" "$IMAGE" sh -c "$setup" sh verify 2>&1)"; then
   scenario=verify bad "systemd-analyze verify"
 fi
 # verify also reports on stock units it loads; only ours matter here.
@@ -93,7 +100,7 @@ run() {
   local ui="$2"
   shift 2
   echo "--- $scenario"
-  cid="$(docker run -d --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+  cid="$(docker run -d --label org.sonora=1 --privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
     --tmpfs /run --tmpfs /run/lock -v "$src:/src:ro" "$IMAGE" sh -c "$setup" sh "$ui" "$@")"
   case "$scenario" in
     plain)
@@ -121,6 +128,7 @@ run() {
     docker exec "$cid" systemctl --no-pager status 'sonora-*' 2>&1 | tail -40 >&2 || true
   fi
   docker rm -f "$cid" >/dev/null
+  cid=
 }
 
 run plain healthy
