@@ -17,7 +17,9 @@
 
 namespace sonora::plugin_host {
 
-class StatePaths;  // state_paths.h
+class StatePaths;     // state_paths.h
+class EditorDisplay;  // editor.h
+class EditorWindow;
 
 enum class PortKind { Audio, Control, Atom, CV, Other };
 
@@ -228,6 +230,22 @@ public:
     // Whether a dense parameter is a program change (VST3
     // kIsProgramChange): never one a preset sets again over a state.
     virtual bool is_program_change(uint32_t /*dense*/) const { return false; }
+    // The plugin's own editor (editor.h), on the main thread. Attaches it
+    // into `window`, which the caller shows once this returns true; false,
+    // with the reason, when the plugin has none this host can open. Its
+    // descriptors and timers are registered on `display`, owned by this
+    // processor, and dropped by close_editor() whether the plugin removed
+    // them or not.
+    virtual bool open_editor(EditorDisplay&, EditorWindow&, std::string& error) {
+        error = info_.format == "lv2" ? info_.name + ": LV2 plugin UIs are not hosted by this build yet"
+                                      : info_.name + " has no editor this host can open";
+        return false;
+    }
+    // Before the window goes. Nothing when no editor is open.
+    virtual void close_editor() {}
+    // The operator resized the window: the size the editor took, which may
+    // differ (its constraints), or the one it keeps when it cannot resize.
+    virtual void editor_resized(uint32_t& /*width*/, uint32_t& /*height*/) {}
     // Display text for a value (host_control.h DescribeValue). The main thread.
     virtual bool describe_value(uint32_t dense, float value, std::string& out) const {
         if (dense >= param_count()) return false;

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "vst3_host.h"
 
+#include "editor.h"
 #include "loader.h"
 
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/base/ipluginbase.h"
+#include "pluginterfaces/gui/iplugview.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstcomponent.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
@@ -386,6 +388,122 @@ private:
     const std::vector<std::pair<uint32_t, uint32_t>>* by_id_ = nullptr;
     int bypass_dense_ = -1;
     V::IEditController* controller_ = nullptr;
+};
+
+constexpr int32 kMaxViewSide = 16384;
+
+bool view_size_ok(const Steinberg::ViewRect& r) {
+    const int32 w = r.getWidth(), h = r.getHeight();
+    return w >= 1 && h >= 1 && w <= kMaxViewSide && h <= kMaxViewSide;
+}
+
+// What an editor's view is given (IPlugFrame) and asks its frame for on
+// Linux (Linux::IRunLoop): resizes, and the descriptors and timers its
+// toolkit needs, all called back on the host's main thread (editor.h).
+// Handlers are held (addRef) while registered, and every one is let go when
+// the editor closes, so a view that forgets to unregister is never called
+// after removed().
+class PlugFrame final : public Steinberg::IPlugFrame, public Steinberg::Linux::IRunLoop {
+public:
+    PlugFrame(EditorDisplay& display, EditorWindow& window) : display_(display), window_(window) {}
+    ~PlugFrame() { drop_all(); }
+    PlugFrame(const PlugFrame&) = delete;
+    PlugFrame& operator=(const PlugFrame&) = delete;
+
+    void set_view(Steinberg::IPlugView* view) { view_ = view; }
+    void drop_all() {
+        display_.remove_owner(this);
+        for (const Held& h : held_) h.handler->release();
+        held_.clear();
+    }
+
+    tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
+        if (iid_is(iid, Steinberg::FUnknown_iid) || iid_is(iid, Steinberg::IPlugFrame_iid)) {
+            *obj = static_cast<Steinberg::IPlugFrame*>(this);
+            return Steinberg::kResultOk;
+        }
+        if (iid_is(iid, Steinberg::Linux::IRunLoop_iid)) {
+            *obj = static_cast<Steinberg::Linux::IRunLoop*>(this);
+            return Steinberg::kResultOk;
+        }
+        *obj = nullptr;
+        return Steinberg::kNoInterface;
+    }
+    SONORA_UNCOUNTED
+
+    // The window follows, then the view is told (onSize) before this
+    // returns, as VST3 asks. A view that resizes again from inside its
+    // onSize gets its window resized and is not called back a second time.
+    tresult PLUGIN_API resizeView(Steinberg::IPlugView* view, Steinberg::ViewRect* r) override {
+        if (!view || view != view_ || !r || !view_size_ok(*r)) return Steinberg::kInvalidArgument;
+        const int32 w = r->getWidth(), h = r->getHeight();
+        window_.set_size(uint32_t(w), uint32_t(h), window_.resizable());
+        if (!in_resize_) {
+            in_resize_ = true;
+            Steinberg::ViewRect now(0, 0, w, h);
+            view->onSize(&now);
+            in_resize_ = false;
+        }
+        return Steinberg::kResultTrue;
+    }
+
+    tresult PLUGIN_API registerEventHandler(Steinberg::Linux::IEventHandler* handler,
+                                            Steinberg::Linux::FileDescriptor fd) override {
+        if (!handler || fd < 0) return Steinberg::kInvalidArgument;
+        handler->addRef();
+        const EditorDisplay::Id id = display_.watch_fd(fd, this, [handler, fd] { handler->onFDIsSet(fd); });
+        held_.push_back({id, handler, false});
+        return Steinberg::kResultTrue;
+    }
+    tresult PLUGIN_API unregisterEventHandler(Steinberg::Linux::IEventHandler* handler) override {
+        if (!handler) return Steinberg::kInvalidArgument;
+        let_go(handler, false);
+        return Steinberg::kResultTrue;
+    }
+    tresult PLUGIN_API registerTimer(Steinberg::Linux::ITimerHandler* handler,
+                                     Steinberg::Linux::TimerInterval ms) override {
+        if (!handler) return Steinberg::kInvalidArgument;
+        handler->addRef();
+        const auto interval = static_cast<uint32_t>(std::min<Steinberg::Linux::TimerInterval>(ms, 60'000));
+        const EditorDisplay::Id id = display_.add_timer(interval, this, [handler] { handler->onTimer(); });
+        held_.push_back({id, handler, true});
+        return Steinberg::kResultTrue;
+    }
+    tresult PLUGIN_API unregisterTimer(Steinberg::Linux::ITimerHandler* handler) override {
+        if (!handler) return Steinberg::kInvalidArgument;
+        let_go(handler, true);
+        return Steinberg::kResultTrue;
+    }
+
+private:
+    struct Held {
+        EditorDisplay::Id id;
+        FUnknown* handler;
+        bool timer;
+    };
+    void let_go(FUnknown* handler, bool timer) {
+        // Moved out first: a release may run the plugin's destructor, which
+        // may unregister something else.
+        std::vector<Held> going;
+        for (auto it = held_.begin(); it != held_.end();) {
+            if (it->handler == handler && it->timer == timer) {
+                going.push_back(*it);
+                it = held_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (const Held& h : going) {
+            display_.remove(h.id);
+            h.handler->release();
+        }
+    }
+
+    EditorDisplay& display_;
+    EditorWindow& window_;
+    Steinberg::IPlugView* view_ = nullptr;
+    std::vector<Held> held_;
+    bool in_resize_ = false;
 };
 
 // Component state handed to the controller at load. Not RT.
@@ -800,6 +918,7 @@ public:
         : context_(context), module_(module), cls_(cls), handler_(latency_dirty_) {}
 
     ~Vst3Processor() override {
+        close_editor();
         for (Instance& i : inst_) {
             if (i.processing) i.processor->setProcessing(false);
             if (i.active) i.component->setActive(false);
@@ -1356,6 +1475,80 @@ public:
     float param_default(uint32_t dense) const override { return info_.ports[dense_ports_[dense]].def; }
     int bypass_param() const noexcept SONORA_RT override { return bypass_dense_; }
 
+    // The controller's view, attached into our toplevel as an X11 embed.
+    // The frame is set before attached(): a Linux view asks it for the run
+    // loop while it attaches.
+    bool open_editor(EditorDisplay& display, EditorWindow& window, std::string& error) override {
+        if (view_) {
+            error = who_ + ": its editor is already open";
+            return false;
+        }
+        if (!controller_) {
+            error = who_ + " has no edit controller, so no editor";
+            return false;
+        }
+        Steinberg::IPlugView* view = controller_->createView(V::ViewType::kEditor);
+        if (!view) {
+            error = who_ + " has no editor of its own";
+            return false;
+        }
+        if (view->isPlatformTypeSupported(Steinberg::kPlatformTypeX11EmbedWindowID) != Steinberg::kResultTrue) {
+            view->release();
+            error = who_ + " has no X11 editor";
+            return false;
+        }
+        frame_ = std::make_unique<PlugFrame>(display, window);
+        frame_->set_view(view);
+        view->setFrame(frame_.get());
+        // A size it cannot give, or one no screen holds, is not trusted:
+        // the window opens at a default and the editor may resize it.
+        Steinberg::ViewRect r{};
+        uint32_t w = 640, h = 480;
+        if (view->getSize(&r) == Steinberg::kResultTrue && view_size_ok(r)) {
+            w = uint32_t(r.getWidth());
+            h = uint32_t(r.getHeight());
+        }
+        window.set_size(w, h, view->canResize() == Steinberg::kResultTrue);
+        if (view->attached(reinterpret_cast<void*>(static_cast<uintptr_t>(window.native_handle())),
+                           Steinberg::kPlatformTypeX11EmbedWindowID) != Steinberg::kResultTrue) {
+            view->setFrame(nullptr);
+            view->release();
+            frame_.reset();
+            error = who_ + " refused to attach its editor";
+            return false;
+        }
+        view_ = view;
+        return true;
+    }
+
+    void close_editor() override {
+        if (!view_) return;
+        view_->removed();
+        view_->setFrame(nullptr);
+        view_->release();
+        view_ = nullptr;
+        frame_.reset();
+    }
+
+    void editor_resized(uint32_t& width, uint32_t& height) override {
+        if (!view_) return;
+        Steinberg::ViewRect r(0, 0, int32(std::min<uint32_t>(width, kMaxViewSide)),
+                              int32(std::min<uint32_t>(height, kMaxViewSide)));
+        if (view_->canResize() != Steinberg::kResultTrue) {
+            Steinberg::ViewRect keep{};
+            if (view_->getSize(&keep) == Steinberg::kResultTrue && view_size_ok(keep)) {
+                width = uint32_t(keep.getWidth());
+                height = uint32_t(keep.getHeight());
+            }
+            return;
+        }
+        view_->checkSizeConstraint(&r);
+        if (!view_size_ok(r)) return;
+        view_->onSize(&r);
+        width = uint32_t(r.getWidth());
+        height = uint32_t(r.getHeight());
+    }
+
 private:
     struct Instance {
         V::IComponent* component = nullptr;
@@ -1521,6 +1714,9 @@ private:
     std::vector<ProgramParam> program_params_;  // writable kIsProgramChange ones, one per unit
     static constexpr int32 kOutputQueues = 256;
     std::atomic<uint32_t> latency_{0};  // written by the main thread, read by the processing one
+    // The open editor, main thread only.
+    Steinberg::IPlugView* view_ = nullptr;
+    std::unique_ptr<PlugFrame> frame_;
 };
 
 }  // namespace
