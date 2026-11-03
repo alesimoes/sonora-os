@@ -171,6 +171,17 @@ public:
     // Bounds on the output stay on check/check_le, held in every build.
     void check_time_le(const std::string& what, double value, double bar, const std::string& unit,
                        const std::string& note = {});
+    // A real-time period bar on a block's wall-clock cost (the worst block
+    // must fit the audio period), as check_time_le with the bar
+    //     period_us x max(1, kernel_us / reference_kernel_reference_us()),
+    // where kernel_us is the reference kernel's per-block cost timed around
+    // the render (reference_kernel_us). The period is held as it stands on
+    // a machine at least as fast as the reference machine of ADR-0011 §3.5;
+    // a slower or loaded one (a parallel ctest) stretches it by the
+    // slowdown the kernel saw, so the bar measures the code and not the
+    // neighbours. It never tightens the period. Both figures are in the note.
+    void check_period_le(const std::string& what, double value_us, double period_us, double kernel_us,
+                         const std::string& note = {});
     void info(const std::string& what, double value, const std::string& unit,
               const std::string& note = {});
     void fail(const std::string& why);
