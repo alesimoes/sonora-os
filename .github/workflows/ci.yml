@@ -589,6 +589,11 @@ jobs:
       - name: Display fallback units under systemd
         run: tools/test-display-fallback.sh
 
+      # The shipped rc.xml under headless labwc 0.8.3, against a run with
+      # labwc's defaults: no compositor chord or desktop menu, clicks reach the UI.
+      - name: labwc kiosk bindings (keys, desktop menu, client clicks)
+        run: tools/test-labwc-kiosk.sh
+
       # The image installs the copies under iso/, not audio-stack/ itself, so
       # an edit that skipped tools/sync-audio-stack.sh would ship the old
       # tuning while every container test (which reads audio-stack/) passed.
