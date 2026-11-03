@@ -73,6 +73,7 @@
 #include "sonora/native/fet.h"
 #include "sonora/native/gate.h"
 #include "sonora/native/limiter.h"
+#include "sonora/native/mixbus.h"
 #include "sonora/native/reverb.h"
 #include "sonora/native/saturator.h"
 #include "sonora/native/tape.h"
@@ -92,6 +93,7 @@ measure::Config opto_golden_config();
 measure::Config fet_golden_config();
 measure::Config tape_golden_config();
 measure::Config saturator_golden_config();
+measure::Config mixbus_golden_config();
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -166,6 +168,9 @@ const Target kTargets[] = {
     // leaves every state at zero, so the preroll is free.
     {"saturator", [] { return native::make_saturator(); }, native::suites::saturator_golden_config, true,
      {"drive", 30.0f}, {{"quality", 2.0f}}},
+    // Silence leaves the detectors and the side-chain filter at zero.
+    {"mixbus", [] { return native::make_mixbus(); }, native::suites::mixbus_golden_config, true,
+     {"threshold", -32.0f}, {}},
 };
 
 struct Case {

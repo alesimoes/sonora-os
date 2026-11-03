@@ -476,6 +476,17 @@ are theirs to settle in the acceptance PR.
 - Automation (DAW 4) interpolates in the stored value's space: VST3 in
   normalised space, as VST3 hosts do; LV2 in plain space, or log space for
   a port marked logarithmic.
+- *Amended 2026-11-03 (host wire 5, #250 review).* A lane on a parameter
+  that takes only some values of its range holds each point's value up to
+  the next point instead of interpolating: a ramp from choice 0 to 3 would
+  walk the plugin through 1 and 2. The host says which in `Loaded`:
+  `ParamDesc.stepped`, set for an LV2 `lv2:toggled`, `lv2:enumeration` or
+  `lv2:integer` port and a VST3 parameter with a `stepCount` (below 4096,
+  as the probe record counts them). The plan builder adds a hold point at
+  the next point's frame (a step, as `auto_lane_value` reads two points at
+  one frame); the audio thread is unchanged. Values are held, never
+  snapped: which choice a value between two selects is the plugin's own
+  rounding (VST3 floors), so the engine does not guess it.
 
 **5.3 Crash and restart: a region is never reused.**
 

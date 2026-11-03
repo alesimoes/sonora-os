@@ -145,6 +145,7 @@ const char* const kSleep = "urn:sonora:test#sleep";
 const char* const kCrash = "urn:sonora:test#crash";
 const char* const kLiar = "urn:sonora:test#liar";
 const char* const kWorker = "urn:sonora:test#worker";
+const char* const kNan = "urn:sonora:test#nan";
 
 uint64_t now_ns() {
     return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -519,6 +520,46 @@ int scenario_lanes(const Args& a) {
     check(rig.until([&] { return rig.hosting->host_value(500, "gain", v) && v == -12.f; }, 5000),
           "the host reads the lane's value for gain");
     if (v != -12.f) std::printf("  gain: %g\n", double(v));
+    return failures ? 1 : 0;
+}
+
+// #250 review: two inserts, the lane on a parameter of the SECOND instance,
+// and that parameter an LV2 toggle. The running host's table says it is
+// stepped (host wire 5), so the plan holds 0 up to the next point instead of
+// ramping through the values between; the lane names instance 1, and the
+// host reads its value there, not on the first insert.
+int scenario_lanes_second_insert(const Args& a) {
+    std::printf("lanes_second_insert: eg-amp then the NaN plugin, its toggle automated\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.apply(insert_op(100, 501, 1, kNan));
+    // 1 is an hour away: the transport never reaches it, so the plugin
+    // never writes a NaN; the plan still has to hold 0 until then.
+    EditAutomation toggle{100, AutomationParam::Plugin, 0, kMaxInteger, {{0, 0.f}, {48000LL * 3600, 1.f}}};
+    toggle.insert = 501;
+    toggle.key = "nan";
+    rig.apply(toggle);
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.chain_node(0)->plugin_lane_count != 0; }, 15000),
+          "bound, with its lane, once Ready");
+    const PlaybackPlan* p = rig.session->plans().current();
+    if (p == nullptr || rig.chain_node(0)->plugin_lane_count != 1) {
+        check(false, "one lane on the chain");
+        return 1;
+    }
+    const PlanPluginLane& lane = p->plugin_lanes[rig.chain_node(0)->first_plugin_lane];
+    check(lane.instance == 1, "the lane names the second instance");
+    check(lane.count == 3, "a toggle's lane holds 0 to the next point: one hold point added");
+    if (lane.count == 3) {
+        const PlanAutoPoint* pts = p->auto_points + lane.first;
+        check(auto_lane_value(pts, lane.count, 48000LL * 1800) == 0.f, "half way there, still 0, not 0.5");
+    }
+    float v = -1.f;
+    check(rig.until([&] { return rig.hosting->host_value(501, "nan", v) && v == 0.f; }, 5000),
+          "the second instance reads the lane's value");
+    float g = 0.f;
+    check(rig.hosting->host_value(500, "gain", g) && g == 0.f, "the first instance's gain is untouched");
     return failures ? 1 : 0;
 }
 
@@ -2377,6 +2418,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "refused") rc = scenario_refused(a);
     else if (a.scenario == "params") rc = scenario_params(a);
     else if (a.scenario == "lanes") rc = scenario_lanes(a);
+    else if (a.scenario == "lanes_second_insert") rc = scenario_lanes_second_insert(a);
     else if (a.scenario == "down_keeps_latency") rc = scenario_down_keeps_latency(a);
     else if (a.scenario == "gestures") rc = scenario_gestures(a);
     else if (a.scenario == "server") rc = scenario_server(a);

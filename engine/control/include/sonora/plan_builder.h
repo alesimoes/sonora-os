@@ -52,12 +52,15 @@ using ChainResolver = std::function<void(const model::TrackEdit& track, uint32_t
 // Where a plugin lane lands in the chain the resolver bound (ADR-0027 §5):
 // the instance's position in that chain and the dense index its host's scan
 // gave the key, with the parameter's range, to which the builder clamps the
-// lane's points as a knob's value is clamped.
+// lane's points as a knob's value is clamped. A lane on a `stepped`
+// parameter (contracts/plugin ParamDesc) holds each point's value up to the
+// next point instead of ramping through the values between.
 struct LaneTarget {
     uint32_t instance = 0;
     uint32_t param = 0;
     float min = 0.0f;
     float max = 1.0f;
+    bool stepped = false;
 };
 // Resolves ADR-0012's stable key of a lane on `insert`, an insert of
 // `track`, against the instance table of the chain bound for it in the same
