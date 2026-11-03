@@ -530,16 +530,33 @@ write)
     sparse "$PARTTEST" 2G
     dd if="$ISO" of="$PARTTEST" bs=4M conv=notrunc status=none
     if [[ "$held" == *stale* ]]; then
-      # The kernel keeps the old partition 3 when dd rewrites the MBR.
       echo "start=$(( p3_start + 2048 )), type=83" | sfdisk -q --append --no-reread --no-tell-kernel --wipe never "$PARTTEST" >/dev/null 2>&1
-      attach PT_LOOP "$PARTTEST"
+    fi
+    attach PT_LOOP "$PARTTEST"
+    # Locked from here to the end of the case. /dev is devtmpfs, so the udevd
+    # of whatever runs the container (the Docker Desktop VM, the CI runner)
+    # sees every close-after-write here and re-reads the table itself: it
+    # dropped the stale p3 on WSL2 6.6.87.2 and on the nightly runner, which
+    # stopped the run before any boot, and it could add p3 for the writer in
+    # the other two cases. udevd leaves a disk alone while it is flock'ed.
+    exec 8<"$PT_LOOP"
+    flock -x 8
+    if [[ "$held" == *stale* ]]; then
+      # The kernel keeps the old partition 3 when dd rewrites the MBR.
       dd if="$ISO" of="$PT_LOOP" bs=4M conv=fsync status=none
       stale_start="$(cat "/sys/class/block/$(basename "$PT_LOOP")/$(basename "$PT_LOOP")p3/start" 2>/dev/null || echo none)"
+      # An environment that still drops it cannot build this case at all: say
+      # so and go on, rather than stop every later check. Nightly sets
+      # WRITE_USB_REQUIRE_STALE_P3=1 so the case cannot quietly vanish there.
+      if [[ "$stale_start" != "$(( p3_start + 2048 ))" && "${WRITE_USB_REQUIRE_STALE_P3:-0}" != 1 ]]; then
+        info "skipped: $held -- kernel $(uname -r) did not keep the stale partition 3 (found '$stale_start', wanted $(( p3_start + 2048 ))) after dd rewrote the table; WRITE_USB_REQUIRE_STALE_P3=1 makes this a failure"
+        exec 8<&-
+        losetup -d "$PT_LOOP"
+        continue
+      fi
       expect "precondition: the kernel holds a stale partition 3 at sector $stale_start" \
         "precondition failed: the kernel's partition 3 is at '$stale_start', not $(( p3_start + 2048 ))" \
         test "$stale_start" == "$(( p3_start + 2048 ))"
-    else
-      attach PT_LOOP "$PARTTEST"
     fi
     mkdir -p /mnt/held
     if [[ "$held" == "the whole disk" ]]; then mount -o ro "$PT_LOOP" /mnt/held; else mount -o ro "${PT_LOOP}p1" /mnt/held; fi
@@ -554,6 +571,7 @@ write)
     expect "partition 3 reaches the kernel with $held mounted ($found)" \
       "partition 3 did not reach the kernel with $held mounted: $found" \
       test "$found" == "${PT_LOOP}p3"
+    exec 8<&-
     umount /mnt/held
     losetup -d "$PT_LOOP"
   done

@@ -18,6 +18,8 @@
   - **Amendment of 2026-10-19** (the scan worker and the catalog, after
     the 2026-10-14 one): **accepted by the owner, 2026-10-19**, with the
     architect's changes A–E and the owner's answers to Q1–Q4 (PR #88).
+  - **Amendment of 2026-11-03** (the operator's block list, after the
+    2026-11-01 one): accepted on the recommended defaults.
   - **Two owner decisions**, each with a default this ADR builds on until
     the owner rules ("For the owner"). Neither blocks the contract.
 - Date: 2026-10-13
@@ -1273,11 +1275,62 @@ before anything in the plan writes against it.
    chain with `key_channels` from it. They bump the session format and are
    scheduled with the other format changes.
 
+**Amendment, 2026-11-03: the operator's block list (BACKLOG Track 4, "Plugin
+manager", engine half)** (accepted on the recommended defaults). The scan
+already blocks a plug-in whose probe crashes or hangs (item 4 of the
+2026-10-19 amendment) and probes it again on a rescan. What it lacked is
+the operator's own "never run this one": a plug-in that probes cleanly but
+misbehaves in a session, nags, or simply is not wanted on this machine.
+Pro Tools' Plug-in Manager and Logic's Plug-in Manager both have it.
+
+1. **A setting, not a cache.** The list is the operator's decision and
+   cannot be regenerated, so it lives in the config folder
+   (`~/.config/sonora/plugin-blocklist.json`, beside the round trip),
+   resolved by the entry layer (`--plugin-block-list`, `""` keeps it in
+   memory), never in `~/.cache`, which the operator may delete. Version 1:
+   `{"version": 1, "blocked": [{"id", "name"}]}`, the host id (an LV2 URI,
+   `vst3:` and the class id) and the name last scanned. Written durably
+   (temporary file, sync, rename, directory sync) by the scan worker's
+   thread, which also reads it, before the cache, at start. An unreadable
+   file is renamed `<file>.unreadable` and said once, never written over;
+   the run starts with nothing blocked. Capped at 4096 plug-ins and 1 MiB.
+2. **Blocked means none of its code runs.** No catalog probe, no rescan
+   probe, no chain-start probe. Where the scan would have probed it, it
+   caches a stand-in record, `Blocked` with the reason
+   `kBlockedByOperator`, under its bundle, so the bundle settles (its other
+   plug-ins are not probed again at every start) and the plug-in stays in
+   the catalog for the operator to find and unblock. The VST3 `--list`
+   child of a changed bundle still loads its factory: enumeration is per
+   bundle, not per plug-in, and refusing the bundle would hide its other
+   plug-ins.
+3. **Refused in one place, in one set of words.** The worker masks every
+   record it publishes for a blocked id (the catalog entry and
+   `Catalog::probes`) as `Blocked`, "it is blocked in the plug-in manager".
+   So `AddInsert`/`ReplaceInsert` are refused through the existing
+   `catalog_refusal`, and a chain start takes the masked record and refuses
+   the insert, with no new path in `PluginHosting`. A probe already made is
+   kept under the mask: unblocking it costs nothing.
+4. **Unblocking probes only what was never probed,** and as a catalog
+   probe, so not during a take (change D); a scan is started for it when
+   none is running. A chain already running when its plug-in is blocked
+   keeps it until it next starts: tearing down audio on a click in a
+   manager is worse than one more block of a plug-in the operator is
+   already moving away from.
+5. **The commands, no new message.** `plugin.block` and `plugin.unblock`,
+   argument `"<lv2|vst3> <id>"` as the catalog names the plug-in. Both are
+   allowed during a take (blocking runs nothing; an unblock waits), both
+   are idempotent, and a plug-in the catalog does not have (and the list
+   does not hold) is refused by name. The catalog already carries
+   `usable`/`refusal`; the plug-in manager's own field (blocked, as
+   distinct from refused by its probe) is the UI slice's protocol bump.
+   Favourites are the interface's (how the operator looks at the catalog,
+   not what the engine may run): not in this amendment.
+
 **Amendment, 2026-11-03: editor windows in the host (BACKLOG
 `plugins.host.editors`, host slice)** (accepted on the recommended
 defaults). §4 fixed the messages (`OpenEditor`, `EditorOpened`,
 `EditorFailed`, `EditorClosed`); this fixes where an editor runs inside
-the host process. No contract change: wire 1, layout 1 and the probe record
+the host process. No contract change: the wire version (whatever #329 has made it), the layout version and the probe record
 are untouched.
 
 1. **The main thread, never the processing thread.** The view is created,

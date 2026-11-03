@@ -74,6 +74,10 @@ std::size_t track_bytes(const TrackEdit& t) {
     return n;
 }
 
+std::size_t lane_bytes(const AutomationLane& l) {
+    return kNodeOverhead + sizeof(AutomationLane) + l.points.size() * sizeof(AutomationPoint);
+}
+
 std::size_t marker_bytes(const MarkerList& m) {
     std::size_t n = kNodeOverhead + sizeof(MarkerList) + m.markers.size() * sizeof(Marker);
     for (const Marker& k : m.markers) n += k.name.size();
@@ -113,6 +117,10 @@ public:
                 });
             }
         }
+        for (const Bus& b : state.buses) {
+            for (const auto& l : b.automation) objects_.insert(l.get());
+        }
+        for (const auto& l : state.master_automation) objects_.insert(l.get());
     }
 
     bool has(const void* p) const { return objects_.count(p) != 0; }
@@ -155,8 +163,7 @@ Own own(const EditState& state, const EditState& previous, std::string* oversize
         }
         for (const auto& l : t->automation) {
             if (shared.has(l.get()) || !seen.insert(l.get()).second) continue;
-            o.bytes += kNodeOverhead + sizeof(AutomationLane) +
-                       l->points.size() * sizeof(AutomationPoint);
+            o.bytes += lane_bytes(*l);
         }
         for (const auto& p : t->midi_playlists) {
             if (shared.has(p.get()) || !seen.insert(p.get()).second) continue;
@@ -182,6 +189,16 @@ Own own(const EditState& state, const EditState& previous, std::string* oversize
             });
         }
     }
+    // The buses are copied with every state; their lanes are shared, and a
+    // lane up to kMaxAutomationPoints long is what a bus can make big.
+    const auto lanes = [&](const AutomationLanes& ls) {
+        for (const auto& l : ls) {
+            if (shared.has(l.get()) || !seen.insert(l.get()).second) continue;
+            o.bytes += lane_bytes(*l);
+        }
+    };
+    for (const Bus& b : state.buses) lanes(b.automation);
+    lanes(state.master_automation);
     if (state.markers != previous.markers && state.markers) {
         o.bytes += marker_bytes(*state.markers);
     }

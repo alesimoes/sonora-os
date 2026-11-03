@@ -90,6 +90,23 @@ int test_values() {
     return 0;
 }
 
+// A plugin lane is not clamped, so two finite points can differ by more than
+// a float holds. Interpolating in float made that segment infinite: drawn at
+// infinity, and never thinned.
+int test_wide_plugin_lane() {
+    const float big = 3.0e38f;
+    const AutomationLane l = lane_of(AutomationParam::Plugin, {{0, -big}, {2000, big}});
+    for (Frames f : {Frames{1}, Frames{500}, Frames{1500}}) {
+        OK(std::isfinite(lane_value_at(&l, f, 0.0f)));
+    }
+    OK(std::fabs(lane_value_at(&l, 500, 0.0f) + big / 2) <= big * 1e-6f);
+    OK(std::fabs(lane_value_at(&l, 1000, 0.0f)) <= big * 1e-6f);
+    // Collinear: the middle point adds nothing to the curve.
+    const std::vector<AutomationPoint> three{{0, -big}, {1000, 0.0f}, {2000, big}};
+    OK(thin_points(three, thin_tolerance(AutomationParam::Plugin)) == l.points);
+    return 0;
+}
+
 int test_operations() {
     ModelDocument doc(make_empty_session(2, kRate));
     std::string why;
@@ -970,8 +987,8 @@ int test_scene() {
 
 int main() {
     // Every test runs, so one failure does not hide the next.
-    const int failed = test_values() + test_operations() + test_stroke() + test_clip() +
-                       test_rows() + test_lane_height_follows_zoom() + test_gestures() +
+    const int failed = test_values() + test_wide_plugin_lane() + test_operations() +
+                       test_stroke() + test_clip() + test_rows() + test_lane_height_follows_zoom() + test_gestures() +
                        test_range_commands() + test_follow_ops() + test_follow_at_the_lane_cap() +
                        test_thin_exact() + test_undo_drops_the_picked_point() + test_tool_cycle() +
                        test_zoom_keeps_the_selection_still() + test_range_across_tracks() +

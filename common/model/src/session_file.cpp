@@ -59,7 +59,10 @@ constexpr Name<AutomationParam> kAutomationParams[] = {
     {"volume", AutomationParam::Volume},
     {"pan", AutomationParam::Pan},
     {"plugin", AutomationParam::Plugin},
-    {"volume_trim", AutomationParam::VolumeTrim}};
+    {"volume_trim", AutomationParam::VolumeTrim},
+    {"mute", AutomationParam::Mute},
+    {"send_level", AutomationParam::SendLevel},
+    {"send_pan", AutomationParam::SendPan}};
 
 template <typename E, std::size_t N>
 const char* name_of(const Name<E> (&table)[N], E v) {
@@ -493,10 +496,60 @@ bool v16_to_v17(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v17 -> v18 (ADR-0027 §9): every aux bus and the monitor bus gain
+// "automation": [], after their last key. A version 17 file that already
+// holds either, or a mute or send lane on a track, is refused, as a
+// version 17 reader would refuse it.
+bool v17_to_v18(Value& root, std::vector<Repair>&, std::string& error) {
+    const Value* tracks = root.find("tracks");
+    if (tracks != nullptr && tracks->is_array()) {
+        for (std::size_t i = 0; i < tracks->items().size(); ++i) {
+            const Value& t = tracks->items()[i];
+            const Value* lanes = t.is_object() ? t.find("automation") : nullptr;
+            if (lanes == nullptr || !lanes->is_array()) continue;
+            for (std::size_t k = 0; k < lanes->items().size(); ++k) {
+                const Value& l = lanes->items()[k];
+                if (!l.is_object()) continue;
+                const Value* param = l.find("param");
+                const std::string name =
+                    param != nullptr && param->is_string() ? param->text() : "";
+                if (name == "mute" || name == "send_level" || name == "send_pan" ||
+                    l.find("send") != nullptr) {
+                    error = "tracks[" + std::to_string(i) + "].automation[" + std::to_string(k) +
+                            "] is a mute or send lane, which version 17 does not define";
+                    return false;
+                }
+            }
+        }
+    }
+    Value* buses = root.find("buses");
+    if (buses != nullptr && buses->is_array()) {
+        for (std::size_t i = 0; i < buses->items().size(); ++i) {
+            Value& b = buses->items()[i];
+            if (!b.is_object()) continue;
+            if (b.find("automation") != nullptr) {
+                error = "buses[" + std::to_string(i) +
+                        "] has \"automation\", which version 17 does not define";
+                return false;
+            }
+            b.set("automation", Value::array());
+        }
+    }
+    Value* master = root.find("monitor_bus");
+    if (master != nullptr && master->is_object()) {
+        if (master->find("automation") != nullptr) {
+            error = "monitor_bus has \"automation\", which version 17 does not define";
+            return false;
+        }
+        master->set("automation", Value::array());
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
      v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
-     v16_to_v17}};
+     v16_to_v17, v17_to_v18}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -664,6 +717,30 @@ Value send_value(const Send& sd, const SendMix& m) {
     v.set("follow_pan", Value::boolean(m.follow_pan));
     v.set("mute", Value::boolean(m.mute));
     v.set("pre", Value::boolean(m.pre));
+    return v;
+}
+
+// A strip's "automation": a plugin lane carries "insert" and "key", a send
+// lane "send", any other neither.
+Value lanes_value(const AutomationLanes& lanes) {
+    Value v = Value::array();
+    for (const auto& l : lanes) {
+        Value& lv = v.push(Value::object());
+        lv.set("param", Value::string(name_of(kAutomationParams, l->param)));
+        if (l->param == AutomationParam::Plugin) {
+            lv.set("insert", id_value(l->insert));
+            lv.set("key", Value::string(l->key));
+        }
+        if (l->param == AutomationParam::SendLevel || l->param == AutomationParam::SendPan) {
+            lv.set("send", id_value(l->send));
+        }
+        Value& points = lv.set("points", Value::array());
+        for (const AutomationPoint& pt : l->points) {
+            Value& e = points.push(Value::array());
+            e.push(integer(pt.at));
+            e.push(Value::number_float(pt.value));
+        }
+    }
     return v;
 }
 
@@ -945,10 +1022,11 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
     return rd.checked(detail::settings_problem(s, where), root, "", where);
 }
 
+// The Master's lanes, "automation", are read_master_automation's.
 bool read_bus(Reader& rd, const Value& root, MonitorBus& b) {
     const Value& v = *root.find("monitor_bus");
     const std::string p = "monitor_bus";
-    if (!rd.keys(v, p, {"outputs", "gain_db", "pan_law_db"})) return false;
+    if (!rd.keys(v, p, {"outputs", "gain_db", "pan_law_db", "automation"})) return false;
     std::array<Frames, 2> outs{};
     if (!rd.range(v, p, "outputs", outs)) return false;
     if (outs[0] > 0xFFFF || outs[1] > 0xFFFF) {
@@ -1449,23 +1527,27 @@ bool read_inserts(Reader& rd, const Value& track, const std::string& path, Track
 }
 
 // "automation": [{"param": "volume", "points": [[at, value], ...]}, ...]
-// (ADR-0027 §6).
-bool read_automation(Reader& rd, const Value& track, const std::string& path, TrackEdit& t) {
+// (ADR-0027 §6), a plugin lane with "insert" and "key", a send lane with
+// "send" (§9). The shape only; the strip's check judges the lanes.
+bool read_lanes(Reader& rd, const Value& strip, const std::string& path, AutomationLanes& out) {
     const Value* list = nullptr;
-    if (!rd.array(track, path, "automation", list)) return false;
+    if (!rd.array(strip, path, "automation", list)) return false;
     for (std::size_t i = 0; i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path(path + ".automation", i);
         auto lane = std::make_shared<AutomationLane>();
         const Value* points = nullptr;
         const Value* param = v.is_object() ? v.find("param") : nullptr;
-        const bool plugin = param != nullptr && param->is_string() && param->text() == "plugin";
-        if (!(plugin ? rd.keys(v, p, {"param", "insert", "key", "points"})
-                     : rd.keys(v, p, {"param", "points"})) ||
-            !rd.choice(v, p, "param", kAutomationParams, lane->param) ||
+        const std::string name = param != nullptr && param->is_string() ? param->text() : "";
+        const bool plugin = name == "plugin";
+        const bool send = name == "send_level" || name == "send_pan";
+        const bool keys = plugin ? rd.keys(v, p, {"param", "insert", "key", "points"})
+                          : send ? rd.keys(v, p, {"param", "send", "points"})
+                                 : rd.keys(v, p, {"param", "points"});
+        if (!keys || !rd.choice(v, p, "param", kAutomationParams, lane->param) ||
             (plugin && (!rd.id(v, p, "insert", lane->insert) ||
                         !rd.text(v, p, "key", lane->key))) ||
-            !rd.array(v, p, "points", points)) {
+            (send && !rd.id(v, p, "send", lane->send)) || !rd.array(v, p, "points", points)) {
             return false;
         }
         if (points->items().size() > kMaxAutomationPoints) {
@@ -1485,10 +1567,25 @@ bool read_automation(Reader& rd, const Value& track, const std::string& path, Tr
             }
             lane->points.push_back(AutomationPoint{at, value});
         }
-        t.automation.push_back(std::move(lane));
+        out.push_back(std::move(lane));
     }
+    return true;
+}
+
+bool read_automation(Reader& rd, const Value& track, const std::string& path, TrackEdit& t) {
+    if (!read_lanes(rd, track, path, t.automation)) return false;
     std::string where;
     return rd.checked(detail::automation_problem(t, where), track, path, where);
+}
+
+// "monitor_bus.automation": the Master's lanes (ADR-0027 §9).
+bool read_master_automation(Reader& rd, const Value& root, EditState& edit) {
+    const Value& v = *root.find("monitor_bus");
+    const std::string p = "monitor_bus";
+    if (!read_lanes(rd, v, p, edit.master_automation)) return false;
+    std::string where;
+    return rd.checked(detail::lanes_problem(detail::master_strip(), edit.master_automation, where),
+                      v, p, where);
 }
 
 bool read_sends(Reader& rd, const Value& strip, const std::string& path,
@@ -1532,7 +1629,9 @@ bool read_buses(Reader& rd, const Value& root, EditState& edit, MixState& mix) {
     for (std::size_t i = 0; i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path("buses", i);
-        if (!rd.keys(v, p, {"id", "name", "gain_db", "pan", "mute", "solo", "output", "sends"})) {
+        if (!rd.keys(v, p,
+                     {"id", "name", "gain_db", "pan", "mute", "solo", "output", "sends",
+                      "automation"})) {
             return false;
         }
         Bus b;
@@ -1554,6 +1653,11 @@ bool read_buses(Reader& rd, const Value& root, EditState& edit, MixState& mix) {
         std::string where;
         if (!rd.checked(detail::bus_mix_problem(m, where), v, p, where)) return false;
         if (!read_sends(rd, v, p, b.sends, mix)) return false;
+        if (!read_lanes(rd, v, p, b.automation)) return false;
+        if (!rd.checked(detail::lanes_problem(detail::lane_strip(b), b.automation, where), v, p,
+                        where)) {
+            return false;
+        }
         edit.buses.push_back(std::move(b));
         mix.buses.push_back(m);
     }
@@ -1799,6 +1903,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
     bus.set("outputs", pair(s.mix.bus.outputs[0], s.mix.bus.outputs[1]));
     bus.set("gain_db", Value::number_float(s.mix.bus.gain_db));
     bus.set("pan_law_db", Value::number_float(s.mix.bus.pan_law_db));
+    bus.set("automation", lanes_value(s.edit->master_automation));
 
     Value& sources = root.set("sources", Value::array());
     for (const Source& src : s.sources->sources) sources.push(source_value(src));
@@ -1845,21 +1950,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
             for (const Send& sd : t.sends) sends.push(send_value(sd, *s.mix.find_send(sd.id)));
             tv.set("output", id_value(t.output));
             tv.set("automation_mode", Value::string(name_of(kAutomationModes, m.automation)));
-            Value& lanes = tv.set("automation", Value::array());
-            for (const auto& l : t.automation) {
-                Value& lv = lanes.push(Value::object());
-                lv.set("param", Value::string(name_of(kAutomationParams, l->param)));
-                if (l->param == AutomationParam::Plugin) {
-                    lv.set("insert", id_value(l->insert));
-                    lv.set("key", Value::string(l->key));
-                }
-                Value& points = lv.set("points", Value::array());
-                for (const AutomationPoint& pt : l->points) {
-                    Value& e = points.push(Value::array());
-                    e.push(integer(pt.at));
-                    e.push(Value::number_float(pt.value));
-                }
-            }
+            tv.set("automation", lanes_value(t.automation));
         }
         Value& pls = tv.set("playlists", Value::array());
         for (const auto& mp : t.midi_playlists) {
@@ -1900,6 +1991,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
         bv.set("output", id_value(b.output));
         Value& sends = bv.set("sends", Value::array());
         for (const Send& sd : b.sends) sends.push(send_value(sd, *s.mix.find_send(sd.id)));
+        bv.set("automation", lanes_value(b.automation));
     }
 
     Value& markers = root.set("markers", Value::array());
@@ -1993,6 +2085,7 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error,
     SequenceFiles files(sequences);
     if (!read_tracks(rd, root, *pool, files, *edit, mix)) return false;
     if (!read_buses(rd, root, *edit, mix)) return false;
+    if (!read_master_automation(rd, root, *edit)) return false;
     auto markers = std::make_shared<MarkerList>();
     if (!read_markers(rd, root, *markers)) return false;
     edit->markers = std::move(markers);

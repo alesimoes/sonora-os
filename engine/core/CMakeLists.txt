@@ -208,3 +208,10 @@ if(UNIX)
   target_link_libraries(test_take_kill PRIVATE sonora_core sonora_audiofile Threads::Threads)
   add_test(NAME take_kill COMMAND test_take_kill)
 endif()
+# engine.record.direct_io: the disk thread's write path and wake, measured by
+# hand on the medium (brain/research/disk-write-path.md). Built with the
+# tests so it cannot rot, never run by ctest. O_DIRECT is Linux's.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(measure_disk_write tests/posix/measure_disk_write.cpp)
+  target_link_libraries(measure_disk_write PRIVATE sonora_audiofile Threads::Threads)
+endif()

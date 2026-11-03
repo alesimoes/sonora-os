@@ -89,4 +89,9 @@ std::string encode_plugin_cache(const PluginCatalogCache& cache);
 // cap (then nothing is written, and the old file stays).
 bool save_plugin_cache(const std::string& path, const PluginCatalogCache& cache, std::string& why);
 
+// `text` to a temporary file beside `path`, synced, renamed over it and the
+// directory synced: the old file or the new one after a power cut, never
+// half of one. The parent directories are created. False, with `why`.
+bool write_file_durably(const std::string& path, const std::string& text, std::string& why);
+
 }  // namespace sonora

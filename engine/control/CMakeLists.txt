@@ -15,6 +15,7 @@ add_library(sonora_control STATIC
   src/plugin_hosting.cpp
   src/plugin_scanner.cpp
   src/plugin_catalog_cache.cpp
+  src/plugin_block_list.cpp
   src/factory_preset_reader.cpp
   src/session_saver.cpp
   src/active_folder.cpp

@@ -16,6 +16,11 @@ namespace sonora {
 // ADR-0005). Empty when there is none: the catalog lives in memory.
 std::string default_plugin_cache(const std::string& cache_dir);
 
+// The operator's plug-in block list (ADR-0012, amendment of 2026-11-03):
+// a setting, so in `config_dir`, common/platform's user_config_dir()
+// (~/.config/sonora). Empty when there is none: kept in memory.
+std::string default_plugin_block_list(const std::string& config_dir);
+
 // The image's build id from an os-release file's text: BUILD_ID, else
 // IMAGE_VERSION (os-release(5)), unquoted; empty when it names neither (a
 // developer's machine). An image update changes it, so the cache's system

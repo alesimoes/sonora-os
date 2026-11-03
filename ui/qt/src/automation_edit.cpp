@@ -41,6 +41,9 @@ const char* lane_name(AutomationParam p) {
         case AutomationParam::Pan: return "Pan";
         case AutomationParam::Plugin: return "Plugin";
         case AutomationParam::VolumeTrim: return "Volume Trim";
+        case AutomationParam::Mute: return "Mute";
+        case AutomationParam::SendLevel: return "Send Level";
+        case AutomationParam::SendPan: return "Send Pan";
     }
     return "Volume";
 }
@@ -82,7 +85,11 @@ float value_on(const std::vector<AutomationPoint>& pts, Frames at) {
     const AutomationPoint& b = *next;
     if (a.at == at) return a.value;
     const double t = static_cast<double>(at - a.at) / static_cast<double>(b.at - a.at);
-    return static_cast<float>(a.value + t * (b.value - a.value));
+    // In double before the subtraction: a plugin lane is not clamped, and
+    // two finite floats far enough apart differ by more than a float holds,
+    // which drew the whole segment at infinity.
+    const double from = a.value;
+    return static_cast<float>(from + t * (static_cast<double>(b.value) - from));
 }
 
 // Where the line arriving at `at` ends: the first of a step's two points,
@@ -125,12 +132,13 @@ bool flat(const AutomationLane& lane) {
     return true;
 }
 
-// The lane an edit replaces points of: its param, and a plugin lane's insert
-// and key, without which apply() would look for another lane.
+// The lane an edit replaces points of: its param, a plugin lane's insert and
+// key, a send lane's send, without which apply() would look for another lane.
 void aim(EditAutomation& op, const AutomationLane& lane) {
     op.param = lane.param;
     op.insert = lane.insert;
     op.key = lane.key;
+    op.send = lane.send;
 }
 
 EditAutomation window_op(Id track, const AutomationLane& lane, Frames lo, Frames hi,
@@ -285,8 +293,11 @@ std::vector<AutomationPoint> thin_points(const std::vector<AutomationPoint>& poi
             const double t = b.at == a.at ? 0.0
                                           : static_cast<double>(points[i].at - a.at) /
                                                 static_cast<double>(b.at - a.at);
-            const double line = a.value + t * (b.value - a.value);
-            const double err = std::abs(points[i].value - line);
+            // As value_on: a float difference overflows on a wide plugin lane,
+            // and an infinite line would keep every point inside it.
+            const double from = a.value;
+            const double line = from + t * (static_cast<double>(b.value) - from);
+            const double err = std::abs(static_cast<double>(points[i].value) - line);
             if (err > worst) {
                 worst = err;
                 at = i;
