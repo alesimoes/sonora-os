@@ -292,6 +292,9 @@ private:
     void take_state_reply(model::Id track, const std::string& bytes);
     void fail_state_requests(model::Id track, const std::string& why);
     void follow_state_requests(uint64_t now_ms);
+    // Starts the deadline of the next GetState on `track`'s host, unless one
+    // is already running: the host answers them in order.
+    void arm_state_request(model::Id track, uint64_t now_ms);
     void finish_flush_if_done(uint64_t flush);
 
     Session& session_;
@@ -344,7 +347,7 @@ private:
         model::Id insert = 0;
         model::Id track = 0;
         plugin_client::HostProcess* host = nullptr;
-        uint64_t deadline_ms = 0;
+        uint64_t deadline_ms = 0;  // 0: behind another GetState on its host
         int timeout_ms = 0;
         std::string where;
     };

@@ -10,13 +10,19 @@
 // not touch another instance's save into the same folder.
 #include "state_paths.h"
 
+#include "sonora/sha256.h"
+
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <iterator>
 #include <vector>
 
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -150,6 +156,202 @@ int main() {
               "a file named after the failure is not copied (named as given)");
         sp.free_path(after);
         check(!sp.end_save(listed, error) && contains(error, "over.bin"), "  and the save reports the first failure");
+    }
+
+    // #283 review: the free-space query failing, and free space below the
+    // file's own size (the guard before the margin's subtraction).
+    std::printf("state_paths: free space unknown, or under the file's size\n");
+    {
+        CopyLimits blind = small;
+        blind.free_space = [](const std::string&, uint64_t&) {
+            errno = EIO;
+            return false;
+        };
+        StatePaths sp((scratch / "f").string(), session.string(), blind);
+        write_file(scratch / "f" / "take.bin", 900, 'f');
+        std::vector<pc::StateFile> listed;
+        std::string error;
+        check(!save(sp, session, {scratch / "f" / "take.bin"}, listed, error) && listed.empty(),
+              "a free-space query that fails refuses the copy");
+        std::printf("    text: %s\n", error.c_str());
+        check(contains(error, "cannot tell how much room"), "  its text says the room is unknown");
+        StatePaths under((scratch / "f").string(), session.string(), small);
+        room = 500;  // under the 900 bytes themselves: free - size would wrap
+        check(!save(under, session, {scratch / "f" / "take.bin"}, listed, error) && contains(error, "not enough room"),
+              "free space under the file's size is no room, not a wrapped subtraction");
+        check(no_incoming(session), "  nothing partial is left");
+        room = uint64_t{1} << 40;
+    }
+
+    std::printf("state_paths: a source that grows while it is copied\n");
+    {
+        CopyLimits growing = small;
+        const fs::path src = scratch / "g" / "loop.bin";
+        bool grown = false;
+        // Read before every chunk: the plugin appends after the size was taken.
+        growing.clock = [&] {
+            if (!grown) std::ofstream(src, std::ios::binary | std::ios::app) << std::string(200, 'x');
+            grown = true;
+            return uint64_t{0};
+        };
+        StatePaths sp((scratch / "g").string(), session.string(), growing);
+        write_file(src, 900, 'g');
+        grown = true;  // not while begin_save starts the clock
+        std::vector<pc::StateFile> listed;
+        std::string error;
+        sp.begin_save(session.string(), false);
+        grown = false;
+        sp.free_path(sp.abstract_path(src.c_str()));
+        check(!sp.end_save(listed, error) && listed.empty() && contains(error, "grew while it was being saved"),
+              "a file that grows past its checked size fails the save");
+        std::printf("    text: %s\n", error.c_str());
+        check(no_incoming(session), "  and leaves nothing behind");
+    }
+
+    std::printf("state_paths: a copy that runs out of the save's time\n");
+    {
+        CopyLimits slow;
+        slow.file_bytes = slow.total_bytes = uint64_t{16} << 20;
+        slow.margin_bytes = 0;
+        slow.free_space = small.free_space;
+        slow.budget_ms = 2500;
+        uint64_t t = 0;
+        slow.clock = [&t] { return t += 1000; };  // a second per chunk of 1 MiB
+        StatePaths sp((scratch / "h").string(), session.string(), slow);
+        write_file(scratch / "h" / "patch.bin", std::size_t{4} << 20, 'h');
+        std::vector<pc::StateFile> listed;
+        std::string error;
+        check(!save(sp, session, {scratch / "h" / "patch.bin"}, listed, error) && listed.empty(),
+              "a copy still running at the budget stops and fails the save");
+        std::printf("    text: %s\n", error.c_str());
+        check(contains(error, "patch.bin") && contains(error, "too slow"), "  its text names the file and why");
+        check(no_incoming(session), "  and leaves no .incoming-* to be killed over");
+    }
+
+    std::printf("state_paths: makePath through a symlink out of its folder (#276 review N6)\n");
+    {
+        const fs::path elsewhere = base / "elsewhere";
+        fs::create_directories(elsewhere);
+        fs::create_directories(scratch / "i");
+        fs::create_directory_symlink(elsewhere, scratch / "i" / "out");
+        fs::create_symlink(elsewhere / "f.wav", scratch / "i" / "link.wav");
+        StatePaths sp((scratch / "i").string(), session.string(), small);
+        char* through = sp.make_path("out/sub/x.wav");
+        check(!through && sp.refused() == 1, "a parent that is a symlink out of the folder: refused and counted");
+        sp.free_path(through);
+        char* last = sp.make_path("link.wav");
+        check(!last && sp.refused() == 2, "a last component that is a symlink out: refused and counted");
+        sp.free_path(last);
+        check(contains(sp.refusal_text(), "a symlink out of its folder"), "  the text says so");
+        check(fs::is_empty(elsewhere), "  nothing was made through either");
+    }
+
+    std::printf("state_paths: a symlinked Plugin Files/ or <sha256>/ (#276 review N4)\n");
+    {
+        const fs::path out1 = base / "out1", out2 = base / "out2";
+        const fs::path s1 = base / "S1", s2 = base / "S2";
+        fs::create_directories(out1);
+        fs::create_directories(out2);
+        fs::create_directories(s1);
+        fs::create_directories(s2 / "Plugin Files");
+        fs::create_directory_symlink(out1, s1 / "Plugin Files");
+        write_file(scratch / "j" / "kit.bin", 100, 'k');
+        sonora::Sha256 h;
+        const std::string bytes(100, 'k');
+        h.update(bytes.data(), bytes.size());
+        fs::create_directory_symlink(out2, s2 / "Plugin Files" / h.hex());
+        StatePaths sp((scratch / "j").string(), s1.string(), small);
+        std::vector<pc::StateFile> listed;
+        std::string error;
+        check(!save(sp, s1, {scratch / "j" / "kit.bin"}, listed, error) && contains(error, "symlink"),
+              "Plugin Files/ a symlink: the save fails");
+        std::printf("    text: %s\n", error.c_str());
+        check(fs::is_empty(out1), "  nothing written through it");
+        check(!save(sp, s2, {scratch / "j" / "kit.bin"}, listed, error) && contains(error, "symlink"),
+              "<sha256>/ a symlink: the save fails");
+        std::printf("    text: %s\n", error.c_str());
+        check(fs::is_empty(out2) && no_incoming(s2), "  nothing written through it, nothing left");
+    }
+
+    std::printf("state_paths: saved files stay what their hash says (#276 review N3)\n");
+    {
+        const fs::path s = base / "S3";
+        fs::create_directories(s);
+        write_file(scratch / "k" / "loop.wav", 64, 'l');
+        std::vector<pc::StateFile> listed;
+        std::string error;
+        std::string rel;
+        {
+            StatePaths sp((scratch / "k").string(), s.string(), small);
+            check(save(sp, s, {scratch / "k" / "loop.wav"}, listed, error) && listed.size() == 1, "saved");
+            if (!listed.empty()) rel = listed[0].path;
+        }
+        const fs::path saved = s / rel;
+        check(!rel.empty() && (fs::status(saved).permissions() & fs::perms::all) ==
+                                  (fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read),
+              "a saved plugin file is read-only (0444)");
+        // A restored instance of a later run: the session's file as restore()
+        // gives it, then saved again.
+        StatePaths sp((scratch / "k").string(), s.string(), small);
+        char* full = sp.absolute_path(rel.c_str());
+        check(full && saved == fs::path(full), "restored from the session's Plugin Files/");
+        check(save(sp, s, {saved}, listed, error) && listed.size() == 1 && listed[0].path == rel,
+              "unchanged: named by its own path");
+        // The looper writes its loop back in place: same size, other bytes.
+        fs::permissions(saved, fs::perms::owner_write, fs::perm_options::add);
+        { std::ofstream(saved, std::ios::binary | std::ios::trunc) << std::string(64, 'L'); }
+        fs::last_write_time(saved, fs::last_write_time(saved) + std::chrono::seconds(5));
+        sp.begin_save(s.string(), true);
+        sp.free_path(sp.abstract_path(full));
+        check(!sp.end_save(listed, error) && contains(error, "after the take"),
+              "changed, during a take: not read, the save waits for after the take");
+        check(save(sp, s, {saved}, listed, error) && listed.size() == 1 && listed[0].path != rel &&
+                  listed[0].bytes == 64,
+              "changed: hashed again and saved as the new bytes, not named by the old sha");
+        std::ifstream back(s / (listed.empty() ? rel : listed[0].path), std::ios::binary);
+        std::string got((std::istreambuf_iterator<char>(back)), std::istreambuf_iterator<char>());
+        check(got == std::string(64, 'L'), "  the new file holds the new bytes");
+        sp.free_path(full);
+    }
+
+    std::printf("state_paths: an absolute path a restored state held is not copied in (#276 review N5)\n");
+    {
+        write_file(base / "home" / "secret", 32, 's');
+        StatePaths sp((scratch / "l").string(), session.string(), small);
+        const std::string abs = (base / "home" / "secret").string();
+        char* back = sp.absolute_path(abs.c_str());
+        check(back && abs == back, "restore: returned as it is (states from before wire 4)");
+        sp.free_path(back);
+        std::vector<pc::StateFile> listed;
+        std::string error;
+        sp.begin_save(session.string(), false);
+        char* named = sp.abstract_path(abs.c_str());
+        check(named && abs == named, "save: named as given");
+        sp.free_path(named);
+        check(sp.end_save(listed, error) && listed.empty(), "  and nothing copied into Plugin Files/");
+    }
+
+    std::printf("state_paths: stale .incoming-* swept at session open (#276 review N2)\n");
+    {
+        const fs::path s = base / "S4", pf = s / "Plugin Files";
+        fs::create_directories(pf);
+        const pid_t child = ::fork();
+        if (child == 0) ::_exit(0);
+        ::waitpid(child, nullptr, 0);
+        const std::string dead = ".incoming-" + std::to_string(child) + "-1";
+        const std::string live = ".incoming-" + std::to_string(::getppid()) + "-1";
+        const std::string dead_link = ".incoming-" + std::to_string(child) + "-2";
+        write_file(pf / dead, 10, 'd');
+        write_file(pf / live, 10, 'l');
+        write_file(pf / ".incoming-notes", 10, 'n');
+        write_file(base / "keep" / "target", 10, 't');
+        fs::create_symlink(base / "keep" / "target", pf / dead_link);
+        StatePaths sp((scratch / "m").string(), s.string(), small);
+        check(!fs::exists(pf / dead), "a dead host's .incoming-* is removed");
+        check(fs::exists(pf / live), "a running host's is kept: its copy is in progress");
+        check(fs::exists(pf / ".incoming-notes"), "a name that is not <pid>-<n> is kept");
+        check(fs::is_symlink(fs::symlink_status(pf / dead_link)) && fs::exists(base / "keep" / "target"),
+              "a link with a dead pid's name is not followed or removed");
     }
 
     fs::remove_all(base, ec);

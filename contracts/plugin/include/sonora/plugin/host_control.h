@@ -329,8 +329,9 @@ inline constexpr uint32_t kMaxStateFiles = 1024;            // files one State m
 // kMaxStateCopyBytes, fails that State (StateStatus::Failed, its text naming
 // the file and the cap); the other instances' States are their own. 1 GiB
 // holds any sampler patch or impulse response a session names; 4 GiB bounds
-// one save at about 40 s of copy and hash on a USB 3 stick, inside
-// kStateReplyTimeoutMs. The engine refuses a State listing a file over
+// one save at about 40 s of copy and hash on a USB 3 stick at 100 MB/s,
+// inside kStateReplyTimeoutMs (unmeasured; a slower stick is stopped with a
+// text at kStateCopyBudgetMs instead of killed). The engine refuses a State listing a file over
 // kMaxStateFileBytes, so both sides hold the same number; the encoding does
 // not change, so the wire stays 4.
 inline constexpr uint64_t kMaxStateFileBytes = uint64_t{1} << 30;
@@ -370,6 +371,15 @@ inline constexpr int kReplyTimeoutMs = 5000;
 // A State only: the save may hash and copy the plugin's files (ADR-0029 §6).
 // The host's processing thread keeps bumping the heartbeat meanwhile.
 inline constexpr int kStateReplyTimeoutMs = 60000;
+// What the host lets one save spend copying and hashing plugin files,
+// counted from the GetState: a copy still running then stops, and the State
+// fails with a text, before the engine's deadline kills the host half way
+// (#283 review). The 15 s left cover the last fdatasync (the host syncs
+// every 64 MiB, so at most that much is dirty), the plugin's save() around
+// the copies, and the reply. The engine starts a GetState's deadline only
+// when the one before it on the same host is answered, so each save of a
+// chain has the whole of it. The host's own constant: no wire change.
+inline constexpr uint64_t kStateCopyBudgetMs = uint64_t(kStateReplyTimeoutMs) - 15000;
 inline constexpr int kReconfigureTimeoutMs = 10000;
 inline constexpr int kTouchIntervalMs = 10;  // 100 Hz, ADR-0012 §4
 // A message half received that has not grown for this long: the host is
