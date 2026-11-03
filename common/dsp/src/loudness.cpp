@@ -32,6 +32,14 @@ void k_weighting(double fs, BiquadCoeffs& stage1, BiquadCoeffs& stage2) noexcept
     }
 }
 
+void LoudnessMeter::Hist::resize(std::uint32_t bins) {
+    n = bins;
+    count.assign(bins + 1, 0);
+    energy.assign(bins + 1, 0.0);
+    top = 1;
+    while (top * 2 <= n) top *= 2;
+}
+
 void LoudnessMeter::Hist::clear() noexcept {
     for (auto& c : count) c = 0;
     for (auto& e : energy) e = 0.0;
@@ -40,11 +48,49 @@ void LoudnessMeter::Hist::clear() noexcept {
 void LoudnessMeter::Hist::add(double lufs, double e) noexcept {
     if (lufs < kHistMin) return;  // the absolute gate
     double idx = std::floor((lufs - kHistMin) / kBin);
-    const double last = static_cast<double>(count.size() - 1);
+    const double last = static_cast<double>(n - 1);
     if (idx > last) idx = last;
-    const auto i = static_cast<std::size_t>(idx);
-    ++count[i];
-    energy[i] += e;
+    const auto b = static_cast<std::uint32_t>(idx);
+    for (std::uint32_t k = b + 1; k <= n; k += k & (0u - k)) ++count[k];
+    for (std::uint32_t k = n - b; k <= n; k += k & (0u - k)) energy[k] += e;
+}
+
+std::uint64_t LoudnessMeter::Hist::count_below(std::uint32_t i) const noexcept {
+    std::uint64_t sum = 0;
+    for (std::uint32_t k = i; k > 0; k -= k & (0u - k)) sum += count[k];
+    return sum;
+}
+
+double LoudnessMeter::Hist::energy_from(std::uint32_t i) const noexcept {
+    // Bins [i, n) are the first n - i of the reversed order.
+    double sum = 0.0;
+    for (std::uint32_t k = n - i; k > 0; k -= k & (0u - k)) sum += energy[k];
+    return sum;
+}
+
+std::uint32_t LoudnessMeter::Hist::bin_of_rank(std::uint64_t rank) const noexcept {
+    // The standard descent: the largest prefix whose count is below rank;
+    // the bin after it holds the rank-th block.
+    std::uint32_t pos = 0;
+    for (std::uint32_t step = top; step > 0; step >>= 1) {
+        if (pos + step <= n && count[pos + step] < rank) {
+            pos += step;
+            rank -= count[pos];
+        }
+    }
+    return pos < n ? pos : n - 1;
+}
+
+std::uint32_t LoudnessMeter::Hist::first_bin_at_or_above(double lufs) const noexcept {
+    // An estimate, then the exact test the bin scan used (lower edge
+    // kHistMin + i * kBin >= lufs), so the gate keeps the same bins.
+    double x = std::ceil((lufs - kHistMin) / kBin);
+    if (!(x > 0.0)) x = 0.0;
+    if (x > static_cast<double>(n)) x = static_cast<double>(n);
+    auto i = static_cast<std::uint32_t>(x);
+    while (i > 0 && kHistMin + (i - 1) * kBin >= lufs) --i;
+    while (i < n && kHistMin + i * kBin < lufs) ++i;
+    return i;
 }
 
 double LoudnessMeter::to_lufs(double ms) noexcept {
@@ -54,7 +100,7 @@ double LoudnessMeter::to_lufs(double ms) noexcept {
 }
 
 bool LoudnessMeter::prepare(double sample_rate, std::uint32_t channels,
-                            const double* weights) {
+                            const double* weights, bool true_peak) {
     if (!(sample_rate > 0.0) || channels == 0) return false;
     rate_ = sample_rate;
     channels_ = channels;
@@ -65,16 +111,15 @@ bool LoudnessMeter::prepare(double sample_rate, std::uint32_t channels,
     k_weighting(sample_rate, k1_, k2_);
     s1_.assign(channels, BiquadState{});
     s2_.assign(channels, BiquadState{});
-    tp_.prepare(channels);
+    measure_tp_ = true_peak;
+    if (true_peak) tp_.prepare(channels);
     tp_max_.assign(channels, 0.0);
     sub_len_ = static_cast<std::uint32_t>(std::lround(sample_rate / 100.0));
     if (sub_len_ == 0) sub_len_ = 1;
     ring_.assign(kSubsPerShortTerm, 0.0);
     const auto bins = static_cast<std::size_t>(std::lround((kHistMax - kHistMin) / kBin));
-    gate_hist_.count.assign(bins, 0);
-    gate_hist_.energy.assign(bins, 0.0);
-    lra_hist_.count.assign(bins, 0);
-    lra_hist_.energy.assign(bins, 0.0);
+    gate_hist_.resize(static_cast<std::uint32_t>(bins));
+    lra_hist_.resize(static_cast<std::uint32_t>(bins));
     reset();
     return true;
 }
@@ -82,7 +127,7 @@ bool LoudnessMeter::prepare(double sample_rate, std::uint32_t channels,
 void LoudnessMeter::reset() noexcept {
     for (auto& s : s1_) s.reset();
     for (auto& s : s2_) s.reset();
-    tp_.reset();
+    if (measure_tp_) tp_.reset();
     for (auto& m : tp_max_) m = 0.0;
     for (auto& r : ring_) r = 0.0;
     ring_pos_ = 0;
@@ -102,8 +147,10 @@ void LoudnessMeter::process(const float* const* in, std::uint32_t frames) noexce
             const double x = in[c][i];
             const double y = s2_[c].tick(k2_, s1_[c].tick(k1_, x));
             sum += weight_[c] * y * y;
-            const double tp = tp_.process(c, x);
-            if (tp > tp_max_[c]) tp_max_[c] = tp;
+            if (measure_tp_) {
+                const double tp = tp_.process(c, x);
+                if (tp > tp_max_[c]) tp_max_[c] = tp;
+            }
         }
         sub_sum_ += sum;
         if (++sub_fill_ == sub_len_) finish_sub_block();
@@ -141,57 +188,29 @@ void LoudnessMeter::finish_sub_block() noexcept {
 }
 
 double LoudnessMeter::integrated_lufs() const noexcept {
-    double e = 0.0;
-    std::uint64_t n = 0;
     const std::uint32_t bins = gate_hist_.bins();
-    for (std::uint32_t i = 0; i < bins; ++i) {
-        e += gate_hist_.energy[i];
-        n += gate_hist_.count[i];
-    }
+    const std::uint64_t n = gate_hist_.count_below(bins);
     if (n == 0) return kFloorLufs;
-    const double rel = to_lufs(e / n) - 10.0;
-    double e2 = 0.0;
-    std::uint64_t n2 = 0;
-    for (std::uint32_t i = 0; i < bins; ++i) {
-        // A bin is in when its lower edge is at or above the gate: blocks
-        // within 0.01 LU under the gate may be dropped, never added.
-        const double lo = kHistMin + i * kBin;
-        if (lo >= rel) {
-            e2 += gate_hist_.energy[i];
-            n2 += gate_hist_.count[i];
-        }
-    }
-    return n2 == 0 ? kFloorLufs : to_lufs(e2 / n2);
+    const double rel = to_lufs(gate_hist_.energy_from(0) / n) - 10.0;
+    // A bin is in when its lower edge is at or above the gate: blocks
+    // within 0.01 LU under the gate may be dropped, never added.
+    const std::uint32_t first = gate_hist_.first_bin_at_or_above(rel);
+    const std::uint64_t n2 = n - gate_hist_.count_below(first);
+    return n2 == 0 ? kFloorLufs : to_lufs(gate_hist_.energy_from(first) / n2);
 }
 
 double LoudnessMeter::loudness_range_lu() const noexcept {
-    double e = 0.0;
-    std::uint64_t n = 0;
     const std::uint32_t bins = lra_hist_.bins();
-    for (std::uint32_t i = 0; i < bins; ++i) {
-        e += lra_hist_.energy[i];
-        n += lra_hist_.count[i];
-    }
+    const std::uint64_t n = lra_hist_.count_below(bins);
     if (n == 0) return 0.0;
-    const double rel = to_lufs(e / n) - 20.0;
-    std::uint32_t first = 0;
-    std::uint64_t m = 0;
-    for (std::uint32_t i = bins; i-- > 0;) {
-        if (kHistMin + i * kBin < rel) {
-            first = i + 1;
-            break;
-        }
-        m += lra_hist_.count[i];
-    }
+    const double rel = to_lufs(lra_hist_.energy_from(0) / n) - 20.0;
+    const std::uint32_t first = lra_hist_.first_bin_at_or_above(rel);
+    const std::uint64_t below = lra_hist_.count_below(first);
+    const std::uint64_t m = n - below;
     if (m == 0) return 0.0;
     // Tech 3342's reference: sorted(round((n-1) * p / 100 + 1)), 1-based.
     auto value_at_rank = [&](std::uint64_t rank1) {
-        std::uint64_t seen = 0;
-        for (std::uint32_t i = first; i < bins; ++i) {
-            seen += lra_hist_.count[i];
-            if (seen >= rank1) return kHistMin + (i + 0.5) * kBin;
-        }
-        return kHistMax;
+        return kHistMin + (lra_hist_.bin_of_rank(below + rank1) + 0.5) * kBin;
     };
     const auto low = static_cast<std::uint64_t>(std::llround((m - 1) * 0.10 + 1.0));
     const auto high = static_cast<std::uint64_t>(std::llround((m - 1) * 0.95 + 1.0));

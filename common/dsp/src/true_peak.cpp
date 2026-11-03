@@ -34,6 +34,18 @@ void TruePeakDetector::prepare(std::uint32_t channels, std::uint32_t taps_per_ph
     }
     hist_.assign(channels, Hist{});
     for (Hist& hs : hist_) hs.x.assign(2 * taps_, 0.0);
+    block_.clear();
+    acc_.clear();
+    max_frames_ = 0;
+}
+
+void TruePeakDetector::prepare_blocks(std::uint32_t max_frames) {
+    max_frames_ = max_frames;
+    block_.assign(hist_.size(), std::vector<float>(taps_ - 1 + max_frames, 0.0f));
+    acc_.assign(max_frames, 0.0f);
+    for (std::uint32_t p = 1; p < kFactor; ++p) {
+        phase_f_[p].assign(phase_[p].begin(), phase_[p].end());
+    }
 }
 
 void TruePeakDetector::reset() noexcept {
@@ -42,6 +54,63 @@ void TruePeakDetector::reset() noexcept {
         hs.pos = 0;
         hs.prev2 = hs.prev3 = 0.0;
     }
+    for (auto& b : block_) {
+        for (float& v : b) v = 0.0f;
+    }
+}
+
+double TruePeakDetector::process_block(std::uint32_t ch, const float* x,
+                                       std::uint32_t frames) noexcept {
+    if (ch >= block_.size()) return 0.0;  // prepare_blocks() not called
+    if (frames > max_frames_) frames = max_frames_;
+    float* b = block_[ch].data();
+    const std::uint32_t hist = taps_ - 1;
+    for (std::uint32_t k = 0; k < frames; ++k) b[hist + k] = x[k];
+    // Phase 0 is the input delayed by D = taps_ / 2 <= hist.
+    float m = 0.0f;
+    const float* d = b + hist - delay();
+    for (std::uint32_t k = 0; k < frames; ++k) {
+        const float a = std::fabs(d[k]);
+        if (a > m) m = a;
+    }
+    float* acc = acc_.data();
+    for (std::uint32_t p = 1; p < kFactor; ++p) {
+        const float* h = phase_f_[p].data();
+        for (std::uint32_t k = 0; k < frames; ++k) acc[k] = 0.0f;
+        // Point k of phase p is sum_i h[i] x[k - i], summed in tap order:
+        // taps over the whole block, so the inner loop carries no sum
+        // between points and vectorises. Four taps per pass add in the same
+        // order as one tap per pass, with a quarter of the loads and stores
+        // of the accumulator, which is what bounds this loop.
+        std::uint32_t i = 0;
+        for (; i + 4 <= taps_; i += 4) {
+            const float h0 = h[i], h1 = h[i + 1], h2 = h[i + 2], h3 = h[i + 3];
+            const float* s0 = b + hist - i;
+            const float* s1 = s0 - 1;
+            const float* s2 = s0 - 2;
+            const float* s3 = s0 - 3;
+            for (std::uint32_t k = 0; k < frames; ++k) {
+                float a = acc[k];
+                a += h0 * s0[k];
+                a += h1 * s1[k];
+                a += h2 * s2[k];
+                a += h3 * s3[k];
+                acc[k] = a;
+            }
+        }
+        for (; i < taps_; ++i) {
+            const float hi = h[i];
+            const float* src = b + hist - i;
+            for (std::uint32_t k = 0; k < frames; ++k) acc[k] += hi * src[k];
+        }
+        for (std::uint32_t k = 0; k < frames; ++k) {
+            const float a = std::fabs(acc[k]);
+            if (a > m) m = a;
+        }
+    }
+    // The last taps_ - 1 samples become the next block's history.
+    for (std::uint32_t k = 0; k < hist; ++k) b[k] = b[frames + k];
+    return m;
 }
 
 void TruePeakDetector::process_points(std::uint32_t ch, double x, double* out) noexcept {
