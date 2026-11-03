@@ -1096,6 +1096,15 @@ void SessionModel::selectTrack(int index) {
     sync();
 }
 
+QList<int> SessionModel::selectedTracks() const {
+    const Selection& s = ctl_.selection();
+    const int n = static_cast<int>(ctl_.snapshot().edit->tracks.size());
+    QList<int> out;
+    if (s.track < 0) return out;
+    for (int i = s.track; i < s.track + s.tracks && i < n; ++i) out << i;
+    return out;
+}
+
 QList<int> SessionModel::selectedTracksFor(int track) const {
     const Selection& s = ctl_.selection();
     const int n = static_cast<int>(ctl_.snapshot().edit->tracks.size());

@@ -85,6 +85,9 @@ class SessionModel : public QObject {
     Q_PROPERTY(QString fadeShape READ fadeShape NOTIFY editStateChanged)
     Q_PROPERTY(QString crossfadeShape READ crossfadeShape NOTIFY editStateChanged)
     Q_PROPERTY(int selectedTrack READ selectedTrack NOTIFY selectionChanged)
+    // Every track the selection covers: the headers the Shift-click on R and I
+    // acts on, drawn as selected.
+    Q_PROPERTY(QList<int> selectedTracks READ selectedTracks NOTIFY selectionChanged)
     Q_PROPERTY(QString selectionStart READ selectionStart NOTIFY selectionChanged)
     Q_PROPERTY(QString selectionEnd READ selectionEnd NOTIFY selectionChanged)
     Q_PROPERTY(QString selectionLength READ selectionLength NOTIFY selectionChanged)
@@ -365,6 +368,7 @@ public:
         return QString::fromLatin1(fade_shape_name(ctl_.crossfade_shape()));
     }
     int selectedTrack() const { return ctl_.selection().track; }
+    QList<int> selectedTracks() const;
     QString selectionStart() const;
     QString selectionEnd() const;
     QString selectionLength() const;
