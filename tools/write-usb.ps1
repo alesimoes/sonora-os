@@ -759,32 +759,41 @@ function Write-ImageToDisk($Handle, $Disk, [string]$ImagePath, [int64]$ImageByte
     }
 }
 
-# Read back the first and last 64 MiB of the image region, and the zeroed last
-# MiB of the disk, through a fresh unbuffered handle.
-function Test-WrittenDisk($Disk, [string]$ImagePath, [int64]$ImageBytes) {
-    $headLen = [math]::Min($script:VerifyBytes, $ImageBytes)
-    $tailStart = [int64]([math]::Floor([math]::Max(0, $ImageBytes - $script:VerifyBytes) / $script:MiB)) * $script:MiB
+# The ranges read back: the first 64 MiB of the image, the last 64 MiB of it
+# from a MiB boundary (so unbuffered reads stay aligned), and the zeroed last
+# MiB of the disk. Objects, not arrays: in PowerShell the comma binds tighter
+# than +, so @('a' + $x, 0, $n) is one string, and an earlier version read
+# back the wrong bytes that way without noticing.
+function Get-VerifyRanges([int64]$ImageBytes, [int64]$DiskBytes) {
+    $headLen = [int64][math]::Min($script:VerifyBytes, $ImageBytes)
+    $tailStart = [int64]([math]::Floor([math]::Max([int64]0, ($ImageBytes - $script:VerifyBytes)) / $script:MiB)) * $script:MiB
     $tailLen = $ImageBytes - $tailStart
+    $head = [pscustomobject]@{ Name = ('first ' + [math]::Floor($headLen / $script:MiB) + ' MiB'); Offset = [int64]0; Length = $headLen; Zero = $false }
+    $tail = [pscustomobject]@{ Name = ('last ' + [math]::Floor($tailLen / $script:MiB) + ' MiB of the image'); Offset = $tailStart; Length = $tailLen; Zero = $false }
+    $last = [pscustomobject]@{ Name = 'last MiB of the disk is zero (no stale backup GPT)'; Offset = ($DiskBytes - $script:MiB); Length = $script:MiB; Zero = $true }
+    return @($head, $tail, $last)
+}
+
+# Read back the Get-VerifyRanges ranges through a fresh unbuffered handle.
+function Test-WrittenDisk($Disk, [string]$ImagePath, [int64]$ImageBytes) {
+    $ranges = @(Get-VerifyRanges $ImageBytes ([int64]$Disk.Size))
     $img = [SonoraUsb.Native]::Open($ImagePath, 'file', $false, $true)
     $dev = [SonoraUsb.Native]::Open($Disk.Path, $Disk.Kind, $false, $true)
     $ok = $true
     try {
-        $checks = @(
-            @('first ' + [math]::Floor($headLen / $script:MiB) + ' MiB', [int64]0, [int64]$headLen),
-            @('last ' + [math]::Floor($tailLen / $script:MiB) + ' MiB of the image', $tailStart, $tailLen)
-        )
-        foreach ($c in $checks) {
-            $want = [SonoraUsb.Native]::HashRange($img, $c[1], $c[2])
-            $got = [SonoraUsb.Native]::HashRange($dev, $c[1], $c[2])
+        $zeroHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash((New-Object byte[] $script:MiB))).Replace('-', '')
+        foreach ($c in @($ranges | Where-Object { -not $_.Zero })) {
+            $want = [SonoraUsb.Native]::HashRange($img, [int64]$c.Offset, [int64]$c.Length)
+            $got = [SonoraUsb.Native]::HashRange($dev, [int64]$c.Offset, [int64]$c.Length)
             if ($want -eq $got) {
-                Write-Host ('  read back ok    ' + $c[0] + '  ' + $got)
+                Write-Host ('  read back ok    ' + $c.Name + '  ' + $got)
             } else {
-                Write-Host ('  read back FAIL  ' + $c[0] + ': stick ' + $got + ', image ' + $want)
+                Write-Host ('  read back FAIL  ' + $c.Name + ': stick ' + $got + ', image ' + $want)
                 $ok = $false
             }
         }
-        $zeroHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash((New-Object byte[] $script:MiB))).Replace('-', '')
-        $got = [SonoraUsb.Native]::HashRange($dev, [int64]$Disk.Size - $script:MiB, $script:MiB)
+        $z = @($ranges | Where-Object { $_.Zero })[0]
+        $got = [SonoraUsb.Native]::HashRange($dev, [int64]$z.Offset, [int64]$z.Length)
         if ($got -eq $zeroHash) {
             Write-Host '  read back ok    last MiB of the disk is zero (no stale backup GPT)'
         } else {

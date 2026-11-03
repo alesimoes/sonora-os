@@ -335,10 +335,23 @@ try {
     Expect ($gap -ne $zero) 'between the image and the last MiB the old contents are left as they were'
     foreach ($n in @(1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13)) { Expect ((Get-Sha $files[$n]) -eq $before[$n]) ('fake disk ' + $n + ' is untouched') }
 
+    Write-Host '--- read-back ranges, pinned ---'
+    # 70 MiB + 2048 on a 128 MiB disk: head [0, 64 MiB), tail from the MiB
+    # boundary at 6 MiB to the end, last MiB at 127 MiB.
+    $vr = @(Get-VerifyRanges $imageBytes $stickBytes)
+    Expect ($vr.Count -eq 3) 'three read-back ranges'
+    Expect ($vr[0].Offset -eq 0 -and $vr[0].Length -eq (64 * $MiB) -and -not $vr[0].Zero) ('head range 0 + 64 MiB (got ' + $vr[0].Offset + ' + ' + $vr[0].Length + ')')
+    Expect ($vr[1].Offset -eq (6 * $MiB) -and $vr[1].Length -eq ((64 * $MiB) + 2048) -and -not $vr[1].Zero) ('tail range 6 MiB + 64 MiB 2048 (got ' + $vr[1].Offset + ' + ' + $vr[1].Length + ')')
+    Expect ($vr[2].Offset -eq (127 * $MiB) -and $vr[2].Length -eq $MiB -and $vr[2].Zero) ('zero range at 127 MiB, 1 MiB (got ' + $vr[2].Offset + ' + ' + $vr[2].Length + ')')
+    $small = @(Get-VerifyRanges (3 * $MiB) (16 * $MiB))
+    Expect ($small[0].Length -eq (3 * $MiB) -and $small[1].Offset -eq 0 -and $small[1].Length -eq (3 * $MiB) -and $small[2].Offset -eq (15 * $MiB)) 'an image under 64 MiB is read back whole, twice'
+    foreach ($v in $vr) { Expect (($v.Offset % 4096) -eq 0) ('range "' + $v.Name + '" starts on a 4096-byte boundary') }
+
     Write-Host '--- read-back catches a bad write ---'
     $disk = [pscustomobject]@{ Path = $files[3]; Kind = 'file'; Size = $stickBytes }
     Expect (Test-WrittenDisk $disk $image $imageBytes) 'the written fake disk verifies'
-    foreach ($at in @([int64]5 * $MiB, $imageBytes - 100, $stickBytes - 10)) {
+    # Every element in parentheses: the comma binds tighter than * and -.
+    foreach ($at in @(([int64]5 * $MiB), ([int64]40 * $MiB), ([int64]6 * $MiB), ($imageBytes - 100), ($imageBytes - 1), ($stickBytes - 10), ($stickBytes - $MiB))) {
         $fs = [IO.File]::Open($files[3], 'Open', 'ReadWrite')
         try { $fs.Position = $at; $b = $fs.ReadByte(); $fs.Position = $at; $fs.WriteByte(($b -bxor 0xFF)) } finally { $fs.Dispose() }
         Expect (-not (Test-WrittenDisk $disk $image $imageBytes)) ('one flipped byte at ' + $at + ' fails verification')
