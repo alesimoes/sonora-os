@@ -339,6 +339,12 @@ Session::Session(SessionConfig cfg)
     track_open_last_.reset(new float[tracks + 1]());
     auto_level_.reset(new float[tracks + 1]());
     auto_pan_.reset(new float[tracks + 1]());
+    track_trim_.reset(new float[tracks + 1]);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(tracks) + 1; ++i) track_trim_[i] = 1.0f;
+    auto_vol_lane_.reset(new uint8_t[tracks + 1]());
+    auto_trim_.reset(new uint8_t[tracks + 1]());
+    auto_trim_last_.reset(new uint8_t[tracks + 1]());
+    auto_trim_db_.reset(new float[tracks + 1]());
     auto_live_.reset(new uint8_t[tracks + 1]());
     auto_live_last_.reset(new uint8_t[tracks + 1]());
     auto_latched_.reset(new uint8_t[tracks + 1]());
@@ -1351,6 +1357,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         track_open_[e] = open ? 1.0f : 0.0f;
         track_level_[e] = level;
         track_pan_[e] = pan;
+        track_trim_[e] = v.trim;
     }
     for (std::size_t e = 0; snap_mix_ && e < tracks_.size(); ++e) {
         if (snap_row_[e] == 0) continue;
@@ -1989,7 +1996,10 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
     auto_start_ = start;
     auto_rolling_ = rolling;
     std::memset(track_auto_.get(), 0, tracks_.size());
-    constexpr uint8_t kAllParams = (1u << kAutoVolume) | (1u << kAutoPan);
+    std::memcpy(auto_trim_last_.get(), auto_trim_.get(), tracks_.size());
+    std::memset(auto_trim_.get(), 0, tracks_.size());
+    constexpr uint8_t kAbsolute = (1u << kAutoVolume) | (1u << kAutoPan);
+    constexpr uint8_t kTrimmed = (1u << kAutoPan) | (1u << kAutoTrim);
     // Every engine track, not only those with audio in the plan: a pass
     // writes an empty track's lanes as well.
     for (uint32_t e = 0; e < tracks_.size(); ++e) {
@@ -1998,17 +2008,22 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         const Track::Automation mode = view.automation;
         // What plays its live value instead of its lane (ADR-0027 §3):
         // Touch while held, Latch from a touch until the roll stops, Write
-        // always. Stopped, a Latch touch holds only while held.
-        const auto held = static_cast<uint8_t>(view.touched & kAllParams);
+        // always. Stopped, a Latch touch holds only while held. In Trim and
+        // WriteTrim the fader is the trim fader (§8): the volume lane plays
+        // as in Read, the trim and the pan as in Touch and Write.
+        const bool trim_mode =
+            mode == Track::Automation::Trim || mode == Track::Automation::WriteTrim;
+        const auto held = static_cast<uint8_t>(view.touched & (trim_mode ? kTrimmed : kAbsolute));
         uint8_t live = 0;
         if (mode == Track::Automation::Latch && rolling) {
             auto_latched_[e] = static_cast<uint8_t>(auto_latched_[e] | held);
         } else {
             auto_latched_[e] = 0;
         }
-        if (mode == Track::Automation::Touch) live = held;
+        if (mode == Track::Automation::Touch || mode == Track::Automation::Trim) live = held;
         if (mode == Track::Automation::Latch) live = static_cast<uint8_t>(held | auto_latched_[e]);
-        if (mode == Track::Automation::Write) live = kAllParams;
+        if (mode == Track::Automation::Write) live = kAbsolute;
+        if (mode == Track::Automation::WriteTrim) live = kTrimmed;
         auto_live_[e] = live;
         // Stamped before a lane overwrites track_level_ and track_pan_,
         // which still hold the static, live values.
@@ -2022,10 +2037,10 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
                 at = kNoReturn;
             }
             const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
-            const float now = p == kAutoVolume ? track_level_[e] : track_pan_[e];
-            if ((live & bit) != 0) live_value_[k] = now;
-            const bool released = rolling && mode == Track::Automation::Touch &&
-                                  (auto_live_last_[e] & bit) != 0 && (live & bit) == 0;
+            if ((live & bit) != 0) live_value_[k] = live_param(e, p);
+            const bool released =
+                rolling && (mode == Track::Automation::Touch || mode == Track::Automation::Trim) &&
+                (auto_live_last_[e] & bit) != 0 && (live & bit) == 0;
             if (!released) continue;
             // What the last live callback played: the release may arrive
             // with the static already back in the atomic, and the return
@@ -2045,7 +2060,9 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
             // lane_param() is its one reader, on a lane or, with none, on
             // the static value (return_to_).
             at = s;
-            return_from_[k] = p == kAutoVolume ? auto_db_of_gain(heard) : heard;
+            return_from_[k] = p == kAutoPan     ? heard
+                              : p == kAutoTrim ? auto_trim_db_of_gain(heard)
+                                               : auto_db_of_gain(heard);
         }
     }
     for (uint32_t pi = 0; pi < plan.track_count; ++pi) {
@@ -2057,6 +2074,7 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         uint8_t flags = 0;
         if (pt.auto_count[kAutoVolume] != 0) flags |= 1u << kAutoVolume;
         if (pt.auto_count[kAutoPan] != 0) flags |= 1u << kAutoPan;
+        if (pt.auto_count[kAutoTrim] != 0) flags |= 1u << kAutoTrim;
         // A Touch released with no lane glides to the static value
         // (ADR-0027 §8), on the lane path so that it is the same function
         // of the frame as the return the writer writes. The static is read
@@ -2066,28 +2084,50 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         for (uint32_t p = 0; p < kAutoParams; ++p) {
             const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
             if (pt.auto_count[p] != 0 || return_at_[k] == kNoReturn) continue;
-            const float fixed = p == kAutoVolume ? auto_db_of_gain(track_level_[e]) : track_pan_[e];
+            // A trim with no lane returns to 0 dB, the trim of no lane.
+            const float fixed = p == kAutoVolume ? auto_db_of_gain(track_level_[e])
+                                : p == kAutoPan  ? track_pan_[e]
+                                                 : 0.0f;
             const auto bit = static_cast<uint8_t>(1u << p);
             return_moved = return_moved || ((track_auto_last_[e] & bit) != 0 && fixed != return_to_[k]);
             return_to_[k] = fixed;
             flags = static_cast<uint8_t>(flags | bit);
         }
         flags = static_cast<uint8_t>(flags & ~live);
+        // A trim plays on the volume's lane path, the volume's own lane or
+        // the fader under it (ADR-0027 §8): one gain per frame, summed in
+        // dB, on the same grid and through the same sends as the volume.
+        constexpr auto kVolume = static_cast<uint8_t>(1u << kAutoVolume);
+        constexpr auto kTrim = static_cast<uint8_t>(1u << kAutoTrim);
+        const bool trim_live = (live & kTrim) != 0;
+        const uint8_t trim =
+            trim_live ? kTrimLive : ((flags & kTrim) != 0 ? kTrimLane : kTrimNone);
+        const auto vol_lane = static_cast<uint8_t>(flags & kVolume);
+        if (trim != kTrimNone) flags = static_cast<uint8_t>(flags | kVolume);
+        flags = static_cast<uint8_t>(flags & ~kTrim);
         if (flags == 0) continue;
         track_auto_[e] = flags;
+        auto_vol_lane_[e] = vol_lane != 0 ? 1 : 0;
+        auto_trim_[e] = trim;
+        const float trim_db = auto_trim_db_of_gain(track_trim_[e]);
+        const bool trim_moved = trim == kTrimLive && auto_trim_last_[e] == kTrimLive &&
+                                trim_db != auto_trim_db_[e];
+        auto_trim_db_[e] = trim_db;
         // Only the parameter the lane leaves static: the fader moving under a
         // lane changes nothing heard, and a crossfade would bend the lane.
         // Last callback's values are still here, and a track that was not
-        // automated with these flags then ramps on the flags alone.
+        // automated with these flags then ramps on the flags alone. A fader
+        // under a trim is heard, so it ramps as a static fader does.
         const bool static_moved =
-            ((flags & (1u << kAutoVolume)) == 0 && track_level_[e] != auto_level_[e]) ||
+            (vol_lane == 0 && track_level_[e] != auto_level_[e]) ||
             ((flags & (1u << kAutoPan)) == 0 && track_pan_[e] != auto_pan_[e]);
         auto_level_[e] = track_level_[e];
         auto_pan_[e] = track_pan_[e];
         // A moved track starts at its lane, as a static fader starts at its
         // target (ADR-0023 §4).
         track_ramp_[e] = snap_row_[e] == 0 &&
-                         (jumped || static_moved || return_moved || flags != track_auto_last_[e] ||
+                         (jumped || static_moved || return_moved || trim_moved ||
+                          flags != track_auto_last_[e] || trim != auto_trim_last_[e] ||
                           track_open_[e] != track_open_last_[e]);
         const auto t = static_cast<int64_t>(start);
         if ((flags & (1u << kAutoVolume)) != 0) {
@@ -2100,7 +2140,21 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
 float Session::lane_param(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, uint32_t p,
                           int64_t t) const noexcept SONORA_RT {
     ++lane_evals_;
-    const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
+    const std::size_t row = static_cast<std::size_t>(e) * kAutoParams;
+    if (p != kAutoVolume) return lane_or_return(plan, pt, row + p, p, t);
+    const float volume = auto_vol_lane_[e] != 0 ? lane_or_return(plan, pt, row + p, p, t)
+                                                : auto_db_of_gain(auto_level_[e]);
+    // Constant over the callback when live, a function of t on a lane: the
+    // sum is still one function of t for the grid and the block cuts.
+    switch (auto_trim_[e]) {
+        case kTrimLive: return volume + auto_trim_db_[e];
+        case kTrimLane: return volume + lane_or_return(plan, pt, row + kAutoTrim, kAutoTrim, t);
+        default: return volume;
+    }
+}
+
+float Session::lane_or_return(const PlaybackPlan& plan, const PlanTrack& pt, std::size_t k,
+                              uint32_t p, int64_t t) const noexcept SONORA_RT {
     // No lane: only a return reaches here (automation_targets()), toward
     // the static value.
     const float lane = pt.auto_count[p] != 0
@@ -2115,6 +2169,11 @@ float Session::lane_param(const PlaybackPlan& plan, const PlanTrack& pt, uint32_
     // play it as they play the lane.
     const float x = static_cast<float>(t - at) / static_cast<float>(touch_return_frames_);
     return return_from_[k] + (lane - return_from_[k]) * x;
+}
+
+float Session::live_param(uint32_t e, uint32_t p) const noexcept SONORA_RT {
+    if (p == kAutoPan) return track_pan_[e];
+    return p == kAutoTrim ? track_trim_[e] : track_level_[e];
 }
 
 void Session::push_write(const AutomationWrite& w) noexcept SONORA_RT {
@@ -2133,7 +2192,7 @@ void Session::stamp_writes(uint32_t e, uint8_t bits, uint64_t start) noexcept SO
         w.track_id = auto_owner_[e];
         w.track = e;
         w.param = static_cast<uint8_t>(p);
-        w.value = p == kAutoVolume ? track_level_[e] : track_pan_[e];
+        w.value = live_param(e, p);
         uint64_t at = start;
         uint32_t left = play_until_;
         // A loop shorter than the block would wrap many times over the same
@@ -2321,13 +2380,15 @@ Session::TrackMixView Session::mix_view(const PlaybackPlan& plan,
                         ? static_cast<Track::Monitor>(m.monitor)
                         : Track::Monitor::Off;
         v.input = m.input;
-        v.automation = m.automation <= static_cast<uint8_t>(Track::Automation::Trim)
+        v.automation = m.automation <= static_cast<uint8_t>(Track::Automation::WriteTrim)
                            ? static_cast<Track::Automation>(m.automation)
                            : Track::Automation::Off;
         v.touched = m.touched;
+        v.trim = m.trim;
         return v;
     }
     v.touched = t.touched();
+    v.trim = t.trim();
     v.gain = t.gain();
     v.pan = t.pan();
     v.mute = t.muted();

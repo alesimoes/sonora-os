@@ -613,13 +613,24 @@ struct Bus {
 
 // What a lane drives. Volume is in dB, kMinGainDb to kMaxGainDb; pan is
 // -1 (left) to +1 (right); a plugin parameter is format-native, as
-// ParamValue's value is (ADR-0027 §5, update of 2026-11-01).
-enum class AutomationParam : std::uint8_t { Volume, Pan, Plugin };
+// ParamValue's value is (ADR-0027 §5, update of 2026-11-01). VolumeTrim is
+// a relative dB, kMinTrimDb to kMaxTrimDb, summed in dB with Volume in
+// every mode but Off (ADR-0027 §8 slice 5, format 16). Appended, so the
+// lane order of a file written before it does not change.
+enum class AutomationParam : std::uint8_t { Volume, Pan, Plugin, VolumeTrim };
 // Off plays the static fader and pan; Read, Touch and Latch play the lanes
 // until a parameter is touched; Write plays the live values and writes them
-// from play to stop (ADR-0027 §3). Trim's relative lane is not built yet,
-// so a mix holding Trim is refused.
-enum class AutomationMode : std::uint8_t { Off, Read, Touch, Latch, Write, Trim };
+// from play to stop (ADR-0027 §3). Trim is Pro Tools' Touch/Trim: the
+// fader writes the VolumeTrim lane from touch to release while the Volume
+// lane plays as in Read, and pan behaves as in Touch. WriteTrim writes the
+// trim lane from play to stop, pan as in Write, and falls back to Trim
+// after a pass, as Write falls back to Latch.
+enum class AutomationMode : std::uint8_t { Off, Read, Touch, Latch, Write, Trim, WriteTrim };
+
+// The trim lane's range. Unverified against the Pro Tools Reference Guide
+// (ADR-0027 §8): the architect's range until the researcher checks it.
+inline constexpr float kMinTrimDb = -60.0f;
+inline constexpr float kMaxTrimDb = 12.0f;
 
 inline constexpr std::size_t kMaxAutomationPoints = 65536;
 

@@ -53,10 +53,13 @@ constexpr Name<TrackKind> kTrackKinds[] = {{"audio", TrackKind::Audio},
 constexpr Name<AutomationMode> kAutomationModes[] = {
     {"off", AutomationMode::Off},     {"read", AutomationMode::Read},
     {"touch", AutomationMode::Touch}, {"latch", AutomationMode::Latch},
-    {"write", AutomationMode::Write}, {"trim", AutomationMode::Trim}};
-constexpr Name<AutomationParam> kAutomationParams[] = {{"volume", AutomationParam::Volume},
-                                                       {"pan", AutomationParam::Pan},
-                                                       {"plugin", AutomationParam::Plugin}};
+    {"write", AutomationMode::Write}, {"trim", AutomationMode::Trim},
+    {"write_trim", AutomationMode::WriteTrim}};
+constexpr Name<AutomationParam> kAutomationParams[] = {
+    {"volume", AutomationParam::Volume},
+    {"pan", AutomationParam::Pan},
+    {"plugin", AutomationParam::Plugin},
+    {"volume_trim", AutomationParam::VolumeTrim}};
 
 template <typename E, std::size_t N>
 const char* name_of(const Name<E> (&table)[N], E v) {
@@ -438,9 +441,39 @@ bool v14_to_v15(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v15 -> v16 (ADR-0027 §8 slice 5): nothing changes. A file that already
+// holds a trim lane or the write_trim mode is refused, as a version 15
+// reader would refuse it.
+bool v15_to_v16(Value& root, std::vector<Repair>&, std::string& error) {
+    const Value* list = root.find("tracks");
+    if (list == nullptr || !list->is_array()) return true;   // the reader names it
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        const Value& t = list->items()[i];
+        if (!t.is_object()) continue;
+        const std::string path = "tracks[" + std::to_string(i) + "]";
+        const Value* mode = t.find("automation_mode");
+        if (mode != nullptr && mode->is_string() && mode->text() == "write_trim") {
+            error = path + " is in write_trim, which version 15 does not define";
+            return false;
+        }
+        const Value* lanes = t.find("automation");
+        if (lanes == nullptr || !lanes->is_array()) continue;
+        for (std::size_t k = 0; k < lanes->items().size(); ++k) {
+            const Value& l = lanes->items()[k];
+            const Value* param = l.is_object() ? l.find("param") : nullptr;
+            if (param != nullptr && param->is_string() && param->text() == "volume_trim") {
+                error = path + ".automation[" + std::to_string(k) +
+                        "] is a volume_trim lane, which version 15 does not define";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
-     v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15}};
+     v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {

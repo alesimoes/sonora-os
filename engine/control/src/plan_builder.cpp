@@ -100,6 +100,8 @@ float pan_exponent_for(float pan_law_db) {
 
 static_assert(kAutoMinGainDb == model::kMinGainDb && kAutoMaxGainDb == model::kMaxGainDb,
               "a lane and a fader clamp to the same range");
+static_assert(kAutoMinTrimDb == model::kMinTrimDb && kAutoMaxTrimDb == model::kMaxTrimDb,
+              "the engine clamps a live trim to the range a trim lane holds");
 
 float gain_of_db(float db) { return auto_gain_of_db(db); }
 
@@ -406,11 +408,12 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     // moves tracks between engine tracks (ADR-0023 §4).
     sizes.track_mix = limits.engine_tracks;
     sizes.send_mix = limits.engine_tracks * kStripSendSlots;
-    // Each track's volume and pan lanes (ADR-0027 §2), copied whole: the
-    // plan stays one allocation the audio thread only reads.
+    // Each track's volume, pan and trim lanes (ADR-0027 §2, §8), copied
+    // whole: the plan stays one allocation the audio thread only reads.
     const auto lane_of = [](const model::TrackEdit& t, uint32_t k) {
         return t.lane(k == kAutoVolume ? model::AutomationParam::Volume
-                                       : model::AutomationParam::Pan);
+                      : k == kAutoPan  ? model::AutomationParam::Pan
+                                       : model::AutomationParam::VolumeTrim);
     };
     std::size_t auto_total = 0;
     for (std::size_t ti = 0; ti < tracks.size(); ++ti) {

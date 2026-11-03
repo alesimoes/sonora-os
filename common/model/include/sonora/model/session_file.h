@@ -50,7 +50,10 @@ namespace sonora::model {
 // 15: "colour" on every track, and optionally on a region (ADR-0023, update
 //    of 2026-11-02). A version 14 file opens with the colours its window
 //    showed, each track's by its position.
-constexpr std::int64_t kFormatVersion = 15;
+// 16: a lane may be "volume_trim", a relative dB lane, and a track's
+//    "automation_mode" "write_trim" (ADR-0027 §8 slice 5). A version 15
+//    file opens unchanged.
+constexpr std::int64_t kFormatVersion = 16;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

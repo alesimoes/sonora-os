@@ -57,10 +57,13 @@ constexpr Name<Timebase> kTimebases[] = {{"frames", Timebase::Frames},
 constexpr Name<AutomationMode> kAutomationModes[] = {
     {"off", AutomationMode::Off},     {"read", AutomationMode::Read},
     {"touch", AutomationMode::Touch}, {"latch", AutomationMode::Latch},
-    {"write", AutomationMode::Write}, {"trim", AutomationMode::Trim}};
-constexpr Name<AutomationParam> kAutomationParams[] = {{"volume", AutomationParam::Volume},
-                                                       {"pan", AutomationParam::Pan},
-                                                       {"plugin", AutomationParam::Plugin}};
+    {"write", AutomationMode::Write}, {"trim", AutomationMode::Trim},
+    {"write_trim", AutomationMode::WriteTrim}};
+constexpr Name<AutomationParam> kAutomationParams[] = {
+    {"volume", AutomationParam::Volume},
+    {"pan", AutomationParam::Pan},
+    {"plugin", AutomationParam::Plugin},
+    {"volume_trim", AutomationParam::VolumeTrim}};
 
 template <typename E, std::size_t N>
 Value name_of(const Name<E> (&table)[N], E v) {
@@ -1822,7 +1825,9 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 //    update of 2026-11-01).
 // 12: each edit track and region carries its colour (ADR-0023, update of
 //    2026-11-02).
-constexpr std::int64_t kWindowFormat = 12;
+// 13: a lane may be a volume_trim lane, a track mix's automation mode
+//    write_trim (ADR-0027 §8 slice 5).
+constexpr std::int64_t kWindowFormat = 13;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on

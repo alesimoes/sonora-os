@@ -86,10 +86,16 @@ struct PlanSegment {
 };
 
 // The parameters a plan carries lanes for (ADR-0027 §2), in
-// PlanTrack::auto_first and auto_count.
-enum PlanAutoParam : uint32_t { kAutoVolume = 0, kAutoPan = 1, kAutoParams = 2 };
+// PlanTrack::auto_first and auto_count. kAutoTrim is the volume trim, a
+// relative dB summed with the volume (ADR-0027 §8 slice 5).
+enum PlanAutoParam : uint32_t { kAutoVolume = 0, kAutoPan = 1, kAutoTrim = 2, kAutoParams = 3 };
 
-// One breakpoint, as model::AutomationPoint: volume in dB, pan -1 to +1.
+// model::kMinTrimDb and kMaxTrimDb; plan_builder.cpp asserts they agree.
+constexpr float kAutoMinTrimDb = -60.0f;
+constexpr float kAutoMaxTrimDb = 12.0f;
+
+// One breakpoint, as model::AutomationPoint: volume and trim in dB, pan -1
+// to +1.
 struct PlanAutoPoint {
     int64_t at = 0;
     float value = 0.0f;
@@ -114,8 +120,8 @@ struct PlanTrack {
     uint32_t segment_count = 0;
     uint16_t channels = 1;
     // Each parameter's lane, in PlaybackPlan::auto_points; count 0: none.
-    uint32_t auto_first[kAutoParams] = {0, 0};
-    uint32_t auto_count[kAutoParams] = {0, 0};
+    uint32_t auto_first[kAutoParams] = {0, 0, 0};
+    uint32_t auto_count[kAutoParams] = {0, 0, 0};
 };
 
 // The graph, in topological order: per track a TrackOut, or TrackSource,
@@ -201,6 +207,8 @@ struct PlanTrackMix {
     // Track::touched() of the track that arrives here, as the publish found
     // it: the atomics still hold the departing track's (ADR-0027 §8).
     uint8_t touched = 0;
+    // Track::trim() of the same track, stamped with `touched`.
+    float trim = 1.0f;
     // The document track this plan plays on the engine track, 0 for none.
     // Set in every plan, with or without a mix_serial: the audio thread
     // moves what it keeps per track (a Latch) by it, and a mix serial
@@ -342,6 +350,12 @@ inline float auto_db_of_gain(float g) noexcept SONORA_RT {
     if (!(g > 0.0f)) return kAutoMinGainDb;
     const float db = 20.0f * std::log10(g);
     return db < kAutoMinGainDb ? kAutoMinGainDb : (db > kAutoMaxGainDb ? kAutoMaxGainDb : db);
+}
+
+// A trim fader's linear gain in dB, clamped to the trim lane's range.
+inline float auto_trim_db_of_gain(float g) noexcept SONORA_RT {
+    const float db = auto_db_of_gain(g);
+    return db < kAutoMinTrimDb ? kAutoMinTrimDb : (db > kAutoMaxTrimDb ? kAutoMaxTrimDb : db);
 }
 
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "chunk slots");

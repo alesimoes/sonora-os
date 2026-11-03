@@ -974,7 +974,9 @@ void EngineControlServer::finish_pass() {
         api::EngineEvent e;
         e.kind = api::EventKind::Notice;
         e.text = "automation: the pass on " + name + "'s " +
-                 (d.param == model::AutomationParam::Volume ? "volume" : "pan") +
+                 (d.param == model::AutomationParam::Volume ? "volume"
+                  : d.param == model::AutomationParam::Pan  ? "pan"
+                                                            : "volume trim") +
                  " lane was not kept: it would hold " + std::to_string(d.points) +
                  " points, and a lane holds at most " +
                  std::to_string(model::kMaxAutomationPoints);
@@ -992,12 +994,19 @@ void EngineControlServer::finish_pass() {
     // Write falls back to Latch after a pass, as Pro Tools' does: also when
     // every lane of it was dropped, or the next Play in Write would write
     // over the lanes the notice above says were kept (#252 review).
+    // WriteTrim falls back to Trim: Touch/Trim, as there is no Latch/Trim
+    // yet (ADR-0027 §8 slice 5).
     bool mix_changed = false;
     for (const model::Id id : written) {
         const model::TrackMix* m = document_->current().mix.find(id);
-        if (m == nullptr || m->automation != model::AutomationMode::Write) continue;
+        if (m == nullptr || (m->automation != model::AutomationMode::Write &&
+                             m->automation != model::AutomationMode::WriteTrim)) {
+            continue;
+        }
         model::TrackMix latch = *m;
-        latch.automation = model::AutomationMode::Latch;
+        latch.automation = m->automation == model::AutomationMode::Write
+                               ? model::AutomationMode::Latch
+                               : model::AutomationMode::Trim;
         model::ReplicationUpdate mu;
         std::string mwhy;
         if (document_->apply(model::SetMix{latch}, mu, mwhy)) {
@@ -1050,6 +1059,9 @@ void EngineControlServer::drop_pass() {
     for (const auto& t : session_.tracks()) {
         t->set_touched(kAutoVolume, false);
         t->set_touched(kAutoPan, false);
+        t->set_touched(kAutoTrim, false);
+        // The trim fader is the open session's, not a stored value.
+        t->set_trim(1.0f);
     }
     session_.forget_latches();
 }
@@ -2124,6 +2136,7 @@ void EngineControlServer::forget(ClientId id) {
             // its lanes for good.
             playback_->touch(document_->current(), it->first, kAutoVolume, false);
             playback_->touch(document_->current(), it->first, kAutoPan, false);
+            playback_->touch(document_->current(), it->first, kAutoTrim, false);
             it = riders_.erase(it);
         } else {
             ++it;
@@ -2506,6 +2519,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         // Written as an atomic the audio thread already reads; a NaN would
         // reach every sample of the track, so it is refused here.
         const bool pan = c.param == api::ParamId::Pan;
+        const bool trim = c.param == api::ParamId::VolumeTrim;
         if (pan && !(c.value >= -1.0f && c.value <= 1.0f)) {
             reply(from, c.seq, DispatchResult::Failed, "pan must be from -1 to 1");
             return;
@@ -2521,6 +2535,8 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             Track& t = *session_.tracks()[c.track];
             if (pan) {
                 t.set_pan(c.value);
+            } else if (trim) {
+                t.set_trim(c.value);
             } else {
                 t.set_gain(c.value);
             }
@@ -2528,7 +2544,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         // A touch holds the parameter off its lane in Touch, Latch and
         // Write until its release (ADR-0027 §3), even through a move: a
         // dropped release would hold it until the client leaves.
-        const uint8_t param = pan ? kAutoPan : kAutoVolume;
+        const uint8_t param = pan ? kAutoPan : trim ? kAutoTrim : kAutoVolume;
         if (c.gesture == api::Gesture::Touch || c.gesture == api::Gesture::Release) {
             playback_->touch(document_->current(), c.track, param,
                              c.gesture == api::Gesture::Touch);

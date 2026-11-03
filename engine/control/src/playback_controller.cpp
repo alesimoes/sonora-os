@@ -29,10 +29,10 @@ Track::Monitor monitor_of(model::MonitorMode m) {
     return Track::Monitor::Auto;
 }
 
-// The same six modes in the same order (ADR-0027 §1).
+// The same seven modes in the same order (ADR-0027 §1, §8).
 Track::Automation automation_of(model::AutomationMode m) {
-    static_assert(static_cast<int>(model::AutomationMode::Trim) ==
-                      static_cast<int>(Track::Automation::Trim),
+    static_assert(static_cast<int>(model::AutomationMode::WriteTrim) ==
+                      static_cast<int>(Track::Automation::WriteTrim),
                   "the model's automation modes and the engine's differ");
     return static_cast<Track::Automation>(static_cast<uint8_t>(m));
 }
@@ -278,7 +278,12 @@ void PlaybackController::touch(const model::Snapshot& snapshot, std::size_t row,
     // and the audio thread glides to it from what it last played. Stopped,
     // a ride is the static, which the client saves.
     const model::TrackMix* m = snapshot.mix.find(tracks[row]->id);
-    if (held || m == nullptr || m->automation != model::AutomationMode::Touch ||
+    // The trim fader has no static value to put back. In Trim the pan
+    // returns as in Touch (session.cpp), so its static goes back too; the
+    // volume is not held there, so there is no volume release to restore.
+    const bool returns = m != nullptr && (m->automation == model::AutomationMode::Touch ||
+                                          m->automation == model::AutomationMode::Trim);
+    if (held || param == kAutoTrim || !returns ||
         session_.transport().state() == TransportState::Stopped) {
         return;
     }
@@ -457,12 +462,17 @@ void PlaybackController::stamp_touched(PlaybackPlan& plan) const {
     // blocks before adopt_track_mix() reaches the audio thread from then.
     for (std::size_t e = 0; e < plan.track_mix_count && e < engine.size(); ++e) {
         uint8_t held = 0;
+        float trim = 1.0f;
         for (std::size_t j = 0; e < pending_order_.size() && atoms_order_ &&
                                 j < atoms_order_->size() && j < engine.size();
              ++j) {
-            if ((*atoms_order_)[j] == pending_order_[e]) held = engine[j]->touched();
+            if ((*atoms_order_)[j] == pending_order_[e]) {
+                held = engine[j]->touched();
+                trim = engine[j]->trim();
+            }
         }
         plan.track_mix[e].touched = held;
+        plan.track_mix[e].trim = trim;
     }
 }
 
@@ -471,12 +481,20 @@ void PlaybackController::adopt_track_mix(const PlaybackPlan& plan) {
     // A hold is its document track's, as its arm is: read before any
     // engine track's is overwritten, since a swap reads both ways.
     std::vector<uint8_t> held(engine.size(), 0);
+    // A track the atomics did not hold yet arrives at 0 dB of trim.
+    std::vector<float> trim(engine.size(), 1.0f);
     for (std::size_t e = 0; e < engine.size() && e < adopting_order_.size(); ++e) {
         for (std::size_t j = 0; atoms_order_ && j < atoms_order_->size() && j < engine.size(); ++j) {
-            if ((*atoms_order_)[j] == adopting_order_[e]) held[e] = engine[j]->touched();
+            if ((*atoms_order_)[j] == adopting_order_[e]) {
+                held[e] = engine[j]->touched();
+                trim[e] = engine[j]->trim();
+            }
         }
     }
-    for (std::size_t e = 0; e < engine.size(); ++e) engine[e]->set_touched_bits(held[e]);
+    for (std::size_t e = 0; e < engine.size(); ++e) {
+        engine[e]->set_touched_bits(held[e]);
+        engine[e]->set_trim(trim[e]);
+    }
     for (std::size_t e = 0; e < plan.track_mix_count && e < engine.size(); ++e) {
         const PlanTrackMix& m = plan.track_mix[e];
         Track& t = *engine[e];

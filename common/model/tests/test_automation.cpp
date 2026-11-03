@@ -122,7 +122,7 @@ int test_refusals() {
     CHECK_APPLY(h, whole(vox.track, AutomationParam::Volume, {}));
     CHECK(lane_of(h.current(), 0, AutomationParam::Volume) == nullptr);
 
-    // The mode: every one but Trim, whose relative lane waits for its slice.
+    // The mode, every one of them (Trim and WriteTrim since format 16).
     TrackMix m = *h.current().mix.find(vox.track);
     CHECK(m.automation == AutomationMode::Read);
     m.automation = AutomationMode::Off;
@@ -136,8 +136,85 @@ int test_refusals() {
         CHECK_APPLY(h, SetMix{m});
         CHECK(h.current().mix.find(vox.track)->automation == mode);
     }
-    m.automation = AutomationMode::Trim;
-    CHECK(refused(h, SetMix{m}, "not available yet"));
+    for (const AutomationMode mode : {AutomationMode::Trim, AutomationMode::WriteTrim}) {
+        m.automation = mode;
+        CHECK_APPLY(h, SetMix{m});
+        CHECK(h.current().mix.find(vox.track)->automation == mode);
+    }
+    m.automation = static_cast<AutomationMode>(7);
+    CHECK(refused(h, SetMix{m}, "is not an automation mode"));
+    return 0;
+}
+
+// Trim (ADR-0027 §8 slice 5): a relative dB lane in [-60, +12], after the
+// other lanes; it names no insert; it crosses the codec and the undo
+// window, as do the trim modes.
+int test_volume_trim_lane_and_modes() {
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    CHECK_APPLY(h, whole(vox.track, AutomationParam::VolumeTrim, {{0, -3.0f}, {48000, 6.0f}}));
+    CHECK_APPLY(h, whole(vox.track, AutomationParam::Volume, {{0, -6.0f}}));
+    const auto& lanes = h.current().edit->tracks[0]->automation;
+    CHECK(lanes.size() == 2 && lanes[0]->param == AutomationParam::Volume &&
+          lanes[1]->param == AutomationParam::VolumeTrim);
+    CHECK(lane_of(h.current(), 0, AutomationParam::VolumeTrim)->points[1].value == 6.0f);
+    CHECK(invariants_hold(h.current()));
+    CHECK_APPLY(h, whole(vox.track, AutomationParam::VolumeTrim, {{0, -60.0f}, {10, 12.0f}}));
+    CHECK(refused(h, whole(vox.track, AutomationParam::VolumeTrim, {{0, 12.5f}}),
+                  "a trim point must be from -60 to 12 dB"));
+    CHECK(refused(h, whole(vox.track, AutomationParam::VolumeTrim, {{0, -61.0f}}),
+                  "a trim point must be from -60 to 12 dB"));
+    CHECK(refused(h,
+                  whole(vox.track, AutomationParam::VolumeTrim,
+                        {{0, std::numeric_limits<float>::quiet_NaN()}}),
+                  "a trim point must be from -60 to 12 dB"));
+    EditAutomation keyed = whole(vox.track, AutomationParam::VolumeTrim, {{0, 0.0f}});
+    keyed.insert = 42;
+    CHECK(refused(h, keyed, "names no insert and no key"));
+
+    const Operation op = EditAutomation{
+        vox.track, AutomationParam::VolumeTrim, 100, 5000, {{100, -0.5f}, {4000, 3.0f}}};
+    std::string bytes;
+    std::string error;
+    CHECK(encode_operation(op, bytes, error));
+    CHECK(mentions(bytes, "\"volume_trim\""));
+    Operation back;
+    CHECK(decode_operation(bytes, back, error));
+    std::string again;
+    CHECK(encode_operation(back, again, error));
+    CHECK(again == bytes);
+    const auto* e = std::get_if<EditAutomation>(&back);
+    CHECK(e != nullptr && e->param == AutomationParam::VolumeTrim && e->points.size() == 2);
+
+    for (const AutomationMode mode : {AutomationMode::Trim, AutomationMode::WriteTrim}) {
+        TrackMix m = *h.current().mix.find(vox.track);
+        m.automation = mode;
+        const Operation set = SetMix{m};
+        CHECK(encode_operation(set, bytes, error));
+        CHECK(mentions(bytes, mode == AutomationMode::Trim ? "\"trim\"" : "\"write_trim\""));
+        CHECK(decode_operation(bytes, back, error));
+        const auto* s = std::get_if<SetMix>(&back);
+        CHECK(s != nullptr && s->mix.automation == mode);
+        CHECK(encode_operation(back, again, error) && again == bytes);
+    }
+
+    // The undo window (format 13) carries the trim lane and mode.
+    Document doc(new_session(settings()), 4096);
+    ReplicationUpdate u;
+    Ids dids(doc.current());
+    const AddTrack bass = add_track(dids, "Bass");
+    CHECK(doc.apply(bass, u, error));
+    CHECK(doc.apply(whole(bass.track, AutomationParam::VolumeTrim, {{0, -9.0f}}), u, error));
+    TrackMix m = *doc.current().mix.find(bass.track);
+    m.automation = AutomationMode::WriteTrim;
+    CHECK(doc.apply(SetMix{m}, u, error));
+    Replica late;
+    CHECK(doc.snapshot(u, error) && late.receive(u, error));
+    CHECK(late.current() == doc.current());
+    CHECK(lane_of(late.current(), 0, AutomationParam::VolumeTrim)->points[0].value == -9.0f);
+    CHECK(late.current().mix.find(bass.track)->automation == AutomationMode::WriteTrim);
     return 0;
 }
 
@@ -489,7 +566,7 @@ int test_plugin_lanes_cross_the_wire_and_the_file() {
     CHECK(plugin_lane(late.current(), 0, lim.insert, "threshold")->points.size() == 2);
 
     CHECK(serialize(doc.current(), WriteInfo{"test", 1}, bytes, error));
-    CHECK(mentions(bytes, "\"sonora_session\": 15"));
+    CHECK(mentions(bytes, "\"sonora_session\": 16"));
     CHECK(mentions(bytes, "\"param\": \"plugin\""));
     Loaded l;
     LoadError le;
@@ -521,6 +598,7 @@ int main() {
     };
     t(test_edit_replaces_a_range_and_undoes);
     t(test_refusals);
+    t(test_volume_trim_lane_and_modes);
     t(test_codec_window_and_duplicate);
     t(test_duplicate_without_automation);
     t(test_plugin_lane_keyed_by_insert_and_key);

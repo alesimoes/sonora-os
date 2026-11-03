@@ -111,9 +111,15 @@ void round_trips() {
         // A version-33 peer's change, without the id, is cut short.
         bytes.resize(bytes.size() - 8);
         CHECK(!wire::decode(bytes, back, error));
-        // A parameter past AuxGain is refused.
+        // The trim fader (protocol 39) crosses; a parameter past it is refused.
+        c.param = ParamId::VolumeTrim;
+        c.value = 0.5f;
+        c.gesture = Gesture::Release;
         wire::encode(c, bytes);
-        bytes[1 + 8 + 4] = 4;
+        CHECK(wire::decode(bytes, back, error));
+        CHECK(back.param == ParamId::VolumeTrim && back.value == 0.5f &&
+              back.gesture == Gesture::Release);
+        bytes[1 + 8 + 4] = 5;
         CHECK(!wire::decode(bytes, back, error));
     }
     {
@@ -422,7 +428,9 @@ void version_check() {
     // (ADR-0009 update of 2026-11-01, record-ready; follows 36).
     // 38: SetTrackColour, SetRegionName, SetRegionColour and the colours in
     // the undo window (ADR-0023 update of 2026-11-02; follows 37).
-    CHECK(kProtocolVersion == 38);
+    // 39: ParamId::VolumeTrim, volume_trim lanes and the write_trim mode
+    // (ADR-0027 §8 slice 5; follows 38).
+    CHECK(kProtocolVersion == 39);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     CHECK(kStateLayoutVersion == 6);
@@ -432,13 +440,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 38 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 39 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 38"));
+                   "speaks version 39"));
 }
 
 void domains() {

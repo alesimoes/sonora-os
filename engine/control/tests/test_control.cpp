@@ -1170,6 +1170,90 @@ void automation_write_on_the_real_engine() {
     CHECK(replica.current().mix.find(track)->automation == model::AutomationMode::Latch);
 }
 
+// ADR-0027 §8 slice 5 end to end: a track in WriteTrim with its trim fader
+// at -6 dB through ParamId::VolumeTrim, rolled and stopped. The pass
+// writes the trim lane and the pan, never the volume; the static fader is
+// untouched; the track falls back to Trim (Touch/Trim).
+void write_trim_on_the_real_engine() {
+    RealEngine real(fresh_dir("automation_write_trim"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            std::string why;
+            CHECK(replica.receive(from_wire(in.model[fed]), why));
+        }
+    };
+    const auto reply_to = [&](uint64_t seq, api::CommandReply& out) {
+        const bool got = until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        feed();
+        return got;
+    };
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    feed();
+    CHECK(replica.synced());
+    if (!replica.synced()) return;
+    const model::Id track = replica.current().edit->tracks[0]->id;
+    model::TrackMix mix = *replica.current().mix.find(track);
+    mix.automation = model::AutomationMode::WriteTrim;
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(model::SetMix{mix}, m.op, error));
+    api::CommandReply r;
+    CHECK(reply_to(real.submit(m), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        return real.session().tracks()[0]->automation() == Track::Automation::WriteTrim;
+    }));
+
+    api::ParameterChange trim;
+    trim.track = 0;
+    trim.param = api::ParamId::VolumeTrim;
+    trim.value = 0.5f;
+    CHECK(reply_to(real.send(trim), r) && r.result == DispatchResult::Ok);
+    CHECK(real.session().tracks()[0]->trim() == 0.5f);
+    CHECK(real.session().tracks()[0]->gain() == 1.0f);
+
+    api::CommandRequest play;
+    play.command = "transport.play";
+    CHECK(reply_to(real.send(play), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= 4800; }));
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(reply_to(real.send(stop), r) && r.result == DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        feed();
+        const model::TrackEdit& t = *replica.current().edit->tracks[0];
+        return t.lane(model::AutomationParam::VolumeTrim) != nullptr &&
+               replica.current().mix.find(track)->automation == model::AutomationMode::Trim;
+    }));
+    const model::TrackEdit& t = *replica.current().edit->tracks[0];
+    const model::AutomationLane* lane = t.lane(model::AutomationParam::VolumeTrim);
+    CHECK(t.lane(model::AutomationParam::Volume) == nullptr);
+    CHECK(t.lane(model::AutomationParam::Pan) != nullptr);
+    CHECK(lane != nullptr);
+    if (lane == nullptr) return;
+    // In at 0 dB of trim, held at -6.02 dB, out at 0 dB.
+    bool half = false;
+    for (const model::AutomationPoint& p : lane->points) {
+        half = half || std::fabs(p.value - 20.0f * std::log10(0.5f)) < 1e-3f;
+    }
+    CHECK(half);
+    CHECK(lane->points.front().value == 0.0f && lane->points.back().value == 0.0f);
+    CHECK(replica.current().mix.find(track)->gain_db == 0.0f);
+    CHECK(real.session().automation_write_overruns() == 0);
+}
+
 // #178 review: a Load while rolling does not stop playback, and the new
 // session's tracks share engine indices with the old one's. What the rest of
 // the roll stamps belongs to a pass begun on the old document, so none of it
@@ -3391,6 +3475,7 @@ int main() {
     a_failed_autosave_is_tried_again();
     no_take_while_a_save_as_copies();
     automation_write_on_the_real_engine();
+    write_trim_on_the_real_engine();
     a_load_while_rolling_writes_nothing();
     play_then_load_writes_nothing();
     a_pass_with_every_lane_dropped_leaves_write();

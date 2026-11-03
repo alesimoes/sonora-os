@@ -290,6 +290,11 @@ defaults, no owner present:
 
 Nothing reaches `process()`: a name or a colour is not in the plan.
 
+*Session format note (2026-11-02, ADR-0027 §8 slice 5):* format 16 follows
+15, undo window format 13 follows 12, protocol 39 follows 38. They add the
+`volume_trim` lane and the `write_trim` mode, nothing of this ADR's; a
+version 15 session opens unchanged.
+
 ## Open questions
 
 None for the owner.

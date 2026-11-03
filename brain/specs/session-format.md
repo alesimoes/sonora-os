@@ -384,6 +384,12 @@ not referenced by any region in any playlist is *unused*. It stays.
   format-native as in `params` (finite; a VST3 value from 0 to 1). Lanes
   sort by param (volume, pan, plugin), then insert, then key; at most 8,192
   plugin lanes an insert. A volume or pan lane carries neither key.
+- The trim lane and modes (version 16, ADR-0027 §8 slice 5): `{"param":
+  "volume_trim", "points": [...]}`, a relative dB from -60 to +12 (range
+  unverified against Pro Tools), played summed with the volume in every
+  mode but `"off"`; it sorts after the plugin lanes and carries no key.
+  `automation_mode` may be `"trim"` (Touch/Trim) or `"write_trim"`; every
+  mode from `"touch"` on is accepted since the write slice.
 - `kind` (version 5, second key): `"audio"`, `"midi"` or `"instrument"`.
   The example above is an audio track. The key set depends on the kind,
   strictly: a MIDI track has no `channels`, `input`, `gain_db`, `pan` or
@@ -995,6 +1001,13 @@ opens looking as it did. No region gains a key: without one it wears its
 track's colour. A version 14 file cannot carry `colour` on a track or a
 region. The frozen v14 fixture loads through it and saves as
 `v15-colours.sonora`, byte for byte.
+
+**v15→v16 (trim, ADR-0027 §8 slice 5):** nothing is filled in; only the
+version changes. A lane's `param` may be `"volume_trim"`, a relative dB
+from -60 to +12 summed with the volume, and a track's `automation_mode`
+`"write_trim"` (`"trim"` was a name before, refused by the checks). A
+version 15 file cannot carry either. The frozen v15 fixture loads through
+it and saves as `v16-trim.sonora`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

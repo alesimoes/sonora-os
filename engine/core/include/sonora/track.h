@@ -37,6 +37,12 @@ public:
     float pan() const { return pan_.load(std::memory_order_relaxed); }
     void set_pan(float p) { pan_.store(p, std::memory_order_relaxed); }
 
+    // The trim fader, linear: what Trim plays while it is touched and
+    // WriteTrim always, in place of the trim lane. Not a stored mix value,
+    // so it never moves the static fader.
+    float trim() const { return trim_.load(std::memory_order_relaxed); }
+    void set_trim(float g) { trim_.store(g, std::memory_order_relaxed); }
+
     bool soloed() const { return soloed_.load(std::memory_order_relaxed); }
     void set_soloed(bool v) { soloed_.store(v, std::memory_order_relaxed); }
 
@@ -52,7 +58,10 @@ public:
 
     // model::AutomationMode, in its order (ADR-0027 §1). Off plays the
     // static gain and pan; Read, Touch and Latch play the plan's lanes.
-    enum class Automation : uint8_t { Off = 0, Read = 1, Touch = 2, Latch = 3, Write = 4, Trim = 5 };
+    // Trim and WriteTrim write the trim lane from trim() (ADR-0027 §8).
+    enum class Automation : uint8_t {
+        Off = 0, Read = 1, Touch = 2, Latch = 3, Write = 4, Trim = 5, WriteTrim = 6
+    };
     Automation automation() const { return automation_.load(std::memory_order_relaxed); }
     void set_automation(Automation a) { automation_.store(a, std::memory_order_relaxed); }
 
@@ -154,6 +163,7 @@ private:
     std::atomic<bool> muted_{false};
     std::atomic<float> gain_{1.0f};
     std::atomic<float> pan_{0.0f};
+    std::atomic<float> trim_{1.0f};
     std::atomic<bool> soloed_{false};
     std::atomic<bool> solo_safe_{false};
     std::atomic<Monitor> monitor_{Monitor::Auto};
