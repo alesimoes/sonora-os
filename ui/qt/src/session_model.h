@@ -409,6 +409,16 @@ public:
     Q_INVOKABLE void wheel(qreal x, qreal dx, qreal dy, bool shift, bool ctrl);
     Q_INVOKABLE void rulerClick(qreal x);
     Q_INVOKABLE void selectTrack(int index);
+    // The tracks a Shift-click on a track's R or I button acts on (Pro
+    // Tools' "apply to the selected tracks"): the selection's tracks when it
+    // covers `track`, else `track` alone, so a click never changes tracks
+    // away from the one the operator pointed at.
+    Q_INVOKABLE QList<int> selectedTracksFor(int track) const;
+    // A click on a track's I button. Alone it toggles the track; with Alt
+    // every audio track takes the clicked track's new state, with Shift the
+    // selected tracks do (MIDI and instrument tracks have no input and are
+    // left as they are).
+    Q_INVOKABLE void inputClick(int track, int modifiers);
     // The triangle on a track header: discloses or hides the track's
     // automation lanes. A refusal (a MIDI track) is a notice.
     Q_INVOKABLE void toggleAutolanes(int track);
