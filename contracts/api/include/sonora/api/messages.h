@@ -139,7 +139,12 @@ namespace sonora::api {
 //   transport.record_ready, and transport.play and transport.toggle_play
 //   start a take while the transport is record-ready. A version-36 engine
 //   has no record-ready, so its Play only plays.
-constexpr uint32_t kProtocolVersion = 37;
+// 38 (ADR-0023 update of 2026-11-02, names and colours; follows 37): new
+//   operation kinds SetTrackColour, SetRegionName and SetRegionColour, a
+//   region in an operation carries "colour", and a Snapshot's undo window
+//   is window format 12, with each track's and region's colour (session
+//   format 15). A version-37 peer refuses all of them.
+constexpr uint32_t kProtocolVersion = 38;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

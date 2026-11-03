@@ -194,6 +194,9 @@ std::vector<Operation> one_of_each() {
             SetPlaylistName{2, 3, "Kick lead"},
             RemovePlaylist{2, 3},
             EditAutomation{2, AutomationParam::Volume, 0, 96000, {{0, -6.0f}, {48000, 0.0f}}},
+            SetTrackColour{2, 13},
+            SetRegionName{3, 11, "Verse \xC3\xA9"},
+            SetRegionColour{3, 11, kTrackColour},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 
@@ -582,8 +585,8 @@ int test_window_refuses_what_does_not_fit() {
         return !decode_window(WindowParts{u.parts, bytes}, out, err) && !out.has_value() &&
                mentions(err, why);
     };
-    CHECK(refused("\"window_format\": 11", "\"window_format\": 10", "window_format"));
-    CHECK(refused("\"window_format\": 11", "\"window_format\": 12", "window_format"));
+    CHECK(refused("\"window_format\": 12", "\"window_format\": 11", "window_format"));
+    CHECK(refused("\"window_format\": 12", "\"window_format\": 13", "window_format"));
     CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
     CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
     CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));

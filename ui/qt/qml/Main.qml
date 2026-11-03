@@ -806,6 +806,9 @@ Rectangle {
                     { name: "editDuplicate", label: "Duplicate", command: "edit.duplicate", on: true },
                     { name: "editRepeat", label: "Repeat…", command: "edit.repeat", on: true },
                     { name: "", label: "", command: "", on: false },
+                    { name: "editRenameRegion", label: "Rename Region…", command: "region.rename", on: true },
+                    { name: "editRegionColour", label: "Region Colour…", command: "region.colour", on: true },
+                    { name: "", label: "", command: "", on: false },
                     { name: "editSelectAll", label: "Select All", command: "edit.select_all", on: true },
                     { name: "", label: "", command: "", on: false },
                     { name: "editNewMarker", label: "New Marker…", command: "marker.add", on: true },
@@ -877,6 +880,9 @@ Rectangle {
                         { name: "trackNew", label: "New…", command: "track.new", on: true },
                         { name: "trackDuplicate", label: "Duplicate", command: "track.duplicate", on: sel >= 0 },
                         { name: "trackDelete", label: "Delete", command: "track.delete", on: sel >= 0 },
+                        { name: "", label: "", command: "", on: false },
+                        { name: "trackRename", label: "Rename…", command: "track.rename", on: sel >= 0 },
+                        { name: "trackColourItem", label: "Colour…", command: "track.colour", on: sel >= 0 },
                         { name: "", label: "", command: "", on: false },
                         { name: "trackMoveUp", label: "Move Up", command: "track.move_up", on: sel > 0 },
                         { name: "trackMoveDown", label: "Move Down", command: "track.move_down", on: sel >= 0 && sel < n - 1 }
@@ -1183,6 +1189,235 @@ Rectangle {
                     text: "Rename"
                     implicitHeight: 24
                     onClicked: playlistRenamePanel.accept()
+                }
+            }
+        }
+    }
+
+    // --- Rename Track, Rename Region -----------------------------------------------
+    // Asked for by track.rename or region.rename with no name (a double-click
+    // on a track name or on a region with the Grabber does the same): the
+    // current name, selected. Rename and Return send the command with the new
+    // name; a refusal (empty, or another track's name) keeps the dialog open
+    // and says why inside it, until the next try or Cancel.
+    MouseArea {
+        anchors.fill: parent
+        visible: namePanel.visible
+        z: 9
+        onClicked: namePanel.close()
+    }
+    Rectangle {
+        id: namePanel
+        objectName: "namePanel"
+        visible: false
+        z: 10
+        property int track: -1   // -1: the selected region
+        property string problem: ""
+        anchors.centerIn: parent
+        width: 360
+        height: nameColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        function show(t, current) {
+            track = t
+            problem = ""
+            nameInput.text = current
+            visible = true
+            nameInput.forceActiveFocus()
+            nameInput.selectAll()
+        }
+        function close() {
+            visible = false
+            nameInput.focus = false
+            root.shell.setTextEntry(false)
+        }
+        function accept() {
+            if (root.shell.invokeWith(track >= 0 ? "track.rename" : "region.rename", track,
+                                      nameInput.text)) close()
+            else problem = root.shell.statusText
+        }
+
+        Column {
+            id: nameColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                objectName: "nameTitle"
+                text: namePanel.track >= 0 ? "Rename Track" : "Rename Region"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Rectangle {
+                width: parent.width
+                height: 26
+                radius: Theme.radiusSmall
+                color: Theme.window
+                border.color: nameInput.activeFocus ? Theme.accent : Theme.borderStrong
+                TextInput {
+                    id: nameInput
+                    objectName: "nameInput"
+                    anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                    verticalAlignment: TextInput.AlignVCenter
+                    clip: true
+                    color: Theme.text
+                    selectionColor: Theme.selectionFill
+                    selectedTextColor: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                    onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                    onTextEdited: namePanel.problem = ""
+                    Keys.onEscapePressed: namePanel.close()
+                    Keys.onReturnPressed: namePanel.accept()
+                    Keys.onEnterPressed: namePanel.accept()
+                }
+            }
+            Text {
+                objectName: "nameProblem"
+                visible: namePanel.problem.length > 0
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: namePanel.problem
+                color: Theme.caution
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "nameCancel"
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: namePanel.close()
+                }
+                SButton {
+                    objectName: "nameOk"
+                    text: "Rename"
+                    implicitHeight: 24
+                    onClicked: namePanel.accept()
+                }
+            }
+        }
+    }
+
+    // --- the colour palette -----------------------------------------------------------
+    // Pro Tools' Color Palette, asked for by track.colour or region.colour with
+    // no colour, or a click on a track's colour bar: the palette, the current
+    // colour ringed. A swatch sends the command with its number (1 to 16); a
+    // region also offers its track's colour back.
+    MouseArea {
+        anchors.fill: parent
+        visible: colourPalette.visible
+        z: 9
+        onClicked: colourPalette.visible = false
+    }
+    Rectangle {
+        id: colourPalette
+        objectName: "colourPalette"
+        visible: false
+        z: 10
+        property int track: -1    // -1: the selected region
+        property int current: -1  // a palette index; -1 a region wearing its track's
+        property string problem: ""
+        anchors.centerIn: parent
+        width: paletteColumn.implicitWidth + 2 * Theme.space4
+        height: paletteColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        function show(t, c) {
+            track = t
+            current = c
+            problem = ""
+            visible = true
+        }
+        function choose(argument) {
+            if (root.shell.invokeWith(track >= 0 ? "track.colour" : "region.colour", track, argument))
+                visible = false
+            else problem = root.shell.statusText
+        }
+
+        Column {
+            id: paletteColumn
+            anchors { left: parent.left; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space3
+
+            Text {
+                objectName: "paletteTitle"
+                text: colourPalette.track >= 0
+                      ? "Track Colour  \u00B7  " + (root.session.trackNames[colourPalette.track] || "")
+                      : "Region Colour"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Grid {
+                columns: 8
+                spacing: Theme.space2
+                Repeater {
+                    model: Theme.paletteSize
+                    Rectangle {
+                        id: swatch
+                        required property int index
+                        objectName: "colourSwatch" + index
+                        width: 32; height: 32
+                        radius: Theme.radius
+                        color: Theme.paletteColour(index)
+                        border.width: colourPalette.current === index ? 2 : (swatchArea.containsMouse ? 1 : 0)
+                        border.color: Theme.text
+                        Rectangle {  // the ring's inner edge, so it reads on a light swatch too
+                            visible: colourPalette.current === swatch.index
+                            anchors { fill: parent; margins: 2 }
+                            radius: Theme.radiusSmall
+                            color: "transparent"
+                            border.color: Theme.window
+                            border.width: 1
+                        }
+                        MouseArea {
+                            id: swatchArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onClicked: colourPalette.choose(String(swatch.index + 1))
+                        }
+                    }
+                }
+            }
+            Text {
+                width: 8 * 32 + 7 * Theme.space2
+                elide: Text.ElideRight
+                text: colourPalette.current >= 0 ? Theme.paletteName(colourPalette.current)
+                                                 : "Wears its track's colour"
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Text {
+                objectName: "paletteProblem"
+                visible: colourPalette.problem.length > 0
+                width: 8 * 32 + 7 * Theme.space2
+                wrapMode: Text.Wrap
+                text: colourPalette.problem
+                color: Theme.caution
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "colourFollowTrack"
+                    visible: colourPalette.track < 0
+                    text: "Track's Colour"
+                    implicitHeight: 24
+                    active: colourPalette.current < 0
+                    onClicked: colourPalette.choose("track")
+                }
+                SButton {
+                    objectName: "paletteClose"
+                    text: "Close"
+                    implicitHeight: 24
+                    onClicked: colourPalette.visible = false
                 }
             }
         }
@@ -1548,6 +1783,8 @@ Rectangle {
         function onNewTracksRequested() { newTracksPanel.show() }
         function onSaveAsRequested(copy, name, where) { saveAsPanel.show(copy, name, where) }
         function onPlaylistRenameRequested(track, current) { playlistRenamePanel.show(track, current) }
+        function onNameRequested(track, current) { namePanel.show(track, current) }
+        function onColourRequested(track, current) { colourPalette.show(track, current) }
         function onMarkerRequested(name, what, range) { markerPanel.show(name, what, range) }
     }
 }

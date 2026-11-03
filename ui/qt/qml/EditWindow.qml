@@ -316,10 +316,27 @@ Item {
                                 edit.trackMenuRequested(p.x, p.y)
                             }
                         }
+                        // Pro Tools: a double-click on the name renames the track.
+                        onDoubleClicked: (mouse) => {
+                            if (mouse.button === Qt.LeftButton &&
+                                mouse.y <= headerName.y + headerName.height + Theme.space1 &&
+                                mouse.x <= headerName.x + headerName.width)
+                                edit.shell.invoke("track.rename", header.index)
+                        }
                     }
-                    Rectangle {  // the track's colour, as its regions wear it
+                    // The track's colour, as its regions wear it; a click
+                    // opens the palette on it.
+                    Rectangle {
+                        objectName: "trackColour" + header.index
                         width: 3; height: parent.height - 2
-                        color: Theme.trackColour(header.index)
+                        color: Theme.paletteColour(edit.session.trackColours[header.index] || 0)
+                        MouseArea {
+                            width: 10; height: parent.height
+                            onClicked: {
+                                edit.session.selectTrack(header.index)
+                                edit.shell.invoke("track.colour", header.index)
+                            }
+                        }
                     }
                     Rectangle {
                         anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
@@ -503,6 +520,7 @@ Item {
                 onPressed: (m) => edit.session.press(m.x, m.y)
                 onPositionChanged: (m) => { if (pressed) edit.session.drag(m.x, m.y) }
                 onReleased: (m) => edit.session.release(m.x, m.y)
+                onDoubleClicked: (m) => edit.session.doubleClick(m.x, m.y)
                 onWheel: (w) => edit.session.wheel(w.x, w.angleDelta.x / 3, w.angleDelta.y / 3,
                                                    (w.modifiers & Qt.ShiftModifier) !== 0,
                                                    (w.modifiers & Qt.ControlModifier) !== 0)

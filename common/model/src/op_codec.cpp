@@ -93,6 +93,7 @@ Value region_value(const Region& r) {
     Value v = Value::object();
     v.set("id", id_value(r.id));
     v.set("name", Value::string(r.name));
+    v.set("colour", integer(r.colour));
     v.set("position", integer(r.position));
     v.set("length", integer(r.length));
     Value& src = v.set("source", Value::array());
@@ -245,6 +246,7 @@ Value midi_region_fields(const MidiRegion& r) {
     Value v = Value::object();
     v.set("id", id_value(r.id));
     v.set("name", Value::string(r.name));
+    v.set("colour", integer(r.colour));
     v.set("position_ticks", integer(r.position));
     v.set("length_ticks", integer(r.length));
     v.set("offset_ticks", integer(r.offset));
@@ -556,6 +558,26 @@ struct Encoder {
         Value v = with_kind("SetTrackName");
         v.set("track", id_value(o.track));
         v.set("name", Value::string(o.name));
+        return v;
+    }
+    Value operator()(const SetTrackColour& o) const {
+        Value v = with_kind("SetTrackColour");
+        v.set("track", id_value(o.track));
+        v.set("colour", integer(o.colour));
+        return v;
+    }
+    Value operator()(const SetRegionName& o) const {
+        Value v = with_kind("SetRegionName");
+        v.set("playlist", id_value(o.playlist));
+        v.set("region", id_value(o.region));
+        v.set("name", Value::string(o.name));
+        return v;
+    }
+    Value operator()(const SetRegionColour& o) const {
+        Value v = with_kind("SetRegionColour");
+        v.set("playlist", id_value(o.playlist));
+        v.set("region", id_value(o.region));
+        v.set("colour", integer(o.colour));
         return v;
     }
     Value operator()(const ReorderTracks& o) const {
@@ -884,6 +906,20 @@ private:
     std::string prefix_;
 };
 
+// A palette index (ADR-0023, update of 2026-11-02); a region's may also be
+// kTrackColour, its track's.
+bool read_colour(Reader& rd, const Value& obj, const std::string& path, bool region,
+                 std::uint8_t& out) {
+    std::uint8_t c = 0;
+    if (!rd.small(obj, path, "colour", c)) return false;
+    if (region ? !detail::region_colour_ok(c) : c >= kColours) {
+        return rd.fail(Reader::at(path, "colour"), region ? detail::region_colour_problem()
+                                                          : detail::track_colour_problem());
+    }
+    out = c;
+    return true;
+}
+
 bool read_fade(Reader& rd, const Value& obj, const std::string& path, const char* key, Fade& f) {
     const Value& v = *obj.find(key);
     const std::string p = Reader::at(path, key);
@@ -892,11 +928,12 @@ bool read_fade(Reader& rd, const Value& obj, const std::string& path, const char
 }
 
 bool read_region_value(Reader& rd, const Value& v, const std::string& p, Region& r) {
-    if (!rd.keys(v, p, {"id", "name", "position", "length", "source", "source_offset",
-                        "gain_db", "mute", "fade_in", "fade_out"})) {
+    if (!rd.keys(v, p, {"id", "name", "colour", "position", "length", "source",
+                        "source_offset", "gain_db", "mute", "fade_in", "fade_out"})) {
         return false;
     }
     if (!rd.id(v, p, "id", r.id) || !rd.text(v, p, "name", r.name) ||
+        !read_colour(rd, v, p, true, r.colour) ||
         !rd.frames(v, p, "position", r.position) || !rd.frames(v, p, "length", r.length)) {
         return false;
     }
@@ -1004,6 +1041,7 @@ bool read_midi_source_value(Reader& rd, const Value& v, const std::string& p, Mi
 
 bool read_midi_region_fields(Reader& rd, const Value& v, const std::string& p, MidiRegion& r) {
     return rd.id(v, p, "id", r.id) && rd.text(v, p, "name", r.name) &&
+           read_colour(rd, v, p, true, r.colour) &&
            rd.frames(v, p, "position_ticks", r.position) &&
            rd.frames(v, p, "length_ticks", r.length) &&
            rd.frames(v, p, "offset_ticks", r.offset) && rd.flag(v, p, "mute", r.mute) &&
@@ -1011,8 +1049,8 @@ bool read_midi_region_fields(Reader& rd, const Value& v, const std::string& p, M
 }
 
 bool read_midi_region_value(Reader& rd, const Value& v, const std::string& p, MidiRegion& r) {
-    if (!rd.keys(v, p, {"id", "name", "position_ticks", "length_ticks", "offset_ticks", "mute",
-                        "source", "notes", "events", "sysex"}) ||
+    if (!rd.keys(v, p, {"id", "name", "colour", "position_ticks", "length_ticks",
+                        "offset_ticks", "mute", "source", "notes", "events", "sysex"}) ||
         !read_midi_region_fields(rd, v, p, r)) {
         return false;
     }
@@ -1476,6 +1514,29 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = std::move(o);
+    } else if (kind == "SetTrackColour") {
+        SetTrackColour o;
+        if (!rd.keys(v, "", {"op", "track", "colour"}) || !rd.id(v, "", "track", o.track) ||
+            !read_colour(rd, v, "", false, o.colour)) {
+            return false;
+        }
+        out = o;
+    } else if (kind == "SetRegionName") {
+        SetRegionName o;
+        if (!rd.keys(v, "", {"op", "playlist", "region", "name"}) ||
+            !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
+            !rd.text(v, "", "name", o.name)) {
+            return false;
+        }
+        out = std::move(o);
+    } else if (kind == "SetRegionColour") {
+        SetRegionColour o;
+        if (!rd.keys(v, "", {"op", "playlist", "region", "colour"}) ||
+            !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
+            !read_colour(rd, v, "", true, o.colour)) {
+            return false;
+        }
+        out = o;
     } else if (kind == "ReorderTracks") {
         ReorderTracks o;
         const Value* order = nullptr;
@@ -1759,7 +1820,9 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 //    automation mode (ADR-0027).
 // 11: a lane may be a plugin lane, with its insert and key (ADR-0027 §5,
 //    update of 2026-11-01).
-constexpr std::int64_t kWindowFormat = 11;
+// 12: each edit track and region carries its colour (ADR-0023, update of
+//    2026-11-02).
+constexpr std::int64_t kWindowFormat = 12;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1836,6 +1899,7 @@ private:
         tv.set("id", id_value(t.id));
         tv.set("kind", name_of(kTrackKinds, t.kind));
         tv.set("name", Value::string(t.name));
+        tv.set("colour", integer(t.colour));
         tv.set("channels", integer(t.channels));
         tv.set("active_playlist", id_value(t.active_playlist));
         Value& ins = tv.set("inserts", Value::array());
@@ -2118,8 +2182,8 @@ bool read_midi_playlists(Reader& rd, const Value& root,
             const std::string rp = "midi_playlists.regions";
             MidiRegion region;
             std::size_t ix = 0;
-            if (!rd.keys(r, rp, {"id", "name", "position_ticks", "length_ticks", "offset_ticks",
-                                 "mute", "source", "sequence"}) ||
+            if (!rd.keys(r, rp, {"id", "name", "colour", "position_ticks", "length_ticks",
+                                 "offset_ticks", "mute", "source", "sequence"}) ||
                 !read_midi_region_fields(rd, r, rp, region) ||
                 !table_index(rd, *r.find("sequence"), rp + ".sequence", sequences.size(), ix)) {
                 return false;
@@ -2145,11 +2209,12 @@ bool read_tracks(Reader& rd, const Value& root,
         const Value* ins = nullptr;
         const Value* sends = nullptr;
         if (!rd.keys(e, "tracks",
-                     {"id", "kind", "name", "channels", "active_playlist", "inserts", "sends",
-                      "output", "automation", "playlists", "midi_playlists"}) ||
+                     {"id", "kind", "name", "colour", "channels", "active_playlist", "inserts",
+                      "sends", "output", "automation", "playlists", "midi_playlists"}) ||
             !rd.id(e, "tracks", "id", t->id) || !rd.id(e, "tracks", "output", t->output) ||
             !rd.choice(e, "tracks", "kind", kTrackKinds, t->kind) ||
             !rd.text(e, "tracks", "name", t->name) ||
+            !read_colour(rd, e, "tracks", false, t->colour) ||
             !rd.small(e, "tracks", "channels", t->channels) ||
             !rd.id(e, "tracks", "active_playlist", t->active_playlist) ||
             !rd.array(e, "tracks", "inserts", ins) || !rd.array(e, "tracks", "sends", sends) ||
@@ -2506,7 +2571,7 @@ const char* const kNames[] = {
     "SetMidiRouting", "RecordLoopTake", "AddBus", "RemoveBus",
     "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
     "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "EditAutomation",
-    "Compound"};
+    "SetTrackColour", "SetRegionName", "SetRegionColour", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

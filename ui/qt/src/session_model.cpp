@@ -242,6 +242,78 @@ void SessionModel::installCommands(CommandRegistry& local) {
         return playlistCommand(
             i, false, [&](Why& w) { return ctl_.rename_playlist(i, ctx.argument, w); }, why);
     });
+    // --- names and colours (ADR-0023, update of 2026-11-02) ---
+    const auto no_row = [this](int i, Why& why) {
+        if (i >= 0 && i < static_cast<int>(ctl_.snapshot().edit->tracks.size())) return false;
+        why = i < 0 ? "no track is selected" : "there is no track " + std::to_string(i + 1);
+        return true;
+    };
+    simple("track.rename", [this, row, no_row](const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        if (ctx.argument.empty()) {
+            if (no_row(i, why)) return false;
+            emit nameRequested(i, q(ctl_.snapshot().edit->tracks[static_cast<std::size_t>(i)]->name));
+            return true;
+        }
+        return ctl_.rename_track(i, ctx.argument, why);
+    });
+    simple("region.rename", [this](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) {
+            const Region* r = ctl_.selected_region(why);
+            if (r == nullptr) return false;
+            emit nameRequested(-1, q(r->name));
+            return true;
+        }
+        return ctl_.rename_region(ctx.argument, why);
+    });
+    // The palette numbers its colours from 1, as the operator sees them.
+    const auto palette_number = [](const std::string& a, int& colour) {
+        if (a.empty() || a.size() > 2 ||
+            !std::all_of(a.begin(), a.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+            return false;
+        }
+        colour = std::stoi(a) - 1;
+        return colour >= 0 && colour < model::kColours;
+    };
+    const auto bad_colour = [](const std::string& a, bool region) {
+        return "\"" + a + "\" is not a palette colour; give 1 to " +
+               std::to_string(model::kColours) + (region ? ", or \"track\"" : "") +
+               ". Nothing was coloured.";
+    };
+    simple("track.colour", [this, row, no_row, palette_number, bad_colour](
+                               const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        if (ctx.argument.empty()) {
+            if (no_row(i, why)) return false;
+            emit colourRequested(i, ctl_.snapshot().edit->tracks[static_cast<std::size_t>(i)]->colour);
+            return true;
+        }
+        int colour = 0;
+        if (!palette_number(ctx.argument, colour)) {
+            why = bad_colour(ctx.argument, false);
+            return false;
+        }
+        // A key or the palette with no track named colours every selected
+        // track, as Pro Tools' palette does.
+        const auto& sel = ctl_.selection();
+        const int count = !ctx.has_target() && sel.track == i ? sel.tracks : 1;
+        return ctl_.set_track_colour(i, count, colour, why);
+    });
+    simple("region.colour", [this, palette_number, bad_colour](const CommandContext& ctx,
+                                                                Why& why) {
+        if (ctx.argument.empty()) {
+            const Region* r = ctl_.selected_region(why);
+            if (r == nullptr) return false;
+            emit colourRequested(-1, r->colour == model::kTrackColour ? -1 : r->colour);
+            return true;
+        }
+        int colour = model::kTrackColour;
+        if (ctx.argument != "track" && !palette_number(ctx.argument, colour)) {
+            why = bad_colour(ctx.argument, true);
+            return false;
+        }
+        return ctl_.set_region_colour(colour, why);
+    });
     simple("track.playlist_delete_unused", [this, row](const CommandContext& ctx, Why& why) {
         const int i = row(ctx);
         return playlistCommand(i, false,
@@ -761,6 +833,12 @@ QStringList SessionModel::trackNames() const {
     return out;
 }
 
+QList<int> SessionModel::trackColours() const {
+    QList<int> out;
+    for (const auto& t : ctl_.snapshot().edit->tracks) out << t->colour;
+    return out;
+}
+
 QVariantList SessionModel::trackRows() const {
     const Snapshot& s = ctl_.snapshot();
     const ViewState& v = ctl_.view();
@@ -949,6 +1027,16 @@ void SessionModel::drag(qreal x, qreal y) {
 void SessionModel::release(qreal x, qreal y) {
     std::string why;
     run(ctl_.release(x, y, why), why);
+}
+
+void SessionModel::doubleClick(qreal x, qreal y) {
+    const Hit h = ctl_.hit(x, y);
+    // The press before it picked the region up only as a Grabber does, so
+    // a Selector double-click, which selects time, names nothing.
+    if (h.region == kNoId || h.region != ctl_.selection().region) return;
+    std::string why;
+    const Region* r = ctl_.selected_region(why);
+    if (r != nullptr) emit nameRequested(-1, q(r->name));
 }
 
 void SessionModel::wheel(qreal x, qreal dx, qreal dy, bool shift, bool ctrl) {

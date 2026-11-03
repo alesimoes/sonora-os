@@ -17,6 +17,14 @@
 namespace sonora::model::detail {
 
 bool valid_text(const std::string& s);
+inline bool region_colour_ok(std::uint8_t c) { return c < kColours || c == kTrackColour; }
+inline std::string region_colour_problem() {
+    return "colour must be a palette colour from 0 to " + std::to_string(kColours - 1) +
+           ", or " + std::to_string(kTrackColour) + " for the track's";
+}
+inline std::string track_colour_problem() {
+    return "colour must be a palette colour from 0 to " + std::to_string(kColours - 1);
+}
 std::string source_problem(const Source& s);
 std::string region_problem(const Region& r, const SourcePool& pool,
                            std::uint16_t track_channels);

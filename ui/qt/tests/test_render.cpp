@@ -199,7 +199,8 @@ int main(int argc, char** argv) {
         // band + the middle of the area under it.
         const auto wave_y = [&](int track) { return static_cast<int>(track * row + 39); };
         CHECK(is(shot, 300, wave_y(0), region_wave(region_colour(0))));
-        CHECK(is(shot, 300, wave_y(11), region_wave(region_colour(11))));
+        // Track 12 wears the colour it was given when it was added.
+        CHECK(is(shot, 300, wave_y(11), region_wave(region_colour(model::auto_colour(11)))));
     }
 
     std::printf("ui render: all checks passed\n");

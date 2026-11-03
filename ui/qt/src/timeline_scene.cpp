@@ -373,14 +373,20 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
         if (y + v.track_height < 0 || y > v.height) continue;
         const Playlist* p = active_playlist(tracks[i].get());
         if (p == nullptr) continue;
-        const uint32_t palette = theme::region_colour(static_cast<int>(i));
+        // Each region's own colour, else its track's (ADR-0023, update of
+        // 2026-11-02): stored, so a moved track keeps it.
+        const TrackEdit& owner = *tracks[i];
+        const auto colour_of = [&](const Region& r) {
+            return theme::region_colour(r.colour == model::kTrackColour ? owner.colour
+                                                                         : r.colour);
+        };
         // A trim in the hand: the playlist as the drop will leave it, so a
         // neighbour the edge runs into is seen to be overwritten before the
         // button comes up.
         if (drag.moved && drag.preview && drag.preview->id == p->id) {
             for (const Region& r : drag.preview->regions) {
                 draw_region(r, r.position, r.length, r.source_offset,
-                            region_fades(*drag.preview, r), y, v, palette, r.id == drag.region,
+                            region_fades(*drag.preview, r), y, v, colour_of(r), r.id == drag.region,
                             false, peaks, out);
             }
             draw_crossfades(*drag.preview, y, v, out);
@@ -391,27 +397,27 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
             const bool selected = sel.region == r.id;
             RegionFades fades = region_fades(*p, r);
             if (!dragged) {
-                draw_region(r, r.position, r.length, r.source_offset, fades, y, v, palette,
+                draw_region(r, r.position, r.length, r.source_offset, fades, y, v, colour_of(r),
                             selected, false, peaks, out);
                 continue;
             }
             switch (drag.kind) {
                 case Drag::Kind::Move:
-                    draw_region(r, r.position, r.length, r.source_offset, fades, y, v, palette,
+                    draw_region(r, r.position, r.length, r.source_offset, fades, y, v, colour_of(r),
                                 false, true, peaks, out);
-                    draw_region(r, drag.start, r.length, r.source_offset, fades, y, v, palette,
+                    draw_region(r, drag.start, r.length, r.source_offset, fades, y, v, colour_of(r),
                                 true, false, peaks, out);
                     break;
                 case Drag::Kind::FadeIn:
                 case Drag::Kind::FadeOut:
                     // The fade in the hand, as the drop will set it.
                     (drag.kind == Drag::Kind::FadeIn ? fades.in : fades.out) = drag.fade;
-                    draw_region(r, r.position, r.length, r.source_offset, fades, y, v, palette,
+                    draw_region(r, r.position, r.length, r.source_offset, fades, y, v, colour_of(r),
                                 true, false, peaks, out);
                     break;
                 default:
                     draw_region(r, drag.start, drag.end - drag.start,
-                                r.source_offset + (drag.start - r.position), fades, y, v, palette,
+                                r.source_offset + (drag.start - r.position), fades, y, v, colour_of(r),
                                 true, false, peaks, out);
                     break;
             }

@@ -47,7 +47,10 @@ namespace sonora::model {
 //    with audio (ADR-0027). A version 12 file opens with no lanes, in read.
 // 14: a lane may be a plugin parameter's, keyed by "insert" and "key"
 //    (ADR-0027 §5, update of 2026-11-01). A version 13 file opens as it was.
-constexpr std::int64_t kFormatVersion = 14;
+// 15: "colour" on every track, and optionally on a region (ADR-0023, update
+//    of 2026-11-02). A version 14 file opens with the colours its window
+//    showed, each track's by its position.
+constexpr std::int64_t kFormatVersion = 15;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

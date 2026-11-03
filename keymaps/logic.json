@@ -190,6 +190,16 @@
       "command": "track.delete",
       "verified": false,
       "comment": "Delete Track, Command-Delete. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md."
+    },
+    "shift+return": {
+      "command": "track.rename",
+      "verified": false,
+      "comment": "Name Track, Shift-Return: names the selected track. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md (ADR-0023, update of 2026-11-02)."
+    },
+    "shift+n": {
+      "command": "region.rename",
+      "verified": false,
+      "comment": "Name Regions/Events, Shift-N: names the selected region. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md (ADR-0023, update of 2026-11-02)."
     }
   }
 }

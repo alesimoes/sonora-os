@@ -489,7 +489,7 @@ int test_plugin_lanes_cross_the_wire_and_the_file() {
     CHECK(plugin_lane(late.current(), 0, lim.insert, "threshold")->points.size() == 2);
 
     CHECK(serialize(doc.current(), WriteInfo{"test", 1}, bytes, error));
-    CHECK(mentions(bytes, "\"sonora_session\": 14"));
+    CHECK(mentions(bytes, "\"sonora_session\": 15"));
     CHECK(mentions(bytes, "\"param\": \"plugin\""));
     Loaded l;
     LoadError le;

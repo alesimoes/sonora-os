@@ -84,9 +84,24 @@ inline constexpr float kMaxGainDb = 24.0f;
 // positive law is a negative exponent, which is inf at a hard pan.
 inline constexpr float kMinPanLawDb = -12.0f;
 
+// Colours (ADR-0023, update of 2026-11-02): an index into the interface's
+// palette, never a display position, so a track keeps its colour when it
+// moves. A new track takes one of the first kAutoColours by how many tracks
+// the session already has, so tracks added in turn get what the window
+// showed by display position before colours were stored.
+inline constexpr std::uint8_t kColours = 16;
+inline constexpr std::uint8_t kAutoColours = 8;
+// A region's colour when it wears its track's, as Pro Tools' clips do until
+// one is coloured on its own.
+inline constexpr std::uint8_t kTrackColour = 0xFF;
+inline constexpr std::uint8_t auto_colour(std::size_t display_index) {
+    return static_cast<std::uint8_t>(display_index % kAutoColours);
+}
+
 struct Region {
     Id id = 0;
     std::string name;
+    std::uint8_t colour = kTrackColour;
     Frames position = 0;       // timeline frame of the region's first frame
     Frames length = 0;         // > 0
     Frames source_offset = 0;  // the source frame that plays at `position`
@@ -476,6 +491,7 @@ inline std::uint64_t midi_entries(const MidiSequence& s) { return s.entries(); }
 struct MidiRegion {
     Id id = 0;
     std::string name;
+    std::uint8_t colour = kTrackColour;
     Ticks position = 0;   // timeline tick of the window's start
     Ticks length = 0;     // > 0
     Ticks offset = 0;     // the data tick shown at `position`
@@ -639,6 +655,7 @@ bool lane_before(const AutomationLane& a, const AutomationLane& b);
 struct TrackEdit {
     Id id = 0;
     std::string name;
+    std::uint8_t colour = 0;   // below kColours
     std::uint16_t channels = 1;
     Id active_playlist = 0;
     std::vector<std::shared_ptr<const Playlist>> playlists;

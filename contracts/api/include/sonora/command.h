@@ -150,6 +150,15 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"track.delete", CommandTarget::Track, "Delete a track"},
         {"track.move_up", CommandTarget::Track, "Move a track up one row"},
         {"track.move_down", CommandTarget::Track, "Move a track down one row"},
+        // Names and colours (ADR-0023, update of 2026-11-02). Rename takes
+        // the new name; Colour the palette colour, 1 to 16. Without an
+        // argument the window asks: the name dialog, the colour palette.
+        {"track.rename", CommandTarget::Track, "Rename a track", true},
+        {"track.colour", CommandTarget::Track, "Colour a track from the palette", true},
+        // On the selected region. Colour "track" wears the track's again.
+        {"region.rename", CommandTarget::None, "Rename the selected region", true},
+        {"region.colour", CommandTarget::None, "Colour the selected region from the palette",
+         true},
         // The track's playlist selector (ADR-0026), on the track given or the
         // selected one. Choose takes the playlist's name; Rename the new name,
         // and asks for it without one.

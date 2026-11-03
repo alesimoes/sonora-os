@@ -247,6 +247,28 @@ struct SetTrackName {
     std::string name;
 };
 
+// Pro Tools' Color Palette on a track (ADR-0023, update of 2026-11-02):
+// `colour` below kColours. Undoable, as Pro Tools' colour changes are.
+struct SetTrackColour {
+    Id track = 0;
+    std::uint8_t colour = 0;
+};
+
+// Pro Tools' Rename Clip, Logic's Name Regions: on an audio or MIDI region
+// of `playlist`. The name may be empty, as a region's may be in the file.
+struct SetRegionName {
+    Id playlist = 0;
+    Id region = 0;
+    std::string name;
+};
+
+// A region's own colour, or kTrackColour to wear its track's again.
+struct SetRegionColour {
+    Id playlist = 0;
+    Id region = 0;
+    std::uint8_t colour = kTrackColour;
+};
+
 // A permutation of every track id, in the new display order.
 struct ReorderTracks {
     std::vector<Id> order;
@@ -522,7 +544,7 @@ using Member =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -557,7 +579,7 @@ using Operation =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, Compound>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

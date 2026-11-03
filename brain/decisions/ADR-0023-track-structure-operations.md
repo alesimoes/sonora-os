@@ -39,6 +39,9 @@
   move an armed track. A track past the engine's track count is refused.
 - Update 2026-10-31: `DuplicateTrack` carries `automation` (default on),
   Pro Tools' dialog checkbox; off, the copy has no lanes. Protocol 35.
+- Update 2026-11-02: a palette colour stored on every track and, when it
+  has its own, on a region; `SetTrackColour`, `SetRegionName`,
+  `SetRegionColour`. Session format 15, protocol 38.
 
 ## Context
 
@@ -241,6 +244,51 @@ choice:
   35: a version-34 peer refuses the key, and this one refuses an operation
   without it. Session format unchanged (13): operations are not saved, the
   lanes they make are.
+
+## Update 2026-11-02: names and colours (session format 15, protocol 38)
+
+Backlog `ui.editing.names_colours`, design review finding F21: the window
+coloured a track by its display position, so moving, inserting or deleting
+a track recoloured every track below it. Pro Tools and Logic store a
+colour on the track and on the clip or region. Taken on the recommended
+defaults, no owner present:
+
+- A colour is a **palette index**, 0 to 15 (`kColours`), not an RGB value:
+  the interface owns the palette and its contrast against the dark theme,
+  as it owns every other colour; AAF interchange (Phase 4) maps an index to
+  RGB on export. `TrackEdit::colour` always holds one; `Region::colour` and
+  `MidiRegion::colour` hold one or `kTrackColour` (255), which wears the
+  track's, as a Pro Tools clip does until it is coloured itself.
+- `AddTrack` gives the new track `auto_colour(n)`, `n` the tracks the
+  session already has, cycling the first eight (`kAutoColours`): tracks
+  added in turn get what the window showed before. `AddTrack` itself is
+  unchanged on the wire. `DuplicateTrack` copies its source's colour.
+- Three operations, each undoable and one undo step:
+  `SetTrackColour{track, colour}`, `SetRegionName{playlist, region, name}`
+  and `SetRegionColour{playlist, region, colour}`. The region ones act on
+  audio and MIDI regions alike, by id, as the other region operations do,
+  and touch nothing else, so no fade, crossfade or neighbour moves.
+  Track renames already had `SetTrackName`.
+- Names are not required to be unique by the model; the interface refuses
+  an empty track name and one another track has, as Pro Tools does. A
+  region name may be empty in the file and from the codec, and the
+  interface refuses an empty one.
+- **Session format 15, unavoidable:** the reader is strict, so a stored
+  colour needs a key, and a key is a version (session-format.md,
+  "Versioning"). Every track gains `"colour"` after `"name"`; a region
+  carries `"colour"` after its name only when it has its own. v14→v15
+  fills each track with `auto_colour(its index)`, the colour the window
+  gave it, so a version 14 session opens looking as it did.
+- **Protocol 38:** the three operation kinds, `"colour"` on a region inside
+  an operation, and undo window format 12 with each track's and region's
+  colour. A version-37 peer refuses all of them.
+- Commands: `track.rename`, `track.colour`, `region.rename` and
+  `region.colour`; without an argument the window asks (the name dialog,
+  the colour palette). Pro Tools' Rename Clip is `ctrl+shift+r`; Logic's
+  Name Track and Name Regions/Events are `shift+return` and `shift+n`.
+  Each binding the research file does not confirm is marked unverified.
+
+Nothing reaches `process()`: a name or a colour is not in the plan.
 
 ## Open questions
 

@@ -350,6 +350,9 @@ public:
         track->id = op.track;
         track->kind = op.kind;
         track->name = op.name;
+        // Stored from here on, so a later move keeps it (ADR-0023, update
+        // of 2026-11-02).
+        track->colour = auto_colour(before_.edit->tracks.size());
         track->channels = op.channels;
         track->active_playlist = op.playlist;
         if (op.kind == TrackKind::Audio) {
@@ -728,6 +731,26 @@ public:
         });
     }
 
+    bool operator()(const SetTrackColour& op) {
+        if (op.colour >= kColours) return fail(detail::track_colour_problem());
+        return edit_track(op.track, [&](TrackEdit& t) {
+            t.colour = op.colour;
+            return true;
+        });
+    }
+
+    bool operator()(const SetRegionName& op) {
+        if (!detail::valid_text(op.name)) return fail("name is not valid UTF-8");
+        return edit_region(op.playlist, op.region,
+                           [&](auto& r) { r.name = op.name; });
+    }
+
+    bool operator()(const SetRegionColour& op) {
+        if (!detail::region_colour_ok(op.colour)) return fail(detail::region_colour_problem());
+        return edit_region(op.playlist, op.region,
+                           [&](auto& r) { r.colour = op.colour; });
+    }
+
     bool operator()(const ReorderTracks& op) {
         const auto& tracks = before_.edit->tracks;
         if (op.order.size() != tracks.size()) {
@@ -773,6 +796,7 @@ public:
         auto copy = std::make_shared<TrackEdit>();
         copy->id = op.track;
         copy->name = op.name;
+        copy->colour = src.colour;
         copy->kind = src.kind;
         copy->channels = src.channels;
         // The copy plays where its source does (ADR-0024 §2); a track has no
@@ -1786,6 +1810,28 @@ private:
         after_ = before_;
         after_.edit = std::move(edit);
         return true;
+    }
+
+    // A field of one audio or MIDI region that no other region, fade or
+    // crossfade depends on: its name or colour.
+    template <typename F>
+    bool edit_region(Id playlist, Id region, F&& f) {
+        Located midi;
+        if (locate_midi_playlist(*before_.edit, playlist, midi)) {
+            return edit_midi_playlist(playlist, [&](MidiPlaylist& p) {
+                const std::size_t i = midi_region_index(p, region);
+                if (i == kNone) return no_region(region, playlist);
+                f(p.regions[i]);
+                return true;
+            });
+        }
+        return edit_playlist(playlist, [&](Playlist& p, std::uint16_t) {
+            const std::size_t i = region_index(p, region);
+            if (i == kNone) return no_region(region, playlist);
+            f(p.regions[i]);
+            mark(i, i);
+            return true;
+        });
     }
 
     bool no_insert(Id insert) {

@@ -114,7 +114,7 @@ bool fit_crossfade(Crossfade& x, Frames before, Frames after) {
 }
 
 bool Region::operator==(const Region& o) const {
-    return id == o.id && name == o.name && position == o.position &&
+    return id == o.id && name == o.name && colour == o.colour && position == o.position &&
            length == o.length && source_offset == o.source_offset &&
            channels == o.channels && gain_db == o.gain_db && mute == o.mute &&
            fade_in == o.fade_in && fade_out == o.fade_out;
@@ -126,13 +126,14 @@ bool Playlist::operator==(const Playlist& o) const {
 }
 
 bool MidiRegion::operator==(const MidiRegion& o) const {
-    return id == o.id && name == o.name && position == o.position && length == o.length &&
-           offset == o.offset && mute == o.mute && source == o.source &&
+    return id == o.id && name == o.name && colour == o.colour && position == o.position &&
+           length == o.length && offset == o.offset && mute == o.mute && source == o.source &&
            same_ptr_or_value(data, o.data);
 }
 
 bool TrackEdit::operator==(const TrackEdit& o) const {
-    if (id != o.id || kind != o.kind || name != o.name || channels != o.channels ||
+    if (id != o.id || kind != o.kind || name != o.name || colour != o.colour ||
+        channels != o.channels ||
         active_playlist != o.active_playlist || inserts != o.inserts || sends != o.sends ||
         output != o.output || automation.size() != o.automation.size() ||
         playlists.size() != o.playlists.size() ||
@@ -768,6 +769,7 @@ std::string sequence_problem(const MidiSequence& s, std::string& where) {
 std::string midi_region_problem(const MidiRegion& r, const SourcePool& pool) {
     if (r.id == 0) return "id must be at least 1";
     if (!valid_text(r.name)) return "name is not valid UTF-8";
+    if (!region_colour_ok(r.colour)) return region_colour_problem();
     if (r.length <= 0) return "length must be greater than 0";
     if (r.position < 0) return "position must not be negative";
     if (r.offset < 0) return "offset must not be negative";
@@ -826,6 +828,7 @@ const char* track_kind_name(TrackKind kind) {
 }
 
 std::string track_shape_problem(const TrackEdit& t) {
+    if (t.colour >= kColours) return track_colour_problem();
     if (t.kind == TrackKind::Midi) {
         if (t.channels != 0) return "a MIDI track has no audio channels; channels must be 0";
         if (!t.inserts.empty()) return "a MIDI track has no audio, and so no insert";
@@ -850,6 +853,7 @@ std::string region_problem(const Region& r, const SourcePool& pool,
                            std::uint16_t track_channels) {
     if (r.id == 0) return "id must be at least 1";
     if (!valid_text(r.name)) return "name is not valid UTF-8";
+    if (!region_colour_ok(r.colour)) return region_colour_problem();
     if (r.length <= 0) return "length must be greater than 0";
     if (r.position < 0) return "position must not be negative";
     if (r.source_offset < 0) return "source_offset must not be negative";
