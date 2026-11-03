@@ -527,6 +527,30 @@ defaults, no owner present.**
   directory syncs only); copies happen only at the untitled rename and Save
   As, and the host's `no_copy` (2b) covers the flush.
 
+**Slice 2b as landed (2026-11-03), same terms.** No version moves: the
+fields were all in host wire 4 and session format 17.
+
+- *Folders.* `Load.session_dir` and `GetState.save_dir` are the session
+  folder, absolute. Scratch is `<root>/<pid>-<n>/<session>/<insert id>/`:
+  one run directory per hosting (a backend reactivated makes another), a
+  serial per session opened so a reused insert id never meets the last
+  session's files, removed with the hosting, and a run whose pid is gone
+  swept at the next start. A running chain's restart follows a moved
+  folder.
+- *The untitled rename* moves the folder under a running plugin, whose
+  path then names a folder that is gone. The host names such a path by the
+  same relative path in the save folder when the file is there, and only
+  when the old path no longer exists (the §6 rewrite, which assumed the old
+  folder was still there).
+- *Checks.* A `State.files` entry is held to `plugin_file_problem` and the
+  per-state caps on the control thread, and to "there, plain, its size" on
+  the saver thread with its directory syncs, before `SetInsertState`. A
+  flush whose files were saved into a folder the session has left fails.
+- *Notices.* A counted `Fault{Plugin}` (refused path calls) is a held
+  Notice, once a run per insert, cleared when a session opens.
+- *Take.* The server sets `kGetStateNoCopy` while a take is open or
+  closing (`takes_in_flight`); such a GetState keeps `kReplyTimeoutMs`.
+
 Preset sidecar `sonora_preset` 1 is new (slice 4) and versioned apart from
 the session. The protocol comment block in `messages.h` gets one entry per
 bump, in the existing style.

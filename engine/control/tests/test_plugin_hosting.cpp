@@ -78,6 +78,14 @@
 //   state_reads_in_turn  two slow saves on one chain: each GetState's
 //                        deadline starts when the one before is answered,
 //                        so both are read and the host is not killed
+//   plugin_files_restore a state naming a makePath file (ADR-0029 slice 2b):
+//                        no copy during a take, copied into Plugin Files/ at
+//                        the next flush and named in StateRef.files, carried
+//                        by Save As, and read back by the plugin restored
+//                        from the new folder; refused paths a held notice
+//   server_held_path_notice  through the server: N builds of a chain say its
+//                        refused paths live each time, a late interface is
+//                        greeted with one, and none after a Load
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
@@ -90,6 +98,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -103,6 +112,7 @@
 #include "sonora/engine_control_in_process.h"
 #include "sonora/fake_backend.h"
 #include "sonora/model/history.h"
+#include "sonora/model/op_codec.h"
 #include "sonora/model/operations.h"
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
@@ -127,6 +137,8 @@ void check(bool ok, const char* what) {
 constexpr int kSkip = 77;
 constexpr uint32_t kBlock = 128;
 const std::string kDir = "test_plugin_hosting_session";
+// Where the hostings make their makePath folders: never the user's own.
+const std::string kScratch = "test_plugin_hosting_scratch";
 const char* const kEgAmp = "http://lv2plug.in/plugins/eg-amp";
 const char* const kLookahead = "urn:sonora:test#lookahead";
 const char* const kSleep = "urn:sonora:test#sleep";
@@ -211,6 +223,7 @@ struct Rig {
         hc.max_block_frames = 256;
         hc.max_stores = 16;
         hc.ready_timeout_ms = ready_timeout_ms;
+        hc.plugin_scratch_root = std::filesystem::absolute(kScratch).string();
         PluginScannerConfig sc;
         sc.host_path = a.host;
         sc.bundles = a.bundles;
@@ -228,6 +241,7 @@ struct Rig {
         ctl.reset();
         session.reset();
         std::filesystem::remove_all(kDir);
+        std::filesystem::remove_all(kScratch);
     }
 
     bool apply(const model::Operation& op) {
@@ -797,10 +811,11 @@ bool state_counter(const std::string& bytes, int64_t& n) {
 }
 
 // One FlushPluginState as the server runs it: the reads, the files (here on
-// this thread, through the saver's own SessionFolder::write_states), then
-// the document. The flush's counter for `insert`, or -1.
-int64_t flush(Rig& rig, Id insert, PluginHosting::Flush* out = nullptr) {
-    const uint64_t id = rig.hosting->request_states(0, rig.history.current());
+// this thread, through the saver's own SessionFolder::write_states and
+// sync_plugin_files, into the session's folder), then the document. The
+// flush's counter for `insert`, or -1.
+int64_t flush(Rig& rig, Id insert, PluginHosting::Flush* out = nullptr, bool no_copy = false) {
+    const uint64_t id = rig.hosting->request_states(0, rig.history.current(), no_copy);
     std::vector<PluginHosting::Flush> done;
     rig.until(
         [&] {
@@ -814,12 +829,17 @@ int64_t flush(Rig& rig, Id insert, PluginHosting::Flush* out = nullptr) {
     }
     for (const std::string& f : done[0].failed) std::printf("  failed: %s\n", f.c_str());
     std::vector<session_files::StateFile> files;
-    for (const auto& s : done[0].states)
+    std::map<std::string, PluginFileRef> plugin_files;
+    for (const auto& s : done[0].states) {
         if (!s.sha256.empty()) files.push_back({s.sha256, s.bytes});
+        for (const PluginFileRef& f : s.files) plugin_files[f.path] = f;
+    }
     session_files::SessionFolder folder;
     std::string why;
-    if (!folder.write_states(kDir, files, why)) {
+    const std::string dir = *rig.session->folder();
+    if (!folder.write_states(dir, files, why) || !folder.sync_plugin_files(dir, plugin_files, why)) {
         std::printf("  write_states: %s\n", why.c_str());
+        if (out) *out = std::move(done[0]);
         return -1;
     }
     for (const model::Operation& op : rig.hosting->states_saved(done[0], rig.history.current())) {
@@ -908,6 +928,126 @@ int scenario_state_flush(const Args& a) {
     const int64_t reopened = flush(rig, 500);
     std::printf("  after reopening: %lld\n", (long long)reopened);
     check(reopened >= after_crash && reopened >= first, "the reopened plugin counts on from the saved state");
+    return failures ? 1 : 0;
+}
+
+// An integer property of the files plugin's state ("test#verified" and so
+// on), from a StateBlob's Turtle, or `fallback`.
+int64_t files_prop(const std::string& bytes, const std::string& key, int64_t fallback = -1000) {
+    namespace pc = plugin::control;
+    pc::StateBlob b;
+    std::string e;
+    if (!pc::decode_state_blob(bytes, b, e) || b.sections.empty()) return fallback;
+    const std::string& s = b.sections[0];
+    const std::size_t at = s.find(key);
+    if (at == std::string::npos) return fallback;
+    const std::size_t d = s.find_first_of("-0123456789", at + key.size());
+    return d == std::string::npos ? fallback : std::strtoll(s.c_str() + d, nullptr, 10);
+}
+
+// ADR-0029 slice 2b, end to end: the files plugin makes "takes/sample.bin"
+// under its scratch folder (outside the session folder), which the engine
+// made and named in Load. A flush during a take (kGetStateNoCopy) copies
+// nothing and fails that insert by name. The flush after it has the host
+// copy the file into "<session>/Plugin Files/<sha256>/sample.bin" (the
+// GetState names the session folder), the saver checks and syncs it, and
+// SetInsertState names it in StateRef.files. Save As carries it to a new
+// folder; the old folder's file and the scratch folder are deleted; the
+// session reopened from the new folder restores a plugin that reads the
+// same bytes back. The host's refusals of the plugin's bad makePath calls
+// are a held notice.
+int scenario_plugin_files_restore(const Args& a) {
+    namespace fs = std::filesystem;
+    namespace pc = plugin::control;
+    std::printf("plugin_files_restore: a state that names a file, saved, moved and restored\n");
+    const fs::path moved = fs::absolute(kDir + "_moved");
+    fs::remove_all(moved);
+    Rig rig(a, 1);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, "urn:sonora:test#files"));
+    rig.show(true);
+    check(rig.until([&] { return (rig.hosting->insert_flags(500) & api::kInsertRunning) != 0; }, 15000),
+          "the files plugin runs");
+    // Its scratch folder: "<root>/<pid>-<n>/<session>/500/", outside the
+    // session folder.
+    fs::path made;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(kScratch, ec), end; !ec && it != end; it.increment(ec))
+        if (it->path().filename() == "sample.bin") made = it->path();
+    check(!made.empty() && made.parent_path().filename() == "takes" &&
+              made.parent_path().parent_path().filename() == "500",
+          "makePath made takes/sample.bin in the insert's scratch folder");
+    check(!fs::exists(fs::path(kDir) / "takes"), "  not in the session folder");
+    std::vector<std::string> held;
+    rig.until(
+        [&] {
+            for (std::string& n : rig.hosting->take_held_notices()) held.push_back(std::move(n));
+            return !held.empty();
+        },
+        3000);
+    for (const std::string& n : held) std::printf("  held: %s\n", n.c_str());
+    check(held.size() == 1 && held[0].find("(A, slot A)") != std::string::npos &&
+              held[0].find("makePath refused") != std::string::npos,
+          "the host's refused makePath calls: one held notice naming plugin, track and slot");
+
+    PluginHosting::Flush f;
+    flush(rig, 500, &f, true);
+    for (const std::string& l : f.failed) std::printf("  no-copy: %s\n", l.c_str());
+    check(f.failed.size() == 1 && f.failed[0].find("after the take") != std::string::npos && f.states.empty(),
+          "a flush during a take: that insert fails, \"saved after the take\"");
+    check(!fs::exists(fs::path(kDir) / "Plugin Files"), "  and nothing was copied");
+    const InsertMix* m = rig.history.current().mix.find_insert(500);
+    check(!m || !m->state, "  the document names no state");
+
+    flush(rig, 500, &f);
+    for (const std::string& l : f.failed) std::printf("  failed: %s\n", l.c_str());
+    m = rig.history.current().mix.find_insert(500);
+    check(f.failed.empty() && m && m->state && m->state->files.size() == 1, "the flush after it: StateRef.files names one file");
+    if (!m || !m->state || m->state->files.size() != 1) return 1;
+    const PluginFileRef file = m->state->files[0];
+    std::printf("  named: %s (%llu bytes)\n", file.path.c_str(), (unsigned long long)file.bytes);
+    check(file.path == plugin_files_path(file.sha256, "sample.bin") && file.bytes == 40000,
+          "  \"Plugin Files/<sha256>/sample.bin\", 40000 bytes");
+    check(fs::file_size(fs::path(kDir) / file.path, ec) == file.bytes && !ec, "  the file is in the session folder");
+
+    // Save As (ADR-0018 §5) into another folder, from this one.
+    std::string bytes, e;
+    check(serialize(rig.history.current(), WriteInfo{"test", 1}, bytes, e), "the session serialises");
+    session_files::SessionFolder folder;
+    std::string why, caution;
+    const fs::path file_b = moved / "B.sonora";
+    check(folder.save_as(file_b.string(), bytes, rig.history.current(), fs::absolute(kDir).string(), true, why, caution),
+          "Save As into another folder");
+    if (!why.empty()) std::printf("  save_as: %s\n", why.c_str());
+    check(fs::file_size(moved / file.path, ec) == file.bytes && !ec, "  carries the plugin file");
+
+    // Only the new folder can serve it now.
+    fs::remove_all(fs::path(kDir) / "Plugin Files");
+    fs::remove(made, ec);
+    std::string set_why;
+    check(rig.session->set_folder(moved.string(), set_why), "the session's folder is the new one");
+    std::ifstream in(file_b, std::ios::binary);
+    std::ostringstream text;
+    text << in.rdbuf();
+    Loaded loaded;
+    LoadError le;
+    check(deserialize(text.str(), loaded, le), "the saved file opens");
+    rig.history = History(loaded.snapshot);
+    rig.show(true);
+    check(rig.until([&] { return (rig.hosting->insert_flags(500) & api::kInsertRunning) != 0; }, 15000),
+          "the reopened session runs the plugin");
+    check(rig.hosting->faults().count(500) == 0, "  its state was restored (no fault)");
+    flush(rig, 500, &f);
+    for (const std::string& l : f.failed) std::printf("  failed: %s\n", l.c_str());
+    int64_t verified = -1000;
+    for (const auto& s : f.states)
+        if (s.insert == 500) verified = files_prop(s.bytes, "test#verified");
+    std::printf("  restore() verified %lld bytes\n", (long long)verified);
+    check(verified == 40000, "restore() resolved the path under the new folder and read the same bytes back");
+    m = rig.history.current().mix.find_insert(500);
+    check(m && m->state && m->state->files.size() == 1 && m->state->files[0] == file,
+          "  and its state names the same file again");
+    fs::remove_all(moved);
     return failures ? 1 : 0;
 }
 
@@ -1274,6 +1414,159 @@ int scenario_flush_read_across_load(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// #299 review B1: the held notice for a refused path went into the server's
+// notices_, which is capped and never cleared: every chain build added one
+// for a later interface, and a session opened since still replayed the old
+// session's. Through the server: the files plugin's refused makePath calls
+// are said live at each of N builds of its chain, an interface attaching
+// then is greeted with exactly one, and after a Load of another session
+// with none.
+int scenario_server_held_path_notice(const Args& a) {
+    namespace fs = std::filesystem;
+    std::printf("server_held_path_notice: one held notice per insert, none after a Load\n");
+    const fs::path first = fs::absolute(kDir);
+    const fs::path other = fs::absolute(kDir + "_other");
+    fs::remove_all(first);
+    fs::remove_all(other);
+    SessionConfig cfg;
+    cfg.dir = first.string();
+    cfg.track_count = 2;
+    cfg.ring_seconds = 0.5;
+    cfg.playback.max_param_stores = 16;
+    Session session(cfg);
+    session.create_dirs();
+    FakeBackend::Config bc;
+    bc.devices = {FakeBackend::onboard()};
+    bc.mode = FakeBackend::Mode::Thread;
+    FakeBackend audio(bc);
+    std::string error;
+    check(audio.open({"sonora", 2, 2, 48000, ""}, session, error) && audio.activate(error), "fake backend up");
+    session.disk().start();
+    History h(new_session(SessionSettings{}));
+    std::string e;
+    check(h.apply(track_op(100, 101, "A"), e) && h.apply(insert_op(100, 500, 0, "urn:sonora:test#files"), e) &&
+              h.apply(insert_op(100, 501, 1, kEgAmp), e),
+          "the document: A with the files plugin and eg-amp");
+    // The session the Load opens: the same track, no plug-in.
+    History quiet(new_session(SessionSettings{}));
+    quiet.apply(track_op(100, 101, "A"), e);
+    std::string bytes;
+    check(serialize(quiet.current(), WriteInfo{"test", 1}, bytes, error), "the other session serialised");
+    fs::create_directories(other);
+    {
+        std::ofstream out(other / "Other.sonora", std::ios::binary);
+        out << bytes;
+    }
+    EngineControlServer::Options opts;
+    opts.plugin_host = a.host;
+    opts.plugin_bundles = a.bundles;
+    opts.plugin_scan_at_start = false;
+    opts.initial_document = std::make_shared<Snapshot>(h.current());
+    {
+        InProcessEngine engine(session, &audio, opts);
+        check(engine.connect(error), "connected");
+        api::Inbox in;
+        const auto until = [&](const std::function<bool()>& pred, uint64_t ms) {
+            const uint64_t end = now_ms() + ms;
+            while (now_ms() < end) {
+                engine.poll(in);
+                if (pred()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            engine.poll(in);
+            return pred();
+        };
+        const auto refused_in = [](const std::vector<api::EngineEvent>& events) {
+            std::size_t n = 0;
+            for (const auto& ev : events)
+                n += ev.kind == api::EventKind::Notice && ev.text.find("makePath refused") != std::string::npos ? 1 : 0;
+            return n;
+        };
+        // What an interface attaching now is greeted with.
+        const auto greeting = [&]() {
+            struct Got {
+                std::mutex mutex;
+                std::vector<std::string> frames;
+            };
+            auto got = std::make_shared<Got>();
+            EngineControlServer& server = engine.server();
+            const auto id = server.attach(
+                [got](EngineControlServer::Frame frame) {
+                    std::lock_guard<std::mutex> lock(got->mutex);
+                    got->frames.push_back(*frame);
+                },
+                {});
+            const auto received = [&got]() {
+                std::vector<std::string> frames;
+                {
+                    std::lock_guard<std::mutex> lock(got->mutex);
+                    frames = got->frames;
+                }
+                api::wire::Reassembler reassembler;
+                api::Inbox late;
+                std::string message, error2;
+                for (const std::string& f : frames)
+                    if (reassembler.add(f, message, error2) == api::wire::Reassembler::Result::Complete)
+                        api::wire::decode_into(message, late, error2);
+                return late;
+            };
+            // The standing events follow the catalog, in the same turn.
+            until([&] { return !received().catalogs.empty(); }, 3000);
+            until([] { return false; }, 300);
+            server.detach(id);
+            return received().events;
+        };
+        const auto running = [&]() { return (engine.state().track(0).inserts[0].flags & api::kInsertRunning) != 0; };
+        check(until([&] { return running() && refused_in(in.events) >= 1; }, 20000),
+              "the chain runs, and its refused paths are said");
+        const int builds = 3;
+        for (int k = 0; k < builds; ++k) {
+            // eg-amp out and back in: the chain is built again twice, and
+            // each build's host refuses the plug-in's paths again.
+            for (const bool active : {false, true}) {
+                api::ModelRequest m;
+                m.action = api::ModelAction::Apply;
+                model::encode_operation(SetInsertActive{501, active}, m.op, e);
+                engine.submit(m);
+                const std::size_t said = refused_in(in.events);
+                until([&] { return refused_in(in.events) > said; }, 15000);
+            }
+        }
+        const std::size_t live = refused_in(in.events);
+        std::printf("  said live %zu times over %d builds\n", live, 1 + 2 * builds);
+        check(live >= std::size_t(1 + builds), "  said again at each new build");
+        const std::vector<api::EngineEvent> late = greeting();
+        std::printf("  a late interface is greeted with %zu of them\n", refused_in(late));
+        check(refused_in(late) == 1, "an interface attaching now is greeted with exactly one");
+
+        api::ModelRequest load;
+        load.action = api::ModelAction::Load;
+        load.op = api::wire::encode_load((other / "Other.sonora").string(), bytes);
+        const uint64_t load_seq = engine.submit(load);
+        api::CommandReply loaded;
+        check(until(
+                  [&] {
+                      for (const auto& r : in.replies)
+                          if (r.seq == load_seq) loaded = r;
+                      return loaded.seq == load_seq;
+                  },
+                  10000),
+              "the Load answered");
+        if (!loaded.message.empty()) std::printf("  load: %s\n", loaded.message.c_str());
+        check(loaded.result == DispatchResult::Ok, "the Load: Ok");
+        until([] { return false; }, 300);
+        check(refused_in(greeting()) == 0, "after it, an interface attaching is greeted with none of them");
+        engine.shutdown();
+        audio.deactivate();
+        engine.server().after_deactivate();
+        session.stop();
+    }
+    fs::remove_all(first);
+    fs::remove_all(other);
+    fs::remove_all(kScratch);
+    return failures ? 1 : 0;
+}
+
 // BACKLOG Track 4 item 5, "Untested: the GetState timeout". A plug-in whose
 // save() never comes back (here: the worker plugin's, slowed past
 // kReplyTimeoutMs) must not hold File > Save: at the deadline its read fails
@@ -1298,7 +1591,9 @@ int scenario_state_read_timeout(const Args& a) {
     for (int i = 0; i < 200; ++i) rig.turn();
 
     const uint64_t started = now_ms();
-    const uint64_t id = rig.hosting->request_states(0, rig.history.current());
+    // As during a take (kGetStateNoCopy): no file may be copied, so the
+    // deadline is kReplyTimeoutMs, not kStateReplyTimeoutMs's 60 s.
+    const uint64_t id = rig.hosting->request_states(0, rig.history.current(), true);
     std::vector<PluginHosting::Flush> done;
     // The gap between two looks is one turn: the callback, poll(), the plan.
     uint64_t longest_turn = 0, last_look = now_ms();
@@ -1515,7 +1810,12 @@ int scenario_touch_faults(const Args& a) {
           "  the other inserts', and the one past the chain, count nothing");
     std::vector<std::string> notices = rig.hosting->take_notices();
     for (const std::string& n : notices) std::printf("  notice: %s\n", n.c_str());
-    check(notices.size() == 3, "three notices: one for the chain, one for the insert, one for its refused paths");
+    check(notices.size() == 2, "two passing notices: one for the chain, one for the insert");
+    // ADR-0029 slice 2b: a refused path is held, not the status line.
+    const std::vector<std::string> held = rig.hosting->take_held_notices();
+    for (const std::string& n : held) std::printf("  held: %s\n", n.c_str());
+    check(held.size() == 1, "one held notice, for the refused paths (said once)");
+    notices.insert(notices.end(), held.begin(), held.end());
     const auto has = [&](const char* a1, const char* a2) {
         for (const std::string& n : notices)
             if (n.find(a1) != std::string::npos && n.find(a2) != std::string::npos) return true;
@@ -1562,6 +1862,8 @@ int scenario_touch_faults(const Args& a) {
     check(rig.hosting->touches_lost(100) == 0 && rig.hosting->param_unmapped(501) == 0,
           "  with counts of 0, not the last session's");
     check(rig.hosting->take_notices().empty(), "  and none of its notices");
+    check(rig.hosting->take_held_notices().empty() && rig.hosting->held_notices().empty(),
+          "  nor held ones, to say or to replay");
     send(pc::Fault{pc::FaultKind::ParamUnmapped, 0, 2, ""});
     send(pc::Fault{pc::FaultKind::EventsDropped, -1, 3, ""});
     check(rig.hosting->take_notices().size() == 2 && rig.hosting->param_unmapped(501) == 2 &&
@@ -2102,6 +2404,8 @@ int main(int argc, char** argv) {
     else if (a.scenario == "state_reads_in_turn") rc = scenario_state_reads_in_turn(a);
     else if (a.scenario == "flush_active_folder") rc = scenario_flush_active_folder(a);
     else if (a.scenario == "flush_read_across_load") rc = scenario_flush_read_across_load(a);
+    else if (a.scenario == "plugin_files_restore") rc = scenario_plugin_files_restore(a);
+    else if (a.scenario == "server_held_path_notice") rc = scenario_server_held_path_notice(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
     if (rc == 0 && failures) rc = 1;
     std::printf("%s: %s\n", a.scenario.c_str(), rc == 0 ? "ok" : rc == kSkip ? "skipped" : "FAILED");

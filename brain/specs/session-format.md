@@ -432,7 +432,7 @@ Ordered by `slot`. Empty for a track with none, never absent.
 | `bypass` | Instantiated and passing audio through, still delayed by its latency, so a toggle never shifts timing. Mix state: saved, not undoable. |
 | `params` | Parameter values by **stable key**: the LV2 port symbol (a C identifier), or the VST3 ParamID in decimal without leading zeros. Never a port index, which changes between plugin versions. Values are **format-native**: the LV2 port value, the VST3 normalised value, which must be from 0 to 1. Finite floats, parsed straight into `float`. Keys unique per insert; at most 8192. Mix state. |
 | `state` | Optional, absent when there is none. The plugin's own state, in a file under `Plugin State/` named by its SHA-256: `file` is exactly `"Plugin State/<sha256>.state"`, `sha256` 64 lower-case hex digits, `bytes` its size. Written durably before the session file that names it. Mix state. |
-| `state.files` | Optional (version 17), absent when the state names no file; never empty. The files an LV2 state names (ADR-0029 §6): at most 1,024 `{path, sha256, bytes}`, no path twice, each `path` exactly `"Plugin Files/<sha256>/<basename>"` relative to the session folder, `<basename>` one name (not empty, `.`, `..`, no `/`, `\`, NUL or control byte, valid UTF-8, at most 255 bytes, not a host's `.incoming-` copy). A received session is untrusted: an absolute path or one that climbs out is refused at load. |
+| `state.files` | Optional (version 17), absent when the state names no file; never empty. The files an LV2 state names (ADR-0029 §6): at most 1,024 `{path, sha256, bytes}`, no path twice, each `path` exactly `"Plugin Files/<sha256>/<basename>"` relative to the session folder, `<basename>` one name (not empty, `.`, `..`, no `/`, `\`, NUL or control byte, valid UTF-8, at most 255 bytes, not a host's `.incoming-` copy), `bytes` at most 1 GiB and the state's files 4 GiB in all (the host's `kMaxStateFileBytes` and `kMaxStateCopyBytes`). A received session is untrusted: an absolute path or one that climbs out is refused at load. |
 
 - **State lives beside the file, not in it.** Some plugins' state runs to
   megabytes, and the session file's bytes cross the control socket inside
@@ -690,8 +690,15 @@ written: one already in its own folder with its size is named as it is (not
 read again: content-addressed, never rewritten); one only in the engine's
 folder (the untitled rename, Save As, Save Copy In, a template) is hashed,
 refused if its bytes are not its digest, and hard-linked, or copied and
-synced; then each `<sha256>/` and `Plugin Files/` itself is synced once
-until known durable. Every component of the path is `lstat`ed in both
+synced (through `<sha256>/.incoming-sonora.part`, a name no state may hold
+and short enough for a 255-byte basename; the bytes to copy are checked
+against the target's free space first); then each `<sha256>/` holding a
+file not yet known durable, and `Plugin Files/` when one of them is new, is
+synced. Durability is tracked per file, so a second name with the same
+bytes in a `<sha256>/` synced before is synced again. A flush
+(`FlushPluginState`, ADR-0029 slice 2b) does the same for the files the
+hosts saved into the session folder, after checking each is there, plain,
+with its size, before the document names it. Every component of the path is `lstat`ed in both
 folders: a symlink at `Plugin Files`, at `<sha256>` or at the file refuses
 the save, so nothing reached through a link in a received folder is ever
 copied into a session. A file found in neither folder refuses the save by

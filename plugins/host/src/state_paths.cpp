@@ -527,6 +527,22 @@ char* StatePaths::abstract_path(const char* absolute) {
     // brings along (ADR-0029 §6).
     for (std::size_t k = previous_.size(); !named && check_error.empty() && !canonical.empty() && k-- > 0;)
         named = name_in(canonical, previous_[k], f, check_error);
+    // The untitled folder renamed at its first Save (ADR-0018) took the file
+    // with it: the path the plugin holds names a folder that is gone, and
+    // the same relative path in the save folder is that file. Only for a
+    // path that no longer exists: a file still at the old place may hold
+    // other bytes than the save folder's.
+    std::error_code gone_ec;
+    if (!named && check_error.empty() && !fs::exists(fs::symlink_status(given, gone_ec))) {
+        const std::string lexical = fs::path(given).lexically_normal().string();
+        for (std::size_t k = previous_.size(); !named && check_error.empty() && k-- > 0;) {
+            const std::string root = fs::path(previous_[k]).lexically_normal().string();
+            if (!inside(lexical, root) || lexical.size() <= root.size() + 1) continue;
+            const std::string rel = lexical.substr(root.size() + (root.back() == '/' ? 0 : 1));
+            const std::string moved = canonical_or_empty((fs::path(save_dir_) / rel).string());
+            named = !moved.empty() && name_in(moved, save_dir_, f, check_error);
+        }
+    }
     if (!check_error.empty()) {
         if (failed_.empty()) failed_ = check_error;
         return dup(given);

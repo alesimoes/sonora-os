@@ -87,6 +87,13 @@ struct PluginHostingConfig {
     uint32_t max_stores = 256;
     uint64_t ready_timeout_ms = 10000;
     std::string scratch_dir = "/tmp";
+    // ADR-0029 §6: where each instance's makePath folder is made,
+    // "<root>/<run>/<session>/<insert id>/", outside the session folder,
+    // which moves at its first Save and at Save As. Empty:
+    // $XDG_STATE_HOME/sonora/plugin-scratch, else
+    // ~/.local/state/sonora/plugin-scratch. A run whose engine is gone is
+    // removed when the next one starts.
+    std::string plugin_scratch_root;
 };
 
 class PluginHosting {
@@ -170,6 +177,18 @@ public:
     // chain, for lost touches) in a run. The server posts each once, to the
     // clients attached then.
     std::vector<std::string> take_notices();
+    // Notices the operator must see whenever they look, not only the clients
+    // attached when it happened: a file path the host refused for a plugin
+    // (Fault{Plugin} with a count, ADR-0029 §6), so a file the plugin keeps
+    // may be missing from the session. Those said since the last call, once
+    // a run per insert: the server sends each to the clients attached now,
+    // and replays held_notices() to one that attaches later.
+    std::vector<std::string> take_held_notices();
+    // Every held notice standing, by insert id (0: the run's own), for an
+    // interface that attaches later: one per insert however often its chain
+    // was built again, none of a session opened before this one, and none
+    // for an insert the document no longer has.
+    const std::map<model::Id, std::string>& held_notices() const { return held_; }
 
     // Chains still starting with the session (for "Loading plug-ins (n of
     // m)"); 0 of 0 when none.
@@ -210,6 +229,11 @@ public:
         model::Id insert = 0;
         std::string sha256;  // of `bytes`; empty: the plugin keeps no state of its own
         std::string bytes;   // a StateBlob
+        // The plugin files the state names (ADR-0029 §6), relative to the
+        // flush's save_dir, each checked against model::plugin_file_problem
+        // and the per-state byte cap. The caller makes them durable (and
+        // checks each is there with its size) before states_saved names them.
+        std::vector<model::PluginFileRef> files;
     };
     struct Flush {
         uint64_t id = 0;
@@ -217,13 +241,19 @@ public:
         // One line per insert whose state could not be had, naming plugin,
         // track and slot, for the client's Failed reply.
         std::vector<std::string> failed;
+        // The absolute session folder the hosts saved the files into.
+        std::string save_dir;
     };
     // Sends GetState to the running host of each instance of `insert` (0:
     // of every insert); never waits. An insert with no running instance
     // (inactive, missing, its chain still starting) is left out: its last
     // state is the document's. One whose chain is restarting or down is a
-    // failure. Returns the flush's id, never 0.
-    uint64_t request_states(model::Id insert, const model::Snapshot& doc);
+    // failure. Each GetState names the session folder as save_dir; with
+    // `no_copy` (a take is open or closing) it carries kGetStateNoCopy, so a
+    // host copies and hashes nothing while the disk thread records, and a
+    // state whose file is not in the folder yet fails ("saved after the
+    // take"). Returns the flush's id, never 0.
+    uint64_t request_states(model::Id insert, const model::Snapshot& doc, bool no_copy = false);
     // Flushes with every request answered or failed: a host that stops,
     // restarts or is replaced before answering fails its requests, and one
     // that has not answered within kReplyTimeoutMs fails them and is killed
@@ -287,6 +317,17 @@ private:
     void close_gestures(Chain& c, const model::Snapshot& doc, std::vector<model::Operation>& ops);
     uint32_t take_store();
     uint32_t take_node();
+    // The session folder, absolute, as the hosts are given it.
+    std::string session_dir() const;
+    // The insert's makePath folder for this session, made; empty when there
+    // is no scratch root or it could not be made (then said once).
+    std::string scratch_for(model::Id insert, const std::string& who);
+    // Running and pending chains follow a moved session folder (their next
+    // restart's Load names the new one).
+    void follow_session_dir();
+    // A held notice for `insert` (0: the run's), standing until the session
+    // changes or the insert leaves the document.
+    void hold(model::Id insert, std::string text);
     // GetState requests: a host that answers, a bound host that changes
     // (restart, edit, chain dropped), one past its deadline.
     void take_state_reply(model::Id track, const std::string& bytes);
@@ -334,6 +375,19 @@ private:
     std::map<model::Id, uint64_t> param_unmapped_;
     std::map<model::Id, uint64_t> touches_lost_;  // by track
     std::vector<std::string> notices_;
+    // Standing held notices by insert id (0: the run's own, no scratch
+    // root), one each, the latest replacing the last; and the ids said
+    // since take_held_notices().
+    std::map<model::Id, std::string> held_;
+    std::vector<model::Id> held_new_;
+    // "<scratch root>/<pid>-<n>": this object's makePath folders, removed
+    // with it; empty when there is no root. A session opened takes the
+    // next `session_serial_`, so ids reused by the next session never share
+    // a folder with the last one's.
+    std::string run_dir_;
+    uint64_t session_serial_ = 0;
+    std::set<model::Id> scratch_failed_;
+    std::string followed_dir_;
     uint32_t loading_total_ = 0;
     uint64_t dropped_seen_ = 0;
     uint64_t last_repost_ms_ = 0;

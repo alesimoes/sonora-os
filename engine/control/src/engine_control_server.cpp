@@ -781,7 +781,9 @@ bool EngineControlServer::flush_plugin_state(ClientId from, const api::ModelRequ
     f.to = from;
     f.seq = m.seq;
     f.generation = session_generation_;
-    f.reading = hosting_->request_states(id, document_->current());
+    // A take open or closing: the hosts copy and hash no plugin file
+    // (ADR-0029 §6), and a state whose file still needs a copy fails.
+    f.reading = hosting_->request_states(id, document_->current(), takes_in_flight());
     flushes_[next_flush_++] = std::move(f);
     // Nothing to wait for (no running instance) is answered now.
     follow_flushes();
@@ -810,12 +812,25 @@ void EngineControlServer::follow_flushes() {
             finish_flush(it->first, false, "");
             continue;
         }
+        // The hosts saved the states' files into the folder the session had
+        // when they were asked: one it has left since (Save As) does not
+        // hold them, and the document must not name them.
+        const std::string folder = *session_.folder();
+        std::error_code ec;
+        const std::string here = std::filesystem::absolute(folder, ec).lexically_normal().string();
+        bool files = false;
+        for (const PluginHosting::StateRead& s : it->second.flush.states) files = files || !s.files.empty();
+        if (files && here != it->second.flush.save_dir) {
+            finish_flush(it->first, false, "the session's folder changed while they were read; save again");
+            continue;
+        }
         SessionSaver::Job job;
         job.kind = SessionSaver::Kind::States;
         job.seq = it->first;
-        job.file = *session_.folder();
+        job.file = folder;
         for (const PluginHosting::StateRead& s : it->second.flush.states) {
             if (!s.sha256.empty()) job.states.push_back({s.sha256, s.bytes});
+            for (const model::PluginFileRef& f : s.files) job.plugin_files[f.path] = f;
         }
         if (job.states.empty()) {
             finish_flush(it->first, true, "");
@@ -1577,6 +1592,16 @@ void EngineControlServer::greet(ClientId id) {
     send_catalog(client);
     for (const std::string& e : notices_) send_to(client, e);
     for (const auto& [insert, e] : plugin_faults_) send_to(client, e);
+    if (hosting_) {
+        for (const auto& [insert, text] : hosting_->held_notices()) {
+            api::EngineEvent e;
+            e.kind = api::EventKind::Notice;
+            e.text = text;
+            std::string encoded;
+            api::wire::encode(e, encoded);
+            send_to(client, encoded);
+        }
+    }
     for (const std::string* e :
          {&session_folder_, &latency_, &inputs_missing_, &take_failed_, &fatal_,
           &recovery_offer_}) {
@@ -3000,6 +3025,18 @@ void EngineControlServer::tick() {
         // Not standing (ADR-0012 change G): the count stays in the state
         // block for whoever attaches later.
         for (std::string& text : hosting_->take_notices()) {
+            api::EngineEvent e;
+            e.kind = api::EventKind::Notice;
+            e.text = std::move(text);
+            post_transient(e);
+        }
+        // Held: a file a plug-in keeps may be missing from the session, which
+        // the operator must know whenever they look (ADR-0029 §6). Not in
+        // notices_, which is never cleared and capped: hosting keeps them by
+        // insert for this session, and a client attaching later is sent
+        // those (attach()), so restarts never crowd it and a session opened
+        // since replays none of the last one's.
+        for (std::string& text : hosting_->take_held_notices()) {
             api::EngineEvent e;
             e.kind = api::EventKind::Notice;
             e.text = std::move(text);

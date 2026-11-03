@@ -847,8 +847,18 @@ std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::s
         }
         li.params = spec.param_counts[i];
         if (i < spec.states.size()) li.state = spec.states[i];
+        if (i < spec.scratch_dirs.size()) li.scratch_dir = spec.scratch_dirs[i];
         host->instances_.push_back({li.format, li.id});
         load.instances.push_back(std::move(li));
+    }
+    load.session_dir = spec.session_dir;
+    // The host refuses a Load whose folders are not absolute: said here, by
+    // the chain's names, rather than as the host's protocol fault.
+    bool folders_ok = pc::valid_folder(load.session_dir);
+    for (const pc::LoadInstance& li : load.instances) folders_ok = folders_ok && pc::valid_folder(li.scratch_dir);
+    if (!folders_ok) {
+        error = name + ": a plugin folder is not an absolute path";
+        return nullptr;
     }
     // The touch buckets, one per dense parameter and bypass, laid out now.
     uint32_t slots = 0;

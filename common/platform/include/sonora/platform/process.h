@@ -21,6 +21,11 @@ std::string executable_dir();
 // --engine-pid).
 int64_t current_process_id();
 
+// True only when the OS says no process has this id: what a sweep of a dead
+// run's files may rely on. Another user's process, an id out of range, or a
+// platform that cannot tell: false.
+bool process_gone(int64_t pid);
+
 // Lowers the calling thread only: its CPU priority to nice `nice` (a
 // thread already nicer stays as it is) and, with `idle_io`, the idle I/O
 // class. For a

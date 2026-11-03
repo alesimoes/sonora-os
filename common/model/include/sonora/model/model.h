@@ -564,6 +564,11 @@ struct PluginFileRef {
 
 // What one state may name: the host's kMaxStateFiles.
 constexpr std::size_t kMaxPluginFiles = 1024;
+// The host's kMaxStateFileBytes and kMaxStateCopyBytes (contracts/plugin
+// host_control.h), held here too: a received session is untrusted, and one
+// naming 1,024 files of any size would have Save As copy all of them.
+constexpr std::uint64_t kMaxPluginFileBytes = std::uint64_t{1} << 30;
+constexpr std::uint64_t kMaxPluginFilesBytes = std::uint64_t{4} << 30;
 
 struct StateRef {
     std::string file;     // plugin_state_file(sha256)
@@ -584,8 +589,13 @@ std::string plugin_files_path(const std::string& sha256, const std::string& base
 // Empty when `f` may be named by a session; else why not. The path is
 // exactly plugin_files_path(f.sha256, basename) for one basename that is a
 // single component: not empty, ".", "..", no '/', '\\', NUL or control
-// byte, valid UTF-8, at most 255 bytes, and not a host's ".incoming-" tmp.
+// byte, valid UTF-8, at most 255 bytes, and not a host's ".incoming-" tmp;
+// `bytes` at most kMaxPluginFileBytes.
 std::string plugin_file_problem(const PluginFileRef& f);
+// Empty when one state may name all of `files` together: at most
+// kMaxPluginFiles, no path twice, kMaxPluginFilesBytes at most in all.
+// Each one's own rule is plugin_file_problem.
+std::string plugin_files_problem(const std::vector<PluginFileRef>& files);
 
 // Which plugin sits in which slot, and whether it is in the chain.
 struct Insert {

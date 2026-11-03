@@ -284,7 +284,27 @@ std::string plugin_file_problem(const PluginFileRef& f) {
     }
     if (base.compare(0, 10, ".incoming-") == 0) return "path names a copy in progress";
     if (!json::valid_utf8(base)) return "path must be valid UTF-8";
-    if (f.bytes > static_cast<std::uint64_t>(kMaxInteger)) return "bytes is out of range";
+    if (f.bytes > kMaxPluginFileBytes) {
+        return "a plugin file is at most " + std::to_string(kMaxPluginFileBytes >> 30) + " GiB";
+    }
+    return {};
+}
+
+std::string plugin_files_problem(const std::vector<PluginFileRef>& files) {
+    if (files.size() > kMaxPluginFiles) {
+        return "a state names at most " + std::to_string(kMaxPluginFiles) + " files";
+    }
+    std::unordered_set<std::string> paths;
+    std::uint64_t total = 0;
+    for (const PluginFileRef& f : files) {
+        if (!paths.insert(f.path).second) return "names " + f.path + " twice";
+        // Each is at most kMaxPluginFileBytes, checked or not: no overflow
+        // in 1,024 of them, and an unchecked one only fails sooner.
+        total += std::min(f.bytes, kMaxPluginFilesBytes + 1);
+        if (total > kMaxPluginFilesBytes) {
+            return "a state's files are at most " + std::to_string(kMaxPluginFilesBytes >> 30) + " GiB in all";
+        }
+    }
     return {};
 }
 
@@ -1474,10 +1494,10 @@ std::string insert_mix_problem(const InsertMix& m, PluginFormat format, std::str
             where = "state.files[" + std::to_string(i) + "]";
             const std::string why = plugin_file_problem(st.files[i]);
             if (!why.empty()) return why;
-            for (std::size_t k = 0; k < i; ++k) {
-                if (st.files[k].path == st.files[i].path) return "names " + st.files[i].path + " twice";
-            }
         }
+        where = "state.files";
+        const std::string why = plugin_files_problem(st.files);
+        if (!why.empty()) return why;
     }
     where.clear();
     return {};
