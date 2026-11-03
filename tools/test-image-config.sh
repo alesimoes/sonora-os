@@ -78,6 +78,44 @@ grep -q 'systemctl disable getty@tty1.service' "$HOOK" || bad "hook leaves the t
 grep -q 'systemctl set-default multi-user.target' "$HOOK" || bad "hook does not boot to multi-user.target"
 grep -q 'display-manager.service' "$HOOK" || bad "hook does not refuse an installed display manager"
 
+# NAutoVTs=0 only stops logind's on-demand gettys. An enabled getty@tty2..6
+# (or autovt@) would still put a passwordless login behind Ctrl+Alt+F2..F6,
+# whatever logind.conf says, so nothing in the tree may start one.
+vt='(getty|autovt)@tty[2-6]'
+# In a hook, any non-comment mention other than a mask or disable counts:
+# systemctl enable, a hand-made getty.target.wants symlink, a sed on NAutoVTs.
+grep -EHn "$vt" "$ROOT"/iso/config/hooks/*/*.hook.* 2>/dev/null |
+  grep -Ev '^[^:]*:[0-9]+:[[:space:]]*#' |
+  grep -Ev "systemctl (mask|disable) ([^ ]+ )*$vt" &&
+  bad "a hook enables a VT getty on tty2..6"
+unit_dirs=()
+for d in "$INC/etc/systemd" "$INC/usr/lib/systemd" "$INC/lib/systemd"; do
+  [ -d "$d" ] && unit_dirs+=("$d")
+done
+# grep exits 2 on a missing directory even after a match, hence the list.
+grep -EHnr "^(Wants|Requires|Upholds|BindsTo|Also|WantedBy|RequiredBy|UpheldBy)=.*$vt" "${unit_dirs[@]}" &&
+  bad "a unit pulls in a VT getty on tty2..6"
+while IFS= read -r f; do
+  # A symlink to /dev/null is a mask, which is the safe direction.
+  [ "$(readlink "$f" 2>/dev/null)" = /dev/null ] && continue
+  bad "includes.chroot ships ${f#"$ROOT"/}"
+done < <(find "$INC" \( -name 'getty@tty[2-6].service' -o -name 'autovt@tty[2-6].service' \) 2>/dev/null)
+
+# --- display fallback (ADR-0010 stage 1): it must always end on the session ---
+FALLBACK="$INC/etc/systemd/system/sonora-display-fallback.service"
+flag=/run/sonora-display-failed
+if [ -f "$FALLBACK" ]; then
+  # Without '-' a failed stop ends the oneshot before the session starts, and
+  # tty1 is left with neither the display nor the engine.
+  grep -Eq '^ExecStart=-/usr/bin/systemctl stop ' "$FALLBACK" || bad "fallback: a failed stop would skip starting the session (needs '-')"
+  grep -Eq '^ExecStart=/usr/bin/systemctl stop ' "$FALLBACK" && bad "fallback: a systemctl stop without '-'"
+  grep -qx "ExecStart=/usr/bin/touch $flag" "$FALLBACK" || bad "fallback does not create $flag"
+  grep -Eq '^ExecStart=-?/usr/bin/systemctl (--no-block )?start sonora-session\.service$' "$FALLBACK" || bad "fallback does not start sonora-session"
+  grep -qx "ConditionPathExists=|$flag" "$UNIT" || bad "session condition does not accept $flag"
+  grep -qx 'ConditionKernelCommandLine=|!sonora.gui' "$UNIT" || bad "session condition is not '|!sonora.gui'"
+  grep -q 'chvt 2' "$FALLBACK" && bad "fallback switches to tty2, which has no terminal UI before ADR-0010 stage 2"
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo "ok: pipewire $pw_pin, wireplumber $wp_pin from $(printf '%s\n' "$src" | grep -Eo '[0-9]{8}T[0-9]{6}Z'); rt kernel; tty1 owned, no VT gettys"
 fi

@@ -123,6 +123,21 @@ dependencies.
 | `sonora-tui.service` | `sonora-tui` (ADR-0007 M7), a client like the Qt UI | tty2, the TTY properties of today's `sonora-session.service`, `Conflicts=getty@tty2.service`, `Restart=always`, `LimitRTPRIO=0`. `WantedBy=multi-user.target`. |
 | `sonora-display-fallback.service` | `chvt 2`, as root | `Type=oneshot`. Started only by `OnFailure=`. |
 
+> **Amendment, 2026-11-02 (stage 1 fallback, #241 and its review).** Until
+> stage 2 adds `sonora-tui.service`, nothing listens on tty2, so `chvt 2`
+> left the operator on an empty console with no engine. At stage 1 the
+> fallback unit instead hands tty1 back to `sonora-session.service`:
+> `touch /run/sonora-display-failed`, then `-systemctl stop
+> sonora-compositor.service sonora-ui.service` (the `-` so a failed stop still
+> reaches the next line), then `systemctl --no-block start
+> sonora-session.service`, then `-chvt 1`. The session's condition is
+> `ConditionKernelCommandLine=|!sonora.gui` plus
+> `ConditionPathExists=|/run/sonora-display-failed` (either one is enough).
+> The flag is on tmpfs, so the next boot tries the display again. The
+> `chvt 2` row and the tty2 bullet below describe stage 2 and stay as
+> written. `tools/test-display-fallback.sh` exercises the hand-back under a
+> containerised systemd; the QEMU check with a broken UI is still open.
+
 The behaviour this gives:
 
 - **UI crash:** systemd restarts the UI in 1 s. The engine is untouched, and
@@ -295,6 +310,11 @@ distro-engineer:
   the UI unit runs `sonora-ui --demo` (FakeEngine). Under `sonora.gui`,
   `sonora-session.service` gets `ConditionKernelCommandLine=!sonora.gui`.
   Without the parameter the image boots exactly as today.
+  *Amended 2026-11-02:* the session condition is now `|!sonora.gui` or
+  `|/run/sonora-display-failed`, and at stage 1 the fallback starts the
+  session on tty1 instead of `chvt 2` (see the amendment under §4). The
+  last QEMU check below therefore expects `fgconsole` = 1 and an active
+  `sonora-session.service` until stage 2.
 - QEMU smoke-test checks under `sonora.gui`:
   - ISO size;
   - time to the UI's first frame (it logs one);

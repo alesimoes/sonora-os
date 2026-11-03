@@ -575,6 +575,11 @@ jobs:
       - name: Image config (backports pins, RT kernel, tty1 session, no VT gettys)
         run: tools/test-image-config.sh
 
+      # The shipped units under a real systemd (PID 1 in a container): the
+      # display fallback hands tty1 back to the session; systemd-analyze verify.
+      - name: Display fallback units under systemd
+        run: tools/test-display-fallback.sh
+
       # The image installs the copies under iso/, not audio-stack/ itself, so
       # an edit that skipped tools/sync-audio-stack.sh would ship the old
       # tuning while every container test (which reads audio-stack/) passed.
