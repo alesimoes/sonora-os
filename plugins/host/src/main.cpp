@@ -85,14 +85,18 @@
 // is also written into the channel header (refusal, refusal_instance),
 // which is what the engine reads; stderr is for people.
 //
-// Plugin editors (UI windows) are not hosted yet: OpenEditor is answered
-// with EditorFailed. Under ADR-0010 they will be parentless X11 toplevels
-// placed by labwc through Xwayland, opened by this process, with the opaque
-// parent-window token of ADR-0007 update 1 item 6 carried but empty on the
-// appliance.
+// Plugin editors (OpenEditor, editors.h): a VST3 view in a parentless X11
+// toplevel this process opens on $DISPLAY, which labwc places through
+// Xwayland on the appliance (ADR-0010) and WSLg shows during development.
+// The opaque parent-window token of ADR-0007 update 1 item 6 is empty on the
+// appliance; a non-empty one is an X11 window the editor is transient for.
+// Editors run on the main thread, beside HostControl, never on the
+// processing thread. LV2 UIs are not hosted yet: EditorFailed, with that
+// reason.
 
 #include "chain.h"
 #include "control.h"
+#include "editors.h"
 #include "ipc.h"
 #include "loader.h"
 #include "lv2_host.h"
@@ -115,6 +119,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -591,8 +596,11 @@ int probe(const Options& o) {
     r.version = info.version;
     r.categories = info.categories;
     if (r.categories.size() > pr::kMaxRecordCategories) r.categories.resize(pr::kMaxRecordCategories);
-    // No editor is hosted yet (OpenEditor is answered EditorFailed): the
-    // record says what this host can open, not what the plugin ships.
+    // The record says what the operator can open. VST3 editors open in a
+    // serving host (OpenEditor), but nothing in the engine asks for one yet
+    // (no editor command reaches PluginHosting), so the record stays false
+    // until that slice, which moves the record version with it
+    // (probe_record.h; ADR-0012 item 2 note).
     r.has_editor = false;
     r.audio_in = info.audio_in;
     r.audio_out = info.audio_out;
@@ -1462,6 +1470,36 @@ int serve(const Options& o) {
         gestures.recover(uint32_t(chain.size()), count, engine, current, send);
         recover_due = 0;
     };
+    // Editors (host_control.h, "Editors"), and per instance the last value
+    // of every parameter touched while its editor was open: EditorClosed's
+    // `moved`. Recorded from EditorOpened until its EditorClosed is sent, not
+    // by the window: touches queued before a close are drained after it.
+    Editors editors(chain);
+    std::vector<std::map<uint32_t, float>> moved(chain.size());
+    std::vector<bool> recording(chain.size(), false);
+    auto take_touches = [&](uint64_t now) {
+        events.clear();
+        touches.drain(events);
+        for (const auto& e : events) {
+            if ((e.kind == TouchKind::Perform || e.kind == TouchKind::End) && e.instance < recording.size() &&
+                recording[e.instance] && std::isfinite(e.value))
+                moved[e.instance][e.dense] = e.value;
+            gestures.apply(e, now, send);
+        }
+    };
+    // The editor of `instance` has closed: its gestures end first (the
+    // contract's order), with every touch that came before.
+    auto editor_closed = [&](uint32_t instance, pc::EditorCloseReason reason) {
+        take_touches(monotonic_ns());
+        gestures.end_instance(instance, current, send);
+        pc::EditorClosed c{instance, reason, {}};
+        for (const auto& [param, value] : moved[instance]) c.moved.push_back({param, value});
+        moved[instance].clear();
+        recording[instance] = false;
+        std::string b;
+        pc::encode(c, b);
+        send(b);
+    };
     auto stop_processing = [&] {
         s.stop.store(true, std::memory_order_release);
         while (!finished.load(std::memory_order_acquire)) {
@@ -1569,17 +1607,23 @@ int serve(const Options& o) {
         case pc::Type::OpenEditor: {
             pc::OpenEditor e;
             if (!pc::decode(m, e, why)) break;
-            const std::string reason = e.instance < chain.size()
-                                           ? "plugin editors are not hosted by this build yet"
-                                           : "no instance " + std::to_string(e.instance);
-            pc::encode(pc::EditorFailed{e.request, e.instance, reason}, out);
+            std::string reason;
+            if (editors.open(e.instance, e.parent_token, reason)) {
+                moved[e.instance].clear();
+                recording[e.instance] = true;
+                pc::encode(pc::EditorOpened{e.request, e.instance}, out);
+            } else {
+                pc::encode(pc::EditorFailed{e.request, e.instance, reason.substr(0, pc::kMaxTextBytes)}, out);
+            }
             send(out);
             return;
         }
         case pc::Type::CloseEditor: {
             pc::CloseEditor c;
             if (!pc::decode(m, c, why)) break;
-            return;  // no editor is ever open in this build
+            // One that is not open is ignored (host_control.h).
+            if (editors.close(c.instance)) editor_closed(c.instance, pc::EditorCloseReason::Requested);
+            return;
         }
         case pc::Type::Reconfigure: {
             pc::Reconfigure r;
@@ -1619,12 +1663,15 @@ int serve(const Options& o) {
             }
             engine_gone = true;
         }
+        // The editors' windows, descriptors and timers; the watcher woke
+        // this pass when one was ready.
+        std::vector<uint32_t> closed_by_operator;
+        const uint64_t ui_due = editors.dispatch(closed_by_operator);
+        for (uint32_t i : closed_by_operator) editor_closed(i, pc::EditorCloseReason::ByOperator);
         const uint64_t now = monotonic_ns();
         // Read before the drain: a touch lost from here on is seen next pass.
         const uint64_t lost = touches.lost();
-        events.clear();
-        touches.drain(events);
-        for (const auto& e : events) gestures.apply(e, now, send);
+        take_touches(now);
         // A lost touch may have been an end: end every open gesture now,
         // with the plugin's current value (host_control.h, M3).
         if (lost != lost_seen) {
@@ -1635,6 +1682,7 @@ int serve(const Options& o) {
         if (recover_due && now >= recover_due) recover();
         uint64_t touch_due = gestures.flush(now, send);
         if (recover_due && (touch_due == 0 || recover_due < touch_due)) touch_due = recover_due;
+        if (ui_due && (touch_due == 0 || ui_due < touch_due)) touch_due = ui_due;
         // A plugin that refills a full ring, or touches a meter, every block
         // would otherwise send a Fault every pass.
         say_counts(now);
@@ -1650,11 +1698,14 @@ int serve(const Options& o) {
         if (touch_due) wait = touch_due > now ? std::min(wait, touch_due - now) : 0;
         if (wait) wait_for_change(control_word(), seen, wait);
     }
-    // Before stopping: every open gesture ends (host_control.h), then the
+    // Before stopping: every editor closes, each after its own gestures
+    // end; every other open gesture ends (host_control.h), then the
     // processing thread, then a fault's text if a plugin faulted.
-    events.clear();
-    touches.drain(events);
-    for (const auto& e : events) gestures.apply(e, monotonic_ns(), send);
+    for (uint32_t i : editors.open_instances()) {
+        editors.close(i);
+        editor_closed(i, pc::EditorCloseReason::HostStopping);
+    }
+    take_touches(monotonic_ns());
     gestures.end_all(current, send);
     if (recover_due || touches.lost() != lost_seen) recover();
     stop_processing();

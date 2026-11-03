@@ -230,9 +230,37 @@ void a_change_in_flight_is_not_recorded_as_a_plugin_move() {
           w.seen.back().value == 0.1f);
 }
 
+// An editor closing ends its own instance's gestures, with the plugin's
+// value, before its EditorClosed; another instance's stay open.
+void an_editor_closing_ends_only_its_gestures() {
+    GestureTracker g;
+    Wire w;
+    auto send = [&](const std::string& b) { w(b); };
+    g.apply({0, TouchKind::Begin, 3, 0.1f}, 100 * kMs, send);
+    g.apply({1, TouchKind::Begin, 2, 0.6f}, 100 * kMs, send);
+    g.apply({0, TouchKind::Perform, 3, 0.25f}, 100 * kMs, send);
+    auto current = [](uint32_t instance, uint32_t, float& v) {
+        v = instance == 0 ? 0.3f : 0.7f;
+        return true;
+    };
+    w.seen.clear();
+    g.end_instance(0, current, send);
+    CHECK(w.seen.size() == 1 && w.seen[0].type == pc::Type::GestureEnd && w.seen[0].param == 3 &&
+          w.seen[0].value == 0.3f);
+    CHECK(g.any_open());
+    // Its own late end at the value sent says nothing new.
+    w.seen.clear();
+    g.apply({0, TouchKind::End, 3, 0.3f}, 200 * kMs, send);
+    CHECK(w.seen.empty());
+    g.end_all(current, send);
+    CHECK(w.seen.size() == 1 && w.seen[0].param == 2 && w.seen[0].value == 0.7f);
+    CHECK(!g.any_open());
+}
+
 }  // namespace
 
 int main() {
+    an_editor_closing_ends_only_its_gestures();
     a_lost_touch_does_not_make_the_end_stale();
     a_lost_end_does_not_leave_a_gesture_open();
     touches_are_coalesced_and_flushed();

@@ -198,9 +198,11 @@
 // toplevels placed by labwc). The host answers EditorOpened or EditorFailed;
 // it sends EditorClosed exactly once for every EditorOpened, whether the
 // engine asked (CloseEditor), the operator closed the window, or the host is
-// stopping. CloseEditor for an editor that is not open is ignored. This
-// build hosts no editor yet (BACKLOG Track 4 item 5): every OpenEditor is
-// answered with EditorFailed and its reason.
+// stopping. CloseEditor for an editor that is not open is ignored. A second
+// OpenEditor for one already open is answered with EditorFailed (the window
+// is raised). The host opens VST3 editors (ADR-0012, amendment of
+// 2026-11-03); LV2 UIs, and any editor without a display, are answered
+// with EditorFailed and its reason.
 //
 // State (ADR-0012 §5.3, §6.1). contracts/api's ModelAction::FlushPluginState
 // is a GetState for every running instance, then the files, then

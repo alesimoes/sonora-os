@@ -37,7 +37,21 @@
 //                                                       to 0.5, an edit of the read-only
 //                                                       one, and a gesture left open at
 //                                                       0.125
+//   vst3:534F4E4F52415653543354455354000B  editor       mono pass-through with an X11 editor
+//                                                       (Linux only): 320x200, fixed size. Once
+//                                                       attached it registers a pipe and a 10 ms
+//                                                       timer on the host's run loop, writes
+//                                                       to the pipe, asks for 400x250 when the
+//                                                       pipe was seen, and once told that size
+//                                                       (onSize) moves ParamID 0 "level" in a
+//                                                       gesture: to 0.4 when every call came on
+//                                                       the thread that attached it, 0.9 when
+//                                                       not. removed() leaves its timer
+//                                                       registered, and a timer after removed()
+//                                                       segfaults: the host must drop it
 //
+// SONORA_TEST_VST3_EDITOR=crash makes the editor class segfault in
+// attached(), =hang makes attached() never return.
 // SONORA_TEST_VST3_CRASH_ON_SCAN=1 makes GetPluginFactory segfault, for the
 // test that a crashing scan costs one --list entry and not the list.
 // SONORA_TEST_VST3_HANG_ON_SCAN=1 makes the latency class hang when it is
@@ -46,6 +60,7 @@
 
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/base/ipluginbase.h"
+#include "pluginterfaces/gui/iplugview.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstcomponent.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
@@ -60,6 +75,11 @@
 #include <cstring>
 #include <thread>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 using namespace Steinberg;
 using namespace Steinberg::Vst;
 
@@ -67,9 +87,9 @@ namespace {
 
 enum class Kind {
     Crash = 1, StereoOnly = 2, YesMan = 3, Liar = 4, Turncoat = 5, Params = 6, Latency = 7, Once = 8,
-    State = 9, Touch = 10
+    State = 9, Touch = 10, Editor = 11
 };
-constexpr int kKinds = 10;
+constexpr int kKinds = 11;
 constexpr ParamID kTouchLevel = 7, kTouchMeter = 9;
 constexpr char kStateMagic[4] = {'S', 'N', 'T', 'S'};
 // More than the 128 one block once carried; the host's ring holds 256.
@@ -99,7 +119,8 @@ class TestEffect final : public IComponent, public IAudioProcessor, public IEdit
 public:
     explicit TestEffect(Kind kind) : kind_(kind) {
         const bool stereo = kind != Kind::Crash && kind != Kind::Params && kind != Kind::Latency &&
-                            kind != Kind::Once && kind != Kind::State && kind != Kind::Touch;
+                            kind != Kind::Once && kind != Kind::State && kind != Kind::Touch &&
+                            kind != Kind::Editor;
         arrangement_ = stereo ? SpeakerArr::kStereo : SpeakerArr::kMono;
     }
 
@@ -186,6 +207,7 @@ public:
         case Kind::Once:
         case Kind::State:
         case Kind::Touch:
+        case Kind::Editor:
             if (ins[0] != outs[0] || SpeakerArr::getChannelCount(ins[0]) > 2) return kResultFalse;
             arrangement_ = ins[0];
             return kResultTrue;
@@ -333,6 +355,7 @@ public:
         const char* title = kind_ == Kind::Crash     ? "crash"
                             : kind_ == Kind::Latency ? "latency"
                             : kind_ == Kind::Params  ? "param"
+                            : kind_ == Kind::Editor  ? "level"
                                                      : "unused";
         copy16(info.title, title);
         copy16(info.shortTitle, title);
@@ -356,18 +379,28 @@ public:
     ParamValue PLUGIN_API plainParamToNormalized(ParamID, ParamValue v) override { return v; }
     ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
         if (kind_ == Kind::Touch) return id == kTouchLevel ? edited_.load() : 0.0;
+        if (kind_ == Kind::Editor) return id == 0 ? edited_.load() : 0.0;
         if (kind_ == Kind::State && id == kStateProgram) return double(program_) / (kStateProgramCount - 1);
         return trigger_;
     }
     tresult PLUGIN_API setParamNormalized(ParamID, ParamValue) override { return kResultOk; }
     tresult PLUGIN_API setComponentHandler(IComponentHandler* handler) override {
+        if (kind_ == Kind::Editor) handler_ = handler;  // the view's edits go through it
         if (kind_ != Kind::Latency && kind_ != Kind::Touch) return kResultOk;
         stop_notifier();
         handler_ = handler;
         if (handler_) notifier_ = std::thread([this] { kind_ == Kind::Touch ? touch_script() : notify_loop(); });
         return kResultOk;
     }
-    IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
+    IPlugView* PLUGIN_API createView(FIDString name) override;
+    // The editor class's view moving "level" as an editor knob would.
+    void edit_from_view(double v) {
+        if (!handler_) return;
+        handler_->beginEdit(0);
+        edited_.store(v);
+        handler_->performEdit(0, v);
+        handler_->endEdit(0);
+    }
 
     // IUnitInfo (the state class only): the root unit and its program list.
     int32 PLUGIN_API getUnitCount() override { return 1; }
@@ -474,6 +507,141 @@ private:
     std::atomic<double> edited_{1.0};  // the touch class: the controller's
 };
 
+#ifndef _WIN32
+// The editor class's view. It draws nothing: what it tests is the host's
+// side of an editor, which a real one (VSTGUI, JUCE) leans on the same way.
+class TestView final : public IPlugView, public Linux::IEventHandler, public Linux::ITimerHandler {
+public:
+    explicit TestView(TestEffect& owner) : owner_(owner) { owner_.addRef(); }
+
+    tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
+        if (same(iid, FUnknown_iid) || same(iid, IPlugView_iid))
+            *obj = static_cast<IPlugView*>(this);
+        else if (same(iid, Linux::IEventHandler_iid))
+            *obj = static_cast<Linux::IEventHandler*>(this);
+        else if (same(iid, Linux::ITimerHandler_iid))
+            *obj = static_cast<Linux::ITimerHandler*>(this);
+        else {
+            *obj = nullptr;
+            return kNoInterface;
+        }
+        addRef();
+        return kResultOk;
+    }
+    uint32 PLUGIN_API addRef() override { return ++refs_; }
+    uint32 PLUGIN_API release() override {
+        const uint32 r = --refs_;
+        if (r == 0) delete this;
+        return r;
+    }
+
+    tresult PLUGIN_API isPlatformTypeSupported(FIDString type) override {
+        return type && std::strcmp(type, kPlatformTypeX11EmbedWindowID) == 0 ? kResultTrue : kResultFalse;
+    }
+    tresult PLUGIN_API attached(void* parent, FIDString type) override {
+        const char* mode = std::getenv("SONORA_TEST_VST3_EDITOR");
+        if (mode && std::strcmp(mode, "crash") == 0) {
+            volatile int* nowhere = nullptr;
+            *nowhere = 1;
+        }
+        if (mode && std::strcmp(mode, "hang") == 0)
+            for (;;) std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!parent || isPlatformTypeSupported(type) != kResultTrue || !frame_) return kResultFalse;
+        void* loop = nullptr;
+        if (frame_->queryInterface(Linux::IRunLoop_iid, &loop) != kResultOk || !loop) return kResultFalse;
+        loop_ = static_cast<Linux::IRunLoop*>(loop);
+        thread_ = std::this_thread::get_id();
+        if (pipe2(pipe_, O_CLOEXEC | O_NONBLOCK) != 0) return kResultFalse;
+        loop_->registerEventHandler(this, pipe_[0]);
+        loop_->registerTimer(this, 10);
+        const char b = 1;
+        if (write(pipe_[1], &b, 1) != 1) return kResultFalse;
+        return kResultOk;
+    }
+    // Unregisters its descriptor and leaves its timer: the host must drop
+    // what an editor left behind.
+    tresult PLUGIN_API removed() override {
+        removed_ = true;
+        if (loop_) loop_->unregisterEventHandler(this);
+        for (int& fd : pipe_)
+            if (fd >= 0) close(fd), fd = -1;
+        return kResultOk;
+    }
+    tresult PLUGIN_API onWheel(float) override { return kResultFalse; }
+    tresult PLUGIN_API onKeyDown(char16, int16, int16) override { return kResultFalse; }
+    tresult PLUGIN_API onKeyUp(char16, int16, int16) override { return kResultFalse; }
+    tresult PLUGIN_API getSize(ViewRect* size) override {
+        if (!size) return kInvalidArgument;
+        *size = size_;
+        return kResultTrue;
+    }
+    tresult PLUGIN_API onSize(ViewRect* r) override {
+        if (!r) return kInvalidArgument;
+        check_thread();
+        size_ = *r;
+        if (r->getWidth() == 400 && r->getHeight() == 250) sized_ = true;
+        return kResultTrue;
+    }
+    tresult PLUGIN_API onFocus(TBool) override { return kResultTrue; }
+    tresult PLUGIN_API setFrame(IPlugFrame* frame) override {
+        frame_ = frame;
+        return kResultTrue;
+    }
+    tresult PLUGIN_API canResize() override { return kResultFalse; }
+    tresult PLUGIN_API checkSizeConstraint(ViewRect*) override { return kResultTrue; }
+
+    void PLUGIN_API onFDIsSet(Linux::FileDescriptor fd) override {
+        check_thread();
+        char buf[16];
+        while (read(fd, buf, sizeof buf) > 0) {
+        }
+        fd_seen_ = true;
+    }
+    void PLUGIN_API onTimer() override {
+        if (removed_) {
+            volatile int* nowhere = nullptr;
+            *nowhere = 1;  // a timer after removed(): the host's bug
+        }
+        check_thread();
+        if (fd_seen_ && !asked_ && frame_) {
+            asked_ = true;
+            ViewRect r(0, 0, 400, 250);
+            frame_->resizeView(this, &r);
+        } else if (sized_ && !touched_) {
+            touched_ = true;
+            owner_.edit_from_view(wrong_thread_ ? 0.9 : 0.4);
+        }
+    }
+
+private:
+    ~TestView() {
+        for (int fd : pipe_)
+            if (fd >= 0) close(fd);
+        owner_.release();
+    }
+    void check_thread() {
+        if (std::this_thread::get_id() != thread_) wrong_thread_ = true;
+    }
+
+    TestEffect& owner_;
+    std::atomic<uint32> refs_{1};
+    IPlugFrame* frame_ = nullptr;
+    Linux::IRunLoop* loop_ = nullptr;
+    std::thread::id thread_;
+    int pipe_[2] = {-1, -1};
+    ViewRect size_{0, 0, 320, 200};
+    bool fd_seen_ = false, asked_ = false, sized_ = false, touched_ = false, removed_ = false;
+    bool wrong_thread_ = false;
+};
+
+IPlugView* PLUGIN_API TestEffect::createView(FIDString name) {
+    if (kind_ != Kind::Editor || !name || std::strcmp(name, ViewType::kEditor) != 0) return nullptr;
+    return new TestView(*this);
+}
+#else
+IPlugView* PLUGIN_API TestEffect::createView(FIDString) { return nullptr; }
+#endif
+
 class Factory final : public IPluginFactory {
 public:
     tresult PLUGIN_API queryInterface(const TUID iid, void** obj) override {
@@ -505,7 +673,8 @@ public:
         static const char* const names[kKinds] = {
             "Sonora Test Crash",    "Sonora Test Stereo Only", "Sonora Test Yes-Man", "Sonora Test Liar",
             "Sonora Test Turncoat", "Sonora Test Params",      "Sonora Test Latency",
-            "Sonora Test Once",     "Sonora Test State",       "Sonora Test Touch"};
+            "Sonora Test Once",     "Sonora Test State",       "Sonora Test Touch",
+            "Sonora Test Editor"};
 #ifdef SONORA_TEST_VST3_ONLY_KIND
         if (index != 0) return kInvalidArgument;
         index = SONORA_TEST_VST3_ONLY_KIND - 1;
