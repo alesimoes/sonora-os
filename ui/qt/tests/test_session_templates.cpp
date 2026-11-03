@@ -506,6 +506,66 @@ int the_browser_lists_renames_and_deletes() {
     return 0;
 }
 
+// #291 review B1: Delete and Rename never reach past the templates folder.
+// A symlinked "template" is not listed, and Delete leaves its target's files
+// alone; a templates folder that is the sessions folder, and a folder with
+// audio in it (a template never has any), are refused by name.
+int delete_never_leaves_the_templates_folder() {
+    QTemporaryDir sessions_dir, templates_dir, elsewhere_dir;
+    CHECK(sessions_dir.isValid() && templates_dir.isValid() && elsewhere_dir.isValid());
+    const QString templates = templates_dir.path();
+    ModelDocument doc(make_empty_session(1, 48000));
+    SyntheticPeakSource peaks(48000, 120.0);
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(sessions_dir.path());
+    session.setTemplatesDir(templates);
+    std::string why;
+
+    // templates/Shared -> elsewhere/Shared, which holds Shared.sonora.
+    CHECK(write_template(elsewhere_dir.path(), QStringLiteral("Shared"), make_empty_session(2, 48000)));
+    const QString target = QDir(elsewhere_dir.path()).filePath(QStringLiteral("Shared"));
+    const QString sentinel = QDir(target).filePath(QStringLiteral("keep.txt"));
+    {
+        QFile f(sentinel);
+        CHECK(f.open(QIODevice::WriteOnly) && f.write("mine") == 4);
+    }
+    CHECK(QFile::link(target, QDir(templates).filePath(QStringLiteral("Shared"))));
+    CHECK(listed_template(session, QStringLiteral("Shared")).isEmpty());
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Shared"), why));
+    CHECK(QFileInfo(sentinel).isFile() && QFileInfo(session_file_path(elsewhere_dir.path(), QStringLiteral("Shared"))).isFile());
+    CHECK(!session.renameSessionTemplate(QStringLiteral("Shared"), QStringLiteral("Mine"), why));
+    CHECK(QFileInfo(sentinel).isFile());
+
+    // A folder with audio is a session, never a template.
+    CHECK(write_template(templates, QStringLiteral("Taken"), make_empty_session(1, 48000)));
+    const QString audio = QDir(templates).filePath(QStringLiteral("Taken/Audio Files"));
+    CHECK(QDir().mkpath(audio));
+    {
+        QFile f(QDir(audio).filePath(QStringLiteral("Audio 1_01.wav")));
+        CHECK(f.open(QIODevice::WriteOnly) && f.write("RIFF") == 4);
+    }
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Taken"), why));
+    CHECK(why.find("audio") != std::string::npos);
+    CHECK(QFileInfo(QDir(audio).filePath(QStringLiteral("Audio 1_01.wav"))).isFile());
+
+    // The templates folder is the sessions folder: its sessions, audio and
+    // all, would be listed as templates.
+    CHECK(write_template(sessions_dir.path(), QStringLiteral("Song"), make_empty_session(1, 48000)));
+    session.setTemplatesDir(sessions_dir.path() + QStringLiteral("/."));
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Song"), why));
+    CHECK(why.find("sessions folder") != std::string::npos);
+    CHECK(!session.renameSessionTemplate(QStringLiteral("Song"), QStringLiteral("Other"), why));
+    CHECK(QFileInfo(session_file_path(sessions_dir.path(), QStringLiteral("Song"))).isFile());
+
+    // A real template still renames and deletes.
+    session.setTemplatesDir(templates);
+    CHECK(write_template(templates, QStringLiteral("Plain"), make_empty_session(1, 48000)));
+    CHECK(session.renameSessionTemplate(QStringLiteral("Plain"), QStringLiteral("Plainer"), why));
+    CHECK(session.deleteSessionTemplate(QStringLiteral("Plainer"), why));
+    CHECK(!QFileInfo::exists(QDir(templates).filePath(QStringLiteral("Plainer"))));
+    return 0;
+}
+
 // The File menu's entries are commands: without a name Save as Template
 // asks for one, offering a free name in the templates folder; with one it
 // saves, markers as the dialog's check box says. New from Template asks
@@ -567,6 +627,7 @@ int main(int argc, char** argv) {
     if (every_record_or_punch_command_is_a_take_command() != 0) return 1;
     if (the_browser_lists_renames_and_deletes() != 0) return 1;
     if (the_commands_ask_then_save() != 0) return 1;
+    if (delete_never_leaves_the_templates_folder() != 0) return 1;
     std::printf("session templates: ok\n");
     return 0;
 }

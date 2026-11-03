@@ -602,6 +602,9 @@ private:
     bool inTemplateFolder() const;
     // Whether the template `name` may be renamed or deleted now; why not.
     bool templateIsFree(const QString& name, std::string& why) const;
+    // Whether `name` is a real folder directly in the templates folder, not
+    // a link and not the sessions folder's (#291 B1); why not.
+    bool templateFolderSafe(const QString& name, std::string& why) const;
     // Sends after_open_'s Save As once the engine has taken the Load.
     void saveAfterOpen();
     // saveSession() and saveSessionAs()'s common part: the plugins' state,
