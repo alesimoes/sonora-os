@@ -272,7 +272,8 @@
 // path): Hello within kHelloTimeoutMs of the fork; Loaded or Refused within
 // kLoadTimeoutMs of Load (ADR-0012 §5.3's 10 s); a GetState, DescribeValue
 // or OpenEditor reply within kReplyTimeoutMs (a State within
-// kStateReplyTimeoutMs: a save may copy plugin files); Reconfigured within
+// state_reply_timeout_ms: kStateReplyTimeoutMs when the save may copy plugin
+// files, at most kMaxStateCopyBytes of them); Reconfigured within
 // kReconfigureTimeoutMs. Past one, the host is hung: SIGKILL, crash path.
 // The same for a host whose queue of unsent frames would pass
 // kMaxQueuedBytes (it is not reading its socket), and for one with a
@@ -320,6 +321,23 @@ inline constexpr std::size_t kMaxStateBytes = std::size_t{16} << 20;  // one ins
 inline constexpr std::size_t kMaxStateSections = 4;
 inline constexpr std::size_t kMaxPathBytes = 4096;          // a folder or a plugin file's relative path (PATH_MAX)
 inline constexpr uint32_t kMaxStateFiles = 1024;            // files one State may name
+// Bytes a GetState may make the host copy and hash (ADR-0029 §6; #276
+// review N1). The files are made by plugin code, which is untrusted: without
+// a cap one makePath file can fill the session disk, and its copy outlasts
+// kStateReplyTimeoutMs, so the host is killed half way. A file over
+// kMaxStateFileBytes, or a copy that would take one instance's State past
+// kMaxStateCopyBytes, fails that State (StateStatus::Failed, its text naming
+// the file and the cap); the other instances' States are their own. 1 GiB
+// holds any sampler patch or impulse response a session names; 4 GiB bounds
+// one save at about 40 s of copy and hash on a USB 3 stick, inside
+// kStateReplyTimeoutMs. The engine refuses a State listing a file over
+// kMaxStateFileBytes, so both sides hold the same number; the encoding does
+// not change, so the wire stays 4.
+inline constexpr uint64_t kMaxStateFileBytes = uint64_t{1} << 30;
+inline constexpr uint64_t kMaxStateCopyBytes = uint64_t{4} << 30;
+// The host copies only if the destination keeps this much free afterwards:
+// a plugin's files must never take the room the next take records into.
+inline constexpr uint64_t kStateCopyFreeMarginBytes = uint64_t{512} << 20;
 inline constexpr std::size_t kMaxFrameBytes = std::size_t{64} << 10;  // one datagram
 inline constexpr std::size_t kFrameHeaderBytes = 8;
 // Caps per direction (rt-engineer M1 on PR #51): what one host can make the
@@ -453,6 +471,12 @@ struct GetState {
     std::string save_dir;
     uint32_t flags = 0;
 };
+
+// What the engine waits for the State a GetState asks for: the long budget
+// only when the host may copy files (a save_dir, without kGetStateNoCopy).
+inline int state_reply_timeout_ms(const GetState& g) {
+    return !g.save_dir.empty() && !(g.flags & kGetStateNoCopy) ? kStateReplyTimeoutMs : kReplyTimeoutMs;
+}
 
 struct DescribeValue {
     uint32_t request = 0;

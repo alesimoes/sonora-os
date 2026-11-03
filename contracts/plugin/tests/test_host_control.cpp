@@ -242,6 +242,17 @@ void untrusted_fields_are_refused() {
         for (uint32_t i = 0; i <= kMaxStateFiles; ++i)
             many.files.push_back({plugin_file_path(sha, "f" + std::to_string(i)), sha, 1});
         refuse(many, "more files than a State may name");
+        refuse(with({plugin_file_path(sha, "big.wav"), sha, kMaxStateFileBytes + 1}),
+               "a file over kMaxStateFileBytes (#276 review N1)");
+        {
+            std::string wire, e;
+            encode(with({plugin_file_path(sha, "big.wav"), sha, kMaxStateFileBytes}), wire);
+            State back;
+            CHECK(decode(wire, back, e) && back.files.size() == 1 && back.files[0].bytes == kMaxStateFileBytes);
+        }
+        CHECK(state_reply_timeout_ms(GetState{0, 0, "", 0}) == kReplyTimeoutMs);
+        CHECK(state_reply_timeout_ms(GetState{0, 0, "/s", kGetStateNoCopy}) == kReplyTimeoutMs);
+        CHECK(state_reply_timeout_ms(GetState{0, 0, "/s", 0}) == kStateReplyTimeoutMs);
         refuse(GetState{0, 0, "relative/dir", 0}, "a relative save_dir");
         refuse(GetState{0, 0, "/a/../b", 0}, "a save_dir with ..");
         refuse(GetState{0, 0, "/a", 0x80}, "unknown GetState flags");

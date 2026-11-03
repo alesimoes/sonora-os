@@ -85,6 +85,14 @@ target_link_libraries(test_gestures PRIVATE sonora_plugin_host_control sonora_pl
 add_test(NAME plugin_host_gestures COMMAND test_gestures)
 set_tests_properties(plugin_host_gestures PROPERTIES LABELS plugins)
 
+# What a save may copy out of a plugin's files, with the caps shrunk and the
+# free space faked (#276 review N1).
+add_executable(test_state_paths tests/test_state_paths.cpp src/state_paths.cpp)
+target_include_directories(test_state_paths PRIVATE src)
+target_link_libraries(test_state_paths PRIVATE sonora_plugin_host_control PkgConfig::LILV)
+add_test(NAME plugins_host_state_copy_caps COMMAND test_state_paths)
+set_tests_properties(plugins_host_state_copy_caps PROPERTIES LABELS plugins)
+
 add_executable(test_urid_map tests/test_urid_map.cpp)
 target_link_libraries(test_urid_map PRIVATE sonora_urid_map Threads::Threads)
 add_test(NAME plugin_host_urid_map COMMAND test_urid_map)

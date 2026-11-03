@@ -14,7 +14,12 @@
 //                  by its path relative to that folder; any other file is
 //                  hashed and copied into "<save_dir>/Plugin Files/<sha256>/
 //                  <basename>" (tmp, fdatasync, rename) and named by that.
-//                  Each is recorded for the State reply.
+//                  Each is recorded for the State reply. A file over
+//                  CopyLimits::file_bytes, a copy that takes the save past
+//                  total_bytes, or one that would leave less than
+//                  margin_bytes free fails the save before a byte is
+//                  written, its text naming the file and the cap; a failed
+//                  copy leaves no ".incoming-*" behind.
 //   absolute_path  in restore(): "<session_dir>/<path>"; a path that escapes
 //                  the folder is refused (NULL). An absolute path, which
 //                  states saved before wire 4 hold, is returned as it is.
@@ -34,6 +39,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -45,12 +51,24 @@ namespace sonora::plugin_host {
 void mark_processing_thread() noexcept;
 bool on_processing_thread() noexcept;
 
+// What one instance's save may copy (host_control.h kMaxStateFileBytes,
+// kMaxStateCopyBytes, kStateCopyFreeMarginBytes). Tests shrink the caps and
+// fake the free space; the host uses the defaults.
+struct CopyLimits {
+    uint64_t file_bytes = plugin::control::kMaxStateFileBytes;
+    uint64_t total_bytes = plugin::control::kMaxStateCopyBytes;
+    uint64_t margin_bytes = plugin::control::kStateCopyFreeMarginBytes;
+    // Bytes free to an unprivileged writer on the filesystem holding `dir`,
+    // or false. Empty: statvfs.
+    std::function<bool(const std::string& dir, uint64_t& free)> free_space;
+};
+
 class StatePaths {
 public:
     // Both absolute or empty (contracts/plugin valid_folder). No scratch
     // folder: no makePath. No session folder: a relative path cannot be
     // resolved, and a save names paths as the plugin gave them.
-    StatePaths(std::string scratch_dir, std::string session_dir);
+    StatePaths(std::string scratch_dir, std::string session_dir, CopyLimits limits = {});
     StatePaths(const StatePaths&) = delete;
     StatePaths& operator=(const StatePaths&) = delete;
 
@@ -87,6 +105,7 @@ private:
     // `canonical` relative to `<folder>/`, when it is a "Plugin Files/
     // <sha256>/<name>" there: the relative path, sha and size recorded.
     bool name_in(const std::string& canonical, const std::string& folder, plugin::control::StateFile& out) const;
+    bool free_space_of(const std::string& dir, uint64_t& free) const;
     bool copy_in(const std::string& given, const std::string& canonical, plugin::control::StateFile& out,
                  std::string& error);
 
@@ -101,6 +120,8 @@ private:
     std::vector<plugin::control::StateFile> files_;
     std::map<std::string, std::string> named_;  // a path given -> what it was named, this save
     uint64_t copies_ = 0;
+    uint64_t copied_bytes_ = 0;  // this save, against limits_.total_bytes
+    const CopyLimits limits_;
     std::string last_refusal_;
     std::atomic<uint64_t> refused_{0}, rt_refused_{0};
 

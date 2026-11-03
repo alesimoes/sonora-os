@@ -221,6 +221,8 @@ struct PluginHosting::Chain {
     // insert, and for touches lost on the way, per chain (the host's touch
     // queue is the chain's, not one plugin's).
     std::set<model::Id> unmapped_noticed;
+    // The same for path calls the host refused (Fault{Plugin} with a count).
+    std::set<model::Id> paths_noticed;
     bool lost_noticed = false;
 };
 
@@ -340,6 +342,7 @@ void PluginHosting::drop_chain(Chain& c) {
     c.state_lost.clear();
     c.work_noticed.clear();
     c.unmapped_noticed.clear();
+    c.paths_noticed.clear();
     c.lost_noticed = false;
 }
 
@@ -772,6 +775,7 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                     c.pending_state_lost.clear();
                     c.work_noticed.clear();
                     c.unmapped_noticed.clear();
+                    c.paths_noticed.clear();
                     c.lost_noticed = false;
                     note_refused_states(c, doc);
                     c.retry.clear();
@@ -1084,6 +1088,20 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
                                    "may have become more than one undo step");
                 break;
             }
+            // Wire 4: with a count, the plugin's path calls (makePath,
+            // mapPath) the host refused; it plays on, but a file it meant to
+            // keep may be missing from the session, which the operator must
+            // hear before relying on it. Said once a run, with the host's text.
+            if (m.kind == pc::FaultKind::Plugin && m.count > 0) {
+                if (m.instance < 0 || uint32_t(m.instance) >= c.running_spec.size() || !t) break;
+                const model::Id insert = c.running_spec[uint32_t(m.instance)].insert;
+                if (!c.paths_noticed.insert(insert).second) break;
+                for (const model::Insert& in : t->inserts)
+                    if (in.id == insert)
+                        notices_.push_back(where(*t, in) + ": the host refused a file path its plug-in asked for (" +
+                                           m.text + "), so a file it keeps may not be saved with the session");
+                break;
+            }
             if (m.kind != pc::FaultKind::WorkRefused && m.kind != pc::FaultKind::ParamUnmapped) break;
             if (m.instance < 0 || uint32_t(m.instance) >= c.running_spec.size()) break;
             const model::Id insert = c.running_spec[uint32_t(m.instance)].insert;
@@ -1122,7 +1140,6 @@ uint64_t PluginHosting::request_states(model::Id only, const model::Snapshot& do
     const uint64_t id = next_flush_++;
     Flush& f = flushes_[id];
     f.id = id;
-    const uint64_t deadline = steady_ms() + uint64_t(pc::kReplyTimeoutMs);
     for (auto& [track, cp] : chains_) {
         Chain& c = *cp;
         const model::TrackEdit* t = nullptr;
@@ -1147,12 +1164,16 @@ uint64_t PluginHosting::request_states(model::Id only, const model::Snapshot& do
             if (next_state_request_ == 0) next_state_request_ = 1;
             const uint32_t request = next_state_request_++;
             std::string bytes, e;
-            pc::encode(pc::GetState{request, i}, bytes);
+            const pc::GetState ask{request, i};
+            pc::encode(ask, bytes);
             if (!c.running->host()->send(bytes, e)) {
                 f.failed.push_back(who + ": its state could not be asked for: " + e);
                 continue;
             }
-            state_requests_[request] = StateRequest{id, insert, c.track, c.running->host(), deadline, who};
+            // A save that may copy plugin files waits for them (host_control.h).
+            const int timeout_ms = pc::state_reply_timeout_ms(ask);
+            const uint64_t deadline = steady_ms() + uint64_t(timeout_ms);
+            state_requests_[request] = StateRequest{id, insert, c.track, c.running->host(), deadline, timeout_ms, who};
         }
     }
     finish_flush_if_done(id);
@@ -1204,17 +1225,19 @@ void PluginHosting::follow_state_requests(uint64_t now_ms) {
     for (const auto& [request, r] : state_requests_)
         if (now_ms >= r.deadline_ms) late.insert(r.track);
     for (const model::Id track : late) {
-        // host_control.h: a GetState unanswered past kReplyTimeoutMs is a
-        // hung host, killed; the crash path restarts it from the session's
+        int timeout_ms = pc::kReplyTimeoutMs;
+        // host_control.h: a GetState unanswered past state_reply_timeout_ms is
+        // a hung host, killed; the crash path restarts it from the session's
         // last saved state. `host` is still the bound one: anything that
         // unbinds it fails its requests first.
         for (const auto& [request, r] : state_requests_) {
             if (r.track != track || now_ms < r.deadline_ms) continue;
+            timeout_ms = r.timeout_ms;
             r.host->signal_kill();
             break;
         }
         fail_state_requests(track, "its plug-in did not hand over its state within " +
-                                       std::to_string(pc::kReplyTimeoutMs / 1000) +
+                                       std::to_string(timeout_ms / 1000) +
                                        " s, so its host was restarted");
     }
 }
