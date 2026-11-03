@@ -144,7 +144,11 @@ namespace sonora::api {
 //   region in an operation carries "colour", and a Snapshot's undo window
 //   is window format 12, with each track's and region's colour (session
 //   format 15). A version-37 peer refuses all of them.
-constexpr uint32_t kProtocolVersion = 38;
+// 39 (ADR-0027 §8 slice 5, Trim; follows 38): ParamId::VolumeTrim; a lane
+//   in EditAutomation and the undo window may be "volume_trim", a track's
+//   mix "write_trim" (window format 13, session format 16). A version-38
+//   peer refuses all of them.
+constexpr uint32_t kProtocolVersion = 39;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -172,6 +176,11 @@ enum class ParamId : uint32_t {
     // by track. Linear, 0 .. 4, as Gain.
     SendLevel = 2,
     AuxGain = 3,
+    // The track's trim fader in Trim and WriteTrim (ADR-0027 §8 slice 5):
+    // linear, 0 .. 4 as Gain, played and written within kMinTrimDb ..
+    // kMaxTrimDb. It never changes the static fader. In any other mode the
+    // value is kept and a touch holds nothing.
+    VolumeTrim = 4,
 };
 
 // Where a change sits in the operator's gesture (ADR-0027 §3). In Touch,

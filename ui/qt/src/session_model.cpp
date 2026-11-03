@@ -861,6 +861,7 @@ QVariantList SessionModel::trackRows() const {
                 case AutomationMode::Latch: mode = "Latch"; break;
                 case AutomationMode::Write: mode = "Write"; break;
                 case AutomationMode::Trim: mode = "Trim"; break;
+                case AutomationMode::WriteTrim: mode = "Write/Trim"; break;
             }
         }
         QStringList captions;

@@ -1663,7 +1663,8 @@ bool EditController::step_automation_mode(int index, std::string& why) {
         case AutomationMode::Touch: m.automation = AutomationMode::Latch; break;
         case AutomationMode::Latch: m.automation = AutomationMode::Write; break;
         case AutomationMode::Write:
-        case AutomationMode::Trim: m.automation = AutomationMode::Off; break;
+        case AutomationMode::Trim:
+        case AutomationMode::WriteTrim: m.automation = AutomationMode::Off; break;
     }
     return submit(SetMix{m}, why);
 }

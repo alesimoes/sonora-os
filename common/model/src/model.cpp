@@ -1133,11 +1133,9 @@ std::string mix_problem(const TrackMix& m, TrackKind kind, std::uint16_t track_c
         where = "pan";
         return "must be from -1 to 1";
     }
-    if (m.automation >= AutomationMode::Trim) {
+    if (m.automation > AutomationMode::WriteTrim) {
         where = "automation";
-        if (m.automation > AutomationMode::Trim) return "is not an automation mode";
-        // Its relative lane, summed with Volume in dB, is not built yet.
-        return "trim is not available yet; use off, read, touch, latch or write";
+        return "is not an automation mode";
     }
     if (kind == TrackKind::Midi && m.automation != AutomationMode::Read) {
         where = "automation";
@@ -1167,6 +1165,11 @@ std::string automation_points_problem(const std::vector<AutomationPoint>& points
         if (param == AutomationParam::Pan && !(p.value >= -1.0f && p.value <= 1.0f)) {
             return "a pan point must be from -1 to 1";
         }
+        if (param == AutomationParam::VolumeTrim &&
+            !(p.value >= kMinTrimDb && p.value <= kMaxTrimDb)) {
+            return "a trim point must be from " + str(static_cast<std::int64_t>(kMinTrimDb)) +
+                   " to " + str(static_cast<std::int64_t>(kMaxTrimDb)) + " dB";
+        }
         if (param == AutomationParam::Plugin) {
             // ParamValue's rules (insert_mix_problem): a lane point is a
             // value the insert could hold.
@@ -1182,9 +1185,11 @@ std::string automation_points_problem(const std::vector<AutomationPoint>& points
 
 std::string automation_target_problem(const TrackEdit& t, AutomationParam param, Id insert,
                                       const std::string& key, PluginFormat& format) {
-    if (param > AutomationParam::Plugin) return "is not a parameter this version automates";
+    if (param > AutomationParam::VolumeTrim) return "is not a parameter this version automates";
     if (param != AutomationParam::Plugin) {
-        if (insert != 0 || !key.empty()) return "a volume or pan lane names no insert and no key";
+        if (insert != 0 || !key.empty()) {
+            return "a volume, pan or trim lane names no insert and no key";
+        }
         return {};
     }
     const Insert* in = nullptr;

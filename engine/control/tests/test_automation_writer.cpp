@@ -384,6 +384,44 @@ int test_a_non_finite_live_value_is_dropped() {
     return 0;
 }
 
+// The trim fader (ADR-0027 §8 slice 5): written to the VolumeTrim lane in
+// dB, clamped to [-60, +12]; a track with no trim lane plays 0 dB of trim,
+// which is what a run steps in from and out to.
+int test_a_trim_write_is_its_own_lane() {
+    sonora::AutomationWrite a{};
+    a.frame = 640;
+    a.frames = 64;
+    a.param = sonora::kAutoTrim;
+    a.value = 0.5f;
+    PassWrite p;
+    CHECK(live_pass_write(a, 7, p));
+    CHECK(p.param == AutomationParam::VolumeTrim && std::fabs(p.value - -6.0206f) < 1e-3f);
+    a.value = 4.0f;
+    CHECK(live_pass_write(a, 7, p) && p.value == kMaxTrimDb);
+    a.value = 0.0f;
+    CHECK(live_pass_write(a, 7, p) && p.value == kMinTrimDb);
+    a.value = std::nanf("");
+    CHECK(!live_pass_write(a, 7, p));
+
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    TrackMix m = *h.current().mix.find(vox.track);
+    m.gain_db = -3.0f;
+    CHECK_APPLY(h, SetMix{m});
+    std::vector<PassWrite> w;
+    ride(w, vox.track, AutomationParam::VolumeTrim, 200, 400, 6.0f);
+    const std::vector<EditAutomation> edits = automation_pass_edits(h.current(), w, 0);
+    CHECK(edits.size() == 1 && edits[0].param == AutomationParam::VolumeTrim);
+    CHECK(has(edits[0].points, 200, 0.0f) && has(edits[0].points, 200, 6.0f));
+    CHECK(has(edits[0].points, 400, 6.0f) && has(edits[0].points, 400, 0.0f));
+    CHECK_APPLY(h, edits[0]);
+    CHECK(h.current().edit->tracks[0]->lane(AutomationParam::Volume) == nullptr);
+    CHECK(h.current().edit->tracks[0]->lane(AutomationParam::VolumeTrim) != nullptr);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -399,6 +437,7 @@ int main() {
     failed += test_a_crowded_lane_is_thinned_harder();
     failed += test_a_merged_line_ends_on_its_value();
     failed += test_a_non_finite_live_value_is_dropped();
+    failed += test_a_trim_write_is_its_own_lane();
     if (failed != 0) {
         std::fprintf(stderr, "automation_writer: %d failed\n", failed);
         return 1;

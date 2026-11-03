@@ -96,7 +96,7 @@ struct LaneWrites {
 };
 
 // About what a fader or a pan knob can be set to by hand.
-float tolerance_of(AutomationParam p) { return p == AutomationParam::Volume ? 0.1f : 0.005f; }
+float tolerance_of(AutomationParam p) { return p == AutomationParam::Pan ? 0.005f : 0.1f; }
 
 // The lane's edit, its runs thinned at `tolerance`.
 model::EditAutomation lane_edit(const LaneWrites& l, const Original& o, float tolerance) {
@@ -235,14 +235,18 @@ bool live_pass_write(const AutomationWrite& w, model::Id track, PassWrite& p) {
     if (w.param >= kAutoParams || !std::isfinite(w.value)) return false;
     p = PassWrite{};
     p.track = track;
-    p.param = w.param == kAutoVolume ? AutomationParam::Volume : AutomationParam::Pan;
+    p.param = w.param == kAutoVolume ? AutomationParam::Volume
+              : w.param == kAutoPan  ? AutomationParam::Pan
+                                     : AutomationParam::VolumeTrim;
     p.frame = static_cast<Frames>(w.frame);
     p.frames = w.frames;
-    if (w.param == kAutoVolume) {
-        const double db = w.value > 0.0f ? 20.0 * std::log10(static_cast<double>(w.value))
-                                         : static_cast<double>(model::kMinGainDb);
-        p.value = static_cast<float>(std::clamp(db, static_cast<double>(model::kMinGainDb),
-                                                static_cast<double>(model::kMaxGainDb)));
+    if (w.param != kAutoPan) {
+        // Linear on the ring, as the fader's atomic holds it.
+        const bool trim = w.param == kAutoTrim;
+        const double lo = trim ? model::kMinTrimDb : model::kMinGainDb;
+        const double hi = trim ? model::kMaxTrimDb : model::kMaxGainDb;
+        const double db = w.value > 0.0f ? 20.0 * std::log10(static_cast<double>(w.value)) : lo;
+        p.value = static_cast<float>(std::clamp(db, lo, hi));
     } else {
         p.value = std::clamp(w.value, -1.0f, 1.0f);
     }
@@ -263,7 +267,9 @@ std::vector<model::EditAutomation> automation_pass_edits(const model::Snapshot& 
             found = true;
             o.lane = t->lane(param);
             const model::TrackMix* mix = doc.mix.find(id);
-            if (mix) o.fixed = param == AutomationParam::Volume ? mix->gain_db : mix->pan;
+            // A track with no trim lane plays 0 dB of trim.
+            if (mix && param == AutomationParam::Volume) o.fixed = mix->gain_db;
+            if (mix && param == AutomationParam::Pan) o.fixed = mix->pan;
             return o;
         }
         return o;

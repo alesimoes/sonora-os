@@ -322,7 +322,7 @@ conformance). Before launching a slice, check its file list against
 | 2 | **Plan-move and Load state** (RT): touched bits carried in `PlanTrackMix`; `auto_latched_` moves with its track on adopt; drop a pass by the plan it started on, not by the pass number | `engine/core/include/sonora/playback_plan.h` (`PlanTrackMix`), `engine/core/{include/sonora/session.h,src/session.cpp}`, `engine/control/src/playback_controller.cpp` (`adopt_track_mix`), `engine/control/src/engine_control_server.cpp` (~1016, ~2647), `engine/core/tests/test_automation.cpp`, `engine/control/tests/test_track_structure.cpp` | none (the plan is in-process; the pass's plan seq is a `Session` accessor, not the state block) | Latch on track 2, reorder while rolling: the latch follows the track; a moving plan's first 2 blocks stamp no write on the arriving track; play then Load back to back: no write lands on the new session | Opus (RT) | after #243, Track 4b and slice 1 merge |
 | 3 | **Per-frame sends and PDC-aligned lanes** (RT): post-fader and follow-pan sends take the lane per frame; a track behind an insert chain reads its lane at the frames its output came from, so the loop's first pass is right | `engine/core/src/session.cpp` (send ramp, lane read offset), `engine/core/tests/test_sends.cpp`, `engine/core/tests/test_plan_pdc.cpp` | none | a send on a lane ramping inside one callback matches the fader's per-frame curve; a looped track with `L` > 0 plays the loop start's lane value, not the loop end's, for its first `L` frames | Opus (RT) | after slice 2 (same `session.cpp`) |
 | 4 | **Touch's return**: release with no lane glides to the static value; `--automatch-ms` | `engine/core/{include/sonora/session.h,src/session.cpp}` (config field, `lane_param` glide for unautomated params), `engine/app/src/main.cpp`, `ui/qt/src/mix_model.cpp` (no `set_gain`/`set_pan` after a live ride), `engine/core/tests/test_automation.cpp`, `ui/qt/tests/test_mix.cpp` | none (start-up option) | Touch, no lane, ride +6 dB and release: the audio 250 ms later equals the written return lane frame for frame; `--automatch-ms 100` shortens both | Opus (RT) | after slice 3 (same `session.cpp`) |
-| 5 | **Trim** (Touch/Trim) | `common/model/{include/sonora/model/model.h,src/model.cpp,src/checks.h,src/op_codec.cpp,src/session_file.cpp}` (`AutomationParam::VolumeTrim`, `SetMix` accepts Trim), `contracts/api/include/sonora/api/messages.h`, `engine/control/src/plan_builder.cpp` (copy the trim lane), `engine/core/include/sonora/playback_plan.h`, `engine/core/src/session.cpp` (gain = Volume dB + Trim dB, write the trim lane), `ui/qt/src/automation_edit.*`, lane menu and QML | **session format 15, window format 12, protocol: the next free number (38 if nothing lands first)**. A v14 file opens unchanged, and a v14 reader refuses `volume_trim`. No state-block bump | model: v14 round-trip, v15 refused by v14 codec, Trim `SetMix` accepted; engine: Volume lane -6 dB with trim -3 dB plays -9 dB, block-split invariant; a Trim pass writes only the trim lane | Opus (contracts, storage, RT) | after Track 2, Track 4b and slice 4 |
+| 5 | **Trim** (Touch/Trim) | `common/model/{include/sonora/model/model.h,src/model.cpp,src/checks.h,src/op_codec.cpp,src/session_file.cpp}` (`AutomationParam::VolumeTrim`, `SetMix` accepts Trim), `contracts/api/include/sonora/api/messages.h`, `engine/control/src/plan_builder.cpp` (copy the trim lane), `engine/core/include/sonora/playback_plan.h`, `engine/core/src/session.cpp` (gain = Volume dB + Trim dB, write the trim lane), `ui/qt/src/automation_edit.*`, lane menu and QML | **session format 16, window format 13, protocol 39** (renumbered: #277 took 15, 12 and 38). A v15 file opens unchanged, and a v15 reader refuses `volume_trim`. No state-block bump | model: v15 round-trip, v16 refused by v15 codec, Trim `SetMix` accepted; engine: Volume lane -6 dB with trim -3 dB plays -9 dB, block-split invariant; a Trim pass writes only the trim lane | Opus (contracts, storage, RT) | after Track 2, Track 4b and slice 4 |
 
 *As built (slice 2, recommended defaults, nobody available):* the pass's
 plan is carried in each `AutomationWrite` (`epoch`, the plan its pass began
@@ -382,6 +382,38 @@ the static. The control thread stores the static after it clears
 `touched`, not before. Stored first, it could be played and written as one
 live callback's value. In this order the audio thread returns from
 `live_value_`, and a static that arrives late is crossfaded. No bump.
+
+*As built (slice 5, model, engine and protocol; recommended defaults,
+nobody available):* **session format 16, undo window format 13, protocol
+39** (#277 took 15, 12 and 38, so the row's numbers moved up one). The
+mode pair is taken in the same bump rather than as a later one:
+`AutomationMode::Trim` is Touch/Trim and a new `WriteTrim` (`"write_trim"`)
+is Write/Trim; Latch/Trim stays a BACKLOG line. In both the volume fader
+is the trim fader: the Volume lane plays as in Read, a volume touch holds
+nothing, the pan behaves as in Touch (Trim) or Write (WriteTrim). The trim
+fader is its own parameter on the wire, `ParamId::VolumeTrim` (linear, as
+`Gain`), and its own atomic, `Track::trim()`, so a trim ride can never
+move or save the static fader; it is session state, set to 0 dB at a
+Load, and moves with its track through `PlanTrackMix::trim`.
+`AutomationParam::VolumeTrim` is appended after `Plugin`, so lanes sort
+volume, pan, plugin, trim, and no earlier file's order changes. The lane
+plays in every mode but Off. On the audio thread a trim rides the
+volume's lane path (`kAutoTrim`, a third plan parameter): wherever a trim
+plays, the volume bit is set and `lane_param(kAutoVolume)` returns the
+volume lane (or the static or live fader under it) plus the trim in dB,
+so the grid, the block cuts, the PDC lag and the post-fader sends take
+one sum. A fader moving under a trim and a live trim that changes are
+crossfaded over one callback, as a static change is. Touch/Trim's
+release returns to the trim lane, or to 0 dB with none, over the
+AutoMatch time, and the writer's run edges step to 0 dB where the track
+had no trim lane. WriteTrim falls back to Trim after a pass, as Write
+falls back to Latch. A live trim is clamped to [-60, +12] dB where it
+plays and where it is written. *Unverified:* that range against the Pro
+Tools Reference Guide (`brain/research/protools-logic-key-bindings.md`
+has nothing on it). **Not built here (ui-engineer follow-up):** the
+interface still refuses Trim (`EditController::set_automation_mode`), has
+no Write/Trim entry, sends no `VolumeTrim`, shows no trim offset on the
+fader and has no Volume Trim lane in the lane menu or `automation_edit`.
 
 **Merge order:** 1 (now), then #243 and Track 4b, then 2, 3, 4, 5. Slice 1
 is the only one that can run beside the in-flight work, because 2 to 5 all

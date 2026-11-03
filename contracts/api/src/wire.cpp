@@ -163,7 +163,7 @@ private:
 };
 
 constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::Failed);
-constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::AuxGain);
+constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::VolumeTrim);
 constexpr uint32_t kLastGesture = static_cast<uint32_t>(Gesture::Release);
 constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::SaveAs);
 constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::Latency);

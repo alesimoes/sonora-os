@@ -706,6 +706,7 @@ private:
         uint32_t input = 0;
         Track::Automation automation = Track::Automation::Read;
         uint8_t touched = 0;   // Track::touched()
+        float trim = 1.0f;     // Track::trim()
     };
     TrackMixView mix_view(const PlaybackPlan& plan, std::size_t e) const noexcept SONORA_RT;
     // A new plan: what the audio thread keeps per engine track for live
@@ -755,8 +756,16 @@ private:
     // Parameter p's lane on engine track e at frame t, in the lane's unit,
     // leaning toward the value a released Touch parameter left while it
     // returns (ADR-0027 §3).
+    // The volume is that lane, or the static or live fader where it plays
+    // none, plus the trim in dB wherever a trim plays (ADR-0027 §8).
     float lane_param(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, uint32_t p,
                      int64_t t) const noexcept SONORA_RT;
+    // p's lane alone, or the static it returns to where it has none.
+    float lane_or_return(const PlaybackPlan& plan, const PlanTrack& pt, std::size_t k,
+                         uint32_t p, int64_t t) const noexcept SONORA_RT;
+    // Parameter p's live value on engine track e, in the ring's unit:
+    // volume and trim linear, pan -1 to +1.
+    float live_param(uint32_t e, uint32_t p) const noexcept SONORA_RT;
     // Stamps the live value of each parameter in `bits` over the frames this
     // callback plays from `start`, one write per span between wraps.
     void stamp_writes(uint32_t e, uint8_t bits, uint64_t start) noexcept SONORA_RT;
@@ -983,6 +992,19 @@ private:
     std::unique_ptr<float[]> track_open_last_;
     std::unique_ptr<float[]> auto_level_;
     std::unique_ptr<float[]> auto_pan_;
+    // The trim (ADR-0027 §8), per engine track: the trim fader this block,
+    // linear; 1 when the volume bit of track_auto_ plays the volume lane (or
+    // its return), 0 when it plays auto_level_ under a trim; what the trim
+    // plays (kTrimNone, kTrimLane, kTrimLive) this callback and last; the
+    // live trim in dB.
+    static constexpr uint8_t kTrimNone = 0;
+    static constexpr uint8_t kTrimLane = 1;
+    static constexpr uint8_t kTrimLive = 2;
+    std::unique_ptr<float[]> track_trim_;
+    std::unique_ptr<uint8_t[]> auto_vol_lane_;
+    std::unique_ptr<uint8_t[]> auto_trim_;
+    std::unique_ptr<uint8_t[]> auto_trim_last_;
+    std::unique_ptr<float[]> auto_trim_db_;
     // Where the next callback starts if it continues this one, looped, or
     // the playhead, stopped; this callback's start; whether it rolls.
     uint64_t auto_next_ = 0;

@@ -30,6 +30,7 @@ namespace fs = std::filesystem;
 using namespace playback_test;
 using sonora::kAutoGridFrames;
 using sonora::kAutoPan;
+using sonora::kAutoTrim;
 using sonora::kAutoVolume;
 using sonora::PlanAutoPoint;
 using sonora::Session;
@@ -107,25 +108,27 @@ struct Rig {
 
     // The source and a plan whose track plays it with these lanes.
     bool load(const std::vector<PlanAutoPoint>& volume,
-              const std::vector<PlanAutoPoint>& pan = {}) {
+              const std::vector<PlanAutoPoint>& pan = {},
+              const std::vector<PlanAutoPoint>& trim = {}) {
         Session& s = *session;
         const std::string path = (dir / "source.wav").string();
         if (!write_source(path, 5, 1, source_frames)) return false;
         std::string error;
         if (!s.reader().add_source(path, slot, error)) return false;
-        return publish(volume, pan);
+        return publish(volume, pan, {}, trim);
     }
 
     // With `owners`, the document track each engine track plays, as
     // PlaybackController fills them in every plan; none: 0 on each.
     bool publish(const std::vector<PlanAutoPoint>& volume,
                  const std::vector<PlanAutoPoint>& pan,
-                 const std::vector<uint64_t>& owners = {}) {
+                 const std::vector<uint64_t>& owners = {},
+                 const std::vector<PlanAutoPoint>& trim = {}) {
         Session& s = *session;
         SegmentSpec sp;
         sp.end = source_frames;
         sp.source_slot = slot;
-        const auto total = static_cast<uint32_t>(volume.size() + pan.size());
+        const auto total = static_cast<uint32_t>(volume.size() + pan.size() + trim.size());
         const auto mix = static_cast<uint32_t>(owners.size());
         sonora::PlaybackPlan* p = make_plan(s.plans().next_epoch(), 1, {sp}, kChunk, 0, mix, total);
         for (uint32_t e = 0; e < mix; ++e) p->track_mix[e].track = owners[e];
@@ -136,6 +139,9 @@ struct Rig {
         p->tracks[0].auto_first[kAutoPan] = at;
         p->tracks[0].auto_count[kAutoPan] = static_cast<uint32_t>(pan.size());
         for (const PlanAutoPoint& v : pan) p->auto_points[at++] = v;
+        p->tracks[0].auto_first[kAutoTrim] = at;
+        p->tracks[0].auto_count[kAutoTrim] = static_cast<uint32_t>(trim.size());
+        for (const PlanAutoPoint& v : trim) p->auto_points[at++] = v;
         if (!publish_plan(s, p)) return false;
         s.reader().run_pass();
         return true;
@@ -227,10 +233,11 @@ int test_read_plays_the_lane() {
 }
 
 // The output for frames [start, start + total) cut into `sizes`, repeated.
-std::vector<float> rolled(const std::vector<uint32_t>& sizes, uint64_t start, uint32_t total) {
+std::vector<float> rolled(const std::vector<uint32_t>& sizes, uint64_t start, uint32_t total,
+                          const std::vector<PlanAutoPoint>& trim = {}) {
     Rig rig("split");
     std::vector<float> got;
-    if (!rig.load(kRide) || !rig.park(start)) return got;
+    if (!rig.load(kRide, {}, trim) || !rig.park(start)) return got;
     rig.session->play();
     for (std::size_t k = 0; got.size() < total; ++k) {
         const uint32_t n = sizes[k % sizes.size()];
@@ -842,6 +849,192 @@ int test_write_writes_every_parameter_and_splits_at_the_wrap() {
     return 0;
 }
 
+// --- Trim (ADR-0027 §8 slice 5) ----------------------------------------------
+
+// Down 12 dB to 3000, up to +6 at 5000, a step to -3 there.
+const std::vector<PlanAutoPoint> kTrimRide = {{0, 0.0f}, {3000, -12.0f}, {5000, 6.0f},
+                                              {5000, -3.0f}};
+
+// What the grid applies for a volume lane under a trim lane: their sum in dB.
+float expected_sum(const std::vector<PlanAutoPoint>& vol, const std::vector<PlanAutoPoint>& trim,
+                   int64_t t) {
+    const auto nv = static_cast<uint32_t>(vol.size());
+    const auto nt = static_cast<uint32_t>(trim.size());
+    const auto at = [&](int64_t g) {
+        return gain_of_db(sonora::auto_lane_value(vol.data(), nv, g) +
+                          sonora::auto_lane_value(trim.data(), nt, g));
+    };
+    const int64_t g0 = t - t % kAutoGridFrames;
+    const float c0 = at(g0);
+    const float c1 = at(g0 + kAutoGridFrames);
+    return c0 + (c1 - c0) * (static_cast<float>(t - g0) / static_cast<float>(kAutoGridFrames));
+}
+
+int test_a_trim_lane_sums_with_the_volume_lane() {
+    {
+        // -6 dB under -3 dB of trim plays -9 dB.
+        Rig rig("trim_flat");
+        CHECK(rig.load({{0, -6.0f}}, {}, {{0, -3.0f}}));
+        CHECK(rig.park(2000));
+        rig.session->play();
+        rig.block();
+        rig.block();
+        CHECK(holds(applied(rig, 0, 2000 + kBlock), gain_of_db(-9.0f), "volume and trim"));
+    }
+    Rig rig("trim_ride");
+    CHECK(rig.load(kRide, {}, kTrimRide));
+    CHECK(rig.park(2500));
+    rig.session->play();
+    reset_heap_counts();
+    uint64_t t = 2500;
+    for (int b = 0; b < 40; ++b) {
+        rig.block();
+        for (uint32_t i = 0; i < kBlock; ++i, ++t) {
+            const auto f = static_cast<int64_t>(t);
+            const float want = source_value(5, 0, f) * expected_sum(kRide, kTrimRide, f);
+            if (!near(rig.out[0][i], want)) {
+                std::fprintf(stderr, "  trim ride: frame %lld plays %.7f, want %.7f\n",
+                             static_cast<long long>(f), static_cast<double>(rig.out[0][i]),
+                             static_cast<double>(want));
+                return 1;
+            }
+        }
+    }
+    CHECK(heap_untouched());
+    // However the callbacks are cut.
+    const std::vector<float> a = rolled({64}, 2500, 4000, kTrimRide);
+    const std::vector<float> b = rolled({37, 101, 256, 1, 200, 13, 128}, 2500, 4000, kTrimRide);
+    CHECK(a.size() == 4000 && b.size() == 4000);
+    for (std::size_t i = 0; i < a.size() && i < b.size(); ++i) {
+        if (a[i] != b[i]) {
+            std::fprintf(stderr, "  frame %zu: %.9f against %.9f\n", 2500 + i,
+                         static_cast<double>(a[i]), static_cast<double>(b[i]));
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int test_a_trim_lane_over_the_static_fader() {
+    Rig rig("trim_static");
+    CHECK(rig.load({}, {}, {{0, -6.0f}}));
+    Session& s = *rig.session;
+    Track& track = *s.tracks()[0];
+    track.set_gain(0.5f);
+    CHECK(rig.park(2000));
+    s.play();
+    rig.block();
+    int64_t t = 2000 + kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), 0.5f * gain_of_db(-6.0f), "fader and trim"));
+    t += kBlock;
+    // The fader under a trim is heard: a move ramps over one callback.
+    track.set_gain(0.25f);
+    rig.block();
+    CHECK(ramps(applied(rig, 0, t), 0.5f * gain_of_db(-6.0f), 0.25f * gain_of_db(-6.0f),
+                "fader move under trim"));
+    t += kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), 0.25f * gain_of_db(-6.0f), "moved"));
+    t += kBlock;
+    // Off plays the static fader alone.
+    track.set_automation(Track::Automation::Off);
+    rig.block();
+    t += kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), 0.25f, "off"));
+    return 0;
+}
+
+// Touch/Trim: the fader is the trim fader. A volume touch holds nothing;
+// a trim touch plays the trim on the volume lane and writes the trim lane
+// alone; its release returns to 0 dB of trim over the AutoMatch time.
+int test_touch_trim_writes_only_the_trim_lane() {
+    Rig rig("touch_trim");
+    CHECK(rig.load({{0, -6.0f}}));
+    Session& s = *rig.session;
+    Track& track = *s.tracks()[0];
+    track.set_automation(Track::Automation::Trim);
+    CHECK(rig.park(2000));
+    s.play();
+    rig.block();
+    int64_t t = 2000 + kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), gain_of_db(-6.0f), "untouched"));
+    t += kBlock;
+
+    track.set_gain(1.0f);
+    track.set_touched(kAutoVolume, true);
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), gain_of_db(-6.0f), "a volume touch in trim"));
+    t += kBlock;
+    CHECK(drained(s).empty());
+    track.set_touched(kAutoVolume, false);
+
+    const float trim = gain_of_db(-3.0f);
+    track.set_trim(trim);
+    track.set_touched(kAutoTrim, true);
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    CHECK(ramps(applied(rig, 0, t), gain_of_db(-6.0f), gain_of_db(-9.0f), "trim touch"));
+    const int64_t first = t;
+    t += kBlock;
+    rig.block();
+    CHECK(holds(applied(rig, 0, t), gain_of_db(-9.0f), "trim held"));
+    t += kBlock;
+    std::vector<AutomationWrite> w = drained(s);
+    CHECK(w.size() == 2);
+    if (w.size() != 2) return 1;
+    for (std::size_t i = 0; i < 2; ++i) {
+        CHECK(w[i].param == kAutoTrim && w[i].value == trim && w[i].frames == kBlock);
+        CHECK(w[i].frame == static_cast<uint64_t>(first) + i * kBlock);
+    }
+
+    track.set_touched(kAutoTrim, false);
+    rig.block();
+    const int64_t r = t;
+    const auto len = static_cast<int64_t>(s.touch_return_frames());
+    w = drained(s);
+    CHECK(w.size() == 1 && w[0].param == kAutoTrim && w[0].frames == 0 &&
+          w[0].frame == static_cast<uint64_t>(r) && w[0].value == trim);
+    t += kBlock;
+    rig.block();
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        CHECK(near(applied(rig, 0, t)[i], expected_return(-9.0f, -6.0f, r, len, t + i), 1e-4f));
+    }
+    CHECK(drained(s).empty());
+    return 0;
+}
+
+// Write/Trim: the trim fader and the pan from play to stop, never the
+// volume, whose lane plays under the trim.
+int test_write_trim_writes_the_trim_and_the_pan() {
+    Rig rig("write_trim");
+    CHECK(rig.load({{0, -6.0f}}));
+    Session& s = *rig.session;
+    Track& track = *s.tracks()[0];
+    track.set_automation(Track::Automation::WriteTrim);
+    track.set_gain(0.25f);
+    const float trim = gain_of_db(-3.0f);
+    track.set_trim(trim);
+    CHECK(rig.loop(1000, 3000));
+    CHECK(rig.park(2950));
+    s.play();
+    reset_heap_counts();
+    rig.block();
+    CHECK(heap_untouched());
+    CHECK(near(rig.out[0][0], source_value(5, 0, 2950) * gain_of_db(-9.0f), 1e-4f));
+    const std::vector<AutomationWrite> w = drained(s);
+    CHECK(w.size() == 4);
+    if (w.size() != 4) return 1;
+    CHECK(w[0].param == kAutoPan && w[0].frame == 2950 && w[1].frame == 1000);
+    CHECK(w[2].param == kAutoTrim && w[2].frame == 2950 && w[2].frames == 50);
+    CHECK(w[3].param == kAutoTrim && w[3].frame == 1000 && w[3].frames == kBlock - 50);
+    CHECK(w[2].value == trim);
+    return 0;
+}
+
 int test_a_full_ring_is_counted() {
     Rig rig("full");
     CHECK(rig.load({}));
@@ -852,7 +1045,7 @@ int test_a_full_ring_is_counted() {
     s.play();
     reset_heap_counts();
     // Never drained: two writes a block, more blocks than the ring holds.
-    for (int b = 0; b < 1200; ++b) rig.block();
+    for (int b = 0; b < 3000; ++b) rig.block();
     CHECK(heap_untouched());
     CHECK(s.automation_write_overruns() > 0);
     const std::vector<AutomationWrite> w = drained(s);
@@ -890,6 +1083,10 @@ int main() {
     t(test_owners_remap_on_and_off_their_rows, "test_owners_remap_on_and_off_their_rows");
     t(test_write_writes_every_parameter_and_splits_at_the_wrap,
       "test_write_writes_every_parameter_and_splits_at_the_wrap");
+    t(test_a_trim_lane_sums_with_the_volume_lane, "test_a_trim_lane_sums_with_the_volume_lane");
+    t(test_a_trim_lane_over_the_static_fader, "test_a_trim_lane_over_the_static_fader");
+    t(test_touch_trim_writes_only_the_trim_lane, "test_touch_trim_writes_only_the_trim_lane");
+    t(test_write_trim_writes_the_trim_and_the_pan, "test_write_trim_writes_the_trim_and_the_pan");
     t(test_a_full_ring_is_counted, "test_a_full_ring_is_counted");
     if (failed != 0) {
         std::fprintf(stderr, "automation: %d of %d failed (heap counter: %s)\n", failed, run,
