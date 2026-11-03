@@ -40,6 +40,25 @@ public:
     // The trim fader, linear: what Trim plays while it is touched and
     // WriteTrim always, in place of the trim lane. Not a stored mix value,
     // so it never moves the static fader.
+    // The document's gain and pan, which gain() and pan() hold too except
+    // during a ride: what a Touch release returns to with no lane (ADR-0027
+    // §8). Stored before the release clears touched(), so the audio thread
+    // that sees the release sees the static it returns to, whichever order
+    // the ride's value and the static reach gain() and pan().
+    float static_gain() const { return static_gain_.load(std::memory_order_relaxed); }
+    float static_pan() const { return static_pan_.load(std::memory_order_relaxed); }
+    void set_static_gain(float g) { static_gain_.store(g, std::memory_order_relaxed); }
+    void set_static_pan(float p) { static_pan_.store(p, std::memory_order_relaxed); }
+    // The static and the value played, as a mix applied outside a ride does.
+    void set_mix_gain(float g) {
+        set_static_gain(g);
+        set_gain(g);
+    }
+    void set_mix_pan(float p) {
+        set_static_pan(p);
+        set_pan(p);
+    }
+
     float trim() const { return trim_.load(std::memory_order_relaxed); }
     void set_trim(float g) { trim_.store(g, std::memory_order_relaxed); }
 
@@ -68,14 +87,15 @@ public:
     // The parameters the operator holds, a bit per PlanAutoParam (ADR-0027
     // §3): in Touch, Latch and Write each plays gain() or pan() instead of
     // its lane while held, and is written while the transport rolls.
-    // Control thread writes; the callback reads once per block.
-    uint8_t touched() const { return touched_.load(std::memory_order_relaxed); }
+    // Control thread writes; the callback reads once per block. A release
+    // is ordered after the static_gain() and static_pan() stored before it.
+    uint8_t touched() const { return touched_.load(std::memory_order_acquire); }
     void set_touched(uint8_t param, bool held) {
         const auto bit = static_cast<uint8_t>(1u << param);
         if (held) {
             touched_.fetch_or(bit, std::memory_order_relaxed);
         } else {
-            touched_.fetch_and(static_cast<uint8_t>(~bit), std::memory_order_relaxed);
+            touched_.fetch_and(static_cast<uint8_t>(~bit), std::memory_order_release);
         }
     }
     void set_touched_bits(uint8_t bits) { touched_.store(bits, std::memory_order_relaxed); }
@@ -163,6 +183,8 @@ private:
     std::atomic<bool> muted_{false};
     std::atomic<float> gain_{1.0f};
     std::atomic<float> pan_{0.0f};
+    std::atomic<float> static_gain_{1.0f};
+    std::atomic<float> static_pan_{0.0f};
     std::atomic<float> trim_{1.0f};
     std::atomic<bool> soloed_{false};
     std::atomic<bool> solo_safe_{false};

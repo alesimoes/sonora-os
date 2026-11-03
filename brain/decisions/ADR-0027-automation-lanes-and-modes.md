@@ -369,7 +369,11 @@ from the atomic it reads at the release, as the static may already be back.
 The release write carries that same value. A parameter with no lane in its
 return window plays on the lane path, toward the static it reads each
 callback (`return_to_`), so the same function of the frame plays as with a
-lane. A static that changes mid-return is crossfaded over one callback.
+lane. That static is its own atomic (`Track::static_gain()`,
+`static_pan()`), set wherever the mix is applied but never by a ride, and
+`touch()` stores it before it clears `touched` (release order): a callback
+between the release and the played value's return never aims at the ride
+(#282 review). A static that changes mid-return is crossfaded over one callback.
 `SessionConfig::touch_return_ms` (engine option `--automatch-ms`, 10 to
 5000, default 250) sets the return for the audio and the writer.
 `MixModel` saves no static after a ride that played in Touch while

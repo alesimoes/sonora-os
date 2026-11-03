@@ -1746,11 +1746,14 @@ void a_touch_release_returns_to_the_static_value() {
     touch.value = ride;
     touch.gesture = api::Gesture::Touch;
     CHECK(ok(real.send(touch)));
+    // A ride moves the played value only: the audio thread returns to the
+    // static whichever of the two it reads at the release.
+    CHECK(track.gain() == ride && track.static_gain() == 1.0f);
     const uint64_t touched_at = real.state().transport().playhead;
     CHECK(until(real, in, [&]() { return real.state().transport().playhead >= touched_at + 4800; }));
     touch.gesture = api::Gesture::Release;
     CHECK(ok(real.send(touch)));
-    CHECK(track.touched() == 0 && track.gain() == 1.0f);
+    CHECK(track.touched() == 0 && track.gain() == 1.0f && track.static_gain() == 1.0f);
     const uint64_t released_at = real.state().transport().playhead;
     CHECK(until(real, in, [&]() {
         return real.state().transport().playhead >= released_at + 2 * 12000;
