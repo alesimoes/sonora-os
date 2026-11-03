@@ -518,6 +518,13 @@ half, decided on the recommended defaults, no owner present.
   keeps the last value the host gave for the save, so a path whose file
   failed to load is still saved as given; the sound is the previous
   response and the reason goes to stderr.
+- *Untrusted path.* A state path is untrusted input. The SDK does not know
+  the host's Plugin Files folder, so confinement to it is the host's
+  guarantee alone (`state:mapPath` hands the plugin only paths it placed).
+  `load_cab_ir_wav` still refuses, on every route, a NUL, a path over 4096
+  bytes, a `://` URL, any `..` component, and anything that is not a regular
+  file as `symlink_status` sees it (a symlink, directory, FIFO or device,
+  so `/dev/stdin` cannot block the restoring thread), before any open.
 - *VST3.* Component state holds the slot as a string (DPF's state stream),
   restored on the host's main thread. There is no path mapping in VST3, so
   the path is saved as the user chose it and the file is not copied into
