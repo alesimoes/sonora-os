@@ -137,8 +137,8 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
         const model::TrackMix* m = snapshot.mix.find(tracks[i]->id);
         if (!m) continue;
         Track& t = *session_.tracks()[i];
-        t.set_gain(gain_of_db(m->gain_db));
-        t.set_pan(pan_of(m->pan));
+        t.set_mix_gain(gain_of_db(m->gain_db));
+        t.set_mix_pan(pan_of(m->pan));
         t.set_muted(m->mute);
         t.set_soloed(m->solo);
         t.set_solo_safe(m->solo_safe);
@@ -201,8 +201,8 @@ void PlaybackController::apply_gain(const model::Snapshot& snapshot, std::size_t
     if (track >= tracks.size() || track >= session_.tracks().size()) return;
     const model::TrackMix* m = snapshot.mix.find(tracks[track]->id);
     if (!m) return;
-    session_.tracks()[track]->set_gain(gain_of_db(m->gain_db));
-    session_.tracks()[track]->set_pan(m->pan);
+    session_.tracks()[track]->set_mix_gain(gain_of_db(m->gain_db));
+    session_.tracks()[track]->set_mix_pan(m->pan);
 }
 
 PlaybackController::Ride PlaybackController::ride_send(const model::Snapshot& snapshot,
@@ -272,9 +272,8 @@ void PlaybackController::touch(const model::Snapshot& snapshot, std::size_t row,
     }
     if (e >= engine.size()) return;
     Track& t = *engine[e];
-    t.set_touched(param, held);
     // A Touch pass keeps the ride in its lane, not in the static value
-    // (ADR-0027 §8): the static goes back in the atomic after the release,
+    // (ADR-0027 §8): the static goes back in the atomic at the release,
     // and the audio thread glides to it from what it last played. Stopped,
     // a ride is the static, which the client saves.
     const model::TrackMix* m = snapshot.mix.find(tracks[row]->id);
@@ -285,12 +284,24 @@ void PlaybackController::touch(const model::Snapshot& snapshot, std::size_t row,
                                           m->automation == model::AutomationMode::Trim);
     if (held || param == kAutoTrim || !returns ||
         session_.transport().state() == TransportState::Stopped) {
+        t.set_touched(param, held);
         return;
     }
+    // The static before the release, which orders it, and the played value
+    // after: a callback between them returns to static_gain(), while one
+    // before the release still plays the ride (#282 review).
+    const float pan = pan_of(m->pan);
+    const float gain = gain_of_db(m->gain_db);
     if (param == kAutoPan) {
-        t.set_pan(pan_of(m->pan));
+        t.set_static_pan(pan);
     } else {
-        t.set_gain(gain_of_db(m->gain_db));
+        t.set_static_gain(gain);
+    }
+    t.set_touched(param, false);
+    if (param == kAutoPan) {
+        t.set_pan(pan);
+    } else {
+        t.set_gain(gain);
     }
 }
 
@@ -498,8 +509,8 @@ void PlaybackController::adopt_track_mix(const PlaybackPlan& plan) {
     for (std::size_t e = 0; e < plan.track_mix_count && e < engine.size(); ++e) {
         const PlanTrackMix& m = plan.track_mix[e];
         Track& t = *engine[e];
-        t.set_gain(m.gain);
-        t.set_pan(m.pan);
+        t.set_mix_gain(m.gain);
+        t.set_mix_pan(m.pan);
         t.set_muted(m.mute);
         t.set_soloed(m.solo);
         t.set_solo_safe(m.solo_safe);
