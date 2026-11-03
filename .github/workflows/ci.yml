@@ -255,6 +255,17 @@ jobs:
           docker exec build bash -c
           'ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -R "^native_format"'
 
+      # Two instrumented RelWithDebInfo trees do not fit on the runner's disk
+      # together: the ASan build died with "No space left on device" (run
+      # 41246994280). Nothing reads build-tsan after its tests, and the objects
+      # worth keeping live in .ccache, which this leaves alone. The files are
+      # root's, so they go from inside the container. df shows the margin.
+      - name: Remove the TSan build tree
+        run: |
+          df -h "$PWD"
+          docker exec build rm -rf build-tsan
+          df -h "$PWD"
+
       - name: Build with ASan and UBSan
         run: |
           docker exec build bash -ec '
