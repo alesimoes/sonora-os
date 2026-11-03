@@ -2169,7 +2169,10 @@ not start or extend those items before the Complete DAW closes (owner,
 - [x] (#294) Run `tools/test-write-usb.sh` in CI (nightly workflow; first nightly run not yet seen). The container half
       (`WRITE_USB_BOOT=0`) needs only Docker and the ISO; the boots need QEMU
       with KVM.
-- [x] (#294; N7: the privileged container exposes host disks; the physical-stick run is the owner step above) A verified way to write the stick from Windows, where the owner works.
+- [x] (#294; N7: the privileged container exposes host disks) `tools/write-usb.ps1` and its tests against fake disks in the Windows CI job: a way to write the stick from Windows, where the owner works.
+- [ ] A verified way to write the stick from Windows: the owner's physical-stick run of `tools/write-usb.ps1` (the owner step above) has not happened.
+- [ ] Confirm the first nightly run of tools/test-write-usb.sh (container half) is green; the QEMU boots with KVM stay owner-run.
+- [ ] automation.lanes review follow-ups: tracked as the open lines `automation.lanes` follow-ups and `automation.lanes` UI follow-ups from the #181 review (above); tick them done or fold them into one line when the last closes.
       The first attempt (`write-usb-windows.ps1`, removed 2026-10-12) opened
       `\.\PhysicalDrive` with one leading backslash, which .NET resolves to
       `C:\PhysicalDrive`; it erased the stick and then wrote nothing. Check any
