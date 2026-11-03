@@ -26,4 +26,11 @@ if(UNIX)
   target_include_directories(test_session_templates PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
   target_link_libraries(test_session_templates PRIVATE sonora_session_files sonora_sha256)
   add_test(NAME session_templates COMMAND test_session_templates)
+
+  # Plugin files in the session (ADR-0029 slice 2): placed, synced, carried
+  # by Save As and the untitled rename, never through a symlink.
+  add_executable(test_session_plugin_files tests/test_session_plugin_files.cpp)
+  target_include_directories(test_session_plugin_files PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
+  target_link_libraries(test_session_plugin_files PRIVATE sonora_session_files sonora_sha256)
+  add_test(NAME session_folder_plugin_files COMMAND test_session_plugin_files)
 endif()

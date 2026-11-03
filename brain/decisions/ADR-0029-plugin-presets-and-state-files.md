@@ -495,8 +495,37 @@ EditPreset for that plugin, and after a rescan.
 | Slice | Host wire | Session format | Protocol | Window format |
 |---|---|---|---|---|
 | 1 files in the host | 3 → 4 | — | — | — |
-| 2 files in the session | — | +1 (`StateRef.files`; earlier versions migrate with none) | +1 (`StateRef.files` in ops and Snapshot) | unchanged (inserts in the window carry no `StateRef`; check at landing) |
+| 2 files in the session | — | 16 → 17 (`StateRef.files`; earlier versions migrate with none) | 39 → 40 (`StateRef.files` in ops and Snapshot) | 13 → 14: checked at landing, the window's `insert_mix` table does carry each `StateRef` |
 | 5 preset ops | — | +1 (`InsertMix.preset {source, id, name, modified}`, optional) | +1 (`LoadPreset`, `SavePreset`, `EditPreset`, `ListPresets` = ModelAction 9–12; `PluginPresetList`; op `LoadInsertPreset`) | unchanged |
+
+**Slice 2 as landed (2026-11-03), decisions taken on the recommended
+defaults, no owner present.**
+
+- *Split by risk.* 2a (this PR): the format, the protocol, the model's
+  checks and the session folder (placing, linking or copying, syncing,
+  refusing links). 2b: `plugin_hosting.cpp` sends the real `save_dir`,
+  `session_dir`, per-instance `scratch_dir` and `kGetStateNoCopy` during a
+  take, checks each `State.files` entry exists with its size before
+  `StateRef` names it, and holds the host's `Fault` text as a notice. Until
+  2b lands the engine sends empty folders, so no state names a file and
+  2a's code paths run only on sessions that already do.
+- *Untrusted paths.* `plugin_file_problem` is the one rule, applied at
+  load, at every apply and before the saver joins a path to a folder:
+  exactly `Plugin Files/<sha256>/<basename>`, one name. The saver `lstat`s
+  every component in the target and the source folder and refuses a
+  symlink anywhere (the engine-side twin of #289's `leads_out_of_sessions`).
+- *Verification.* A file already in the folder with its size is trusted, as
+  the host trusts it; a file placed from another folder is hashed first.
+  Verifying a whole received folder at open stays open (a follow-up).
+- *Templates keep every plugin file their states name.* Stripping files by
+  size would restore a sampler without its samples, silently. If templates
+  grow large, the rule to add is a cap with a held refusal at Save as
+  Template, not a strip.
+- *Cleanup* of `Plugin Files/<sha256>/` waits with `Plugin State/`'s, which
+  is not built either; both are one follow-up.
+- *During a take* an in-place save reads no plugin file (sizes and
+  directory syncs only); copies happen only at the untitled rename and Save
+  As, and the host's `no_copy` (2b) covers the flush.
 
 Preset sidecar `sonora_preset` 1 is new (slice 4) and versioned apart from
 the session. The protocol comment block in `messages.h` gets one entry per

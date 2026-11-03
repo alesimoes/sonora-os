@@ -547,6 +547,47 @@ bool plugin_state_references(std::string_view session_file, std::set<std::string
     return true;
 }
 
+bool plugin_file_references(std::string_view session_file, std::map<std::string, PluginFileRef>& out,
+                            std::string& why) {
+    out.clear();
+    json::Value root;
+    std::int64_t version = 0;
+    if (!session_root(session_file, root, version, why)) return false;
+    const json::Value* tracks = root.find("tracks");
+    if (tracks == nullptr || !tracks->is_array()) return true;
+    for (const json::Value& t : tracks->items()) {
+        const json::Value* ins = t.is_object() ? t.find("inserts") : nullptr;
+        if (ins == nullptr || !ins->is_array()) continue;
+        for (const json::Value& in : ins->items()) {
+            const json::Value* st = in.is_object() ? in.find("state") : nullptr;
+            const json::Value* files = st != nullptr && st->is_object() ? st->find("files") : nullptr;
+            if (files == nullptr || !files->is_array()) continue;
+            for (const json::Value& f : files->items()) {
+                const json::Value* path = f.is_object() ? f.find("path") : nullptr;
+                const json::Value* sha = f.is_object() ? f.find("sha256") : nullptr;
+                const json::Value* bytes = f.is_object() ? f.find("bytes") : nullptr;
+                PluginFileRef ref;
+                std::int64_t n = -1;
+                if (path == nullptr || !path->is_string() || sha == nullptr || !sha->is_string() ||
+                    bytes == nullptr || !bytes->is_integer_lexeme() || !bytes->to_int64(n) || n < 0) {
+                    why = "a plugin file entry is malformed";
+                    return false;
+                }
+                ref.path = path->text();
+                ref.sha256 = sha->text();
+                ref.bytes = static_cast<std::uint64_t>(n);
+                const std::string problem = plugin_file_problem(ref);
+                if (!problem.empty()) {
+                    why = "plugin file \"" + ref.path + "\": " + problem;
+                    return false;
+                }
+                out[ref.path] = std::move(ref);
+            }
+        }
+    }
+    return true;
+}
+
 void SequenceFileSet::kept(const std::string& name, std::set<std::string> references) {
     unreadable_.erase(name);
     refs_[name] = std::move(references);

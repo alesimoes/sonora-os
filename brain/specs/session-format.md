@@ -14,6 +14,7 @@ both are in [ADR-0009](../decisions/ADR-0009-timeline-snapshots-and-plan-swap.md
   Audio Files/                   every source, one BWF per take per track
   Session File Backups/          rotated saves, autosaves, pre-migration copies
   Plugin State/                  plugin state blobs, content-addressed (version 2, ADR-0012)
+  Plugin Files/                  files LV2 states name, <sha256>/<basename> (version 17, ADR-0029)
   MIDI Files/                    MIDI takes and imported SMFs (version 5, ADR-0014)
   MIDI Sequences/                each MIDI region's events, content-addressed (version 6, ADR-0015)
 ```
@@ -41,7 +42,9 @@ templates folder (`$SONORA_TEMPLATES_DIR`, else
 `$XDG_DATA_HOME/sonora/Session Templates`): a session file of the current
 version, with no key of its own, holding the setup and none of the
 material (no region, no source, no `left_takes`, an empty `session_id`),
-and the `Plugin State/` files it names. Save as Template writes it as a Save
+and the `Plugin State/` and `Plugin Files/` files it names (all of them:
+a sampler's template without its samples would restore without them).
+Save as Template writes it as a Save
 Copy In without audio; New from Template reads it as any session file and
 Saves As out of it, so the version rules below apply to it unchanged.
 
@@ -429,6 +432,7 @@ Ordered by `slot`. Empty for a track with none, never absent.
 | `bypass` | Instantiated and passing audio through, still delayed by its latency, so a toggle never shifts timing. Mix state: saved, not undoable. |
 | `params` | Parameter values by **stable key**: the LV2 port symbol (a C identifier), or the VST3 ParamID in decimal without leading zeros. Never a port index, which changes between plugin versions. Values are **format-native**: the LV2 port value, the VST3 normalised value, which must be from 0 to 1. Finite floats, parsed straight into `float`. Keys unique per insert; at most 8192. Mix state. |
 | `state` | Optional, absent when there is none. The plugin's own state, in a file under `Plugin State/` named by its SHA-256: `file` is exactly `"Plugin State/<sha256>.state"`, `sha256` 64 lower-case hex digits, `bytes` its size. Written durably before the session file that names it. Mix state. |
+| `state.files` | Optional (version 17), absent when the state names no file; never empty. The files an LV2 state names (ADR-0029 §6): at most 1,024 `{path, sha256, bytes}`, no path twice, each `path` exactly `"Plugin Files/<sha256>/<basename>"` relative to the session folder, `<basename>` one name (not empty, `.`, `..`, no `/`, `\`, NUL or control byte, valid UTF-8, at most 255 bytes, not a host's `.incoming-` copy). A received session is untrusted: an absolute path or one that climbs out is refused at load. |
 
 - **State lives beside the file, not in it.** Some plugins' state runs to
   megabytes, and the session file's bytes cross the control socket inside
@@ -677,6 +681,22 @@ session file names into the file's own `Plugin State/` by the same steps,
 before the file is written, so a session never points outside its own
 folder. A state found in neither folder refuses the save, unless the file
 being replaced already names it (lost before, and reported at open).
+
+**Plugin files (version 17, ADR-0029 §6).** The plugin host saves the files
+an LV2 state names into `<save_dir>/Plugin Files/<sha256>/<basename>` (tmp,
+`fdatasync`, rename) and leaves the directory syncs to the engine. The
+save then, for each file the session file names, before the file is
+written: one already in its own folder with its size is named as it is (not
+read again: content-addressed, never rewritten); one only in the engine's
+folder (the untitled rename, Save As, Save Copy In, a template) is hashed,
+refused if its bytes are not its digest, and hard-linked, or copied and
+synced; then each `<sha256>/` and `Plugin Files/` itself is synced once
+until known durable. Every component of the path is `lstat`ed in both
+folders: a symlink at `Plugin Files`, at `<sha256>` or at the file refuses
+the save, so nothing reached through a link in a received folder is ever
+copied into a session. A file found in neither folder refuses the save by
+name, unless the file being replaced already names it. Cleanup does not
+delete plugin files yet (as for states).
 
 **Autosave.** After every committed take (the `RecordTake` operation) and
 every 60 s while there are unsaved edits, the same procedure writes
@@ -1008,6 +1028,12 @@ from -60 to +12 summed with the volume, and a track's `automation_mode`
 `"write_trim"` (`"trim"` was a name before, refused by the checks). A
 version 15 file cannot carry either. The frozen v15 fixture loads through
 it and saves as `v16-trim.sonora`, byte for byte.
+
+**v16→v17 (plugin files, ADR-0029 slice 2):** nothing is filled in; only
+the version changes. An insert's `state` may carry `files`, written only
+when the state names at least one. A version 16 file cannot carry it. The
+frozen v16 fixture loads through it and saves as
+`v17-plugin-files.sonora`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

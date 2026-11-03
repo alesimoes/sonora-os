@@ -53,7 +53,10 @@ namespace sonora::model {
 // 16: a lane may be "volume_trim", a relative dB lane, and a track's
 //    "automation_mode" "write_trim" (ADR-0027 §8 slice 5). A version 15
 //    file opens unchanged.
-constexpr std::int64_t kFormatVersion = 16;
+// 17: an insert's "state" may name "files", the plugin files an LV2 state
+//    saved under "Plugin Files/" (ADR-0029 slice 2). A version 16 file
+//    opens unchanged: its states name none.
+constexpr std::int64_t kFormatVersion = 17;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

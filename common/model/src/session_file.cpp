@@ -471,9 +471,32 @@ bool v15_to_v16(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v16 -> v17 (ADR-0029 slice 2): nothing changes; a version 16 state names
+// no file. One that already does is refused, as a version 16 reader would.
+bool v16_to_v17(Value& root, std::vector<Repair>&, std::string& error) {
+    const Value* list = root.find("tracks");
+    if (list == nullptr || !list->is_array()) return true;   // the reader names it
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        const Value& t = list->items()[i];
+        const Value* ins = t.is_object() ? t.find("inserts") : nullptr;
+        if (ins == nullptr || !ins->is_array()) continue;
+        for (std::size_t k = 0; k < ins->items().size(); ++k) {
+            const Value& in = ins->items()[k];
+            const Value* st = in.is_object() ? in.find("state") : nullptr;
+            if (st != nullptr && st->is_object() && st->find("files") != nullptr) {
+                error = "tracks[" + std::to_string(i) + "].inserts[" + std::to_string(k) +
+                        "].state names plugin files, which version 16 does not define";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
-     v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16}};
+     v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
+     v16_to_v17}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -615,6 +638,17 @@ Value insert_value(const Insert& in, const InsertMix& m) {
         s.set("file", Value::string(m.state->file));
         s.set("sha256", Value::string(m.state->sha256));
         s.set("bytes", integer(static_cast<std::int64_t>(m.state->bytes)));
+        // Since version 17, and only when the state names files, so a
+        // session with none is written as version 16 wrote it.
+        if (!m.state->files.empty()) {
+            Value& fs = s.set("files", Value::array());
+            for (const PluginFileRef& f : m.state->files) {
+                Value& e = fs.push(Value::object());
+                e.set("path", Value::string(f.path));
+                e.set("sha256", Value::string(f.sha256));
+                e.set("bytes", integer(static_cast<std::int64_t>(f.bytes)));
+            }
+        }
     }
     return v;
 }
@@ -1368,13 +1402,33 @@ bool read_inserts(Reader& rd, const Value& track, const std::string& path, Track
         }
         if (const Value* sv = v.find("state")) {
             const std::string sp = p + ".state";
-            if (!rd.keys(*sv, sp, {"file", "sha256", "bytes"})) return false;
+            if (!rd.keys(*sv, sp, {"file", "sha256", "bytes"}, {"files"})) return false;
             StateRef st;
             std::int64_t bytes = 0;
             if (!rd.text(*sv, sp, "file", st.file)) return false;
             if (!rd.text(*sv, sp, "sha256", st.sha256)) return false;
             if (!rd.integer(*sv, sp, "bytes", kMaxInteger, bytes)) return false;
             st.bytes = static_cast<std::uint64_t>(bytes);
+            if (const Value* fv = sv->find("files")) {
+                const std::string fp = sp + ".files";
+                if (!fv->is_array()) return rd.fail(*fv, fp, "must be an array");
+                if (fv->items().empty()) return rd.fail(*fv, fp, "is written only when the state names a file");
+                if (fv->items().size() > kMaxPluginFiles) {
+                    return rd.fail(*fv, fp, "a state names at most " + std::to_string(kMaxPluginFiles) + " files");
+                }
+                for (std::size_t k = 0; k < fv->items().size(); ++k) {
+                    const Value& e = fv->items()[k];
+                    const std::string ep = fp + "[" + std::to_string(k) + "]";
+                    PluginFileRef f;
+                    std::int64_t fb = 0;
+                    if (!rd.keys(e, ep, {"path", "sha256", "bytes"}) || !rd.text(e, ep, "path", f.path) ||
+                        !rd.text(e, ep, "sha256", f.sha256) || !rd.integer(e, ep, "bytes", kMaxInteger, fb)) {
+                        return false;
+                    }
+                    f.bytes = static_cast<std::uint64_t>(fb);
+                    st.files.push_back(std::move(f));
+                }
+            }
             m.state = std::move(st);
         }
         std::string where;
