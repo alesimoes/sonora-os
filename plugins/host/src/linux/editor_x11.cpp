@@ -44,6 +44,20 @@ int on_x_error(Display* d, XErrorEvent* e) {
     return 0;
 }
 
+// Xlib's default I/O error handler exits the process: an Xwayland that
+// restarts would end every host with an editor open, and each of those is
+// a chain with its inserts (ADR-0012 §3). The exit handler may return; the
+// connection is then dead, every later Xlib call a no-op, and the display
+// answers every editor closed.
+// The process-wide handler runs first and its default exits; this one
+// returns, which hands the decision to the display's exit handler below.
+int on_io_error(Display*) { return 0; }
+
+void on_io_error_exit(Display*, void* lost) {
+    std::fprintf(stderr, "sonora-plugin-host: the X server went away; closing the plugin editors\n");
+    static_cast<std::atomic<bool>*>(lost)->store(true, std::memory_order_release);
+}
+
 class X11Display;
 
 class X11Window final : public EditorWindow {
@@ -117,7 +131,10 @@ public:
         net_wm_pid_ = XInternAtom(d_, "_NET_WM_PID", False);
         net_wm_name_ = XInternAtom(d_, "_NET_WM_NAME", False);
         utf8_ = XInternAtom(d_, "UTF8_STRING", False);
+        XSetIOErrorExitHandler(d_, on_io_error_exit, &lost_);
     }
+
+    bool lost() const override { return lost_.load(std::memory_order_acquire); }
 
     bool start() {
         watcher_ = start_thread([](void* self) { static_cast<X11Display*>(self)->watch(); }, this, kWatcherStack);
@@ -202,6 +219,8 @@ public:
     }
 
     uint64_t dispatch() override {
+        if (lost()) return 0;
+        // XPending is what notices a dead server: it reads the socket.
         while (XPending(d_) > 0) {
             XEvent e;
             XNextEvent(d_, &e);
@@ -222,6 +241,7 @@ public:
                 }
             }
         }
+        if (lost()) return 0;
         if (!fds.empty() && poll(fds.data(), nfds_t(fds.size()), 0) > 0) {
             for (std::size_t i = 0; i < fds.size(); ++i)
                 if (fds[i].revents & (POLLIN | POLLHUP | POLLERR)) call(fd_ids[i], 0);
@@ -254,6 +274,7 @@ private:
         uint64_t interval_ns;  // 0 for a descriptor
         uint64_t due_ns;
         std::function<void()> fn;
+        bool dead = false;  // its descriptor was closed under us (POLLNVAL)
     };
 
     Id add(Entry e) {
@@ -315,14 +336,21 @@ private:
     // The watcher: polls, wakes the main thread, waits for its pass.
     void watch() {
         std::vector<pollfd> fds;
+        std::vector<Id> ids;  // ids[i] owns fds[i + 2]
         while (!stop_.load(std::memory_order_acquire)) {
             fds.clear();
+            ids.clear();
             fds.push_back(pollfd{wake_read_, POLLIN, 0});
-            fds.push_back(pollfd{ConnectionNumber(d_), POLLIN, 0});
+            // A lost connection stays hung up for ever: left in, it would
+            // wake this thread in a loop. poll skips a negative fd.
+            fds.push_back(pollfd{lost() ? -1 : ConnectionNumber(d_), POLLIN, 0});
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 for (const Entry& e : entries_)
-                    if (!e.interval_ns) fds.push_back(pollfd{e.fd, POLLIN, 0});
+                    if (!e.interval_ns && !e.dead) {
+                        fds.push_back(pollfd{e.fd, POLLIN, 0});
+                        ids.push_back(e.id);
+                    }
             }
             const uint32_t seen = ack_.load(std::memory_order_acquire);
             const int n = poll(fds.data(), nfds_t(fds.size()), -1);
@@ -335,9 +363,15 @@ private:
             }
             bool ready = false;
             for (std::size_t i = 1; i < fds.size(); ++i) {
-                // POLLNVAL: a plugin closed a descriptor it left registered.
-                // Not a reason to wake anyone; it goes when its editor does.
                 if (fds[i].revents & (POLLIN | POLLHUP | POLLERR)) ready = true;
+                // A plugin closed a descriptor it left registered: poll
+                // reports it at once, every time. Not a reason to wake
+                // anyone, and not polled again; it goes with its editor.
+                if ((fds[i].revents & POLLNVAL) && i >= 2) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    for (Entry& e : entries_)
+                        if (e.id == ids[i - 2]) e.dead = true;
+                }
             }
             if (!ready) continue;
             notify_control();
@@ -354,6 +388,7 @@ private:
     std::vector<Entry> entries_;
     Id next_id_ = 0;
     std::atomic<bool> stop_{false};
+    std::atomic<bool> lost_{false};
     std::atomic<uint32_t> ack_{0};
     void* watcher_ = nullptr;
 };
@@ -374,6 +409,7 @@ std::unique_ptr<EditorDisplay> EditorDisplay::open(std::string& error) {
         return nullptr;
     }
     XSetErrorHandler(on_x_error);
+    XSetIOErrorHandler(on_io_error);
     int wake[2];
     if (pipe2(wake, O_CLOEXEC | O_NONBLOCK) != 0) {
         XCloseDisplay(d);

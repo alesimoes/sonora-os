@@ -158,6 +158,19 @@ if(X11_FOUND)
   target_compile_definitions(plugin_driver PRIVATE SONORA_DRIVER_HAVE_X11)
 endif()
 
+# The editor display alone, on an Xvfb the test starts (and kills): a
+# descriptor a plugin closed, and the X server going away.
+if(X11_FOUND AND SONORA_XVFB_RUN)
+  add_executable(test_editor_display tests/test_editor_display.cpp src/linux/editor_x11.cpp)
+  target_include_directories(test_editor_display PRIVATE src)
+  target_link_libraries(test_editor_display PRIVATE sonora_plugin_ipc X11::X11)
+  foreach(_case dead_fd x_gone)
+    add_test(NAME plugin_host_editor_display_${_case} COMMAND test_editor_display ${_case})
+    set_tests_properties(plugin_host_editor_display_${_case} PROPERTIES LABELS plugins SKIP_RETURN_CODE 77
+                         TIMEOUT 60)
+  endforeach()
+endif()
+
 set(_drive $<TARGET_FILE:plugin_driver> --host $<TARGET_FILE:sonora-plugin-host>
            --bundle ${SONORA_TEST_BUNDLE})
 
