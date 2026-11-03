@@ -1078,6 +1078,7 @@ bool PluginHosting::resolve_lane(const model::TrackEdit& track, model::Id insert
         target.param = uint32_t(d - keys.begin());
         target.min = d->min;
         target.max = d->max;
+        target.stepped = d->stepped;
         return true;
     }
     return false;

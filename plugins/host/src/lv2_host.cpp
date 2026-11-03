@@ -150,6 +150,7 @@ void Lv2World::describe_control(const LilvPlugin* p, const LilvPort* port, PortI
     if (pi.toggle) {
         pi.steps = 2;
     } else if (lilv_port_has_property(p, port, n.enumeration)) {
+        pi.discrete = true;
         // Labels only when the scale points are the evenly spaced values
         // from min to max that contracts/api's `steps` describes; otherwise
         // the choices cannot be named by index, and it reads as a range.
@@ -174,6 +175,7 @@ void Lv2World::describe_control(const LilvPlugin* p, const LilvPort* port, PortI
             for (auto& pt : points) pi.labels.push_back(std::move(pt.second));
         }
     }
+    if (integer) pi.discrete = true;
     if (!pi.toggle && !pi.enumeration && integer && pi.max > pi.min && pi.max - pi.min < 4096.f &&
         std::floor(pi.min) == pi.min && std::floor(pi.max) == pi.max)
         pi.steps = uint32_t(pi.max - pi.min) + 1;

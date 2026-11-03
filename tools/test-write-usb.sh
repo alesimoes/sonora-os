@@ -122,7 +122,8 @@ echo "=== write-usb.sh against a loop device ==="
 # The disk image lives in the volume, which is ext4 inside the Linux VM:
 # sparse, and a loop device over a Windows bind mount is not something to
 # depend on.
-if ! in_container "$IMAGE" bash /src/tools/test-write-usb-entrypoint.sh write; then
+if ! in_container -e WRITE_USB_REQUIRE_STALE_P3="${WRITE_USB_REQUIRE_STALE_P3:-0}" \
+     "$IMAGE" bash /src/tools/test-write-usb-entrypoint.sh write; then
   echo "WRITE-USB TEST FAIL (writing; nothing was booted)" >&2
   exit 1
 fi
@@ -148,8 +149,19 @@ for candidate in \
   if command -v "$candidate" >/dev/null 2>&1; then QEMU="$candidate"; break; fi
   if [[ -x "$candidate" ]]; then QEMU="$candidate"; break; fi
 done
-[[ -n "$QEMU" ]] || { echo "error: qemu-system-x86_64 not found (WRITE_USB_BOOT=0 skips booting)." >&2; exit 1; }
-QEMU_DIR="$(dirname "$(command -v "$QEMU" || echo "$QEMU")")"
+# No QEMU on the host: run it in a container, as tools/test-boot-qemu.sh does.
+# On Windows the Docker Desktop VM usually has /dev/kvm when the host has no
+# QEMU at all, and without this boot 3's clean-shutdown check never ran there.
+IN_CONTAINER=0
+QEMU_IMAGE=sonora-qemu:trixie
+QEMU_CONTAINER=""
+if [[ -z "$QEMU" ]]; then
+  IN_CONTAINER=1
+  QEMU="docker:$QEMU_IMAGE"
+  docker build -q -t "$QEMU_IMAGE" --label org.sonora=1 \
+    -f "$(host_path "$ROOT/tools")/Dockerfile.qemu" "$(host_path "$ROOT/tools")" >/dev/null
+fi
+echo "qemu: $QEMU"
 
 # UEFI firmware as a code/vars pair for pflash. Not -bios: QEMU's -bios wants
 # a size that is a multiple of 64 KiB, and edk2-x86_64-code.fd as shipped with
@@ -158,24 +170,53 @@ QEMU_DIR="$(dirname "$(command -v "$QEMU" || echo "$QEMU")")"
 # edk2-i386-vars.fd.
 OVMF=""
 OVMF_VARS=""
-for pair in \
-  "$QEMU_DIR/share/edk2-x86_64-code.fd:$QEMU_DIR/share/edk2-i386-vars.fd" \
-  "/c/Program Files/qemu/share/edk2-x86_64-code.fd:/c/Program Files/qemu/share/edk2-i386-vars.fd" \
-  "/usr/share/qemu/edk2-x86_64-code.fd:/usr/share/qemu/edk2-i386-vars.fd" \
-  "/usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd" \
-  "/usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd"; do
-  code="${pair%%:*}"
-  vars="${pair#*:}"
-  if [[ -f "$code" && -f "$vars" ]]; then OVMF="$code"; OVMF_VARS="$vars"; break; fi
-done
+if [[ "$IN_CONTAINER" == 1 ]]; then
+  # The code is read where it lies in the image; the vars template is copied
+  # out once, so each UEFI boot can start from a fresh copy in $WORK.
+  if docker run --rm --label org.sonora=1 -v "$(host_path "$WORK"):/w" "$QEMU_IMAGE" \
+       cp /usr/share/OVMF/OVMF_VARS_4M.fd /w/ovmf-template.vars.fd 2>/dev/null; then
+    OVMF=/usr/share/OVMF/OVMF_CODE_4M.fd
+    OVMF_VARS="$WORK/ovmf-template.vars.fd"
+  fi
+else
+  QEMU_DIR="$(dirname "$(command -v "$QEMU" || echo "$QEMU")")"
+  for pair in \
+    "$QEMU_DIR/share/edk2-x86_64-code.fd:$QEMU_DIR/share/edk2-i386-vars.fd" \
+    "/c/Program Files/qemu/share/edk2-x86_64-code.fd:/c/Program Files/qemu/share/edk2-i386-vars.fd" \
+    "/usr/share/qemu/edk2-x86_64-code.fd:/usr/share/qemu/edk2-i386-vars.fd" \
+    "/usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd" \
+    "/usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd"; do
+    code="${pair%%:*}"
+    vars="${pair#*:}"
+    if [[ -f "$code" && -f "$vars" ]]; then OVMF="$code"; OVMF_VARS="$vars"; break; fi
+  done
+fi
 
-if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+KVM_DEV=()
+if [[ "$IN_CONTAINER" == 1 ]]; then
+  # Decided inside the Docker VM, where /dev/kvm is the VM's, not the host's.
+  if docker run --rm --privileged --label org.sonora=1 "$QEMU_IMAGE" test -c /dev/kvm; then
+    KVM_DEV=(--device /dev/kvm)
+    ACCEL=(-accel kvm)
+    echo "accel: kvm (in the Docker VM)"
+  else
+    ACCEL=(-accel tcg)
+    echo "accel: tcg (no /dev/kvm in the Docker VM; expect slow boots)"
+  fi
+elif [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
   ACCEL=(-accel whpx -accel tcg)
 elif [[ -w /dev/kvm ]]; then
   ACCEL=(-accel kvm)
 else
   ACCEL=(-accel tcg)
 fi
+
+# A named container, so a boot stopped on the clock can be removed: killing
+# the docker client alone leaves QEMU running in the VM.
+stop_qemu_container() {
+  [[ -z "$QEMU_CONTAINER" ]] || docker rm -f "$QEMU_CONTAINER" >/dev/null 2>&1 || true
+}
+trap 'stop_qemu_container; docker volume rm -f "$VOLUME" >/dev/null 2>&1 || true' EXIT
 
 # The shipped command line, read from where it is defined rather than copied,
 # so the kernel boots cannot drift from what the bootloaders pass.
@@ -192,8 +233,18 @@ SHIPPED_APPEND="$(sed -n 's/.*--bootappend-live "\([^"]*\)".*/\1/p' "$ROOT/iso/a
 POWERED_OFF=0
 boot() {
   local name="$1" disk="$2" mode="$3" seconds="$4" extra="${5:-}"
-  local w pid waited=0
-  w="$(host_path "$WORK")"
+  local w pid waited=0 fw="" runner
+  if [[ "$IN_CONTAINER" == 1 ]]; then
+    w=/w
+    fw="$OVMF"
+    QEMU_CONTAINER="sonora-usbtest-qemu-$$-$name"
+    runner=(docker run --rm --name "$QEMU_CONTAINER" --label org.sonora=1 "${KVM_DEV[@]}"
+            -v "$(host_path "$WORK"):/w" "$QEMU_IMAGE" qemu-system-x86_64)
+  else
+    w="$(host_path "$WORK")"
+    [[ -z "$OVMF" ]] || fw="$(host_path "$(dirname "$OVMF")")/$(basename "$OVMF")"
+    runner=("$QEMU")
+  fi
   local args=(
     -m "$MEMORY" -smp 2 "${ACCEL[@]}"
     -device qemu-xhci
@@ -214,13 +265,13 @@ boot() {
       # would let the firmware skip the removable-media path being tested.
       cp "$OVMF_VARS" "$WORK/$name.vars.fd"
       args+=(-device "usb-storage,drive=stick,removable=on,bootindex=0"
-             -drive "if=pflash,format=raw,readonly=on,file=$(host_path "$(dirname "$OVMF")")/$(basename "$OVMF")"
+             -drive "if=pflash,format=raw,readonly=on,file=$fw"
              -drive "if=pflash,format=raw,file=$w/$name.vars.fd") ;;
     bios)
       args+=(-device "usb-storage,drive=stick,removable=on,bootindex=0") ;;
   esac
   echo "--- boot: $name ($mode, ${seconds}s) ---"
-  "$QEMU" "${args[@]}" < /dev/null > "$WORK/$name.qemu.log" 2>&1 &
+  "${runner[@]}" "${args[@]}" < /dev/null > "$WORK/$name.qemu.log" 2>&1 &
   pid=$!
   while [[ "$waited" -lt "$seconds" ]] && kill -0 "$pid" 2>/dev/null; do
     sleep 2
@@ -232,6 +283,7 @@ boot() {
     sleep 2
     kill -9 "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
+    stop_qemu_container
   else
     POWERED_OFF=1
     wait "$pid" 2>/dev/null || true

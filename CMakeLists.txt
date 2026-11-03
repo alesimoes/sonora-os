@@ -132,6 +132,7 @@ add_subdirectory(plugins/native/fet)
 add_subdirectory(plugins/native/tape)
 add_subdirectory(plugins/native/ampcab)
 add_subdirectory(plugins/native/cab)
+add_subdirectory(plugins/native/mixbus)
 add_subdirectory(plugins/native/measure/app)
 
 # Everything below is POSIX or Qt: the neutral build stops here.

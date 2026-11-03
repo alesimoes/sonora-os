@@ -2153,6 +2153,70 @@ int test_build_resolves_plugin_lanes() {
                              error));
     CHECK(plan->plugin_lane_count == 0 && plan->nodes[1].plugin_lane_count == 0);
     sonora::destroy_plan(plan);
+
+    // #250 review: a lane on a stepped parameter (a choice of 0 to 3) holds
+    // each point's value up to the next point, where it steps; a ramp would
+    // walk the plugin through every choice between. An existing step (two
+    // points at one frame) and a point that keeps the value need no hold.
+    {
+        History s(new_session(SessionSettings{}));
+        CHECK_APPLY(s, track_op(100, 101, "A"));
+        CHECK_APPLY(s, insert_op(100, 500, 0));
+        CHECK_APPLY(s, insert_op(100, 501, 1));
+        CHECK_APPLY(s, plugin_lane_op(100, 501, "mode",
+                                      {{0, 0.0f}, {4800, 3.0f}, {9600, 3.0f}, {9600, 1.0f}, {12000, 2.0f},
+                                       {14400, 9.0f}}));
+        CHECK_APPLY(s, plugin_lane_op(100, 500, "gain", {{0, 0.0f}, {4800, 3.0f}}));
+        bool stepped = true;
+        const sonora::LaneResolver choices = [&](const TrackEdit&, Id insert, const std::string& key,
+                                                 sonora::LaneTarget& target) {
+            target.instance = insert == 501 ? 1 : 0;
+            target.param = key == "mode" ? 2 : 0;
+            target.min = 0.0f;
+            target.max = 3.0f;
+            target.stepped = key == "mode" && stepped;
+            return true;
+        };
+        limits.max_plugin_lanes = 2;
+        sonora::PlanContinuity fresh(limits.delay_lines);
+        CHECK(sonora::build_plan(s.current(), limits, no_sources, resolve, choices, fresh, 1, plan,
+                                 report, error));
+        CHECK(plan->plugin_lane_count == 2);
+        const sonora::PlanPluginLane* mode = nullptr;
+        const sonora::PlanPluginLane* gain = nullptr;
+        for (uint32_t i = 0; i < plan->plugin_lane_count; ++i) {
+            (plan->plugin_lanes[i].instance == 1 ? mode : gain) = &plan->plugin_lanes[i];
+        }
+        CHECK(mode != nullptr && gain != nullptr);
+        // 0 held to 4800, 3 to 9600, the step to 1 as written, 1 held to
+        // 12000, 2 held to 14400, then 9 clamped to 3: holds after the
+        // first, the fourth and the fifth points.
+        CHECK(mode->param == 2 && mode->count == 9);
+        const sonora::PlanAutoPoint* m = plan->auto_points + mode->first;
+        const auto at = [&](int64_t t) { return sonora::auto_lane_value(m, mode->count, t); };
+        CHECK(at(0) == 0.0f && at(2400) == 0.0f && at(4799) == 0.0f);
+        CHECK(at(4800) == 3.0f && at(9599) == 3.0f);
+        CHECK(at(9600) == 1.0f && at(11999) == 1.0f);
+        CHECK(at(12000) == 2.0f && at(14399) == 2.0f);
+        CHECK(at(14400) == 3.0f && at(48000) == 3.0f);
+        CHECK(m[1].at == 4800 && m[1].value == 0.0f && m[2].at == 4800 && m[2].value == 3.0f);
+        // A continuous parameter on the same chain still ramps.
+        CHECK(gain->count == 2);
+        CHECK(sonora::auto_lane_value(plan->auto_points + gain->first, gain->count, 2400) == 1.5f);
+        sonora::destroy_plan(plan);
+
+        // The same lane on a continuous parameter is copied as written.
+        stepped = false;
+        CHECK(sonora::build_plan(s.current(), limits, no_sources, resolve, choices, fresh, 2, plan,
+                                 report, error));
+        for (uint32_t i = 0; i < plan->plugin_lane_count; ++i) {
+            const sonora::PlanPluginLane& l = plan->plugin_lanes[i];
+            if (l.instance != 1) continue;
+            CHECK(l.count == 6);
+            CHECK(sonora::auto_lane_value(plan->auto_points + l.first, l.count, 2400) == 1.5f);
+        }
+        sonora::destroy_plan(plan);
+    }
     return 0;
 }
 
