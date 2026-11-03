@@ -12,6 +12,8 @@
 //   changed_ctime      a file rewritten with its mtime set back (cp -p,
 //                      touch -d) is a changed bundle, through a symlink too;
 //                      only that bundle is probed again
+//   cache_presets      records keep their factory presets; a version-1 cache
+//                      is discarded (ADR-0029 slice 3)
 //   cache_header       another image build, another host line, an unreadable
 //                      or an over-cap file: discarded whole, said once
 //   bundle_gone        a bundle no longer installed leaves the catalog
@@ -326,6 +328,45 @@ void test_cache_header() {
         f << std::string(kMaxPluginCacheBytes + 1, ' ');
     }
     check(discarded(fx.config(), "MiB cap"), "a file over 32 MiB: discarded");
+}
+
+// Cache version 2 (ADR-0029 slice 3): records keep the factory presets
+// their probe listed, and a version-1 cache (no presets) is discarded, so
+// every plugin is probed again and lists its presets.
+void test_cache_presets() {
+    std::printf("cache_presets\n");
+    Fixture fx("presets");
+    PluginCatalogCache c;
+    c.host = "sonora-plugin-host layout 1 clock 1 wire 3 probe " + std::to_string(pr::kProbeRecordVersion);
+    c.build = "b";
+    pr::Record r;
+    r.host = c.host;
+    r.uri = "vst3:534F4E4F524156535433544553540009";
+    r.format = "vst3";
+    r.bundle = "/x.vst3";
+    r.outcome = pr::Outcome::Ok;
+    r.channels = 1;
+    r.replicas = 1;
+    r.sample_rate = 48000;
+    r.presets = {{"vst3-program:0/2", "Count 2000"}, {"vst3-file:V/P/Warm.vstpreset", "Warm"}};
+    c.bundles["/x.vst3"].format = "vst3";
+    c.bundles["/x.vst3"].plugins = {r};
+    std::string why;
+    check(save_plugin_cache(fx.cache, c, why), "a cache with presets is written");
+    PluginCatalogCache back;
+    const bool loaded = load_plugin_cache(fx.cache, c.host, c.build, back, why) == CacheLoad::Loaded;
+    const auto& plugins = back.bundles["/x.vst3"].plugins;
+    check(loaded && plugins.size() == 1 && plugins[0].presets.size() == 2 &&
+              plugins[0].presets[1].id == "vst3-file:V/P/Warm.vstpreset" && plugins[0].presets[1].name == "Warm",
+          "its records come back with their presets");
+    std::string text = encode_plugin_cache(c);
+    const std::string v2 = "\"version\": " + std::to_string(kPluginCacheVersion);
+    check(kPluginCacheVersion == 2 && text.find(v2) != std::string::npos, "the cache is version 2");
+    text.replace(text.find(v2), v2.size(), "\"version\": 1");
+    std::ofstream(fx.cache, std::ios::trunc) << text;
+    check(load_plugin_cache(fx.cache, c.host, c.build, back, why) == CacheLoad::Discarded &&
+              why.find("another version") != std::string::npos,
+          "a version-1 cache is discarded");
 }
 
 void test_bundle_gone() {
@@ -947,6 +988,7 @@ int main(int argc, char** argv) {
     test_cold_then_warm();
     test_changed_ctime();
     test_cache_header();
+    test_cache_presets();
     test_bundle_gone();
     test_rescan();
     test_recording();

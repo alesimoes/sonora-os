@@ -13,6 +13,7 @@
 #include "pluginterfaces/vst/ivstmessage.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
+#include "pluginterfaces/vst/ivstunits.h"
 #include "pluginterfaces/vst/vstspeaker.h"
 
 #include <algorithm>
@@ -919,6 +920,11 @@ public:
                 if (p.input) {
                     if ((pi.flags & V::ParameterInfo::kIsBypass) && bypass_dense_ < 0)
                         bypass_dense_ = static_cast<int>(dense_ids_.size());
+                    // The first program-change parameter of each unit is
+                    // the one that selects its programs.
+                    if ((pi.flags & V::ParameterInfo::kIsProgramChange) && !program_param(pi.unitId))
+                        program_params_.push_back(
+                            {pi.unitId, pi.id, static_cast<uint32_t>(dense_ids_.size()), pi.stepCount});
                     by_id_.push_back({pi.id, static_cast<uint32_t>(dense_ids_.size())});
                     dense_ids_.push_back(pi.id);
                     dense_ports_.push_back(info_.ports.size());
@@ -1276,6 +1282,74 @@ public:
         return true;
     }
 
+    // Units with a program list and a program-change parameter, through the
+    // controller's IUnitInfo (ADR-0029 §1). The plugin's counts are clamped:
+    // a program list of two billion is a plugin lying, not a menu.
+    std::vector<FactoryProgram> factory_programs(std::size_t cap) const override {
+        std::vector<FactoryProgram> out;
+        if (!controller_ || program_params_.empty()) return out;
+        V::IUnitInfo* units = query<V::IUnitInfo>(controller_, V::IUnitInfo_iid);
+        if (!units) return out;
+        const int32 n_units = std::clamp<int32>(units->getUnitCount(), 0, kMaxUnits);
+        for (int32 u = 0; u < n_units && out.size() < cap; ++u) {
+            V::UnitInfo ui{};
+            if (units->getUnitInfo(u, ui) != Steinberg::kResultOk || ui.programListId == V::kNoProgramListId ||
+                !program_param(ui.id))
+                continue;
+            const int32 count = program_count(units, ui.programListId);
+            for (int32 k = 0; k < count && out.size() < cap; ++k) {
+                V::String128 name{};
+                std::string n;
+                if (units->getProgramName(ui.programListId, k, name) == Steinberg::kResultOk) n = utf8(name, 128);
+                if (n.empty()) n = "Program " + std::to_string(k + 1);
+                out.push_back({ui.id, k, std::move(n)});
+            }
+        }
+        units->release();
+        return out;
+    }
+
+    // The controller first, as an editor's program menu would, then the
+    // processor through the next block's parameter changes: the processor
+    // is what getState() reads.
+    bool select_program(int32_t unit, int32_t index, std::string& error) override {
+        const ProgramParam* pp = program_param(unit);
+        V::IUnitInfo* units = controller_ ? query<V::IUnitInfo>(controller_, V::IUnitInfo_iid) : nullptr;
+        int32 count = 0;
+        if (units && pp) {
+            const int32 n_units = std::clamp<int32>(units->getUnitCount(), 0, kMaxUnits);
+            for (int32 u = 0; u < n_units; ++u) {
+                V::UnitInfo ui{};
+                if (units->getUnitInfo(u, ui) == Steinberg::kResultOk && ui.id == unit &&
+                    ui.programListId != V::kNoProgramListId) {
+                    count = program_count(units, ui.programListId);
+                    break;
+                }
+            }
+        }
+        if (units) units->release();
+        if (!pp || index < 0 || index >= count) {
+            error = who_ + " lists no program " + std::to_string(index) + " in unit " + std::to_string(unit);
+            return false;
+        }
+        double v = controller_->plainParamToNormalized(pp->id, double(index));
+        if (!std::isfinite(v))
+            v = pp->step_count > 0 ? double(index) / double(pp->step_count) : count > 1 ? double(index) / (count - 1) : 0.0;
+        v = std::clamp(v, 0.0, 1.0);
+        controller_->setParamNormalized(pp->id, v);
+        if (!set_param(pp->dense, float(v), 0)) {
+            error = who_ + ": the program change could not be queued";
+            return false;
+        }
+        return true;
+    }
+
+    bool is_program_change(uint32_t dense) const override {
+        for (const ProgramParam& pp : program_params_)
+            if (pp.dense == dense) return true;
+        return false;
+    }
+
     const PortInfo& param_port(uint32_t dense) const override { return info_.ports[dense_ports_[dense]]; }
     std::string param_key(uint32_t dense) const override { return std::to_string(dense_ids_[dense]); }
     std::string param_symbol(uint32_t dense) const override { return info_.ports[dense_ports_[dense]].symbol; }
@@ -1294,6 +1368,32 @@ private:
         std::vector<V::SpeakerArrangement> in_arr, out_arr;
         V::ProcessData data{};
     };
+
+    struct ProgramParam {
+        V::UnitID unit;
+        V::ParamID id;
+        uint32_t dense;
+        int32 step_count;
+    };
+    static constexpr int32 kMaxUnits = 1024;
+    static constexpr int32 kMaxProgramLists = 1024;
+    static constexpr int32 kMaxPrograms = 4096;
+
+    const ProgramParam* program_param(V::UnitID unit) const {
+        for (const ProgramParam& pp : program_params_)
+            if (pp.unit == unit) return &pp;
+        return nullptr;
+    }
+
+    static int32 program_count(V::IUnitInfo* units, V::ProgramListID list) {
+        const int32 n = std::clamp<int32>(units->getProgramListCount(), 0, kMaxProgramLists);
+        for (int32 l = 0; l < n; ++l) {
+            V::ProgramListInfo li{};
+            if (units->getProgramListInfo(l, li) == Steinberg::kResultOk && li.id == list)
+                return std::clamp<int32>(li.programCount, 0, kMaxPrograms);
+        }
+        return 0;
+    }
 
     bool main_bus(V::BusDirection d) {
         V::BusInfo bi{};
@@ -1418,6 +1518,7 @@ private:
     std::vector<std::size_t> dense_ports_;
     std::vector<std::pair<uint32_t, uint32_t>> by_id_;
     int bypass_dense_ = -1;  // the kIsBypass parameter, if any
+    std::vector<ProgramParam> program_params_;  // writable kIsProgramChange ones, one per unit
     static constexpr int32 kOutputQueues = 256;
     std::atomic<uint32_t> latency_{0};  // written by the main thread, read by the processing one
 };

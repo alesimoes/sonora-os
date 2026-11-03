@@ -113,6 +113,10 @@ public:
         return true;
     }
 
+    // One slot's processor, for the one-shot modes (--read-preset) that ask
+    // a plugin what a chain never does. The main thread.
+    Processor& processor(std::size_t i) { return *slots_[i]; }
+
     std::size_t size() const { return slots_.size(); }
     uint32_t instance_latency(std::size_t i) const noexcept SONORA_RT;
     uint32_t total_latency() const noexcept SONORA_RT;

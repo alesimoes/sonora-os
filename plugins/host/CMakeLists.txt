@@ -59,10 +59,16 @@ add_library(sonora_plugin_loader STATIC src/loader.h src/linux/loader_linux.cpp)
 target_include_directories(sonora_plugin_loader PUBLIC src)
 target_link_libraries(sonora_plugin_loader PUBLIC sonora_plugin_ipc ${CMAKE_DL_LIBS})
 
+# The .vstpreset reader (ADR-0029 §5): untrusted bytes, no SDK and no lilv,
+# so the fuzz test builds it alone.
+add_library(sonora_vstpreset STATIC src/vstpreset.h src/vstpreset.cpp)
+target_include_directories(sonora_vstpreset PUBLIC src)
+
 add_executable(sonora-plugin-host src/main.cpp src/processor.h src/chain.cpp src/chain.h
                src/lv2_host.cpp src/lv2_host.h src/lv2_worker.cpp src/lv2_worker.h
-               src/state_paths.cpp src/state_paths.h src/control.cpp src/control.h)
-target_link_libraries(sonora-plugin-host PRIVATE sonora_plugin_ipc sonora_plugin_loader
+               src/state_paths.cpp src/state_paths.h src/control.cpp src/control.h
+               src/lv2_presets.cpp src/lv2_presets.h)
+target_link_libraries(sonora-plugin-host PRIVATE sonora_vstpreset sonora_plugin_ipc sonora_plugin_loader
                       sonora_urid_map sonora_plugin_host_control sonora_plugin_probe_record PkgConfig::LILV)
 if(VST3SDK_INCLUDE_DIR)
   target_sources(sonora-plugin-host PRIVATE src/vst3_host.cpp src/vst3_host.h)
@@ -90,6 +96,13 @@ target_include_directories(test_lv2_worker PRIVATE src)
 target_link_libraries(test_lv2_worker PRIVATE sonora_plugin_ipc PkgConfig::LILV Threads::Threads)
 add_test(NAME plugin_host_lv2_worker COMMAND test_lv2_worker)
 set_tests_properties(plugin_host_lv2_worker PROPERTIES LABELS plugins)
+
+# The .vstpreset reader on hostile bytes: crafted, truncated and fuzzed
+# files, and a sparse 8 GiB one refused by its size (ADR-0029 slice 3).
+add_executable(test_vstpreset tests/test_vstpreset.cpp)
+target_link_libraries(test_vstpreset PRIVATE sonora_vstpreset)
+add_test(NAME plugins_host_vstpreset_fuzz COMMAND test_vstpreset)
+set_tests_properties(plugins_host_vstpreset_fuzz PROPERTIES LABELS plugins)
 
 # The misbehaving plugins, as an LV2 bundle in the build tree. Never installed.
 set(SONORA_TEST_BUNDLE ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
@@ -128,13 +141,13 @@ add_test(NAME plugin_host_list_bundles_only COMMAND sonora-plugin-host --list --
          --bundle ${SONORA_TEST_BUNDLE})
 set_tests_properties(plugin_host_list_bundles_only PROPERTIES PASS_REGULAR_EXPRESSION
   "{\"bundle\":\"[^\"]*/lv2/sonora-test.lv2\",\"format\":\"lv2\"}\n")
-# One probe record, version 2 (contracts/plugin probe_record.h), with the
+# One probe record, version 3 (contracts/plugin probe_record.h), with the
 # description the catalog shows: the parameter's name, range and unit-less
 # flags; native, so no "bridge" after the bundle. eg-amp is from Debian's
 # lv2-examples.
 add_test(NAME plugin_host_probe_record COMMAND sonora-plugin-host --probe http://lv2plug.in/plugins/eg-amp --channels 2)
 set_tests_properties(plugin_host_probe_record PROPERTIES PASS_REGULAR_EXPRESSION
-  "^{\"record\":2,\"host\":\"sonora-plugin-host layout 1 clock 1 wire 4 probe 2\",\"uri\":\"http://lv2plug.in/plugins/eg-amp\",\"format\":\"lv2\",\"bundle\":\"/[^\"]+\",\"name\":\"[^\"]+\"[^\n]*\"ok\":true,\"channels\":2,\"replicas\":2,[^\n]*\"params\":\\[{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,")
+  "^{\"record\":3,\"host\":\"sonora-plugin-host layout 1 clock 1 wire [0-9]+ probe 3\",\"uri\":\"http://lv2plug.in/plugins/eg-amp\",\"format\":\"lv2\",\"bundle\":\"/[^\"]+\",\"name\":\"[^\"]+\"[^\n]*\"ok\":true,\"channels\":2,\"replicas\":2,[^\n]*\"params\":\\[{\"key\":\"gain\",\"symbol\":\"gain\",\"name\":\"Gain\",\"min\":-90.0,\"max\":24.0,")
 add_test(NAME plugin_host_probe_not_installed COMMAND sonora-plugin-host --probe "urn:sonora:test#absent")
 set_tests_properties(plugin_host_probe_not_installed PROPERTIES PASS_REGULAR_EXPRESSION
   "\"ok\":false,\"reason\":\"not installed\"[^\n]*\"outcome\":\"not_installed\"")
@@ -154,7 +167,7 @@ set_tests_properties(plugin_host_orphan PROPERTIES PASS_REGULAR_EXPRESSION "is n
                      LABELS plugins)
 # The versions the engine checks at start-up (ADR-0012 §5.5).
 add_test(NAME plugin_host_version COMMAND sonora-plugin-host --version)
-set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire 4 probe 2\n$"
+set_tests_properties(plugin_host_version PROPERTIES PASS_REGULAR_EXPRESSION "^sonora-plugin-host layout 1 clock 1 wire [0-9]+ probe 3\n$"
                      LABELS plugins)
 # Hosts are timer-paced by default: the audio thread's futex wake ships gated
 # off (contracts/plugin kHostWakeEnabled, ADR-0012 §1.3-1.4). The *_futex
@@ -471,6 +484,20 @@ if(VST3SDK_INCLUDE_DIR)
 endif()
 
 set_tests_properties(${_plugin_tests} PROPERTIES LABELS plugins RUN_SERIAL TRUE)
+
+# Factory presets (ADR-0029 slice 3): listed in the probe record, read by
+# --read-preset, every refusal and a crash. eg-amp is Debian's; the rest
+# is written by the test into a directory of its own, its children's $HOME.
+add_executable(test_read_preset tests/test_read_preset.cpp)
+target_link_libraries(test_read_preset PRIVATE sonora_plugin_probe_record sonora_plugin_host_control)
+add_dependencies(test_read_preset sonora-plugin-host sonora_test_lv2)
+set(_read_preset_args --host $<TARGET_FILE:sonora-plugin-host> --lv2-bundle ${SONORA_TEST_BUNDLE})
+if(VST3SDK_INCLUDE_DIR)
+  add_dependencies(test_read_preset sonora_test_vst3)
+  list(APPEND _read_preset_args --vst3-bundle ${SONORA_TEST_VST3})
+endif()
+add_test(NAME plugins_host_read_preset COMMAND test_read_preset ${_read_preset_args})
+set_tests_properties(plugins_host_read_preset PROPERTIES LABELS plugins)
 if(SONORA_PLUGIN_TESTS_ALLOW_SKIP)
   set_tests_properties(${_plugin_tests} PROPERTIES SKIP_RETURN_CODE 77)
 endif()
