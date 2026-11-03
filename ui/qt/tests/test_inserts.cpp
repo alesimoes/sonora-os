@@ -16,6 +16,7 @@
 //   - File > Save sends FlushPluginState and writes only after its reply;
 //   - the QML: slots on the strips, the chooser with typing that does not
 //     reach the key map, Escape, a drag between strips, the panel.
+#include <QElapsedTimer>
 #include <QFile>
 #include <QGuiApplication>
 #include <QQuickItem>
@@ -553,6 +554,26 @@ QPoint centre(QQuickItem* item) {
     return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint();
 }
 
+// The item a press at a scene point would reach: the topmost visible,
+// enabled item that takes mouse buttons, as Qt Quick's own delivery picks.
+QQuickItem* mouse_target(QQuickItem* item, const QPointF& scene) {
+    if (!item->isVisible() || !item->isEnabled()) return nullptr;
+    const QPointF local = item->mapFromScene(scene);
+    const auto kids = item->childItems();
+    for (auto it = kids.crbegin(); it != kids.crend(); ++it) {
+        if (QQuickItem* hit = mouse_target(*it, scene)) return hit;
+    }
+    if (item->acceptedMouseButtons() != Qt::NoButton && item->contains(local)) return item;
+    return nullptr;
+}
+
+bool is_within(QQuickItem* item, QQuickItem* ancestor) {
+    for (; item != nullptr; item = item->parentItem()) {
+        if (item == ancestor) return true;
+    }
+    return false;
+}
+
 int qml() {
     Rig r;
     CHECK(r.connect());
@@ -654,6 +675,25 @@ int qml() {
     const auto position = [&](const char* key) {
         return r.inserts.panelValues()[QString::fromLatin1(key)].toMap()[QStringLiteral("position")].toReal();
     };
+    // The click opened the panel in this event loop turn; a press goes where
+    // the scene is when it arrives. Wait, bounded, until the knob is what a
+    // press at its centre would reach (the CI failure: the drag was lost with
+    // the plugin never written, the knob not moved and nothing refused), and
+    // say what was reached instead if it never is.
+    const auto reachable = [&] {
+        QQuickItem* t = mouse_target(view.contentItem(), centre(knob));
+        return t != nullptr && is_within(t, knob);
+    };
+    QElapsedTimer waited;
+    waited.start();
+    while (!reachable() && waited.elapsed() < 2000) QTest::qWait(10);
+    if (!reachable()) {
+        QQuickItem* t = mouse_target(view.contentItem(), centre(knob));
+        std::fprintf(stderr, "knob drag: a press at %d,%d reaches \"%s\" (%s), not the knob\n",
+                     centre(knob).x(), centre(knob).y(),
+                     t ? qPrintable(t->objectName()) : "nothing", t ? t->metaObject()->className() : "-");
+    }
+    CHECK(reachable());
     const qreal p0 = position("0");
     CHECK(p0 <= 0.75);
     const QPoint k = centre(knob);
