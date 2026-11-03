@@ -95,3 +95,64 @@ lands (#307).
   multiply-adds).
 - tanh: the exp-based form costs about 145 us per 30 720 values here; a
   rational approximation held to the same 2.5e-7 would cost less.
+
+## Slice 2: AVX2 kernels chosen at run time, rational tanh
+
+What changed (common/dsp/src/neural/kernels.h, src/arch/x86_64/):
+- The product, tanh and sigmoid are a kernel table. The generic table is
+  the code above. `neural_avx2.cpp`, the only file compiled with `-mavx2`
+  (`/arch:AVX2` on MSVC), holds eight output rows by eight frames in
+  registers over the whole input loop. `neural_simd.cpp` picks it when
+  CPUID says AVX2 and the OS saves the ymm state, so the library still
+  runs on an x86-64 without AVX2.
+- No FMA, every sum in the generic order: the AVX2 table gives the
+  generic table's bits. `test_dsp_neural` holds this for 280 products
+  (1 to 32 rows, 1 to 48 inputs, 1 to 130 frames), both activations at
+  every tail length with NaN and Inf, and whole networks through
+  `process()`. A capture sounds the same on every machine, and golden
+  files do not depend on the runner's processor.
+- tanh is now a rational x P(x^2)/Q(x^2), degrees 6 and 3, clamped at
+  +-7.9. It is our own fit, with the method in `vec_math.h`. It is in
+  both tables. Its error against std::tanh is 3.2e-7 (the bar moves from
+  2.5e-7 to 3.5e-7: about 5 float ulps below 1, from the float rounding
+  of the Horner sums; the fit alone is 1.4e-9). In AVX2 it takes 2.2 us
+  per 2 048 values against 4.6 us for the exp-based form. The equivalence
+  with the NAM reference is unchanged in kind: standard 1.38e-7, the
+  worst file (feather) 1.71e-7, all under the 1e-5 bar.
+
+Pieces timed alone (best of 2 000, i7-11800H, build image, GCC 14 -O3):
+
+| Piece | Generic us | AVX2 us |
+|---|---|---|
+| conv product 16 x 48 x 128 | 20.7 | 7.2 |
+| residual product 16 x 16 x 128 | 7.1 | 2.4 |
+| tanh, 16 x 128 values (exp form) | 9.6 | 4.8 |
+| tanh, 2 048 values (rational) | | 2.2 |
+
+`ampcab-budget 20`, both tables in one run, 7 500 blocks each, q128,
+48 kHz, mono. The host was heavily loaded by other containers: the
+generic standard took 1 077 us p50 here against 560 us in the slice-1
+run above. Only the ratio carries over.
+
+| Size | Generic p50 / p99.9 / max us, CPU us | AVX2 p50 / p99.9 / max us, CPU us |
+|---|---|---|
+| nano | 132 / 1 972 / 4 333, 155 | 38 / 532 / 2 214, 42 |
+| feather | 329 / 2 420 / 7 575, 362 | 89 / 914 / 3 369, 101 |
+| lite | 604 / 2 738 / 6 708, 640 | 175 / 1 571 / 2 798, 196 |
+| standard | 1 077 / 5 236 / 5 919, 1 136 | 289 / 1 433 / 4 489, 291 |
+
+AVX2 runs 3.5 to 3.9 times faster than generic. Applied to the slice-1
+generic figure (560 us p50), standard would come to about 150 us p50
+and lite to about 85 us. That is an estimate, not a measurement.
+Unverified 9 stays open until `ampcab-budget` runs on a quiet machine
+with the cabinet convolver (#307) beside it.
+
+What is left if standard misses class E on the quiet run:
+- FMA. It halves the arithmetic of the products, which is the floor here:
+  2.6 M multiply-adds per standard block is about 110 us at 3 GHz
+  without FMA. But FMA changes bits against the generic table. A
+  capture would then sound different, in the last bits, on an FMA and a
+  non-FMA machine, and the golden-file rule (ADR-0011 §2.3, §3.4) would
+  need an amendment. This needs a decision before any code.
+- The element-wise passes (bias and mixin, head sum, residual add) still
+  run at the generic width.
