@@ -77,23 +77,10 @@ $files"
     [ "$tries" -lt 10 ] || break
     sleep 60
   done
-  # Read before the checks are, so a push after this point makes the merge
-  # refuse rather than land a head nobody checked.
-  head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid) || {
-    skip "$pr" "gh pr view failed"; continue; }
-  total=$(gh pr checks "$pr" --json name --jq 'length' 2>/dev/null) || total=0
-  [ "${total:-0}" -gt 0 ] || { skip "$pr" "no checks reported"; continue; }
-  failing=$(gh pr checks "$pr" --json name,bucket \
-    --jq '.[] | select(.bucket == "fail" or .bucket == "cancel" or .bucket == "pending") | .name')
-  if [ -n "$failing" ]; then
-    skip "$pr" "checks not green:
-$failing"
-    continue
-  fi
-
-  if [ -n "$missing" ]; then
-    skip "$pr" "checks not reported after 10 minutes:
-$missing"
+  # The loop's snapshot only decides when to stop waiting: a push since then
+  # could leave it describing an earlier head. merge_gate decides afresh.
+  if ! head=$(merge_gate "$pr"); then
+    skip "$pr" "$head"
     continue
   fi
 
