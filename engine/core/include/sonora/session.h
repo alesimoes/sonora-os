@@ -515,7 +515,7 @@ public:
     // The pass of the roll now playing, or of the last one; 0 before any.
     uint64_t automation_pass() const { return auto_pass_now_.load(std::memory_order_acquire); }
     // A Load while rolling: from the next callback no track plays a Latch
-    // touched before it. Clear the touched flags first, or one still held
+    // touched before it, nor goes on with a Touch return begun before it. Clear the touched flags first, or one still held
     // latches again.
     void forget_latches() { auto_unlatch_.fetch_add(1, std::memory_order_release); }
     // Writes the audio thread dropped on a full ring: a gap in a pass.
@@ -1040,10 +1040,14 @@ private:
     // live callback played, which a release returns from (the control
     // thread may already have put the static back in the atomic); and the
     // static a parameter with no lane returns to, read each callback.
-    // live_moved_ is room for live_value_ while its tracks move.
+    // live_moved_ is room for live_value_ while its tracks move;
+    // return_at_moved_ and return_moved_ (from and to, interleaved) for a
+    // return under way.
     std::unique_ptr<float[]> live_value_;
     std::unique_ptr<float[]> live_moved_;
     std::unique_ptr<float[]> return_to_;
+    std::unique_ptr<int64_t[]> return_at_moved_;
+    std::unique_ptr<float[]> return_moved_;
     uint32_t touch_return_frames_ = 0;
     std::unique_ptr<RingBuffer<AutomationWrite>> auto_writes_;
     std::atomic<uint64_t> auto_write_overruns_{0};
