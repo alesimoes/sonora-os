@@ -153,7 +153,24 @@ if [ -f "$FALLBACK" ]; then
   grep -q 'chvt 2' "$FALLBACK" && bad "fallback switches to tty2, which has no terminal UI before ADR-0010 stage 2"
 fi
 
+# --- boot smoke test: one orderly poweroff on success ---
+# A forced poweroff on success skips the unit stops, so the persistence
+# overlay is never unmounted and test-write-usb.sh's clean-fsck check after
+# boot 3 measures luck. A poweroff in the script races the unit's action.
+SMOKE_UNIT="$INC/etc/systemd/system/sonora-smoketest.service"
+SMOKE_SCRIPT="$INC/usr/local/bin/sonora-smoketest"
+if [ -f "$SMOKE_UNIT" ]; then
+  # [Unit] keys only: under [Service] systemd ignores them with a warning.
+  smoke_unit_keys="$(awk '/^\[/ { u = ($0 == "[Unit]") } u' "$SMOKE_UNIT")"
+  printf '%s\n' "$smoke_unit_keys" | grep -qx 'SuccessAction=poweroff' ||
+    bad "smoketest unit: [Unit] SuccessAction= is not an orderly 'poweroff'"
+  printf '%s\n' "$smoke_unit_keys" | grep -qx 'FailureAction=poweroff-force' ||
+    bad "smoketest unit: [Unit] FailureAction= is not 'poweroff-force'; a wedged check would hold the guest up"
+  grep -Ev '^[[:space:]]*#' "$SMOKE_SCRIPT" | grep -Eq '(systemctl[[:space:]].*(poweroff|halt|reboot)|^[[:space:]]*(poweroff|halt|reboot|shutdown)([[:space:]]|$))' &&
+    bad "sonora-smoketest powers off by itself; the unit's SuccessAction= does that"
+fi
+
 if [ "$fail" -eq 0 ]; then
-  echo "ok: whole archive from snapshot $auto_ts; pipewire $pw_pin, wireplumber $wp_pin; rt kernel; tty1 owned, no VT gettys"
+  echo "ok: whole archive from snapshot $auto_ts; pipewire $pw_pin, wireplumber $wp_pin; rt kernel; tty1 owned, no VT gettys; smoketest powers off in order"
 fi
 exit "$fail"
