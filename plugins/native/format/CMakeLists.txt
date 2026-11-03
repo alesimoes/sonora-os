@@ -240,7 +240,8 @@ function(_sonora_native_bundle name suffix channels uid display)
                    --inputs ${inputs} --outputs ${SONORA_CHANNELS} --scenario options)
   # "nokey": an inactive or missing key bus is no key, not a silent one
   # (bridge.h). "wide": an over-wide bus prints nothing from process().
-  set(scenarios lazy oversize threads late wide)
+  # "setup": setupProcessing() between two process() calls (vst3_setup).
+  set(scenarios lazy oversize threads late wide setup)
   if(P_SIDECHAIN)
     list(APPEND scenarios nokey)
   endif()

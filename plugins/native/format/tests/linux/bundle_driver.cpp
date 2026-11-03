@@ -36,7 +36,19 @@
 //   --scenario options   (LV2) options:set with a new block length and
 //                        rate between two run() calls: prepared inside
 //                        set(), nothing allocated in run(), and the sound of
-//                        an instance instantiated with those options.
+//                        an instance instantiated with those options. Then
+//                        deactivate() and activate() with nothing changed:
+//                        no signal state carried over.
+//   --scenario setup     (VST3) setupProcessing() with a new rate and block
+//                        size between two process() calls, on an active
+//                        component and on one the host deactivated first,
+//                        and again with the same values: the sound of a
+//                        fresh instance, nothing allocated in process().
+//
+// The options and setup scenarios drive a loud burst before the change and
+// compare what follows with a fresh instance, and show that the burst leaves
+// state at the bundle's defaults (an instance that is not reset sounds
+// different), so a missing reset() fails them.
 //
 // Every scenario reads the bundle's layout (stereo or mono, with or without
 // a key input) from the bundle itself: VST3 from its main bus, LV2 from
@@ -72,7 +84,10 @@
 #include "travesty/factory.h"
 
 // Counts every operator new while armed. The executable exports it
-// (ENABLE_EXPORTS), so the bundle, loaded later, binds to this one.
+// (ENABLE_EXPORTS), so the bundle, loaded later, binds to this one. It sees
+// operator new only: a direct malloc, calloc or realloc in the bundle goes
+// past it. "Allocates nothing" here is a claim about operator new; the RTSan
+// job, which runs these tests, is the guard for the rest.
 namespace {
 std::atomic<bool> g_counting{false};
 std::atomic<long> g_allocations{0};
@@ -300,6 +315,44 @@ struct Block {
 };
 
 Block::Block(int32_t frames, const Vst3& p) : Block(frames, p.channels, p.channels) {}
+
+// Block's input at another level. kQuiet is Block's own, so an instance fed
+// nothing else hears exactly what a fresh one hears; kLoud is the burst whose
+// tail (a delay line, a reverb, an envelope, a filter's memory) the options
+// and setup scenarios expect a reset to clear.
+constexpr float kQuiet = 0.25f;
+constexpr float kLoud = 0.9f;
+void drive(Block& b, float gain) {
+    for (std::size_t c = 0; c < b.in.size(); ++c) {
+        for (std::size_t i = 0; i < b.in[c].size(); ++i)
+            b.in[c][i] = (c & 1 ? -gain : gain) * std::sin(0.01f * static_cast<float>(i));
+    }
+}
+
+// Bit for bit, and finite. Says where the first difference is.
+bool same_render(const std::vector<float>& got, const std::vector<float>& want, const char* what) {
+    if (got.empty() || got.size() != want.size()) {
+        std::fprintf(stderr, "%s: %zu values rendered, want %zu\n", what, got.size(), want.size());
+        return false;
+    }
+    for (std::size_t i = 0; i < got.size(); ++i) {
+        if (std::isfinite(got[i]) && got[i] == want[i]) continue;
+        std::fprintf(stderr, "%s: differs from a fresh instance at value %zu: %.9g, want %.9g\n", what, i,
+                     static_cast<double>(got[i]), static_cast<double>(want[i]));
+        return false;
+    }
+    return true;
+}
+
+// The burst left state that a fresh instance does not have: without this a
+// comparison with a fresh instance proves nothing about reset().
+bool carries_state(const std::vector<float>& kept, const std::vector<float>& fresh, const char* what) {
+    std::size_t differ = 0;
+    for (std::size_t i = 0; i < kept.size() && i < fresh.size(); ++i) differ += kept[i] != fresh[i];
+    std::printf("%s: %zu of %zu value(s) differ from a fresh instance without a reset\n", what, differ,
+                fresh.size());
+    return !kept.empty() && kept.size() == fresh.size() && differ > 0;
+}
 
 int vst3_lazy(const char* path) {
     Vst3 p;
@@ -698,6 +751,116 @@ int vst3_wide(const char* path) {
     return 0;
 }
 
+// How vst3_setup's instance reaches its second configuration.
+enum class Change {
+    None,
+    // setupProcessing() on an active, processing component. The VST3 spec
+    // asks for an inactive one; DPF deactivates and re-activates around it
+    // (DistrhoPluginVST3.cpp, setupProcessing), and hosts do call it so.
+    SetupActive,
+    // What the spec asks: processing off, inactive, setup, active again.
+    SetupInactive,
+    // setActive(false) and setActive(true) with nothing changed.
+    Reactivate,
+};
+
+// 128 blocks of 256 at 48 kHz, 0.68 s: longer than the delay's longest
+// default time (500 ms), so its line is full of the burst at the change and
+// an echo not cleared is heard at once, inside the short window compared
+// after it. With 8 blocks the echo came after the window and a missing
+// reset passed for the delay.
+constexpr int kBurst = 128;
+constexpr int kAfterChange = 16;
+
+struct Vst3Render {
+    std::vector<float> out;  // every main output, block by block
+    uint32_t latency = 0;
+    long allocations = 0;  // operator new inside process() after the change
+};
+
+// A fresh instance set up at (rate0, max0), active and processing: `burst`
+// loud blocks of max0, the change `how` to (rate1, max1), then kAfterChange
+// quiet blocks of max1. `out` is empty on any failure.
+Vst3Render vst3_render_changed(const char* path, double rate0, int32_t max0, int burst, Change how,
+                               double rate1, int32_t max1) {
+    Vst3Render r;
+    Vst3 p;
+    const auto active = [&](bool on) {
+        if (!on && v3_cpp_obj(p.proc)->set_processing(p.proc, false) != V3_OK) return false;
+        if (v3_cpp_obj(p.comp)->set_active(p.comp, on) != V3_OK) return false;
+        return !on || v3_cpp_obj(p.proc)->set_processing(p.proc, true) == V3_OK;
+    };
+    if (!p.open(path) || !p.setup(rate0, max0) || !active(true)) {
+        p.close();
+        return r;
+    }
+    Block b(max0 > max1 ? max0 : max1, p);
+    drive(b, kLoud);
+    bool ok = true;
+    for (int k = 0; k < burst; ++k) ok = ok && b.run(p, max0, nullptr) == V3_OK;
+    switch (how) {
+    case Change::None: break;
+    case Change::SetupActive: ok = ok && p.setup(rate1, max1); break;
+    case Change::SetupInactive: ok = ok && active(false) && p.setup(rate1, max1) && active(true); break;
+    case Change::Reactivate: ok = ok && active(false) && active(true); break;
+    }
+    drive(b, kQuiet);
+    r.out.reserve(static_cast<std::size_t>(kAfterChange) * b.out.size() * static_cast<std::size_t>(max1));
+    g_allocations.store(0);
+    g_counting.store(true);
+    for (int k = 0; ok && k < kAfterChange; ++k) {
+        ok = b.run(p, max1, nullptr) == V3_OK;
+        for (const auto& o : b.out) r.out.insert(r.out.end(), o.begin(), o.begin() + max1);
+    }
+    g_counting.store(false);
+    r.allocations = g_allocations.load();
+    r.latency = v3_cpp_obj(p.proc)->get_latency_samples(p.proc);
+    p.close();
+    if (!ok) r.out.clear();
+    return r;
+}
+
+// --scenario setup (VST3): the counterpart of --scenario options. A host
+// moves the rate and the block size with setupProcessing() between two
+// process() calls. DPF re-prepares inside it, on the host's main thread
+// (sampleRateChanged and bufferSizeChanged in plugin.cpp), so process()
+// after it allocates nothing, and the instance sounds exactly like one set
+// up with the new values from the start, the burst before the change
+// forgotten. The same with the values unchanged, which reaches
+// Bridge::activate's no-prepare path, where reset() alone clears the burst.
+int vst3_setup(const char* path) {
+    struct Case {
+        const char* what;
+        Change how;
+        double rate;
+        int32_t max;
+    };
+    const Case moved[] = {
+        {"setupProcessing(44100, 128) while active", Change::SetupActive, 44100.0, 128},
+        {"setupProcessing(44100, 128) while inactive", Change::SetupInactive, 44100.0, 128},
+        {"setupProcessing(48000, 256) again while active", Change::SetupActive, 48000.0, 256},
+        {"setActive(false), setActive(true)", Change::Reactivate, 48000.0, 256},
+    };
+    // One fresh render per configuration: creating an instance is most of
+    // this test's time (about 0.25 s for the tube).
+    const Vst3Render fresh44 = vst3_render_changed(path, 44100.0, 128, 0, Change::None, 44100.0, 128);
+    const Vst3Render fresh = vst3_render_changed(path, 48000.0, 256, 0, Change::None, 48000.0, 256);
+    for (const Case& c : moved) {
+        const Vst3Render& want = c.rate == 48000.0 ? fresh : fresh44;
+        const Vst3Render got = vst3_render_changed(path, 48000.0, 256, kBurst, c.how, c.rate, c.max);
+        CHECK(!want.out.empty());
+        if (got.allocations != 0)
+            std::fprintf(stderr, "%s: %ld allocations inside process() after it\n", c.what, got.allocations);
+        CHECK(got.allocations == 0);
+        CHECK(same_render(got.out, want.out, c.what));
+        CHECK(got.latency == want.latency);
+        std::printf("%s: the sound and latency (%u) of a fresh instance\n", c.what, got.latency);
+    }
+    const Vst3Render kept = vst3_render_changed(path, 48000.0, 256, kBurst, Change::None, 48000.0, 256);
+    CHECK(carries_state(kept.out, fresh.out, "the burst, not reset"));
+    return 0;
+}
+
 // --- LV2 --------------------------------------------------------------------
 
 // The only feature run() might use is the map, and only at instantiate.
@@ -836,7 +999,16 @@ struct Lv2Instance {
     }
     Lv2Instance(const Lv2Instance&) = delete;
     Lv2Instance& operator=(const Lv2Instance&) = delete;
-    bool ok() const { return h != nullptr && opts != nullptr && opts->set != nullptr; }
+    bool ok() const {
+        return h != nullptr && opts != nullptr && opts->set != nullptr && desc->activate != nullptr &&
+               desc->deactivate != nullptr;
+    }
+
+    // A host stopping and restarting the instance, nothing changed.
+    void reactivate() {
+        desc->deactivate(h);
+        desc->activate(h);
+    }
 
     // What Ardour (Session::set_block_size) and Carla (bufferSizeChanged,
     // sampleRateChanged) send: the new nominal block length and rate.
@@ -884,7 +1056,9 @@ private:
 //   inside set();
 // - the instance then sounds exactly like one instantiated with the new
 //   options, even with a nominal length under the blocks the host runs
-//   (nominal is only "typical", buf-size.ttl; the max still holds).
+//   (nominal is only "typical", buf-size.ttl; the max still holds), the
+//   loud burst before set() forgotten;
+// - deactivate() and activate() with nothing changed forget it too.
 int lv2_options(const char* path, const char* bundle, uint32_t inputs, uint32_t outputs) {
     constexpr int32_t kMax = 256;
     constexpr int32_t kNominalAfter = 64;
@@ -893,7 +1067,8 @@ int lv2_options(const char* path, const char* bundle, uint32_t inputs, uint32_t 
 
     Lv2Instance moved(path, bundle, inputs, outputs, 48000.0, kMax, kMax);
     CHECK(moved.ok());
-    moved.run(8, nullptr);
+    drive(moved.b, kLoud);
+    moved.run(kBurst, nullptr);
 
     g_allocations.store(0);
     g_counting.store(true);
@@ -905,6 +1080,7 @@ int lv2_options(const char* path, const char* bundle, uint32_t inputs, uint32_t 
     CHECK(g_allocations.load() == 0);
 
     CHECK(moved.set(kNominalAfter, kRateAfter) == LV2_OPTIONS_SUCCESS);
+    drive(moved.b, kQuiet);
     std::vector<float> after;
     after.reserve(static_cast<std::size_t>(kAfter) * outputs * kMax);
     g_allocations.store(0);
@@ -920,19 +1096,38 @@ int lv2_options(const char* path, const char* bundle, uint32_t inputs, uint32_t 
     std::vector<float> want;
     fresh.run(kAfter, &want);
 
-    CHECK(after.size() == want.size());
-    std::size_t first = after.size();
-    for (std::size_t i = 0; i < after.size(); ++i) {
-        CHECK(std::isfinite(after[i]));
-        if (first == after.size() && after[i] != want[i]) first = i;
-    }
-    if (first != after.size())
-        std::fprintf(stderr, "differs from a fresh instance at value %zu: %.9g, want %.9g\n", first,
-                     static_cast<double>(after[first]), static_cast<double>(want[first]));
-    CHECK(first == after.size());
+    CHECK(same_render(after, want, "options:set"));
     // The port after the audio: the latency output in a bundle that does not
     // follow the host tempo, which must then match too.
     CHECK(std::memcmp(moved.extra, fresh.extra, sizeof(float)) == 0);
+
+    // deactivate() and activate() with the options unchanged: DPF calls
+    // neither callback, so Bridge::activate takes its no-prepare path and
+    // its reset() is all that clears the burst. `kept`, the burst without
+    // the re-activation, shows the burst leaves state to clear.
+    Lv2Instance again(path, bundle, inputs, outputs, 48000.0, kMax, kMax);
+    Lv2Instance kept(path, bundle, inputs, outputs, 48000.0, kMax, kMax);
+    Lv2Instance fresh48(path, bundle, inputs, outputs, 48000.0, kMax, kMax);
+    CHECK(again.ok() && kept.ok() && fresh48.ok());
+    drive(again.b, kLoud);
+    drive(kept.b, kLoud);
+    again.run(kBurst, nullptr);
+    kept.run(kBurst, nullptr);
+    g_allocations.store(0);
+    g_counting.store(true);
+    again.reactivate();
+    g_counting.store(false);
+    if (g_allocations.load() != 0)
+        std::fprintf(stderr, "%ld allocations in an unchanged re-activation\n", g_allocations.load());
+    CHECK(g_allocations.load() == 0);
+    drive(again.b, kQuiet);
+    drive(kept.b, kQuiet);
+    std::vector<float> reactivated, carried, want48;
+    again.run(kAfter, &reactivated);
+    kept.run(kAfter, &carried);
+    fresh48.run(kAfter, &want48);
+    CHECK(same_render(reactivated, want48, "deactivate(), activate()"));
+    CHECK(carries_state(carried, want48, "the burst, not reset"));
     return 0;
 }
 
@@ -959,11 +1154,12 @@ int main(int argc, char** argv) {
     else if (vst3 != nullptr && scenario == "late") r = vst3_late(vst3);
     else if (vst3 != nullptr && scenario == "nokey") r = vst3_nokey(vst3);
     else if (vst3 != nullptr && scenario == "wide") r = vst3_wide(vst3);
+    else if (vst3 != nullptr && scenario == "setup") r = vst3_setup(vst3);
     else if (lv2 != nullptr && bundle != nullptr && scenario == "lazy") r = lv2_lazy(lv2, bundle, inputs, outputs);
     else if (lv2 != nullptr && bundle != nullptr && scenario == "options")
         r = lv2_options(lv2, bundle, inputs, outputs);
     else
-        std::fprintf(stderr, "usage: %s (--vst3 BINARY --scenario lazy|oversize|threads|late|nokey|wide |"
+        std::fprintf(stderr, "usage: %s (--vst3 BINARY --scenario lazy|oversize|threads|late|nokey|wide|setup |"
                              " --lv2 BINARY --bundle DIR [--inputs N --outputs N] --scenario lazy|options)\n",
                      argv[0]);
     if (r == 0) std::printf("bundle_driver %s: pass\n", scenario.c_str());
