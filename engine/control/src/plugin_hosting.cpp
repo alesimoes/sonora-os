@@ -305,8 +305,8 @@ PluginHosting::PluginHosting(Session& session, PluginHostingConfig config, Plugi
     std::string why;
     run_dir_ = make_run_dir(config_.plugin_scratch_root, why);
     if (run_dir_.empty() && ok_)
-        run_notice_ = "plug-ins cannot make files of their own this run (their scratch folder: " + why +
-                      "); a plug-in that needs one may not work";
+        hold(0, "plug-ins cannot make files of their own this run (their scratch folder: " + why +
+                    "); a plug-in that needs one may not work");
     followed_dir_ = session_dir();
 }
 
@@ -365,8 +365,8 @@ std::string PluginHosting::scratch_for(model::Id insert, const std::string& who)
     if (ec || !std::filesystem::is_directory(std::filesystem::symlink_status(dir, ec))) {
         // It runs without makePath, and the operator is told once.
         if (scratch_failed_.insert(insert).second)
-            held_notices_.push_back(who + ": its scratch folder " + dir.string() +
-                                    " could not be made, so it cannot make files of its own");
+            hold(insert, who + ": its scratch folder " + dir.string() +
+                             " could not be made, so it cannot make files of its own");
         return {};
     }
     return dir.string();
@@ -664,13 +664,19 @@ void PluginHosting::show(const model::Snapshot& doc, bool opened) {
         param_unmapped_.clear();
         touches_lost_.clear();
         notices_.clear();
-        held_notices_.clear();
+        // Held notices are the session's, by insert id: none of the last
+        // one's is replayed to an interface attaching to this one. The run's
+        // own (key 0) stays.
+        for (auto it = held_.begin(); it != held_.end();) it = it->first != 0 ? held_.erase(it) : std::next(it);
         // The new session's insert ids are its own: their scratch folders
         // are new ones, never the last session's files.
         ++session_serial_;
         scratch_failed_.clear();
     }
     follow_session_dir();
+    // An insert the document no longer has keeps no held notice.
+    for (auto it = held_.begin(); it != held_.end();)
+        it = it->first != 0 && !insert_in(doc, it->first) ? held_.erase(it) : std::next(it);
     std::set<model::Id> seen;
     for (const auto& tp : doc.edit->tracks) {
         const model::TrackEdit& t = *tp;
@@ -1208,8 +1214,8 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
                 // on the session that a file the plugin keeps may be missing.
                 for (const model::Insert& in : t->inserts)
                     if (in.id == insert)
-                        held_notices_.push_back(where(*t, in) + ": the host refused a file path its plug-in asked for (" +
-                                                m.text + "), so a file it keeps may not be saved with the session");
+                        hold(insert, where(*t, in) + ": the host refused a file path its plug-in asked for (" + m.text +
+                                         "), so a file it keeps may not be saved with the session");
                 break;
             }
             if (m.kind != pc::FaultKind::WorkRefused && m.kind != pc::FaultKind::ParamUnmapped) break;
@@ -1558,13 +1564,18 @@ std::vector<std::string> PluginHosting::take_notices() {
     return out;
 }
 
+void PluginHosting::hold(model::Id insert, std::string text) {
+    held_[insert] = std::move(text);
+    held_new_.push_back(insert);
+}
+
 std::vector<std::string> PluginHosting::take_held_notices() {
     std::vector<std::string> out;
-    // The run's own, said once whatever session is open.
-    if (!run_notice_.empty()) out.push_back(std::move(run_notice_));
-    run_notice_.clear();
-    for (std::string& n : held_notices_) out.push_back(std::move(n));
-    held_notices_.clear();
+    for (const model::Id insert : held_new_) {
+        const auto it = held_.find(insert);
+        if (it != held_.end()) out.push_back(it->second);
+    }
+    held_new_.clear();
     return out;
 }
 

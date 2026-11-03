@@ -83,6 +83,9 @@
 //                        the next flush and named in StateRef.files, carried
 //                        by Save As, and read back by the plugin restored
 //                        from the new folder; refused paths a held notice
+//   server_held_path_notice  through the server: N builds of a chain say its
+//                        refused paths live each time, a late interface is
+//                        greeted with one, and none after a Load
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
@@ -109,6 +112,7 @@
 #include "sonora/engine_control_in_process.h"
 #include "sonora/fake_backend.h"
 #include "sonora/model/history.h"
+#include "sonora/model/op_codec.h"
 #include "sonora/model/operations.h"
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
@@ -1410,6 +1414,159 @@ int scenario_flush_read_across_load(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// #299 review B1: the held notice for a refused path went into the server's
+// notices_, which is capped and never cleared: every chain build added one
+// for a later interface, and a session opened since still replayed the old
+// session's. Through the server: the files plugin's refused makePath calls
+// are said live at each of N builds of its chain, an interface attaching
+// then is greeted with exactly one, and after a Load of another session
+// with none.
+int scenario_server_held_path_notice(const Args& a) {
+    namespace fs = std::filesystem;
+    std::printf("server_held_path_notice: one held notice per insert, none after a Load\n");
+    const fs::path first = fs::absolute(kDir);
+    const fs::path other = fs::absolute(kDir + "_other");
+    fs::remove_all(first);
+    fs::remove_all(other);
+    SessionConfig cfg;
+    cfg.dir = first.string();
+    cfg.track_count = 2;
+    cfg.ring_seconds = 0.5;
+    cfg.playback.max_param_stores = 16;
+    Session session(cfg);
+    session.create_dirs();
+    FakeBackend::Config bc;
+    bc.devices = {FakeBackend::onboard()};
+    bc.mode = FakeBackend::Mode::Thread;
+    FakeBackend audio(bc);
+    std::string error;
+    check(audio.open({"sonora", 2, 2, 48000, ""}, session, error) && audio.activate(error), "fake backend up");
+    session.disk().start();
+    History h(new_session(SessionSettings{}));
+    std::string e;
+    check(h.apply(track_op(100, 101, "A"), e) && h.apply(insert_op(100, 500, 0, "urn:sonora:test#files"), e) &&
+              h.apply(insert_op(100, 501, 1, kEgAmp), e),
+          "the document: A with the files plugin and eg-amp");
+    // The session the Load opens: the same track, no plug-in.
+    History quiet(new_session(SessionSettings{}));
+    quiet.apply(track_op(100, 101, "A"), e);
+    std::string bytes;
+    check(serialize(quiet.current(), WriteInfo{"test", 1}, bytes, error), "the other session serialised");
+    fs::create_directories(other);
+    {
+        std::ofstream out(other / "Other.sonora", std::ios::binary);
+        out << bytes;
+    }
+    EngineControlServer::Options opts;
+    opts.plugin_host = a.host;
+    opts.plugin_bundles = a.bundles;
+    opts.plugin_scan_at_start = false;
+    opts.initial_document = std::make_shared<Snapshot>(h.current());
+    {
+        InProcessEngine engine(session, &audio, opts);
+        check(engine.connect(error), "connected");
+        api::Inbox in;
+        const auto until = [&](const std::function<bool()>& pred, uint64_t ms) {
+            const uint64_t end = now_ms() + ms;
+            while (now_ms() < end) {
+                engine.poll(in);
+                if (pred()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            engine.poll(in);
+            return pred();
+        };
+        const auto refused_in = [](const std::vector<api::EngineEvent>& events) {
+            std::size_t n = 0;
+            for (const auto& ev : events)
+                n += ev.kind == api::EventKind::Notice && ev.text.find("makePath refused") != std::string::npos ? 1 : 0;
+            return n;
+        };
+        // What an interface attaching now is greeted with.
+        const auto greeting = [&]() {
+            struct Got {
+                std::mutex mutex;
+                std::vector<std::string> frames;
+            };
+            auto got = std::make_shared<Got>();
+            EngineControlServer& server = engine.server();
+            const auto id = server.attach(
+                [got](EngineControlServer::Frame frame) {
+                    std::lock_guard<std::mutex> lock(got->mutex);
+                    got->frames.push_back(*frame);
+                },
+                {});
+            const auto received = [&got]() {
+                std::vector<std::string> frames;
+                {
+                    std::lock_guard<std::mutex> lock(got->mutex);
+                    frames = got->frames;
+                }
+                api::wire::Reassembler reassembler;
+                api::Inbox late;
+                std::string message, error2;
+                for (const std::string& f : frames)
+                    if (reassembler.add(f, message, error2) == api::wire::Reassembler::Result::Complete)
+                        api::wire::decode_into(message, late, error2);
+                return late;
+            };
+            // The standing events follow the catalog, in the same turn.
+            until([&] { return !received().catalogs.empty(); }, 3000);
+            until([] { return false; }, 300);
+            server.detach(id);
+            return received().events;
+        };
+        const auto running = [&]() { return (engine.state().track(0).inserts[0].flags & api::kInsertRunning) != 0; };
+        check(until([&] { return running() && refused_in(in.events) >= 1; }, 20000),
+              "the chain runs, and its refused paths are said");
+        const int builds = 3;
+        for (int k = 0; k < builds; ++k) {
+            // eg-amp out and back in: the chain is built again twice, and
+            // each build's host refuses the plug-in's paths again.
+            for (const bool active : {false, true}) {
+                api::ModelRequest m;
+                m.action = api::ModelAction::Apply;
+                model::encode_operation(SetInsertActive{501, active}, m.op, e);
+                engine.submit(m);
+                const std::size_t said = refused_in(in.events);
+                until([&] { return refused_in(in.events) > said; }, 15000);
+            }
+        }
+        const std::size_t live = refused_in(in.events);
+        std::printf("  said live %zu times over %d builds\n", live, 1 + 2 * builds);
+        check(live >= std::size_t(1 + builds), "  said again at each new build");
+        const std::vector<api::EngineEvent> late = greeting();
+        std::printf("  a late interface is greeted with %zu of them\n", refused_in(late));
+        check(refused_in(late) == 1, "an interface attaching now is greeted with exactly one");
+
+        api::ModelRequest load;
+        load.action = api::ModelAction::Load;
+        load.op = api::wire::encode_load((other / "Other.sonora").string(), bytes);
+        const uint64_t load_seq = engine.submit(load);
+        api::CommandReply loaded;
+        check(until(
+                  [&] {
+                      for (const auto& r : in.replies)
+                          if (r.seq == load_seq) loaded = r;
+                      return loaded.seq == load_seq;
+                  },
+                  10000),
+              "the Load answered");
+        if (!loaded.message.empty()) std::printf("  load: %s\n", loaded.message.c_str());
+        check(loaded.result == DispatchResult::Ok, "the Load: Ok");
+        until([] { return false; }, 300);
+        check(refused_in(greeting()) == 0, "after it, an interface attaching is greeted with none of them");
+        engine.shutdown();
+        audio.deactivate();
+        engine.server().after_deactivate();
+        session.stop();
+    }
+    fs::remove_all(first);
+    fs::remove_all(other);
+    fs::remove_all(kScratch);
+    return failures ? 1 : 0;
+}
+
 // BACKLOG Track 4 item 5, "Untested: the GetState timeout". A plug-in whose
 // save() never comes back (here: the worker plugin's, slowed past
 // kReplyTimeoutMs) must not hold File > Save: at the deadline its read fails
@@ -1705,7 +1862,8 @@ int scenario_touch_faults(const Args& a) {
     check(rig.hosting->touches_lost(100) == 0 && rig.hosting->param_unmapped(501) == 0,
           "  with counts of 0, not the last session's");
     check(rig.hosting->take_notices().empty(), "  and none of its notices");
-    check(rig.hosting->take_held_notices().empty(), "  nor held ones");
+    check(rig.hosting->take_held_notices().empty() && rig.hosting->held_notices().empty(),
+          "  nor held ones, to say or to replay");
     send(pc::Fault{pc::FaultKind::ParamUnmapped, 0, 2, ""});
     send(pc::Fault{pc::FaultKind::EventsDropped, -1, 3, ""});
     check(rig.hosting->take_notices().size() == 2 && rig.hosting->param_unmapped(501) == 2 &&
@@ -2247,6 +2405,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "flush_active_folder") rc = scenario_flush_active_folder(a);
     else if (a.scenario == "flush_read_across_load") rc = scenario_flush_read_across_load(a);
     else if (a.scenario == "plugin_files_restore") rc = scenario_plugin_files_restore(a);
+    else if (a.scenario == "server_held_path_notice") rc = scenario_server_held_path_notice(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());
     if (rc == 0 && failures) rc = 1;
     std::printf("%s: %s\n", a.scenario.c_str(), rc == 0 ? "ok" : rc == kSkip ? "skipped" : "FAILED");

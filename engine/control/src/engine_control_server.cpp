@@ -1592,6 +1592,16 @@ void EngineControlServer::greet(ClientId id) {
     send_catalog(client);
     for (const std::string& e : notices_) send_to(client, e);
     for (const auto& [insert, e] : plugin_faults_) send_to(client, e);
+    if (hosting_) {
+        for (const auto& [insert, text] : hosting_->held_notices()) {
+            api::EngineEvent e;
+            e.kind = api::EventKind::Notice;
+            e.text = text;
+            std::string encoded;
+            api::wire::encode(e, encoded);
+            send_to(client, encoded);
+        }
+    }
     for (const std::string* e :
          {&session_folder_, &latency_, &inputs_missing_, &take_failed_, &fatal_,
           &recovery_offer_}) {
@@ -3021,12 +3031,16 @@ void EngineControlServer::tick() {
             post_transient(e);
         }
         // Held: a file a plug-in keeps may be missing from the session, which
-        // the operator must know whenever they look (ADR-0029 §6).
+        // the operator must know whenever they look (ADR-0029 §6). Not in
+        // notices_, which is never cleared and capped: hosting keeps them by
+        // insert for this session, and a client attaching later is sent
+        // those (attach()), so restarts never crowd it and a session opened
+        // since replays none of the last one's.
         for (std::string& text : hosting_->take_held_notices()) {
             api::EngineEvent e;
             e.kind = api::EventKind::Notice;
             e.text = std::move(text);
-            post_event(e);
+            post_transient(e);
         }
         show_inserts(false);
     }

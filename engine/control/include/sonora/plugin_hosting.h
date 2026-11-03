@@ -180,9 +180,15 @@ public:
     // Notices the operator must see whenever they look, not only the clients
     // attached when it happened: a file path the host refused for a plugin
     // (Fault{Plugin} with a count, ADR-0029 §6), so a file the plugin keeps
-    // may be missing from the session. The server posts each as a held
-    // Notice, once a run per insert.
+    // may be missing from the session. Those said since the last call, once
+    // a run per insert: the server sends each to the clients attached now,
+    // and replays held_notices() to one that attaches later.
     std::vector<std::string> take_held_notices();
+    // Every held notice standing, by insert id (0: the run's own), for an
+    // interface that attaches later: one per insert however often its chain
+    // was built again, none of a session opened before this one, and none
+    // for an insert the document no longer has.
+    const std::map<model::Id, std::string>& held_notices() const { return held_; }
 
     // Chains still starting with the session (for "Loading plug-ins (n of
     // m)"); 0 of 0 when none.
@@ -319,6 +325,9 @@ private:
     // Running and pending chains follow a moved session folder (their next
     // restart's Load names the new one).
     void follow_session_dir();
+    // A held notice for `insert` (0: the run's), standing until the session
+    // changes or the insert leaves the document.
+    void hold(model::Id insert, std::string text);
     // GetState requests: a host that answers, a bound host that changes
     // (restart, edit, chain dropped), one past its deadline.
     void take_state_reply(model::Id track, const std::string& bytes);
@@ -366,8 +375,11 @@ private:
     std::map<model::Id, uint64_t> param_unmapped_;
     std::map<model::Id, uint64_t> touches_lost_;  // by track
     std::vector<std::string> notices_;
-    std::vector<std::string> held_notices_;   // this session's
-    std::string run_notice_;                  // no scratch folder this run
+    // Standing held notices by insert id (0: the run's own, no scratch
+    // root), one each, the latest replacing the last; and the ids said
+    // since take_held_notices().
+    std::map<model::Id, std::string> held_;
+    std::vector<model::Id> held_new_;
     // "<scratch root>/<pid>-<n>": this object's makePath folders, removed
     // with it; empty when there is no root. A session opened takes the
     // next `session_serial_`, so ids reused by the next session never share
