@@ -588,7 +588,8 @@ int touch_returns_to_static(uint32_t block, uint32_t automatch_ms, std::vector<f
     Session& s = *rig.session;
     for (std::size_t e = 1; e < s.tracks().size(); ++e) {
         s.tracks()[e]->set_pan(1.0f);
-        s.tracks()[e]->set_gain(gain_of_db(kStaticDb));
+        // The static too: a return moved onto this row reads static_gain().
+        s.tracks()[e]->set_mix_gain(gain_of_db(kStaticDb));
         s.tracks()[e]->set_automation(Track::Automation::Touch);
     }
     Track& track = *s.tracks()[0];
