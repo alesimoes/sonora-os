@@ -232,7 +232,15 @@ int test_hot_square_every_factor() {
             CHECK(hot.resets == 0);
             CHECK(hot.most < TriodeStage::kMaxIterations);
             CHECK_LE(hot.peak, 2.0 * 250.0, "load voltage, V");
+            // A sanitizer's slowdown is uneven across blocks, so the ratio is
+            // reported there (measure::sanitized_build() does the same for
+            // the native suites); every other bar above stays held.
+#if SONORA_SANITIZED
+            std::printf("  info: ratio bar 6.0 reported, not held: sanitizer build
+");
+#else
             CHECK_LE(ratio, 6.0, "worst hot block over a quiet block's median");
+#endif
         }
     }
     return 0;

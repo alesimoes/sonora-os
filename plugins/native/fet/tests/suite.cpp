@@ -923,7 +923,7 @@ void hot_input(Suite& s) {
             if (!ceiling)
                 s.check_le(what + ": deepest reduction, second half", deepest, deepest_bar + 0.5, "dB",
                            fmt("the gate's forward limit allows %.1f dB", deepest_bar));
-            s.check_le(what + ": worst block over the quiet median, minimum of 3 runs", w / median, ratio_bar, "x",
+            s.check_time_le(what + ": worst block over the quiet median, minimum of 3 runs", w / median, ratio_bar, "x",
                        fmt("worst %.1f us; median %.1f us on a -60 dBFS square", w, median));
             s.check_time_le(what + ": worst block, minimum of 3 runs", w, 667.0, "us",
                             "the 128-frame period at 192 kHz: block cost independent of the base rate");

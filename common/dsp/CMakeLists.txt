@@ -55,6 +55,8 @@ target_compile_options(sonora_dsp PUBLIC
 foreach(t filters oversampling loudness dynamics limiter fdn triode opto fet noise tape transformer)
   add_executable(test_dsp_${t} tests/test_${t}.cpp)
   target_link_libraries(test_dsp_${t} PRIVATE sonora_dsp)
+  # The root CMakeLists.txt's SONORA_SANITIZED: timing bars are reported, not held.
+  target_compile_definitions(test_dsp_${t} PRIVATE SONORA_SANITIZED=$<BOOL:${SONORA_SANITIZED}>)
   add_test(NAME dsp_${t} COMMAND test_dsp_${t})
 endforeach()
 # The portable two-lane triode solve (src/arch/generic/triode_pair.cpp)
@@ -64,6 +66,7 @@ if(NOT SONORA_DSP_ARCH STREQUAL "generic")
   add_executable(test_dsp_triode_generic tests/test_triode.cpp src/triode.cpp src/oversampling.cpp src/fft.cpp
                  src/arch/generic/triode_pair.cpp src/arch/generic/denormals.cpp)
   target_include_directories(test_dsp_triode_generic PRIVATE include)
+  target_compile_definitions(test_dsp_triode_generic PRIVATE SONORA_SANITIZED=$<BOOL:${SONORA_SANITIZED}>)
   target_link_libraries(test_dsp_triode_generic PRIVATE sonora_base)
   target_compile_options(test_dsp_triode_generic PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off> $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
