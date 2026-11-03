@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -12,7 +13,9 @@
 #include <system_error>
 #include <utility>
 
+#include <dirent.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
@@ -51,6 +54,16 @@ bool inside(const std::string& path, const std::string& folder) {
     return path.size() == folder.size() || folder.back() == '/' || path[folder.size()] == '/';
 }
 
+// A symlink stays inside `root` only when it resolves all the way, to a path
+// there. weakly_canonical stops at a link whose target is missing, so a
+// dangling link out of the folder looked inside, and the plugin's write then
+// went through it (found by the #276 review N6 test).
+bool link_inside(const fs::path& link, const std::string& root) {
+    std::error_code ec;
+    const fs::path c = fs::canonical(link, ec);
+    return !ec && inside(c.string(), root);
+}
+
 std::string canonical_or_empty(const std::string& p) {
     std::error_code ec;
     const fs::path c = fs::weakly_canonical(p, ec);
@@ -76,6 +89,50 @@ std::string human_bytes(uint64_t n) {
     return text;
 }
 
+// A copy is synced this often, so the dirty pages the last fdatasync has to
+// write stay small and the time a copy has taken is the time it really took
+// (writes into the page cache alone would look fast until the end).
+constexpr uint64_t kSyncEveryBytes = uint64_t{64} << 20;
+
+struct Fd {
+    int fd = -1;
+    explicit Fd(int f = -1) : fd(f) {}
+    Fd(const Fd&) = delete;
+    Fd& operator=(const Fd&) = delete;
+    ~Fd() {
+        if (fd >= 0) ::close(fd);
+    }
+    explicit operator bool() const { return fd >= 0; }
+};
+
+// `name` under `parent`, as a real directory: made first when absent (mkdirat
+// does not follow a link that is already there), then opened without
+// following one. A symlink, or anything that is not a folder, is refused, so
+// nothing is ever made or written through a link.
+int open_real_dir(int parent, const char* name, std::string& why) {
+    if (::mkdirat(parent, name, 0755) != 0 && errno != EEXIST) {
+        why = std::strerror(errno);
+        return -1;
+    }
+    const int fd = ::openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) why = errno == ELOOP || errno == ENOTDIR ? "it is a symlink or not a folder" : std::strerror(errno);
+    return fd;
+}
+
+// ".incoming-<pid>-<n>": the pid, or 0 for any other name.
+pid_t incoming_pid(const char* name) {
+    static constexpr char kPrefix[] = ".incoming-";
+    if (std::strncmp(name, kPrefix, sizeof kPrefix - 1) != 0) return 0;
+    const char* p = name + sizeof kPrefix - 1;
+    long long pid = 0;
+    const char* digits = p;
+    while (*p >= '0' && *p <= '9' && pid < (1LL << 31)) pid = pid * 10 + (*p++ - '0');
+    if (p == digits || *p != '-' || pid <= 0 || pid >= (1LL << 31)) return 0;
+    const char* n = ++p;
+    while (*p >= '0' && *p <= '9') ++p;
+    return p != n && *p == '\0' ? pid_t(pid) : 0;
+}
+
 char* c_make_path(LV2_State_Make_Path_Handle h, const char* path) {
     return static_cast<StatePaths*>(h)->make_path(path);
 }
@@ -92,6 +149,32 @@ void c_free_path(LV2_State_Free_Path_Handle h, char* path) { static_cast<StatePa
 void mark_processing_thread() noexcept { t_processing = true; }
 bool on_processing_thread() noexcept { return t_processing; }
 
+std::size_t sweep_incoming(const std::string& folder) {
+    if (folder.empty()) return 0;
+    const Fd top(::open(folder.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (!top) return 0;
+    const int files = ::openat(top.fd, kPluginFiles, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (files < 0) return 0;  // none yet, or a link: nothing is removed through it
+    DIR* dir = ::fdopendir(files);
+    if (!dir) {
+        ::close(files);
+        return 0;
+    }
+    std::size_t removed = 0;
+    const pid_t self = ::getpid();
+    while (const dirent* e = ::readdir(dir)) {
+        const pid_t pid = incoming_pid(e->d_name);
+        // Pid 0 is not ours; a pid that runs is another host's copy in
+        // progress (or a recycled pid: the file then waits a session more).
+        if (pid == 0 || pid == self || ::kill(pid, 0) == 0 || errno != ESRCH) continue;
+        struct stat st {};
+        if (::fstatat(files, e->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(st.st_mode)) continue;
+        if (::unlinkat(files, e->d_name, 0) == 0) ++removed;
+    }
+    ::closedir(dir);
+    return removed;
+}
+
 StatePaths::StatePaths(std::string scratch_dir, std::string session_dir, CopyLimits limits)
     : scratch_(std::move(scratch_dir)), session_(std::move(session_dir)), limits_(std::move(limits)) {
     make_ = {this, c_make_path};
@@ -100,6 +183,36 @@ StatePaths::StatePaths(std::string scratch_dir, std::string session_dir, CopyLim
     make_f_ = {LV2_STATE__makePath, &make_};
     map_f_ = {LV2_STATE__mapPath, &map_};
     free_f_ = {LV2_STATE__freePath, &free_};
+    sweep_once(session_);
+}
+
+void StatePaths::sweep_once(const std::string& folder) {
+    if (folder.empty() || !swept_.insert(folder).second) return;
+    sweep_incoming(folder);
+}
+
+uint64_t StatePaths::now_ms() const {
+    if (limits_.clock) return limits_.clock();
+    return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count());
+}
+
+bool StatePaths::out_of_time() const { return now_ms() - save_started_ms_ >= limits_.budget_ms; }
+
+std::string StatePaths::out_of_time_text(const std::string& given) const {
+    return "its files took more than the " + std::to_string(limits_.budget_ms / 1000) +
+           " s a save may spend copying them (stopped at " + given + "): the session disk is too slow for them";
+}
+
+bool StatePaths::seen_now(const std::string& path, Seen& out) {
+    struct stat st {};
+    if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+    out.dev = uint64_t(st.st_dev);
+    out.ino = uint64_t(st.st_ino);
+    out.size = uint64_t(st.st_size);
+    out.mtime_ns = int64_t(st.st_mtim.tv_sec) * 1000000000 + int64_t(st.st_mtim.tv_nsec);
+    return true;
 }
 
 bool StatePaths::refuse_rt() noexcept {
@@ -148,7 +261,7 @@ char* StatePaths::make_path(const char* path) {
     for (const fs::path& part : fs::path(rel).lexically_normal().parent_path()) {
         at /= part;
         const fs::file_status st = fs::symlink_status(at, ec);
-        if (fs::is_symlink(st) && !inside(canonical_or_empty(at.string()), root)) {
+        if (fs::is_symlink(st) && !link_inside(at, root)) {
             refuse("makePath refused " + rel.substr(0, 512) + ": a symlink out of its folder");
             return nullptr;
         }
@@ -157,14 +270,15 @@ char* StatePaths::make_path(const char* path) {
             return nullptr;
         }
     }
-    if (fs::is_symlink(fs::symlink_status(full, ec)) && !inside(canonical_or_empty(full.string()), root)) {
+    if (fs::is_symlink(fs::symlink_status(full, ec)) && !link_inside(full, root)) {
         refuse("makePath refused " + rel.substr(0, 512) + ": a symlink out of its folder");
         return nullptr;
     }
     return dup(full.string());
 }
 
-bool StatePaths::name_in(const std::string& canonical, const std::string& folder, pc::StateFile& out) const {
+bool StatePaths::name_in(const std::string& canonical, const std::string& folder, pc::StateFile& out,
+                         std::string& error) {
     const std::string root = canonical_or_empty(folder);
     if (root.empty() || !inside(canonical, root) || canonical.size() <= root.size() + 1) return false;
     const std::string rel = canonical.substr(root.size() + (root.back() == '/' ? 0 : 1));
@@ -172,46 +286,88 @@ bool StatePaths::name_in(const std::string& canonical, const std::string& folder
     if (rel.compare(0, prefix.size(), prefix) != 0 || rel.size() < prefix.size() + 64) return false;
     const std::string sha = rel.substr(prefix.size(), 64);
     if (!pc::state_file_path_valid(rel, sha)) return false;
-    std::error_code ec;
-    const uintmax_t size = fs::file_size(canonical, ec);
+    Seen now;
     // Over the cap (put there by hand): not named by it, so copy_in refuses
     // it with the text, rather than the engine refusing the whole State.
-    if (ec || uint64_t(size) > limits_.file_bytes) return false;
-    // Content-addressed and append-only: the directory is its hash, so it is
-    // not read again (with kGetStateNoCopy nothing may be).
-    out = {rel, sha, uint64_t(size)};
+    if (!seen_now(canonical, now) || now.size > limits_.file_bytes) return false;
+    now.sha = sha;
+    // The directory is the file's hash only while nobody rewrote it: a
+    // looper writing its loop back in place, or a received folder whose
+    // files do not match their names (#276 review N3). Known unchanged: not
+    // read again.
+    const auto known = seen_.find(canonical);
+    if (known == seen_.end() || !(known->second == now)) {
+        if (no_copy_) {
+            error = "plugin files are saved after the take (" + rel + " has to be checked first)";
+            return false;
+        }
+        const Fd src(::open(canonical.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+        if (!src) return false;
+        Sha256 hash;
+        std::vector<char> buf(std::size_t(1) << 20);
+        uint64_t total = 0;
+        for (;;) {
+            if (out_of_time()) {
+                error = out_of_time_text(rel);
+                return false;
+            }
+            const ssize_t n = ::read(src.fd, buf.data(), buf.size());
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0) return false;
+            if (n == 0) break;
+            total += uint64_t(n);
+            if (total > now.size) return false;  // growing: it is not the file seen
+            hash.update(buf.data(), std::size_t(n));
+        }
+        Seen after;
+        // Not what its directory says, or rewritten while read: new bytes,
+        // which copy_in saves under their own hash.
+        if (total != now.size || hash.hex() != sha || !seen_now(canonical, after)) return false;
+        after.sha = sha;
+        if (!(after == now)) return false;
+        seen_[canonical] = now;
+    }
+    out = {rel, sha, now.size};
     return true;
 }
 
-bool StatePaths::free_space_of(const std::string& dir, uint64_t& free) const {
+bool StatePaths::free_space_of(const std::string& dir, int dir_fd, uint64_t& free) const {
     if (limits_.free_space) return limits_.free_space(dir, free);
     struct statvfs vfs {};
-    if (::statvfs(dir.c_str(), &vfs) != 0) return false;
+    if (::fstatvfs(dir_fd, &vfs) != 0) return false;
     free = uint64_t(vfs.f_bavail) * uint64_t(vfs.f_frsize);
     return true;
 }
 
 bool StatePaths::copy_in(const std::string& given, const std::string& canonical, pc::StateFile& out,
                          std::string& error) {
-    std::error_code ec;
     const fs::path into = fs::path(save_dir_) / kPluginFiles;
-    fs::create_directories(into, ec);
-    if (ec) {
-        error = "cannot make " + into.string() + ": " + ec.message();
+    // The save folder is the engine's; what is inside it may be anyone's. A
+    // "Plugin Files" or "<sha256>" that is a symlink would send the copy out
+    // of the session folder (#276 review N4): each is opened as a real
+    // directory, and everything after goes through those descriptors.
+    const Fd top(::open(save_dir_.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (!top) {
+        error = "cannot open the session folder " + save_dir_ + ": " + std::strerror(errno);
+        return false;
+    }
+    std::string why;
+    const Fd files(open_real_dir(top.fd, kPluginFiles, why));
+    if (!files) {
+        error = "cannot save plugin files into " + into.string() + ": " + why;
         return false;
     }
     const std::string name = fs::path(given).filename().string();
     // `canonical` has no link left in it; O_NOFOLLOW keeps one swapped in
     // since from being followed, and fstat sizes what was opened.
-    const int src = ::open(canonical.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (src < 0) {
+    const Fd src(::open(canonical.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+    if (!src) {
         error = "cannot read " + given + ": " + std::strerror(errno);
         return false;
     }
     struct stat st {};
-    if (::fstat(src, &st) != 0 || !S_ISREG(st.st_mode)) {
+    if (::fstat(src.fd, &st) != 0 || !S_ISREG(st.st_mode)) {
         error = "cannot read " + given + ": not a regular file";
-        ::close(src);
         return false;
     }
     // Every refusal before the first byte is written: a plugin's file that
@@ -220,42 +376,48 @@ bool StatePaths::copy_in(const std::string& given, const std::string& canonical,
     if (size > limits_.file_bytes) {
         error = "its file " + given + " is " + human_bytes(size) + ", over the " + human_bytes(limits_.file_bytes) +
                 " one plug-in file may be";
-        ::close(src);
         return false;
     }
     if (size > limits_.total_bytes - std::min(copied_bytes_, limits_.total_bytes)) {
         error = "its files come to more than the " + human_bytes(limits_.total_bytes) + " one save may copy (" +
                 given + " is " + human_bytes(size) + ", after " + human_bytes(copied_bytes_) + ")";
-        ::close(src);
         return false;
     }
     uint64_t free_bytes = 0;
-    if (!free_space_of(into.string(), free_bytes)) {
+    if (!free_space_of(into.string(), files.fd, free_bytes)) {
         error = "cannot tell how much room is left in " + into.string() + ": " + std::strerror(errno);
-        ::close(src);
         return false;
     }
     if (free_bytes < size || free_bytes - size < limits_.margin_bytes) {
         error = "not enough room to save " + given + " (" + human_bytes(size) + "): " + human_bytes(free_bytes) +
                 " free in " + into.string() + ", and " + human_bytes(limits_.margin_bytes) +
                 " must stay free for recording";
-        ::close(src);
         return false;
     }
-    const fs::path tmp = into / (".incoming-" + std::to_string(::getpid()) + "-" + std::to_string(++copies_));
-    const int dst = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+    // The pid names the host that owns it, so a host killed mid-copy leaves
+    // a file the next session open can tell is nobody's (sweep_incoming).
+    const std::string tmp = ".incoming-" + std::to_string(::getpid()) + "-" + std::to_string(++copies_);
+    // Read-only from its creation: a saved plugin file is never written again
+    // (#276 review N3); this descriptor is the one writer it has.
+    const int dst = ::openat(files.fd, tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0444);
     if (dst < 0) {
-        error = "cannot write " + tmp.string() + ": " + std::strerror(errno);
-        ::close(src);
+        error = "cannot write " + (into / tmp).string() + ": " + std::strerror(errno);
         return false;
     }
     // Hashed while copied: one read of the plugin's file, never held whole.
     Sha256 sha;
     std::vector<char> buf(std::size_t(1) << 20);
-    uint64_t total = 0;
+    uint64_t total = 0, unsynced = 0;
     bool ok = true;
     for (;;) {
-        const ssize_t n = ::read(src, buf.data(), buf.size());
+        // Stopped with a text while the engine still waits, rather than
+        // killed by its deadline with the copy half done.
+        if (out_of_time()) {
+            error = out_of_time_text(given);
+            ok = false;
+            break;
+        }
+        const ssize_t n = ::read(src.fd, buf.data(), buf.size());
         if (n < 0 && errno == EINTR) continue;
         if (n < 0) {
             error = "cannot read " + given + ": " + std::strerror(errno);
@@ -273,14 +435,27 @@ bool StatePaths::copy_in(const std::string& given, const std::string& canonical,
         }
         sha.update(buf.data(), std::size_t(n));
         if (!write_all(dst, buf.data(), std::size_t(n))) {
-            error = "cannot write " + tmp.string() + ": " + std::strerror(errno);
+            error = "cannot write " + (into / tmp).string() + ": " + std::strerror(errno);
             ok = false;
             break;
         }
+        unsynced += uint64_t(n);
+        if (unsynced >= kSyncEveryBytes) {
+            if (::fdatasync(dst) != 0) {
+                error = "cannot sync " + (into / tmp).string() + ": " + std::strerror(errno);
+                ok = false;
+                break;
+            }
+            unsynced = 0;
+        }
     }
-    ::close(src);
     if (ok && ::fdatasync(dst) != 0) {
-        error = "cannot sync " + tmp.string() + ": " + std::strerror(errno);
+        error = "cannot sync " + (into / tmp).string() + ": " + std::strerror(errno);
+        ok = false;
+    }
+    struct stat written {};
+    if (ok && ::fstat(dst, &written) != 0) {
+        error = "cannot read back " + (into / tmp).string() + ": " + std::strerror(errno);
         ok = false;
     }
     ::close(dst);
@@ -291,21 +466,31 @@ bool StatePaths::copy_in(const std::string& given, const std::string& canonical,
         ok = false;
     }
     if (ok) {
-        const fs::path final_path = fs::path(save_dir_) / rel;
-        fs::create_directories(final_path.parent_path(), ec);
-        if (fs::exists(final_path, ec) && fs::file_size(final_path, ec) == total) {
-            // Already saved, by another state or an earlier save: the same bytes.
-            fs::remove(tmp, ec);
-        } else if (::rename(tmp.c_str(), final_path.c_str()) != 0) {
-            error = "cannot move a plugin file into " + final_path.string() + ": " + std::strerror(errno);
+        const Fd dir(open_real_dir(files.fd, hex.c_str(), why));
+        // Moved over whatever has the name: the same bytes when a state or an
+        // earlier save put them there, and otherwise a file that no longer
+        // matches its hash, which these bytes put right. A link there is
+        // replaced, not followed.
+        if (!dir) {
+            error = "cannot save plugin files into " + (into / hex).string() + ": " + why;
+            ok = false;
+        } else if (::renameat(files.fd, tmp.c_str(), dir.fd, name.c_str()) != 0) {
+            error = "cannot move a plugin file into " + (into / hex / name).string() + ": " + std::strerror(errno);
             ok = false;
         }
     }
     if (!ok) {
-        fs::remove(tmp, ec);
+        ::unlinkat(files.fd, tmp.c_str(), 0);
         return false;
     }
     copied_bytes_ += total;
+    Seen saved;
+    saved.dev = uint64_t(written.st_dev);
+    saved.ino = uint64_t(written.st_ino);
+    saved.size = uint64_t(written.st_size);
+    saved.mtime_ns = int64_t(written.st_mtim.tv_sec) * 1000000000 + int64_t(written.st_mtim.tv_nsec);
+    saved.sha = hex;
+    seen_[canonical_or_empty((fs::path(save_dir_) / rel).string())] = saved;
     out = {rel, hex, total};
     return true;
 }
@@ -320,12 +505,17 @@ char* StatePaths::abstract_path(const char* absolute) {
     if (const auto it = named_.find(given); it != named_.end()) return dup(it->second);
     const std::string canonical = canonical_or_empty(given);
     pc::StateFile f;
-    bool named = !canonical.empty() && name_in(canonical, save_dir_, f);
+    std::string check_error;
+    bool named = !canonical.empty() && name_in(canonical, save_dir_, f, check_error);
     // A file restored from the folder this session had before its first
     // Save or a Save As: the same relative path, which the engine's Save As
     // brings along (ADR-0029 §6).
-    for (std::size_t k = previous_.size(); !named && !canonical.empty() && k-- > 0;)
-        named = name_in(canonical, previous_[k], f);
+    for (std::size_t k = previous_.size(); !named && check_error.empty() && !canonical.empty() && k-- > 0;)
+        named = name_in(canonical, previous_[k], f, check_error);
+    if (!check_error.empty()) {
+        if (failed_.empty()) failed_ = check_error;
+        return dup(given);
+    }
     if (!named) {
         std::error_code ec;
         if (canonical.empty() || !fs::is_regular_file(canonical, ec)) {
@@ -333,6 +523,12 @@ char* StatePaths::abstract_path(const char* absolute) {
             // plugin decides what a missing file means at restore.
             return dup(given);
         }
+        // An absolute path a restored state held (ADR-0029 §6): it came from
+        // session data, which may come from anyone, so it is named as it was
+        // and never copied in. Otherwise a received session naming
+        // ~/.ssh/id_rsa would carry that file away in its own Plugin Files/
+        // at the next save (#276 review N5).
+        if (passed_through_.count(given) || passed_through_.count(canonical)) return dup(given);
         if (no_copy_) {
             if (failed_.empty()) failed_ = "plugin files are saved after the take (" + given + ")";
             return dup(given);
@@ -363,8 +559,17 @@ char* StatePaths::absolute_path(const char* abstract) {
     if (refuse_rt()) return nullptr;
     const std::string given = abstract ? abstract : "";
     // States saved before wire 4 (lilv's own mapPath, no folders) hold
-    // absolute paths; they stay what they were.
-    if (!given.empty() && given[0] == '/') return dup(given);
+    // absolute paths; they stay what they were, and are remembered so a save
+    // does not copy them in (abstract_path).
+    if (!given.empty() && given[0] == '/') {
+        if (given.size() <= pc::kMaxPathBytes) {
+            const std::string canonical = canonical_or_empty(given);
+            std::lock_guard<std::mutex> lock(mutex_);
+            passed_through_.insert(given);
+            if (!canonical.empty()) passed_through_.insert(canonical);
+        }
+        return dup(given);
+    }
     std::string session;
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -375,7 +580,19 @@ char* StatePaths::absolute_path(const char* abstract) {
                (session.empty() ? ": the session has no folder" : ": it escapes the session folder"));
         return nullptr;
     }
-    return dup((fs::path(session) / given).string());
+    const std::string full = (fs::path(session) / given).string();
+    // What the session's file is as the plugin gets it: the next save names
+    // it by its directory's sha without reading it, unless it changed.
+    Seen seen;
+    const std::string canonical = canonical_or_empty(full);
+    const std::string prefix = std::string(kPluginFiles) + "/";
+    if (!canonical.empty() && given.compare(0, prefix.size(), prefix) == 0 && given.size() > prefix.size() + 64 &&
+        pc::state_file_path_valid(given, given.substr(prefix.size(), 64)) && seen_now(canonical, seen)) {
+        seen.sha = given.substr(prefix.size(), 64);
+        std::lock_guard<std::mutex> lock(mutex_);
+        seen_[canonical] = seen;
+    }
+    return dup(full);
 }
 
 void StatePaths::free_path(char* path) {
@@ -393,6 +610,11 @@ void StatePaths::begin_save(const std::string& save_dir, bool no_copy) {
     files_.clear();
     named_.clear();
     copied_bytes_ = 0;
+    // Within a reply's transit of when the engine's deadline for this GetState
+    // starts (sent, or the previous State on this host answered): the 15 s
+    // kStateCopyBudgetMs leaves over cover the difference.
+    save_started_ms_ = now_ms();
+    sweep_once(save_dir);
     if (!save_dir.empty() && save_dir != session_) {
         if (!session_.empty()) {
             bool known = false;

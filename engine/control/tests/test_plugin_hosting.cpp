@@ -75,6 +75,9 @@
 //                        its read fails by name at the deadline, its host is
 //                        killed and restarts from the document, the other
 //                        track's state is still saved, and no turn waited
+//   state_reads_in_turn  two slow saves on one chain: each GetState's
+//                        deadline starts when the one before is answered,
+//                        so both are read and the host is not killed
 //
 // Built where the host is (tools/build-plugins.sh). Exit 77: a Debian
 // plugin this needs is missing.
@@ -1356,6 +1359,55 @@ int scenario_state_read_timeout(const Args& a) {
     return failures ? 1 : 0;
 }
 
+// #283 review: the host answers the GetStates of one chain in order, and
+// each deadline used to start when all were sent, so the second instance had
+// only what the first one's save() left of the budget. Two saves of 0.7 x
+// kReplyTimeoutMs on one track: both are inside their own budget, together
+// they pass one. Each must be read, and the host not killed.
+int scenario_state_reads_in_turn(const Args& a) {
+    namespace pc = plugin::control;
+    std::printf("state_reads_in_turn: two slow saves on one track, each inside its own deadline\n");
+    const int slow = pc::kReplyTimeoutMs * 7 / 10;
+    const std::string slow_ms = std::to_string(slow);
+    ::setenv("SONORA_TEST_SLOW_SAVE_MS", slow_ms.c_str(), 1);
+    struct Unset {
+        ~Unset() { ::unsetenv("SONORA_TEST_SLOW_SAVE_MS"); }
+    } unset;
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kWorker, {{"gain", 0.5f}}));
+    rig.apply(insert_op(100, 501, 1, kWorker, {{"gain", 0.25f}}));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "A's chain of two runs");
+    for (int i = 0; i < 200; ++i) rig.turn();
+
+    const uint64_t started = now_ms();
+    const uint64_t id = rig.hosting->request_states(0, rig.history.current());
+    std::vector<PluginHosting::Flush> done;
+    rig.until(
+        [&] {
+            for (PluginHosting::Flush& f : rig.hosting->take_flushes()) done.push_back(std::move(f));
+            return !done.empty();
+        },
+        uint64_t(2 * pc::kReplyTimeoutMs) + 5000);
+    const uint64_t took = now_ms() - started;
+    std::printf("  the flush ended after %llu ms\n", (unsigned long long)took);
+    check(done.size() == 1 && done[0].id == id, "the flush ends");
+    if (done.size() != 1) return 1;
+    for (const std::string& line : done[0].failed) std::printf("  failed: %s\n", line.c_str());
+    check(done[0].failed.empty(), "  nothing failed: the second deadline started at the first reply");
+    check(took >= uint64_t(2 * slow), "  after both saves, one after the other");
+    bool first = false, second = false;
+    for (const auto& s : done[0].states) {
+        first = first || (s.insert == 500 && !s.sha256.empty());
+        second = second || (s.insert == 501 && !s.sha256.empty());
+    }
+    check(first && second, "  both states read");
+    check((rig.hosting->insert_flags(501) & api::kInsertRestarting) == 0 && rig.bound_at(0, kBlock),
+          "  the host was not killed: the chain plays on");
+    return failures ? 1 : 0;
+}
+
 // BACKLOG Track 4 item 5: the worker's refused messages were counted in the
 // host and told to nobody, so a sampler that never got its sample played on
 // as if it had. ADR-0012 change G, as for non-finite output: one Notice the
@@ -2047,6 +2099,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "state_flush") rc = scenario_state_flush(a);
     else if (a.scenario == "server_state_flush") rc = scenario_server_state_flush(a);
     else if (a.scenario == "state_read_timeout") rc = scenario_state_read_timeout(a);
+    else if (a.scenario == "state_reads_in_turn") rc = scenario_state_reads_in_turn(a);
     else if (a.scenario == "flush_active_folder") rc = scenario_flush_active_folder(a);
     else if (a.scenario == "flush_read_across_load") rc = scenario_flush_read_across_load(a);
     else std::fprintf(stderr, "unknown scenario %s\n", a.scenario.c_str());

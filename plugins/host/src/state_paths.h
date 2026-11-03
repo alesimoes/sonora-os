@@ -18,11 +18,27 @@
 //                  CopyLimits::file_bytes, a copy that takes the save past
 //                  total_bytes, or one that would leave less than
 //                  margin_bytes free fails the save before a byte is
-//                  written, its text naming the file and the cap; a failed
-//                  copy leaves no ".incoming-*" behind.
+//                  written, its text naming the file and the cap; a copy
+//                  still running when the save has used CopyLimits::budget_ms
+//                  stops and fails the save, so the engine's State deadline
+//                  never kills the host half way. A failed copy leaves no
+//                  ".incoming-*" behind. "Plugin Files/" and "<sha256>/" are
+//                  opened as real directories (O_NOFOLLOW) before anything is
+//                  made in them: a symlink there fails the save. A saved file
+//                  is read-only (0444). A file under "Plugin Files/" whose
+//                  size, mtime or inode is not the one this object last saw
+//                  (at restore, or when it saved or hashed it) is hashed again
+//                  before its directory's sha names it; one that no longer
+//                  matches is copied as new bytes.
 //   absolute_path  in restore(): "<session_dir>/<path>"; a path that escapes
 //                  the folder is refused (NULL). An absolute path, which
-//                  states saved before wire 4 hold, is returned as it is.
+//                  states saved before wire 4 hold, is returned as it is,
+//                  and abstract_path names it as given, never copying it in.
+//
+// At construction (the host's Load) and at the first save into a folder,
+// "Plugin Files/.incoming-<pid>-<n>" files whose host pid no longer runs are
+// removed: what a host killed mid-copy leaves. A live pid's are another
+// host's copy in progress, and stay.
 //   free_path      frees what the two above return (malloc'd, so a plugin
 //                  that calls free() instead is fine too).
 //
@@ -42,6 +58,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -61,7 +78,17 @@ struct CopyLimits {
     // Bytes free to an unprivileged writer on the filesystem holding `dir`,
     // or false. Empty: statvfs.
     std::function<bool(const std::string& dir, uint64_t& free)> free_space;
+    // Milliseconds a save may spend copying and hashing, from begin_save
+    // (host_control.h kStateCopyBudgetMs), and the clock that measures it.
+    // Empty clock: steady_clock. A test's clock may also act on the file
+    // being copied: it is read before every chunk.
+    uint64_t budget_ms = plugin::control::kStateCopyBudgetMs;
+    std::function<uint64_t()> clock;
 };
+
+// Removes "<folder>/Plugin Files/.incoming-<pid>-<n>" whose pid is not
+// running, through no link; returns how many.
+std::size_t sweep_incoming(const std::string& folder);
 
 class StatePaths {
 public:
@@ -103,11 +130,30 @@ private:
     bool refuse_rt() noexcept;
     void refuse(std::string text);
     // `canonical` relative to `<folder>/`, when it is a "Plugin Files/
-    // <sha256>/<name>" there: the relative path, sha and size recorded.
-    bool name_in(const std::string& canonical, const std::string& folder, plugin::control::StateFile& out) const;
-    bool free_space_of(const std::string& dir, uint64_t& free) const;
+    // <sha256>/<name>" there whose bytes are still that sha: the relative
+    // path, sha and size recorded. False with `error` set: the save fails
+    // (a check it may not read for under no_copy, or out of time).
+    bool name_in(const std::string& canonical, const std::string& folder, plugin::control::StateFile& out,
+                 std::string& error);
+    bool free_space_of(const std::string& dir, int dir_fd, uint64_t& free) const;
     bool copy_in(const std::string& given, const std::string& canonical, plugin::control::StateFile& out,
                  std::string& error);
+    uint64_t now_ms() const;
+    bool out_of_time() const;
+    std::string out_of_time_text(const std::string& given) const;
+    void sweep_once(const std::string& folder);
+
+    // What a file in "Plugin Files/" was when this object last knew its
+    // bytes; a file that is not that any more is hashed again.
+    struct Seen {
+        uint64_t dev = 0, ino = 0, size = 0;
+        int64_t mtime_ns = 0;
+        std::string sha;
+        bool operator==(const Seen& o) const {
+            return dev == o.dev && ino == o.ino && size == o.size && mtime_ns == o.mtime_ns && sha == o.sha;
+        }
+    };
+    static bool seen_now(const std::string& path, Seen& out);
 
     const std::string scratch_;
     mutable std::mutex mutex_;
@@ -121,6 +167,10 @@ private:
     std::map<std::string, std::string> named_;  // a path given -> what it was named, this save
     uint64_t copies_ = 0;
     uint64_t copied_bytes_ = 0;  // this save, against limits_.total_bytes
+    uint64_t save_started_ms_ = 0;
+    std::map<std::string, Seen> seen_;           // by canonical path
+    std::set<std::string> passed_through_;       // absolute paths absolute_path returned as given
+    std::set<std::string> swept_;                // folders whose stale ".incoming-*" are gone
     const CopyLimits limits_;
     std::string last_refusal_;
     std::atomic<uint64_t> refused_{0}, rt_refused_{0};
