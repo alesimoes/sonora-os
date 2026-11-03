@@ -686,8 +686,14 @@ private:
     // Hands the saver an autosave when one is due.
     void autosave_when_due();
     // The session's file as the engine knows it, from the last Load of a
-    // file or Save; empty for a session with none (no autosave then).
+    // file or Save; empty for a session with none, which is autosaved only
+    // while its folder is Untitled (ADR-0018 update of 2026-11-03).
     std::string session_file_;
+    // Saves handed to the saver and not yet answered: no untitled autosave
+    // meanwhile, since the Save may rename the folder and covers the edits.
+    int saves_in_flight_ = 0;
+    // Deletes the untitled autosave once a Save has given the session a file.
+    void drop_untitled_autosave();
     // The document revision the session file or the autosave holds, as far
     // as the engine knows: no autosave while the document is still at it.
     uint64_t covered_revision_ = 0;

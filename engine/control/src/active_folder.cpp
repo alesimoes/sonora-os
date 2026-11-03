@@ -138,6 +138,21 @@ void remove_unreferenced(const std::string& dir) {
     fs::remove(fs::path(dir), ec);
 }
 
+// The operator left the untitled session, so the autosave this engine wrote
+// there holds edits they chose not to keep (ADR-0018 update of 2026-11-03).
+// Only a regular file by that plain name: a symlink in its place is not the
+// engine's, and is data. The backups folder goes too if that emptied it.
+void discard_autosave(const std::string& dir, const std::string& name) {
+    if (name.empty() || name == "." || name == ".." || name.find('/') != std::string::npos) return;
+    const fs::path backups = fs::path(dir) / session_files::kBackupsDir;
+    if (!real_folder(backups)) return;
+    const fs::path file = backups / name;
+    std::error_code ec;
+    if (!fs::is_regular_file(fs::symlink_status(file, ec)) || ec) return;
+    fs::remove(file, ec);
+    if (fs::is_empty(backups, ec) && !ec) fs::remove(backups, ec);
+}
+
 // Whether `p` is `dir` or lies inside it, both in identity()'s spelling.
 bool within(const fs::path& p, const fs::path& dir) {
     auto pi = p.begin();
@@ -318,10 +333,14 @@ bool ActiveFolder::enter(Session& session, const std::string& path, Kind kind,
     // released first, another engine could enter it between the check and
     // the unlinks.
     const std::unique_ptr<platform::FolderLock> old_lock = std::move(lock_);
+    const std::string old_autosave = std::move(untitled_autosave_);
+    untitled_autosave_.clear();
     lock_ = std::move(lock);
     path_ = id;
     kind_ = kind;
     renamed_ = false;
+    // Before the data check, so a folder that held only the autosave goes.
+    if (!old_path.empty()) discard_autosave(old_path, old_autosave);
     if (old_disposable) remove_unreferenced(old_path);
     return true;
 }
