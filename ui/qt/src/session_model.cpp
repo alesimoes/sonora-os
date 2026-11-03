@@ -1096,6 +1096,46 @@ void SessionModel::selectTrack(int index) {
     sync();
 }
 
+QList<int> SessionModel::selectedTracksFor(int track) const {
+    const Selection& s = ctl_.selection();
+    const int n = static_cast<int>(ctl_.snapshot().edit->tracks.size());
+    QList<int> out;
+    if (s.track >= 0 && s.covers(track)) {
+        for (int i = s.track; i < s.track + s.tracks && i < n; ++i) out << i;
+    } else {
+        out << track;
+    }
+    return out;
+}
+
+void SessionModel::inputClick(int track, int modifiers) {
+    std::string why;
+    const auto& tracks = ctl_.snapshot().edit->tracks;
+    const int n = static_cast<int>(tracks.size());
+    const bool alt = (modifiers & Qt::AltModifier) != 0;
+    const bool shift = (modifiers & Qt::ShiftModifier) != 0;
+    // A plain click, or one on a track with no input: the toggle's own
+    // refusal says why, rather than a group silently skipping the track.
+    if ((!alt && !shift) || track < 0 || track >= n ||
+        tracks[static_cast<std::size_t>(track)]->kind != model::TrackKind::Audio) {
+        run(ctl_.toggle_input_monitor(track, why), why);
+        return;
+    }
+    const QList<bool> now = inputMonitors();
+    const bool on = !now[track];
+    QList<int> targets;
+    if (shift) {
+        targets = selectedTracksFor(track);
+    } else {
+        for (int i = 0; i < n; ++i) targets << i;
+    }
+    for (int i : targets) {
+        if (now[i] == on || tracks[static_cast<std::size_t>(i)]->kind != model::TrackKind::Audio)
+            continue;
+        if (!run(ctl_.toggle_input_monitor(i, why), why)) return;
+    }
+}
+
 void SessionModel::toggleAutolanes(int track) {
     std::string why;
     run(ctl_.toggle_autolanes(track, why), why);

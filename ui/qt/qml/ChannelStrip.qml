@@ -235,16 +235,18 @@ Rectangle {
             spacing: 2
             visible: !strip.isBus
             SButton {
+                objectName: strip.isBus ? "" : "stripArm" + strip.track
                 text: "R"; implicitWidth: strip.stateButton; implicitHeight: 18; fontPx: Theme.textCaption
                 active: strip.armed; activeColour: Theme.record
                 available: strip.shell.engineAlive
-                onClicked: strip.shell.invoke("track.toggle_arm", strip.track)
+                onClicked: (m) => strip.shell.armClick(strip.track, m.modifiers,
+                                                       strip.session.selectedTracksFor(strip.track))
             }
             SButton {
                 objectName: strip.isBus ? "" : "input" + strip.track
                 text: "I"; implicitWidth: strip.stateButton; implicitHeight: 18; fontPx: Theme.textCaption
                 active: strip.inputMonitor; activeColour: Theme.input
-                onClicked: strip.shell.invoke("track.toggle_input_monitor", strip.track)
+                onClicked: (m) => strip.session.inputClick(strip.track, m.modifiers)
             }
             SoloButton {
                 objectName: "solo" + strip.track
