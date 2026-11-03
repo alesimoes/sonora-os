@@ -44,7 +44,22 @@ SECONDS_ARG="${2:-60}"
 shift $(( $# > 2 ? 2 : $# ))
 PROCESSORS=("$@")
 if [[ ${#PROCESSORS[@]} -eq 0 ]]; then
-  PROCESSORS=(eq compressor gate limiter delay chorus phaser reverb tube opto fet tape)
+  # One name per line, alphabetical, so PRs adding a processor do not
+  # conflict with each other on a shared line.
+  PROCESSORS=(
+    chorus
+    compressor
+    delay
+    eq
+    fet
+    gate
+    limiter
+    opto
+    phaser
+    reverb
+    tape
+    tube
+  )
 fi
 MEASURE="$BUILD/sonora-dsp-measure"
 OUT="$BUILD/dsp-reports-cpu"
