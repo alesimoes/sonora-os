@@ -42,7 +42,8 @@ LABEL=org.sonora=1
 # The shellcheck, actionlint and ubuntu images CI checks run in are not ours
 # by label or name, so they are never candidates in the first place.
 KEEP_IMAGES=(sonora-build:trixie sonora-runtime:trixie sonora-ui:trixie
-             sonora-livebuild:trixie sonora-usbtest:trixie sonora-bwf-readers:trixie)
+             sonora-livebuild:trixie sonora-usbtest:trixie sonora-bwf-readers:trixie
+             sonora-qemu:trixie)
 CACHE_VOLUME=sonora-livebuild-work
 # A worktree whose git index or HEAD moved this recently may be mid-task even
 # if no agent locked it.
