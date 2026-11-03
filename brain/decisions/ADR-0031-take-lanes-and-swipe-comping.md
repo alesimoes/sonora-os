@@ -25,8 +25,10 @@
   counted, so the interface can say so.
 - §4: which lane a comped region came from is computed
   (`model::comp_origin()`), never stored.
-- §5: left for later: take folders' collapsed view, MIDI comping,
-  Consolidate.
+- §5: Consolidate: the engine renders, `model::consolidate_range()` replaces
+  the range with one region (one `PlaceRegion`, no version bump).
+- §6: left for later: take folders' collapsed view, MIDI comping, the engine
+  half of Consolidate.
 
 ## Context
 
@@ -117,14 +119,27 @@ format bump and go stale with the next trim, while the computed one stays
 right for any edit that keeps the audio where it was, and is simply absent
 after one that moves it.
 
-### 5. Not decided here
+### 5. Consolidate: the render is the engine's, the replacement is a member
+
+Consolidate (`ui.comping.consolidate`) renders [start, end) of a playlist
+(regions, fades, crossfades, gains) to one file, then makes it the only
+region there. The render is the engine's offline writer. The edit needs no
+new operation: the file enters the pool with `AddSource` (not undoable, as
+every source), and `model::consolidate_range()` returns one `PlaceRegion` of
+the whole range from the file's first frame, whose overwrite replaces what
+was there. It is sent in a Compound with a label, so it is one undo step; no
+protocol or format change. Refused when the range holds no region, or the
+file is missing, shorter than the range or not the track's channel count.
+Undo gives back the old regions; the rendered file stays in the pool.
+
+### 6. Not decided here
 
 - Logic's take folder, collapsed with the comp shown on the folder: an
   interface view over §1, `ui.comping.lanes`.
 - MIDI comping: MIDI regions are windows onto shared sequences
   (ADR-0014); refused until MIDI takes need it.
-- Consolidate (`ui.comping.consolidate`): rendering a comp to one file is
-  the engine's offline writer, not a model operation.
+- The offline writer and the control command that call §5 (the engine half
+  of `ui.comping.consolidate`), and the interface command.
 
 ## Rationale
 
