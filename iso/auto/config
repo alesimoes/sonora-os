@@ -24,9 +24,26 @@
 # bootstrap flavour, so /live/vmlinuz and the default menu entry both point at
 # the non-RT kernel. The machine then boots without RT and nothing says so --
 # the only symptom is xruns nobody can explain.
+#
+# The whole archive comes from one snapshot.debian.org timestamp (ADR-0002,
+# amendment of 2026-11-02). With deb.debian.org here, a trixie point release
+# or a DSA swapped the RT kernel between two builds of the same commit. The
+# timestamp must equal the one in config/archives/sonora-backports.list.chroot
+# (tools/test-image-config.sh checks it); bumping it is how the kernel moves.
+# The build-time Release files expire, hence sonora-snapshot.conf.chroot.
+#
+# The binary mirrors stay live on purpose: they are what the shipped system's
+# sources.list names, and a frozen source there would never get a security fix.
 set -e
 
+SONORA_SNAPSHOT=20261101T000000Z
+
 lb config noauto \
+  --mirror-bootstrap "http://snapshot.debian.org/archive/debian/$SONORA_SNAPSHOT/" \
+  --mirror-chroot "http://snapshot.debian.org/archive/debian/$SONORA_SNAPSHOT/" \
+  --mirror-chroot-security "http://snapshot.debian.org/archive/debian-security/$SONORA_SNAPSHOT/" \
+  --mirror-binary "http://deb.debian.org/debian/" \
+  --mirror-binary-security "http://security.debian.org/debian-security/" \
   --distribution trixie \
   --architectures amd64 \
   --linux-flavours rt-amd64 \
