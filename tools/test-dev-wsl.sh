@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The parts of tools/dev-wsl.sh that need neither WSL nor root: the wsl.conf
-# edit of the `user` step, the session-bus liveness check, the Windows log
-# path and the --log wrapper. Runs on any Linux (CI's "Shell scripts" job).
+# edit, wsl.conf backup and sudoers files of the `user` step, the tunnel and
+# restart checks of `audio`, the `stop` marker of `run`, the session-bus
+# liveness check, the Windows log path and the --log wrapper. Runs on any Linux (CI's "Shell scripts" job).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,9 +34,38 @@ conf "other default replaced" '[user]\ndefault=bob\n[boot]\nsystemd=true\n' $'[u
 conf "two [user] sections" '[user]\ndefault=a\n[network]\nhostname=x\n[user]\ndefault=b\n' \
   $'[user]\ndefault=sonora\n[network]\nhostname=x\n[user]'
 conf "default= of another section kept" '[network]\ndefault=keep\n' $'[network]\ndefault=keep\n\n[user]\ndefault=sonora'
+conf "CRLF header" '[user]\r\ndefault=bob\r\n' $'[user]\r\ndefault=sonora'
+conf "header with a comment" '[user] # set by hand\ndefault=bob\n' $'[user] # set by hand\ndefault=sonora'
+conf "commented-out header" '# [user]\n[boot]\nsystemd=true\n' $'# [user]\n[boot]\nsystemd=true\n\n[user]\ndefault=sonora'
 once="$(printf '[boot]\nsystemd=true' | wsl_conf_set_user sonora)"
 twice="$(printf '%s\n' "$once" | wsl_conf_set_user sonora)"
 if [[ $once == "$twice" ]]; then ok "wsl.conf edit is idempotent"; else bad "wsl.conf second edit differs"; fi
+
+# The operator's wsl.conf is kept once, before the first change.
+printf '[boot]\nsystemd=true\n' >"$TMP/wsl.conf"
+wsl_conf_write "$TMP/wsl.conf" a >/dev/null
+if [[ $(cat "$TMP/wsl.conf.sonora-bak" 2>/dev/null) == $'[boot]\nsystemd=true' ]]; then ok "wsl.conf backed up"; else bad "no wsl.conf backup"; fi
+wsl_conf_write "$TMP/wsl.conf" b >/dev/null
+if grep -q default=b "$TMP/wsl.conf" && ! grep -q default "$TMP/wsl.conf.sonora-bak"; then
+  ok "backup not overwritten by a later change"
+else
+  bad "backup overwritten or conf unchanged"
+fi
+wsl_conf_write "$TMP/none.conf" a >/dev/null
+if [[ -f $TMP/none.conf && ! -e $TMP/none.conf.sonora-bak ]]; then ok "no wsl.conf: none backed up"; else bad "missing wsl.conf case"; fi
+
+# sudoers: our file written, the pre-#284 duplicate removed only when it is ours.
+# shellcheck disable=SC2317,SC2329  # called by sudoers_set
+visudo() { :; }
+mkdir -p "$TMP/sudoers.d"
+echo 'a ALL=(ALL) NOPASSWD:ALL' >"$TMP/sudoers.d/90-a"
+echo 'b ALL=(ALL) ALL' >"$TMP/sudoers.d/90-b"
+sudoers_set "$TMP/sudoers.d" a >/dev/null
+sudoers_set "$TMP/sudoers.d" b >/dev/null
+if [[ $(cat "$TMP/sudoers.d/90-sonora-a") == 'a ALL=(ALL) NOPASSWD:ALL' ]]; then ok "sudoers written"; else bad "sudoers content"; fi
+if [[ ! -e $TMP/sudoers.d/90-a ]]; then ok "old duplicate 90-NAME removed"; else bad "old 90-NAME kept"; fi
+if [[ -e $TMP/sudoers.d/90-b ]]; then ok "a 90-NAME we did not write is kept"; else bad "foreign 90-NAME removed"; fi
+unset -f visudo
 
 unset DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
 if bus_dead; then ok "no address: dead"; else bad "no address"; fi
@@ -86,10 +116,65 @@ mkdir -p "$STATE"
 ovr='[W][23:56:16.115996] mod.pulse-tunnel | [module-pulse-tun:  373 playback_stream_process()] 0x59d5: overrun write:38440120 filled:38440120 + size:512 > max:4194304'
 printf '%s\n' '[W][10:11:34.474042] mod.pulse-tunnel | [module-pulse-tun:  719 stream_underflow_cb()] underflow (0 suppressed)' >"$STATE/pipewire.log"
 if tunnel_dead; then bad "tunnel with an underflow only: dead"; else ok "tunnel with an underflow only: alive"; fi
-printf '%s\n' "$ovr" "$ovr" >>"$STATE/pipewire.log"
+printf '%s\n' "$ovr" >>"$STATE/pipewire.log"
+if tunnel_dead; then bad "one recovered overrun, last line: dead"; else ok "one recovered overrun, last line: alive"; fi
+printf '%s\n' "$ovr" >>"$STATE/pipewire.log"
+if tunnel_dead; then bad "two overruns: dead"; else ok "two overruns: alive"; fi
+printf '%s\n' "$ovr" >>"$STATE/pipewire.log"
 if tunnel_dead; then ok "sink buffer full, nothing reads it: dead"; else bad "stalled sink tunnel not seen"; fi
+# Three overruns long ago, then the tunnel ran on.
+{ printf '%s\n' "$ovr" "$ovr" "$ovr"; for _ in $(seq 25); do echo '[I][x] pw.node | running'; done; echo "$ovr"; } >"$STATE/pipewire.log"
+if tunnel_dead; then bad "old overruns plus one new: dead"; else ok "old overruns plus one new: alive"; fi
 printf '%s\n' '[E][x] mod.pulse-tunnel | connection failure' "$ovr" >"$STATE/pipewire.log"
 if tunnel_dead; then ok "connection failure under overrun lines: dead"; else bad "connection failure missed"; fi
+
+# do_audio with every PipeWire call faked: a dead tunnel restarts PipeWire,
+# except under AUDIO_KEEP (selftest beside a running engine).
+audio_case() {  # label, AUDIO_KEEP, expect restart (1/0)
+  local got
+  : >"$TMP/audio.log"
+  # shellcheck disable=SC2317,SC2329  # the fakes are called by do_audio
+  (
+    check_host() { :; }; check_wslg() { :; }; runtime_dir() { :; }
+    write_pipewire_config() { :; }; ensure_wireplumber() { :; }
+    systemctl() { return 1; }; pw_up() { :; }; speakers_up() { :; }; tunnel_dead() { :; }
+    kill_ours() { echo kill >>"$TMP/audio.log"; }; start_cold() { echo start >>"$TMP/audio.log"; }
+    node_ports() { :; }; pw-link() { return 1; }; pw-metadata() { :; }; sleep() { :; }
+    AUDIO_KEEP=$2 do_audio
+  ) >/dev/null 2>&1
+  if grep -q kill "$TMP/audio.log"; then got=1; else got=0; fi
+  if [[ $got == "$3" ]]; then ok "do_audio: $1"; else bad "do_audio: $1 (restart=$got)"; fi
+}
+audio_case "dead tunnel restarts PipeWire" 0 1
+audio_case "dead tunnel beside a running engine: no restart" 1 0
+
+# `run` ends 0 on a SIGTERM only when `stop` left its marker.
+STATE="$TMP/run"
+mkdir -p "$STATE"
+run_until_stopped bash -c 'kill -TERM $$' >/dev/null
+rc=$?
+if [[ $rc == 143 ]]; then ok "SIGTERM without stop: 143"; else bad "SIGTERM without stop: $rc"; fi
+# shellcheck disable=SC2016  # expanded by the inner bash
+run_until_stopped bash -c ': >"$1/stopped"; kill -TERM $$' _ "$STATE" >/dev/null
+rc=$?
+if [[ $rc == 0 && ! -e $STATE/stopped ]]; then ok "SIGTERM from stop: 0, marker gone"; else bad "SIGTERM from stop: $rc"; fi
+: >"$STATE/stopped"  # a stop with nothing running
+run_until_stopped bash -c 'kill -TERM $$' >/dev/null
+rc=$?
+if [[ $rc == 143 ]]; then ok "stale marker ignored"; else bad "stale marker taken: $rc"; fi
+# shellcheck disable=SC2016  # expanded by the inner bash
+run_until_stopped bash -c ': >"$1/stopped"; exit 3' _ "$STATE" >/dev/null
+rc=$?
+if [[ $rc == 3 ]]; then ok "other exit codes kept"; else bad "exit 3 became $rc"; fi
+# do_stop writes the marker before it signals anything.
+rm -f "$STATE/stopped"
+# shellcheck disable=SC2317,SC2329  # the fakes are called by do_stop
+(
+  runtime_dir() { :; }; pkill() { [[ -e $STATE/stopped ]] || echo early >>"$TMP/stop.log"; return 1; }
+  pgrep() { return 1; }; sleep() { :; }
+  do_stop
+) >/dev/null 2>&1
+if [[ -e $STATE/stopped && ! -e $TMP/stop.log ]]; then ok "stop marks before signalling"; else bad "stop marker missing or late"; fi
 
 # A fake systemctl: unit states from $SC_ACTIVE, calls logged to $SC_LOG.
 SC_LOG="$TMP/systemctl.log"

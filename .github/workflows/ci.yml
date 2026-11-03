@@ -581,8 +581,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install shellcheck and dbus-x11
+        run: sudo apt-get update && sudo apt-get install -y shellcheck dbus-x11
       - name: Check
         run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest
 
@@ -590,7 +590,7 @@ jobs:
         run: tools/test-merge-checks.sh
 
       - name: dev-wsl.sh wsl.conf edit, session bus check, --log
-        run: sudo apt-get install -y dbus-x11 && tools/test-dev-wsl.sh
+        run: tools/test-dev-wsl.sh
 
       - name: RT limits agree across limits.d, unit and hook
         run: tools/test-rt-limits.sh
