@@ -82,7 +82,11 @@ float value_on(const std::vector<AutomationPoint>& pts, Frames at) {
     const AutomationPoint& b = *next;
     if (a.at == at) return a.value;
     const double t = static_cast<double>(at - a.at) / static_cast<double>(b.at - a.at);
-    return static_cast<float>(a.value + t * (b.value - a.value));
+    // In double before the subtraction: a plugin lane is not clamped, and
+    // two finite floats far enough apart differ by more than a float holds,
+    // which drew the whole segment at infinity.
+    const double from = a.value;
+    return static_cast<float>(from + t * (static_cast<double>(b.value) - from));
 }
 
 // Where the line arriving at `at` ends: the first of a step's two points,
@@ -285,8 +289,11 @@ std::vector<AutomationPoint> thin_points(const std::vector<AutomationPoint>& poi
             const double t = b.at == a.at ? 0.0
                                           : static_cast<double>(points[i].at - a.at) /
                                                 static_cast<double>(b.at - a.at);
-            const double line = a.value + t * (b.value - a.value);
-            const double err = std::abs(points[i].value - line);
+            // As value_on: a float difference overflows on a wide plugin lane,
+            // and an infinite line would keep every point inside it.
+            const double from = a.value;
+            const double line = from + t * (static_cast<double>(b.value) - from);
+            const double err = std::abs(static_cast<double>(points[i].value) - line);
             if (err > worst) {
                 worst = err;
                 at = i;
