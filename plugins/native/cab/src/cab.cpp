@@ -25,7 +25,7 @@ const ParamInfo kParams[kParamCount] = {
 const Descriptor kDesc = {"org.sonora.cab", "Sonora Cabinet", "Amp", 1, kParams, kParamCount, 1, 2, false};
 
 // P = 128: a 128-tap direct head and one 256-point transform pair a block.
-// The cost for a 0.5 s response is in quality.json's note.
+// The cost for a 0.3 s response is in quality.json's note.
 constexpr std::uint32_t kPartition = 128;
 
 double bessel_i0(double x) noexcept {

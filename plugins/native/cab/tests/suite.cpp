@@ -54,7 +54,6 @@ std::vector<float> make_ir(double (*f)(double), double fs, double seconds) {
     return h;
 }
 
-bool g_unit_impulse = false;
 
 constexpr double kIrRate = 48000.0;
 constexpr double kIrSeconds = 0.3;
@@ -199,12 +198,10 @@ void concurrent_loads(Suite& s) {
     auto c = cab_with(ir_at);
     c->prepare(fs, 128, 2);
     const auto a = make_ir(ir_at, kIrRate, kIrSeconds), b = make_ir(ir2_at, kIrRate, kIrSeconds);
-    double l1 = 0.0;
-    for (std::size_t i = 0; i < a.size(); ++i) l1 = std::max({l1, 0.0});
     double la = 0.0, lb = 0.0;
     for (float v : a) la += std::fabs(v);
     for (float v : b) lb += std::fabs(v);
-    l1 = std::max(la, lb);
+    const double l1 = std::max(la, lb);
     const int wanted = measure::quick() ? 15 : 80;
     std::atomic<int> loaded{0};
     std::atomic<bool> done{false};
@@ -309,7 +306,7 @@ void class_e_share(Suite& s, const Config& golden) {
 measure::Config cab_golden_config() { return {{"output", -2.0f}, {"mix", 85.0f}}; }
 
 int cab(const measure::Args& args) {
-    Suite s("cab", [] { return g_unit_impulse ? std::unique_ptr<Processor>(make_cab()) : std::unique_ptr<Processor>(cab_with(ir_at)); }, args);
+    Suite s("cab", [] { return std::unique_ptr<Processor>(cab_with(ir_at)); }, args);
     response_equals_loaded(s);
     length_limit(s);
     change_of_response(s);
