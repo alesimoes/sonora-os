@@ -152,7 +152,13 @@ namespace sonora::api {
 //   StateRef in an operation and in the undo window carries "files", the
 //   plugin files an LV2 state names (window format 14, session format 17).
 //   A version-39 peer refuses all of them.
-constexpr uint32_t kProtocolVersion = 40;
+// 41 (ADR-0027 §9, mute, send and strip lanes; follows 40): a lane in
+//   EditAutomation and the undo window may be "mute", "send_level" or
+//   "send_pan", the last two with "send"; EditAutomation's track may name an
+//   aux bus or the Master (0); the undo window is window format 15, its
+//   lanes one table that tracks, buses and the Master index (session format
+//   18). A version-40 peer refuses all of them.
+constexpr uint32_t kProtocolVersion = 41;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

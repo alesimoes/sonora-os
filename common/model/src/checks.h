@@ -76,17 +76,34 @@ std::string bus_loop_problem(const EditState& e, std::string& where);
 // Automation (ADR-0027). Points: each `at` from 0 to kMaxInteger, sorted, at
 // most two at a frame, values in the param's range, at most
 // kMaxAutomationPoints. A plugin value is finite, and from 0 to 1 when
-// `format` is VST3. Lanes: sorted by lane_before, unique, none empty, none
-// on a MIDI track, each plugin lane on an insert of its track with a key
-// valid for that insert's format, at most kMaxInsertParams an insert.
+// `format` is VST3. A mute value is 0 or 1 and changes only at a step.
+// Lanes: sorted by lane_before, unique, none empty, none on a MIDI track,
+// each plugin lane on an insert of its track with a key valid for that
+// insert's format, at most kMaxInsertParams an insert, each send lane on a
+// send of its strip, each param one its strip takes (ADR-0027 §9).
 std::string automation_points_problem(const std::vector<AutomationPoint>& points,
                                       AutomationParam param, std::string& where,
                                       PluginFormat format = PluginFormat::Lv2);
+
+// What a lane's strip offers its lanes: a track, an aux return or the
+// Master, with the inserts and sends a keyed lane may name.
+struct LaneStrip {
+    enum class Kind : std::uint8_t { Track, Bus, Master };
+    Kind kind = Kind::Master;
+    Id id = kMasterOutput;
+    const std::vector<Insert>* inserts = nullptr;
+    const std::vector<Send>* sends = nullptr;
+};
+LaneStrip lane_strip(const TrackEdit& t);
+LaneStrip lane_strip(const Bus& b);
+LaneStrip master_strip();
+
 std::string automation_problem(const TrackEdit& t, std::string& where);
-// Empty when (param, insert, key) names a lane `t` may hold; `format` is
-// then the insert's format for a plugin lane.
-std::string automation_target_problem(const TrackEdit& t, AutomationParam param, Id insert,
-                                      const std::string& key, PluginFormat& format);
+std::string lanes_problem(const LaneStrip& s, const AutomationLanes& lanes, std::string& where);
+// Empty when (param, insert, send, key) names a lane `s` may hold; `format`
+// is then the insert's format for a plugin lane.
+std::string automation_target_problem(const LaneStrip& s, AutomationParam param, Id insert,
+                                      Id send, const std::string& key, PluginFormat& format);
 // Empty when `key` is a ParamValue key of `format`.
 std::string param_key_problem(const std::string& key, PluginFormat format);
 
