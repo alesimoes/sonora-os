@@ -75,8 +75,9 @@ float TrackMeter::take_true_peak(std::uint32_t ch) noexcept {
 }
 
 void TrackMeter::reset_now() noexcept {
-    // Clears the loudness histograms: 40 000 stores, once per operator
-    // reset, never per block.
+    // Clears the loudness histograms, 320 KB: about 67 us per stereo meter
+    // on the reference laptop, in the callback that sees the request. The
+    // cost is stated in meter.h; staggering a "reset all" is the caller's.
     if (loudness_on_) loudness_.reset();
     if (tp_on_) tp_.reset();
     for (std::uint32_t c = 0; c < channels_; ++c) {

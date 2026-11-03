@@ -44,6 +44,7 @@ namespace sonora::dsp {
 
 static_assert(std::atomic<float>::is_always_lock_free, "meter readings must be lock-free");
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "meter counters must be lock-free");
+static_assert(std::atomic<bool>::is_always_lock_free, "the reset request must be lock-free");
 
 class TrackMeter {
 public:
@@ -78,6 +79,11 @@ public:
 
     // Any thread: the next process() starts the integrated loudness, the
     // LRA, the maxima and the counters again (the operator's meter reset).
+    // That process() clears the two loudness histograms, 320 KB: 66.6 us
+    // for a stereo meter on the reference laptop (#315 review), on top of
+    // the block. Sixty-four meters reset in one callback is 3.1 ms, more
+    // than a whole 2.67 ms quantum at 128 / 48 kHz: a caller resetting many
+    // meters spreads the requests over several callbacks.
     void request_reset() noexcept { reset_requested_.store(true, std::memory_order_release); }
 
     std::uint32_t channels() const noexcept { return channels_; }
@@ -112,9 +118,9 @@ private:
     static float load(const std::atomic<float>& a) noexcept {
         return a.load(std::memory_order_relaxed);
     }
-    static void raise(std::atomic<float>& a, float v) noexcept;
-    void reset_now() noexcept;
-    void publish_loudness(std::uint64_t steps_before) noexcept;
+    static void raise(std::atomic<float>& a, float v) noexcept SONORA_RT;
+    void reset_now() noexcept SONORA_RT;
+    void publish_loudness(std::uint64_t steps_before) noexcept SONORA_RT;
 
     std::uint32_t channels_ = 0;
     std::uint32_t max_frames_ = 0;

@@ -60,7 +60,7 @@ public:
     // the interpolator, most of the per-sample cost. Allocates.
     bool prepare(double sample_rate, std::uint32_t channels, const double* weights = nullptr,
                  bool true_peak = true);
-    void reset() noexcept;
+    void reset() noexcept SONORA_RT;
     void process(const float* const* in, std::uint32_t frames) noexcept SONORA_RT;
 
     double momentary_lufs() const noexcept { return momentary_; }
@@ -91,20 +91,20 @@ private:
         std::uint32_t n = 0;
         std::uint32_t top = 0;  // the largest power of two <= n
         void resize(std::uint32_t bins);
-        void clear() noexcept;
-        void add(double lufs, double energy) noexcept;
+        void clear() noexcept SONORA_RT;
+        void add(double lufs, double energy) noexcept SONORA_RT;
         std::uint32_t bins() const noexcept { return n; }
         // Blocks in bins [0, i).
-        std::uint64_t count_below(std::uint32_t i) const noexcept;
+        std::uint64_t count_below(std::uint32_t i) const noexcept SONORA_RT;
         // Energy summed over bins [i, n).
-        double energy_from(std::uint32_t i) const noexcept;
+        double energy_from(std::uint32_t i) const noexcept SONORA_RT;
         // The bin holding the rank-th block counted from the bottom, rank >= 1.
-        std::uint32_t bin_of_rank(std::uint64_t rank) const noexcept;
+        std::uint32_t bin_of_rank(std::uint64_t rank) const noexcept SONORA_RT;
         // The first bin whose lower edge is at or above `lufs`, or n.
-        std::uint32_t first_bin_at_or_above(double lufs) const noexcept;
+        std::uint32_t first_bin_at_or_above(double lufs) const noexcept SONORA_RT;
     };
-    void finish_sub_block() noexcept;
-    static double to_lufs(double mean_square) noexcept;
+    void finish_sub_block() noexcept SONORA_RT;
+    static double to_lufs(double mean_square) noexcept SONORA_RT;
     bool measure_tp_ = true;
 
     double rate_ = 48000.0;

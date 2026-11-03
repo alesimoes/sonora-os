@@ -489,6 +489,42 @@ int test_nonfinite_input() {
     CHECK(m.nonfinite_samples() == injected);
     // Metered as single silent samples, the tone still reads its level.
     CHECK(std::fabs(m.momentary_lufs() + 23.0f) <= 0.1f);
+
+    // Finite but huge (#315 review): one block doubling from 1e30 to
+    // 2.68e38, near FLT_MAX. The single-precision interpolator overflowed
+    // and held true-peak at +inf until reset. Then a tone: no filter state
+    // may stay poisoned.
+    TrackMeter h;
+    CHECK(h.prepare(fs, 128, 2));
+    std::vector<float> huge(128);
+    for (std::size_t i = 0; i < huge.size(); ++i) {
+        const auto k = static_cast<int>(std::min<std::size_t>(i, 28));
+        huge[i] = static_cast<float>(1e30 * std::ldexp(1.0, k));
+    }
+    const float* hp[2] = {huge.data(), huge.data()};
+    h.process(hp, 128);
+    const float hr[] = {h.take_true_peak(0), h.true_peak_max_dbtp(), h.take_peak(0),
+                        h.display_peak(1), h.momentary_lufs(), h.short_term_lufs()};
+    for (float v : hr) CHECK(std::isfinite(v));
+    CHECK(h.nonfinite_samples() == 0);
+    // The interpolator's tail of the huge block reaches 16 samples into the
+    // tone (true_peak.h's delay); channel 1's take starts after it.
+    const Chans tone = sine(fs, 4.0, 1000.0, -23.0);
+    feed(h, Chans{std::vector<float>(tone[0].begin(), tone[0].begin() + 4800),
+                  std::vector<float>(tone[1].begin(), tone[1].begin() + 4800)});
+    h.take_true_peak(1);
+    feed(h, Chans{std::vector<float>(tone[0].begin() + 4800, tone[0].end()),
+                  std::vector<float>(tone[1].begin() + 4800, tone[1].end())});
+    const float after[] = {h.take_true_peak(0), h.true_peak_max_dbtp(), h.momentary_lufs(),
+                           h.short_term_lufs(), h.integrated_lufs(), h.loudness_range_lu(),
+                           h.display_peak(0)};
+    for (float v : after) CHECK(std::isfinite(v));
+    const double tp_tone = gain_to_db(h.take_true_peak(1));
+    std::printf("  huge finite block: TP max %.1f dBTP; then a -23 dBFS tone reads M %.3f, "
+                "TP %.3f dBTP\n",
+                h.true_peak_max_dbtp(), h.momentary_lufs(), tp_tone);
+    CHECK(std::fabs(h.momentary_lufs() + 23.0f) <= 0.1f);
+    CHECK(std::fabs(tp_tone + 23.0) <= 0.1);
     return 0;
 }
 
@@ -656,9 +692,9 @@ int report_cpu() {
         };
     });
     const double med_all = percentile(all, 0.5);
-    const double ratio_spike = *std::max_element(all.begin(), all.end()) / med_all;
+    const double ratio_spike = percentile(all, 0.999) / med_all;
     const double ratio_tp = percentile(per_sample, 0.5) / med_all;
-    std::printf("  all readings: median block %.2f us, worst %.1f x the median; the per-sample "
+    std::printf("  all readings: median block %.2f us, p99.9 %.1f x the median; the per-sample "
                 "true-peak alone costs %.1f x the whole block-mode meter\n",
                 med_all, ratio_spike, ratio_tp);
     if (SONORA_SANITIZED) {
@@ -666,8 +702,11 @@ int report_cpu() {
         return 0;
     }
     // No block much dearer than the rest: the 100 ms gate step's O(log bins)
-    // statistics and the 10 ms window sums stay inside the noise.
-    CHECK_LE(ratio_spike, 3.0, "worst code-path block / median");
+    // statistics (one block in 37) and the 10 ms window sums stay inside the
+    // noise. p99.9, not the max: one block the host preempted in every
+    // render measured 3.4x on a loaded machine, and a per-gate-step cost
+    // would still sit far above the 0.1 % tail.
+    CHECK_LE(ratio_spike, 3.0, "p99.9 code-path block / median");
     // The block interpolator keeps its saving; the bar leaves room for a
     // compiler that vectorises less.
     CHECK_LE(1.5, ratio_tp, "per-sample true-peak / block-mode meter, at least");

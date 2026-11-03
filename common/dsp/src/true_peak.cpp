@@ -2,6 +2,7 @@
 #include "sonora/dsp/true_peak.h"
 
 #include <cmath>
+#include <limits>
 
 #include "sonora/dsp/fft.h"
 #include "sonora/dsp/math.h"
@@ -43,9 +44,16 @@ void TruePeakDetector::prepare_blocks(std::uint32_t max_frames) {
     max_frames_ = max_frames;
     block_.assign(hist_.size(), std::vector<float>(taps_ - 1 + max_frames, 0.0f));
     acc_.assign(max_frames, 0.0f);
+    // The largest input whose points cannot overflow a float sum: FLT_MAX
+    // over the largest sum of |taps| of a phase, with a factor 2 to spare.
+    double gain = 1.0;
     for (std::uint32_t p = 1; p < kFactor; ++p) {
         phase_f_[p].assign(phase_[p].begin(), phase_[p].end());
+        double g = 0.0;
+        for (double t : phase_[p]) g += std::fabs(t);
+        if (g > gain) gain = g;
     }
+    block_safe_ = static_cast<float>(std::numeric_limits<float>::max() / (2.0 * gain));
 }
 
 void TruePeakDetector::reset() noexcept {
@@ -66,6 +74,21 @@ double TruePeakDetector::process_block(std::uint32_t ch, const float* x,
     float* b = block_[ch].data();
     const std::uint32_t hist = taps_ - 1;
     for (std::uint32_t k = 0; k < frames; ++k) b[hist + k] = x[k];
+    // Finite input near FLT_MAX would overflow the single-precision sums
+    // to inf, and to NaN where an inf meets its negative (#315 review).
+    // Every sample a point of this block reads is checked first; a block
+    // that could overflow reads as the largest finite float, over every
+    // real meter scale. The history holds only finite samples, so the
+    // blocks after it are sound once the large samples leave it.
+    float in_max = 0.0f;
+    for (std::uint32_t k = 0; k < hist + frames; ++k) {
+        const float a = std::fabs(b[k]);
+        if (a > in_max) in_max = a;
+    }
+    if (!(in_max <= block_safe_)) {
+        for (std::uint32_t k = 0; k < hist; ++k) b[k] = b[frames + k];
+        return std::numeric_limits<float>::max();
+    }
     // Phase 0 is the input delayed by D = taps_ / 2 <= hist.
     float m = 0.0f;
     const float* d = b + hist - delay();
