@@ -40,7 +40,7 @@ public:
     // tests/test_limiter.cpp against a 16x reference.
     void prepare(std::uint32_t channels, std::uint32_t taps_per_phase = 32,
                  double stopband_db = 80.0, bool refine = false);
-    void reset() noexcept;
+    void reset() noexcept SONORA_RT;
     std::uint32_t delay() const noexcept { return taps_ / 2; }
 
     // Feeds one sample. Returns the largest |value| among the four
@@ -58,8 +58,32 @@ public:
     // once per process_points(), in order; it keeps the last two points.
     double peak_of(std::uint32_t ch, const double* pts4) noexcept SONORA_RT;
 
+    // Block mode, for meters: the same interpolator run a block at a time
+    // in single precision, each phase as taps_ multiply-adds over the whole
+    // block, which a compiler vectorises without reordering any sum, where
+    // the per-sample dot product above cannot be. Single precision because
+    // that loop is bound by moving the accumulator, and four floats move in
+    // the time of two doubles; a point differs from process()'s by at most
+    // 5e-7 of full scale, 5e-6 dB at a peak (measured in tests/test_meter.cpp), far
+    // inside Tech 3341's +0.2 / -0.4 dB. Not for the limiter, which needs
+    // process()'s double and its refinement.
+    // prepare() first, then prepare_blocks(); allocates.
+    void prepare_blocks(std::uint32_t max_frames);
+    // The largest |point| (unrefined) over the 4 * frames points produced
+    // for these samples; frames above max_frames are not read. A block
+    // whose points could overflow a float (input near FLT_MAX) returns
+    // FLT_MAX: always finite. Keeps its own history: do
+    // not mix with process() on a channel between resets.
+    double process_block(std::uint32_t ch, const float* x, std::uint32_t frames) noexcept SONORA_RT;
+
 private:
     std::uint32_t taps_ = 32;
+    std::uint32_t max_frames_ = 0;
+    // Per channel: taps_ - 1 samples of history (oldest first), then the block.
+    std::vector<std::vector<float>> block_;
+    std::vector<float> acc_;
+    std::vector<float> phase_f_[kFactor];
+    float block_safe_ = 0.0f;  // the largest |input| the float sums cannot overflow at
     // phase_[p][i] = h[p + 4 i] for p = 1..3; phase 0 is the delay.
     std::vector<double> phase_[kFactor];
     bool refine_ = false;

@@ -154,6 +154,7 @@ bool StateView::attach(const void* block, std::size_t bytes, std::string& error)
     const uint64_t now = h->heartbeat.load(std::memory_order_acquire);
     cursors_.assign(h->capacity_tracks, now);
     bus_cursors_.fill(now);
+    post_cursors_.assign(std::size_t{h->capacity_tracks} * kPostPeakSides, now);
     seen_any_ = false;
     return true;
 }
@@ -252,6 +253,12 @@ float StateView::take_peak(uint32_t index) {
 float StateView::take_bus_peak(uint32_t side) {
     if (header_ == nullptr || side >= kBusPeakSides) return 0.0f;
     return take_from(header_->bus_peaks[side], bus_cursors_[side]);
+}
+
+float StateView::take_post_peak(uint32_t index, uint32_t side) {
+    if (header_ == nullptr || index >= track_count() || side >= kPostPeakSides) return 0.0f;
+    return take_from(tracks_[index].post_peaks[side],
+                     post_cursors_[std::size_t{index} * kPostPeakSides + side]);
 }
 
 float StateView::take_from(const PeakRing& ring, uint64_t& cursor) const {

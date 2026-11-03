@@ -60,6 +60,9 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
         ts->clip_count.store(0, std::memory_order_relaxed);
         ts->latency_frames.store(0, std::memory_order_relaxed);
         for (auto& s : ts->peaks.entries) s.store(0, std::memory_order_relaxed);
+        for (PeakRing& ring : ts->post_peaks) {
+            for (auto& s : ring.entries) s.store(0, std::memory_order_relaxed);
+        }
         for (InsertState& in : ts->inserts) {
             in.flags.store(0, std::memory_order_relaxed);
             in.latency_frames.store(0, std::memory_order_relaxed);
@@ -82,7 +85,8 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
 }
 
 void StateWriter::publish(const TransportFields& transport, const TrackFields* tracks,
-                          const float* peaks, const float* bus_peaks) {
+                          const float* peaks, const float* bus_peaks,
+                          const float* post_peaks) {
     if (header_ == nullptr) return;
     StateHeader& h = *header_;
     // The seqlock without standalone fences, which ThreadSanitizer cannot
@@ -162,6 +166,12 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
     for (uint32_t i = 0; i < track_count_; ++i) {
         tracks_[i].peaks.entries[tick % kPeakSlots].store(pack_peak(tick, peaks[i]),
                                                         std::memory_order_release);
+        for (uint32_t side = 0; side < kPostPeakSides; ++side) {
+            const float peak =
+                post_peaks != nullptr ? post_peaks[std::size_t{i} * kPostPeakSides + side] : 0.0f;
+            tracks_[i].post_peaks[side].entries[tick % kPeakSlots].store(
+                pack_peak(tick, peak), std::memory_order_release);
+        }
     }
     for (uint32_t side = 0; side < kBusPeakSides; ++side) {
         const float peak = bus_peaks != nullptr ? bus_peaks[side] : 0.0f;

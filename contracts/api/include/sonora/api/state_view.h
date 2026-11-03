@@ -123,6 +123,10 @@ public:
     // The same for the monitor bus, side 0 left and 1 right, each with a
     // cursor of its own. 0 for any other side.
     float take_bus_peak(uint32_t side);
+    // The track's post-fader peak (layout 7), side 0 left and 1 right, a
+    // cursor per track and side. 0 for a track past track_count or another
+    // side.
+    float take_post_peak(uint32_t index, uint32_t side);
 
     // False once the heartbeat has stood still for the timeout, judged on
     // the caller's monotonic clock, so no clock is shared with the engine.
@@ -141,6 +145,7 @@ private:
     const TrackState* tracks_ = nullptr;
     std::vector<uint64_t> cursors_;
     std::array<uint64_t, kBusPeakSides> bus_cursors_{};
+    std::vector<uint64_t> post_cursors_;   // track * kPostPeakSides + side
     mutable uint64_t stale_reads_ = 0;
     mutable uint64_t retries_ = 0;
     mutable uint64_t stuck_seq_ = 0;   // an odd sequence a read gave up on

@@ -28,6 +28,10 @@
 #                      re-derive the committed references from their netlists
 #                      (ctest spice_*). A test tool, like the validators.
 #
+# Plugin editors (plugins/host src/editor.h), also Debian trixie main:
+#   libx11-dev    Xlib, which the host's editor windows are made with (MIT)
+#   xvfb, xauth   a private X server for the editor tests (xvfb-run; MIT)
+#
 # Nothing here ships in the ISO. Which plugins the appliance carries is a
 # separate decision.
 FROM debian:trixie-slim AS validators
@@ -88,6 +92,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       vst3sdk-plugins \
       lsp-plugins-vst3 \
       libelf1t64 \
+      libx11-dev \
+      xvfb \
+      xauth \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=validators /opt/validators /opt/validators

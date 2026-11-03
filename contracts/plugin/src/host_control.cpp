@@ -377,6 +377,7 @@ void encode(const Loaded& m, std::string& out) {
             put_f32(out, p.min);
             put_f32(out, p.max);
             put_f32(out, p.default_value);
+            put_bool(out, p.stepped);
         }
     }
 }
@@ -398,7 +399,7 @@ bool decode(std::string_view b, Loaded& m, std::string& error) {
         r.enumerated(i.state, static_cast<uint8_t>(StateResult::Refused), "state result");
         r.enumerated(i.bypass, static_cast<uint8_t>(BypassBy::Plugin), "bypass");
         uint32_t np = 0;
-        r.count(np, kMaxParamsPerInstance, 17, "param count");
+        r.count(np, kMaxParamsPerInstance, 18, "param count");
         std::set<std::string> keys;
         for (uint32_t p = 0; p < np && r.ok(); ++p) {
             ParamDesc d;
@@ -406,6 +407,7 @@ bool decode(std::string_view b, Loaded& m, std::string& error) {
             r.f32(d.min, "min");
             r.f32(d.max, "max");
             r.f32(d.default_value, "default");
+            r.boolean(d.stepped, "stepped");
             if (!r.ok()) break;
             if (d.key.empty()) r.fail("an empty parameter key");
             else if (!(d.min <= d.max)) r.fail("parameter " + d.key + ": min above max");

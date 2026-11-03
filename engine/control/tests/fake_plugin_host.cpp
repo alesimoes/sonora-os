@@ -62,7 +62,7 @@ struct Plugin {
 
 struct World {
     std::string version =
-        "sonora-plugin-host layout 1 clock 1 wire 4 probe " + std::to_string(pr::kProbeRecordVersion);
+        "sonora-plugin-host layout 1 clock 1 wire 5 probe " + std::to_string(pr::kProbeRecordVersion);
     std::vector<Plugin> plugins;
     struct Preset {
         std::string plugin, id, behaviour;

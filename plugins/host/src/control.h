@@ -117,6 +117,10 @@ public:
     // PR #51), and no gesture may stay open for want of it.
     template <class Current, class Send>
     void end_all(Current&& current, Send&& send);
+    // The same for one instance's gestures only: before its EditorClosed
+    // (host_control.h, "Parameter touches").
+    template <class Current, class Send>
+    void end_instance(uint32_t instance, Current&& current, Send&& send);
     // After touches were lost, a value the plugin moved may be in no
     // gesture the host saw (a lone edit lost; host_control.h). For every
     // instance below `instances`, its `count(i)` dense parameters and its
@@ -243,6 +247,25 @@ void GestureTracker::end_all(Current&& current, Send&& send) {
         ended_[key] = v;
     }
     open_.clear();
+}
+
+template <class Current, class Send>
+void GestureTracker::end_instance(uint32_t instance, Current&& current, Send&& send) {
+    using namespace plugin::control;
+    std::string bytes;
+    for (auto it = open_.begin(); it != open_.end();) {
+        if (it->first.first != instance) {
+            ++it;
+            continue;
+        }
+        float v = it->second.last;
+        float now = 0.f;
+        if (current(it->first.first, it->first.second, now) && std::isfinite(now)) v = now;
+        encode(GestureEnd{it->first.first, it->first.second, v}, bytes);
+        send(bytes);
+        ended_[it->first] = v;
+        it = open_.erase(it);
+    }
 }
 
 template <class Count, class Engine, class Current, class Send>

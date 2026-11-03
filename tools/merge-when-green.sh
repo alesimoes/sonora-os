@@ -67,12 +67,12 @@ $files"
   tries=0
   while :; do
     gh pr checks "$pr" --watch --interval 60 >/dev/null 2>&1 || true
-    missing=$(gh pr checks "$pr" --json name,bucket \
-      --jq '.[] | [.name, .bucket] | @tsv' 2>/dev/null | missing_heavy_checks)
+    missing=$(gh pr checks "$pr" --json name,state \
+      --jq '.[] | [.name, .state] | @tsv' 2>/dev/null | missing_heavy_checks)
     [ -n "$missing" ] || break
     # A failed check is reported below, not waited out.
-    gh pr checks "$pr" --json bucket --jq '.[].bucket' 2>/dev/null |
-      grep -qx -e fail -e cancel && break
+    gh pr checks "$pr" --json state --jq '.[].state' 2>/dev/null |
+      grep -qx -e FAILURE -e CANCELLED -e ERROR -e TIMED_OUT -e STARTUP_FAILURE && break
     tries=$((tries + 1))
     [ "$tries" -lt 10 ] || break
     sleep 60

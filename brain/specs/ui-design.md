@@ -289,6 +289,15 @@ Every continuous control behaves the same way. A vertical drag rides it, at
 Alt-click returns it to its default. A click on the readout lets you type a
 value. The wheel moves one step. A knob is never turned by a circular drag.
 
+**R and I buttons (2026-11-03).** Click toggles the track. Alt-click sets
+every track to the clicked track's new state; Shift-click sets the selected
+tracks (all the tracks the selection covers, whose headers draw as selected)
+to it, or only the clicked track when it is outside the selection;
+Alt+Shift is the Shift case. The new state is read from the engine at the
+click, not from the last published list. Plain Shift-click is kept: the
+parity audit (row 1) finds it is Pro Tools' selected-tracks click and no
+guide binds it otherwise.
+
 ## Mixer strip anatomy
 
 **Update, 2026-10-31.** The fader and its meter are the strip, and every

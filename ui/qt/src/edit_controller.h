@@ -236,6 +236,11 @@ public:
 
     // --- edit commands; each one operation at most ---
     bool separate(std::string& why);
+    // Pro Tools' Heal Separation: joins regions that butt at a cut the
+    // insertion point sits on, or the range or selected region covers, when
+    // they still play one stretch of one source. Refused, naming the pair,
+    // when the join would change what plays (moved, faded, gain, mute).
+    bool heal_separation(std::string& why);
     bool trim_start_to_insertion(std::string& why);
     bool trim_end_to_insertion(std::string& why);
     // A region selected, or a time range on the selected track: removes

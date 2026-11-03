@@ -74,9 +74,11 @@
 #include "sonora/native/deesser.h"
 #include "sonora/native/gate.h"
 #include "sonora/native/limiter.h"
+#include "sonora/native/mixbus.h"
 #include "sonora/native/reverb.h"
 #include "sonora/native/tape.h"
 #include "sonora/native/opto.h"
+#include "sonora/native/phaser.h"
 #include "sonora/native/tube.h"
 
 namespace sonora::native::suites {
@@ -87,11 +89,13 @@ measure::Config deesser_golden_config();
 measure::Config limiter_golden_config();
 measure::Config delay_golden_config();
 measure::Config chorus_golden_config();
+measure::Config phaser_golden_config();
 measure::Config reverb_golden_config();
 measure::Config tube_golden_config();
 measure::Config opto_golden_config();
 measure::Config fet_golden_config();
 measure::Config tape_golden_config();
+measure::Config mixbus_golden_config();
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -145,6 +149,8 @@ const Target kTargets[] = {
      {"ceiling", -4.0f}, {{"lookahead", 3.0f}}},
     {"delay", [] { return native::make_delay(); }, native::suites::delay_golden_config, true,
      {"mix", 70.0f}, {}},
+    {"phaser", [] { return native::make_phaser(); }, native::suites::phaser_golden_config, false,
+     {"mix", 20.0f}, {}},
     {"chorus", [] { return native::make_chorus(); }, native::suites::chorus_golden_config, false,
      {"mix", 20.0f}, {}},
     {"reverb", [] { return native::make_reverb(); }, native::suites::reverb_golden_config, true,
@@ -164,6 +170,9 @@ const Target kTargets[] = {
     // leaves the tape's state at zero, so the preroll is free.
     {"tape", [] { return native::make_tape(); }, native::suites::tape_golden_config, true,
      {"drive", 18.0f}, {{"quality", 2.0f}}},
+    // Silence leaves the detectors and the side-chain filter at zero.
+    {"mixbus", [] { return native::make_mixbus(); }, native::suites::mixbus_golden_config, true,
+     {"threshold", -32.0f}, {}},
 };
 
 struct Case {

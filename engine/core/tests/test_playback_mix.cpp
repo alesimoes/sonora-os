@@ -8,6 +8,7 @@
 // plays the target from the next block; a plan swap and a delay line keep
 // going across the swap; input monitoring by the track's mode; a plan that
 // moves tracks snaps only the rows whose track changed.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "playback_test.h"
+#include "sonora/dsp/meter.h"
 #include "sonora/session.h"
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -347,8 +349,75 @@ int test_per_block_ramps() {
     rig.block(kBlock);
     s.set_bus_gain(0.5f);
     CHECK(ramp(1, 1.0f, 0.5f));
-    CHECK(s.take_bus_peak(1) > 0.0f);
-    CHECK(s.take_bus_peak(1) == 0.0f);
+    CHECK(s.master_meter().take_peak(1) > 0.0f);
+    CHECK(s.master_meter().take_peak(1) == 0.0f);
+    return 0;
+}
+
+// N1 meters, engine half (ADR-0011 §1.3, ADR-0013 amendment of 2026-11-03):
+// a track is metered after its fader, on what it sends the bus and before
+// the bus gain; the master after the bus gain. An unarmed track playing back
+// shows on its own meter with no input at all; a muted one shows nothing.
+int test_post_fader_meters() {
+    Rig rig(2);
+    Session& s = *rig.session;
+    // Built and prepared with the session, before any callback.
+    CHECK(s.track_meter_count() == 2);
+    CHECK(s.track_meter(0).channels() == 2);
+    CHECK(s.master_meter().channels() == 2);
+    const uint32_t a = rig.source(5, 1, 16 * kChunk);
+    SegmentSpec sp;
+    sp.end = 16 * kChunk;
+    sp.source_slot = a;
+    SegmentSpec sp2 = sp;
+    sp2.track = 1;
+    CHECK(rig.publish(rig.plan(2, {sp, sp2})));
+    s.tracks()[0]->set_pan(-1.0f);
+    s.tracks()[0]->set_gain(0.5f);
+    s.tracks()[1]->set_pan(1.0f);
+    s.tracks()[1]->set_muted(true);
+    s.play();
+    rig.block(kBlock);   // the fader ramps in from silence
+    for (int side = 0; side < 2; ++side) {
+        s.track_meter(0).take_peak(side);
+        s.master_meter().take_peak(side);
+    }
+
+    const auto loudest = [&](int side) {
+        float m = 0.0f;
+        for (uint32_t i = 0; i < kBlock; ++i) m = std::max(m, std::fabs(rig.out[side][i]));
+        return m;
+    };
+    rig.block(kBlock);
+    const float left = loudest(0);
+    CHECK(left > 1000.0f);
+    CHECK(s.track_meter(0).take_peak(0) == left);
+    CHECK(s.track_meter(0).take_peak(1) == 0.0f);   // hard left
+    CHECK(s.track_meter(0).take_peak(0) == 0.0f);   // taken
+    CHECK(s.track_meter(1).take_peak(0) == 0.0f);   // muted
+    CHECK(s.track_meter(1).take_peak(1) == 0.0f);
+    CHECK(s.master_meter().take_peak(0) == left);
+    CHECK(s.master_meter().take_peak(1) == 0.0f);
+    // No input on either track: the input peak is silent, the post-fader
+    // one is what the strip shows for playback.
+    CHECK(s.tracks()[0]->take_peak() == 0.0f);
+
+    // The bus gain is on the master meter only.
+    s.set_bus_gain(0.5f);
+    rig.block(kBlock);
+    rig.block(kBlock);
+    s.track_meter(0).take_peak(0);
+    s.master_meter().take_peak(0);
+    rig.block(kBlock);
+    const float bus = loudest(0);
+    CHECK(s.master_meter().take_peak(0) == bus);
+    CHECK(s.track_meter(0).take_peak(0) == 2.0f * bus);
+
+    // The master measures loudness; a track meter is peak only.
+    for (int i = 0; i < 8; ++i) rig.block(kBlock);
+    CHECK(s.master_meter().loudness_steps() > 0);
+    CHECK(s.track_meter(0).loudness_steps() == 0);
+    CHECK(s.master_meter().nonfinite_samples() == 0);
     return 0;
 }
 
@@ -739,6 +808,7 @@ int main() {
     if (test_region_gain_and_fades()) return 1;
     if (test_crossfade()) return 1;
     if (test_per_block_ramps()) return 1;
+    if (test_post_fader_meters()) return 1;
     if (test_solo_safe()) return 1;
     if (test_miss_is_counted_silence()) return 1;
     if (test_locate_without_dropping_a_block()) return 1;

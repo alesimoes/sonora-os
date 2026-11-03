@@ -9,9 +9,11 @@ target_link_libraries(sonora-dsp-measure PRIVATE
   sonora_native_limiter_suite
   sonora_native_delay_suite
   sonora_native_chorus_suite
+  sonora_native_phaser_suite
   sonora_native_reverb_suite
   sonora_native_tube_suite
   sonora_native_opto_suite
   sonora_native_fet_suite
   sonora_native_tape_suite
+  sonora_native_mixbus_suite
 )

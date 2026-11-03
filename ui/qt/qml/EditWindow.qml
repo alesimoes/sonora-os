@@ -294,7 +294,7 @@ Item {
                     objectName: "trackHeader" + index
                     required property int index
                     required property string modelData
-                    readonly property bool selected: edit.session.selectedTrack === index
+                    readonly property bool selected: edit.session.selectedTracks.indexOf(index) >= 0
                     readonly property var row: edit.session.trackRows[index] || ({})
                     readonly property bool armed: edit.shell.engineAlive && edit.shell.armed[index] === true
                     y: edit.rowTop(index) - edit.session.scrollY
