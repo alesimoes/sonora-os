@@ -157,9 +157,41 @@ unchanged to the digits reported. Aliasing to 8 kHz moved by at most
 standard 44.1 kHz -84.1 to -83.6 (bar -80), high 44.1 kHz -98.8 to -97.4
 (bar -95).
 
+## THD bars (2026-11-02)
+
+`thd.nominal_pct` was a 5 % ceiling over a measured 0.64 %: a ceiling that
+loose holds nothing, and a ceiling of any height passes a tape that stopped
+saturating. THD+N of a 1 kHz tone at -18 dBFS is now held as a band, at
+drive 0 dB and at drive 12 dB, in every quality, 48 kHz. Measured (GCC 14
+Release, Docker Desktop, i7-11800H, `SONORA_DSP_QUICK=1`), %:
+
+| fs | drive | eco | standard | high |
+|---|---|---|---|---|
+| 44.1 kHz | 0 dB | 0.6268 | 0.6381 | 0.6415 |
+| 44.1 kHz | 12 dB | 2.2726 | 2.3100 | 2.3210 |
+| 48 kHz | 0 dB | 0.6288 | 0.6387 | 0.6416 |
+| 48 kHz | 12 dB | 2.2794 | 2.3121 | 2.3216 |
+| 96 kHz | 0 dB | 0.6387 | 0.6416 | 0.6424 |
+| 96 kHz | 12 dB | 2.3121 | 2.3216 | 2.3241 |
+
+The spread follows the internal rate, not the quality (eco at 96 kHz and
+standard at 48 kHz both run the curve at 192 kHz and agree to the digit),
+and stays under 2 % of the figure.
+The bands are standard at 48 kHz +-5 %: drive 0 dB 0.607-0.671 %
+(`thd.nominal_min_pct`, `thd.nominal_pct`), drive 12 dB 2.20-2.43 %
+(`thd.drive12_min_pct`, `thd.drive12_pct`). Checked against a mutant that
+drives the curve 1 dB harder and takes 1 dB off the output, so the
+small-signal gain is unchanged and the unity and response bars do not see
+it (the reference chain and the goldens do): eco, standard, high read
+0.6926, 0.7035, 0.7067 % at drive 0 dB and 2.6186, 2.6558, 2.6666 % at
+drive 12 dB, outside both bands in every quality. A +-10 % band (0.57-0.71 %,
+tried first) let all three through at drive 0 dB. The second harmonic sits
+at -146 dBc (the loop is symmetric), so `thd.h2_below_h3_db` (-20 dB, measured
+-102.7) is left as the ceiling it is.
+
 ## Open
 
-Aliasing above 8 kHz; `thd.nominal_pct` is loose and should be re-measured;
+Aliasing above 8 kHz;
 goldens under Clang and MSVC (the substep count is discontinuous); the CPU
 figures on a quiet reference machine (these are calibrated on a loaded one);
 rt-safety-auditor run.

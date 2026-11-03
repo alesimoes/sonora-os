@@ -272,7 +272,7 @@ std::vector<double> harmonics_dbc(const std::vector<float>& y, std::size_t from,
 void distortion(Suite& s) {
     const double fs = 48000.0;
     json::Value rows = json::Value::array();
-    double nominal_thd = 0.0, nominal_h3 = 0.0, nominal_h2 = 0.0;
+    double nominal_thd = 0.0, nominal_h3 = 0.0, nominal_h2 = 0.0, driven_thd = 0.0;
     for (double drive : {0.0, 12.0}) {
         // Quick mode keeps the -18 dBFS nominal point the bars read.
         for (double level = measure::quick() ? -36.0 : -48.0; level <= 6.0 + 1e-9; level += measure::quick() ? 18.0 : 6.0) {
@@ -288,6 +288,7 @@ void distortion(Suite& s) {
                 nominal_h2 = h[0];
                 nominal_h3 = h[1];
             }
+            if (drive == 12.0 && level == -18.0) driven_thd = thd;
             json::Value r = json::Value::array();
             r.push(jf(drive));
             r.push(jf(level));
@@ -299,9 +300,29 @@ void distortion(Suite& s) {
         }
     }
     s.data().set("drive_level_gain_thdn_h2_h3", rows);
+    // THD is held as a band, not a ceiling: a tape that stopped saturating
+    // (a lost drive scale, a curve gone linear) is as wrong as one that
+    // saturates more. Each band is the standard-quality figure +-5 %; every
+    // quality and rate sits within 2 % of it (the oversampler, not the
+    // curve), and a curve driven 1 dB harder (+10 %, +15 %) leaves it
+    // (brain/research/native-tape-n2.md, "THD bars"). Held in every quality.
+    for (int q = 0; q < 3; ++q) {
+        for (const auto& [drive, lo, hi] : {std::tuple<double, const char*, const char*>{0.0, "thd.nominal_min_pct", "thd.nominal_pct"},
+                                            {12.0, "thd.drive12_min_pct", "thd.drive12_pct"}}) {
+            double thd = q == 1 ? (drive == 0.0 ? nominal_thd : driven_thd) : 0.0;
+            if (q != 1) {
+                auto p = measuring(s, fs, 1, {{"drive", static_cast<float>(drive)}, {"quality", static_cast<float>(q)}});
+                const Chans x = measure::sine(fs, 1000.0, -18.0, 1.5, 1);
+                const Chans y = aligned(*p, x);
+                thd = 100.0 * std::pow(10.0, measure::thdn_db(y[0], static_cast<std::size_t>(0.5 * fs), fs, 1000.0) / 20.0);
+            }
+            const double min = s.bar(lo), max = s.bar(hi);
+            s.check(fmt("THD+N at 1 kHz, -18 dBFS, drive %.0f dB, ", drive) + kQualityIds[q], thd, max, thd >= min && thd <= max,
+                    "%", fmt("band %.3g-%.3g %%", min, max));
+        }
+    }
     // The anhysteretic curve is odd: the third harmonic leads, the second
     // is the loop's thin residue.
-    s.check_le("THD+N at 1 kHz, -18 dBFS, drive 0 dB", nominal_thd, s.bar("thd.nominal_pct"), "%");
     s.check_le("2nd harmonic at 1 kHz, -18 dBFS, drive 0 dB, relative to the 3rd", nominal_h2 - nominal_h3,
                s.bar("thd.h2_below_h3_db"), "dB");
     // Compression: the level at which the gain is 1 dB down, reported;
