@@ -62,6 +62,43 @@ function Part($Number, $Size, $Letter, $Fs, $Used, $Extra) {
     return [pscustomobject]$p
 }
 
+function Set-U32([byte[]]$B, [int]$At, [int64]$V) {
+    $x = [BitConverter]::GetBytes([uint32]$V)
+    [Array]::Copy($x, 0, $B, $At, 4)
+}
+
+# The first MiB of a stick tools/make-stick-image.sh writes: xorriso's MBR
+# (entry 1 type 0 at 64, entry 2 EF at 540 for 6656), write-usb.sh's entry 3
+# (83 at the MiB after the ISO), and the ISO's volume descriptor at 32768.
+function New-SonoraHead([int64]$Size1, [string]$Label) {
+    $b = New-Object byte[] 1048576
+    $b[510] = 0x55; $b[511] = 0xAA
+    $b[446] = 0x80
+    Set-U32 $b 454 64; Set-U32 $b 458 $Size1
+    $b[466] = 0xEF; Set-U32 $b 470 540; Set-U32 $b 474 6656
+    $start3 = [int64]([math]::Ceiling((64 + $Size1) / 2048)) * 2048
+    $b[482] = 0x83; Set-U32 $b 486 $start3; Set-U32 $b 490 100000
+    $b[32768] = 1
+    $ascii = [Text.Encoding]::ASCII
+    [Array]::Copy($ascii.GetBytes('CD001'), 0, $b, 32769, 5)
+    [Array]::Copy($ascii.GetBytes($Label.PadRight(32)), 0, $b, 32808, 32)
+    return , $b
+}
+
+# The first 4 KiB of an ext4 partition: magic at 1024+56, label at 1024+120.
+function New-Ext4Block([string]$Label) {
+    $b = New-Object byte[] 4096
+    $b[1080] = 0x53; $b[1081] = 0xEF
+    $l = [Text.Encoding]::ASCII.GetBytes($Label)
+    [Array]::Copy($l, 0, $b, 1144, $l.Length)
+    return , $b
+}
+
+function Write-Bytes([string]$Path, [int64]$Offset, [byte[]]$Bytes) {
+    $fs = [IO.File]::Open($Path, 'Open', 'ReadWrite')
+    try { $fs.Position = $Offset; $fs.Write($Bytes, 0, $Bytes.Length) } finally { $fs.Dispose() }
+}
+
 try {
     Write-Host '--- device paths ---'
     $p = Get-DevicePath 3
@@ -90,7 +127,8 @@ try {
 
     Write-Host '--- refusals ---'
     $good = [pscustomobject]@{ Number = 3; BusType = 'USB'; IsSystem = $false; IsBoot = $false; HasPageFile = $false; FriendlyName = 'Kingston DataTraveler 3.0'
-        Size = [int64]32e9; LogicalSectorSize = 512; SerialNumber = '0401 aa0012bc34'; Partitions = @([pscustomobject]@{ Number = 1; DriveLetter = 'E'; Size = [int64]31e9 }) }
+        Size = [int64]32e9; LogicalSectorSize = 512; SerialNumber = '0401 aa0012bc34'; Partitions = @([pscustomobject]@{ Number = 1; DriveLetter = 'E'; Size = [int64]31e9 })
+        PartitionQueryFailed = $false; Head = $null; P3Block = $null }
     function Variant([hashtable]$Change) { $c = $good.PSObject.Copy(); foreach ($k in $Change.Keys) { $c.$k = $Change[$k] }; return $c }
     $img = [int64]1500 * $MiB
     Expect ((Get-DiskRefusal $good $img $false 'C') -eq '') 'a 32 GB USB stick is accepted'
@@ -121,11 +159,35 @@ try {
     Expect (@(Get-DataPartitions (Variant @{ Partitions = @((Part 1 31e9 'F' 'FAT32' 0 @{})) })).Count -eq 1) 'a factory FAT32 volume with a letter counts as data too'
     $noletter = @(Get-DataPartitions (Variant @{ Partitions = @((Part 1 16e6 '' '' 0 @{}), (Part 2 31e9 '' '' 0 @{})) }))
     Expect ($noletter.Count -eq 1 -and (Get-DataToken $noletter) -ceq 'ERASE DATA P2') 'a large unreadable partition is data, a 16 MB reserved one is not'
-    Expect (@(Get-DataPartitions (Variant @{ Partitions = @() })).Count -eq 0) 'a blank stick holds no data'
-    $sonora = Variant @{ Partitions = @((Part 1 909e6 '' '' 0 @{}), (Part 2 3407872 'R' 'FAT' 3e6 @{}), (Part 3 31e9 '' '' 0 @{})) }
+    Expect (@(Get-DataPartitions (Variant @{ Partitions = @(); Head = (New-Object byte[] $MiB) })).Count -eq 0) 'no partitions and a zero first MiB: blank, no data'
+    $raw = New-Object byte[] $MiB
+    $raw[1080] = 0x53
+    $rawItems = @(Get-DataPartitions (Variant @{ Partitions = @(); Head = $raw }))
+    Expect ($rawItems.Count -eq 1 -and (Get-DataToken $rawItems) -ceq 'ERASE DATA DISK') 'no partitions but a non-zero first MiB (a filesystem on the whole device): data, ERASE DATA DISK'
+    Expect (@(Get-DataPartitions (Variant @{ Partitions = @() })).Count -eq 1) 'no partitions and a first MiB that could not be read: data'
+    $failedList = @(Get-DataPartitions (Variant @{ Partitions = @(); PartitionQueryFailed = $true; Head = (New-Object byte[] $MiB) }))
+    Expect ($failedList.Count -eq 1 -and (Format-Partition $failedList[0]) -like '*could not list*') 'partitions that could not be listed: data, even over a zero first MiB'
+    Expect (@(Get-DataPartitions (Variant @{ Partitions = @((Part 1 16e6 '' '' 0 @{ VolumeQueryFailed = $true })) })).Count -eq 1) 'a partition whose volume could not be queried is data, however small'
+
+    Write-Host '--- a previous SonoraOS stick, by its bytes ---'
+    $sHead = New-SonoraHead 8128 'SONORA'
+    $sP3 = New-Ext4Block 'persistence'
+    Expect (Test-SonoraBytes $sHead $sP3 ([int64]64e9)) 'our MBR, ISO label SONORA and ext4 label persistence: recognised'
+    Expect (-not (Test-SonoraBytes (New-SonoraHead 8128 'DEBIAN_LIVE') $sP3 ([int64]64e9))) 'another live ISO label (DEBIAN_LIVE) is not ours'
+    Expect (-not (Test-SonoraBytes $sHead (New-Ext4Block 'home-rw') ([int64]64e9))) 'another ext4 label is not ours'
+    Expect (-not (Test-SonoraBytes $sHead $null ([int64]64e9))) 'an unreadable partition 3 is not ours'
+    $odd = New-SonoraHead 8128 'SONORA'
+    $odd[494] = 0x83
+    Expect (-not (Test-SonoraBytes $odd $sP3 ([int64]64e9))) 'a fourth MBR entry is not ours'
+    $winView = @((Part 2 3407872 'R' 'FAT' 3e6 @{}), (Part 3 31e9 '' '' 0 @{}))
+    $sonora = Variant @{ Partitions = $winView; Head = $sHead; P3Block = $sP3 }
     Expect ((Test-SonoraLayout $sonora) -and @(Get-DataPartitions $sonora).Count -eq 0) 'a previous SonoraOS stick is not a data disk'
-    $notSonora = Variant @{ Partitions = @((Part 1 909e6 '' '' 0 @{}), (Part 2 3407872 'R' 'FAT' 3e6 @{}), (Part 3 31e9 'S' 'NTFS' 5e9 @{})) }
-    Expect (-not (Test-SonoraLayout $notSonora)) '... but three partitions with a readable partition 3 are not that layout'
+    $ntfsP1 = Variant @{ Partitions = @((Part 1 909e6 'E' 'NTFS' 5e8 @{}), (Part 2 3407872 'R' 'FAT' 3e6 @{}), (Part 3 31e9 '' '' 0 @{})); Head = $sHead; P3Block = $sP3 }
+    Expect (-not (Test-SonoraLayout $ntfsP1) -and @(Get-DataPartitions $ntfsP1).Count -ge 1) 'NTFS on partition 1 with a small 2 and an unreadable 3: data, whatever the bytes say'
+    $debian = Variant @{ Partitions = $winView; Head = (New-SonoraHead 8128 'DEBIAN_LIVE'); P3Block = $sP3 }
+    Expect (-not (Test-SonoraLayout $debian) -and @(Get-DataPartitions $debian).Count -ge 1) 'a Debian-live-like stick with persistence: data'
+    $lookalike = Variant @{ Partitions = $winView; Head = $null; P3Block = $null }
+    Expect (-not (Test-SonoraLayout $lookalike) -and @(Get-DataPartitions $lookalike).Count -ge 1) 'the same partition sizes without our bytes: data'
 
     Write-Host '--- confirmation tokens, sidecar ---'
     Expect ((Get-ConfirmToken $good) -ceq 'ERASE 3 BC34') 'token is ERASE, the number and the serial tail'
@@ -150,12 +212,19 @@ try {
     Set-Content -LiteralPath ($image + '.sha256') -Value ($imageHash.ToLowerInvariant() + ' *sonora-stick.img') -Encoding Ascii
 
     $files = @{}
-    $nums = @(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+    $nums = @(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
     foreach ($n in $nums) { $files[$n] = Join-Path $work ('disk' + $n + '.bin') }
     $stickBytes = [int64]128 * $MiB
     foreach ($n in $nums) {
-        if ($n -eq 3 -or $n -eq 6) { New-FilledFile $files[$n] $stickBytes (-1) } else { New-FilledFile $files[$n] (4 * $MiB) (-1) }
+        if ($n -eq 3 -or $n -eq 6) { New-FilledFile $files[$n] $stickBytes (-1) } else { New-FilledFile $files[$n] (8 * $MiB) (-1) }
     }
+    # Disk 3 is a blank stick: no partitions and a zero first MiB.
+    Write-Bytes $files[3] 0 (New-Object byte[] $MiB)
+    # 9 carries our image's bytes, 11 another live ISO's label, 12 our bytes
+    # under a Windows view with NTFS on partition 1.
+    foreach ($n in @(9, 12)) { Write-Bytes $files[$n] 0 $sHead; Write-Bytes $files[$n] (4 * $MiB) $sP3 }
+    Write-Bytes $files[11] 0 (New-SonoraHead 8128 'DEBIAN_LIVE')
+    Write-Bytes $files[11] (4 * $MiB) $sP3
     $before = @{}
     foreach ($n in $nums) { $before[$n] = Get-Sha $files[$n] }
 
@@ -178,7 +247,10 @@ try {
         (FakeDisk 7 'USB' ([int64]64e9) 'LOCK7777' @{} @((Part 1 63e9 'K' 'NTFS' 1e9 @{ BitLocker = $true }))),
         (FakeDisk 8 'USB' ([int64]64e9) 'WIND8888' @{} @((Part 1 63e9 'W' 'NTFS' 20e9 @{ HasWindows = $true }))),
         (FakeDisk 9 'USB' ([int64]64e9) 'SONO9999' @{} @((Part 1 909e6 '' '' 0 @{}), (Part 2 3407872 'R' 'FAT' 3e6 @{}), (Part 3 60e9 '' '' 0 @{}))),
-        (FakeDisk 10 'USB' ([int64]64e9) '' @{} $blank)
+        (FakeDisk 10 'USB' ([int64]64e9) '' @{} $blank),
+        (FakeDisk 11 'USB' ([int64]64e9) 'DEBI1111' @{} @((Part 1 909e6 '' '' 0 @{}), (Part 2 3407872 'R' 'FAT' 3e6 @{}), (Part 3 60e9 '' '' 0 @{}))),
+        (FakeDisk 12 'USB' ([int64]64e9) 'NTFS1212' @{} @((Part 1 909e6 'E' 'NTFS' 5e8 @{}), (Part 2 3407872 'R' 'FAT' 3e6 @{}), (Part 3 60e9 '' '' 0 @{}))),
+        (FakeDisk 13 'USB' ([int64]64e9) 'FAIL1313' @{ PartitionQueryFailed = $true } $blank)
     )
     ConvertTo-Json -InputObject $fake -Depth 6 | Set-Content -LiteralPath $json -Encoding Ascii
     $right = 'ERASE 3 BC34'
@@ -187,7 +259,11 @@ try {
     $r = Invoke-Writer ($common + @('-List'))
     Expect ($r.Code -eq 0 -and $r.Text -match '(?m)^  3 .*can be written' -and $r.Text -match '2 other disks not shown') '-List shows only the USB disks, and says which may be written'
     Expect ($r.Text -match '(?m)^  6 .*has data: partition 1 \(Q:\)  NTFS "Takes"') '-List marks the disk with an NTFS volume as having data'
-    Expect ($r.Text -match '(?m)^  9 .*can be written') '-List shows a previous SonoraOS stick as writable'
+    Expect ($r.Text -match '(?m)^  9 .*can be written') '-List shows a previous SonoraOS stick (our bytes) as writable'
+    Expect ($r.Text -match '(?m)^  11 .*has data') '-List marks a Debian-live-like stick with persistence as having data'
+    Expect ($r.Text -match '(?m)^  12 .*has data: partition 1 \(E:\)  NTFS') '-List marks our layout with NTFS on partition 1 as having data'
+    Expect ($r.Text -match '(?m)^  13 .*has data: the whole disk: Windows could not list') '-List marks a disk whose partitions could not be listed as having data'
+    Expect ($r.Text -match '(?m)^  10 .*has data: the whole disk: no partitions') '-List marks a disk with no partitions but old contents as having data'
     Expect ($r.Text -match 'matches sonora-stick.img.sha256') 'the image is checked against its sidecar'
 
     $cases = @(
@@ -198,6 +274,9 @@ try {
         @(@('-DiskNumber', '7', '-Token', 'ERASE 7 7777', '-AllowDataVolumes'), 'BitLocker'),
         @(@('-DiskNumber', '8', '-Token', 'ERASE 8 8888', '-AllowDataVolumes'), 'Windows installation'),
         @(@('-DiskNumber', '6', '-Token', 'ERASE 6 6666'), 'holds data; pass -AllowDataVolumes'),
+        @(@('-DiskNumber', '11', '-Token', 'ERASE 11 1111'), 'holds data; pass -AllowDataVolumes'),
+        @(@('-DiskNumber', '12', '-Token', 'ERASE 12 1212'), 'holds data; pass -AllowDataVolumes'),
+        @(@('-DiskNumber', '13', '-Token', 'ERASE 13 1313'), 'holds data; pass -AllowDataVolumes'),
         @(@('-DiskNumber', '10', '-Token', 'ERASE 10 FAKEUSB10 64000000000'), 'reports no serial'),
         @(@('-DiskNumber', '99', '-Token', 'ERASE 99 0000'), 'no disk 99'),
         @(@('-DiskNumber', '3', '-Token', 'ERASE 3 WRONG'), 'does not match'),
@@ -254,7 +333,7 @@ try {
     Expect ($whole -eq $imageHash) 'every byte of the image is on the fake disk'
     Expect ($last -eq $zero) 'the last MiB of the fake disk is zero'
     Expect ($gap -ne $zero) 'between the image and the last MiB the old contents are left as they were'
-    foreach ($n in @(1, 2, 4, 5, 7, 8, 9, 10)) { Expect ((Get-Sha $files[$n]) -eq $before[$n]) ('fake disk ' + $n + ' is untouched') }
+    foreach ($n in @(1, 2, 4, 5, 7, 8, 9, 10, 11, 12, 13)) { Expect ((Get-Sha $files[$n]) -eq $before[$n]) ('fake disk ' + $n + ' is untouched') }
 
     Write-Host '--- read-back catches a bad write ---'
     $disk = [pscustomobject]@{ Path = $files[3]; Kind = 'file'; Size = $stickBytes }

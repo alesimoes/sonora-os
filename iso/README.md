@@ -48,8 +48,14 @@ digits of that disk's serial. A disk that reports no serial gets its model
 and exact size in bytes instead, and can only be confirmed at the prompt.
 A disk that holds data -- any volume with a drive letter or a filesystem
 Windows reads, or a large partition it cannot read -- also asks for
-`ERASE DATA E` (its drive letters, or `P1P2...` without letters). A blank
-stick, or one written by this script before, needs only the first. Anything
+`ERASE DATA E` (its drive letters, or `P1P2...` without letters), and
+`ERASE DATA DISK` when Windows cannot list its partitions or it has none but
+its first MiB is not zero (a filesystem on the whole device). Only a blank
+stick (no partitions, first MiB zero) or one this script wrote before needs
+just the first: that is recognised by its bytes (our MBR, the ISO label
+`SONORA`, an ext4 partition 3 labelled `persistence`), read read-only, and
+with nothing larger than the EFI partition carrying a letter or a
+filesystem Windows reads. Anything
 else stops it. A script passes the first text with `-Token "ERASE N XXXX"`
 and accepts the data loss with `-AllowDataVolumes`; without them a
 non-interactive run is refused. A misspelt parameter (`-DryRn`) is an error

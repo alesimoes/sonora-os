@@ -59,13 +59,10 @@ if ((Test-Path variable:args) -and @($args).Count -gt 0) {
     Write-Host ('refused: unknown arguments: ' + (@($args) -join ' ') + ' Nothing was written.')
     exit 2
 }
-# -WhatIf and -Confirm are not this script's parameters (it has -DryRun and
-# -Token). Should a PowerShell version ever bind them anyway, they must not
-# pass for a rehearsal or a confirmation.
-if ($PSBoundParameters.ContainsKey('WhatIf') -or $PSBoundParameters.ContainsKey('Confirm')) {
-    Write-Host 'refused: use -DryRun for a rehearsal and -Token for a confirmation. Nothing was written.'
-    exit 2
-}
+# -WhatIf and -Confirm are not parameters here (-DryRun and -Token are), and
+# without SupportsShouldProcess [CmdletBinding()] does not add them, so either
+# fails parameter binding before this line runs; tools/test-write-usb.ps1
+# checks that.
 
 # 256 GiB rather than GB, so a stick sold as "256 GB" still passes; same
 # limit as tools/write-usb.sh. Above it the disk is more likely a backup drive.
@@ -240,6 +237,30 @@ public static class Native {
         }
     }
 
+    // count bytes at offset (both multiples of 4096), for a handle opened
+    // read-only and unbuffered: what is on the medium, not in a cache.
+    public static byte[] ReadAt(SafeFileHandle h, long offset, int count) {
+        int ask = (count + Align - 1) & ~(Align - 1);
+        IntPtr raw = Marshal.AllocHGlobal(ask + Align);
+        try {
+            IntPtr p = Aligned(raw);
+            Seek(h, offset);
+            uint got;
+            if (!ReadFile(h, p, (uint)ask, out got, IntPtr.Zero)) Fail("read failed at byte " + offset);
+            if (got < (uint)count) throw new Exception("short read at byte " + offset + ": " + got + " of " + count);
+            byte[] b = new byte[count];
+            Marshal.Copy(p, b, 0, count);
+            return b;
+        } finally {
+            Marshal.FreeHGlobal(raw);
+        }
+    }
+
+    public static bool AllZero(byte[] b) {
+        foreach (byte x in b) if (x != 0) return false;
+        return true;
+    }
+
     public static void Flush(SafeFileHandle h) {
         if (!FlushFileBuffers(h)) Fail("flush failed");
     }
@@ -344,34 +365,109 @@ function Get-DiskRefusal($Disk, [int64]$ImageBytes, [bool]$AllowLarge, [string]$
     return ''
 }
 
-# A stick this script or tools/write-usb.sh wrote before: three partitions,
-# a small partition 2 (the EFI image) and a partition 3 Windows cannot read
-# (the ext4 persistence). Rewriting it loses the old persistence, which the
-# prompt says, but it is not a stranger's data disk.
-function Test-SonoraLayout($Disk) {
-    $parts = @(Get-Field $Disk 'Partitions' @())
-    if ($parts.Count -ne 3) { return $false }
-    $p2 = @($parts | Where-Object { [int]$_.Number -eq 2 })
-    $p3 = @($parts | Where-Object { [int]$_.Number -eq 3 })
-    if ($p2.Count -ne 1 -or $p3.Count -ne 1) { return $false }
-    return ([int64]$p2[0].Size -le $script:SmallPartition -and [string](Get-Field $p3[0] 'FileSystem' '') -eq '')
+# A byte array property, or $null. The comma keeps PowerShell from unrolling
+# the array into the pipeline one byte at a time.
+function Get-Bytes($Object, [string]$Name) {
+    # Not through Get-Field, whose return would unroll the array.
+    if ($null -eq $Object -or -not $Object.PSObject.Properties[$Name]) { return $null }
+    $v = $Object.$Name
+    if ($v -is [byte[]]) { return , $v }
+    return $null
 }
 
-# The partitions that may hold someone's files: any with a drive letter or a
-# filesystem Windows recognises, and any large one it cannot read. Not a
-# blank stick, and not a previous SonoraOS stick.
+function Get-U32([byte[]]$B, [int]$At) { return [int64][BitConverter]::ToUInt32($B, $At) }
+
+# The sector where partition 3 starts if this MBR is exactly the one our
+# image carries, else -1. xorriso's hybrid table (tools/make-stick-image.sh
+# prints it): entry 1 type 0x00 from sector 64 over the whole ISO, entry 2
+# type 0xEF at 540 for 6656 sectors (the EFI image), and write-usb.sh's entry
+# 3, type 0x83, at the first MiB boundary after the ISO; entry 4 empty.
+function Get-SonoraP3Start([byte[]]$Head) {
+    if ($null -eq $Head -or $Head.Length -lt 65536) { return -1 }
+    if ($Head[510] -ne 0x55 -or $Head[511] -ne 0xAA) { return -1 }
+    if ($Head[450] -ne 0x00 -or (Get-U32 $Head 454) -ne 64) { return -1 }
+    $size1 = Get-U32 $Head 458
+    if ($size1 -le 0) { return -1 }
+    if ($Head[466] -ne 0xEF -or (Get-U32 $Head 470) -ne 540 -or (Get-U32 $Head 474) -ne 6656) { return -1 }
+    $start3 = [int64]([math]::Ceiling((64 + $size1) / 2048)) * 2048
+    if ($Head[482] -ne 0x83 -or (Get-U32 $Head 486) -ne $start3 -or (Get-U32 $Head 490) -le 0) { return -1 }
+    for ($i = 494; $i -lt 510; $i++) { if ($Head[$i] -ne 0) { return -1 } }
+    return $start3
+}
+
+# Our image, byte for byte where it identifies itself: the MBR above, the
+# ISO's primary volume descriptor (byte 32768) with --iso-volume "SONORA"
+# from iso/auto/config, and an ext4 superblock labelled "persistence" at the
+# start of partition 3. Another distribution's live stick with persistence
+# differs in the volume label at least.
+function Test-SonoraBytes([byte[]]$Head, [byte[]]$P3, [int64]$DiskSize) {
+    $start3 = Get-SonoraP3Start $Head
+    if ($start3 -lt 0) { return $false }
+    if ($start3 * 512 + 4096 -gt $DiskSize) { return $false }
+    $ascii = [Text.Encoding]::ASCII
+    if ($Head[32768] -ne 1 -or $ascii.GetString($Head, 32769, 5) -cne 'CD001') { return $false }
+    if ($ascii.GetString($Head, 32808, 32).TrimEnd([char]32, [char]0) -cne 'SONORA') { return $false }
+    if ($null -eq $P3 -or $P3.Length -lt 4096) { return $false }
+    if ($P3[1080] -ne 0x53 -or $P3[1081] -ne 0xEF) { return $false }
+    return ($ascii.GetString($P3, 1144, 16).TrimEnd([char]0) -ceq 'persistence')
+}
+
+# A stick this script or tools/write-usb.sh wrote before. Rewriting it loses
+# the old persistence, which the prompt says, but it is not a stranger's data
+# disk. Its content must be our image (Test-SonoraBytes) and Windows must see
+# nothing it can read on it but the small EFI partition: no letter and no
+# filesystem on anything larger, no volume it failed to query.
+function Test-SonoraLayout($Disk) {
+    if ([bool](Get-Field $Disk 'PartitionQueryFailed' $false)) { return $false }
+    $parts = @(Get-Field $Disk 'Partitions' @())
+    if ($parts.Count -gt 3) { return $false }
+    foreach ($p in $parts) {
+        if ([bool](Get-Field $p 'VolumeQueryFailed' $false)) { return $false }
+        if ([int64]$p.Size -gt $script:SmallPartition -and ([string](Get-Field $p 'DriveLetter' '') -ne '' -or [string](Get-Field $p 'FileSystem' '') -ne '')) { return $false }
+    }
+    return (Test-SonoraBytes (Get-Bytes $Disk 'Head') (Get-Bytes $Disk 'P3Block') ([int64]$Disk.Size))
+}
+
+function New-WholeDiskItem($Disk, [string]$Why) {
+    return [pscustomobject]@{ Number = 0; DriveLetter = ''; Size = [int64]$Disk.Size; FileSystem = ''; Label = ''
+        UsedBytes = [int64]0; Description = ('the whole disk: ' + $Why) }
+}
+
+# What may hold someone's files. Partitions with a drive letter, a filesystem
+# Windows recognises, a volume it failed to query, or over 64 MiB it cannot
+# read; the whole disk when its partitions could not be listed, or when it
+# has none but its first MiB is not provably blank (a filesystem or LUKS on
+# the whole device has no partition table). Nothing on a blank stick or a
+# previous SonoraOS stick.
 function Get-DataPartitions($Disk) {
+    if ([bool](Get-Field $Disk 'PartitionQueryFailed' $false)) {
+        return @(New-WholeDiskItem $Disk 'Windows could not list its partitions')
+    }
     if (Test-SonoraLayout $Disk) { return @() }
+    $parts = @(Get-Field $Disk 'Partitions' @())
+    if ($parts.Count -eq 0) {
+        $head = Get-Bytes $Disk 'Head'
+        if ($null -ne $head -and $head.Length -ge $script:MiB -and [SonoraUsb.Native]::AllZero($head)) { return @() }
+        return @(New-WholeDiskItem $Disk 'no partitions, and its first MiB is not blank or could not be read (a filesystem on the whole device?)')
+    }
     $out = @()
-    foreach ($p in @(Get-Field $Disk 'Partitions' @())) {
+    foreach ($p in $parts) {
         $letter = [string](Get-Field $p 'DriveLetter' '')
         $fs = [string](Get-Field $p 'FileSystem' '')
-        if ($letter -ne '' -or $fs -ne '' -or [int64]$p.Size -gt $script:SmallPartition) { $out += $p }
+        $failed = [bool](Get-Field $p 'VolumeQueryFailed' $false)
+        if ($failed -or $letter -ne '' -or $fs -ne '' -or [int64]$p.Size -gt $script:SmallPartition) { $out += $p }
     }
     return $out
 }
 
+# One line per data item, compared before and after the prompt.
+function Get-DataSignature($Items) {
+    return (@($Items | ForEach-Object { [string]$_.Number + ':' + (Get-Field $_ 'DriveLetter' '') + ':' + (Get-Field $_ 'FileSystem' '') + ':' + $_.Size + ':' + (Get-Field $_ 'Description' '') }) -join '|')
+}
+
 function Format-Partition($Part) {
+    $desc = [string](Get-Field $Part 'Description' '')
+    if ($desc -ne '') { return $desc }
     $fs = [string](Get-Field $Part 'FileSystem' '')
     if ($fs -eq '') { $fs = 'unknown filesystem' }
     $label = [string](Get-Field $Part 'Label' '')
@@ -404,13 +500,21 @@ function Test-HasSerial($Disk) {
 # The second answer a disk holding data needs: its drive letters, or the
 # partition numbers when it has none.
 function Get-DataToken($Parts) {
+    if (@($Parts | Where-Object { [int]$_.Number -eq 0 }).Count -gt 0) { return 'ERASE DATA DISK' }
     $letters = (@($Parts | ForEach-Object { [string](Get-Field $_ 'DriveLetter' '') } | Where-Object { $_ -ne '' }) -join '')
     if ($letters -ne '') { return ('ERASE DATA ' + $letters.ToUpperInvariant()) }
     return ('ERASE DATA ' + (@($Parts | ForEach-Object { 'P' + $_.Number }) -join ''))
 }
 
+# Everything that tells two disks apart, partitions included (offset, size,
+# type, GUID): a disk without a serial is then still not interchangeable with
+# another of the same model and size.
 function Get-DiskIdentity($Disk) {
-    return ([string]$Disk.Number + '|' + $Disk.UniqueId + '|' + $Disk.SerialNumber + '|' + $Disk.Size + '|' + $Disk.BusType)
+    $parts = @(@(Get-Field $Disk 'Partitions' @()) | ForEach-Object {
+        [string]$_.Number + ':' + (Get-Field $_ 'Offset' '') + ':' + $_.Size + ':' + (Get-Field $_ 'Type' '') + ':' +
+        (Get-Field $_ 'MbrType' '') + ':' + (Get-Field $_ 'GptType' '') + ':' + (Get-Field $_ 'Guid' '') })
+    return ([string]$Disk.Number + '|' + $Disk.UniqueId + '|' + $Disk.SerialNumber + '|' + $Disk.Size + '|' + $Disk.BusType + '|' +
+        (Get-Field $Disk 'FriendlyName' '') + '|' + [bool](Get-Field $Disk 'PartitionQueryFailed' $false) + '|' + ($parts -join ';'))
 }
 
 # Sidecar in sha256sum's format: "<hex>  name" or "<hex> *name".
@@ -429,14 +533,17 @@ function Get-Disks {
         $raw = Get-Content -LiteralPath $FakeDisks -Raw | ConvertFrom-Json
         $out = @()
         foreach ($d in @($raw)) {
-            $out += [pscustomobject]@{
+            $fake = [pscustomobject]@{
                 Number = [int]$d.Number; FriendlyName = [string]$d.FriendlyName
                 SerialNumber = [string]$d.SerialNumber; Size = [int64]$d.Size
                 BusType = [string]$d.BusType; IsSystem = [bool]$d.IsSystem; IsBoot = [bool]$d.IsBoot
                 HasPageFile = [bool]$d.HasPageFile; LogicalSectorSize = [int]$d.LogicalSectorSize
                 UniqueId = [string]$d.UniqueId; Partitions = @($d.Partitions)
-                Path = [string]$d.Path; Kind = 'file'
+                PartitionQueryFailed = [bool](Get-Field $d 'PartitionQueryFailed' $false)
+                Path = [string]$d.Path; Kind = 'file'; Head = $null; P3Block = $null
             }
+            Add-DiskContent $fake
+            $out += $fake
         }
         return $out
     }
@@ -458,12 +565,19 @@ function Get-Disks {
     $out = @()
     foreach ($d in @(Get-Disk)) {
         $parts = @()
-        foreach ($p in @(Get-Partition -DiskNumber $d.Number -ErrorAction SilentlyContinue)) {
+        # Through the pipeline: a disk with no partitions yields none, without
+        # the "no MSFT_Partition objects found" error -DiskNumber gives. Any
+        # error is a disk whose contents are unknown, which counts as data.
+        $partsFailed = $false
+        $found = @()
+        try { $found = @($d | Get-Partition -ErrorAction Stop) } catch { $partsFailed = $true; $found = @() }
+        foreach ($p in $found) {
             $letter = ''
             if ($p.DriveLetter -and [int][char]$p.DriveLetter -ne 0) { $letter = ([string]$p.DriveLetter).ToUpperInvariant() }
             $fs = ''; $label = ''; $used = [int64]0
             $vol = $null
-            try { $vol = $p | Get-Volume -ErrorAction Stop } catch { $vol = $null }
+            $volFailed = $false
+            try { $vol = $p | Get-Volume -ErrorAction Stop } catch { $vol = $null; $volFailed = $true }
             if ($null -ne $vol) {
                 $fs = [string]$vol.FileSystem
                 $label = [string]$vol.FileSystemLabel
@@ -482,23 +596,52 @@ function Get-Disks {
             $parts += [pscustomobject]@{
                 Number = $p.PartitionNumber; DriveLetter = $letter; Size = [int64]$p.Size
                 Type = [string]$p.Type; AccessPaths = @($p.AccessPaths)
-                FileSystem = $fs; Label = $label; UsedBytes = $used
+                Offset = [int64]$p.Offset; Guid = [string]$p.Guid
+                MbrType = [string]$p.MbrType; GptType = [string]$p.GptType
+                FileSystem = $fs; Label = $label; UsedBytes = $used; VolumeQueryFailed = $volFailed
                 BitLocker = $locked; HasWindows = $hasWindows
                 IsSystemPartition = ([bool]$p.IsSystem -or [bool]$p.IsBoot)
             }
         }
         $hasPage = $false
         foreach ($p in $parts) { if ($p.DriveLetter -ne '' -and ($pageLetters -contains $p.DriveLetter)) { $hasPage = $true } }
-        $out += [pscustomobject]@{
+        $disk = [pscustomobject]@{
             Number = [int]$d.Number; FriendlyName = [string]$d.FriendlyName
             SerialNumber = ([string]$d.SerialNumber).Trim(); Size = [int64]$d.Size
             BusType = [string]$d.BusType; IsSystem = [bool]$d.IsSystem; IsBoot = [bool]$d.IsBoot
             HasPageFile = $hasPage; LogicalSectorSize = [int]$d.LogicalSectorSize
-            UniqueId = [string]$d.UniqueId; Partitions = $parts
-            Path = (Get-DevicePath $d.Number); Kind = 'device'
+            UniqueId = [string]$d.UniqueId; Partitions = $parts; PartitionQueryFailed = $partsFailed
+            Path = (Get-DevicePath $d.Number); Kind = 'device'; Head = $null; P3Block = $null
         }
+        Add-DiskContent $disk
+        $out += $disk
     }
     return $out
+}
+
+# count bytes of a disk, read-only, or $null when they cannot be read (on a
+# real disk that includes not being elevated).
+function Read-DiskBytes($Disk, [int64]$Offset, [int]$Count) {
+    try {
+        $h = [SonoraUsb.Native]::Open($Disk.Path, $Disk.Kind, $false, $true)
+        try { $b = [SonoraUsb.Native]::ReadAt($h, $Offset, $Count) } finally { $h.Dispose() }
+        return , $b
+    } catch {
+        return $null
+    }
+}
+
+# The first MiB (blank or not, and our MBR and ISO descriptor) and, when the
+# MBR is ours, the first 4 KiB of partition 3 (the ext4 superblock). Read for
+# USB disks only: an internal disk is never opened, not even to read.
+function Add-DiskContent($Disk) {
+    if ([string]$Disk.BusType -ne 'USB') { return }
+    $head = Read-DiskBytes $Disk 0 ([int]$script:MiB)
+    $Disk.Head = $head
+    $start3 = Get-SonoraP3Start $head
+    if ($start3 -ge 0 -and ($start3 * 512 + 4096) -le [int64]$Disk.Size) {
+        $Disk.P3Block = Read-DiskBytes $Disk ($start3 * 512) 4096
+    }
 }
 
 function Show-Disk($Disk) {
@@ -546,10 +689,12 @@ function Assert-HandleIsDisk($Handle, $Disk) {
         $serial = [SonoraUsb.Native]::DeviceSerial($Handle, [ref]$bus)
         if ($len -ne [int64]$Disk.Size) { return ('the open device is ' + $len + ' bytes, not ' + $Disk.Size + '.') }
         if ($bus -ne 7) { return ('the open device reports bus type ' + $bus + ', not USB (7).') }
-        $a = ($serial -replace '[^A-Za-z0-9]', '').ToUpperInvariant()
-        $b = ([string]$Disk.SerialNumber -replace '[^A-Za-z0-9]', '').ToUpperInvariant()
-        if ($a -ne '' -and $b -ne '' -and -not ($a.Contains($b) -or $b.Contains($a))) {
-            return ('the open device reports serial ' + $serial + ', not ' + $Disk.SerialNumber + '.')
+        # Exact whenever Windows listed a serial. Without one, the identity
+        # compared after the prompt (model, size, unique id, every partition's
+        # offset, size, type and GUID) is what ties the handle to the disk.
+        $want = ([string]$Disk.SerialNumber).Trim()
+        if ($want -ne '' -and $serial.Trim() -cne $want) {
+            return ('the open device reports serial "' + $serial + '", not "' + $want + '" as listed. Unplug other USB disks and run again.')
         }
         return ''
     }
@@ -795,7 +940,9 @@ function Invoke-Main {
     $disk = $again[0]
     $why = Get-DiskRefusal $disk $imageBytes ([bool]$AllowLarge) $imageDrive
     if ($why -ne '') { Stop-Refused ('disk ' + $DiskNumber + ': ' + $why) }
-    if (@(Get-DataPartitions $disk).Count -gt $data.Count) { Stop-Refused ('disk ' + $DiskNumber + ' gained a data partition since it was shown.') }
+    if ((Get-DataSignature @(Get-DataPartitions $disk)) -ne (Get-DataSignature $data)) {
+        Stop-Refused ('what disk ' + $DiskNumber + ' holds changed since it was shown.')
+    }
 
     $h = $null
     $locks = @()
