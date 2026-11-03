@@ -5,6 +5,7 @@
 # common/midi for notes (ADR-0014, the model-to-midi edge).
 set(SONORA_MODEL_SOURCES
   src/apply.cpp
+  src/comping.cpp
   src/history.cpp
   src/local_edit.cpp
   src/midi_json.cpp
@@ -76,6 +77,10 @@ add_test(NAME model_routing COMMAND test_model_routing)
 add_executable(test_model_automation tests/test_automation.cpp)
 target_link_libraries(test_model_automation PRIVATE sonora_model_audited)
 add_test(NAME model_automation COMMAND test_model_automation)
+# Take lanes and swipe comping (ADR-0031).
+add_executable(test_model_comping tests/test_comping.cpp)
+target_link_libraries(test_model_comping PRIVATE sonora_model_audited)
+add_test(NAME model_comping COMMAND test_model_comping)
 # Track structure: delete, duplicate (ADR-0023).
 add_executable(test_model_tracks tests/test_tracks.cpp)
 target_link_libraries(test_model_tracks PRIVATE sonora_model_audited)
