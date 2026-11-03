@@ -365,6 +365,19 @@ measurement.
    labwc-config(5). Test: send Alt-Tab and Super-Return to the UI through a
    virtual keyboard in QEMU and check that they arrive. Owner:
    distro-engineer, stage 1.
+
+   *Update, 2026-11-03 (container, not QEMU or hardware):*
+   `tools/test-labwc-kiosk.sh` runs headless labwc 0.8.3 (pixman) through
+   `sonora-compositor` with `wev` as the client, `wtype` and `wlrctl` as
+   virtual keyboard and pointer. With the shipped `rc.xml`, Alt-Tab,
+   Super-Return and Super-a reach the client, and a left or right press on
+   the desktop opens no menu. With an empty `rc.xml` labwc swallows all three
+   chords and opens its root menu, so the probe tells the two apart. It also
+   found that a plain Left Press bound on the `Frame` context swallowed every
+   left click on every window, the UI included: `Frame` covers the client
+   area. That binding moved to `Title`. Still open: Ctrl+Alt+Fn under
+   `srvrkeys:none` (`wtype` uploads its own keymap, which bypasses labwc's XKB
+   options), the title-bar drag and the close button, and real input devices.
 3. **Renderer on a machine with no render node, and its CPU cost**: GLES2 on
    llvmpipe or pixman, measured on QEMU `-vga std` and then on a laptop with
    the GPU driver blacklisted. Owner: researcher.

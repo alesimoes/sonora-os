@@ -14,8 +14,11 @@
   <mouse>
     <!-- Only what an operator needs to move or dismiss a plugin editor.
          Nothing on the Root context: the desktop shows for about a second
-         between a UI crash and its restart and must lead nowhere. -->
-    <context name="Frame">
+         between a UI crash and its restart and must lead nowhere.
+         Nothing unmodified on Frame either: Frame spans the client area, and
+         labwc 0.8.3 swallows a press bound there, so the UI never saw a left
+         click (tools/test-labwc-kiosk.sh). -->
+    <context name="Title">
       <mousebind button="Left" action="Press"><action name="Focus"/></mousebind>
     </context>
     <context name="Client">
