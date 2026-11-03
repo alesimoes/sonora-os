@@ -2079,16 +2079,12 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         // A Touch released with no lane glides to the static value
         // (ADR-0027 §8), on the lane path so that it is the same function
         // of the frame as the return the writer writes. The static is read
-        // each callback: the control thread puts it back in the atomic
-        // around the release, not necessarily before this callback.
+        // each callback, so an edit mid-return moves its end.
         bool return_moved = false;
         for (uint32_t p = 0; p < kAutoParams; ++p) {
             const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
             if (pt.auto_count[p] != 0 || return_at_[k] == kNoReturn) continue;
-            // A trim with no lane returns to 0 dB, the trim of no lane.
-            const float fixed = p == kAutoVolume ? auto_db_of_gain(track_level_[e])
-                                : p == kAutoPan  ? track_pan_[e]
-                                                 : 0.0f;
+            const float fixed = static_param(plan, e, p);
             const auto bit = static_cast<uint8_t>(1u << p);
             return_moved = return_moved || ((track_auto_last_[e] & bit) != 0 && fixed != return_to_[k]);
             return_to_[k] = fixed;
@@ -2361,6 +2357,23 @@ uint32_t Session::newest_punch(uint32_t take) const noexcept SONORA_RT {
         if (found == punch_slots_ || punch_stored_[k] > punch_stored_[found]) found = k;
     }
     return found;
+}
+
+float Session::static_param(const PlaybackPlan& plan, uint32_t e,
+                            uint32_t p) const noexcept SONORA_RT {
+    // A trim with no lane returns to 0 dB, the trim of no lane.
+    if (p == kAutoTrim) return 0.0f;
+    const Track& t = *tracks_[e];
+    float gain = 0.0f;
+    float pan = 0.0f;
+    if (plan.mix_serial != 0 && e < plan.track_mix_count && t.mix_serial() != plan.mix_serial) {
+        gain = plan.track_mix[e].gain;
+        pan = plan.track_mix[e].pan;
+    } else {
+        gain = t.static_gain();
+        pan = t.static_pan();
+    }
+    return p == kAutoPan ? pan : auto_db_of_gain(gain);
 }
 
 Session::TrackMixView Session::mix_view(const PlaybackPlan& plan,
