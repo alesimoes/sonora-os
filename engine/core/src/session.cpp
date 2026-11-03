@@ -1693,9 +1693,10 @@ void Session::gather_lanes(const PlaybackPlan& plan, uint64_t frame) noexcept SO
             const float v = auto_lane_value(plan.auto_points + lane.first, lane.count, t);
             // post_plugin_param's rule: a NaN would reach the store and the
             // host's table, and as it equals nothing it would be resent every
-            // callback. Checked on the value, not the points: finite points
-            // whose difference overflows a float interpolate to infinity.
-            // The host keeps the last value it had.
+            // callback. The builder carries no non-finite point and finite
+            // ones interpolate to a finite value, so only a plan built
+            // elsewhere gets here; checked on the value, which costs nothing
+            // per point. The host keeps the last value it had.
             if (!std::isfinite(v)) continue;
             if (!posted && lane_has_sent_[li] != 0 && lane_sent_[li] == v) continue;
             lane_sent_[li] = v;

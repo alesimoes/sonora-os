@@ -218,6 +218,16 @@ the write slice.
   knob when a parameter leaves lane play (mode to Off or Write, a lane
   removed) is not built: the plugin keeps the lane's last value until the
   knob next moves.
+- *As built (finite lane values, 2026-11-03):* the builder leaves out a
+  plugin lane with a non-finite point, as it does one whose key resolves
+  to nothing (the model refuses such a value, so only a broken document
+  has one, and a NaN passes the range clamp unchanged). Lanes are
+  interpolated in double (`auto_lane_value`, and the writer's
+  `lane_value` with it), so two finite points whose difference overflows
+  a float, as a plugin parameter's range allows, play a finite value
+  between them rather than infinity; such a lane is no longer skipped, so
+  a knob moved under it no longer wins. The session's finite check on the
+  value stays, for a plan not built by the builder.
 
 ### §6 First slice, format, protocol
 

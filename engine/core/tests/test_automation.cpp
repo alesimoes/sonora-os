@@ -14,6 +14,7 @@
 #include "playback_test.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -198,6 +199,12 @@ int test_lane_value() {
     const PlanAutoPoint one{500, 3.0f};
     CHECK(sonora::auto_lane_value(&one, 1, 0) == 3.0f);
     CHECK(sonora::auto_lane_value(&one, 1, 9000) == 3.0f);
+    // #243 review: two finite points whose difference overflows a float,
+    // as a plugin parameter's range allows, still give a finite value.
+    const std::vector<PlanAutoPoint> wide = {{0, -FLT_MAX}, {1000, FLT_MAX}};
+    CHECK(sonora::auto_lane_value(wide.data(), 2, 500) == 0.0f);
+    const float quarter = sonora::auto_lane_value(wide.data(), 2, 250);
+    CHECK(std::isfinite(quarter) && near(quarter / FLT_MAX, -0.5f));
     return 0;
 }
 
