@@ -1593,6 +1593,102 @@ void a_removal_while_latched_drops_the_ride() {
         });
 }
 
+// ADR-0027 §8 slice 4: Touch on a track with no lane, ridden to +6 dB while
+// rolling and released. The release puts the document's static (0 dB, never
+// committed) back in the gain atomic for the audio thread to glide to; the
+// pass's lane returns to it; the static is still 0 dB. Stopped, a Touch
+// release leaves the atomic where the ride put it (the client saves it).
+void a_touch_release_returns_to_the_static_value() {
+    RealEngine real(fresh_dir("automation_touch_return"), {});
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    model::Replica replica;
+    std::size_t fed = 0;
+    const auto feed = [&]() {
+        for (; fed < in.model.size(); ++fed) {
+            std::string why;
+            CHECK(replica.receive(from_wire(in.model[fed]), why));
+        }
+    };
+    const auto ok = [&](uint64_t seq) {
+        bool good = false;
+        CHECK(until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    good = r.result == DispatchResult::Ok;
+                    return true;
+                }
+            }
+            return false;
+        }));
+        feed();
+        return good;
+    };
+    CHECK(until(real, in, [&]() { return !in.model.empty(); }));
+    feed();
+    CHECK(replica.synced());
+    if (!replica.synced() || replica.current().edit->tracks.size() < 2) return;
+    const model::Id id = replica.current().edit->tracks[1]->id;
+    model::TrackMix mix = *replica.current().mix.find(id);
+    CHECK(mix.gain_db == 0.0f);
+    mix.automation = model::AutomationMode::Touch;
+    api::ModelRequest m;
+    m.action = api::ModelAction::Apply;
+    CHECK(model::encode_operation(model::SetMix{mix}, m.op, error));
+    CHECK(ok(real.submit(m)));
+    Track& track = *real.session().tracks()[1];
+    CHECK(until(real, in, [&]() { return track.automation() == Track::Automation::Touch; }));
+
+    const float ride = std::pow(10.0f, 6.0f / 20.0f);
+    api::ParameterChange touch;
+    touch.track = 1;
+    touch.value = ride;
+    touch.gesture = api::Gesture::Touch;
+    CHECK(ok(real.send(touch)));
+    touch.gesture = api::Gesture::Release;
+    CHECK(ok(real.send(touch)));
+    CHECK(track.touched() == 0 && track.gain() == ride);   // stopped: the ride stays
+
+    touch.gesture = api::Gesture::Move;
+    touch.value = 1.0f;
+    CHECK(ok(real.send(touch)));
+    api::CommandRequest play;
+    play.command = "transport.play";
+    CHECK(ok(real.send(play)));
+    CHECK(until(real, in, [&]() {
+        return real.session().transport().state() == sonora::TransportState::Rolling;
+    }));
+    touch.value = ride;
+    touch.gesture = api::Gesture::Touch;
+    CHECK(ok(real.send(touch)));
+    const uint64_t touched_at = real.state().transport().playhead;
+    CHECK(until(real, in, [&]() { return real.state().transport().playhead >= touched_at + 4800; }));
+    touch.gesture = api::Gesture::Release;
+    CHECK(ok(real.send(touch)));
+    CHECK(track.touched() == 0 && track.gain() == 1.0f);
+    const uint64_t released_at = real.state().transport().playhead;
+    CHECK(until(real, in, [&]() {
+        return real.state().transport().playhead >= released_at + 2 * 12000;
+    }));
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(ok(real.send(stop)));
+    CHECK(until(real, in, [&]() { return real.session().automation_passes_ended() >= 1; }));
+    CHECK(until(real, in, [&]() {
+        feed();
+        return volume_lane(replica.current(), id) != nullptr;
+    }));
+    const model::AutomationLane* lane = volume_lane(replica.current(), id);
+    if (lane == nullptr || lane->points.empty()) return;
+    // Up to the ride, and back down to the untouched static at the end.
+    float top = -1000.0f;
+    for (const auto& p : lane->points) top = std::max(top, p.value);
+    CHECK(std::fabs(top - 6.0f) < 0.01f);
+    CHECK(std::fabs(lane->points.back().value) < 0.01f);
+    CHECK(replica.current().mix.find(id)->gain_db == 0.0f);
+}
+
 // ADR-0016 end to end: with the document's loop range set, transport.record
 // starts a loop take; while it records, a SetSettings that moves the loop
 // range or clears it is refused by name, as is opening a session, and any
@@ -3299,6 +3395,7 @@ int main() {
     play_then_load_writes_nothing();
     a_pass_with_every_lane_dropped_leaves_write();
     a_reorder_while_latched_files_the_ride_under_its_track();
+    a_touch_release_returns_to_the_static_value();
     a_removal_while_latched_drops_the_ride();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");

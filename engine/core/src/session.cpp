@@ -349,7 +349,13 @@ Session::Session(SessionConfig cfg)
         return_at_[i] = kNoReturn;
     }
     return_from_.reset(new float[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]());
-    touch_return_frames_ = std::max<uint32_t>(1, cfg_.sample_rate / 4);
+    live_value_.reset(new float[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]());
+    live_moved_.reset(new float[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]());
+    return_to_.reset(new float[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]());
+    const uint64_t return_ms = std::clamp(cfg_.touch_return_ms, SessionConfig::kMinTouchReturnMs,
+                                          SessionConfig::kMaxTouchReturnMs);
+    touch_return_frames_ = static_cast<uint32_t>(
+        std::max<uint64_t>(1, static_cast<uint64_t>(cfg_.sample_rate) * return_ms / 1000));
     // The control thread drains every 50 ms at the longest; 512 writes a
     // lane is a third of a second of 32-frame blocks, each wrapping.
     auto_writes_ = std::make_unique<RingBuffer<AutomationWrite>>(
@@ -2015,10 +2021,16 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
                 (at != kNoReturn && (s < at || s >= at + touch_return_frames_))) {
                 at = kNoReturn;
             }
+            const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
+            const float now = p == kAutoVolume ? track_level_[e] : track_pan_[e];
+            if ((live & bit) != 0) live_value_[k] = now;
             const bool released = rolling && mode == Track::Automation::Touch &&
                                   (auto_live_last_[e] & bit) != 0 && (live & bit) == 0;
             if (!released) continue;
-            const float from = p == kAutoVolume ? auto_db_of_gain(track_level_[e]) : track_pan_[e];
+            // What the last live callback played: the release may arrive
+            // with the static already back in the atomic, and the return
+            // starts where the audio was.
+            const float heard = live_value_[k];
             // The write marks the release whether or not a lane plays it
             // back: the pass then knows the run ended there by a release.
             AutomationWrite w{};
@@ -2028,11 +2040,12 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
             w.frame = start;
             w.track = e;
             w.param = static_cast<uint8_t>(p);
-            w.value = p == kAutoVolume ? track_level_[e] : track_pan_[e];
+            w.value = heard;
             push_write(w);
-            // Heard only where a lane plays: lane_param() is its one reader.
+            // lane_param() is its one reader, on a lane or, with none, on
+            // the static value (return_to_).
             at = s;
-            return_from_[e * kAutoParams + p] = from;
+            return_from_[k] = p == kAutoVolume ? auto_db_of_gain(heard) : heard;
         }
     }
     for (uint32_t pi = 0; pi < plan.track_count; ++pi) {
@@ -2044,6 +2057,21 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         uint8_t flags = 0;
         if (pt.auto_count[kAutoVolume] != 0) flags |= 1u << kAutoVolume;
         if (pt.auto_count[kAutoPan] != 0) flags |= 1u << kAutoPan;
+        // A Touch released with no lane glides to the static value
+        // (ADR-0027 §8), on the lane path so that it is the same function
+        // of the frame as the return the writer writes. The static is read
+        // each callback: the control thread puts it back in the atomic
+        // around the release, not necessarily before this callback.
+        bool return_moved = false;
+        for (uint32_t p = 0; p < kAutoParams; ++p) {
+            const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
+            if (pt.auto_count[p] != 0 || return_at_[k] == kNoReturn) continue;
+            const float fixed = p == kAutoVolume ? auto_db_of_gain(track_level_[e]) : track_pan_[e];
+            const auto bit = static_cast<uint8_t>(1u << p);
+            return_moved = return_moved || ((track_auto_last_[e] & bit) != 0 && fixed != return_to_[k]);
+            return_to_[k] = fixed;
+            flags = static_cast<uint8_t>(flags | bit);
+        }
         flags = static_cast<uint8_t>(flags & ~live);
         if (flags == 0) continue;
         track_auto_[e] = flags;
@@ -2058,8 +2086,9 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         auto_pan_[e] = track_pan_[e];
         // A moved track starts at its lane, as a static fader starts at its
         // target (ADR-0023 §4).
-        track_ramp_[e] = snap_row_[e] == 0 && (jumped || static_moved || flags != track_auto_last_[e] ||
-                                        track_open_[e] != track_open_last_[e]);
+        track_ramp_[e] = snap_row_[e] == 0 &&
+                         (jumped || static_moved || return_moved || flags != track_auto_last_[e] ||
+                          track_open_[e] != track_open_last_[e]);
         const auto t = static_cast<int64_t>(start);
         if ((flags & (1u << kAutoVolume)) != 0) {
             track_level_[e] = auto_gain_of_db(lane_param(plan, pt, e, kAutoVolume, t));
@@ -2071,8 +2100,12 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
 float Session::lane_param(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t e, uint32_t p,
                           int64_t t) const noexcept SONORA_RT {
     ++lane_evals_;
-    const float lane = auto_lane_value(plan.auto_points + pt.auto_first[p], pt.auto_count[p], t);
     const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
+    // No lane: only a return reaches here (automation_targets()), toward
+    // the static value.
+    const float lane = pt.auto_count[p] != 0
+                           ? auto_lane_value(plan.auto_points + pt.auto_first[p], pt.auto_count[p], t)
+                           : return_to_[k];
     const int64_t at = return_at_[k];
     if (at == kNoReturn || t < at - kAutoGridFrames || t >= at + touch_return_frames_) return lane;
     // The grid point before the release: the frames between it and the
@@ -2336,11 +2369,18 @@ void Session::follow_track_owners(const PlaybackPlan& plan) noexcept SONORA_RT {
         // Last callback's live bits too, or the track leaving a row would
         // read as a release of the one arriving on it.
         live[e] = from < n ? auto_live_[from] : 0;
+        // With them the value they played, which their release returns from.
+        for (uint32_t p = 0; p < kAutoParams; ++p) {
+            live_moved_[e * kAutoParams + p] = from < n ? live_value_[from * kAutoParams + p] : 0.0f;
+        }
         snap_row_[e] = from != e ? 1 : 0;
     }
     for (uint32_t e = 0; e < n; ++e) {
         auto_latched_[e] = latched[e];
         auto_live_[e] = live[e];
+        for (uint32_t p = 0; p < kAutoParams; ++p) {
+            live_value_[e * kAutoParams + p] = live_moved_[e * kAutoParams + p];
+        }
         auto_owner_[e] = owner(e);
     }
 }

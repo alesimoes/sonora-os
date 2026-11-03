@@ -127,6 +127,17 @@ bool MixModel::live(int track) const {
            static_cast<uint32_t>(track) < engine_tracks_();
 }
 
+bool MixModel::writes(int track) const {
+    if (!live(track) || !session_.transportOverlay().rolling) return false;
+    const QStringList modes = session_.automationModes();
+    if (track >= modes.size()) return false;
+    // Touch only: the engine puts the static back at its release. Latch and
+    // Write keep playing the ride until the stop, so it is saved as the
+    // static, or a mix edit mid-pass (apply_mix) or a second grab would
+    // step back to the old one (#282 review B1).
+    return modes[track] == QLatin1String("Touch");
+}
+
 void MixModel::sendLive(int track, float db, api::Gesture gesture) {
     sender_(static_cast<uint32_t>(track), api::ParamId::Gain, fader_linear_gain(db), gesture);
     if (gesture == api::Gesture::Move) ++live_steps_;
@@ -141,6 +152,7 @@ void MixModel::beginRide(int track) {
     ride_from_db_ = ride_db_ = session_.stripGain(track);
     ride_sent_live_ = false;
     ride_touched_ = false;
+    ride_wrote_ = writes(track);
     // The hand is on the fader from the press, before it moves: Touch and
     // Latch take over at this value, so nothing jumps.
     if (live(track)) {
@@ -158,6 +170,7 @@ void MixModel::ride(int track, qreal dy, qreal travel, bool fine) {
     if (live(track)) {
         sendLive(track, db);
         ride_sent_live_ = true;
+        ride_wrote_ = ride_wrote_ || writes(track);
     } else {
         session_.setGain(track, db);
     }
@@ -169,12 +182,16 @@ void MixModel::endRide(int track) {
     const float db = ride_db_;
     const bool sent = ride_sent_live_;
     const bool touched = ride_touched_;
+    const bool wrote = ride_wrote_ || writes(track);
     ride_track_ = kNoRide;
     ride_id_ = 0;
     ride_sent_live_ = false;
     ride_touched_ = false;
+    ride_wrote_ = false;
     if (touched) sendLive(track, db, api::Gesture::Release);
-    if (sent) {
+    // A Touch ride is the pass's lane; the engine glides back to
+    // the static, which the cap shows again.
+    if (sent && !wrote) {
         std::string why;
         const bool ok = session_.controller().set_gain(track, db, why);
         session_.reportEdit(ok, why);

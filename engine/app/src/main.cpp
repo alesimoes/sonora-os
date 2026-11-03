@@ -592,6 +592,16 @@ int main(int argc, char** argv) {
                 return 2;
             }
             control.autosave_period_ms = static_cast<uint64_t>(n) * 1000;
+        } else if (std::strcmp(argv[i], "--automatch-ms") == 0 && i + 1 < argc) {
+            char* end = nullptr;
+            const long long n = std::strtoll(argv[++i], &end, 10);
+            if (end == argv[i] || *end != '\0' ||
+                n < static_cast<long long>(sonora::SessionConfig::kMinTouchReturnMs) ||
+                n > static_cast<long long>(sonora::SessionConfig::kMaxTouchReturnMs)) {
+                std::fprintf(stderr, "sonora: --automatch-ms takes 10 to 5000\n");
+                return 2;
+            }
+            cfg.touch_return_ms = static_cast<uint32_t>(n);
         } else if (std::strcmp(argv[i], "--backups") == 0 && i + 1 < argc) {
             char* end = nullptr;
             const long long n = std::strtoll(argv[++i], &end, 10);
@@ -654,6 +664,9 @@ int main(int argc, char** argv) {
                 "                    autosave a session that has a file this often\n"
                 "                    while it has edits, and after each take\n"
                 "                    (default 60; 0: never)\n"
+                "  --automatch-ms MS how long a released Touch fader or pan glides\n"
+                "                    back to its lane or static value (AutoMatch;\n"
+                "                    default 250, 10 to 5000)\n"
                 "  --backups N       earlier session files each save keeps in\n"
                 "                    \"Session File Backups\" (default 20; 0: none)\n"
                 "  --record SECONDS  record for SECONDS, then exit (headless)\n"

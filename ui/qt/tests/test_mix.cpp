@@ -1064,6 +1064,74 @@ int automation_gestures() {
     return 0;
 }
 
+// ADR-0027 §8 slice 4: a ride in Touch, Latch or Write while rolling is the
+// pass's lane, so its release saves no static gain; stopped, or in Read, it
+// is the static and is saved as before.
+int written_ride_keeps_the_static() {
+    Rig r;
+    CHECK(r.connect());
+    TransportSnapshot rolling;
+    rolling.state = TransportMode::Rolling;
+    r.session.onTransport(rolling, true);
+    const auto ride_up = [&r](int track) {
+        r.mixer.beginRide(track);
+        r.mixer.ride(track, -20, 200, false);
+        r.mixer.endRide(track);
+        r.settle();
+    };
+    // Touch while rolling: the engine glides back to the static, which stays.
+    CHECK(r.mixer.setAutomationMode(1, "Touch"));
+    r.settle();
+    uint64_t rev = r.doc.revision();
+    ride_up(1);
+    CHECK(r.doc.revision() == rev && near(r.session.stripGain(1), 0.0));
+    CHECK(!r.sent.empty() && r.sent.back().gesture == api::Gesture::Release);
+    CHECK(r.refused.empty());
+    // Read while rolling: the ride is the static.
+    CHECK(r.mixer.setAutomationMode(1, "Read"));
+    r.settle();
+    rev = r.doc.revision();
+    ride_up(1);
+    CHECK(r.doc.revision() == rev + 1 && r.session.stripGain(1) > 0.0);
+    // #282 review B1: Latch and Write keep playing the ride after the
+    // release, so the static is saved with it. Otherwise any mix edit before
+    // the stop (apply_mix() sets every track's gain from the document) and
+    // a second grab (its Touch carries stripGain()) would step the audio and
+    // the lane back to the old static mid-pass.
+    std::string why;
+    for (const char* m : {"Latch", "Write"}) {
+        CHECK(r.mixer.setAutomationMode(3, m));
+        r.settle();
+        rev = r.doc.revision();
+        const double before = r.session.stripGain(3);
+        ride_up(3);
+        const double ridden = r.session.stripGain(3);
+        CHECK(r.doc.revision() == rev + 1 && ridden > before);
+        CHECK(r.session.controller().toggle_mute(0, why));
+        r.settle();
+        CHECK(near(r.session.stripGain(3), ridden));
+        CHECK(near(r.engine_gain(3), fader_linear_gain(static_cast<float>(ridden))));
+        r.mixer.beginRide(3);
+        CHECK(!r.sent.empty() && r.sent.back().gesture == api::Gesture::Touch &&
+              near(r.sent.back().value, fader_linear_gain(static_cast<float>(ridden))));
+        r.mixer.endRide(3);
+        r.settle();
+        CHECK(r.session.controller().toggle_mute(0, why));
+        r.settle();
+        CHECK(r.refused.empty());
+    }
+    // Touch, stopped: the static too.
+    CHECK(r.mixer.setAutomationMode(2, "Touch"));
+    r.settle();
+    TransportSnapshot stopped;
+    r.session.onTransport(stopped, true);
+    rev = r.doc.revision();
+    ride_up(2);
+    CHECK(r.doc.revision() == rev + 1 && r.session.stripGain(2) > 0.0);
+    std::printf("  a written ride keeps the static: ok\n");
+    return 0;
+}
+
 int automation_mode_selector() {
     Rig r;
     CHECK(r.connect());
@@ -1116,6 +1184,7 @@ int main(int argc, char** argv) {
     if (live_path_follows_the_engine() != 0) return 1;
     if (automation_gestures() != 0) return 1;
     if (automation_mode_selector() != 0) return 1;
+    if (written_ride_keeps_the_static() != 0) return 1;
     if (typed_values() != 0) return 1;
     if (modifier_clicks() != 0) return 1;
     if (implicit_mutes() != 0) return 1;

@@ -361,6 +361,28 @@ A plan that carries a mix snaps only the rows whose document track changed
 (and every row of a plan that names no owners, as before); a track left on
 its row ramps (#267 review L2). In-process only: no bump.
 
+*As built (slice 4, recommended defaults, nobody available):* a Touch
+release while rolling makes the control thread put the document's static
+back in the track's atomic (`PlaybackController::touch()`). The audio thread
+returns from the value its last live callback played (`live_value_`), not
+from the atomic it reads at the release, as the static may already be back.
+The release write carries that same value. A parameter with no lane in its
+return window plays on the lane path, toward the static it reads each
+callback (`return_to_`), so the same function of the frame plays as with a
+lane. A static that changes mid-return is crossfaded over one callback.
+`SessionConfig::touch_return_ms` (engine option `--automatch-ms`, 10 to
+5000, default 250) sets the return for the audio and the writer.
+`MixModel` saves no static after a ride that played in Touch while
+rolling. Latch and Write rides are saved as the static, as before. Those
+modes keep playing the ride until the stop. With the old static in the
+document, any mix edit mid-pass (`apply_mix()` sets every gain from the
+document) or a second grab would step the audio back to it, and the lane
+would record the step (#282 review B1). Stopped, or in Read, the ride is
+the static. The control thread stores the static after it clears
+`touched`, not before. Stored first, it could be played and written as one
+live callback's value. In this order the audio thread returns from
+`live_value_`, and a static that arrives late is crossfaded. No bump.
+
 **Merge order:** 1 (now), then #243 and Track 4b, then 2, 3, 4, 5. Slice 1
 is the only one that can run beside the in-flight work, because 2 to 5 all
 edit `session.cpp`. Each slice's diff is small enough for one agent session,
