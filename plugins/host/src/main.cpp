@@ -1127,6 +1127,8 @@ pc::Loaded loaded_message(const plugin::ChannelHeader& h, const Chain& chain, co
             p.default_value = chain.param_default(i, d);
             if (!std::isfinite(p.min) || !std::isfinite(p.max)) p.min = p.max = 0.f;
             if (!std::isfinite(p.default_value)) p.default_value = p.min;
+            const PortInfo& port = chain.param_port(i, d);
+            p.stepped = port.steps >= 2 || port.toggle || port.enumeration || port.discrete;
             li.params.push_back(std::move(p));
         }
         m.instances.push_back(std::move(li));

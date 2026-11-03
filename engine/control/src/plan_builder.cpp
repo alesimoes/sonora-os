@@ -50,6 +50,24 @@ uint64_t demand_at(const std::vector<std::vector<PlanSegment>>& tracks, int64_t 
     return total;
 }
 
+float lane_value(float v, const LaneTarget& t) { return std::min(std::max(v, t.min), t.max); }
+
+// A lane on a stepped parameter (ADR-0027 §5, #250 review) holds each
+// point's value until the next point's frame, then steps: auto_lane_value
+// reads two points at one frame as a step, so a hold is one more point, at
+// the next point's frame with the value before it. Interpolated, a ramp
+// from choice 0 to 3 would walk the plugin through 1 and 2. Points that
+// already form a step, or keep the value, need none.
+bool needs_hold(const model::AutomationPoint& a, const model::AutomationPoint& b, const LaneTarget& t) {
+    return t.stepped && b.at > a.at && lane_value(a.value, t) != lane_value(b.value, t);
+}
+
+std::size_t plan_points(const model::AutomationLane& l, const LaneTarget& t) {
+    std::size_t n = l.points.size();
+    for (std::size_t i = 1; i < l.points.size(); ++i) n += needs_hold(l.points[i - 1], l.points[i], t) ? 1 : 0;
+    return n;
+}
+
 }  // namespace
 
 std::vector<ClickSegment> click_segments(const model::SessionSettings& settings) {
@@ -454,7 +472,7 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
             LaneTarget target;
             if (!lanes(*tracks[ti], lp->insert, lp->key, target)) continue;
             plugin_lanes.push_back(PluginLane{target, lp.get()});
-            auto_total += lp->points.size();
+            auto_total += plan_points(*lp, target);
         }
         lanes_count[ti] = static_cast<uint32_t>(plugin_lanes.size()) - lanes_first[ti];
     }
@@ -509,10 +527,13 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         lane.instance = pl.target.instance;
         lane.param = pl.target.param;
         lane.first = auto_at;
-        lane.count = static_cast<uint32_t>(pl.lane->points.size());
-        for (const model::AutomationPoint& p : pl.lane->points) {
-            const float v = std::min(std::max(p.value, pl.target.min), pl.target.max);
-            plan->auto_points[auto_at++] = PlanAutoPoint{p.at, v};
+        lane.count = static_cast<uint32_t>(plan_points(*pl.lane, pl.target));
+        const auto& points = pl.lane->points;
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            if (i > 0 && needs_hold(points[i - 1], points[i], pl.target)) {
+                plan->auto_points[auto_at++] = PlanAutoPoint{points[i].at, lane_value(points[i - 1].value, pl.target)};
+            }
+            plan->auto_points[auto_at++] = PlanAutoPoint{points[i].at, lane_value(points[i].value, pl.target)};
         }
     }
     layout_mix_graph(*plan, bindings.data(), mix);

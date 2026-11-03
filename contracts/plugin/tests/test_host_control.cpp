@@ -21,7 +21,7 @@
 using namespace sonora::plugin;
 using namespace sonora::plugin::control;
 
-static_assert(kHostWireVersion == 4, "the golden encodings below describe wire version 4");
+static_assert(kHostWireVersion == 5, "the golden encodings below describe wire version 5");
 
 namespace {
 
@@ -93,14 +93,14 @@ M round_trip(const M& m, const char* name) {
 void hellos_are_pinned() {
     std::string b;
     encode(EngineHello{}, b);
-    CHECK(hex(b) == "01" "04000000" "01000000" "01000000");
+    CHECK(hex(b) == "01" "05000000" "01000000" "01000000");
     uint32_t w = 0;
-    CHECK(decode_wire_version(b, w) && w == 4);
+    CHECK(decode_wire_version(b, w) && w == 5);
     Hello h;
     h.pid = 0x0102030405060708ull;
     encode(h, b);
-    CHECK(hex(b) == "40" "04000000" "01000000" "01000000" "0807060504030201");
-    CHECK(decode_wire_version(b, w) && w == 4);
+    CHECK(hex(b) == "40" "05000000" "01000000" "01000000" "0807060504030201");
+    CHECK(decode_wire_version(b, w) && w == 5);
     // A newer engine's hello with fields this version does not know: the
     // version is still readable, the message is not.
     std::string newer;
@@ -152,12 +152,26 @@ void every_message_round_trips() {
     li.replicas = 2;
     li.state = StateResult::Restored;
     li.bypass = BypassBy::Plugin;
-    li.params = {{"threshold", -60.f, 0.f, -1.f}, {"467309611", 0.f, 1.f, 0.738f}};
+    li.params = {{"threshold", -60.f, 0.f, -1.f},
+                 {"467309611", 0.f, 1.f, 0.738f},
+                 {"mode", 0.f, 3.f, 1.f, true}};
     loaded.instances.push_back(li);
     const Loaded lo = round_trip(loaded, "Loaded");
-    CHECK(lo.instances.size() == 1 && lo.instances[0].params.size() == 2 &&
+    CHECK(lo.instances.size() == 1 && lo.instances[0].params.size() == 3 &&
           lo.instances[0].params[1].key == "467309611" && lo.instances[0].params[0].min == -60.f &&
           lo.instances[0].state == StateResult::Restored && lo.instances[0].bypass == BypassBy::Plugin);
+    // Wire 5: a choice is stepped, a continuous parameter is not.
+    CHECK(!lo.instances[0].params[0].stepped && lo.instances[0].params[2].stepped);
+    {
+        // The descriptor's golden bytes: key, min, max, default, stepped.
+        Loaded one;
+        LoadedInstance oi;
+        oi.params = {{"m", 0.f, 1.f, 0.f, true}};
+        one.instances.push_back(oi);
+        std::string g;
+        encode(one, g);
+        CHECK(hex(g).substr(hex(g).size() - 2 * 18) == "01000000" "6d" "00000000" "0000803f" "00000000" "01");
+    }
 
     round_trip(Refused{Refusal::ParamMismatch, 1, "has 3 parameters; the engine expects 4"}, "Refused");
     round_trip(State{3, 0, StateStatus::Ok, "blob", ""}, "State");
@@ -298,6 +312,19 @@ void untrusted_fields_are_refused() {
     refuse(l, "min above max");
     l.instances[0].params = {{std::string(kMaxKeyBytes + 1, 'k'), 0, 1, 0}};
     refuse(l, "a key over the cap");
+    // `stepped` is a bool (wire 5): any other byte is refused.
+    {
+        Loaded one;
+        LoadedInstance oi;
+        oi.params = {{"m", 0.f, 1.f, 0.f, true}};
+        one.instances.push_back(oi);
+        std::string g;
+        encode(one, g);
+        g.back() = 2;
+        Loaded x;
+        std::string why;
+        CHECK(!decode(g, x, why) && why.find("stepped") != std::string::npos);
+    }
     EditorClosed twice{0, EditorCloseReason::Requested, {{1, 0.f}, {1, 1.f}}};
     refuse(twice, "a moved parameter listed twice");
 
@@ -670,7 +697,7 @@ void state_blob_and_files() {
 void version_line() {
     char buf[96];
     CHECK(format_host_version_line(buf, sizeof buf) > 0);
-    CHECK(std::string(buf) == "sonora-plugin-host layout 1 clock 1 wire 4");
+    CHECK(std::string(buf) == "sonora-plugin-host layout 1 clock 1 wire 5");
     uint32_t l = 0, c = 0, w = 0;
     CHECK(parse_host_version_line(buf, l, c, w) && l == kLayoutVersion && c == kClockLayoutVersion &&
           w == kHostWireVersion);
