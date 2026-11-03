@@ -72,6 +72,15 @@ configuration we ship, `/usr/share/sonora/labwc/`, makes it a kiosk:
     server-side decorations. A title bar to move it and a close button that
     sends `WM_DELETE_WINDOW` are how an operator gets rid of a misbehaving
     editor. Placement policy is `center`.
+
+    *Update, 2026-11-03 (container, labwc 0.8.3 headless):* this holds for
+    an X11 window: `tools/test-labwc-input.sh` drags an `xev` window under
+    Xwayland by its title bar and closes it with WM_DELETE_WINDOW. It does
+    not hold by default for a native Wayland window: labwc 0.8.3 gives an
+    xdg-shell toplevel client-side decorations unless the client asks for
+    server-side ones through xdg-decoration (`src/xdg.c`), and `wev`, which
+    does not ask, gets no title bar. Whether Qt's dialogs ask while the UI
+    sets `QT_WAYLAND_DISABLE_WINDOWDECORATION=1` is not checked yet.
   - Xwayland is **lazy**. It is the default with wlroots ≥ 0.18.2
     (labwc-config(5)), and Debian ships 0.18.2-3. Boot pays nothing for X11;
     the first editor opened pays Xwayland's start.
@@ -171,6 +180,11 @@ The behaviour this gives:
   `srvrkeys:none` makes those chords plain function keys, so a profile can
   use them. A key that is listed in a profile but switches the console away
   from the UI mid-take is a control that lies.
+  *Update, 2026-11-03 (container, not a real VT):* `tools/test-labwc-input.sh`
+  runs `sonora-compositor` nested in a headless labwc 0.8.3, so its keyboard
+  goes through the keymap labwc builds from `XKB_DEFAULT_*`. Ctrl+Alt+F1, F2
+  and F12 reach the client as F1, F2 and F12; without `srvrkeys:none` labwc
+  swallows all three.
 - The cost: an operator cannot reach tty2 by hand. The terminal UI shows up
   when the display stack has failed, which is when it is needed, and it is
   always running for anyone with a serial or SSH path in the future.
