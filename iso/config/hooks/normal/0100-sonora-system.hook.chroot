@@ -3,6 +3,24 @@
 # installs the tuning that audio-stack/ documents.
 set -e
 
+# --- every package came from the one snapshot ---
+# The chroot's sources are still the build-time ones while hooks run. A stale
+# config/ (lb config not re-run) or a live mirror here installs whatever
+# kernel deb.debian.org had that day, and the image still builds. So every
+# deb line must be snapshot.debian.org at the backports list's timestamp.
+ts="$(grep -Eho 'snapshot\.debian\.org/archive/debian/[0-9]{8}T[0-9]{6}Z' /etc/apt/sources.list.d/sonora-backports.list | head -n 1 | grep -Eo '[0-9]{8}T[0-9]{6}Z' || true)"
+if [ -z "$ts" ]; then
+  echo "E: no snapshot timestamp in /etc/apt/sources.list.d/sonora-backports.list." >&2
+  exit 1
+fi
+off="$(cat /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null |
+  grep -E '^deb ' | grep -Ev "snapshot\.debian\.org/archive/debian(-security)?/$ts/? " || true)"
+if [ -n "$off" ]; then
+  echo "E: build sources outside snapshot $ts:" >&2
+  echo "$off" >&2
+  exit 1
+fi
+
 # --- operator account ---
 # uid 1000 is hard-coded because the systemd unit sets XDG_RUNTIME_DIR to
 # /run/user/1000. If these two disagree the engine cannot reach PipeWire.

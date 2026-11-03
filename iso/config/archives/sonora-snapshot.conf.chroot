@@ -1,0 +1,9 @@
+// The build reads every suite from one dated snapshot.debian.org timestamp
+// (iso/auto/config, ADR-0002). trixie-security's Release carries a
+// Valid-Until a few days after that date, so apt would reject the snapshot
+// as stale on any later build. The signature and every hash are still
+// checked, and the hook's exact-version checks catch a replayed older Release.
+//
+// .conf.chroot, not .conf: live-build removes it before the image is packed,
+// so the shipped system keeps expiry checks against the live mirrors.
+Acquire::Check-Valid-Until "false";

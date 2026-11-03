@@ -40,3 +40,30 @@ check, which read a property systemd does not expose, and showed
 Run 4's image, with main's added display-stack checks, passed all 31: 22.9 s
 guest time to the verdict, 25 s wall for the boot. The figures above are from
 run 3.
+
+## Cold build through snapshot.debian.org (ADR-0002 amendment applied)
+
+Same host. trixie, trixie-updates, trixie-security and trixie-backports all
+from the `20261101T000000Z` snapshot, a fresh Docker volume (no
+`cache/bootstrap`, no package cache), `tools/build-iso.sh` without the UI.
+
+| Stage | Wall time |
+|---|---|
+| Engine build (stage-only) from a cold worktree, plus image copy-out | 906 s (total minus live-build) |
+| `lb bootstrap` (debootstrap from the snapshot) | 5 min 30 s |
+| `lb chroot` (RT kernel, firmware, PipeWire, hooks) | 11 min 53 s |
+| live-build total, `lb clean` to ISO | 23 min 02 s |
+| Whole script | 2288 s |
+
+No rate-limit errors or retries from snapshot.debian.org in the log. The
+image is 976 MB. Installed: kernel `6.12.113-1` (`6.12.113+deb13-rt-amd64`),
+PipeWire `1.6.9-2~bpo13+1`, WirePlumber `0.5.12-1~bpo13+1`. The run-3 image
+above, built from the live mirror, had `6.12.115+deb13.1`: the kernel in that
+image depended on the build date, and now it depends on the timestamp.
+
+In the ISO's squashfs: `/etc/apt/sources.list` names `deb.debian.org` and
+`security.debian.org/debian-security`, and no file under `/etc/apt` sets
+`Check-Valid-Until` (the `.conf.chroot` override was removed before packing).
+
+`tools/test-boot-qemu.sh` on that image (KVM in the Docker VM, as above):
+BOOT TEST PASS, 31 ok, kernel `-rt-`, 65 s wall. Xruns not measured.

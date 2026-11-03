@@ -5,7 +5,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE=sonora-livebuild:trixie
-VOLUME=sonora-livebuild-work
+# SONORA_LB_VOLUME: a separate volume, e.g. to time a cold build beside the
+# cached one.
+VOLUME="${SONORA_LB_VOLUME:-sonora-livebuild-work}"
 
 # Git Bash on Windows rewrites anything that looks like a Unix path before it
 # reaches the executable, so a container path like /src arrives as
@@ -160,6 +162,17 @@ docker run --rm --privileged \
   # rebuild back into twenty.
   rm -rf auto config
   cp -r /src/iso/auto /src/iso/config .
+
+  # cache/bootstrap is a whole debootstrapped tree, reused as is: after a
+  # snapshot bump it would keep the old base (and kernel) under the new
+  # timestamp. So the cache belongs to one snapshot and goes with it.
+  snap="$(sed -n "s/^SONORA_SNAPSHOT=//p" auto/config)"
+  if [ "$(cat cache/sonora-snapshot 2>/dev/null || true)" != "$snap" ]; then
+    echo "snapshot $snap: dropping the package cache of another snapshot"
+    rm -rf cache
+  fi
+  mkdir -p cache
+  echo "$snap" > cache/sonora-snapshot
 
   lb clean
   lb config

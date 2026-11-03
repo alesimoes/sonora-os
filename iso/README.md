@@ -93,6 +93,7 @@ needs usbipd-win installed on the host.
 | `auto/config` | The `lb config` arguments, in the repository so the build is reproducible |
 | `config/package-lists/sonora.list.chroot` | What goes in the image |
 | `config/archives/sonora-backports.*.chroot` | PipeWire and WirePlumber from a dated trixie-backports snapshot, at exact versions (build-time only) |
+| `config/archives/sonora-snapshot.conf.chroot` | Turns off apt's Release expiry check for the dated snapshot (build-time only) |
 | `config/includes.chroot/` | Files copied into the filesystem verbatim |
 | `config/hooks/normal/` | Scripts run inside the chroot at build time |
 | `config/bootloaders/` | Overrides for live-build's isolinux and GRUB templates: a 5 s menu timeout instead of waiting forever |
@@ -117,9 +118,16 @@ directly so that `audio-stack/` stays the single documented source for them —
 ## Versions
 
 Everything comes from trixie except PipeWire 1.6.9 and WirePlumber 0.5.12,
-which come from trixie-backports through
-`snapshot.debian.org/archive/debian/20261101T000000Z`. The RT kernel is
-trixie's. To move PipeWire: change the snapshot date, both versions in
+which come from trixie-backports. All of it, trixie, trixie-updates,
+trixie-security and backports, is read from one
+`snapshot.debian.org` timestamp, `20261101T000000Z` (ADR-0002), so two
+builds of one commit get the same RT kernel. The shipped system's own
+sources name the live `deb.debian.org` and `security.debian.org`. To move the
+base and the kernel: change `SONORA_SNAPSHOT` in `auto/config` and the date in
+`config/archives/sonora-backports.list.chroot` together;
+`tools/test-image-config.sh` fails while they differ, and `tools/build-iso.sh`
+drops its package cache on the next build. To move PipeWire: change the snapshot
+date (both places), both versions in
 `config/archives/sonora-backports.pref.chroot` and the two
 `SONORA_*_VERSION` lines in the hook, in one commit, then run
 `tools/test-image-config.sh` and `tools/test-quantum-pin.sh`.
