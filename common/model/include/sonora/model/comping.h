@@ -45,6 +45,24 @@ struct Comp {
 bool comp_range(const Snapshot& s, const CompRange& c, const std::function<Id()>& next_id,
                 Comp& out, std::string& why);
 
+struct ConsolidateRange {
+    Id track = 0;
+    Id playlist = 0;
+    Frames start = 0;
+    Frames end = 0;
+    Id source = 0;       // the rendered file, already in the pool (AddSource)
+    std::string name;    // the new region's
+};
+
+// The members that make [start, end) of `playlist` one region playing the
+// rendered `source` from its first frame (ADR-0031 §6). The engine renders
+// the range (regions, fades, crossfades, gains) first; this only replaces
+// it, so the edit is one undo step. Refused when the range holds no region,
+// or when the source is missing, shorter than the range or not the track's
+// channel count. New ids come from `next_id`.
+bool consolidate_range(const Snapshot& s, const ConsolidateRange& c,
+                       const std::function<Id()>& next_id, Comp& out, std::string& why);
+
 // The first playlist of `track` other than `exclude` that holds `r`'s audio
 // at `r`'s place: a region covering r's span with the same channels and the
 // same source_offset - position (ADR-0031 §4). 0 when none does.

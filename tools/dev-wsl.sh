@@ -309,14 +309,22 @@ speakers_up() { pw-link -i 2>/dev/null | grep -q "^$SPEAKERS:"; }
 # WSLg's PulseServer restarts now and then; the tunnel does not reconnect.
 # A server that hangs instead never says so: the sink tunnel's buffer only
 # fills ("overrun write:N filled:N + size:S > max:M"), because nothing on the
-# WSLg side reads it any more.
+# WSLg side reads it any more. A stalled tunnel logs that line every cycle, so
+# the log ends in a run of them; one overrun the tunnel recovered from is a
+# single line that may still be the last one, and must not restart PipeWire.
 tunnel_dead() {
-  local tail
+  local tail full='playback_stream_process.*overrun write:.* > max:' n
   tail="$(tail -c 300000 "$STATE/pipewire.log" 2>/dev/null)"
   grep -v overrun <<<"$tail" | tail -n 5 |
     grep -qi 'connection failure\|connection terminated' && return 0
-  tail -n 1 <<<"$tail" | grep -q 'playback_stream_process.*overrun write:.* > max:'
+  tail -n 1 <<<"$tail" | grep -q "$full" || return 1
+  n="$(tail -n 20 <<<"$tail" | grep -c "$full")"
+  ((n >= 3))
 }
+
+# A restart of PipeWire drops every client, an engine started by `run` in
+# another terminal included.
+engine_running() { pgrep -x sonora-engine >/dev/null; }
 
 # With systemd=true in wsl.conf, a non-root user gets systemd's pipewire.socket,
 # which owns $XDG_RUNTIME_DIR/pipewire-0 but cannot start pipewire.service: that
@@ -347,7 +355,8 @@ do_audio() {
   if command -v systemctl >/dev/null && systemctl --user is-active -q pipewire 2>/dev/null; then
     # systemd is enabled in this distro and runs PipeWire per user. Restart
     # it once, so the drop-ins written above are read.
-    if [[ ! -f "$STATE/systemd-restarted" ]] || ! node_ports "$SPEAKERS" -i | grep -q .; then
+    if [[ ${AUDIO_KEEP:-0} != 1 ]] &&
+      { [[ ! -f "$STATE/systemd-restarted" ]] || ! node_ports "$SPEAKERS" -i | grep -q .; }; then
       say "restarting the user's PipeWire (systemd) to load the WSLg bridge"
       systemctl --user restart pipewire wireplumber
       touch "$STATE/systemd-restarted"
@@ -360,12 +369,16 @@ do_audio() {
     else
       start_cold
     fi
-    if speakers_up && tunnel_dead; then
+    if [[ ${AUDIO_KEEP:-0} == 1 ]]; then
+      # selftest beside a running engine: diagnose only, never restart.
+      speakers_up && tunnel_dead &&
+        say "the WSLg tunnel looks dead, but the engine is running; not restarting PipeWire (tools/dev-wsl.sh stop, then retry)"
+    elif speakers_up && tunnel_dead; then
       say "the WSLg tunnel lost its connection; restarting PipeWire"
       kill_ours
       start_cold
     fi
-    if ! wait_for 10 speakers_up; then
+    if [[ ${AUDIO_KEEP:-0} != 1 ]] && ! wait_for 10 speakers_up; then
       ls /usr/lib/*/pipewire-0.3/libpipewire-module-pulse-tunnel.so >/dev/null 2>&1 ||
         die "PipeWire's pulse-tunnel module is not installed (libpipewire-0.3-modules)"
       say "the $SPEAKERS node did not appear; restarting PipeWire once"
@@ -435,7 +448,22 @@ do_run() {
   mkdir -p "$(dirname "$SESSION_DIR")"  # the engine creates only the last path component
   say "engine + Qt UI; session in $SESSION_DIR"
   SONORA_BUILD="$BUILD" SONORA_ENGINE_ARGS="${ENGINE_EXTRA[*]}" \
-    "$ROOT/tools/run-sonora.sh" --backend jack --tracks 2 --dir "$SESSION_DIR" "$@"
+    run_until_stopped "$ROOT/tools/run-sonora.sh" --backend jack --tracks 2 --dir "$SESSION_DIR" "$@"
+}
+
+# The UI ended by SIGTERM exits 143. That is a clean end only when `stop`
+# sent it, which do_stop records in $STATE/stopped; any other SIGTERM stays a
+# failure. A marker left by a `stop` with nothing running is removed first.
+run_until_stopped() {  # command...
+  local rc=0
+  rm -f "$STATE/stopped"
+  "$@" || rc=$?
+  if ((rc == 143)) && [[ -f "$STATE/stopped" ]]; then
+    say "ended by tools/dev-wsl.sh stop"
+    rc=0
+  fi
+  rm -f "$STATE/stopped"
+  return "$rc"
 }
 
 # --- selftest --------------------------------------------------------------
@@ -473,6 +501,10 @@ do_selftest() {
       *) die "selftest: unknown argument $1" ;;
     esac
   done
+  if engine_running; then
+    say "an engine is running; PipeWire is used as it is, never restarted"
+    AUDIO_KEEP=1
+  fi
   do_audio
   [[ -x "$BUILD/sonora-engine" && -x "$BUILD/sonora-ctl" ]] ||
     die "no build in $BUILD; run: tools/dev-wsl.sh build"
@@ -558,11 +590,13 @@ PY
 # wsl.conf on stdin -> stdout with default=NAME in its [user] section. The
 # first [user] section gets the line, every other default= under a [user]
 # header goes, and with no [user] section one is appended. awk ends every line
-# with a newline, so nothing is glued onto a last line that had none.
+# with a newline, so nothing is glued onto a last line that had none. A file
+# saved from Notepad ends its lines in CR, and a header may carry a comment
+# ("[user] # WSL"): both are dropped from the copy the header is matched on.
 wsl_conf_set_user() {  # name
   awk -v name="$1" '
     /^[ \t]*\[/ {
-      sect = $0; gsub(/[ \t\[\]]/, "", sect); sect = tolower(sect)
+      sect = $0; sub(/[#;].*/, "", sect); gsub(/[ \t\r\[\]]/, "", sect); sect = tolower(sect)
       print
       if (sect == "user" && !done) { print "default=" name; done = 1 }
       next
@@ -573,6 +607,45 @@ wsl_conf_set_user() {  # name
   '
 }
 
+# The NOPASSWD line for NAME in DIR (/etc/sudoers.d). Before #284 it was
+# written to 90-NAME; that copy goes, but only when it holds exactly our line.
+sudoers_set() {  # dir name
+  local dir="$1" name="$2" line="$2 ALL=(ALL) NOPASSWD:ALL"
+  local sudoers="$dir/90-sonora-$name" legacy="$dir/90-$name"
+  if [[ "$(cat "$sudoers" 2>/dev/null)" != "$line" ]]; then
+    printf '%s\n' "$line" >"$sudoers.tmp"
+    chmod 0440 "$sudoers.tmp"
+    visudo -cqf "$sudoers.tmp" || { rm -f "$sudoers.tmp"; die "visudo rejected $sudoers"; }
+    mv -f "$sudoers.tmp" "$sudoers"
+  fi
+  if [[ -f $legacy && "$(cat "$legacy")" == "$line" ]]; then
+    rm -f "$legacy"
+    say "removed $legacy (the same line is in $sudoers)"
+  fi
+}
+
+# The operator's own wsl.conf is copied to CONF.sonora-bak before this script
+# first changes it, and never overwritten after, so it can always be put back.
+wsl_conf_write() {  # conf name
+  local conf="$1" name="$2" old="" new
+  [[ -f $conf ]] && old="$(cat "$conf")"
+  new="$(printf '%s' "$old" | wsl_conf_set_user "$name")"
+  if [[ "$old" == "$new" ]]; then
+    say "$conf: default user already '$name'"
+    return 0
+  fi
+  if [[ -f $conf && ! -e $conf.sonora-bak ]]; then
+    cp -p "$conf" "$conf.sonora-bak"
+    say "$conf: the previous version is kept in $conf.sonora-bak"
+  fi
+  # Written beside it, then renamed: a half-written wsl.conf would be read
+  # at the next start of the distro.
+  printf '%s\n' "$new" >"$conf.sonora-tmp"
+  chmod 0644 "$conf.sonora-tmp"
+  mv -f "$conf.sonora-tmp" "$conf"
+  say "$conf: default user is now '$name' (read when the distro next starts)"
+}
+
 do_user() {
   local name="${1:-sonora}" conf="${SONORA_WSL_CONF:-/etc/wsl.conf}" existing
   ((EUID == 0)) || die "user: run as root (tools/dev-wsl.ps1 user does that)"
@@ -580,7 +653,12 @@ do_user() {
   # WSL's own first-launch user is uid 1000: reuse it rather than add a second.
   existing="$(getent passwd 1000 | cut -d: -f1 || true)"
   if [[ -n $existing ]]; then
-    [[ $existing == "$name" ]] || say "uid 1000 is '$existing'; using it, not '$name'"
+    if [[ $existing != "$name" ]]; then
+      # On stdout: dev-wsl.ps1 prints this step's stdout, and Windows
+      # PowerShell 5.1 turns a native command's stderr into error records.
+      say "WARNING: uid 1000 is '$existing', not '$name': '$existing' becomes the default user"
+      say "WARNING: and gets sudo without a password (/etc/sudoers.d/90-sonora-$existing)"
+    fi
     name="$existing"
   elif getent passwd "$name" >/dev/null; then
     say "user '$name' exists"
@@ -594,26 +672,8 @@ do_user() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends sudo
   fi
   usermod -aG sudo,audio,video "$name"
-  local sudoers="/etc/sudoers.d/90-sonora-$name" line="$name ALL=(ALL) NOPASSWD:ALL"
-  if [[ "$(cat "$sudoers" 2>/dev/null)" != "$line" ]]; then
-    printf '%s\n' "$line" >"$sudoers.tmp"
-    chmod 0440 "$sudoers.tmp"
-    visudo -cqf "$sudoers.tmp" || { rm -f "$sudoers.tmp"; die "visudo rejected $sudoers"; }
-    mv -f "$sudoers.tmp" "$sudoers"
-  fi
-  local old="" new
-  [[ -f $conf ]] && old="$(cat "$conf")"
-  new="$(printf '%s' "$old" | wsl_conf_set_user "$name")"
-  if [[ "$old" != "$new" ]]; then
-    # Written beside it, then renamed: a half-written wsl.conf would be read
-    # at the next start of the distro.
-    printf '%s\n' "$new" >"$conf.sonora-tmp"
-    chmod 0644 "$conf.sonora-tmp"
-    mv -f "$conf.sonora-tmp" "$conf"
-    say "$conf: default user is now '$name' (read when the distro next starts)"
-  else
-    say "$conf: default user already '$name'"
-  fi
+  sudoers_set /etc/sudoers.d "$name"
+  wsl_conf_write "$conf" "$name"
   echo "DEFAULT_USER=$name"
 }
 
@@ -621,6 +681,8 @@ do_user() {
 
 do_stop() {
   # Engine and UI only: PipeWire stays up.
+  runtime_dir
+  : >"$STATE/stopped"  # before the signal, so `run` sees it when the UI ends
   pkill -TERM -x sonora-ui 2>/dev/null || true
   pkill -TERM -x sonora-engine 2>/dev/null || true
   for _ in $(seq 50); do  # up to 5 s for the engine to write its session

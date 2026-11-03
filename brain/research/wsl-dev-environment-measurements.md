@@ -83,6 +83,11 @@ after); `docker-desktop` stayed Running.
    the host.
 3. **Default flow exited 143 (fixed).** `dev-wsl.ps1` with no arguments,
    ended by `stop`, returned 143 while `run` returned 0. Both now return 0.
+   Verified by reading only at #292: the fix mapped any 143 to 0. Since
+   then `stop` leaves a marker and `dev-wsl.sh run` maps 143 to 0 only when
+   it is there; `tools/test-dev-wsl.sh` checks that mapping on Linux. That
+   `dev-wsl.ps1` passes the 0 through is still verified by reading only,
+   not on the laptop.
 
 ## What a human must still check
 

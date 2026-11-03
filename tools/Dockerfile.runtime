@@ -9,13 +9,30 @@
 # systemd bringing the session up. Those need QEMU or hardware.
 #
 # Build context is the repository root, so audio-stack/ can be copied in.
-FROM debian:trixie
+#
+# The base is pinned by digest, and its trixie sources are moved to the
+# image's snapshot timestamp (ADR-0002, 2026-11-02 amendment): with the live
+# mirror, a point release changed dbus or libc under the tests between two
+# runs of one commit. Take a base dated on or before the snapshot, so apt
+# never has to install an index older than what the base already carries.
+FROM debian:trixie-20261027@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1
 
 # The image takes PipeWire and WirePlumber from a dated trixie-backports
 # snapshot at exact versions. These are the image's own files, not copies, so
 # a version bump cannot reach one and miss the other.
 COPY iso/config/archives/sonora-backports.list.chroot /etc/apt/sources.list.d/sonora-backports.list
 COPY iso/config/archives/sonora-backports.pref.chroot /etc/apt/preferences.d/sonora-backports.pref
+COPY iso/config/archives/sonora-snapshot.conf.chroot /etc/apt/apt.conf.d/99sonora-snapshot.conf
+
+# The timestamp is read from the backports list, which tools/test-image-config.sh
+# holds equal to iso/auto/config, so there is one number to bump.
+RUN ts="$(grep -Eo '[0-9]{8}T[0-9]{6}Z' /etc/apt/sources.list.d/sonora-backports.list | head -n 1)" \
+ && [ -n "$ts" ] \
+ && sed -i -E \
+      -e "s#^URIs: http://deb\.debian\.org/debian-security/?\$#URIs: http://snapshot.debian.org/archive/debian-security/$ts/#" \
+      -e "s#^URIs: http://deb\.debian\.org/debian/?\$#URIs: http://snapshot.debian.org/archive/debian/$ts/#" \
+      /etc/apt/sources.list.d/debian.sources \
+ && ! grep -E '^URIs:' /etc/apt/sources.list.d/debian.sources | grep -v "snapshot\.debian\.org/archive/debian\(-security\)\?/$ts/\$"
 
 # libjack-jackd2-0 is deliberately absent, exactly as in the ISO package list:
 # it installs a libjack.so.0 into the default library path that wins over the

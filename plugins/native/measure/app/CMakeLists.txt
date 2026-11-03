@@ -15,5 +15,6 @@ target_link_libraries(sonora-dsp-measure PRIVATE
   sonora_native_fet_suite
   sonora_native_tape_suite
   sonora_native_saturator_suite
+  sonora_native_cab_suite
   sonora_native_mixbus_suite
 )

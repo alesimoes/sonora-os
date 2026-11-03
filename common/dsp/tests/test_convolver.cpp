@@ -280,7 +280,16 @@ int test_refusals() {
     CHECK(!k.set(bad.data(), 0));
     bad[50] = std::numeric_limits<double>::quiet_NaN();
     CHECK(!k.set(bad.data(), 60));
+    // A finite tap past the bound would overflow the partition spectra (a
+    // sum of P taps near DBL_MAX is Inf) and the output with them.
+    bad[50] = 1e306;
+    CHECK(!k.set(bad.data(), 60));
+    bad[50] = -2e30;
+    CHECK(!k.set(bad.data(), 60));
     CHECK(k.taps() == 100);
+    bad[50] = 1e30;  // the bound itself is taken
+    CHECK(k.set(bad.data(), 60) && k.taps() == 60);
+    CHECK(k.set(h.data(), 100));
 
     Convolver other;
     CHECK(other.prepare(64, 100));

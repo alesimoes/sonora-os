@@ -44,7 +44,7 @@ bool ConvolutionKernel::prepare(std::uint32_t partition, std::uint32_t max_taps)
 bool ConvolutionKernel::set(const double* h, std::uint32_t taps) noexcept {
     if (p_ == 0 || taps == 0 || taps > max_taps_ || h == nullptr) return false;
     for (std::uint32_t i = 0; i < taps; ++i) {
-        if (!is_finite(h[i])) return false;
+        if (!is_finite(h[i]) || h[i] > kMaxTap || h[i] < -kMaxTap) return false;
     }
     taps_ = taps;
     parts_ = tail_parts(taps, p_);
