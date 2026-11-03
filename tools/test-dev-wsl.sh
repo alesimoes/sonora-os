@@ -80,6 +80,36 @@ else
   echo "SKIP have_bus (no dbus-launch)"
 fi
 
+# The tunnel checks read $STATE/pipewire.log; lines as PipeWire 1.4 writes them.
+STATE="$TMP/tunnel"
+mkdir -p "$STATE"
+ovr='[W][23:56:16.115996] mod.pulse-tunnel | [module-pulse-tun:  373 playback_stream_process()] 0x59d5: overrun write:38440120 filled:38440120 + size:512 > max:4194304'
+printf '%s\n' '[W][10:11:34.474042] mod.pulse-tunnel | [module-pulse-tun:  719 stream_underflow_cb()] underflow (0 suppressed)' >"$STATE/pipewire.log"
+if tunnel_dead; then bad "tunnel with an underflow only: dead"; else ok "tunnel with an underflow only: alive"; fi
+printf '%s\n' "$ovr" "$ovr" >>"$STATE/pipewire.log"
+if tunnel_dead; then ok "sink buffer full, nothing reads it: dead"; else bad "stalled sink tunnel not seen"; fi
+printf '%s\n' '[E][x] mod.pulse-tunnel | connection failure' "$ovr" >"$STATE/pipewire.log"
+if tunnel_dead; then ok "connection failure under overrun lines: dead"; else bad "connection failure missed"; fi
+
+# A fake systemctl: unit states from $SC_ACTIVE, calls logged to $SC_LOG.
+SC_LOG="$TMP/systemctl.log"
+# shellcheck disable=SC2317,SC2329  # called by release_systemd_socket
+systemctl() {
+  echo "$*" >>"$SC_LOG"
+  if [[ $2 == is-active ]]; then [[ " $SC_ACTIVE " == *" ${*: -1} "* ]]; fi
+}
+socket_case() {  # label, active units, expect stop (1/0)
+  SC_ACTIVE="$2"
+  : >"$SC_LOG"
+  release_systemd_socket >/dev/null
+  if grep -q "stop pipewire.socket" "$SC_LOG"; then got=1; else got=0; fi
+  if [[ $got == "$3" ]]; then ok "systemd socket: $1"; else bad "systemd socket: $1 (stop=$got)"; fi
+}
+socket_case "socket without a service is stopped" "pipewire.socket" 1
+socket_case "a running service is left alone" "pipewire.socket pipewire" 0
+socket_case "no socket, nothing to do" "" 0
+unset -f systemctl
+
 # shellcheck disable=SC2317,SC2329  # called by linux_path
 wslpath() { return 1; }  # outside WSL: the fallback is what is tested
 if [[ $(linux_path 'C:\Users\A B\x.log') == '/mnt/c/Users/A B/x.log' ]]; then ok "C:\\ path"; else bad "C:\\ path: $(linux_path 'C:\Users\A B\x.log')"; fi
