@@ -46,6 +46,7 @@ int tube(const measure::Args&);
 int opto(const measure::Args&);
 int fet(const measure::Args&);
 int tape(const measure::Args&);
+int cab(const measure::Args&);
 int mixbus(const measure::Args&);
 }  // namespace sonora::native::suites
 
@@ -143,6 +144,7 @@ int main(int argc, char** argv) {
     if (which == "opto") return native::suites::opto(args);
     if (which == "fet") return native::suites::fet(args);
     if (which == "tape") return native::suites::tape(args);
+    if (which == "cab") return native::suites::cab(args);
     if (which == "mixbus") return native::suites::mixbus(args);
     std::fprintf(stderr, "unknown processor '%s'\n", which.c_str());
     return 2;
