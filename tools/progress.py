@@ -111,6 +111,8 @@ def validate(data):
                 status = item.get("status")
                 if status not in STATUSES:
                     errors.append("%s: unknown status %r" % (where, status))
+                if "optional" in item and not isinstance(item["optional"], bool):
+                    errors.append("%s: optional must be true or false" % where)
                 if status == "done" and not str(item.get("evidence", "")).strip():
                     errors.append("%s is done without evidence" % where)
                 if status == "doing" and not str(item.get("branch", "")).strip():
@@ -317,11 +319,42 @@ class Tally:
         return 100 * self.done // self.total if self.total else 0
 
 
+def is_optional(data, item):
+    """Optional work (ADR-0025, owner 2026-11-03) is not needed for a studio
+    to record and mix: a post-launch phase, or "optional": true on the item."""
+    return bool(item.get("optional")) or (
+        str(item["phase"]) in set(data.get("post_launch_phases", [])))
+
+
+def optional_items(data):
+    for front in data["fronts"]:
+        for module in front["modules"]:
+            for item in module["items"]:
+                if is_optional(data, item):
+                    yield front, module, item
+
+
+def core_queue(data):
+    """Open items a recording and mixing studio needs, in catalogue order
+    (which follows dependency within a module)."""
+    for front in data["fronts"]:
+        for module in front["modules"]:
+            for item in module["items"]:
+                if item["status"] != "done" and not is_optional(data, item):
+                    yield front, module, item
+
+
+def optional_tally(data):
+    t = Tally()
+    for _, _, item in optional_items(data):
+        t.add(data["sizes"][item["size"]], item["status"])
+    return t
+
+
 def tally(data):
     """Returns (overall, fronts, phases): fronts is a list of
     (front, tally, [(module, tally)]), phases maps phase key -> tally."""
     sizes = data["sizes"]
-    post_launch = set(data.get("post_launch_phases", []))
     overall = Tally()
     phases = {key: Tally() for key in data["phases"]}
     fronts = []
@@ -333,9 +366,9 @@ def tally(data):
             for item in module["items"]:
                 points = sizes[item["size"]]
                 phases[str(item["phase"])].add(points, item["status"])
-                # Optional post-launch work (ADR-0025) has its own phase row
-                # but must not dilute the launch percentages.
-                if str(item["phase"]) not in post_launch:
+                # Optional work has its own section but must not dilute the
+                # launch percentages.
+                if not is_optional(data, item):
                     module_tally.add(points, item["status"])
             front_tally.merge(module_tally)
             modules.append((module, module_tally))
@@ -418,7 +451,16 @@ def render_markdown(data):
         out += ["## %s: %d%%" % (front["title"], front_tally.pct()), ""]
         out += head + [row(m["title"], t) for m, t in modules] + [""]
 
-    out += ["## In progress", "", "| Item | Module | Branch | Points |",
+    opt = optional_tally(data)
+    out += ["## Optional (not counted above)", "",
+            "Not needed to record and mix in a studio; %d of %d points done, "
+            "%d in progress. Video, surround and immersive (ADR-0025) and the "
+            "items marked `optional` in the catalogue." % (
+                opt.done, opt.total, opt.doing), "",
+            "| Item | Status | Size |", "|---|---|---|"]
+    for _, _, item in optional_items(data):
+        out.append("| %s | %s | %s |" % (item["title"], item["status"], item["size"]))
+    out += ["", "## In progress", "", "| Item | Module | Branch | Points |",
             "|---|---|---|---:|"]
     for front, module, item in doing_items(data):
         out.append("| %s | %s / %s | `%s` | %d |" % (

@@ -294,15 +294,14 @@ playback can follow edits; it is in flight.
           so the audio thread can aim one callback at the ride; store the static first, or make
           `return_to_` latch the static at the release (one-callback audio/writer difference).
   - [ ] AutoMatch time in the UI Preferences (a protocol message).
-  - [ ] Latch/Trim and Write/Trim (mode pair, session format bump), slice 5 of
-        ADR-0027 §8. Researcher first checks Pro Tools' Trim range. The engine half (Trim lane,
-        session format 16, window 13, protocol 39) is #290 (open at this chore).
-    - [ ] Slice 5 UI half, after #290: Trim in `EditController::set_automation_mode`; Write and Trim in
+  - [x] (#290, #297) Latch/Trim and Write/Trim (mode pair, session format bump), slice 5 of
+        ADR-0027 §8. The engine half (Trim lane, session format 16, window 13, protocol 39) is #290.
+    - [x] (#297) Slice 5 UI half, after #290: Trim in `EditController::set_automation_mode`; Write and Trim in
       `AutomationModeButton`; `VolumeTrim` touch and release from the fader; the trim offset shown; a
       Volume Trim lane in the lane menu and in `automation_edit`; screenshots of every scene touched.
   - [ ] Automation write slice, ADR-0027 §8 order: (1) writer hardening (done, #252), (2) plan-move and
         Load state (done, #262), (3) per-frame sends and PDC-aligned lanes (done, #271, #279),
-        (4) Touch's return and AutoMatch (done, #282), (5) Trim (engine half #290, UI half open); slices 4 and 5 touch `session.cpp`,
+        (4) Touch's return and AutoMatch (done, #282), (5) Trim (done, #290 engine, #297 UI); slices 4 and 5 touch `session.cpp`,
         so one after another. Slice 5 must take session format 16, window 13, protocol 39: #277
         (names and colours) took 15, 12 and 38.
   - [x] (#262) `finish_pass` returns before Write->Latch when every lane of the pass is dropped
@@ -1815,6 +1814,8 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          `scratch_dir`/`session_dir`/`save_dir` and `kGetStateNoCopy` during a take, `StateRef.files`,
          Save As and cleanup. Needs session format 17 and protocol 40 (#290 took 16, 13 and 39);
          shares `plugin_hosting.cpp` with the ADR-0027 lane work, so not in parallel with it.
+         - [x] (#298) Slice 2a, the model half: `StateRef.files`, placed and synced by the saver, never
+           through a link (format 17, window 14, protocol 40). Slice 2b, the engine half, is #299 (open at this chore).
          - [ ] Engine: wait `kStateReplyTimeoutMs` (60 s) for a `State`, not `kReplyTimeoutMs`.
          - [ ] Engine: show an operator notice for a counted `Fault{Plugin}` (path refusals);
            `plugin_hosting.cpp` ignores it today.
@@ -2165,10 +2166,13 @@ not start or extend those items before the Complete DAW closes (owner,
       physical machine, BIOS and UEFI, and confirm a session survives a
       reboot. The first time the script's USB/removable check meets real
       hardware.
-- [ ] Run `tools/test-write-usb.sh` in CI. The container half
+- [x] (#294) Run `tools/test-write-usb.sh` in CI (nightly workflow; first nightly run not yet seen). The container half
       (`WRITE_USB_BOOT=0`) needs only Docker and the ISO; the boots need QEMU
       with KVM.
-- [ ] (#294 in review, open at this chore; N7: the privileged container exposes host disks) A verified way to write the stick from Windows, where the owner works.
+- [x] (#294; N7: the privileged container exposes host disks) `tools/write-usb.ps1` and its tests against fake disks in the Windows CI job: a way to write the stick from Windows, where the owner works.
+- [ ] A verified way to write the stick from Windows: the owner's physical-stick run of `tools/write-usb.ps1` (the owner step above) has not happened.
+- [ ] Confirm the first nightly run of tools/test-write-usb.sh (container half) is green; the QEMU boots with KVM stay owner-run.
+- [ ] automation.lanes review follow-ups: tracked as the open lines `automation.lanes` follow-ups and `automation.lanes` UI follow-ups from the #181 review (above); tick them done or fold them into one line when the last closes.
       The first attempt (`write-usb-windows.ps1`, removed 2026-10-12) opened
       `\.\PhysicalDrive` with one leading backslash, which .NET resolves to
       `C:\PhysicalDrive`; it erased the stick and then wrote nothing. Check any
