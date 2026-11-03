@@ -1064,6 +1064,48 @@ int automation_gestures() {
     return 0;
 }
 
+// ADR-0027 §8 slice 4: a ride in Touch, Latch or Write while rolling is the
+// pass's lane, so its release saves no static gain; stopped, or in Read, it
+// is the static and is saved as before.
+int written_ride_keeps_the_static() {
+    Rig r;
+    CHECK(r.connect());
+    TransportSnapshot rolling;
+    rolling.state = TransportMode::Rolling;
+    r.session.onTransport(rolling, true);
+    const auto ride_up = [&r](int track) {
+        r.mixer.beginRide(track);
+        r.mixer.ride(track, -20, 200, false);
+        r.mixer.endRide(track);
+        r.settle();
+    };
+    for (const char* m : {"Touch", "Latch", "Write"}) {
+        CHECK(r.mixer.setAutomationMode(1, m));
+        r.settle();
+        const uint64_t rev = r.doc.revision();
+        ride_up(1);
+        CHECK(r.doc.revision() == rev && near(r.session.stripGain(1), 0.0));
+        CHECK(!r.sent.empty() && r.sent.back().gesture == api::Gesture::Release);
+        CHECK(r.refused.empty());
+    }
+    // Read while rolling: the ride is the static.
+    CHECK(r.mixer.setAutomationMode(1, "Read"));
+    r.settle();
+    uint64_t rev = r.doc.revision();
+    ride_up(1);
+    CHECK(r.doc.revision() == rev + 1 && r.session.stripGain(1) > 0.0);
+    // Touch, stopped: the static too.
+    CHECK(r.mixer.setAutomationMode(2, "Touch"));
+    r.settle();
+    TransportSnapshot stopped;
+    r.session.onTransport(stopped, true);
+    rev = r.doc.revision();
+    ride_up(2);
+    CHECK(r.doc.revision() == rev + 1 && r.session.stripGain(2) > 0.0);
+    std::printf("  a written ride keeps the static: ok\n");
+    return 0;
+}
+
 int automation_mode_selector() {
     Rig r;
     CHECK(r.connect());
@@ -1116,6 +1158,7 @@ int main(int argc, char** argv) {
     if (live_path_follows_the_engine() != 0) return 1;
     if (automation_gestures() != 0) return 1;
     if (automation_mode_selector() != 0) return 1;
+    if (written_ride_keeps_the_static() != 0) return 1;
     if (typed_values() != 0) return 1;
     if (modifier_clicks() != 0) return 1;
     if (implicit_mutes() != 0) return 1;

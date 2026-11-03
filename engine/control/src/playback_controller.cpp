@@ -270,7 +270,23 @@ void PlaybackController::touch(const model::Snapshot& snapshot, std::size_t row,
             if (order[j] == tracks[row]->id) e = j;
         }
     }
-    if (e < engine.size()) engine[e]->set_touched(param, held);
+    if (e >= engine.size()) return;
+    Track& t = *engine[e];
+    t.set_touched(param, held);
+    // A Touch pass keeps the ride in its lane, not in the static value
+    // (ADR-0027 §8): the static goes back in the atomic after the release,
+    // and the audio thread glides to it from what it last played. Stopped,
+    // a ride is the static, which the client saves.
+    const model::TrackMix* m = snapshot.mix.find(tracks[row]->id);
+    if (held || m == nullptr || m->automation != model::AutomationMode::Touch ||
+        session_.transport().state() == TransportState::Stopped) {
+        return;
+    }
+    if (param == kAutoPan) {
+        t.set_pan(pan_of(m->pan));
+    } else {
+        t.set_gain(gain_of_db(m->gain_db));
+    }
 }
 
 void PlaybackController::apply_monitoring(const model::Snapshot& snapshot) {

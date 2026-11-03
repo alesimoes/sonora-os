@@ -162,6 +162,8 @@ private:
     }
     void resetViews();
     bool live(int track) const;
+    // A live ride on `track` now is written into a pass's lane.
+    bool writes(int track) const;
     void sendLive(int track, float db, api::Gesture gesture = api::Gesture::Move);
     // Every track's solo (or mute) to `on`, one SetMix per track that differs.
     void setAll(bool solo, bool on);
@@ -194,6 +196,9 @@ private:
     float ride_from_db_ = 0.0f;
     bool ride_sent_live_ = false;
     bool ride_touched_ = false;   // a Touch went out and wants its Release
+    // Some of the ride played in Touch, Latch or Write while rolling: the
+    // pass's lane holds it, so the static is not set (ADR-0027 §8).
+    bool ride_wrote_ = false;
     int pan_track_ = kNoRide;     // the engine track whose pan the hand holds
     model::Id pan_id_ = 0;
     uint64_t pan_generation_ = 0;

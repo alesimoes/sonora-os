@@ -7,11 +7,13 @@
 // fade, Off playing the static fader, a pan lane, a static parameter's change
 // ramped on a partly automated track, and no allocation. Live writes (§3):
 // Touch plays and stamps the fader while held and returns to the lane over
-// the return time, Latch holds until the stop, Write writes every parameter
+// the return time (to the static value where there is no lane, over the
+// configured AutoMatch time), Latch holds until the stop, Write writes every parameter
 // and splits a span at the loop's end, a full ring is counted.
 #define PLAYBACK_TEST_COUNT_HEAP 1
 #include "playback_test.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -67,13 +69,18 @@ struct Rig {
     std::vector<float> out[2];
     float* out_ptrs[2];
     uint32_t slot = 0;
+    // A Touch return at 250 ms outlasts kSourceFrames.
+    int64_t source_frames = kSourceFrames;
 
-    explicit Rig(const std::string& name, int tracks = 1) {
+    explicit Rig(const std::string& name, int tracks = 1, uint32_t automatch_ms = 250,
+                 int64_t frames = kSourceFrames)
+        : source_frames(frames) {
         dir = fs::temp_directory_path() / ("sonora_test_automation_" + name);
         fs::remove_all(dir);
         sonora::SessionConfig cfg;
         cfg.dir = dir.string();
         cfg.track_count = tracks;
+        cfg.touch_return_ms = automatch_ms;
         cfg.format = sonora::WavWriter::Format::Float32;
         cfg.ring_seconds = 1.0;
         cfg.playback.chunk_frames = kChunk;
@@ -103,7 +110,7 @@ struct Rig {
               const std::vector<PlanAutoPoint>& pan = {}) {
         Session& s = *session;
         const std::string path = (dir / "source.wav").string();
-        if (!write_source(path, 5, 1, kSourceFrames)) return false;
+        if (!write_source(path, 5, 1, source_frames)) return false;
         std::string error;
         if (!s.reader().add_source(path, slot, error)) return false;
         return publish(volume, pan);
@@ -116,7 +123,7 @@ struct Rig {
                  const std::vector<uint64_t>& owners = {}) {
         Session& s = *session;
         SegmentSpec sp;
-        sp.end = kSourceFrames;
+        sp.end = source_frames;
         sp.source_slot = slot;
         const auto total = static_cast<uint32_t>(volume.size() + pan.size());
         const auto mix = static_cast<uint32_t>(owners.size());
@@ -522,6 +529,132 @@ int test_touch_plays_and_writes_the_fader() {
     return 0;
 }
 
+// Touch on a track with no lane (ADR-0027 §8, slice 4): ride +6 dB over a
+// -6 dB static and release, the control thread putting the static back in
+// the atomic before the audio thread sees the release, as
+// PlaybackController::touch() does. Rolled in `block`-frame callbacks so the
+// release lands on frame 4000. `out` gets every frame from 4000 to the
+// return's end plus 4 callbacks; nonzero on a failed check.
+constexpr int64_t kReleaseAt = 4000;
+constexpr float kStaticDb = -6.0f;
+constexpr float kRideDb = 6.0f;
+
+int touch_returns_to_static(uint32_t block, uint32_t automatch_ms, std::vector<float>& out,
+                            int64_t& len) {
+    Rig rig("touch_no_lane", 1, automatch_ms, 72 * kChunk);
+    CHECK(rig.load({}));
+    Session& s = *rig.session;
+    Track& track = *s.tracks()[0];
+    track.set_gain(gain_of_db(kStaticDb));
+    track.set_automation(Track::Automation::Touch);
+    const auto start = static_cast<uint64_t>(kReleaseAt - 4 * static_cast<int64_t>(block));
+    CHECK(rig.park(start));
+    s.play();
+    rig.block(block);
+    rig.block(block);
+    track.set_gain(gain_of_db(kRideDb));
+    track.set_touched(kAutoVolume, true);
+    rig.block(block);
+    rig.block(block);
+    CHECK(!drained(s).empty());
+
+    track.set_touched(kAutoVolume, false);
+    track.set_gain(gain_of_db(kStaticDb));
+    len = static_cast<int64_t>(s.touch_return_frames());
+    out.clear();
+    reset_heap_counts();
+    for (int64_t t = kReleaseAt; t < kReleaseAt + len + 4 * static_cast<int64_t>(block);
+         t += block) {
+        rig.block(block);
+        for (uint32_t i = 0; i < block; ++i) {
+            out.push_back(rig.out[0][i] / source_value(5, 0, t + i));
+        }
+    }
+    CHECK(heap_untouched());
+    // The release marks what was heard, not the static it found in the
+    // atomic: the writer's return starts there too.
+    const std::vector<AutomationWrite> w = drained(s);
+    CHECK(w.size() == 1);
+    if (w.size() != 1) return 1;
+    CHECK(w[0].frames == 0 && w[0].frame == static_cast<uint64_t>(kReleaseAt));
+    CHECK(near(w[0].value, gain_of_db(kRideDb)));
+    return 0;
+}
+
+// The audio is the return lane the writer writes (a line in dB from the
+// ride to the static over the return time), frame for frame from the
+// callback after the release; no step at the release; the static after.
+bool glides_like_the_lane(const std::vector<float>& g, uint32_t block, int64_t len) {
+    const float ride = gain_of_db(kRideDb);
+    const float fixed = gain_of_db(kStaticDb);
+    for (std::size_t i = 0; i < g.size(); ++i) {
+        const int64_t f = kReleaseAt + static_cast<int64_t>(i);
+        // The release callback crossfades from the ride into the curve,
+        // which starts at the ride: within a hair of it, never a step.
+        if (i < block) {
+            if (!(g[i] <= ride * 1.0001f && g[i] > ride * 0.97f)) {
+                std::fprintf(stderr, "  release: frame %lld applies %.6f\n",
+                             static_cast<long long>(f), static_cast<double>(g[i]));
+                return false;
+            }
+            continue;
+        }
+        const float want = f >= kReleaseAt + len + kAutoGridFrames
+                               ? fixed
+                               : expected_return(kRideDb, kStaticDb, kReleaseAt, len, f);
+        if (!near(g[i], want, 1e-4f)) {
+            std::fprintf(stderr, "  return: frame %lld applies %.6f, want %.6f\n",
+                         static_cast<long long>(f), static_cast<double>(g[i]),
+                         static_cast<double>(want));
+            return false;
+        }
+    }
+    return true;
+}
+
+int test_touch_with_no_lane_returns_to_the_static_value() {
+    std::vector<float> g;
+    int64_t len = 0;
+    CHECK(touch_returns_to_static(kBlock, 250, g, len) == 0);
+    CHECK(len == 12000);
+    CHECK(glides_like_the_lane(g, kBlock, len));
+    // Still near the ride a few callbacks on: a glide, not a snap.
+    CHECK(g.size() > 6 * kBlock && g[6 * kBlock] > gain_of_db(kRideDb - 1.0f));
+
+    // Cut into other callbacks the glide is the same function of the frame:
+    // bit for bit once both are past their release callback.
+    std::vector<float> h;
+    CHECK(touch_returns_to_static(64, 250, h, len) == 0);
+    CHECK(glides_like_the_lane(h, 64, len));
+    const std::size_t n = std::min(g.size(), h.size());
+    for (std::size_t i = 2 * kBlock; i < n; ++i) {
+        if (g[i] != h[i]) {
+            std::fprintf(stderr, "  split: frame %zu applies %.9g and %.9g\n", i,
+                         static_cast<double>(g[i]), static_cast<double>(h[i]));
+            CHECK(g[i] == h[i]);
+            break;
+        }
+    }
+    return 0;
+}
+
+// --automatch-ms (SessionConfig::touch_return_ms) shortens the audio's
+// return as it shortens the writer's, which reads touch_return_frames().
+int test_automatch_time_sets_the_return() {
+    std::vector<float> g;
+    int64_t len = 0;
+    CHECK(touch_returns_to_static(kBlock, 100, g, len) == 0);
+    CHECK(len == 4800);
+    CHECK(glides_like_the_lane(g, kBlock, len));
+    // At the static from the return's end on, well before 250 ms.
+    const auto end = static_cast<std::size_t>(len + kAutoGridFrames);
+    CHECK(g.size() > end && near(g[end], gain_of_db(kStaticDb), 1e-4f));
+    // Out of range is clamped to 10 ms .. 5 s, never 0 frames.
+    CHECK(Rig("automatch_low", 1, 0).session->touch_return_frames() == 480);
+    CHECK(Rig("automatch_high", 1, 60000).session->touch_return_frames() == 240000);
+    return 0;
+}
+
 int test_latch_holds_until_stop() {
     Rig rig("latch");
     CHECK(rig.load({{0, -40.0f}}));
@@ -748,6 +881,9 @@ int main() {
     t(test_level_change_on_a_pan_lane_ramps, "test_level_change_on_a_pan_lane_ramps");
     t(test_pan_change_on_a_volume_lane_ramps, "test_pan_change_on_a_volume_lane_ramps");
     t(test_touch_plays_and_writes_the_fader, "test_touch_plays_and_writes_the_fader");
+    t(test_touch_with_no_lane_returns_to_the_static_value,
+      "test_touch_with_no_lane_returns_to_the_static_value");
+    t(test_automatch_time_sets_the_return, "test_automatch_time_sets_the_return");
     t(test_latch_holds_until_stop, "test_latch_holds_until_stop");
     t(test_forgotten_latches_play_the_lane, "test_forgotten_latches_play_the_lane");
     t(test_a_latch_moves_with_its_owner, "test_a_latch_moves_with_its_owner");

@@ -218,6 +218,13 @@ struct SessionConfig {
     // it; the wrap list each closed file carries is sized to it here, and
     // the wraps after it are on disk only.
     uint32_t loop_pass_cap = 99;
+    // AutoMatch (ADR-0027 §8): how long a released Touch parameter glides
+    // back, clamped to [kMinTouchReturnMs, kMaxTouchReturnMs]. An engine
+    // preference, as in Pro Tools, not a session setting; 250 ms is Pro
+    // Tools' default.
+    static constexpr uint32_t kMinTouchReturnMs = 10;
+    static constexpr uint32_t kMaxTouchReturnMs = 5000;
+    uint32_t touch_return_ms = 250;
     PlaybackConfig playback;
 };
 
@@ -515,8 +522,8 @@ public:
     uint64_t automation_write_overruns() const {
         return auto_write_overruns_.load(std::memory_order_relaxed);
     }
-    // How long a released Touch parameter takes to return to its lane: Pro
-    // Tools' AutoMatch default, 250 ms, until the session carries its own.
+    // How long a released Touch parameter takes to return to its lane, or
+    // to its static value where it has none: SessionConfig::touch_return_ms.
     uint32_t touch_return_frames() const { return touch_return_frames_; }
 
     // Recorded samples no file took (DiskThread::dropped_samples()): above
@@ -1003,6 +1010,14 @@ private:
     static constexpr int64_t kNoReturn = INT64_MIN;
     std::unique_ptr<int64_t[]> return_at_;
     std::unique_ptr<float[]> return_from_;
+    // Per track and parameter, in the lane's unit: the live value the last
+    // live callback played, which a release returns from (the control
+    // thread may already have put the static back in the atomic); and the
+    // static a parameter with no lane returns to, read each callback.
+    // live_moved_ is room for live_value_ while its tracks move.
+    std::unique_ptr<float[]> live_value_;
+    std::unique_ptr<float[]> live_moved_;
+    std::unique_ptr<float[]> return_to_;
     uint32_t touch_return_frames_ = 0;
     std::unique_ptr<RingBuffer<AutomationWrite>> auto_writes_;
     std::atomic<uint64_t> auto_write_overruns_{0};
