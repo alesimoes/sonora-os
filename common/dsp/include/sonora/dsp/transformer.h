@@ -167,21 +167,26 @@ private:
         double vs_last = 0.0;       // the driver's last sample, for the trapezoid
         double inv_slope = 0.0;     // 1 / (dF/di) at the last step, to warm-start
     };
-    struct LanNode {
-        double l = 0.0, dl = 0.0;  // L and L' at the node
-    };
     // The core's step for V::kLanes channels at once (src/transformer_solve.h):
     // V is one double (Lane1, there) or a pair (the arch files).
     struct Lane1;
     template <class V>
     struct EvalV;
+    // The core's state in lane layout, held in registers across a block.
     template <class V>
-    EvalV<V> eval_lanes(const Core* const* s, V i) const noexcept SONORA_RT;
+    struct StateV;
+    // The core's constants in lane form, made once per block into a local:
+    // already broadcast, and out of reach of the output stores (doubles),
+    // which would otherwise force a reload of every member each step.
     template <class V>
-    void step_lanes(Core* const* s, const double* rhs) noexcept SONORA_RT;
+    struct CoefV;
+    template <class V>
+    CoefV<V> coef() const noexcept SONORA_RT;
+    template <class V>
+    static EvalV<V> eval_lanes(const CoefV<V>& k, V si, V sm, V smirr, V i) noexcept SONORA_RT;
     // The safeguarded Newton loop, for a step the first evaluation leaves
     // more than di_tol_ from converged; one channel.
-    void refine(Core& s, double rhs, double& i, EvalV<Lane1>& e, double& f, double& inv, double& di,
+    void refine(const Core& s, double rhs, double& i, EvalV<Lane1>& e, double& f, double& inv, double& di,
                 std::uint32_t& n) const noexcept SONORA_RT;
     template <class V>
     void process_lanes(const double* const* in, double* const* out, std::uint32_t steps, const double* sag,
@@ -208,9 +213,18 @@ private:
     double rsup_ = 0.0;       // r_supply * sag
     double vres_ = 0.0;       // the reservoir's voltage
     double rail_ = 0.0;
+    // The rail the driver clips to: rail_ one core step earlier. The extra
+    // step of lag (20.8 us at eco's 48 kHz core rate, 10.4 us at 96 kHz,
+    // under 4e-4 of the reservoir's 60 ms) takes the supply off the step's
+    // chain of dependent operations: the clip of step t no longer waits
+    // for the current drawn in step t - 1 (brain/research/native-tube-n2.md,
+    // "Output stage at class B", the rerun).
+    double rail_drv_ = 0.0;
     double v_open_ = 0.0;     // unloaded supply voltage, for the current sag
     Core ch_[kMaxChannels];
-    LanNode lan_[kLangevinSegments + 1];  // filled by prepare
+    // L and L' at each node, filled by prepare: a pair of doubles so one
+    // load reads a node (src/transformer_solve.h).
+    double lan_[kLangevinSegments + 1][2] = {};
     std::uint32_t max_iter_seen_ = 0;
     std::uint64_t evals_ = 0, steps_ = 0;
     bool pair_ = true;

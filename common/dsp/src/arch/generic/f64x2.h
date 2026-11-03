@@ -35,6 +35,19 @@ struct F64x2 {
         p[0] = x[0];
         p[1] = x[1];
     }
+    // Lane l takes p[l][0] into lo and p[l][1] into hi: one table node (two
+    // adjacent doubles) per lane.
+    static void gather2(const double* const* p, F64x2& lo, F64x2& hi) noexcept {
+        lo = F64x2(p[0][0], p[1][0]);
+        hi = F64x2(p[0][1], p[1][1]);
+    }
+    // Each lane, in [0, 2^31), truncated towards zero: the integers into
+    // idx, their values as doubles returned.
+    F64x2 trunc_index(int* idx) const noexcept {
+        idx[0] = static_cast<int>(x[0]);
+        idx[1] = static_cast<int>(x[1]);
+        return F64x2(static_cast<double>(idx[0]), static_cast<double>(idx[1]));
+    }
     static Mask none() noexcept { return {{false, false}}; }
     F64x2 operator+(F64x2 o) const noexcept { return F64x2(x[0] + o.x[0], x[1] + o.x[1]); }
     F64x2 operator-(F64x2 o) const noexcept { return F64x2(x[0] - o.x[0], x[1] - o.x[1]); }

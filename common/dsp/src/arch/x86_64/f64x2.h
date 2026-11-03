@@ -43,6 +43,23 @@ struct F64x2 {
     static F64x2 dup(const double* p) noexcept { return F64x2(_mm_load_pd(p)); }
     double get(int i) const noexcept { return i == 0 ? _mm_cvtsd_f64(x) : _mm_cvtsd_f64(_mm_unpackhi_pd(x, x)); }
     void store(double* p) const noexcept { _mm_storeu_pd(p, x); }
+    // Lane l takes p[l][0] into lo and p[l][1] into hi: one table node (two
+    // adjacent doubles, written once at prepare, so a 16-byte load does not
+    // wait on a store) per lane.
+    static void gather2(const double* const* p, F64x2& lo, F64x2& hi) noexcept {
+        const __m128d a = _mm_loadu_pd(p[0]), b = _mm_loadu_pd(p[1]);
+        lo = F64x2(_mm_unpacklo_pd(a, b));
+        hi = F64x2(_mm_unpackhi_pd(a, b));
+    }
+    // Each lane, in [0, 2^31), truncated towards zero (CVTTPD2DQ, as
+    // static_cast<int> is): the integers into idx, their values as doubles
+    // (exact) returned.
+    F64x2 trunc_index(int* idx) const noexcept {
+        const __m128i k = _mm_cvttpd_epi32(x);
+        idx[0] = _mm_cvtsi128_si32(k);
+        idx[1] = _mm_cvtsi128_si32(_mm_shuffle_epi32(k, 1));
+        return F64x2(_mm_cvtepi32_pd(k));
+    }
     static Mask none() noexcept { return {_mm_setzero_pd()}; }
     F64x2 operator+(F64x2 o) const noexcept { return F64x2(_mm_add_pd(x, o.x)); }
     F64x2 operator-(F64x2 o) const noexcept { return F64x2(_mm_sub_pd(x, o.x)); }

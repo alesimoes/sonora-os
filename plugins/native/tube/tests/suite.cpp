@@ -768,9 +768,11 @@ void cpu_qualities(Suite& s, const Config& golden) {
         measure::check_cpu_on(s, noisy, programme, std::string(names[q]) + ", noise and hum 100 %", q == 0);
         // Slice 3: the output stage in, the core's solve once per base
         // sample (eco) or two (standard, high) on top of the triode's.
-        // Reported, not held: at eco it adds about 14 us to a block on the
-        // reference machine, which leaves the hot programme at about 59 us
-        // against the 60 us bar and over cpu.p999_kernels x 1.15
+        // Reported, not held: at eco it adds about 8.6 us to a block on the
+        // reference machine (14 before the rerun), which puts the hot
+        // programme at about 1.64 kernels there, but about 1.79 on the EPYC
+        // runner, over cpu.p999_kernels x 1.15 (the stage-off gate); held
+        // once a nightly records the stage-on worst case
         // (brain/research/native-tube-n2.md, "Output stage at class B").
         Config xf = c;
         xf.push_back({"transformer", 100.0f});

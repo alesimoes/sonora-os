@@ -56,7 +56,7 @@ bool OutputStage::prepare(double sample_rate, std::uint32_t channels, const Tran
     inv_rs_ = 1.0 / c.r_source;
     inv_out_ = 1.0 / (g_ * c.volts_per_unit);
     for (std::uint32_t k = 0; k <= kLangevinSegments; ++k)
-        langevin_exact(static_cast<double>(k) / kLanPerUnit, lan_[k].l, lan_[k].dl);
+        langevin_exact(static_cast<double>(k) / kLanPerUnit, lan_[k][0], lan_[k][1]);
     set_solve_tolerance(kDefaultSolveTol);
     // The demagnetised core's slope, on the anhysteretic curve, for the
     // first step after a reset.
@@ -81,6 +81,7 @@ void OutputStage::reset() noexcept SONORA_RT {
     }
     vres_ = v_idle_;
     rail_ = v_idle_ - ckt_.v_knee;
+    rail_drv_ = rail_;
     max_iter_seen_ = 0;
     evals_ = steps_ = 0;
 }
@@ -103,10 +104,10 @@ void OutputStage::set_sag(double amount) noexcept SONORA_RT {
     }
 }
 
-void OutputStage::refine(Core& s, double rhs, double& i, EvalV<Lane1>& e, double& f, double& inv, double& di,
-                         std::uint32_t& n) const noexcept SONORA_RT {
+void OutputStage::refine(const Core& s, double rhs, double& i, EvalV<Lane1>& e, double& f, double& inv,
+                         double& di, std::uint32_t& n) const noexcept SONORA_RT {
     const double half = half_;
-    const Core* sp[1] = {&s};
+    const CoefV<Lane1> k = coef<Lane1>();
     double lo, hi;
     if (f > 0.0) {
         hi = i;
@@ -120,7 +121,7 @@ void OutputStage::refine(Core& s, double rhs, double& i, EvalV<Lane1>& e, double
         double next = i + di;
         if (!(next > lo && next < hi)) next = 0.5 * (lo + hi);
         i = next;
-        e = eval_lanes<Lane1>(sp, Lane1(i));
+        e = eval_lanes<Lane1>(k, Lane1(s.i), Lane1(s.m), Lane1(s.m_irr), Lane1(i));
         f = e.psi.x - rhs + half * i;
         if (f > 0.0) hi = i; else lo = i;
         inv = 1.0 / (e.dpsi.x + half);
