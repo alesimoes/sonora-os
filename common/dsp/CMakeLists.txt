@@ -31,6 +31,7 @@ add_library(sonora_dsp STATIC
   src/limiter.cpp
   src/loudness.cpp
   src/meter.cpp
+  src/neural/wavenet.cpp
   src/noise.cpp
   src/opto.cpp
   src/oversampling.cpp
@@ -55,7 +56,14 @@ target_compile_options(sonora_dsp PUBLIC
   $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>
   $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
 
-foreach(t filters convolver oversampling loudness meter dynamics limiter fdn triode opto fet noise tape transformer)
+# The WaveNet kernel's products are element-wise loops over a block's
+# frames through pointers GCC cannot prove distinct; its -O2 "very cheap"
+# vectoriser will not version a loop for aliasing, -O3 does. Element-wise,
+# so vectorising reorders no sum: the output is the same bits either way.
+set_source_files_properties(src/neural/wavenet.cpp PROPERTIES COMPILE_OPTIONS
+  "$<$<AND:$<CXX_COMPILER_ID:GNU>,$<NOT:$<CONFIG:Debug>>>:-O3>")
+
+foreach(t filters convolver oversampling loudness meter dynamics limiter fdn triode opto fet noise tape transformer neural)
   add_executable(test_dsp_${t} tests/test_${t}.cpp)
   target_link_libraries(test_dsp_${t} PRIVATE sonora_dsp)
   # The root CMakeLists.txt's SONORA_SANITIZED: timing bars are reported, not held.

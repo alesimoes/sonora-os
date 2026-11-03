@@ -598,6 +598,70 @@ int test_a_symlink_keeps_the_folder() {
     return 0;
 }
 
+// ADR-0018 update of 2026-11-03: an untitled session's autosave is its only
+// copy of the edits. Leaving the session on purpose (another folder entered)
+// deletes the one this engine wrote, and the folder then goes as an empty
+// one does; a crash's autosave, or one an exit leaves, keeps the folder.
+int test_a_deliberate_leave_discards_the_untitled_autosave() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    std::string why;
+    std::vector<std::string> notices;
+    const std::string u = ActiveFolder::make_untitled(r, why);
+    sonora::Session s(config(u));
+    ActiveFolder folder;
+    CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+    fs::create_directories(u + "/Session File Backups");
+    CHECK(touch(u + "/Session File Backups/Untitled.autosave.sonora"));
+    folder.set_untitled_autosave("Untitled.autosave.sonora");
+    CHECK(folder.enter(s, r + "/Mix", ActiveFolder::Kind::Named, why, notices));
+    CHECK(!exists(u));
+    CHECK(folder.untitled_autosave().empty());
+
+    // Not this engine's (a crash's, found on entry): the folder stays.
+    const std::string u2 = ActiveFolder::make_untitled(r, why);
+    CHECK(folder.enter(s, u2, ActiveFolder::Kind::Untitled, why, notices));
+    fs::create_directories(u2 + "/Session File Backups");
+    CHECK(touch(u2 + "/Session File Backups/Untitled.autosave.sonora"));
+    CHECK(folder.enter(s, r + "/Mix", ActiveFolder::Kind::Named, why, notices));
+    CHECK(exists(u2 + "/Session File Backups/Untitled.autosave.sonora"));
+
+    // A symlink in its place is not followed or removed.
+    const std::string u3 = ActiveFolder::make_untitled(r, why);
+    CHECK(folder.enter(s, u3, ActiveFolder::Kind::Untitled, why, notices));
+    fs::create_directories(u3 + "/Session File Backups");
+    CHECK(touch(r + "/Mix/keep.sonora"));
+    fs::create_symlink(r + "/Mix/keep.sonora", u3 + "/Session File Backups/Untitled 3.autosave.sonora");
+    folder.set_untitled_autosave("Untitled 3.autosave.sonora");
+    CHECK(folder.enter(s, r + "/Mix", ActiveFolder::Kind::Named, why, notices));
+    CHECK(fs::is_symlink(u3 + "/Session File Backups/Untitled 3.autosave.sonora"));
+    CHECK(exists(r + "/Mix/keep.sonora"));
+    fs::remove_all(root());
+    return 0;
+}
+
+int test_an_exit_keeps_the_untitled_autosave() {
+    const std::string r = root() + "/Sessions";
+    fs::remove_all(root());
+    std::string why;
+    std::vector<std::string> notices;
+    const std::string u = ActiveFolder::make_untitled(r, why);
+    sonora::Session s(config(u));
+    {
+        ActiveFolder folder;
+        CHECK(folder.enter(s, u, ActiveFolder::Kind::Untitled, why, notices));
+        fs::create_directories(u + "/Session File Backups");
+        CHECK(touch(u + "/Session File Backups/Untitled.autosave.sonora"));
+        folder.set_untitled_autosave("Untitled.autosave.sonora");
+    }
+    CHECK(exists(u + "/Session File Backups/Untitled.autosave.sonora"));
+    // Nor does the next start's cleanup take it: it is the crash's edits.
+    ActiveFolder::remove_empty_untitled(r);
+    CHECK(exists(u + "/Session File Backups/Untitled.autosave.sonora"));
+    fs::remove_all(root());
+    return 0;
+}
+
 #ifdef __linux__
 // #151 review, N1: enter() released the old folder's lock before removing
 // it, so another engine could enter the folder between the check and the
@@ -658,6 +722,8 @@ int main() {
     failed += test_naming_is_refused_during_a_take();
     failed += test_a_folder_holding_only_unreferenced_states_goes();
     failed += test_a_symlink_keeps_the_folder();
+    failed += test_a_deliberate_leave_discards_the_untitled_autosave();
+    failed += test_an_exit_keeps_the_untitled_autosave();
 #ifdef __linux__
     failed += test_the_old_folder_stays_locked_while_it_is_removed();
 #endif

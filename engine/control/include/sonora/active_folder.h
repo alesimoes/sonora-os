@@ -76,6 +76,15 @@ public:
     // take is open or closing, naming the folder it is written to.
     bool rename(Session& session, const std::string& folder, std::string& why);
 
+    // The untitled session's autosave this engine wrote, by its name in
+    // "Session File Backups/" (ADR-0018 update of 2026-11-03); empty for
+    // none. enter() of another folder deletes it before deciding whether the
+    // folder it leaves holds data: the operator left the session. The
+    // destructor and the start-up cleanup keep it, and the folder with it:
+    // after a crash it is the only copy of the edits.
+    void set_untitled_autosave(const std::string& name) { untitled_autosave_ = name; }
+    const std::string& untitled_autosave() const { return untitled_autosave_; }
+
 private:
     // Removed on leaving if it holds no data.
     bool disposable() const;
@@ -84,6 +93,7 @@ private:
     std::string path_;
     Kind kind_ = Kind::Named;
     bool renamed_ = false;   // named by rename(), not entered by name
+    std::string untitled_autosave_;
     bool read_only_ = false;
     uint64_t free_bytes_ = 0;
 };

@@ -83,6 +83,19 @@ void Suite::check_time_le(const std::string& what, double value, double b, const
     info(what, value, unit, note.empty() ? std::string(held) : note + "; " + held);
 }
 
+void Suite::check_period_le(const std::string& what, double value_us, double period_us, double kernel_us,
+                            const std::string& note) {
+    // A kernel timing that is not a positive finite figure gives no
+    // slowdown to apply: the period is held unscaled.
+    const double slowdown = kernel_us / reference_kernel_reference_us();
+    const double scale = std::isfinite(slowdown) && slowdown > 1.0 ? slowdown : 1.0;
+    char how[160];
+    std::snprintf(how, sizeof how,
+                  "period %g us x %.3f (reference kernel %.2f us here, %.2f us on the reference machine)", period_us,
+                  scale, kernel_us, reference_kernel_reference_us());
+    check_time_le(what, value_us, period_us * scale, "us", note.empty() ? std::string(how) : note + "; " + how);
+}
+
 void Suite::info(const std::string& what, double value, const std::string& unit,
                  const std::string& note) {
     Value o = Value::object();

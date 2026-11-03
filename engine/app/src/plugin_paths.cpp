@@ -11,6 +11,10 @@ std::string default_plugin_cache(const std::string& cache_dir) {
     return cache_dir.empty() ? std::string() : cache_dir + "/plugin-catalog.json";
 }
 
+std::string default_plugin_block_list(const std::string& config_dir) {
+    return config_dir.empty() ? std::string() : config_dir + "/plugin-blocklist.json";
+}
+
 std::string image_build_id(const std::string& os_release) {
     std::string build, image;
     std::istringstream in(os_release);

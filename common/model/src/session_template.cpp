@@ -29,6 +29,7 @@ std::vector<std::shared_ptr<const P>> active_only(const std::vector<std::shared_
 Snapshot template_of(const Snapshot& session, const TemplateOptions& options) {
     auto edit = std::make_shared<EditState>();
     edit->buses = session.edit->buses;
+    edit->master_automation = session.edit->master_automation;
     edit->markers = options.markers && session.edit->markers ? session.edit->markers
                                                              : std::make_shared<const MarkerList>();
     edit->tracks.reserve(session.edit->tracks.size());

@@ -41,6 +41,9 @@ const char* lane_name(AutomationParam p) {
         case AutomationParam::Pan: return "Pan";
         case AutomationParam::Plugin: return "Plugin";
         case AutomationParam::VolumeTrim: return "Volume Trim";
+        case AutomationParam::Mute: return "Mute";
+        case AutomationParam::SendLevel: return "Send Level";
+        case AutomationParam::SendPan: return "Send Pan";
     }
     return "Volume";
 }
@@ -125,12 +128,13 @@ bool flat(const AutomationLane& lane) {
     return true;
 }
 
-// The lane an edit replaces points of: its param, and a plugin lane's insert
-// and key, without which apply() would look for another lane.
+// The lane an edit replaces points of: its param, a plugin lane's insert and
+// key, a send lane's send, without which apply() would look for another lane.
 void aim(EditAutomation& op, const AutomationLane& lane) {
     op.param = lane.param;
     op.insert = lane.insert;
     op.key = lane.key;
+    op.send = lane.send;
 }
 
 EditAutomation window_op(Id track, const AutomationLane& lane, Frames lo, Frames hi,

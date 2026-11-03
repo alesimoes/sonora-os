@@ -18,6 +18,10 @@
 //                      or an over-cap file: discarded whole, said once
 //   bundle_gone        a bundle no longer installed leaves the catalog
 //   rescan             blocked plugins are probed again, nothing else
+//   block_list         the operator's blocked plugins (hang, crash) never
+//                      run, stay listed and refused; unblocking probes
+//                      after the take; kept across starts; an unreadable
+//                      list kept aside (amendment of 2026-11-03)
 //   recording          no catalog child starts during a take; chain-start
 //                      probes do; the scan resumes when the take ends
 //   reserved_slot      a chain-start probe starts while the catalog fills
@@ -67,6 +71,7 @@
 #include <vector>
 
 #include "sonora/api/wire.h"
+#include "sonora/plugin_block_list.h"
 #include "sonora/plugin_catalog_cache.h"
 #include "sonora/plugin_scanner.h"
 
@@ -401,6 +406,103 @@ void test_rescan() {
     check(until(s, [&] { return s.probes_started() == 4 && s.idle(); }, 10000), "a rescan runs one probe");
     check(fx.log_lines("--probe vst3:C").size() == 1 && fx.log_lines("--probe urn:").empty(),
           "the blocked plugin, and only it, is probed again");
+}
+
+// The operator's block list (ADR-0012, amendment of 2026-11-03), against the
+// crash and hang plugins: what is blocked is never run, by the scan, a
+// rescan or a chain start; it stays listed, refused in the operator's
+// words; unblocking keeps a probe already made and probes one never made,
+// and only once the take is over; the list survives a restart; an
+// unreadable list is kept aside and said, never written over.
+void test_block_list() {
+    std::printf("block_list\n");
+    Fixture fx("block");
+    const std::string a = fx.bundle("a.lv2"), h = fx.bundle("h.lv2"), c = fx.bundle("c.vst3");
+    const std::string hang = "plugin urn:h " + h + " lv2 1 1 hang";
+    const std::string crash = "plugin vst3:C0000000000000000000000000000000 " + c + " vst3 2 2 crash";
+    fx.set_world({"plugin urn:a " + a + " lv2 1 1 ok", hang, crash});
+    const std::string list = fx.root + "/config/plugin-blocklist.json";
+    {
+        PluginBlockList l;
+        l.plugins["urn:h"] = "Hanger";
+        l.plugins["vst3:C0000000000000000000000000000000"] = "Crasher";
+        std::string why;
+        check(save_plugin_block_list(list, l, why), "a block list written (" + why + ")");
+    }
+    PluginScannerConfig cfg = fx.config();
+    cfg.block_list_path = list;
+    const auto refused_as_blocked = [](const api::PluginInfo* p) {
+        return p && !p->usable && p->refusal == kBlockedByOperator;
+    };
+    {
+        PluginScanner s(cfg);
+        // A hung probe would hold the scan for its 20 s timeout.
+        check(scanned(s, 5000), "the scan completes without waiting on the hung plugin");
+        check(s.probes_started() == 1 && fx.log_lines("--probe urn:h").empty() &&
+                  fx.log_lines("--probe vst3:C").empty(),
+              "the blocked hang and crash plugins are never probed (" + std::to_string(s.probes_started()) +
+                  " probes)");
+        const api::PluginInfo* ph = entry(s, "urn:h");
+        const api::PluginInfo* pc = entry(s, "C0000000000000000000000000000000");
+        check(refused_as_blocked(ph) && ph->name == "Hanger" && refused_as_blocked(pc) && pc->name == "Crasher",
+              "both stay in the catalog, refused in the operator's words, with the names the list keeps");
+        check(s.catalog()->blocked.size() == 2, "the catalog carries the list");
+        const pr::Record* r = s.catalog()->find("urn:h", 2);
+        check(r && r->outcome == pr::Outcome::Blocked && r->reason == kBlockedByOperator,
+              "a chain start finds it refused, and starts no probe");
+
+        // Blocking a plugin already probed keeps its record for later.
+        s.set_blocked("urn:a", "Fake urn:a", true);
+        check(until(s, [&] { return refused_as_blocked(entry(s, "urn:a")); }, 5000), "urn:a blocked");
+        check(entry(s, "urn:a")->params.size() == 1, "its probe's parameters kept");
+        const pr::Record* ra = s.catalog()->find("urn:a", 2);
+        check(ra && ra->outcome == pr::Outcome::Blocked, "a chain start finds the blocked record, not the probe's");
+        PluginBlockList on_disk;
+        std::string why;
+        check(load_plugin_block_list(list, on_disk, why) == BlockListLoad::Loaded && on_disk.plugins.size() == 3 &&
+                  on_disk.has("urn:a"),
+              "the list is written at once");
+        s.set_blocked("urn:a", "Fake urn:a", false);
+        check(until(s, [&] {
+            const api::PluginInfo* p = entry(s, "urn:a");
+            return p && p->usable && s.idle();
+        }, 5000),
+              "unblocked: usable again");
+        check(s.probes_started() == 1, "from the probe it had, none run again");
+
+        // A rescan runs what a probe blocked, never what the operator did.
+        fx.clear_log();
+        s.rescan();
+        check(until(s, [&] { return s.catalog()->scanned && s.idle(); }, 5000) &&
+                  fx.log_lines("--probe").empty(),
+              "a rescan probes neither blocked plugin");
+    }
+    {
+        // The plugin is mended; the operator unblocks it during a take.
+        fx.set_world({"plugin urn:a " + a + " lv2 1 1 ok", "plugin urn:h " + h + " lv2 1 1 ok", crash});
+        fx.clear_log();
+        PluginScanner s(cfg);
+        check(scanned(s) && s.probes_started() == 0 && refused_as_blocked(entry(s, "urn:h")),
+              "after a restart: still blocked, nothing probed");
+        s.set_blocked("urn:h", "Hanger", false);
+        until(s, [] { return false; }, 600, true);
+        check(s.probes_started() == 0, "unblocked during a take: not probed yet");
+        check(until(s, [&] {
+            const api::PluginInfo* p = entry(s, "urn:h");
+            return p && p->usable && s.idle();
+        }, 5000),
+              "the take over: probed, and usable");
+        check(s.probes_started() == 1 && fx.log_lines("--probe urn:h").size() == 1, "one probe, of it alone");
+    }
+    {
+        std::ofstream(list, std::ios::trunc) << "{not json";
+        PluginScanner s(cfg);
+        check(scanned(s), "a scan with an unreadable list");
+        const auto n = notices(s);
+        check(any_says(n, "not readable JSON") && any_says(n, ".unreadable"), "said, and where it was kept");
+        check(fs::exists(list + ".unreadable") && !fs::exists(list), "kept aside, not written over");
+        check(s.catalog()->blocked.empty(), "nothing blocked");
+    }
 }
 
 void test_recording() {
@@ -991,6 +1093,7 @@ int main(int argc, char** argv) {
     test_cache_presets();
     test_bundle_gone();
     test_rescan();
+    test_block_list();
     test_recording();
     test_reserved_slot();
     test_dedup();

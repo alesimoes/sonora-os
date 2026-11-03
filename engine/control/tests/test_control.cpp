@@ -3245,6 +3245,98 @@ void the_first_save_names_the_untitled_folder() {
     CHECK(*real.session().folder() == named);
 }
 
+// ADR-0018 update of 2026-11-03: an untitled session is autosaved, so a
+// crash before the first Save keeps its edits, not only its takes. The
+// first Save covers it and takes it away; a new session discards it, and
+// the folder it was alone in goes as an empty one does.
+void an_untitled_session_is_autosaved() {
+    const fs::path root = fresh_dir("untitled_autosave_root");
+    struct Gone {
+        fs::path p;
+        ~Gone() {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+    } gone{root};
+    const fs::path untitled = root / "Untitled";
+    fs::create_directories(untitled);
+    EngineControlServer::Options opts;
+    opts.sessions_root = root.string();
+    opts.autosave_period_ms = 50;
+    const model::Snapshot start = RealEngine::start_document(untitled);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(untitled, opts, false, true);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto answered = [&](uint64_t seq) {
+        api::CommandReply got;
+        const bool seen = until(real, in, [&]() {
+            for (const api::CommandReply& r : in.replies)
+                if (r.seq == seq) got = r;
+            return got.seq == seq;
+        });
+        return seen && got.result == DispatchResult::Ok;
+    };
+    model::SessionSettings settings = start.settings;
+    const auto rename = [&](const std::string& name) {
+        settings.name = name;
+        api::ModelRequest m;
+        m.action = api::ModelAction::Apply;
+        std::string e;
+        model::encode_operation(model::SetSettings{settings}, m.op, e);
+        return answered(real.submit(m));
+    };
+    const auto read = [](const fs::path& p) {
+        std::ifstream f(p, std::ios::binary);
+        std::stringstream s;
+        s << f.rdbuf();
+        return s.str();
+    };
+
+    const fs::path autosave = untitled / "Session File Backups" / "Untitled.autosave.sonora";
+    CHECK(rename("Before any save"));
+    CHECK(wait_for([&]() { return real.engine().server().autosaves() == 1 && fs::exists(autosave); }));
+    const std::string written = read(autosave);
+    std::uint64_t generation = 0;
+    CHECK(model::file_save_generation(written, generation) && generation == 1);
+    CHECK(written.find("\"Before any save\"") != std::string::npos);
+
+    // The first Save names the folder and covers the autosave.
+    std::string bytes;
+    model::Snapshot named = start;
+    named.settings = settings;
+    CHECK(model::serialize(named, model::WriteInfo{"test", 1}, bytes, error));
+    const fs::path file = root / "Bass" / "Bass.sonora";
+    api::ModelRequest save;
+    save.action = api::ModelAction::Save;
+    save.op = api::wire::encode_save(file.string(), bytes);
+    CHECK(answered(real.submit(save)));
+    CHECK(*real.session().folder() == (root / "Bass").string());
+    CHECK(fs::is_regular_file(file));
+    CHECK(!fs::exists(root / "Bass" / "Session File Backups" / "Untitled.autosave.sonora"));
+    // From then on the session's own autosave, beside its file.
+    CHECK(rename("Named"));
+    CHECK(wait_for([&]() { return fs::exists(session_files::autosave_file_of(file.string())); }));
+    CHECK(!fs::exists(root / "Bass" / "Session File Backups" / "Untitled.autosave.sonora"));
+
+    // A new session, autosaved untitled, then left for another new one: its
+    // autosave goes, and the folder with it.
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    load.op = api::wire::encode_load("", bytes);
+    CHECK(answered(real.submit(load)));
+    const fs::path second = root / "Untitled";
+    CHECK(*real.session().folder() == second.string());
+    const fs::path second_autosave = second / "Session File Backups" / "Untitled.autosave.sonora";
+    const uint64_t before = real.engine().server().autosaves();
+    CHECK(rename("Abandoned"));
+    CHECK(wait_for([&]() { return real.engine().server().autosaves() > before && fs::exists(second_autosave); }));
+    CHECK(answered(real.submit(load)));
+    CHECK(*real.session().folder() != second.string());
+    CHECK(!fs::exists(second));
+}
+
 // The round trip kept per machine (ADR-0019, update of 2026-10-26): the
 // source the start chose stands for a late client too, and a measured or
 // manual L is written to the machine's file under the server's key; the
@@ -3469,6 +3561,7 @@ int main() {
     a_load_waits_for_the_save_before_it();
     a_new_session_gets_its_own_untitled_folder();
     the_first_save_names_the_untitled_folder();
+    an_untitled_session_is_autosaved();
     the_round_trip_is_kept_for_the_machine();
     the_backend_figure_follows_a_late_connection();
     a_folder_load_enters_only_a_session_folder();

@@ -146,15 +146,28 @@ bool TrackEdit::operator==(const TrackEdit& o) const {
     for (std::size_t i = 0; i < midi_playlists.size(); ++i) {
         if (!same_ptr_or_value(midi_playlists[i], o.midi_playlists[i])) return false;
     }
-    for (std::size_t i = 0; i < automation.size(); ++i) {
-        if (!same_ptr_or_value(automation[i], o.automation[i])) return false;
+    return same_lanes(automation, o.automation);
+}
+
+bool same_lanes(const AutomationLanes& a, const AutomationLanes& b) {
+    if (a.size() != b.size()) return false;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (!same_ptr_or_value(a[i], b[i])) return false;
     }
     return true;
 }
 
+bool Bus::operator==(const Bus& o) const {
+    return id == o.id && name == o.name && sends == o.sends && output == o.output &&
+           same_lanes(automation, o.automation);
+}
+
 const AutomationLane* TrackEdit::lane(AutomationParam param) const {
-    // A track may hold many plugin lanes; none of them is "the" plugin lane.
-    if (param == AutomationParam::Plugin) return nullptr;
+    // A track may hold many plugin or send lanes; none of them is "the" one.
+    if (param == AutomationParam::Plugin || param == AutomationParam::SendLevel ||
+        param == AutomationParam::SendPan) {
+        return nullptr;
+    }
     for (const auto& l : automation) {
         if (l->param == param) return l.get();
     }
@@ -173,11 +186,25 @@ const AutomationLane* TrackEdit::lane(Id insert, const std::string& key) const {
 bool lane_before(const AutomationLane& a, const AutomationLane& b) {
     if (a.param != b.param) return a.param < b.param;
     if (a.insert != b.insert) return a.insert < b.insert;
+    if (a.send != b.send) return a.send < b.send;
     return a.key < b.key;
 }
 
+const AutomationLane* find_lane(const AutomationLanes& lanes, const AutomationLane& which) {
+    const auto at = std::lower_bound(
+        lanes.begin(), lanes.end(), which,
+        [](const std::shared_ptr<const AutomationLane>& l, const AutomationLane& x) {
+            return lane_before(*l, x);
+        });
+    if (at == lanes.end() || lane_before(which, **at)) return nullptr;
+    return at->get();
+}
+
 bool EditState::operator==(const EditState& o) const {
-    if (tracks.size() != o.tracks.size() || buses != o.buses) return false;
+    if (tracks.size() != o.tracks.size() || buses != o.buses ||
+        !same_lanes(master_automation, o.master_automation)) {
+        return false;
+    }
     for (std::size_t i = 0; i < tracks.size(); ++i) {
         if (!same_ptr_or_value(tracks[i], o.tracks[i])) return false;
     }
@@ -1212,9 +1239,21 @@ std::string automation_points_problem(const std::vector<AutomationPoint>& points
         if (p.at < 0 || p.at >= kMaxInteger) return "must be at a frame from 0 to 2^53 - 2";
         if (i > 0 && p.at < points[i - 1].at) return "points are not sorted by frame";
         if (i > 1 && p.at == points[i - 2].at) return "at most two points share a frame";
-        if (param == AutomationParam::Volume && !gain_in_range(p.value)) return gain_range();
-        if (param == AutomationParam::Pan && !(p.value >= -1.0f && p.value <= 1.0f)) {
+        if ((param == AutomationParam::Volume || param == AutomationParam::SendLevel) &&
+            !gain_in_range(p.value)) {
+            return gain_range();
+        }
+        if ((param == AutomationParam::Pan || param == AutomationParam::SendPan) &&
+            !(p.value >= -1.0f && p.value <= 1.0f)) {
             return "a pan point must be from -1 to 1";
+        }
+        if (param == AutomationParam::Mute) {
+            if (p.value != 0.0f && p.value != 1.0f) return "a mute point must be 0 or 1";
+            // Linear between points, so a change between two frames would
+            // play as a fade; a mute changes only at a step.
+            if (i > 0 && p.at != points[i - 1].at && p.value != points[i - 1].value) {
+                return "a mute changes only at a step, two points at one frame";
+            }
         }
         if (param == AutomationParam::VolumeTrim &&
             !(p.value >= kMinTrimDb && p.value <= kMaxTrimDb)) {
@@ -1234,22 +1273,85 @@ std::string automation_points_problem(const std::vector<AutomationPoint>& points
     return {};
 }
 
-std::string automation_target_problem(const TrackEdit& t, AutomationParam param, Id insert,
-                                      const std::string& key, PluginFormat& format) {
-    if (param > AutomationParam::VolumeTrim) return "is not a parameter this version automates";
-    if (param != AutomationParam::Plugin) {
-        if (insert != 0 || !key.empty()) {
-            return "a volume, pan or trim lane names no insert and no key";
+LaneStrip lane_strip(const TrackEdit& t) {
+    return LaneStrip{LaneStrip::Kind::Track, t.id, &t.inserts, &t.sends};
+}
+
+LaneStrip lane_strip(const Bus& b) {
+    return LaneStrip{LaneStrip::Kind::Bus, b.id, nullptr, &b.sends};
+}
+
+LaneStrip master_strip() { return LaneStrip{}; }
+
+namespace {
+
+const char* automation_param_name(AutomationParam p) {
+    switch (p) {
+        case AutomationParam::Volume: return "volume";
+        case AutomationParam::Pan: return "pan";
+        case AutomationParam::Plugin: return "plugin parameter";
+        case AutomationParam::VolumeTrim: return "volume trim";
+        case AutomationParam::Mute: return "mute";
+        case AutomationParam::SendLevel: return "send level";
+        case AutomationParam::SendPan: return "send pan";
+    }
+    return "parameter";
+}
+
+std::string strip_name(const LaneStrip& s) {
+    switch (s.kind) {
+        case LaneStrip::Kind::Track: return "track " + str(static_cast<std::uint64_t>(s.id));
+        case LaneStrip::Kind::Bus: return "aux bus " + str(static_cast<std::uint64_t>(s.id));
+        case LaneStrip::Kind::Master: break;
+    }
+    return "the Master";
+}
+
+// What each strip has to automate (ADR-0027 §9): an aux return has no
+// insert and no automation mode, so no plugin or trim lane; the Master only
+// a gain.
+bool strip_takes(const LaneStrip& s, AutomationParam param) {
+    switch (s.kind) {
+        case LaneStrip::Kind::Track: return true;
+        case LaneStrip::Kind::Bus:
+            return param != AutomationParam::Plugin && param != AutomationParam::VolumeTrim;
+        case LaneStrip::Kind::Master: return param == AutomationParam::Volume;
+    }
+    return false;
+}
+
+}  // namespace
+
+std::string automation_target_problem(const LaneStrip& s, AutomationParam param, Id insert,
+                                      Id send, const std::string& key, PluginFormat& format) {
+    if (param > AutomationParam::SendPan) return "is not a parameter this version automates";
+    if (!strip_takes(s, param)) {
+        return strip_name(s) + " has no " + automation_param_name(param) + " to automate";
+    }
+    const bool plugin = param == AutomationParam::Plugin;
+    const bool to_send = param == AutomationParam::SendLevel || param == AutomationParam::SendPan;
+    if (!plugin && (insert != 0 || !key.empty())) {
+        return "a lane other than a plugin's names no insert and no key";
+    }
+    if (!to_send && send != 0) return "a lane other than a send's names no send";
+    if (to_send) {
+        const bool held = s.sends != nullptr &&
+                          std::any_of(s.sends->begin(), s.sends->end(),
+                                      [&](const Send& each) { return each.id == send; });
+        if (!held) {
+            return str(static_cast<std::uint64_t>(send)) + " is not a send on " + strip_name(s);
         }
         return {};
     }
+    if (!plugin) return {};
     const Insert* in = nullptr;
-    for (const Insert& each : t.inserts) {
-        if (each.id == insert) in = &each;
+    if (s.inserts != nullptr) {
+        for (const Insert& each : *s.inserts) {
+            if (each.id == insert) in = &each;
+        }
     }
     if (in == nullptr) {
-        return str(static_cast<std::uint64_t>(insert)) + " is not an insert on track " +
-               str(static_cast<std::uint64_t>(t.id));
+        return str(static_cast<std::uint64_t>(insert)) + " is not an insert on " + strip_name(s);
     }
     format = in->plugin.format;
     return param_key_problem(key, format);
@@ -1261,25 +1363,31 @@ std::string automation_problem(const TrackEdit& t, std::string& where) {
         where = "automation";
         return "a MIDI track has no audio automation";
     }
+    return lanes_problem(lane_strip(t), t.automation, where);
+}
+
+std::string lanes_problem(const LaneStrip& s, const AutomationLanes& lanes, std::string& where) {
+    where.clear();
     std::size_t run = 0;   // lanes so far of the insert this lane names
-    for (std::size_t i = 0; i < t.automation.size(); ++i) {
+    for (std::size_t i = 0; i < lanes.size(); ++i) {
         const std::string path = "automation[" + str(static_cast<std::int64_t>(i)) + "]";
-        const AutomationLane* lane = t.automation[i].get();
+        const AutomationLane* lane = lanes[i].get();
         if (lane == nullptr || lane->points.empty()) {
             where = path;
             return "a lane needs at least one point";
         }
         PluginFormat format = PluginFormat::Lv2;
-        std::string why =
-            automation_target_problem(t, lane->param, lane->insert, lane->key, format);
+        std::string why = automation_target_problem(s, lane->param, lane->insert, lane->send,
+                                                    lane->key, format);
         if (!why.empty()) {
             where = path;
             return why;
         }
-        const AutomationLane* prev = i > 0 ? t.automation[i - 1].get() : nullptr;
+        const AutomationLane* prev = i > 0 ? lanes[i - 1].get() : nullptr;
         if (prev != nullptr && !lane_before(*prev, *lane)) {
             where = path;
-            return "lanes are not sorted by parameter, insert and key, or one is there twice";
+            return "lanes are not sorted by parameter, insert, send and key, or one is there "
+                   "twice";
         }
         const bool same_insert = prev != nullptr && lane->param == AutomationParam::Plugin &&
                                  prev->param == AutomationParam::Plugin &&
@@ -1884,6 +1992,11 @@ bool check_invariants(const Snapshot& s, std::string& error) {
             return false;
         }
         if (!check_sends(bus.sends, path)) return false;
+        why = lanes_problem(lane_strip(bus), bus.automation, where);
+        if (!why.empty()) {
+            error = path + "." + where + ": " + why;
+            return false;
+        }
         for (std::size_t i = 0; i < bus.sends.size(); ++i) {
             if (bus.sends[i].bus == bus.id) {
                 error = path + ".sends[" + std::to_string(i) + "]: a bus cannot send to itself";
@@ -1903,6 +2016,11 @@ bool check_invariants(const Snapshot& s, std::string& error) {
     why = bus_loop_problem(*s.edit, where);
     if (!why.empty()) {
         error = (where.empty() ? std::string("buses") : where) + ": " + why;
+        return false;
+    }
+    why = lanes_problem(master_strip(), s.edit->master_automation, where);
+    if (!why.empty()) {
+        error = "master_" + where + ": " + why;
         return false;
     }
 

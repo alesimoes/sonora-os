@@ -518,6 +518,8 @@ struct SetOutput {
 // with `points`, every one of which lies in that range, sorted, at most two
 // at a frame. [0, kMaxInteger) is the whole lane; a lane left with no point
 // is removed. Pencil, thin, cut, copy and paste are all this operation.
+// `track` names the strip (ADR-0027 §9): a track, an aux bus, or
+// kMasterOutput for the Master, which no track or bus id can be.
 struct EditAutomation {
     Id track = 0;
     AutomationParam param = AutomationParam::Volume;
@@ -529,6 +531,8 @@ struct EditAutomation {
     // {track, param, from, to, points} draws no missing-initializer warning.
     Id insert = 0;
     std::string key{};
+    // SendLevel and SendPan only, as AutomationLane's: a send on the strip.
+    Id send = 0;
 };
 
 // Every operation but Compound: what a compound holds. The type, not a

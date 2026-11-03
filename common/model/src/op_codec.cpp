@@ -63,7 +63,10 @@ constexpr Name<AutomationParam> kAutomationParams[] = {
     {"volume", AutomationParam::Volume},
     {"pan", AutomationParam::Pan},
     {"plugin", AutomationParam::Plugin},
-    {"volume_trim", AutomationParam::VolumeTrim}};
+    {"volume_trim", AutomationParam::VolumeTrim},
+    {"mute", AutomationParam::Mute},
+    {"send_level", AutomationParam::SendLevel},
+    {"send_pan", AutomationParam::SendPan}};
 
 template <typename E, std::size_t N>
 Value name_of(const Name<E> (&table)[N], E v) {
@@ -175,29 +178,34 @@ Value points_value(const std::vector<AutomationPoint>& points) {
     return v;
 }
 
-// "param", and for a plugin lane its "insert" and "key"; a volume or pan
-// lane has neither, so its encoding is a version-35 peer's.
-void set_lane_target(Value& v, AutomationParam param, Id insert, const std::string& key) {
+// "param", for a plugin lane its "insert" and "key", for a send lane its
+// "send"; any other lane has none, so its encoding is a version-35 peer's.
+void set_lane_target(Value& v, AutomationParam param, Id insert, Id send,
+                     const std::string& key) {
     v.set("param", name_of(kAutomationParams, param));
-    if (param != AutomationParam::Plugin) return;
-    v.set("insert", id_value(insert));
-    v.set("key", Value::string(key));
-}
-
-// Whether `v` names a plugin lane, so which keys it must carry.
-bool names_plugin(const Value& v) {
-    const Value* p = v.is_object() ? v.find("param") : nullptr;
-    return p != nullptr && p->is_string() && p->text() == "plugin";
-}
-
-Value lanes_value(const std::vector<std::shared_ptr<const AutomationLane>>& lanes) {
-    Value v = Value::array();
-    for (const auto& l : lanes) {
-        Value lv = Value::object();
-        set_lane_target(lv, l->param, l->insert, l->key);
-        lv.set("points", points_value(l->points));
-        v.push(std::move(lv));
+    if (param == AutomationParam::Plugin) {
+        v.set("insert", id_value(insert));
+        v.set("key", Value::string(key));
     }
+    if (param == AutomationParam::SendLevel || param == AutomationParam::SendPan) {
+        v.set("send", id_value(send));
+    }
+}
+
+// Which keys `v` must carry beside "param", by the lane its param names.
+enum class LaneKeys { Plain, Plugin, Send };
+LaneKeys lane_keys(const Value& v) {
+    const Value* p = v.is_object() ? v.find("param") : nullptr;
+    if (p == nullptr || !p->is_string()) return LaneKeys::Plain;
+    if (p->text() == "plugin") return LaneKeys::Plugin;
+    if (p->text() == "send_level" || p->text() == "send_pan") return LaneKeys::Send;
+    return LaneKeys::Plain;
+}
+
+Value lane_value(const AutomationLane& l) {
+    Value v = Value::object();
+    set_lane_target(v, l.param, l.insert, l.send, l.key);
+    v.set("points", points_value(l.points));
     return v;
 }
 
@@ -398,6 +406,7 @@ Value bus_mix_value(const BusMix& m) {
     return v;
 }
 
+// Without its lanes, which the window writes by table index.
 Value aux_bus_value(const Bus& b) {
     Value v = Value::object();
     v.set("id", id_value(b.id));
@@ -771,7 +780,7 @@ struct Encoder {
     Value operator()(const EditAutomation& o) const {
         Value v = with_kind("EditAutomation");
         v.set("track", id_value(o.track));
-        set_lane_target(v, o.param, o.insert, o.key);
+        set_lane_target(v, o.param, o.insert, o.send, o.key);
         v.set("range", pair(o.from, o.to));
         v.set("points", points_value(o.points));
         return v;
@@ -1125,25 +1134,23 @@ bool read_points(Reader& rd, const Value& obj, const std::string& p,
     return true;
 }
 
-bool read_lanes(Reader& rd, const Value& obj, const std::string& p,
-                std::vector<std::shared_ptr<const AutomationLane>>& out) {
-    const Value* list = nullptr;
-    if (!rd.array(obj, p, "automation", list)) return false;
-    const std::string lp = Reader::at(p, "automation");
-    for (const Value& e : list->items()) {
-        auto lane = std::make_shared<AutomationLane>();
-        const bool plugin = names_plugin(e);
-        if (!(plugin ? rd.keys(e, lp, {"param", "insert", "key", "points"})
-                     : rd.keys(e, lp, {"param", "points"})) ||
-            !rd.choice(e, lp, "param", kAutomationParams, lane->param) ||
-            (plugin && (!rd.id(e, lp, "insert", lane->insert) ||
-                        !rd.text(e, lp, "key", lane->key))) ||
-            !read_points(rd, e, lp, lane->points)) {
-            return false;
-        }
-        out.push_back(std::move(lane));
-    }
-    return true;
+// "param", the keys lane_keys() asks of it and nothing else.
+bool read_lane_target(Reader& rd, const Value& v, const std::string& p, AutomationParam& param,
+                      Id& insert, Id& send, std::string& key) {
+    const LaneKeys k = lane_keys(v);
+    return rd.choice(v, p, "param", kAutomationParams, param) &&
+           (k != LaneKeys::Plugin ||
+            (rd.id(v, p, "insert", insert) && rd.text(v, p, "key", key))) &&
+           (k != LaneKeys::Send || rd.id(v, p, "send", send));
+}
+
+bool read_lane(Reader& rd, const Value& e, const std::string& p, AutomationLane& lane) {
+    const LaneKeys k = lane_keys(e);
+    const bool keys = k == LaneKeys::Plugin ? rd.keys(e, p, {"param", "insert", "key", "points"})
+                      : k == LaneKeys::Send ? rd.keys(e, p, {"param", "send", "points"})
+                                            : rd.keys(e, p, {"param", "points"});
+    return keys && read_lane_target(rd, e, p, lane.param, lane.insert, lane.send, lane.key) &&
+           read_points(rd, e, p, lane.points);
 }
 
 bool read_mix(Reader& rd, const Value& obj, const std::string& path, TrackMix& m) {
@@ -1331,7 +1338,9 @@ bool read_bus_mix_value(Reader& rd, const Value& v, const std::string& p, BusMix
 
 bool read_aux_bus_value(Reader& rd, const Value& v, const std::string& p, Bus& b) {
     const Value* sends = nullptr;
-    if (!rd.keys(v, p, {"id", "name", "sends", "output"}) || !rd.id(v, p, "id", b.id) ||
+    // Its "automation" is table indices, which read_edits resolves.
+    if (!rd.keys(v, p, {"id", "name", "sends", "output", "automation"}) ||
+        !rd.id(v, p, "id", b.id) ||
         !rd.text(v, p, "name", b.name) || !rd.array(v, p, "sends", sends) ||
         !rd.id(v, p, "output", b.output)) {
         return false;
@@ -1759,12 +1768,15 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
     } else if (kind == "EditAutomation") {
         EditAutomation o;
         std::array<std::int64_t, 2> range{};
-        const bool plugin = names_plugin(v);
-        if (!(plugin ? rd.keys(v, "", {"op", "track", "param", "insert", "key", "range", "points"})
-                     : rd.keys(v, "", {"op", "track", "param", "range", "points"})) ||
-            !rd.id(v, "", "track", o.track) ||
-            !rd.choice(v, "", "param", kAutomationParams, o.param) ||
-            (plugin && (!rd.id(v, "", "insert", o.insert) || !rd.text(v, "", "key", o.key))) ||
+        const LaneKeys k = lane_keys(v);
+        const bool keys =
+            k == LaneKeys::Plugin
+                ? rd.keys(v, "", {"op", "track", "param", "insert", "key", "range", "points"})
+            : k == LaneKeys::Send
+                ? rd.keys(v, "", {"op", "track", "param", "send", "range", "points"})
+                : rd.keys(v, "", {"op", "track", "param", "range", "points"});
+        if (!keys || !rd.id(v, "", "track", o.track) ||
+            !read_lane_target(rd, v, "", o.param, o.insert, o.send, o.key) ||
             !rd.range(v, "", "range", kMaxInteger, range) || !read_points(rd, v, "", o.points)) {
             return false;
         }
@@ -1848,7 +1860,10 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 // 13: a lane may be a volume_trim lane, a track mix's automation mode
 //    write_trim (ADR-0027 §8 slice 5).
 // 14: an insert mix's state carries "files" (ADR-0029 slice 2).
-constexpr std::int64_t kWindowFormat = 14;
+// 15: lanes are one table, "lanes", that each edit track's, aux bus's and
+//    edit state's "master_automation" index; a lane may be a mute, send
+//    level or send pan lane, the last two with their send (ADR-0027 §9).
+constexpr std::int64_t kWindowFormat = 15;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1901,7 +1916,12 @@ public:
             ev.set("markers", Value::null());
         }
         Value& bs = ev.set("buses", Value::array());
-        for (const Bus& b : e.buses) bs.push(aux_bus_value(b));
+        for (const Bus& b : e.buses) {
+            Value bv = aux_bus_value(b);
+            bv.set("automation", lane_refs(b.automation));
+            bs.push(std::move(bv));
+        }
+        ev.set("master_automation", lane_refs(e.master_automation));
         edits_.push(std::move(ev));
         return ix;
     }
@@ -1912,11 +1932,23 @@ public:
     // The chunk table, in first-reference order: what the parts carry.
     std::vector<const MidiChunk*> chunks_;
     Value midi_playlists_ = Value::array();
+    Value lanes_ = Value::array();
     Value tracks_ = Value::array();
     Value markers_ = Value::array();
     Value edits_ = Value::array();
 
 private:
+    // Each lane once, however many steps and strips share it.
+    Value lane_refs(const AutomationLanes& lanes) {
+        Value v = Value::array();
+        for (const auto& l : lanes) {
+            bool added = false;
+            const std::size_t ix = lane_ix_.index(l.get(), added);
+            if (added) lanes_.push(lane_value(*l));
+            v.push(index_value(ix));
+        }
+        return v;
+    }
     std::size_t track(const TrackEdit& t) {
         bool added = false;
         const std::size_t ix = track_ix_.index(&t, added);
@@ -1933,7 +1965,7 @@ private:
         Value& sends = tv.set("sends", Value::array());
         for (const Send& sd : t.sends) sends.push(send_value(sd));
         tv.set("output", id_value(t.output));
-        tv.set("automation", lanes_value(t.automation));
+        tv.set("automation", lane_refs(t.automation));
         Value& ps = tv.set("playlists", Value::array());
         for (const auto& p : t.playlists) ps.push(index_value(playlist(*p)));
         Value& ms = tv.set("midi_playlists", Value::array());
@@ -2014,6 +2046,7 @@ private:
     Table<MidiSequence> sequence_ix_;
     Table<MidiPlaylist> midi_ix_;
     Table<TrackEdit> track_ix_;
+    Table<AutomationLane> lane_ix_;
     Table<MarkerList> marker_ix_;
     Table<EditState> edit_ix_;
 };
@@ -2063,6 +2096,7 @@ bool window_value(const History& h, WindowWriter& w, Value& root, std::string& e
     root.set("leaves", std::move(w.leaves_));
     root.set("sequences", std::move(w.sequences_));
     root.set("midi_playlists", std::move(w.midi_playlists_));
+    root.set("lanes", std::move(w.lanes_));
     root.set("tracks", std::move(w.tracks_));
     root.set("markers", std::move(w.markers_));
     root.set("edits", std::move(w.edits_));
@@ -2080,6 +2114,33 @@ bool table_index(Reader& rd, const Value& e, const std::string& p, std::size_t s
         return rd.fail(p, "must be an index below " + std::to_string(size));
     }
     out = static_cast<std::size_t>(n);
+    return true;
+}
+
+bool read_lane_table(Reader& rd, const Value& root,
+                     std::vector<std::shared_ptr<const AutomationLane>>& out) {
+    const Value* list = nullptr;
+    if (!rd.array(root, "", "lanes", list)) return false;
+    for (const Value& e : list->items()) {
+        auto lane = std::make_shared<AutomationLane>();
+        if (!read_lane(rd, e, "lanes", *lane)) return false;
+        out.push_back(std::move(lane));
+    }
+    return true;
+}
+
+// `obj`'s `key`: indices into the lane table.
+bool read_lane_refs(Reader& rd, const Value& obj, const std::string& p, const char* key,
+                    const std::vector<std::shared_ptr<const AutomationLane>>& table,
+                    AutomationLanes& out) {
+    const Value* list = nullptr;
+    if (!rd.array(obj, p, key, list)) return false;
+    const std::string lp = Reader::at(p, key);
+    for (const Value& i : list->items()) {
+        std::size_t ix = 0;
+        if (!table_index(rd, i, lp, table.size(), ix)) return false;
+        out.push_back(table[ix]);
+    }
     return true;
 }
 
@@ -2225,6 +2286,7 @@ bool read_midi_playlists(Reader& rd, const Value& root,
 bool read_tracks(Reader& rd, const Value& root,
                  const std::vector<std::shared_ptr<const Playlist>>& playlists,
                  const std::vector<std::shared_ptr<const MidiPlaylist>>& midi_playlists,
+                 const std::vector<std::shared_ptr<const AutomationLane>>& lanes,
                  std::vector<std::shared_ptr<const TrackEdit>>& out) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "tracks", list)) return false;
@@ -2246,7 +2308,7 @@ bool read_tracks(Reader& rd, const Value& root,
             !rd.array(e, "tracks", "inserts", ins) || !rd.array(e, "tracks", "sends", sends) ||
             !rd.array(e, "tracks", "playlists", ps) ||
             !rd.array(e, "tracks", "midi_playlists", ms) ||
-            !read_lanes(rd, e, "tracks", t->automation)) {
+            !read_lane_refs(rd, e, "tracks", "automation", lanes, t->automation)) {
             return false;
         }
         for (const Value& i : ms->items()) {
@@ -2296,6 +2358,7 @@ bool read_marker_lists(Reader& rd, const Value& root,
 bool read_edits(Reader& rd, const Value& root,
                 const std::vector<std::shared_ptr<const TrackEdit>>& tracks,
                 const std::vector<std::shared_ptr<const MarkerList>>& markers,
+                const std::vector<std::shared_ptr<const AutomationLane>>& lanes,
                 std::vector<std::shared_ptr<const EditState>>& out) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "edits", list)) return false;
@@ -2303,13 +2366,17 @@ bool read_edits(Reader& rd, const Value& root,
         auto es = std::make_shared<EditState>();
         const Value* ts = nullptr;
         const Value* bs = nullptr;
-        if (!rd.keys(e, "edits", {"tracks", "markers", "buses"}) ||
-            !rd.array(e, "edits", "tracks", ts) || !rd.array(e, "edits", "buses", bs)) {
+        if (!rd.keys(e, "edits", {"tracks", "markers", "buses", "master_automation"}) ||
+            !rd.array(e, "edits", "tracks", ts) || !rd.array(e, "edits", "buses", bs) ||
+            !read_lane_refs(rd, e, "edits", "master_automation", lanes, es->master_automation)) {
             return false;
         }
         for (const Value& b : bs->items()) {
             Bus bus;
-            if (!read_aux_bus_value(rd, b, "edits.buses", bus)) return false;
+            if (!read_aux_bus_value(rd, b, "edits.buses", bus) ||
+                !read_lane_refs(rd, b, "edits.buses", "automation", lanes, bus.automation)) {
+                return false;
+            }
             es->buses.push_back(std::move(bus));
         }
         for (const Value& i : ts->items()) {
@@ -2345,8 +2412,8 @@ bool read_window(Reader& rd, const Value& root,
     if (!rd.keys(root, "", {"window_format", "revision", "next_id", "position", "settings",
                             "bus", "mix", "insert_mix", "bus_mix", "send_mix", "sources",
                             "midi_sources", "playlists",
-                            "chunks", "leaves", "sequences", "midi_playlists", "tracks",
-                            "markers", "edits", "steps"})) {
+                            "chunks", "leaves", "sequences", "midi_playlists", "lanes",
+                            "tracks", "markers", "edits", "steps"})) {
         return false;
     }
     std::int64_t chunk_count = 0;
@@ -2409,14 +2476,17 @@ bool read_window(Reader& rd, const Value& root,
     std::vector<std::shared_ptr<const MidiSpineLeaf>> leaves;
     std::vector<std::shared_ptr<const MidiSequence>> sequences;
     std::vector<std::shared_ptr<const MidiPlaylist>> midi_playlists;
+    std::vector<std::shared_ptr<const AutomationLane>> lanes;
     std::vector<std::shared_ptr<const TrackEdit>> tracks;
     std::vector<std::shared_ptr<const MarkerList>> markers;
     std::vector<std::shared_ptr<const EditState>> edits;
     if (!read_playlists(rd, root, playlists) || !read_leaves(rd, root, chunks, leaves) ||
         !read_sequences(rd, root, leaves, sequences) ||
         !read_midi_playlists(rd, root, sequences, midi_playlists) ||
-        !read_tracks(rd, root, playlists, midi_playlists, tracks) ||
-        !read_marker_lists(rd, root, markers) || !read_edits(rd, root, tracks, markers, edits)) {
+        !read_lane_table(rd, root, lanes) ||
+        !read_tracks(rd, root, playlists, midi_playlists, lanes, tracks) ||
+        !read_marker_lists(rd, root, markers) ||
+        !read_edits(rd, root, tracks, markers, lanes, edits)) {
         return false;
     }
 
