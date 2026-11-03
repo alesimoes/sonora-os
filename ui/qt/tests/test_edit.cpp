@@ -523,6 +523,107 @@ int test_controller() {
 
 // --- fader taper ---------------------------------------------------------------
 
+// Heal Separation (Pro Tools' Ctrl+H, Logic's Cmd+J) puts back what a
+// separation cut, and refuses, naming the pair, any join that would change
+// what plays.
+int test_heal_separation() {
+    ModelDocument doc(two_tracks());
+    EditController c(doc);
+    c.set_viewport(1000, 200);
+    const Id pl = playlist_of(doc.snapshot(), 0);
+    std::string why;
+    const auto regions = [&]() { return active_playlist(doc.snapshot().edit->tracks[0].get())->regions; };
+    const double th = c.view().track_height;
+    const auto select = [&](Frames a, Frames b) {
+        const Tool was = c.tool();
+        c.set_tool(Tool::Select);
+        std::string e;
+        const bool ok = c.press(c.view().x_of(a), th / 2, e) && c.release(c.view().x_of(b), th / 2, e);
+        c.set_tool(was);
+        return ok && c.selection().start == a && c.selection().end == b;
+    };
+
+    // The insertion point on the cut: A comes back whole, as one undo step.
+    c.select_track(0);
+    c.set_insertion(2 * kBar);
+    OK(c.separate(why));
+    OK(regions().size() == 3);
+    OK(c.heal_separation(why));
+    OK(regions().size() == 2);
+    OK(region(doc.snapshot(), 10)->position == kBar && region(doc.snapshot(), 10)->end() == 3 * kBar);
+    OK(region(doc.snapshot(), 10)->source_offset == kBar);
+    OK(valid(doc.snapshot()));
+    OK(c.undo(why) && regions().size() == 3);
+    OK(c.redo(why) && regions().size() == 2);
+
+    // Nowhere to heal: inside a region, and at A's end, where a gap follows.
+    c.set_insertion(2 * kBar);
+    OK(!c.heal_separation(why) && why.find("no separation") != std::string::npos);
+    c.set_insertion(3 * kBar);
+    OK(!c.heal_separation(why) && why.find("no separation") != std::string::npos);
+
+    // A range across two cuts heals both, one step; the last part's fade
+    // out becomes the healed region's.
+    OK(doc.submit(SetFade{pl, 10, FadeEnd::Out, Fade{kBeat, FadeShape::SCurve}}, why));
+    OK(select(kBar + kBar / 2, 2 * kBar + kBar / 2));
+    OK(c.separate(why));
+    OK(regions().size() == 4);
+    OK(select(kBar, 3 * kBar));
+    OK(c.heal_separation(why));
+    OK(regions().size() == 2);
+    OK(region(doc.snapshot(), 10)->end() == 3 * kBar);
+    OK(region(doc.snapshot(), 10)->fade_out.length == kBeat);
+    OK(region(doc.snapshot(), 10)->fade_out.shape == FadeShape::SCurve);
+    OK(c.undo(why) && regions().size() == 4);
+    OK(c.undo(why) && regions().size() == 2);  // the separation, then the fade
+    OK(c.undo(why));
+
+    // The last part's crossfade into what follows stays, on the healed region.
+    const Id a2 = doc.reserve_id();
+    OK(doc.submit(SplitRegion{pl, 10, 2 * kBar, a2}, why));
+    const Id a3 = doc.reserve_id();
+    OK(doc.submit(SplitRegion{pl, a2, 2 * kBar + kBar / 2, a3}, why));
+    Crossfade xf;
+    xf.left = a2;
+    xf.right = a3;
+    xf.length = kBeat;
+    OK(doc.submit(SetCrossfade{pl, xf}, why));
+    c.set_insertion(2 * kBar);
+    OK(c.heal_separation(why));
+    {
+        const Playlist& p = *active_playlist(doc.snapshot().edit->tracks[0].get());
+        OK(p.regions.size() == 3 && region(doc.snapshot(), a2) == nullptr);
+        OK(region(doc.snapshot(), 10)->end() == 2 * kBar + kBar / 2);
+        OK(p.crossfades.size() == 1 && p.crossfades[0].left == 10 && p.crossfades[0].right == a3);
+        OK(p.crossfades[0].length == kBeat);
+        OK(valid(doc.snapshot()));
+    }
+
+    // Refusals name the pair and change nothing: a crossfaded cut...
+    const uint64_t before = doc.snapshot().revision;
+    c.set_insertion(2 * kBar + kBar / 2);
+    OK(!c.heal_separation(why) && why.find("crossfaded") != std::string::npos);
+    OK(why.find("nothing was healed") != std::string::npos);
+    OK(doc.snapshot().revision == before);
+    OK(c.undo(why) && c.undo(why) && c.undo(why) && c.undo(why));
+    OK(regions().size() == 2);
+
+    // ...a faded end...
+    OK(doc.submit(SplitRegion{pl, 10, 2 * kBar, doc.reserve_id()}, why));
+    OK(doc.submit(SetFade{pl, 10, FadeEnd::Out, Fade{kBeat, FadeShape::Linear}}, why));
+    c.set_insertion(2 * kBar);
+    OK(!c.heal_separation(why) && why.find("fade out") != std::string::npos);
+    OK(c.undo(why) && c.undo(why));
+
+    // ...and two regions that butt but are not one recording: B moved
+    // against A plays the source from 4 bars after A's 3.
+    OK(doc.submit(MoveRegion{pl, 11, 3 * kBar}, why));
+    c.set_insertion(3 * kBar);
+    OK(!c.heal_separation(why) && why.find("A and B are not one recording") != std::string::npos);
+    OK(regions().size() == 2);
+    return 0;
+}
+
 int test_taper() {
     OK(fader_position_from_db(12.0f) == 1.0f);
     OK(std::abs(fader_position_from_db(0.0f) - 0.78f) < 1e-6f);
@@ -1405,7 +1506,8 @@ int test_routing() {
                                 {"alt+a", "zoom.fit_session"},
                                 {"ctrl+e", "edit.separate_at_selection"},
                                 {"b", "edit.separate_at_selection"},
-                                {"a", "edit.trim_start_to_insertion"},
+                                {"ctrl+h", "edit.heal_separation"},
+                                {"a","edit.trim_start_to_insertion"},
                                 {"s", "edit.trim_end_to_insertion"},
                                 {"ctrl+b", "edit.clear"},
                                 {"d", "edit.fade_to_start"},
@@ -1422,6 +1524,7 @@ int test_routing() {
     }
     if (route("logic.json", {{"x", "window.toggle_mix_edit"},
                              {"cmd+t", "edit.separate_at_selection"},
+                             {"cmd+j", "edit.heal_separation"},
                              {"delete", "edit.clear"},
                              {"ctrl+alt+x", "edit.fade_selection"},
                              {"cmd+z", "edit.undo"},
@@ -2540,7 +2643,8 @@ int test_save_as_and_copy() {
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
-    if (test_model() || test_history() || test_controller() || test_fades() || test_fades_against_crossfades() ||
+    if (test_model() || test_history() || test_controller() || test_heal_separation() ||
+        test_fades() || test_fades_against_crossfades() ||
         test_taper() ||
         test_time() || test_nudge_tempo_map() ||
         test_scene() || test_routing() || test_files() || test_first_save_beside_its_takes() ||

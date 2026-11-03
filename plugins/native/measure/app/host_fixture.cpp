@@ -78,6 +78,7 @@
 #include "sonora/native/reverb.h"
 #include "sonora/native/tape.h"
 #include "sonora/native/opto.h"
+#include "sonora/native/phaser.h"
 #include "sonora/native/tube.h"
 
 namespace sonora::native::suites {
@@ -87,6 +88,7 @@ measure::Config gate_golden_config();
 measure::Config limiter_golden_config();
 measure::Config delay_golden_config();
 measure::Config chorus_golden_config();
+measure::Config phaser_golden_config();
 measure::Config reverb_golden_config();
 measure::Config tube_golden_config();
 measure::Config opto_golden_config();
@@ -152,6 +154,8 @@ const Target kTargets[] = {
      {"ceiling", -4.0f}, {{"lookahead", 3.0f}}},
     {"delay", [] { return native::make_delay(); }, native::suites::delay_golden_config, true,
      {"mix", 70.0f}, {}},
+    {"phaser", [] { return native::make_phaser(); }, native::suites::phaser_golden_config, false,
+     {"mix", 20.0f}, {}},
     {"chorus", [] { return native::make_chorus(); }, native::suites::chorus_golden_config, false,
      {"mix", 20.0f}, {}},
     {"reverb", [] { return native::make_reverb(); }, native::suites::reverb_golden_config, true,
@@ -171,9 +175,11 @@ const Target kTargets[] = {
     // leaves the tape's state at zero, so the preroll is free.
     {"tape", [] { return native::make_tape(); }, native::suites::tape_golden_config, true,
      {"drive", 18.0f}, {{"quality", 2.0f}}},
-    // Silence leaves the detectors and the side-chain filter at zero.
+    // Quality changes the oversampling factor, and so the latency. Silence
+    // leaves the detectors, the side-chain filter and the oversampler at zero;
+    // the transformer at rest is an equilibrium (checked by the fixture).
     {"mixbus", [] { return native::make_mixbus(); }, native::suites::mixbus_golden_config, true,
-     {"threshold", -32.0f}, {}},
+     {"threshold", -32.0f}, {{"quality", 0.0f}}},
     // Zero latency, no response loaded: a unit impulse under the output and
     // mix controls, which is what the host can reach (see golden_file).
     {"cab", [] { return native::make_cab(); }, native::suites::cab_golden_config, true,

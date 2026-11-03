@@ -346,6 +346,16 @@ int main(int argc, char** argv) {
         from = engine.sent.size();
         CHECK(click(QStringLiteral("stripArm4"), Qt::AltModifier | Qt::ShiftModifier));
         CHECK(engine.sent.size() == from + 3);
+        // The selection covers 3..5 and the Edit headers show all three.
+        CHECK(session.selectedTracks() == QList<int>({3, 4, 5}));
+        // The engine disarmed everything since the last refresh (the list
+        // still shows 3..5 armed): the click reads the engine, so Alt-click
+        // arms rather than disarms.
+        engine.armed.assign(18, false);
+        CHECK(click(QStringLiteral("stripArm3"), Qt::AltModifier));
+        CHECK(engine.sent.back().command == "track.arm_all");
+        engine.armed[3] = engine.armed[4] = engine.armed[5] = true;
+        refresh();
         // A Shift-click outside the selection acts on that track only.
         from = engine.sent.size();
         CHECK(click(QStringLiteral("stripArm9"), Qt::ShiftModifier));

@@ -220,7 +220,10 @@ modifier in the chord grammar, not a decoder change.
 
 The Edit and Mix windows install handlers, in the window's own registry,
 for the edit modes, the Smart/Trim/Select/Grab tools, zoom, undo and redo,
-separate, trim to the insertion point, clear, nudge, track selection, mute,
+separate, heal separation (`ctrl+h` in `protools.json`, `cmd+j` in
+`logic.json`: it joins only parts that still play one stretch of one source,
+and refuses, naming the pair, a cut that was moved, faded, crossfaded or
+given its own gain or mute), trim to the insertion point, clear, nudge, track selection, mute,
 solo, `app.save` (the native session file, written by the window until the
 engine has session commands) and `window.toggle_mix_edit` (`ctrl+equal` in `protools.json`, `x` in
 `logic.json`, both `"verified": false` until checked against the guides),
@@ -236,6 +239,9 @@ the playhead at once) and `window.memory_locations`, the Memory Locations
 window (`ctrl+numpad_5` in `protools.json`, `"verified": false`). Both are on
 the Edit menu; `logic.json` binds neither until Logic's own keys are
 confirmed.
+`edit.consolidate` (`alt+shift+3`, `ctrl+b` in Logic) stays bound and says
+"not implemented in this build" until the engine can render a new file; the
+window cannot write audio, so it has no stand-in.
 A track command bound without a target acts on the selected track there, so
 `shift+r`, `shift+s` and `shift+m` work in the window and still report that
 they failed at a tty, which has no selection.

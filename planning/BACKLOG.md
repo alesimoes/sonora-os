@@ -290,7 +290,7 @@ playback can follow edits; it is in flight.
           static (`endRide`: `ride_wrote_` should count only moves made while rolling).
         - [ ] (#282 review) A released Touch on a track with no region in the plan (an empty,
           input-monitored track) gets no glide (the return loop covers only `plan.tracks`).
-        - [ ] (#282 review) `PlaybackController::touch()` clears `touched` before it stores the static,
+        - [x] (#313) (#282 review) `PlaybackController::touch()` clears `touched` before it stores the static,
           so the audio thread can aim one callback at the ride; store the static first, or make
           `return_to_` latch the static at the release (one-callback audio/writer difference).
   - [ ] AutoMatch time in the UI Preferences (a protocol message).
@@ -430,11 +430,24 @@ playback can follow edits; it is in flight.
        - [ ] Save Copy In's session-format option: write an older format
              version for an older build; needs a downgrading writer in
              common/model.
-       - [ ] Autosave of an untitled session: today only a session with a
+       - [x] (#323) Autosave of an untitled session: today only a session with a
              file is autosaved, so a crash before the first Save keeps the
              takes (orphan offer) but loses the edits; an autosave in the
              untitled folder must not look like data to the empty-folder
-             cleanup or block the first Save's rename.
+             cleanup or block the first Save's rename. Done: `Untitled n/Session File Backups/Untitled n.autosave.sonora`;
+             a crash or exit keeps it, a deliberate leave or the first Save removes it (ADR-0018 update of 2026-11-03).
+       - [ ] (#323) Interface: "Unsaved recordings" lists a folder that holds only an untitled autosave and offers
+             to open it (today only folders with `.wav` takes); a "Discard" quit sends a discard first, because the
+             engine cannot tell it from a crash.
+       - [ ] (#323 review) test_active_folder: a deliberate leave of an Untitled folder holding a take and the
+             untitled autosave removes only the autosave. test_control: a first Save that fails (rename done, write
+             refused) leaves the untitled autosave in place.
+       - [ ] (#323 review) engine_control_server: a cleanup-only saver Done defaults to Kind::Save and decrements
+             `saves_in_flight_`, so an untitled autosave queued behind a non-renaming Save can land after
+             `drop_untitled_autosave`; a New session on a folder `fresh()` sees empty while an autosave is in flight
+             skips `fence_saver` and leaves it in the reused folder; after a first Save renames and then fails to write
+             no autosave runs until a Save succeeds (tell the operator). Sequence files named only by the untitled
+             autosave stay until the next clean after the first Save.
        - [ ] Preferences for the autosave interval and the backup count
              (engine settings over the wire; command-line only today).
        - [ ] Recover an autosave in one step: opening it today saves in
@@ -664,9 +677,15 @@ playback can follow edits; it is in flight.
   - [x] Owner question, default taken: automation per track (Logic) rather
         than per edit playlist (Pro Tools); revisit if the comping workflow
         wants Pro Tools' behaviour (ADR-0027, alternatives).
-  - [ ] Mute, send level and send pan as `AutomationParam` values, and
+  - [x] (#317) Mute, send level and send pan as `AutomationParam` values, and
         lanes on aux returns and the Master (strip-keyed, with ADR-0024's
-        strips); a session format bump.
+        strips); a session format bump. Model half: format 18, window 15, protocol 41, ADR-0027 §9.
+  - [ ] (#317) Plan builder and audio thread play mute, send level/pan, aux-return and Master lanes (Track 1);
+        automation mode on aux returns and the Master (BusMix / MonitorBus), until then strip lanes play as Read;
+        send mute as an `AutomationParam`.
+  - [ ] (#317) Automation Follows Edit on a mute lane: the vacated span must step, not ramp
+        (`ui/qt/src/automation_edit.cpp`); `apply` refuses such a move whole today. UI: `clamp_lane_value` and
+        `lane_position` for SendLevel and Mute, and lane menus for mute, send, bus and Master lanes.
 - [x] automation (ADR-0027) follow-ups, after #174 merges:
   - [x] `model.cpp` `automation_points_problem` refuses a point at `kMaxInteger`, or lets `EditAutomation`'s range reach it, so the whole-lane `EditAutomation` over `[0, kMaxInteger)` can always remove every point; today a lane loaded with a point at 2^53-1 can never be emptied (#174 review).
   - [x] `plan_builder.cpp` `gain_of_db()` calls core's `auto_gain_of_db()` (exposed in `playback_plan.h`) instead of duplicating it; `session.cpp` hard-codes -144 and 24, so a lane and a fader at one dB cannot drift apart (#174 review).
@@ -1011,6 +1030,11 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        - [ ] Playlist selector in the Mix window's strips and a
              previous/next playlist command; Logic's take folders map onto
              `ui.comping.lanes`.
+       - [x] (#327) `ui.comping.lanes` model half: take lanes and swipe comping, `comp_range`, `comp_origin`
+             (ADR-0031). Open: the lane UI and Quick Swipe, the take-folder view, MIDI comping; consolidate (model half
+             is open PR #337).
+       - [ ] (#327 review) ui.comping.lanes: test a swipe over a target region that sits in a crossfade (refused
+             whole, the message names why).
        - [ ] Pro Tools' playlist keys (`cmd+backslash`,
              `cmd+alt+backslash`) are `"verified": false` until checked
              against Avid's Shortcuts Guide.
@@ -1214,8 +1238,13 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       top-15 lines, minus the three that extend open items (`io_setup` is the hardware
       output paths and I/O setup page item, `auto_input` and `preroll_toggle` are
       `ui.record.punch_loop`). Each is ui-engineer unless said, effort in brackets:
-  - [ ] Arm modifiers: click on a track's R button arms it; Option-click arms or disarms all
+  - [x] (#305) Arm modifiers: click on a track's R button arms it; Option-click arms or disarms all
         tracks; Shift-click arms the selected tracks; the same on the I button (S).
+  - [ ] (#305 review) Confirm against the Pro Tools Shortcuts Guide that plain Shift-click on R/I is not otherwise
+        bound (Option+Shift is the documented chord for the selected tracks); drop plain Shift from `armClick` and
+        `inputClick` if so. Edit track headers highlight every track the selection covers, not only `selectedTrack`.
+        `armClick` derives its target from the engine reply, not the last published armed list.
+        `brain/specs/ui-design.md` lists the R/I click modifiers next to the fader's Alt-click (outside `ui/`).
   - [ ] An armed track meters its input while stopped so the preamp can be set; unarmed tracks
         meter playback. Confirm today's behaviour first (M).
   - [ ] File > New Session dialog: name, location, sample rate (44.1, 48, 88.2, 96 kHz), bit
@@ -1892,8 +1921,17 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
            `make_dir`, so a linked Plugin Files or plugin folder never gets an empty folder created in its target.
          - [ ] (#275 re-review N2) `PresetStore::remove` and `rename` refuse a linked plugin folder
            (`real_dir` check, as `save` does).
+       - [x] (#316) Plugin manager, engine half: the operator's block list (`plugin.block`/`unblock`,
+         `~/.config/sonora/plugin-blocklist.json`, never probed, refused in the catalog; ADR-0012 amendment of 2026-11-03).
        - [ ] Plugin manager (ui/qt): the catalog with refusals, rescan,
-         per-plugin block list, the yabridge bundles; screenshots.
+         per-plugin block list, the yabridge bundles; screenshots. Needs `PluginInfo::blocked` (protocol bump) to tell
+         "blocked by you" from "refused by its probe"; favourites are an interface-domain setting (ADR-0012).
+       - [ ] (#316) An insert refused because its plug-in was blocked does not restart when it is unblocked (needs
+         `plugin.retry` or a reopen); decide. Blocked plug-ins whose bundle is gone are listed nowhere, so the UI
+         cannot unblock them.
+       - [ ] (#316 review) Block list: keep an earlier `.unreadable` aside instead of overwriting it; say once when
+         HOME and XDG_CONFIG_HOME are unset and `plugin.block` cannot persist; cap an entry's name (256 bytes) on read
+         so a huge hand-edited name cannot exceed the wire frame and clear the catalog.
 6. [ ] **Windows VST through yabridge** (in progress, plugin-engineer;
        ADR-0017, Proposed).
        - [x] Discovery, validation and the real bridge measured (PR 1).
@@ -1968,22 +2006,22 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          raises a standing `PluginFault` on that insert, cleared once the
          document names another state or none (ctest
          `plugin_hosting_state_not_restored`).
-- [ ] Plugin parameter automation (ADR-0027 §5): lanes keyed by insert id
+- [x] Plugin parameter automation (ADR-0027 §5): lanes keyed by insert id
       and ParamValue key, carried in the plan beside the mix lanes,
       evaluated once per block at the block's first frame less the chain's
       latency into ADR-0012's block-tagged last-value table; no new IPC.
       After the write slice (Track 1).
   - [x] Slice 1, engine side (#212): lanes are played once per callback into
-        the chain. The parent item stays open for the rest.
+        the chain. The rest is under "Plugin lanes follow-ups from #212 and #226".
 - [x] `insert_chain_runner.h:38-41` comment says events are posted
       changes followed by plan plugin lane values (#243).
 - [x] `test_plugin_automation`: Trim mode, a lane on an unbound or
       silent chain, and a period of another size (#243).
 - [x] Engine never sends a non-finite plugin lane value, so a NaN lane is no longer
       resent every callback (#243); the model already refused them (#226).
-  - [ ] Track 1/2: the plan builder refuses non-finite plugin lane values when it gains
+  - [x] (#304) Track 1/2: the plan builder refuses non-finite plugin lane values when it gains
         plugin lanes (with key-to-index resolution).
-  - [ ] #243 review: a skipped non-finite lane lets a posted knob win; interpolate in
+  - [x] (#304, #320) #243 review: a skipped non-finite lane lets a posted knob win; interpolate in
         double or clamp so an overflowing pair of finite points still yields a value.
 - [x] (#226) Plugin lanes in the model: `AutomationParam::Plugin` keyed by insert id and
       ParamValue key, session format 14, window format 11, protocol 36; lanes follow their
@@ -1994,10 +2032,32 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 - [ ] Plugin lanes follow-ups from #212 and #226: restoring knob values on leaving lane
       play (post to the first plan without the lane; shares Touch release with the write
       slice); per-insert latency; touch and write; mute and send automation; UI.
-  - [ ] #250 review: a scenario with two inserts automating a parameter of the second
+  - [x] (#329) #250 review: a scenario with two inserts automating a parameter of the second
         instance.
-  - [ ] #250 review: stepped, integer and enum parameters carried as a flag in `ParamDesc`,
-        so a lane holds between points instead of interpolating.
+  - [x] (#329) #250 review: stepped, integer and enum parameters carried as a flag in `ParamDesc`,
+        so a lane holds between points instead of interpolating (host wire 5, ADR-0027 §5).
+  - [ ] (#329 review) `vst3_host.cpp:904`: a VST3 parameter with stepCount >= 4096 is not marked stepped; set
+        `PortInfo::discrete` for any stepCount > 0, and say so in the ADR-0012 stepped amendment (it still says
+        "below 4096"). Stepped for VST3 is untested against a real VST3. `test_plugin_hosting` lanes_second_insert:
+        automate a value other than the default before the transport, so the check proves routing to instance 1.
+  - [ ] (#320) The writer's thinning at `automation_writer.cpp:223` still subtracts in float; it needs the same fix
+        when plugin lanes gain a writer. `test_automation.cpp` main() is over 100 columns after #320; reflow.
+- [ ] (#322 review, open PR) `plugins/host` `editor_x11.cpp`: a plugin fd closed while registered returns POLLNVAL at once
+      and spins `watch()` at 100% CPU; no `XSetIOErrorHandler`, so an Xwayland restart `exit()`s every host that opened an
+      editor (close the display and answer EditorClosed). (#339) `dispatch()` skips `Entry.dead` fds in the main-thread poll.
+- [ ] (#315, #332 review, open PRs) N1 meters: resetting many `LoudnessMeter`s in one callback misses the q128 deadline
+      (64 stereo meters 3073 us against 2667 us; stagger one per callback, document ~65 us per meter); `ratio_tp >= 1.5` may
+      fail on MSVC; `true_peak` after an overflow-guard trip reads FLT_MAX for the whole next block; a +Inf on the bus is
+      metered as silence (publish `master_meter().nonfinite_samples()` or show it as clip).
+- [ ] (#333 review, open PR) `test_heal_separation`: refusal cases for different gain_db, mute, fade_in and source
+      channel; no `docs/images` scene exercises heal; `edit.consolidate` has no handler.
+- [ ] (#334, #335, #338 review, open PRs) De-esser: redesign the bell and advance its ramp while in wide or listen mode, so
+      switching back to band does not click. Saturator: say in the quality label or docs that eco (2x) folds 4th/5th harmonics
+      of 10-19 kHz tones (-53.7 dBc warm). Phaser: tighten `zipper_dbfs` from -60 to the measured margin.
+- [ ] (#302 review, open PR) `test_automation`: give row 1 audio and assert the moved track keeps gliding on its new row;
+      `take_boundaries` failed once in the full Release ctest (`test_take_boundaries.cpp:335`), passed 10/10 alone: track it.
+- [ ] (#313 review) `PlaybackController::apply_gain()` stores the pan without `pan_of()`; clamp as `apply_mix()` does. `track.h`:
+      move the trim-fader comment back above `trim()`.
 
 ### Track 5: dev environment (distro-engineer, researcher)
 
@@ -2023,11 +2083,12 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          and comments before matching `[user]`; remove the duplicate old `90-NAME` sudoers file.
    - [ ] (#284 review) CI "Shell scripts" step: fold `apt-get install dbus-x11` into the Install step
          (it relies on the earlier `apt-get update`).
-3. [ ] CI: the Thread and address sanitizers job ran out of disk (No space left
+3. [x] (#310) CI: the Thread and address sanitizers job ran out of disk (No space left
        on device) in the ASan/UBSan build on a docs-only PR (run 41246994280);
        add a free-disk-space step or prune the build tree between the TSan and
-       ASan builds.
-4. [ ] CI follow-ups from #230: `tools/merge-checks.sh` takes its missing-set snapshot before
+       ASan builds. Follow-up: if the `df` after the removal still shows under ~5 GB free, add a runner
+       disk-freeing step, timed in that run.
+4. [ ] CI follow-ups from #230 (the missing-set recompute after the head read is done in #311, tested in #326): `tools/merge-checks.sh` takes its missing-set snapshot before
        it reads the head SHA, so a push in that narrow gap with only cheap checks registered
        could pass; recompute the missing set after the head read. Measure the ccache hit rate
        and the new sanitizer duration over two runs after #230 (the first is cold). Trade-offs
@@ -2067,6 +2128,12 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
    - [ ] (#273 review) Report a judge job that exited non-zero as "keep (could not judge)" and
          trap-remove the temp dir on exit (a bare `wait` reaps a failed job silently; an abort through
          `wait -n` leaves `$JDIR`).
+- [x] (#311, #326) merge-when-green decides from one checks snapshot between two equal head reads, on `state` (only SUCCESS
+      and SKIPPED are green); `tools/test-merge-checks.sh` runs in the "Shell scripts" job; the smoketest exits 1 on a failing
+      verdict and `test-boot-qemu.sh` waits up to 60 s for QEMU to power off.
+- [ ] (#326) Reading the checks of the exact head SHA: `gh pr checks` has no such option; the two head reads and
+      `--match-head-commit` cover it. (#309 review, open PR) `dev-wsl.sh`: `wsl_conf_set_user` writes `default=` without CR
+      into a CRLF file; put the stop marker where `stop` and `run` resolve the same runtime dir.
 
 ### Later stages, in order (detail in `progress.json`)
 
@@ -2104,11 +2171,17 @@ not start or extend those items before the Complete DAW closes (owner,
       PipeWire 1.6.9 and WirePlumber 0.5.12 pinned from a dated backports snapshot; the
       hook fails the build if the pins are not what got installed.
   - [x] (#285) http vs https for the snapshot decided: http (ADR-0002 amendment).
-  - [ ] Put trixie and trixie-security on a snapshot too (`lb config --mirror-*`), so a
+  - [x] (#303) Put trixie and trixie-security on a snapshot too (`lb config --mirror-*`), so a
         point release cannot change the kernel between two builds of one commit: apply the snapshot
         mirrors in `iso/auto/config` plus `config/apt` Check-Valid-Until, with a timed cold build
         through snapshot.debian.org; have `test-image-config.sh` check the timestamp in auto/config
-        matches the backports list.
+        matches the backports list. Done: `SONORA_SNAPSHOT`, cold build through the snapshot 2288 s.
+  - [ ] (#303) `20261101T000000Z` gives kernel 6.12.113-1, older than the 6.12.115 the live mirror gave; bump the
+        timestamp (keep the PipeWire pins) once a build is timed on the newer date. `tools/build-iso.sh` native path
+        drops `iso/cache` on a timestamp change. `tools/Dockerfile.runtime` still takes trixie from deb.debian.org.
+  - [ ] (#303 review) Hook 0100 also scans `/etc/apt/sources.list.d/*.sources` (deb822); ADR-0002: drop "(designed,
+        not built)" from the 2026-11-02 amendment heading and fix the `config/apt/` path; Check-Valid-Until is off for
+        the whole chroot, so a replayed older Release is caught only for the pinned packages.
   - [x] (#293) Build the ISO and boot it in QEMU with the pins (`tools/build-iso.sh`,
         `tools/test-boot-qemu.sh`): 978 MB image, BOOT TEST PASS 31 ok, no VT login prompts; stage-only
         engine and UI builds, BUILD_ID stamped on Windows, real linger, QEMU in a container
@@ -2196,6 +2269,9 @@ not start or extend those items before the Complete DAW closes (owner,
       `xfail` branch in `tools/bwf-interop.py`, whose format checks already
       run once the fields are non-empty. Found by `tools/test-bwf-interop.sh`;
       see `brain/research/bwf-interop.md`. rt-engineer.
+      (#321) Stale: `WavWriter` fills both fields since #16. What remains is deleting the `v.known(...)` branch in
+      `tools/bwf-interop.py` (~line 482) and fixing the "Defect: OriginationDate/Time empty" entry in
+      `brain/INDEX.md` and `brain/research/bwf-interop.md`.
 - [ ] Run the boot test in CI. Needs the ISO built first, which takes tens of
       minutes, so it belongs in a separate workflow on a schedule or manual
       dispatch rather than on every push.
@@ -2343,8 +2419,16 @@ not deferred.
       `sonora-engine.service` + `sonora-tui.service` (tty2); compositor
       enabled by default; smoke test kills labwc and the UI mid-take and
       asserts the engine PID and a growing take file. distro-engineer.
-- [ ] Stage 1 QEMU checks (the list above) and the rc.xml mouse contexts
-      against labwc 0.8.3: not run yet. distro-engineer.
+- [x] (#306) The rc.xml mouse contexts and the compositor chords against labwc 0.8.3, headless in a container
+      (`tools/test-labwc-kiosk.sh`); it found and fixed a `Frame` binding that ate every left click.
+  - [x] (#314) Ctrl+Alt+Fn under `srvrkeys:none` (nested `sonora-compositor`), and the title-bar drag and close
+        button on an X11 editor window under labwc 0.8.3 (`tools/test-labwc-input.sh`, `tools/labwc-vinput.c`).
+- [ ] Stage 1 QEMU checks (the list above): not run yet. distro-engineer.
+- [ ] (#306 review) `tools/test-labwc-kiosk.sh`: pin the base image by digest or snapshot date. (#314 review)
+      `test-labwc-input.sh` fails when `origin()` returns -1 -1; `labwc-vinput.c` checks the xkb NULLs and
+      `wl_display_roundtrip < 0`, rejects a negative wait; `timeout-minutes: 5` on the "labwc input" CI step.
+      ADR-0010: the claim that Qt's own dialogs keep server-side decorations is unchecked (labwc 0.8.3 gives a
+      native xdg-shell window no title bar unless it asks through xdg-decoration).
 - [x] `sonora-display-fallback` ran `chvt 2`, which reaches no terminal UI until stage 2
       adds `sonora-tui.service` on tty2. (#241) The fallback now starts
       `sonora-session.service` on tty1 (flag file `/run/sonora-display-failed`).
@@ -2675,12 +2759,9 @@ Order and owners are in ADR-0008 §5.
   only on stderr and in `Session::dropped_samples()`, which the UI does not
   surface (PR #60, review 5). Acceptable for a hung backend, but the
   operator should see it: a Notice, or the health flag.
-- `DiskThread` polls every 10 ms. Correct, but a condition variable signalled
-  by the callback would be better once there is a reason to care. It must not
-  make the callback block.
-- The disk thread writes with buffered `stdio`. Direct I/O with aligned buffers
-  avoids double-buffering through the page cache; worth measuring before
-  changing.
+- (#321) Measured, both kept: the 10 ms poll and unbuffered `stdio` (`brain/research/disk-write-path.md`).
+  Open: run `measure_disk_write <session folder> 18 60 512` on the appliance, on a USB stick and on the SSD
+  (ADR-0009 Unverified 8).
 - No RT priority is requested for the audio thread yet; PipeWire sets it for
   its own client thread, which is enough until we own threads.
 - `KeyMap::terminal_chords()` assumes xterm's modifier encoding. On the Linux
@@ -2763,11 +2844,14 @@ ADR-0011 "For the owner".
       Done: `options` is instantiation-class, Ardour and Carla call it off the audio thread, ours
       never; kept immediate (deferring would move the allocation into `run()` on a lazy
       activate); held by `native_format_options_lv2_*`.
-  - [ ] #249 review: add a state-dependent input (a decaying tail) to the options sub-check so
+  - [x] (#312) #249 review: add a state-dependent input (a decaying tail) to the options sub-check so
         dropping `reset()` on the same-configuration path fails; the alloc counter sees
         `operator new` only.
-  - [ ] #249: a VST3 counterpart: `setupProcessing` with a new rate or block size between two
+  - [x] (#312) #249: a VST3 counterpart: `setupProcessing` with a new rate or block size between two
         `process()` calls on an active component, held to a fresh instance.
+  - [ ] (#312 review) Load flakes seen in a loaded full-suite run: `plugin_host_vst3_gain_mono`/`_gain_futex`/
+        `_latency` ("blocks dropped"), `plugin_client_host_control_unsolicited`, `plugin_client_host_crash`; re-run on
+        an idle main, then widen the bars or make them load-aware as #281 did.
 - [ ] N1, with M9: plugin-parameter target on `ParameterChange` and the
       read-only telemetry region in `contracts/plugin`. plugin-engineer +
       rt-engineer + ui-engineer.
@@ -3011,6 +3095,26 @@ ADR-0011 "For the owner".
       MIT reference implementation; first captures and IRs of owned or
       rented hardware with capture cards. dsp-engineer; hardware is the
       owner's (item 6).
+  - [x] (#307) Slice 1: zero-latency partitioned convolution in `common/dsp` (`convolver.h`, -145.5 dB vs direct).
+  - [x] (#318) Slice 1: WaveNet kernel in `common/dsp/neural`, `.nam` reader, equivalence with the NAM reference
+        (max 1.7e-7 against 1e-5); network half of `ampcab-budget`.
+  - [ ] (#318) LSTM kernel and its `.nam` reading; AVX2 product with run-time selection and a cheaper tanh held to
+        2.5e-7 (needed for "standard" to fit class E; #324 was closed); re-run `ampcab-budget` and the reference bench
+        on a quiet machine with the 200 ms IR; amp processor (load-time class-E check, resampling from the capture
+        rate with its latency, loudness normalisation).
+  - [ ] (#307 review) `ConvolutionKernel::set()` refuses taps above a bound (|h| > 1e30), so a finite but huge IR
+        cannot overflow the tail spectra to Inf and make the output NaN (add to test_refusals).
+  - [ ] (#318 review) `read_nam_file` reads the whole file into an `ostringstream` and copies it before the 64 MiB
+        cap; `version` is required but never checked; warm-up cap 2^30 refuses 64-channel gated WaveNets.
+  - [ ] (#331 review, open PR) cab: `resample()` runs over the whole input before the 1 s cut (cut first, tabulate the
+        Kaiser window, `cab.cpp:285, 442`); dead `l1` loop and `g_unit_impulse` in `tests/suite.cpp`, `build-cab/` in
+        `.gitignore`, `quality.json` says "about 55 %" for 53 %.
+  - [x] (#319) native_fet's 667 us period bar held on the reference machine's scale (`Suite::check_period_le`);
+        the bar's unit was wrong, not the processor.
+  - [ ] (#319) Record high's hot-square worst block on a quiet reference machine; consider moving the tube's and
+        opto's period bars (2667 us) to `check_period_le`. (#319 review) Cap the `check_period_le` slowdown
+        (min(slowdown, 4), INCONCLUSIVE past it); a loaded-host `hot_input` regression guard, because a 3x regression
+        passes at slowdown 2.6.
 - [ ] N4: mastering console as one processor; `sonora-analyze` with a
       rule-based mastering-suggestion pass. dsp-engineer.
 - [ ] Research, before N5: a source-separation model whose weights we may

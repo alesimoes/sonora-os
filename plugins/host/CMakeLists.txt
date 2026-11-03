@@ -76,6 +76,29 @@ if(VST3SDK_INCLUDE_DIR)
   target_compile_definitions(sonora-plugin-host PRIVATE SONORA_HAVE_VST3)
 endif()
 
+# Plugin editors (src/editor.h): parentless X11 toplevels (ADR-0010), Xlib
+# from libx11-dev. Without it the host still builds and answers every
+# OpenEditor with EditorFailed; tools/build-plugins.sh sets
+# SONORA_REQUIRE_PLUGIN_EDITORS so CI fails instead, and runs the editor
+# tests on Xvfb (xvfb-run).
+option(SONORA_REQUIRE_PLUGIN_EDITORS
+       "Fail the configure step when X11 (libx11-dev) or xvfb-run for the editor tests is missing" OFF)
+find_package(X11 QUIET)
+find_program(SONORA_XVFB_RUN xvfb-run)
+target_sources(sonora-plugin-host PRIVATE src/editor.h src/editors.cpp src/editors.h)
+if(X11_FOUND)
+  message(STATUS "plugins/host: plugin editors on X11")
+  target_sources(sonora-plugin-host PRIVATE src/linux/editor_x11.cpp)
+  target_link_libraries(sonora-plugin-host PRIVATE X11::X11)
+else()
+  message(STATUS "plugins/host: X11 not found; the host opens no plugin editor")
+  target_sources(sonora-plugin-host PRIVATE src/editor_none.cpp)
+endif()
+if(SONORA_REQUIRE_PLUGIN_EDITORS AND (NOT X11_FOUND OR NOT SONORA_XVFB_RUN))
+  message(FATAL_ERROR "plugins/host: SONORA_REQUIRE_PLUGIN_EDITORS is ON and libx11-dev or xvfb-run "
+                      "was not found")
+endif()
+
 # --- tests (ADR-0007 §7: a fake engine driver plus in-tree test plugins)
 
 # The gesture rules without a plugin (rt-engineer M3 on PR #51).
@@ -127,6 +150,13 @@ configure_file(tests/lv2/sonora_test.ttl ${SONORA_TEST_BUNDLE}/sonora_test.ttl C
 add_executable(plugin_driver tests/plugin_driver.cpp)
 target_link_libraries(plugin_driver PRIVATE sonora_plugin_ipc sonora_plugin_host_control)
 add_dependencies(plugin_driver sonora-plugin-host sonora_test_lv2)
+# The editor scenarios look at the host's window and close it as the
+# operator would, through the same X server.
+if(X11_FOUND)
+  target_sources(plugin_driver PRIVATE tests/x11_probe.cpp tests/x11_probe.h)
+  target_link_libraries(plugin_driver PRIVATE X11::X11)
+  target_compile_definitions(plugin_driver PRIVATE SONORA_DRIVER_HAVE_X11)
+endif()
 
 set(_drive $<TARGET_FILE:plugin_driver> --host $<TARGET_FILE:sonora-plugin-host>
            --bundle ${SONORA_TEST_BUNDLE})
@@ -330,6 +360,25 @@ if(VST3SDK_INCLUDE_DIR)
     plugin_host_vst3_list_crash_entry plugin_host_vst3_list_after_crash
     plugin_host_vst3_probe_mismatch plugin_host_vst3_probe_replicated PROPERTIES LABELS plugins)
 
+  # Editors (src/editor.h), each on a private Xvfb: the window's life
+  # (opened at the view's size, resized by the plugin, closed by the
+  # operator, by CloseEditor and by Shutdown, each with its EditorClosed),
+  # the run loop on the main thread, and an editor that crashes or hangs
+  # while the chain plays. Without a display, EditorFailed and play on.
+  add_test(NAME plugin_host_editor_no_display
+           COMMAND ${CMAKE_COMMAND} -E env --unset=DISPLAY ${_vst3_drive} --scenario editor_no_display)
+  set_tests_properties(plugin_host_editor_no_display PROPERTIES LABELS plugins)
+  if(X11_FOUND AND SONORA_XVFB_RUN)
+    set(_xvfb ${SONORA_XVFB_RUN} -a -s "-screen 0 1280x800x24 -nolisten tcp")
+    add_test(NAME plugin_host_editor COMMAND ${_xvfb} ${_vst3_drive} --scenario editor)
+    add_test(NAME plugin_host_editor_crash COMMAND ${_xvfb} ${_vst3_drive} --scenario editor_crash)
+    add_test(NAME plugin_host_editor_hang COMMAND ${_xvfb} ${_vst3_drive} --scenario editor_hang)
+    set_tests_properties(plugin_host_editor_crash PROPERTIES ENVIRONMENT SONORA_TEST_VST3_EDITOR=crash)
+    set_tests_properties(plugin_host_editor_hang PROPERTIES ENVIRONMENT SONORA_TEST_VST3_EDITOR=hang)
+    set_tests_properties(plugin_host_editor plugin_host_editor_crash plugin_host_editor_hang PROPERTIES
+      LABELS plugins)
+  endif()
+
   # --- yabridge (ADR-0017), without Wine. Two bundles laid out as
   # yabridgectl lays them out: Contents/x86_64-linux/<name>.so, a Windows
   # module under Contents/x86_64-win, and the Windows original's
@@ -345,11 +394,13 @@ if(VST3SDK_INCLUDE_DIR)
   set(_bridged ${CMAKE_BINARY_DIR}/vst3/sonora-test-bridged.vst3)
   set(_multi ${CMAKE_BINARY_DIR}/vst3/sonora-test-multiplatform.vst3)
   set(_com_classes "")
-  foreach(k RANGE 1 10)
+  foreach(k RANGE 1 11)
     if(k LESS 10)
       set(_kk "0${k}")
-    else()
+    elseif(k EQUAL 10)
       set(_kk "0A")
+    else()
+      set(_kk "0B")
     endif()
     if(_com_classes)
       string(APPEND _com_classes ",")
