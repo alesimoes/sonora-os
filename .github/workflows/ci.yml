@@ -569,6 +569,9 @@ jobs:
       - name: Check
         run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot
 
+      - name: dev-wsl.sh wsl.conf edit, session bus check, --log
+        run: sudo apt-get install -y dbus-x11 && tools/test-dev-wsl.sh
+
       - name: RT limits agree across limits.d, unit and hook
         run: tools/test-rt-limits.sh
 
