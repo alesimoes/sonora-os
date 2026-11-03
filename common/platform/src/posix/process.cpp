@@ -114,6 +114,12 @@ std::string executable_dir() {
 
 int64_t current_process_id() { return static_cast<int64_t>(::getpid()); }
 
+bool process_gone(int64_t pid) {
+    if (pid <= 0 || pid != static_cast<int64_t>(static_cast<pid_t>(pid))) return false;
+    // EPERM is a process of another user: it runs.
+    return ::kill(static_cast<pid_t>(pid), 0) != 0 && errno == ESRCH;
+}
+
 namespace {
 
 #ifdef __linux__

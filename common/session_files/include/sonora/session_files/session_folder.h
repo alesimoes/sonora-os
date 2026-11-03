@@ -203,6 +203,13 @@ public:
     // its bytes' included); the ones before it stay, which is harmless,
     // since no document names them yet. Independent of save()'s folder.
     bool write_states(const std::string& folder, const std::vector<StateFile>& states, std::string& why);
+    // The plugin files a flush's states name (ADR-0029 §6), which the hosts
+    // renamed into "<folder>/Plugin Files/<sha256>/": each must be there,
+    // a plain file of its size reached through no link, and each directory
+    // entry is synced before a session file may name it. False, with `why`,
+    // at the first that is not. Independent of save()'s folder.
+    bool sync_plugin_files(const std::string& folder, const std::map<std::string, model::PluginFileRef>& refs,
+                           std::string& why);
     // State files written since construction, for the tests.
     std::size_t states_written() const { return states_written_; }
     // Plugin files linked or copied into a folder since construction.
@@ -241,8 +248,10 @@ private:
 
     // Step 5 of save(): `old` kept as the newest rotated backup of `file`.
     bool keep_backup(const std::string& file, const std::string& old, std::string& caution);
-    // A file the media copy wrote, synced and renamed into place.
-    bool copy_synced(const std::string& from, const std::string& to, std::string& why);
+    // A file the media copy wrote, synced and renamed into place, through
+    // `tmp` (empty: "<to>.part").
+    bool copy_synced(const std::string& from, const std::string& to, std::string& why,
+                     const std::string& tmp = std::string());
 
     SyncDirectory sync_directory_;
     std::size_t backups_ = kDefaultBackups;

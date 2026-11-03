@@ -3002,6 +3002,24 @@ int scenario_state_files(const Args& a) {
           "the restored state names the same file again, without a copy");
     std::printf("  restore() was handed %lld mapPath feature(s)\n",
                 (long long)turtle_int(turtle_b, "test#restore_map_offers"));
+
+    // The untitled rename (ADR-0018): B is renamed to B2 under the running
+    // plugin, which still holds B's path. The save into B2 names the same
+    // relative path, not B's dead absolute one.
+    const fs::path sess_b2 = base / "Session B2";
+    fs::rename(sess_b, sess_b2, ec);
+    check(!ec, "B renamed to B2 under the running host");
+    pc::State renamed;
+    second.queue(pc::GetState{2, 0, sess_b2.string(), 0});
+    check(second.expect_message(pc::Type::State, renamed, pc::kStateReplyTimeoutMs) &&
+              renamed.status == pc::StateStatus::Ok,
+          "a GetState into the renamed folder: Ok");
+    if (renamed.status != pc::StateStatus::Ok) std::printf("  State failed: %s\n", renamed.text.c_str());
+    const std::string turtle_b2 = lv2_section(renamed.bytes);
+    check(renamed.files.size() == 1 && renamed.files[0].path == rel && turtle_b2.find(rel) != std::string::npos &&
+              turtle_b2.find(sess_b.string()) == std::string::npos,
+          "  it names the file relative to B2, never B's path");
+    fs::rename(sess_b2, sess_b, ec);
     second.stop();
 
     // A state whose path escapes the session folder: absolute_path refuses it.

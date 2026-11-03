@@ -4,8 +4,10 @@
 #include "sonora/plugin_hosting.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -76,6 +78,54 @@ void record_value(std::vector<model::Operation>& ops, const model::Snapshot& doc
                                 [&](const model::ParamValue& p) { return p.key == key; });
     if (k != set->params.end()) k->value = value;
     else set->params.push_back({key, value});
+}
+
+// ADR-0029 §6: makePath folders live outside the session folder, under the
+// user's state directory, per engine run. Runs whose engine is gone (it
+// crashed, or was killed) are removed first; a live engine's stay.
+std::string make_run_dir(std::string root, std::string& why) {
+    namespace fs = std::filesystem;
+    if (root.empty()) {
+        const char* state = std::getenv("XDG_STATE_HOME");
+        const char* home = std::getenv("HOME");
+        // XDG: a relative value is ignored.
+        if (state && state[0] == '/') root = std::string(state) + "/sonora/plugin-scratch";
+        else if (home && home[0] == '/') root = std::string(home) + "/.local/state/sonora/plugin-scratch";
+    }
+    if (root.empty()) {
+        why = "neither XDG_STATE_HOME nor HOME names a folder";
+        return {};
+    }
+    std::error_code ec;
+    const fs::path base = fs::absolute(root, ec).lexically_normal();
+    if (ec) {
+        why = root + " is not a folder";
+        return {};
+    }
+    for (fs::directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        const std::size_t dash = name.find('-');
+        if (dash == 0 || dash == std::string::npos ||
+            name.find_first_not_of("0123456789") != dash)
+            continue;
+        std::error_code type;
+        if (!fs::is_directory(it->symlink_status(type)) || type) continue;
+        if (platform::process_gone(std::strtoll(name.substr(0, dash).c_str(), nullptr, 10))) {
+            std::error_code rm;
+            fs::remove_all(it->path(), rm);
+        }
+    }
+    // The pid and a count: two hostings of one engine (a backend reactivated)
+    // never share a folder.
+    static std::atomic<uint64_t> serial{0};
+    const fs::path run = base / (std::to_string(platform::current_process_id()) + "-" + std::to_string(++serial));
+    ec.clear();
+    fs::create_directories(run, ec);
+    if (ec) {
+        why = run.string() + " could not be made: " + ec.message();
+        return {};
+    }
+    return run.string();
 }
 
 bool insert_in(const model::Snapshot& doc, model::Id insert) {
@@ -252,6 +302,12 @@ PluginHosting::PluginHosting(Session& session, PluginHostingConfig config, Plugi
     }
     runner_ = std::make_unique<PluginChainRunner>(*client_);
     session_.set_insert_chains(runner_.get());
+    std::string why;
+    run_dir_ = make_run_dir(config_.plugin_scratch_root, why);
+    if (run_dir_.empty() && ok_)
+        run_notice_ = "plug-ins cannot make files of their own this run (their scratch folder: " + why +
+                      "); a plug-in that needs one may not work";
+    followed_dir_ = session_dir();
 }
 
 PluginHosting::~PluginHosting() {
@@ -284,6 +340,46 @@ PluginHosting::~PluginHosting() {
     runner_.reset();
     supervisor_.reset();
     client_.reset();
+    // Every host is gone: a scratch file a saved state needed was copied
+    // into the session at its flush, so nothing here is the session's.
+    if (!run_dir_.empty()) {
+        std::error_code ec;
+        std::filesystem::remove_all(run_dir_, ec);
+    }
+}
+
+std::string PluginHosting::session_dir() const {
+    const std::shared_ptr<const std::string> folder = session_.folder();
+    if (!folder || folder->empty()) return {};
+    std::error_code ec;
+    const std::filesystem::path abs = std::filesystem::absolute(*folder, ec);
+    return ec ? std::string() : abs.lexically_normal().string();
+}
+
+std::string PluginHosting::scratch_for(model::Id insert, const std::string& who) {
+    if (run_dir_.empty()) return {};
+    const std::filesystem::path dir =
+        std::filesystem::path(run_dir_) / std::to_string(session_serial_) / std::to_string(insert);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec || !std::filesystem::is_directory(std::filesystem::symlink_status(dir, ec))) {
+        // It runs without makePath, and the operator is told once.
+        if (scratch_failed_.insert(insert).second)
+            held_notices_.push_back(who + ": its scratch folder " + dir.string() +
+                                    " could not be made, so it cannot make files of its own");
+        return {};
+    }
+    return dir.string();
+}
+
+void PluginHosting::follow_session_dir() {
+    const std::string dir = session_dir();
+    if (dir == followed_dir_) return;
+    followed_dir_ = dir;
+    for (auto& [track, c] : chains_) {
+        if (c->running) c->running->set_session_dir(dir);
+        if (c->pending) c->pending->set_session_dir(dir);
+    }
 }
 
 uint32_t PluginHosting::take_store() {
@@ -466,6 +562,8 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const st
     std::map<model::Id, Chain::LostState> lost;
     plugin_client::ChainSpec spec;
     spec.channels = track->channels;
+    // The folder the saved states' files resolve under (ADR-0029 §6).
+    spec.session_dir = session_dir();
     std::vector<const model::Insert*> active;
     for (const model::Insert& in : track->inserts)
         if (in.active && !c.missing.count(in.id) && !c.refused.count(in.id)) active.push_back(&in);
@@ -513,6 +611,7 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const st
             if (!why.empty()) lost[in->id] = Chain::LostState{*m->state, std::move(why)};
         }
         spec.states.push_back(std::move(state));
+        spec.scratch_dirs.push_back(scratch_for(in->id, where(*track, *in)));
         spec_members.push_back({in->id, in->plugin});
         seeded[in->id] = m ? *m : model::InsertMix{in->id, false, {}, {}};
     }
@@ -565,7 +664,13 @@ void PluginHosting::show(const model::Snapshot& doc, bool opened) {
         param_unmapped_.clear();
         touches_lost_.clear();
         notices_.clear();
+        held_notices_.clear();
+        // The new session's insert ids are its own: their scratch folders
+        // are new ones, never the last session's files.
+        ++session_serial_;
+        scratch_failed_.clear();
     }
+    follow_session_dir();
     std::set<model::Id> seen;
     for (const auto& tp : doc.edit->tracks) {
         const model::TrackEdit& t = *tp;
@@ -735,6 +840,9 @@ void PluginHosting::close_gestures(Chain& c, const model::Snapshot& doc, std::ve
 PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snapshot& doc, uint64_t oldest_live_epoch) {
     PollResult result;
     result.ops.swap(deferred_ops_);
+    // A Save that renamed or moved the folder: a restart from now on names
+    // the new one.
+    follow_session_dir();
     // A probe that finished lets the chains waiting on it start.
     const bool probes_moved = poll_probes();
     start_probes();
@@ -1096,10 +1204,12 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
                 if (m.instance < 0 || uint32_t(m.instance) >= c.running_spec.size() || !t) break;
                 const model::Id insert = c.running_spec[uint32_t(m.instance)].insert;
                 if (!c.paths_noticed.insert(insert).second) break;
+                // Held (ADR-0029 §6): the operator must know before relying
+                // on the session that a file the plugin keeps may be missing.
                 for (const model::Insert& in : t->inserts)
                     if (in.id == insert)
-                        notices_.push_back(where(*t, in) + ": the host refused a file path its plug-in asked for (" +
-                                           m.text + "), so a file it keeps may not be saved with the session");
+                        held_notices_.push_back(where(*t, in) + ": the host refused a file path its plug-in asked for (" +
+                                                m.text + "), so a file it keeps may not be saved with the session");
                 break;
             }
             if (m.kind != pc::FaultKind::WorkRefused && m.kind != pc::FaultKind::ParamUnmapped) break;
@@ -1136,10 +1246,13 @@ void PluginHosting::watch(std::vector<platform::WaitSet::Watch>& out) const {
 
 // ---- FlushPluginState (§8)
 
-uint64_t PluginHosting::request_states(model::Id only, const model::Snapshot& doc) {
+uint64_t PluginHosting::request_states(model::Id only, const model::Snapshot& doc, bool no_copy) {
     const uint64_t id = next_flush_++;
     Flush& f = flushes_[id];
     f.id = id;
+    // ADR-0029 §6: the hosts save the files a state names into the session
+    // folder, and name them relative to it.
+    f.save_dir = session_dir();
     for (auto& [track, cp] : chains_) {
         Chain& c = *cp;
         const model::TrackEdit* t = nullptr;
@@ -1164,7 +1277,13 @@ uint64_t PluginHosting::request_states(model::Id only, const model::Snapshot& do
             if (next_state_request_ == 0) next_state_request_ = 1;
             const uint32_t request = next_state_request_++;
             std::string bytes, e;
-            const pc::GetState ask{request, i};
+            pc::GetState ask;
+            ask.request = request;
+            ask.instance = i;
+            ask.save_dir = f.save_dir;
+            // During a take the hosts copy and hash nothing (ADR-0029 §6): no
+            // bulk I/O competes with the disk thread.
+            ask.flags = no_copy ? pc::kGetStateNoCopy : 0u;
             pc::encode(ask, bytes);
             if (!c.running->host()->send(bytes, e)) {
                 f.failed.push_back(who + ": its state could not be asked for: " + e);
@@ -1201,11 +1320,35 @@ void PluginHosting::take_state_reply(model::Id track, const std::string& bytes) 
     Flush& f = flushes_[r.flush];
     switch (m.status) {
         case pc::StateStatus::Ok: {
-            std::string sha = sha256_hex(m.bytes);
-            f.states.push_back(StateRead{r.insert, std::move(sha), std::move(m.bytes)});
+            // The host's list is untrusted: each file is checked against the
+            // rule a session file is (model::plugin_file_problem, the byte
+            // caps included) before anything is joined to the folder. The
+            // saver checks each is there with its size and syncs it.
+            StateRead read;
+            read.insert = r.insert;
+            std::string bad;
+            for (const pc::StateFile& file : m.files) {
+                read.files.push_back(model::PluginFileRef{file.path, file.sha256, file.bytes});
+                const std::string why = model::plugin_file_problem(read.files.back());
+                if (!why.empty() && bad.empty()) bad = file.path.substr(0, 256) + ": " + why;
+            }
+            if (bad.empty()) bad = model::plugin_files_problem(read.files);
+            if (!bad.empty()) {
+                f.failed.push_back(r.where + ": the plug-in's state names a file the session cannot hold (" + bad +
+                                   ")");
+                break;
+            }
+            read.sha256 = sha256_hex(m.bytes);
+            read.bytes = std::move(m.bytes);
+            f.states.push_back(std::move(read));
             break;
         }
-        case pc::StateStatus::Empty: f.states.push_back(StateRead{r.insert, {}, {}}); break;
+        case pc::StateStatus::Empty: {
+            StateRead read;
+            read.insert = r.insert;
+            f.states.push_back(std::move(read));
+            break;
+        }
         case pc::StateStatus::Failed:
             f.failed.push_back(r.where + ": the plug-in could not save its state" +
                                (m.text.empty() ? std::string() : " (" + m.text + ")"));
@@ -1284,7 +1427,8 @@ std::vector<model::Operation> PluginHosting::states_saved(const Flush& flush, co
     for (const StateRead& s : flush.states) {
         if (!insert_in(doc, s.insert)) continue;
         std::optional<model::StateRef> want;
-        if (!s.sha256.empty()) want = model::StateRef{model::plugin_state_file(s.sha256), s.sha256, s.bytes.size()};
+        if (!s.sha256.empty())
+            want = model::StateRef{model::plugin_state_file(s.sha256), s.sha256, s.bytes.size(), s.files};
         const model::InsertMix* m = doc.mix.find_insert(s.insert);
         const std::optional<model::StateRef> have = m ? m->state : std::nullopt;
         if (!(have == want)) ops.push_back(model::SetInsertState{s.insert, want});
@@ -1411,6 +1555,16 @@ uint64_t PluginHosting::touches_lost(model::Id track) const {
 std::vector<std::string> PluginHosting::take_notices() {
     std::vector<std::string> out;
     out.swap(notices_);
+    return out;
+}
+
+std::vector<std::string> PluginHosting::take_held_notices() {
+    std::vector<std::string> out;
+    // The run's own, said once whatever session is open.
+    if (!run_notice_.empty()) out.push_back(std::move(run_notice_));
+    run_notice_.clear();
+    for (std::string& n : held_notices_) out.push_back(std::move(n));
+    held_notices_.clear();
     return out;
 }
 

@@ -29,7 +29,10 @@
 //                  size, mtime or inode is not the one this object last saw
 //                  (at restore, or when it saved or hashed it) is hashed again
 //                  before its directory's sha names it; one that no longer
-//                  matches is copied as new bytes.
+//                  matches is copied as new bytes. A path under a previous
+//                  session folder that no longer exists (the untitled folder
+//                  renamed at its first Save) is named by the same relative
+//                  path in the save folder, when the file is there.
 //   absolute_path  in restore(): "<session_dir>/<path>"; a path that escapes
 //                  the folder, or passes a symlink in it (lstat on every
 //                  component), is refused (NULL). At save, a path into a

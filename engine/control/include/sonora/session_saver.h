@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -69,6 +70,11 @@ public:
         std::string bytes;
         model::Snapshot document;
         std::vector<session_files::StateFile> states;
+        // States: the plugin files those states name, by path relative to
+        // `file` (ADR-0029 §6). The hosts wrote them; each is checked to be
+        // there, with its size and through no link, and its folder synced,
+        // before the reply lets the document name it.
+        std::map<std::string, model::PluginFileRef> plugin_files;
         // Save: the folder whose "Plugin State/" the flushes wrote (the
         // engine's --dir); the states the bytes name are copied from it into
         // the session file's own folder (SessionFolder::save, step 3).

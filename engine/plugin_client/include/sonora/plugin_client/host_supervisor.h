@@ -82,6 +82,12 @@ struct ChainSpec {
     std::vector<std::string> states;
     // Load's flags (kLoadReactivate).
     uint32_t load_flags = 0;
+    // ADR-0029 §6: the absolute folder the states' file paths resolve under
+    // (Load.session_dir), and per instance the absolute scratch folder its
+    // makePath resolves under (LoadInstance.scratch_dir), made by the
+    // caller. Empty, or short: none (wire 3's behaviour).
+    std::string session_dir;
+    std::vector<std::string> scratch_dirs;
 };
 
 class HostProcess;
@@ -479,6 +485,10 @@ public:
     // then recovers to the session's last saved state, not to the one the
     // chain started with. Out of range: ignored.
     void set_state(uint32_t instance, std::string blob);
+    // The session folder a restart's Load names (ChainSpec::session_dir):
+    // the folder moves at the untitled rename and at Save As, and a state
+    // saved since names its files relative to the new one.
+    void set_session_dir(std::string dir) { spec_.session_dir = std::move(dir); }
 
     uint32_t restarts() const { return restarts_total_; }
     // The chain index named for the last removal or hang: the instance the

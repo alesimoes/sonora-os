@@ -1815,6 +1815,23 @@ int test_v16_migrates_and_plugin_files() {
                   "lower-case", nullptr));
     CHECK(refused(edit(cur, bytes, "            \"bytes\": 812,\n            \"files\": []\n          }"),
                   "only when the state names a file", nullptr));
+
+    // #298 review N2: the host's caps hold in the model too, so a received
+    // session cannot make Save As copy files no host would have saved.
+    std::string big = good;
+    big.replace(big.find("\"bytes\": 4096"), 13, "\"bytes\": " + std::to_string(kMaxPluginFileBytes + 1));
+    CHECK(refused(edit(cur, bytes, big), "at most 1 GiB", nullptr));
+    const std::string path = "Plugin Files/" + sha + "/Kick.wav";
+    CHECK(plugin_file_problem(PluginFileRef{path, sha, kMaxPluginFileBytes}).empty());
+    std::vector<PluginFileRef> four, five;
+    for (int i = 0; i < 5; ++i) {
+        const PluginFileRef f{"Plugin Files/" + sha + "/k" + std::to_string(i), sha, kMaxPluginFileBytes};
+        if (i < 4) four.push_back(f);
+        five.push_back(f);
+    }
+    CHECK(plugin_files_problem(four).empty());
+    CHECK(mentions(plugin_files_problem(five), "4 GiB in all"));
+    CHECK(mentions(plugin_files_problem({four[0], four[0]}), "twice"));
     return 0;
 }
 

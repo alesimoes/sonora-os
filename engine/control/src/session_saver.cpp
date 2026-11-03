@@ -126,7 +126,8 @@ void SessionSaver::run() {
             if (job.kind == Kind::States) {
                 lock.unlock();
                 std::string why;
-                d.ok = folder_.write_states(job.file, job.states, why);
+                d.ok = folder_.write_states(job.file, job.states, why) &&
+                       folder_.sync_plugin_files(job.file, job.plugin_files, why);
                 d.message = d.ok ? std::string() : why;
                 job = Job{};
                 lock.lock();

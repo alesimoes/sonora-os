@@ -10,8 +10,10 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "model_test.h"
@@ -229,6 +231,97 @@ int test_missing_or_wrong_file() {
     return 0;
 }
 
+// #298 review N1: a host renamed a second name with the same bytes into a
+// "<sha256>/" an earlier save had synced. That entry is new too: the folder
+// is synced again before the session file names it.
+int test_second_name_same_bytes_is_synced() {
+    TempDir tmp;
+    Sampler s;
+    SessionFolder f(recording_sync);
+    const fs::path folder = tmp.path / "Mix";
+    s.flushed_into(f, folder);
+    std::string why, caution;
+    CHECK(f.save((folder / "Mix.sonora").string(), s.bytes(), s.h.current(), why, caution, folder.string()));
+
+    const PluginFileRef snare{plugin_files_path(s.file.sha256, "Snare.wav"), s.file.sha256, kSample.size()};
+    write(folder / snare.path, kSample);
+    const Id insert = s.h.current().edit->tracks[0]->inserts[0].id;
+    CHECK(s.h.apply(SetInsertState{insert, StateRef{plugin_state_file(s.sha), s.sha, kBlob.size(), {s.file, snare}}},
+                    why));
+    g_synced.clear();
+    CHECK(f.save((folder / "Mix.sonora").string(), s.bytes(), s.h.current(), why, caution, folder.string()));
+    CHECK(g_synced.count((folder / "Plugin Files" / s.file.sha256).string()) == 1);
+    // Nothing new since: nothing synced again.
+    g_synced.clear();
+    CHECK(f.save((folder / "Mix.sonora").string(), s.bytes(), s.h.current(), why, caution, folder.string()));
+    CHECK(g_synced.count((folder / "Plugin Files" / s.file.sha256).string()) == 0);
+    return 0;
+}
+
+// A flush (ADR-0029 slice 2b): the files the hosts say they saved are
+// checked to be there with their size, through no link, and their folders
+// synced; one missing, of another size or behind a link refuses the flush.
+int test_flush_checks_and_syncs() {
+    TempDir tmp;
+    const Sampler s;
+    const fs::path folder = tmp.path / "Mix";
+    std::map<std::string, PluginFileRef> refs{{s.file.path, s.file}};
+    g_synced.clear();
+    SessionFolder f(recording_sync);
+    std::string why;
+    CHECK(!f.sync_plugin_files(folder.string(), refs, why));
+    CHECK(mentions(why, "did not leave") && mentions(why, "Kick.wav"));
+    write(folder / s.file.path, kSample + "!");
+    CHECK(!f.sync_plugin_files(folder.string(), refs, why));
+    write(folder / s.file.path, kSample);
+    CHECK(f.sync_plugin_files(folder.string(), refs, why));
+    CHECK(g_synced.count((folder / "Plugin Files").string()) == 1);
+    CHECK(g_synced.count((folder / "Plugin Files" / s.file.sha256).string()) == 1);
+
+    const fs::path other = tmp.path / "Other";
+    write(tmp.path / "secret" / "Kick.wav", kSample);
+    fs::create_directories(other / "Plugin Files" / s.file.sha256);
+    fs::create_symlink(tmp.path / "secret" / "Kick.wav", other / s.file.path);
+    CHECK(!f.sync_plugin_files(other.string(), refs, why));
+    CHECK(mentions(why, "link"));
+    return 0;
+}
+
+// #298 review N3: a copy across volumes went through "<basename>.part",
+// which passes NAME_MAX for a basename of 251 to 255 bytes, so such a
+// session could never be saved to a disk without hard links. Needs a
+// source on another filesystem than the temp folder (/dev/shm in the
+// build container); skipped, and said, without one.
+int test_long_name_copies() {
+    TempDir tmp;
+    const fs::path shm = fs::path("/dev/shm") / ("sonora-plugin-files-" + std::to_string(::getpid()));
+    std::error_code ec;
+    fs::create_directories(shm, ec);
+    struct stat a {}, b {};
+    if (ec || ::stat(shm.c_str(), &a) != 0 || ::stat(tmp.path.c_str(), &b) != 0 || a.st_dev == b.st_dev) {
+        std::printf("  long_name_copies: SKIP, no second filesystem at /dev/shm\n");
+        fs::remove_all(shm, ec);
+        return 0;
+    }
+    Sampler s;
+    const std::string name = std::string(251, 'k') + ".wav";
+    const PluginFileRef longest{plugin_files_path(s.file.sha256, name), s.file.sha256, kSample.size()};
+    const Id insert = s.h.current().edit->tracks[0]->inserts[0].id;
+    std::string why, caution;
+    CHECK(s.h.apply(SetInsertState{insert, StateRef{plugin_state_file(s.sha), s.sha, kBlob.size(), {longest}}}, why));
+    SessionFolder f;
+    CHECK(f.write_states(shm.string(), {{s.sha, kBlob}}, why));
+    write(shm / longest.path, kSample);
+    const fs::path file = tmp.path / "Mix" / "Mix.sonora";
+    const bool saved = f.save(file.string(), s.bytes(), s.h.current(), why, caution, shm.string());
+    if (!saved) std::fprintf(stderr, "  %s\n", why.c_str());
+    CHECK(saved);
+    CHECK(read(tmp.path / "Mix" / longest.path) == kSample);
+    CHECK(!fs::exists(tmp.path / "Mix" / "Plugin Files" / s.file.sha256 / ".incoming-sonora.part"));
+    fs::remove_all(shm, ec);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -237,6 +330,9 @@ int main() {
     failed += test_files_follow_the_session_file();
     failed += test_links_are_never_followed();
     failed += test_missing_or_wrong_file();
+    failed += test_second_name_same_bytes_is_synced();
+    failed += test_flush_checks_and_syncs();
+    failed += test_long_name_copies();
     std::printf("%s\n", failed == 0 ? "session_folder_plugin_files: all passed" : "session_folder_plugin_files: FAILED");
     return failed == 0 ? 0 : 1;
 }
