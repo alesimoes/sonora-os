@@ -40,6 +40,7 @@ int gate(const measure::Args&);
 int limiter(const measure::Args&);
 int delay(const measure::Args&);
 int chorus(const measure::Args&);
+int phaser(const measure::Args&);
 int reverb(const measure::Args&);
 int tube(const measure::Args&);
 int opto(const measure::Args&);
@@ -136,6 +137,7 @@ int main(int argc, char** argv) {
     if (which == "limiter") return native::suites::limiter(args);
     if (which == "delay") return native::suites::delay(args);
     if (which == "chorus") return native::suites::chorus(args);
+    if (which == "phaser") return native::suites::phaser(args);
     if (which == "reverb") return native::suites::reverb(args);
     if (which == "tube") return native::suites::tube(args);
     if (which == "opto") return native::suites::opto(args);
