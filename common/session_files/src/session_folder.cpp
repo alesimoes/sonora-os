@@ -227,6 +227,40 @@ bool inside_relative(const std::string& path) {
     return true;
 }
 
+// What a session-relative path reaches, every component lstat'd: a received
+// folder is untrusted, and a link anywhere under it ("Plugin Files", the
+// "<sha256>" folder or the file) could carry ~/.ssh into a copy of it.
+enum class Entry { Plain, Missing, Link, Other };
+Entry plain_entry(const fs::path& root, const std::string& rel, std::uintmax_t& size) {
+    fs::path at = root;
+    const fs::path r(rel);
+    for (auto it = r.begin(); it != r.end(); ++it) {
+        at /= *it;
+        std::error_code ec;
+        const fs::file_status s = fs::symlink_status(at, ec);
+        if (fs::is_symlink(s)) return Entry::Link;
+        if (ec || !fs::exists(s)) return Entry::Missing;
+        const bool last = std::next(it) == r.end();
+        if (last ? !fs::is_regular_file(s) : !fs::is_directory(s)) return Entry::Other;
+    }
+    std::error_code ec;
+    size = fs::file_size(at, ec);
+    return ec ? Entry::Other : Entry::Plain;
+}
+
+bool file_sha256(const fs::path& p, std::string& out) {
+    std::FILE* in = std::fopen(p.string().c_str(), "rb");
+    if (in == nullptr) return false;
+    Sha256 h;
+    std::vector<char> buffer(std::size_t{1} << 20);
+    std::size_t got = 0;
+    while ((got = std::fread(buffer.data(), 1, buffer.size(), in)) > 0) h.update(buffer.data(), got);
+    const bool ok = !std::ferror(in);
+    std::fclose(in);
+    if (ok) out = h.hex();
+    return ok;
+}
+
 std::string megabytes(std::uint64_t bytes) {
     return std::to_string((bytes + (1u << 20) - 1) >> 20) + " MB";
 }
@@ -455,8 +489,10 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
     std::set<std::string> refs;
     std::string parse_why;
     std::set<std::string> state_refs;
+    std::map<std::string, model::PluginFileRef> file_refs;
     if (!model::sequence_references(bytes, refs, parse_why) ||
-        !model::plugin_state_references(bytes, state_refs, parse_why)) {
+        !model::plugin_state_references(bytes, state_refs, parse_why) ||
+        !model::plugin_file_references(bytes, file_refs, parse_why)) {
         why = "what was to be saved is not a session file: " + parse_why;
         return false;
     }
@@ -575,6 +611,10 @@ bool SessionFolder::save(const std::string& session_file, const std::string& byt
             placed.push_back(target.string());
         }
         if (!sync_states(folder.string(), placed, step_why)) return fail(step_why);
+    }
+    if (!file_refs.empty() &&
+        !place_plugin_files(folder.string(), file.string(), file_refs, state_source, step_why)) {
+        return fail(step_why);
     }
 
     // Step 5's bytes, read before the rename replaces them, which is why the
@@ -863,7 +903,7 @@ bool SessionFolder::save_as(const std::string& session_file, const std::string& 
     // In a folder that was there, empty: the entries this call may make in
     // it, which are all a failure removes there (#164 review).
     std::set<std::string> put = {file.filename().string(), file.filename().string() + ".tmp",
-                                 kSequenceDir, kPluginStateDir, kBackupsDir};
+                                 kSequenceDir, kPluginStateDir, kPluginFilesDir, kBackupsDir};
     const auto fail = [&](std::string reason) {
         std::error_code rm;
         if (!made.empty()) {
@@ -985,6 +1025,97 @@ bool SessionFolder::save_as(const std::string& session_file, const std::string& 
                            " already missing and stay offline: " + rep.missing.front();
         if (rep.missing.size() > 1) line += " and others";
         caution = caution.empty() ? line : caution + "; " + line;
+    }
+    return true;
+}
+
+bool SessionFolder::place_plugin_files(const std::string& folder_name, const std::string& file,
+                                       const std::map<std::string, model::PluginFileRef>& refs,
+                                       const std::string& source_name, std::string& why) {
+    const fs::path folder(folder_name);
+    const fs::path files_dir = folder / kPluginFilesDir;
+    const bool other_source = !source_name.empty() && plain(fs::path(source_name)) != plain(folder);
+    const auto linked = [&](const fs::path& root, const std::string& rel) {
+        why = "the plugin file " + rel + " in " + root.string() +
+              " is reached through a symbolic link; plugin files are never followed out of a session folder";
+        return false;
+    };
+    std::map<std::string, model::PluginFileRef> replaced;   // what the file being replaced names
+    bool replaced_read = false;
+    std::set<std::string> dirs;   // "<sha256>/" folders holding a named file
+    std::error_code ec;
+    for (const auto& [rel, ref] : refs) {
+        std::uintmax_t size = 0;
+        const Entry here = plain_entry(folder, rel, size);
+        if (here == Entry::Link) return linked(folder, rel);
+        if (here == Entry::Plain && size == ref.bytes) {
+            dirs.insert((folder / rel).parent_path().string());
+            continue;
+        }
+        if (here != Entry::Missing) {
+            why = "the plugin file " + rel + " in " + folder.string() + " is not the " +
+                  std::to_string(ref.bytes) + " bytes the session names";
+            return false;
+        }
+        Entry there = Entry::Missing;
+        if (other_source) there = plain_entry(fs::path(source_name), rel, size);
+        if (there == Entry::Link) return linked(fs::path(source_name), rel);
+        if (there != Entry::Plain || size != ref.bytes) {
+            if (!replaced_read) {
+                replaced_read = true;
+                std::string old, ignored;
+                if (read_file(file, kMaxSessionBytes, old)) model::plugin_file_references(old, replaced, ignored);
+            }
+            // Lost before this save, and said at open: refusing would leave
+            // a session that can never be saved again.
+            if (replaced.count(rel) != 0) continue;
+            why = "the session names a plugin file (" + rel + ") that is neither in " + folder.string() +
+                  (other_source ? " nor in " + source_name : std::string()) +
+                  " with its size; flush the plugins' state and save again";
+            return false;
+        }
+        const fs::path from = fs::path(source_name) / rel;
+        const fs::path to = folder / rel;
+        // The name is the hash: bytes that are not the digest's never get it.
+        std::string sha;
+        if (!file_sha256(from, sha) || sha != ref.sha256) {
+            why = "the plugin file " + rel + " in " + source_name + " does not match its digest";
+            return false;
+        }
+        const bool made_dir = !fs::exists(fs::symlink_status(to.parent_path(), ec));
+        fs::create_directories(to.parent_path(), ec);
+        if (ec) {
+            why = "cannot create " + to.parent_path().string();
+            return false;
+        }
+        if (made_dir) durable_states_.erase(files_dir.string());
+        std::string link_why;
+        if (!platform::hard_link(from.string(), to.string(), link_why) &&
+            !copy_synced(from.string(), to.string(), why)) {
+            return false;
+        }
+        ++plugin_files_placed_;
+        durable_states_.erase(to.parent_path().string());
+        dirs.insert(to.parent_path().string());
+    }
+    // A file the host renamed into place is durable once its folder is
+    // synced, and a new folder once its parent is (ADR-0029 §6: the host
+    // leaves the directory syncs to the engine).
+    for (const std::string& d : dirs) {
+        if (durable_states_.count(d) != 0) continue;
+        if (!sync_directory_(d)) {
+            why = "cannot sync " + d + " after placing plugin files";
+            return false;
+        }
+        durable_states_.erase(files_dir.string());
+        durable_states_.insert(d);
+    }
+    if (!dirs.empty() && durable_states_.count(files_dir.string()) == 0) {
+        if (!sync_directory_(files_dir.string()) || !sync_directory_(folder.string())) {
+            why = "cannot sync " + files_dir.string() + " after placing plugin files";
+            return false;
+        }
+        durable_states_.insert(files_dir.string());
     }
     return true;
 }

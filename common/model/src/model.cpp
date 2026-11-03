@@ -257,6 +257,37 @@ std::string plugin_state_file(const std::string& sha256) {
     return "Plugin State/" + sha256 + ".state";
 }
 
+std::string plugin_files_path(const std::string& sha256, const std::string& basename) {
+    return "Plugin Files/" + sha256 + "/" + basename;
+}
+
+std::string plugin_file_problem(const PluginFileRef& f) {
+    if (f.sha256.size() != 64 ||
+        !std::all_of(f.sha256.begin(), f.sha256.end(),
+                     [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); })) {
+        return "sha256 must be 64 lower-case hex digits";
+    }
+    const std::string head = "Plugin Files/" + f.sha256 + "/";
+    if (f.path.compare(0, head.size(), head) != 0) {
+        return "path must be \"" + head + "<name>\"";
+    }
+    const std::string base = f.path.substr(head.size());
+    // A received session is untrusted: its path is joined to the session
+    // folder, so it must stay one name inside it.
+    if (base.empty() || base == "." || base == ".." || base.size() > 255) {
+        return "path must end in one file name";
+    }
+    for (const char c : base) {
+        if (c == '/' || c == '\\' ||static_cast<unsigned char>(c) < 0x20 || c == 0x7f) {
+            return "path must end in one file name";
+        }
+    }
+    if (base.compare(0, 10, ".incoming-") == 0) return "path names a copy in progress";
+    if (!json::valid_utf8(base)) return "path must be valid UTF-8";
+    if (f.bytes > static_cast<std::uint64_t>(kMaxInteger)) return "bytes is out of range";
+    return {};
+}
+
 std::string midi_sequence_file(const std::string& sha256) {
     return "MIDI Sequences/" + sha256 + ".msq";
 }
@@ -1436,6 +1467,17 @@ std::string insert_mix_problem(const InsertMix& m, PluginFormat format, std::str
             return "file must be \"" + plugin_state_file(st.sha256) + "\"";
         }
         if (st.bytes > static_cast<std::uint64_t>(kMaxInteger)) return "bytes is out of range";
+        if (st.files.size() > kMaxPluginFiles) {
+            return "a state names at most " + std::to_string(kMaxPluginFiles) + " files";
+        }
+        for (std::size_t i = 0; i < st.files.size(); ++i) {
+            where = "state.files[" + std::to_string(i) + "]";
+            const std::string why = plugin_file_problem(st.files[i]);
+            if (!why.empty()) return why;
+            for (std::size_t k = 0; k < i; ++k) {
+                if (st.files[k].path == st.files[i].path) return "names " + st.files[i].path + " twice";
+            }
+        }
     }
     where.clear();
     return {};

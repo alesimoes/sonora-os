@@ -148,7 +148,11 @@ namespace sonora::api {
 //   in EditAutomation and the undo window may be "volume_trim", a track's
 //   mix "write_trim" (window format 13, session format 16). A version-38
 //   peer refuses all of them.
-constexpr uint32_t kProtocolVersion = 39;
+// 40 (ADR-0029 slice 2, plugin files in the session; follows 39): a
+//   StateRef in an operation and in the undo window carries "files", the
+//   plugin files an LV2 state names (window format 14, session format 17).
+//   A version-39 peer refuses all of them.
+constexpr uint32_t kProtocolVersion = 40;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

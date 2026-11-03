@@ -341,6 +341,13 @@ Value state_value(const std::optional<StateRef>& s) {
     v.set("file", Value::string(s->file));
     v.set("sha256", Value::string(s->sha256));
     v.set("bytes", integer(static_cast<std::int64_t>(s->bytes)));
+    Value& fs = v.set("files", Value::array());
+    for (const PluginFileRef& f : s->files) {
+        Value& e = fs.push(Value::object());
+        e.set("path", Value::string(f.path));
+        e.set("sha256", Value::string(f.sha256));
+        e.set("bytes", integer(static_cast<std::int64_t>(f.bytes)));
+    }
     return v;
 }
 
@@ -1268,12 +1275,25 @@ bool read_state(Reader& rd, const Value& obj, const std::string& path,
     const std::string sp = Reader::at(path, "state");
     StateRef s;
     std::int64_t bytes = 0;
-    if (!rd.keys(v, sp, {"file", "sha256", "bytes"}) || !rd.text(v, sp, "file", s.file) ||
+    const Value* files = nullptr;
+    if (!rd.keys(v, sp, {"file", "sha256", "bytes", "files"}) || !rd.text(v, sp, "file", s.file) ||
         !rd.text(v, sp, "sha256", s.sha256) ||
-        !rd.integer(v, sp, "bytes", kMaxInteger, bytes)) {
+        !rd.integer(v, sp, "bytes", kMaxInteger, bytes) || !rd.array(v, sp, "files", files)) {
         return false;
     }
     s.bytes = static_cast<std::uint64_t>(bytes);
+    const std::string fp = Reader::at(sp, "files");
+    if (files->items().size() > kMaxPluginFiles) return rd.fail(fp, "too many files");
+    for (const Value& e : files->items()) {
+        PluginFileRef f;
+        std::int64_t fb = 0;
+        if (!rd.keys(e, fp, {"path", "sha256", "bytes"}) || !rd.text(e, fp, "path", f.path) ||
+            !rd.text(e, fp, "sha256", f.sha256) || !rd.integer(e, fp, "bytes", kMaxInteger, fb)) {
+            return false;
+        }
+        f.bytes = static_cast<std::uint64_t>(fb);
+        s.files.push_back(std::move(f));
+    }
     out = std::move(s);
     return true;
 }
@@ -1827,7 +1847,8 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 //    2026-11-02).
 // 13: a lane may be a volume_trim lane, a track mix's automation mode
 //    write_trim (ADR-0027 §8 slice 5).
-constexpr std::int64_t kWindowFormat = 13;
+// 14: an insert mix's state carries "files" (ADR-0029 slice 2).
+constexpr std::int64_t kWindowFormat = 14;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on

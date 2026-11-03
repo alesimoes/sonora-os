@@ -30,6 +30,8 @@ namespace sonora::session_files {
 inline constexpr const char* kSequenceDir = "MIDI Sequences";
 inline constexpr const char* kBackupsDir = "Session File Backups";
 inline constexpr const char* kPluginStateDir = "Plugin State";
+// The files LV2 states name (ADR-0029 §6): "<sha256>/<basename>" below it.
+inline constexpr const char* kPluginFilesDir = "Plugin Files";
 inline constexpr const char* kAudioDir = "Audio Files";
 inline constexpr const char* kMidiFilesDir = "MIDI Files";
 
@@ -102,6 +104,13 @@ public:
     //      wrote it) the same way, then "Plugin State/" is synced once
     //      unless every one is already known durable: a session never points
     //      outside its own folder;
+    //   3b. each plugin file `bytes` names (model::plugin_file_references)
+    //      that is not in the folder with its size is linked, or copied and
+    //      synced, there from `state_source` (where the plugin host saved
+    //      it), its digest checked; then each "Plugin Files/<sha256>/" and
+    //      "Plugin Files/" is synced unless already known durable. A symlink
+    //      on the way, in either folder, refuses the save: nothing reached
+    //      through a link in a received folder is copied into a session;
     //   4. `bytes` to "<file>.tmp", synced, renamed over `session_file`, and
     //      the folder synced;
     //   5. the bytes the file held before, when they differ, kept as
@@ -116,6 +125,7 @@ public:
     // `document` does not hold fails the save by name, and so does a plugin
     // state found in neither folder, unless the file being replaced already
     // names it (its state was lost before, and the operator told at open).
+    // The same holds for a plugin file.
     // Refused for a rotated-backup name in "Session File Backups/", which
     // pruning deletes; `why` points to Save As. True once the rename
     // has landed; `caution` then says what could not be made durable (the
@@ -195,6 +205,8 @@ public:
     bool write_states(const std::string& folder, const std::vector<StateFile>& states, std::string& why);
     // State files written since construction, for the tests.
     std::size_t states_written() const { return states_written_; }
+    // Plugin files linked or copied into a folder since construction.
+    std::size_t plugin_files_placed() const { return plugin_files_placed_; }
 
     // The folder the last save entered; empty before the first.
     const std::string& folder() const { return folder_; }
@@ -218,6 +230,10 @@ private:
     // durable_states_, then adds them: a file found there, or renamed there
     // before a sync that failed, is not yet a durable entry.
     bool sync_states(const std::string& folder, const std::vector<std::string>& paths, std::string& why);
+    // Step 3b of save().
+    bool place_plugin_files(const std::string& folder, const std::string& file,
+                            const std::map<std::string, model::PluginFileRef>& refs,
+                            const std::string& source, std::string& why);
     void refresh_kept();
     // Whether "<sha>.msq" is already there with exactly the bytes its name
     // hashes: a file renamed into place only after it was synced.
@@ -238,6 +254,7 @@ private:
     std::size_t kept_reads_ = 0;
     std::size_t sequences_written_ = 0;
     std::size_t states_written_ = 0;
+    std::size_t plugin_files_placed_ = 0;
     std::set<std::string> durable_states_;   // state files a folder sync has covered
     // By path, every folder's, never cleared; the hash of the bytes last written
     // there, so an autosave another writer put at the path is not taken for ours.

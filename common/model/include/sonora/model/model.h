@@ -548,18 +548,44 @@ struct ParamValue {
 // The plugin's own state lives in a file beside the session, never inline:
 // some run to megabytes, and the document crosses the control socket whole
 // with every Snapshot.
+// A file an LV2 state names (ADR-0029 §6, session format 17): saved by the
+// plugin host into the session folder, content-addressed, never rewritten.
+// `path` is plugin_files_path(sha256, basename), relative to the session
+// folder: a received session is untrusted, so nothing absolute, no "..",
+// one basename (plugin_file_problem).
+struct PluginFileRef {
+    std::string path;
+    std::string sha256;   // 64 lower-case hex digits: the path's directory
+    std::uint64_t bytes = 0;
+    bool operator==(const PluginFileRef& o) const {
+        return path == o.path && sha256 == o.sha256 && bytes == o.bytes;
+    }
+};
+
+// What one state may name: the host's kMaxStateFiles.
+constexpr std::size_t kMaxPluginFiles = 1024;
+
 struct StateRef {
     std::string file;     // plugin_state_file(sha256)
     std::string sha256;   // 64 lower-case hex digits
     std::uint64_t bytes = 0;
+    std::vector<PluginFileRef> files;   // at most kMaxPluginFiles, no path twice
     bool operator==(const StateRef& o) const {
-        return file == o.file && sha256 == o.sha256 && bytes == o.bytes;
+        return file == o.file && sha256 == o.sha256 && bytes == o.bytes && files == o.files;
     }
 };
 
 // "Plugin State/<sha256>.state": where a state file with this digest lives
 // in the session folder.
 std::string plugin_state_file(const std::string& sha256);
+
+// "Plugin Files/<sha256>/<basename>", relative to the session folder.
+std::string plugin_files_path(const std::string& sha256, const std::string& basename);
+// Empty when `f` may be named by a session; else why not. The path is
+// exactly plugin_files_path(f.sha256, basename) for one basename that is a
+// single component: not empty, ".", "..", no '/', '\\', NUL or control
+// byte, valid UTF-8, at most 255 bytes, and not a host's ".incoming-" tmp.
+std::string plugin_file_problem(const PluginFileRef& f);
 
 // Which plugin sits in which slot, and whether it is in the chain.
 struct Insert {

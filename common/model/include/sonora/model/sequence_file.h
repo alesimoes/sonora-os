@@ -132,6 +132,14 @@ bool sequence_references(std::string_view session_file, std::set<std::string>& o
 bool plugin_state_references(std::string_view session_file, std::set<std::string>& out,
                              std::string& why);
 
+// The plugin files a session file's states name (ADR-0029 slice 2), by
+// path, read the same way: what a saver must find in the file's own folder
+// before it writes the file. False, with `why`, as above, and also for an
+// entry plugin_file_problem refuses: a received session's path is never
+// joined to a folder unchecked.
+bool plugin_file_references(std::string_view session_file, std::map<std::string, PluginFileRef>& out,
+                            std::string& why);
+
 // --- what the saver keeps in memory between saves (ADR-0015 §3, §6) ---------
 
 // What is on disk is a set of hashes, the saver's own: those that verified

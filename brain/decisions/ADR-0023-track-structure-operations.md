@@ -295,6 +295,11 @@ Nothing reaches `process()`: a name or a colour is not in the plan.
 `volume_trim` lane and the `write_trim` mode, nothing of this ADR's; a
 version 15 session opens unchanged.
 
+*Session format note (2026-11-03, ADR-0029 slice 2):* format 17 follows
+16, undo window format 14 follows 13, protocol 40 follows 39. They add
+`StateRef.files`, nothing of this ADR's; a version 16 session opens
+unchanged.
+
 ## Open questions
 
 None for the owner.
