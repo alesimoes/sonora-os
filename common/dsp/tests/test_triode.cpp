@@ -236,8 +236,7 @@ int test_hot_square_every_factor() {
             // reported there (measure::sanitized_build() does the same for
             // the native suites); every other bar above stays held.
 #if SONORA_SANITIZED
-            std::printf("  info: ratio bar 6.0 reported, not held: sanitizer build
-");
+            std::printf("  info: ratio bar 6.0 reported, not held: sanitizer build\n");
 #else
             CHECK_LE(ratio, 6.0, "worst hot block over a quiet block's median");
 #endif
