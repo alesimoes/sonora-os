@@ -5,6 +5,7 @@
 // own, copies the playback miss count, and says "Locating…" while the
 // controller holds a locate back for its window. Layout 7 (ADR-0013
 // amendment of 2026-11-03): each track's post-fader peak, from its meter.
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -136,6 +137,12 @@ int test_layout_5_from_a_playing_session() {
     CHECK(b.take_post_peak(0, 0) == left);
     CHECK(a.take_peak(0) == 0.0f);
     CHECK(s.track_meter(0).take_peak(0) == 0.0f);
+    // Layout 8: the master's loudness and true-peak are published; the track
+    // meter measures none unless the session asks for it.
+    CHECK(a.master_meter().true_peak_max_db > -20.0f);
+    CHECK(a.master_meter().nonfinite == 0);
+    CHECK(a.track_meter(0).true_peak_max_db == -200.0f);
+    CHECK(b.master_meter().true_peak_max_db == a.master_meter().true_peak_max_db);
     p.publish_once();
     CHECK(a.take_bus_peak(0) == 0.0f);   // no block since
     CHECK(a.take_post_peak(0, 0) == 0.0f);
@@ -165,6 +172,17 @@ int test_layout_5_from_a_playing_session() {
 
     ctl.stop();
     run_block(s);
+
+    // A blown-up bus (a non-finite gain stands for a plugin that did it): the
+    // meter counts it and measures silence, and the block says clip.
+    s.set_bus_gain(std::nanf(""));
+    run_block(s);
+    run_block(s);
+    p.publish_once();
+    CHECK(a.master_meter().nonfinite > 0);
+    CHECK(a.take_bus_peak(0) == api::kNonfinitePeak);
+    CHECK(a.take_bus_peak(1) == api::kNonfinitePeak);
+    CHECK(a.take_post_peak(0, 0) < 1.0f);   // the track itself was fine
     std::filesystem::remove_all(kDir, ec);
     return 0;
 }

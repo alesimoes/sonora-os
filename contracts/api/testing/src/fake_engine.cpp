@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -279,7 +280,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.toggle_loop", "latency.measure", "latency.cancel", "latency.set",
         "transport.toggle_loop_record", "transport.toggle_cycle",
         "transport.cycle_selection", "transport.punch_selection", "transport.clear_punch",
-        "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready",
+        "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready", "meters.reset",
     };
     return ids;
 }
@@ -1786,6 +1787,28 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
             return false;
         }
         armed_[idx] = !armed_[idx];
+        return true;
+    }
+    if (id == "meters.reset") {
+        // Nothing to reset: the fake's levels are synthetic. The argument is
+        // judged as the engine judges it.
+        const std::string& a = r.argument;
+        if (a.empty() || a == "all" || a == "master") return true;
+        std::size_t used = 0;
+        unsigned long idx = 0;
+        try {
+            idx = std::stoul(a, &used);
+        } catch (const std::exception&) {
+            used = 0;
+        }
+        if (used == 0 || used != a.size()) {
+            why = "meters.reset takes all, master or a track index, not \"" + a + "\"";
+            return false;
+        }
+        if (idx >= armed_.size()) {
+            why = "there is no track " + std::to_string(idx + 1);
+            return false;
+        }
         return true;
     }
     if (id == "track.arm_all" || id == "track.disarm_all") {
