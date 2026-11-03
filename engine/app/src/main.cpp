@@ -499,6 +499,7 @@ int main(int argc, char** argv) {
     // session-format.md, "Autosave": every 60 s while there are edits.
     control.autosave_period_ms = 60000;
     bool plugin_cache_given = false;
+    bool plugin_block_list_given = false;
     bool latency_file_given = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -560,6 +561,9 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--plugin-cache") == 0 && i + 1 < argc) {
             control.plugin_cache = argv[++i];
             plugin_cache_given = true;
+        } else if (std::strcmp(argv[i], "--plugin-block-list") == 0 && i + 1 < argc) {
+            control.plugin_block_list = argv[++i];
+            plugin_block_list_given = true;
         } else if (std::strcmp(argv[i], "--latency-file") == 0 && i + 1 < argc) {
             control.latency_file = argv[++i];
             latency_file_given = true;
@@ -652,6 +656,8 @@ int main(int argc, char** argv) {
                 "  --plugin-bundle DIR  an extra LV2/VST3 bundle directory (repeatable)\n"
                 "  --plugin-cache PATH  the plugin catalog cache (default:\n"
                 "                    ~/.cache/sonora/plugin-catalog.json; \"\": in memory)\n"
+                "  --plugin-block-list PATH  the plug-ins the operator blocked (default:\n"
+                "                    ~/.config/sonora/plugin-blocklist.json; \"\": in memory)\n"
                 "  --latency-file PATH  where the round trip is kept per device, rate\n"
                 "                    and period (default: ~/.config/sonora/latency.conf;\n"
                 "                    \"\": neither read nor kept)\n"
@@ -1093,6 +1099,10 @@ int main(int argc, char** argv) {
     // Q2): resolved here and passed down; an empty --plugin-cache keeps
     // the catalog in memory.
     if (!plugin_cache_given) control.plugin_cache = sonora::default_plugin_cache(sonora::platform::user_cache_dir());
+    // The operator's block list (amendment of 2026-11-03): a setting, not
+    // regenerable, so beside the round trip rather than in the cache.
+    if (!plugin_block_list_given)
+        control.plugin_block_list = sonora::default_plugin_block_list(sonora::platform::user_config_dir());
     // Windows plug-ins through yabridge (ADR-0017 Y4): the prefix their
     // probes and chains run in, created before the first scan that lists
     // one.

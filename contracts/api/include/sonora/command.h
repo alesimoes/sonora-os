@@ -278,6 +278,11 @@ inline const std::vector<CommandSpec>& command_catalog() {
 
         // --- plugins (ADR-0012 §8) ---
         {"plugin.rescan", CommandTarget::None, "Scan the installed plugins again"},
+        // Argument: "<lv2|vst3> <id>", the id as the catalog names it. A
+        // blocked plug-in is never run, probed or offered (ADR-0012,
+        // amendment of 2026-11-03); the list is kept across starts.
+        {"plugin.block", CommandTarget::None, "Never run this plug-in", true},
+        {"plugin.unblock", CommandTarget::None, "Allow a blocked plug-in again", true},
         // Argument: "<slot> <parent token>", the slot 0..9 (A..J) and the
         // window to parent the editor to, opaque, empty on the appliance.
         {"plugin.editor.open", CommandTarget::Track, "Open a plugin's own editor", true},

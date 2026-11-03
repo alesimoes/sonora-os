@@ -168,6 +168,9 @@ public:
         // 2026-10-19, item 4 and change A: resolved by the entry layer).
         // Empty: the catalog lives in memory for the run.
         std::string plugin_cache;
+        // The operator's plug-in block list (plugin_block_list.h), resolved
+        // by the entry layer. Empty: kept in memory for the run.
+        std::string plugin_block_list;
         // The image build id, in the cache header (change B).
         std::string plugin_build_id;
         // Windows plug-ins (ADR-0017 Y4), resolved by the entry layer: the
