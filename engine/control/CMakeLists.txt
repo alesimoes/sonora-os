@@ -21,6 +21,7 @@ add_library(sonora_control STATIC
   src/active_folder.cpp
   src/machine_latency.cpp
   src/preset_store.cpp
+  src/consolidate.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -73,6 +74,14 @@ if(UNIX)
   add_executable(test_active_folder tests/test_active_folder.cpp)
   target_link_libraries(test_active_folder PRIVATE sonora_control)
   add_test(NAME active_folder COMMAND test_active_folder)
+endif()
+
+# Consolidate's engine half (ADR-0031 §6): the rendered range, its file
+# names, cancel, and the one compound. POSIX's: it records a take to refuse.
+if(UNIX)
+  add_executable(test_consolidate tests/test_consolidate.cpp)
+  target_link_libraries(test_consolidate PRIVATE sonora_control)
+  add_test(NAME consolidate COMMAND test_consolidate)
 endif()
 
 # A closed take as one compound; a bad file costs one track (ADR-0009
