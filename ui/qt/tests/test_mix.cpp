@@ -884,6 +884,11 @@ int qml() {
     CHECK(list_open() && r.shell.textEntry());
     QQuickItem* touch0 = named(root, QStringLiteral("autoMode0Touch"));
     CHECK(touch0 != nullptr && touch0->isVisible());
+    // Seven modes, the two trim ones as available as the rest.
+    for (const char* m : {"Trim", "Write/Trim"}) {
+        QQuickItem* item = named(root, QStringLiteral("autoMode0") + QLatin1String(m));
+        CHECK(item != nullptr && item->property("available").toBool());
+    }
     const QList<bool> solos_before = r.session.solos();
     QTest::mouseClick(&view, Qt::LeftButton, {}, centre(solo));
     r.settle();
@@ -1151,11 +1156,12 @@ int automation_mode_selector() {
     CHECK(r.mixer.setAutomationMode(1, "Read"));
     r.settle();
     CHECK(r.doc.revision() == same);
-    // Trim is refused by name and nothing is sent.
-    CHECK(!r.mixer.setAutomationMode(1, "Trim"));
-    CHECK(!r.refused.empty() && r.refused.back().find("Trim") != std::string::npos);
-    r.settle();
-    CHECK(r.doc.revision() == same);
+    // Both trim modes are taken (ADR-0027 §8 slice 5).
+    for (const char* m : {"Trim", "Write/Trim", "Read"}) {
+        CHECK(r.mixer.setAutomationMode(1, m));
+        r.settle();
+        CHECK(r.session.automationModes()[1] == m && r.refused.empty());
+    }
     CHECK(!r.mixer.setAutomationMode(9, "Write"));
     CHECK(!r.mixer.setAutomationMode(1, "Banana"));
     // The lane header's label follows the strip.
@@ -1163,6 +1169,122 @@ int automation_mode_selector() {
     r.settle();
     CHECK(r.session.automationModes()[2] == "Write");
     std::printf("  automation mode selector: ok\n");
+    return 0;
+}
+
+// In Trim and Write/Trim the volume fader is the trim fader (ADR-0027 §8
+// slice 5; Pro Tools' Trim modes): a ride sends VolumeTrim with Touch, Move
+// and Release, never Gain, and saves nothing, because the trim is session
+// state the engine holds. The strip shows the trim where it is what plays.
+int trim_ride() {
+    Rig r;
+    CHECK(r.connect());
+    const auto only = [&r](api::ParamId p) {
+        for (const Rig::Sent& s : r.sent) {
+            if (s.param != p) return false;
+        }
+        return !r.sent.empty();
+    };
+    const auto ride_up = [&r](int track) {
+        r.mixer.beginRide(track);
+        const qreal from = r.mixer.rideGain();
+        r.mixer.ride(track, -20, 200, false);
+        CHECK(r.mixer.rideTrack() == track && r.mixer.rideGain() > from);
+        r.mixer.endRide(track);
+        r.settle();
+        return 0;
+    };
+    CHECK(r.mixer.trims() == QList<qreal>({0.0, 0.0, 0.0, 0.0}));
+
+    // Touch/Trim, stopped: the hand lands at 0 dB of trim and lifts at the
+    // ride's; the document and its fader are untouched.
+    CHECK(r.mixer.setAutomationMode(1, "Trim"));
+    r.settle();
+    uint64_t rev = r.doc.revision();
+    r.sent.clear();
+    CHECK(ride_up(1) == 0);
+    CHECK(only(api::ParamId::VolumeTrim) && r.refused.empty());
+    CHECK(r.sent.front().gesture == api::Gesture::Touch && r.sent.front().value == 1.0f);
+    CHECK(r.sent.back().gesture == api::Gesture::Release && r.sent.back().value > 1.0f);
+    CHECK(r.doc.revision() == rev && r.session.stripGain(1) == 0.0);
+    // Released, Touch/Trim plays the trim lane, or 0 dB with none.
+    CHECK(r.mixer.trims()[1] == 0.0 && !r.mixer.trimLanes()[1]);
+
+    // Write/Trim plays the trim fader until it moves again: it is shown, and
+    // the next ride starts from it.
+    CHECK(r.mixer.setAutomationMode(2, "Write/Trim"));
+    r.settle();
+    r.sent.clear();
+    CHECK(ride_up(2) == 0);
+    CHECK(only(api::ParamId::VolumeTrim));
+    const qreal held = r.mixer.trims()[2];
+    CHECK(held > 0.0 && r.session.stripGain(2) == 0.0);
+    CHECK(near(fader_linear_gain(static_cast<float>(held)), r.sent.back().value));
+    r.sent.clear();
+    r.mixer.beginRide(2);
+    CHECK(r.sent.size() == 1 && near(r.sent[0].value, fader_linear_gain(static_cast<float>(held))));
+    // Pushed past the top, the trim stops at its range's.
+    r.mixer.ride(2, -100000, 200, false);
+    CHECK(r.mixer.rideGain() == model::kMaxTrimDb);
+    r.mixer.ride(2, 100000, 200, false);
+    CHECK(r.mixer.rideGain() == model::kMinTrimDb);
+    r.mixer.endRide(2);
+    r.settle();
+    CHECK(r.mixer.trims()[2] == model::kMinTrimDb);
+
+    // Alt-click on the trim fader puts the trim at 0 dB, not the volume.
+    r.sent.clear();
+    std::string why;
+    CHECK(r.session.controller().set_gain(2, -6.0f, why));
+    r.settle();
+    r.mixer.resetTrim(2);
+    r.settle();
+    CHECK(only(api::ParamId::VolumeTrim) && r.sent.back().value == 1.0f);
+    CHECK(r.mixer.trims()[2] == 0.0 && near(r.session.stripGain(2), -6.0));
+
+    // With a trim lane, Touch/Trim says the lane plays, and the hand lands
+    // at the lane's value where the playhead is, so nothing jumps.
+    model::EditAutomation lane;
+    lane.track = r.doc.snapshot().edit->tracks[1]->id;
+    lane.param = model::AutomationParam::VolumeTrim;
+    lane.from = 0;
+    lane.to = model::kMaxInteger;
+    lane.points = {{0, -4.0f}};
+    CHECK(r.doc.submit(lane, why));
+    r.settle();
+    CHECK(r.mixer.trimLanes()[1] && near(r.mixer.trims()[1], -4.0));
+    r.sent.clear();
+    r.mixer.beginRide(1);
+    CHECK(r.sent.size() == 1 && near(r.sent[0].value, fader_linear_gain(-4.0f)));
+    r.mixer.endRide(1);
+
+    // Read is the volume fader again.
+    CHECK(r.mixer.setAutomationMode(2, "Read"));
+    r.settle();
+    r.sent.clear();
+    CHECK(ride_up(2) == 0);
+    CHECK(only(api::ParamId::Gain) && r.session.stripGain(2) > -6.0);
+    CHECK(r.mixer.trims()[2] == 0.0);
+
+    // A new session: the engine's trim faders are back at 0 dB, and so is
+    // what the strips say.
+    CHECK(r.mixer.setAutomationMode(3, "Write/Trim"));
+    r.settle();
+    CHECK(ride_up(3) == 0 && r.mixer.trims()[3] > 0.0);
+    emit r.session.sessionOpened();
+    CHECK(r.mixer.trims()[3] == 0.0);
+    CHECK(r.refused.empty());
+
+    // A track the engine does not have has no trim fader to ride: refused,
+    // said, nothing sent, and no ride held.
+    Rig small(2);
+    CHECK(small.connect());
+    CHECK(small.mixer.setAutomationMode(3, "Trim"));
+    small.settle();
+    small.mixer.beginRide(3);
+    CHECK(small.mixer.rideTrack() == MixModel::kNoRide && small.sent.empty());
+    CHECK(!small.refused.empty() && small.refused.back().find("trim") != std::string::npos);
+    std::printf("  trim ride: ok\n");
     return 0;
 }
 
@@ -1184,6 +1306,7 @@ int main(int argc, char** argv) {
     if (live_path_follows_the_engine() != 0) return 1;
     if (automation_gestures() != 0) return 1;
     if (automation_mode_selector() != 0) return 1;
+    if (trim_ride() != 0) return 1;
     if (written_ride_keeps_the_static() != 0) return 1;
     if (typed_values() != 0) return 1;
     if (modifier_clicks() != 0) return 1;

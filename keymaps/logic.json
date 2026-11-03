@@ -68,7 +68,7 @@
     "ctrl+alt+m": {
       "command": "track.step_automation_mode",
       "origin": "sonora",
-      "comment": "Ours. Logic picks the mode from the track header with no documented key. Steps the selected track Off, Read, Touch, Latch, Write."
+      "comment": "Ours. Logic picks the mode from the track header with no documented key. Steps the selected track Off, Read, Touch, Latch, Write, Trim, Write/Trim."
     },
     "delete": {
       "command": "edit.clear",

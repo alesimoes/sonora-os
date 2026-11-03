@@ -41,6 +41,19 @@
 //     the engine deliberately leaves alone when a client attaches, and made
 //     this interface that track's last rider.
 //
+// The trim fader (ADR-0027 §8 slice 5). In Trim (Pro Tools' Touch/Trim)
+// and Write/Trim the volume fader is the trim fader, as in Pro Tools' Trim
+// modes: a ride sends ParamId::VolumeTrim with Touch, Move and Release, the
+// engine's Track::trim() atomic, and never Gain, and nothing is saved at
+// release. The trim is session state, not a mix field: the engine sets it
+// to 0 dB at a Load, so this interface keeps what it last sent to each
+// track and forgets it when a session opens. What the strip shows (trims,
+// trimLanes) is what plays: the ride while held; in Write/Trim the trim
+// fader, which plays until it moves again; in Touch/Trim, released, the
+// trim lane at the playhead (trimLanes says a lane plays) or 0 dB. A track
+// the engine does not have has no trim atomic: its trim ride is refused,
+// since there is no SetMix to fall back on.
+//
 // Modifier clicks, as the Pro Tools Reference Guide documents them for
 // Windows:
 //   Alt-click solo or mute    every track to the clicked track's new state
@@ -57,6 +70,7 @@
 #include <QString>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 
 #include "sonora/api/messages.h"
@@ -71,7 +85,13 @@ class MixModel : public QObject {
     // The strip whose fader is being ridden: a track, -1 for the monitor
     // bus, kNoRide (-2) for none. Its cap and readout show rideGain.
     Q_PROPERTY(int rideTrack READ rideTrack NOTIFY rideChanged)
+    // rideGain is the trim's dB in a trim ride (rideTrim).
     Q_PROPERTY(qreal rideGain READ rideGain NOTIFY rideChanged)
+    Q_PROPERTY(bool rideTrim READ rideTrim NOTIFY rideChanged)
+    // Per track: the trim the strip shows in a trim mode (dB, 0 elsewhere),
+    // and whether that is the trim lane playing rather than the trim fader.
+    Q_PROPERTY(QList<qreal> trims READ trims NOTIFY trimsChanged)
+    Q_PROPERTY(QList<bool> trimLanes READ trimLanes NOTIFY trimsChanged)
     // What the strips' meters read, said on the strips themselves; and the
     // line above the strips.
     Q_PROPERTY(QString trackMeterCaption READ trackMeterCaption CONSTANT)
@@ -109,6 +129,9 @@ public:
 
     int rideTrack() const { return ride_track_; }
     qreal rideGain() const { return ride_db_; }
+    bool rideTrim() const { return ride_track_ != kNoRide && ride_trim_; }
+    QList<qreal> trims() const;
+    QList<bool> trimLanes() const;
     QString trackMeterCaption() const;
     QString busMeterCaption() const;
     QString note() const;
@@ -128,6 +151,11 @@ public:
     // `dy` pixels down on a fader with `travel` pixels; `fine` is Ctrl.
     Q_INVOKABLE void ride(int track, qreal dy, qreal travel, bool fine);
     Q_INVOKABLE void endRide(int track);
+    // Alt-click on a fader in a trim mode: the trim to 0 dB, as one touch
+    // and release, leaving the volume as it is.
+    Q_INVOKABLE void resetTrim(int track);
+    // The track is in Trim or Write/Trim: its fader is the trim fader.
+    Q_INVOKABLE bool trimMode(int track) const;
 
     // --- typed values: the readouts are fields (Return sets, Escape leaves) ---
     // False, with the reason on the status line, for text that is not one.
@@ -140,8 +168,8 @@ public:
     Q_INVOKABLE void panDrag(int track, qreal dx, qreal width, bool fine);
 
     // --- the strip's automation mode selector (ADR-0027) ---
-    // One SetMix. Trim is refused by name: the engine has no write slice for
-    // it, and a selector that took it would show a mode that does nothing.
+    // One SetMix: "Off", "Read", "Touch", "Latch", "Write", "Trim" or
+    // "Write/Trim", as SessionModel::automationModes names them.
     Q_INVOKABLE bool setAutomationMode(int track, const QString& mode);
 
     // --- solo and mute clicks with a modifier (Qt::KeyboardModifiers) ---
@@ -153,6 +181,7 @@ public:
 signals:
     void rideChanged();
     void viewsChanged();
+    void trimsChanged();
 
 private:
     void setView(bool& field, bool on) {
@@ -161,7 +190,13 @@ private:
         emit viewsChanged();
     }
     void resetViews();
+    void sessionOpened();
     bool live(int track) const;
+    // Where a trim ride on `track` starts, so nothing jumps: the trim fader
+    // in Write/Trim, the trim lane at the playhead (or 0 dB) in Touch/Trim.
+    float trimNow(int track, bool& lane) const;
+    float trimNow(int track, const QString& mode, bool& lane) const;
+    float heldTrim(model::Id track) const;
     // A live ride on `track` now is a Touch pass's: its lane holds it and the
     // engine returns to the static at the release.
     bool writes(int track) const;
@@ -200,6 +235,10 @@ private:
     // Some of the ride played in Touch while rolling: the
     // pass's lane holds it, so the static is not set (ADR-0027 §8).
     bool ride_wrote_ = false;
+    bool ride_trim_ = false;      // the ride is the trim fader's (VolumeTrim)
+    // What each track's engine trim atomic holds, as this interface last
+    // sent it; a track not here is at 0 dB. Cleared when a session opens.
+    std::map<model::Id, float> held_trim_db_;
     int pan_track_ = kNoRide;     // the engine track whose pan the hand holds
     model::Id pan_id_ = 0;
     uint64_t pan_generation_ = 0;

@@ -234,8 +234,8 @@ int test_rows() {
     const ViewState& v = ctl.view();
     OK(ctl.autolanes_shown(0) && !ctl.autolanes_shown(1));
     OK(v.tops.size() == 4 && v.tops[1] == h + kLaneCount * v.autolane_height);
-    OK(v.y_of_track(1) == h + 2 * v.autolane_height);
-    OK(v.content_height(3) == 3 * h + 2 * v.autolane_height);
+    OK(v.y_of_track(1) == h + kLaneCount * v.autolane_height);
+    OK(v.content_height(3) == 3 * h + kLaneCount * v.autolane_height);
     // A pixel in a lane is over its track, and says which lane.
     const double in_lane1 = v.y_of_autolane(0, 1) + 3;
     OK(v.track_at(in_lane1) == 0 && v.autolane_at(0, in_lane1) == 1);
@@ -852,6 +852,64 @@ int test_range_across_tracks() {
     return 0;
 }
 
+// The Volume Trim lane (ADR-0027 §8 slice 5): the third lane under a track,
+// a relative dB in [kMinTrimDb, kMaxTrimDb] on the fader's taper, so 0 dB of
+// trim sits where unity sits on the Volume lane. Before slice 5's interface
+// it was treated as Pan: a "Gtr Pan" notice and a clamp to [-1, 1].
+int test_trim_lane() {
+    OK(kLaneCount == 3 && lane_param(2) == AutomationParam::VolumeTrim);
+    OK(std::string(lane_name(AutomationParam::VolumeTrim)) == "Volume Trim");
+    OK(clamp_lane_value(AutomationParam::VolumeTrim, 2.5f) == 2.5f);
+    OK(clamp_lane_value(AutomationParam::VolumeTrim, 30.0f) == kMaxTrimDb);
+    OK(clamp_lane_value(AutomationParam::VolumeTrim, -90.0f) == kMinTrimDb);
+    OK(clamp_lane_value(AutomationParam::VolumeTrim, std::nanf("")) == 0.0f);
+    OK(lane_position(AutomationParam::VolumeTrim, 0.0f) ==
+       lane_position(AutomationParam::Volume, 0.0f));
+    OK(lane_value(AutomationParam::VolumeTrim, 1.0f) == kMaxTrimDb);
+    OK(lane_value(AutomationParam::VolumeTrim, 0.0f) == kMinTrimDb);
+    OK(near(lane_value(AutomationParam::VolumeTrim,
+                       lane_position(AutomationParam::VolumeTrim, -6.0f)), -6.0f, 0.1f));
+    OK(lane_value_text(AutomationParam::VolumeTrim, 2.5f) == "+2.5 dB");
+    OK(lane_value_text(AutomationParam::VolumeTrim, kMinTrimDb) == "-60.0 dB");
+    OK(thin_tolerance(AutomationParam::VolumeTrim) == thin_tolerance(AutomationParam::Volume));
+
+    // The Pencil on lane 2 writes the trim lane, in its range.
+    ModelDocument doc(make_empty_session(3, kRate));
+    EditController ctl(doc);
+    ctl.set_viewport(1000, 900);
+    std::string why;
+    for (int i = 0; i < 3; ++i) OK(ctl.toggle_autolanes(i, why));
+    const ViewState& v = ctl.view();
+    ctl.set_tool(Tool::Pencil);
+    OK(ctl.press(100, v.autolane_y(0, 2, 0.99f), why));
+    ctl.move(200, v.autolane_y(0, 2, 0.99f));
+    OK(ctl.release(300, v.autolane_y(0, 2, 0.99f), why));
+    const AutomationLane* drawn = lane(doc, 0, AutomationParam::VolumeTrim);
+    OK(drawn != nullptr && lane(doc, 0, AutomationParam::Pan) == nullptr);
+    for (const AutomationPoint& p : drawn->points) OK(p.value <= kMaxTrimDb && p.value > 6.0f);
+    OK(valid(doc.snapshot()));
+
+    // The Selector across tracks on the trim lane (#265): one Clear over all
+    // of them, and a refusal that names the lane.
+    const std::vector<AutomationPoint> shape{{0, -20.0f}, {120000, -6.0f}, {240000, 3.0f}};
+    for (int i = 0; i < 3; ++i) OK(seed(doc, i, AutomationParam::VolumeTrim, shape));
+    OK(drag_lane_range(ctl, 0, 2, 60000, 2, 2, 200000, why));
+    OK(ctl.selection().tracks == 3 && ctl.selection().autolane == 2);
+    const uint64_t r0 = doc.snapshot().revision;
+    OK(ctl.clear(why));
+    OK(doc.snapshot().revision == r0 + 1 && doc.undo_label() == "Clear Automation");
+    for (int i = 0; i < 3; ++i) {
+        for (const AutomationPoint& p : lane(doc, i, AutomationParam::VolumeTrim)->points) {
+            OK(p.at <= 60000 || p.at >= 199999);
+        }
+    }
+    OK(ctl.take_follow_notice().empty());
+    OK(drag_lane_range(ctl, 0, 2, 700000, 2, 2, 900000, why));
+    OK(!ctl.clear(why) && why.find("Volume Trim lanes") != std::string::npos);
+    OK(why.find("Pan") == std::string::npos);
+    return 0;
+}
+
 int test_scene() {
     ModelDocument doc(make_empty_session(2, kRate));
     EditController ctl(doc);
@@ -900,6 +958,8 @@ int test_scene() {
     build();
     OK(count_colour(theme::kPlayhead) > before);
     OK(ctl.release(310, v.autolane_y(0, 0, 0.9f), why));
+    // The trim lane has a colour of its own, dashed at 0 dB with no lane.
+    OK(count_colour(theme::kAutomationTrim) > 20);
     // Track 1's row starts below the lanes.
     const SceneRect* row = rect_at(scene.rects, 500, static_cast<float>(v.y_of_track(1) + 5));
     OK(row != nullptr && row->argb != theme::kSunken);
@@ -915,7 +975,7 @@ int main() {
                        test_range_commands() + test_follow_ops() + test_follow_at_the_lane_cap() +
                        test_thin_exact() + test_undo_drops_the_picked_point() + test_tool_cycle() +
                        test_zoom_keeps_the_selection_still() + test_range_across_tracks() +
-                       test_scene();
+                       test_trim_lane() + test_scene();
     if (failed != 0) {
         std::fprintf(stderr, "ui automation: %d tests failed\n", failed);
         return 1;

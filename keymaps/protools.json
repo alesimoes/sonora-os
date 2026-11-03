@@ -124,7 +124,7 @@
     "ctrl+alt+m": {
       "command": "track.step_automation_mode",
       "origin": "sonora",
-      "comment": "Ours. Pro Tools sets the mode from the track header with no key. Steps the selected track Off, Read, Touch, Latch, Write."
+      "comment": "Ours. Pro Tools sets the mode from the track header with no key. Steps the selected track Off, Read, Touch, Latch, Write, Trim, Write/Trim."
     },
     "alt+r": "edit.repeat",
     "alt+shift+3": "edit.consolidate",

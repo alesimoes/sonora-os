@@ -38,6 +38,20 @@ Rectangle {
     // What the cap and readout show: the ride's value while this fader is
     // being ridden, the document's otherwise.
     readonly property real shownGain: mixer !== null && mixer.rideTrack === track ? mixer.rideGain : gainDb
+    // In Trim and Write/Trim the fader is the trim fader (ADR-0027 §8 slice
+    // 5, as in Pro Tools' Trim modes): the cap and the readout show the
+    // trim, in the trim colour, and the volume stays where the document has
+    // it. Released in Trim with a trim lane, it is the lane that plays: the
+    // readout says so and the cap is dimmed, as it does not follow the lane.
+    readonly property string automationMode: isBus || track >= session.automationModes.length
+                                       ? "Read" : session.automationModes[track]
+    readonly property bool trimMode: automationMode === "Trim" || automationMode === "Write/Trim"
+    readonly property real shownTrim: mixer === null ? 0
+        : mixer.rideTrack === track ? mixer.rideGain
+        : track < mixer.trims.length ? mixer.trims[track] : 0
+    readonly property bool trimLane: trimMode && mixer !== null && mixer.rideTrack !== track &&
+                                     track < mixer.trimLanes.length && mixer.trimLanes[track] === true
+    readonly property real capValue: trimMode ? shownTrim : shownGain
     property real pan: 0
     property bool hasPan: true
     property bool selected: false
@@ -269,8 +283,7 @@ Rectangle {
             shell: strip.shell
             mixer: strip.mixer
             track: strip.track
-            mode: strip.isBus || strip.track >= strip.session.automationModes.length
-                  ? "Read" : strip.session.automationModes[strip.track]
+            mode: strip.automationMode
         }
     }
 
@@ -427,12 +440,26 @@ Rectangle {
             width: Math.min(28, strip.width * 0.36)
             height: faderArea.capH
             x: slot.x + slot.width / 2 - width / 2
-            y: (1 - strip.session.faderPosition(strip.shownGain)) * faderArea.travel
+            y: (1 - strip.session.faderPosition(strip.capValue)) * faderArea.travel
             radius: Theme.radius
             color: Theme.hover
-            border.color: Theme.borderStrong
-            Rectangle { anchors { left: parent.left; right: parent.right; top: parent.top; margins: 1 } height: 1; color: Theme.highlight }
-            Rectangle { anchors.centerIn: parent; width: parent.width - 6; height: 2; color: Theme.text }
+            border.color: strip.trimMode ? Theme.automationTrim : Theme.borderStrong
+            border.width: strip.trimMode ? 2 : 1
+            opacity: strip.trimLane ? 0.5 : 1.0
+            Rectangle { anchors { left: parent.left; right: parent.right; top: parent.top; margins: 2 } height: 1; color: Theme.highlight }
+            Rectangle { anchors.centerIn: parent; width: parent.width - 6; height: 2
+                        color: strip.trimMode ? Theme.automationTrim : Theme.text }
+        }
+        // Over the scale, as the meter's caption is over the meter: the
+        // fader is the trim fader.
+        Text {
+            objectName: strip.isBus ? "" : "trimCaption" + strip.track
+            visible: strip.trimMode
+            anchors { left: parent.left; leftMargin: 2; bottom: meters.top }
+            text: "TRIM"
+            color: Theme.automationTrim
+            font { family: Theme.fontFamily; pixelSize: Theme.textOverline; weight: Font.DemiBold
+                   letterSpacing: 0.5 }
         }
         MouseArea {
             objectName: strip.isBus ? "busFader" : "fader" + strip.track
@@ -443,7 +470,8 @@ Rectangle {
             onPressed: (m) => {
                 lastY = m.y
                 if (m.modifiers & Qt.AltModifier) {
-                    strip.session.resetGain(strip.track)
+                    if (strip.trimMode && strip.mixer !== null) strip.mixer.resetTrim(strip.track)
+                    else strip.session.resetGain(strip.track)
                 } else if (strip.mixer !== null) {
                     riding = true
                     strip.mixer.beginRide(strip.track)
@@ -515,9 +543,14 @@ Rectangle {
             objectName: strip.isBus ? "busGainValue" : "gainValue" + strip.track
             anchors.fill: parent
             shell: strip.shell
-            text: strip.session.gainText(strip.shownGain)
-            textColour: strip.shownGain > 0.05 ? Theme.caution : Theme.text
-            editable: strip.mixer !== null
+            // The trim is said as an offset ("trim +2.5"), never as a level.
+            text: !strip.trimMode ? strip.session.gainText(strip.shownGain)
+                  : strip.trimLane ? "trim lane"
+                  : "trim " + strip.session.gainText(strip.shownTrim)
+            textColour: strip.trimMode ? Theme.automationTrim
+                        : strip.shownGain > 0.05 ? Theme.caution : Theme.text
+            // A typed value is a volume; the trim is ridden, not typed.
+            editable: strip.mixer !== null && !strip.trimMode
             onSubmitted: (t) => { if (strip.mixer.setGainText(strip.track, t)) gainField.finish() }
         }
     }

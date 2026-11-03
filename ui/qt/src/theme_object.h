@@ -35,6 +35,7 @@ class ThemeObject : public QObject {
     Q_PROPERTY(QColor marker READ marker CONSTANT)
     Q_PROPERTY(QColor automationVolume READ automationVolume CONSTANT)
     Q_PROPERTY(QColor automationPan READ automationPan CONSTANT)
+    Q_PROPERTY(QColor automationTrim READ automationTrim CONSTANT)
     Q_PROPERTY(QColor input READ input CONSTANT)
     Q_PROPERTY(QColor caution READ caution CONSTANT)
     Q_PROPERTY(QColor alarm READ alarm CONSTANT)
@@ -95,6 +96,7 @@ public:
     QColor marker() const { return QColor::fromRgba(theme::kMarker); }
     QColor automationVolume() const { return QColor::fromRgba(theme::kAutomationVolume); }
     QColor automationPan() const { return QColor::fromRgba(theme::kAutomationPan); }
+    QColor automationTrim() const { return QColor::fromRgba(theme::kAutomationTrim); }
     QColor input() const { return QColor::fromRgba(theme::kInput); }
     QColor caution() const { return QColor::fromRgba(theme::kCaution); }
     QColor alarm() const { return QColor::fromRgba(theme::kAlarm); }

@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // A strip's automation mode (ADR-0027): the button names the mode, lit in
-// its colour when the strip writes (Touch and Latch amber, Write red), and
-// a click opens the list under it. Off and Read are quiet. Trim is listed
-// and dimmed, because the engine refuses it; choosing it says so on the
-// status line rather than showing a mode that does nothing.
+// its colour when the strip writes (Touch and Latch amber, Write and
+// Write/Trim red, Trim in the trim colour, as its fader is then the trim
+// fader), and a click opens the list under it. Off and Read are quiet.
+// The list's order after Write, Trim (Touch/Trim) then Write/Trim, is ours:
+// Pro Tools' own is unverified (brain/research has no automation modes).
 //
 // The open list is a menu. A press anywhere off it, Escape, or any other
 // key closes it, and whatever closed it does nothing else: a click-away
 // that also soloed the track under it would be two actions for one. Up and
-// Down move through the modes the engine plays, Return or Space chooses.
+// Down move through every mode, Return or Space chooses.
 // While the list is open the keys are its own (ShellModel::setTextEntry),
 // as a text field's are; a key it has no use for closes it and says so on
 // the status line, rather than vanishing.
@@ -23,8 +24,14 @@ Item {
     required property int track
     required property string mode
     property bool open: false
-    readonly property var modes: ["Off", "Read", "Touch", "Latch", "Write", "Trim"]
-    readonly property bool writes: mode === "Touch" || mode === "Latch" || mode === "Write"
+    readonly property var modes: ["Off", "Read", "Touch", "Latch", "Write", "Trim", "Write/Trim"]
+    readonly property bool writes: mode !== "Off" && mode !== "Read"
+    function colourOf(m) {
+        return m === "Write" || m === "Write/Trim" ? Theme.record
+             : m === "Trim" ? Theme.automationTrim
+             : m === "Touch" || m === "Latch" ? Theme.caution
+             : Theme.accent
+    }
     // The row the keyboard is on while the list is open.
     property int hot: -1
     implicitHeight: 16
@@ -41,11 +48,7 @@ Item {
         sel.mixer.setAutomationMode(sel.track, m)
     }
     function step(by) {
-        let i = sel.hot
-        do {
-            i = (i + by + sel.modes.length) % sel.modes.length
-        } while (sel.modes[i] === "Trim")
-        sel.hot = i
+        sel.hot = (sel.hot + by + sel.modes.length) % sel.modes.length
     }
 
     onOpenChanged: {
@@ -73,11 +76,12 @@ Item {
 
     SButton {
         anchors.fill: parent
-        text: sel.mode
+        // A narrow strip has no room for the whole name.
+        text: sel.mode === "Write/Trim" && sel.width < 62 ? "W/Trim" : sel.mode
         fontPx: Theme.textCaption
         bold: sel.writes
         active: sel.writes
-        activeColour: sel.mode === "Write" ? Theme.record : Theme.caution
+        activeColour: sel.colourOf(sel.mode)
         onClicked: sel.open = !sel.open
     }
 
@@ -97,7 +101,7 @@ Item {
 
         Rectangle {
             id: list
-            width: Math.max(sel.width, 58)
+            width: Math.max(sel.width, 72)
             height: sel.modes.length * 18 + 4
             radius: Theme.radius
             color: Theme.panel
@@ -153,10 +157,7 @@ Item {
                         alignLeft: true
                         fontPx: Theme.textCaption
                         active: modelData === sel.mode
-                        activeColour: modelData === "Write" ? Theme.record
-                                      : modelData === "Touch" || modelData === "Latch" ? Theme.caution
-                                      : Theme.accent
-                        available: modelData !== "Trim"
+                        activeColour: sel.colourOf(modelData)
                         onClicked: sel.choose(modelData)
                         // The keyboard's row, when it is not the current mode.
                         Rectangle {

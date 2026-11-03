@@ -472,24 +472,29 @@ Item {
                     visible: modelData.shown === true
                     y: modelData.top + edit.session.trackHeight - edit.session.scrollY
                     width: laneHeaders.width
-                    height: 2 * edit.session.autolaneHeight
+                    height: edit.session.autolaneNames.length * edit.session.autolaneHeight
                     Repeater {
-                        model: 2
+                        model: edit.session.autolaneNames
                         Rectangle {
                             id: laneHeader
                             required property int index
+                            required property string modelData
+                            // Volume, Pan, Volume Trim: the timeline's colours.
+                            readonly property color laneColour: index === 0 ? Theme.automationVolume
+                                                              : index === 1 ? Theme.automationPan
+                                                              : Theme.automationTrim
                             objectName: "autolaneHeader" + laneBlock.index + "_" + index
                             y: index * edit.session.autolaneHeight
                             width: laneBlock.width
                             height: edit.session.autolaneHeight
                             color: Theme.sunken
-                            Rectangle { width: 3; height: parent.height - 2; color: laneHeader.index === 0 ? Theme.automationVolume : Theme.automationPan }
+                            Rectangle { width: 3; height: parent.height - 2; color: laneHeader.laneColour }
                             Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: Theme.borderSubtle }
                             Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom } width: 1; color: Theme.borderSubtle }
                             Text {
                                 x: Theme.space3; y: Theme.space2
-                                text: laneHeader.index === 0 ? "Volume" : "Pan"
-                                color: laneHeader.index === 0 ? Theme.automationVolume : Theme.automationPan
+                                text: laneHeader.modelData
+                                color: laneHeader.laneColour
                                 font { family: Theme.fontFamily; pixelSize: Theme.textSmall; weight: Font.DemiBold }
                             }
                             Text {

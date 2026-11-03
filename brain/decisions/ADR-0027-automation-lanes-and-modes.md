@@ -415,6 +415,22 @@ interface still refuses Trim (`EditController::set_automation_mode`), has
 no Write/Trim entry, sends no `VolumeTrim`, shows no trim offset on the
 fader and has no Volume Trim lane in the lane menu or `automation_edit`.
 
+*As built (slice 5, interface; recommended defaults, nobody available):*
+the selector and `track.step_automation_mode` run Off, Read, Touch, Latch,
+Write, Trim, Write/Trim and round to Off (Pro Tools' order *unverified*).
+In both trim modes the strip's fader is the trim fader: `MixModel` sends
+`VolumeTrim` Touch, Move and Release, never `Gain`, saves nothing, clamps
+the ride to [-60, +12] dB, and refuses a trim ride on a track the engine
+does not have. It keeps the last trim it sent per track (cleared when a
+session opens, as the engine's Load clears the atomic) and shows only what
+plays: the ride, the held trim in Write/Trim, and in Touch/Trim the trim
+lane at the playhead ("trim lane", cap dimmed) or 0 dB. A trim ride starts
+from that value, so a touch does not jump. The readout says "trim +2.5"
+and is not typed into; Alt-click resets the trim, not the volume. Volume
+Trim is the third disclosed lane under a track (kLaneCount 3; there is no
+per-lane menu yet), on the fader's taper, clamped to the trim range, in its
+own colour.
+
 **Merge order:** 1 (now), then #243 and Track 4b, then 2, 3, 4, 5. Slice 1
 is the only one that can run beside the in-flight work, because 2 to 5 all
 edit `session.cpp`. Each slice's diff is small enough for one agent session,

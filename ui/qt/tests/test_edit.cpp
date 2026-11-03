@@ -2195,9 +2195,9 @@ int test_input_monitor() {
     return 0;
 }
 
-// track.step_automation_mode: Off, Read, Touch, Latch, Write and round to
-// Off. Trim is skipped, because the engine refuses it; a key that landed on
-// it would be a key that does nothing.
+// track.step_automation_mode: Off, Read, Touch, Latch, Write, Trim,
+// Write/Trim and round to Off (ADR-0027 §8 slice 5: the engine plays both
+// trim modes now).
 int test_step_automation_mode() {
     FlatPeaks peaks;
     std::string why;
@@ -2209,11 +2209,19 @@ int test_step_automation_mode() {
     const auto mode = [&]() { return doc.snapshot().mix.find(audio)->automation; };
     OK(mode() == AutomationMode::Read);
     const AutomationMode order[] = {AutomationMode::Touch, AutomationMode::Latch,
-                                    AutomationMode::Write, AutomationMode::Off,
+                                    AutomationMode::Write, AutomationMode::Trim,
+                                    AutomationMode::WriteTrim, AutomationMode::Off,
                                     AutomationMode::Read};
     for (const AutomationMode want : order) {
         OK(c.step_automation_mode(0, why) && mode() == want);
     }
+    // Both trim modes are set as asked (ADR-0027 §8 slice 5), and named.
+    OK(c.set_automation_mode(0, AutomationMode::Trim, why) && mode() == AutomationMode::Trim);
+    OK(session.automationModes()[0] == "Trim");
+    OK(c.set_automation_mode(0, AutomationMode::WriteTrim, why) &&
+       mode() == AutomationMode::WriteTrim);
+    OK(session.automationModes()[0] == "Write/Trim");
+    OK(c.set_automation_mode(0, AutomationMode::Read, why));
     OK(!c.step_automation_mode(-1, why) && why == "no track is selected");
     // The command runs on the selected track, or the one it is aimed at.
     OK(session.automationModes()[0] == "Read");
