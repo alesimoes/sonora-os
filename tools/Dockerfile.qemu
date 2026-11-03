@@ -1,11 +1,14 @@
-# QEMU for tools/test-boot-qemu.sh on a host that has none of its own, such as
-# Windows with Docker Desktop. The Docker Desktop VM usually exposes /dev/kvm
-# (WSL2 nested virtualisation), so the boot is accelerated even though the
-# Windows host itself has no KVM; without it the script falls back to TCG.
+# QEMU for tools/test-boot-qemu.sh and the boots of tools/test-write-usb.sh on
+# a host that has none of its own, such as Windows with Docker Desktop. The
+# Docker Desktop VM usually exposes /dev/kvm (WSL2 nested virtualisation), so
+# the boot is accelerated even though the Windows host itself has no KVM;
+# without it the scripts fall back to TCG. ovmf is the UEFI firmware for
+# test-write-usb.sh's boot 5; qemu-system-x86 only recommends it.
 FROM debian:trixie
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       qemu-system-x86 \
+      ovmf \
     && rm -rf /var/lib/apt/lists/*
 
 CMD ["bash"]

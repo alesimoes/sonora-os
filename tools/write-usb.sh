@@ -196,10 +196,17 @@ wipe_signatures() {
 # BLKPG, which works with partitions 1 or 2, or the whole disk, mounted.
 # (sfdisk without --no-tell-kernel does not do this: measured, it leaves the
 # kernel without partition 3 and still exits 0.)
+#
+# --update cannot move a partition: it resizes through BLKPG_RESIZE_PARTITION,
+# which keeps the start, so a partition 3 the kernel still holds from an image
+# of another size failed with "error updating partition 3" (measured once the
+# test could build that state, 2026-11-03). That one is deleted and re-added.
 add_partition_to_kernel() {
   local dev="$1"
   if blockdev --rereadpt "$dev" 2>/dev/null; then return 0; fi
-  partx --update --nr 3 "$dev"
+  if partx --update --nr 3 "$dev" 2>/dev/null; then return 0; fi
+  partx --delete --nr 3 "$dev" 2>/dev/null || true
+  partx --add --nr 3 "$dev"
 }
 
 # find_partition NAME START_SECTOR -- prints /dev/<partition> or nothing.

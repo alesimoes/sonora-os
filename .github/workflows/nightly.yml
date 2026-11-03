@@ -164,6 +164,10 @@ jobs:
       - name: write-usb.sh refusals and write, against loop devices
         env:
           WRITE_USB_BOOT: "0"
+          # The stale-partition-3 case is built under flock so the runner's
+          # udevd leaves it alone; if it still cannot be built, fail here
+          # rather than skip it.
+          WRITE_USB_REQUIRE_STALE_P3: "1"
         run: tools/test-write-usb.sh
 
       - name: The stick image for Windows, and its sidecar
