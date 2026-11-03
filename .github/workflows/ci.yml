@@ -584,7 +584,7 @@ jobs:
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot
+        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest
 
       - name: dev-wsl.sh wsl.conf edit, session bus check, --log
         run: sudo apt-get install -y dbus-x11 && tools/test-dev-wsl.sh
