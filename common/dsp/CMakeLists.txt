@@ -30,6 +30,7 @@ add_library(sonora_dsp STATIC
   src/fft.cpp
   src/limiter.cpp
   src/loudness.cpp
+  src/meter.cpp
   src/noise.cpp
   src/opto.cpp
   src/oversampling.cpp
@@ -54,7 +55,7 @@ target_compile_options(sonora_dsp PUBLIC
   $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>
   $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
 
-foreach(t filters convolver oversampling loudness dynamics limiter fdn triode opto fet noise tape transformer)
+foreach(t filters convolver oversampling loudness meter dynamics limiter fdn triode opto fet noise tape transformer)
   add_executable(test_dsp_${t} tests/test_${t}.cpp)
   target_link_libraries(test_dsp_${t} PRIVATE sonora_dsp)
   # The root CMakeLists.txt's SONORA_SANITIZED: timing bars are reported, not held.
@@ -99,7 +100,7 @@ if(NOT SONORA_DSP_ARCH STREQUAL "generic")
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off> $<$<CXX_COMPILER_ID:MSVC>:/fp:precise>)
   add_test(NAME dsp_convolver_generic COMMAND test_dsp_convolver_generic)
 endif()
-# The two slow ones (tens of seconds in Release, minutes under ASan) carry
+# The slow ones (tens of seconds in Release, minutes under ASan) carry
 # the "slow" label: PR CI runs them with SONORA_DSP_QUICK=1 (one rate, one
 # setting), the nightly workflow runs `ctest -L slow` in full.
-set_tests_properties(dsp_limiter dsp_loudness PROPERTIES LABELS slow)
+set_tests_properties(dsp_limiter dsp_loudness dsp_meter PROPERTIES LABELS slow)
