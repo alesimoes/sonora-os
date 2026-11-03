@@ -475,6 +475,8 @@ bool decode(std::string_view b, State& m, std::string& error) {
         r.u64(f.bytes, "file bytes");
         if (r.ok() && !state_file_path_valid(f.path, f.sha256))
             r.fail("file " + std::to_string(k) + " is not \"Plugin Files/<its sha256>/<name>\"");
+        if (r.ok() && f.bytes > kMaxStateFileBytes)
+            r.fail("file " + std::to_string(k) + " is over kMaxStateFileBytes");
         if (r.ok() && !seen.insert(f.path).second) r.fail("file " + std::to_string(k) + " is listed twice");
         m.files.push_back(std::move(f));
     }

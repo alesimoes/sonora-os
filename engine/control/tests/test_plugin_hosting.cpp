@@ -1452,6 +1452,9 @@ int scenario_touch_faults(const Args& a) {
     no_ops = send(pc::Fault{pc::FaultKind::ParamUnmapped, 1, 1, "no dense index"}) && no_ops;
     // Instance 2 is no plugin of A's chain of two.
     no_ops = send(pc::Fault{pc::FaultKind::ParamUnmapped, 2, 7, "no dense index"}) && no_ops;
+    // Wire 4: path calls the host refused, twice from slot B (said once).
+    no_ops = send(pc::Fault{pc::FaultKind::Plugin, 1, 2, "makePath refused ../escape.bin"}) && no_ops;
+    no_ops = send(pc::Fault{pc::FaultKind::Plugin, 1, 1, "makePath refused /abs"}) && no_ops;
     check(no_ops, "no document operation from any of them");
     check(rig.hosting->touches_lost(100) == 5, "A's lost touches are counted, summed: 5");
     check(rig.hosting->touches_lost(102) == 0, "  B's count nothing");
@@ -1460,7 +1463,7 @@ int scenario_touch_faults(const Args& a) {
           "  the other inserts', and the one past the chain, count nothing");
     std::vector<std::string> notices = rig.hosting->take_notices();
     for (const std::string& n : notices) std::printf("  notice: %s\n", n.c_str());
-    check(notices.size() == 2, "two notices: one for the chain, one for the insert");
+    check(notices.size() == 3, "three notices: one for the chain, one for the insert, one for its refused paths");
     const auto has = [&](const char* a1, const char* a2) {
         for (const std::string& n : notices)
             if (n.find(a1) != std::string::npos && n.find(a2) != std::string::npos) return true;
@@ -1469,6 +1472,8 @@ int scenario_touch_faults(const Args& a) {
     check(has("A: ", "were lost on the way") && has("A: ", "read back and recorded"),
           "  the lost touches name the track, and say the values were read back");
     check(has("(A, slot B)", "did not record that change"), "  the unmapped ones name the plugin, track and slot");
+    check(has("(A, slot B)", "refused a file path") && has("(A, slot B)", "makePath refused ../escape.bin"),
+          "  the refused paths name the plugin, track and slot, with the host's text");
     bool standing = false;
     for (int i = 0; i < 100; ++i) {
         rig.turn();

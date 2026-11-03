@@ -345,6 +345,7 @@ private:
         model::Id track = 0;
         plugin_client::HostProcess* host = nullptr;
         uint64_t deadline_ms = 0;
+        int timeout_ms = 0;
         std::string where;
     };
     std::map<uint32_t, StateRequest> state_requests_;

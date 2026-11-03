@@ -3,7 +3,9 @@
 
 #include "sonora/sha256.h"
 
+#include <algorithm>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -12,6 +14,7 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 namespace sonora::plugin_host {
@@ -65,6 +68,14 @@ bool write_all(int fd, const char* p, std::size_t n) {
     return true;
 }
 
+std::string human_bytes(uint64_t n) {
+    char text[32];
+    if (n >= (uint64_t{1} << 30)) std::snprintf(text, sizeof text, "%.1f GiB", double(n) / double(uint64_t{1} << 30));
+    else if (n >= (uint64_t{1} << 20)) std::snprintf(text, sizeof text, "%.1f MiB", double(n) / double(1u << 20));
+    else std::snprintf(text, sizeof text, "%llu bytes", static_cast<unsigned long long>(n));
+    return text;
+}
+
 char* c_make_path(LV2_State_Make_Path_Handle h, const char* path) {
     return static_cast<StatePaths*>(h)->make_path(path);
 }
@@ -81,8 +92,8 @@ void c_free_path(LV2_State_Free_Path_Handle h, char* path) { static_cast<StatePa
 void mark_processing_thread() noexcept { t_processing = true; }
 bool on_processing_thread() noexcept { return t_processing; }
 
-StatePaths::StatePaths(std::string scratch_dir, std::string session_dir)
-    : scratch_(std::move(scratch_dir)), session_(std::move(session_dir)) {
+StatePaths::StatePaths(std::string scratch_dir, std::string session_dir, CopyLimits limits)
+    : scratch_(std::move(scratch_dir)), session_(std::move(session_dir)), limits_(std::move(limits)) {
     make_ = {this, c_make_path};
     map_ = {this, c_abstract_path, c_absolute_path};
     free_ = {this, c_free_path};
@@ -163,10 +174,20 @@ bool StatePaths::name_in(const std::string& canonical, const std::string& folder
     if (!pc::state_file_path_valid(rel, sha)) return false;
     std::error_code ec;
     const uintmax_t size = fs::file_size(canonical, ec);
-    if (ec) return false;
+    // Over the cap (put there by hand): not named by it, so copy_in refuses
+    // it with the text, rather than the engine refusing the whole State.
+    if (ec || uint64_t(size) > limits_.file_bytes) return false;
     // Content-addressed and append-only: the directory is its hash, so it is
     // not read again (with kGetStateNoCopy nothing may be).
     out = {rel, sha, uint64_t(size)};
+    return true;
+}
+
+bool StatePaths::free_space_of(const std::string& dir, uint64_t& free) const {
+    if (limits_.free_space) return limits_.free_space(dir, free);
+    struct statvfs vfs {};
+    if (::statvfs(dir.c_str(), &vfs) != 0) return false;
+    free = uint64_t(vfs.f_bavail) * uint64_t(vfs.f_frsize);
     return true;
 }
 
@@ -180,12 +201,48 @@ bool StatePaths::copy_in(const std::string& given, const std::string& canonical,
         return false;
     }
     const std::string name = fs::path(given).filename().string();
-    const fs::path tmp = into / (".incoming-" + std::to_string(::getpid()) + "-" + std::to_string(++copies_));
-    const int src = ::open(canonical.c_str(), O_RDONLY | O_CLOEXEC);
+    // `canonical` has no link left in it; O_NOFOLLOW keeps one swapped in
+    // since from being followed, and fstat sizes what was opened.
+    const int src = ::open(canonical.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (src < 0) {
         error = "cannot read " + given + ": " + std::strerror(errno);
         return false;
     }
+    struct stat st {};
+    if (::fstat(src, &st) != 0 || !S_ISREG(st.st_mode)) {
+        error = "cannot read " + given + ": not a regular file";
+        ::close(src);
+        return false;
+    }
+    // Every refusal before the first byte is written: a plugin's file that
+    // would fill the disk or outlast the State budget is never started.
+    const uint64_t size = uint64_t(st.st_size);
+    if (size > limits_.file_bytes) {
+        error = "its file " + given + " is " + human_bytes(size) + ", over the " + human_bytes(limits_.file_bytes) +
+                " one plug-in file may be";
+        ::close(src);
+        return false;
+    }
+    if (size > limits_.total_bytes - std::min(copied_bytes_, limits_.total_bytes)) {
+        error = "its files come to more than the " + human_bytes(limits_.total_bytes) + " one save may copy (" +
+                given + " is " + human_bytes(size) + ", after " + human_bytes(copied_bytes_) + ")";
+        ::close(src);
+        return false;
+    }
+    uint64_t free_bytes = 0;
+    if (!free_space_of(into.string(), free_bytes)) {
+        error = "cannot tell how much room is left in " + into.string() + ": " + std::strerror(errno);
+        ::close(src);
+        return false;
+    }
+    if (free_bytes < size || free_bytes - size < limits_.margin_bytes) {
+        error = "not enough room to save " + given + " (" + human_bytes(size) + "): " + human_bytes(free_bytes) +
+                " free in " + into.string() + ", and " + human_bytes(limits_.margin_bytes) +
+                " must stay free for recording";
+        ::close(src);
+        return false;
+    }
+    const fs::path tmp = into / (".incoming-" + std::to_string(::getpid()) + "-" + std::to_string(++copies_));
     const int dst = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
     if (dst < 0) {
         error = "cannot write " + tmp.string() + ": " + std::strerror(errno);
@@ -206,8 +263,15 @@ bool StatePaths::copy_in(const std::string& given, const std::string& canonical,
             break;
         }
         if (n == 0) break;
-        sha.update(buf.data(), std::size_t(n));
         total += uint64_t(n);
+        // The plugin can still be writing it: what was checked is the most
+        // that is copied.
+        if (total > size) {
+            error = "its file " + given + " grew while it was being saved";
+            ok = false;
+            break;
+        }
+        sha.update(buf.data(), std::size_t(n));
         if (!write_all(dst, buf.data(), std::size_t(n))) {
             error = "cannot write " + tmp.string() + ": " + std::strerror(errno);
             ok = false;
@@ -241,6 +305,7 @@ bool StatePaths::copy_in(const std::string& given, const std::string& canonical,
         fs::remove(tmp, ec);
         return false;
     }
+    copied_bytes_ += total;
     out = {rel, hex, total};
     return true;
 }
@@ -272,6 +337,8 @@ char* StatePaths::abstract_path(const char* absolute) {
             if (failed_.empty()) failed_ = "plugin files are saved after the take (" + given + ")";
             return dup(given);
         }
+        // The State already fails: copying more would only spend the budget.
+        if (!failed_.empty()) return dup(given);
         std::string error;
         if (!copy_in(given, canonical, f, error)) {
             if (failed_.empty()) failed_ = error;
@@ -325,6 +392,7 @@ void StatePaths::begin_save(const std::string& save_dir, bool no_copy) {
     failed_.clear();
     files_.clear();
     named_.clear();
+    copied_bytes_ = 0;
     if (!save_dir.empty() && save_dir != session_) {
         if (!session_.empty()) {
             bool known = false;
