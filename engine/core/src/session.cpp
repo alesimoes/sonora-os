@@ -2033,7 +2033,10 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
             const uint8_t bit = static_cast<uint8_t>(1u << p);
             int64_t& at = return_at_[e * kAutoParams + p];
             const auto s = static_cast<int64_t>(start);
-            if (!rolling || (live & bit) != 0 || jumped ||
+            // A new plan alone does not end a return: an edit mid-glide
+            // leaves the audio where it was (follow_track_owners() ends the
+            // return of a row whose track moved).
+            if (!rolling || (live & bit) != 0 || start != auto_next_ ||
                 (at != kNoReturn && (s < at || s >= at + touch_return_frames_))) {
                 at = kNoReturn;
             }
@@ -2449,6 +2452,10 @@ void Session::follow_track_owners(const PlaybackPlan& plan) noexcept SONORA_RT {
             live_moved_[e * kAutoParams + p] = from < n ? live_value_[from * kAutoParams + p] : 0.0f;
         }
         snap_row_[e] = from != e ? 1 : 0;
+        // The glide belongs to the track that was released, not to the row.
+        if (from != e) {
+            for (uint32_t p = 0; p < kAutoParams; ++p) return_at_[e * kAutoParams + p] = kNoReturn;
+        }
     }
     for (uint32_t e = 0; e < n; ++e) {
         auto_latched_[e] = latched[e];
