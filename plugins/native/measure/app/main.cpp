@@ -45,6 +45,7 @@ int tube(const measure::Args&);
 int opto(const measure::Args&);
 int fet(const measure::Args&);
 int tape(const measure::Args&);
+int saturator(const measure::Args&);
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -140,6 +141,7 @@ int main(int argc, char** argv) {
     if (which == "opto") return native::suites::opto(args);
     if (which == "fet") return native::suites::fet(args);
     if (which == "tape") return native::suites::tape(args);
+    if (which == "saturator") return native::suites::saturator(args);
     std::fprintf(stderr, "unknown processor '%s'\n", which.c_str());
     return 2;
 }

@@ -74,6 +74,7 @@
 #include "sonora/native/gate.h"
 #include "sonora/native/limiter.h"
 #include "sonora/native/reverb.h"
+#include "sonora/native/saturator.h"
 #include "sonora/native/tape.h"
 #include "sonora/native/opto.h"
 #include "sonora/native/tube.h"
@@ -90,6 +91,7 @@ measure::Config tube_golden_config();
 measure::Config opto_golden_config();
 measure::Config fet_golden_config();
 measure::Config tape_golden_config();
+measure::Config saturator_golden_config();
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -160,6 +162,10 @@ const Target kTargets[] = {
     // leaves the tape's state at zero, so the preroll is free.
     {"tape", [] { return native::make_tape(); }, native::suites::tape_golden_config, true,
      {"drive", 18.0f}, {{"quality", 2.0f}}},
+    // Quality changes the oversampling factor, and so the latency. Silence
+    // leaves every state at zero, so the preroll is free.
+    {"saturator", [] { return native::make_saturator(); }, native::suites::saturator_golden_config, true,
+     {"drive", 30.0f}, {{"quality", 2.0f}}},
 };
 
 struct Case {
