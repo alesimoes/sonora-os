@@ -37,6 +37,7 @@ namespace sonora::native::suites {
 int eq(const measure::Args&);
 int compressor(const measure::Args&);
 int gate(const measure::Args&);
+int deesser(const measure::Args&);
 int limiter(const measure::Args&);
 int delay(const measure::Args&);
 int chorus(const measure::Args&);
@@ -132,6 +133,7 @@ int main(int argc, char** argv) {
     if (which == "eq") return native::suites::eq(args);
     if (which == "compressor") return native::suites::compressor(args);
     if (which == "gate") return native::suites::gate(args);
+    if (which == "deesser") return native::suites::deesser(args);
     if (which == "limiter") return native::suites::limiter(args);
     if (which == "delay") return native::suites::delay(args);
     if (which == "chorus") return native::suites::chorus(args);
