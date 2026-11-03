@@ -229,9 +229,9 @@ void check_denormals(Suite& s, const Config& c) {
     }
     s.check_le("denormals: subnormal output samples in the silent tail", static_cast<double>(subnormals), 0.0,
                "samples", "bit inspection, deterministic");
-    s.check_le("denormals: per-block CPU, silence after signal / active (median, interleaved, best of <=3)", best,
-               s.bar("denormal_ratio"), "ratio",
-               dsp::flush_to_zero_supported() ? "FTZ/DAZ on" : "no FTZ on this architecture");
+    s.check_time_le("denormals: per-block CPU, silence after signal / active (median, interleaved, best of <=3)", best,
+                    s.bar("denormal_ratio"), "ratio",
+                    dsp::flush_to_zero_supported() ? "FTZ/DAZ on" : "no FTZ on this architecture");
 }
 
 Chans zipper_tone(double fs, double seconds, double dbfs) {

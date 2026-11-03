@@ -812,8 +812,8 @@ void hot_input(Suite& s) {
             s.check(what + ": output finite", finite ? 1.0 : 0.0, 1.0, finite, "bool");
             s.check_le(what + ": deepest reduction", deepest, s.bar("deepest_gr_db"), "dB",
                        "the cell under the driver's full swing ([M]: up to 40 dB)");
-            s.check_le(what + ": worst block over the quiet median, minimum of 3 runs", w / median, ratio_bar, "x",
-                       fmt("worst %.1f us; median %.1f us on a -60 dBFS square", w, median));
+            s.check_time_le(what + ": worst block over the quiet median, minimum of 3 runs", w / median, ratio_bar, "x",
+                            fmt("worst %.1f us; median %.1f us on a -60 dBFS square", w, median));
             s.check_time_le(what + ": worst block, minimum of 3 runs", w, 2667.0, "us",
                             "the 128-frame period at 48 kHz");
         }
