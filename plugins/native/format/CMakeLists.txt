@@ -95,11 +95,17 @@ target_compile_options(sonora_native_bundle_driver PRIVATE $<$<CXX_COMPILER_ID:G
 # <fn> is the processor's factory in namespace sonora::native, declared in
 # sonora/native/<name>.h. <uid> and <mono uid> are the VST3 class IDs'
 # plugin words: never change one, saved sessions find the plugin by it.
+# FILES: the processor has file slots (sdk files.h); each is a filename-path
+# state (plugin.cpp, ADR-0029 section 6 amendment). LINK <targets>: libraries
+# the factory lives in, when it is not sonora_native_<name> itself.
+# MEMORYLESS: with its defaults the processor keeps no signal memory (the
+# cabinet with no response is a unit impulse), so the driver's "a burst left
+# state that reset() cleared" proof is waived for it (bundle_driver.cpp).
 # SIDECHAIN: the processor takes a key (Descriptor::sidechain), and each
 # layout gets a key input with as many channels as its main input.
 option(SONORA_INSTALL_EXPERIMENTAL "Install bundles marked EXPERIMENTAL" OFF)
 function(sonora_native_plugin name)
-  cmake_parse_arguments(P "TIMEPOS;SIDECHAIN;EXPERIMENTAL" "FACTORY;DISPLAY;UID;MONO_UID;LV2_CATEGORY;VST3_CATEGORIES" "" ${ARGN})
+  cmake_parse_arguments(P "TIMEPOS;SIDECHAIN;EXPERIMENTAL;FILES;MEMORYLESS" "FACTORY;DISPLAY;UID;MONO_UID;LV2_CATEGORY;VST3_CATEGORIES" "LINK" ${ARGN})
   foreach(uid "${P_UID}" "${P_MONO_UID}")
     string(LENGTH "${uid}" uid_len)
     if(NOT uid_len EQUAL 4)
@@ -114,7 +120,7 @@ function(sonora_native_plugin name)
   # position-independent. Code generation for the arithmetic is unchanged,
   # so the golden files still hold.
   foreach(dep sonora_base sonora_json sonora_dsp sonora_native_sdk sonora_native_format
-              sonora_native_${name})
+              sonora_native_${name} ${P_LINK})
     set_property(TARGET ${dep} PROPERTY POSITION_INDEPENDENT_CODE ON)
   endforeach()
 
@@ -146,6 +152,11 @@ function(_sonora_native_bundle name suffix channels uid display)
   else()
     set(SONORA_SIDECHAIN_CHANNELS 0)
   endif()
+  if(P_FILES)
+    set(SONORA_FILE_STATE 1)
+  else()
+    set(SONORA_FILE_STATE 0)
+  endif()
   if(P_TIMEPOS)
     set(SONORA_TIMEPOS 1)
   else()
@@ -168,7 +179,7 @@ function(_sonora_native_bundle name suffix channels uid display)
     target_compile_definitions(${t} PRIVATE DISTRHO_PLUGIN_TARGET_${FMT} SONORA_DPF_QUIET)
     target_include_directories(${t} PRIVATE ${gen})
     target_include_directories(${t} SYSTEM PRIVATE ${SONORA_DPF_DIR}/distrho)
-    target_link_libraries(${t} PRIVATE sonora_native_${name} sonora_native_format)
+    target_link_libraries(${t} PRIVATE ${P_LINK} sonora_native_${name} sonora_native_format)
     # Only the format's entry points are exported; lv2lint's symbol check
     # holds us to it.
     set_target_properties(${t} PROPERTIES PREFIX "" CXX_VISIBILITY_PRESET hidden
@@ -210,7 +221,7 @@ function(_sonora_native_bundle name suffix channels uid display)
   target_compile_definitions(${gen_t} PRIVATE DISTRHO_PLUGIN_TARGET_LV2)
   target_include_directories(${gen_t} PRIVATE ${gen})
   target_include_directories(${gen_t} SYSTEM PRIVATE ${SONORA_DPF_DIR}/distrho)
-  target_link_libraries(${gen_t} PRIVATE sonora_native_${name} sonora_native_format)
+  target_link_libraries(${gen_t} PRIVATE ${P_LINK} sonora_native_${name} sonora_native_format)
   set_target_properties(${gen_t} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
   add_custom_command(TARGET sonora-${b}-lv2 POST_BUILD
     COMMAND $<TARGET_FILE:${gen_t}> --lv2 sonora-${b}_dsp --descriptor ${lv2_bundle}/descriptor.json
@@ -231,13 +242,27 @@ function(_sonora_native_bundle name suffix channels uid display)
   # held as a test so a change in it is seen.
   set(drive $<TARGET_FILE:sonora_native_bundle_driver>)
   math(EXPR inputs "${SONORA_CHANNELS} + ${SONORA_SIDECHAIN_CHANNELS}")
+  # A bundle with file state has an event output port too: --state 1.
+  set(state_args --state ${SONORA_FILE_STATE})
+  set(memoryless_args)
+  if(P_MEMORYLESS)
+    set(memoryless_args --memoryless 1)
+  endif()
+  list(APPEND state_args ${memoryless_args})
   add_test(NAME native_format_lazy_lv2_${b}
            COMMAND ${drive} --lv2 $<TARGET_FILE:sonora-${b}-lv2> --bundle ${lv2_bundle}/
-                   --inputs ${inputs} --outputs ${SONORA_CHANNELS} --scenario lazy)
+                   --inputs ${inputs} --outputs ${SONORA_CHANNELS} ${state_args} --scenario lazy)
   # options:set between two run() calls (bundle_driver.cpp, lv2_options).
   add_test(NAME native_format_options_lv2_${b}
            COMMAND ${drive} --lv2 $<TARGET_FILE:sonora-${b}-lv2> --bundle ${lv2_bundle}/
-                   --inputs ${inputs} --outputs ${SONORA_CHANNELS} --scenario options)
+                   --inputs ${inputs} --outputs ${SONORA_CHANNELS} ${state_args} --scenario options)
+  if(P_FILES)
+    # The file the state names, through state:mapPath and the Worker.
+    add_test(NAME native_format_state_lv2_${b}
+             COMMAND ${drive} --lv2 $<TARGET_FILE:sonora-${b}-lv2> --bundle ${lv2_bundle}/
+                     --inputs ${inputs} --outputs ${SONORA_CHANNELS} --state 1 --uri ${SONORA_LV2_URI}
+                     --scenario state)
+  endif()
   # "nokey": an inactive or missing key bus is no key, not a silent one
   # (bridge.h). "wide": an over-wide bus prints nothing from process().
   # "setup": setupProcessing() between two process() calls (vst3_setup).
@@ -247,7 +272,7 @@ function(_sonora_native_bundle name suffix channels uid display)
   endif()
   foreach(scenario ${scenarios})
     add_test(NAME native_format_${scenario}_vst3_${b}
-             COMMAND ${drive} --vst3 $<TARGET_FILE:sonora-${b}-vst3> --scenario ${scenario})
+             COMMAND ${drive} --vst3 $<TARGET_FILE:sonora-${b}-vst3> ${memoryless_args} --scenario ${scenario})
   endforeach()
 
   if(SONORA_LV2LINT)

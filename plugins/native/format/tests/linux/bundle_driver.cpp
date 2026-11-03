@@ -39,6 +39,13 @@
 //                        an instance instantiated with those options. Then
 //                        deactivate() and activate() with nothing changed:
 //                        no signal state carried over.
+//   --scenario state     (LV2, a bundle with a file slot; --state 1 --uri U)
+//                        the file the plugin state names: restore() with a
+//                        mapped path loads it off the audio thread, save()
+//                        writes the abstract path back, patch:Set goes
+//                        through the Worker and loads nothing in run(), a
+//                        missing file keeps the response, and nothing
+//                        allocates in run() after a load.
 //   --scenario setup     (VST3) setupProcessing() with a new rate and block
 //                        size between two process() calls, on an active
 //                        component and on one the host deactivated first,
@@ -60,6 +67,7 @@
 #include <dlfcn.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -72,12 +80,16 @@
 #include <thread>
 #include <vector>
 
+#include "lv2/atom-forge.h"
 #include "lv2/atom.h"
 #include "lv2/buf-size.h"
 #include "lv2/lv2.h"
 #include "lv2/options.h"
 #include "lv2/parameters.h"
+#include "lv2/patch.h"
+#include "lv2/state.h"
 #include "lv2/urid.h"
+#include "lv2/worker.h"
 #include "travesty/audio_processor.h"
 #include "travesty/component.h"
 #include "travesty/edit_controller.h"
@@ -116,6 +128,11 @@ namespace {
     } while (0)
 
 constexpr int kBlocks = 64;
+
+// --state 1: the bundle has plugin state (a file slot), which adds an event
+// output port beside the event input (DISTRHO_LV2_USE_EVENTS_OUT).
+bool g_state_ports = false;
+bool g_memoryless = false;  // --memoryless 1, see carries_state()
 
 // --- VST3, through travesty ---------------------------------------------
 
@@ -347,6 +364,11 @@ bool same_render(const std::vector<float>& got, const std::vector<float>& want, 
 // The burst left state that a fresh instance does not have: without this a
 // comparison with a fresh instance proves nothing about reset().
 bool carries_state(const std::vector<float>& kept, const std::vector<float>& fresh, const char* what) {
+    // --memoryless 1: the bundle's default sound has no signal memory (the
+    // cabinet with no response loaded is a unit impulse), so a burst leaves
+    // nothing for a reset to clear and the comparison cannot show one. The
+    // processor's own suite tests reset() with a response loaded.
+    if (g_memoryless) return !kept.empty() && kept.size() == fresh.size();
     std::size_t differ = 0;
     for (std::size_t i = 0; i < kept.size() && i < fresh.size(); ++i) differ += kept[i] != fresh[i];
     std::printf("%s: %zu of %zu value(s) differ from a fresh instance without a reset\n", what, differ,
@@ -904,9 +926,17 @@ int lv2_lazy(const char* path, const char* bundle, uint32_t inputs, uint32_t out
     };
     const LV2_Feature map_feature{LV2_URID__map, &map};
     const LV2_Feature options_feature{LV2_OPTIONS__options, const_cast<LV2_Options_Option*>(options)};
-    const LV2_Feature* features[] = {&map_feature, &options_feature, nullptr};
+    // A bundle with plugin state requires the worker feature (DPF
+    // instantiates nothing without it); nothing is ever scheduled here.
+    const LV2_Worker_Schedule schedule{nullptr, [](LV2_Worker_Schedule_Handle, uint32_t, const void*) {
+                                           return LV2_WORKER_SUCCESS;
+                                       }};
+    const LV2_Feature worker_feature{LV2_WORKER__schedule, const_cast<LV2_Worker_Schedule*>(&schedule)};
+    std::vector<const LV2_Feature*> features{&map_feature, &options_feature};
+    if (g_state_ports) features.push_back(&worker_feature);
+    features.push_back(nullptr);
 
-    LV2_Handle h = desc->instantiate(desc, 48000.0, bundle, features);
+    LV2_Handle h = desc->instantiate(desc, 48000.0, bundle, features.data());
     CHECK(h != nullptr);
     Block b(max_block, static_cast<int32_t>(inputs), static_cast<int32_t>(outputs));
     // DPF's LV2 port order: the audio inputs (the key input's last), the
@@ -922,6 +952,14 @@ int lv2_lazy(const char* path, const char* bundle, uint32_t inputs, uint32_t out
     for (float* in : b.ins) desc->connect_port(h, port++, in);
     for (float* out : b.outs) desc->connect_port(h, port++, out);
     desc->connect_port(h, port, extra);
+    // A bundle with plugin state (--state 1) has an event output and then
+    // the latency after the event input; DPF reads the input in every run().
+    alignas(8) std::uint8_t events_out[1024] = {};
+    float latency_out = 0.0f;
+    if (g_state_ports) {
+        desc->connect_port(h, port + 1, events_out);
+        desc->connect_port(h, port + 2, &latency_out);
+    }
 
     g_allocations.store(0);
     g_counting.store(true);
@@ -936,6 +974,41 @@ int lv2_lazy(const char* path, const char* bundle, uint32_t inputs, uint32_t out
     return 0;
 }
 
+// The host side of LV2 state with files (ADR-0029 §6): state:mapPath and
+// freePath over a made-up session folder, and a worker queue that the test
+// runs by hand, on "another thread" (the test's own).
+struct StateHost {
+    std::string dir;  // the session folder; "files/<name>" abstracts <dir>/<name>
+    std::vector<std::vector<std::uint8_t>> queued;
+
+    static char* abstract_path(LV2_State_Map_Path_Handle h, const char* abs) {
+        const std::string prefix = static_cast<StateHost*>(h)->dir + "/";
+        const std::string a(abs);
+        const std::string r = a.compare(0, prefix.size(), prefix) == 0 ? "files/" + a.substr(prefix.size()) : a;
+        return strdup(r.c_str());
+    }
+    static char* absolute_path(LV2_State_Map_Path_Handle h, const char* rel) {
+        const std::string r(rel);
+        const std::string prefix = "files/";
+        return strdup((r.compare(0, prefix.size(), prefix) == 0
+                           ? static_cast<StateHost*>(h)->dir + "/" + r.substr(prefix.size())
+                           : r).c_str());
+    }
+    static void free_path(LV2_State_Free_Path_Handle, char* p) { std::free(p); }
+    static LV2_Worker_Status schedule_work(LV2_Worker_Schedule_Handle h, uint32_t size, const void* data) {
+        const auto* p = static_cast<const std::uint8_t*>(data);
+        static_cast<StateHost*>(h)->queued.emplace_back(p, p + size);
+        return LV2_WORKER_SUCCESS;
+    }
+
+    LV2_State_Map_Path map_path{this, abstract_path, absolute_path};
+    LV2_State_Free_Path free_path_feature{this, free_path};
+    LV2_Worker_Schedule schedule{this, schedule_work};
+    LV2_Feature f_map{LV2_STATE__mapPath, &map_path};
+    LV2_Feature f_free{LV2_STATE__freePath, &free_path_feature};
+    LV2_Feature f_work{LV2_WORKER__schedule, &schedule};
+};
+
 // One LV2 instance, instantiated with a rate, a max block length and a
 // nominal one, and activated: what a host has before it starts running.
 struct Lv2Instance {
@@ -947,10 +1020,14 @@ struct Lv2Instance {
     LV2_URID_Map map{&urids, UridMap::map};
     int32_t max_block, nominal;
     Block b;
-    alignas(8) std::uint8_t extra[64] = {};
+    // The event input; --scenario state forges patch:Set messages into it.
+    alignas(8) std::uint8_t extra[512] = {};
+    alignas(8) std::uint8_t events_out[1024] = {};
+    float latency_out = 0.0f;
+    StateHost own_host;
 
     Lv2Instance(const char* path, const char* bundle, uint32_t inputs, uint32_t outputs, double rate,
-                int32_t max, int32_t nom)
+                int32_t max, int32_t nom, StateHost* host = nullptr)
         : max_block(max), nominal(nom), b(max, static_cast<int32_t>(inputs), static_cast<int32_t>(outputs)) {
         lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
         if (lib == nullptr) {
@@ -975,8 +1052,15 @@ struct Lv2Instance {
         };
         const LV2_Feature map_feature{LV2_URID__map, &map};
         const LV2_Feature options_feature{LV2_OPTIONS__options, const_cast<LV2_Options_Option*>(options)};
-        const LV2_Feature* features[] = {&map_feature, &options_feature, nullptr};
-        h = desc->instantiate(desc, rate, bundle, features);
+        std::vector<const LV2_Feature*> features{&map_feature, &options_feature};
+        if (host == nullptr && g_state_ports) host = &own_host;  // the worker feature is required
+        if (host != nullptr) {
+            features.push_back(&host->f_map);
+            features.push_back(&host->f_free);
+            features.push_back(&host->f_work);
+        }
+        features.push_back(nullptr);
+        h = desc->instantiate(desc, rate, bundle, features.data());
         if (h == nullptr) return;
         if (desc->extension_data != nullptr)
             opts = static_cast<const LV2_Options_Interface*>(desc->extension_data(LV2_OPTIONS__interface));
@@ -988,6 +1072,10 @@ struct Lv2Instance {
         for (float* in : b.ins) desc->connect_port(h, port++, in);
         for (float* out : b.outs) desc->connect_port(h, port++, out);
         desc->connect_port(h, port, extra);
+        if (g_state_ports) {
+            desc->connect_port(h, port + 1, events_out);
+            desc->connect_port(h, port + 2, &latency_out);
+        }
         if (desc->activate != nullptr) desc->activate(h);
     }
     ~Lv2Instance() {
@@ -1131,16 +1219,210 @@ int lv2_options(const char* path, const char* bundle, uint32_t inputs, uint32_t 
     return 0;
 }
 
+// --- --scenario state (LV2): a file slot carried in plugin state ----------
+
+// What the host keeps of a saved state, and hands back on restore.
+struct StateStore {
+    struct Entry {
+        std::string value;
+        uint32_t type;
+    };
+    std::map<uint32_t, Entry> entries;
+    static LV2_State_Status store(LV2_State_Handle h, uint32_t key, const void* value, size_t size,
+                                  uint32_t type, uint32_t) {
+        auto* s = static_cast<StateStore*>(h);
+        s->entries[key] = {std::string(static_cast<const char*>(value), size), type};
+        return LV2_STATE_SUCCESS;
+    }
+    static const void* retrieve(LV2_State_Handle h, uint32_t key, size_t* size, uint32_t* type, uint32_t* flags) {
+        auto* s = static_cast<StateStore*>(h);
+        const auto it = s->entries.find(key);
+        if (it == s->entries.end()) return nullptr;
+        *size = it->second.value.size();
+        *type = it->second.type;
+        *flags = LV2_STATE_IS_POD | LV2_STATE_IS_PORTABLE;
+        return it->second.value.c_str();
+    }
+};
+
+// A mono PCM16 WAV with one nonzero sample: an impulse response whose
+// response (index, gain) the test can read back.
+bool write_ir(const std::string& path, uint32_t rate, int index, int16_t value, int frames) {
+    std::vector<std::uint8_t> w;
+    auto p32 = [&](uint32_t v) { for (int i = 0; i < 4; ++i) w.push_back(static_cast<std::uint8_t>(v >> (8 * i))); };
+    auto p16 = [&](uint16_t v) { w.push_back(static_cast<std::uint8_t>(v)); w.push_back(static_cast<std::uint8_t>(v >> 8)); };
+    auto tag = [&](const char* t) { w.insert(w.end(), t, t + 4); };
+    tag("RIFF"); p32(36 + static_cast<uint32_t>(frames) * 2); tag("WAVE");
+    tag("fmt "); p32(16); p16(1); p16(1); p32(rate); p32(rate * 2); p16(2); p16(16);
+    tag("data"); p32(static_cast<uint32_t>(frames) * 2);
+    for (int i = 0; i < frames; ++i) p16(static_cast<uint16_t>(i == index ? value : 0));
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (f == nullptr) return false;
+    const bool ok = std::fwrite(w.data(), 1, w.size(), f) == w.size();
+    return std::fclose(f) == 0 && ok;
+}
+
+constexpr int kIrLen = 48;
+
+// The first kIrLen samples of channel 0 for a unit impulse, after enough
+// silent blocks for a response loaded before them to have been taken over
+// (the audio thread takes it at a block boundary, then dips for 2 x 4 ms +
+// one partition). With `count` the allocations in run() are checked.
+bool measure_ir(Lv2Instance& in, std::vector<float>& ir, bool count) {
+    for (auto& ch : in.b.in) std::fill(ch.begin(), ch.end(), 0.0f);
+    const uint32_t frames = static_cast<uint32_t>(in.max_block);
+    if (count) {
+        g_allocations.store(0);
+        g_counting.store(true);
+    }
+    for (int k = 0; k < 8; ++k) in.desc->run(in.h, frames);
+    for (auto& ch : in.b.in) ch[0] = 1.0f;
+    in.desc->run(in.h, frames);
+    if (count) g_counting.store(false);
+    for (auto& ch : in.b.in) ch[0] = 0.0f;
+    if (count && g_allocations.load() != 0) {
+        std::fprintf(stderr, "%ld allocations inside run() after a file was loaded\n", g_allocations.load());
+        return false;
+    }
+    ir.assign(in.b.out[0].begin(), in.b.out[0].begin() + kIrLen);
+    return in.b.finite();
+}
+
+bool is_response(const std::vector<float>& ir, int index, float gain, const char* what) {
+    for (int i = 0; i < kIrLen; ++i) {
+        const float want = i == index ? gain : 0.0f;
+        if (std::fabs(ir[static_cast<std::size_t>(i)] - want) > 1e-3f) {
+            std::fprintf(stderr, "%s: sample %d is %.6f, want %.6f\n", what, i,
+                         static_cast<double>(ir[static_cast<std::size_t>(i)]), static_cast<double>(want));
+            return false;
+        }
+    }
+    return true;
+}
+
+// The patch:Set a host sends to write a filename-path property, as the first
+// event of the input sequence.
+void forge_patch_set(Lv2Instance& in, LV2_URID property, const std::string& path) {
+    LV2_Atom_Forge forge;
+    lv2_atom_forge_init(&forge, &in.map);
+    lv2_atom_forge_set_buffer(&forge, in.extra, sizeof in.extra);
+    LV2_Atom_Forge_Frame seq_frame, obj_frame;
+    lv2_atom_forge_sequence_head(&forge, &seq_frame, 0);
+    lv2_atom_forge_frame_time(&forge, 0);
+    lv2_atom_forge_object(&forge, &obj_frame, 0, UridMap::map(&in.urids, LV2_PATCH__Set));
+    lv2_atom_forge_key(&forge, UridMap::map(&in.urids, LV2_PATCH__property));
+    lv2_atom_forge_urid(&forge, property);
+    lv2_atom_forge_key(&forge, UridMap::map(&in.urids, LV2_PATCH__value));
+    lv2_atom_forge_path(&forge, path.c_str(), static_cast<uint32_t>(path.size() + 1));
+    lv2_atom_forge_pop(&forge, &obj_frame);
+    lv2_atom_forge_pop(&forge, &seq_frame);
+}
+
+void empty_events(Lv2Instance& in) {
+    auto* seq = reinterpret_cast<LV2_Atom_Sequence*>(in.extra);
+    seq->atom.size = sizeof(LV2_Atom_Sequence_Body);
+    seq->atom.type = UridMap::map(&in.urids, LV2_ATOM__Sequence);
+}
+
+// The bundle's response is the file its state names: restore() puts it in
+// (through state:mapPath, off the audio thread), save() writes the path back
+// abstracted, a patch:Set reaches setState() through the Worker and never
+// loads a file inside run(), and a file that cannot be read leaves the
+// previous response. Mapped path and file are the host's (StateHost).
+int lv2_state(const char* path, const char* bundle, uint32_t inputs, uint32_t outputs, const char* uri) {
+    CHECK(uri != nullptr && g_state_ports);
+    char tmpl[] = "/tmp/sonora_state_XXXXXX";
+    CHECK(mkdtemp(tmpl) != nullptr);
+    StateHost host;
+    host.dir = tmpl;
+    CHECK(write_ir(host.dir + "/a.wav", 48000, 10, 16384, 40));    // 0.5 at 10
+    CHECK(write_ir(host.dir + "/b.wav", 48000, 20, 8192, 40));     // 0.25 at 20
+
+    constexpr int32_t kMax = 256;
+    Lv2Instance a(path, bundle, inputs, outputs, 48000.0, kMax, kMax, &host);
+    CHECK(a.h != nullptr && a.desc->extension_data != nullptr);
+    const auto* state_if = static_cast<const LV2_State_Interface*>(a.desc->extension_data(LV2_STATE__interface));
+    const auto* worker_if = static_cast<const LV2_Worker_Interface*>(a.desc->extension_data(LV2_WORKER__interface));
+    CHECK(state_if != nullptr && state_if->save != nullptr && state_if->restore != nullptr);
+    CHECK(worker_if != nullptr && worker_if->work != nullptr);
+    const LV2_Feature* const state_features[] = {&host.f_map, &host.f_free, nullptr};
+    const LV2_URID key = UridMap::map(&a.urids, (std::string(uri) + "#ir").c_str());
+    const LV2_URID atom_path = UridMap::map(&a.urids, LV2_ATOM__Path);
+    drive(a.b, 0.0f);
+
+    std::vector<float> ir;
+    // Nothing loaded: the unit impulse.
+    CHECK(measure_ir(a, ir, false));
+    CHECK(is_response(ir, 0, 1.0f, "no file"));
+
+    // restore(): the host hands back the abstract path of a.wav.
+    StateStore saved;
+    saved.entries[key] = {"files/a.wav", atom_path};
+    CHECK(state_if->restore(a.h, StateStore::retrieve, &saved, 0, state_features) == LV2_STATE_SUCCESS);
+    CHECK(measure_ir(a, ir, true));
+    CHECK(is_response(ir, 10, 0.5f, "restored a.wav"));
+
+    // save(): the same abstract path, typed atom:Path, not the absolute one.
+    StateStore out;
+    CHECK(state_if->save(a.h, StateStore::store, &out, 0, state_features) == LV2_STATE_SUCCESS);
+    CHECK(out.entries.count(key) == 1);
+    CHECK(out.entries[key].type == atom_path);
+    CHECK(std::string(out.entries[key].value.c_str()) == "files/a.wav");
+
+    // A host that writes the property: patch:Set in the event input is only
+    // queued to the Worker by run(), and the file is read in work().
+    forge_patch_set(a, key, host.dir + "/b.wav");
+    a.desc->run(a.h, static_cast<uint32_t>(kMax));
+    empty_events(a);
+    CHECK(host.queued.size() == 1);
+    CHECK(measure_ir(a, ir, false));
+    CHECK(is_response(ir, 10, 0.5f, "before the worker ran"));
+    const auto respond = [](LV2_Worker_Respond_Handle, uint32_t, const void*) { return LV2_WORKER_SUCCESS; };
+    CHECK(worker_if->work(a.h, respond, nullptr, static_cast<uint32_t>(host.queued[0].size()),
+                          host.queued[0].data()) == LV2_WORKER_SUCCESS);
+    CHECK(measure_ir(a, ir, true));
+    CHECK(is_response(ir, 20, 0.25f, "patch:Set b.wav"));
+
+    // The save after a patch:Set names the new file, abstracted.
+    StateStore out2;
+    CHECK(state_if->save(a.h, StateStore::store, &out2, 0, state_features) == LV2_STATE_SUCCESS);
+    CHECK(std::string(out2.entries[key].value.c_str()) == "files/b.wav");
+
+    // A file that is gone: the previous response stays.
+    StateStore gone;
+    gone.entries[key] = {"files/missing.wav", atom_path};
+    CHECK(state_if->restore(a.h, StateStore::retrieve, &gone, 0, state_features) == LV2_STATE_SUCCESS);
+    CHECK(measure_ir(a, ir, true));
+    CHECK(is_response(ir, 20, 0.25f, "missing file"));
+
+    // A second instance restored from the saved state sounds the same.
+    Lv2Instance c(path, bundle, inputs, outputs, 48000.0, kMax, kMax, &host);
+    CHECK(c.h != nullptr);
+    drive(c.b, 0.0f);
+    CHECK(state_if->restore(c.h, StateStore::retrieve, &out2, 0, state_features) == LV2_STATE_SUCCESS);
+    std::vector<float> ir_c;
+    CHECK(measure_ir(c, ir_c, true));
+    CHECK(same_render(ir_c, ir, "second instance from saved state"));
+
+    for (const char* f : {"/a.wav", "/b.wav"}) std::remove((host.dir + f).c_str());
+    rmdir(host.dir.c_str());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     const char* vst3 = nullptr;
     const char* lv2 = nullptr;
     const char* bundle = nullptr;
+    const char* uri = nullptr;
     std::string scenario;
     uint32_t inputs = 2, outputs = 2;
     for (int i = 1; i + 1 < argc; i += 2) {
-        if (std::strcmp(argv[i], "--vst3") == 0) vst3 = argv[i + 1];
+        if (std::strcmp(argv[i], "--state") == 0) g_state_ports = std::atoi(argv[i + 1]) != 0;
+        else if (std::strcmp(argv[i], "--memoryless") == 0) g_memoryless = std::atoi(argv[i + 1]) != 0;
+        else if (std::strcmp(argv[i], "--uri") == 0) uri = argv[i + 1];
+        else if (std::strcmp(argv[i], "--vst3") == 0) vst3 = argv[i + 1];
         else if (std::strcmp(argv[i], "--lv2") == 0) lv2 = argv[i + 1];
         else if (std::strcmp(argv[i], "--bundle") == 0) bundle = argv[i + 1];
         else if (std::strcmp(argv[i], "--scenario") == 0) scenario = argv[i + 1];
@@ -1158,9 +1440,11 @@ int main(int argc, char** argv) {
     else if (lv2 != nullptr && bundle != nullptr && scenario == "lazy") r = lv2_lazy(lv2, bundle, inputs, outputs);
     else if (lv2 != nullptr && bundle != nullptr && scenario == "options")
         r = lv2_options(lv2, bundle, inputs, outputs);
+    else if (lv2 != nullptr && bundle != nullptr && scenario == "state")
+        r = lv2_state(lv2, bundle, inputs, outputs, uri);
     else
         std::fprintf(stderr, "usage: %s (--vst3 BINARY --scenario lazy|oversize|threads|late|nokey|wide|setup |"
-                             " --lv2 BINARY --bundle DIR [--inputs N --outputs N] --scenario lazy|options)\n",
+                             " --lv2 BINARY --bundle DIR [--inputs N --outputs N] --scenario lazy|options|state [--state 1 --uri URI])\n",
                      argv[0]);
     if (r == 0) std::printf("bundle_driver %s: pass\n", scenario.c_str());
     return r;

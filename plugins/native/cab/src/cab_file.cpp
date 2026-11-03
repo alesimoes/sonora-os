@@ -57,4 +57,10 @@ Cab::LoadResult load_cab_ir_wav(Cab& cab, const std::string& path, std::string& 
     }
 }
 
+std::unique_ptr<Cab> make_cab_plugin() {
+    std::unique_ptr<Cab> cab = make_cab();
+    cab->set_ir_reader(&load_cab_ir_wav);
+    return cab;
+}
+
 }  // namespace sonora::native

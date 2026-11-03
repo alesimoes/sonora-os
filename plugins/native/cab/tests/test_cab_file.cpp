@@ -12,6 +12,7 @@
 
 #include "sonora/measure/measure.h"
 #include "sonora/native/cab_file.h"
+#include "sonora/native/state.h"
 
 namespace {
 int failures = 0;
@@ -103,6 +104,80 @@ int main() {
         CHECK(!e.empty());
     }
     CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3));
+    // The file slot (ADR-0029 section 6, amendment): the response chosen
+    // through plugin state.
+    {
+        CHECK(native::make_cab()->files() == nullptr);  // no reader, no slot
+        const double fs = 48000.0;
+        auto write_ir = [&](const std::string& p, std::size_t at, float g) {
+            measure::Chans c = measure::silence(fs, 0.01, 1);
+            c[0][at] = g;
+            return measure::write_wav_f32(p, c, fs);
+        };
+        const std::string p1 = (dir / "slot1.wav").string(), p2 = (dir / "slot2.wav").string();
+        CHECK(write_ir(p1, 7, 0.5f));
+        CHECK(write_ir(p2, 20, 0.25f));
+        // Silent blocks first: a load is taken over at a block boundary and
+        // the wet path then dips and fades back.
+        auto response = [&](native::Cab& c) {
+            measure::render(c, measure::silence(fs, 0.05, 1));
+            measure::Chans x = measure::silence(fs, 0.01, 1);
+            x[0][0] = 1.0f;
+            return measure::render(c, x)[0];
+        };
+        auto prepared = [&]() {
+            auto c = native::make_cab_plugin();
+            c->prepare(fs, 128, 1);
+            return c;
+        };
+
+        auto a = prepared();
+        native::FileSlots* slots = a->files();
+        CHECK(slots != nullptr && slots->slot_count() == 1);
+        CHECK(std::string(slots->slot(0).id) == "ir" && std::string(slots->slot(0).extensions) == "wav");
+        CHECK(std::fabs(response(*a)[0] - 1.0f) < 1e-6f);  // nothing loaded: the unit impulse
+
+        std::string why;
+        CHECK(slots->load(0, p1, why));
+        CHECK(slots->path(0) == p1);
+        std::vector<float> y = response(*a);
+        CHECK(std::fabs(y[7] - 0.5f) < 1e-4f && std::fabs(y[0]) < 1e-6f);
+
+        // A second load before the audio thread took the first over cannot
+        // be made: it fails after the bounded wait and the path is unchanged.
+        why.clear();
+        const auto w0 = std::chrono::steady_clock::now();
+        CHECK(slots->load(0, p2, why) == true);  // the first was taken over by response()
+        CHECK(!slots->load(0, p1, why));         // no block ran since
+        CHECK(!why.empty());
+        CHECK(std::chrono::steady_clock::now() - w0 < std::chrono::seconds(3));
+        CHECK(slots->path(0) == p2);
+        y = response(*a);
+        CHECK(std::fabs(y[20] - 0.25f) < 1e-4f && std::fabs(y[7]) < 1e-6f);
+
+        // The state carries the path; a new cab restored from it sounds the same.
+        const std::string s = native::save_state(*a);
+        CHECK(s.find("slot2.wav") != std::string::npos);
+        auto b = prepared();
+        CHECK(native::load_state(*b, s, why));
+        CHECK(b->files()->path(0) == p2);
+        const std::vector<float> yb = response(*b);
+        CHECK(yb == y);
+
+        // A file that cannot be read fails the whole state: nothing changes.
+        a->set_param(native::cab::kOutput, -6.0f);
+        const std::string missing = (dir / "gone.wav").string();
+        CHECK(!native::load_state(*b, "{\"processor\": \"org.sonora.cab\", \"state_version\": 1, \"params\": "
+                                      "{\"output\": -12.0}, \"files\": {\"ir\": \"" + missing + "\"}}", why));
+        CHECK(why.find("ir") != std::string::npos);
+        CHECK(b->files()->path(0) == p2 && b->param(native::cab::kOutput) == 0.0f);
+
+        // A state without a file puts the unit impulse back.
+        CHECK(native::load_state(*b, "{\"processor\": \"org.sonora.cab\", \"state_version\": 1, \"params\": {}}", why));
+        CHECK(b->files()->path(0).empty());
+        CHECK(std::fabs(response(*b)[0] - 1.0f) < 1e-6f);
+    }
+
     std::filesystem::remove_all(dir);
     return failures == 0 ? 0 : 1;
 }

@@ -47,7 +47,7 @@ std::string written(const Value& v) {
 }  // namespace
 
 std::string descriptor_json(const Descriptor& d, const FormatSymbol* symbols,
-                            std::uint32_t symbol_count) {
+                            std::uint32_t symbol_count, const FileSlots* files) {
     Value root = Value::object();
     root.set("id", Value::string(d.id));
     root.set("name", Value::string(d.name));
@@ -91,6 +91,18 @@ std::string descriptor_json(const Descriptor& d, const FormatSymbol* symbols,
         params.push(std::move(o));
     }
     root.set("params", std::move(params));
+    if (files != nullptr && files->slot_count() > 0) {
+        Value slots = Value::array();
+        for (std::uint32_t i = 0; i < files->slot_count(); ++i) {
+            const FileSlotInfo& s = files->slot(i);
+            Value o = Value::object();
+            o.set("id", Value::string(s.id));
+            o.set("name", Value::string(s.name));
+            o.set("extensions", Value::string(s.extensions));
+            slots.push(std::move(o));
+        }
+        root.set("files", std::move(slots));
+    }
     return written(root);
 }
 
@@ -104,6 +116,17 @@ std::string save_state(const Processor& p) {
         params.set(d.params[i].id, Value::number_float(p.param(i)));
     }
     root.set("params", std::move(params));
+    if (const FileSlots* files = p.files()) {
+        Value paths = Value::object();
+        bool any = false;
+        for (std::uint32_t i = 0; i < files->slot_count(); ++i) {
+            const std::string path = files->path(i);
+            if (path.empty()) continue;
+            paths.set(files->slot(i).id, Value::string(path));
+            any = true;
+        }
+        if (any) root.set("files", std::move(paths));
+    }
     return written(root);
 }
 
@@ -155,6 +178,41 @@ bool load_state(Processor& p, const std::string& text, std::string& error) {
             return false;
         }
         values[idx] = sanitize(d.params[idx], v);
+    }
+    // A state without "files" puts a slot back to its default, as a missing
+    // parameter takes its default. Resolved before any value is applied, so
+    // a slot this processor does not have, or a file that cannot be read,
+    // fails the load with the values untouched.
+    FileSlots* files = p.files();
+    const std::uint32_t slot_count = files != nullptr ? files->slot_count() : 0;
+    std::vector<std::string> wanted(slot_count);
+    if (const Value* file_obj = root.find("files")) {
+        if (!file_obj->is_object()) {
+            error = "state 'files' is not an object";
+            return false;
+        }
+        for (const auto& kv : file_obj->members()) {
+            std::uint32_t idx = slot_count;
+            for (std::uint32_t i = 0; i < slot_count; ++i) {
+                if (kv.first == files->slot(i).id) idx = i;
+            }
+            if (idx == slot_count) {
+                error = "unknown file slot '" + kv.first + "' for " + d.id;
+                return false;
+            }
+            if (!kv.second.is_string()) {
+                error = "file slot '" + kv.first + "' is not a path";
+                return false;
+            }
+            wanted[idx] = kv.second.text();
+        }
+    }
+    for (std::uint32_t i = 0; i < slot_count; ++i) {
+        std::string why;
+        if (!files->load(i, wanted[i], why)) {
+            error = std::string("file slot '") + files->slot(i).id + "': " + why;
+            return false;
+        }
     }
     for (std::uint32_t i = 0; i < d.param_count; ++i) p.set_param(i, values[i]);
     return true;
