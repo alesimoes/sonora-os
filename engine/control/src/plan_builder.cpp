@@ -442,6 +442,15 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         lanes_first[ti] = static_cast<uint32_t>(plugin_lanes.size());
         for (const auto& lp : tracks[ti]->automation) {
             if (lp->param != model::AutomationParam::Plugin || lp->points.empty()) continue;
+            // The model refuses non-finite values, so one here is a broken
+            // document. A NaN passes the clamp below unchanged and would
+            // reach the host as a parameter value: the lane is left out, as
+            // a key that resolves to nothing is, and the rest still plays.
+            const bool finite = std::all_of(lp->points.begin(), lp->points.end(),
+                                            [](const model::AutomationPoint& p) {
+                                                return std::isfinite(p.value);
+                                            });
+            if (!finite) continue;
             LaneTarget target;
             if (!lanes(*tracks[ti], lp->insert, lp->key, target)) continue;
             plugin_lanes.push_back(PluginLane{target, lp.get()});
