@@ -128,6 +128,7 @@ struct JackBackend::Impl {
     // One word the callback reads: a lock-based atomic there would be a
     // mutex on the audio thread (PR #77 RT audit L2).
     static_assert(std::atomic<int64_t>::is_always_lock_free, "steady_minus_jack_ns");
+    drivers::MonotonicStamp stamper;  // the audio thread's; reset in activate()
     drivers::ClockOffset time_offset;  // the sampler's: start_time_sampler, then its thread
     std::thread time_sampler;
     std::mutex sampler_mutex;
@@ -267,12 +268,12 @@ struct JackBackend::Impl {
         jack_nframes_t cycle_frames = 0;
         jack_time_t cycle_usecs = 0, next_usecs = 0;
         float period_usecs = 0.0f;
-        int64_t stamp = 0;
+        int64_t cycle_ns = 0;
         if (jack_get_cycle_times(self->client, &cycle_frames, &cycle_usecs, &next_usecs, &period_usecs) == 0) {
-            stamp = static_cast<int64_t>(cycle_usecs) * 1000 +
-                    self->steady_minus_jack_ns.load(std::memory_order_relaxed);
+            cycle_ns = static_cast<int64_t>(cycle_usecs) * 1000;
         }
-        self->block.callback_ns = stamp > 0 ? static_cast<uint64_t>(stamp) : 0;
+        self->block.callback_ns = self->stamper.stamp(
+            cycle_ns, self->steady_minus_jack_ns.load(std::memory_order_relaxed));
         self->callback->process(self->block);
         return 0;
     }
@@ -454,6 +455,7 @@ bool JackBackend::activate(std::string& error) {
     if (d.active) return true;
     if (!d.start_time_sampler(error)) return false;
     d.clock.resume();
+    d.stamper.reset();
     if (jack_activate(d.client) != 0) {
         d.stop_time_sampler();
         error = "jack_activate failed";
