@@ -72,8 +72,16 @@ partition table), checks the SHA-256 of what it read against the sidecar
 before that last step, flushes, and reads back the first and last 64 MiB and
 the zeroed last MiB through an unbuffered handle. Before the first byte it
 asks the open device handle for its length, bus and serial, which must match
-the disk that was confirmed. Exit code 0 is a verified stick; 2 is a
-refusal, nothing written.
+the disk that was confirmed.
+
+Exit code 0 means: every write completed with no short write, the image
+matched its sidecar, and the first 64 MiB, the last 64 MiB and the zeroed
+last MiB of the disk read back correctly. That is a sample. The middle of the
+image is not read back, so a bad block 1 GiB in still exits 0. The real check
+is booting it: `tools/test-write-usb.sh` boots a written image in QEMU, and
+for the stick itself, boot a machine from it. If the stick does not boot,
+write it again (another port or stick if it fails twice). Exit code 1 is an
+error; 2 is a refusal, nothing written.
 
 Why not WSL: `wsl --mount` does not take USB sticks, and passing one through
 needs usbipd-win installed on the host.

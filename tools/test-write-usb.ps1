@@ -318,7 +318,7 @@ try {
     Expect ($changed.Count -eq 0) ('no refusal or dry run changed a byte of any fake disk (changed: ' + ($changed -join ',') + ')')
 
     $r = Invoke-Writer ($common + @('-DiskNumber', '3', '-Token', $right))
-    Expect ($r.Code -eq 0 -and $r.Text -like '*Done: disk 3*') 'the write to fake disk 3 succeeds'
+    Expect ($r.Code -eq 0 -and $r.Text -like '*Done: disk 3*the middle was not read back*' -and $r.Text -like '*a sample, not the whole image*') 'the write to fake disk 3 succeeds and says only a sample was read back'
     Expect (([regex]::Matches($r.Text, 'read back ok')).Count -eq 3) 'the read-back checks the head, the tail and the zeroed last MiB'
     $r6 = Invoke-Writer ($common + @('-DiskNumber', '6', '-Token', 'ERASE 6 6666', '-AllowDataVolumes'))
     Expect ($r6.Code -eq 0 -and $r6.Text -like '*-AllowDataVolumes: the partitions listed above*' -and $r6.Text -like '*NTFS "Takes"*') '-AllowDataVolumes writes the data disk and still lists what it erases'
@@ -349,12 +349,12 @@ try {
 
     Write-Host '--- read-back catches a bad write ---'
     $disk = [pscustomobject]@{ Path = $files[3]; Kind = 'file'; Size = $stickBytes }
-    Expect (Test-WrittenDisk $disk $image $imageBytes) 'the written fake disk verifies'
+    Expect (Test-WrittenDisk $disk $image $imageBytes) 'the written fake disk reads back correctly in the sampled ranges'
     # Every element in parentheses: the comma binds tighter than * and -.
     foreach ($at in @(([int64]5 * $MiB), ([int64]40 * $MiB), ([int64]6 * $MiB), ($imageBytes - 100), ($imageBytes - 1), ($stickBytes - 10), ($stickBytes - $MiB))) {
         $fs = [IO.File]::Open($files[3], 'Open', 'ReadWrite')
         try { $fs.Position = $at; $b = $fs.ReadByte(); $fs.Position = $at; $fs.WriteByte(($b -bxor 0xFF)) } finally { $fs.Dispose() }
-        Expect (-not (Test-WrittenDisk $disk $image $imageBytes)) ('one flipped byte at ' + $at + ' fails verification')
+        Expect (-not (Test-WrittenDisk $disk $image $imageBytes)) ('one flipped byte at ' + $at + ' fails the read-back')
         $fs = [IO.File]::Open($files[3], 'Open', 'ReadWrite')
         try { $fs.Position = $at; $fs.WriteByte($b) } finally { $fs.Dispose() }
     }

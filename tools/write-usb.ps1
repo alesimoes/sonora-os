@@ -993,16 +993,17 @@ function Invoke-Main {
         foreach ($vh in $locks) { $vh.Dispose() }
     }
 
-    Write-Host 'Verifying...'
+    Write-Host 'Reading back the first and last 64 MiB and the last MiB (a sample, not the whole image)...'
     if (-not (Test-WrittenDisk $disk $Image $imageBytes)) {
         Write-Host 'error: the stick does not read back as written. Try another port or stick.'
         return 1
     }
+    $what = 'the image, without persistence'
+    if ($persistent) { $what = 'the image and the persistence partition' }
+    Write-Host ('Done: disk ' + $disk.Number + ' holds ' + $what + ' (head, tail and last MiB read back; the middle was not read back).')
+    Write-Host 'Booting it is the real check: if the stick does not boot, write it again.'
     if ($persistent) {
-        Write-Host ('Done: disk ' + $disk.Number + ' holds the image and the persistence partition.')
         Write-Host 'If Windows offers to format a drive on the stick, say Cancel: that is the persistence partition.'
-    } else {
-        Write-Host ('Done: disk ' + $disk.Number + ' holds the image, without persistence.')
     }
     return 0
 }
