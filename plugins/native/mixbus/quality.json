@@ -1,7 +1,7 @@
 {
   "processor": "org.sonora.mixbus",
   "class": "B",
-  "note": "ADR-0011 §3.2 bars for a dynamics processor; class B as §3.5 lists the mix bus (it will carry the oversampled colour stage, slice 7 part 2). Static curve against the Giannoulis et al. gain computer with DC levels at each stepped ratio; manual attack and release are the 63 % times of the gain change in dB from step tests; auto release is held to its fast path's time after a 10 ms overload and its slow path's after 4 s. brain/research/native-mixbus-n2.md has the figures.",
+  "note": "ADR-0011 §3.2 bars for a dynamics processor; class B as §3.5 lists the mix bus (the oversampled colour stage is part 2). Static curve against the Giannoulis et al. gain computer with DC levels at each stepped ratio; manual attack and release are the 63 % times of the gain change in dB from step tests; auto release is held to its fast path's time after a 10 ms overload and its slow path's after 4 s. brain/research/native-mixbus-n2.md has the figures. Colour (part 2): the line transformer of common/dsp at the oversampled rate; its harmonics 2-9 at 1 kHz and 40 Hz (-12 dBFS) against the same model driven by an ideal oversampled sine (colour.harmonic_db, above colour.floor_dbc); LF first; sag; 0 % is the compressor delayed, to the bit; aliasing on tones 1-19 kHz at the nominal -18 dBFS per quality (-70 eco, -90 standard and high, ADR-0011 3.2), hotter levels reported. CPU (3.5, class B): eco is held to the class with colour at 0 and at 100 % on the programme and programme +12 dB; standard and high are reported. p999_kernels is eco colour 100 %, programme +12 dB, in reference kernels (92.7 us over 83.8 us on a loaded laptop, --cpu-calibrate), held to x1.15.",
   "mixbus": {
     "static_db": 0.1,
     "time_tolerance": 0.1,
@@ -11,10 +11,13 @@
   "width": {"max_error": 1e-6},
   "denormal_ratio": 1.2,
   "zipper_dbfs": -60.0,
-  "zipper": ["threshold", "ratio", "knee", "attack", "release", "auto_release", "sc_hpf_on", "sc_hpf_freq", "makeup", "mix", "width"],
+  "zipper": ["threshold", "ratio", "knee", "attack", "release", "auto_release", "sc_hpf_on", "sc_hpf_freq", "makeup", "mix", "width", "colour", "sag"],
+  "aliasing": {"eco_dbc": -70.0, "standard_dbc": -90.0, "high_dbc": -90.0},
+  "colour": {"floor_dbc": -90.0, "harmonic_db": 0.5, "lf_over_mid_db": 10.0, "sag_db": 0.05},
   "golden_abs": 1e-6,
   "cpu": {
     "p999_us": 60.0,
+    "p999_kernels": 1.11,
     "max_us": 150.0
   }
 }

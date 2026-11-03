@@ -172,9 +172,11 @@ const Target kTargets[] = {
     // leaves every state at zero, so the preroll is free.
     {"saturator", [] { return native::make_saturator(); }, native::suites::saturator_golden_config, true,
      {"drive", 30.0f}, {{"quality", 2.0f}}},
-    // Silence leaves the detectors and the side-chain filter at zero.
+    // Quality changes the oversampling factor, and so the latency. Silence
+    // leaves the detectors, the side-chain filter and the oversampler at zero;
+    // the transformer at rest is an equilibrium (checked by the fixture).
     {"mixbus", [] { return native::make_mixbus(); }, native::suites::mixbus_golden_config, true,
-     {"threshold", -32.0f}, {}},
+     {"threshold", -32.0f}, {{"quality", 0.0f}}},
 };
 
 struct Case {
