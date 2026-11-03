@@ -369,6 +369,8 @@ Session::Session(SessionConfig cfg)
     return_from_.reset(new float[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]());
     live_value_.reset(new float[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]());
     live_moved_.reset(new float[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]());
+    return_at_moved_.reset(new int64_t[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]);
+    return_moved_.reset(new float[2 * kAutoParams * (static_cast<std::size_t>(tracks) + 1)]());
     return_to_.reset(new float[kAutoParams * (static_cast<std::size_t>(tracks) + 1)]());
     const uint64_t return_ms = std::clamp(cfg_.touch_return_ms, SessionConfig::kMinTouchReturnMs,
                                           SessionConfig::kMaxTouchReturnMs);
@@ -1391,9 +1393,14 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     if (unlatch != auto_unlatch_seen_) {
         auto_unlatch_seen_ = unlatch;
         std::memset(auto_latched_.get(), 0, tracks_.size());
+        // The returns too: the Load's tracks may reuse the old ids.
+        for (std::size_t k = 0; k < kAutoParams * tracks_.size(); ++k) return_at_[k] = kNoReturn;
+        unlatch_floor_ = auto_unlatch_epoch_.load(std::memory_order_relaxed);
+        unlatch_quiet_ = true;
     }
     if (plan_valid_) {
         automation_targets(*plan, rolling, playhead);
+        if (unlatch_quiet_ && seen_epoch_ > unlatch_floor_) unlatch_quiet_ = false;
         // At the frame automation_targets() starts the callback's lanes at.
         gather_lanes(*plan, auto_start_);
     } else {
@@ -2036,14 +2043,18 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
             const uint8_t bit = static_cast<uint8_t>(1u << p);
             int64_t& at = return_at_[e * kAutoParams + p];
             const auto s = static_cast<int64_t>(start);
-            if (!rolling || (live & bit) != 0 || jumped ||
+            // A new plan alone keeps the return: an edit mid-return leaves
+            // the playhead where it was, and follow_track_owners() moved
+            // each return with its track.
+            if (!rolling || (live & bit) != 0 || start != auto_next_ ||
                 (at != kNoReturn && (s < at || s >= at + touch_return_frames_))) {
                 at = kNoReturn;
             }
             const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
             if ((live & bit) != 0) live_value_[k] = live_param(e, p);
             const bool released =
-                rolling && (mode == Track::Automation::Touch || mode == Track::Automation::Trim) &&
+                rolling && !unlatch_quiet_ &&
+                (mode == Track::Automation::Touch || mode == Track::Automation::Trim) &&
                 (auto_live_last_[e] & bit) != 0 && (live & bit) == 0;
             if (!released) continue;
             // What the last live callback played: the release may arrive
@@ -2447,9 +2458,15 @@ void Session::follow_track_owners(const PlaybackPlan& plan) noexcept SONORA_RT {
         // Last callback's live bits too, or the track leaving a row would
         // read as a release of the one arriving on it.
         live[e] = from < n ? auto_live_[from] : 0;
-        // With them the value they played, which their release returns from.
+        // With them the value they played, which their release returns from,
+        // and a return under way: it is the track's, not the row's.
         for (uint32_t p = 0; p < kAutoParams; ++p) {
-            live_moved_[e * kAutoParams + p] = from < n ? live_value_[from * kAutoParams + p] : 0.0f;
+            const std::size_t k = e * kAutoParams + p;
+            const std::size_t f = static_cast<std::size_t>(from) * kAutoParams + p;
+            live_moved_[k] = from < n ? live_value_[f] : 0.0f;
+            return_at_moved_[k] = from < n ? return_at_[f] : kNoReturn;
+            return_moved_[2 * k] = from < n ? return_from_[f] : 0.0f;
+            return_moved_[2 * k + 1] = from < n ? return_to_[f] : 0.0f;
         }
         snap_row_[e] = from != e ? 1 : 0;
     }
@@ -2457,7 +2474,11 @@ void Session::follow_track_owners(const PlaybackPlan& plan) noexcept SONORA_RT {
         auto_latched_[e] = latched[e];
         auto_live_[e] = live[e];
         for (uint32_t p = 0; p < kAutoParams; ++p) {
-            live_value_[e * kAutoParams + p] = live_moved_[e * kAutoParams + p];
+            const std::size_t k = e * kAutoParams + p;
+            live_value_[k] = live_moved_[k];
+            return_at_[k] = return_at_moved_[k];
+            return_from_[k] = return_moved_[2 * k];
+            return_to_[k] = return_moved_[2 * k + 1];
         }
         auto_owner_[e] = owner(e);
     }

@@ -522,9 +522,14 @@ public:
     // The pass of the roll now playing, or of the last one; 0 before any.
     uint64_t automation_pass() const { return auto_pass_now_.load(std::memory_order_acquire); }
     // A Load while rolling: from the next callback no track plays a Latch
-    // touched before it. Clear the touched flags first, or one still held
-    // latches again.
-    void forget_latches() { auto_unlatch_.fetch_add(1, std::memory_order_release); }
+    // touched before it, nor goes on with a Touch return begun before it.
+    // Clear the touched flags first, or one still held latches again.
+    // Publisher thread: a release seen before a plan newer than the last
+    // one published here is the Load's and starts no return.
+    void forget_latches() {
+        auto_unlatch_epoch_.store(plans_->last_epoch(), std::memory_order_relaxed);
+        auto_unlatch_.fetch_add(1, std::memory_order_release);
+    }
     // Writes the audio thread dropped on a full ring: a gap in a pass.
     uint64_t automation_write_overruns() const {
         return auto_write_overruns_.load(std::memory_order_relaxed);
@@ -1047,10 +1052,14 @@ private:
     // live callback played, which a release returns from (the control
     // thread may already have put the static back in the atomic); and the
     // static a parameter with no lane returns to, read each callback.
-    // live_moved_ is room for live_value_ while its tracks move.
+    // live_moved_ is room for live_value_ while its tracks move;
+    // return_at_moved_ and return_moved_ (from and to, interleaved) for a
+    // return under way.
     std::unique_ptr<float[]> live_value_;
     std::unique_ptr<float[]> live_moved_;
     std::unique_ptr<float[]> return_to_;
+    std::unique_ptr<int64_t[]> return_at_moved_;
+    std::unique_ptr<float[]> return_moved_;
     uint32_t touch_return_frames_ = 0;
     std::unique_ptr<RingBuffer<AutomationWrite>> auto_writes_;
     std::atomic<uint64_t> auto_write_overruns_{0};
@@ -1058,6 +1067,14 @@ private:
     std::atomic<uint64_t> auto_pass_now_{0};
     std::atomic<uint32_t> auto_unlatch_{0};
     uint32_t auto_unlatch_seen_ = 0;
+    // forget_latches()'s last published epoch, and whether releases start no
+    // return until a plan newer than it has played a callback (#302 B1): a
+    // fader held through a Load is released by the Load, possibly only on
+    // its plan's first callback when the previous plan's pending mix still
+    // held it.
+    std::atomic<uint64_t> auto_unlatch_epoch_{0};
+    uint64_t unlatch_floor_ = 0;
+    bool unlatch_quiet_ = false;
     uint64_t auto_pass_ = 0;
     uint64_t auto_pass_epoch_ = 0;   // AutomationWrite::epoch
     bool pass_rolling_ = false;
