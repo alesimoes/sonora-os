@@ -81,7 +81,7 @@ hook_snapcheck() {
 # apt_case NAME SOURCES_CONTENT [LIST_LINE]: a fresh /etc/apt with the
 # backports list, sources.list.d/debian.sources and an optional sources.list.
 apt_case() {
-  rm -rf "$apt_tmp/etc"
+  rm -rf "${apt_tmp:?}/etc"
   mkdir -p "$apt_tmp/etc/apt/sources.list.d"
   cp "$LIST" "$apt_tmp/etc/apt/sources.list.d/sonora-backports.list"
   [ -n "$2" ] && printf '%s\n' "$2" > "$apt_tmp/etc/apt/sources.list.d/debian.sources"
