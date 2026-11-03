@@ -327,8 +327,13 @@ inline float auto_lane_value(const PlanAutoPoint* p, uint32_t n, int64_t t) noex
     }
     const PlanAutoPoint& a = p[lo];
     const PlanAutoPoint& b = p[hi];
+    // In double: two finite floats far apart, as a plugin parameter's range
+    // allows, have a difference that overflows a float, and every frame
+    // between them would be infinity. The result lies between them, so it
+    // is finite as a float.
     const double x = static_cast<double>(t - a.at) / static_cast<double>(b.at - a.at);
-    return a.value + static_cast<float>(x * static_cast<double>(b.value - a.value));
+    const double va = a.value;
+    return static_cast<float>(va + x * (static_cast<double>(b.value) - va));
 }
 
 // model::kMinGainDb and kMaxGainDb, which engine/core cannot include;

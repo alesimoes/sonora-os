@@ -36,6 +36,11 @@
 //     there is none, before anything bridged runs; if it cannot, that is
 //     said and nothing bridged is enumerated, probed or cached (ADR-0017
 //     Y4);
+//   - a plug-in on the operator's block list (plugin_block_list.h) is never
+//     probed, by the scan or a chain start: its catalog entry and every
+//     record published for it are refused with kBlockedByOperator, and
+//     unblocking it probes it when the scan may (ADR-0012, amendment of
+//     2026-11-03);
 //   - the thread lives until the scanner is destroyed, and is joined only
 //     after it has killed and reaped every child (change C: the death
 //     signal of a child fires when the thread that forked it exits).
@@ -69,6 +74,9 @@ struct PluginScannerConfig {
     // The cache file (change A: resolved by the entry layer, passed down).
     // Empty: the catalog lives in memory for the run (tests, CI).
     std::string cache_path;
+    // The operator's block list (plugin_block_list.h), resolved by the
+    // entry layer like the cache. Empty: kept in memory for the run.
+    std::string block_list_path;
     // The image's build id, in the cache header (change B): an image
     // update revalidates every bundle, reproducible mtimes or not.
     std::string build_id;
@@ -126,6 +134,8 @@ public:
         // by every catalog of one generation. Never null once published.
         using Frames = std::vector<std::shared_ptr<const std::string>>;
         std::shared_ptr<const Frames> api_frames;
+        // The operator's block list as of this publish: host ids.
+        std::set<std::string> blocked;
         // (format, id) -> index in api.plugins.
         std::map<std::pair<uint32_t, std::string>, std::size_t> api_index;
         // Every record known this run, chain-start probes included.
@@ -171,6 +181,10 @@ public:
     // plugin.rescan: the same walk, and blocked plugins probed again. A
     // request while a scan runs joins it.
     void rescan();
+    // plugin.block / plugin.unblock, by host id (an LV2 URI, or "vst3:" and
+    // the class id); `name` is kept in the list beside it. Applied by the
+    // worker, which writes the list and publishes; asking twice is harmless.
+    void set_blocked(const std::string& host_id, const std::string& name, bool blocked);
     // What the operator is told once: a discarded cache, a bundle that
     // could not be scanned, a cache that could not be written.
     std::vector<std::string> take_notices();
@@ -205,12 +219,19 @@ private:
     std::vector<Key> want_probes_;
     std::set<Key> asked_;
     bool want_rescan_ = false;
+    struct BlockChange {
+        std::string id;
+        std::string name;
+        bool blocked = true;
+    };
+    std::vector<BlockChange> want_blocks_;
     std::vector<std::string> notices_;
 
     // Under exchange_mu_.
     std::mutex exchange_mu_;
     std::vector<Key> in_probes_;
     bool in_rescan_ = false;
+    std::vector<BlockChange> in_blocks_;
     // Not under the lock: a lost try_lock still delivers it.
     std::atomic<bool> recording_{false};
     std::shared_ptr<const Catalog> out_catalog_;

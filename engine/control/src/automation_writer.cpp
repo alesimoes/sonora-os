@@ -74,7 +74,8 @@ float lane_value(const std::vector<AutomationPoint>& p, Frames t) {
     const AutomationPoint& b = *hi;
     const AutomationPoint& a = *std::prev(hi);
     const double x = static_cast<double>(t - a.at) / static_cast<double>(b.at - a.at);
-    return a.value + static_cast<float>(x * static_cast<double>(b.value - a.value));
+    const double va = a.value;
+    return static_cast<float>(va + x * (static_cast<double>(b.value) - va));
 }
 
 struct Original {

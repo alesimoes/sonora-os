@@ -283,6 +283,26 @@ void ShellModel::invoke(const QString& command, int target) {
     report(router_.invoke(command.toStdString(), ctx));
 }
 
+void ShellModel::armClick(int track, int modifiers, const QList<int>& selected) {
+    static const QString toggle = QStringLiteral("track.toggle_arm");
+    const bool alt = (modifiers & Qt::AltModifier) != 0;
+    const bool shift = (modifiers & Qt::ShiftModifier) != 0;
+    // Without a known state for the clicked track there is no "new state" to
+    // spread; the plain toggle lets the router or the engine say why.
+    if ((!alt && !shift) || track < 0 || track >= armed_.size()) {
+        invoke(toggle, track);
+        return;
+    }
+    const bool on = !armed_[track];
+    if (!shift) {
+        invoke(on ? QStringLiteral("track.arm_all") : QStringLiteral("track.disarm_all"), -1);
+        return;
+    }
+    for (int t : selected) {
+        if (t >= 0 && t < armed_.size() && armed_[t] != on) invoke(toggle, t);
+    }
+}
+
 // What ends a refusal: the operator moved on (Stop, Play), or took the Record
 // again. Keys reach the shell through report(), buttons through invoke(), and
 // the engine's answer through tick(): all three apply this.

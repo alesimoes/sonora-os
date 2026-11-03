@@ -25,6 +25,9 @@ int failures = 0;
 int main() {
     CHECK(default_plugin_cache("/home/op/.cache/sonora") == "/home/op/.cache/sonora/plugin-catalog.json");
     CHECK(default_plugin_cache("").empty());
+    // A setting, beside the round trip, never in the regenerable cache.
+    CHECK(default_plugin_block_list("/home/op/.config/sonora") == "/home/op/.config/sonora/plugin-blocklist.json");
+    CHECK(default_plugin_block_list("").empty());
 
     CHECK(image_build_id("PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nBUILD_ID=\"20261019.1\"\n") == "20261019.1");
     CHECK(image_build_id("IMAGE_VERSION=7\nID=sonora\n") == "7");

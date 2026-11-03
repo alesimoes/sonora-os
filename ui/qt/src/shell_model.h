@@ -252,6 +252,12 @@ public:
     // The same path as a key, for a click: the arm button sends exactly what
     // the profile's arm key would.
     Q_INVOKABLE void invoke(const QString& command, int target);
+    // A click on a track's R button, as Pro Tools reads its modifiers: alone
+    // it toggles the track; Alt arms every track, or disarms every track
+    // when the clicked one is armed; Shift (with or without Alt) gives the
+    // `selected` tracks the clicked track's new state. Each is the command a
+    // key would send, so the engine's refusals are the same.
+    Q_INVOKABLE void armClick(int track, int modifiers, const QList<int>& selected);
     // The same with the value a dialog asked for (Repeat's count). True when
     // it ran, so the dialog closes; on a refusal the reason is on the status
     // line and the dialog stays open to correct it.

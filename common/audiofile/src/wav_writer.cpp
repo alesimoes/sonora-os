@@ -144,8 +144,11 @@ bool WavWriter::open(const std::string& path, uint32_t sample_rate,
     // stdio's buffer, frames counted there were lost when the disk refused
     // the flush, and the header claimed them. The disk thread writes whole
     // chunks and flushed every pass anyway, so this costs no extra calls
-    // where it matters. Must precede any other operation on the stream; if
-    // it fails, close() still measures a failed take on disk.
+    // where it matters. The page cache still buffers, which kill -9 safety
+    // relies on; O_DIRECT was measured and rejected
+    // (brain/research/disk-write-path.md). Must precede any other operation
+    // on the stream; if it fails, close() still measures a failed take on
+    // disk.
     std::setvbuf(file_, nullptr, _IONBF, 0);
     path_ = path;
     format_ = format;

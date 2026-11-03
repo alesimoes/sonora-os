@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -2114,6 +2115,31 @@ int test_build_resolves_plugin_lanes() {
     CHECK(c.kind == sonora::NodeKind::InsertChain && c.chain_id == 104);
     CHECK(c.param_store == sonora::kNoParamStore && c.plugin_lane_count == 0);
     sonora::destroy_plan(plan);
+
+    // A non-finite point, which the model refuses, so only a broken
+    // document has one: a NaN would pass the clamp and reach the host, so
+    // the lane is left out and the others still play.
+    {
+        Snapshot broken = h.current();
+        auto edit = std::make_shared<EditState>(*broken.edit);
+        auto a_edit = std::make_shared<TrackEdit>(*edit->tracks[0]);
+        for (auto& lp : a_edit->automation) {
+            if (lp->param != AutomationParam::Plugin || lp->key != "ceiling") continue;
+            auto bad = std::make_shared<AutomationLane>(*lp);
+            bad->points.push_back({9600, std::numeric_limits<float>::quiet_NaN()});
+            lp = bad;
+        }
+        edit->tracks[0] = a_edit;
+        broken.edit = edit;
+        CHECK(sonora::build_plan(broken, limits, no_sources, resolve, lanes, continuity, 2, plan,
+                                 report, error));
+        CHECK(plan->plugin_lane_count == 2 && plan->nodes[1].plugin_lane_count == 1);
+        CHECK(plan->plugin_lanes[0].param == 3 && plan->plugin_lanes[0].count == 2);
+        for (uint32_t i = 0; i < plan->auto_point_count; ++i) {
+            CHECK(std::isfinite(plan->auto_points[i].value));
+        }
+        sonora::destroy_plan(plan);
+    }
 
     // Past the session's maximum the plan is refused, naming it: the
     // session would refuse it as out of bounds.

@@ -12,6 +12,10 @@
 //                an accepted insert stores the catalog's name and version,
 //                never the client's; plugin.rescan is announced and Ok
 //   no_rescan_while_recording  plugin.rescan refused during a take (Q3)
+//   block        plugin.block and plugin.unblock: announced; a blocked plugin
+//                is never probed and AddInsert is refused in the operator's
+//                words; a malformed or unknown plugin is refused; the list
+//                is written to the file the entry layer names
 //   shared_frames  every client is sent the catalog's own frames, split once
 //                  by the worker: the same immutable bytes, not a copy each
 #include <unistd.h>
@@ -22,6 +26,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -112,10 +117,11 @@ struct Client {
         if (!model::encode_operation(op, m.op, err)) return nullptr;
         return reply(e.submit(m));
     }
-    const api::CommandReply* command(const std::string& id, int32_t target = -1) {
+    const api::CommandReply* command(const std::string& id, int32_t target = -1, const std::string& argument = "") {
         api::CommandRequest r;
         r.command = id;
         r.target = target;
+        r.argument = argument;
         return reply(e.send(r));
     }
 };
@@ -245,6 +251,80 @@ void test_resolution() {
     engine.shutdown();
 }
 
+void test_block() {
+    std::printf("block\n");
+    World w("block", {"urn:mono 1 1 ok", "urn:hang 1 1 hang"});
+    const std::string log = w.root + "/log";
+    ::setenv("SONORA_FAKE_HOST_LOG", log.c_str(), 1);
+    const std::string list = w.root + "/config/plugin-blocklist.json";
+    fs::create_directories(w.root + "/config");
+    std::ofstream(list) << "{\"version\": 1, \"blocked\": [{\"id\": \"urn:hang\", \"name\": \"Hanger\"}]}\n";
+    SessionConfig cfg;
+    cfg.dir = w.root + "/session";
+    cfg.track_count = 2;
+    Session session(cfg);
+    session.create_dirs();
+    EngineControlServer::Options opts;
+    opts.plugin_host = g_host;
+    opts.plugin_block_list = list;
+    InProcessEngine engine(session, nullptr, opts);
+    std::string error;
+    check(engine.connect(error), "connected");
+    Client c(engine);
+    const auto& names = engine.hello().implemented_commands;
+    check(std::find(names.begin(), names.end(), "plugin.block") != names.end() &&
+              std::find(names.begin(), names.end(), "plugin.unblock") != names.end(),
+          "plugin.block and plugin.unblock are announced");
+    const auto entry = [&](const std::string& id) -> const api::PluginInfo* {
+        if (c.in.catalogs.empty()) return nullptr;
+        for (const api::PluginInfo& p : c.in.catalogs.back().plugins)
+            if (p.id == id) return &p;
+        return nullptr;
+    };
+    check(c.until([&] {
+        const api::PluginInfo* m = entry("urn:mono");
+        const api::PluginInfo* h = entry("urn:hang");
+        return c.replica.synced() && m && m->usable && h && !h->usable;
+    }),
+          "the scan completes without waiting on the blocked, hung plugin");
+    check(entry("urn:hang")->refusal == "it is blocked in the plug-in manager", "refused in the operator's words");
+    std::string probes;
+    {
+        std::ifstream f(log);
+        for (std::string l; std::getline(f, l);)
+            if (l.find("--probe urn:hang") != std::string::npos) probes += l;
+    }
+    check(probes.empty(), "and never probed");
+    const model::Id track = c.replica.current().edit->tracks.at(0)->id;
+
+    check(says(c.command("plugin.block", -1, "lv2 urn:mono"), DispatchResult::Ok, ""), "plugin.block is Ok");
+    check(c.until([&] { return entry("urn:mono") && !entry("urn:mono")->usable; }), "a new catalog shows it blocked");
+    check(says(c.apply(add(track, c.replica.current().next_id, "urn:mono")), DispatchResult::Failed,
+               "Fake urn:mono cannot be used: it is blocked in the plug-in manager"),
+          "AddInsert of a blocked plugin is refused in those words");
+    check(says(c.command("plugin.block", -1, "urn:mono"), DispatchResult::Failed, "name the plug-in as"),
+          "an argument without a format is refused");
+    check(says(c.command("plugin.block", -1, "lv2 urn:absent"), DispatchResult::Failed,
+               "no plug-in urn:absent is in the catalog"),
+          "a plugin the catalog does not have is refused");
+    std::string text;
+    check(c.until([&] {
+        std::ifstream f(list);
+        text.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        return text.find("urn:mono") != std::string::npos;
+    }),
+          "the list on disk has it");
+    check(text.find("Fake urn:mono") != std::string::npos && text.find("urn:hang") != std::string::npos,
+          "with its name, beside the one blocked before");
+
+    check(says(c.command("plugin.unblock", -1, "lv2 urn:mono"), DispatchResult::Ok, ""), "plugin.unblock is Ok");
+    check(c.until([&] { return entry("urn:mono") && entry("urn:mono")->usable; }), "usable again");
+    const auto* ok = c.apply(add(track, c.replica.current().next_id, "urn:mono"));
+    check(ok && ok->result == DispatchResult::Ok, "and inserted");
+    engine.shutdown();
+    ::unsetenv("SONORA_FAKE_HOST_LOG");
+}
+
 void test_no_rescan_while_recording() {
     std::printf("no_rescan_while_recording\n");
     World w("recording", {"urn:mono 1 1 ok"});
@@ -358,6 +438,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     test_resolution();
+    test_block();
     test_no_rescan_while_recording();
     test_shared_frames();
     if (failures) {

@@ -709,6 +709,10 @@ private:
         float trim = 1.0f;     // Track::trim()
     };
     TrackMixView mix_view(const PlaybackPlan& plan, std::size_t e) const noexcept SONORA_RT;
+    // What a released parameter p with no lane returns to: the static from
+    // the same source as mix_view(), the plan's or Track::static_gain() and
+    // static_pan(), never the ride the atomic may still hold; 0 dB for a trim.
+    float static_param(const PlaybackPlan& plan, uint32_t e, uint32_t p) const noexcept SONORA_RT;
     // A new plan: what the audio thread keeps per engine track for live
     // writes moves with the document track the plan's owners say it is
     // (ADR-0027 §8). A track the last plan did not play starts clear.
