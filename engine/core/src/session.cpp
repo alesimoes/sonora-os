@@ -1383,9 +1383,12 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         std::memset(auto_latched_.get(), 0, tracks_.size());
         // The returns too: the Load's tracks may reuse the old ids.
         for (std::size_t k = 0; k < kAutoParams * tracks_.size(); ++k) return_at_[k] = kNoReturn;
+        unlatch_floor_ = auto_unlatch_epoch_.load(std::memory_order_relaxed);
+        unlatch_quiet_ = true;
     }
     if (plan_valid_) {
         automation_targets(*plan, rolling, playhead);
+        if (unlatch_quiet_ && seen_epoch_ > unlatch_floor_) unlatch_quiet_ = false;
         // At the frame automation_targets() starts the callback's lanes at.
         gather_lanes(*plan, auto_start_);
     } else {
@@ -2047,7 +2050,8 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
             const std::size_t k = static_cast<std::size_t>(e) * kAutoParams + p;
             if ((live & bit) != 0) live_value_[k] = live_param(e, p);
             const bool released =
-                rolling && (mode == Track::Automation::Touch || mode == Track::Automation::Trim) &&
+                rolling && !unlatch_quiet_ &&
+                (mode == Track::Automation::Touch || mode == Track::Automation::Trim) &&
                 (auto_live_last_[e] & bit) != 0 && (live & bit) == 0;
             if (!released) continue;
             // What the last live callback played: the release may arrive
