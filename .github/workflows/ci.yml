@@ -129,6 +129,12 @@ jobs:
           SONORA_DSP_QUICK: "1"
         run: ctest --test-dir build -C Release --output-on-failure -R "dsp_|native_"
 
+      # Windows PowerShell 5.1, the one the owner writes the stick with. Fake
+      # disks only (regular files in %TEMP%); no real disk is opened. Seconds.
+      - name: tools/write-usb.ps1 against fake disks
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-write-usb.ps1
+
   ui:
     name: Qt interface build and headless tests
     needs: changes

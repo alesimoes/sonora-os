@@ -47,12 +47,22 @@ stamp_build_id() {
 }
 stamp_build_id
 
+# iso/sonora.iso.sha256, in sha256sum's format. tools/write-usb.ps1 refuses to
+# erase a stick for an image that no longer matches it: a copy cut short by a
+# full disk or an interrupted transfer can still boot partway, which is worse
+# than not booting.
+write_sidecar() {
+  (cd "$ROOT/iso" && rm -f sonora.iso.sha256 && sha256sum sonora.iso > sonora.iso.sha256)
+  cat "$ROOT/iso/sonora.iso.sha256"
+}
+
 if [[ "$(uname -s)" == "Linux" && "$(id -u)" == "0" ]] && command -v lb >/dev/null; then
   cd "$ROOT/iso"
   lb clean
   lb config
   lb build
   mv -f live-image-amd64.hybrid.iso sonora.iso
+  write_sidecar
   echo "built: $ROOT/iso/sonora.iso"
   exit 0
 fi
@@ -166,5 +176,6 @@ docker run --rm \
   -v "$VOLUME:/work" \
   "$IMAGE" bash -lc 'cp -f /work/sonora.iso /out/sonora.iso'
 
+write_sidecar
 ls -lh "$ROOT/iso/sonora.iso"
 echo "built: $ROOT/iso/sonora.iso"

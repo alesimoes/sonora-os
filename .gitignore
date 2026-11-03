@@ -77,6 +77,9 @@ iso/chroot/
 iso/binary/
 iso/local/
 iso/*.iso
+iso/*.img
+iso/*.sha256
+iso/*.part
 iso/*.log
 iso/*.contents
 iso/*.files
