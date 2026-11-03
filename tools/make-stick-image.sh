@@ -63,6 +63,15 @@ docker volume create --label org.sonora=1 "$VOLUME" >/dev/null
 
 rm -f "$ROOT/iso/sonora-stick.img" "$ROOT/iso/sonora-stick.img.sha256" "$ROOT/iso/sonora-stick.img.part"
 
+# --privileged lets the container see every block device of the Docker host
+# (on Docker Desktop, the Linux VM's virtual disks; on a CI runner, the
+# runner's own disk), with or without the devtmpfs mount below: Docker copies
+# the host's device nodes into a privileged container itself. So the guard is
+# write-usb.sh's SONORA_WRITE_USB_TEST_IMAGE check, which accepts only a loop
+# device backed by exactly that file. Narrowing the container to loop devices
+# by cgroup rule does not work: loop partitions take dynamic majors (259,
+# blkext), which NVMe namespaces share. Recorded as a follow-up in the PR.
+#
 # The sparse file lives in the volume (ext4 in the Linux VM): a loop device
 # over a Windows bind mount is not something to depend on. Only the finished
 # image is copied out, under a .part name until it is complete.

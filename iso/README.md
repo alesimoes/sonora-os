@@ -32,24 +32,42 @@ repository:
 
 `-SelfTest` runs `tools/test-write-usb.ps1`, the whole flow against fake disks
 (regular files). `-List` checks the image against its sidecar and lists only
-USB disks, each marked "can be written" or with the reason it is refused: the
-system or boot disk, a disk with a page file, the disk the image is on, any
-bus but USB (an internal SD reader or eMMC included), over 256 GiB without
-`-AllowLarge`, too small, or sectors other than 512 bytes. The last command
-shows the disk's model, size, serial and partitions, says what will be
-erased, and asks you to type `ERASE N XXXX`, where `XXXX` is the last four
-letters or digits of that disk's serial (its size in MiB when it reports
-none). Anything else stops it. A script or scheduled task passes the same
-text with `-Confirm "ERASE N XXXX"`; without it a non-interactive run is
-refused.
+USB disks, each marked "can be written", "has data" (with each volume's
+letter, filesystem, label, size and used space) or with the reason it is
+refused: the system or boot disk, a disk with a page file, a BitLocker
+volume, a Windows installation or boot loader, a system or boot partition,
+the disk the image is on, any bus but USB (an internal SD reader or eMMC
+included), over 256 GiB without `-AllowLarge`, too small, or sectors other
+than 512 bytes.
+
+`-DryRun` says so first, goes through every check, shows the target and the
+text a real run would ask for, and asks for nothing. The last command shows
+the disk's model, size, serial and partitions, says what will be erased, and
+asks you to type `ERASE N XXXX`, where `XXXX` is the last four letters or
+digits of that disk's serial. A disk that reports no serial gets its model
+and exact size in bytes instead, and can only be confirmed at the prompt.
+A disk that holds data -- any volume with a drive letter or a filesystem
+Windows reads, or a large partition it cannot read -- also asks for
+`ERASE DATA E` (its drive letters, or `P1P2...` without letters). A blank
+stick, or one written by this script before, needs only the first. Anything
+else stops it. A script passes the first text with `-Token "ERASE N XXXX"`
+and accepts the data loss with `-AllowDataVolumes`; without them a
+non-interactive run is refused. A misspelt parameter (`-DryRn`) is an error
+before anything is shown, never a real run.
+
+**After writing:** Windows sees the ext4 persistence partition as
+unformatted and may offer to format it. Click Cancel. Formatting it erases
+the persistence partition, and the stick then boots without it.
 
 The write locks and dismounts every volume on the stick, zeroes its first and
 last MiB, writes the image from the second MiB on and the first MiB last (an
 interrupted write leaves a blank stick, not half an image with a valid
 partition table), checks the SHA-256 of what it read against the sidecar
 before that last step, flushes, and reads back the first and last 64 MiB and
-the zeroed last MiB through an unbuffered handle. Exit code 0 is a verified
-stick; 2 is a refusal, nothing written.
+the zeroed last MiB through an unbuffered handle. Before the first byte it
+asks the open device handle for its length, bus and serial, which must match
+the disk that was confirmed. Exit code 0 is a verified stick; 2 is a
+refusal, nothing written.
 
 Why not WSL: `wsl --mount` does not take USB sticks, and passing one through
 needs usbipd-win installed on the host.
