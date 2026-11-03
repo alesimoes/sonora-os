@@ -71,6 +71,7 @@
 #include "sonora/native/delay.h"
 #include "sonora/native/eq.h"
 #include "sonora/native/fet.h"
+#include "sonora/native/deesser.h"
 #include "sonora/native/gate.h"
 #include "sonora/native/limiter.h"
 #include "sonora/native/mixbus.h"
@@ -84,6 +85,7 @@ namespace sonora::native::suites {
 measure::Config eq_golden_config();
 measure::Config compressor_golden_config();
 measure::Config gate_golden_config();
+measure::Config deesser_golden_config();
 measure::Config limiter_golden_config();
 measure::Config delay_golden_config();
 measure::Config chorus_golden_config();
@@ -141,6 +143,8 @@ const Target kTargets[] = {
      {"threshold", -40.0f}, {}},
     {"gate", [] { return native::make_gate(); }, native::suites::gate_golden_config, true,
      {"threshold", -10.0f}, {}},
+    {"deesser", [] { return native::make_deesser(); }, native::suites::deesser_golden_config, true,
+     {"threshold", -50.0f}, {}},
     {"limiter", [] { return native::make_limiter(); }, native::suites::limiter_golden_config, true,
      {"ceiling", -4.0f}, {{"lookahead", 3.0f}}},
     {"delay", [] { return native::make_delay(); }, native::suites::delay_golden_config, true,

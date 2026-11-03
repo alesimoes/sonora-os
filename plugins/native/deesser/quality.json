@@ -1,0 +1,20 @@
+{
+  "processor": "org.sonora.deesser",
+  "class": "A",
+  "note": "ADR-0011 §3.2 first bars. The detector hears only its band, so the tests drive it with a tone at the frequency setting (6.5 kHz), where the band-pass has 0 dB gain and the bell its full cut. Static gain against the Giannoulis et al. curve; attack and release are 63 % times of the gain change in dB from step tests in wide mode, where the gain is per sample; with no reduction the bell is the identity. The sibilant zipper sweeps read a 2 kHz tone through the bell (HF residue, bar moved down by the tone's 6 dB) and the gain of a 100 Hz tone carrying an 8 kHz sibilant (wide), since the standard 100 Hz tone never reaches the band.",
+  "deesser": {
+    "identity_db": 0.01,
+    "static_db": 0.15,
+    "time_tolerance": 0.1,
+    "body_db": 0.05,
+    "band_db": 0.3
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["frequency", "q", "threshold", "ratio", "knee", "range", "attack", "release", "link", "output"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}
