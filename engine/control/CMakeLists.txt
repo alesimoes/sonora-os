@@ -179,7 +179,7 @@ if(TARGET sonora-plugin-host)
   set(_ph $<TARGET_FILE:test_plugin_hosting> --host $<TARGET_FILE:sonora-plugin-host>
           --bundle ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
   set(_ph_tests)
-  foreach(scenario open_starts_silent new_insert_dry edit_keeps_old undo_abandons missing refused params lanes
+  foreach(scenario open_starts_silent new_insert_dry edit_keeps_old undo_abandons missing refused params lanes lanes_second_insert
                    down_keeps_latency gestures server values_while_starting reload_starts_afresh
                    repost_bypass_off gesture_left_open failed_edit state_not_restored work_refused touch_faults work_refused_new_session server_work_refused play_waits play_wait_bounded move_off_missing
                    play_no_hosting play_wait_cancel rescan_drops_stale rescan_loses_running

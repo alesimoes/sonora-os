@@ -49,6 +49,10 @@ struct PortInfo {
     bool automatable = true;
     uint32_t steps = 0;
     std::vector<std::string> labels;
+    // Takes only some values of its range even when `steps` cannot count
+    // them: an LV2 enumeration whose scale points are uneven, an integer
+    // port too wide to count. A lane on it holds between points.
+    bool discrete = false;
 };
 
 struct PluginInfo {
