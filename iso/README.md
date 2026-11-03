@@ -52,9 +52,15 @@ Off by default. With `sonora.gui` on the kernel command line,
 `sonora-compositor.service` runs labwc as a kiosk on tty1, pulls in
 `sonora-ui.service` (`sonora-ui --kiosk --demo`, fake engine) and
 `sonora-session.service` stands down. Five failures in 60 s, or the UI's exit
-code 3, run `sonora-display-fallback.service` (`chvt 2`; tty2 hosts the terminal UI only from stage 2, so at stage 1 it is an empty console). `sonora-ui` is not
-yet staged by `tools/build-iso.sh`; until it is, the UI unit fails and falls
-back.
+code 3, run `sonora-display-fallback.service`. It creates
+`/run/sonora-display-failed`, stops the compositor and the UI, and starts
+`sonora-session.service`, whose conditions are `!sonora.gui` *or* that flag,
+so tty1 gets the engine and its terminal UI as on a plain boot. The flag is on
+tmpfs, so the next boot tries the display again. (ADR-0010's `chvt 2` to a
+terminal UI on tty2 is stage 2.) `tools/build-iso.sh` stages `sonora-ui` only
+with `SONORA_WITH_UI=1`; without it the UI unit fails and falls back.
+`tools/test-display-fallback.sh` runs this hand-back under systemd in a
+container.
 
 ## What is not verified
 

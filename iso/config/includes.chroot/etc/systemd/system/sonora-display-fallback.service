@@ -15,7 +15,10 @@ Type=oneshot
 ExecStart=/usr/bin/touch /run/sonora-display-failed
 # Stopped first and synchronously: both units want tty1. The UI is BindsTo= the
 # compositor, so it goes too; it is named in case the compositor already failed.
-ExecStart=/usr/bin/systemctl stop sonora-compositor.service sonora-ui.service
+# The '-' matters: without it a stop that returns non-zero (a cancelled job)
+# ends the oneshot here, and tty1 is left with neither the display nor the
+# session. The session's Conflicts=getty@tty1 is all it needs from tty1.
+ExecStart=-/usr/bin/systemctl stop sonora-compositor.service sonora-ui.service
 # --no-block: the session waits up to a minute for the audio server and inputs,
 # and nothing here should be held up by that.
 ExecStart=/usr/bin/systemctl --no-block start sonora-session.service

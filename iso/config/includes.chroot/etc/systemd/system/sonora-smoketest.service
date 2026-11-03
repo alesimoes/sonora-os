@@ -11,6 +11,16 @@ ConditionKernelCommandLine=sonora.smoketest
 # than a reason to skip.
 After=multi-user.target sonora-session.service
 
+# Hard ceiling. TimeoutStartSec alone only kills the service -- the guest
+# would stay powered on until the harness clock ran out, which costs five
+# minutes and tells nobody anything. The actions are what actually power it
+# off, including when a check wedges before the script reaches its own
+# poweroff. pw-link against a stalled PipeWire is the likely candidate.
+# They are [Unit] keys: under [Service] systemd ignored SuccessAction= with a
+# warning (systemd-analyze verify, tools/test-display-fallback.sh).
+FailureAction=poweroff-force
+SuccessAction=poweroff-force
+
 [Service]
 Type=oneshot
 RemainAfterExit=no
@@ -21,14 +31,7 @@ ExecStart=/usr/local/bin/sonora-smoketest
 StandardOutput=journal+console
 StandardError=journal+console
 
-# Hard ceiling. TimeoutStartSec alone only kills the service -- the guest
-# would stay powered on until the harness clock ran out, which costs five
-# minutes and tells nobody anything. The actions are what actually power it
-# off, including when a check wedges before the script reaches its own
-# poweroff. pw-link against a stalled PipeWire is the likely candidate.
 TimeoutStartSec=180
-FailureAction=poweroff-force
-SuccessAction=poweroff-force
 
 [Install]
 WantedBy=multi-user.target
