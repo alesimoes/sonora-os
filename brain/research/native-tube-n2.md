@@ -579,3 +579,66 @@ the stage off. A run on the same build at a load average of 19 read 1.80 to
 2.20 kernels and failed, as did origin/main's build in the run beside it
 (1.67 to 1.93): host load, not the code, which this change leaves
 bit-identical with the stage off (the golden holds).
+
+### The rerun: the step's chain of dependent operations
+
+The step is latency-bound, not instruction-bound: one solve per core step,
+each needing the last one's state, and the supply's rail feeding the next
+step's clip. What changed (`src/transformer_solve.h`, `transformer.h`,
+`src/arch/*/f64x2.h`):
+- **State in lane layout across the block**: loaded from `Core` once per
+  `process_block`, stored once at its end; the constants are broadcast once
+  into a local (`CoefV`) the output stores cannot alias; `eval_lanes` is
+  declared `inline` (GCC had left it out of line: a call per step, every
+  register spilled around it). The Langevin table is `double[641][2]`, read
+  one node per 16-byte load, the index converted in vector form
+  (`trunc_index`, `gather2`). All bit-identical to the per-step form.
+- **The driver's rail one core step behind** (`rail_drv_`): the clip of
+  step t uses the rail after step t - 2's draw, not t - 1's, and is computed
+  during step t - 1, before its solve, so it runs beside the solve instead
+  of after the supply. One step is 20.8 us at eco (10.4 us at 96 kHz),
+  3.5e-4 of the reservoir's 60 ms (600 ohm x 100 uF). This is the one
+  change of output. Against the bit-exact form (stage alone, stereo, sag
+  100 %, 5 s): 0.3 FS programme -118 dB of peak; 1.2 FS (into the rail)
+  -85.8 dB; standard and high -91.7 and -91.4 dB; a 4 FS square, the
+  extreme, -80.4 dB; 0 with sag at 0 (bit-identical). All under the -62 to
+  -68 dB that stepping the core at 48 rather than 96 kHz moves it by. The
+  golden files are unchanged (the stage is out at the golden settings);
+  every check of the suite and of `test_dsp_transformer` passes as before.
+
+**Measured** (i7-11800H, Docker Desktop, GCC 14 Release, -O3
+-ffp-contract=off, other agents' builds running beside it):
+the stage alone, origin/main and this change in one binary, renders
+interleaved, per-block minimum of 7 runs, 128 core steps per block:
+
+| p50 per block, us | origin/main | this change | ratio |
+|---|---|---|---|
+| eco, 0.3 FS programme, sag 100 % | 32.99 | 18.89 | 0.573 |
+| eco, 1.2 FS, sag 100 % | 33.59 | 19.61 | 0.584 |
+| eco, 4 FS square, sag 100 % | 35.14 | 20.73 | 0.590 |
+| standard (96 kHz core), 1.2 FS | 33.07 | 18.95 | 0.573 |
+| high (96 kHz core, 4 substeps), 1.2 FS | 35.52 | 24.40 | 0.687 |
+| eco, 1.2 FS, sag 0 % (bit-identical) | 28.54 | 18.24 | 0.639 |
+
+The bit-identical part alone gave 0.875 at sag 100 % (0.76 at sag 0); the
+rail's step of lag the rest. In the suite (`sonora-dsp-measure --processor
+tube --cpu --cpu-calibrate --cpu-seconds 5`, runner scale 2.565, kernel
+before/after 0.5 % apart), eco's stage-on minus stage-off p99.9: programme
++19.96 us, hot +22.1 us, square +20.65 us, where origin/main's build, run
+beside it, read +48.9 to +49.2, +38.9 to +42.5 and +38.5 to +41.0. The
+absolute figures failed for both builds with the stage off too (1.78 to
+1.97 kernels against the quiet 1.28): host load, as in the run above.
+
+**Projection, and why the stage-on loads stay reported**: +22.1 us at
+scale 2.565 is 8.6 us on the reference machine (it was 14). Added to the
+quiet stage-off figures: programme 41.4 + 7.8 = 49.2 us (1.51 kernels),
+square 37.1 + 8.1 = 45.2 (1.39), hot programme 45.0 + 8.6 = 53.6 us, 1.64
+kernels, against the 1.76 gate and 1.84 for the class bar: within both on
+the reference machine, 7 % under the gate. With the EPYC 7763 runner's
+9 % (above), the hot programme reads 1.79 kernels, 0.03 over the gate
+(about 1 us per block on the reference machine) though under the class bar
+(1.84). The gate is the stage-off eco's recorded worst case plus 15 %; a
+stage-on load needs its own recorded worst case, which takes a nightly run
+on that runner (the stage-on figures are in its report). So the stage-on
+loads stay reported, not held, until a nightly records them; then they are
+held to the class bar and to their own recorded figure.
