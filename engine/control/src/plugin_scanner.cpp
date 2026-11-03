@@ -10,6 +10,7 @@
 #include <csignal>
 #include <cstdio>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <random>
 #include <sstream>
@@ -19,6 +20,7 @@
 #include "sonora/json/json.h"
 #include "sonora/platform/process.h"
 #include "sonora/plugin/protocol.h"
+#include "sonora/plugin_block_list.h"
 #include "sonora/plugin_catalog_cache.h"
 
 namespace sonora {
@@ -69,6 +71,10 @@ std::vector<std::string> lines_of(const std::string& text) {
 std::string format_of(const std::string& host_id) { return host_id.rfind("vst3:", 0) == 0 ? "vst3" : "lv2"; }
 
 bool same_key(const pr::Record& r, const Key& k) { return r.uri == k.first && r.channels == k.second; }
+
+// What the scan caches in place of a probe for a plug-in the operator has
+// blocked: nothing of it ran, so it says nothing about the plug-in.
+bool stand_in(const pr::Record& r) { return r.outcome == pr::Outcome::Blocked && r.reason == kBlockedByOperator; }
 
 std::string ended(platform::ChildProcess& c) {
     return c.exited_normally() ? "exited with code " + std::to_string(c.exit_code())
@@ -145,6 +151,10 @@ struct PluginScanner::Worker {
     std::string disabled;
     PluginCatalogCache cache;
     std::map<Key, pr::Record> run_only;  // not installed; blocked with no bundle known
+    PluginBlockList block_list;
+    // False when an unreadable list could not be moved aside: changes are
+    // then kept for this run only, never written over the operator's file.
+    bool block_list_writable = true;
     bool dirty = false;
     uint64_t saved_ms = 0;
 
@@ -270,6 +280,90 @@ struct PluginScanner::Worker {
         }
     }
 
+    // Before the cache, so no plug-in on it is ever probed at start.
+    void load_block_list() {
+        if (cfg.block_list_path.empty()) return;
+        std::string why;
+        if (load_plugin_block_list(cfg.block_list_path, block_list, why) != BlockListLoad::Unreadable) return;
+        // A setting, not regenerable: kept for the operator to mend, never
+        // written over by the next block.
+        const std::string aside = cfg.block_list_path + ".unreadable";
+        std::error_code ec;
+        std::filesystem::rename(cfg.block_list_path, aside, ec);
+        if (ec) {
+            block_list_writable = false;
+            notice(why + "; no plug-in is blocked, and what is blocked now is kept for this run only");
+        } else {
+            notice(why + "; it is kept as " + aside + ", and no plug-in is blocked");
+        }
+    }
+
+    void save_block_list() {
+        if (cfg.block_list_path.empty()) return;
+        std::string why;
+        if (!block_list_writable)
+            notice("the plug-in block list is kept for this run only: " + cfg.block_list_path + " is unreadable");
+        else if (!save_plugin_block_list(cfg.block_list_path, block_list, why))
+            notice("the plug-in block list could not be written, and holds for this run only: " + why);
+    }
+
+    // The record as clients and chain starts see it: refused while the
+    // operator blocks the plug-in, its probe kept for when they unblock it.
+    pr::Record shown(const pr::Record& r) const {
+        const auto it = block_list.plugins.find(r.uri);
+        if (it == block_list.plugins.end() || r.outcome == pr::Outcome::NotInstalled) return r;
+        pr::Record b = r;
+        b.outcome = pr::Outcome::Blocked;
+        b.reason = kBlockedByOperator;
+        if (b.name.empty()) b.name = it->second;
+        return b;
+    }
+
+    // Stand-ins for plug-ins no longer blocked go, and each is probed when
+    // the scan may (change D): queued, with a scan wanted if none runs.
+    void release_unblocked() {
+        bool queued = false;
+        for (auto& [path, b] : cache.bundles) {
+            for (auto it = b.plugins.begin(); it != b.plugins.end();) {
+                if (!stand_in(*it) || block_list.has(it->uri)) {
+                    ++it;
+                    continue;
+                }
+                const Key k{it->uri, uint16_t(it->channels)};
+                it = b.plugins.erase(it);
+                dirty = true;
+                probed_this_scan.erase(k);
+                enqueue_catalog(k, path);
+                queued = true;
+            }
+        }
+        // A chain start asks again, and is probed then.
+        for (auto it = run_only.begin(); it != run_only.end();)
+            it = stand_in(it->second) && !block_list.has(it->first.first) ? run_only.erase(it) : std::next(it);
+        if (queued && phase == Phase::Idle) scan_wanted = true;
+        publish_wanted = true;
+    }
+
+    void apply_blocks(const std::vector<BlockChange>& changes) {
+        bool changed = false;
+        for (const BlockChange& c : changes) {
+            if (c.blocked) {
+                if (block_list.plugins.size() >= kMaxBlockedPlugins && !block_list.has(c.id)) {
+                    notice("the plug-in block list is full (" + std::to_string(kMaxBlockedPlugins) + "): " + c.name +
+                           " is not blocked");
+                    continue;
+                }
+                changed = block_list.plugins.emplace(c.id, c.name).second || changed;
+            } else {
+                changed = block_list.plugins.erase(c.id) > 0 || changed;
+            }
+        }
+        if (!changed) return;
+        save_block_list();
+        release_unblocked();
+        rebuild_api();
+    }
+
     void load() {
         cache.host = host_line;
         cache.build = cfg.build_id;
@@ -357,7 +451,7 @@ struct PluginScanner::Worker {
         api::PluginCatalog c;
         for (const auto& [k, r] : pick) {
             if (c.plugins.size() >= api::wire::kMaxCatalogPlugins) break;
-            c.plugins.push_back(catalog_entry(*r));
+            c.plugins.push_back(catalog_entry(shown(*r)));
         }
         std::sort(c.plugins.begin(), c.plugins.end(), [](const api::PluginInfo& a, const api::PluginInfo& b) {
             return std::tie(a.name, a.id) < std::tie(b.name, b.id);
@@ -403,8 +497,9 @@ struct PluginScanner::Worker {
         c->api_frames = api_frames;
         c->api_index = api_index;
         for (const auto& [path, b] : cache.bundles)
-            for (const pr::Record& r : b.plugins) c->probes[{r.uri, uint16_t(r.channels)}] = r;
-        for (const auto& [k, r] : run_only) c->probes[k] = r;
+            for (const pr::Record& r : b.plugins) c->probes[{r.uri, uint16_t(r.channels)}] = shown(r);
+        for (const auto& [k, r] : run_only) c->probes[k] = shown(r);
+        for (const auto& [id, name] : block_list.plugins) c->blocked.insert(id);
         std::shared_ptr<const Catalog> untaken;
         {
             std::lock_guard<std::mutex> l(s.exchange_mu_);
@@ -787,6 +882,17 @@ struct PluginScanner::Worker {
     }
 
     void start_probe(const Key& k, bool chain, const std::string& bundle) {
+        if (const auto b = block_list.plugins.find(k.first); b != block_list.plugins.end()) {
+            // Nothing of it runs. Cached under its bundle, so the bundle
+            // settles and the plug-in stays listed for the operator to
+            // unblock; with none known, for this run.
+            pr::Record r = blocked(k, kBlockedByOperator);
+            r.name = b->second;
+            probed_this_scan.insert(k);
+            store(k, std::move(r), bundle);
+            settle_one(bundle);
+            return;
+        }
         if (!disabled.empty()) {
             refuse(k, disabled, bundle);
             return;
@@ -1006,10 +1112,12 @@ struct PluginScanner::Worker {
         std::vector<Key> probes;
         bool want_rescan = false;
         std::vector<std::shared_ptr<const Catalog>> retired;
+        std::vector<BlockChange> blocks;
         {
             std::lock_guard<std::mutex> l(s.exchange_mu_);
             retired.swap(s.retired_);
             probes.swap(s.in_probes_);
+            blocks.swap(s.in_blocks_);
             want_rescan = s.in_rescan_;
             s.in_rescan_ = false;
         }
@@ -1028,6 +1136,8 @@ struct PluginScanner::Worker {
                             enqueue_catalog({r.uri, uint16_t(r.channels)}, path);
             }
         }
+        // Before the probes asked with them, which then see the list.
+        if (!blocks.empty()) apply_blocks(blocks);
         for (const Key& k : probes) enqueue_chain(k);
     }
 
@@ -1052,7 +1162,11 @@ struct PluginScanner::Worker {
             notice("the plug-in scan runs at normal priority: " + why);
         check_version();
         if (!disabled.empty()) notice(disabled);
+        load_block_list();
         load();
+        // The list may have been mended or deleted since the cache was
+        // written.
+        release_unblocked();
         ready = true;
         rebuild_api();
         publish();
@@ -1097,9 +1211,11 @@ bool PluginScanner::exchange(bool recording) {
         if (was != recording) sleep_cv_.notify_one();
         return false;
     }
-    const bool wake = !want_probes_.empty() || want_rescan_ || recording != was;
+    const bool wake = !want_probes_.empty() || want_rescan_ || !want_blocks_.empty() || recording != was;
     in_probes_.insert(in_probes_.end(), want_probes_.begin(), want_probes_.end());
     want_probes_.clear();
+    in_blocks_.insert(in_blocks_.end(), want_blocks_.begin(), want_blocks_.end());
+    want_blocks_.clear();
     in_rescan_ = in_rescan_ || want_rescan_;
     want_rescan_ = false;
     if (out_catalog_) {
@@ -1125,6 +1241,10 @@ void PluginScanner::probe(const std::string& host_id, uint16_t channels) {
 }
 
 void PluginScanner::rescan() { want_rescan_ = true; }
+
+void PluginScanner::set_blocked(const std::string& host_id, const std::string& name, bool blocked) {
+    want_blocks_.push_back({host_id, name, blocked});
+}
 
 void PluginScanner::inject_catalog_for_test(std::shared_ptr<const Catalog> c) {
     std::shared_ptr<const Catalog> untaken;

@@ -219,6 +219,10 @@ bool save_plugin_cache(const std::string& path, const PluginCatalogCache& cache,
               std::to_string(kMaxPluginCacheBytes >> 20) + " MiB cap; it is kept in memory only";
         return false;
     }
+    return write_file_durably(path, text, why);
+}
+
+bool write_file_durably(const std::string& path, const std::string& text, std::string& why) {
     const fs::path target(path);
     const fs::path dir = target.has_parent_path() ? target.parent_path() : fs::path(".");
     std::error_code ec;

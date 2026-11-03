@@ -18,6 +18,7 @@
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
 #include "sonora/playback_controller.h"
+#include "sonora/plugin_block_list.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/plugin_scanner.h"
 #include "sonora/session.h"
@@ -272,6 +273,21 @@ std::string host_id(const model::PluginRef& p) {
     return p.format == model::PluginFormat::Vst3 ? "vst3:" + p.id : p.id;
 }
 
+// plugin.block and plugin.unblock: "<lv2|vst3> <id>", the id as the
+// catalog names it (a VST3 class id without "vst3:").
+bool parse_plugin_argument(const std::string& arg, model::PluginRef& out, std::string& why) {
+    const auto space = arg.find(' ');
+    const std::string format = arg.substr(0, space);
+    const std::string id = space == std::string::npos ? std::string() : arg.substr(space + 1);
+    if ((format != "lv2" && format != "vst3") || id.empty() || id.find(' ') != std::string::npos) {
+        why = "name the plug-in as \"lv2 <uri>\" or \"vst3 <class id>\"";
+        return false;
+    }
+    out.format = format == "vst3" ? model::PluginFormat::Vst3 : model::PluginFormat::Lv2;
+    out.id = id;
+    return true;
+}
+
 // §6.1's "as scanned": the session file stores the catalog's words, never
 // the client's. From the catalog sent, or, as catalog_refusal accepts it,
 // from a probe this run finished (finding 4 on #95: during a first cold
@@ -410,6 +426,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
         sc.host_path = opts_.plugin_host;
         sc.bundles = opts_.plugin_bundles;
         sc.cache_path = opts_.plugin_cache;
+        sc.block_list_path = opts_.plugin_block_list;
         sc.build_id = opts_.plugin_build_id;
         sc.wine_prefix = opts_.plugin_wine_prefix;
         sc.wine_prefix_command = opts_.plugin_wine_prefix_command;
@@ -428,6 +445,32 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                               scanner_->rescan();
                               return true;
                           }));
+        // The operator's block list (ADR-0012, amendment of 2026-11-03).
+        // Allowed during a take: blocking runs nothing, and an unblocked
+        // plug-in waits for the take to end before it is probed. A chain
+        // already running keeps its plug-in until it next starts.
+        const auto block_handler = [this](bool blocked) {
+            return ExplainingHandler([this, blocked](const CommandContext& ctx, std::string& why) {
+                model::PluginRef ref;
+                if (!parse_plugin_argument(ctx.argument, ref, why)) return false;
+                const auto& c = scanner_->catalog();
+                const std::string id = host_id(ref);
+                const api::PluginInfo* p = catalog_find(*c, ref.format, ref.id);
+                const bool listed = c->blocked.count(id) != 0;
+                if (!p && !listed) {
+                    why = "no plug-in " + ref.id + " is in the catalog";
+                    return false;
+                }
+                if (blocked && !listed && c->blocked.size() >= kMaxBlockedPlugins) {
+                    why = "the plug-in block list is full (" + std::to_string(kMaxBlockedPlugins) + ")";
+                    return false;
+                }
+                scanner_->set_blocked(id, p ? p->name : std::string(), blocked);
+                return true;
+            });
+        };
+        registry_.install("plugin.block", block_handler(true));
+        registry_.install("plugin.unblock", block_handler(false));
     }
     // Recovered and orphan takes (session-format.md, "Crash recovery"):
     // placed only when the operator says so, as one undo step per take.
