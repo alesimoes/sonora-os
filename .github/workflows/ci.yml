@@ -595,6 +595,11 @@ jobs:
       - name: Image config (backports pins, RT kernel, tty1 session, no VT gettys)
         run: tools/test-image-config.sh
 
+      # labwc 0.8.3 headless: Ctrl+Alt+Fn reaches the UI (srvrkeys:none, through
+      # a nested labwc's own keymap); an X11 editor's title bar and close button.
+      - name: labwc input (Ctrl+Alt+Fn, title-bar drag, close button)
+        run: tools/test-labwc-input.sh
+
       # The shipped units under a real systemd (PID 1 in a container): the
       # display fallback hands tty1 back to the session; systemd-analyze verify.
       - name: Display fallback units under systemd
