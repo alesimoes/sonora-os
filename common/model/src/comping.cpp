@@ -188,6 +188,63 @@ bool comp_range(const Snapshot& s, const CompRange& c, const std::function<Id()>
     return true;
 }
 
+bool consolidate_range(const Snapshot& s, const ConsolidateRange& c,
+                       const std::function<Id()>& next_id, Comp& out, std::string& why) {
+    out = Comp{};
+    why.clear();
+    const TrackEdit* t = find_track(s, c.track);
+    if (t == nullptr) {
+        why = "no such track; nothing was consolidated";
+        return false;
+    }
+    if (t->kind != TrackKind::Audio) {
+        why = t->name + " is a MIDI track, and only audio is consolidated; nothing was consolidated";
+        return false;
+    }
+    const Playlist* p = find_playlist(*t, c.playlist);
+    if (p == nullptr) {
+        why = "the range is not a playlist of " + t->name + "; nothing was consolidated";
+        return false;
+    }
+    if (c.start < 0 || c.end <= c.start) {
+        why = "the range to consolidate is empty; nothing was consolidated";
+        return false;
+    }
+    const bool any = std::any_of(p->regions.begin(), p->regions.end(), [&c](const Region& r) {
+        return r.position < c.end && r.end() > c.start;
+    });
+    if (!any) {
+        why = "nothing to consolidate: the range holds no region";
+        return false;
+    }
+    const auto src = std::find_if(s.sources->sources.begin(), s.sources->sources.end(),
+                                  [&c](const Source& e) { return e.id == c.source; });
+    if (src == s.sources->sources.end()) {
+        why = "the rendered file is not in the session; nothing was consolidated";
+        return false;
+    }
+    if (src->channels != t->channels) {
+        why = "the rendered file has " + std::to_string(src->channels) + " channels, " + t->name +
+              " has " + std::to_string(t->channels) + "; nothing was consolidated";
+        return false;
+    }
+    if (src->length < c.end - c.start) {
+        why = "the rendered file is shorter than the range; nothing was consolidated";
+        return false;
+    }
+    Region r;
+    r.id = next_id();
+    r.name = c.name;
+    r.position = c.start;
+    r.length = c.end - c.start;
+    r.source_offset = 0;
+    for (std::uint16_t ch = 0; ch < t->channels; ++ch) r.channels.push_back({c.source, ch});
+    // The overwrite may split a region that spans the range; its id is
+    // reserved whether or not it is used.
+    out.members.push_back(PlaceRegion{c.playlist, std::move(r), next_id()});
+    return true;
+}
+
 Id comp_origin(const TrackEdit& track, const Region& r, Id exclude) {
     for (const auto& p : track.playlists) {
         if (p->id == exclude) continue;
