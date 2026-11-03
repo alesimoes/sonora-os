@@ -16,6 +16,11 @@
 #                               from a test tone, play it back to the
 #                               speakers, and print the levels of the take
 #                               and of what reached the speakers
+#   tools/dev-wsl.sh user [NAME]  (as root) make NAME (default sonora, or the
+#                               existing uid 1000) the distro's default user
+#   tools/dev-wsl.sh --log FILE STEP ...
+#                               the same, with the output also written to
+#                               FILE (a Windows path such as C:/x/y.log works)
 #
 # Every step is idempotent: packages already installed are not reinstalled,
 # the build is incremental, a PipeWire already running is reused.
@@ -102,6 +107,12 @@ PACKAGES=(
   dbus dbus-x11 python3 procps
 )
 
+# Root needs no sudo, and a Debian distro installed with --no-launch has
+# only root and may not have sudo at all.
+as_root() {
+  if ((EUID == 0)); then "$@"; else sudo "$@"; fi
+}
+
 do_deps() {
   check_host
   local missing=()
@@ -111,8 +122,8 @@ do_deps() {
   done
   if ((${#missing[@]})); then
     say "installing ${#missing[@]} packages: ${missing[*]}"
-    sudo apt-get update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+    as_root apt-get update
+    as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
   else
     say "packages: all ${#PACKAGES[@]} installed"
   fi
@@ -121,9 +132,9 @@ do_deps() {
   # looks for a jackd that is not running.
   local conf=/etc/ld.so.conf.d/pipewire-jack.conf
   if [[ ! -f "$conf" ]]; then
-    sudo install -D -m 0644 \
+    as_root install -D -m 0644 \
       /usr/share/doc/pipewire/examples/ld.so.conf.d/pipewire-jack-x86_64-linux-gnu.conf "$conf"
-    sudo ldconfig
+    as_root ldconfig
   fi
 }
 
@@ -210,27 +221,41 @@ node_ports() {  # node, -o|-i: its ports, monitor ports excluded
   pw-link "$2" 2>/dev/null | grep "^$1:" | grep -v ":monitor_" || true
 }
 
-# A unix:path bus whose socket is gone. WSL exports
-# unix:path=/run/user/N/bus even when nothing listens there (no systemd), and
-# PipeWire and WirePlumber then fail to reach a bus.
+# WSL exports unix:path=/run/user/N/bus even when nothing listens there (no
+# systemd), and PipeWire and WirePlumber then fail to reach a bus. A path
+# address is dead when its socket is gone. The bus dbus-launch started for us
+# is judged by its pid, whatever its address: after `wsl --terminate` its
+# socket file can still sit in /tmp (the distro's disk) and an abstract one
+# has no file at all, while the pid is gone or is now some other process.
 bus_dead() {
-  local a="${DBUS_SESSION_BUS_ADDRESS:-}"
+  local a="${DBUS_SESSION_BUS_ADDRESS:-}" p="${DBUS_SESSION_BUS_PID:-}"
   [[ -z $a ]] && return 0
+  if [[ -n $p ]]; then
+    kill -0 "$p" 2>/dev/null || return 0
+    [[ "$(cat "/proc/$p/comm" 2>/dev/null)" == dbus-daemon ]] || return 0
+  fi
   [[ $a == unix:path=* ]] || return 1
   a="${a#unix:path=}"
   [[ ! -S ${a%%,*} ]]
 }
 
 have_bus() {
-  if bus_dead && [[ -f "$STATE/dbus.env" ]]; then
-    # shellcheck disable=SC1091
-    . "$STATE/dbus.env"
+  local saved="$STATE/dbus.env"
+  # A file written before the pid was saved cannot be checked: drop it.
+  if [[ -f $saved ]] && ! grep -q DBUS_SESSION_BUS_PID "$saved"; then
+    rm -f "$saved"
+  fi
+  if bus_dead && [[ -f $saved ]]; then
+    unset DBUS_SESSION_BUS_PID
+    # shellcheck disable=SC1090
+    . "$saved"
   fi
   if bus_dead; then
     # WirePlumber needs a session bus; WSL without systemd has none.
-    unset DBUS_SESSION_BUS_ADDRESS
+    unset DBUS_SESSION_BUS_ADDRESS DBUS_SESSION_BUS_PID
     eval "$(dbus-launch --sh-syntax)"
-    echo "export DBUS_SESSION_BUS_ADDRESS='$DBUS_SESSION_BUS_ADDRESS'" >"$STATE/dbus.env"
+    printf "export DBUS_SESSION_BUS_ADDRESS='%s' DBUS_SESSION_BUS_PID='%s'\n" \
+      "$DBUS_SESSION_BUS_ADDRESS" "$DBUS_SESSION_BUS_PID" >"$saved"
   fi
 }
 
@@ -508,6 +533,70 @@ PY
   say "selftest passed; the files are in $dir"
 }
 
+# --- user ------------------------------------------------------------------
+
+# wsl.conf on stdin -> stdout with default=NAME in its [user] section. The
+# first [user] section gets the line, every other default= under a [user]
+# header goes, and with no [user] section one is appended. awk ends every line
+# with a newline, so nothing is glued onto a last line that had none.
+wsl_conf_set_user() {  # name
+  awk -v name="$1" '
+    /^[ \t]*\[/ {
+      sect = $0; gsub(/[ \t\[\]]/, "", sect); sect = tolower(sect)
+      print
+      if (sect == "user" && !done) { print "default=" name; done = 1 }
+      next
+    }
+    sect == "user" && /^[ \t]*default[ \t]*=/ { next }
+    { print }
+    END { if (!done) { if (NR) print ""; print "[user]"; print "default=" name } }
+  '
+}
+
+do_user() {
+  local name="${1:-sonora}" conf="${SONORA_WSL_CONF:-/etc/wsl.conf}" existing
+  ((EUID == 0)) || die "user: run as root (tools/dev-wsl.ps1 user does that)"
+  [[ $name =~ ^[a-z][a-z0-9_-]*$ ]] || die "'$name' is not a valid Linux user name"
+  # WSL's own first-launch user is uid 1000: reuse it rather than add a second.
+  existing="$(getent passwd 1000 | cut -d: -f1 || true)"
+  if [[ -n $existing ]]; then
+    [[ $existing == "$name" ]] || say "uid 1000 is '$existing'; using it, not '$name'"
+    name="$existing"
+  elif getent passwd "$name" >/dev/null; then
+    say "user '$name' exists"
+  else
+    useradd -m -s /bin/bash "$name"
+    say "user '$name' created"
+  fi
+  if ! command -v sudo >/dev/null; then
+    say "installing sudo"
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends sudo
+  fi
+  usermod -aG sudo,audio,video "$name"
+  local sudoers="/etc/sudoers.d/90-sonora-$name" line="$name ALL=(ALL) NOPASSWD:ALL"
+  if [[ "$(cat "$sudoers" 2>/dev/null)" != "$line" ]]; then
+    printf '%s\n' "$line" >"$sudoers.tmp"
+    chmod 0440 "$sudoers.tmp"
+    visudo -cqf "$sudoers.tmp" || { rm -f "$sudoers.tmp"; die "visudo rejected $sudoers"; }
+    mv -f "$sudoers.tmp" "$sudoers"
+  fi
+  local old="" new
+  [[ -f $conf ]] && old="$(cat "$conf")"
+  new="$(printf '%s' "$old" | wsl_conf_set_user "$name")"
+  if [[ "$old" != "$new" ]]; then
+    # Written beside it, then renamed: a half-written wsl.conf would be read
+    # at the next start of the distro.
+    printf '%s\n' "$new" >"$conf.sonora-tmp"
+    chmod 0644 "$conf.sonora-tmp"
+    mv -f "$conf.sonora-tmp" "$conf"
+    say "$conf: default user is now '$name' (read when the distro next starts)"
+  else
+    say "$conf: default user already '$name'"
+  fi
+  echo "DEFAULT_USER=$name"
+}
+
 # --- stop, status ----------------------------------------------------------
 
 do_stop() {
@@ -544,6 +633,30 @@ do_status() {
 
 # --- main ------------------------------------------------------------------
 
+# Windows paths (C:/x or C:\x) reach the log through /mnt/<drive>.
+linux_path() {
+  if [[ $1 =~ ^[A-Za-z]:[/\\] ]]; then
+    wslpath -u "$1" 2>/dev/null && return
+    local d="${1:0:1}" r="${1:2}"
+    echo "/mnt/${d,,}${r//\\//}"
+  else
+    echo "$1"
+  fi
+}
+
+if [[ ${1:-} == --log ]]; then
+  # The tee runs here, not in PowerShell: Windows PowerShell 5.1 turns a
+  # native command's stderr into error records and writes Tee-Object files in
+  # UTF-16. This file gets the script's own UTF-8 bytes, stderr included.
+  [[ $# -ge 2 ]] || die "--log needs a file"
+  log="$(linux_path "$2")"
+  shift 2
+  mkdir -p "$(dirname "$log")"
+  rc=0
+  bash "${BASH_SOURCE[0]}" "$@" 2>&1 | tee "$log" || rc=$?
+  exit "$rc"
+fi
+
 cmd="${1:-all}"
 [[ $# -gt 0 ]] && shift
 case "$cmd" in
@@ -554,7 +667,8 @@ case "$cmd" in
   stop) do_stop ;;
   status) do_status ;;
   selftest) do_selftest "$@" ;;
+  user) do_user "$@" ;;
   all|--) [[ "${1:-}" == -- ]] && shift; do_deps; do_build; do_run -- "$@" ;;
-  -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown step $cmd (see --help)" ;;
 esac

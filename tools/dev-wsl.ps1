@@ -101,22 +101,57 @@ if ($WslExit -ne 0) {
 
 # --- the non-root user ------------------------------------------------------
 
-$uid1000 = InDistro 'getent passwd 1000 | cut -d: -f1'
+# Who `wsl -d Debian` logs in as: the [user] default of wsl.conf as read at
+# the distro's last start, root when there is none.
+function DefaultUser {
+    $u = @(Invoke-Wsl @('-d', $Distro, '--', 'id', '-un'))
+    if ($u.Count -gt 0) { return $u[-1] }
+    return ''
+}
+
 if ($Step.Count -gt 0 -and $Step[0] -eq 'user') {
-    $name = if ($Step.Count -gt 1) { $Step[1] } else { 'sonora' }
+    $name = 'sonora'
+    if ($Step.Count -gt 1) { $name = $Step[1] }
     if ($name -notmatch '^[a-z][a-z0-9_-]*$') { Fail "'$name' is not a valid Linux user name." '' }
-    if ($uid1000) { Write-Host "dev-wsl: user '$uid1000' already exists; nothing to do"; exit 0 }
-    $null = InDistro "useradd -m -s /bin/bash -G sudo,audio,video $name && echo '$name ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/90-$name && chmod 0440 /etc/sudoers.d/90-$name && printf '[user]\ndefault=$name\n' >> /etc/wsl.conf"
-    if ($WslExit -ne 0) { Fail "could not create user '$name'." "run it by hand: wsl -d $Distro -u root -- adduser $name" }
-    $null = Invoke-Wsl @('--terminate', $Distro)  # only this distro; wsl.conf is read at its next start
-    Write-Host "dev-wsl: user '$name' created and set as the default. Run this script again (the first build starts from scratch)."
+    # dev-wsl.sh does the work: it reuses uid 1000 if there is one, and edits
+    # wsl.conf in place, so a second run changes nothing.
+    $prev = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $old = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $out = @(& wsl.exe -d $Distro -u root --cd "$Repo" -- bash tools/dev-wsl.sh user $name)
+    $rc = $LASTEXITCODE
+    $ErrorActionPreference = $old
+    [Console]::OutputEncoding = $prev
+    $out | Where-Object { $_ -notmatch '^DEFAULT_USER=' } | ForEach-Object { Write-Host $_ }
+    if ($rc -ne 0) { Fail "could not set up user '$name' (exit $rc)." "run it by hand: wsl -d $Distro -u root -- adduser $name" }
+    $set = @($out | Where-Object { $_ -match '^DEFAULT_USER=' } | ForEach-Object { $_.Substring(13) })
+    if ($set.Count -gt 0) { $name = $set[-1] }
+    if ((DefaultUser) -eq $name) { Write-Host "dev-wsl: '$name' is already the default user; nothing to do"; exit 0 }
+    # wsl.conf is read when the distro starts. Terminating it would kill a
+    # running engine mid-take, so that is left to the operator.
+    # pgrep exits 1 for "no match" only. Anything else (0 = running, 2/3 =
+    # pgrep error, 255 = wsl.exe failed) means we do not know, so no terminate.
+    # One pgrep, not a chain: `a || b` would turn an error of `a` into the
+    # exit code of `b`.
+    $null = InDistro "pgrep -x 'sonora-(engine|ui)'"
+    if ($WslExit -eq 0) {
+        Fail "'$name' is set as the default user, but Sonora is running." "run 'tools\dev-wsl.ps1 stop', then 'wsl --terminate $Distro' (only this distro; never 'wsl --shutdown')."
+    }
+    if ($WslExit -ne 1) {
+        Fail "'$name' is set as the default user, but could not check whether Sonora is running (exit $WslExit), so $Distro was not restarted." "run 'tools\dev-wsl.ps1 status'; when Sonora is not running, 'wsl --terminate $Distro' (only this distro; never 'wsl --shutdown')."
+    }
+    $null = Invoke-Wsl @('--terminate', $Distro)  # only this distro
+    Write-Host "dev-wsl: '$name' is now the default user. Run this script again (the first build starts from scratch)."
     exit 0
 }
 # With no normal user, root does the work: it needs no password and sudo is a no-op.
-$asUser = @()
-if (-not $uid1000) {
-    $who = InDistro 'id -un'
-    if ($who -eq 'root') { $asUser = @('-u', 'root') }
+# Without a uid 1000 the distro is never started as its default user: a
+# fresh distro may run its first-launch user prompt there.
+$asUser = @('-u', 'root')
+$uid1000 = InDistro 'getent passwd 1000 | cut -d: -f1'
+if ($uid1000) {
+    if ((DefaultUser) -ne 'root') { $asUser = @() }
 }
 
 # --- run --------------------------------------------------------------------
@@ -128,19 +163,26 @@ $isSelftest = $stepArgs.Count -gt 0 -and $stepArgs[0] -eq 'selftest'
 # distro's own disk (~/.cache/sonora/build-wsl), which is much faster.
 $old = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
+$prevEnc = [Console]::OutputEncoding
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 if ($isSelftest) {
     # Keep the audio + playback numbers: they are the evidence that the
-    # sound path works on this laptop.
+    # sound path works on this laptop. dev-wsl.sh writes the log itself
+    # (--log): piping a native command into Tee-Object under PowerShell 5.1
+    # turns its stderr into error records and writes the file in UTF-16.
+    # Forward slashes, because the distro's shell eats unquoted backslashes.
     $dir = Join-Path $env:LOCALAPPDATA 'Sonora'
     New-Item -ItemType Directory -Force $dir | Out-Null
     $log = Join-Path $dir ("selftest-{0:yyyyMMdd-HHmmss}.log" -f (Get-Date))
-    wsl.exe -d $Distro @asUser --cd "$Repo" -- bash tools/dev-wsl.sh @stepArgs 2>&1 | Tee-Object -FilePath $log
+    $logArg = $log -replace '\\', '/'
+    wsl.exe -d $Distro @asUser --cd "$Repo" -- bash tools/dev-wsl.sh --log "$logArg" @stepArgs
     $rc = $LASTEXITCODE
     Write-Host "dev-wsl: selftest output saved to $log"
 } else {
     wsl.exe -d $Distro @asUser --cd "$Repo" -- bash tools/dev-wsl.sh @stepArgs
     $rc = $LASTEXITCODE
 }
+[Console]::OutputEncoding = $prevEnc
 $ErrorActionPreference = $old
 if ($rc -ne 0 -and $stepArgs.Count -gt 0 -and $stepArgs[0] -notin @('status', 'stop') -and -not ($rc -eq 143 -and $stepArgs[0] -eq 'run')) {
     $hint = switch -Regex ($stepArgs[0]) {

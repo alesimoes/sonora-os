@@ -75,6 +75,17 @@ PowerShell, in the checkout:
     # first time only: it stops after installing Debian; run `wsl -d Debian`
     # once to create your Linux user, exit, and run the line above again
 
+The other steps take the same form (`tools\dev-wsl.ps1 STEP`): `run` (engine
+and UI from the existing build), `stop`, `status`, `selftest [--tone]` (its
+output is also saved, UTF-8, under `%LOCALAPPDATA%\Sonora`), `shortcut` (a
+Sonora icon on the Desktop that runs `tools\sonora-wsl.cmd`), and
+`user [name]`. Without a normal user every step runs as root, which works.
+`user` makes the existing uid 1000, or a new `sonora`, the distro's default
+user with passwordless sudo; run it again and it changes nothing. It then
+restarts only the Debian distro (`wsl --terminate Debian`) so `wsl.conf` is
+read, and refuses while Sonora is running. The new user's home is empty, so
+the next run builds from scratch.
+
 Or from inside the distro, in the checkout (`/mnt/c/source/sound`):
 
     tools/dev-wsl.sh                  # deps, build, engine + Qt UI
@@ -82,6 +93,7 @@ Or from inside the distro, in the checkout (`/mnt/c/source/sound`):
                                       # print the levels of the take and of
                                       # what was sent to the speakers
     tools/dev-wsl.sh selftest --tone  # the same with a test tone, no mic
+    tools/dev-wsl.sh --log FILE STEP  # any step, its output also in FILE
 
 Two tracks record the Windows default input. Armed tracks do not monitor
 their input, since a laptop's own mic and speakers feed back; disarm a track
