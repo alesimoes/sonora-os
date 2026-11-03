@@ -278,9 +278,12 @@ void PlaybackController::touch(const model::Snapshot& snapshot, std::size_t row,
     // and the audio thread glides to it from what it last played. Stopped,
     // a ride is the static, which the client saves.
     const model::TrackMix* m = snapshot.mix.find(tracks[row]->id);
-    // The trim fader has no static value to put back.
-    if (held || param == kAutoTrim || m == nullptr ||
-        m->automation != model::AutomationMode::Touch ||
+    // The trim fader has no static value to put back. In Trim the pan
+    // returns as in Touch (session.cpp), so its static goes back too; the
+    // volume is not held there, so there is no volume release to restore.
+    const bool returns = m != nullptr && (m->automation == model::AutomationMode::Touch ||
+                                          m->automation == model::AutomationMode::Trim);
+    if (held || param == kAutoTrim || !returns ||
         session_.transport().state() == TransportState::Stopped) {
         return;
     }

@@ -588,6 +588,35 @@ int test_a_moving_plan_writes_only_the_held_track() {
     return 0;
 }
 
+// ADR-0027 §8 slice 5 (#290 review B2): in Trim the pan behaves as in
+// Touch, so a pan release while rolling puts the document's static pan
+// back in the atomic, as Touch's does; otherwise the audio would glide to
+// the ridden value while the writer records a return to the static.
+int test_a_pan_release_in_trim_puts_the_static_back() {
+    for (const AutomationMode mode : {AutomationMode::Touch, AutomationMode::Trim}) {
+        auto session = make_session(1);
+        Session& s = *session;
+        History h(new_session(SessionSettings{}));
+        AddTrack a = track_op(100, "A", 0.0f, 0);
+        a.mix.automation = mode;
+        CHECK_APPLY(h, a);
+        PlaybackController ctl(s);
+        CHECK(show(ctl, h.current()));
+        CHECK(ctl.settle(2.0));
+        ctl.play();
+        CHECK(ctl.settle(2.0));
+        CHECK(s.transport().state() == TransportState::Rolling);
+        Out o;
+        block(s, o);
+        ctl.touch(h.current(), 0, sonora::kAutoPan, true);
+        s.tracks()[0]->set_pan(1.0f);   // the ParameterChange moves
+        block(s, o);
+        ctl.touch(h.current(), 0, sonora::kAutoPan, false);
+        CHECK(s.tracks()[0]->pan() == h.current().mix.find(a.track)->pan);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -598,6 +627,7 @@ int main() {
     if (test_a_touch_follows_its_track() != 0) return 1;
     if (test_a_release_while_moving_reaches_its_track() != 0) return 1;
     if (test_a_latch_follows_its_track() != 0) return 1;
+    if (test_a_pan_release_in_trim_puts_the_static_back() != 0) return 1;
     if (test_a_moving_plan_writes_only_the_held_track() != 0) return 1;
     if (test_a_plan_back_while_adopting_keeps_each_mix() != 0) return 1;
     std::printf("test_track_structure: ok\n");
