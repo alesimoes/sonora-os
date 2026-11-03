@@ -1,6 +1,8 @@
 #!/bin/sh
-# Boot smoke test. Runs only when the kernel command line asks for it, prints
-# one line per check to the console, then powers the machine off.
+# Boot smoke test. Runs only when the kernel command line asks for it and
+# prints one line per check to the console. sonora-smoketest.service powers the
+# machine off when this exits (SuccessAction=/FailureAction=); a poweroff of
+# our own would race the unit's and is not here.
 #
 # Every check here corresponds to a defect that actually happened. The ones
 # worth understanding:
@@ -239,4 +241,3 @@ else
 fi
 
 sync
-systemctl poweroff --no-block
