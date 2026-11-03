@@ -307,9 +307,28 @@ kill_ours() {
 speakers_up() { pw-link -i 2>/dev/null | grep -q "^$SPEAKERS:"; }
 
 # WSLg's PulseServer restarts now and then; the tunnel does not reconnect.
+# A server that hangs instead never says so: the sink tunnel's buffer only
+# fills ("overrun write:N filled:N + size:S > max:M"), because nothing on the
+# WSLg side reads it any more.
 tunnel_dead() {
-  tail -c 300000 "$STATE/pipewire.log" 2>/dev/null | grep -v overrun | tail -n 5 |
-    grep -qi 'connection failure\|connection terminated'
+  local tail
+  tail="$(tail -c 300000 "$STATE/pipewire.log" 2>/dev/null)"
+  grep -v overrun <<<"$tail" | tail -n 5 |
+    grep -qi 'connection failure\|connection terminated' && return 0
+  tail -n 1 <<<"$tail" | grep -q 'playback_stream_process.*overrun write:.* > max:'
+}
+
+# With systemd=true in wsl.conf, a non-root user gets systemd's pipewire.socket,
+# which owns $XDG_RUNTIME_DIR/pipewire-0 but cannot start pipewire.service: that
+# needs a user D-Bus (dbus-user-session), which Debian's WSL image lacks. The
+# first client then fails the socket unit and the bridge comes up only after a
+# 10 s wait and a restart. Stopping the socket hands the path to our PipeWire.
+release_systemd_socket() {
+  command -v systemctl >/dev/null || return 0
+  systemctl --user is-active -q pipewire.socket 2>/dev/null || return 0
+  systemctl --user is-active -q pipewire 2>/dev/null && return 0
+  say "stopping systemd's pipewire.socket (no user D-Bus to start PipeWire with)"
+  systemctl --user stop pipewire.socket 2>/dev/null || true
 }
 
 log_tails() {
@@ -334,6 +353,7 @@ do_audio() {
       touch "$STATE/systemd-restarted"
     fi
   else
+    release_systemd_socket
     if pw_up; then
       say "PipeWire is already running; reusing it"
       ensure_wireplumber
