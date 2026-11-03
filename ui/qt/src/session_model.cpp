@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "session_model.h"
 
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QTimer>
@@ -457,6 +459,26 @@ void SessionModel::installCommands(CommandRegistry& local) {
     };
     simple("app.save_as", save_as(false));
     simple("app.save_copy_in", save_as(true));
+    // Pro Tools' Save As Template asks for the name as Save As does; the
+    // markers are the dialog's check box, kept on the model.
+    simple("app.save_as_template", [this](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) {
+            if (overlay_.recording) {
+                why = "stop recording before Save as Template";
+                return false;
+            }
+            const std::string& n = ctl_.snapshot().settings.name;
+            const QString base = n.empty() ? QStringLiteral("Untitled") : q(n);
+            emit saveAsTemplateRequested(
+                unused_session_name(templates_dir_, base + QStringLiteral(" template")), templates_dir_);
+            return true;
+        }
+        return saveSessionAsTemplate(q(ctx.argument), template_markers_, why);
+    });
+    simple("app.new_from_template", [this](const CommandContext&, Why&) {
+        emit templateBrowserRequested();
+        return true;
+    });
 
     simple("window.toggle_mix_edit", [this](const CommandContext&, Why&) {
         setWindow(window_ == QStringLiteral("edit") ? QStringLiteral("mix") : QStringLiteral("edit"));
@@ -1233,6 +1255,14 @@ bool SessionModel::writeSessionAs(const SaveAsTarget& target, std::string& why, 
                 why = as_template ? "the template was not saved: " + message
                       : std::string(copy ? "the copy was not saved: " : "the session was not saved as ") +
                             (copy ? message : QFileInfo(folder).fileName().toStdString() + ": " + message);
+                // New from Template's Save As (ADR-0030 §3): the operator
+                // must know the engine is still in the template's folder,
+                // and why Record is refused until the session is saved.
+                if (!copy && !as_template && file_.isEmpty() && inTemplateFolder()) {
+                    why += ". The session is open unsaved and the engine is still in the template's "
+                           "folder, so Record is refused until Save puts the session in " +
+                           sessions_dir_.toStdString();
+                }
                 sync();
             } else if (as_template) {
                 saved = true;
@@ -1961,13 +1991,134 @@ std::string SessionModel::commandRefusal(const std::string& command) const {
 
 QVariantList SessionModel::templateList() const {
     QVariantList out;
+    const uint32_t rate = ctl_.snapshot().settings.sample_rate;
     for (const SessionEntry& e : list_sessions(templates_dir_)) {
         QVariantMap m;
         m.insert(QStringLiteral("name"), e.name);
         m.insert(QStringLiteral("file"), e.file);
+        m.insert(QStringLiteral("date"),
+                 QFileInfo(e.file).lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm")));
+        // Read as New from Template reads it, so what the browser offers is
+        // what the click does: one it would refuse says why here instead.
+        std::string bytes, why;
+        model::Loaded loaded;
+        int tracks = -1;
+        QString problem;
+        if (!read_session_file(e.file, bytes, loaded, why)) {
+            problem = QStringLiteral("cannot be read: ") + q(why);
+        } else if (loaded.snapshot.settings.sample_rate != rate) {
+            problem = QStringLiteral("made at %1 Hz; this system runs at %2 Hz")
+                          .arg(loaded.snapshot.settings.sample_rate)
+                          .arg(rate);
+        } else {
+            tracks = static_cast<int>(loaded.snapshot.edit->tracks.size());
+        }
+        m.insert(QStringLiteral("tracks"), tracks);
+        m.insert(QStringLiteral("problem"), problem);
         out << m;
     }
     return out;
+}
+
+QString SessionModel::unusedSessionName(const QString& base) const {
+    const QString b = base.trimmed();
+    return unused_session_name(sessions_dir_, b.isEmpty() ? QStringLiteral("Untitled") : b);
+}
+
+namespace {
+
+// `name` is a listed template of `dir`: a valid folder name with its
+// session file there, so nothing outside the templates folder is touched.
+bool is_listed_template(const QString& dir, const QString& name) {
+    if (dir.isEmpty() || !session_name_problem(name).empty()) return false;
+    for (const SessionEntry& e : list_sessions(dir)) {
+        if (e.name == name) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+bool SessionModel::templateIsFree(const QString& name, std::string& why) const {
+    if (making_from_template_ || after_open_) {
+        why = "a session is being made from a template; rename or delete once it is saved";
+        return false;
+    }
+    if (save_waiting_ || save_writing_) {
+        why = "a save is still in hand; rename or delete the template once it is written";
+        return false;
+    }
+    if (engine_folder_.isEmpty()) return true;
+    const QString folder = QDir::cleanPath(QFileInfo(QDir(templates_dir_).filePath(name)).absoluteFilePath());
+    const QString engine = QDir::cleanPath(QFileInfo(engine_folder_).absoluteFilePath());
+    if (engine == folder || engine.startsWith(folder + QLatin1Char('/'))) {
+        why = "the engine is in this template's folder; save the session first, which moves it to " +
+              sessions_dir_.toStdString();
+        return false;
+    }
+    return true;
+}
+
+bool SessionModel::renameSessionTemplate(const QString& from, const QString& to, std::string& why) {
+    if (!is_listed_template(templates_dir_, from)) {
+        why = "there is no template named \"" + from.toStdString() + "\" in " + templates_dir_.toStdString();
+        return false;
+    }
+    const QString wanted = to.trimmed();
+    if (wanted == from) return true;
+    const std::string bad = session_name_problem(wanted);
+    if (!bad.empty()) {
+        why = "cannot rename the template to \"" + wanted.toStdString() + "\": " + bad;
+        return false;
+    }
+    QDir root(templates_dir_);
+    if (QFileInfo::exists(root.filePath(wanted))) {
+        why = "a template named \"" + wanted.toStdString() + "\" is already in " +
+              templates_dir_.toStdString() + "; choose another name";
+        return false;
+    }
+    if (!templateIsFree(from, why)) return false;
+    // The file inside the folder first, then the folder: a failure at the
+    // second step puts the file back, so the template stays listed.
+    const QString folder = root.filePath(from);
+    const QString old_file = session_file_path(templates_dir_, from);
+    const QString moved_file = QDir(folder).filePath(wanted + QStringLiteral(".sonora"));
+    if (!QFile::rename(old_file, moved_file)) {
+        why = "could not rename " + old_file.toStdString();
+        return false;
+    }
+    if (!root.rename(from, wanted)) {
+        QFile::rename(moved_file, old_file);
+        why = "could not rename the folder " + folder.toStdString();
+        return false;
+    }
+    emit notice(QStringLiteral("Renamed the template ") + from + QStringLiteral(" to ") + wanted);
+    return true;
+}
+
+bool SessionModel::deleteSessionTemplate(const QString& name, std::string& why) {
+    if (!is_listed_template(templates_dir_, name)) {
+        why = "there is no template named \"" + name.toStdString() + "\" in " + templates_dir_.toStdString();
+        return false;
+    }
+    if (!templateIsFree(name, why)) return false;
+    QDir folder(QDir(templates_dir_).filePath(name));
+    if (!folder.removeRecursively()) {
+        why = "could not delete all of " + folder.absolutePath().toStdString() + "; what is left stays there";
+        return false;
+    }
+    emit notice(QStringLiteral("Deleted the template ") + name);
+    return true;
+}
+
+bool SessionModel::renameTemplate(const QString& from, const QString& to) {
+    std::string why;
+    return run(renameSessionTemplate(from, to, why), why);
+}
+
+bool SessionModel::deleteTemplate(const QString& name) {
+    std::string why;
+    return run(deleteSessionTemplate(name, why), why);
 }
 
 bool SessionModel::saveAsTemplate(const QString& name, bool markers) {

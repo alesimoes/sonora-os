@@ -133,6 +133,7 @@ class SessionModel : public QObject {
     // status line.
     Q_PROPERTY(QString trackRefusal READ trackRefusal NOTIFY trackRefusalChanged)
     Q_PROPERTY(bool copyWithAudio READ copyWithAudio WRITE setCopyWithAudio NOTIFY copyWithAudioChanged)
+    Q_PROPERTY(bool templateMarkers READ templateMarkers WRITE setTemplateMarkers NOTIFY templateMarkersChanged)
 
 public:
     // `synthetic_peaks`: the waveforms `peaks` draws are not the sources'
@@ -241,6 +242,22 @@ public:
         copy_with_audio_ = on;
         emit copyWithAudioChanged();
     }
+    // Save as Template's "Markers" (ADR-0030 §2: off unless asked), kept
+    // between templates as copyWithAudio is between copies.
+    bool templateMarkers() const { return template_markers_; }
+    void setTemplateMarkers(bool on) {
+        if (on == template_markers_) return;
+        template_markers_ = on;
+        emit templateMarkersChanged();
+    }
+    // The template browser's Rename and Delete (ADR-0030 §4): the folder
+    // <templates>/<from> and its session file renamed to <to>, or the folder
+    // removed. The interface does it, as no engine action names a template;
+    // so it is refused while the engine is in that template's folder (its
+    // autosave goes there), while a save or a New from Template is in hand,
+    // for a name that is not a listed template, and for a name in use.
+    bool renameSessionTemplate(const QString& from, const QString& to, std::string& why);
+    bool deleteSessionTemplate(const QString& name, std::string& why);
     // Waiting for the plugins' state, or for the engine to write the file.
     bool saveWaiting() const { return save_waiting_ || save_writing_; }
     // How long a save waits for the engine's FlushPluginState reply before
@@ -435,8 +452,17 @@ public:
     // the folder, loaded with the folder's path, so the engine records
     // there and offers its takes for placing.
     Q_INVOKABLE bool openRecording(const QString& folder, bool discard);
-    // [{name, file}]: the templates (ADR-0030), for New from Template.
+    // [{name, file, date, tracks, problem}]: the templates (ADR-0030), for
+    // the New from Template browser. `date` is the file's, `tracks` -1 and
+    // `problem` the reason for one that New from Template would refuse
+    // (unreadable, newer than this build, another sample rate), so the
+    // browser shows it as unusable instead of failing on the click.
     Q_INVOKABLE QVariantList templateList() const;
+    Q_INVOKABLE QString templatesFolder() const { return templates_dir_; }
+    // The first free session name for a session made from `base`.
+    Q_INVOKABLE QString unusedSessionName(const QString& base) const;
+    Q_INVOKABLE bool renameTemplate(const QString& from, const QString& to);
+    Q_INVOKABLE bool deleteTemplate(const QString& name);
     Q_INVOKABLE bool saveAsTemplate(const QString& name, bool markers);
     Q_INVOKABLE bool newFromTemplate(const QString& file, const QString& name, bool discard);
     bool openRecordingFolder(const QString& folder, bool discard, std::string& why);
@@ -521,6 +547,12 @@ signals:
     // app.save_as or app.save_copy_in without a name: the window asks for
     // one, offering `name` (the first free one), and says where it goes.
     void saveAsRequested(bool copy, const QString& name, const QString& where);
+    // app.save_as_template without a name: the window asks for one,
+    // offering `name` (the first free one in `where`, the templates folder).
+    void saveAsTemplateRequested(const QString& name, const QString& where);
+    // app.new_from_template: the window shows the template browser.
+    void templateBrowserRequested();
+    void templateMarkersChanged();
     // What the operator must see and may not be looking at when it happens:
     // a Save As the engine refused after the dialog closed. Held in the
     // shell's notice list until dismissed.
@@ -568,6 +600,8 @@ private:
     QString saveAsRoot() const;
     // The engine's folder is one of the templates folder's.
     bool inTemplateFolder() const;
+    // Whether the template `name` may be renamed or deleted now; why not.
+    bool templateIsFree(const QString& name, std::string& why) const;
     // Sends after_open_'s Save As once the engine has taken the Load.
     void saveAfterOpen();
     // saveSession() and saveSessionAs()'s common part: the plugins' state,
@@ -608,6 +642,7 @@ private:
     QElapsedTimer save_wait_;
     qint64 flush_patience_ms_ = 10'000;
     bool copy_with_audio_ = true;
+    bool template_markers_ = false;
     // New from Template's Save As, sent once the engine has taken the Load
     // of the template's folder: sent with the Load, it would run against the
     // session the engine kept if it refused the Load.

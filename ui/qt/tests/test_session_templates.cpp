@@ -351,10 +351,16 @@ int record_is_refused_in_a_template_folder() {
     const QString tdir = QFileInfo(tfile).absolutePath();
     CHECK(QFileInfo(tfile).isFile());
 
+    QStringList held;
+    QObject::connect(&r.session, &SessionModel::heldNotice, [&](const QString& t) { held << t; });
     r.fake.script_save_failure("the medium is full");
     CHECK(r.session.newSessionFromTemplate(tfile, QStringLiteral("Gig"), true, why));
     r.settle();
     r.fake.script_save_failure("");
+    // Held, and it says where the engine still is and why Record is refused.
+    CHECK(!held.isEmpty() && held.back().contains(QStringLiteral("the medium is full")));
+    CHECK(held.back().contains(QStringLiteral("still in the template's folder")));
+    CHECK(held.back().contains(r.sessions.path()));
     CHECK(QDir::cleanPath(QString::fromStdString(r.fake.folder())) == QDir::cleanPath(tdir));
     CHECK(r.session.sessionFile().isEmpty());
     const auto before = tree(tdir);
@@ -417,6 +423,122 @@ int record_is_refused_during_the_round_trip() {
     return 0;
 }
 
+// <dir>/<name>/<name>.sonora, as Save as Template leaves it.
+bool write_template(const QString& dir, const QString& name, const model::Snapshot& s) {
+    std::string bytes, error;
+    model::Snapshot named = s;
+    named.settings.name = name.toStdString();
+    if (!model::serialize(named, model::WriteInfo{}, bytes, error)) return false;
+    const QString file = session_file_path(dir, name);
+    if (!QDir().mkpath(QFileInfo(file).absolutePath())) return false;
+    QFile f(file);
+    return f.open(QIODevice::WriteOnly) && f.write(bytes.data(), static_cast<qint64>(bytes.size())) ==
+                                               static_cast<qint64>(bytes.size());
+}
+
+QVariantMap listed_template(const SessionModel& session, const QString& name) {
+    for (const QVariant& v : session.templateList()) {
+        if (v.toMap().value(QStringLiteral("name")).toString() == name) return v.toMap();
+    }
+    return {};
+}
+
+// The browser beside Open: each template with its date and track count, one
+// New from Template would refuse marked with the reason, and Rename and
+// Delete kept inside the templates folder and refused while the engine is
+// in that template's folder.
+int the_browser_lists_renames_and_deletes() {
+    QTemporaryDir sessions_dir, templates_dir;
+    CHECK(sessions_dir.isValid() && templates_dir.isValid());
+    const QString templates = templates_dir.path();
+    CHECK(write_template(templates, QStringLiteral("Band"), make_empty_session(3, 48000)));
+    CHECK(write_template(templates, QStringLiteral("Podcast"), make_empty_session(2, 44100)));
+    CHECK(QDir().mkpath(QDir(templates).filePath(QStringLiteral("Broken"))));
+    {
+        QFile f(session_file_path(templates, QStringLiteral("Broken")));
+        CHECK(f.open(QIODevice::WriteOnly) && f.write("not a session") > 0);
+    }
+    ModelDocument doc(make_empty_session(1, 48000));
+    SyntheticPeakSource peaks(48000, 120.0);
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(sessions_dir.path());
+    session.setTemplatesDir(templates);
+
+    CHECK(session.templateList().size() == 3);
+    const QVariantMap band = listed_template(session, QStringLiteral("Band"));
+    CHECK(band.value(QStringLiteral("tracks")).toInt() == 3);
+    CHECK(band.value(QStringLiteral("problem")).toString().isEmpty());
+    CHECK(band.value(QStringLiteral("date")).toString().size() == 16);
+    const QVariantMap podcast = listed_template(session, QStringLiteral("Podcast"));
+    CHECK(podcast.value(QStringLiteral("tracks")).toInt() == -1);
+    CHECK(podcast.value(QStringLiteral("problem")).toString().contains(QStringLiteral("44100")));
+    const QVariantMap broken = listed_template(session, QStringLiteral("Broken"));
+    CHECK(broken.value(QStringLiteral("tracks")).toInt() == -1);
+    CHECK(broken.value(QStringLiteral("problem")).toString().contains(QStringLiteral("cannot be read")));
+    CHECK(session.unusedSessionName(QStringLiteral("Band")) == QStringLiteral("Band"));
+
+    std::string why;
+    CHECK(!session.renameSessionTemplate(QStringLiteral("Band"), QStringLiteral("Podcast"), why));
+    CHECK(why.find("already") != std::string::npos);
+    CHECK(!session.renameSessionTemplate(QStringLiteral("Band"), QStringLiteral("../Band"), why));
+    CHECK(!session.renameSessionTemplate(QStringLiteral(".."), QStringLiteral("X"), why));
+    CHECK(!session.deleteSessionTemplate(QStringLiteral(".."), why));
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Nothing"), why));
+    CHECK(session.renameSessionTemplate(QStringLiteral("Band"), QStringLiteral("Live Band"), why));
+    CHECK(!QFileInfo::exists(QDir(templates).filePath(QStringLiteral("Band"))));
+    const QString live = session_file_path(templates, QStringLiteral("Live Band"));
+    CHECK(QFileInfo(live).isFile());
+    CHECK(listed_template(session, QStringLiteral("Live Band")).value(QStringLiteral("tracks")).toInt() == 3);
+
+    // The engine in the template's folder (a New from Template whose Save
+    // As failed): its autosave goes there, so the folder stays.
+    session.setEngineFolder(QFileInfo(live).absolutePath());
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Live Band"), why));
+    CHECK(why.find("engine is in this template") != std::string::npos);
+    CHECK(!session.renameSessionTemplate(QStringLiteral("Live Band"), QStringLiteral("Band"), why));
+    CHECK(QFileInfo(live).isFile());
+    session.setEngineFolder(QDir(sessions_dir.path()).filePath(QStringLiteral("Mix")));
+    CHECK(session.deleteSessionTemplate(QStringLiteral("Live Band"), why));
+    CHECK(!QFileInfo::exists(QFileInfo(live).absolutePath()));
+    CHECK(session.templateList().size() == 2);
+    // Nothing outside the templates folder was touched.
+    CHECK(QDir(sessions_dir.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty());
+    return 0;
+}
+
+// The File menu's entries are commands: without a name Save as Template
+// asks for one, offering a free name in the templates folder; with one it
+// saves, markers as the dialog's check box says. New from Template asks
+// the window for the browser.
+int the_commands_ask_then_save() {
+    Rig r;
+    CHECK(r.connect());
+    QString offered, where;
+    int browsers = 0;
+    QObject::connect(&r.session, &SessionModel::saveAsTemplateRequested,
+                     [&](const QString& name, const QString& w) {
+                         offered = name;
+                         where = w;
+                     });
+    QObject::connect(&r.session, &SessionModel::templateBrowserRequested, [&] { ++browsers; });
+    RouteResult asked = r.router.invoke("app.save_as_template", CommandContext{});
+    CHECK(asked.kind == RouteResult::Kind::Local && asked.result == DispatchResult::Ok);
+    CHECK(!offered.isEmpty() && where == r.templates.path());
+    CommandContext named;
+    named.argument = offered.toStdString();
+    CHECK(r.router.invoke("app.save_as_template", named).result == DispatchResult::Ok);
+    r.settle();
+    CHECK(QFileInfo(session_file_path(r.templates.path(), offered)).isFile());
+    // The next offer is the next free name.
+    RouteResult again = r.router.invoke("app.save_as_template", CommandContext{});
+    CHECK(again.kind == RouteResult::Kind::Local && again.result == DispatchResult::Ok);
+    CHECK(offered.endsWith(QStringLiteral(" 2")));
+    CHECK(r.router.invoke("app.new_from_template", CommandContext{}).result == DispatchResult::Ok);
+    CHECK(browsers == 1);
+    CHECK(!r.session.templateMarkers());
+    return 0;
+}
+
 // The shared list holds every catalog command that records or punches, so
 // one added to the catalog cannot start a take in a template's folder
 // unseen. transport.clear_punch only removes the range.
@@ -443,6 +565,8 @@ int main(int argc, char** argv) {
     if (record_is_refused_in_a_template_folder() != 0) return 1;
     if (record_is_refused_during_the_round_trip() != 0) return 1;
     if (every_record_or_punch_command_is_a_take_command() != 0) return 1;
+    if (the_browser_lists_renames_and_deletes() != 0) return 1;
+    if (the_commands_ask_then_save() != 0) return 1;
     std::printf("session templates: ok\n");
     return 0;
 }
