@@ -65,4 +65,29 @@ private:
     bool trusted_ = false;
 };
 
+// callback_ns from a server's cycle time and the offset above. The offset is
+// re-measured every 100 ms and may step down by tens of us, while the cycle
+// time advances by one period (about 1 ms at 64 frames, and a server's DLL
+// estimate can itself jitter): the sum could go backwards, which the contract
+// forbids. So a stamp is never below the previous one. Audio thread only; one
+// compare, no clock read.
+class MonotonicStamp {
+public:
+    // 0 when the cycle time could not be read or the sum is not positive.
+    uint64_t stamp(int64_t cycle_ns, int64_t offset_ns) noexcept {
+        if (cycle_ns <= 0) return 0;
+        const int64_t raw = cycle_ns + offset_ns;
+        if (raw <= 0) return 0;
+        const auto v = static_cast<uint64_t>(raw);
+        if (v < last_) return last_;
+        last_ = v;
+        return v;
+    }
+    // A new activation: the server's clock may have been re-based.
+    void reset() noexcept { last_ = 0; }
+
+private:
+    uint64_t last_ = 0;
+};
+
 }  // namespace sonora::drivers
