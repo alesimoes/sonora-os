@@ -287,19 +287,33 @@ void ShellModel::armClick(int track, int modifiers, const QList<int>& selected) 
     static const QString toggle = QStringLiteral("track.toggle_arm");
     const bool alt = (modifiers & Qt::AltModifier) != 0;
     const bool shift = (modifiers & Qt::ShiftModifier) != 0;
-    // Without a known state for the clicked track there is no "new state" to
-    // spread; the plain toggle lets the router or the engine say why.
-    if ((!alt && !shift) || track < 0 || track >= armed_.size()) {
+    if (!alt && !shift) {
         invoke(toggle, track);
         return;
     }
-    const bool on = !armed_[track];
+    // The state the engine holds now, read at the click: the published list
+    // is up to a refresh old, and a click on it would spread a state the
+    // button no longer shows. Without a fresh read there is no "new state"
+    // to spread; the plain toggle lets the router or the engine say why.
+    std::vector<bool> now;
+    if (engine_.engine_alive(now_ns_())) {
+        engine_.frame(now_frame_);
+        if (!now_frame_.transport.stale) {
+            for (const auto& s : now_frame_.tracks) now.push_back(s.armed);
+        }
+    }
+    const int n = static_cast<int>(now.size());
+    if (track < 0 || track >= n) {
+        invoke(toggle, track);
+        return;
+    }
+    const bool on = !now[static_cast<std::size_t>(track)];
     if (!shift) {
         invoke(on ? QStringLiteral("track.arm_all") : QStringLiteral("track.disarm_all"), -1);
         return;
     }
     for (int t : selected) {
-        if (t >= 0 && t < armed_.size() && armed_[t] != on) invoke(toggle, t);
+        if (t >= 0 && t < n && now[static_cast<std::size_t>(t)] != on) invoke(toggle, t);
     }
 }
 
