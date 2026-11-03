@@ -240,10 +240,12 @@ void OutputStage::process_lanes(const double* const* in, double* const* out, std
         const V railv(r);
         const V u_per_x(vpu / r);
         for (std::uint32_t gi = 0; gi < groups; ++gi) {
-            const std::uint32_t c0 = gi * L;
+            // V::kLanes, not the local L: MSVC does not take a constexpr
+            // local captured by a lambda as a constant expression (C2131).
+            const std::uint32_t c0 = gi * V::kLanes;
             for (std::uint32_t j = 0; j < ns; ++j) {
-                double xs[L];
-                for (int l = 0; l < L; ++l) xs[l] = in[c0 + l][at + j];
+                double xs[V::kLanes];
+                for (int l = 0; l < V::kLanes; ++l) xs[l] = in[c0 + l][at + j];
                 V x = V::load(xs);
                 x = V::select(x.abs() <= finite_max, x, zero);
                 // The driver, rail-limited: Vs = rail u / (1 + u^4)^(1/4). |u| is
