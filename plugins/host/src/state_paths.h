@@ -31,7 +31,10 @@
 //                  before its directory's sha names it; one that no longer
 //                  matches is copied as new bytes.
 //   absolute_path  in restore(): "<session_dir>/<path>"; a path that escapes
-//                  the folder is refused (NULL). An absolute path, which
+//                  the folder, or passes a symlink in it (lstat on every
+//                  component), is refused (NULL). At save, a path into a
+//                  session folder that resolves outside it fails the save
+//                  and is never copied. An absolute path, which
 //                  states saved before wire 4 hold, is returned as it is,
 //                  and abstract_path names it as given, never copying it in.
 //
@@ -138,6 +141,10 @@ private:
     bool free_space_of(const std::string& dir, int dir_fd, uint64_t& free) const;
     bool copy_in(const std::string& given, const std::string& canonical, plugin::control::StateFile& out,
                  std::string& error);
+    // `given` names a place in the save folder, the session folder or a
+    // previous one, and `canonical` (what it resolves to) is not in it: a
+    // link in that folder leads out. Under mutex_.
+    bool leads_out_of_sessions(const std::string& given, const std::string& canonical) const;
     uint64_t now_ms() const;
     bool out_of_time() const;
     std::string out_of_time_text(const std::string& given) const;

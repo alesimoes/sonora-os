@@ -331,6 +331,59 @@ int main() {
         check(sp.end_save(listed, error) && listed.empty(), "  and nothing copied into Plugin Files/");
     }
 
+    // #289 review B1: a received session whose Plugin Files/ leads out
+    // through a link, at the file, at <sha256>/ or at Plugin Files/ itself.
+    // Restoring must not hand the plugin that path, and a save given it anyway
+    // must not copy what it reaches (a key, here a sentinel) into the session.
+    std::printf("state_paths: a received Plugin Files/ that leads out through a link (#289 review B1)\n");
+    {
+        const std::string secret(48, 'S');
+        sonora::Sha256 h;
+        h.update(secret.data(), secret.size());
+        const std::string sha = h.hex();
+        const std::string rel = "Plugin Files/" + sha + "/kit.wav";
+        write_file(base / "victim" / "id_rsa", secret.size(), 'S');
+        write_file(base / "victim_dir" / "kit.wav", secret.size(), 'S');
+        write_file(base / "victim_pf" / sha / "kit.wav", secret.size(), 'S');
+        // Regular files under `dir`, not counting links or what they reach.
+        const auto real_files = [](const fs::path& dir) {
+            std::size_t n = 0;
+            std::error_code e;
+            for (const auto& entry : fs::recursive_directory_iterator(dir, e))
+                n += fs::is_regular_file(entry.symlink_status()) ? 1 : 0;
+            return n;
+        };
+        struct Case {
+            const char* what;
+            fs::path session;
+        };
+        const Case cases[] = {{"the file is a link", base / "R1"},
+                              {"<sha256>/ is a link", base / "R2"},
+                              {"Plugin Files/ is a link", base / "R3"}};
+        fs::create_directories(cases[0].session / "Plugin Files" / sha);
+        fs::create_symlink(base / "victim" / "id_rsa", cases[0].session / rel);
+        fs::create_directories(cases[1].session / "Plugin Files");
+        fs::create_directory_symlink(base / "victim_dir", cases[1].session / "Plugin Files" / sha);
+        fs::create_directories(cases[2].session);
+        fs::create_directory_symlink(base / "victim_pf", cases[2].session / "Plugin Files");
+        for (const Case& c : cases) {
+            std::printf("  case: %s\n", c.what);
+            StatePaths sp((scratch / "n").string(), c.session.string(), small);
+            char* got = sp.absolute_path(rel.c_str());
+            check(!got && sp.refused() == 1, "    restore: the path is refused (NULL) and counted");
+            if (sp.refused()) std::printf("    text: %s\n", sp.refusal_text().c_str());
+            sp.free_path(got);
+            // A plugin that rebuilt the path by itself and hands it to save().
+            std::vector<pc::StateFile> listed;
+            std::string error;
+            sp.begin_save(c.session.string(), false);
+            sp.free_path(sp.abstract_path((c.session / rel).c_str()));
+            check(!sp.end_save(listed, error) && listed.empty(), "    save: fails, naming nothing");
+            std::printf("    text: %s\n", error.c_str());
+            check(real_files(c.session) == 0, "    nothing it reaches is copied into the session");
+        }
+    }
+
     std::printf("state_paths: stale .incoming-* swept at session open (#276 review N2)\n");
     {
         const fs::path s = base / "S4", pf = s / "Plugin Files";

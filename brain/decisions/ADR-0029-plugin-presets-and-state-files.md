@@ -392,7 +392,18 @@ EditPreset for that plugin, and after a rescan.
     in wire 3. The copy on save is new, so `abstract_path` names such a path
     exactly as it was given and **never copies it in**. Otherwise a received
     session that names `~/.ssh/id_rsa` would carry that file away in its own
-    `Plugin Files/` at the next save. The host remembers each absolute path
+    `Plugin Files/` at the next save. A *relative* path can reach outside the
+    session through a symlink in a received folder (`Plugin Files`,
+    `<sha256>/` or the file itself). So `absolute_path` lstats every
+    component under the session folder, and refuses (NULL, counted) any path
+    that passes a link (#289 review B1). At save, a path that names a place
+    in the save, session or a previous folder, but resolves outside it,
+    fails that save and is not copied. What is guaranteed: no file reached
+    through a link in a session folder, and no absolute path from a restored
+    state, is ever copied into a session by a save. What is not covered: a
+    file the plugin itself opens by an absolute path that it got from
+    elsewhere, such as a user's file dialog, is still copied in. That is the
+    point of the copy. The host remembers each absolute path
     it passed through, as given and canonical, for the instance's life.
     Gathering an old session's outside files into the folder is an explicit
     operator action ("Collect plugin files"), not a side effect of saving.

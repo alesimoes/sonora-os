@@ -301,7 +301,7 @@ bool StatePaths::name_in(const std::string& canonical, const std::string& folder
             error = "plugin files are saved after the take (" + rel + " has to be checked first)";
             return false;
         }
-        const Fd src(::open(canonical.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+        const Fd src(::open(canonical.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
         if (!src) return false;
         Sha256 hash;
         std::vector<char> buf(std::size_t(1) << 20);
@@ -360,7 +360,7 @@ bool StatePaths::copy_in(const std::string& given, const std::string& canonical,
     const std::string name = fs::path(given).filename().string();
     // `canonical` has no link left in it; O_NOFOLLOW keeps one swapped in
     // since from being followed, and fstat sizes what was opened.
-    const Fd src(::open(canonical.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+    const Fd src(::open(canonical.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     if (!src) {
         error = "cannot read " + given + ": " + std::strerror(errno);
         return false;
@@ -495,6 +495,21 @@ bool StatePaths::copy_in(const std::string& given, const std::string& canonical,
     return true;
 }
 
+bool StatePaths::leads_out_of_sessions(const std::string& given, const std::string& canonical) const {
+    const std::string lexical = fs::path(given).lexically_normal().string();
+    std::vector<std::string> roots = previous_;
+    roots.push_back(session_);
+    roots.push_back(save_dir_);
+    for (const std::string& r : roots) {
+        if (r.empty()) continue;
+        const std::string as_named = fs::path(r).lexically_normal().string();
+        const std::string resolved = canonical_or_empty(r);
+        if (!inside(lexical, as_named) && !inside(lexical, resolved)) continue;
+        if (resolved.empty() || !inside(canonical, resolved)) return true;
+    }
+    return false;
+}
+
 char* StatePaths::abstract_path(const char* absolute) {
     if (refuse_rt()) return nullptr;
     const std::string given = absolute ? absolute : "";
@@ -529,6 +544,14 @@ char* StatePaths::abstract_path(const char* absolute) {
         // ~/.ssh/id_rsa would carry that file away in its own Plugin Files/
         // at the next save (#276 review N5).
         if (passed_through_.count(given) || passed_through_.count(canonical)) return dup(given);
+        // A path into a session folder that resolves somewhere else went
+        // through a link there (a received folder's, #289 review B1): what it
+        // reaches is not the session's, and is never copied in.
+        if (leads_out_of_sessions(given, canonical)) {
+            if (failed_.empty())
+                failed_ = given + " is in the session folder but a symlink there leads out of it; not saved";
+            return dup(given);
+        }
         if (no_copy_) {
             if (failed_.empty()) failed_ = "plugin files are saved after the take (" + given + ")";
             return dup(given);
@@ -579,6 +602,24 @@ char* StatePaths::absolute_path(const char* abstract) {
         refuse("absolute_path refused " + given.substr(0, 512) +
                (session.empty() ? ": the session has no folder" : ": it escapes the session folder"));
         return nullptr;
+    }
+    // Session data names the path, and a received folder may hold links:
+    // "Plugin Files", "<sha256>" or the file itself pointing at ~/.ssh/id_rsa
+    // would give the plugin that file, and the next save would copy it into
+    // the session (#289 review B1). Each component under the session folder
+    // is lstat'ed; a link anywhere is refused before the plugin sees the path.
+    {
+        fs::path at(session);
+        for (const fs::path& part : fs::path(given).lexically_normal()) {
+            at /= part;
+            struct stat st {};
+            if (::lstat(at.c_str(), &st) != 0) break;  // missing: the plugin decides what that means
+            if (S_ISLNK(st.st_mode)) {
+                refuse("absolute_path refused " + given.substr(0, 512) + ": " + at.string() +
+                       " in the session folder is a symlink");
+                return nullptr;
+            }
+        }
     }
     const std::string full = (fs::path(session) / given).string();
     // What the session's file is as the plugin gets it: the next save names
