@@ -11,6 +11,7 @@
 // files, is plugins/native/ampcab/tests/test_nam.cpp.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -375,6 +376,34 @@ int test_refusals() {
     CHECK(refused(s, "huge"));
     s.arrays.clear();
     CHECK(refused(s, "empty"));
+
+    // Review of #318: every dimension within its own cap, the totals not.
+    // One array, kernel 2, 32 layers at dilation 32768: a 52 KB file at 16
+    // channels made prepare() run 19 s and take 132 MiB; at 128 channels
+    // (3.1 MB) it ran for minutes towards 1 GiB. Refused at the check, and
+    // load() returns at once without sizing anything.
+    for (int ch : {16, 128}) {
+        WaveNetSpec h;
+        h.arrays.push_back(array_spec(1, ch, 1, 2, std::vector<int>(32, 32768), Activation::tanh, false, true));
+        CHECK(refused(h, ch == 16 ? "hostile, 16 channels" : "hostile, 128 channels"));
+        std::vector<float> zeros(wavenet_weight_count(h), 0.0f);
+        const auto t0 = std::chrono::steady_clock::now();
+        WaveNet hostile;
+        CHECK(!hostile.load(h, zeros, &err));
+        hostile.prepare(128);
+        CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(1));
+    }
+    // Wide and deep without a long history: the rows, then the warm-up
+    // (32 channels, 30 layers at dilation 1024: every other total in range,
+    // 7.7e9 multiply-adds to prewarm).
+    WaveNetSpec wide;
+    wide.arrays.push_back(array_spec(1, 128, 1, 32, std::vector<int>(64, 1), Activation::tanh, false, true));
+    CHECK(refused(wide, "layer rows"));
+    WaveNetSpec warm;
+    warm.arrays.push_back(array_spec(1, 32, 1, 3, std::vector<int>(30, 1024), Activation::tanh, false, true));
+    CHECK(refused(warm, "warm-up work") && wavenet_check(warm).find("warm-up") != std::string::npos);
+    // The trainer's presets stay well inside every total.
+    CHECK(wavenet_check(standard_spec()).empty());
     // An unloaded kernel outputs silence rather than reading nothing.
     float buf[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     WaveNet empty;

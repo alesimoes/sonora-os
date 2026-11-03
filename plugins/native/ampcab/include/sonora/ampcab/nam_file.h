@@ -37,11 +37,13 @@ struct NamModel {
 };
 
 // From the file's text. False with *error set (one sentence) on any
-// problem: malformed JSON, a missing or mistyped field, an unsupported
-// architecture or key, a weight count that does not match.
+// problem: malformed JSON, a format version outside 0.5.x-0.6.x, a missing
+// or mistyped field, an unsupported architecture or key, a network over
+// the kernel's size caps, a weight count that does not match.
 bool parse_nam(std::string_view text, NamModel* out, std::string* error);
 
-// The same from a file. Refuses files over 64 MiB (the JSON reader's cap).
+// The same from a file. Refuses a file over 64 MiB (the JSON reader's cap)
+// from its size, before reading it.
 bool read_nam_file(const std::string& path, NamModel* out, std::string* error);
 
 }  // namespace sonora::ampcab

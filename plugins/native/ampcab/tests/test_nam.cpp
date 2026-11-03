@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -135,8 +136,67 @@ int test_refusals() {
         {"unknown activation", tiny_text(",\"activation\":\"Wobble\"").replace(
                                    tiny_text().find("\"activation\":\"Tanh\","), 20, "")},
         {"two inputs", tiny_text("", ",\"in_channels\":2")},
+        {"version 0.7", [] {
+             std::string t = tiny_text();
+             return t.replace(t.find("0.5.4"), 5, "0.7.0");
+         }()},
+        {"version 1.0", [] {
+             std::string t = tiny_text();
+             return t.replace(t.find("0.5.4"), 5, "1.0");
+         }()},
+        {"version not a version", [] {
+             std::string t = tiny_text();
+             return t.replace(t.find("0.5.4"), 5, "five");
+         }()},
         {"condition_size", tiny_text().replace(tiny_text().find("\"condition_size\":1"), 18, "\"condition_size\":3")},
     };
+    // The verified format range is 0.5.x to 0.6.x.
+    {
+        std::string t = tiny_text();
+        CHECK(ampcab::parse_nam(t.replace(t.find("0.5.4"), 5, "0.6.0"), &m, &err));
+    }
+    // A file over the 64 MiB cap is refused from its size, before it is read
+    // (sparse where the filesystem allows, so this costs no disk).
+    {
+        const std::string big = (std::filesystem::temp_directory_path() / "sonora-test-oversize.nam").string();
+        {
+            std::ofstream f(big, std::ios::binary);
+            f.seekp((std::streamoff{64} << 20) + 1);
+            f.put('}');
+        }
+        err.clear();
+        const bool ok = ampcab::read_nam_file(big, &m, &err);
+        std::remove(big.c_str());
+        std::printf("  refused (oversize file): %s\n", err.c_str());
+        CHECK(!ok && err.find("64 MiB") != std::string::npos);
+    }
+    // Review of #318: the 52 KB file whose every dimension is in range but
+    // whose 2^20-sample history made prepare() run 19 s. Built here, all
+    // weights zero; refused by the reader, before any kernel sees it.
+    std::string hostile =
+        "{\"version\":\"0.5.4\",\"architecture\":\"WaveNet\",\"config\":{\"layers\":[{"
+        "\"input_size\":1,\"condition_size\":1,\"head_size\":1,\"channels\":16,\"kernel_size\":2,\"dilations\":[";
+    for (int i = 0; i < 32; ++i) hostile += (i ? ",32768" : "32768");
+    hostile += "],\"activation\":\"Tanh\",\"gated\":false,\"head_bias\":true}],\"head\":null,\"head_scale\":0.02},"
+               "\"weights\":[";
+    {
+        dsp::neural::WaveNetSpec spec;
+        dsp::neural::LayerArraySpec a;
+        a.channels = 16;
+        a.head_size = 1;
+        a.kernel_size = 2;
+        a.dilations.assign(32, 32768);
+        a.head_bias = true;
+        spec.arrays.push_back(a);
+        const std::size_t n = dsp::neural::wavenet_weight_count(spec);
+        for (std::size_t i = 0; i < n; ++i) hostile += i ? ",0" : "0";
+        hostile += "]}";
+    }
+    err.clear();
+    CHECK(!ampcab::parse_nam(hostile, &m, &err));
+    std::printf("  refused (hostile 16-channel history, %zu bytes): %s\n", hostile.size(), err.c_str());
+    CHECK(err.find("receptive field") != std::string::npos);
+
     for (const Bad& b : bad) {
         err.clear();
         const bool ok = ampcab::parse_nam(b.text, &m, &err);

@@ -28,9 +28,13 @@ oracle build in `tests/oracle/generate.sh`, from Debian's
 `libeigen3-dev`; it is not vendored or linked into any Sonora target
 (ADR-0011 §4.3, "For the owner" item 1).
 
-Accepted: format 0.5 WaveNets (any depth of layer arrays, any channel
-count up to 128, kernel up to 32, gated or not), and the newer keys at
-their neutral values. Refused with a sentence: LSTM (follow-up),
+Accepted: format versions 0.5.x and 0.6.x; WaveNets of any depth of
+layer arrays, any channel count up to 128, kernel up to 32, gated or not,
+and the newer keys at their neutral values, within caps on the totals
+(receptive field 65 536, history 4 Mi floats, 1 Mi weights, 4 096 layer
+rows, 2^30 multiply-adds of warm-up; "standard" needs 4 092, 98 208,
+13 802, 240 and 5.6e7). The totals cap came from review: a 52 KB file
+within every per-dimension cap made prepare() run 19 s. Refused with a sentence: LSTM (follow-up),
 bottleneck, grouped convolutions, FiLM, head1x1, the post-stack head, a
 condition DSP, parameterised activations (LeakyHardtanh, PReLU).
 

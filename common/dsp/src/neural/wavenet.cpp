@@ -48,7 +48,24 @@ constexpr int kMaxKernel = 32;
 constexpr int kMaxDilation = 1 << 15;
 constexpr int kMaxLayers = 256;
 constexpr int kMaxArrays = 16;
-constexpr long kMaxReceptiveField = 1L << 20;
+// Every dimension within its cap is not enough: the totals multiply (review
+// of #318: one 52 KB file, 16 channels, 32 layers of dilation 32768, took
+// 19 s and 132 MiB in prepare(); at 128 channels, minutes towards 1 GiB).
+// So the totals are capped too. "standard" needs, against each:
+//   receptive field     4 092 samples          cap 65 536
+//   history             98 208 floats          cap 4 Mi floats (16 MiB)
+//   weights             13 802                 cap 1 Mi
+//   layer rows          240 (layers x channels) cap 4 096
+//   warm-up work        5.6e7 multiply-adds    cap 2^30 (about 1 s here)
+constexpr long kMaxReceptiveField = 1L << 16;
+constexpr unsigned long long kMaxHistoryFloats = 1ULL << 22;
+constexpr unsigned long long kMaxWeights = 1ULL << 20;
+constexpr unsigned long long kMaxLayerRows = 4096;
+constexpr unsigned long long kMaxWarmupWork = 1ULL << 30;
+// prepare() sizes every row for at most this many frames; process() runs a
+// longer block in pieces, so the cap costs nothing but bounds memory by
+// kMaxLayerRows x kMaxBlock floats whatever the host asks for.
+constexpr int kMaxBlock = 1024;
 
 // The guitar sample is held to +-16 before it enters the network.
 constexpr float kInputLimit = 16.0f;
@@ -199,7 +216,25 @@ std::string wavenet_check(const WaveNetSpec& spec) {
         }
     }
     if (spec.arrays.back().head_size != 1) return "the last layer array's head_size must be 1 (one output)";
-    if (wavenet_receptive_field(spec) > kMaxReceptiveField) return "receptive field over 2^20 samples";
+    const long rf = wavenet_receptive_field(spec);
+    if (rf > kMaxReceptiveField)
+        return "the receptive field is over " + std::to_string(kMaxReceptiveField) + " samples";
+    unsigned long long history = 0, rows = 0;
+    for (const LayerArraySpec& a : spec.arrays)
+        for (int d : a.dilations) {
+            history += 2ULL * static_cast<unsigned long long>(a.channels) * static_cast<unsigned long long>(d) *
+                       static_cast<unsigned long long>(a.kernel_size - 1);
+            rows += static_cast<unsigned long long>(a.channels);
+        }
+    if (history > kMaxHistoryFloats)
+        return "the history would be over " + std::to_string(kMaxHistoryFloats) + " samples";
+    if (rows > kMaxLayerRows)
+        return "layers x channels is over " + std::to_string(kMaxLayerRows);
+    const unsigned long long weights = wavenet_weight_count(spec);
+    if (weights > kMaxWeights) return "over " + std::to_string(kMaxWeights) + " weights";
+    if (weights * static_cast<unsigned long long>(rf + 1) > kMaxWarmupWork)
+        return "the warm-up (weights x receptive field) is over " + std::to_string(kMaxWarmupWork) +
+               " multiply-adds";
     return {};
 }
 
@@ -281,7 +316,7 @@ bool WaveNet::load(const WaveNetSpec& spec, const std::vector<float>& weights, s
 
 void WaveNet::prepare(int max_frames) {
     if (arrays_.empty()) return;
-    max_frames_ = std::max(1, max_frames);
+    max_frames_ = std::min(std::max(1, max_frames), kMaxBlock);
     const auto mf = static_cast<std::size_t>(max_frames_);
     std::size_t c_max = 1;
     for (Array& a : arrays_) {

@@ -8,8 +8,6 @@
 
 #include <cstdint>
 #include <fstream>
-#include <iterator>
-#include <sstream>
 
 #include "sonora/json/json.h"
 
@@ -173,6 +171,13 @@ bool parse_nam(std::string_view text, NamModel* out, std::string* error) {
     const Value* version = root.find("version");
     if (!version || !version->is_string()) return r.fail("the file has no 'version'");
     m.version = version->text();
+    // The range the reader was checked against: format 0.5.x as the trainer
+    // writes it, and 0.6.x, the reference implementation's own (the oracle
+    // was NeuralAmpModelerCore 0.6.0). A later format may change what a key
+    // means, so it is refused rather than guessed at.
+    if (m.version.compare(0, 4, "0.5.") != 0 && m.version.compare(0, 4, "0.6.") != 0 && m.version != "0.5" &&
+        m.version != "0.6")
+        return r.fail("the .nam format version '" + m.version + "' is not supported (0.5.x and 0.6.x are)");
     const Value* arch = root.find("architecture");
     if (!arch || !arch->is_string()) return r.fail("the file has no 'architecture'");
     m.architecture = arch->text();
@@ -249,13 +254,25 @@ bool read_nam_file(const std::string& path, NamModel* out, std::string* error) {
         if (error) *error = "cannot open " + path;
         return false;
     }
-    std::ostringstream text;
-    text << f.rdbuf();
-    if (!f && !f.eof()) {
+    // The size first, so an oversize file is refused without being read
+    // into memory (the JSON reader's cap is the same 64 MiB).
+    f.seekg(0, std::ios::end);
+    const std::streamoff size = f.tellg();
+    if (size < 0) {
         if (error) *error = "cannot read " + path;
         return false;
     }
-    return parse_nam(text.str(), out, error);
+    if (size > (std::streamoff{64} << 20)) {
+        if (error) *error = path + " is over 64 MiB, larger than any .nam file";
+        return false;
+    }
+    f.seekg(0, std::ios::beg);
+    std::string text(static_cast<std::size_t>(size), '\0');
+    if (size > 0 && !f.read(&text[0], size)) {
+        if (error) *error = "cannot read " + path;
+        return false;
+    }
+    return parse_nam(text, out, error);
 }
 
 }  // namespace sonora::ampcab

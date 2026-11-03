@@ -77,7 +77,10 @@ struct WaveNetSpec {
     std::vector<LayerArraySpec> arrays;
 };
 
-// "" when the spec is one this kernel runs; otherwise why it is not.
+// "" when the spec is one this kernel runs; otherwise why it is not. Caps
+// each dimension and the totals (receptive field, history, weights, layer
+// rows, warm-up work), so an accepted spec prepares in about a second and
+// tens of MiB at most.
 std::string wavenet_check(const WaveNetSpec& spec);
 // The number of weights a file must carry for `spec`, the trailing head
 // scale included.
@@ -103,7 +106,8 @@ public:
     bool load(const WaveNetSpec& spec, const std::vector<float>& weights, std::string* error);
     bool loaded() const { return !arrays_.empty(); }
 
-    // Not real-time. Sizes every buffer for blocks of up to max_frames and
+    // Not real-time. Sizes every buffer for blocks of up to max_frames (held
+    // to 1024; process() runs longer blocks in pieces) and
     // computes the prewarmed state reset() restores: the network after
     // receptive_field() + 1 samples of silence, as the reference
     // implementation's prewarm leaves it.
