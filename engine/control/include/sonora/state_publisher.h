@@ -4,12 +4,13 @@
 //
 // A thread at normal priority that copies what the audio thread already
 // writes -- Transport's state and playhead, each Track's arm, mute, gain,
-// peak and overrun atomics, the monitor bus's peaks and the playback miss
-// count -- into the shared state block, on a fixed timer. The audio thread
-// is not touched: it writes no new atomic and learns of no client. The
-// publisher is the only caller of Track::take_peak() and of
-// Session::take_bus_peak(), so the exchange-to-clear loses no peak between
-// publishes, and readers keep cursors of their own in the block.
+// input peak and overrun atomics, each track meter's post-fader peak, the
+// master meter's peaks and the playback miss count -- into the shared state
+// block, on a fixed timer. The audio thread is not touched: it writes no
+// new atomic and learns of no client. The publisher is the only caller of
+// Track::take_peak() and of the session's meters' take_peak(), so the
+// exchange-to-clear loses no peak between publishes, and readers keep
+// cursors of their own in the block.
 //
 // Paced, never "on change": an unpaced republish loop starved a 60 Hz
 // reader to a p99 of 41 ms in the measurement. If a publish runs late the
@@ -106,6 +107,7 @@ private:
     // The publisher thread's own; sized once, so a publish never allocates.
     std::vector<api::TrackFields> tracks_;
     std::vector<float> peaks_;
+    std::vector<float> post_peaks_;   // track * kPostPeakSides + side
     std::vector<uint32_t> clips_;
 
     std::atomic<bool> stop_{false};

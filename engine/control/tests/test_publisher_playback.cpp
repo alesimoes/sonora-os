@@ -3,7 +3,8 @@
 // State block layout 5 from a session that plays (ADR-0009 update of
 // 2026-11-01): the publisher takes the monitor bus's peaks, each side on its
 // own, copies the playback miss count, and says "Locating…" while the
-// controller holds a locate back for its window.
+// controller holds a locate back for its window. Layout 7 (ADR-0013
+// amendment of 2026-11-03): each track's post-fader peak, from its meter.
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -13,6 +14,7 @@
 
 #include "sonora/api/state_block.h"
 #include "sonora/api/state_view.h"
+#include "sonora/dsp/meter.h"
 #include "sonora/model/history.h"
 #include "sonora/model/operations.h"
 #include "sonora/playback_controller.h"
@@ -126,9 +128,17 @@ int test_layout_5_from_a_playing_session() {
     CHECK(a.take_bus_peak(1) == 0.0f);
     CHECK(b.take_bus_peak(0) == left);   // A's read took nothing from B
     // The publisher took it from the session: nothing is left to take twice.
-    CHECK(s.take_bus_peak(0) == 0.0f);
+    CHECK(s.master_meter().take_peak(0) == 0.0f);
+    // Layout 7: the unarmed track playing back has its own post-fader peak,
+    // with no input connected; its input peak stays silent.
+    CHECK(a.take_post_peak(0, 0) == left);   // the only track, at unity
+    CHECK(a.take_post_peak(0, 1) == 0.0f);
+    CHECK(b.take_post_peak(0, 0) == left);
+    CHECK(a.take_peak(0) == 0.0f);
+    CHECK(s.track_meter(0).take_peak(0) == 0.0f);
     p.publish_once();
     CHECK(a.take_bus_peak(0) == 0.0f);   // no block since
+    CHECK(a.take_post_peak(0, 0) == 0.0f);
     CHECK(a.transport().playback_misses == 0);
 
     // A locate sent past the gate lands where nothing is resident: the

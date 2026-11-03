@@ -435,7 +435,7 @@ void version_check() {
     CHECK(kProtocolVersion == 40);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
-    CHECK(kStateLayoutVersion == 6);
+    CHECK(kStateLayoutVersion == 7);
     Hello engine;
     engine.protocol_version = kProtocolVersion;
     engine.state_layout_version = kStateLayoutVersion;
