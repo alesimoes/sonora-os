@@ -1,0 +1,20 @@
+{
+  "processor": "org.sonora.mixbus",
+  "class": "B",
+  "note": "ADR-0011 §3.2 bars for a dynamics processor; class B as §3.5 lists the mix bus (it will carry the oversampled colour stage, slice 7 part 2). Static curve against the Giannoulis et al. gain computer with DC levels at each stepped ratio; manual attack and release are the 63 % times of the gain change in dB from step tests; auto release is held to its fast path's time after a 10 ms overload and its slow path's after 4 s. brain/research/native-mixbus-n2.md has the figures.",
+  "mixbus": {
+    "static_db": 0.1,
+    "time_tolerance": 0.1,
+    "thdn_db": -110.0
+  },
+  "sc_hpf": {"min_drop_db": 15.0, "passband_db": 0.1},
+  "width": {"max_error": 1e-6},
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["threshold", "ratio", "knee", "attack", "release", "auto_release", "sc_hpf_on", "sc_hpf_freq", "makeup", "mix", "width"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 60.0,
+    "max_us": 150.0
+  }
+}

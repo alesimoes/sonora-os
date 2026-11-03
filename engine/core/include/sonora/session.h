@@ -13,6 +13,7 @@
 #include "sonora/click.h"
 #include "sonora/disk_reader.h"
 #include "sonora/disk_thread.h"
+#include "sonora/dsp/meter.h"
 #include "sonora/fade_curve.h"
 #include "sonora/insert_chain_runner.h"
 #include "sonora/latency_probe.h"
@@ -478,10 +479,16 @@ public:
     // Monitor bus gain, linear. Mix state, ramped per block.
     void set_bus_gain(float g) { bus_gain_.store(g, std::memory_order_relaxed); }
     float bus_gain() const { return bus_gain_.load(std::memory_order_relaxed); }
-    // Bus peak since the last read, per side; reading clears it.
-    float take_bus_peak(int side) {
-        return bus_peak_[side & 1].exchange(0.0f, std::memory_order_relaxed);
-    }
+    // N1 meters (ADR-0011 §1.3, ADR-0013 amendment of 2026-11-03), built
+    // and prepared by the constructor and never again, so the audio thread
+    // never meets a meter being sized. Channel 0 left, 1 right. A track's
+    // meter reads what it sends the bus, after its fader and before the bus
+    // gain, peak only; the master's reads the bus after the bus gain, with
+    // loudness and true-peak. The readers are the meter's own, lock-free;
+    // take_peak() clears, so the state publisher is their one taker.
+    dsp::TrackMeter& track_meter(std::size_t track) { return track_meters_[track]; }
+    std::size_t track_meter_count() const { return tracks_.size(); }
+    dsp::TrackMeter& master_meter() { return master_meter_; }
     // Spans the audio thread played as silence because their chunk was not
     // resident. Each one is an audible hole.
     uint64_t playback_misses() const { return misses_.load(std::memory_order_relaxed); }
@@ -1144,7 +1151,8 @@ private:
     uint32_t play_until_ = 0;
 
     std::atomic<float> bus_gain_{1.0f};
-    std::atomic<float> bus_peak_[2] = {{0.0f}, {0.0f}};
+    std::unique_ptr<dsp::TrackMeter[]> track_meters_;   // one per engine track
+    dsp::TrackMeter master_meter_;
     std::atomic<uint64_t> misses_{0};
     std::atomic<uint64_t> locates_dropped_{0};
     std::atomic<uint64_t> chain_bypassed_{0};

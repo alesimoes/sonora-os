@@ -2,7 +2,7 @@
 #pragma once
 
 // ============================================================================
-//  HostControl, wire version 4 (ADR-0012 §4, §5.5; checklist item 1;
+//  HostControl, wire version 5 (ADR-0012 §4, §5.5; checklist item 1;
 //  ADR-0029 §6 for the plugin files a state names).
 //
 //  Owned jointly by plugin-engineer and rt-engineer (ADR-0007 §4.3, §6), like
@@ -90,7 +90,7 @@
 //  so either side can name a mismatch whatever changed after them.
 //
 // The start-up check (ADR-0012 §5.5): `sonora-plugin-host --version` prints
-// format_host_version_line, "sonora-plugin-host layout 1 clock 1 wire 4",
+// format_host_version_line, "sonora-plugin-host layout 1 clock 1 wire 5",
 // and the engine parses it with parse_host_version_line, which requires all
 // three; a mismatch disables plugin hosting for the run, loudly.
 //
@@ -308,7 +308,10 @@ namespace sonora::plugin::control {
 // is (Track 4 item 5).
 // 4: plugin files (ADR-0029 §6): Load.session_dir, LoadInstance.scratch_dir,
 // GetState.save_dir and flags, State.files; Fault{Plugin} with a count.
-inline constexpr uint32_t kHostWireVersion = 4;
+// 5: ParamDesc.stepped, so a lane on a toggle, a choice or an
+// integer holds between its points instead of interpolating (ADR-0027 §5,
+// #250 review).
+inline constexpr uint32_t kHostWireVersion = 5;
 
 // --- caps (untrusted input is checked against these before anything is held)
 inline constexpr std::size_t kMaxIdBytes = 1024;            // LV2 URI; VST3 is 32 hex digits
@@ -537,11 +540,20 @@ enum class BypassBy : uint8_t { Host = 0, Plugin = 1 };
 // dense index when it records SetInsertParams. Untrusted: keys are 1 ..
 // kMaxKeyBytes bytes and unique within the instance; min <= max and every
 // figure finite.
+//
+// `stepped` (wire 5): the plugin takes only some values of the range (an LV2
+// toggle, enumeration or integer port, a VST3 parameter with a stepCount),
+// so a lane on it holds each point's value up to the next point: a ramp
+// through a choice would walk the plugin through every choice between.
+// Which value a point between two of them selects stays the plugin's own
+// rounding (VST3 floors a normalised value, an LV2 port may round), so the
+// engine holds the value and never snaps it.
 struct ParamDesc {
     std::string key;
     float min = 0.f;
     float max = 1.f;
     float default_value = 0.f;
+    bool stepped = false;
 };
 
 struct LoadedInstance {

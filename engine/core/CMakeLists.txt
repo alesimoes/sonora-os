@@ -28,8 +28,10 @@ target_include_directories(sonora_core PUBLIC include)
 # links no plugin SDK and starts no host. sonora_plugin_client links
 # common/platform PRIVATE, so this edge does not open engine/core ->
 # common/platform (ADR-0007 §1): a platform include here fails to compile.
+# common/dsp for the track and master meters only (ADR-0011 §1.3); Session
+# holds them, so the edge is PUBLIC.
 target_link_libraries(sonora_core PUBLIC
-  sonora_base sonora_backend_api sonora_audiofile sonora_plugin_client Threads::Threads)
+  sonora_base sonora_backend_api sonora_audiofile sonora_plugin_client sonora_dsp Threads::Threads)
 
 add_executable(test_session_process tests/test_session_process.cpp)
 target_link_libraries(test_session_process PRIVATE sonora_core)

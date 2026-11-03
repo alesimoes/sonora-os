@@ -9,12 +9,12 @@ expect() {  # label, expected count of missing heavy checks, input
   [ "$n" = "$2" ] || { echo "FAIL $1: $n missing, expected $2"; fail=1; }
 }
 tab=$(printf '\t')
-cheap="Changed paths${tab}pass
-Executable bits${tab}pass
-Progress catalogue${tab}pass
-Shell scripts${tab}pass"
-all=$(printf '%s\n' "$HEAVY_CHECKS" | awk '{ print $0 "\tpass" }')
-skipped=$(printf '%s\n' "$HEAVY_CHECKS" | awk '{ print $0 "\tskipping" }')
+cheap="Changed paths${tab}SUCCESS
+Executable bits${tab}SUCCESS
+Progress catalogue${tab}SUCCESS
+Shell scripts${tab}SUCCESS"
+all=$(printf '%s\n' "$HEAVY_CHECKS" | awk '{ print $0 "\tSUCCESS" }')
+skipped=$(printf '%s\n' "$HEAVY_CHECKS" | awk '{ print $0 "\tSKIPPED" }')
 no_engine=$(printf '%s\n' "$all" | grep -v '^Engine build')
 
 expect "only cheap checks (before dependents exist)" 9 "$cheap"
@@ -26,10 +26,18 @@ expect "engine absent" 1 "$cheap
 $no_engine"
 expect "engine pending" 1 "$cheap
 $no_engine
-Engine build and tests${tab}pending"
+Engine build and tests${tab}IN_PROGRESS"
 expect "engine failed" 1 "$cheap
 $no_engine
-Engine build and tests${tab}fail"
+Engine build and tests${tab}FAILURE"
+
+# Any state but SUCCESS or SKIPPED in a heavy slot is missing. NEUTRAL is the
+# one gh's bucket calls "skipping"; it must not pass.
+for st in FAILURE CANCELLED ERROR TIMED_OUT STARTUP_FAILURE ACTION_REQUIRED           NEUTRAL STALE IN_PROGRESS QUEUED PENDING WAITING EXPECTED success pass skipping ""; do
+  expect "heavy check in state '$st'" 1 "$cheap
+$no_engine
+Engine build and tests${tab}$st"
+done
 
 # merge-when-green.sh end to end, against a fake gh that can "push" a new head
 # right after its Nth read of the check list. GitHub's own --match-head-commit
@@ -87,6 +95,54 @@ run "all green, no push" A 0 "merged A"
 run "push after the wait loop's snapshot" A 1 ""
 run "push between the gate's reads" A 2 ""
 run "head read empty" "" 0 ""
+
+# The gate itself. Any single check in a non-green state refuses the merge,
+# cheap or heavy.
+gate_case() {  # label, state to put on the check named by $3, check, expected
+  s="$work/g$1"
+  mkdir "$s"
+  echo A >"$s/head"
+  printf '%s
+%s
+' "$cheap" "$all" | awk -F'	' -v n="$3" -v st="$2"     'BEGIN { OFS = "	" } $1 == n { $2 = st } { print }' >"$s/checks"
+  echo 0 >"$s/reads"; echo 0 >"$s/push_at"; : >"$s/log"
+  FAKE_GH=$s PATH="$work/bin:$PATH" sh "$(dirname "$0")/merge-when-green.sh" 7     >"$s/out" 2>&1
+  got=$(cat "$s/log")
+  [ "$got" = "$4" ] || { echo "FAIL gate $1: merge log '$got', expected '$4'"; fail=1; }
+}
+i=0
+for st in FAILURE CANCELLED ERROR TIMED_OUT NEUTRAL STALE IN_PROGRESS QUEUED PENDING ACTION_REQUIRED; do
+  for name in "Shell scripts" "Engine build and tests"; do
+    i=$((i + 1))
+    gate_case "$i-$st" "$st" "$name" ""
+  done
+done
+gate_case ok SKIPPED "Engine build and tests" "merged A"
+
+# Without the second head read the push-between-reads case merges. Compare
+# the head with itself instead and require that the case then goes through:
+# proof the test above fails when the read is removed.
+here=$(dirname "$0")
+# shellcheck disable=SC2016 # the pattern is literal text
+sed 's/"\$gate_again" != "\$gate_head"/"$gate_again" != "$gate_again"/'   "$here/merge-checks.sh" >"$work/no-second-read.sh"
+if cmp -s "$work/no-second-read.sh" "$here/merge-checks.sh"; then
+  echo "FAIL mutation: could not remove the second head read"; fail=1
+else
+  gate_push() {  # sourced file, expected "refuse" or "merge"
+    s="$work/gp"; rm -rf "$s"; mkdir "$s"
+    echo A >"$s/head"; printf '%s
+%s
+' "$cheap" "$all" >"$s/checks"
+    printf '%s
+' "$cheap" >"$s/checks_b"
+    echo 0 >"$s/reads"; echo 1 >"$s/push_at"
+    # shellcheck disable=SC1090
+    (. "$1"; FAKE_GH=$s PATH="$work/bin:$PATH" merge_gate 7 >/dev/null) && got=merge || got=refuse
+    [ "$got" = "$2" ] || { echo "FAIL $1: push during the checks read: $got, expected $2"; fail=1; }
+  }
+  gate_push "$here/merge-checks.sh" refuse
+  gate_push "$work/no-second-read.sh" merge
+fi
 
 [ "$fail" = 0 ] && echo "ok"
 exit "$fail"

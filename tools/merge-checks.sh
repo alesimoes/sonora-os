@@ -5,7 +5,11 @@
 # The heavy CI jobs have `needs: changes`, so GitHub creates their check runs
 # only after "Changed paths" finishes. A poll in that window sees only the
 # cheap jobs, all green. A merge needs every heavy check present, passed or
-# skipped (a job skipped by `if:` still reports one, bucket "skipping").
+# skipped (a job skipped by `if:` still reports one, state SKIPPED).
+#
+# Decisions use gh's `state`, never `bucket`: bucket folds NEUTRAL (and
+# STALE) into "skipping", which would let a check that neither passed nor was
+# skipped by `if:` count as fine. Only SUCCESS and SKIPPED are green.
 
 HEAVY_CHECKS="Engine build and tests
 Portable modules under MSVC
@@ -17,13 +21,13 @@ BWF files read back by third-party tools
 Quantum and rate stay pinned
 Plugin host against real LV2 and VST3 plugins"
 
-# stdin: "name<TAB>bucket" lines. Prints each heavy check that is absent or
-# not pass/skipping; prints nothing when all are present and fine.
+# stdin: "name<TAB>state" lines. Prints each heavy check that is absent or
+# not SUCCESS/SKIPPED; prints nothing when all are present and fine.
 missing_heavy_checks() {
   checks=$(cat)
   printf '%s\n' "$HEAVY_CHECKS" | while IFS= read -r want; do
     printf '%s\n' "$checks" | awk -F'\t' -v w="$want" \
-      '$1 == w && ($2 == "pass" || $2 == "skipping") { found = 1 } END { exit !found }' ||
+      '$1 == w && ($2 == "SUCCESS" || $2 == "SKIPPED") { found = 1 } END { exit !found }' ||
       printf '%s\n' "$want"
   done
 }
@@ -43,8 +47,8 @@ merge_gate() {
   [ -n "$gate_head" ] || { echo "could not read the head commit"; return 1; }
   # gh pr checks exits non-zero while a check is pending or failed, so its
   # status says nothing about the read; an empty answer is what refuses.
-  gate_checks=$(gh pr checks "$pr" --json name,bucket \
-    --jq '.[] | [.name, .bucket] | @tsv' 2>/dev/null)
+  gate_checks=$(gh pr checks "$pr" --json name,state \
+    --jq '.[] | [.name, .state] | @tsv' 2>/dev/null)
   gate_again=$(gh pr view "$pr" --json headRefOid --jq .headRefOid 2>/dev/null) ||
     gate_again=""
   if [ "$gate_again" != "$gate_head" ]; then
@@ -53,7 +57,7 @@ merge_gate() {
   fi
   [ -n "$gate_checks" ] || { echo "no checks reported"; return 1; }
   gate_failing=$(printf '%s\n' "$gate_checks" |
-    awk -F'\t' '$2 != "pass" && $2 != "skipping" { print $1 }')
+    awk -F'\t' '$2 != "SUCCESS" && $2 != "SKIPPED" { print $1 }')
   if [ -n "$gate_failing" ]; then
     printf 'checks not green:\n%s\n' "$gate_failing"
     return 1

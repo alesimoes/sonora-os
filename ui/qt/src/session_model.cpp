@@ -383,6 +383,8 @@ void SessionModel::installCommands(CommandRegistry& local) {
     });
     simple("edit.separate_at_selection",
            [this](const CommandContext&, Why& why) { return ctl_.separate(why); });
+    simple("edit.heal_separation",
+           [this](const CommandContext&, Why& why) { return ctl_.heal_separation(why); });
     simple("edit.trim_start_to_insertion",
            [this](const CommandContext&, Why& why) { return ctl_.trim_start_to_insertion(why); });
     simple("edit.trim_end_to_insertion",

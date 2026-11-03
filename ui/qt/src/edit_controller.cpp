@@ -874,6 +874,111 @@ bool EditController::separate(std::string& why) {
     return true;
 }
 
+namespace {
+
+// Why `l` and `r`, which butt, cannot be healed into one region; empty when
+// they can. Healing must play exactly what the two parts played, so only a
+// region separated and left alone since is joined.
+std::string unhealable(const Playlist& p, const Region& l, const Region& r) {
+    const std::string pair = l.name + " and " + r.name;
+    if (l.channels != r.channels || l.source_offset + l.length != r.source_offset) {
+        return pair + " are not one recording separated in two (moved, slipped or from "
+                      "different takes); Heal Separation joins only parts that still line up";
+    }
+    for (const Crossfade& x : p.crossfades) {
+        if (x.left == l.id && x.right == r.id) {
+            return pair + " are crossfaded; select the crossfade and Clear it first";
+        }
+    }
+    if (l.fade_out.length > 0) return l.name + " ends in a fade out; Clear the fade first";
+    if (r.fade_in.length > 0) return r.name + " starts with a fade in; Clear the fade first";
+    if (l.gain_db != r.gain_db) return pair + " have different clip gain";
+    if (l.mute != r.mute) return "one of " + pair + " is muted and the other is not";
+    return {};
+}
+
+}  // namespace
+
+bool EditController::heal_separation(std::string& why) {
+    int first = sel_.track;
+    int tracks = span();
+    Frames a = sel_.insertion, b = sel_.insertion;
+    if (sel_.region != kNoId) {
+        const TrackEdit* t = nullptr;
+        const Region* r = find_region(snapshot(), sel_.region, &t);
+        if (r == nullptr) {
+            why = "the selected region is gone; nothing was healed";
+            return false;
+        }
+        first = track_index(snapshot(), t->id);
+        tracks = 1;
+        a = r->position;
+        b = r->end();
+    } else if (sel_.has_range()) {
+        a = sel_.start;
+        b = sel_.end;
+    }
+    if (tracks == 0) {
+        why = "select a track first";
+        return false;
+    }
+    // Every separation the selection touches, on every selected track, is
+    // one heal and one undo step; one that cannot be healed refuses them
+    // all, so nothing is half done.
+    std::vector<Member> members;
+    for (int i = first; i < first + tracks; ++i) {
+        const TrackEdit* t = track(i);
+        const Playlist* p = active(t);
+        if (p == nullptr) continue;
+        const std::vector<Region>& rs = p->regions;
+        std::size_t k = 0;
+        while (k + 1 < rs.size()) {
+            const auto joins = [&](std::size_t j) {
+                const Frames cut = rs[j].end();
+                return j + 1 < rs.size() && rs[j + 1].position == cut && cut >= a && cut <= b;
+            };
+            if (!joins(k)) {
+                ++k;
+                continue;
+            }
+            const std::size_t head = k;
+            while (joins(k)) {
+                const std::string no = unhealable(*p, rs[k], rs[k + 1]);
+                if (!no.empty()) {
+                    why = no + " (" + t->name + "); nothing was healed";
+                    return false;
+                }
+                ++k;
+            }
+            const Region& h = rs[head];
+            const Region& tail = rs[k];
+            members.push_back(TrimRegion{p->id, h.id, Edge::End, tail.end()});
+            // The healed region ends as its last part did: that part's fade
+            // out and its crossfade into whatever follows.
+            if (tail.fade_out.length > 0) {
+                members.push_back(SetFade{p->id, h.id, FadeEnd::Out, tail.fade_out});
+            }
+            for (const Crossfade& x : p->crossfades) {
+                if (x.left != tail.id) continue;
+                Crossfade moved = x;
+                moved.left = h.id;
+                members.push_back(SetCrossfade{p->id, moved});
+            }
+        }
+    }
+    if (members.empty()) {
+        why = sel_.has_range() || sel_.region != kNoId
+                  ? "no separation inside the selection: Heal Separation joins two regions "
+                    "that butt, with the cut between them selected"
+                  : "no separation at the insertion point: place it on the cut between two "
+                    "regions, or select across it";
+        return false;
+    }
+    if (!submit_compound(std::move(members), "Heal Separation", "healed", why)) return false;
+    sel_.region = kNoId;
+    return true;
+}
+
 bool EditController::trim_start_to_insertion(std::string& why) {
     if (refuse_several("Trimming to the insertion point", why)) return false;
     int index = -1;
