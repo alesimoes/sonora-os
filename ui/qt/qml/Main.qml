@@ -449,10 +449,23 @@ Rectangle {
                     font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                 }
             }
-            SButton {
-                text: "Cancel"
-                implicitHeight: 24
-                onClicked: openPanel.visible = false
+            Row {
+                spacing: Theme.space2
+                SButton {
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: openPanel.visible = false
+                }
+                // Pro Tools' "Create From Template", beside Open.
+                SButton {
+                    objectName: "openNewFromTemplate"
+                    text: "New from Template…"
+                    implicitHeight: 24
+                    onClicked: {
+                        openPanel.visible = false
+                        templatePanel.show()
+                    }
+                }
             }
         }
     }
@@ -592,8 +605,10 @@ Rectangle {
                     { name: "fileSave", label: "Save", command: "app.save" },
                     { name: "fileSaveAs", label: "Save As…", command: "app.save_as" },
                     { name: "fileSaveCopyIn", label: "Save Copy In…", command: "app.save_copy_in" },
+                    { name: "fileSaveAsTemplate", label: "Save as Template…", command: "app.save_as_template" },
                     { name: "", label: "", command: "" },
-                    { name: "fileOpen", label: "Open…", command: "open" }
+                    { name: "fileOpen", label: "Open…", command: "open" },
+                    { name: "fileNewFromTemplate", label: "New from Template…", command: "app.new_from_template" }
                 ]
                 Item {
                     required property var modelData
@@ -638,6 +653,8 @@ Rectangle {
         id: saveAsPanel
         objectName: "saveAsPanel"
         property bool copy: false
+        // File > Save as Template: the same dialog, named for a template.
+        property bool asTemplate: false
         property string where
         property string problem
         visible: false
@@ -652,6 +669,7 @@ Rectangle {
 
         function show(copy, name, where) {
             saveAsPanel.copy = copy
+            saveAsPanel.asTemplate = false
             saveAsPanel.where = where
             saveAsPanel.problem = ""
             saveAsInput.text = name
@@ -659,13 +677,18 @@ Rectangle {
             saveAsInput.forceActiveFocus()
             saveAsInput.selectAll()
         }
+        function showTemplate(name, where) {
+            show(false, name, where)
+            saveAsPanel.asTemplate = true
+        }
         function close() {
             visible = false
             saveAsInput.focus = false
             root.shell.setTextEntry(false)
         }
         function accept() {
-            const command = saveAsPanel.copy ? "app.save_copy_in" : "app.save_as"
+            const command = saveAsPanel.asTemplate ? "app.save_as_template"
+                          : saveAsPanel.copy ? "app.save_copy_in" : "app.save_as"
             if (root.shell.invokeWith(command, -1, saveAsInput.text)) close()
             else saveAsPanel.problem = root.shell.statusText
         }
@@ -676,7 +699,7 @@ Rectangle {
             spacing: Theme.space2
 
             Text {
-                text: saveAsPanel.copy ? "Save Copy In" : "Save As"
+                text: saveAsPanel.asTemplate ? "Save as Template" : saveAsPanel.copy ? "Save Copy In" : "Save As"
                 color: Theme.text
                 font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
             }
@@ -684,7 +707,9 @@ Rectangle {
                 objectName: "saveAsWhat"
                 width: parent.width
                 wrapMode: Text.Wrap
-                text: (saveAsPanel.copy
+                text: (saveAsPanel.asTemplate
+                       ? "This session's tracks, routing, inserts and mix, without its audio or regions. You stay in this session."
+                       : saveAsPanel.copy
                        ? "A copy of this session in a new folder. You stay in this session."
                        : "This session in a new folder, with its audio. You go on in the new one; this one stays as it is.")
                       + " In " + saveAsPanel.where + "."
@@ -695,7 +720,7 @@ Rectangle {
                 spacing: Theme.space2
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Session name"
+                    text: saveAsPanel.asTemplate ? "Template name" : "Session name"
                     color: Theme.text
                     font { family: Theme.fontFamily; pixelSize: Theme.textBody }
                 }
@@ -733,6 +758,15 @@ Rectangle {
                 implicitHeight: 24
                 onClicked: root.session.copyWithAudio = !root.session.copyWithAudio
             }
+            // ADR-0030 §2: a template drops its markers unless asked.
+            SButton {
+                objectName: "saveAsTemplateMarkers"
+                visible: saveAsPanel.asTemplate
+                text: (root.session.templateMarkers ? "☑" : "☐") + "  Markers"
+                bold: false
+                implicitHeight: 24
+                onClicked: root.session.templateMarkers = !root.session.templateMarkers
+            }
             Text {
                 objectName: "saveAsProblem"
                 visible: saveAsPanel.problem.length > 0
@@ -757,6 +791,351 @@ Rectangle {
                     implicitHeight: 24
                     active: true
                     onClicked: saveAsPanel.accept()
+                }
+            }
+        }
+    }
+
+    // --- New from Template: the templates folder, and nothing else -------------
+    // Pro Tools' "Create From Template", as a list like Open's (ADR-0030):
+    // each template with its date and track count; one New from Template
+    // would refuse is shown with the reason and cannot be chosen. Rename and
+    // Delete act on the row; Delete asks first, on the row itself.
+    MouseArea {
+        anchors.fill: parent
+        visible: templatePanel.visible
+        z: 9
+        onClicked: templatePanel.close()
+    }
+    Rectangle {
+        id: templatePanel
+        objectName: "templatePanel"
+        property var entries: []
+        property string chosen        // the template's file
+        property string chosenName
+        property string confirming    // the template Delete asks about
+        property string renaming      // the template whose name is edited
+        property string problem
+        property bool discard: false
+        visible: false
+        z: 10
+        anchors.centerIn: parent
+        width: 600
+        height: templateColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        function refresh() {
+            entries = root.session.templateList()
+            let still = false
+            for (let i = 0; i < entries.length; ++i) {
+                if (entries[i].file === chosen && entries[i].problem.length === 0) still = true
+            }
+            if (!still) {
+                chosen = ""
+                chosenName = ""
+                for (let i = 0; i < entries.length; ++i) {
+                    if (entries[i].problem.length === 0) {
+                        choose(entries[i])
+                        break
+                    }
+                }
+            }
+        }
+        function show() {
+            chosen = ""
+            confirming = ""
+            renaming = ""
+            problem = ""
+            discard = false
+            refresh()
+            visible = true
+        }
+        function choose(entry) {
+            chosen = entry.file
+            chosenName = entry.name
+            templateNameInput.text = root.session.unusedSessionName(entry.name)
+            problem = ""
+        }
+        function close() {
+            visible = false
+            templateNameInput.focus = false
+            renaming = ""
+            root.shell.setTextEntry(false)
+        }
+        function accept() {
+            if (chosen.length === 0) return
+            if (root.session.newFromTemplate(chosen, templateNameInput.text, discard)) close()
+            else problem = root.shell.statusText
+        }
+        function rename(to) {
+            if (root.session.renameTemplate(renaming, to)) {
+                renaming = ""
+                root.shell.setTextEntry(false)
+                refresh()
+            } else {
+                problem = root.shell.statusText
+            }
+        }
+        function remove(name) {
+            confirming = ""
+            if (!root.session.deleteTemplate(name)) problem = root.shell.statusText
+            refresh()
+        }
+
+        Column {
+            id: templateColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: "New from Template"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                width: parent.width
+                elide: Text.ElideMiddle
+                text: root.session.templatesFolder()
+                color: Theme.textTertiary
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+            }
+            Text {
+                visible: templatePanel.entries.length === 0
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "No templates yet. File > Save as Template puts one here."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+            }
+            Repeater {
+                model: templatePanel.entries
+                Rectangle {
+                    id: templateRow
+                    required property var modelData
+                    readonly property bool usable: modelData.problem.length === 0
+                    readonly property bool picked: modelData.file === templatePanel.chosen
+                    readonly property bool asking: modelData.name === templatePanel.confirming
+                    readonly property bool editing: modelData.name === templatePanel.renaming
+                    objectName: "templateRow"
+                    width: templateColumn.width
+                    height: 44
+                    radius: Theme.radiusSmall
+                    color: picked ? Theme.selectionFill : rowArea.containsMouse && usable ? Theme.hover : Theme.sunken
+                    border.color: picked ? Theme.accent : asking ? Theme.alarm : "transparent"
+
+                    MouseArea {
+                        id: rowArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        enabled: templateRow.usable && !templateRow.editing
+                        onClicked: templatePanel.choose(templateRow.modelData)
+                        onDoubleClicked: {
+                            templatePanel.choose(templateRow.modelData)
+                            templatePanel.accept()
+                        }
+                    }
+                    Column {
+                        anchors { left: parent.left; leftMargin: Theme.space3; verticalCenter: parent.verticalCenter
+                                  right: rowButtons.left; rightMargin: Theme.space2 }
+                        spacing: 2
+                        Text {
+                            visible: !templateRow.editing
+                            width: parent.width
+                            elide: Text.ElideRight
+                            text: templateRow.modelData.name
+                            color: templateRow.usable ? Theme.text : Theme.textTertiary
+                            font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.DemiBold }
+                        }
+                        Rectangle {
+                            visible: templateRow.editing
+                            width: parent.width
+                            height: 22
+                            radius: Theme.radiusSmall
+                            color: Theme.window
+                            border.color: Theme.accent
+                            TextInput {
+                                id: renameInput
+                                objectName: "templateRenameInput"
+                                anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                                verticalAlignment: TextInput.AlignVCenter
+                                clip: true
+                                color: Theme.text
+                                selectionColor: Theme.selectionFill
+                                selectedTextColor: Theme.text
+                                font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                                onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                                onTextChanged: templatePanel.problem = ""
+                                Keys.onEscapePressed: { templatePanel.renaming = ""; focus = false }
+                                Keys.onReturnPressed: templatePanel.rename(text)
+                                Keys.onEnterPressed: templatePanel.rename(text)
+                            }
+                        }
+                        Text {
+                            width: parent.width
+                            elide: Text.ElideRight
+                            text: templateRow.asking
+                                  ? "Delete it and its plugin states? Sessions made from it keep theirs."
+                                  : templateRow.usable
+                                  ? (templateRow.modelData.tracks === 1 ? "1 track" : templateRow.modelData.tracks + " tracks")
+                                    + "  ·  saved " + templateRow.modelData.date
+                                  : "Cannot be used: " + templateRow.modelData.problem
+                            color: templateRow.asking ? Theme.alarm : templateRow.usable ? Theme.textSecondary : Theme.caution
+                            font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                        }
+                    }
+                    Row {
+                        id: rowButtons
+                        anchors { right: parent.right; rightMargin: Theme.space2; verticalCenter: parent.verticalCenter }
+                        spacing: Theme.space1
+                        SButton {
+                            visible: !templateRow.asking && !templateRow.editing
+                            objectName: "templateRename"
+                            text: "Rename…"
+                            bold: false
+                            implicitHeight: 24
+                            onClicked: {
+                                templatePanel.confirming = ""
+                                templatePanel.problem = ""
+                                templatePanel.renaming = templateRow.modelData.name
+                                renameInput.text = templateRow.modelData.name
+                                renameInput.forceActiveFocus()
+                                renameInput.selectAll()
+                            }
+                        }
+                        SButton {
+                            visible: !templateRow.asking && !templateRow.editing
+                            objectName: "templateDelete"
+                            text: "Delete…"
+                            bold: false
+                            implicitHeight: 24
+                            onClicked: {
+                                templatePanel.renaming = ""
+                                templatePanel.problem = ""
+                                templatePanel.confirming = templateRow.modelData.name
+                            }
+                        }
+                        SButton {
+                            visible: templateRow.asking
+                            text: "Keep"
+                            implicitHeight: 24
+                            onClicked: templatePanel.confirming = ""
+                        }
+                        SButton {
+                            visible: templateRow.asking
+                            objectName: "templateDeleteConfirm"
+                            text: "Delete"
+                            implicitHeight: 24
+                            active: true
+                            activeColour: Theme.alarm
+                            onClicked: templatePanel.remove(templateRow.modelData.name)
+                        }
+                        SButton {
+                            visible: templateRow.editing
+                            text: "Cancel"
+                            implicitHeight: 24
+                            onClicked: {
+                                templatePanel.renaming = ""
+                                renameInput.focus = false
+                            }
+                        }
+                        SButton {
+                            visible: templateRow.editing
+                            text: "Rename"
+                            implicitHeight: 24
+                            active: true
+                            onClicked: templatePanel.rename(renameInput.text)
+                        }
+                    }
+                }
+            }
+            Row {
+                visible: templatePanel.entries.length > 0
+                spacing: Theme.space2
+                topPadding: Theme.space2
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "New session name"
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                }
+                Rectangle {
+                    width: 280
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.window
+                    border.color: templateNameInput.activeFocus ? Theme.accent : Theme.borderStrong
+                    TextInput {
+                        id: templateNameInput
+                        objectName: "templateNameInput"
+                        anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.selectionFill
+                        selectedTextColor: Theme.text
+                        font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                        onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                        onTextChanged: templatePanel.problem = ""
+                        Keys.onEscapePressed: templatePanel.close()
+                        Keys.onReturnPressed: templatePanel.accept()
+                        Keys.onEnterPressed: templatePanel.accept()
+                    }
+                }
+            }
+            Text {
+                visible: templatePanel.entries.length > 0
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "In " + root.session.sessionsFolder() + ". Record works once the new session is saved there."
+                color: Theme.textTertiary
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+            }
+            Row {
+                visible: root.session.dirty
+                spacing: Theme.space2
+                SButton {
+                    text: "Discard edits"
+                    implicitHeight: 24
+                    active: templatePanel.discard
+                    activeColour: Theme.caution
+                    onClicked: templatePanel.discard = !templatePanel.discard
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "This session has unsaved edits."
+                    color: Theme.caution
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                }
+            }
+            Text {
+                objectName: "templateProblem"
+                visible: templatePanel.problem.length > 0
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: templatePanel.problem
+                color: Theme.alarm
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "templateCancel"
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: templatePanel.close()
+                }
+                SButton {
+                    objectName: "templateCreate"
+                    text: "Create Session"
+                    implicitHeight: 24
+                    implicitWidth: 130
+                    active: templatePanel.chosen.length > 0
+                    available: templatePanel.chosen.length > 0
+                    onClicked: templatePanel.accept()
                 }
             }
         }
@@ -1782,6 +2161,8 @@ Rectangle {
         function onRepeatRequested(count, what) { repeatPanel.show(count, what) }
         function onNewTracksRequested() { newTracksPanel.show() }
         function onSaveAsRequested(copy, name, where) { saveAsPanel.show(copy, name, where) }
+        function onSaveAsTemplateRequested(name, where) { saveAsPanel.showTemplate(name, where) }
+        function onTemplateBrowserRequested() { templatePanel.show() }
         function onPlaylistRenameRequested(track, current) { playlistRenamePanel.show(track, current) }
         function onNameRequested(track, current) { namePanel.show(track, current) }
         function onColourRequested(track, current) { colourPalette.show(track, current) }

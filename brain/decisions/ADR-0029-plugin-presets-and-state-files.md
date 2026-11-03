@@ -385,7 +385,57 @@ EditPreset for that plugin, and after a rescan.
     rewritten to the same relative path, so a plugin restored from the old
     folder saves cleanly into the new one.
   - `absolute_path(rel)` gives `<session_dir>/<rel>`. A path that escapes
-    the folder gives NULL, counted as a fault.
+    the folder gives NULL, counted as a fault. **Amended (#276 review N5):**
+    an *absolute* path is returned unchanged. States saved before wire 4
+    (lilv's own mapPath, no folders) hold absolute paths, and refusing them
+    would break every such state. Reading through them was already possible
+    in wire 3. The copy on save is new, so `abstract_path` names such a path
+    exactly as it was given and **never copies it in**. Otherwise a received
+    session that names `~/.ssh/id_rsa` would carry that file away in its own
+    `Plugin Files/` at the next save. A *relative* path can reach outside the
+    session through a symlink in a received folder (`Plugin Files`,
+    `<sha256>/` or the file itself). So `absolute_path` lstats every
+    component under the session folder, and refuses (NULL, counted) any path
+    that passes a link (#289 review B1). At save, a path that names a place
+    in the save, session or a previous folder, but resolves outside it,
+    fails that save and is not copied. What is guaranteed: no file reached
+    through a link in a session folder, and no absolute path from a restored
+    state, is ever copied into a session by a save. What is not covered: a
+    file the plugin itself opens by an absolute path that it got from
+    elsewhere, such as a user's file dialog, is still copied in. That is the
+    point of the copy. The host remembers each absolute path
+    it passed through, as given and canonical, for the instance's life.
+    Gathering an old session's outside files into the folder is an explicit
+    operator action ("Collect plugin files"), not a side effect of saving.
+    That action is not scheduled yet.
+  - **Copy safety (#276 review N2–N4, #283 review).** `Plugin Files/` and
+    `<sha256>/` are opened as real directories (`mkdirat`, then
+    `openat(O_NOFOLLOW | O_DIRECTORY)`) before anything is made in them.
+    After that the tmp file, the rename and the free-space query all go
+    through those descriptors. A symlink at either one fails that save, and
+    nothing is written through it. The tmp is `.incoming-<host pid>-<n>`,
+    created `0444`. A saved file is read-only from the start and the rename
+    keeps it so. The copy syncs every 64 MiB, and it stops with a Failed
+    text once the save has spent `kStateCopyBudgetMs` (the State timeout
+    less 15 s). A file in `Plugin Files/` is named by its directory's sha
+    without being read only while its size, mtime and inode match what the
+    host last saw: at `absolute_path`, or when it saved or hashed the file.
+    Otherwise it is hashed again, and a file that no longer matches is
+    copied as new bytes. During a take (`no_copy`) that check counts as a
+    read, so the save fails "after the take". A file never seen by this
+    host, for example in a received folder, is trusted at restore as
+    before. Verifying a whole folder on open is the engine's job in slice 2.
+  - **Stale tmp files.** At the host's Load (`session_dir`) and at the first
+    save into a folder, the host removes `Plugin Files/.incoming-<pid>-<n>`
+    whose pid no longer runs (`kill(pid, 0)` gives `ESRCH`), with `unlinkat`
+    on regular files only. A live pid's file belongs to another host's copy
+    in progress and stays. A recycled pid only delays the sweep. Any other
+    name is left alone.
+  - **One deadline at a time per host.** The host answers a chain's
+    GetStates in order, so the engine starts a GetState's deadline only
+    when the one before it on the same host has been answered. Each save
+    has the whole State timeout to itself. A chain of N instances can take
+    N times the timeout, and every one of them is bounded.
 - `state:freePath` frees what the two above return (the host allocated
   it). Offered always. A plugin that frees with `free()` instead works
   anyway, because the host allocates with `malloc`.

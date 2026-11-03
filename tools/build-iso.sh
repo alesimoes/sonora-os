@@ -27,12 +27,17 @@ fi
 # Commit date plus short hash, not the wall clock: the same commit must give
 # the same id, or every rebuild would discard every operator's cache. A dirty
 # tree gets a suffix so an uncommitted experiment never shares a commit's id.
+#
+# git.exe is a native Windows program and, with MSYS2_ARG_CONV_EXCL set above,
+# gets /c/... unconverted and cannot find it: every image built on Windows
+# was "unstamped" until the path went through host_path.
 stamp_build_id() {
-  local id date sha
-  if date="$(git -C "$ROOT" log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null)" &&
-     sha="$(git -C "$ROOT" rev-parse --short=9 HEAD 2>/dev/null)"; then
+  local id date sha repo
+  repo="$(host_path "$ROOT")"
+  if date="$(git -C "$repo" log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null)" &&
+     sha="$(git -C "$repo" rev-parse --short=9 HEAD 2>/dev/null)"; then
     id="$date.$sha"
-    [[ -z "$(git -C "$ROOT" status --porcelain -- iso audio-stack engine 2>/dev/null)" ]] || id="$id-dirty"
+    [[ -z "$(git -C "$repo" status --porcelain -- iso audio-stack engine 2>/dev/null)" ]] || id="$id-dirty"
   else
     id="unstamped"
   fi
@@ -92,7 +97,9 @@ run_logged() {
 # config/includes.chroot, where live-build copies it into the image verbatim.
 # Without this the image boots into a restart loop on a missing binary.
 echo "Building the engine for the image..."
-run_logged build-engine "$ROOT/tools/build-engine.sh"
+# Binaries only (SONORA_STAGE_ONLY): the tests are CI's, and a timing bar
+# missed under host load must not cost the image.
+run_logged build-engine env SONORA_STAGE_ONLY=1 "$ROOT/tools/build-engine.sh"
 
 STAGE="$ROOT/iso/config/includes.chroot/usr/local/bin"
 mkdir -p "$STAGE"
@@ -119,7 +126,7 @@ echo "staged the engine and sonora-tui into includes.chroot/usr/local/bin/"
 rm -f "$STAGE/sonora-ui"
 if [[ "${SONORA_WITH_UI:-0}" == 1 ]]; then
   echo "Building the interface for the image..."
-  run_logged build-ui "$ROOT/tools/build-ui.sh"
+  run_logged build-ui "$ROOT/tools/build-ui.sh" --stage
   UI="$(find "$ROOT/build-ui-container" -name sonora-ui -type f 2>/dev/null | head -n 1)"
   [[ -n "$UI" ]] || {
     echo "error: SONORA_WITH_UI=1 but no sonora-ui binary was found to stage." >&2

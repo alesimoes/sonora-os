@@ -269,15 +269,40 @@ playback can follow edits; it is in flight.
   - [x] The interface: an automation mode selector per track, and the fader
         and pan knob sending `Gesture::Touch` at press and `Release` at
         release (#187; found done by #245).
-  - [ ] Touch's return time as an engine preference `--automatch-ms` (not a session
-        setting, ADR-0027 §8); a constant 250 ms today
-        (`Session::touch_return_frames()`).
+  - [x] (#282) Touch's return to the static value (also with no lane) and the engine preference
+        `--automatch-ms` (not a session setting, ADR-0027 §8; default 250 ms). ADR-0027 §8 slice 4.
+        - [ ] (#282) UI: the fader cap snaps back to the static at a written release while the audio
+          glides; follow the engine's played gain (post-fader gain in the state block, or a local
+          glide over the AutoMatch time).
+        - [ ] (#282) UI: `panDrag` saves pan to the document per step even in a written ride; pan
+          keeps its static the way gain does.
+        - [ ] (#282) Pro Tools-style Latch/Write that keep the static, as Touch now does: `apply_mix`
+          leaves live or latched parameters alone while rolling and the engine restores the static at
+          the pass's end (B1 alternative not taken; today `MixModel::writes()` is Touch only).
+        - [ ] (#282) Engine: a new plan in the middle of a return (any edit) cancels the return and the
+          audio snaps to the target over one callback.
+        - [ ] (#282 review) `test_touch_with_no_lane_returns_to_the_static_value` compares the audio to
+          the test's `expected_return()` model within 1e-4, not to the lane `automation_pass_edits()`
+          writes; add an end-to-end check of the played gain against the written lane at the same frames.
+        - [ ] (#282 review) A Touch ride begun while rolling and released after a stop is neither saved
+          by `MixModel` (`ride_wrote_` sticks) nor restored by `touch()` (Stopped): restore or save on that path.
+          Related edge: a Touch moved while STOPPED and released after the transport started saves no
+          static (`endRide`: `ride_wrote_` should count only moves made while rolling).
+        - [ ] (#282 review) A released Touch on a track with no region in the plan (an empty,
+          input-monitored track) gets no glide (the return loop covers only `plan.tracks`).
+        - [ ] (#282 review) `PlaybackController::touch()` clears `touched` before it stores the static,
+          so the audio thread can aim one callback at the ride; store the static first, or make
+          `return_to_` latch the static at the release (one-callback audio/writer difference).
   - [ ] AutoMatch time in the UI Preferences (a protocol message).
   - [ ] Latch/Trim and Write/Trim (mode pair, session format bump), slice 5 of
-        ADR-0027 §8. Researcher first checks Pro Tools' Trim range.
+        ADR-0027 §8. Researcher first checks Pro Tools' Trim range. The engine half (Trim lane,
+        session format 16, window 13, protocol 39) is #290 (open at this chore).
+    - [ ] Slice 5 UI half, after #290: Trim in `EditController::set_automation_mode`; Write and Trim in
+      `AutomationModeButton`; `VolumeTrim` touch and release from the fader; the trim offset shown; a
+      Volume Trim lane in the lane menu and in `automation_edit`; screenshots of every scene touched.
   - [ ] Automation write slice, ADR-0027 §8 order: (1) writer hardening (done, #252), (2) plan-move and
         Load state (done, #262), (3) per-frame sends and PDC-aligned lanes (done, #271, #279),
-        (4) Touch's return and AutoMatch (open), (5) Trim (open); slices 4 and 5 touch `session.cpp`,
+        (4) Touch's return and AutoMatch (done, #282), (5) Trim (engine half #290, UI half open); slices 4 and 5 touch `session.cpp`,
         so one after another. Slice 5 must take session format 16, window 13, protocol 39: #277
         (names and colours) took 15, 12 and 38.
   - [x] (#262) `finish_pass` returns before Write->Latch when every lane of the pass is dropped
@@ -300,10 +325,20 @@ playback can follow edits; it is in flight.
         wrap (`lane_frame`); only the rows whose owner moved snap their mix (`snap_row_`), the others ramp.
   - [x] (#271) The `AutomationWrite` ring comment says 12 MiB at 128 tracks after the power-of-two
         round-up; `follow_automation` looks ids up in a per-drain sorted id list.
+  - [x] (#295) JACK backend: `callback_ns` never decreases (`drivers::MonotonicStamp` clamps to the previous stamp).
+    - [ ] (#295 review N1) Count `MonotonicStamp` clamps and the largest one (relaxed atomic, audio-thread
+          writer) and have `callback_ns_is_the_monotonic_clock` print them, so a jackd2 DLL step backwards or a
+          provisional offset replaced shows up instead of being absorbed.
+    - [ ] (#295 review N2) `test_clock_offset`: a case where `cycle_ns` steps back with the offset unchanged
+          (jackd2 DLL resync), and correct the test comment: the offset step is not the only cause and the
+          rig's period is 2.67 ms, not <= 1 ms. Unverified: the jack conformance run and the RTSan repeat.
   - [ ] (#271 review) `Session`: mark `auto_wrapped_` from the playhead (not `auto_start_`) so a wrap
         during an invalid-plan callback still counts for lagged lanes (at most `L` frames wrong).
   - [ ] (#267 audit) `orphan_writes_` does not count writes with `track_id == 0` (a roll on the initial
         empty plan); count them or say why not.
+  - [ ] (#279) A forward cursor for `auto_lane_value()` in the fader's lane path (same result as the
+        binary search, reset on seek and wrap, own identity test), and `apply_track_fader()`'s frame
+        loop as stretches, as `sum_send()` now does.
   - [ ] (#279 review) `engine.core`: `test_shared_lanes_are_bit_identical` also covers a Touch release
         mid-roll (the `return_at_` return ramp) and a plan republished mid-roll with different lanes,
         both while the lane memo is warm.
@@ -359,10 +394,22 @@ playback can follow edits; it is in flight.
              (regions and sources dropped), no format or protocol bump. Record and the other
              take-starting commands are refused while the engine sits in a template's folder
              (`take_commands()` in `contracts/api/command.h`).
-       - [ ] (ui-engineer) Template menu and browser: File > Save as Template... with a name and a
-             "Markers" check box calling `saveAsTemplate`; New from Template, a list beside Open,
-             calling `templateList` and `newFromTemplate`; a command id in `contracts/api/command.h`
-             and keymap entries; screenshots.
+       - [x] (#291) Template menu and browser: File > Save as Template... with a name and a
+             "Markers" check box calling `saveAsTemplate`; New from Template, a list beside Open
+             with date, track count, rename and delete, `app.save_as_template` /
+             `app.new_from_template` (no Pro Tools default key exists, none bound); screenshots.
+             - [ ] (#291) Rename a template through the engine once a template action exists, so the name
+               inside the file follows the folder's (today the folder and file are renamed, the stored name is not).
+             - [ ] (#291 review) `templateIsFree` compares absolute, not canonical, paths; use
+               `canonicalFilePath` for the engine folder and the template folder.
+             - [ ] (#291 review) Click Rename and Delete in a live window and record it in a PR (only
+               model-level tests exist).
+             - [ ] (#291 review) Template Delete: clear the read-only attribute before removing a file on
+               Windows and stop at the first failure, so a 0444 plugin file (#289) cannot leave a
+               half-deleted template; `remove_without_following` re-checks `is_link` on each directory
+               before descending (or `openat`/`O_NOFOLLOW`) to close the enumerate-to-recurse swap.
+             - [ ] (#291 review) `test_session_templates`: nested-symlink, dangling-link, `.sonora-link`
+               and `.WAV` cases in `delete_never_leaves_the_templates_folder`.
        - [ ] `NewFromTemplate` engine action (protocol bump): the engine makes the new folder from the
              template and enters it, never the template's folder (ADR-0030 §3). Until then New from
              Template writes into the template folder on every use (`ActiveFolder::enter` makes
@@ -1048,9 +1095,23 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          reuse; placement beside the strip; scenes for the generic editor
          and a native-editor placeholder (F12, F13). The native editor
          inside it is `plugins.host.editors`.
-       - [ ] D11 `ui.editing.names_colours` (existing item), first slice:
+       - [x] D11 `ui.editing.names_colours` (existing item), first slice (#277):
          colour stored per track, never recomputed from the display index
-         (F21).
+         (F21); track, clip and region names and colours (session format 15, window 12, protocol 38).
+         - [ ] (#277) Pro Tools renames the main playlist along with the track; we leave playlist names alone.
+         - [ ] (#277) Colour several selected regions (a range across tracks) as one Compound.
+         - [ ] (#277) Esc and `x` on the palette and the Name dialog (D14 covers every window).
+         - [ ] (#277) MIDI regions are not drawn in the Edit window yet; their stored colour is ready.
+         - [ ] (#277) Confirm the three new key bindings against Avid's and Apple's guides and drop `"verified": false`.
+         - [ ] (#277 review) ADR-0027 §8 row 5 text still says session format 15, window 12; renumber to 16, 13, 39.
+         - [ ] (#277 review) model: codec round-trip tests for SetTrackName/SetRegionName with an empty name,
+           a 4 KB name, only spaces, and names with NUL and newline (op_codec, test_tracks).
+         - [ ] (#277 review) model: cap track, region and playlist names in bytes and refuse control
+           characters in apply and the session reader, with a clear error (a hand-edited file or remote op can store a newline or MBs).
+         - [ ] (#277 review) `set_track_colour` truncates a selection of more than 256 tracks to
+           `kMaxCompoundMembers` without saying so; split it into several steps or refuse it (`edit_names.cpp`).
+         - [ ] (#277 review) `static_assert(theme::kRegionPaletteSize == model::kColours)`, and fix the
+           `edit_names_colours` scene comment ("the overheads" is the Hi-Hat, track index 2).
        - [ ] D12 `ui.design.edit_density`: header meter ≥ 6 px; track-height
          presets for 16 to 48 tracks, unless `ui.editing.zoom` already
          carries them (F22, F23).
@@ -1115,9 +1176,14 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
       first frames saws. Hold at frame 0 until `from + i` reaches the latency.
 - [ ] `test_automation.cpp`: add a test that a track behind an insert chain
       reads its lanes `chain.latency_frames` early; the `lag` path has no test.
-- [ ] (#274) `test_inserts` (`ui_inserts`): the knob-drag flake (CI run 41518271936) now prints a
-      "knob drag:" stderr diagnostic when the check fails. Once the flake is understood, remove the
+- [ ] (#274, #287) `test_inserts` (`ui_inserts`): the knob-drag flake (CI run 41518271936) now prints a
+      "knob drag:" stderr diagnostic when the check fails; #287 waits until the knob is what a press
+      reaches before dragging it (an unproven cure). If the flake recurs, look at the press path
+      (QQuickWindow delivery), not geometry; if it stays away, remove the
       diagnostic or turn it into a CHECK message.
+- [ ] (#287 review) `test_inserts`: `mouse_target` walks `childItems()` in insertion order, not Qt's
+      z/paint order, and ignores clip, opacity and pointer handlers; use the delivery order if a failure
+      names an item the test said was reachable.
 - [ ] Test hygiene: audit fixed sleeps before SIGKILL/deadline checks in
       engine/app/tests/test_exit_watchdog.cpp and
       engine/control/tests/fake_plugin_host.cpp for the ctest -j + TSan load
@@ -1742,28 +1808,44 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          state copy above.
        - [x] LV2 states that hold files, in the host (ADR-0029 slice 1, #276):
          `makePath`, `mapPath`, `freePath`, HostControl wire 4, ctest `plugins_host_state_files`.
+       - [x] (#283, #289) Host side of safe saving: byte caps (1 GiB per file, 4 GiB per save, 512 MiB
+         kept free), one State deadline per host at a time, a copy budget against `kStateReplyTimeoutMs`,
+         `.incoming-*` sweep, 0444 files re-hashed before use, no write through links.
        - [ ] LV2 states that hold files, in the session (ADR-0029 slice 2): the engine sends
          `scratch_dir`/`session_dir`/`save_dir` and `kGetStateNoCopy` during a take, `StateRef.files`,
-         Save As and cleanup. Needs session format +1 and protocol +1; shares `plugin_hosting.cpp`
-         with the ADR-0027 lane work, so not in parallel with it.
+         Save As and cleanup. Needs session format 17 and protocol 40 (#290 took 16, 13 and 39);
+         shares `plugin_hosting.cpp` with the ADR-0027 lane work, so not in parallel with it.
          - [ ] Engine: wait `kStateReplyTimeoutMs` (60 s) for a `State`, not `kReplyTimeoutMs`.
          - [ ] Engine: show an operator notice for a counted `Fault{Plugin}` (path refusals);
            `plugin_hosting.cpp` ignores it today.
          - [ ] `-Wmissing-field-initializers`: positional brace inits of `GetState`/`State`/`LoadInstance`
            warn (`contracts/plugin/tests/test_host_control.cpp`, `plugin_hosting.cpp:1150`).
        - [ ] plugins.host.state follow-ups from the #276 review:
-         - [ ] **Required before slice 2 sends a real `save_dir`:** N1, cap the bytes one GetState may
-           copy and hash (per file and in total, a constant in `host_control.h`), fail that instance's
-           State with a clear text past it, and check free space before copying.
-         - [ ] N2: sweep `Plugin Files/.incoming-*` left by a host killed mid-copy (session open or ADR-0029 cleanup).
-         - [ ] N3: keep saved plugin files immutable: read-only (0444) after the rename, and/or re-hash
-           a `Plugin Files/<sha>/` file whose mtime or size changed since restore before naming it by that sha.
-         - [ ] N4: refuse to save plugin files through a symlinked `Plugin Files/` or `<sha256>/` directory
-           (lstat each component, O_NOFOLLOW on the final rename target's parent).
-         - [ ] N5: amend ADR-0029 §6 for `absolute_path`'s passthrough of absolute paths from pre-wire-4
-           states, and decide whether `abstract_path` may copy a file that only the restored state named.
-         - [ ] N6: `plugins_host_state_files`: add a makePath through a symlink that leads out of the
-           scratch folder, refused and counted.
+         - [x] N1 (#283): byte caps per file and per save, free-space check before copying.
+         - [x] N2 (#289): sweep `Plugin Files/.incoming-*` left by a host killed mid-copy.
+         - [x] N3 (#289): saved plugin files read-only (0444), re-hashed before being named by their sha.
+         - [x] N4 (#289): refuse to save through a symlinked `Plugin Files/` or `<sha256>/`.
+         - [x] N5 (#289): ADR-0029 §6 amended for `absolute_path`'s passthrough.
+         - [x] N6 (#289): makePath through a symlink out of the scratch folder, refused and counted.
+         - [x] (#283 review, #289) GetState deadlines of one chain run one at a time; a copy aborts with a
+           Failed text near `kStateReplyTimeoutMs`; `plugins_host_state_copy_caps` covers `free_space`
+           false, free < size and a source that grows mid-copy.
+         - [ ] Measure copy+fdatasync throughput on a real USB 3 stick to justify `kMaxStateCopyBytes` and
+           `kStateCopyBudgetMs` (#283 review, #289).
+         - [ ] The 512 MiB free-space margin is checked per host and per file; concurrent hosts or a take
+           can consume it together; reserve or serialise across hosts in slice 2 (#283 review).
+         - [ ] Verify `Plugin Files/` against its directory hashes when a received session is opened
+           (engine, slice 2): a file the host never saw is trusted at restore (#289).
+         - [ ] "Collect plugin files": an operator action that copies files named by pre-wire-4 absolute
+           paths into the session (ADR-0029 §6 amendment, #289).
+         - [ ] Open plugin files with `O_NONBLOCK` in `copy_in`/`name_in` so a FIFO swapped in after the
+           `is_regular_file`/`lstat` check cannot block the save until the engine kills the host (#289 review N1).
+         - [ ] `copy_in` keeps an existing `Plugin Files/<sha>/<name>` that verifies instead of renaming
+           over it; the new inode makes other hosts' `seen_` entries stale ("saved after the take") (#289 review N2).
+         - [ ] Check whether 0444 plugin files on a FAT/exFAT session disk get the read-only attribute and
+           block deleting the session folder on Windows (suspected, #289 review N3).
+         - [ ] ADR-0029 §6: limit the "no absolute path from a restored state is copied" guarantee to paths
+           passed through `absolute_path`; a path kept in a plugin's opaque state is not covered (#289 re-review N1).
          - [ ] Probe: give `--probe` a scratch folder, so a plugin that requires `state:makePath` can be
            scanned as usable.
          - [ ] Copy plugin files with reflink (`FICLONE`) where the filesystem supports it.
@@ -1782,7 +1864,20 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          - [x] Slice 1 (host files, #276, above) and slice 4 (user preset store,
            `preset_store.{h,cpp}`, `sonora_preset 1`, #275).
          - [ ] Slice 2: plugin files in the session (above).
-         - [ ] Slice 3: factory preset listing and `--read-preset` in the host (in flight, #278).
+         - [x] Slice 3: factory preset listing (LV2 `pset:Preset`, VST3 programs, `.vstpreset`) in the
+           probe record and `--read-preset` in the host (#278); `FactoryPresetReader`.
+         - [ ] (#278) Wire `FactoryPresetReader` into the scan worker and `LoadPreset` (slice 5); call
+           `forget_blocked()` on `plugin.rescan`; read the `.vstpreset` `Info` chunk (category, name) for the list.
+         - [ ] (#278) A VST3 program-change parameter's value in the document is written at every Load;
+           leave `kIsProgramChange` parameters out of the initial values (`plugin_hosting`).
+         - [ ] (#278) Unverified on real plugins: Surge XT and a yabridge plugin, on hardware or in an image that has them.
+         - [ ] (#278 review N2) LV2 restore: surface the plugin's `restore()` status (call the state
+           interface directly, or wrap it) so `--read-preset` and Load refuse a state the plugin rejects
+           (`lilv_state_restore` returns void; the session-restore path has the same gap).
+         - [ ] (#278 review N3) `FactoryPresetReader`: persist Blocked presets with the catalog cache
+           (cleared on rescan or bundle change), as probes are, when slice 5 wires it.
+         - [ ] (#278 review N4) LV2 presets: stat-cap a preset's `seeAlso` files before
+           `lilv_world_load_resource`, so one oversized pset .ttl cannot time out the plugin's probe.
          - [ ] Slice 5: the `LoadInsertPreset` op through `engine_control_server.cpp`.
          - [ ] Slice 6: the preset menu in the insert panel (ui-engineer).
          - [ ] Slice 7: mix undo for a preset load (Track 2 item 6).
@@ -1905,13 +2000,28 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
 
 ### Track 5: dev environment (distro-engineer, researcher)
 
-1. [ ] Measure WSLg audio from WSL2 Debian trixie: can PipeWire bridge to
-       WSLg's PulseAudio server for playback **and** capture, what quantum
-       holds with zero xruns over 10 minutes, round-trip latency. Assumption
-       until measured. researcher.
-2. [ ] `tools/dev-wsl.sh` when engine and UI are first connected: builds
-       engine and UI, starts PipeWire on onboard audio, runs both. Not
-       before.
+1. [ ] Measure WSLg audio from WSL2 Debian trixie (`devenv.wsl_measure`). Done (#292, first real run
+       on the laptop, `brain/research/wsl-dev-environment-measurements.md`): playback bridge works,
+       quantum 48000/128 stable, engine xruns=0 over about 4 min. Still missing:
+   - [ ] the 10-minute xrun run;
+   - [ ] round-trip latency (no tool yet);
+   - [ ] the microphone (silent at RDPSource: check with a real mic);
+   - [ ] WSLg's PulseAudio server stops answering while the mic tunnel is linked (seen 3 times,
+         `rdp-source ... q overrun`; `wsl --terminate Debian` cures it): try a newer WSLg
+         (`wsl --update`) or open the mic tunnel only while recording (#292).
+2. [x] `tools/dev-wsl.sh`: builds engine and UI, starts PipeWire on onboard audio, runs both. (#284, #292:
+       first real run, systemd socket released, stalled-tunnel detection, default flow exits 0.)
+   - [ ] (#292 review) `tunnel_dead` requires the overrun line to be recent (or a count of at least 3 in
+         the last 20 lines) so one recovered overrun cannot restart PipeWire; do not restart PipeWire
+         from `selftest` while the engine runs.
+   - [ ] (#292 review) `dev-wsl.ps1`: map exit 143 to 0 only when this script ran `stop` (a marker file
+         written by `do_stop`), not for any SIGTERM of the UI; the mapping is verified by reading only.
+   - [ ] (#292 review) Mark failure 3 (143 to 0) in `wsl-dev-environment-measurements.md` as verified by reading only.
+   - [ ] (#284 review) `dev-wsl.sh user`: back up `/etc/wsl.conf` to `wsl.conf.sonora-bak` on the first change;
+         warn when uid 1000 is another user (NOPASSWD sudo is granted); `wsl_conf_set_user` must strip CR
+         and comments before matching `[user]`; remove the duplicate old `90-NAME` sudoers file.
+   - [ ] (#284 review) CI "Shell scripts" step: fold `apt-get install dbus-x11` into the Install step
+         (it relies on the earlier `apt-get update`).
 3. [ ] CI: the Thread and address sanitizers job ran out of disk (No space left
        on device) in the ASan/UBSan build on a docs-only PR (run 41246994280);
        add a free-disk-space step or prune the build tree between the TSan and
@@ -1925,10 +2035,9 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
        two parallel jobs; merge Record, BWF interop and Quantum into one job (both rename
        required checks).
 5. [x] `ci.yml` hunks of #242 and #247 (merged).
-6. [ ] #223 review: `bus_dead` in `tools/dev-wsl.sh` treats a saved `unix:abstract=` bus as
-       alive (check `DBUS_SESSION_BUS_PID` with `kill -0`); `tools/sonora-wsl.cmd` breaks
-       on `)` in an argument. Not run on the laptop yet: `dev-wsl.ps1 status`, `run`,
-       `stop`, `shortcut` are unverified.
+6. [x] #223 review: `bus_dead` checks the saved bus pid (#284); `sonora-wsl.cmd` has no paren block and
+       exits with the script's code (#284). `status`, default flow, `user`, `run`, `shortcut` ran on the
+       laptop (#292).
 7. [x] (#251) `WavWriter` counts only frames that reached the file; a failed flush never
        leaves a header claiming audio the disk refused (unbuffered stream, `close()` clamps
        to the file).
@@ -1937,10 +2046,13 @@ Against `common/model` and `FakeEngine` now; wired to M4 when it lands.
          expect `known=True`, now that #251 fixed the miscount. OS 2.
    - [ ] #251 review: build the 654-byte header in memory and write it with one `fwrite`;
          run the refused-take path on MSVC (`setvbuf` and the `SEEK_END` pad seek are untested there).
+   - [ ] Waits on the owner's authorization: delete the old git worktrees, 269 safe local branches and 53
+         safe remote branches; also the stale remote branch `plugins/state-files-safety` (#289 landed
+         the work under another name).
 8. [x] (#273) `tools/clean.sh --worktrees-only`: judges every worktree under `.claude/worktrees/` in
        parallel, then removes the merged, clean, idle ones; `--dry-run` lists the candidates.
    - [ ] `tools/clean.sh --worktrees-only` does not cover the old worktrees outside `.claude/worktrees/`
-         (`C:/source/sound-*` and `C:/source/wt-*`, about 6 GB): extend it to them with the same safety
+         (`C:/source/sound-*` and `C:/source/wt-*`, about 6 GB; 25 were removed by hand): extend it to them with the same safety
          rules (not locked, clean status, idle for `ACTIVE_MINUTES`, merged into origin/main, never
          the primary checkout, never a branch delete).
    - [ ] (#273 review) Re-check lock, status and the active-minutes mtime right before each worktree
@@ -1990,12 +2102,31 @@ not start or extend those items before the Complete DAW closes (owner,
 - [x] `live-build` config: package list, RT kernel, PipeWire from backports. (#238)
       PipeWire 1.6.9 and WirePlumber 0.5.12 pinned from a dated backports snapshot; the
       hook fails the build if the pins are not what got installed.
+  - [x] (#285) http vs https for the snapshot decided: http (ADR-0002 amendment).
   - [ ] Put trixie and trixie-security on a snapshot too (`lb config --mirror-*`), so a
-        point release cannot change the kernel between two builds of one commit; use
-        https for the snapshot; measure a cold build through snapshot.debian.org first.
-  - [ ] Build the ISO and boot it in QEMU with the pins (`tools/build-iso.sh`,
-        `tools/test-boot-qemu.sh`); confirm the "no VT login prompts" smoke check.
-  - [ ] `tools/test-image-config.sh` fails if `getty@tty2..6` is enabled.
+        point release cannot change the kernel between two builds of one commit: apply the snapshot
+        mirrors in `iso/auto/config` plus `config/apt` Check-Valid-Until, with a timed cold build
+        through snapshot.debian.org; have `test-image-config.sh` check the timestamp in auto/config
+        matches the backports list.
+  - [x] (#293) Build the ISO and boot it in QEMU with the pins (`tools/build-iso.sh`,
+        `tools/test-boot-qemu.sh`): 978 MB image, BOOT TEST PASS 31 ok, no VT login prompts; stage-only
+        engine and UI builds, BUILD_ID stamped on Windows, real linger, QEMU in a container
+        (`brain/research/iso-first-build-and-qemu-boot.md`).
+    - [ ] (#293) Boot through the bootloader (the test boots `-kernel`/`-initrd`), an unaccelerated TCG boot,
+          and CI for these changes are unverified.
+    - [ ] (#293) A smoketest check that BUILD_ID is not `unstamped` on a git build (it was only an info line).
+    - [ ] (#293 review) `tools/build-iso.sh`: build the staged engine in the trixie container even when the
+          host has cmake+JACK (the native path uses the host compiler, e.g. Ubuntu GCC with
+          `-march=x86-64-v3`: SIGILL risk on a baseline CPU); stage from the build dir `build-engine.sh`
+          just built, not the last existing of `build/` and `build-container/`; add an opt-in
+          `SONORA_ISO_TESTS=1` to run the full ctest before staging.
+  - [x] (#285) `tools/test-image-config.sh` fails if `getty@tty2..6` is enabled.
+  - [ ] (#285 review) `SuccessAction=poweroff-force` (honoured since #285) pre-empts the smoketest script's
+        orderly poweroff; use `SuccessAction=poweroff`, or drop the script's own poweroff, and confirm
+        `tools/test-write-usb.sh` boot 3 `CLEAN_SHUTDOWN` still passes (no QEMU run has confirmed it).
+  - [ ] (#285 review) `tools/test-display-fallback.sh`: `trap EXIT` to `docker rm -f` the boot container and
+        label containers `org.sonora=1`.
+  - [ ] (#285) Add `sonora-smoketest` to CI's shellcheck list (`-s sh`) after fixing its SC2016/SC2013 infos.
   - [x] (#242) `tools/test-image-config.sh` runs in the CI "Shell scripts" job.
 - [x] `sonora-session.service`: autologin on tty1 into the engine, respawn on
       exit, no display manager. (#238) Closes the VT getty gap: `NAutoVTs=0`,
@@ -2029,21 +2160,22 @@ not start or extend those items before the Complete DAW closes (owner,
       Verified against a loop device and booted in QEMU, with persistence
       surviving a reboot: `tools/test-write-usb.sh`. Not yet run on a
       physical stick.
-- [ ] Write a physical USB stick with `tools/write-usb.sh`, boot it on a
+- [ ] (owner step) Write the physical stick with `tools/write-usb.ps1` (#294, open at this chore) using the
+      exact command lines in `iso/README.md`. Original item: write a physical USB stick with `tools/write-usb.sh`, boot it on a
       physical machine, BIOS and UEFI, and confirm a session survives a
       reboot. The first time the script's USB/removable check meets real
       hardware.
 - [ ] Run `tools/test-write-usb.sh` in CI. The container half
       (`WRITE_USB_BOOT=0`) needs only Docker and the ISO; the boots need QEMU
       with KVM.
-- [ ] A verified way to write the stick from Windows, where the owner works.
+- [ ] (#294 in review, open at this chore; N7: the privileged container exposes host disks) A verified way to write the stick from Windows, where the owner works.
       The first attempt (`write-usb-windows.ps1`, removed 2026-10-12) opened
       `\.\PhysicalDrive` with one leading backslash, which .NET resolves to
       `C:\PhysicalDrive`; it erased the stick and then wrote nothing. Check any
       Windows device path byte for byte: a doubled backslash sent through the
       agent's shell tool can arrive as a single one.
 - [ ] Boot test on real hardware; record the xrun count in
-      `brain/research/`.
+      `brain/research/` (the first QEMU boot is recorded: `iso-first-build-and-qemu-boot.md`).
 - [x] QEMU boot smoke test. 20 checks, including the live PipeWire quantum
       and rate: a running engine that holds its PID,
       `-rt-` in `uname -r`, no failed units, no serial login prompt, and one
@@ -2212,11 +2344,10 @@ not deferred.
 - [x] `sonora-display-fallback` ran `chvt 2`, which reaches no terminal UI until stage 2
       adds `sonora-tui.service` on tty2. (#241) The fallback now starts
       `sonora-session.service` on tty1 (flag file `/run/sonora-display-failed`).
-  - [ ] #241 review: prefix the `systemctl stop` in `sonora-display-fallback` with `-` so
-        a stop failure does not skip the hand-back; ADR-0010 lines ~124 and ~296 and
-        `iso/README.md` line ~55 still describe `chvt 2`.
-  - [ ] A smoketest/QEMU check that boots with `sonora.gui` and a broken `sonora-ui`,
-        then asserts `sonora-session.service` is active on tty1. distro-engineer.
+  - [x] (#285) #241 review: `-` on the fallback's `systemctl stop`; ADR-0010 and `iso/README.md` describe the hand-back.
+  - [ ] A QEMU boot with `sonora.gui sonora.expect_fallback` and a `sonora-ui` that exits 3
+        (`tools/test-boot-qemu.sh`), then asserts `sonora-session.service` is active on tty1. The systemd
+        half is in CI (#285) and the smoketest branch is ready, but nothing has run it. distro-engineer.
 - [x] (#217) `sonora-smoketest` checks `BUILD_ID` and the `sonora.gui` path.
 - [x] (#217) `tools/build-iso.sh` stages `sonora-ui` when `SONORA_WITH_UI=1`.
 - [x] Qt runtime packages are not in the image package list yet (stage 2). (#241) The
@@ -2508,6 +2639,10 @@ Order and owners are in ADR-0008 §5.
 
 ## Known gaps, not yet scheduled
 
+- [ ] Four screenshots went stale in earlier PRs and need their own refresh PR (ui-engineer; open each
+  and list them): `docs/images/sonora-ui-edit-clipboard.png`, `sonora-ui-edit-fill.png`,
+  `sonora-ui-edit-multitrack.png` and `sonora-ui-transport.png`. Also the old
+  `sonora-ui-refusal.png` / `sonora-ui-refusal-reconnect.png` pair still shows protocol 32/31.
 - RT-path data race, documented in `engine/core/src/session.cpp` above the
   ring reset in `start_recording()`: an audio callback that loaded Recording
   for the previous take and was descheduled across `stop()` and the next
@@ -2669,8 +2804,14 @@ ADR-0011 "For the owner".
       rerun and record. dsp-engineer.
       Update (#258): (b), (c), (d) done and the stage runs once per step at the base rate; class B with the stage on is still
       NOT met (1.81 kernels hot against 1.76). The gate stays.
-  - [ ] Transformer stage-on eco CPU gate (#258 review): keep the stage state in registers across a block, then a quiet
-        reference-machine run, then lift the gate in `cpu_qualities`. dsp-engineer.
+  - [ ] Transformer stage-on eco CPU gate (#258 review): #288 shortened the core step's dependency chain
+        (0.57-0.69 of the time per block) but kept the gate. Record the stage-on worst case from a nightly
+        on the EPYC runner, then hold eco stage-on to the class bar plus that figure and lift the gate in
+        `cpu_qualities`; if the EPYC figure is over 1.76 the next cut is algebraic (Estrin form of the
+        Hermite polynomial and the psi update; changes bits at ~1e-16, needs a deliberate golden note). dsp-engineer.
+  - [ ] (#288 review N1) tube: add a golden at transformer 100 %, sag 100 % (eco and standard) so the
+        output stage's own output, including #288's one-step rail lag, is pinned; today every golden runs
+        with the stage bypassed. dsp-engineer.
   - [x] (#260) `test_dsp_transformer_generic` and the shared `f64x2.h`.
 - [ ] N2 tube follow-ups (slice 2): (a) CPU: eco (2x) meets class B at
       44-48 us p99.9 per q128 stereo block on programme and full-drive
@@ -2707,8 +2848,13 @@ ADR-0011 "For the owner".
   - [ ] Tape aliasing above 8 kHz is a real defect (19 kHz tone, drive 12 dB: eco -4 to
         -11 dBc, standard -23 to -37, high -52 to -62 at 44.1/48 kHz): reduce it and
         extend the aliasing bar to 19 kHz.
-  - [ ] `thd.nominal_pct` 5.0 for tape looks far too loose: re-measure, tighten, add a
-        drive-12 dB bar.
+  - [x] (#286) `thd.nominal_pct` for tape re-measured: a measured band at drive 0 and 12 dB, held in every quality.
+    - [ ] (#286 review) Write the regeneration command for the THD bands (`sonora-dsp-measure --processor tape`
+          with `SONORA_DSP_QUICK=1` and the JSON rows) into `brain/research/native-tape-n2.md` "THD bars".
+    - [ ] (#286) `thd.h2_below_h3_db` stays at -20 dB against a measured -102.7 dB (H2 is at the numerical
+          floor, -146 dBc); tighten to about -90 dB or drop it.
+    - [ ] (#286 review) Add the 44.1 and 96 kHz points to the THD band check, or say in the quality.json
+          note that the bands are 48 kHz only.
   - [ ] Tape goldens under Clang and MSVC (the substep count is discontinuous);
         rt-safety-auditor run; RTSan.
   - [ ] The quick `native_tape` run took about 103 s on a loaded host (target 60 s):
@@ -2820,6 +2966,9 @@ ADR-0011 "For the owner".
       consecutive inconclusive nights (the count kept as a workflow
       artifact or cache entry), N set from the inconclusive rate the
       nightly has seen. dsp-engineer.
+- [x] (#281) Timing-ratio bars are reported, not held, under a sanitizer (the `native_fet` flake).
+  - [ ] (#281 review) Re-align the continuation lines of the converted `check_time_le` calls in the fet and opto
+        `suite.cpp` and `measure/checks.cpp`.
 - [x] Wall-clock bars under the sanitizers (found on the opto PR, not
       caused by it; done in #73: Suite::check_time_le, SONORA_SANITIZED): the tube suite's `hot_input` holds every quality's
       worst block to the 2.67 ms period (`check_le`, 2667 us) in every

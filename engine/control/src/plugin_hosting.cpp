@@ -1171,8 +1171,15 @@ uint64_t PluginHosting::request_states(model::Id only, const model::Snapshot& do
                 continue;
             }
             // A save that may copy plugin files waits for them (host_control.h).
+            // The host serves its GetStates one after the other, so a deadline
+            // started now for each would give the second instance only what the
+            // first left of it (#283 review): two 3 GiB samplers on one track
+            // would kill the host mid-copy. One behind another on this host
+            // starts its deadline when that one is answered (arm_state_request).
             const int timeout_ms = pc::state_reply_timeout_ms(ask);
-            const uint64_t deadline = steady_ms() + uint64_t(timeout_ms);
+            bool behind = false;
+            for (const auto& [other, r] : state_requests_) behind = behind || r.track == c.track;
+            const uint64_t deadline = behind ? 0 : steady_ms() + uint64_t(timeout_ms);
             state_requests_[request] = StateRequest{id, insert, c.track, c.running->host(), deadline, timeout_ms, who};
         }
     }
@@ -1190,6 +1197,7 @@ void PluginHosting::take_state_reply(model::Id track, const std::string& bytes) 
     if (it == state_requests_.end() || it->second.track != track) return;
     const StateRequest r = it->second;
     state_requests_.erase(it);
+    arm_state_request(track, steady_ms());
     Flush& f = flushes_[r.flush];
     switch (m.status) {
         case pc::StateStatus::Ok: {
@@ -1220,10 +1228,24 @@ void PluginHosting::fail_state_requests(model::Id track, const std::string& why)
     for (const uint64_t f : touched) finish_flush_if_done(f);
 }
 
+void PluginHosting::arm_state_request(model::Id track, uint64_t now_ms) {
+    StateRequest* first = nullptr;
+    for (auto& [request, r] : state_requests_) {
+        if (r.track != track) continue;
+        if (r.deadline_ms != 0) return;  // one is already being served
+        // Ids grow in the order sent, so the lowest is the one the host takes
+        // next; after the wrap of 2^32 requests at worst one waits its turn
+        // with another's deadline.
+        if (!first) first = &r;
+    }
+    if (first) first->deadline_ms = now_ms + uint64_t(first->timeout_ms);
+}
+
 void PluginHosting::follow_state_requests(uint64_t now_ms) {
     std::set<model::Id> late;
+    // Deadline 0: behind another on its host, not started yet.
     for (const auto& [request, r] : state_requests_)
-        if (now_ms >= r.deadline_ms) late.insert(r.track);
+        if (r.deadline_ms != 0 && now_ms >= r.deadline_ms) late.insert(r.track);
     for (const model::Id track : late) {
         int timeout_ms = pc::kReplyTimeoutMs;
         // host_control.h: a GetState unanswered past state_reply_timeout_ms is
@@ -1231,7 +1253,7 @@ void PluginHosting::follow_state_requests(uint64_t now_ms) {
         // last saved state. `host` is still the bound one: anything that
         // unbinds it fails its requests first.
         for (const auto& [request, r] : state_requests_) {
-            if (r.track != track || now_ms < r.deadline_ms) continue;
+            if (r.track != track || r.deadline_ms == 0 || now_ms < r.deadline_ms) continue;
             timeout_ms = r.timeout_ms;
             r.host->signal_kill();
             break;

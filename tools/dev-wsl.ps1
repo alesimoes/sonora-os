@@ -157,6 +157,9 @@ if ($uid1000) {
 # --- run --------------------------------------------------------------------
 
 [string[]]$stepArgs = @($Step)
+# No step is the default flow (deps, build, run): it ends the way `run` does.
+$first = 'all'
+if ($stepArgs.Count -gt 0) { $first = $stepArgs[0] }
 $isSelftest = $stepArgs.Count -gt 0 -and $stepArgs[0] -eq 'selftest'
 
 # The checkout is reached through /mnt/c; dev-wsl.sh builds into the
@@ -184,13 +187,15 @@ if ($isSelftest) {
 }
 [Console]::OutputEncoding = $prevEnc
 $ErrorActionPreference = $old
-if ($rc -ne 0 -and $stepArgs.Count -gt 0 -and $stepArgs[0] -notin @('status', 'stop') -and -not ($rc -eq 143 -and $stepArgs[0] -eq 'run')) {
-    $hint = switch -Regex ($stepArgs[0]) {
-        '^run$' { 'if the message above says the engine exited before listening, its log is printed there; if it says "no build", run this script without arguments first.' }
+# 143 is the UI ended by SIGTERM (`stop`, or the window closed by WSLg).
+$stopped = $rc -eq 143 -and $first -in @('run', 'all')
+if ($rc -ne 0 -and $first -notin @('status', 'stop') -and -not $stopped) {
+    $hint = switch -Regex ($first) {
+        '^(run|all)$' { 'if the message above says the engine exited before listening, its log is printed there; if it says "no build", run this script without arguments first.' }
         '^selftest$' { 'no microphone? try: selftest --tone' }
         default { 'see the messages above.' }
     }
-    Write-Host "dev-wsl: step '$($stepArgs[0])' failed (exit $rc). $hint" -ForegroundColor Red
+    Write-Host "dev-wsl: step '$first' failed (exit $rc). $hint" -ForegroundColor Red
 }
-if ($rc -eq 143 -and $stepArgs.Count -gt 0 -and $stepArgs[0] -eq "run") { $rc = 0 }
+if ($stopped) { $rc = 0 }
 exit $rc

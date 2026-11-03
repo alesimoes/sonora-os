@@ -123,9 +123,36 @@ int test_a_reversed_bracket_is_refused() {
     return 0;
 }
 
+// The offset is re-measured every 100 ms and can step down by tens of us (a
+// bracket's half width) while the server's cycle time advances by one period,
+// which can be shorter: callback_ns then went backwards (CI, RTSan job, "1
+// decreases of callback_ns").
+int test_a_downward_offset_step_never_lowers_the_stamp() {
+    sonora::drivers::MonotonicStamp s;
+    const int64_t cycle_ns = 5'000'000'000;
+    const int64_t offset = 800'000'000;
+    const uint64_t first = s.stamp(cycle_ns, offset);
+    CHECK(first == static_cast<uint64_t>(cycle_ns + offset));
+    // 1 us later on the server, 50 us lower offset: the raw sum is 49 us back.
+    const uint64_t next = s.stamp(cycle_ns + 1'000, offset - 50'000);
+    CHECK(next >= first);
+    CHECK(s.stamp(cycle_ns + 2'000, offset - 50'000) >= next);
+    // Once the server is past it, the stamp follows the clock again.
+    CHECK(s.stamp(cycle_ns + 10'000'000, offset - 50'000) ==
+          static_cast<uint64_t>(cycle_ns + 10'000'000 + offset - 50'000));
+    // A cycle time that could not be read stays 0 and does not poison the clamp.
+    CHECK(s.stamp(0, 0) == 0);
+    CHECK(s.stamp(cycle_ns + 11'000'000, offset - 50'000) >
+          static_cast<uint64_t>(cycle_ns + 10'000'000));
+    s.reset();
+    CHECK(s.stamp(1'000, 0) == 1'000);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
+    if (test_a_downward_offset_step_never_lowers_the_stamp()) return 1;
     if (test_a_narrow_first_bracket_is_trusted()) return 1;
     if (test_the_first_value_is_retried_until_narrow()) return 1;
     if (test_the_retry_is_bounded()) return 1;

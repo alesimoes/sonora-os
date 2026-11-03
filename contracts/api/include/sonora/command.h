@@ -37,7 +37,8 @@ enum class CommandTarget {
 enum class CommandDomain {
     Engine,     // transport.*, track.*, edit operations, nudge.*, app.save
     Interface,  // tool.*, zoom.*, edit.mode.*, focus.*, window.transport,
-                // window.undo_history, window.memory_locations, app.quit
+                // window.undo_history, window.memory_locations, app.quit,
+                // app.save_as_template, app.new_from_template
 };
 
 struct CommandSpec {
@@ -317,6 +318,15 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // the interface asks for the name, so the argument is the window's.
         {"app.save_as", CommandTarget::None, "Save the session under a new name and go on in it"},
         {"app.save_copy_in", CommandTarget::None, "Save a copy of the session; stay in this one"},
+        // Pro Tools' File > Save As Template and New Session's "Create From
+        // Template" (ADR-0030 §3). The interface's: it asks for the name or
+        // shows the templates, then writes through ModelAction::SaveAs and
+        // Load, which the engine already runs.
+        {"app.save_as_template", CommandTarget::None,
+         "Save the session's setup, without its audio, as a template", false,
+         CommandDomain::Interface},
+        {"app.new_from_template", CommandTarget::None,
+         "Show the templates to start a new session from one", false, CommandDomain::Interface},
         {"app.quit", CommandTarget::None, "Leave the engine",
          false, CommandDomain::Interface},
     };

@@ -155,6 +155,9 @@ check "pipewire quantum pinned at 128" test "$PW_QUANTUM" = "128/128/128"
 check "pipewire rate pinned at 48000" test "$PW_RATE" = "48000|[ 48000 ]"
 check "wireplumber pro-audio rule" sh -c 'grep -q "pro-audio" /etc/wireplumber/wireplumber.conf.d/99-sonora.conf'
 check "pipewire running" pgrep -x pipewire
+# PipeWire was running above only because the session's PAM login started the
+# user manager; without lingering it goes down with every engine restart.
+check "operator lingers" sh -c 'loginctl show-user sonora -p Linger | grep -qx Linger=yes'
 check "no serial login prompt" sh -c '! systemctl is-active --quiet "serial-getty@ttyS0.service"'
 # Asked of logind, not grepped from the drop-in: a stock file that outranks it
 # would leave Ctrl+Alt+F2 opening a passwordless login.
@@ -221,11 +224,13 @@ else
   check "sonora-ui.service skipped without sonora.gui" sh -c '! systemctl is-active --quiet sonora-ui.service'
 fi
 # Both units claim tty1, so they must never be startable together: their
-# kernel-command-line conditions have to be opposites.
+# kernel-command-line conditions have to be opposites. Read from the unit text:
+# systemd exposes conditions only as the Conditions= array, so
+# `systemctl show -p ConditionKernelCommandLine` printed nothing and this
+# check failed the first boot of a built image (2026-11-03).
 check "session and compositor have opposite sonora.gui conditions" sh -c \
-  'systemctl show -p ConditionKernelCommandLine sonora-session.service | grep -q "!sonora.gui" &&
-   systemctl show -p ConditionKernelCommandLine sonora-compositor.service | grep -q "sonora.gui" &&
-   ! systemctl show -p ConditionKernelCommandLine sonora-compositor.service | grep -q "!sonora.gui"'
+  'systemctl cat sonora-session.service | grep -Eq "^ConditionKernelCommandLine=\|?!sonora\.gui$" &&
+   systemctl cat sonora-compositor.service | grep -Eq "^ConditionKernelCommandLine=sonora\.gui$"'
 
 if [ "$FAILED" = "0" ]; then
   echo "SMOKETEST RESULT pass"

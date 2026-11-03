@@ -56,7 +56,19 @@ for candidate in \
   if command -v "$candidate" >/dev/null 2>&1; then QEMU="$candidate"; break; fi
   if [[ -x "$candidate" ]]; then QEMU="$candidate"; break; fi
 done
-[[ -n "$QEMU" ]] || { echo "error: qemu-system-x86_64 not found." >&2; exit 1; }
+# No QEMU on the host: run it in a container. On Windows the Docker Desktop VM
+# usually has /dev/kvm even when the host has no QEMU at all, so this is the
+# faster path there, not a degraded one.
+IN_CONTAINER=0
+QEMU_IMAGE=sonora-qemu:trixie
+if [[ -z "$QEMU" ]]; then
+  command -v docker >/dev/null || {
+    echo "error: qemu-system-x86_64 not found, and no docker to run it in." >&2
+    exit 1
+  }
+  IN_CONTAINER=1
+  QEMU="docker:$QEMU_IMAGE"
+fi
 echo "qemu: $QEMU"
 
 mkdir -p "$WORK"
@@ -68,6 +80,10 @@ rm -f "$LOG"
 # live-boot still finds its squashfs on the attached CD.
 if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
   export MSYS2_ARG_CONV_EXCL='*'
+fi
+if [[ "$IN_CONTAINER" == 1 ]]; then
+  docker build -q -t "$QEMU_IMAGE" --label org.sonora=1 \
+    -f "$(host_path "$ROOT/tools")/Dockerfile.qemu" "$(host_path "$ROOT/tools")" >/dev/null
 fi
 # --- what the bootloaders would actually load ---
 # isolinux loads /live/vmlinuz; grub loads the versioned name. Both must be
@@ -125,7 +141,10 @@ docker run --rm \
 
 # --- acceleration, if the host offers any ---
 ACCEL=()
-if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+if [[ "$IN_CONTAINER" == 1 ]]; then
+  # Decided inside the container, where /dev/kvm is the VM's, not the host's.
+  ACCEL=(-accel kvm -accel tcg)
+elif [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
   # Windows Hypervisor Platform. Falls back silently to TCG if unavailable,
   # which is slow but still correct.
   ACCEL=(-accel whpx -accel tcg)
@@ -155,21 +174,46 @@ echo "booting (timeout ${TIMEOUT}s)..."
 # serial line and the QEMU monitor onto stdio, and with stdin on the
 # invoking terminal QEMU puts it into raw mode. Ctrl-C stops working and a
 # kill -9 on timeout leaves the shell with no echo.
-"$QEMU" \
+#
+# In the container the same files are reached through /work and /iso, and the
+# container is named so a timeout can remove it: killing the docker client
+# alone would leave QEMU running in the VM.
+CONTAINER=""
+if [[ "$IN_CONTAINER" == 1 ]]; then
+  CONTAINER="sonora-qemu-boot-$$"
+  W=/work
+  I=/iso
+  KVM_DEV=()
+  if docker run --rm --privileged "$QEMU_IMAGE" test -c /dev/kvm; then
+    KVM_DEV=(--device /dev/kvm)
+    echo "accel: kvm (in the Docker VM)"
+  else
+    echo "accel: tcg (no /dev/kvm in the Docker VM; expect a slow boot)"
+  fi
+  RUNNER=(docker run --rm --name "$CONTAINER" --label org.sonora=1 "${KVM_DEV[@]}"
+          -v "$(host_path "$WORK"):/work" -v "$(host_path "$ROOT/iso"):/iso:ro"
+          "$QEMU_IMAGE" qemu-system-x86_64)
+else
+  W="$(host_path "$WORK")"
+  I="$(host_path "$ROOT/iso")"
+  RUNNER=("$QEMU")
+fi
+"${RUNNER[@]}" \
   -m "$MEMORY" \
   -smp 2 \
   "${ACCEL[@]}" \
-  -kernel "$(host_path "$WORK")/vmlinuz" \
-  -initrd "$(host_path "$WORK")/initrd.img" \
+  -kernel "$W/vmlinuz" \
+  -initrd "$W/initrd.img" \
   -append "boot=live components quiet splash persistence username=sonora hostname=sonora threadirqs console=ttyS0,115200 sonora.smoketest" \
-  -cdrom "$(host_path "$ROOT/iso")/sonora.iso" \
+  -cdrom "$I/sonora.iso" \
   -device intel-hda -device hda-duplex \
-  -serial "file:$(host_path "$WORK")/serial.log" \
+  -serial "file:$W/serial.log" \
   -display none \
   -monitor none \
   -no-reboot \
   < /dev/null > "$WORK/qemu.log" 2>&1 &
 QEMU_PID=$!
+started=$SECONDS
 
 # --- wait for a verdict, or for the clock to run out ---
 waited=0
@@ -186,6 +230,8 @@ if kill -0 "$QEMU_PID" 2>/dev/null; then
   sleep 1
   kill -9 "$QEMU_PID" 2>/dev/null || true
 fi
+[[ -z "$CONTAINER" ]] || docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+echo "boot took $((SECONDS - started))s"
 
 echo
 echo "=== smoke test output ==="

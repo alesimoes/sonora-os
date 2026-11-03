@@ -30,9 +30,20 @@ forget_pre_m1_tree() {
   fi
 }
 
+# SONORA_STAGE_ONLY=1 builds the two binaries tools/build-iso.sh stages and
+# runs no tests. The image build used to run the whole suite here, and a
+# wall-clock CPU bar in a plugin's DSP suite, missed under load from other
+# containers on the host, stopped the ISO after 33 minutes. The suite is CI's
+# job and a plain tools/build-engine.sh run's; the image needs the binaries.
+STAGE_ONLY="${SONORA_STAGE_ONLY:-0}"
+
 native_build() {
   forget_pre_m1_tree "$ROOT/build"
   cmake -S "$ROOT" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release
+  if [[ "$STAGE_ONLY" == 1 ]]; then
+    cmake --build "$ROOT/build" -j"$(nproc)" --target sonora-engine sonora-tui
+    return
+  fi
   cmake --build "$ROOT/build" -j"$(nproc)"
   ctest --test-dir "$ROOT/build" --output-on-failure
 }
@@ -61,13 +72,17 @@ fi
 # The build directory is container-specific; keep it out of the host tree.
 # Unlimited memlock, as the appliance grants it, so test_memory_lock can
 # check that locking works and not only that a finite limit is refused.
-docker run --rm --ulimit memlock=-1:-1 -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -lc '
+docker run --rm --ulimit memlock=-1:-1 -e SONORA_STAGE_ONLY="$STAGE_ONLY" -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -lc '
   set -euo pipefail
   # forget_pre_m1_tree, inside the container where the tree was configured.
   if grep -qs "^CMAKE_HOME_DIRECTORY:INTERNAL=.*/engine\$" build-container/CMakeCache.txt; then
     rm -rf build-container
   fi
   cmake -S . -B build-container -DCMAKE_BUILD_TYPE=Release
+  if [[ "$SONORA_STAGE_ONLY" == 1 ]]; then
+    cmake --build build-container -j"$(nproc)" --target sonora-engine sonora-tui
+    exit 0
+  fi
   cmake --build build-container -j"$(nproc)"
   ctest --test-dir build-container --output-on-failure
 '

@@ -30,6 +30,7 @@ compile_commands.json
 # build artefact, not source.
 iso/config/includes.chroot/usr/local/bin/sonora-engine
 iso/config/includes.chroot/usr/local/bin/sonora-tui
+iso/config/includes.chroot/usr/local/bin/sonora-ui
 # Stamped per build by tools/build-iso.sh; becomes BUILD_ID in /etc/os-release.
 iso/config/includes.chroot/usr/share/sonora/build-id
 
