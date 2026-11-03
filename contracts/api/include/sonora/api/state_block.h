@@ -36,7 +36,9 @@ namespace sonora::api {
 // 5 (ADR-0009 update of 2026-11-01): kTransportLocating, the header's
 //   playback_misses and the monitor bus's peak rings.
 // 6 (ADR-0009 update of 2026-11-01, record-ready): kTransportRecordReady.
-constexpr uint32_t kStateLayoutVersion = 6;
+// 7 (ADR-0013 amendment of 2026-11-03): TrackState::post_peaks, each
+//   track's peak after its fader, from the engine's track meter.
+constexpr uint32_t kStateLayoutVersion = 7;
 constexpr uint32_t kStateMagic = 0x534F4E53;   // "SONS"
 
 // Publish ticks a peak survives in the ring. At the fastest pace measured
@@ -88,6 +90,8 @@ enum TransportFlag : uint32_t {
 
 // The monitor bus's sides in StateHeader::bus_peaks: left, then right.
 constexpr uint32_t kBusPeakSides = 2;
+// A track's sides in TrackState::post_peaks: left, then right, after the pan.
+constexpr uint32_t kPostPeakSides = 2;
 
 // Pro Tools' A to J: insert slots per track (ADR-0012 §2). common/model's
 // kInsertSlots is the same number; engine/control asserts that it is.
@@ -142,6 +146,10 @@ struct alignas(64) TrackState {
     // Slot A first; flags and latency under the seqlock, the counters not.
     // Layout 2.
     InsertState inserts[kInsertSlots];
+    // Layout 7. What the track sends the monitor bus, after its fader, pan,
+    // mute and solo and before the bus gain; `peaks` is still the input.
+    // Not under the seqlock.
+    PeakRing post_peaks[kPostPeakSides];
 };
 
 struct alignas(64) StateHeader {
@@ -292,11 +300,13 @@ public:
     // One publish: the seqlock section, then the insert counters and the
     // peaks, then the heartbeat.
     // `tracks` and `peaks` have track_count entries, `bus_peaks`
-    // kBusPeakSides; a null `bus_peaks` publishes silence, still tagged with
-    // the tick. Short and bounded: it never loops and never waits for a
-    // reader.
+    // kBusPeakSides, `post_peaks` kPostPeakSides per track, track by track;
+    // a null `bus_peaks` or `post_peaks` publishes silence, still tagged
+    // with the tick. Short and bounded: it never loops and never waits for
+    // a reader.
     void publish(const TransportFields& transport, const TrackFields* tracks,
-                 const float* peaks, const float* bus_peaks = nullptr);
+                 const float* peaks, const float* bus_peaks = nullptr,
+                 const float* post_peaks = nullptr);
 
     // A publish that stops after opening the seqlock, for the test that a
     // reader gives up and says "stale" instead of spinning. finish_write()

@@ -311,6 +311,18 @@ Session::Session(SessionConfig cfg)
     order_lanes_.reset(new uint32_t[max_order_ + 1]());
     scratch_.reset(new float[static_cast<std::size_t>(scratch_buffers_) * 2 * max_block_]());
     track_buf_.reset(new float[2 * static_cast<std::size_t>(max_block_)]());
+    // Here, before any backend can call process(): prepare() allocates, and
+    // a meter the audio thread can reach is never prepared again (RT audit
+    // of #315, condition 1). A track meter is peak only; loudness per track
+    // comes with the staggered reset (ADR-0013 amendment of 2026-11-03).
+    dsp::TrackMeter::Options track_meter;
+    track_meter.loudness = false;
+    track_meter.true_peak = false;
+    track_meters_.reset(new dsp::TrackMeter[tracks]);
+    for (uint32_t t = 0; t < tracks; ++t) {
+        track_meters_[t].prepare(cfg_.sample_rate, max_block_, 2, track_meter);
+    }
+    master_meter_.prepare(cfg_.sample_rate, max_block_, 2);
     delay_len_ = pb.max_delay_frames ? pb.max_delay_frames + 1 : 0;
     // One edge per track into the bus, and with buses one per return and
     // per send.
@@ -1729,7 +1741,9 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 const bool stereo =
                     render_source(plan, node, block, offset, n, rolling, recording, from, tb);
                 const float* const in[2] = {tb[0], tb[1]};
-                apply_track_fader(plan, plan.tracks[node.track], stereo, in, out, n, from, 0);
+                const PlanTrack& pt = plan.tracks[node.track];
+                apply_track_fader(plan, pt, stereo, in, out, n, from, 0);
+                track_meters_[pt.engine_track].process(out, n);
                 continue;
             }
             case NodeKind::TrackSource: {
@@ -1786,6 +1800,7 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 // the audio they scale (ADR-0027 §2).
                 apply_track_fader(plan, pt, pt.channels >= 2, in, out, n, from,
                                   chain.latency_frames);
+                track_meters_[pt.engine_track].process(out, n);
                 continue;
             }
             case NodeKind::AuxSum: {
@@ -1847,29 +1862,17 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
 
         const float b0 = bus_applied_;
         const float db = bus_target_ - b0;
-        float peak_l = 0.0f;
-        float peak_r = 0.0f;
         for (uint32_t i = 0; i < n; ++i) {
             const float g = b0 + db * static_cast<float>(block_done_ + i + 1) * inv_block;
             L[i] *= g;
             R[i] *= g;
-            const float al = L[i] < 0.0f ? -L[i] : L[i];
-            const float ar = R[i] < 0.0f ? -R[i] : R[i];
-            if (al > peak_l) peak_l = al;
-            if (ar > peak_r) peak_r = ar;
         }
+        master_meter_.process(out, n);
         if (plan.monitor_out[0] < block.output_count) {
             std::memcpy(block.outputs[plan.monitor_out[0]] + offset, L, n * sizeof(float));
         }
         if (plan.monitor_out[1] < block.output_count) {
             std::memcpy(block.outputs[plan.monitor_out[1]] + offset, R, n * sizeof(float));
-        }
-        for (int side = 0; side < 2; ++side) {
-            const float p = side ? peak_r : peak_l;
-            float prev = bus_peak_[side].load(std::memory_order_relaxed);
-            while (p > prev &&
-                   !bus_peak_[side].compare_exchange_weak(prev, p, std::memory_order_relaxed)) {
-            }
         }
     }
 }

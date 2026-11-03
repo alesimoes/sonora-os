@@ -26,6 +26,16 @@
 // LUFS, holding a count and the exact energy sum per bin, so the integrated
 // value averages exact energies and only the gate decision is quantised.
 // That keeps process() allocation-free for any programme length.
+//
+// The histograms are Fenwick trees (binary indexed trees; P. M. Fenwick,
+// "A new data structure for cumulative frequency tables", Software:
+// Practice and Experience 24(3), 1994), so a sum over the bins above a gate
+// and the bin holding a given rank cost O(log bins), 14 steps, instead of a
+// 10 000-bin scan. That is what lets a track meter (meter.h) publish the
+// integrated loudness and the LRA from the audio thread every 100 ms. Counts
+// live in a forward tree, so a sum above the gate is an exact integer
+// difference; energies live in a tree over the reversed bins, so the sum
+// above the gate is a prefix sum and never a difference of large numbers.
 #pragma once
 
 #include <cstdint>
@@ -45,18 +55,22 @@ class LoudnessMeter {
 public:
     static constexpr double kFloorLufs = -200.0;
 
-    // weights: one per channel, or null for 1.0 each. Allocates.
-    bool prepare(double sample_rate, std::uint32_t channels, const double* weights = nullptr);
-    void reset() noexcept;
+    // weights: one per channel, or null for 1.0 each. true_peak: false when
+    // the caller measures it itself (meter.h does, per read), which saves
+    // the interpolator, most of the per-sample cost. Allocates.
+    bool prepare(double sample_rate, std::uint32_t channels, const double* weights = nullptr,
+                 bool true_peak = true);
+    void reset() noexcept SONORA_RT;
     void process(const float* const* in, std::uint32_t frames) noexcept SONORA_RT;
 
     double momentary_lufs() const noexcept { return momentary_; }
     double short_term_lufs() const noexcept { return short_term_; }
     double max_momentary_lufs() const noexcept { return max_momentary_; }
     double max_short_term_lufs() const noexcept { return max_short_term_; }
-    // O(bins); bounded, but a reader, not something to call per block.
-    double integrated_lufs() const noexcept;
-    double loudness_range_lu() const noexcept;
+    // O(log bins): cheap enough for the audio thread every 100 ms. Not
+    // safe to call from another thread while process() runs.
+    double integrated_lufs() const noexcept SONORA_RT;
+    double loudness_range_lu() const noexcept SONORA_RT;
     double true_peak_dbtp() const noexcept;
     // Number of 10 ms steps completed since reset; readers use it to see a
     // new momentary/short-term value.
@@ -70,15 +84,28 @@ private:
     static constexpr std::uint32_t kSubsPerShortTerm = 300;  // 3 s / 10 ms
     static constexpr std::uint32_t kSubsPerGateStep = 10;    // 100 ms
 
+    // Block counts and energies per 0.01 LU bin, as Fenwick trees.
     struct Hist {
-        std::vector<std::uint64_t> count;
-        std::vector<double> energy;
-        void clear() noexcept;
-        void add(double lufs, double energy) noexcept;
-        std::uint32_t bins() const noexcept { return static_cast<std::uint32_t>(count.size()); }
+        std::vector<std::uint64_t> count;  // 1-based tree over bins 0..n-1
+        std::vector<double> energy;        // 1-based tree over bins n-1..0
+        std::uint32_t n = 0;
+        std::uint32_t top = 0;  // the largest power of two <= n
+        void resize(std::uint32_t bins);
+        void clear() noexcept SONORA_RT;
+        void add(double lufs, double energy) noexcept SONORA_RT;
+        std::uint32_t bins() const noexcept { return n; }
+        // Blocks in bins [0, i).
+        std::uint64_t count_below(std::uint32_t i) const noexcept SONORA_RT;
+        // Energy summed over bins [i, n).
+        double energy_from(std::uint32_t i) const noexcept SONORA_RT;
+        // The bin holding the rank-th block counted from the bottom, rank >= 1.
+        std::uint32_t bin_of_rank(std::uint64_t rank) const noexcept SONORA_RT;
+        // The first bin whose lower edge is at or above `lufs`, or n.
+        std::uint32_t first_bin_at_or_above(double lufs) const noexcept SONORA_RT;
     };
-    void finish_sub_block() noexcept;
-    static double to_lufs(double mean_square) noexcept;
+    void finish_sub_block() noexcept SONORA_RT;
+    static double to_lufs(double mean_square) noexcept SONORA_RT;
+    bool measure_tp_ = true;
 
     double rate_ = 48000.0;
     std::uint32_t channels_ = 0;
