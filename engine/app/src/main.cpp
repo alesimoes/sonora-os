@@ -467,6 +467,7 @@ int run_headless(sonora::Session& session, AudioBackend& audio, sonora::InProces
 
 int main(int argc, char** argv) {
     sonora::SessionConfig cfg;
+    cfg.track_loudness = true;   // the strips' loudness readouts (N1 meters)
     // ADR-0018 §3: without --dir the engine starts a new session, in a
     // fresh Untitled folder under the sessions root (~/Sessions, on the
     // machine's own disk on an installed system), and makes another for

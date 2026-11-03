@@ -49,10 +49,12 @@ struct Rig {
     std::vector<float> out[4];
     float* out_ptrs[4];
 
-    Rig(int tracks, uint32_t max_delay = 0, uint32_t max_block = 256) {
+    Rig(int tracks, uint32_t max_delay = 0, uint32_t max_block = 256,
+        bool track_loudness = false) {
         sonora::SessionConfig cfg;
         cfg.dir = "test_playback_mix_unused";
         cfg.track_count = tracks;
+        cfg.track_loudness = track_loudness;
         cfg.ring_seconds = 0.1;
         cfg.playback.chunk_frames = kChunk;
         cfg.playback.window_seconds = 0.02;  // 960 frames + a block
@@ -423,6 +425,100 @@ int test_post_fader_meters() {
 
 // A solo-safe track is never implicitly muted by another track's solo, and
 // its own mute still silences it, as in Pro Tools.
+// N1 loudness (ADR-0013 amendment of 2026-11-03): with track_loudness every
+// track meter measures what the master does; "reset all" restarts at most
+// kMeterResetsPerCallback meters per callback, the master first, so 64
+// loudness meters never clear their histograms in one callback.
+int test_track_loudness_and_staggered_reset() {
+    constexpr int kTracks = 10;
+    Rig rig(kTracks, 0, 256, true);
+    Session& s = *rig.session;
+    const uint32_t a = rig.source(6, 1, 64 * kChunk);
+    std::vector<SegmentSpec> specs;
+    for (int t = 0; t < kTracks; ++t) {
+        SegmentSpec sp;
+        sp.end = 64 * kChunk;
+        sp.source_slot = a;
+        sp.track = t;
+        specs.push_back(sp);
+    }
+    CHECK(rig.publish(rig.plan(kTracks, specs)));
+    s.play();
+    for (int i = 0; i < 24; ++i) rig.block(kBlock);   // 1536 frames: 3 steps of 10 ms
+    for (int t = 0; t < kTracks; ++t) {
+        CHECK(s.track_meter(t).loudness_steps() >= 2);
+        CHECK(s.track_meter(t).momentary_lufs() > -100.0f);
+    }
+    CHECK(s.master_meter().loudness_steps() >= 2);
+
+    const auto fresh = [&](std::vector<bool>& flags) {
+        int n = 0;
+        flags.assign(kTracks + 1, false);
+        flags[0] = s.master_meter().loudness_steps() == 0;
+        for (int t = 0; t < kTracks; ++t) flags[t + 1] = s.track_meter(t).loudness_steps() == 0;
+        for (bool f : flags) n += f ? 1 : 0;
+        return n;
+    };
+    std::vector<bool> flags;
+    CHECK(fresh(flags) == 0);
+    s.reset_meters();
+    // One block of 64 frames is far short of a 10 ms step, so a meter that
+    // was reset in a callback shows 0 steps until the pass is over.
+    int seen = 0;
+    const int cap = static_cast<int>(Session::kMeterResetsPerCallback);
+    rig.block(kBlock);
+    int now = fresh(flags);
+    CHECK(now == cap);
+    CHECK(flags[0]);   // the master goes first
+    seen = now;
+    rig.block(kBlock);
+    now = fresh(flags);
+    CHECK(now - seen == cap);
+    seen = now;
+    rig.block(kBlock);
+    now = fresh(flags);
+    CHECK(now == kTracks + 1);   // the third callback takes the last three
+    rig.block(kBlock);
+    CHECK(fresh(flags) == kTracks + 1);   // and nothing resets again
+
+    // One meter on its own, at once; the others are left alone.
+    for (int i = 0; i < 16; ++i) rig.block(kBlock);
+    CHECK(fresh(flags) == 0);
+    s.reset_meter(3);
+    rig.block(kBlock);
+    CHECK(fresh(flags) == 1);
+    CHECK(flags[4]);
+    s.reset_meter(-1);
+    rig.block(kBlock);
+    CHECK(fresh(flags) == 2);
+    CHECK(flags[0]);
+    s.reset_meter(99);   // no such track: ignored
+    rig.block(kBlock);
+    return 0;
+}
+
+// A non-finite bus sample is replaced for the meter's filters but counted,
+// so the publisher can show a clip rather than silence.
+int test_nonfinite_bus_is_counted() {
+    Rig rig(1);
+    Session& s = *rig.session;
+    const uint32_t a = rig.source(7, 1, 16 * kChunk);
+    SegmentSpec sp;
+    sp.end = 16 * kChunk;
+    sp.source_slot = a;
+    CHECK(rig.publish(rig.plan(1, {sp})));
+    s.play();
+    rig.block(kBlock);
+    CHECK(s.master_meter().nonfinite_samples() == 0);
+    s.set_bus_gain(std::nanf(""));
+    rig.block(kBlock);
+    rig.block(kBlock);
+    CHECK(s.master_meter().nonfinite_samples() > 0);
+    CHECK(std::isfinite(s.master_meter().take_peak(0)));
+    CHECK(std::isfinite(s.master_meter().momentary_lufs()));
+    return 0;
+}
+
 int test_solo_safe() {
     Rig rig(2);
     Session& s = *rig.session;
@@ -809,6 +905,8 @@ int main() {
     if (test_crossfade()) return 1;
     if (test_per_block_ramps()) return 1;
     if (test_post_fader_meters()) return 1;
+    if (test_track_loudness_and_staggered_reset()) return 1;
+    if (test_nonfinite_bus_is_counted()) return 1;
     if (test_solo_safe()) return 1;
     if (test_miss_is_counted_silence()) return 1;
     if (test_locate_without_dropping_a_block()) return 1;

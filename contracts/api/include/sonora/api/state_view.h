@@ -128,6 +128,11 @@ public:
     // side.
     float take_post_peak(uint32_t index, uint32_t side);
 
+    // The loudness of the master and of track `index` (layout 8), as last
+    // published; none-yet values for a track past track_count.
+    MeterFields master_meter() const;
+    MeterFields track_meter(uint32_t index) const;
+
     // False once the heartbeat has stood still for the timeout, judged on
     // the caller's monotonic clock, so no clock is shared with the engine.
     // The interface then shows meters as "no data", not frozen (ADR-0007 §3).

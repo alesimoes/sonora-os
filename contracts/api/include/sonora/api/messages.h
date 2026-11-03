@@ -158,7 +158,10 @@ namespace sonora::api {
 //   aux bus or the Master (0); the undo window is window format 15, its
 //   lanes one table that tracks, buses and the Master index (session format
 //   18). A version-40 peer refuses all of them.
-constexpr uint32_t kProtocolVersion = 41;
+// 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
+//   meters.reset, and state block layout 8 carries the meters' loudness.
+//   A version-41 engine answers the command NotImplemented.
+constexpr uint32_t kProtocolVersion = 42;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

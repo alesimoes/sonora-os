@@ -490,8 +490,38 @@ int test_punch_stopped_records_the_range() {
 
 }  // namespace
 
+// Protocol 42: meters.reset names all, the master or one track by index; the
+// effect (staggered, a few meters per callback) is test_playback_mix's.
+int test_meters_reset_argument() {
+    Dir dir("sonora_test_session_commands_meters");
+    sonora::SessionConfig cfg;
+    cfg.dir = dir.path.string();
+    cfg.track_count = 3;
+    cfg.ring_seconds = 0.25;
+    sonora::Session s(cfg);
+    CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(reg, s, take, quit);
+    CHECK(reg.implemented("meters.reset"));
+    for (const char* ok : {"", "all", "master", "0", "2"}) {
+        CommandContext c;
+        c.argument = ok;
+        CHECK(reg.dispatch("meters.reset", c) == DispatchResult::Ok);
+    }
+    for (const char* bad : {"3", "x", "-1", "1x", "master "}) {
+        CommandContext c;
+        c.argument = bad;
+        std::string why;
+        CHECK(reg.dispatch("meters.reset", c, why) == DispatchResult::Failed);
+        CHECK(!why.empty());
+    }
+    return 0;
+}
+
 int main() {
     int failures = 0;
+    failures += test_meters_reset_argument();
     failures += test_session_commands();
     failures += test_arming_locked_during_take();
     failures += test_arm_all_with_nothing_to_arm_is_refused();

@@ -38,7 +38,11 @@ namespace sonora::api {
 // 6 (ADR-0009 update of 2026-11-01, record-ready): kTransportRecordReady.
 // 7 (ADR-0013 amendment of 2026-11-03): TrackState::post_peaks, each
 //   track's peak after its fader, from the engine's track meter.
-constexpr uint32_t kStateLayoutVersion = 7;
+// 8 (ADR-0013 amendment of 2026-11-03, loudness): MeterState, the BS.1770
+//   loudness, true-peak and non-finite count of the master (in the header)
+//   and of each track, and a non-finite bus sample published as
+//   kNonfinitePeak, a clip, instead of silence.
+constexpr uint32_t kStateLayoutVersion = 8;
 constexpr uint32_t kStateMagic = 0x534F4E53;   // "SONS"
 
 // Publish ticks a peak survives in the ring. At the fastest pace measured
@@ -90,6 +94,11 @@ enum TransportFlag : uint32_t {
 
 // The monitor bus's sides in StateHeader::bus_peaks: left, then right.
 constexpr uint32_t kBusPeakSides = 2;
+// What a peak ring carries for a publish tick in which the meter replaced a
+// non-finite sample (a blown-up plugin): +24 dBFS, over any clip threshold.
+// Finite, because StateView::take_from drops NaN and an infinity would make
+// a dB scale infinite.
+constexpr float kNonfinitePeak = 16.0f;
 // A track's sides in TrackState::post_peaks: left, then right, after the pan.
 constexpr uint32_t kPostPeakSides = 2;
 
@@ -132,6 +141,31 @@ struct PeakRing {
     std::atomic<uint64_t> entries[kPeakSlots];
 };
 
+// One meter's loudness (layout 8), LUFS and dBTP, -200 for none yet. Words
+// read on their own, outside the seqlock: a reading beside one a publish
+// older is what a meter is.
+struct MeterState {
+    std::atomic<float> momentary;
+    std::atomic<float> short_term;
+    std::atomic<float> max_momentary;
+    std::atomic<float> max_short_term;
+    std::atomic<float> integrated;
+    std::atomic<float> range_lu;
+    std::atomic<float> true_peak_max_db;
+    std::atomic<uint32_t> nonfinite;   // samples replaced since the meter's reset
+};
+
+struct MeterFields {
+    float momentary = -200.0f;
+    float short_term = -200.0f;
+    float max_momentary = -200.0f;
+    float max_short_term = -200.0f;
+    float integrated = -200.0f;
+    float range_lu = 0.0f;
+    float true_peak_max_db = -200.0f;
+    uint32_t nonfinite = 0;
+};
+
 struct alignas(64) TrackState {
     // Under the header's seqlock.
     std::atomic<uint32_t> flags;
@@ -150,6 +184,8 @@ struct alignas(64) TrackState {
     // mute and solo and before the bus gain; `peaks` is still the input.
     // Not under the seqlock.
     PeakRing post_peaks[kPostPeakSides];
+    // Layout 8. Not under the seqlock.
+    MeterState meter;
 };
 
 struct alignas(64) StateHeader {
@@ -191,6 +227,8 @@ struct alignas(64) StateHeader {
     std::atomic<uint32_t> playback_misses;
     // Layout 5. Not under the seqlock, as a track's peaks are not.
     PeakRing bus_peaks[kBusPeakSides];
+    // Layout 8. The master meter. Not under the seqlock.
+    MeterState master_meter;
 };
 
 // Shared memory needs atomics that never fall back to libatomic's lock
@@ -307,6 +345,11 @@ public:
     void publish(const TransportFields& transport, const TrackFields* tracks,
                  const float* peaks, const float* bus_peaks = nullptr,
                  const float* post_peaks = nullptr);
+
+    // Layout 8: the meters' loudness, `tracks` track_count entries, after
+    // publish() on the same thread. A null `master` or `tracks` leaves what
+    // was last written. Never loops, never waits.
+    void publish_meters(const MeterFields* master, const MeterFields* tracks);
 
     // A publish that stops after opening the seqlock, for the test that a
     // reader gives up and says "stale" instead of spinning. finish_write()

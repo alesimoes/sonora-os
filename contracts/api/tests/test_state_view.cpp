@@ -750,7 +750,7 @@ void layout_5_fields() {
 // left and right, in rings apart from its input peak, a cursor per reader,
 // per track and per side.
 void layout_7_post_fader_peaks() {
-    CHECK(kStateLayoutVersion == 7);
+    CHECK(kStateLayoutVersion >= 7);
     StateBlockMemory mem(2);
     StateWriter w;
     CHECK(w.init(mem.data(), mem.bytes(), 2, 2, 10'000'000));
@@ -789,6 +789,52 @@ void layout_7_post_fader_peaks() {
     CHECK(none.take_post_peak(0, 0) == 0.0f);
 }
 
+// Layout 8 (ADR-0013 amendment of 2026-11-03): the loudness of the master and
+// of each track, none-yet until published, a view per reader, nothing read
+// past the tracks or from a view with no block.
+void layout_8_meters() {
+    CHECK(kStateLayoutVersion == 8);
+    StateBlockMemory mem(2);
+    StateWriter w;
+    CHECK(w.init(mem.data(), mem.bytes(), 2, 2, 10'000'000));
+    StateView a, b;
+    std::string error;
+    CHECK(a.attach(mem.data(), mem.bytes(), error));
+    CHECK(b.attach(mem.data(), mem.bytes(), error));
+    CHECK(a.master_meter().momentary == -200.0f);
+    CHECK(a.track_meter(1).integrated == -200.0f);
+    CHECK(a.track_meter(1).nonfinite == 0);
+
+    MeterFields master;
+    master.momentary = -14.5f;
+    master.short_term = -15.0f;
+    master.integrated = -16.25f;
+    master.range_lu = 7.0f;
+    master.true_peak_max_db = -1.5f;
+    master.nonfinite = 4;
+    MeterFields tracks[2];
+    tracks[1].momentary = -30.0f;
+    tracks[1].max_short_term = -20.0f;
+    w.publish_meters(&master, tracks);
+    CHECK(a.master_meter().momentary == -14.5f);
+    CHECK(a.master_meter().integrated == -16.25f);
+    CHECK(a.master_meter().range_lu == 7.0f);
+    CHECK(a.master_meter().true_peak_max_db == -1.5f);
+    CHECK(a.master_meter().nonfinite == 4);
+    CHECK(b.master_meter().short_term == -15.0f);
+    CHECK(a.track_meter(0).momentary == -200.0f);
+    CHECK(a.track_meter(1).momentary == -30.0f);
+    CHECK(a.track_meter(1).max_short_term == -20.0f);
+    CHECK(a.track_meter(2).momentary == -200.0f);   // past the tracks
+
+    // A null master or tracks leaves what was written.
+    w.publish_meters(nullptr, nullptr);
+    CHECK(a.master_meter().momentary == -14.5f);
+    StateView none;
+    CHECK(none.master_meter().momentary == -200.0f);
+    CHECK(none.track_meter(0).momentary == -200.0f);
+}
+
 }  // namespace
 
 int main() {
@@ -796,6 +842,7 @@ int main() {
     insert_slots_by_track();
     layout_5_fields();
     layout_7_post_fader_peaks();
+    layout_8_meters();
     blocked_writer_reads_stale();
     never_torn_unpaced();
     paced_writer_does_not_starve_a_60hz_reader();

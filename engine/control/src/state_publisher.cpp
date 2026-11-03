@@ -8,6 +8,29 @@
 
 namespace sonora {
 
+namespace {
+
+// Copies a meter's loudness for the state block. True when the meter replaced
+// a non-finite sample since the last publish: the strip shows a clip, not the
+// silence the meter measures (it zeroes the sample so a NaN cannot stick in
+// its filters).
+bool read_meter(const dsp::TrackMeter& m, api::MeterFields& to, uint64_t& seen) {
+    to.momentary = m.momentary_lufs();
+    to.short_term = m.short_term_lufs();
+    to.max_momentary = m.max_momentary_lufs();
+    to.max_short_term = m.max_short_term_lufs();
+    to.integrated = m.integrated_lufs();
+    to.range_lu = m.loudness_range_lu();
+    to.true_peak_max_db = m.true_peak_max_dbtp();
+    const uint64_t n = m.nonfinite_samples();
+    to.nonfinite = n > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(n);
+    const bool fresh = n != seen && n != 0;
+    seen = n;
+    return fresh;
+}
+
+}  // namespace
+
 StatePublisher::StatePublisher(Session& session, const backend::AudioBackend* audio,
                                api::StateWriter& writer, uint64_t period_ns)
     : session_(session),
@@ -22,7 +45,9 @@ StatePublisher::StatePublisher(Session& session, const backend::AudioBackend* au
       tracks_(session.tracks().size()),
       peaks_(session.tracks().size(), 0.0f),
       post_peaks_(session.tracks().size() * api::kPostPeakSides, 0.0f),
-      clips_(session.tracks().size(), 0) {
+      clips_(session.tracks().size(), 0),
+      meters_(session.tracks().size() + 1),
+      nonfinite_seen_(session.tracks().size() + 1, 0) {
     for (std::size_t i = 0; i < session.tracks().size(); ++i) {
         input_connected_[i].store(false, std::memory_order_relaxed);
         track_latency_[i].store(0, std::memory_order_relaxed);
@@ -130,8 +155,12 @@ void StatePublisher::publish_once() {
                         (record_ready_.load(std::memory_order_relaxed) ? api::kTransportRecordReady
                                                                        : 0u);
     t.playback_misses = static_cast<uint32_t>(session_.playback_misses());
-    const float bus[api::kBusPeakSides] = {session_.master_meter().take_peak(0),
-                                           session_.master_meter().take_peak(1)};
+    float bus[api::kBusPeakSides] = {session_.master_meter().take_peak(0),
+                                     session_.master_meter().take_peak(1)};
+    const std::size_t master_at = tracks.size();
+    if (read_meter(session_.master_meter(), meters_[master_at], nonfinite_seen_[master_at])) {
+        for (float& b : bus) b = api::kNonfinitePeak;
+    }
     if (audio_ != nullptr) {
         t.xruns = audio_->xruns();
         t.clock_steps = audio_->clock_discontinuities();
@@ -144,8 +173,10 @@ void StatePublisher::publish_once() {
         const float peak = tr.take_peak();
         if (peak >= 1.0f) ++clips_[i];
         peaks_[i] = peak;
+        const bool blown = read_meter(session_.track_meter(i), meters_[i], nonfinite_seen_[i]);
         for (uint32_t side = 0; side < api::kPostPeakSides; ++side) {
-            post_peaks_[i * api::kPostPeakSides + side] = session_.track_meter(i).take_peak(side);
+            const float p = session_.track_meter(i).take_peak(side);
+            post_peaks_[i * api::kPostPeakSides + side] = blown ? api::kNonfinitePeak : p;
         }
         api::TrackFields& f = tracks_[i];
         f.flags = (tr.rec_armed() ? api::kTrackArmed : 0u) |
@@ -169,6 +200,7 @@ void StatePublisher::publish_once() {
         }
     }
     writer_.publish(t, tracks_.data(), peaks_.data(), bus, post_peaks_.data());
+    writer_.publish_meters(&meters_[master_at], meters_.data());
     publishes_.fetch_add(1, std::memory_order_relaxed);
 }
 

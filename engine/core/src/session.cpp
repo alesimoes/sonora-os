@@ -316,8 +316,8 @@ Session::Session(SessionConfig cfg)
     // of #315, condition 1). A track meter is peak only; loudness per track
     // comes with the staggered reset (ADR-0013 amendment of 2026-11-03).
     dsp::TrackMeter::Options track_meter;
-    track_meter.loudness = false;
-    track_meter.true_peak = false;
+    track_meter.loudness = cfg_.track_loudness;
+    track_meter.true_peak = cfg_.track_loudness;
     track_meters_.reset(new dsp::TrackMeter[tracks]);
     for (uint32_t t = 0; t < tracks; ++t) {
         track_meters_[t].prepare(cfg_.sample_rate, max_block_, 2, track_meter);
@@ -1107,6 +1107,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     // ADR-0009 §4.1: the block count, then the plan, before anything reads
     // either. A new plan is told by its epoch, never its address.
     const PlaybackPlan* plan = plans_->acquire();
+    step_meter_reset();
     if (plan->epoch != seen_epoch_) {
         seen_epoch_ = plan->epoch;
         reseek_ = true;
@@ -1715,6 +1716,25 @@ void Session::gather_lanes(const PlaybackPlan& plan, uint64_t frame) noexcept SO
             lane_has_sent_[li] = 1;
             node_params_[order_first_[o] + order_count_[o]++] =
                 ChainParamEvent{lane.instance, lane.param, 0, v};
+        }
+    }
+}
+
+void Session::step_meter_reset() noexcept SONORA_RT {
+    const uint32_t gen = meter_reset_gen_.load(std::memory_order_acquire);
+    if (gen != meter_reset_seen_) {
+        meter_reset_seen_ = gen;
+        meter_reset_next_ = 0;
+    }
+    // Each meter clears its histograms inside its own process() of this
+    // callback, so the flags raised here are the callback's whole share.
+    const std::size_t total = tracks_.size() + 1;
+    for (uint32_t budget = kMeterResetsPerCallback; budget != 0 && meter_reset_next_ < total;
+         --budget, ++meter_reset_next_) {
+        if (meter_reset_next_ == 0) {
+            master_meter_.request_reset();
+        } else {
+            track_meters_[meter_reset_next_ - 1].request_reset();
         }
     }
 }
