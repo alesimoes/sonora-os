@@ -15,6 +15,22 @@ if [ -z "$ts" ]; then
 fi
 off="$(cat /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null |
   grep -E '^deb ' | grep -Ev "snapshot\.debian\.org/archive/debian(-security)?/$ts/? " || true)"
+# deb822 files are read by apt as well (trixie's own images ship
+# debian.sources), and a one-line grep never sees their URIs: field, which may
+# list several URIs and continue on indented lines. A stanza with
+# "Enabled: no" is not read by apt, so it does not count.
+off822="$(cat /etc/apt/sources.list.d/*.sources 2>/dev/null | awk '
+  function flush() { if (!disabled) for (i = 1; i <= n; i++) print uris[i]; n = 0; disabled = 0; field = "" }
+  /^#/ { next }
+  /^[[:space:]]*$/ { flush(); next }
+  /^[[:space:]]/ { if (field == "uris") for (i = 1; i <= NF; i++) uris[++n] = $i; next }
+  { field = tolower($1) }
+  field == "uris:" { field = "uris"; for (i = 2; i <= NF; i++) uris[++n] = $i; next }
+  field == "enabled:" && tolower($2) == "no" { disabled = 1 }
+  END { flush() }' |
+  grep -Ev "^https?://snapshot\.debian\.org/archive/debian(-security)?/$ts/?$" || true)"
+[ -n "$off822" ] && off="${off:+$off
+}$off822"
 if [ -n "$off" ]; then
   echo "E: build sources outside snapshot $ts:" >&2
   echo "$off" >&2
