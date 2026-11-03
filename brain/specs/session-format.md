@@ -393,6 +393,14 @@ not referenced by any region in any playlist is *unused*. It stays.
   mode but `"off"`; it sorts after the plugin lanes and carries no key.
   `automation_mode` may be `"trim"` (Touch/Trim) or `"write_trim"`; every
   mode from `"touch"` on is accepted since the write slice.
+- Mute and send lanes (version 18, ADR-0027 §9): `{"param": "mute",
+  "points": [...]}`, values 0 (playing) or 1 (muted), two points in a row
+  at different frames holding the same value, so a mute changes only at a
+  step; `{"param": "send_level" | "send_pan", "send": <id>, "points":
+  [...]}`, `send` a send on the same strip, the level in dB in the gain
+  range, the pan from -1 to +1. They sort after the trim lane, in that
+  order, send lanes then by `send`. Only a send lane carries `send`. Not
+  played yet.
 - `kind` (version 5, second key): `"audio"`, `"midi"` or `"instrument"`.
   The example above is an audio track. The key set depends on the kind,
   strictly: a MIDI track has no `channels`, `input`, `gain_db`, `pan` or
@@ -909,6 +917,10 @@ strip, returned to `monitor_bus`.
 | send `level_db` | In the model's gain range; `-144` is Pro Tools' -INF. Mix state. |
 | send `pan`, `follow_pan` | The send's own pan, -1 to 1, used when `follow_pan` is false; with it true (Pro Tools' FMP) the send pans as its strip does. Mix state. |
 | send `mute`, `pre` | `pre`: pre-fader, post-insert, before the strip's fader and pan; still silenced by the strip's mute. Mix state. |
+| bus `automation` | Version 18 (ADR-0027 §9): the return's lanes, as a track's (`tracks`, `automation`): `volume`, `pan` (its balance), `mute`, and `send_level` and `send_pan` on its own sends; no plugin or trim lane. Undoable. Last key of the bus. |
+
+`monitor_bus` carries `automation` too since version 18, after
+`pan_law_db`: the Master's lanes, `volume` only.
 
 ## Versioning
 
@@ -1034,6 +1046,13 @@ the version changes. An insert's `state` may carry `files`, written only
 when the state names at least one. A version 16 file cannot carry it. The
 frozen v16 fixture loads through it and saves as
 `v17-plugin-files.sonora`, byte for byte.
+
+**v17→v18 (mute, send and strip lanes, ADR-0027 §9):** every bus gains
+`"automation": []` after `sends`, and `monitor_bus` `"automation": []`
+after `pan_law_db`. A lane's `param` may be `"mute"`, `"send_level"` or
+`"send_pan"`, the last two with `send`. A version 17 file cannot carry any
+of them. The frozen v17 fixture loads through it and saves as
+`v18-strip-lanes.sonora`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

@@ -432,7 +432,9 @@ void version_check() {
     // (ADR-0027 §8 slice 5; follows 38).
     // 40: StateRef.files in operations and the undo window (ADR-0029
     // slice 2; follows 39).
-    CHECK(kProtocolVersion == 40);
+    // 41: mute, send and strip lanes, and the lane table in the undo window
+    // (ADR-0027 §9; follows 40).
+    CHECK(kProtocolVersion == 41);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     CHECK(kStateLayoutVersion == 6);
@@ -442,13 +444,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 40 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 41 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 40"));
+                   "speaks version 41"));
 }
 
 void domains() {

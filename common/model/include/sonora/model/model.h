@@ -622,6 +622,8 @@ struct Send {
 // of an aux bus.
 inline constexpr Id kMasterOutput = 0;
 
+struct AutomationLane;
+
 // An aux bus and its return strip, one object (ADR-0022 §1): stereo, fed by
 // sends and by strips whose output it is, returned to its own output. Its
 // sends and its output feed other buses; the buses never form a loop.
@@ -630,9 +632,10 @@ struct Bus {
     std::string name;
     std::vector<Send> sends;   // sorted by slot
     Id output = kMasterOutput;
-    bool operator==(const Bus& o) const {
-        return id == o.id && name == o.name && sends == o.sends && output == o.output;
-    }
+    // The return's lanes, as a track's AutomationLanes: Volume, Pan, Mute
+    // and its sends' (ADR-0027 §9).
+    std::vector<std::shared_ptr<const AutomationLane>> automation;
+    bool operator==(const Bus& o) const;
 };
 
 // --- automation (ADR-0027) --------------------------------------------------
@@ -642,8 +645,19 @@ struct Bus {
 // ParamValue's value is (ADR-0027 §5, update of 2026-11-01). VolumeTrim is
 // a relative dB, kMinTrimDb to kMaxTrimDb, summed in dB with Volume in
 // every mode but Off (ADR-0027 §8 slice 5, format 16). Appended, so the
-// lane order of a file written before it does not change.
-enum class AutomationParam : std::uint8_t { Volume, Pan, Plugin, VolumeTrim };
+// lane order of a file written before it does not change. Mute is 0 or 1
+// and changes only at a step, so read linearly it is a switch; SendLevel
+// is a send's dB, SendPan its pan, both keyed by the send (ADR-0027 §9,
+// format 18).
+enum class AutomationParam : std::uint8_t {
+    Volume,
+    Pan,
+    Plugin,
+    VolumeTrim,
+    Mute,
+    SendLevel,
+    SendPan
+};
 // Off plays the static fader and pan; Read, Touch and Latch play the lanes
 // until a parameter is touched; Write plays the live values and writes them
 // from play to stop (ADR-0027 §3). Trim is Pro Tools' Touch/Trim: the
@@ -679,13 +693,25 @@ struct AutomationLane {
     // {param, points} stays warning-free.
     Id insert = 0;
     std::string key{};
+    // SendLevel and SendPan only: a send on the lane's strip. Zero for
+    // every other param.
+    Id send = 0;
     bool operator==(const AutomationLane& o) const {
-        return param == o.param && points == o.points && insert == o.insert && key == o.key;
+        return param == o.param && points == o.points && insert == o.insert && key == o.key &&
+               send == o.send;
     }
 };
 
-// The order of TrackEdit::automation: by param, then insert, then key.
+// A strip's lanes, sorted by lane_before, one each; shared, so an undo step
+// copies only the lanes it changes.
+using AutomationLanes = std::vector<std::shared_ptr<const AutomationLane>>;
+
+// The order of a strip's lanes: by param, then insert, then send, then key.
 bool lane_before(const AutomationLane& a, const AutomationLane& b);
+// The lane of `lanes` with `which`'s param, insert, send and key, or nullptr.
+const AutomationLane* find_lane(const AutomationLanes& lanes, const AutomationLane& which);
+// The same lanes, each the same pointer or an equal value.
+bool same_lanes(const AutomationLanes& a, const AutomationLanes& b);
 
 // The undoable part of a track. Input, monitor mode and the mix live in
 // TrackMix, because a fader move is not an edit.
@@ -714,8 +740,9 @@ struct TrackEdit {
     // Undoable, as Pro Tools' automation edits are (ADR-0027 §1). Sorted by
     // lane_before, one lane each; shared, so an undo step copies only the
     // lanes it changes. A MIDI track holds none.
-    std::vector<std::shared_ptr<const AutomationLane>> automation;
-    // Nullptr when the track has no lane for `param`, Volume or Pan.
+    AutomationLanes automation;
+    // Nullptr when the track has no lane for `param`, one of the params
+    // that name no insert and no send.
     const AutomationLane* lane(AutomationParam param) const;
     // The plugin lane of `insert`'s parameter `key`, or nullptr.
     const AutomationLane* lane(Id insert, const std::string& key) const;
@@ -742,6 +769,8 @@ struct EditState {
     std::vector<std::shared_ptr<const TrackEdit>> tracks;   // display order
     std::shared_ptr<const MarkerList> markers;
     std::vector<Bus> buses;   // display order
+    // The Master's lanes: Volume only (ADR-0027 §9).
+    AutomationLanes master_automation;
     bool operator==(const EditState& o) const;
 };
 
