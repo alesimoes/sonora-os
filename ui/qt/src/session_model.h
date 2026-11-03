@@ -98,6 +98,8 @@ class SessionModel : public QObject {
     // once a lane is open, so the headers place themselves by `top`.
     Q_PROPERTY(QVariantList trackRows READ trackRows NOTIFY rowsChanged)
     Q_PROPERTY(qreal autolaneHeight READ autolaneHeight NOTIFY viewChanged)
+    // The lanes a disclosed track shows, top to bottom (kLaneCount names).
+    Q_PROPERTY(QStringList autolaneNames READ autolaneNames CONSTANT)
     Q_PROPERTY(QList<bool> mutes READ mutes NOTIFY mixChanged)
     Q_PROPERTY(QList<bool> solos READ solos NOTIFY mixChanged)
     Q_PROPERTY(QList<bool> soloSafes READ soloSafes NOTIFY mixChanged)
@@ -322,6 +324,7 @@ public:
     QStringList playlistNames() const;
     QVariantList trackRows() const;
     qreal autolaneHeight() const { return ctl_.view().autolane_height; }
+    QStringList autolaneNames() const;
     // The track's playlists in their order, for its selector's menu.
     Q_INVOKABLE QStringList trackPlaylists(int track) const;
     bool canUndo() const { return doc_.can_undo(); }

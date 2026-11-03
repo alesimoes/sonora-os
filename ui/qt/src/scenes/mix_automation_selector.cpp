@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The automation mode selector (ADR-0027) open on the first strip: the five
-// modes the engine plays, the current one lit, the keyboard's row ringed,
-// and Trim dimmed because the engine refuses it. The next strips show
+// The automation mode selector (ADR-0027) open on the first strip: the seven
+// modes, the current one lit and the keyboard's row ringed; Trim and
+// Write/Trim are listed as available as the rest. The next strips show
 // Touch, Latch and Write lit.
 #include <QQuickItem>
 #include <cstdio>

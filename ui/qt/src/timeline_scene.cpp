@@ -208,12 +208,13 @@ void draw_autolane(const Snapshot& s, const TrackEdit& t, int i, int l, const Vi
     const double top = v.y_of_autolane(i, l);
     const TrackMix* mix = s.mix.find(t.id);
     const bool off = mix != nullptr && mix->automation == AutomationMode::Off;
-    const uint32_t colour =
-        off ? theme::kTextTertiary
-            : (p == AutomationParam::Volume ? theme::kAutomationVolume : theme::kAutomationPan);
+    const uint32_t colour = off                             ? theme::kTextTertiary
+                            : p == AutomationParam::Volume     ? theme::kAutomationVolume
+                            : p == AutomationParam::VolumeTrim ? theme::kAutomationTrim
+                                                               : theme::kAutomationPan;
     const double h = v.autolane_height;
 
-    const float unity = p == AutomationParam::Volume ? lane_position(p, 0.0f) : 0.5f;
+    const float unity = p == AutomationParam::Pan ? 0.5f : lane_position(p, 0.0f);
     add(out.rects, 0, std::floor(v.autolane_y(i, l, unity)), v.width, 1, theme::kAutomationGuide);
 
     Frames ra = sel.start, rb = sel.end;
@@ -234,9 +235,10 @@ void draw_autolane(const Snapshot& s, const TrackEdit& t, int i, int l, const Vi
 
     int dragged = -1;
     const std::vector<AutomationPoint> pts = lane_points_as_drawn(t, i, l, drag, dragged);
-    const float fallback = mix == nullptr                    ? 0.0f
-                           : p == AutomationParam::Volume ? mix->gain_db
-                                                          : mix->pan;
+    // A trim with no lane plays 0 dB: it has no static value.
+    const float fallback = mix == nullptr || p == AutomationParam::VolumeTrim ? 0.0f
+                           : p == AutomationParam::Volume                    ? mix->gain_db
+                                                                             : mix->pan;
     if (pts.empty()) {
         const double y = v.autolane_y(i, l, lane_position(p, fallback));
         for (double px = 0; px < v.width; px += 9) add(out.rects, px, y - 0.75, 5, 1.5, colour);

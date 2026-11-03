@@ -440,16 +440,17 @@ public:
     // Solo safe (TrackMix::solo_safe): another track's solo never silences
     // this one. Its own solo and mute are left as they are.
     bool toggle_solo_safe(int track, std::string& why);
-    // A track's automation mode (ADR-0027). Trim is refused: the engine has
-    // no write slice for it yet.
+    // A track's automation mode (ADR-0027), the two trim modes included
+    // (§8 slice 5).
     bool set_automation_mode(int track, model::AutomationMode mode, std::string& why);
     // Pro Tools' TrackInput: Input mode (the live input whatever the
     // transport does) or back to Auto. Off, which only a file can set, is
     // not Input, so it goes to Input. Refused on a MIDI or instrument
     // track, whose engine track carries no audio of its own (ADR-0014 M-1).
     bool toggle_input_monitor(int track, std::string& why);
-    // Off, Read, Touch, Latch, Write and round to Off. Trim is skipped (the
-    // engine refuses it); a track already on Trim steps to Off.
+    // Off, Read, Touch, Latch, Write, Trim (Touch/Trim), Write/Trim and
+    // round to Off: the selector's order. Pro Tools' own order is unverified
+    // (brain/research/protools-logic-key-bindings.md has no automation modes).
     bool step_automation_mode(int track, std::string& why);
     bool set_bus_gain(float db, std::string& why);
 

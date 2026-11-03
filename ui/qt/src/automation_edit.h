@@ -21,13 +21,16 @@
 namespace sonora::ui {
 
 // The lanes a track discloses, top to bottom: what the model automates.
-inline constexpr int kLaneCount = 2;
+// Volume, Pan and Volume Trim (ADR-0027 §8 slice 5). Plugin lanes are not
+// disclosed here yet.
+inline constexpr int kLaneCount = 3;
 model::AutomationParam lane_param(int lane);
 const char* lane_name(model::AutomationParam p);
 
 // Where a value sits in a lane, 0 at the bottom to 1 at the top. Volume
-// follows the fader's taper, so the curve is drawn as the fader moves; pan
-// runs left at the bottom to right at the top.
+// follows the fader's taper, so the curve is drawn as the fader moves; so
+// does Volume Trim, kept in [kMinTrimDb, kMaxTrimDb]; pan runs left at the
+// bottom to right at the top.
 float lane_position(model::AutomationParam p, float value);
 float lane_value(model::AutomationParam p, float position);
 float clamp_lane_value(model::AutomationParam p, float value);

@@ -30,9 +30,10 @@ const ShotRegistrar registrar{[] {
         when_open(c, [](ShotContext& c) {
             const QString step = QStringLiteral("track.step_automation_mode");
             // Read is the default: one step is Touch, two Latch, three Write
-            // and four Off for the tracks 0..3 (track 0 stays on Touch).
+            // and six Off (past Trim and Write/Trim) for the tracks 0..3
+            // (track 0 stays on Touch).
             for (int t = 0; t < 4 && t < c.session.trackCount(); ++t) {
-                for (int n = 0; n < (t == 3 ? 4 : t + 1); ++n) c.model.invoke(step, t);
+                for (int n = 0; n < (t == 3 ? 6 : t + 1); ++n) c.model.invoke(step, t);
             }
             QQuickItem* sel = find(c.view.rootObject(), QStringLiteral("editAutoMode0"));
             if (sel == nullptr) std::fprintf(stderr, "sonora-ui: no header selector found\n");

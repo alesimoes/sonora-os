@@ -12,7 +12,12 @@ using namespace model;
 
 namespace {
 
-bool is_volume(AutomationParam p) { return p == AutomationParam::Volume; }
+// Volume and Volume Trim are both dB on the fader's taper: the trim fader is
+// the volume fader in a trim mode (ADR-0027 §8 slice 5), so its lane is drawn
+// as the fader shows it. Only their ranges differ (clamp_lane_value).
+bool is_volume(AutomationParam p) {
+    return p == AutomationParam::Volume || p == AutomationParam::VolumeTrim;
+}
 
 // True when `i` is one of a step's two points.
 bool has_partner(const std::vector<AutomationPoint>& pts, std::size_t i) {
@@ -23,12 +28,21 @@ bool has_partner(const std::vector<AutomationPoint>& pts, std::size_t i) {
 }  // namespace
 
 AutomationParam lane_param(int lane) {
-    return lane == 1 ? AutomationParam::Pan : AutomationParam::Volume;
+    switch (lane) {
+        case 1: return AutomationParam::Pan;
+        case 2: return AutomationParam::VolumeTrim;
+        default: return AutomationParam::Volume;
+    }
 }
 
 const char* lane_name(AutomationParam p) {
-    if (p == AutomationParam::Plugin) return "Plugin";
-    return is_volume(p) ? "Volume" : "Pan";
+    switch (p) {
+        case AutomationParam::Volume: return "Volume";
+        case AutomationParam::Pan: return "Pan";
+        case AutomationParam::Plugin: return "Plugin";
+        case AutomationParam::VolumeTrim: return "Volume Trim";
+    }
+    return "Volume";
 }
 
 float lane_position(AutomationParam p, float value) {
@@ -44,6 +58,7 @@ float lane_value(AutomationParam p, float position) {
 
 float clamp_lane_value(AutomationParam p, float value) {
     if (!(value == value)) return 0.0f;  // NaN
+    if (p == AutomationParam::VolumeTrim) return std::clamp(value, kMinTrimDb, kMaxTrimDb);
     if (is_volume(p)) return std::clamp(value, kMinGainDb, kMaxGainDb);
     // A plugin value is format-native; its range is the plugin's, which the
     // lane does not carry, so apply() is the one to refuse it.

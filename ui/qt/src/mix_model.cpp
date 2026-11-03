@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "automation_edit.h"
 #include "fader_taper.h"
 #include "session_model.h"
 
@@ -21,7 +22,71 @@ MixModel::MixModel(SessionModel& session, GainSender sender, EngineTracks engine
     // Every change to the document reaches the windows through
     // contentChanged (SessionModel::sync), a whole new document included.
     connect(&session_, &SessionModel::contentChanged, this, &MixModel::documentChanged);
-    connect(&session_, &SessionModel::sessionOpened, this, &MixModel::resetViews);
+    connect(&session_, &SessionModel::sessionOpened, this, &MixModel::sessionOpened);
+}
+
+void MixModel::sessionOpened() {
+    resetViews();
+    // The engine puts every trim fader back at 0 dB at a Load.
+    held_trim_db_.clear();
+    emit trimsChanged();
+}
+
+namespace {
+
+bool is_trim(const QString& mode) {
+    return mode == QLatin1String("Trim") || mode == QLatin1String("Write/Trim");
+}
+
+}  // namespace
+
+bool MixModel::trimMode(int track) const {
+    return is_trim(session_.automationModes().value(track));
+}
+
+float MixModel::heldTrim(model::Id track) const {
+    const auto it = held_trim_db_.find(track);
+    return it == held_trim_db_.end() ? 0.0f : it->second;
+}
+
+float MixModel::trimNow(int track, bool& lane) const {
+    return trimNow(track, session_.automationModes().value(track), lane);
+}
+
+float MixModel::trimNow(int track, const QString& mode, bool& lane) const {
+    lane = false;
+    if (mode == QLatin1String("Write/Trim")) return heldTrim(session_.trackId(track));
+    const auto& tracks = session_.controller().snapshot().edit->tracks;
+    if (track < 0 || track >= static_cast<int>(tracks.size())) return 0.0f;
+    const model::AutomationLane* l =
+        tracks[static_cast<std::size_t>(track)]->lane(model::AutomationParam::VolumeTrim);
+    if (l == nullptr || l->points.empty()) return 0.0f;
+    lane = true;
+    const TransportOverlay& t = session_.transportOverlay();
+    const model::Frames at = t.rolling ? t.playhead : session_.controller().selection().insertion;
+    return clamp_lane_value(model::AutomationParam::VolumeTrim, lane_value_at(l, at, 0.0f));
+}
+
+QList<qreal> MixModel::trims() const {
+    const QStringList modes = session_.automationModes();
+    QList<qreal> out;
+    for (int i = 0; i < modes.size(); ++i) {
+        bool lane = false;
+        if (ride_trim_ && ride_track_ == i) out << ride_db_;
+        else out << (is_trim(modes[i]) ? trimNow(i, modes[i], lane) : 0.0f);
+    }
+    return out;
+}
+
+QList<bool> MixModel::trimLanes() const {
+    const QStringList modes = session_.automationModes();
+    QList<bool> out;
+    for (int i = 0; i < modes.size(); ++i) {
+        bool lane = false;
+        if (is_trim(modes[i]) && !(ride_trim_ && ride_track_ == i)) trimNow(i, modes[i], lane);
+        out << lane;
+    }
+    return out;
 }
 
 void MixModel::resetViews() {
@@ -34,6 +99,8 @@ void MixModel::resetViews() {
 void MixModel::documentChanged() {
     if (ride_track_ != kNoRide) rideStillHolds();
     if (pan_track_ != kNoRide) panStillHolds();
+    // A mode or a trim lane may have changed what the strips show.
+    emit trimsChanged();
 }
 
 bool MixModel::panStillHolds() {
@@ -95,13 +162,17 @@ void MixModel::dropRide(const std::string& why) {
     // The steps went to an engine gain atomic by index, and one that
     // crossed another interface's edit may sit on whichever track is there
     // now (the header says why the engine cannot see it). Past the
-    // document's tracks the Release carries the ride's own last value.
+    // document's tracks the Release carries the ride's own last value, and
+    // so does a trim's: the trim has no document value to go back to.
     if ((sent || touched) && live(index)) {
-        const float db = index < session_.trackCount() ? session_.stripGain(index) : ride_db_held;
+        const float db = !ride_trim_ && index < session_.trackCount() ? session_.stripGain(index)
+                                                                      : ride_db_held;
         sendLive(index, db, api::Gesture::Release);
     }
+    ride_trim_ = false;
     session_.reportEdit(false, why);
     emit rideChanged();
+    emit trimsChanged();
 }
 
 QString MixModel::trackMeterCaption() const { return QStringLiteral("IN"); }
@@ -139,20 +210,47 @@ bool MixModel::writes(int track) const {
 }
 
 void MixModel::sendLive(int track, float db, api::Gesture gesture) {
-    sender_(static_cast<uint32_t>(track), api::ParamId::Gain, fader_linear_gain(db), gesture);
+    const api::ParamId param = ride_trim_ ? api::ParamId::VolumeTrim : api::ParamId::Gain;
+    sender_(static_cast<uint32_t>(track), param, fader_linear_gain(db), gesture);
+    if (ride_trim_ && track < session_.trackCount()) held_trim_db_[session_.trackId(track)] = db;
     if (gesture == api::Gesture::Move) ++live_steps_;
+}
+
+void MixModel::resetTrim(int track) {
+    if (!trimMode(track) || ride_track_ != kNoRide) return;
+    if (!live(track)) {
+        session_.reportEdit(false, "The engine has no track " + std::to_string(track + 1) +
+                                       ": its trim fader has nothing to reset");
+        return;
+    }
+    ride_trim_ = true;
+    sendLive(track, 0.0f, api::Gesture::Touch);
+    sendLive(track, 0.0f, api::Gesture::Release);
+    ride_trim_ = false;
+    emit trimsChanged();
 }
 
 void MixModel::beginRide(int track) {
     if (track < -1 || track >= session_.trackCount()) return;
     if (ride_track_ != kNoRide) dropRide("A second fader press arrived while one was held");
+    const bool trim = trimMode(track);
+    // The trim lives in the engine's atomic alone: with no live path there
+    // is nothing to ride and nothing to save it in, so the fader says so
+    // rather than moving a cap that changes nothing heard.
+    if (trim && !live(track)) {
+        session_.reportEdit(false, "The engine has no track " + std::to_string(track + 1) +
+                                       ": its trim fader cannot be ridden");
+        return;
+    }
     ride_track_ = track;
+    ride_trim_ = trim;
     ride_id_ = track < 0 ? 0 : session_.trackId(track);
     ride_generation_ = session_.sessionGeneration();
-    ride_from_db_ = ride_db_ = session_.stripGain(track);
+    bool lane = false;
+    ride_from_db_ = ride_db_ = trim ? trimNow(track, lane) : session_.stripGain(track);
     ride_sent_live_ = false;
     ride_touched_ = false;
-    ride_wrote_ = writes(track);
+    ride_wrote_ = !trim && writes(track);
     // The hand is on the fader from the press, before it moves: Touch and
     // Latch take over at this value, so nothing jumps.
     if (live(track)) {
@@ -160,20 +258,23 @@ void MixModel::beginRide(int track) {
         ride_touched_ = true;
     }
     emit rideChanged();
+    if (trim) emit trimsChanged();
 }
 
 void MixModel::ride(int track, qreal dy, qreal travel, bool fine) {
     if (track != ride_track_ || track == kNoRide || !rideStillHolds()) return;
-    const float db = fader_drag(ride_db_, static_cast<float>(dy), static_cast<float>(travel), fine);
+    float db = fader_drag(ride_db_, static_cast<float>(dy), static_cast<float>(travel), fine);
+    if (ride_trim_) db = std::clamp(db, model::kMinTrimDb, model::kMaxTrimDb);
     if (db == ride_db_) return;
     ride_db_ = db;
     if (live(track)) {
         sendLive(track, db);
         ride_sent_live_ = true;
-        ride_wrote_ = ride_wrote_ || writes(track);
+        ride_wrote_ = ride_wrote_ || (!ride_trim_ && writes(track));
     } else {
         session_.setGain(track, db);
     }
+    // The strip under the hand shows rideGain; trims need not change per step.
     emit rideChanged();
 }
 
@@ -183,6 +284,19 @@ void MixModel::endRide(int track) {
     const bool sent = ride_sent_live_;
     const bool touched = ride_touched_;
     const bool wrote = ride_wrote_ || writes(track);
+    if (ride_trim_) {
+        // The engine holds the trim and writes its lane; the document's
+        // fader is not the trim's, so nothing is saved.
+        if (touched) sendLive(track, db, api::Gesture::Release);
+        ride_track_ = kNoRide;
+        ride_id_ = 0;
+        ride_sent_live_ = false;
+        ride_touched_ = false;
+        ride_trim_ = false;
+        emit rideChanged();
+        emit trimsChanged();
+        return;
+    }
     ride_track_ = kNoRide;
     ride_id_ = 0;
     ride_sent_live_ = false;
@@ -259,7 +373,8 @@ bool MixModel::setAutomationMode(int track, const QString& mode) {
     static const std::pair<const char*, model::AutomationMode> modes[] = {
         {"Off", model::AutomationMode::Off},     {"Read", model::AutomationMode::Read},
         {"Touch", model::AutomationMode::Touch}, {"Latch", model::AutomationMode::Latch},
-        {"Write", model::AutomationMode::Write}, {"Trim", model::AutomationMode::Trim}};
+        {"Write", model::AutomationMode::Write}, {"Trim", model::AutomationMode::Trim},
+        {"Write/Trim", model::AutomationMode::WriteTrim}};
     for (const auto& m : modes) {
         if (mode != QLatin1String(m.first)) continue;
         std::string why;

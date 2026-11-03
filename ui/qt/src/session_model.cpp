@@ -890,8 +890,10 @@ QVariantList SessionModel::trackRows() const {
         QStringList captions;
         for (int l = 0; l < kLaneCount; ++l) {
             const AutomationLane* lane = t.lane(lane_param(l));
-            QString what = lane == nullptr ? QStringLiteral("static")
-                                           : QStringLiteral("%1 pts").arg(lane->points.size());
+            // A trim with no lane has no static value: it plays 0 dB.
+            QString what = lane != nullptr ? QStringLiteral("%1 pts").arg(lane->points.size())
+                           : lane_param(l) == AutomationParam::VolumeTrim ? QStringLiteral("0 dB")
+                                                                          : QStringLiteral("static");
             captions << what + QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ") + QString::fromLatin1(mode);
         }
         row[QStringLiteral("captions")] = captions;
@@ -965,8 +967,18 @@ QList<bool> SessionModel::soloSafes() const {
     return per_strip<bool>(ctl_.snapshot(), [](const model::TrackMix& m) { return m.solo_safe; });
 }
 
+QStringList SessionModel::autolaneNames() const {
+    QStringList out;
+    for (int l = 0; l < kLaneCount; ++l) out << QString::fromLatin1(lane_name(lane_param(l)));
+    return out;
+}
+
 QStringList SessionModel::automationModes() const {
-    static const char* const names[] = {"Off", "Read", "Touch", "Latch", "Write", "Trim"};
+    // Indexed by AutomationMode: one name for each.
+    static const char* const names[] = {"Off",   "Read", "Touch",     "Latch",
+                                        "Write", "Trim", "Write/Trim"};
+    static_assert(sizeof names / sizeof names[0] ==
+                  static_cast<std::size_t>(model::AutomationMode::WriteTrim) + 1);
     QStringList out;
     for (const QString& n : per_strip<QString>(ctl_.snapshot(), [](const model::TrackMix& m) {
              return QString::fromLatin1(names[static_cast<int>(m.automation)]);
