@@ -336,6 +336,80 @@ int test_over_the_compound_limit() {
     return 0;
 }
 
+// Consolidate (ADR-0031 §6): the rendered file replaces what the playlist
+// plays over the range, as one region and one undo step; the render itself
+// is the engine's.
+ConsolidateRange consolidation(const Session& s, Id source, Frames start, Frames end) {
+    ConsolidateRange c;
+    c.track = s.vox.track;
+    c.playlist = s.vox.playlist;
+    c.start = start;
+    c.end = end;
+    c.source = source;
+    c.name = "Vox_bip";
+    return c;
+}
+
+int test_consolidate_replaces_the_range() {
+    Session s;
+    if (build(s) != 0) return 1;
+    Ids ids(s.h.current());
+    const AddSource rendered = add_source(ids, 48000, 1, s.vox.track);
+    CHECK_APPLY(s.h, rendered);
+    const Snapshot before = s.h.current();
+    Ids more(before);
+    Comp comp;
+    std::string why;
+    CHECK(consolidate_range(before, consolidation(s, rendered.source.id, 24000, 72000),
+                            std::ref(more), comp, why));
+    CHECK(comp.members.size() == 1);
+    CHECK_APPLY(s.h, (Compound{comp.members, "Consolidate"}));
+    const Snapshot& after = s.h.current();
+    CHECK(invariants_hold(after));
+    const Playlist& m = *playlist(after, s.vox.playlist);
+    CHECK(m.regions.size() == 3);
+    CHECK(m.regions[0].id == s.main_region && m.regions[0].length == 24000);
+    CHECK(m.regions[1].channels[0].source == rendered.source.id);
+    CHECK(m.regions[1].position == 24000 && m.regions[1].length == 48000);
+    CHECK(m.regions[1].source_offset == 0 && m.regions[1].name == "Vox_bip");
+    CHECK(m.regions[2].position == 72000 && m.regions[2].length == 24000);
+    CHECK(s.h.undo());
+    CHECK(*s.h.current().edit == *before.edit);
+    return 0;
+}
+
+int test_consolidate_refusals() {
+    Session s;
+    if (build(s) != 0) return 1;
+    Ids ids(s.h.current());
+    const AddSource good = add_source(ids, 48000, 1, s.vox.track);
+    const AddSource stereo = add_source(ids, 48000, 2, s.vox.track);
+    const AddSource brief = add_source(ids, 100, 1, s.vox.track);
+    CHECK_APPLY(s.h, good);
+    CHECK_APPLY(s.h, stereo);
+    CHECK_APPLY(s.h, brief);
+    const Snapshot& now = s.h.current();
+    const auto refused = [&](const ConsolidateRange& c, const char* says) {
+        Ids n(now);
+        Comp out;
+        std::string why;
+        if (consolidate_range(now, c, std::ref(n), out, why)) return false;
+        return out.members.empty() && mentions(why, says);
+    };
+    CHECK(refused(consolidation(s, good.source.id, 24000, 24000), "empty"));
+    CHECK(refused(consolidation(s, 9999, 0, 48000), "rendered file is not"));
+    CHECK(refused(consolidation(s, stereo.source.id, 0, 48000), "channels"));
+    CHECK(refused(consolidation(s, brief.source.id, 0, 48000), "shorter"));
+    CHECK(refused(consolidation(s, good.source.id, 100000, 148000), "nothing to consolidate"));
+    ConsolidateRange c = consolidation(s, good.source.id, 0, 48000);
+    c.playlist = 12345;
+    CHECK(refused(c, "not a playlist"));
+    c = consolidation(s, good.source.id, 0, 48000);
+    c.track = 12345;
+    CHECK(refused(c, "no such track"));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -355,6 +429,8 @@ int main() {
     t(test_seam_without_handles_stays_a_cut);
     t(test_refusals);
     t(test_over_the_compound_limit);
+    t(test_consolidate_replaces_the_range);
+    t(test_consolidate_refusals);
     if (failed != 0) {
         std::fprintf(stderr, "model_comping: %d of %d failed\n", failed, run);
         return 1;
