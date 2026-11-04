@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <filesystem>
+
 #include "sonora/interchange/interchange.h"
 
 namespace sonora::interchange {
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -51,7 +55,8 @@ int run_convert(const std::vector<std::string>& args, std::string& out, std::str
              exporter.write(snapshot, dest, report, error);
     } else if (command == "session") {
         ok = read_session(in, snapshot, report, error) &&
-             write_session(dest, snapshot, report, error);
+             write_session(dest, snapshot, report, error,
+                           fs::absolute(fs::path(in)).parent_path().string());
     } else {
         err += "sonora-convert: unknown command \"" + command + "\"\n" + kUsage;
         return 2;

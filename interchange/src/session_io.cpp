@@ -84,7 +84,8 @@ bool read_session(const std::string& path, model::Snapshot& out, ConversionRepor
 }
 
 bool write_session(const std::string& path, const model::Snapshot& snapshot,
-                   ConversionReport& report, std::string& error) {
+                   ConversionReport& report, std::string& error,
+                   const std::string& state_source) {
     const fs::path absolute = fs::absolute(fs::path(path));
     if (absolute.extension() != ".sonora") {
         error = path + ": a session file ends in .sonora";
@@ -97,7 +98,7 @@ bool write_session(const std::string& path, const model::Snapshot& snapshot,
     if (!model::serialize(snapshot, info, bytes, error, &digests)) return false;
     session_files::SessionFolder folder;
     std::string why, caution;
-    if (!folder.save(absolute.string(), bytes, snapshot, why, caution)) {
+    if (!folder.save(absolute.string(), bytes, snapshot, why, caution, state_source)) {
         error = path + ": " + why;
         return false;
     }

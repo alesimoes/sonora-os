@@ -66,8 +66,11 @@ bool read_session(const std::string& path, model::Snapshot& out, ConversionRepor
                   std::string& error);
 // Written as the engine's saver writes it (session_files::SessionFolder), so
 // the result opens in the engine. The folder is created if it is not there.
+// The plugin state a session names is copied from `state_source` (the input
+// session's folder for a rewrite), as the saver does; without it a session
+// that names state is refused.
 bool write_session(const std::string& path, const model::Snapshot&, ConversionReport&,
-                   std::string& error);
+                   std::string& error, const std::string& state_source = std::string());
 
 // sonora-convert's command line, apart from main() so a test can run it.
 // Returns the exit code: 0 done, 1 the conversion failed, 2 usage.

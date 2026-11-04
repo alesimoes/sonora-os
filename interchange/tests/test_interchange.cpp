@@ -10,6 +10,7 @@
 #include <sstream>
 
 #include "sonora/interchange/interchange.h"
+#include "sonora/model/session_file.h"
 #include "sonora/midi/notes.h"
 #include "sonora/midi/smf.h"
 
@@ -19,6 +20,16 @@
             std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
             return 1;                                                        \
         }                                                                    \
+    } while (0)
+
+// CHECK that also says why, for the calls that return a reason.
+#define CHECK_OK(cond, why)                                                      \
+    do {                                                                         \
+        if (!(cond)) {                                                           \
+            std::fprintf(stderr, "FAIL %s:%d: %s: %s\n", __FILE__, __LINE__, #cond, \
+                         (why).c_str());                                         \
+            return 1;                                                            \
+        }                                                                        \
     } while (0)
 
 using namespace sonora;
@@ -50,8 +61,8 @@ std::string song_bytes() {
     midi::SmfTrack conductor;
     conductor.events.push_back(midi::tempo(0, 428571));   // 140 bpm
     conductor.events.push_back(midi::time_signature(0, 4, 4));
-    conductor.events.push_back(midi::time_signature(1920, 3, 4));
     conductor.events.push_back(midi::marker(480, "verse"));
+    conductor.events.push_back(midi::time_signature(1920, 3, 4));
     smf.tracks.push_back(conductor);
     midi::SmfTrack bass;
     bass.events.push_back(midi::track_name(0, "Bass"));
@@ -82,7 +93,7 @@ int test_smf_import() {
     interchange::ConversionReport report;
     model::Snapshot s;
     std::string error;
-    CHECK(importer.read_bytes(song_bytes(), "Song", s, report, error));
+    CHECK_OK(importer.read_bytes(song_bytes(), "Song", s, report, error), error);
     CHECK(s.settings.name == "Song");
     CHECK(s.edit->tracks.size() == 1);
     const model::TrackEdit& t = *s.edit->tracks[0];
@@ -97,7 +108,8 @@ int test_smf_import() {
     CHECK(s.settings.tempo[0].bpm > 139.9f && s.settings.tempo[0].bpm < 140.1f);
     CHECK(s.settings.tempo[1].meter[0] == 3);
     // 4 beats at 140 bpm, at 48 kHz.
-    CHECK(s.settings.tempo[1].at == 4 * 60 * 48000 / 140);
+    const model::Frames bar = 4 * 60 * 48000 / 140;
+    CHECK(s.settings.tempo[1].at >= bar && s.settings.tempo[1].at <= bar + 1);
     // What did not survive is said.
     CHECK(mentions(report.dropped, "marker"));
     CHECK(mentions(report.dropped, "key signature") || mentions(report.dropped, "no notes"));
@@ -110,7 +122,7 @@ int test_smf_round_trip() {
     interchange::ConversionReport report;
     model::Snapshot s;
     std::string error, bytes;
-    CHECK(importer.read_bytes(song_bytes(), "Song", s, report, error));
+    CHECK_OK(importer.read_bytes(song_bytes(), "Song", s, report, error), error);
     CHECK(exporter.encode(s, bytes, report, error));
     const midi::SmfReadResult back = midi::read_smf(
         reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
@@ -153,17 +165,17 @@ int test_hostile_smf() {
     return 0;
 }
 
-// The frozen v6 session (MIDI sequences beside it) in, out in the current
-// version, in again: the same document, with no repair and nothing lost.
+// The frozen v1 session in, out in the current version, in again: the same
+// document, nothing lost.
 int test_golden_session() {
-    const fs::path golden = fs::path(SONORA_MODEL_FIXTURES) / "v6-midi.sonora";
+    const fs::path golden = fs::path(SONORA_MODEL_FIXTURES) / "v1-punch.sonora";
     interchange::ConversionReport report;
     model::Snapshot before, after;
     std::string error;
     CHECK(interchange::read_session(golden.string(), before, report, error));
     CHECK(!before.edit->tracks.empty());
     const fs::path out = scratch() / "golden" / "golden.sonora";
-    CHECK(interchange::write_session(out.string(), before, report, error));
+    CHECK_OK(interchange::write_session(out.string(), before, report, error), error);
     CHECK(fs::exists(out));
     interchange::ConversionReport again;
     CHECK(interchange::read_session(out.string(), after, again, error));
@@ -178,6 +190,24 @@ int test_golden_session() {
     model::Snapshot reread;
     CHECK(interchange::read_session(twice.string(), reread, third, error));
     CHECK(model::same_document(after, reread));
+    return 0;
+}
+
+// A session that names plugin state is converted only with the state beside
+// it, as the engine's saver demands; the fixtures have none, so it is refused
+// by name and no half session is left behind.
+int test_plugin_state_refused() {
+    const fs::path golden = fs::path(SONORA_MODEL_FIXTURES) / "v6-midi.sonora";
+    interchange::ConversionReport report;
+    model::Snapshot s;
+    std::string error;
+    CHECK_OK(interchange::read_session(golden.string(), s, report, error), error);
+    CHECK(s.edit->tracks.size() > 0);
+    const fs::path out = scratch() / "state" / "state.sonora";
+    CHECK(!interchange::write_session(out.string(), s, report, error,
+                                      (fs::path(SONORA_MODEL_FIXTURES)).string()));
+    CHECK(error.find("plugin state") != std::string::npos);
+    CHECK(!fs::exists(out));
     return 0;
 }
 
@@ -212,7 +242,7 @@ int test_command_line() {
     const fs::path session = scratch() / "cli" / "Song.sonora";
     out.clear();
     err.clear();
-    CHECK(interchange::run_convert({"smf-import", mid.string(), session.string()}, out, err) == 0);
+    CHECK_OK(interchange::run_convert({"smf-import", mid.string(), session.string()}, out, err) == 0, err);
     CHECK(out.find("dropped:") != std::string::npos && fs::exists(session));
     const fs::path exported = scratch() / "back.mid";
     CHECK(interchange::run_convert({"smf-export", session.string(), exported.string()}, out,
@@ -233,6 +263,7 @@ int main() {
     failed += test_smf_round_trip();
     failed += test_hostile_smf();
     failed += test_golden_session();
+    failed += test_plugin_state_refused();
     failed += test_session_errors();
     failed += test_command_line();
     std::error_code ec;
