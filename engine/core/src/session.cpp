@@ -1826,7 +1826,9 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
                 const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
                 const bool silent = node.channel_slot == kSilentChannelSlot;
+                bool played = false;
                 if (runner_ != nullptr && node.channel_slot != kNoChannelSlot && !silent) {
+                    played = true;
                     // runner_ is set only for a callback mixed whole, so
                     // this runs once per node per callback, with the
                     // changes gather_params() sorted to it.
@@ -1853,6 +1855,17 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                     }
                     std::atomic<uint64_t>& c = silent ? silent_chain_blocks_ : unrun_chain_blocks_;
                     c.store(c.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+                }
+                if (rolling) {
+                    if (TrackTap* tap = track_tap_.load(std::memory_order_acquire)) {
+                        if (tap->engine_track() == plan.tracks[node.track].engine_track) {
+                            if (played) {
+                                tap->push(L, R, n, node.latency_frames);
+                            } else {
+                                tap->unplayed(n);
+                            }
+                        }
+                    }
                 }
                 if (runner_ != nullptr && ni == plan.last_insert_node) runner_->end();
                 continue;

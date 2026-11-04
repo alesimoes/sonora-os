@@ -281,7 +281,8 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.toggle_loop_record", "transport.toggle_cycle",
         "transport.cycle_selection", "transport.punch_selection", "transport.clear_punch",
         "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready", "meters.reset",
-        "mix.bounce", "mix.bounce_cancel",
+        "mix.bounce", "mix.bounce_cancel", "track.freeze", "track.commit", "track.process_selection",
+        "track.unfreeze", "track.render_cancel",
     };
     return ids;
 }
@@ -390,6 +391,7 @@ bool FakeEngine::connect(std::string& error) {
     if (!folder_.empty()) announce_folder();
     announce_latency();
     if (!bounce_event_.empty()) queue(outbound_, bounce_event_);
+    if (!render_event_.empty()) queue(outbound_, render_event_);
     return true;
 }
 
@@ -1317,6 +1319,7 @@ void FakeEngine::poll(Inbox& inbox) {
     check_take();
     check_latency();
     check_bounce();
+    check_render();
     publish();
 
     // The client's half: everything back through the codec.
@@ -1646,6 +1649,48 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
                         "the bounce was cancelled; no file was kept");
         return true;
     }
+    // Render in place (ADR-0051): like the bounce above, Running then Done.
+    // The real engine renders the track's chain; the fake has no document to
+    // put the file in.
+    if (id == "track.freeze" || id == "track.commit" || id == "track.process_selection") {
+        RenderOptions o;
+        if (!parse_render_argument(r.argument, o, why)) return false;
+        if (id == "track.process_selection" && o.end == 0) {
+            why = "select a range to process";
+            return false;
+        }
+        if (recording) {
+            why = "stop recording before rendering a track";
+            return false;
+        }
+        if (render_running_ || bounce_running_) {
+            why = "a render is already running; cancel it or wait for it";
+            return false;
+        }
+        if (mode_ != TransportState::Stopped) {
+            why = "stop the transport before rendering a track";
+            return false;
+        }
+        render_running_ = true;
+        render_age_ = 0;
+        render_track_ = o.track;
+        announce_render(static_cast<uint32_t>(RenderState::Running), 500, "");
+        return true;
+    }
+    if (id == "track.unfreeze") {
+        RenderOptions o;
+        return parse_render_argument(r.argument, o, why);
+    }
+    if (id == "track.render_cancel") {
+        if (!render_running_) {
+            why = "no render is running";
+            return false;
+        }
+        render_running_ = false;
+        announce_render(static_cast<uint32_t>(RenderState::Cancelled), 0,
+                        "the render was cancelled; nothing was changed");
+        return true;
+    }
     if (id == "session.place_recovered") return place_recovered(why);
     if (id == "session.leave_recovered") {
         if (offered_.empty()) {
@@ -1877,6 +1922,25 @@ void FakeEngine::check_bounce() {
     if (bounce_age_++ < 1) return;
     bounce_running_ = false;
     announce_bounce(static_cast<uint32_t>(BounceState::Done), 1000, "Bounced Files/Bounce_01.wav");
+}
+
+void FakeEngine::announce_render(uint32_t state, uint32_t permille, const std::string& text) {
+    EngineEvent e;
+    e.kind = EventKind::Render;
+    e.frame = permille;
+    e.insert = render_track_;
+    e.flags = state;
+    e.text = text;
+    render_event_.clear();
+    wire::encode(e, render_event_);
+    post_event(e);
+}
+
+void FakeEngine::check_render() {
+    if (!render_running_) return;
+    if (render_age_++ < 1) return;
+    render_running_ = false;
+    announce_render(static_cast<uint32_t>(RenderState::Done), 1000, "Track rendered");
 }
 
 void FakeEngine::announce_latency() {

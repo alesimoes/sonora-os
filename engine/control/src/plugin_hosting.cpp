@@ -1599,6 +1599,33 @@ uint32_t PluginHosting::insert_flags(model::Id insert) const {
     return flags;
 }
 
+bool PluginHosting::chain_ready(model::Id track) const {
+    if (!ok_) return false;
+    const auto it = chains_.find(track);
+    if (it == chains_.end()) return false;
+    const Chain& c = *it->second;
+    if (!c.running || c.pending || c.running->starting() || c.running->restarting() ||
+        c.running->down()) {
+        return false;
+    }
+    const plugin_client::InsertChainRef ref = c.running->node();
+    if (ref.channel_slot == plugin_client::kNoSlot) return false;
+    for (const Member& m : c.running_spec) {
+        if (faults_.count(m.insert)) return false;
+    }
+    return true;
+}
+
+uint64_t PluginHosting::chain_misses(model::Id track) const {
+    const auto it = chains_.find(track);
+    if (it == chains_.end() || !it->second->running) return 0;
+    const plugin_client::InsertChainRef ref = it->second->running->node();
+    if (ref.channel_slot == plugin_client::kNoSlot) return 0;
+    const plugin_client::SlotStatus s = client_->slot_status(ref.channel_slot);
+    const plugin_client::NodeStatus n = client_->node_status(ref.node_state);
+    return s.misses + s.nonfinite_blocks + n.silent_blocks;
+}
+
 uint32_t PluginHosting::loading() const {
     // A chain opened with the session is loading until its host is Ready,
     // its start failed, or nothing of it is left to run. With hosting

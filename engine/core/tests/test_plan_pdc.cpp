@@ -423,6 +423,64 @@ int test_unbound_chain_passes_through() {
     return 0;
 }
 
+// Render in place (ADR-0051): the tap on a track gets what its chain played,
+// before the fader, with the chain's latency, and never the input; a chain
+// that is not bound plays nothing the tap may take, and says so; another
+// track's tap hears nothing.
+int test_track_tap_takes_the_chain_output_and_counts_what_it_did_not_play() {
+    Rig rig(1, 16384);
+    DelayRunner runner(1, 4096);
+    rig.session->set_insert_chains(&runner);
+    DelayLinePool pool(rig.session->delay_lines());
+    CHECK(rig.publish(rig.plan({chain(0, 512)}, pool)));
+    sonora::TrackTap tap(0, 16384);
+    sonora::TrackTap other(1, 1024);
+    rig.session->set_track_tap(&tap);
+    rig.session->play();
+    for (int blk = 0; blk < 30; ++blk) rig.block();
+    rig.session->set_track_tap(&other);
+    rig.block();
+    rig.session->set_track_tap(nullptr);
+    rig.session->stop_playback();
+
+    CHECK(tap.latency() == 512);
+    CHECK(tap.lost_frames() == 0 && tap.unplayed_frames() == 0);
+    CHECK(other.frames_available() == 0 && other.unplayed_frames() == 0);
+    const std::size_t got = tap.frames_available();
+    CHECK(got >= 20 * kBlock);
+    std::vector<float> buf(got * 2);
+    CHECK(tap.read(buf.data(), got) == got);
+    // The head is the chain's own silence, then the signal 512 frames late:
+    // the first non-zero frame is the signal's first (frame kLeadIn).
+    std::size_t first = 0;
+    while (first < got && buf[2 * first] == 0.0f) ++first;
+    CHECK(first < got);
+    CHECK(buf[2 * first] == signal(kLeadIn));
+    for (std::size_t k = first; k < got; ++k) {
+        CHECK(buf[2 * k] == signal(kLeadIn + static_cast<int64_t>(k - first)));
+        CHECK(buf[2 * k + 1] == buf[2 * k]);
+    }
+    return 0;
+}
+
+int test_track_tap_counts_an_unbound_chain_as_unplayed() {
+    Rig rig(1, 16384);
+    DelayLinePool pool(rig.session->delay_lines());
+    ChainBinding unbound;
+    unbound.active = true;
+    CHECK(rig.publish(rig.plan({unbound}, pool)));
+    sonora::TrackTap tap(0, 16384);
+    rig.session->set_track_tap(&tap);
+    rig.session->play();
+    for (int blk = 0; blk < 10; ++blk) rig.block();
+    rig.session->set_track_tap(nullptr);
+    rig.session->stop_playback();
+    // Dry would arrive early and unprocessed: the tap refuses to hold it.
+    CHECK(tap.frames_available() == 0);
+    CHECK(tap.unplayed_frames() >= 5 * kBlock);
+    return 0;
+}
+
 // Review of PR #48 (H1): an edge delayed, then undelayed for a while, then
 // delayed again gets its old line back from the pool. That line holds the
 // audio from before the gap; replaying it would put tens of milliseconds
@@ -761,6 +819,8 @@ int main() {
     if (test_delay_line_pool()) return 1;
     if (test_swap_with_latency_change()) return 1;
     if (test_unbound_chain_passes_through()) return 1;
+    if (test_track_tap_takes_the_chain_output_and_counts_what_it_did_not_play()) return 1;
+    if (test_track_tap_counts_an_unbound_chain_as_unplayed()) return 1;
     if (test_line_restarts_after_a_gap()) return 1;
     if (test_stable_ids_follow_the_track()) return 1;
     if (test_long_callback_bypasses_chains()) return 1;

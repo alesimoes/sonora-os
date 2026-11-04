@@ -215,6 +215,11 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
                     notices_.push_back("bounce: " + e.text);
                 }
                 break;
+            case api::EventKind::Render:
+                if (e.flags != static_cast<uint32_t>(api::RenderState::Running)) {
+                    notices_.push_back("render: " + e.text);
+                }
+                break;
         }
     }
     // Model updates are for an editor's replica; this interface draws none.

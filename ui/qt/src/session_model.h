@@ -87,6 +87,10 @@ class SessionModel : public QObject {
     Q_PROPERTY(QString fadeShape READ fadeShape NOTIFY editStateChanged)
     Q_PROPERTY(QString crossfadeShape READ crossfadeShape NOTIFY editStateChanged)
     Q_PROPERTY(int selectedTrack READ selectedTrack NOTIFY selectionChanged)
+    // Track > Unfreeze is offered on a frozen track (ADR-0051); `renderWhat`
+    // is what the render under way is doing, for the footer.
+    Q_PROPERTY(bool selectedTrackFrozen READ selectedTrackFrozen NOTIFY editStateChanged)
+    Q_PROPERTY(QString renderWhat READ renderWhat NOTIFY renderWhatChanged)
     // Every track the selection covers: the headers the Shift-click on R and I
     // acts on, drawn as selected.
     Q_PROPERTY(QList<int> selectedTracks READ selectedTracks NOTIFY selectionChanged)
@@ -447,6 +451,12 @@ public:
     // parse_roll_text() reads them, sent as transport.set_pre_roll or
     // transport.set_post_roll. False, with the reason on the status line,
     // for text that is not a length; the engine's refusal comes back there.
+    bool selectedTrackFrozen() const;
+    QString renderWhat() const { return render_what_; }
+    // "freeze", "commit", "unfreeze" or "process": the selected track (and
+    // for "process" its selected range) sent to the engine as the matching
+    // track.* command.
+    Q_INVOKABLE bool renderInPlace(const QString& what);
     Q_INVOKABLE bool setPreRollText(const QString& text);
     Q_INVOKABLE bool setPostRollText(const QString& text);
     // How an engine command with an argument leaves this model: the shell's
@@ -522,6 +532,7 @@ signals:
     void windowChanged();
     void contentChanged();
     void editStateChanged();
+    void renderWhatChanged();
     void selectionChanged();
     void viewChanged();
     void rowsChanged();
@@ -682,6 +693,7 @@ private:
     bool memory_locations_open_ = false;
     bool latency_open_ = false;
     bool bounce_open_ = false;
+    QString render_what_;
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);

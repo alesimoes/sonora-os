@@ -73,12 +73,14 @@
 #include <vector>
 
 #include "sonora/api/messages.h"
+#include "sonora/api/render.h"
 #include "sonora/api/state_block.h"
 #include "sonora/api/wire.h"
 #include "sonora/automation_write.h"
 #include "sonora/automation_writer.h"
 #include "sonora/bounce_job.h"
 #include "sonora/command.h"
+#include "sonora/render_in_place.h"
 #include "sonora/machine_latency.h"
 #include "sonora/model/operations.h"
 #include "sonora/orphan_offer.h"
@@ -619,6 +621,20 @@ private:
     void announce_bounce(api::BounceState state, uint32_t permille, uint64_t frames,
                          const std::string& text);
     void follow_bounce();
+    // Render in place (ADR-0051): Freeze, Commit and Process Selection print
+    // a track through its live chain in real time (RenderInPlace) and this
+    // thread puts the file in the document. The standing Render event and
+    // the last progress said.
+    std::unique_ptr<RenderInPlace> render_;
+    std::string render_event_;
+    uint32_t render_said_ = 0;
+    void announce_render(api::RenderState state, uint32_t permille, model::Id track,
+                         const std::string& text);
+    bool start_render(model::RenderKind kind, const std::string& argument, std::string& why);
+    void follow_render();
+    // The compound the engine itself applied: every replica is sent it, the
+    // chains follow the document and the playing plan is built again.
+    void document_changed_by_engine(const std::vector<model::ReplicationUpdate>& updates);
     api::LatencySource latency_source_ = api::LatencySource::None;
     api::LatencyStatus latency_status_ = api::LatencyStatus::Idle;
     std::string latency_text_;

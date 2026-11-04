@@ -9,6 +9,7 @@
 #include <chrono>
 
 #include "sonora/api/bounce.h"
+#include "sonora/api/render.h"
 
 #include "meter_item.h"
 #include "meter_model.h"
@@ -455,6 +456,31 @@ void ShellModel::dismissBounce() {
     emit bounceChanged();
 }
 
+bool ShellModel::renderAvailable() const {
+    const auto& caps = engine_.info().capabilities;
+    return std::find(caps.begin(), caps.end(), api::kCapabilityRender) != caps.end();
+}
+
+void ShellModel::holdRenderNotice(const QString& text) {
+    if (text == render_notice_) return;
+    render_notice_ = text;
+    emit renderChanged();
+}
+
+void ShellModel::cancelRender() {
+    CommandContext ctx;
+    report(router_.invoke("track.render_cancel", ctx));
+}
+
+void ShellModel::dismissRender() {
+    render_notice_.clear();
+    if (render_state_ != 0) {
+        render_state_ = -1;
+        render_progress_ = 0.0;
+    }
+    emit renderChanged();
+}
+
 qreal ShellModel::scaleY(qreal db, qreal h) const {
     const float top = meter_over_band(static_cast<float>(h)) + 1.0f;
     const float span = static_cast<float>(h) - top;
@@ -547,6 +573,12 @@ void ShellModel::tick() {
         if (latency) holdLatencyRefusal(QString::fromStdString(why));
         if (r.command.compare(0, 10, "mix.bounce") == 0) {
             holdBounceRefusal(QString::fromStdString(why));
+        }
+        // The refusal of a render stays in the footer, not on the 2.5 s line.
+        if (r.command == "track.freeze" || r.command == "track.commit" ||
+            r.command == "track.process_selection" || r.command == "track.unfreeze" ||
+            r.command == "track.render_cancel") {
+            holdRenderNotice(QStringLiteral("Render refused: ") + QString::fromStdString(why));
         }
         say(QString::fromStdString(r.command + ": " + why));
     }
@@ -681,6 +713,32 @@ void ShellModel::takeEvents() {
                         break;
                 }
                 emit bounceChanged();
+                break;
+            }
+            case EngineEventKind::Render: {
+                const auto state = static_cast<api::RenderState>(e.flags);
+                // A refusal stands through the progress of the render that
+                // was already under way; a new render clears it.
+                const bool begins = state == api::RenderState::Running && render_state_ != 0;
+                render_state_ = static_cast<int>(e.flags);
+                render_progress_ = state == api::RenderState::Running
+                                       ? std::min<qreal>(1.0, static_cast<qreal>(e.take) / 1000.0)
+                                       : (state == api::RenderState::Done ? 1.0 : 0.0);
+                // One notice stands at a time, replaced by the next render's
+                // and held until put away.
+                switch (state) {
+                    case api::RenderState::Running:
+                        if (begins) render_notice_.clear();
+                        break;
+                    case api::RenderState::Done: render_notice_ = text; break;
+                    case api::RenderState::Failed:
+                        render_notice_ = QStringLiteral("Render failed: ") + text;
+                        break;
+                    case api::RenderState::Cancelled:
+                        render_notice_ = QStringLiteral("Render stopped: ") + text;
+                        break;
+                }
+                emit renderChanged();
                 break;
             }
             case EngineEventKind::PluginFault:

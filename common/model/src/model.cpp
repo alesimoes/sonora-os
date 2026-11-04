@@ -122,7 +122,7 @@ bool Region::operator==(const Region& o) const {
 
 bool Playlist::operator==(const Playlist& o) const {
     return id == o.id && name == o.name && regions == o.regions &&
-           crossfades == o.crossfades;
+           crossfades == o.crossfades && freeze == o.freeze;
 }
 
 bool MidiRegion::operator==(const MidiRegion& o) const {

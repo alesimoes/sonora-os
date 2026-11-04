@@ -24,6 +24,11 @@ add_executable(test_bounce_wire tests/test_bounce_wire.cpp)
 target_link_libraries(test_bounce_wire PRIVATE sonora_api)
 add_test(NAME bounce_wire COMMAND test_bounce_wire)
 
+# Render in place's wire argument (ADR-0051, protocol 56).
+add_executable(test_render_wire tests/test_render_wire.cpp)
+target_link_libraries(test_render_wire PRIVATE sonora_api)
+add_test(NAME render_wire COMMAND test_render_wire)
+
 add_executable(test_api_state_view tests/test_state_view.cpp)
 target_link_libraries(test_api_state_view PRIVATE sonora_api)
 add_test(NAME api_state_view COMMAND test_api_state_view)

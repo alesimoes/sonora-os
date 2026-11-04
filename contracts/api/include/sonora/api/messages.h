@@ -166,7 +166,14 @@ namespace sonora::api {
 //   capability "mix.bounce", and EventKind::Bounce, which a version-42
 //   decoder refuses as an unknown kind. 43 to 48 are other PRs' and are not
 //   in this tree.
-constexpr uint32_t kProtocolVersion = 49;
+// 56 (plugins.graph.freeze, plugins.offline; ADR-0051): the commands
+//   track.freeze, track.commit, track.process_selection, track.unfreeze and
+//   track.render_cancel, the capability "track.render", EventKind::Render
+//   (a version-49 decoder refuses it as an unknown kind), and the optional
+//   "freeze" key of an AddPlaylist operation and of a playlist in the undo
+//   window, which a version-49 decoder refuses as an unknown key. 50 to 55
+//   are other PRs' and are not in this tree.
+constexpr uint32_t kProtocolVersion = 56;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -453,6 +460,13 @@ enum class EventKind : uint32_t {
     // after the last until the next bounce, so a failure stays on screen
     // until dismissed and a client that attaches later is sent it.
     Bounce = 8,
+    // A render in place (api/render.h, protocol 56): `frame` the fraction in
+    // thousandths, `insert` the track's model id, `flags` a RenderState,
+    // `text` what was done once Done or why it Failed or was Cancelled. One
+    // stands from the first progress, held until the next render, so a
+    // failure stays on screen until dismissed and a client that attaches
+    // later is sent it.
+    Render = 9,
 };
 
 // EngineEvent::flags of a SessionFolder.

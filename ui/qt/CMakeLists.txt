@@ -219,6 +219,15 @@ target_compile_definitions(test_ui_bounce_window PRIVATE
 add_test(NAME ui_bounce_window COMMAND test_ui_bounce_window)
 set_tests_properties(ui_bounce_window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# Track > Freeze, Commit, Unfreeze, Process Selection (ADR-0051): the menu over
+# FakeEngine's wire, the argument it sends, progress and the held notice.
+add_executable(test_ui_render_in_place tests/test_render_in_place.cpp)
+target_link_libraries(test_ui_render_in_place PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_render_in_place PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_render_in_place COMMAND test_ui_render_in_place)
+set_tests_properties(ui_render_in_place PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # Counters, ruler, grid and snap through the whole tempo map; the Transport
 # window's model on a scripted transport; then the window in the real QML,
 # opened by Pro Tools' key and by its button.
