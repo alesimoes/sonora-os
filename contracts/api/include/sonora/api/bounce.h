@@ -39,8 +39,8 @@ struct BounceOptions {
     uint64_t start = 0;
     uint64_t end = 0;
     BounceFormat format = BounceFormat::Int24;
-    // A BWF file (bext with the start as its TimeReference); off is plain WAV.
-    bool bwf = true;
+    // The file is always a BWF: the writer's bext carries the start as its
+    // TimeReference, and a BWF opens as a WAV everywhere.
     // Off by default. On, the integrated loudness is brought to
     // `target_lufs` by one gain, never past a -1 dBFS sample peak.
     bool normalise = false;
@@ -52,7 +52,6 @@ inline std::string format_bounce_argument(const BounceOptions& o) {
     std::string s = std::string("mode=") + (o.mode == BounceMode::RealTime ? "realtime" : "offline");
     s += ";start=" + std::to_string(o.start) + ";end=" + std::to_string(o.end);
     s += std::string(";format=") + (o.format == BounceFormat::Float32 ? "float32" : "int24");
-    s += std::string(";bwf=") + (o.bwf ? "1" : "0");
     if (o.normalise) s += ";normalise=" + std::to_string(o.target_lufs);
     s += ";name=" + o.name;
     return s;
@@ -92,9 +91,6 @@ inline bool parse_bounce_argument(const std::string& arg, BounceOptions& out, st
             if (v == "int24") o.format = BounceFormat::Int24;
             else if (v == "float32") o.format = BounceFormat::Float32;
             else { why = "bounce format is int24 or float32, not \"" + v + "\""; return false; }
-        } else if (key == "bwf") {
-            if (v != "0" && v != "1") { why = "bounce bwf is 0 or 1"; return false; }
-            o.bwf = v == "1";
         } else if (key == "normalise") {
             const double d = std::strtod(v.c_str(), &endp);
             if (v.empty() || *endp != '\0' || d < -70.0 || d > 0.0) {

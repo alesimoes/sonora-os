@@ -1901,6 +1901,9 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
         if (plan.monitor_out[1] < block.output_count) {
             std::memcpy(block.outputs[plan.monitor_out[1]] + offset, R, n * sizeof(float));
         }
+        if (rolling) {
+            if (MasterTap* tap = master_tap_.load(std::memory_order_acquire)) tap->push(L, R, n);
+        }
     }
 }
 

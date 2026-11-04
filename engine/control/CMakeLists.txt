@@ -22,6 +22,7 @@ add_library(sonora_control STATIC
   src/machine_latency.cpp
   src/preset_store.cpp
   src/consolidate.cpp
+  src/bounce.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -82,6 +83,14 @@ if(UNIX)
   add_executable(test_consolidate tests/test_consolidate.cpp)
   target_link_libraries(test_consolidate PRIVATE sonora_control)
   add_test(NAME consolidate COMMAND test_consolidate)
+endif()
+
+# Bounce Mix's engine half (ui.mixer.bounce): the offline file is the mix,
+# real time records the master through the tap, normalise, cancel. POSIX's.
+if(UNIX)
+  add_executable(test_bounce tests/test_bounce.cpp)
+  target_link_libraries(test_bounce PRIVATE sonora_control Threads::Threads)
+  add_test(NAME bounce COMMAND test_bounce)
 endif()
 
 # A closed take as one compound; a bad file costs one track (ADR-0009

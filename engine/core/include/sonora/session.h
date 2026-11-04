@@ -17,6 +17,7 @@
 #include "sonora/fade_curve.h"
 #include "sonora/insert_chain_runner.h"
 #include "sonora/latency_probe.h"
+#include "sonora/master_tap.h"
 #include "sonora/plan_exchange.h"
 #include "sonora/process_callback.h"
 #include "sonora/ringbuffer.h"
@@ -618,6 +619,10 @@ public:
     void set_insert_chains(InsertChainRunner* runner) {
         chains_.store(runner, std::memory_order_release);
     }
+    // Real-time bounce (ui.mixer.bounce): while set, every rolled frame the
+    // master outputs gets is also pushed to the tap. Not owned; clear it and
+    // let a callback pass (stop the transport) before freeing the tap.
+    void set_master_tap(MasterTap* tap) { master_tap_.store(tap, std::memory_order_release); }
     // Callbacks whose chains did not run because the callback was longer
     // than max_block_frames, or not the runner's block_frames
     // (insert_chain_runner.h).
@@ -998,6 +1003,7 @@ private:
     uint64_t last_callback_ns_ = 0;
     uint32_t last_nframes_ = 0;
     std::atomic<InsertChainRunner*> chains_{nullptr};
+    std::atomic<MasterTap*> master_tap_{nullptr};
     // This callback's runner, when its chains run: loaded once per callback.
     InsertChainRunner* runner_ = nullptr;
     // The runner loaded this callback whether or not it runs the chains:
