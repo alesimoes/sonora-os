@@ -132,13 +132,11 @@ int test_scene_draws_the_line() {
     EditController c(doc);
     std::string why;
     SyntheticPeakSource peaks(kRate, 120.0);
-    ViewState v;
-    v.width = 1200;
-    v.track_height = 120;
-    v.fpp = 400;
+    c.set_viewport(1200, 400);
+    const ViewState v = c.view();
     const auto count = [&] {
         Scene s;
-        build_scene(doc.snapshot(), v, peaks, c.selection(), s);
+        build_timeline_scene(doc.snapshot(), v, c.selection(), Drag{}, false, GridValue{}, peaks, s);
         return std::make_pair(s.rects.size(), s.labels);
     };
     const auto flat = count();
