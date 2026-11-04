@@ -330,7 +330,7 @@ class Train:
             # sanitizers run ~50 min); its push cancels the rest.
             self._save(fid, phase="fixer", action="fixer (CI)",
                        next="fixer corrige: " + ", ".join(early[:3]), **upd)
-            o._red(f, ts, early, "ci")
+            o._red(f, ts, early, "ci", self._why(head))
             return
 
         if any(c["state"] == "pending" for c in checks):
@@ -366,7 +366,7 @@ class Train:
         if fails and (refreshed or self.busy() >= cfg.train_slots):
             self._save(fid, phase="fixer", action="fixer (CI)",
                        next="fixer corrige: " + ", ".join(fails[:3]), **upd)
-            o._red(f, ts, fails, "ci")
+            o._red(f, ts, fails, "ci", self._why(head))
             return
         if self.busy() >= cfg.train_slots:
             self._save(fid, phase="aguardando vaga",
@@ -398,6 +398,12 @@ class Train:
         self._save(fid, phase=phase, action=how,
                    next="novo CI; vermelho de novo → fixer", **upd)
         o.store.event(ts[0]["id"], "train_refresh", f"#{n} {how}")
+
+    def _why(self, head):
+        try:
+            return self.o.forge.failure_excerpt(head)
+        except Exception as e:  # an excerpt is help, never a reason to stop
+            return f"(could not read the CI logs: {e})"
 
     def after_fix(self, fid, local_head):
         """The fixer's commits are pushed: the next head is the one to judge,

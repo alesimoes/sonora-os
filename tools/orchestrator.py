@@ -314,6 +314,8 @@ class Orchestrator:
             env = launcher.run_env(name, t["id"], t["feature_id"], self.hdir,
                                    self.broker.port, self.broker.token,
                                    result_path)
+            if adopted:
+                env["SONORA_UNCLAIMED_OK"] = "1"
             mcp, settings = launcher.write_run_files(run_dir, env)
             prompt = launcher.build_prompt(t, run_id, name, ln.kind,
                                            result_path, self._extra(t, ln.kind))
@@ -752,7 +754,7 @@ class Orchestrator:
                 if failing:
                     self._red(f, ts, failing, "ci")
 
-    def _red(self, f, ts, jobs, fix_kind):
+    def _red(self, f, ts, jobs, fix_kind, detail=""):
         """Red check or conflict: a fixer (the track's engineer) or the
         integrator in the same tick; the same job still red after two fixes
         blocks the feature instead of spending a third agent."""
@@ -769,8 +771,13 @@ class Orchestrator:
                                fixes=f["fixes"] + 1)
         what = "conflicts with main" if fix_kind == "conflict" \
             else "red: " + ", ".join(jobs)
+        note = f"PR #{f['pr']} {what}"
+        if detail:
+            note += "
+Why, from the CI logs (start here):
+" + detail
         self.store.advance_feature(f["id"], "ci_fix", fix_kind=fix_kind,
-                                   note=f"PR #{f['pr']} {what}")
+                                   note=note)
         self.store.event(ts[0]["id"], "ci_red", ", ".join(jobs))
 
     def _merged(self, f, ts):

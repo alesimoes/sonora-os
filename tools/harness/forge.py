@@ -95,6 +95,9 @@ class Forge:
     def close_pr(self, pr, comment):
         raise NotImplementedError
 
+    def failure_excerpt(self, head_sha, per_job=8):
+        return ""
+
     def contains(self, worktree, branch):
         """True when origin/<branch>'s head is in the worktree's HEAD (a
         bundle took that PR)."""
@@ -275,6 +278,49 @@ class GhForge(Forge):
     def close_pr(self, pr, comment):
         self._ok(["gh", "pr", "close", str(pr), "--comment", comment],
                  timeout=60)
+
+    FAIL_LINE = re.compile(
+        r"\(Failed\)|\(Subprocess aborted\)|\(Timeout\)|^(FAIL|ERROR): |"
+        r"AssertionError|error: |forbidden edge|::error|##\[error\]|"
+        r"\bSC\d{4}\b|No space left|\bE: ")
+
+    def failure_excerpt(self, head_sha, per_job=8):
+        """The lines that say why each failed job of the head's CI failed,
+        so a fixer starts from the cause instead of skimming a log head."""
+        try:
+            runs = json.loads(self._ok(
+                ["gh", "run", "list", "--commit", head_sha, "--json",
+                 "databaseId,conclusion"], timeout=60) or "[]")
+        except (ForgeError, ValueError):
+            return ""
+        out = []
+        for run_ in runs:
+            # A run cancelled by a newer push still has its failed jobs.
+            if run_.get("conclusion") == "success":
+                continue
+            try:
+                jobs = json.loads(self._ok(
+                    ["gh", "api", f"repos/{{owner}}/{{repo}}/actions/runs/"
+                     f"{run_['databaseId']}/jobs", "--jq",
+                     "[.jobs[]|select(.conclusion==\"failure\")|"
+                     "{id,name}]"], timeout=60) or "[]")
+            except (ForgeError, ValueError):
+                continue
+            for j in jobs:
+                r = self.run(["gh", "api", "--allow-escape-sequences",
+                              f"repos/{{owner}}/{{repo}}/actions/jobs/"
+                              f"{j['id']}/logs"], self.root, 120)
+                lines = []
+                for ln in (r.stdout or "").splitlines():
+                    ln = re.sub(r"\x1b\[[0-9;]*m", "", ln)
+                    ln = re.sub(r"^\S+Z ", "", ln).strip()
+                    if self.FAIL_LINE.search(ln) and \
+                            "Process completed with exit code" not in ln:
+                        lines.append(ln[:240])
+                out.append(f"[{j['name']}]")
+                out += lines[-per_job:] or ["(no error line found; read "
+                                            "the log)"]
+        return "\n".join(out[:60])
 
     def contains(self, worktree, branch):
         self._ok(["git", "fetch", "-q", "origin",
