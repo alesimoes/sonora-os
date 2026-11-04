@@ -928,7 +928,7 @@ std::string track_shape_problem(const TrackEdit& t) {
     return {};
 }
 
-std::string gain_line_problem(const std::vector<GainPoint>& line) {
+std::string line_problem(const std::vector<GainPoint>& line) {
     if (line.size() > kMaxGainPoints) {
         return "gain_line holds more than " + str(static_cast<std::int64_t>(kMaxGainPoints)) +
                " points";
@@ -980,7 +980,7 @@ std::string region_problem(const Region& r, const SourcePool& pool,
         return "fade_in.length + fade_out.length is longer than the region";
     }
     if (!gain_in_range(r.gain_db)) return "gain_db " + gain_range();
-    return gain_line_problem(r.gain_line);
+    return line_problem(r.gain_line);
 }
 
 const Region* find_region(const Playlist& p, Id id) {
@@ -2057,5 +2057,7 @@ bool check_invariants(const Snapshot& s, std::string& error) {
     }
     return true;
 }
+
+std::string gain_line_problem(const std::vector<GainPoint>& line) { return detail::line_problem(line); }
 
 }  // namespace sonora::model
