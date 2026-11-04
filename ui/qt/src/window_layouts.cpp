@@ -93,7 +93,7 @@ QString WindowLayouts::summary(int slot) const {
 }
 
 QByteArray WindowLayouts::toJson() const {
-    QJsonObject slots;
+    QJsonObject entries;
     for (const auto& s : slots_) {
         QJsonObject windows;
         for (const auto& kv : s.second.windows) {
@@ -108,11 +108,11 @@ QByteArray WindowLayouts::toJson() const {
         QJsonObject slot;
         slot.insert(QStringLiteral("view"), s.second.view);
         slot.insert(QStringLiteral("windows"), windows);
-        slots.insert(QString::number(s.first), slot);
+        entries.insert(QString::number(s.first), slot);
     }
     QJsonObject root;
     root.insert(QStringLiteral("version"), 1);
-    root.insert(QStringLiteral("configurations"), slots);
+    root.insert(QStringLiteral("configurations"), entries);
     return QJsonDocument(root).toJson(QJsonDocument::Indented);
 }
 
@@ -130,8 +130,8 @@ bool WindowLayouts::fromJson(const QByteArray& bytes, QString& why) {
         return false;
     }
     std::map<int, WindowLayout> loaded;
-    const QJsonObject slots = root.value(QStringLiteral("configurations")).toObject();
-    for (auto it = slots.begin(); it != slots.end(); ++it) {
+    const QJsonObject entries = root.value(QStringLiteral("configurations")).toObject();
+    for (auto it = entries.begin(); it != entries.end(); ++it) {
         bool ok = false;
         const int n = it.key().toInt(&ok);
         if (!ok || n < 1 || n > kSlots) continue;
