@@ -2,7 +2,9 @@
 //
 // Bounce Mix on the wire (ui.mixer.bounce). CONTRACT ONLY: not yet in the
 // command catalog, and kProtocolVersion is not bumped by this header. The
-// coordinator gives the version; until then no engine answers it.
+// version is 44 (reserved by the coordinator; 43 is the consolidate command,
+// PR #367). The wire entry lands in a follow-up on top of #367: the two
+// commands, EventKind::Bounce, the capability, the bump to 44.
 //
 //   Command  "mix.bounce"         argument: format_bounce_argument()
 //   Command  "mix.bounce_cancel"  no argument; refused when none runs.

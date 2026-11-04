@@ -258,6 +258,8 @@ bool bounce_offline(const model::Snapshot& snapshot, const std::string& session_
     cfg.channels_per_track = channels;
     cfg.ring_seconds = 0.1;   // it never records
     Session session(cfg);
+    // The reader thread serves the blocks this thread plays.
+    session.reader().start();
     PlaybackController ctl(session);
 
     std::string why;
@@ -294,8 +296,9 @@ bool bounce_offline(const model::Snapshot& snapshot, const std::string& session_
                                   : 0;
         std::string e;
         if (!ctl.locate(from, e)) return e;
+        // The locate lands, and the roll starts, only at the blocks the loop
+        // below plays; settle() would wait for them here.
         ctl.play();
-        if (!ctl.settle(30.0)) return std::string("the disk did not serve the session in time");
         return std::string();
     };
 
@@ -320,15 +323,16 @@ bool bounce_offline(const model::Snapshot& snapshot, const std::string& session_
             return fail("bounce was cancelled");
         }
         ctl.pump();
-        if (session.transport().state() == TransportState::Stopped) {
+        const bool rolling = session.transport().state() != TransportState::Stopped;
+        const uint64_t misses = session.playback_misses();
+        block.frame_time += kBlock;
+        session.process(block);
+        if (!rolling) {
             if (++idle > 5000) return fail("the session never started to play");
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
         idle = 0;
-        const uint64_t misses = session.playback_misses();
-        block.frame_time += kBlock;
-        session.process(block);
         const uint64_t after = session.transport().playhead();
         const uint64_t at = after >= kBlock ? after - kBlock : 0;
         if (session.playback_misses() != misses || at > pos) {
@@ -417,9 +421,10 @@ bool RealTimeBounce::start(const model::Snapshot& snapshot, const std::string& s
     cancel_.store(false);
     finished_.store(false);
     progress_.store(0.0);
-    session_.set_roll_end(end);
     session_.set_master_tap(tap_.get());
     playback_.play();
+    // After play(), which clears it.
+    session_.set_roll_end(end);
     worker_ = std::thread([this] { work(); });
     return true;
 }

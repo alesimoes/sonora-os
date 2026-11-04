@@ -25,6 +25,16 @@
 #include "sonora/wav_reader.h"
 #include "sonora/wav_writer.h"
 
+// A bounce that fails says why.
+#define CHECK_BOUNCE(call, err)                                          \
+    do {                                                                 \
+        if (!(call)) {                                                   \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, \
+                         (err).c_str());                                 \
+            return 1;                                                    \
+        }                                                                \
+    } while (0)
+
 #define CHECK(cond)                                                      \
     do {                                                                 \
         if (!(cond)) {                                                   \
@@ -75,7 +85,7 @@ bool make_rig(Rig& r, const std::string& dir) {
     WavWriter w;
     if (!w.open(dir + "/Audio Files/s.wav", kRate, 1, WavWriter::Format::Float32, 0)) return false;
     std::vector<float> data(kLength);
-    for (int64_t i = 0; i < kLength; ++i) data[static_cast<std::size_t>(i)] = sine_at(i) / kAmp * kAmp;
+    for (int64_t i = 0; i < kLength; ++i) data[static_cast<std::size_t>(i)] = sine_at(i);
     if (!w.write(data.data(), data.size()) || !w.close()) return false;
 
     const model::TrackEdit& t = *r.doc->current().edit->tracks[0];
@@ -135,7 +145,7 @@ int test_offline_is_the_mix() {
     BounceHooks hooks;
     hooks.cancel = &cancel;
     hooks.progress = [&](double f) { last = f; };
-    CHECK(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err));
+    CHECK_BOUNCE(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err), err);
     CHECK(res.relative_path == "Bounced Files/Mixdown_01.wav");
     CHECK(res.frames == kLength);
     CHECK(last == 1.0);
@@ -149,7 +159,7 @@ int test_offline_is_the_mix() {
     // asked: its BWF origin says so.
     o.start = 24000;
     o.end = 48000;
-    CHECK(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err));
+    CHECK_BOUNCE(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err), err);
     CHECK(res.relative_path == "Bounced Files/Mixdown_02.wav");
     CHECK(res.frames == 24000);
     WavReader rd2;
@@ -174,7 +184,7 @@ int test_normalise_and_ceiling() {
     BounceResult res;
     std::string err;
     BounceHooks hooks;
-    CHECK(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err));
+    CHECK_BOUNCE(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err), err);
     CHECK(std::fabs(res.integrated_lufs - (-20.0)) < 0.3);
     CHECK(res.gain_db > 0.0);
     CHECK(matches_mix(r.dir + "/" + res.relative_path, kLength,
@@ -182,7 +192,7 @@ int test_normalise_and_ceiling() {
 
     // A target the peak ceiling forbids is reached only as far as the ceiling.
     o.target_lufs = -1.0;
-    CHECK(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err));
+    CHECK_BOUNCE(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err), err);
     CHECK(res.peak_dbfs <= -0.99 && res.peak_dbfs > -1.1);
     CHECK(res.integrated_lufs < -1.0);
     return 0;
@@ -245,6 +255,7 @@ struct Driver {
 int test_real_time_records_the_master() {
     Rig r;
     CHECK(make_rig(r, "bounce_t4"));
+    r.session->reader().start();
     PlaybackController ctl(*r.session);
     std::string err;
     CHECK(ctl.show(r.doc->current(), err));
@@ -269,9 +280,9 @@ int test_real_time_records_the_master() {
             ended = rt.poll(res, err, cancelled);
             if (!ended) std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        CHECK(ended);
+        CHECK_BOUNCE(ended, err);
     }
-    CHECK(err.empty());
+    CHECK_BOUNCE(err.empty(), err);
     CHECK(!cancelled);
     CHECK(res.frames == 48000);
     // The file is the master from its first frame: the source from 4800.
