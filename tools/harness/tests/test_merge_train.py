@@ -178,7 +178,7 @@ class Train(support.DaemonCase):
     def test_parallel_conflict_runs_have_their_own_names(self):
         o = self.make(max_integrators=2)
         for n in (10, 11):
-            self.forge.add_pr(n, f"b{n}", [f"x{n}/a.cpp"],
+            self.forge.add_pr(n, f"b{n}", ["engine/shared.cpp"],
                               checks={"build": "pass"}, mergeable="no")
         o.train.adopt()
         o.tick()
@@ -205,11 +205,21 @@ class Train(support.DaemonCase):
     def test_refreshes_wait_for_a_ci_slot(self):
         o = self.make(train_slots=2)
         for n in (10, 11, 12):
-            self.forge.add_pr(n, f"b{n}", checks={"build": "fail"})
+            self.forge.add_pr(n, f"b{n}", checks={"build": "cancel"})
         o.train.adopt()
         o.tick()
-        self.assertEqual(self.forge.updated, [10, 11])
+        self.assertEqual([p for p, _ in self.forge.reruns], [10, 11])
         self.assertEqual(self.info(o, 12)["phase"], "aguardando vaga")
+
+    def test_red_pr_gets_a_fixer_when_no_slot_is_free(self):
+        o = self.make(train_slots=1)
+        self.forge.add_pr(10, "b10", ["x10/a.cpp"], checks={"build": "fail"})
+        self.forge.add_pr(11, "b11", ["x11/a.cpp"], checks={"build": "fail"})
+        o.train.adopt()
+        o.tick()
+        self.assertEqual(self.forge.updated, [10])
+        t = o.store.get_task("pr-11")
+        self.assertEqual((t["state"], t["fix_kind"]), ("ci_fix", "ci"))
 
     def test_stacked_pr_waits_then_is_retargeted(self):
         o = self.make()

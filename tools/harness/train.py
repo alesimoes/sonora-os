@@ -229,7 +229,9 @@ class Train:
                        "head: decisão do owner", **upd)
             o._block_feature(f, f"PR #{n}: checks cancelled three times")
             return
-        if fails and refreshed:
+        # A real failure never waits for a CI slot: the fixer works locally
+        # (it merges main first) and only its push costs a CI run.
+        if fails and (refreshed or self.busy() >= cfg.train_slots):
             self._save(fid, phase="fixer", action="fixer (CI)",
                        next="fixer corrige: " + ", ".join(fails[:3]), **upd)
             o._red(f, ts, fails, "ci")

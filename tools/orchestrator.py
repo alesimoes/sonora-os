@@ -264,7 +264,10 @@ class Orchestrator:
         if ln.kind in ("fixer", "integrator") and t["kind"] == "work":
             files = sorted({f for x in self._feature_tasks(t["feature_id"])
                             for f in x["files"]})
-        if t["kind"] == "work" and files and \
+        # An adopted PR is fixed on its own branch in its own worktree: two
+        # train runs touching the same file never meet, so no claim.
+        adopted = self.train.info(t.get("feature_id") or "") is not None
+        if t["kind"] == "work" and files and not adopted and \
                 ln.kind in ("engineer", "fixer", "integrator"):
             denied = self.broker.claim_for(name, files)
             if denied:
@@ -400,10 +403,12 @@ class Orchestrator:
                     "\nMerge-train PR #%s (branch %s), checked out here at "
                     "its head on origin. Read why it is red before changing "
                     "anything: `gh pr checks %s`, then `gh run view --job "
-                    "<id> --log-failed` for each failing job. If the cause "
-                    "is outside this PR (runner lost, apt or network "
-                    "failure, a check already fixed on main), say so in "
-                    "result.json and commit nothing. A conflict: `git merge "
+                    "<id> --log-failed` for each failing job. First `git "
+                    "fetch origin main && git merge origin/main` and commit "
+                    "the merge if it brings anything: many reds are already "
+                    "fixed on main. If the cause is outside this PR (runner "
+                    "lost, apt or network failure), say so in result.json "
+                    "and commit nothing more. A conflict: `git merge "
                     "origin/main`, resolve keeping both sides' intent, run "
                     "the narrow tests. Commit on the current branch; never "
                     "push, never merge, never edit planning/BACKLOG.md." % (
