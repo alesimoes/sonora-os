@@ -51,7 +51,21 @@ public:
 
     std::size_t bank_offset() const { return offset_; }
 
-    // The note numbers, public so tests and docs name them once.
+    // The connection handshake (brain/research/mcu-protocol.md, sources 1 and
+    // 2). query_device() writes the Device Query; the unit answers with a
+    // Host Connection Query (serial + challenge), on_midi() replies with the
+    // serial and the response code, and the unit confirms. A device that
+    // never asks (Logic Control compatible ones) is simply never "online":
+    // rendering does not wait for it, so those keep working. The confirmation
+    // redraws the page, since a unit that connects clears its displays.
+    void query_device();
+    bool online() const { return online_; }
+    bool connection_refused() const { return refused_; }
+    // Public so the test can pin the published vectors.
+    static void challenge_response(const std::uint8_t challenge[4], std::uint8_t response[4]);
+
+    // The note numbers, public so tests and docs name them once. Every value
+    // is in the table of brain/research/mcu-protocol.md with its source.
     static constexpr std::uint8_t kNoteRec = 0x00, kNoteSolo = 0x08, kNoteMute = 0x10,
                                   kNoteSelect = 0x18, kNoteVPush = 0x20, kNoteBankLeft = 0x2E,
                                   kNoteBankRight = 0x2F, kNoteChannelLeft = 0x30,
@@ -61,6 +75,7 @@ public:
     static constexpr std::uint8_t kCcVPot = 0x10, kCcRing = 0x30, kCcJog = 0x3C, kCcTime = 0x40;
 
 private:
+    void sysex(SurfaceLink& link);
     void message(std::uint8_t status, std::uint8_t d1, std::uint8_t d2, SurfaceLink& link);
     void note(std::uint8_t n, bool on, SurfaceLink& link);
     void invalidate_page();
@@ -76,6 +91,13 @@ private:
     std::uint8_t data_[2] = {0, 0};
     std::uint8_t have_ = 0;
     bool in_sysex_ = false;
+    // Bytes between F0 and F7; the longest message we act on is 16.
+    static constexpr std::size_t kSysexCap = 32;
+    std::uint8_t sysex_[kSysexCap];
+    std::size_t sysex_len_ = 0;
+    bool sysex_over_ = false;
+    bool online_ = false;
+    bool refused_ = false;
 
     std::size_t offset_ = 0;  // absolute strip shown on physical strip 0
 

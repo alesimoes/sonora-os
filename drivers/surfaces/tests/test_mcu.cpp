@@ -282,6 +282,82 @@ void a_rejected_write_is_retried_by_the_diff() {
     CHECK(contains(r.port.take(), {0xE0, 0x00, 0x40}));
 }
 
+const Bytes kHdr = {0xF0, 0x00, 0x00, 0x66, 0x14};
+Bytes frame(std::uint8_t cmd, const Bytes& params) {
+    Bytes m = kHdr;
+    m.push_back(cmd);
+    m.insert(m.end(), params.begin(), params.end());
+    m.push_back(0xF7);
+    return m;
+}
+void feed(Rig& r, const Bytes& b) { r.mcu.on_midi(b.data(), b.size(), r.link); }
+
+void challenge_response_matches_published_vectors() {
+    // 01 02 03 04 worked by hand from the formula in the Logic Control
+    // implementation chapter; the second row from the same formula.
+    const std::uint8_t c1[4] = {0x01, 0x02, 0x03, 0x04};
+    const std::uint8_t c2[4] = {0x12, 0x34, 0x56, 0x78};
+    std::uint8_t r[4];
+    McuProtocol::challenge_response(c1, r);
+    CHECK(r[0] == 0x05 && r[1] == 0x05 && r[2] == 0x7B && r[3] == 0x2F);
+    McuProtocol::challenge_response(c2, r);
+    CHECK(r[0] == 0x58 && r[1] == 0x0F && r[2] == 0x16 && r[3] == 0x4E);
+}
+
+void connection_handshake() {
+    Rig r;
+    CHECK(!r.mcu.online());
+    r.mcu.query_device();
+    Sent s = r.port.take();
+    CHECK(s.size() == 1 && s[0] == frame(0x00, {}));
+
+    // The unit asks: serial "ABCDEFG", challenge 01 02 03 04. Delivered in
+    // two chunks, since a USB-MIDI bridge may split it.
+    const Bytes q = frame(0x01, {'A', 'B', 'C', 'D', 'E', 'F', 'G', 1, 2, 3, 4});
+    r.mcu.on_midi(q.data(), 7, r.link);
+    CHECK(r.port.take().empty());
+    r.mcu.on_midi(q.data() + 7, q.size() - 7, r.link);
+    s = r.port.take();
+    CHECK(s.size() == 1);
+    CHECK(s[0] == frame(0x02, {'A', 'B', 'C', 'D', 'E', 'F', 'G', 0x05, 0x05, 0x7B, 0x2F}));
+    CHECK(!r.mcu.online());
+
+    // Confirmation: online, and the page is drawn again.
+    r.tell(FeedbackKind::Mute, 0, true);
+    r.mcu.render(r.link);
+    r.port.take();
+    feed(r, frame(0x03, {'A', 'B', 'C', 'D', 'E', 'F', 'G'}));
+    CHECK(r.mcu.online() && !r.mcu.connection_refused());
+    r.mcu.render(r.link);
+    CHECK(contains(r.port.take(), {0x90, McuProtocol::kNoteMute, 0x7F}));
+}
+
+void connection_error_and_malformed_frames() {
+    Rig r;
+    feed(r, frame(0x04, {'A', 'B', 'C', 'D', 'E', 'F', 'G'}));
+    CHECK(!r.mcu.online() && r.mcu.connection_refused());
+    // A short query, a foreign manufacturer and an overlong frame get no reply.
+    feed(r, frame(0x01, {'A', 'B', 'C'}));
+    feed(r, {0xF0, 0x00, 0x01, 0x66, 0x14, 0x01, 'A', 'B', 'C', 'D', 'E', 'F', 'G', 1, 2, 3, 4, 0xF7});
+    Bytes big = frame(0x01, Bytes(60, 0x11));
+    feed(r, big);
+    CHECK(r.port.take().empty());
+    // The parser is still in step afterwards.
+    SurfaceEvent e{};
+    r.midi({0xE0, 0x00, 0x00});
+    CHECK(r.event(e) && e.strip == 0);
+    feed(r, frame(0x03, {'A', 'B', 'C', 'D', 'E', 'F', 'G'}));
+    CHECK(r.mcu.online() && !r.mcu.connection_refused());
+}
+
+void cycle_is_loop() {
+    Rig r;
+    SurfaceEvent e{};
+    r.midi({0x90, McuProtocol::kNoteCycle, 0x7F});
+    CHECK(r.event(e) && e.kind == EventKind::Transport && e.transport == TransportCmd::Loop);
+    CHECK(McuProtocol::kNoteCycle == 0x56);  // D6 in the published note table
+}
+
 }  // namespace
 
 int main() {
@@ -296,6 +372,10 @@ int main() {
     time_display();
     parser_survives_chunks_and_running_status();
     a_rejected_write_is_retried_by_the_diff();
+    challenge_response_matches_published_vectors();
+    connection_handshake();
+    connection_error_and_malformed_frames();
+    cycle_is_loop();
     if (failures == 0) std::printf("mcu: ok\n");
     return failures == 0 ? 0 : 1;
 }

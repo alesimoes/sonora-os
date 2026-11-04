@@ -12,6 +12,10 @@ namespace {
 
 constexpr std::uint8_t kSysexHeader[] = {0xF0, 0x00, 0x00, 0x66, 0x14};
 constexpr std::uint8_t kCmdLcd = 0x12;
+constexpr std::uint8_t kCmdDeviceQuery = 0x00, kCmdConnectionQuery = 0x01,
+                       kCmdConnectionReply = 0x02, kCmdConnectionConfirm = 0x03,
+                       kCmdConnectionError = 0x04;
+constexpr std::size_t kSerialLen = 7, kChallengeLen = 4;
 constexpr int kFaderMax = 16383;
 
 int fader_to_14(float v) {
@@ -88,11 +92,14 @@ void McuProtocol::on_midi(const std::uint8_t* bytes, std::size_t n, SurfaceLink&
         if (b >= 0xF8) continue;  // realtime bytes may sit inside anything
         if (b == 0xF0) {
             in_sysex_ = true;
+            sysex_len_ = 0;
+            sysex_over_ = false;
             status_ = 0;
             have_ = 0;
             continue;
         }
-        if (b == 0xF7) {  // device replies (connection query, version) are not acted on
+        if (b == 0xF7) {
+            if (in_sysex_ && !sysex_over_) sysex(link);
             in_sysex_ = false;
             continue;
         }
@@ -102,7 +109,15 @@ void McuProtocol::on_midi(const std::uint8_t* bytes, std::size_t n, SurfaceLink&
             have_ = 0;
             continue;
         }
-        if (in_sysex_ || status_ == 0) continue;
+        if (in_sysex_) {
+            if (sysex_len_ < kSysexCap) {
+                sysex_[sysex_len_++] = b;
+            } else {
+                sysex_over_ = true;  // longer than anything we act on
+            }
+            continue;
+        }
+        if (status_ == 0) continue;
         data_[have_++] = b;
         const std::uint8_t kind = status_ & 0xF0;
         const std::uint8_t need = (kind == 0xC0 || kind == 0xD0) ? 1 : 2;
@@ -110,6 +125,48 @@ void McuProtocol::on_midi(const std::uint8_t* bytes, std::size_t n, SurfaceLink&
             message(status_, data_[0], need == 2 ? data_[1] : 0, link);
             have_ = 0;  // status stays: running status
         }
+    }
+}
+
+void McuProtocol::challenge_response(const std::uint8_t c[4], std::uint8_t r[4]) {
+    // The published formula; C precedence makes the extra parentheses explicit.
+    const int c0 = c[0], c1 = c[1], c2 = c[2], c3 = c[3];
+    r[0] = static_cast<std::uint8_t>(0x7F & (c0 + (c1 ^ 0x0A) - c3));
+    r[1] = static_cast<std::uint8_t>(0x7F & ((c2 >> 4) ^ (c0 + c3)));
+    r[2] = static_cast<std::uint8_t>(0x7F & ((c3 - (c2 << 2)) ^ (c0 | c1)));
+    r[3] = static_cast<std::uint8_t>(0x7F & (c1 - c2 + (0xF0 ^ (c3 << 4))));
+}
+
+void McuProtocol::query_device() {
+    const std::uint8_t m[] = {kSysexHeader[0], kSysexHeader[1], kSysexHeader[2],
+                              kSysexHeader[3], kSysexHeader[4], kCmdDeviceQuery, 0xF7};
+    out(m, sizeof m);
+}
+
+void McuProtocol::sysex(SurfaceLink&) {
+    // sysex_ holds what followed F0: 00 00 66 14 <cmd> <params>.
+    if (sysex_len_ < 5 || std::memcmp(sysex_, kSysexHeader + 1, 4) != 0) return;
+    const std::uint8_t cmd = sysex_[4];
+    const std::uint8_t* params = sysex_ + 5;
+    const std::size_t n = sysex_len_ - 5;
+    if (cmd == kCmdConnectionQuery && n == kSerialLen + kChallengeLen) {
+        std::uint8_t m[sizeof kSysexHeader + 1 + kSerialLen + kChallengeLen + 1];
+        std::size_t at = 0;
+        for (const auto b : kSysexHeader) m[at++] = b;
+        m[at++] = kCmdConnectionReply;
+        for (std::size_t i = 0; i < kSerialLen; ++i) m[at++] = params[i];
+        std::uint8_t resp[4];
+        challenge_response(params + kSerialLen, resp);
+        for (const auto b : resp) m[at++] = b;
+        m[at++] = 0xF7;
+        out(m, at);
+    } else if (cmd == kCmdConnectionConfirm && n == kSerialLen) {
+        online_ = true;
+        refused_ = false;
+        invalidate_page();
+    } else if (cmd == kCmdConnectionError && n == kSerialLen) {
+        online_ = false;
+        refused_ = true;
     }
 }
 

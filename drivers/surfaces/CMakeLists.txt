@@ -3,6 +3,7 @@
 # engine's MIDI model. The transport is a MidiPort; tests use a fake one.
 add_library(sonora_surface_mcu STATIC
   src/mcu.cpp
+  src/hui.cpp
   src/engine_bridge.cpp
   src/raw_midi_port.cpp
 )
@@ -16,6 +17,10 @@ target_link_libraries(sonora_surface_testing INTERFACE sonora_surface_mcu)
 add_executable(test_mcu tests/test_mcu.cpp)
 target_link_libraries(test_mcu PRIVATE sonora_surface_testing)
 add_test(NAME surface_mcu COMMAND test_mcu)
+
+add_executable(test_hui tests/test_hui.cpp)
+target_link_libraries(test_hui PRIVATE sonora_surface_testing)
+add_test(NAME surface_hui COMMAND test_hui)
 
 add_executable(test_surface_bridge tests/test_engine_bridge.cpp)
 target_link_libraries(test_surface_bridge PRIVATE sonora_surface_testing)

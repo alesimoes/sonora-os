@@ -7,7 +7,9 @@
 #include <string>
 #include <vector>
 
+#include "fake_midi_port.h"
 #include "sonora/surfaces/engine_bridge.h"
+#include "sonora/surfaces/hui.h"
 
 using namespace sonora::surfaces;
 namespace api = sonora::api;
@@ -162,6 +164,38 @@ void state_becomes_feedback_once() {
     CHECK(!moved);
 }
 
+void hui_runs_on_the_same_bridge() {
+    RecordingEngine eng;
+    EngineSurfaceBridge bridge(eng);
+    SurfaceLink link;
+    FakeMidiPort port;
+    HuiProtocol hui(port, {});
+    // Touch fader 3, move it, release; then press mute on strip 1.
+    const std::uint8_t wire[] = {0xB0, 0x0F, 0x03, 0xB0, 0x2F, 0x40, 0xB0, 0x03, 0x64, 0xB0,
+                                 0x23, 0x00, 0xB0, 0x0F, 0x03, 0xB0, 0x2F, 0x00, 0xB0, 0x0F,
+                                 0x01, 0xB0, 0x2F, 0x42};
+    hui.on_midi(wire, sizeof wire, link);
+    bridge.drain(link);
+    CHECK(eng.changes.size() == 3);
+    CHECK(eng.changes[0].gesture == api::Gesture::Touch && eng.changes[0].track == 3);
+    CHECK(eng.changes[1].gesture == api::Gesture::Move);
+    CHECK(eng.changes[2].gesture == api::Gesture::Release);
+    CHECK(eng.commands.size() == 1 && eng.commands[0].command == "track.toggle_mute");
+
+    // And the engine's state reaches the HUI wire.
+    api::StateFrame frame;
+    frame.tracks.resize(1);
+    frame.tracks[0].gain = 1.0f;
+    frame.tracks[0].flags = api::kTrackMuted;
+    bridge.publish(link, frame, [](std::uint32_t) { return 0.0f; }, {"Kick"});
+    hui.render(link);
+    bool led = false;
+    for (const auto& m : port.sent) {
+        if (m == std::vector<std::uint8_t>{0xB0, 0x0C, 0x00, 0x2C, 0x42}) led = true;
+    }
+    CHECK(led);
+}
+
 }  // namespace
 
 int main() {
@@ -169,6 +203,7 @@ int main() {
     taper_round_trips();
     buttons_become_commands();
     state_becomes_feedback_once();
+    hui_runs_on_the_same_bridge();
     if (failures == 0) std::printf("surface bridge: ok\n");
     return failures == 0 ? 0 : 1;
 }
