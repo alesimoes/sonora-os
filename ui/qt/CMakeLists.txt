@@ -63,6 +63,7 @@ add_library(sonora_ui_qt STATIC
   src/timeline_scene.h src/timeline_scene.cpp
   src/scene_item.h src/scene_item.cpp
   src/session_files.h src/session_files.cpp
+  src/window_layouts.h src/window_layouts.cpp
   src/session_model.h src/session_model.cpp
   src/insert_controller.h src/insert_controller.cpp
   src/insert_model.h src/insert_model.cpp
@@ -84,7 +85,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-        qml/MemoryLocationsWindow.qml qml/EventListWindow.qml qml/CounterField.qml qml/LatencyWindow.qml
+        qml/MemoryLocationsWindow.qml qml/EventListWindow.qml qml/CounterField.qml qml/LatencyWindow.qml qml/WindowConfigsWindow.qml
         qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
 )
 
@@ -210,6 +211,15 @@ target_compile_definitions(test_ui_names_colours PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_names_colours COMMAND test_ui_names_colours)
 set_tests_properties(ui_names_colours PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Window configurations (ui.workflow.windows): the numbered slots, their file,
+# Store and Recall in the real QML, and an empty slot refused and held.
+add_executable(test_ui_window_layouts tests/test_window_layouts.cpp)
+target_link_libraries(test_ui_window_layouts PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_window_layouts PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_window_layouts COMMAND test_ui_window_layouts)
+set_tests_properties(ui_window_layouts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
 # measurement, its figure by hand, and refusals held in the window.

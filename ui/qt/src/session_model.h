@@ -29,6 +29,7 @@
 #include "session_files.h"
 #include "sonora/model/sequence_file.h"
 #include "time_format.h"
+#include "window_layouts.h"
 #include "timeline_document.h"
 #include "timeline_scene.h"
 
@@ -84,6 +85,10 @@ class SessionModel : public QObject {
     Q_PROPERTY(QString eventListTitle READ eventListTitle NOTIFY eventListChanged)
     Q_PROPERTY(int eventLane READ eventLane NOTIFY eventListChanged)
     Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
+    // Window configurations: the nine slots, {slot, stored, summary}, and
+    // the list that shows them (window.configurations).
+    Q_PROPERTY(QVariantList windowConfigs READ windowConfigs NOTIFY windowConfigsChanged)
+    Q_PROPERTY(bool windowConfigsOpen READ windowConfigsOpen NOTIFY windowConfigsOpenChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(bool automationFollowsEdit READ automationFollowsEdit NOTIFY editStateChanged)
@@ -369,6 +374,29 @@ public:
     Q_INVOKABLE bool eventDelete(int row);
     bool latencyOpen() const { return latency_open_; }
     Q_INVOKABLE void setLatencyOpen(bool on);
+
+    // --- window configurations (window.config_store, window.config_recall) ---
+    QVariantList windowConfigs() const;
+    bool windowConfigsOpen() const { return window_configs_open_; }
+    Q_INVOKABLE void setWindowConfigsOpen(bool on);
+    // A floating window reports where it is (on load, and as it is dragged),
+    // so a configuration stores what is on screen. `id` is a
+    // WindowLayouts::ids() entry.
+    Q_INVOKABLE void windowPlaced(const QString& id, int x, int y);
+    // {x, y} the window was last placed at, from a recalled configuration
+    // or its own report; empty before either.
+    Q_INVOKABLE QVariantMap windowPlace(const QString& id) const;
+    // A window that is open outside this model (the Transport window keeps
+    // its own flag) tells it, so a configuration stores it.
+    void noteWindowOpen(const QString& id, bool open);
+    // How a recalled configuration opens and closes the Transport window.
+    void setTransportOpenHook(std::function<void(bool)> hook) { transport_open_hook_ = std::move(hook); }
+    // Where the configurations are kept; loaded now. A file that cannot be
+    // read is a held notice, and the slots start empty.
+    void setLayoutsFile(const QString& path);
+    bool storeWindowConfig(int slot, std::string& why);
+    bool recallWindowConfig(int slot, std::string& why);
+    const WindowLayouts& layouts() const { return layouts_; }
     // A row of `markers`: recalled (the selection moves to it), or cleared,
     // one undo step.
     Q_INVOKABLE bool recallMarker(int row);
@@ -553,6 +581,11 @@ signals:
     void eventListChanged();
     void memoryLocationsOpenChanged();
     void latencyOpenChanged();
+    void windowConfigsChanged();
+    void windowConfigsOpenChanged();
+    // A recalled configuration moved the floating windows: read
+    // windowPlace() again for each.
+    void windowPlacesRecalled();
     // marker.add with no name, stopped: the window asks for one, offering
     // `name`, and sends marker.add again with it. `what` says where the
     // marker goes ("at 5|1|000", "from 5|1|000 to 9|1|000").
@@ -699,6 +732,10 @@ private:
     bool event_list_open_ = false;
     int seen_event_lane_ = 0;
     bool latency_open_ = false;
+    bool window_configs_open_ = false;
+    WindowLayouts layouts_;
+    QString layouts_file_;
+    std::function<void(bool)> transport_open_hook_;
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);

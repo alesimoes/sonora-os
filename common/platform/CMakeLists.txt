@@ -18,6 +18,8 @@ add_library(sonora_platform STATIC
   include/sonora/platform/file.h
   include/sonora/platform/wake.h
   include/sonora/platform/wait_set.h
+  include/sonora/platform/process_setup.h
+  src/${SONORA_PLATFORM_IMPL}/process_setup.cpp
   src/${SONORA_PLATFORM_IMPL}/thread_cpu.cpp
   src/${SONORA_PLATFORM_IMPL}/ipc.cpp
   src/${SONORA_PLATFORM_IMPL}/process.cpp
@@ -33,9 +35,24 @@ add_executable(test_thread_cpu tests/test_thread_cpu.cpp)
 target_link_libraries(test_thread_cpu PRIVATE sonora_platform Threads::Threads)
 add_test(NAME platform_thread_cpu COMMAND test_thread_cpu)
 
+# The quit flag and the default session root: standard C, so MSVC builds it.
+add_executable(test_process_setup tests/test_process_setup.cpp)
+target_link_libraries(test_process_setup PRIVATE sonora_platform)
+add_test(NAME platform_process_setup COMMAND test_process_setup)
+
 # The control channel and the read-only region (ADR-0007 §3): POSIX only,
 # because the test also checks what the kernel refuses a client.
 if(SONORA_PLATFORM STREQUAL "linux")
+  # Every quit signal, SIGHUP included, from another thread (TSan's case).
+  add_executable(test_quit_signals tests/test_quit_signals.cpp)
+  target_link_libraries(test_quit_signals PRIVATE sonora_platform Threads::Threads)
+  add_test(NAME quit_signals COMMAND test_quit_signals)
+
+  # mlockall, and the refusal under a finite RLIMIT_MEMLOCK.
+  add_executable(test_memory_lock tests/test_memory_lock.cpp)
+  target_link_libraries(test_memory_lock PRIVATE sonora_platform)
+  add_test(NAME memory_lock COMMAND test_memory_lock)
+
   add_executable(test_platform_ipc tests/test_ipc.cpp)
   target_link_libraries(test_platform_ipc PRIVATE sonora_platform Threads::Threads)
   add_test(NAME platform_ipc COMMAND test_platform_ipc)
