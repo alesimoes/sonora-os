@@ -104,6 +104,12 @@ jobs:
       - name: Quit during a failed take
         run: docker exec build python3 tools/failed-take-quit.py --engine build/sonora-engine
 
+      # system.hardening.crash_recovery, software half: SIGKILL the engine
+      # mid-take, reopen the folder, check every take is repaired and loses
+      # nothing already on disk. Fake backend, no hardware.
+      - name: Kill mid-take, reopen the session
+        run: docker exec build python3 tools/crash-recovery-kill.py --engine build/sonora-engine
+
   portable:
     name: Portable modules under MSVC
     needs: changes
