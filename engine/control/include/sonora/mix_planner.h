@@ -143,12 +143,46 @@ private:
     std::vector<ParallelSuggestion> suggestions_;
 };
 
-enum class MixPlanKind { Gain, Buses, Parallel, All };
+// What the operator wants the space to sound like, as numbers read off a
+// reference record (its tail, its pre-delay, how far under the dry vocal the
+// reverb and the echo sit). The planner snaps the times to the session's
+// tempo and checks the wet total; it does not measure the reference itself.
+struct ReverbDelayReference {
+    double decay_s = 1.8;          // reference reverb RT60
+    double predelay_ms = 25.0;
+    double reverb_wet_db = -14.0;  // reverb return under the dry track, as a send level
+    double delay_ms = 375.0;       // reference echo time, snapped to a note
+    double delay_wet_db = -18.0;
+    // The reverb and the echo together stay this far under the dry track
+    // (power sum); over it both sends are lowered by the same amount.
+    double max_wet_db = -10.0;
+};
+
+// Two aux buses for the vocals (a reverb, an echo) and a short room for the
+// drums, with sends and the processor settings, as ParallelPlanner does
+// (aux buses hold no inserts yet, ADR-0045 5). Decay, pre-delay and echo
+// time follow the session's first tempo: the tail is a whole number of half
+// beats, the pre-delay a 1/64..1/16 note, the echo a 1/8, dotted 1/8, 1/4 or
+// dotted 1/4 note, nearest the reference's.
+class ReverbDelayPlanner : public model::PlanSource {
+public:
+    explicit ReverbDelayPlanner(const MixAnalysis& analysis, ReverbDelayReference reference = {})
+        : analysis_(analysis), reference_(reference) {}
+    bool propose(const model::Snapshot& at, model::Plan& out, std::string& error) override;
+    const std::vector<ParallelSuggestion>& suggestions() const { return suggestions_; }
+
+private:
+    MixAnalysis analysis_;
+    ReverbDelayReference reference_;
+    std::vector<ParallelSuggestion> suggestions_;
+};
+
+enum class MixPlanKind { Gain, Buses, Parallel, Space, All };
 bool parse_plan_kind(const std::string& word, MixPlanKind& out);
 
 // Runs the planner(s) one after the other on the same snapshot and joins the
 // plans: ids are carried on, `needs` re-indexed. "All" is gain staging, then
-// buses, then parallel. Fails with `error` when no planner has a step.
+// buses, parallel, then space (reverb and delay). Fails with `error` when no planner has a step.
 bool propose_mix_plan(MixPlanKind kind, const model::Snapshot& at, const MixAnalysis& analysis,
                       model::Plan& out, std::string& error);
 

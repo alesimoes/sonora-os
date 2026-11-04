@@ -463,9 +463,79 @@ int test_stale_plan_refused() {
     return 0;
 }
 
+float param_of(const ProcessorSetting& p, const char* key) {
+    for (const ParamValue& v : p.params)
+        if (v.key == key) return v.value;
+    return -1000.0f;
+}
+
+int test_reverb_delay() {
+    Rig r;
+    const Id vocal = r.add("Lead Vocal", tone(440, 0.1));
+    const Id kick = r.add("Kick", bursts(60, 0.8, 1200, 24000));
+    const Id snare = r.add("Snare", bursts(200, 0.9, 1200, 24000));
+    CHECK(vocal != 0 && kick != 0 && snare != 0);
+    MixAnalysis a;
+    std::string error;
+    CHECK(analyse_session(r.h.current(), r.dir.string(), AnalysisHooks{}, a, error));
+
+    // 120 bpm: beat 500 ms, half beat 0.25 s, so a 1.8 s tail -> 7 half
+    // beats = 1.75 s. Pre-delay 25 ms
+    // -> 1/64 note (31.25 ms) is nearest. Echo 375 ms -> dotted 1/8.
+    ReverbDelayPlanner rp(a);
+    Plan plan;
+    CHECK(rp.propose(r.h.current(), plan, error));
+    CHECK(plan.label == "Reverb and Delay");
+    CHECK(plan.steps[0].title == "Add Vocal Reverb bus");
+    CHECK(rp.suggestions().size() == 3);
+    const ProcessorSetting& rev = rp.suggestions()[0].processor;
+    const ProcessorSetting& dly = rp.suggestions()[1].processor;
+    CHECK(rev.uri == "urn:sonora:native:reverb");
+    CHECK(std::fabs(param_of(rev, "decay") - 1.75f) < 1e-4f);
+    CHECK(std::fabs(param_of(rev, "predelay") - 31.25f) < 1e-3f);
+    CHECK(dly.uri == "urn:sonora:native:delay" && param_of(dly, "note_l") == 10.0f &&
+          param_of(dly, "sync") == 1.0f && param_of(dly, "tempo") == 120.0f);
+    CHECK(param_of(rp.suggestions()[2].processor, "decay") <= 0.45f);   // the room: under a beat
+    // Defaults: -14 and -18 dB sum to -12.5 dB, under the -10 limit.
+    const auto& vsend = std::get<AddSend>(plan.steps[1].op);
+    CHECK(vsend.strip == vocal && vsend.mix.level_db == -14.0f);
+    CHECK(check_apply_and_undo(r, plan, true) == 0);
+
+    // The same session at 60 bpm: the times follow the tempo.
+    SessionSettings slow = r.h.current().settings;
+    slow.tempo[0].bpm = 60.0f;
+    CHECK_APPLY(r.h, (SetSettings{slow}));
+    CHECK(rp.propose(r.h.current(), plan, error) == true);
+    CHECK(std::fabs(param_of(rp.suggestions()[0].processor, "decay") - 2.0f) < 1e-4f);
+    CHECK(param_of(rp.suggestions()[1].processor, "note_l") == 8.0f);   // 1/8 = 500 ms is nearest 375
+
+    // Excess: a wet reference is pulled back by the same amount on both.
+    ReverbDelayReference wet;
+    wet.reverb_wet_db = -6.0;
+    wet.delay_wet_db = -6.0;
+    ReverbDelayPlanner wp(a, wet);
+    CHECK(wp.propose(r.h.current(), plan, error));
+    CHECK(std::get<AddSend>(plan.steps[1].op).mix.level_db <= -10.0f - 3.0f);
+    bool excess = false;
+    for (const PlanNote& n : plan.notes) excess = excess || mentions(n.text, "limit");
+    CHECK(excess);
+
+    // No vocal and one drum: nothing to propose.
+    Rig lone;
+    lone.add("Kick", bursts(60, 0.8, 1200, 24000));
+    CHECK(analyse_session(lone.h.current(), lone.dir.string(), AnalysisHooks{}, a, error));
+    ReverbDelayPlanner np(a);
+    CHECK(!np.propose(lone.h.current(), plan, error));
+    CHECK(mentions(error, "no space"));
+    MixPlanKind k;
+    CHECK(parse_plan_kind("space", k) && k == MixPlanKind::Space);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
+    if (test_reverb_delay() != 0) return 1;
     if (test_analysis() != 0) return 1;
     if (test_gain_staging() != 0) return 1;
     if (test_gain_staging_limits() != 0) return 1;

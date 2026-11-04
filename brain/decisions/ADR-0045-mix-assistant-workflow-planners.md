@@ -79,6 +79,23 @@ our own processors only.
    audio thread. No new module edge. The command line is a target of the
    same directory, not part of `sonora-engine`.
 
+8. **Reverb and delay (`mixassist.reverb_delay`).** `ReverbDelayPlanner`
+   takes a `ReverbDelayReference` (tail, pre-delay, echo time, two wet
+   levels, read off a reference record by the operator; the planner does not
+   analyse the reference audio) and the session's first tempo. Times snap to
+   the tempo: tail = a whole number of half beats (at least one; a note over
+   4 bars), pre-delay = the 1/64..1/16 note nearest the reference, echo = the
+   1/8, dotted 1/8, 1/4 or dotted 1/4 note nearest the reference's time
+   (`note_l` of `urn:sonora:native:delay`, `sync` on, `tempo` set). Vocals
+   get a "Vocal Reverb" and a "Vocal Delay" aux, at the reference's levels as
+   post-fader sends; two or more drum tracks get a "Drum Room" aux whose
+   tail stays under one beat, 4 dB under the vocal reverb send. Excess check:
+   the two vocal returns are power-summed; over `max_wet_db` (-10 dB under
+   the dry track) both sends drop by the same amount, with a note. Processors
+   are `PlanNote`s and `suggestions()` as in 5; the wire is unchanged (no
+   protocol bump). `propose_mix_plan(Space)` and `All` run it last;
+   `sonora-mixplan FILE space` prints it.
+
 ## Consequences
 
 - The thresholds above are starting rules, not tuned against mixes; they are
@@ -87,6 +104,8 @@ our own processors only.
 - Bus routing sends a track's whole output to its bus; a track already
   routed away from the Master is left alone and noted.
 - Buses created by the plan have no inserts, no colour and unity gain.
+- The reverb/delay figures are starting rules, not tuned by ear; a tempo map
+  with changes is followed at its first tempo only (noted).
 - Gain staging ignores pan and fades, and counts every track as feeding the
   Master.
 

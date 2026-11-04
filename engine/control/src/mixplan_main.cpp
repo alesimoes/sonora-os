@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// sonora-mixplan SESSION.sonora [gain|buses|parallel|all]
+// sonora-mixplan SESSION.sonora [gain|buses|parallel|space|all]
 //
 // Reads a session, measures its audio, and prints the plan the mix
 // assistant's rules propose, with the diff accepting it would make. Changes
@@ -15,12 +15,12 @@
 
 int main(int argc, char** argv) {
     if (argc < 2 || argc > 3) {
-        std::fprintf(stderr, "usage: sonora-mixplan SESSION.sonora [gain|buses|parallel|all]\n");
+        std::fprintf(stderr, "usage: sonora-mixplan SESSION.sonora [gain|buses|parallel|space|all]\n");
         return 2;
     }
     sonora::MixPlanKind kind = sonora::MixPlanKind::All;
     if (argc == 3 && !sonora::parse_plan_kind(argv[2], kind)) {
-        std::fprintf(stderr, "sonora-mixplan: \"%s\" is not gain, buses, parallel or all\n", argv[2]);
+        std::fprintf(stderr, "sonora-mixplan: \"%s\" is not gain, buses, parallel, space or all\n", argv[2]);
         return 2;
     }
     const std::string path = argv[1];

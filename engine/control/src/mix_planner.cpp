@@ -608,12 +608,180 @@ bool ParallelPlanner::propose(const Snapshot& at, Plan& out, std::string& error)
     return true;
 }
 
+// --- reverb and delay -------------------------------------------------------------------
+
+namespace {
+
+struct NoteChoice {
+    int index;      // the delay processor's "note_l" choice
+    double beats;   // length in quarter notes
+    const char* name;
+};
+// Indices follow plugins/native/delay's kNotes table.
+constexpr NoteChoice kEchoNotes[] = {
+    {8, 0.5, "1/8"}, {10, 0.75, "dotted 1/8"}, {11, 1.0, "1/4"}, {13, 1.5, "dotted 1/4"}};
+constexpr double kPredelayBeats[] = {1.0 / 16, 1.0 / 8, 1.0 / 4, 1.0 / 2};   // 1/64 .. 1/16 note
+
+}  // namespace
+
+bool ReverbDelayPlanner::propose(const Snapshot& at, Plan& out, std::string& error) {
+    suggestions_.clear();
+    Plan plan;
+    plan.label = "Reverb and Delay";
+    plan.base_revision = at.revision;
+    Id next = at.next_id;
+    const ReverbDelayReference& ref = reference_;
+
+    const float bpm = at.settings.tempo.empty() ? 120.0f : at.settings.tempo.front().bpm;
+    if (!(bpm >= 20.0f && bpm <= 300.0f)) {
+        error = "the tempo (" + num(bpm) + " bpm) is outside what the delay can follow";
+        return false;
+    }
+    if (at.settings.tempo.size() > 1)
+        plan.notes.push_back({"Tempo", "the session changes tempo; the times follow the first "
+                                       "tempo (" + num(bpm) + " bpm)"});
+    const double beat_ms = 60000.0 / bpm;
+
+    // Pre-delay: the note value nearest the reference's, so the reverb opens
+    // on the grid.
+    double pre_ms = beat_ms * kPredelayBeats[0];
+    for (const double b : kPredelayBeats)
+        if (std::fabs(beat_ms * b - ref.predelay_ms) < std::fabs(pre_ms - ref.predelay_ms))
+            pre_ms = beat_ms * b;
+    pre_ms = std::clamp(pre_ms, 0.0, 250.0);
+    // Decay: a whole number of half beats, at least one, so the tail has
+    // died when a beat lands.
+    const double half_beat_s = beat_ms / 2000.0;
+    const double half_beats = std::max(1.0, std::round(ref.decay_s / half_beat_s));
+    const double decay_s = std::clamp(half_beats * half_beat_s, 0.2, 20.0);
+    if (decay_s > 16.0 * beat_ms / 1000.0)
+        plan.notes.push_back({"Reverb", "the tail is longer than 4 bars at this tempo"});
+    const NoteChoice* echo = &kEchoNotes[0];
+    for (const NoteChoice& n : kEchoNotes)
+        if (std::fabs(beat_ms * n.beats - ref.delay_ms) <
+            std::fabs(beat_ms * echo->beats - ref.delay_ms))
+            echo = &n;
+
+    struct Strip {
+        const TrackEdit* track;
+    };
+    const auto gather = [&](Role role) {
+        std::vector<Strip> v;
+        for (const auto& t : at.edit->tracks) {
+            if (!is_audio(*t) || classify_track(*at.edit, *t).role != role) continue;
+            const TrackMix* m = mix_of(at, t->id);
+            const TrackAnalysis* a = analysis_.find(t->id);
+            if (m == nullptr || a == nullptr || m->mute || !a->problem.empty() || a->silent())
+                continue;
+            v.push_back({t.get()});
+        }
+        return v;
+    };
+    const auto add_aux = [&](const std::string& bus_name, const std::vector<Strip>& members,
+                             float send_db, const std::string& why, ProcessorSetting proc) {
+        if (find_bus_named(*at.edit, bus_name) != nullptr) {
+            plan.notes.push_back({bus_name, "a bus of that name exists: not added again"});
+            return;
+        }
+        AddBus ab;
+        ab.bus = next++;
+        ab.name = bus_name;
+        const std::size_t bus_step = plan.steps.size();
+        plan.steps.push_back({ab, "Add " + bus_name + " bus", why, {}});
+        for (const Strip& m : members) {
+            std::uint8_t slot = 0;
+            if (!has_send_slot(*m.track, slot)) {
+                plan.notes.push_back({"Track " + m.track->name, "no free send slot: no send to " +
+                                                                   bus_name});
+                continue;
+            }
+            AddSend as;
+            as.strip = m.track->id;
+            as.send = next++;
+            as.slot = slot;
+            as.bus = ab.bus;
+            as.mix.level_db = send_db;
+            plan.steps.push_back({as, "Send " + m.track->name + " to " + bus_name + " at " +
+                                          num(send_db) + " dB",
+                                  "post-fader send; " + why, {bus_step}});
+        }
+        plan.notes.push_back({bus_name, "put " + describe(proc) +
+                                            " on the bus; aux buses cannot hold inserts yet"});
+        suggestions_.push_back({bus_name, std::move(proc)});
+    };
+
+    const std::vector<Strip> vocals = gather(Role::Vocals);
+    if (!vocals.empty()) {
+        // The excess check: the two returns, power-summed, against the dry track.
+        double rev = ref.reverb_wet_db;
+        double dly = ref.delay_wet_db;
+        const double total =
+            10.0 * std::log10(std::pow(10.0, rev / 10.0) + std::pow(10.0, dly / 10.0));
+        if (total > ref.max_wet_db) {
+            const double cut = total - ref.max_wet_db;
+            rev -= cut;
+            dly -= cut;
+            plan.notes.push_back({"Vocals", "reverb and echo together would sit " + num(total) +
+                                                " dB under the dry vocal, over the " +
+                                                num(ref.max_wet_db) + " dB limit: both sends "
+                                                "lowered by " + num(cut) + " dB"});
+        }
+        const float rev_send = static_cast<float>(std::clamp(round_half(rev), -60.0, 0.0));
+        const float dly_send = static_cast<float>(std::clamp(round_half(dly), -60.0, 0.0));
+        const std::string vox = std::to_string(vocals.size()) + " vocal track" +
+                                (vocals.size() == 1 ? "" : "s") + " at " + num(bpm) + " bpm";
+        add_aux("Vocal Reverb", vocals, rev_send,
+                vox + ": tail " + num(decay_s, "%.2f") + " s (" + num(half_beats, "%.0f") +
+                    " half beats), pre-delay " + num(pre_ms) + " ms",
+                {"urn:sonora:native:reverb", "Sonora Reverb",
+                 {pv("predelay", static_cast<float>(pre_ms)),
+                  pv("decay", static_cast<float>(decay_s)), pv("size", 70.0f),
+                  pv("diffusion", 70.0f), pv("high_ratio", 0.5f), pv("low_cut", 200.0f),
+                  pv("high_cut", 9000.0f), pv("mix", 100.0f)}});
+        add_aux("Vocal Delay", vocals, dly_send,
+                vox + ": " + echo->name + " echo = " + num(beat_ms * echo->beats) +
+                    " ms, the note nearest the reference's " + num(ref.delay_ms) + " ms",
+                {"urn:sonora:native:delay", "Sonora Delay",
+                 {pv("sync", 1.0f), pv("note_l", static_cast<float>(echo->index)),
+                  pv("link", 1.0f), pv("tempo", bpm), pv("feedback", 30.0f), pv("hpf", 300.0f),
+                  pv("lpf", 6000.0f), pv("mix", 100.0f)}});
+    } else {
+        plan.notes.push_back({"Vocals", "no audible vocal track: no reverb or echo for it"});
+    }
+
+    const std::vector<Strip> drums = gather(Role::Drums);
+    if (drums.size() >= 2) {
+        // A room, not a hall: the tail stays under one beat so it does not
+        // smear the groove.
+        const double quarter = half_beat_s / 4.0;
+        const double room_s =
+            std::clamp(std::round(std::min(decay_s, 0.9 * beat_ms / 1000.0) / quarter) * quarter,
+                       0.2, 1.2);
+        add_aux("Drum Room", drums,
+                static_cast<float>(std::clamp(round_half(ref.reverb_wet_db - 4.0), -60.0, 0.0)),
+                std::to_string(drums.size()) + " drum tracks: short room, tail " +
+                    num(room_s, "%.2f") + " s, under one beat (" + num(beat_ms) + " ms)",
+                {"urn:sonora:native:reverb", "Sonora Reverb",
+                 {pv("predelay", 0.0f), pv("decay", static_cast<float>(room_s)),
+                  pv("size", 35.0f), pv("diffusion", 80.0f), pv("high_ratio", 0.4f),
+                  pv("low_cut", 150.0f), pv("high_cut", 8000.0f), pv("mix", 100.0f)}});
+    }
+
+    if (plan.steps.empty()) {
+        error = "no audible vocal track and fewer than 2 drum tracks: no space to add";
+        return false;
+    }
+    out = std::move(plan);
+    return true;
+}
+
 // --- joining and printing ------------------------------------------------------------------
 
 bool parse_plan_kind(const std::string& word, MixPlanKind& out) {
     if (word == "gain") out = MixPlanKind::Gain;
     else if (word == "buses") out = MixPlanKind::Buses;
     else if (word == "parallel") out = MixPlanKind::Parallel;
+    else if (word == "space") out = MixPlanKind::Space;
     else if (word == "all") out = MixPlanKind::All;
     else return false;
     return true;
@@ -624,11 +792,13 @@ bool propose_mix_plan(MixPlanKind kind, const Snapshot& at, const MixAnalysis& a
     GainStagingPlanner gain(analysis);
     BusStructurePlanner buses;
     ParallelPlanner parallel(analysis);
+    ReverbDelayPlanner space(analysis);
     std::vector<std::pair<const char*, PlanSource*>> run;
     if (kind == MixPlanKind::Gain || kind == MixPlanKind::All) run.emplace_back("Gain", &gain);
     if (kind == MixPlanKind::Buses || kind == MixPlanKind::All) run.emplace_back("Buses", &buses);
     if (kind == MixPlanKind::Parallel || kind == MixPlanKind::All)
         run.emplace_back("Parallel", &parallel);
+    if (kind == MixPlanKind::Space || kind == MixPlanKind::All) run.emplace_back("Space", &space);
 
     Plan joined;
     joined.base_revision = at.revision;
