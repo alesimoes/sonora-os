@@ -78,7 +78,7 @@ if git diff "$base"...HEAD -U0 | grep -qE '^[+-].*kProtocolVersion *='; then
 fi
 
 # 7. Unfinished markers.
-git diff "$base"...HEAD -U0 | grep -qE '^\+.*(<<<<<<<|>>>>>>>)' && bad "conflict markers in the diff"
+git diff "$base"...HEAD -U0 | grep -qE '^\+(<{7}|>{7})( |$)' && bad "conflict markers in the diff"
 
 if [ "$fail" = 0 ]; then
   echo "pre-pr: ok ($(echo "$changed" | wc -l | tr -d ' ') files). Tests you touched are still yours to run."
