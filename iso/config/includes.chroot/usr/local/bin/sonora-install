@@ -5,14 +5,31 @@
 # image. The exit codes and the "STEP n/N name" lines are the interface; the
 # screens only call this script.
 #
-#   sonora-install [--yes] [--allow-removable] [--select-only] [--target DISK]
+#   sonora-install [--yes] [--allow-removable] [--select-only] [--list] [--target DISK]
+#
+# --list prints one candidate disk per line as DEVICE<TAB>BYTES<TAB>MODEL and
+# exits 0; it opens nothing for writing. Screens use it to offer the choice.
+#
+# Sessions on the running stick (/home/sonora/Sessions, which is the stick's
+# persistence overlay when there is one) are copied to the installed system in
+# step 4 and checked file by file with SHA-256 in step 7. The stick's copy is
+# only ever read. A recording that is still running while the copy happens
+# changes files under the checksum list; that fails with exit 11 and the
+# operator stops recording and runs the install again.
+#
+# Screens (the tty2 front end sonora-install-tty, a Qt page later) need only
+# three things from this program, none of which is a private detail:
+#   - progress: stdout lines "STEP n/7 name", n = 1..7, in order;
+#   - result: the exit code below; the last line on stderr names the reason;
+#   - the erase confirmation is theirs to ask; they pass --yes after it.
 #
 # --select-only prints the disk it would erase and exits 0 before anything is
 # written (used by the tests and by screens that preview the choice).
 #
 # Exit codes: 0 installed and self-checked, 2 usage, 3 target refused,
 # 4 partitioning, 5 formatting, 6 copy, 7 configuration, 8 boot loader,
-# 9 self-check failed, 10 not root or a tool is missing.
+# 9 self-check failed, 10 not root or a tool is missing, 11 session carry-over
+# failed or did not verify.
 #
 # SONORA_* variables exist so the logic runs against a file image in a
 # container; on the stick none is set. While any of SONORA_SYSBLOCK,
@@ -30,7 +47,13 @@ LIVE_PKGS="live-boot live-boot-initramfs-tools live-config live-config-systemd"
 ESP_MIB=512
 STEPS=7
 
+# Where the running system keeps its sessions; the target always gets the
+# standard path. The variable exists for the container test only.
+SESSIONS=${SONORA_SESSIONS:-/home/sonora/Sessions}
+SESSIONS_DEST=/home/sonora/Sessions
+
 YES=0
+LIST=0
 REMOVABLE=0
 SELECT_ONLY=0
 TARGET=
@@ -62,6 +85,7 @@ cleanup() {
         done
         mountpoint -q "$WORK/root" 2>/dev/null && umount "$WORK/root"
         rmdir "${WORK:?}/root" 2>/dev/null
+        rm -f "${WORK:?}/sessions.sha" "$WORK/sessions.err" "$WORK/uuids"
         rmdir "${WORK:?}" 2>/dev/null
     fi
     [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null
@@ -70,7 +94,7 @@ cleanup() {
 trap cleanup EXIT
 
 usage() {
-    echo "usage: sonora-install [--yes] [--allow-removable] [--select-only] [--target DISK]" >&2
+    echo "usage: sonora-install [--yes] [--allow-removable] [--select-only] [--list] [--target DISK]" >&2
     exit 2
 }
 
@@ -79,6 +103,7 @@ while [ $# -gt 0 ]; do
         --yes) YES=1 ;;
         --allow-removable) REMOVABLE=1 ;;
         --select-only) SELECT_ONLY=1 ;;
+        --list) LIST=1 ;;
         --target) [ $# -ge 2 ] || usage; TARGET=$2; shift ;;
         *) usage ;;
     esac
@@ -86,15 +111,21 @@ while [ $# -gt 0 ]; do
 done
 
 # Device nodes may be missing in a container; the sysfs dev number is enough.
+# Without udev a node left by an earlier loop can carry stale numbers, so a
+# node that disagrees with sysfs is recreated (with udev it always agrees).
 wait_node() {
     n=${1##*/}
     i=0
-    while [ ! -b "$1" ] && [ $i -lt 20 ]; do
+    while [ $i -lt 20 ]; do
         if [ -r "/sys/class/block/$n/dev" ]; then
             IFS=: read -r maj min <"/sys/class/block/$n/dev"
-            mknod "$1" b "$maj" "$min" 2>/dev/null
+            if [ ! -b "$1" ] || [ "$(stat -c '%t:%T' "$1" 2>/dev/null)" != "$(printf '%x:%x' "$maj" "$min")" ]; then
+                rm -f "$1"
+                mknod "$1" b "$maj" "$min" 2>/dev/null
+            fi
+            [ -b "$1" ] && return 0
         fi
-        [ -b "$1" ] || sleep 0.2
+        sleep 0.2
         i=$((i + 1))
     done
     [ -b "$1" ]
@@ -125,6 +156,16 @@ candidates() {
         case $(readlink -f "$d/device" 2>/dev/null) in */usb*) continue ;; esac
         [ "/dev/$n" = "$bd" ] && continue
         echo "/dev/$n"
+    done
+}
+
+list_candidates() {
+    for d in $(candidates); do
+        n=${d##*/}
+        sectors=$(cat "$SYSBLOCK/$n/size" 2>/dev/null || echo 0)
+        model=$(tr -s ' ' <"$SYSBLOCK/$n/device/model" 2>/dev/null | sed 's/ *$//')
+        printf '%s	%s	%s
+' "$d" $((sectors * 512)) "${model:-unknown}"
     done
 }
 
@@ -234,6 +275,42 @@ copy() {
     unsquashfs -f -n -d "$WORK/root" "$SQUASHFS" >/dev/null || fail 6 "unsquashfs failed"
     mkdir -p "$WORK/root/boot/efi"
     mount "$ESPP" "$WORK/root/boot/efi" || fail 6 "cannot mount the ESP"
+    carry_sessions
+}
+
+# SHA-256 of every regular file under $1, paths relative to it.
+manifest() {
+    (cd "$1" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum)
+}
+
+# The checksums are taken from the stick before the copy and checked against
+# the installed copy at the end, so a copy that went wrong cannot vouch for
+# itself. Nothing here writes below $SESSIONS.
+carry_sessions() {
+    : >"$WORK/sessions.sha"
+    if [ ! -d "$SESSIONS" ]; then
+        echo "INFO no sessions on this system to carry over"
+        return 0
+    fi
+    manifest "$SESSIONS" >"$WORK/sessions.sha" || fail 11 "cannot read the sessions in $SESSIONS"
+    dest=$WORK/root$SESSIONS_DEST
+    mkdir -p "$dest" || fail 11 "cannot create $SESSIONS_DEST on the target"
+    cp -a "$SESSIONS/." "$dest/" || fail 11 "copying the sessions failed (target full?)"
+    chown --reference="$SESSIONS" "$dest" 2>/dev/null
+    echo "INFO carried over $(grep -c . "$WORK/sessions.sha") session files"
+}
+
+verify_sessions() {
+    [ -s "$WORK/sessions.sha" ] || return 0
+    dest=$WORK/root$SESSIONS_DEST
+    sync
+    if ! (cd "$dest" && sha256sum -c --quiet "$WORK/sessions.sha" >"$WORK/sessions.err" 2>&1); then
+        head -n 3 "$WORK/sessions.err" >&2
+        fail 11 "session files on the target do not match the stick (was a take recording during the install?)"
+    fi
+    have=$(manifest "$dest" | grep -c .)
+    want=$(grep -c . "$WORK/sessions.sha")
+    [ "$have" = "$want" ] || fail 11 "target holds $have session files, the stick had $want"
 }
 
 configure() {
@@ -271,10 +348,10 @@ bootloader() {
     step 6 bootloader
     if [ $EFI -eq 1 ]; then
         in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
-            --bootloader-id=sonora --no-floppy || fail 8 "grub-install (NVRAM entry) failed"
+            --bootloader-id=sonora --uefi-secure-boot --no-floppy || fail 8 "grub-install (NVRAM entry) failed"
         # Firmware that forgets its NVRAM still finds the removable path.
         in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
-            --removable --no-floppy || fail 8 "grub-install --removable failed"
+            --removable --uefi-secure-boot --no-floppy || fail 8 "grub-install --removable failed"
         # grub-install already wrote the entry; this only reports it.
         in_target efibootmgr >/dev/null 2>&1 ||
             echo "sonora-install: efibootmgr unavailable, removable path only" >&2
@@ -312,8 +389,12 @@ selfcheck() {
     [ "$(grep -c . "$WORK/uuids")" -eq 2 ] || check_fail "fstab does not name both partitions"
     if [ $EFI -eq 1 ]; then
         ls "$r"/boot/efi/EFI/sonora/*.efi >/dev/null 2>&1 || check_fail "no loader under EFI/sonora"
+        # Secure Boot (ADR-0034): the signed shim and signed GRUB, not a bare grub.
+        [ -s "$r/boot/efi/EFI/sonora/shimx64.efi" ] || check_fail "no signed shim under EFI/sonora"
+        [ -s "$r/boot/efi/EFI/sonora/grubx64.efi" ] || check_fail "no signed GRUB under EFI/sonora"
         [ -s "$r/boot/efi/EFI/BOOT/BOOTX64.EFI" ] || check_fail "no removable-path loader"
     fi
+    verify_sessions
     # Last, so the marker means every check above passed.
     date -u +%Y-%m-%dT%H:%M:%SZ >"$r/var/lib/sonora/installed" || check_fail "cannot write the marker"
     sync
@@ -324,6 +405,7 @@ for t in sfdisk wipefs mkfs.ext4 mkfs.vfat unsquashfs mount blkid findmnt lsblk 
     command -v "$t" >/dev/null 2>&1 || fail 10 "missing tool: $t"
 done
 
+if [ $LIST -eq 1 ]; then list_candidates; exit 0; fi
 select_target
 partition
 format

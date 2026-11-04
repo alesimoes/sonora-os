@@ -165,6 +165,9 @@ public:
     void set_health_flags(uint32_t flags) { health_ = flags; }
     void add_xruns(uint32_t n) { xruns_ += n; }
     void add_clock_steps(uint32_t n) { clock_steps_ += n; }
+    // Capture frames lost, all tracks: counted apart from xruns (the
+    // audio callback missing its deadline), as the real engine does.
+    void add_overruns(uint32_t n) { overruns_ += n; }
     // Layout 5: spans played as silence, as the real engine counts them.
     void add_playback_misses(uint32_t n) { playback_misses_ += n; }
     // A locate held back for its window, kTransportLocating, until cleared.
@@ -407,6 +410,7 @@ private:
     bool inputs_connected_ = true;
     uint32_t xruns_ = 0;
     uint32_t clock_steps_ = 0;
+    uint32_t overruns_ = 0;
     uint64_t start_ns_ = 0;
     uint64_t last_publish_ns_ = 0;
 

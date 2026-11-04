@@ -311,6 +311,7 @@ Session::Session(SessionConfig cfg)
     order_lanes_.reset(new uint32_t[max_order_ + 1]());
     scratch_.reset(new float[static_cast<std::size_t>(scratch_buffers_) * 2 * max_block_]());
     track_buf_.reset(new float[2 * static_cast<std::size_t>(max_block_)]());
+    vs_buf_.reset(new float[2 * static_cast<std::size_t>(max_block_)]());
     // Here, before any backend can call process(): prepare() allocates, and
     // a meter the audio thread can reach is never prepared again (RT audit
     // of #315, condition 1). A track meter is peak only; loudness per track
@@ -481,6 +482,15 @@ void Session::play() {
     if (transport_->state() == TransportState::Stopped) {
         transport_->set_state(TransportState::Rolling);
     }
+}
+
+bool Session::set_varispeed(float ratio, std::string* error) {
+    if (!(ratio >= kMinVarispeed && ratio <= kMaxVarispeed)) {
+        if (error) *error = "varispeed ratio outside 0.5 to 2.0";
+        return false;
+    }
+    varispeed_.store(ratio, std::memory_order_relaxed);
+    return true;
 }
 
 void Session::stop_playback() {
@@ -1330,6 +1340,11 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
             roll_end_.compare_exchange_strong(end, kNoRollEnd, std::memory_order_acq_rel);
         }
     }
+    // Off-speed only for a plain roll: a loop, a take or a post-roll counts
+    // timeline frames one for one (ADR-0033 §3).
+    const float ratio = varispeed_.load(std::memory_order_relaxed);
+    vs_on_ = rolling && !recording && !roll_stops && loop_to_ == 0 && ratio != 1.0f;
+    vs_ratio_ = ratio;
     capture(block, recording, word.take, word.start, playhead, first);
     if (block_wraps_ != 0) {
         loop_wrap_count_ += block_wraps_;
@@ -1433,12 +1448,30 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         }
         invalid_plan_blocks_.fetch_add(1, std::memory_order_relaxed);
     }
+    // Under varispeed a chunk reads n * ratio source frames and one more to
+    // interpolate: it is cut so those fit vs_buf_.
+    uint32_t chunk_max = max_block_;
+    uint64_t vs_from = playhead;
+    if (vs_on_) {
+        if (reseek_) vs_phase_ = 0.0;
+        const uint32_t whole = static_cast<uint32_t>(std::ceil(vs_ratio_));
+        chunk_max = max_block_ > 2 + whole ? (max_block_ - 2) / whole : 1;
+    } else {
+        vs_phase_ = 0.0;
+    }
     for (uint32_t off = 0; plan_valid_ && off < nframes;) {
-        const uint32_t n = nframes - off < max_block_ ? nframes - off : max_block_;
+        const uint32_t n = nframes - off < chunk_max ? nframes - off : chunk_max;
         block_done_ = off;
-        mix(*plan, block, off, n, rolling, recording, loop_frame(playhead, off));
+        mix(*plan, block, off, n, rolling, recording,
+            vs_on_ ? vs_from : loop_frame(playhead, off));
         reseek_ = false;
         off += n;
+        if (vs_on_) {
+            const double reached = vs_phase_ + static_cast<double>(n) * vs_ratio_;
+            const double whole = std::floor(reached);
+            vs_from += static_cast<uint64_t>(whole);
+            vs_phase_ = reached - whole;
+        }
     }
     // An automated fader left its last applied coefficient in track_target_.
     for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
@@ -1457,7 +1490,9 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     }
     for (uint32_t i = 0; i < 2 * max_buses_; ++i) aux_gain_[i] = aux_target_[i];
 
-    if (plan_valid_) {
+    // The click counts timeline frames at speed 1; off-speed it is silent
+    // rather than wrong (ADR-0033 §3).
+    if (plan_valid_ && !vs_on_) {
         click_->render(*plan, block, rolling, playhead, play_until_, loop_from_, loop_to_);
     }
 
@@ -1466,9 +1501,13 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     probe_->process(block);
 
     // A roll that stops on B stays on B rather than wrapping to A.
-    const uint64_t next =
-        roll_stops ? playhead + play_until_ : rolling ? loop_frame(playhead, play_until_) : playhead;
-    if (rolling && loop_to_ != 0 && !roll_stops) {
+    const uint64_t next = vs_on_ && plan_valid_ ? vs_from
+                          : roll_stops          ? playhead + play_until_
+                          : rolling             ? loop_frame(playhead, play_until_)
+                                                : playhead;
+    if (vs_on_ && plan_valid_) {
+        transport_->set_playhead(next);
+    } else if (rolling && loop_to_ != 0 && !roll_stops) {
         transport_->set_playhead(next);
     } else if (rolling) {
         transport_->advance(play_until_);
@@ -1945,7 +1984,7 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
     const bool play = rolling && mon != Track::Monitor::Off;
     if (steady && pos == first && pos == 0.0f) {
         if (play) {
-            render_track(plan, node.track, from, n, out);
+            render_playback(plan, node.track, from, n, out);
             cut_at_roll_end(out, offset, n);
             return pt.channels >= 2;
         }
@@ -1963,7 +2002,7 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
     const FadeCurve shape = by_punch ? p.shape : FadeCurve::Linear;
     bool stereo = false;
     if (play) {
-        render_track(plan, node.track, from, n, out);
+        render_playback(plan, node.track, from, n, out);
         cut_at_roll_end(out, offset, n);
         stereo = pt.channels >= 2;
     } else {
@@ -2990,6 +3029,25 @@ void Session::render_track(const PlaybackPlan& plan, uint32_t plan_track, uint64
         done += span;
         at += span;
         if (loop_to_ > loop_from_ && at == loop_to_) at = loop_from_;
+    }
+}
+
+void Session::render_playback(const PlaybackPlan& plan, uint32_t plan_track, uint64_t from,
+                              uint32_t n, float* const out[2]) noexcept SONORA_RT {
+    if (!vs_on_) {
+        render_track(plan, plan_track, from, n, out);
+        return;
+    }
+    float* const src[2] = {vs_buf_.get(), vs_buf_.get() + max_block_};
+    const double last = vs_phase_ + static_cast<double>(n - 1) * vs_ratio_;
+    render_track(plan, plan_track, from, static_cast<uint32_t>(last) + 2, src);
+    for (int ch = 0; ch < 2; ++ch) {
+        for (uint32_t i = 0; i < n; ++i) {
+            const double p = vs_phase_ + static_cast<double>(i) * vs_ratio_;
+            const auto k = static_cast<uint32_t>(p);
+            const auto frac = static_cast<float>(p - k);
+            out[ch][i] = src[ch][k] + (src[ch][k + 1] - src[ch][k]) * frac;
+        }
     }
 }
 
