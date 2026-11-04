@@ -64,7 +64,8 @@ class _Conn:
 
 class Broker:
     def __init__(self, harness_dir, token=None, host=P.LOOPBACK_HOST, port=0,
-                 on_event=None, expected_names=None):
+                 on_event=None, expected_names=None, redeliver_s=600.0,
+                 ask_default_s=1200.0, tick_s=5.0, clock=time.monotonic):
         if host != P.LOOPBACK_HOST:
             raise ValueError("broker binds 127.0.0.1 only, got %r" % (host,))
         self.dir = os.path.abspath(harness_dir)
@@ -74,11 +75,18 @@ class Broker:
         self.on_event = on_event
         self.expected = set(expected_names) if expected_names else None
         self.box = Mailbox(self.dir)
+        # Timers are injectable so tests need not wait minutes.
+        self.redeliver_s, self.ask_default_s = redeliver_s, ask_default_s
+        self.tick_s, self.clock = tick_s, clock
+        self.ack_wait = []    # needs_ack deliveries: {to, seq, msg, due, n}
+        self.open_asks = {}   # ask id -> {asker, due, default}
+        self._ticker = None
         self.conns = {}       # name -> _Conn (registered, live)
         self.last_seen = {}   # name -> monotonic time of last frame
         self.seq = {}         # name -> last assigned seq
         self.claims = {}      # pattern -> owner
         self.channels = {}    # feature -> set(members)
+        self.hook_seen = {}   # name -> last seq shown by a hook `peek`
         self._server = None
         self._stopping = False
 
@@ -93,6 +101,7 @@ class Broker:
         self._server = await asyncio.start_server(
             self._handle, self.host, self.port, limit=P.MAX_FRAME)
         self.port = self._server.sockets[0].getsockname()[1]
+        self._ticker = asyncio.ensure_future(self._tick_loop())
         self.box.save_state("broker.json", {
             "host": self.host, "port": self.port, "pid": os.getpid(),
             "started": P.now_iso()})  # never the token
@@ -100,6 +109,8 @@ class Broker:
 
     async def stop(self):
         self._stopping = True
+        if self._ticker:
+            self._ticker.cancel()
         if self._server:
             self._server.close()
         for c in list(self.conns.values()):
@@ -107,6 +118,34 @@ class Broker:
         if self._server:
             await self._server.wait_closed()
             self._server = None
+
+    async def _tick_loop(self):
+        while True:
+            await asyncio.sleep(self.tick_s)
+            self.tick()
+
+    def tick(self):
+        """Redeliver unacked needs_ack messages; answer stale asks."""
+        now = self.clock()
+        for w in list(self.ack_wait):
+            if self.box.get_acked(w["to"]) >= w["seq"]:
+                self.ack_wait.remove(w)
+            elif now >= w["due"]:
+                w["n"] += 1
+                w["due"] = now + self.redeliver_s
+                if w["to"] in self.conns:
+                    self.conns[w["to"]].send({"op": "deliver", "msg": w["msg"]})
+                if w["n"] == 2:
+                    self._event(P.EV_UNACKED, name=w["to"], msg=w["msg"])
+                    if self._known("lead"):
+                        self.send(P.DAEMON, "lead", "note", {
+                            "text": "%s has not acked %s (%s)" % (
+                                w["to"], w["msg"]["id"], w["msg"]["type"])})
+        for aid, a in list(self.open_asks.items()):
+            if now >= a["due"]:
+                del self.open_asks[aid]
+                self.send(P.DAEMON, a["asker"], "answer", {
+                    "text": a["default"], "default": True}, reply_to=aid)
 
     def _event(self, kind, **data):
         if self.on_event:
@@ -209,6 +248,12 @@ class Broker:
              reply_to=None, needs_ack=False):
         """Route one message; durable on disk before this returns."""
         recipients = self._resolve(sender, to)
+        if type_ == "done" and sender != P.DAEMON:
+            blocking = [m for m in self.box.unacked(
+                sender, self.box.get_acked(sender)) if m["type"] in ("bug", "ask")]
+            if blocking:
+                raise P.ProtocolError(P.E_BLOCKED, "unacked %s from %s" % (
+                    blocking[0]["type"], blocking[0]["from"]))
         if type_ not in P.MSG_TYPES:
             self._event(P.EV_UNKNOWN_TYPE, type=type_, sender=sender)
         mid = P.new_id()
@@ -218,11 +263,22 @@ class Broker:
                 "needs_ack": bool(needs_ack),
                 "body": {} if body is None else body}
         self.box.append_log(base)
+        if type_ == "answer":
+            self.open_asks.pop(reply_to, None)
+        elif type_ == "ask" and sender != P.DAEMON:
+            dflt = body.get("default") if isinstance(body, dict) else None
+            self.open_asks[mid] = {
+                "asker": sender, "due": self.clock() + self.ask_default_s,
+                "default": dflt or "No answer in time: take the recommended "
+                                   "default and record it."}
         for r in recipients:
             seq = self.seq.get(r, 0) + 1
             self.seq[r] = seq
             msg = dict(base, seq=seq)
             self.box.put(r, msg)
+            if needs_ack and r != P.DAEMON:
+                self.ack_wait.append({"to": r, "seq": seq, "msg": msg, "n": 0,
+                                      "due": self.clock() + self.redeliver_s})
             if r == P.DAEMON:
                 self.box.set_acked(r, seq)
                 self._event(P.EV_MESSAGE, msg=msg)
@@ -272,9 +328,14 @@ class Broker:
         if t == "register":
             return self._register(conn, f, rid)
         if conn.name is None:
-            if t == "check" and self._auth(f.get("token", "")) and \
+            # Hooks run beside the agent's MCP connection, which owns the
+            # registered name, so they use token-authenticated one-shot ops.
+            if t in ("check", "peek") and self._auth(f.get("token", "")) and \
                     P.valid_name(str(f.get("name", ""))):
-                conn.send(self._check_reply(rid, f["name"], f["path"]))
+                if t == "check":
+                    conn.send(self._check_reply(rid, f["name"], f["path"]))
+                else:
+                    conn.send(self._peek_reply(rid, f["name"]))
                 return True
             raise P.ProtocolError(P.E_NOT_REGISTERED, "register first")
         name = conn.name
@@ -305,7 +366,17 @@ class Broker:
                 name, f["paths"])))
         elif t == "check":
             conn.send(self._check_reply(rid, name, f["path"]))
+        elif t == "peek":
+            conn.send(self._peek_reply(rid, name))
         return True
+
+    def _peek_reply(self, rid, name):
+        """Unacked messages not yet shown to a hook; does not ack."""
+        after = max(self.box.get_acked(name), self.hook_seen.get(name, 0))
+        msgs = self.box.unacked(name, after)
+        if msgs:
+            self.hook_seen[name] = msgs[-1]["seq"]
+        return P.reply_ok(rid, messages=msgs)
 
     def _check_reply(self, rid, name, path):
         r = self.check_path(name, path)

@@ -85,6 +85,8 @@ class Client:
         self._alive = False
         try:
             if self._sock:
+                # The reader thread's makefile() keeps the fd open past close().
+                self._sock.shutdown(socket.SHUT_RDWR)
                 self._sock.close()
         except OSError:
             pass
@@ -206,6 +208,19 @@ class Client:
         if not r.get("ok"):
             return False, str(r.get("error", "refused"))
         return bool(r.get("allowed", True)), r.get("reason", "")
+
+
+def oneshot(port, name, token, op, host="127.0.0.1", timeout=5.0, **fields):
+    """Token-authenticated single request on a short connection that does not
+    register, so it works beside the agent's MCP connection (used by hooks)."""
+    with socket.create_connection((host, port), timeout=timeout) as s:
+        s.settimeout(timeout)
+        frame = dict(fields, op=op, rid=1, name=name, token=token)
+        s.sendall(json.dumps(frame).encode() + b"\n")
+        line = s.makefile("rb").readline()
+    if not line:
+        raise HarnessError("broker closed the connection")
+    return json.loads(line)
 
 
 def brief(m):

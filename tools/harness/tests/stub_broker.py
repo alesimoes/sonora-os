@@ -15,6 +15,7 @@ class StubBroker:
         self.claims = {}       # path -> owner
         self.mail = {}         # name -> list of msgs
         self.acked = {}
+        self.hook_seen = {}
         self.registers = []    # (name, last_acked_seq or None)
         self.sent = []
         self.conns = []
@@ -50,6 +51,11 @@ class StubBroker:
             for line in c.makefile("rb"):
                 r = json.loads(line)
                 op, rid = r["op"], r["rid"]
+                if name is None and op in ("check", "peek"):
+                    if r.get("token") != TOKEN:
+                        out({"rid": rid, "ok": False, "error": "bad token"})
+                        return
+                    name = r["name"]
                 if op == "register":
                     if r.get("token") != TOKEN:
                         out({"rid": rid, "ok": False, "error": "bad token"})
@@ -86,6 +92,12 @@ class StubBroker:
                         out({"rid": rid, "ok": True, "allowed": False, "reason": f"claimed by {owner}"})
                     else:
                         out({"rid": rid, "ok": True, "allowed": True})
+                elif op == "peek":
+                    seen = self.hook_seen.get(name, self.acked.get(name, 0))
+                    ms = [m for m in self.mail.get(name, []) if m["seq"] > seen]
+                    if ms:
+                        self.hook_seen[name] = ms[-1]["seq"]
+                    out({"rid": rid, "ok": True, "messages": ms})
                 elif op == "ping":
                     out({"rid": rid, "ok": True})
         except (OSError, ValueError):

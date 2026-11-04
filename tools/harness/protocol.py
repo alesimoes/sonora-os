@@ -61,7 +61,7 @@ MSG_TYPES = frozenset({
 })
 # Frame types a client may send.
 REQUESTS = frozenset({"register", "ping", "ack", "send", "claim", "release",
-                      "check"})
+                      "check", "peek"})
 
 # Error codes
 E_BAD_FRAME = "bad_frame"
@@ -73,6 +73,7 @@ E_BAD_TYPE = "bad_type"
 E_NO_RECIPIENT = "no_recipient"
 E_BAD_PATH = "bad_path"
 E_CLAIM_DENIED = "claim_denied"
+E_BLOCKED = "blocked"         # done while blocking messages are unacked
 E_NOT_MEMBER = "not_member"   # send to a channel the sender is not in
 
 # Event names passed to Broker's on_event callback.
@@ -80,6 +81,7 @@ EV_REGISTERED = "registered"
 EV_SUSPECT = "suspect"        # connection of a registered name closed
 EV_MESSAGE = "message"        # a message addressed to "daemon"
 EV_UNKNOWN_TYPE = "unknown_type"
+EV_UNACKED = "unacked"        # a needs_ack message was redelivered twice
 
 
 class ProtocolError(Exception):

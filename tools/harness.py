@@ -14,7 +14,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "harness"))
-from client import Client, HarnessError, brief  # noqa: E402
+from client import Client, HarnessError, brief, env_config, oneshot  # noqa: E402
 
 
 def hook_path():
@@ -27,19 +27,44 @@ def hook_path():
 
 
 def cmd_check(c, a):
-    path = hook_path() if a.hook else a.path
-    if not path:
-        if a.hook:
-            print("harness: no file path in hook input", file=sys.stderr)
-            return 2
+    if not a.path:
         print("check needs PATH", file=sys.stderr)
         return 2
-    ok, why = c.check(path)
+    ok, why = c.check(a.path)
     if ok:
         return 0
-    print(f"harness: edit of {path} denied: {why or 'claimed by another agent or not claimed; claim it first'}",
-          file=sys.stderr)
+    print(f"harness: {a.path} denied: {why}", file=sys.stderr)
     return 2
+
+
+def run_hook(a, hook_inbox):
+    """Hooks run beside the agent's MCP connection (which owns the registered
+    name), so they use token-authenticated one-shot requests, not register."""
+    try:
+        cfg = env_config()
+        if hook_inbox:
+            r = oneshot(cfg["port"], cfg["name"], cfg["token"], "peek")
+            msgs = r.get("messages", []) if r.get("ok") else []
+            if msgs:  # never block the agent on a read-only notice
+                text = "Harness messages:\n" + "\n".join(brief(m) for m in msgs)
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PostToolUse", "additionalContext": text}}))
+            return 0
+        path = hook_path()
+        if not path:
+            print("harness: no file path in hook input", file=sys.stderr)
+            return 2
+        r = oneshot(cfg["port"], cfg["name"], cfg["token"], "check", path=path)
+        if r.get("ok") and r.get("allowed"):
+            return 0
+        why = r.get("reason") or r.get("error") or "claim it first"
+        print(f"harness: edit of {path} denied: {why}", file=sys.stderr)
+        return 2
+    except (HarnessError, OSError, ValueError) as e:
+        if hook_inbox:
+            return 0
+        print(f"harness: broker unavailable ({e}); edits denied", file=sys.stderr)
+        return 2
 
 
 def main(argv):
@@ -65,15 +90,12 @@ def main(argv):
     a = ap.parse_args(argv)
 
     hook_inbox = a.verb == "inbox" and a.hook
+    if hook_inbox or (a.verb == "check" and a.hook):
+        return run_hook(a, hook_inbox)
     try:
         c = Client.from_env(ping=False, timeout=5.0, reconnect_window=0)
         c.connect()
     except (HarnessError, OSError, ValueError) as e:
-        if a.verb == "check":
-            print(f"harness: broker unavailable ({e}); edits denied", file=sys.stderr)
-            return 2
-        if hook_inbox:
-            return 0  # never block the agent on a read-only notice
         print(f"harness: {e}", file=sys.stderr)
         return 1
     try:
@@ -104,8 +126,6 @@ def main(argv):
         elif a.verb == "check":
             return cmd_check(c, a)
     except HarnessError as e:
-        if hook_inbox:
-            return 0
         print(f"harness: {e}", file=sys.stderr)
         return 1
     finally:
