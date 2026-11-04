@@ -3180,6 +3180,77 @@ void a_new_session_gets_its_own_untitled_folder() {
     CHECK(fs::exists(first / "Audio Files" / "notes.txt"));
 }
 
+// ADR-0030 section 3, protocol 54: a Load whose path carries the template
+// prefix opens the template as a new session in a fresh Untitled folder with
+// the template's plugin states copied in. The template's folder is only
+// read: an autosave, a take or a Save As that fails cannot write into it.
+void a_template_opens_in_a_new_untitled_folder() {
+    const fs::path root = fresh_dir("template_load_root");
+    struct Gone {
+        fs::path p;
+        ~Gone() {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+    } gone{root};
+    const fs::path first = root / "Untitled";
+    fs::create_directories(first);
+    const fs::path tdir = root / "Templates" / "Band";
+    fs::create_directories(tdir / "Plugin State");
+    CHECK(touch(tdir / "Plugin State" / "abc.state"));
+    CHECK(touch(tdir / "Band.sonora"));
+    EngineControlServer::Options opts;
+    opts.sessions_root = (root / "Sessions").string();
+    fs::create_directories(opts.sessions_root);
+    const model::Snapshot start = RealEngine::start_document(first);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(first, opts, false, true);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    std::string bytes;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, bytes, error));
+    const auto answer = [&](uint64_t seq) {
+        api::CommandReply got;
+        until(real, in, [&]() {
+            for (const api::CommandReply& r : in.replies)
+                if (r.seq == seq) got = r;
+            return got.seq == seq;
+        });
+        return got;
+    };
+    const auto before = [&]() {
+        std::vector<std::string> out;
+        for (const auto& e : fs::recursive_directory_iterator(tdir)) out.push_back(e.path().string());
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    const std::vector<std::string> kept = before();
+
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    load.op = api::wire::encode_load(std::string(api::kLoadTemplatePrefix) + (tdir / "Band.sonora").string(), bytes);
+    const api::CommandReply ok = answer(real.submit(load));
+    CHECK(ok.result == DispatchResult::Ok);
+    const fs::path in_folder(*real.session().folder());
+    CHECK(in_folder != tdir);
+    CHECK(in_folder.parent_path() == fs::path(opts.sessions_root));
+    CHECK(fs::exists(in_folder / "Plugin State" / "abc.state"));
+    CHECK(until(real, in, [&]() { return last_folder(in) != nullptr && last_folder(in)->text == in_folder.string(); }));
+    CHECK(last_folder(in) != nullptr && (last_folder(in)->flags & api::kFolderUntitled) != 0);
+    CHECK(before() == kept);
+
+    // A path that is no template file is refused and leaves the session.
+    api::ModelRequest bad;
+    bad.action = api::ModelAction::Load;
+    bad.op = api::wire::encode_load(std::string(api::kLoadTemplatePrefix) + (tdir / "Gone.sonora").string(), bytes);
+    const api::CommandReply refused = answer(real.submit(bad));
+    CHECK(refused.result == DispatchResult::Failed);
+    CHECK(refused.message.find("no template session file") != std::string::npos);
+    CHECK(fs::path(*real.session().folder()) == in_folder);
+    CHECK(before() == kept);
+}
+
 // ADR-0018 §3 and PR #142 review N2: the first Save of an untitled session
 // renames its folder to the one the interface names, so the takes stay
 // beside the session file and a session called "Bass" is saved as Bass,
@@ -3560,6 +3631,7 @@ int main() {
     the_session_folder_follows_the_load();
     a_load_waits_for_the_save_before_it();
     a_new_session_gets_its_own_untitled_folder();
+    a_template_opens_in_a_new_untitled_folder();
     the_first_save_names_the_untitled_folder();
     an_untitled_session_is_autosaved();
     the_round_trip_is_kept_for_the_machine();

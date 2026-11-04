@@ -161,7 +161,19 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
-constexpr uint32_t kProtocolVersion = 42;
+// 54 (daw.model.session_mgmt, ADR-0030 amendment; numbers 43-53 are held by
+//   PRs in flight): a Load whose file starts with kLoadTemplatePrefix opens
+//   a template as a new session in a fresh Untitled folder, never in the
+//   template's own. A version-42 engine refuses the path as not absolute.
+constexpr uint32_t kProtocolVersion = 54;
+
+// ModelAction::Load's file, when it starts with this and names a template's
+// session file: the engine makes a new Untitled folder in its sessions
+// folder, copies the template's "Plugin State" and "Plugin Files" into it,
+// and enters that folder with the document the Load carries. The template's
+// folder is only read, so a take, an autosave or a failed Save As cannot
+// write into it (ADR-0030 section 3). A path never starts with '@'.
+inline constexpr const char* kLoadTemplatePrefix = "@template:";
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

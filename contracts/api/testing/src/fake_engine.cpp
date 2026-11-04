@@ -467,6 +467,45 @@ bool FakeEngine::load(const std::string& op, std::string& why) {
     }
     std::string folder;
     bool untitled = false;
+    // A template (protocol 54): the session goes to a fresh Untitled folder
+    // with the template's plugin states; the template's folder is only read.
+    const std::string_view prefix = kLoadTemplatePrefix;
+    if (file.compare(0, prefix.size(), prefix) == 0) {
+        const fs::path t(file.substr(prefix.size()));
+        std::error_code ec;
+        if (cfg_.sessions_root.empty()) {
+            why = "this engine has no sessions folder to make a session from a template in";
+            return false;
+        }
+        if (!t.is_absolute() || t.extension() != ".sonora" || !fs::is_regular_file(t, ec)) {
+            why = "there is no template session file at " + t.string();
+            return false;
+        }
+        fs::path made;
+        for (int n = 1; n < 10000; ++n) {
+            made = fs::path(cfg_.sessions_root) / ("Untitled " + std::to_string(n));
+            if (!fs::exists(made, ec)) break;
+        }
+        fs::create_directories(made / "Audio Files", ec);
+        if (ec) {
+            why = "the new session's folder could not be made: " + ec.message();
+            return false;
+        }
+        for (const char* sub : {"Plugin State", "Plugin Files"}) {
+            const fs::path base = t.parent_path() / sub;
+            if (!fs::is_directory(fs::symlink_status(base, ec))) continue;
+            for (fs::recursive_directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec)) {
+                std::error_code type;
+                if (!fs::is_regular_file(it->symlink_status(type))) continue;
+                const fs::path to = made / it->path().lexically_relative(t.parent_path());
+                fs::create_directories(to.parent_path(), type);
+                fs::copy_file(it->path(), to, fs::copy_options::skip_existing, type);
+            }
+        }
+        folder = made.lexically_normal().string();
+        untitled = true;
+        file.clear();
+    }
     if (!file.empty()) {
         const fs::path p(file);
         std::error_code ec;
