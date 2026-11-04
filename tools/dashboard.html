@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SonoraOS ao vivo</title>
+<style>
+/* Layout: header with live pulse, KPI strip, agents grouped by track on the left, PRs and containers on the right. */
+:root{
+  --bg:#0a0e14; --bg2:#0f1520; --panel:rgba(22,30,43,.72); --panel-solid:#141c28; --line:rgba(150,170,200,.14); --line2:rgba(150,170,200,.26);
+  --ink:#e9eef6; --muted:#8c99ad; --faint:#5b6678;
+  --cyan:#43d9ff; --mint:#3be0a8; --amber:#ffb454; --rose:#ff6b81; --slate:#7d8aa0; --violet:#a78bfa;
+  --font:"Segoe UI Variable Text","Segoe UI",ui-sans-serif,system-ui,-apple-system,sans-serif;
+  --mono:"Cascadia Mono","SF Mono",ui-monospace,Consolas,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
+  --bg:#eef1f6; --bg2:#e6eaf2; --panel:rgba(255,255,255,.82); --panel-solid:#ffffff; --line:rgba(40,60,90,.12); --line2:rgba(40,60,90,.22);
+  --ink:#15202e; --muted:#566377; --faint:#8a95a6;
+  --cyan:#0a8db3; --mint:#0f9d6e; --amber:#b86a00; --rose:#d1334d; --slate:#5d6a80; --violet:#6d4fd6; color-scheme:light;}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:
+    radial-gradient(1000px 520px at 12% -10%, color-mix(in srgb,var(--cyan) 14%,transparent), transparent 60%),
+    radial-gradient(900px 480px at 100% 0%, color-mix(in srgb,var(--violet) 12%,transparent), transparent 55%),
+    var(--bg);
+  background-attachment:fixed;
+  color:var(--ink); font:14px/1.45 var(--font); min-height:100vh;
+}
+main{max-width:1440px;margin:0 auto;padding:22px 22px 60px}
+header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.mark{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;
+  background:linear-gradient(135deg,var(--cyan),var(--violet));color:#07101a;font-weight:800;letter-spacing:-.02em;
+  box-shadow:0 8px 28px color-mix(in srgb,var(--cyan) 35%,transparent)}
+h1{font-size:21px;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:12.5px}
+.live{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--muted);
+  padding:7px 12px;border:1px solid var(--line);border-radius:99px;background:var(--panel);backdrop-filter:blur(10px)}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--mint);position:relative}
+.dot::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:1.5px solid var(--mint);opacity:.0;animation:ping 2s ease-out infinite}
+.dot.stale{background:var(--rose)} .dot.stale::after{border-color:var(--rose)}
+@keyframes ping{0%{transform:scale(.4);opacity:.8}100%{transform:scale(1.5);opacity:0}}
+
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(172px,1fr));gap:12px;margin-bottom:22px}
+.kpi{position:relative;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;backdrop-filter:blur(10px)}
+.kpi::before{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--c,var(--cyan));opacity:.9}
+.kpi b{display:block;font-size:34px;line-height:1.05;font-weight:650;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.kpi span{color:var(--muted);font-size:12px}
+.kpi.warn{--c:var(--amber)} .kpi.bad{--c:var(--rose)} .kpi.ok{--c:var(--mint)} .kpi.vio{--c:var(--violet)}
+
+.cols{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:20px}
+@media (max-width:1050px){.cols{grid-template-columns:1fr}}
+.sect{display:flex;align-items:baseline;gap:10px;margin:0 0 10px}
+.sect h2{margin:0;font-size:12px;font-weight:650;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.sect i{font-style:normal;color:var(--faint);font-size:12px}
+.track{margin-bottom:22px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.card{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:12px 13px 11px;
+  backdrop-filter:blur(10px);transition:border-color .2s,transform .2s}
+.card:hover{border-color:var(--line2);transform:translateY(-1px)}
+.card .top{display:flex;align-items:center;gap:8px}
+.ring{width:11px;height:11px;border-radius:50%;flex:none;background:var(--c);box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 22%,transparent)}
+.card.building{--c:var(--cyan)} .card.working{--c:var(--mint)} .card.waiting{--c:var(--amber)}
+.card.done,.card.paused{--c:var(--slate)} .card.unknown,.card.nowt{--c:var(--rose)}
+.card.building .ring,.card.working .ring{animation:breathe 1.8s ease-in-out infinite}
+@keyframes breathe{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--c) 6%,transparent)}}
+.card h3{margin:0;font-size:13.5px;font-weight:600;line-height:1.25}
+.state{margin-left:auto;font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--c);white-space:nowrap}
+.meta{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:9px;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.meta .m{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+.idle{height:3px;border-radius:2px;margin-top:9px;background:var(--line);overflow:hidden}
+.idle i{display:block;height:100%;width:var(--w,0%);background:var(--c);border-radius:2px;transition:width .6s}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:99px;font-size:11px;border:1px solid var(--line2);color:var(--muted)}
+.chip.pr{color:var(--cyan);border-color:color-mix(in srgb,var(--cyan) 40%,transparent)}
+
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;backdrop-filter:blur(10px);margin-bottom:22px}
+.row{padding:11px 14px;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.prh{display:flex;gap:8px;align-items:baseline}
+.prn{font-family:var(--mono);color:var(--cyan);font-size:12.5px}
+.prt{font-weight:560;flex:1;min-width:0}
+.br{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.seg{display:flex;height:6px;border-radius:3px;overflow:hidden;gap:2px;margin:9px 0 6px;background:var(--line)}
+.seg i{display:block;height:100%}
+.seg .p{background:var(--mint)} .seg .r{background:var(--amber);animation:flow 1.4s linear infinite;
+  background-image:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);background-size:60px 100%;background-color:var(--amber)}
+.seg .f{background:var(--rose)}
+@keyframes flow{from{background-position:-60px 0}to{background-position:60px 0}}
+.det{font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 14px}
+.det .bad{color:var(--rose)} .det .wait{color:var(--amber)} .det .good{color:var(--mint)}
+.tag{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 8px;border-radius:6px;white-space:nowrap}
+.tag.q{color:var(--mint);background:color-mix(in srgb,var(--mint) 14%,transparent)}
+.tag.n{color:var(--amber);background:color-mix(in srgb,var(--amber) 14%,transparent)}
+.tag.d{color:var(--rose);background:color-mix(in srgb,var(--rose) 16%,transparent)}
+.crow{display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;align-items:center}
+.crow .id{font-family:var(--mono);font-size:12px;color:var(--faint)}
+.empty{padding:16px;color:var(--faint);text-align:center}
+.err{color:var(--rose);margin:0 0 12px;font-size:13px}
+footer{color:var(--faint);font-size:12px;margin-top:8px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="mark">S</div>
+    <div><h1>SonoraOS ao vivo</h1><div class="sub" id="sub">conectando</div></div>
+    <div class="live"><span class="dot" id="dot"></span><span id="livetxt">sincronizando</span></div>
+  </header>
+  <p class="err" id="err"></p>
+  <section class="kpis" id="kpis" aria-label="Resumo"></section>
+  <div class="cols">
+    <section>
+      <div id="tracks"></div>
+    </section>
+    <aside>
+      <div class="sect"><h2>PRs abertos</h2><i id="prcount"></i></div>
+      <div class="panel" id="prs"></div>
+      <div class="sect"><h2>Containers</h2><i id="ccount"></i></div>
+      <div class="panel" id="cs"></div>
+      <footer>Estado do agente é inferido: container montando o worktree = buildando; arquivo ou git mudou nos últimos 3 min = trabalhando; nada disso = aguardando.</footer>
+    </aside>
+  </div>
+</main>
+<script>
+const E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const dur=s=>s==null?'sem sinal':s<90?s+' s':s<5400?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h';
+const NAME={building:'buildando',working:'trabalhando',waiting:'aguardando',done:'terminou',paused:'pausado',unknown:'?','no worktree':'sem worktree'};
+const CLS=s=>s==='no worktree'?'nowt':s;
+const ORDER={waiting:0,'no worktree':0,building:1,working:2,paused:3,done:4,unknown:5};
+let lastOk=0;
+function kpi(n,label,cls){return `<div class="kpi ${cls||''}"><b>${n}</b><span>${label}</span></div>`}
+function render(s){
+  const act=s.agents.filter(a=>!['done','paused'].includes(a.state));
+  const waiting=act.filter(a=>a.state==='waiting'||a.state==='no worktree').length;
+  const busy=act.filter(a=>a.state==='building'||a.state==='working').length;
+  const red=s.prs.filter(p=>p.failed.length).length;
+  const dups=Object.values(s.watchers.reduce((m,w)=>(m[w.pr]=(m[w.pr]||0)+1,m),{})).filter(n=>n>1).length;
+  document.getElementById('kpis').innerHTML=
+    kpi(act.length,'agentes ativos','vio')+kpi(busy,'buildando ou trabalhando','ok')+
+    kpi(waiting,'aguardando',waiting?'warn':'')+kpi(s.prs.length,'PRs abertos')+
+    kpi(red,'PRs com check vermelho',red?'bad':'ok')+kpi(s.containers.length,'containers')+kpi(s.watchers.length-dups*0,'watchers de merge',dups?'bad':'');
+  const by={};s.agents.forEach(a=>{(by[a.track||'Outros']=by[a.track||'Outros']||[]).push(a)});
+  document.getElementById('tracks').innerHTML=Object.keys(by).map(t=>{
+    const list=by[t].slice().sort((a,b)=>ORDER[a.state]-ORDER[b.state]);
+    const n=list.filter(a=>!['done','paused'].includes(a.state)).length;
+    return `<div class="track"><div class="sect"><h2>${E(t)}</h2><i>${n} ativos de ${list.length}</i></div><div class="grid">`+
+    list.map(a=>{
+      const w=a.idle_seconds==null?0:Math.min(100,Math.round(a.idle_seconds/600*100));
+      const showIdle=!['done','paused'].includes(a.state);
+      return `<article class="card ${CLS(a.state)}"><div class="top"><span class="ring"></span><h3>${E(a.label)}</h3><span class="state">${E(NAME[a.state]||a.state)}</span></div>
+      <div class="meta"><span class="m">${E(a.id.slice(0,7))}</span>${a.pr?`<span class="chip pr">PR #${a.pr}</span>`:''}
+      ${showIdle?`<span>parado há ${dur(a.idle_seconds)}</span>`:''}${a.containers.length?`<span>${a.containers.length} container${a.containers.length>1?'s':''}</span>`:''}${a.dirty?`<span>${a.dirty} arquivo${a.dirty>1?'s':''} alterado${a.dirty>1?'s':''}</span>`:''}</div>
+      ${showIdle?`<div class="idle" style="--w:${w}%"><i></i></div>`:''}</article>`}).join('')+`</div></div>`}).join('')||'<div class="empty">Nenhum agente no arquivo de rótulos.</div>';
+  const w={};s.watchers.forEach(x=>{w[x.pr]=(w[x.pr]||0)+1});
+  document.getElementById('prcount').textContent=s.prs.length+' abertos';
+  document.getElementById('prs').innerHTML=s.prs.map(p=>{
+    const tot=Math.max(1,p.passed+p.pending.length+p.failed.length);
+    const q=w[p.number]>1?`<span class="tag d">${w[p.number]} watchers</span>`:w[p.number]?'<span class="tag q">na fila</span>':'<span class="tag n">sem watcher</span>';
+    const det=[];
+    if(p.failed.length)det.push(`<span class="bad">falhou: ${p.failed.map(E).join(', ')}</span>`);
+    if(p.pending.length)det.push(`<span class="wait">rodando: ${p.pending.map(E).join(', ')}</span>`);
+    if(!p.failed.length&&!p.pending.length)det.push(`<span class="good">todos os ${p.passed} checks verdes</span>`);
+    return `<div class="row"><div class="prh"><span class="prn">#${p.number}</span><span class="prt">${E(p.title)}</span>${q}</div>
+    <div class="br">${E(p.branch)} · ${E(p.merge||'')}</div>
+    <div class="seg"><i class="p" style="width:${p.passed/tot*100}%"></i><i class="r" style="width:${p.pending.length/tot*100}%"></i><i class="f" style="width:${p.failed.length/tot*100}%"></i></div>
+    <div class="det">${det.join('')}</div></div>`}).join('')||'<div class="empty">Nenhum PR aberto.</div>';
+  const owner=c=>{const a=s.agents.find(a=>a.containers.includes(c.id));return a?E(a.label):'<span style="color:var(--faint)">sem dono conhecido</span>'};
+  const now=Date.now()/1000;
+  document.getElementById('ccount').textContent=s.containers.length+' rodando';
+  document.getElementById('cs').innerHTML=s.containers.map(c=>`<div class="row crow"><span class="id">${c.id}</span><span>${owner(c)}<div class="br">${E(c.image)}</div></span><span class="sub">${dur(Math.round(now-Date.parse(c.started)/1000))}</span></div>`).join('')||'<div class="empty">Nenhum container.</div>';
+  document.getElementById('err').textContent=s.errors.join(' | ');
+}
+async function tick(){
+  try{const r=await fetch('/api/state',{cache:'no-store'});const s=await r.json();lastOk=Date.now();render(s);
+    document.getElementById('sub').textContent=new Date().toLocaleString('pt-BR');}
+  catch(e){document.getElementById('err').textContent='sem resposta do servidor: '+e}
+}
+function pulse(){const age=(Date.now()-lastOk)/1000,stale=!lastOk||age>15;
+  document.getElementById('dot').classList.toggle('stale',stale);
+  document.getElementById('livetxt').textContent=stale?'sem sincronia':'ao vivo, atualizado há '+Math.round(age)+' s'}
+tick();setInterval(tick,5000);setInterval(pulse,1000);
+</script>
+</body>
+</html>
