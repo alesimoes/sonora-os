@@ -2,7 +2,7 @@
 name: code-reviewer
 description: Reviews changes before they land. Invoke on every diff that touches C++ code (common/, contracts/, engine/, drivers/, ui/), iso/, or what runs automatically in every agent session (.claude/settings.json, .claude/ hooks, tools/session-start.sh), after the implementer reports done and before commit. Reports findings; does not fix them unless asked.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: sonnet
 maxTurns: 80
 ---
 
