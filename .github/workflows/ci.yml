@@ -607,6 +607,9 @@ jobs:
       - name: Secure Boot chain, static
         run: tools/test-secure-boot.sh
 
+      - name: Installed root, swap sizing and fstab
+        run: tools/test-rootfs.sh
+
       - name: Merge gate decisions, against a fake gh
         run: tools/test-merge-checks.sh
 
