@@ -116,7 +116,8 @@ bool fit_crossfade(Crossfade& x, Frames before, Frames after) {
 bool Region::operator==(const Region& o) const {
     return id == o.id && name == o.name && colour == o.colour && position == o.position &&
            length == o.length && source_offset == o.source_offset &&
-           channels == o.channels && gain_db == o.gain_db && mute == o.mute &&
+           channels == o.channels && gain_db == o.gain_db && gain_line == o.gain_line &&
+           mute == o.mute &&
            fade_in == o.fade_in && fade_out == o.fade_out;
 }
 
@@ -927,6 +928,20 @@ std::string track_shape_problem(const TrackEdit& t) {
     return {};
 }
 
+std::string line_problem(const std::vector<GainPoint>& line) {
+    if (line.size() > kMaxGainPoints) {
+        return "gain_line holds more than " + str(static_cast<std::int64_t>(kMaxGainPoints)) +
+               " points";
+    }
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const GainPoint& p = line[i];
+        if (p.at < 0 || p.at > kMaxInteger) return "a gain_line point is at a negative frame";
+        if (!gain_in_range(p.db)) return "a gain_line point's db " + gain_range();
+        if (i > 0 && p.at <= line[i - 1].at) return "gain_line points must be in increasing order";
+    }
+    return {};
+}
+
 std::string region_problem(const Region& r, const SourcePool& pool,
                            std::uint16_t track_channels) {
     if (r.id == 0) return "id must be at least 1";
@@ -965,7 +980,7 @@ std::string region_problem(const Region& r, const SourcePool& pool,
         return "fade_in.length + fade_out.length is longer than the region";
     }
     if (!gain_in_range(r.gain_db)) return "gain_db " + gain_range();
-    return {};
+    return line_problem(r.gain_line);
 }
 
 const Region* find_region(const Playlist& p, Id id) {
@@ -2079,5 +2094,7 @@ bool check_invariants(const Snapshot& s, std::string& error) {
     }
     return true;
 }
+
+std::string gain_line_problem(const std::vector<GainPoint>& line) { return detail::line_problem(line); }
 
 }  // namespace sonora::model

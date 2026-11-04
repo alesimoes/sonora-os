@@ -266,9 +266,60 @@ int test_refused_while_recording() {
     return 0;
 }
 
+// Render clip gain: the first region's level (-6 dB) and gain line (0 dB at
+// source frame 0 falling to -12 dB at 100, held after) are baked into the
+// file, and the region that replaces it is flat.
+int test_render_clip_gain() {
+    Rig r;
+    CHECK(make_rig(r, "test_consolidate_clip_gain"));
+    const model::Playlist* p0 = playlist_of(r.doc->current(), r.playlist);
+    CHECK(p0 != nullptr && p0->regions.size() == 2);
+    const model::Id region = p0->regions[0].id;
+    const std::string name = p0->regions[0].name;
+    model::SetRegionGain g;
+    g.playlist = r.playlist;
+    g.region = region;
+    g.gain_db = -6.0f;
+    g.gain_line = {{0, 0.0f}, {100, -12.0f}};
+    model::ReplicationUpdate u;
+    std::string err;
+    CHECK(r.doc->apply(g, u, err));
+    const std::size_t undo_before = r.doc->history().undo_depth();
+
+    std::vector<model::ReplicationUpdate> updates;
+    ConsolidateHooks hooks;
+    const bool done = render_clip_gain(*r.doc, *r.session, r.cfg.dir, r.track, region, hooks,
+                                       updates, err);
+    if (!done) std::fprintf(stderr, "  refused: %s\n", err.c_str());
+    CHECK(done);
+    CHECK(r.doc->history().undo_depth() == undo_before + 1);
+    std::uint16_t ch = 0;
+    const std::vector<float> got = read_all(r.cfg.dir + "/Audio Files/Audio 1_cons_01.wav", ch);
+    CHECK(ch == r.channels && got.size() == 200u * ch);
+    const float region_gain = std::pow(10.0f, -6.0f / 20.0f);
+    const float low = std::pow(10.0f, -12.0f / 20.0f);
+    for (int t = 0; t < 140; ++t) {
+        const float x = t < 100 ? static_cast<float>(t) / 100.0f : 1.0f;
+        const float want = region_gain * (1.0f + x * (low - 1.0f));
+        CHECK(std::fabs(got[static_cast<std::size_t>(t) * ch] - want) < 1e-5f);
+    }
+    const model::Playlist* p = playlist_of(r.doc->current(), r.playlist);
+    CHECK(p != nullptr && p->regions[0].position == 0 && p->regions[0].length == 200);
+    CHECK(p->regions[0].name == name && p->regions[0].gain_db == 0.0f &&
+          p->regions[0].gain_line.empty());
+    CHECK(p->regions[0].id != region);
+    CHECK(!render_clip_gain(*r.doc, *r.session, r.cfg.dir, r.track, region, hooks, updates, err));
+    CHECK(err.find("no such region") != std::string::npos);
+    CHECK(r.doc->undo(u, err));
+    p = playlist_of(r.doc->current(), r.playlist);
+    CHECK(p->regions[0].id == region && p->regions[0].gain_line.size() == 2);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
+    if (int rc = test_render_clip_gain()) return rc;
     if (int rc = test_two_takes_with_a_crossfade()) return rc;
     if (int rc = test_never_overwrites_and_cancel()) return rc;
     if (int rc = test_refused_while_recording()) return rc;

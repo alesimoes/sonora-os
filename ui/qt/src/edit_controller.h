@@ -424,6 +424,19 @@ public:
     bool rename_region(const std::string& name, std::string& why);
     // A palette index, or model::kTrackColour for the track's.
     bool set_region_colour(int colour, std::string& why);
+    // --- clip gain (edit_clip_gain.cpp) ---
+    // On the selected region, each one undo step. set_clip_gain is the
+    // region's own level in dB (-144 to +24); a nudge adds to it and is
+    // refused at the limit. A gain point sits at a timeline frame inside
+    // the region, `db` its level on top of the clip's; the first one also
+    // holds both ends at 0 dB. The line is stored in source frames.
+    bool set_clip_gain(float db, std::string& why);
+    bool nudge_clip_gain(float delta_db, std::string& why);
+    bool set_gain_point(model::Frames at, float db, std::string& why);
+    bool remove_gain_point(model::Frames at, std::string& why);
+    bool clear_gain_line(std::string& why);
+    // The line's level (dB, 0 with none) at a timeline frame of `r`.
+    static float clip_line_db_at(const model::Region& r, model::Frames timeline_frame);
     // The palette index a region is drawn in: its own, else its track's.
     static int region_colour(const model::TrackEdit& t, const model::Region& r) {
         return r.colour == model::kTrackColour ? t.colour : r.colour;

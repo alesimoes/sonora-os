@@ -203,6 +203,7 @@ std::string step_text(const std::string& label) {
         {"SetTrackColour", "Colour Track"},          {"SetRegionName", "Rename Region"},
         {"SetRegionColour", "Colour Region"},        {"SetGroup", "Group Tracks"},
         {"RemoveGroup", "Ungroup Tracks"},
+        {"SetRegionGain", "Clip Gain"},
     };
     const auto it = kWords.find(label);
     return it != kWords.end() ? it->second : label;

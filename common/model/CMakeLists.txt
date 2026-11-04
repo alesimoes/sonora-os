@@ -91,6 +91,11 @@ add_test(NAME model_tracks COMMAND test_model_tracks)
 add_executable(test_model_groups tests/test_groups.cpp)
 target_link_libraries(test_model_groups PRIVATE sonora_model_audited)
 add_test(NAME model_groups COMMAND test_model_groups)
+
+# Clip gain: SetRegionGain, the source-frame gain line, codec and undo window.
+add_executable(test_model_clip_gain tests/test_clip_gain.cpp)
+target_link_libraries(test_model_clip_gain PRIVATE sonora_model_audited)
+add_test(NAME model_clip_gain COMMAND test_model_clip_gain)
 # Playlists per track: new, duplicate, choose, rename, delete unused (ADR-0026).
 add_executable(test_model_playlists tests/test_playlists.cpp)
 target_link_libraries(test_model_playlists PRIVATE sonora_model_audited)

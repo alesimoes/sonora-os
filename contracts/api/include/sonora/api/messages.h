@@ -167,7 +167,11 @@ namespace sonora::api {
 //   format 19), and the commands group.new, group.dissolve and
 //   group.toggle_suspend. A version-42 peer refuses the operations and the
 //   window.
-constexpr uint32_t kProtocolVersion = 45;
+// 46 (clip gain; follows 42, 43 to 45 being other branches' numbers): the
+//   operation kind SetRegionGain, a region in an operation and in the undo
+//   window carries "gain_line" (window format 16, session format 19), and
+//   the clip.gain commands. A version-42 peer refuses all of them.
+constexpr uint32_t kProtocolVersion = 46;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

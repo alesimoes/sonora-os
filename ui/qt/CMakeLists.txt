@@ -57,6 +57,7 @@ add_library(sonora_ui_qt STATIC
   src/edit_names.cpp
   src/edit_groups.cpp
   src/mix_groups.cpp
+  src/edit_clip_gain.cpp
   src/strip_silence.h src/strip_silence.cpp
   src/edit_strip_silence.cpp
   src/automation_edit.h src/automation_edit.cpp
@@ -86,7 +87,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml
+        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml qml/ClipGainPanel.qml
         qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
 )
 
@@ -196,6 +197,13 @@ set_tests_properties(ui_playlists PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscr
 # Names and colours (ADR-0023, update of 2026-11-02): rename a track or a
 # region, a palette colour per track and per region, kept through a move;
 # then the real QML: the double-clicks, the Name dialog, the palette.
+add_executable(test_ui_clip_gain tests/test_clip_gain.cpp)
+target_link_libraries(test_ui_clip_gain PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_clip_gain PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_clip_gain COMMAND test_ui_clip_gain)
+set_tests_properties(ui_clip_gain PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 add_executable(test_ui_names_colours tests/test_names_colours.cpp)
 target_link_libraries(test_ui_names_colours PRIVATE sonora_ui_qt Qt6::Test)
 target_compile_definitions(test_ui_names_colours PRIVATE

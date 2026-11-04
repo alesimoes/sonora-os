@@ -546,13 +546,32 @@ bool v17_to_v18(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
-// v18 -> v19 (ADR-0041): the session may hold "groups". A version 18 file
-// that holds the key is refused, as a version 18 reader would refuse it; one
-// without it opens unchanged.
+// v18 -> v19 (ADR-0041 groups, ADR-0042 clip gain): a version 18 file that holds
+// "groups", or a region with "gain_line", is refused, as a version 18 reader
+// would refuse it; one without them opens unchanged.
 bool v18_to_v19(Value& root, std::vector<Repair>&, std::string& error) {
     if (root.find("groups") != nullptr) {
         error = "the file has \"groups\", which version 18 does not define";
         return false;
+    }
+    const Value* list = root.find("tracks");
+    if (list == nullptr || !list->is_array()) return true;
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        const Value& t = list->items()[i];
+        const Value* pls = t.is_object() ? t.find("playlists") : nullptr;
+        if (pls == nullptr || !pls->is_array()) continue;
+        for (const Value& pl : pls->items()) {
+            const Value* rs = pl.is_object() ? pl.find("regions") : nullptr;
+            if (rs == nullptr || !rs->is_array()) continue;
+            for (const Value& r : rs->items()) {
+                if (r.is_object() && r.find("gain_line") != nullptr) {
+                    error = "tracks[" + std::to_string(i) +
+                            "] has a region with \"gain_line\", which version 18 does not "
+                            "define";
+                    return false;
+                }
+            }
+        }
     }
     return true;
 }
@@ -605,6 +624,15 @@ Value region_value(const Region& r) {
     }
     v.set("source_offset", integer(r.source_offset));
     v.set("gain_db", Value::number_float(r.gain_db));
+    // Only a clip with a line: a file without one stays readable by format 18.
+    if (!r.gain_line.empty()) {
+        Value& line = v.set("gain_line", Value::array());
+        for (const GainPoint& g : r.gain_line) {
+            Value& e = line.push(Value::object());
+            e.set("at", integer(g.at));
+            e.set("db", Value::number_float(g.db));
+        }
+    }
     v.set("mute", Value::boolean(r.mute));
     v.set("fade_in", fade_value(r.fade_in));
     v.set("fade_out", fade_value(r.fade_out));
@@ -1373,7 +1401,7 @@ bool read_region(Reader& rd, const Value& v, const std::string& p, Region& r) {
     if (!rd.keys(v, p,
                  {"id", "name", "position", "length", "source", "source_offset",
                   "gain_db", "mute", "fade_in", "fade_out"},
-                 {"colour"})) {
+                 {"colour", "gain_line"})) {
         return false;
     }
     if (!rd.id(v, p, "id", r.id)) return false;
@@ -1394,6 +1422,20 @@ bool read_region(Reader& rd, const Value& v, const std::string& p, Region& r) {
     }
     if (!rd.frames(v, p, "source_offset", r.source_offset)) return false;
     if (!rd.real(v, p, "gain_db", r.gain_db)) return false;
+    if (v.find("gain_line") != nullptr) {
+        const Value* line = nullptr;
+        if (!rd.array(v, p, "gain_line", line)) return false;
+        for (std::size_t i = 0; i < line->items().size(); ++i) {
+            const Value& e = line->items()[i];
+            const std::string gp = index_path(p + ".gain_line", i);
+            GainPoint g;
+            if (!rd.keys(e, gp, {"at", "db"}) || !rd.frames(e, gp, "at", g.at) ||
+                !rd.real(e, gp, "db", g.db)) {
+                return false;
+            }
+            r.gain_line.push_back(g);
+        }
+    }
     if (!rd.flag(v, p, "mute", r.mute)) return false;
     if (!read_fade(rd, v, p, "fade_in", r.fade_in)) return false;
     return read_fade(rd, v, p, "fade_out", r.fade_out);

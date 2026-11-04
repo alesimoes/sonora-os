@@ -95,6 +95,16 @@ Value fade_value(const Fade& f) {
     return v;
 }
 
+Value gain_line_value(const std::vector<GainPoint>& line) {
+    Value a = Value::array();
+    for (const GainPoint& p : line) {
+        Value& e = a.push(Value::object());
+        e.set("at", integer(p.at));
+        e.set("db", Value::number_float(p.db));
+    }
+    return a;
+}
+
 Value region_value(const Region& r) {
     Value v = Value::object();
     v.set("id", id_value(r.id));
@@ -110,6 +120,7 @@ Value region_value(const Region& r) {
     }
     v.set("source_offset", integer(r.source_offset));
     v.set("gain_db", Value::number_float(r.gain_db));
+    v.set("gain_line", gain_line_value(r.gain_line));
     v.set("mute", Value::boolean(r.mute));
     v.set("fade_in", fade_value(r.fade_in));
     v.set("fade_out", fade_value(r.fade_out));
@@ -611,6 +622,14 @@ struct Encoder {
         v.set("colour", integer(o.colour));
         return v;
     }
+    Value operator()(const SetRegionGain& o) const {
+        Value v = with_kind("SetRegionGain");
+        v.set("playlist", id_value(o.playlist));
+        v.set("region", id_value(o.region));
+        v.set("gain_db", Value::number_float(o.gain_db));
+        v.set("gain_line", gain_line_value(o.gain_line));
+        return v;
+    }
     Value operator()(const ReorderTracks& o) const {
         Value v = with_kind("ReorderTracks");
         Value& order = v.set("order", Value::array());
@@ -975,9 +994,27 @@ bool read_fade(Reader& rd, const Value& obj, const std::string& path, const char
            rd.choice(v, p, "shape", kShapes, f.shape);
 }
 
+bool read_gain_line(Reader& rd, const Value& v, const std::string& p,
+                    std::vector<GainPoint>& line) {
+    const Value* a = nullptr;
+    if (!rd.array(v, p, "gain_line", a)) return false;
+    if (a->items().size() > kMaxGainPoints) {
+        return rd.fail("gain_line", "holds more than " + std::to_string(kMaxGainPoints) + " points");
+    }
+    const std::string gp = p + ".gain_line";
+    for (const Value& e : a->items()) {
+        if (!rd.keys(e, gp, {"at", "db"})) return false;
+        GainPoint pt;
+        if (!rd.frames(e, gp, "at", pt.at) || !rd.real(e, gp, "db", pt.db)) return false;
+        line.push_back(pt);
+    }
+    return true;
+}
+
 bool read_region_value(Reader& rd, const Value& v, const std::string& p, Region& r) {
     if (!rd.keys(v, p, {"id", "name", "colour", "position", "length", "source",
-                        "source_offset", "gain_db", "mute", "fade_in", "fade_out"})) {
+                        "source_offset", "gain_db", "gain_line", "mute", "fade_in",
+                        "fade_out"})) {
         return false;
     }
     if (!rd.id(v, p, "id", r.id) || !rd.text(v, p, "name", r.name) ||
@@ -997,7 +1034,8 @@ bool read_region_value(Reader& rd, const Value& v, const std::string& p, Region&
         r.channels.push_back(ref);
     }
     return rd.frames(v, p, "source_offset", r.source_offset) &&
-           rd.real(v, p, "gain_db", r.gain_db) && rd.flag(v, p, "mute", r.mute) &&
+           rd.real(v, p, "gain_db", r.gain_db) && read_gain_line(rd, v, p, r.gain_line) &&
+           rd.flag(v, p, "mute", r.mute) &&
            read_fade(rd, v, p, "fade_in", r.fade_in) &&
            read_fade(rd, v, p, "fade_out", r.fade_out);
 }
@@ -1621,6 +1659,14 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = o;
+    } else if (kind == "SetRegionGain") {
+        SetRegionGain o;
+        if (!rd.keys(v, "", {"op", "playlist", "region", "gain_db", "gain_line"}) ||
+            !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
+            !rd.real(v, "", "gain_db", o.gain_db) || !read_gain_line(rd, v, "", o.gain_line)) {
+            return false;
+        }
+        out = std::move(o);
     } else if (kind == "ReorderTracks") {
         ReorderTracks o;
         const Value* order = nullptr;
@@ -2744,7 +2790,7 @@ const char* const kNames[] = {
     "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
     "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "EditAutomation",
     "SetTrackColour", "SetRegionName", "SetRegionColour", "SetGroup", "RemoveGroup",
-    "Compound"};
+    "SetRegionGain", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

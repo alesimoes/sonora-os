@@ -123,6 +123,12 @@ static_assert(kAutoMinTrimDb == model::kMinTrimDb && kAutoMaxTrimDb == model::kM
 
 float gain_of_db(float db) { return auto_gain_of_db(db); }
 
+void plan_gain_line(const model::Region& r, std::vector<PlanAutoPoint>& out) {
+    for (const model::GainPoint& p : r.gain_line) {
+        out.push_back(PlanAutoPoint{p.at, gain_of_db(p.db)});
+    }
+}
+
 bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
                 const SourceSlot& source_slot, uint64_t epoch, PlaybackPlan*& out,
                 PlanReport& report, std::string& error) {
@@ -168,6 +174,9 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     std::vector<uint16_t> track_channels(limits.engine_tracks,
                                          static_cast<uint16_t>(limits.channels_per_track));
     std::unordered_map<model::Id, uint32_t> slot_of;
+    // Every region's clip gain line, back to back; a segment names its run by
+    // offset, rebased onto the plan's auto_points when they are laid out.
+    std::vector<PlanAutoPoint> gain_points;
     for (std::size_t ti = 0; ti < tracks.size(); ++ti) {
         const model::TrackEdit& t = *tracks[ti];
         const std::string where = "track \"" + t.name + "\"";
@@ -200,6 +209,9 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
             s.source_offset = r.source_offset;
             s.channels = t.channels;
             s.gain = gain_of_db(r.gain_db);
+            s.gain_first = static_cast<uint32_t>(gain_points.size());
+            plan_gain_line(r, gain_points);
+            s.gain_count = static_cast<uint32_t>(gain_points.size()) - s.gain_first;
             s.fade_in_end = r.position + r.fade_in.length;
             s.fade_in_shape = curve(r.fade_in.shape);
             s.fade_out_start = r.end() - r.fade_out.length;
@@ -482,7 +494,8 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         return false;
     }
     sizes.plugin_lanes = static_cast<uint32_t>(plugin_lanes.size());
-    sizes.auto_points = static_cast<uint32_t>(auto_total);
+    const std::size_t gain_base = auto_total;
+    sizes.auto_points = static_cast<uint32_t>(auto_total + gain_points.size());
     PlaybackPlan* plan = create_plan(sizes);
     if (!plan) {
         error = "out of memory for a plan of " + str(segment_total) + " segments";
@@ -506,7 +519,11 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         pt.channels = track_channels[t];
         pt.first_segment = at;
         pt.segment_count = static_cast<uint32_t>(per_track[t].size());
-        for (const PlanSegment& s : per_track[t]) plan->segments[at++] = s;
+        for (const PlanSegment& s : per_track[t]) {
+            plan->segments[at] = s;
+            plan->segments[at].gain_first += static_cast<uint32_t>(gain_base);
+            ++at;
+        }
     }
     uint32_t auto_at = 0;
     for (std::size_t ti = 0; ti < tracks.size(); ++ti) {
@@ -536,6 +553,7 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
             plan->auto_points[auto_at++] = PlanAutoPoint{points[i].at, lane_value(points[i].value, pl.target)};
         }
     }
+    std::copy(gain_points.begin(), gain_points.end(), plan->auto_points + gain_base);
     layout_mix_graph(*plan, bindings.data(), mix);
     for (uint32_t ni = 0; ni < plan->node_count; ++ni) {
         PlanNode& n = plan->nodes[ni];

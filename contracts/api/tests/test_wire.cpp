@@ -436,9 +436,9 @@ void version_check() {
     // (ADR-0027 §9; follows 40).
     // 42: meters.reset, and state layout 8's loudness (ADR-0013 amendment of
     // 2026-11-03; follows 41).
-    // 45: SetGroup, RemoveGroup, groups in the undo window and the group.*
-    // commands (ADR-0041; follows 42, 43 and 44 being on other branches).
-    CHECK(kProtocolVersion == 45);
+    // 46: clip gain, SetRegionGain and a region's gain_line (window format 16,
+    // session format 19).
+    CHECK(kProtocolVersion == 46);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -449,13 +449,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 45 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 46 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 45"));
+                   "speaks version 46"));
 }
 
 void domains() {

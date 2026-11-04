@@ -317,6 +317,90 @@ void SessionModel::installCommands(CommandRegistry& local) {
         }
         return ctl_.set_region_colour(colour, why);
     });
+    // Clip gain. A level is a number of dB, with or without a trailing "dB".
+    const auto db_of = [](const std::string& text, float& out) {
+        char* end = nullptr;
+        const double v = std::strtod(text.c_str(), &end);
+        if (end == text.c_str() || !std::isfinite(v)) return false;
+        while (*end == ' ') ++end;
+        const std::string rest(end);
+        if (!rest.empty() && rest != "dB" && rest != "db") return false;
+        out = static_cast<float>(v);
+        return true;
+    };
+    const auto bad_db = [](const std::string& arg) {
+        return "\"" + arg + "\" is not a level in dB; type a number such as -3.5";
+    };
+    simple("clip.gain", [this, db_of, bad_db](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) {
+            const Region* r = ctl_.selected_region(why);
+            if (r == nullptr) return false;
+            emit clipGainRequested(static_cast<double>(r->gain_db));
+            return true;
+        }
+        float db = 0.0f;
+        if (!db_of(ctx.argument, db)) {
+            why = bad_db(ctx.argument);
+            return false;
+        }
+        return ctl_.set_clip_gain(db, why);
+    });
+    const auto nudge = [this, db_of, bad_db](float sign) {
+        return [this, db_of, bad_db, sign](const CommandContext& ctx, Why& why) {
+            float step = 1.0f;
+            if (!ctx.argument.empty() && (!db_of(ctx.argument, step) || step <= 0.0f)) {
+                why = bad_db(ctx.argument);
+                return false;
+            }
+            return ctl_.nudge_clip_gain(sign * step, why);
+        };
+    };
+    simple("clip.gain_up", nudge(1.0f));
+    simple("clip.gain_down", nudge(-1.0f));
+    const auto gain_place = [this](const Region& r) {
+        const model::Frames i = ctl_.selection().insertion;
+        return i > r.position && i < r.end() ? i : r.position + r.length / 2;
+    };
+    simple("clip.gain_point", [this, db_of, bad_db, gain_place](const CommandContext& ctx, Why& why) {
+        const Region* r = ctl_.selected_region(why);
+        if (r == nullptr) return false;
+        // "DB" or "DB@SECONDS" into the clip. Without a place: the insertion
+        // point when it is inside the clip past its start, else the middle
+        // (selecting a clip puts the insertion point at its start).
+        model::Frames at = gain_place(*r);
+        std::string level = ctx.argument;
+        const std::size_t atsign = level.find('@');
+        if (atsign != std::string::npos) {
+            char* end = nullptr;
+            const std::string secs = level.substr(atsign + 1);
+            const double s = std::strtod(secs.c_str(), &end);
+            if (end == secs.c_str() || *end != '\0' || !(s >= 0.0)) {
+                why = "\"" + secs + "\" is not a time in seconds into the clip";
+                return false;
+            }
+            at = r->position + static_cast<model::Frames>(s * ctl_.snapshot().settings.sample_rate);
+            level = level.substr(0, atsign);
+        }
+        float db = EditController::clip_line_db_at(*r, at);
+        if (!level.empty() && !db_of(level, db)) {
+            why = bad_db(level);
+            return false;
+        }
+        return ctl_.set_gain_point(at, db, why);
+    });
+    simple("clip.gain_point_remove", [this, gain_place](const CommandContext&, Why& why) {
+        const Region* r = ctl_.selected_region(why);
+        if (r == nullptr) return false;
+        return ctl_.remove_gain_point(gain_place(*r), why);
+    });
+    simple("clip.gain_line_clear",
+           [this](const CommandContext&, Why& why) { return ctl_.clear_gain_line(why); });
+    simple("clip.gain_render", [this](const CommandContext&, Why& why) {
+        if (ctl_.selected_region(why) == nullptr) return false;
+        why = "Render Clip Gain bakes the clip through Consolidate, which this interface does "
+              "not drive yet; the engine renders it";
+        return false;
+    });
     simple("track.playlist_delete_unused", [this, row](const CommandContext& ctx, Why& why) {
         const int i = row(ctx);
         return playlistCommand(i, false,

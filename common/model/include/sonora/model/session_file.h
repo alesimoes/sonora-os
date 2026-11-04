@@ -61,6 +61,8 @@ namespace sonora::model {
 //    A version 17 file opens with none.
 // 19: the session may hold "groups" (ADR-0041), only when it has some. A
 //    version 18 file opens unchanged: it has none.
+// 19: a region may carry "gain_line", the points of its clip gain (source
+//    frame, dB). A version 18 file opens unchanged: its regions carry none.
 constexpr std::int64_t kFormatVersion = 19;
 
 // The version a session file declares, read without migrating or checking

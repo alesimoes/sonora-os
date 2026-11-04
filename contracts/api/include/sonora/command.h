@@ -171,6 +171,20 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"region.rename", CommandTarget::None, "Rename the selected region", true},
         {"region.colour", CommandTarget::None, "Colour the selected region from the palette",
          true},
+        // Clip gain, on the selected region. Gain takes the level in dB and
+        // asks for it without one; Up and Down nudge by the argument in dB
+        // (1 without); Point sets a gain point at the insertion point, its
+        // argument the level in dB on top of the clip's.
+        {"clip.gain", CommandTarget::None, "Set the selected clip's gain in dB", true},
+        {"clip.gain_up", CommandTarget::None, "Nudge the selected clip's gain up", true},
+        {"clip.gain_down", CommandTarget::None, "Nudge the selected clip's gain down", true},
+        {"clip.gain_point", CommandTarget::None,
+         "Set a gain point on the selected clip at the insertion point", true},
+        {"clip.gain_point_remove", CommandTarget::None,
+         "Remove the gain point nearest the insertion point"},
+        {"clip.gain_line_clear", CommandTarget::None, "Remove the selected clip's gain line"},
+        {"clip.gain_render", CommandTarget::None,
+         "Render the selected clip's gain into a new file"},
         // The track's playlist selector (ADR-0026), on the track given or the
         // selected one. Choose takes the playlist's name; Rename the new name,
         // and asks for it without one.

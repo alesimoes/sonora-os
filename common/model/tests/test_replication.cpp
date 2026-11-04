@@ -199,6 +199,7 @@ std::vector<Operation> one_of_each() {
             SetRegionColour{3, 11, kTrackColour},
             SetGroup{40, "Drums \xC3\xA9", {2, 5}, 0x0F, false, true},
             RemoveGroup{40},
+            SetRegionGain{3, 11, -3.5f, {{0, -6.0f}, {48000, 0.0f}}},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 
@@ -444,7 +445,7 @@ bool same_history(const Replica& r, const Document& d) {
 // the first Undo after a resync found nothing to undo on the replica and
 // every Undo and Redo after that desynced it.
 int test_resync_keeps_the_undo_window() {
-    Document doc(new_session(settings()), 64 * 1024);
+    Document doc(new_session(settings()), 72 * 1024);
     std::string error;
     ReplicationUpdate u;
     Ids ids(doc.current());

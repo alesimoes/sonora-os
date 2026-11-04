@@ -790,6 +790,22 @@ public:
                            [&](auto& r) { r.colour = op.colour; });
     }
 
+    bool operator()(const SetRegionGain& op) {
+        if (!(op.gain_db >= kMinGainDb && op.gain_db <= kMaxGainDb)) {
+            return fail("gain_db must be from -144 to 24 dB");
+        }
+        const std::string bad = gain_line_problem(op.gain_line);
+        if (!bad.empty()) return fail(bad);
+        return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
+            const std::size_t i = region_index(p, op.region);
+            if (i == kNone) return no_region(op.region, op.playlist);
+            p.regions[i].gain_db = op.gain_db;
+            p.regions[i].gain_line = op.gain_line;
+            mark(i, i);
+            return true;
+        });
+    }
+
     bool operator()(const ReorderTracks& op) {
         const auto& tracks = before_.edit->tracks;
         if (op.order.size() != tracks.size()) {
