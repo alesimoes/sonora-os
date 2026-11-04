@@ -244,7 +244,7 @@ html,body{overflow-x:hidden;max-width:100vw}
 
   <section class="panel hero train" aria-label="Fila de merge">
     <div class="ph"><h2>Merge train</h2><i id="trmeta"></i>
-      <span class="trbtns"><button type="button" onclick="trAll(false)">Expandir tudo</button><button type="button" onclick="trAll(true)">Recolher tudo</button><button type="button" id="trpanel" onclick="trPanel()">Ocultar painel</button></span></div>
+      <span class="trbtns"><button type="button" id="trall" onclick="trAll()">Recolher tudo</button><button type="button" id="trpanel" onclick="trPanel()">Ocultar painel</button></span></div>
     <div class="tbar"><i id="trbar" style="width:0"></i></div>
     <div class="tcols" id="trcols"></div>
   </section>
@@ -366,8 +366,12 @@ let trClosed=new Set(JSON.parse(localStorage.getItem(TRK)||'[]'));
 const trSave=()=>localStorage.setItem(TRK,JSON.stringify([...trClosed]));
 function trCol(c,h,a,empty){
   return `<div class="tc ${c}${trClosed.has(h)?' closed':''}" data-h="${E(h)}"><h3 onclick="trToggle(this.parentNode)">${h} · ${a.length}</h3>${a.map(x=>`<div class="tr">${x}</div>`).join('')||`<div class="tr">${empty||'-'}</div>`}</div>`}
-function trToggle(el){const h=el.dataset.h;el.classList.toggle('closed')?trClosed.add(h):trClosed.delete(h);trSave()}
-function trAll(close){document.querySelectorAll('#trcols .tc').forEach(el=>{el.classList.toggle('closed',close);close?trClosed.add(el.dataset.h):trClosed.delete(el.dataset.h)});trSave()}
+function trToggle(el){const h=el.dataset.h;el.classList.toggle('closed')?trClosed.add(h):trClosed.delete(h);trSave();trAllLabel()}
+/* Um botão só: recolhe tudo se alguma coluna está aberta, senão expande. */
+function trAllLabel(){const cs=[...document.querySelectorAll('#trcols .tc')],b=$('trall');
+  if(b)b.textContent=cs.length&&cs.every(el=>el.classList.contains('closed'))?'Expandir tudo':'Recolher tudo'}
+function trAll(){const cs=[...document.querySelectorAll('#trcols .tc')],close=!cs.every(el=>el.classList.contains('closed'));
+  cs.forEach(el=>{el.classList.toggle('closed',close);close?trClosed.add(el.dataset.h):trClosed.delete(el.dataset.h)});trSave();trAllLabel()}
 function trPanel(){const p=document.querySelector('section.train'),hid=p.classList.toggle('hidden');$('trpanel').textContent=hid?'Mostrar painel':'Ocultar painel';localStorage.setItem(TRK+'.panel',hid?'1':'')}
 addEventListener('DOMContentLoaded',()=>{if(localStorage.getItem(TRK+'.panel'))trPanel()});
 
@@ -400,7 +404,7 @@ function renderOrchTrain(s,tr){
   if(merged.length>8)last.push(`+${merged.length-8} antes`);
   $('trcols').innerHTML=col('m','Mergeados hoje',last)+col('q','Bundles juntando PRs',C.bun)+col('g','Verde → merge',C.merge)
     +col('y','CI rodando',C.ci)+col('y','Refresh sem agente',C.ref)+col('x','Aguardando vaga no CI',C.vaga)
-    +col('r','Agente corrigindo',C.fix)+col('q','Empilhado',C.stack)+col('r','Bloqueado (owner)',C.blk)}
+    +col('r','Agente corrigindo',C.fix)+col('q','Empilhado',C.stack)+col('r','Bloqueado (owner)',C.blk);trAllLabel()}
 
 function renderTrain(s){
   const tr=s.orchestrator&&Array.isArray(s.orchestrator.train)?s.orchestrator.train:null;
@@ -426,7 +430,7 @@ function renderTrain(s){
   const col=trCol;
   $('trcols').innerHTML=col('m','Mergeados hoje',merged.map(p=>`${L(p.number)} ${E(p.title).slice(0,44)}`))
     +col('g','Verde (pronto p/ merge)',B.g)+col('y','Rodando',B.y)+col('r','Vermelho',B.r)
-    +col('x','Cancelado / sem run',B.x)+col('r','Conflito',B.m)+col('q','Empilhado',B.q)}
+    +col('x','Cancelado / sem run',B.x)+col('r','Conflito',B.m)+col('q','Empilhado',B.q);trAllLabel()}
 
 function render(s){
   lastState=s;
