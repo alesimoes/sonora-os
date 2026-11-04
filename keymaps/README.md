@@ -264,7 +264,7 @@ The window sends a command where its `CommandSpec::domain` says
 (`tool.*`, `zoom.*`, `edit.mode.*`, `focus.*`, `window.transport`,
 `window.undo_history`, `window.memory_locations`, `window.configurations`,
 `window.config_store`, `window.config_recall`, `window.event_list`, `app.quit`,
-`app.save_as_template`, `app.new_from_template`) runs in the window
+`app.save_as_template`, `app.new_from_template`, `session.import_audio`) runs in the window
 and never reaches the engine, even if an engine lists it. The two template
 commands have no key in either profile: Pro Tools ships no default shortcut
 for File > Save As Template or for Create From Template, and none is invented

@@ -368,6 +368,12 @@ inline const std::vector<CommandSpec>& command_catalog() {
          CommandDomain::Interface},
         {"app.new_from_template", CommandTarget::None,
          "Show the templates to start a new session from one", false, CommandDomain::Interface},
+        // Pro Tools' File > Import > Audio (ui.editing.import): the window
+        // shows the file browser; the copy and the placement go through
+        // operations the engine already runs (AddSource, AddTrack, PlaceRegion).
+        {"session.import_audio", CommandTarget::None,
+         "Show the browser to import audio files into the session as new tracks", false,
+         CommandDomain::Interface},
         {"app.quit", CommandTarget::None, "Leave the engine",
          false, CommandDomain::Interface},
     };

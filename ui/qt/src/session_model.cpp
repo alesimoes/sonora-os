@@ -525,10 +525,32 @@ void SessionModel::installCommands(CommandRegistry& local) {
         return true;
     });
 
+    simple("session.import_audio", [this](const CommandContext&, Why& why) {
+        if (overlay_.recording) {
+            why = "stop recording before Import Audio";
+            return false;
+        }
+        emit importBrowserRequested();
+        return true;
+    });
+
     simple("window.toggle_mix_edit", [this](const CommandContext&, Why&) {
         setWindow(window_ == QStringLiteral("edit") ? QStringLiteral("mix") : QStringLiteral("edit"));
         return true;
     });
+}
+
+QObject* SessionModel::importer() {
+    if (import_ == nullptr) {
+        ImportModel::Hooks h;
+        h.session_folder = [this] { return engine_folder_; };
+        h.sessions_dir = [this] { return sessions_dir_; };
+        h.recording = [this] { return overlay_.recording; };
+        import_ = new ImportModel(ctl_, std::move(h), this);
+        connect(import_, &ImportModel::heldNotice, this, &SessionModel::heldNotice);
+        connect(import_, &ImportModel::imported, this, [this](int) { sync(); });
+    }
+    return import_;
 }
 
 void SessionModel::attachItem(SceneItem* item) {
