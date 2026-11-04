@@ -55,6 +55,8 @@ add_library(sonora_ui_qt STATIC
   src/edit_clipboard.h src/edit_clipboard.cpp
   src/edit_markers.cpp
   src/edit_names.cpp
+  src/edit_vcas.cpp
+  src/mix_vcas.cpp
   src/strip_silence.h src/strip_silence.cpp
   src/edit_strip_silence.cpp
   src/automation_edit.h src/automation_edit.cpp
@@ -85,7 +87,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
         qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml
-        qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
+        qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml
 )
 
 # The screenshot scenes register themselves (scenes/screenshot_scene.h): in

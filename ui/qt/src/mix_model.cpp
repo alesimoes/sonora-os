@@ -22,6 +22,7 @@ MixModel::MixModel(SessionModel& session, GainSender sender, EngineTracks engine
     // Every change to the document reaches the windows through
     // contentChanged (SessionModel::sync), a whole new document included.
     connect(&session_, &SessionModel::contentChanged, this, &MixModel::documentChanged);
+    connect(&session_, &SessionModel::contentChanged, this, &MixModel::structureChanged);
     connect(&session_, &SessionModel::sessionOpened, this, &MixModel::sessionOpened);
 }
 
@@ -94,6 +95,8 @@ void MixModel::resetViews() {
     setShowInsertsAE(true);
     setShowInsertsFJ(false);
     setShowSends(true);
+    closed_folders_.clear();
+    emit structureChanged();
 }
 
 void MixModel::documentChanged() {

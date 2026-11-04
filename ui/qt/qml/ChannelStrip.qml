@@ -70,6 +70,12 @@ Rectangle {
     readonly property bool muted: !isBus && session.mutes[track] === true
     readonly property bool soloSafe: !isBus && session.soloSafes[track] === true
     readonly property bool inputMonitor: !isBus && session.inputMonitors[track] === true
+    // The folder this strip is in, an index or -1, and the VCAs that hold it
+    // (MixModel, ADR-0042).
+    readonly property int folderIndex: isBus || mixer === null || track >= mixer.trackFolders.length
+                                       ? -1 : mixer.trackFolders[track]
+    readonly property string vcaNames: isBus || mixer === null || track >= mixer.trackVcas.length
+                                       ? "" : mixer.trackVcas[track]
     // Another track's solo silences this one; a console shows that, so does
     // this. SessionModel applies the engine's rule, solo safe included.
     readonly property bool implicitlyMuted: !isBus && session.implicitMutes[track] === true
@@ -149,6 +155,51 @@ Rectangle {
         z: autoMode.open ? 100 : 0
         anchors { left: parent.left; right: parent.right; top: parent.top; topMargin: Theme.space2 }
         spacing: Theme.space2
+
+        // The folder tag: its name, and a click closes the folder into one card.
+        Rectangle {
+            visible: strip.folderIndex >= 0
+            objectName: strip.isBus ? "" : "folderTag" + strip.track
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: parent.width - 2 * Theme.space2
+            height: 12
+            radius: Theme.radiusSmall
+            color: Theme.sunken
+            border.color: Theme.borderStrong
+            Text {
+                anchors { fill: parent; leftMargin: 2; rightMargin: 2 }
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+                text: strip.folderIndex < 0 ? "" : "\u25BE " + strip.mixer.folders[strip.folderIndex].name
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+            }
+            MouseArea {
+                anchors.fill: parent
+                enabled: strip.folderIndex >= 0
+                onClicked: strip.mixer.toggleFolderOpen(strip.folderIndex)
+            }
+        }
+        // The VCAs that hold this track.
+        Rectangle {
+            visible: strip.vcaNames !== ""
+            objectName: strip.isBus ? "" : "vcaTag" + strip.track
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: parent.width - 2 * Theme.space2
+            height: 12
+            radius: Theme.radiusSmall
+            color: Theme.caution
+            Text {
+                anchors { fill: parent; leftMargin: 2; rightMargin: 2 }
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+                text: strip.vcaNames
+                color: Theme.textOnAccent
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+            }
+        }
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter

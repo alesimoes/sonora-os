@@ -260,6 +260,34 @@ void SessionModel::installCommands(CommandRegistry& local) {
         }
         return ctl_.rename_track(i, ctx.argument, why);
     });
+    // --- VCA masters and folders (ADR-0042). A refusal is held: it says what
+    // was not done and why, and the status line would drop it in seconds.
+    const auto held = [this](bool ok, Why& why) {
+        if (!ok && !why.empty()) emit heldNotice(q(why));
+        return ok;
+    };
+    simple("vca.new", [this, held](const CommandContext& ctx, Why& why) {
+        const auto& sel = ctl_.selection();
+        return held(ctl_.vca_new(sel.track, sel.tracks, ctx.argument, why), why);
+    });
+    simple("vca.delete", [this, held](const CommandContext& ctx, Why& why) {
+        const auto& vcas = ctl_.snapshot().edit->vcas;
+        for (std::size_t i = 0; i < vcas.size(); ++i) {
+            if (vcas[i].name == ctx.argument) {
+                return held(ctl_.vca_remove(static_cast<int>(i), why), why);
+            }
+        }
+        why = ctx.argument.empty() ? "give the name of the VCA to delete"
+                                   : "there is no VCA named \"" + ctx.argument + "\"";
+        return held(false, why);
+    });
+    simple("folder.new", [this, held](const CommandContext& ctx, Why& why) {
+        const auto& sel = ctl_.selection();
+        return held(ctl_.folder_new(sel.track, sel.tracks, ctx.argument, why), why);
+    });
+    simple("folder.dissolve", [this, row, held](const CommandContext& ctx, Why& why) {
+        return held(ctl_.folder_dissolve(row(ctx), why), why);
+    });
     simple("region.rename", [this](const CommandContext& ctx, Why& why) {
         if (ctx.argument.empty()) {
             const Region* r = ctl_.selected_region(why);

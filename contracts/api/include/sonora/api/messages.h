@@ -161,7 +161,13 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
-constexpr uint32_t kProtocolVersion = 42;
+// 46 (ADR-0042, VCA masters and folders; follows 42 and the numbers other
+//   branches hold, 43 to 45): new operation kinds SetVca, RemoveVca,
+//   SetVcaMix, SetFolder and RemoveFolder, the undo window carries "vcas",
+//   "folders" and "vca_mix" (window format 16, session format 19), and the
+//   commands vca.new, vca.delete, folder.new and folder.dissolve. A
+//   version-42 peer refuses the operations and the window.
+constexpr uint32_t kProtocolVersion = 46;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

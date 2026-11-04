@@ -201,7 +201,9 @@ std::string step_text(const std::string& label) {
         {"DuplicatePlaylist", "Duplicate Playlist"}, {"SetPlaylistName", "Rename Playlist"},
         {"RemovePlaylist", "Delete Playlist"},       {"EditAutomation", "Automation Edit"},
         {"SetTrackColour", "Colour Track"},          {"SetRegionName", "Rename Region"},
-        {"SetRegionColour", "Colour Region"},
+        {"SetRegionColour", "Colour Region"},        {"SetVca", "VCA Master"},
+        {"RemoveVca", "Delete VCA Master"},          {"SetFolder", "Folder"},
+        {"RemoveFolder", "Dissolve Folder"},
     };
     const auto it = kWords.find(label);
     return it != kWords.end() ? it->second : label;

@@ -445,6 +445,29 @@ public:
     // the pool, and undo brings them back.
     bool delete_unused_playlists(int track, std::string& why);
 
+    // --- VCA masters and folders (ADR-0042) ---
+    // A VCA of `count` tracks from `first` down (the selected tracks): one
+    // SetVca, one undo step. `name` empty takes "VCA N". A track may be on
+    // several VCAs.
+    bool vca_new(int first, int count, const std::string& name, std::string& why);
+    // The VCA at `vca` (an index into snapshot().edit->vcas) holds the
+    // selected tracks instead of what it held.
+    bool vca_assign(int vca, int first, int count, std::string& why);
+    bool vca_remove(int vca, std::string& why);
+    // Not undoable: the VCA's fader and mute.
+    bool set_vca_gain(int vca, float db, std::string& why);
+    bool toggle_vca_mute(int vca, std::string& why);
+    // A folder of the selected tracks. A track already in one is refused by
+    // name, since a track is in one folder at most.
+    bool folder_new(int first, int count, const std::string& name, std::string& why);
+    // The folder `track` is in goes; the tracks stay where they are.
+    bool folder_dissolve(int track, std::string& why);
+    // Mute (or solo) every member of `track`'s folder, or release them when
+    // all were already: one Compound of SetMix.
+    bool folder_toggle(int track, bool solo, std::string& why);
+    // The index in snapshot().edit->folders of the folder `track` is in, or -1.
+    int folder_index(int track) const;
+
     // --- mix: not undoable, but still operations ---
     bool set_gain(int track, float db, std::string& why);
     bool set_pan(int track, float pan, std::string& why);
@@ -474,6 +497,8 @@ public:
 
 private:
     bool submit(const model::Operation& op, std::string& why);
+    // The ids of `count` tracks from `first` down.
+    bool selected_ids(int first, int count, std::vector<model::Id>& out, std::string& why) const;
     bool refuse_in_mode(const char* what, std::string& why) const;
     model::Frames snapped(model::Frames f) const;
     void clamp_scroll();
