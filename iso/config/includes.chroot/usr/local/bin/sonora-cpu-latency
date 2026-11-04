@@ -1,0 +1,49 @@
+#!/bin/sh
+# Keep the CPU out of deep C-states and at full clock while the engine runs.
+# A core waking from C6 can take hundreds of microseconds, a large part of the
+# budget at a 64-frame quantum (1.3 ms at 48 kHz). Kernel PM QoS: a process
+# that holds /dev/cpu_dma_latency open, with a value written to it, caps the
+# idle exit latency for as long as the descriptor lives. The service stopping
+# for any reason releases it.
+#
+# The governor is best effort: no cpufreq (VMs) is not an error.
+#
+# Test hooks: SONORA_SYS (default /sys), SONORA_DMA (default
+# /dev/cpu_dma_latency), SONORA_HOLD (command that blocks; default sleep).
+SYS=${SONORA_SYS:-/sys}
+DMA=${SONORA_DMA:-/dev/cpu_dma_latency}
+HOLD=${SONORA_HOLD:-sleep}
+HOLD_ARG=${SONORA_HOLD_ARG-infinity}
+# Microseconds. 0 would forbid every idle state; 10 admits C1 on most parts
+# and keeps the heat sane. Override in /etc/default/sonora-rt.
+# shellcheck disable=SC1091
+[ -r /etc/default/sonora-rt ] && . /etc/default/sonora-rt
+US=${SONORA_CPU_LATENCY_US:-10}
+case "$US" in '' | *[!0-9]*) US=10 ;; esac
+
+n=0
+for g in "$SYS"/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
+  [ -w "$g" ] || continue
+  if echo performance >"$g" 2>/dev/null; then n=$((n + 1)); fi
+done
+echo "sonora-cpu-latency: governor performance on $n cpu(s)"
+
+if [ ! -w "$DMA" ]; then
+  echo "sonora-cpu-latency: $DMA not writable; C-states unrestricted"
+  # shellcheck disable=SC2086
+  exec "$HOLD" $HOLD_ARG
+fi
+
+# A 32-bit native-endian integer, which is what the kernel reads. The image is
+# amd64, so little endian.
+b0=$((US & 255))
+b1=$(((US >> 8) & 255))
+b2=$(((US >> 16) & 255))
+b3=$(((US >> 24) & 255))
+exec 3>"$DMA"
+fmt="$(printf '\\%03o\\%03o\\%03o\\%03o' "$b0" "$b1" "$b2" "$b3")"
+# shellcheck disable=SC2059
+printf "$fmt" >&3
+echo "sonora-cpu-latency: holding $DMA at $US us"
+# shellcheck disable=SC2086
+exec "$HOLD" $HOLD_ARG
