@@ -91,7 +91,7 @@ endfunction()
 
 function(sonora_define_portable_target)
   set(_all)
-  foreach(_d common/json common/dsp plugins/native)
+  foreach(_d common/json common/dsp common/platform common/audiofile plugins/native)
     _sonora_collect_targets(${CMAKE_SOURCE_DIR}/${_d} _t)
     list(APPEND _all ${_t})
   endforeach()

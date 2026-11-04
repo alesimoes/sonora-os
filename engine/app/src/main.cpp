@@ -36,12 +36,11 @@
 #include "sonora/fake_backend.h"
 #include "sonora/jack_backend.h"
 #include "sonora/machine_latency.h"
-#include "sonora/memory_lock.h"
 #include "sonora/platform/file.h"
 #include "sonora/platform/ipc.h"
 #include "sonora/platform/process.h"
 #include "sonora/plugin_paths.h"
-#include "sonora/quit_signals.h"
+#include "sonora/platform/process_setup.h"
 #include "sonora/session.h"
 #include "sonora/session_commands.h"
 
@@ -216,7 +215,7 @@ int wait_for_inputs(AudioBackend& audio, double seconds) {
 
     double waited = 0.0;
     int polls = 0;
-    while (waited < seconds && !sonora::quit_requested() && !audio.fatal()) {
+    while (waited < seconds && !sonora::platform::quit_requested() && !audio.fatal()) {
         ::usleep(100000);
         waited += 0.1;
         // Every half second: it lists the server's ports each time.
@@ -248,7 +247,7 @@ bool await_reply(sonora::InProcessEngine& engine, uint64_t seq, double seconds,
                  sonora::api::CommandReply& out) {
     const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
     sonora::api::Inbox in;
-    while (std::chrono::steady_clock::now() < end && !sonora::quit_requested()) {
+    while (std::chrono::steady_clock::now() < end && !sonora::platform::quit_requested()) {
         engine.poll(in);
         for (const auto& r : in.replies) {
             if (r.seq == seq) {
@@ -354,7 +353,7 @@ int run_headless(sonora::Session& session, AudioBackend& audio, sonora::InProces
         engine.shutdown();
         session.stop();
     };
-    while (!sonora::quit_requested() &&
+    while (!sonora::platform::quit_requested() &&
            session.transport().playhead() - origin < target) {
         // Server loss, or a rate or buffer size change: the backend has
         // stopped feeding the session, so close the take and say why.
@@ -738,7 +737,7 @@ int main(int argc, char** argv) {
     // stop. The keyboard raises none of these -- the key reading mode turns
     // ISIG off, because Ctrl+C is edit.copy in a profile -- unless the
     // profile cannot quit; see keep_interrupt_key().
-    sonora::install_quit_signals();
+    sonora::platform::install_quit_handlers();
 
     // Before anything touches hardware: a second engine on the same socket
     // is refused while it can still leave without having opened a device.
@@ -766,7 +765,7 @@ int main(int argc, char** argv) {
                      " page-fault and drop out. Never on the appliance.\n");
     } else {
         std::string why;
-        if (!sonora::lock_memory(why)) {
+        if (!sonora::platform::lock_memory(why)) {
             std::fprintf(stderr,
                          "sonora: cannot lock memory: %s. Refusing to start:"
                          " the audio thread could page-fault mid-take.\n",
@@ -789,7 +788,7 @@ int main(int argc, char** argv) {
         std::string why;
         bool said = false;
         for (double waited = 0.0;; waited += 0.5) {
-            const bool over = waited >= wait_for_inputs_seconds || sonora::quit_requested();
+            const bool over = waited >= wait_for_inputs_seconds || sonora::platform::quit_requested();
             all = probe->physical_capture_ports();
             if (!sonora::backend::select_device(all, capture_device, ports, why, over)) {
                 std::fprintf(stderr, "sonora: --tracks auto: %s\n", why.c_str());
@@ -829,7 +828,7 @@ int main(int argc, char** argv) {
     // --dir and the tests keep the folder they name for every session;
     // --sessions, or neither, gives each new session its own.
     if (sessions_root.empty() && !dir_given) {
-        sessions_root = std::string(std::getenv("HOME") ? std::getenv("HOME") : ".") + "/Sessions";
+        sessions_root = sonora::platform::default_session_root(std::getenv("HOME"));
     }
     if (!dir_given) {
         // An earlier engine that died left empty ones behind; they would
@@ -1172,7 +1171,7 @@ int main(int argc, char** argv) {
     if (want_tui && have_tui) start_tui();
 
     int tui_starts = tui ? 1 : 0;
-    while (!sonora::quit_requested()) {
+    while (!sonora::platform::quit_requested()) {
         // The backend stopped calling the session. The interface shows why
         // and leaves; the take is closed below and the unit restarts us.
         if (audio->fatal()) {

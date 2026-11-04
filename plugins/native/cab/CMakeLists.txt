@@ -10,9 +10,10 @@ target_link_libraries(sonora_native_cab_suite PUBLIC sonora_native_cab sonora_ds
 
 sonora_native_quality_test(cab)
 
-# The WAV reader is common/audiofile's, which the neutral (Portable) build
-# does not have; so is the test that reads a file.
-if(TARGET sonora_audiofile)
+# The WAV reader is common/audiofile's. The neutral (Portable) build now
+# compiles that library, but the plugin bundles and the file test stay
+# Linux's until the Windows job has run them (unverified under MSVC).
+if(TARGET sonora_audiofile AND SONORA_PLATFORM STREQUAL "linux")
   add_library(sonora_native_cab_file STATIC src/cab_file.cpp)
   target_link_libraries(sonora_native_cab_file PUBLIC sonora_native_cab PRIVATE sonora_audiofile)
   add_executable(test_native_cab_file tests/test_cab_file.cpp)
