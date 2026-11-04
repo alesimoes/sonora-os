@@ -200,8 +200,15 @@ int test_ui() {
     session.setWindow(QStringLiteral("mix"));
     latency->setX(50);
     latency->setY(60);
+    // Let the Edit-to-Mix switch and the layout it triggers settle before the
+    // click, as a slow runner would otherwise click a half-laid-out list.
+    QTest::qWait(50);
     click(view, named(list, QStringLiteral("windowConfigStore2")));
-    CHECK(text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"));
+    CHECK(QTest::qWaitFor([&]() {
+        return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating");
+    }));
+    if (text_of(list, "windowConfigSummary2") != QStringLiteral("Mix, 1 floating"))
+        std::fprintf(stderr, "summary2 was: %s\n", qPrintable(text_of(list, "windowConfigSummary2")));
 
     // Recall 1: the view, the open set and the place all come back.
     click(view, named(list, QStringLiteral("windowConfigRecall1")));
