@@ -161,17 +161,18 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
-// 45 (ADR-0041, mix and edit groups; follows 42, numbers 43 and 44 belong to
-//   other branches): new operation kinds SetGroup and RemoveGroup, an edit
-//   state in the undo window carries "groups" (window format 16, session
-//   format 19), and the commands group.new, group.dissolve and
-//   group.toggle_suspend. A version-42 peer refuses the operations and the
-//   window.
-// 46 (clip gain; follows 42, 43 to 45 being other branches' numbers): the
-//   operation kind SetRegionGain, a region in an operation and in the undo
-//   window carries "gain_line" (window format 16, session format 19), and
-//   the clip.gain commands. A version-42 peer refuses all of them.
-constexpr uint32_t kProtocolVersion = 46;
+// 48 (the session-model train: ADR-0041 groups, ADR-0042 clip gain, ADR-0043
+//   record modes, one bump for the three; follows 42, 43 to 47 are other
+//   work's): new operation kinds SetGroup, RemoveGroup and SetRegionGain; an
+//   edit state in the undo window carries "groups" and a region "gain_line";
+//   SetSettings carries transport.input_only, rolls_on and quick_punch and an
+//   audio track's mix track_punch (undo window format 16, session format 19);
+//   the commands group.new, group.dissolve, group.toggle_suspend, clip.gain,
+//   transport.toggle_input_only, transport.toggle_pre_post_roll,
+//   transport.toggle_quick_punch (engine) and track.toggle_track_punch
+//   (interface). A version-42 peer refuses the operations, the keys and the
+//   window, and answers the commands NotImplemented.
+constexpr uint32_t kProtocolVersion = 48;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

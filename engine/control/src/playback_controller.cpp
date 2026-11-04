@@ -142,6 +142,7 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
         t.set_muted(m->mute);
         t.set_soloed(m->solo);
         t.set_solo_safe(m->solo_safe);
+        t.set_punch_enabled(m->track_punch);
         t.set_automation(automation_of(m->automation));
         if (!(take && t.rec_armed())) {
             t.set_input(tracks[i]->kind == model::TrackKind::Audio && !m->input.empty()
@@ -348,8 +349,10 @@ bool PlaybackController::show(const model::Snapshot& snapshot, std::string& erro
         session_.set_loop(0, 0);
     }
     const model::Transport& tr = snapshot.settings.transport;
-    pre_roll_ = static_cast<uint64_t>(std::max<model::Frames>(tr.pre_roll, 0));
-    post_roll_ = static_cast<uint64_t>(std::max<model::Frames>(tr.post_roll, 0));
+    // Pre/Post-Roll off (ADR-0043): kept in the document, not used.
+    pre_roll_ = tr.rolls_on ? static_cast<uint64_t>(std::max<model::Frames>(tr.pre_roll, 0)) : 0;
+    post_roll_ = tr.rolls_on ? static_cast<uint64_t>(std::max<model::Frames>(tr.post_roll, 0)) : 0;
+    session_.set_input_only(tr.input_only);
     session_.click().set_count_off_bars(tr.count_off_bars);
     PlaybackPlan* plan = nullptr;
     PlanReport report;

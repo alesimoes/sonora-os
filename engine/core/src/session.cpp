@@ -747,8 +747,15 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
             }
         }
     };
+    bool sat_out = false;
     for (auto& t : tracks_) {
         if (!t->rec_armed()) continue;
+        // TrackPunch (ADR-0043): a track that sits punches out opens no file
+        // for one.
+        if (range != nullptr && !t->punch_enabled()) {
+            sat_out = true;
+            continue;
+        }
         int slot = free_slot(*t);
         for (int i = 0; slot < 0 && i < 1000; ++i) {
             if (!disk_->running()) disk_->drain_once();
@@ -798,7 +805,11 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
     }
 
     if (opened.empty()) {
-        if (error) *error = "no track is armed";
+        if (error) {
+            *error = sat_out
+                         ? "no armed track records in a punch (TrackPunch is off on each)"
+                         : "no track is armed";
+        }
         return false;
     }
     const auto refuse_after_open = [&](const std::string& why) {
@@ -863,6 +874,10 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
         o.first->set_current_slot(o.second);
         o.first->set_slot_take(o.second, take_number, transport_->next_start());
     }
+    // Ordered before the audio thread sees the take by the transport store
+    // below.
+    for (auto& t : tracks_) t->set_in_punch_take(false);
+    for (const auto& o : opened) o.first->set_in_punch_take(true);
     // A take started over another ends it here.
     keep_origin(transport_->playhead());
     Closing& c = closing_[take_number];
@@ -1379,6 +1394,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
             roll_end_.compare_exchange_strong(end, kNoRollEnd, std::memory_order_acq_rel);
         }
     }
+    take_punched_ = punched;
     // Off-speed only for a plain roll: a loop, a take or a post-roll counts
     // timeline frames one for one (ADR-0033 §3).
     const float ratio = varispeed_.load(std::memory_order_relaxed);
@@ -1580,7 +1596,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
         Track& t = *tracks_[i];
         uint32_t& window = window_take_[i];
-        const bool wanted = in_range && t.rec_armed();
+        const bool wanted = in_range && t.rec_armed() && (!take_punched_ || t.in_punch_take());
         CaptureBoundary b{};
         b.track = static_cast<uint32_t>(i);
         // Timeline frames are the playhead's less the take's L (ADR-0019 §2).
@@ -1598,7 +1614,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
             }
             window = kNoWindow;
         }
-        if (passed && t.rec_armed()) {
+        if (passed && t.rec_armed() && (!take_punched_ || t.in_punch_take())) {
             b.kind = CaptureBoundary::Kind::Open;
             b.take = take;
             b.start = start;
@@ -1991,13 +2007,19 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
     const TrackMixView v = mix_view(plan, e);
     const Track::Monitor mon = v.monitor;
     const bool armed = v.armed;
+    // Input Only (ADR-0043): an armed track is the input, always.
+    const bool input_only = armed && mon != Track::Monitor::Off &&
+                            input_only_.load(std::memory_order_relaxed);
+    // A track that sits a punch take out (TrackPunch) is not recording in it.
+    const bool in_take = recording && (!take_punched_ || tracks_[e]->in_punch_take());
     // Auto: the input while armed and stopped or recording, playback
     // otherwise; in a take, the punch points say where, frame by frame.
-    const bool by_punch = mon == Track::Monitor::Auto && armed && rolling && recording;
-    const float fixed =
-        mon == Track::Monitor::Input || (mon == Track::Monitor::Auto && armed && !rolling)
-            ? 1.0f
-            : 0.0f;
+    const bool by_punch =
+        mon == Track::Monitor::Auto && armed && rolling && in_take && !input_only;
+    const float fixed = mon == Track::Monitor::Input || input_only ||
+                                (mon == Track::Monitor::Auto && armed && !rolling)
+                            ? 1.0f
+                            : 0.0f;
     const PunchRecord& p = *punch_;
     // A punch with no crossfade still never cuts: it gets the monitor ramp,
     // centred on A and B like any other punch crossfade.

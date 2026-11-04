@@ -339,8 +339,7 @@ bool v10_to_v11(Value& root, std::vector<Repair>&, std::string& error) {
 bool v11_to_v12(Value& root, std::vector<Repair>&, std::string& error) {
     const auto add = [&](const char* list_key, bool buses) {
         Value* list = root.find(list_key);
-        if (list == nullptr || !list->is_array()) return true;   // the reader names it
-        for (std::size_t i = 0; i < list->items().size(); ++i) {
+        for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
             Value& v = list->items()[i];
             if (!v.is_object()) continue;
             for (const char* key : {"output", "solo"}) {
@@ -365,8 +364,7 @@ bool v11_to_v12(Value& root, std::vector<Repair>&, std::string& error) {
 // "automation_mode": "read", which plays what a version 12 session played.
 bool v12_to_v13(Value& root, std::vector<Repair>&, std::string& error) {
     Value* list = root.find("tracks");
-    if (list == nullptr || !list->is_array()) return true;   // the reader names it
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         Value& v = list->items()[i];
         if (!v.is_object()) continue;
         for (const char* key : {"automation", "automation_mode"}) {
@@ -389,8 +387,7 @@ bool v12_to_v13(Value& root, std::vector<Repair>&, std::string& error) {
 // already holds one is refused, as it would be by a version 13 reader.
 bool v13_to_v14(Value& root, std::vector<Repair>&, std::string& error) {
     Value* list = root.find("tracks");
-    if (list == nullptr || !list->is_array()) return true;   // the reader names it
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& t = list->items()[i];
         const Value* lanes = t.is_object() ? t.find("automation") : nullptr;
         if (lanes == nullptr || !lanes->is_array()) continue;
@@ -415,8 +412,7 @@ bool v13_to_v14(Value& root, std::vector<Repair>&, std::string& error) {
 // what a region without the key means.
 bool v14_to_v15(Value& root, std::vector<Repair>&, std::string& error) {
     Value* list = root.find("tracks");
-    if (list == nullptr || !list->is_array()) return true;   // the reader names it
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         Value& t = list->items()[i];
         if (!t.is_object()) continue;
         if (t.find("colour") != nullptr) {
@@ -449,8 +445,7 @@ bool v14_to_v15(Value& root, std::vector<Repair>&, std::string& error) {
 // reader would refuse it.
 bool v15_to_v16(Value& root, std::vector<Repair>&, std::string& error) {
     const Value* list = root.find("tracks");
-    if (list == nullptr || !list->is_array()) return true;   // the reader names it
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& t = list->items()[i];
         if (!t.is_object()) continue;
         const std::string path = "tracks[" + std::to_string(i) + "]";
@@ -478,8 +473,7 @@ bool v15_to_v16(Value& root, std::vector<Repair>&, std::string& error) {
 // no file. One that already does is refused, as a version 16 reader would.
 bool v16_to_v17(Value& root, std::vector<Repair>&, std::string& error) {
     const Value* list = root.find("tracks");
-    if (list == nullptr || !list->is_array()) return true;   // the reader names it
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& t = list->items()[i];
         const Value* ins = t.is_object() ? t.find("inserts") : nullptr;
         if (ins == nullptr || !ins->is_array()) continue;
@@ -546,17 +540,20 @@ bool v17_to_v18(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
-// v18 -> v19 (ADR-0041 groups, ADR-0042 clip gain): a version 18 file that holds
+// v18 -> v19 (ADR-0041 groups, ADR-0042 clip gain, ADR-0043 record modes): a
+// version 18 file that holds
 // "groups", or a region with "gain_line", is refused, as a version 18 reader
-// would refuse it; one without them opens unchanged.
+// would refuse it; one without them opens unchanged. The transport gains
+// "input_only" (off, Auto Input), "rolls_on" (on) and "quick_punch" (off), and
+// every audio track "track_punch" (on), so an older session records and
+// monitors as it did.
 bool v18_to_v19(Value& root, std::vector<Repair>&, std::string& error) {
     if (root.find("groups") != nullptr) {
         error = "the file has \"groups\", which version 18 does not define";
         return false;
     }
     const Value* list = root.find("tracks");
-    if (list == nullptr || !list->is_array()) return true;
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& t = list->items()[i];
         const Value* pls = t.is_object() ? t.find("playlists") : nullptr;
         if (pls == nullptr || !pls->is_array()) continue;
@@ -571,6 +568,34 @@ bool v18_to_v19(Value& root, std::vector<Repair>&, std::string& error) {
                     return false;
                 }
             }
+        }
+    }
+    Value* tr = root.find("transport");
+    if (tr != nullptr && tr->is_object()) {
+        for (const char* key : {"input_only", "rolls_on", "quick_punch"}) {
+            if (tr->find(key) != nullptr) {
+                error = std::string("the file has \"transport.") + key +
+                        "\", which version 18 does not define";
+                return false;
+            }
+        }
+        tr->set("input_only", Value::boolean(false));
+        tr->set("rolls_on", Value::boolean(true));
+        tr->set("quick_punch", Value::boolean(false));
+    }
+    Value* tracks = root.find("tracks");
+    if (tracks != nullptr && tracks->is_array()) {
+        for (std::size_t i = 0; i < tracks->items().size(); ++i) {
+            Value& t = tracks->items()[i];
+            if (!t.is_object()) continue;
+            const Value* kind = t.find("kind");
+            if (kind == nullptr || !kind->is_string() || kind->text() != "audio") continue;
+            if (t.find("track_punch") != nullptr) {
+                error = "tracks[" + std::to_string(i) +
+                        "] has \"track_punch\", which version 18 does not define";
+                return false;
+            }
+            t.set("track_punch", Value::boolean(true));
         }
     }
     return true;
@@ -1031,7 +1056,8 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
     const Value& tr = *root.find("transport");
     if (!rd.keys(tr, "transport",
                  {"loop", "punch", "pre_roll", "post_roll", "punch_crossfade",
-                  "count_off_bars", "loop_playback", "loop_record"})) {
+                  "count_off_bars", "loop_playback", "loop_record", "input_only", "rolls_on",
+                  "quick_punch"})) {
         return false;
     }
     if (!rd.range(tr, "transport", "loop", s.transport.loop)) return false;
@@ -1048,6 +1074,9 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
     s.transport.count_off_bars = static_cast<std::uint32_t>(bars);
     if (!rd.flag(tr, "transport", "loop_playback", s.transport.loop_playback)) return false;
     if (!rd.flag(tr, "transport", "loop_record", s.transport.loop_record)) return false;
+    if (!rd.flag(tr, "transport", "input_only", s.transport.input_only)) return false;
+    if (!rd.flag(tr, "transport", "rolls_on", s.transport.rolls_on)) return false;
+    if (!rd.flag(tr, "transport", "quick_punch", s.transport.quick_punch)) return false;
     if (!rd.text(root, "", "session_id", s.session_id)) return false;
     const Value* left = nullptr;
     if (!rd.array(root, "", "left_takes", left)) return false;
@@ -1082,7 +1111,7 @@ bool read_bus(Reader& rd, const Value& root, MonitorBus& b) {
 bool read_sources(Reader& rd, const Value& root, SourcePool& pool) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "sources", list)) return false;
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path("sources", i);
         if (!v.is_object()) return rd.fail(v, p, "must be an object");
@@ -1130,7 +1159,7 @@ bool read_sources(Reader& rd, const Value& root, SourcePool& pool) {
 bool read_midi_sources(Reader& rd, const Value& root, SourcePool& pool) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "midi_sources", list)) return false;
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path("midi_sources", i);
         if (!v.is_object()) return rd.fail(v, p, "must be an object");
@@ -1491,7 +1520,7 @@ bool read_inserts(Reader& rd, const Value& track, const std::string& path, Track
                   MixState& mix) {
     const Value* list = nullptr;
     if (!rd.array(track, path, "inserts", list)) return false;
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path(path + ".inserts", i);
         if (!rd.keys(v, p, {"id", "slot", "plugin", "active", "bypass", "params"}, {"state"})) {
@@ -1585,7 +1614,7 @@ bool read_inserts(Reader& rd, const Value& track, const std::string& path, Track
 bool read_lanes(Reader& rd, const Value& strip, const std::string& path, AutomationLanes& out) {
     const Value* list = nullptr;
     if (!rd.array(strip, path, "automation", list)) return false;
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path(path + ".automation", i);
         auto lane = std::make_shared<AutomationLane>();
@@ -1645,7 +1674,7 @@ bool read_sends(Reader& rd, const Value& strip, const std::string& path,
                 std::vector<Send>& sends, MixState& mix) {
     const Value* list = nullptr;
     if (!rd.array(strip, path, "sends", list)) return false;
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path(path + ".sends", i);
         if (!rd.keys(v, p, {"id", "slot", "bus", "level_db", "pan", "follow_pan", "mute", "pre"})) {
@@ -1681,7 +1710,7 @@ bool read_groups(Reader& rd, const Value& root, EditState& edit) {
     const Value* list = root.find("groups");
     if (list == nullptr) return true;
     if (!list->is_array()) return rd.fail(*list, "groups", "must be an array");
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path("groups", i);
         const Value* members = nullptr;
@@ -1711,7 +1740,7 @@ bool read_groups(Reader& rd, const Value& root, EditState& edit) {
 bool read_buses(Reader& rd, const Value& root, EditState& edit, MixState& mix) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "buses", list)) return false;
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path("buses", i);
         if (!rd.keys(v, p,
@@ -1753,7 +1782,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
                  EditState& edit, MixState& mix) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "tracks", list)) return false;
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path("tracks", i);
         auto t = std::make_shared<TrackEdit>();
@@ -1768,9 +1797,9 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
         if (audio) {
             keys_ok = rd.keys(v, p,
                               {"id", "kind", "name", "colour", "channels", "input", "monitor",
-                               "gain_db", "pan", "mute", "solo", "solo_safe", "active_playlist",
-                               "inserts", "sends", "output", "automation", "automation_mode",
-                               "playlists"});
+                               "gain_db", "pan", "mute", "solo", "solo_safe", "track_punch",
+                               "active_playlist", "inserts", "sends", "output", "automation",
+                               "automation_mode", "playlists"});
         } else if (midi) {
             keys_ok = rd.keys(v, p,
                               {"id", "kind", "name", "colour", "midi_input", "midi_output",
@@ -1835,6 +1864,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
         if (!rd.flag(v, p, "mute", m.mute)) return false;
         if (!rd.flag(v, p, "solo", m.solo)) return false;
         if (!rd.flag(v, p, "solo_safe", m.solo_safe)) return false;
+        if (audio && !rd.flag(v, p, "track_punch", m.track_punch)) return false;
         if (!midi && !rd.choice(v, p, "automation_mode", kAutomationModes, m.automation)) {
             return false;
         }
@@ -1880,7 +1910,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
 bool read_markers(Reader& rd, const Value& root, MarkerList& out) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "markers", list)) return false;
-    for (std::size_t i = 0; i < list->items().size(); ++i) {
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path("markers", i);
         if (!rd.keys(v, p, {"id", "position", "name", "length"})) return false;
@@ -1984,6 +2014,9 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
     tr.set("count_off_bars", integer(st.transport.count_off_bars));
     tr.set("loop_playback", Value::boolean(st.transport.loop_playback));
     tr.set("loop_record", Value::boolean(st.transport.loop_record));
+    tr.set("input_only", Value::boolean(st.transport.input_only));
+    tr.set("rolls_on", Value::boolean(st.transport.rolls_on));
+    tr.set("quick_punch", Value::boolean(st.transport.quick_punch));
     Value& bus = root.set("monitor_bus", Value::object());
     bus.set("outputs", pair(s.mix.bus.outputs[0], s.mix.bus.outputs[1]));
     bus.set("gain_db", Value::number_float(s.mix.bus.gain_db));
@@ -2024,6 +2057,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
         tv.set("mute", Value::boolean(m.mute));
         tv.set("solo", Value::boolean(m.solo));
         tv.set("solo_safe", Value::boolean(m.solo_safe));
+        if (audio) tv.set("track_punch", Value::boolean(m.track_punch));
         tv.set("active_playlist", id_value(t.active_playlist));
         if (!midi) {
             Value& inserts = tv.set("inserts", Value::array());

@@ -25,7 +25,8 @@
   Absolute (all to one value); Mute and Solo copy the leader's new state.
   Arm is applied by the engine where it arms (it owns arming).
 - §5: session format 19 (a `groups` key only when there is a group; a v18 file
-  opens unchanged), window format 16, protocol 45.
+  opens unchanged), window format 16, protocol 48 (one bump shared with ADR-0042
+  and ADR-0043, see §5).
 
 ## 1. Where a group lives
 
@@ -66,8 +67,11 @@ track. A take in progress refuses it for the group as for a track.
 
 Session format 19; the writer emits `groups` only when there is one, so a
 session without groups is byte-identical apart from the version. Window
-format 16 (the edit state carries `groups`). Protocol 45 (43 and 44 are
-held by other branches).
+format 16 (the edit state carries `groups`). Protocol 48 (43 to 47 are
+held by other branches). These three numbers are shared with ADR-0042 (clip gain)
+and ADR-0043 (record modes): the three features landed as one branch, the
+session-model train, with a single protocol bump (48), a single session format
+bump (19) and a single undo window format (16), and one v18-to-v19 migration.
 
 ## Not done here
 

@@ -1783,6 +1783,19 @@ bool EditController::toggle_input_monitor(int index, std::string& why) {
     return submit(SetMix{m}, why);
 }
 
+bool EditController::toggle_track_punch(int index, std::string& why) {
+    TrackMix m;
+    if (!mix_target(snapshot(), index, m, why)) return false;
+    const TrackEdit& t = *snapshot().edit->tracks[static_cast<std::size_t>(index)];
+    if (t.kind != TrackKind::Audio) {
+        why = t.name + (t.kind == TrackKind::Midi ? " is a MIDI track" : " is an instrument track") +
+              ": it records no audio to punch";
+        return false;
+    }
+    m.track_punch = !m.track_punch;
+    return submit(SetMix{m}, why);
+}
+
 namespace {
 
 std::string no_track(int index) {

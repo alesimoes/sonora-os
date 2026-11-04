@@ -138,6 +138,21 @@ bool edit_transport_field(const std::string& id, model::Transport& tr, uint32_t 
         tr.punch = {{0, 0}};
         return true;
     }
+    // ADR-0043: three record switches, flipped one each. Input Only is a
+    // monitor decision and may change under a take; the other two change how
+    // the next take starts (take_punch_refusal()).
+    if (id == "transport.toggle_input_only") {
+        tr.input_only = !tr.input_only;
+        return true;
+    }
+    if (id == "transport.toggle_pre_post_roll") {
+        tr.rolls_on = !tr.rolls_on;
+        return true;
+    }
+    if (id == "transport.toggle_quick_punch") {
+        tr.quick_punch = !tr.quick_punch;
+        return true;
+    }
     const bool pre = id == "transport.set_pre_roll";
     if (argument.empty()) {
         why = pre ? "no pre-roll given" : "no post-roll given";
@@ -157,6 +172,9 @@ bool edit_transport_field(const std::string& id, model::Transport& tr, uint32_t 
 }
 
 std::string take_punch_refusal(const model::Transport& was, const model::Transport& now) {
+    if (now.quick_punch != was.quick_punch || now.rolls_on != was.rolls_on) {
+        return "a take is recording; the record mode changes after Stop";
+    }
     if (now.punch == was.punch) return {};
     return "a take is recording; the punch range changes after Stop";
 }
@@ -281,6 +299,8 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.toggle_loop_record", "transport.toggle_cycle",
         "transport.cycle_selection", "transport.punch_selection", "transport.clear_punch",
         "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready", "meters.reset",
+        "transport.toggle_input_only", "transport.toggle_pre_post_roll",
+        "transport.toggle_quick_punch",
     };
     return ids;
 }
@@ -1710,7 +1730,9 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         return true;
     }
     if (id == "transport.punch_selection" || id == "transport.clear_punch" ||
-        id == "transport.set_pre_roll" || id == "transport.set_post_roll") {
+        id == "transport.set_pre_roll" || id == "transport.set_post_roll" ||
+        id == "transport.toggle_input_only" || id == "transport.toggle_pre_post_roll" ||
+        id == "transport.toggle_quick_punch") {
         const model::SessionSettings& was = document_->current().settings;
         model::SetSettings op{was};
         if (!edit_transport_field(id, op.settings.transport, op.settings.sample_rate, r.argument,

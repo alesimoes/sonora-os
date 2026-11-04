@@ -2266,6 +2266,27 @@ int test_midi_sequence_cleanup_follow_ups() {
     return 0;
 }
 
+// TrackPunch (track.toggle_track_punch): the track's flag in the document,
+// on by default, kept with the rest of its mix and never an undo step.
+int test_track_punch() {
+    FlatPeaks peaks;
+    std::string why;
+    Id playlist = 0, region = 0;
+    ModelDocument doc(midi_session(1, playlist, region));
+    SessionModel session(doc, peaks, false);
+    EditController& c = session.controller();
+    const Id audio = doc.snapshot().edit->tracks[0]->id;
+    const auto on = [&]() { return doc.snapshot().mix.find(audio)->track_punch; };
+    const bool could_undo = doc.can_undo();
+    OK(on());
+    OK(c.toggle_track_punch(0, why) && !on());
+    OK(c.toggle_track_punch(0, why) && on());
+    OK(doc.can_undo() == could_undo);
+    OK(!c.toggle_track_punch(1, why) && contains(why, "Synth is a MIDI track"));
+    OK(!c.toggle_track_punch(-1, why) && why == "no track is selected");
+    return 0;
+}
+
 // Pro Tools' TrackInput (track.toggle_input_monitor): the track's monitor
 // mode in the document, Input or Auto, kept with the rest of its mix and
 // never an undo step. A MIDI track has no audio input to monitor.
@@ -2651,7 +2672,7 @@ int main(int argc, char** argv) {
         test_first_save_keeps_the_sessions_name() ||
         test_save_failures() || test_autosave_names_agree() ||
         test_midi_sequence_files() ||
-        test_midi_sequence_cleanup_follow_ups() || test_input_monitor() ||
+        test_midi_sequence_cleanup_follow_ups() || test_input_monitor() || test_track_punch() ||
         test_step_automation_mode() || test_save_as_and_copy() ||
         test_automation_follows_edit() || test_follow_edit_thins_a_full_lane()) {
         return 1;

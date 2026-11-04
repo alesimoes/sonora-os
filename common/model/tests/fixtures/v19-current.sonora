@@ -29,7 +29,10 @@
     "punch_crossfade": 240,
     "count_off_bars": 2,
     "loop_playback": false,
-    "loop_record": false
+    "loop_record": false,
+    "input_only": false,
+    "rolls_on": true,
+    "quick_punch": false
   },
   "monitor_bus": {
     "outputs": [0, 1],
@@ -100,6 +103,7 @@
       "mute": false,
       "solo": false,
       "solo_safe": false,
+      "track_punch": true,
       "active_playlist": 11,
       "inserts": [
         {
@@ -269,6 +273,7 @@
       "mute": true,
       "solo": false,
       "solo_safe": true,
+      "track_punch": true,
       "active_playlist": 13,
       "inserts": [],
       "sends": [],

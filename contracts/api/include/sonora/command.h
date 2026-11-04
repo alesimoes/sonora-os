@@ -121,6 +121,15 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // takes a frame.
         {"transport.set_pre_roll", CommandTarget::None, "Set the pre-roll", true},
         {"transport.set_post_roll", CommandTarget::None, "Set the post-roll", true},
+        // ADR-0043, protocol 48. Pro Tools' Input Only Monitoring against
+        // Auto Input, its Pre/Post-Roll switch and its QuickPunch record
+        // mode: session settings at the engine, flipped one each.
+        {"transport.toggle_input_only", CommandTarget::None,
+         "Switch between Auto Input and Input Only monitoring"},
+        {"transport.toggle_pre_post_roll", CommandTarget::None,
+         "Turn the pre-roll and post-roll on or off"},
+        {"transport.toggle_quick_punch", CommandTarget::None,
+         "Turn the QuickPunch record mode on or off"},
         // ADR-0020: Pro Tools' Click and Count Off, Logic's Metronome and
         // Count-in.
         {"transport.toggle_click", CommandTarget::None, "Turn the click on or off"},
@@ -142,6 +151,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"track.toggle_solo", CommandTarget::Track, "Toggle solo on a track"},
         {"track.toggle_input_monitor", CommandTarget::Track,
          "Toggle input monitoring on a track"},
+        // Protocol 48 (ADR-0043): TrackMix::track_punch, whether the armed
+        // track takes part in punch takes.
+        {"track.toggle_track_punch", CommandTarget::Track,
+         "Toggle whether a track records in punches (TrackPunch)"},
         {"track.step_automation_mode", CommandTarget::Track,
          "Step a track's automation mode: Off, Read, Touch, Latch, Write"},
         {"track.select", CommandTarget::Track, "Make a track the selected track"},
@@ -160,7 +173,7 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // argument the window asks: the name dialog, the colour palette.
         {"track.rename", CommandTarget::Track, "Rename a track", true},
         {"track.colour", CommandTarget::Track, "Colour a track from the palette", true},
-        // Mix and edit groups (ADR-0041, protocol 45). New groups the
+        // Mix and edit groups (ADR-0041, protocol 48). New groups the
         // selected tracks, with the optional argument as its name; Dissolve
         // and Suspend act on the group of the track given or the selected
         // one. Suspend toggles: the group stays and links nothing.
@@ -392,6 +405,7 @@ inline const std::vector<std::string>& take_commands() {
     static const std::vector<std::string> ids = {
         "transport.record",          "transport.toggle_record",   "transport.punch",
         "transport.record_ready",    "transport.punch_selection", "transport.toggle_loop_record",
+        "transport.toggle_quick_punch", "transport.toggle_pre_post_roll",
     };
     return ids;
 }

@@ -563,8 +563,55 @@ int test_meters_reset_argument() {
     return 0;
 }
 
+// QuickPunch (ADR-0043): with the mode on, the record key punches in on the fly
+// and the next press punches out with the transport rolling, each pass a take
+// of its own; with it off a press during a take leaves the take alone.
+int test_quick_punch_record_key() {
+    Dir dir("sonora_test_session_commands_quick_punch");
+    const sonora::SessionConfig cfg = punch_config(dir);
+    sonora::Session s(cfg);
+    CHECK(s.create_dirs());
+    CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    bool quick = false;
+    sonora::install_session_commands(reg, s, take, quit, nullptr, nullptr,
+                                     [](sonora::PunchRange&) { return false; }, nullptr,
+                                     nullptr, nullptr, [&quick]() { return quick; });
+    s.disk().start();
+    s.tracks()[0]->set_rec_armed(true);
+    s.play();
+    roll_to(s, 640);
+
+    // Off: the second press leaves the take running.
+    CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+    CHECK(s.transport().state() == sonora::TransportState::Recording);
+    roll_to(s, s.transport().playhead() + 640);
+    CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+    CHECK(s.transport().state() == sonora::TransportState::Recording && take == 1);
+    CHECK(reg.dispatch("transport.punch") == DispatchResult::Ok);   // out, to start clean
+    CHECK(take == 2);
+
+    // On: in, out, in, out, rolling throughout.
+    quick = true;
+    roll_to(s, s.transport().playhead() + 128);
+    for (int pass = 0; pass < 2; ++pass) {
+        CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Recording);
+        roll_to(s, s.transport().playhead() + 640);
+        CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Rolling);
+        roll_to(s, s.transport().playhead() + 128);
+    }
+    CHECK(take == 4);
+    CHECK(fs::exists(dir.path / "Audio Files" / "Audio 1_02.wav"));
+    CHECK(fs::exists(dir.path / "Audio Files" / "Audio 1_03.wav"));
+    return 0;
+}
+
 int main() {
     int failures = 0;
+    failures += test_quick_punch_record_key();
     failures += test_meters_reset_argument();
     failures += test_session_commands();
     failures += test_arming_locked_during_take();
