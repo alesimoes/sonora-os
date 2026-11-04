@@ -2,7 +2,8 @@ name: Sonora image
 description: >
   Pull ghcr.io/alesimoes/<name>:trixie (built by images.yml) and tag it with
   the local name the build scripts use. Builds it here, without writing any
-  cache, when the change edits the image's inputs or the pull fails.
+  cache, only when the change edits the image's inputs; a failed pull
+  otherwise fails the step (images are built on main by images.yml).
 inputs:
   name:
     description: Image name, e.g. sonora-build
@@ -38,7 +39,8 @@ runs:
             docker tag "$REMOTE" "$NAME:trixie"
             exit 0
           fi
-          echo "::warning::could not pull $REMOTE; building $NAME locally"
+          echo "::error::$REMOTE is missing from GHCR. Run 'gh workflow run images.yml' on main to build and push it, and make the package public."
+          exit 1
         else
           echo "This change edits the inputs of $NAME; building it locally."
         fi

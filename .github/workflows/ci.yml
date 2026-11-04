@@ -40,15 +40,17 @@ jobs:
         id: filter
         run: |
           code=true
-          # Images come prebuilt from images.yml; a change to an image's
-          # inputs must be built here, as the published one is the old one.
+          # Images come prebuilt from images.yml (main only); a change to an
+          # image's inputs, or to the tooling that builds or pulls images,
+          # must be built here, as the published one is the old one.
           # Also on main, where images.yml runs in parallel with this.
+          tooling='\.github/actions/sonora-image/.*|\.github/workflows/images\.yml'
           files=$(git diff --no-renames --name-only HEAD^1 HEAD || true)
           for pair in build:tools/Dockerfile.build \
                       ui:'tools/Dockerfile.ui|audio-stack/pipewire-sonora.conf' \
                       rtsan:tools/Dockerfile.rtsan \
                       plugins:tools/Dockerfile.plugins; do
-            if printf '%s\n' "$files" | grep -qE "^(${pair#*:})$"; then
+            if printf '%s\n' "$files" | grep -qE "^(${pair#*:}|${tooling})$"; then
               echo "image_${pair%%:*}=true" >> "$GITHUB_OUTPUT"
             else
               echo "image_${pair%%:*}=false" >> "$GITHUB_OUTPUT"
