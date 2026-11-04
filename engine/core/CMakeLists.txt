@@ -116,6 +116,9 @@ add_test(NAME loop_record COMMAND test_loop_record)
 add_executable(test_loop_playback tests/test_loop_playback.cpp)
 target_link_libraries(test_loop_playback PRIVATE sonora_core)
 add_test(NAME loop_playback COMMAND test_loop_playback)
+add_executable(test_varispeed tests/test_varispeed.cpp)
+target_link_libraries(test_varispeed PRIVATE sonora_core)
+add_test(NAME varispeed COMMAND test_varispeed)
 
 # Read automation (ADR-0027): the lane value, playback on the timeline grid,
 # block-split invariance, a locate mid-ramp, a loop wrap, Off and pan, and no

@@ -150,6 +150,30 @@ with `SONORA_WITH_UI=1`; without it the UI unit fails and falls back.
 `tools/test-display-fallback.sh` runs this hand-back under systemd in a
 container.
 
+## Installing to disk (ADR-0032)
+
+The installed system is the target; the stick is for trying it. Boot the stick
+with `sonora.install` added at the boot menu (press `e` in GRUB, `Tab` in
+ISOLINUX): `sonora-installer.service` puts a text screen on tty2
+(`sonora-install-tty`) and switches to it. It lists the internal disks,
+asks for the disk's name to be typed, runs `sonora-install --yes --target`,
+shows `STEP n/7` and ends with INSTALLED or the named failure. Sessions on the
+stick are copied to the new system and checked file by file with SHA-256; the
+stick's copy is never removed. The unit does nothing on an installed system.
+
+Everything the screen does goes through the script's contract, so the later Qt
+page in `sonora-ui` replaces `sonora-install-tty` and nothing else:
+`sonora-install --list` (`DEVICE<TAB>BYTES<TAB>MODEL`), the `STEP n/7 name` and
+`INFO ...` lines on stdout, and the exit codes in the script's header (11 is a
+session carry-over that did not verify). A page asks for the typed device name
+itself before passing `--yes`.
+
+Tests: `tools/test-installer-tty.sh` (the screen, a stub installer, no root),
+`tools/test-installer.sh` (the script against a file image, privileged
+container), `tools/test-install-qemu.sh` (the exit test: install to a virtio
+disk from the ISO, restart without the stick, find the session). The last two
+have not been run in CI; see the PR that added them.
+
 ## What is not verified
 
 The image builds and boots in QEMU, both from the ISO (`tools/test-boot-qemu.sh`)
