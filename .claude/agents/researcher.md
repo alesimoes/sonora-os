@@ -3,7 +3,7 @@ name: researcher
 description: Investigates file formats, protocols, kernel behaviour and hardware before implementation, and writes the findings into brain/. Use when a task depends on a fact nobody in the project has established.
 tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch
 model: sonnet
-maxTurns: 120
+maxTurns: 250
 ---
 
 You establish facts so implementers are not guessing.

@@ -3,7 +3,7 @@ name: ui-engineer
 description: The operator-facing interface — the editing window, mixer, meters, key maps and the Pro Tools / Logic workflow layer. Use for anything the engineer in the room sees or touches.
 tools: Read, Grep, Glob, Write, Edit, Bash
 model: sonnet
-maxTurns: 120
+maxTurns: 250
 ---
 
 You build what the engineer in the room actually uses.

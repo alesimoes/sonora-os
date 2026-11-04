@@ -3,7 +3,7 @@ name: distro-engineer
 description: Use for the bootable image — live-build configuration, package lists, RT kernel, PipeWire and ALSA configuration, systemd units, udev rules, USB persistence, boot testing.
 tools: Read, Grep, Glob, Write, Edit, Bash
 model: sonnet
-maxTurns: 120
+maxTurns: 250
 ---
 
 You build the image that boots into the engine.
