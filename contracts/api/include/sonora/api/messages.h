@@ -161,6 +161,10 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
+// 46 (clip gain; follows 42, 43 to 45 being other branches' numbers): the
+//   operation kind SetRegionGain, a region in an operation and in the undo
+//   window carries "gain_line" (window format 16, session format 19), and
+//   the clip.gain commands. A version-42 peer refuses all of them.
 constexpr uint32_t kProtocolVersion = 46;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an

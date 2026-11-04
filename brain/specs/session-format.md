@@ -1061,6 +1061,15 @@ after `pan_law_db`. A lane's `param` may be `"mute"`, `"send_level"` or
 of them. The frozen v17 fixture loads through it and saves as
 `v18-strip-lanes.sonora`, byte for byte.
 
+**v18→v19 (clip gain):** nothing is filled in. A region may carry
+`"gain_line"`, written only when it has points: an array of `{"at", "db"}`
+objects, `at` a frame of the region's *source* (so a move, trim or split
+never rewrites it), strictly increasing, at most 256, `db` from -144 to +24
+on top of the region's `gain_db`. The gain between two points is linear in
+amplitude, held before the first and after the last. A version 18 file
+cannot carry it. The frozen v18 fixture loads through it and saves as
+`v19-clip-gain.sonora`, byte for byte.
+
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and
 `pan_law_db`; each track gains `"output": <id of Main>` and empty `sends`

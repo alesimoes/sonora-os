@@ -436,6 +436,8 @@ void version_check() {
     // (ADR-0027 §9; follows 40).
     // 42: meters.reset, and state layout 8's loudness (ADR-0013 amendment of
     // 2026-11-03; follows 41).
+    // 46: clip gain, SetRegionGain and a region's gain_line (window format 16,
+    // session format 19).
     CHECK(kProtocolVersion == 46);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
