@@ -1,0 +1,15 @@
+{
+  "processor": "org.sonora.transformer",
+  "class": "B",
+  "note": "first run: loose placeholder bars",
+  "response": {"level_dbfs": -70.0, "mid_db": 1.0, "corner_db": 6.0},
+  "iron": {"lf_first_db": 0.0, "flux_law_db": 20.0, "h2_dbc": 0.0, "h3_over_h2_db": 0.0},
+  "aliasing": {"nominal_dbc": 0.0, "hot_dbc": 0.0},
+  "hot": {"max_abs": 100.0},
+  "denormal_ratio": 1.2,
+  "zipper_tone_dbfs": -6.0,
+  "zipper_dbfs": -60.0,
+  "zipper": ["drive", "output"],
+  "golden_abs": 1e-6,
+  "cpu": {"p999_us": 60.0, "max_us": 150.0}
+}
