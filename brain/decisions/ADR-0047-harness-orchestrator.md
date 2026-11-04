@@ -21,9 +21,12 @@
 - §4a (owner refinement): the flow is architect -> lead -> engineers and
   testers -> integrator; a plan file, the lead's assignment table, and
   one feature = one branch = one PR in the store and on the dashboard.
-- §4b (owner addition): agents talk through files in a git-ignored
-  `.harness/` (inbox/outbox, plan, claims, board, events), atomic writes,
-  file claims that stop two engineers editing one file, polled by a hook.
+- §4b (owner decision): agents talk through a broker in the daemon, a
+  loopback TCP server; each agent registers under a name, messages are
+  addressed to names, the broker enforces file claims and reads a live
+  connection as a heartbeat. The client is a per-agent MCP server (CLI
+  fallback); inbound messages show at tool boundaries via a PostToolUse hook.
+  `.harness/` stays as durable log and per-name mailbox.
 - §5: three pools (build, qa, fix) with floors, a 20 cap, a CI budget, kill
   switch and dry-run.
 - §6: the daemon writes `status.json`; the dashboard reads it.
@@ -178,6 +181,11 @@ with backoff 1, 5, 15 min. A usage-limit exit (429 text in the stream) does not
 count: the daemon pauses all launches until the reset time it parses (or 30 min
 if unparseable) and then resumes, per the existing owner rule.
 
+Broker signal (§4b): an agent registered with the MCP client holds a live
+socket to the daemon; traffic or a 15 s `ping` is a beat, and a close marks
+the run `suspect` at once. It is an extra signal; the process/git checks above
+stay the authority because a hung but connected agent still pings.
+
 Escalation: after the retries the task is `blocked`, the worktree and branch
 are kept, a section is appended to the current handoff under "waits on the
 owner" (title, branch, last 20 lines of the stream, the reason), and the pool
@@ -303,133 +311,190 @@ link, feature state, tasks done/total with a per-task strip (state letter and
 agent), CI status, attempts, age, blocked reason. Below it, open PRs by
 feature against `max_open_prs`, and the "waits on the owner" list.
 
-### 4b. Inter-agent communication: `.harness/`
+### 4b. Inter-agent communication: a broker in the daemon
 
-Owner addition (2026-11-04). Purpose: no code conflicts, everyone in tune.
-Files, not a socket: a headless `claude -p` agent has no listener, so a socket
-would need a broker process, a port, and a client the model must drive
-through Bash; files are inspectable, survive daemon and agent restarts,
-replay in tests and need no extra moving part. A socket is justified only if
-polling latency measured in the fake-claude tests exceeds 5 s, which we do not
-expect (agents work in minutes).
+Owner decision (2026-11-04), replacing the first draft of this section (file
+inboxes polled by hooks). Purpose: no code conflicts, everyone in tune. The
+orchestrator is the single access point: it opens a socket server, every agent
+connects to it and registers under a name, messages are addressed to a name,
+and the orchestrator routes them, enforces file claims and reads a live
+connection as a heartbeat. The files in `.harness/` stay, but as the durable
+log and per-recipient mailbox, not as the transport.
 
-**Location.** `<main checkout>/.harness/`, added to `.gitignore`. Worktrees
-share it because the daemon passes `SONORA_HARNESS=<abs path>` (plus
-`SONORA_AGENT_ID`, `SONORA_TASK`, `SONORA_FEATURE`) to every run; agents and
-`tools/harness.py` resolve it from that variable, never from the cwd. If the
-variable is unset the helper exits non-zero (fail loudly at start-up).
+**Transport: TCP on 127.0.0.1, not a Unix socket.** The dev machine is Windows
+(PowerShell, Git Bash, Docker) and the daemon, the hooks and the MCP servers
+may run under native Windows Python or WSL. `AF_UNIX` exists in Windows 10+
+but Python's `asyncio` Unix-server support is missing on Windows, Git Bash and
+native Python disagree on path forms, and a socket file cannot cross the
+WSL/Windows boundary, whereas `127.0.0.1:<port>` works from all of them and
+from a container with host networking. Cost: a port can collide and anything
+local can connect, so see Auth below. Protocol: newline-delimited JSON frames
+over TCP (one request, one reply, plus server-pushed `deliver` frames to
+connections that asked for them); Python `asyncio` streams, no dependency.
 
-    .harness/
-      plan/<feature>.plan.json        architect output, read-only after ingest
-      board.json                      task states, rewritten by the daemon only
-      claims/<path-hash>.json         one file per claimed path (see below)
-      inbox/<agent-id>/<seq>-<type>-<msgid>.json   messages to an agent
-      outbox/<agent-id>/...           messages an agent has sent (audit copy)
-      acks/<agent-id>/<msgid>         empty file: message read
-      runs/<run-id>/{stream.log,beat,result.json}
-      events.log                      append-only JSON lines (daemon + helper)
-      STOP, STOP.NOW                  kill switch (see §5)
+**The constraint that shapes the client.** An LLM agent cannot hold a
+connection or listen: it acts only when it calls a tool, and nothing can be
+pushed into the model between its steps. So the connection belongs to a tool
+process, not to the model, and the agent sees inbound messages only at tool
+boundaries.
 
-`agent-id` is `<role>.<task>.<n>`, unique per run, plus the standing ids
-`daemon`, `lead.<feature>` and `architect.<feature>`. The daemon routes: a
-message is written once to the sender's outbox and delivered (hard-linked or
-copied, then renamed) to the recipient's inbox by `tools/harness.py send`, so
-the agent needs no routing knowledge. Broadcast = `to: "feature:<f>"` expands
-to every live agent of that feature.
+1. **Recommended client: a small per-agent MCP server**
+   (`tools/harness_mcp.py`, stdio, started by `claude` from the run's
+   `--mcp-config`). It connects to the broker at start-up, registers the name
+   from `SONORA_AGENT_NAME`, keeps the socket for the life of the run (this
+   live connection is the heartbeat; see §3) and exposes five tools:
+   `whoami()`, `send(to, type, body, reply_to?)`, `recv(max?, wait_s?)`,
+   `claim(paths[])` and `release(paths[])`. If the broker is unreachable at
+   start-up the MCP server exits non-zero, `claude` reports the tool server as
+   failed and the run's first `whoami` fails: a loud start-up failure, not a
+   silent degrade.
+2. **Fallback client: `tools/harness.py`** with the same verbs
+   (`whoami|send|recv|claim|release|board|check`), one short TCP connection
+   per call, name from `SONORA_AGENT_NAME`, called through Bash. It is also
+   the tool for humans and for the hooks. Used when the MCP server cannot be
+   loaded in headless mode (Unverified 7). No heartbeat from a live socket in
+   this mode; the §3 process/git signals carry it, which is why they remain the
+   authority.
+3. **Delivery at tool boundaries.** The daemon installs, in each worktree's
+   `.claude/settings.local.json`, a `PostToolUse` hook (and
+   `UserPromptSubmit`) running `tools/harness.py recv --brief --hook`. It asks
+   the broker for the agent's unread messages and prints nothing when there are
+   none (zero tokens), otherwise one line per message ("17 bug from qa-2: ...")
+   which reaches the model after its next tool call. Messages are marked
+   delivered by the broker when the hook (or `recv`) returns them. A long
+   single Bash build delays delivery to the end of that call; acceptable.
+   There is no push into the model and the design does not pretend otherwise.
 
-**Message schema** (`msg.schema.json`, version 1):
+**Names.** An agent's name is stable and role-shaped, not per run: `lead`,
+`architect`, `eng-1..N`, `qa-1..N`, `integrator`, `ci-fixer`,
+`conflict-fixer`, `janitor`, plus `daemon` (the broker's own address) and
+`owner` (the "waits on the owner" mailbox, read by the dashboard). The daemon
+assigns the name at launch (`SONORA_AGENT_NAME`) and records name -> task ->
+run in the store, so a relaunched run for the same task gets the same name and
+therefore the same mailbox. Register is refused if the name is already
+connected (a duplicate is a bug, reported to `lead`); a registration for a
+name the store does not expect is refused. Addressing: `to` is a name, or
+`feature:<f>` / `role:<r>` for the broker to expand to the live names.
 
-    { "v": 1, "id": "<ulid>", "seq": 17, "ts": "...", "from": "...",
-      "to": "...", "feature": "...", "task": "...",
-      "type": "assign|ask|answer|blocked|file_claim|file_release|handoff|"
-              "qa_report|bug|done",
+**Broker duties.**
+
+- Route: stamp `id` (ulid) and a per-recipient `seq`, append to the durable log
+  and the recipient's mailbox, then push to the live connection (if any).
+- Claims: the broker holds the claim table (SQLite, §2) and is the only writer.
+  `claim` is all-or-nothing and atomic in the broker's single event loop: a
+  second claim on a path (or on a path under a claimed directory glob) is
+  refused with the owner's name, and the client must `send` an `ask` to `lead`
+  rather than edit. Claims are released by `release`, on task `qa: pass`, or
+  by the daemon when a run is declared dead after the WIP checkpoint; the
+  relaunched run (same name) inherits them.
+- Heartbeat: a connection with traffic or a protocol `ping` (every 15 s, sent
+  by the MCP server, not by the model) is alive; a closed socket marks the run
+  `suspect` at once and the §3 checks decide dead. Fallback-mode agents rely
+  on §3.
+- Timeouts: an unanswered `ask` after 20 min gets the recommended default
+  appended by the broker (per owner rule) and is answered with it.
+
+**Message schema** (`msg.schema.json`, version 1; also the wire frame body):
+
+    { "v": 1, "id": "<ulid>", "seq": 17, "ts": "...", "from": "eng-2",
+      "to": "qa-2", "feature": "...", "task": "...",
+      "type": "register|assign|ask|answer|blocked|claim|claim_denied|release|"
+              "handoff|qa_report|bug|done|ping|ack",
       "reply_to": "<id>|null", "needs_ack": true,
       "body": { ... type specific ... } }
 
-Types: `assign` (lead to engineer or tester: task, branch, start-from, files,
-accept); `ask` / `answer` (any to lead or architect and back; the lead answers
-within its own turn or relays to the architect; unanswered `ask` after 20 min
-makes the daemon append the recommended default, per owner rule, and answer
-with it); `blocked` (agent cannot proceed, names the blocker; the lead
-reassigns or escalates); `file_claim` / `file_release` (see claims);
-`handoff` (engineer to qa: sub-branch, commit, commands run and printed,
-unverified); `qa_report` (qa to lead and daemon: pass/fail and findings);
-`bug` (qa to engineer: one blocking finding with where and text; the engineer
-returns it fixed in a `handoff`); `done` (final, mirrors `result.json`).
-Unknown types are ignored by agents and logged by the daemon.
+`register` (client to broker: name, token, last_acked_seq; the reply carries
+every unacked message with `seq` above it, which is how a relaunched agent
+gets what it missed); `assign` (lead to eng or qa: task, branch, start-from,
+files, accept); `ask` / `answer` (any to lead or architect and back);
+`blocked` (names the blocker; lead reassigns or escalates); `claim` /
+`claim_denied` / `release` (broker-enforced, above; the request and reply
+share `reply_to`); `handoff` (eng to qa: sub-branch, commit, commands run and
+printed, unverified); `qa_report` (qa to lead and daemon); `bug` (qa to eng:
+one blocking finding with where and text; the engineer returns it fixed in a
+`handoff`); `done` (final, mirrors `result.json`); `ping`/`ack` (transport).
+Unknown types are ignored by agents and logged by the broker.
 
-**Atomic writes and ordering.** A writer creates `inbox/<id>/.tmp.<pid>.<rand>`
-in the same directory, fsyncs, then `os.rename`s to the final name (atomic on
-one filesystem; the daemon verifies at start-up that `.harness/` and the
-worktrees share a volume, else it refuses to start). Readers ignore names
-starting with `.tmp.`. Order is the zero-padded `seq`, allocated per recipient
-under an `O_EXCL` lock-file (`inbox/<id>/.seq.lock`, held for microseconds);
-delivery is at-least-once, handlers are idempotent on `id`. Ack =
-creating `acks/<id>/<msgid>`; the sender or the daemon re-delivers an
-unacked `needs_ack` message after 10 min and, after two, tells the lead.
+**Durable log and mailbox: `.harness/`** (git-ignored, shared with worktrees
+through `SONORA_HARNESS=<abs path>`, plus `SONORA_AGENT_NAME`, `SONORA_TASK`,
+`SONORA_FEATURE`, `SONORA_BROKER=127.0.0.1:<port>` and `SONORA_TOKEN`; none is
+resolved from the cwd, and a client with any of them unset exits non-zero).
 
-**Cheap polling without a background shell.** Agents cannot listen. The
-daemon installs, in each worktree's `.claude/settings.local.json`, a
-`PostToolUse` hook (and `UserPromptSubmit`) that runs
-`tools/harness.py inbox --brief`: it does one `os.scandir` of the agent's
-inbox, prints nothing when empty (zero tokens) and otherwise prints one line
-per new message ("17 bug from qa.t2.1: src/x.cpp:40 ..."), moving it to
-`read/`. A message the agent must obey is thus injected after its next tool
-call, a few seconds later. The role prompts say: before finishing, run
-`harness.py inbox` once more and answer every `needs_ack`; a final `done` is
-refused by the helper while unacked blocking `bug` or `ask` messages exist.
-Hooks fire between tool calls, so a long single Bash build delays delivery to
-the end of that call, which is acceptable. (Assumption: headless `-p` runs
-honour project hooks; see Unverified 6.)
+    .harness/
+      plan/<feature>.plan.json        architect output, read-only after ingest
+      board.json                      task states and claims, daemon only
+      broker.json                     port, pid, start time (no token)
+      mail/<name>/<seq>-<type>-<id>.json   every message addressed to a name
+      mail/<name>/.acked              highest acked seq (atomic rewrite)
+      log/messages.jsonl              append-only, every routed message
+      runs/<run-id>/{stream.log,result.json}
+      events.log                      append-only JSON lines
+      STOP, STOP.NOW                  kill switch (see §5)
 
-**File-claim rules (no two engineers on one file).** Ownership is decided
-three times, from coarse to fine:
+The broker writes the mailbox file (temp file in the same directory, fsync,
+`os.rename`; readers ignore `.tmp.*`) before it pushes or acknowledges the
+send, so a message the sender saw accepted is on disk. Only the broker writes
+`mail/` and `log/`; clients never touch them. Consequences: a dead agent
+relaunched under its name receives everything above its `.acked` on
+`register`; a broker or daemon restart loses nothing, because on start it
+rebuilds the claim table and the per-name `seq` counters from the store and
+the mailbox files and live clients reconnect (the MCP server retries with
+back-off for 60 s, then exits and the run is treated as dead). Delivery is
+at-least-once; handlers are idempotent on `id`. An unacked `needs_ack`
+message is redelivered after 10 min and, after two, reported to `lead`. The
+helper refuses a final `done` while unacked blocking `bug` or `ask` messages
+exist. The daemon verifies at start-up that `.harness/` and the worktrees
+share a volume (rename atomicity) and refuses to start otherwise.
 
-1. Plan time: the daemon rejects overlapping `files` globs across active
-   features and tasks (§4a).
-2. Launch time: the daemon writes the task's globs to `claims/` as `owner:
-   task` entries; a task whose globs hit an existing claim is not launched.
-3. Edit time: an engineer sends `file_claim` for any path outside its globs
-   before editing it (e.g. `CMakeLists.txt`, a shared header). The helper
-   `harness.py claim PATH...` is atomic: it creates `claims/<hash>.json` with
-   `O_EXCL`; on success it returns ok; if the file exists it prints the owner
-   and returns non-zero, and the engineer must send `ask` to the lead (who
-   sequences the two tasks, or assigns the edit to the owner) rather than edit.
-   Claims carry `task`, `agent`, `ts`, `expires`; they are released by
-   `file_release`, on task `qa: pass`, or by the daemon when the run is
-   declared dead after the WIP checkpoint (the relaunched run inherits the
-   claims of its task id). `.claude/settings.local.json` also installs a
-   `PreToolUse` hook on Edit/Write that calls `harness.py check PATH` and
-   denies the edit when the path is claimed by another task: this makes the
-   rule mechanical, not a prompt request. The integrator is the only role
-   allowed to touch claimed files across tasks, after all are `qa: pass`.
+**Auth and exposure.** The broker binds `127.0.0.1` only, never `0.0.0.0`
+(fail at start-up if the bind address is not loopback). A per-run random token
+(32 bytes) is generated at broker start, stored in memory and in the launch
+environment of each child only (never in `broker.json`, the log or a
+committed file); `register` without the token is closed. Names are bound to the
+token's launch record, so a process cannot claim another agent's name. This
+defends against other local users and stray processes, not against a hostile
+process running as the same user, which can read the environment anyway; that
+is outside the threat model of a single-user development laptop.
 
-**Heartbeat sharing.** `runs/<run-id>/beat` is touched by the same hooks (each
-helper call updates it), so the daemon gets a free, accurate activity signal
-in addition to the process/git signals of §3; the §3 checks remain the
-authority because a hung agent also stops touching it. The daemon also writes
-`board.json` each tick so any agent can `harness.py board` to see who has what.
+**Edit-time claim enforcement.** The daemon writes the task's globs as
+claims at launch, and rejects overlapping globs at plan time (§4a), as
+before. At edit time a `PreToolUse` hook on Edit/Write/MultiEdit runs
+`tools/harness.py check PATH`, which asks the broker whether PATH is claimed
+by another name and exits with the hook's deny code if so; an unclaimed path
+outside the task's globs is denied with the message "claim it first", so the
+engineer calls `claim`, and on `claim_denied` sends `ask` to `lead`. The rule is
+mechanical, not a prompt request. If the broker is unreachable, `check`
+denies (fail closed) with a message naming the broker; a git pre-commit hook
+runs the same check as a second line of defence. The integrator is the only
+role allowed to touch claimed files across tasks, after all are `qa: pass`.
 
-**Retention and cleanup.** Messages of a feature move to
-`.harness/archive/<feature>/` on `merged` and are deleted after 7 days by the
-janitor; `claims/` entries are removed with the task; `runs/` logs follow the
-7-day rule of the Consequences; `events.log` rotates at 5 MB. Startup
-reconciliation removes `.tmp.*` files older than 1 hour and claims whose task
-is not in the store.
+**Retention.** Mailbox and log of a feature move to
+`.harness/archive/<feature>/` on `merged` and the janitor deletes them after 7
+days; `events.log` rotates at 5 MB; start-up reconciliation removes `.tmp.*`
+older than 1 hour and claims whose task is not in the store.
 
-**What the fake-claude tests assert** (`tools/fake-claude.py` can read its
-inbox, send, claim and exit on a script): atomicity (a writer killed between
-temp and rename leaves no partial message); ordering and idempotent redelivery
-by `id`; hook-style `inbox --brief` prints nothing when empty and one line per
-message otherwise; two fake engineers claiming the same path: exactly one wins,
-the other receives non-zero and sends `ask`; `PreToolUse` `check` denies a
-foreign edit; a `bug` from a fake qa returns the task to `bugfix` and the
+**What the fake-claude tests assert.** The test double is a fake agent client
+(`tools/fake-claude.py` plus `tools/fake_agent_client.py`) that speaks the real
+protocol over the real loopback socket to a real broker started in the test on
+port 0 (the OS picks the port, so tests never collide); it can register, send,
+receive, claim, and exit on a script. Asserts: register with a bad token or a
+duplicate name is refused; addressed delivery (a message to `qa-2` reaches only
+`qa-2`); per-recipient ordering by `seq` and idempotent redelivery by `id`;
+two fake engineers claiming one path, exactly one wins and the other gets
+`claim_denied` and sends `ask`; `check` denies a foreign edit and denies when
+the broker is down; a killed client's socket close marks the run `suspect`
+and its claims are inherited by the relaunch and freed on `merged`; a
+relaunched client registering with `last_acked_seq` receives exactly the
+missed messages; broker restart mid-run loses no accepted message and
+rebuilds claims; a writer killed between temp and rename leaves no partial
+mailbox file; a `bug` from a fake qa returns the task to `bugfix` and the
 `handoff` returns it to `qa`; an unanswered `ask` gets the default after the
-timeout (clock injected); claims of a killed run are inherited by the
-relaunch and freed on `merged`; `done` is refused with an unacked blocking
-message; the tree has no `.tmp.*` after a crash-and-reconcile; the helper
-fails loudly when `SONORA_HARNESS` is unset; no test touches the network or
-the real `claude`.
+timeout (clock injected); `recv --brief --hook` prints nothing when empty and
+one line per message otherwise; `done` is refused with an unacked blocking
+message; the broker refuses a non-loopback bind; a client with
+`SONORA_BROKER` unset fails loudly. The MCP server gets one protocol test
+(initialize, list tools, call `whoami`) against the same broker. No test uses
+the real `claude` or any non-loopback network.
 
 ### 5. Staffing policy
 
@@ -513,10 +578,15 @@ Each is complete for its layer and tested with a fake `claude`
 `result.json`, optionally exits non-zero, hangs, or writes invalid JSON). None
 spends quota.
 
-- **PR 1, core, heartbeat and messaging.** Also carries `tools/harness.py`
-  (`send`, `inbox --brief`, `claim`, `check`, `board`, `release`), the
-  `.harness/` layout, `msg.schema.json`, the `.gitignore` entry, the hook
-  installer for worktrees and every §4b test. Original scope: `tools/orchestrator.py` with the state store,
+- **PR 1, core, heartbeat and messaging.** Also carries the broker
+  (`tools/harness_broker.py`, run inside the daemon), the clients
+  `tools/harness_mcp.py` and `tools/harness.py` (`whoami`, `send`, `recv`,
+  `claim`, `release`, `check`, `board`), the `.harness/` mailbox and log
+  layout, `msg.schema.json`, the wire protocol, the per-run token, the
+  `.gitignore` entry, the hook installer (PostToolUse, PreToolUse) and
+  `--mcp-config` for worktrees, the fake agent client and every §4b test.
+  Broker, clients and their tests land together: a broker without a client,
+  or claims without the `check` hook, would not work end to end. Original scope: `tools/orchestrator.py` with the state store,
   `advance()` state machine, launch/heartbeat/relaunch, WIP checkpoint,
   retries and `blocked` note, kill switch, dry-run, `status.json`, number
   reservations, `result.schema.json`, `tools/fake-claude.py`,
@@ -589,6 +659,19 @@ doing anything, including remembering to report it.
 - **Agents touch a heartbeat file / report progress.** Depends on the model
   remembering; a stuck agent is exactly the one that forgets. Kept as an
   optional extra signal only.
+- **File-only messaging (inboxes polled by hooks, the first draft of §4b).**
+  Needs no port and survives anything, but no component sees all traffic:
+  claims are `O_EXCL` files with races across volumes, there is no live
+  presence so a dead agent is only found by §3, routing and `seq` allocation
+  sit in every client, and the owner asked for one access point. Kept as the
+  durable layer under the broker, not as the transport.
+- **Unix domain socket.** Filesystem permissions for free, but the dev host is
+  Windows: asyncio has no Unix server there, Git Bash and native Python
+  disagree on paths, and the socket cannot cross WSL/Windows. TCP on loopback
+  with a token works everywhere. Revisit if the harness ever runs only on Linux.
+- **Agent holds the connection through a Bash background process.** Violates
+  the no-background rule and dies with the shell; the MCP server is the
+  supported long-lived tool process.
 - **JSON file with lock.** Reimplements transactions badly; rejected for SQLite.
 - **Resume the dead session (`--resume`) instead of a fresh context.** Cheaper
   in tokens on paper, but a session that died on a corrupt state or a loop
@@ -619,8 +702,28 @@ doing anything, including remembering to report it.
    hooks from the worktree's `.claude/settings.local.json` and that a hook's
    stdout reaches the model. Measurement: one fake task with a hook that
    prints a marker; check the stream. If it does not, fall back to the
-   prompt rule "run `harness.py inbox` after every build or commit" and keep
+   prompt rule "call `harness.py recv` after every build or commit" and keep
    `check` as a git pre-commit hook.
+7. That MCP servers named by `--mcp-config` load in headless `-p` mode, stay
+   up for the whole run, expose tools to a `--agent` whose `tools` list names
+   them (and whether `--allowedTools mcp__harness__*` is needed), and exit
+   with the run. Measurement: a one-turn agent that calls `whoami`; record
+   argv, the stream's tool list and the server's pid before and after. If it
+   fails, `tools/harness.py` over Bash is the client and the live-connection
+   heartbeat is lost (§3 carries it).
+8. Port allocation: that binding port 0 and publishing it through
+   `broker.json` and `SONORA_BROKER` is reliable on the owner's Windows host
+   (firewall prompt, excluded port ranges, Docker or WSL port forwarding for
+   container agents). Measurement: start the broker on port 0 from native
+   Python and connect from Git Bash, WSL and a `docker run --network host`
+   container; record each result. Fall back to a configured fixed port.
+9. Auth: that a token in the child environment is not exposed beyond the
+   same user (process listings on Windows, stream logs echoing env).
+   Measurement: grep `stream.log` and the environment dump of a fake run for
+   the token; the logger must redact it.
+10. Delivery latency and cost: that a `PostToolUse` hook which round-trips to
+    the broker adds under 100 ms per tool call and no tokens when empty.
+    Measurement: time 200 tool calls with and without the hook.
 5. Whether the account's weekly Sonnet quota sustains 17+ continuous agents;
    the `max_runs_per_hour` default is a guess.
 
