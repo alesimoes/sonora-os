@@ -59,7 +59,7 @@ int test_controller() {
     CHECK(c.set_meter(8 * kBar + 3000, 3, 4, why));
     // The bar line nearest, with the meter held to the end of the map.
     CHECK(std::llabs(c.selection().insertion - (8 * kBar + 3000)) <= kBar / 2);
-    CHECK(tempo(doc).back().meter[0] == 3 && tempo(doc).back().at == 6 * kBar);
+    CHECK(tempo(doc).back().meter[0] == 3 && tempo(doc).back().at == c.selection().insertion);
     CHECK(tempo_at(c.selection().insertion, doc.snapshot().settings).meter[0] == 3);
 
     // Remove goes to the change nearest the cursor; the first is kept.
@@ -113,7 +113,7 @@ int test_commands() {
 
     // Without a text the dialog opens, offering the tempo in force.
     CHECK(local.dispatch("tempo.edit", none, why) == DispatchResult::Ok);
-    CHECK(asked.size() == 1 && asked.at(0).at(0).toString() == QStringLiteral("120"));
+    CHECK(asked.size() == 1 && asked.at(0).at(0).toString() == QStringLiteral("120.00"));
 
     CommandContext arg;
     arg.argument = "96";

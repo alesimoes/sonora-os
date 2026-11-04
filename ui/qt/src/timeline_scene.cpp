@@ -616,7 +616,8 @@ void build_tempo_track_scene(const model::SessionSettings& s, const ViewState& v
     const float mid = 0.5f * (hi + lo);
     lo = mid - 0.5f * span;
     hi = mid + 0.5f * span;
-    const double top = 6, room_y = height - 12;
+    // A margin each side for the range labels, so no line runs under them.
+    const double top = 14, room_y = height - 28;
     const auto y_of = [&](float bpm) {
         return std::floor(top + (hi - bpm) / span * room_y);
     };
@@ -626,7 +627,7 @@ void build_tempo_track_scene(const model::SessionSettings& s, const ViewState& v
     const float pin_x = 6;
     out.labels.push_back({pin_x, 1.0f, 60.0f, format_bpm(hi), theme::kTextSecondary,
                           theme::kTextCaption});
-    out.labels.push_back({pin_x, static_cast<float>(height - 1 - theme::kTextCaption - 2), 60.0f,
+    out.labels.push_back({pin_x, static_cast<float>(height - theme::kTextCaption - 1), 60.0f,
                           format_bpm(lo), theme::kTextSecondary, theme::kTextCaption});
 
     double last_label_end = -1e9;

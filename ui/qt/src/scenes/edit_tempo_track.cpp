@@ -15,11 +15,15 @@ const ShotRegistrar registrar{[] {
     s.tempo_map = true;
     s.take = false;
     s.apply = [](ShotContext& c) {
-        const model::Frames bar120 = 2 * static_cast<model::Frames>(
-                                             c.session.controller().snapshot().settings.sample_rate);
-        std::string why;
         c.model.invoke(QStringLiteral("tempo.track"), -1);
-        c.session.controller().ramp_tempo(4 * bar120, 12 * bar120, 120.0f, 84.0f, why);
+        when_open(c, [](ShotContext& c) {
+            auto& ctl = c.session.controller();
+            const model::Frames bar120 = 2 * static_cast<model::Frames>(ctl.snapshot().settings.sample_rate);
+            std::string why;
+            if (!ctl.ramp_tempo(4 * bar120, 12 * bar120, 120.0f, 84.0f, why)) {
+                std::fprintf(stderr, "sonora-ui: the demo tempo ramp: %s\n", why.c_str());
+            }
+        });
     };
     return s;
 }()};

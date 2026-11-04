@@ -150,7 +150,7 @@ int test_meter() {
 
     CHECK(!meter_set_near(m, kRate, 0, 0, 4, at, why));
     CHECK(!meter_set_near(m, kRate, 0, 4, 3, at, why));
-    CHECK(mentions(why, "power") || mentions(why, "over 1, 2, 4"));
+    CHECK(mentions(why, "over 1, 2, 4"));
     return 0;
 }
 
