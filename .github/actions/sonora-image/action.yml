@@ -1,0 +1,45 @@
+name: Sonora image
+description: >
+  Pull ghcr.io/alesimoes/<name>:trixie (built by images.yml) and tag it with
+  the local name the build scripts use. Builds it here, without writing any
+  cache, when the change edits the image's inputs or the pull fails.
+inputs:
+  name:
+    description: Image name, e.g. sonora-build
+    required: true
+  dockerfile:
+    description: Dockerfile path
+    required: true
+  context:
+    description: Docker build context
+    required: true
+  rebuild:
+    description: "'true' when this change touches the image's inputs"
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        CONTEXT: ${{ inputs.context }}
+        REBUILD: ${{ inputs.rebuild }}
+        REMOTE: ghcr.io/alesimoes/${{ inputs.name }}:trixie
+        TOKEN: ${{ github.token }}
+        ACTOR: ${{ github.actor }}
+      run: |
+        if [ "$REBUILD" != true ]; then
+          # Public packages pull anonymously; the login only matters while
+          # a package is still private, and fails harmlessly on fork PRs.
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin || true
+          if docker pull "$REMOTE"; then
+            docker tag "$REMOTE" "$NAME:trixie"
+            exit 0
+          fi
+          echo "::warning::could not pull $REMOTE; building $NAME locally"
+        else
+          echo "This change edits the inputs of $NAME; building it locally."
+        fi
+        docker build --label org.sonora=1 -t "$NAME:trixie" -f "$DOCKERFILE" "$CONTEXT"
