@@ -140,7 +140,9 @@ class DirWorktrees:
     def __init__(self, root):
         self.root = root
 
-    def ensure(self, task_id, branch):
+    def ensure(self, task_id, branch, base=None):
+        self.bases = getattr(self, "bases", {})
+        self.bases[task_id] = base
         p = os.path.join(self.root, "wt", task_id)
         os.makedirs(p, exist_ok=True)
         return p

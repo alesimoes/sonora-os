@@ -18,10 +18,14 @@ offset/limit. Use `tools/progress.sh` (`get ID`, `list --open --track T`).
 
 ## What you do, by event
 
-- **plan_ready**: write `.harness/assignments.json`, one row per plan task:
-  engineer agent (the plan's `agent`, or a better fit for the track), tester,
-  sub-branch `feat/<feature>/<task>`, order, start-from. Then `send` an
-  `assign` to each engineer and tester name. Contract tasks come first;
+- **plan_ready**: write `.harness/plan/<feature>.assignments.json` (schema
+  `planning/orchestrator/assignments.schema.json`), one row per plan task:
+  `engineer` agent (the plan's `agent`, or a better fit for the track),
+  `tester` (always `tester`), `sub_branch` exactly `sub/<feature>/<task>`,
+  `order` (unique, after its dependencies), `start_from` (the feature branch,
+  or the sub-branch of a task it depends on). The daemon validates the table,
+  creates the tasks, names the engineers and sends each `assign`; an invalid
+  table is rejected with the reasons and you are relaunched. Contract tasks come first;
   dependants start from the contract's sub-branch.
 - **task_done / qa_fail**: reorder or reassign only if the table is now wrong.
   Say nothing when it is not.

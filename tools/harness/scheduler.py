@@ -12,6 +12,7 @@ except ImportError:  # Python < 3.11
     tomllib = None
 
 HARD_CAP = 20
+HOLD = 1e18   # not_before of a task held back until another feature merges
 # Priority classes, lowest number first: fix > tester > integrator > engineer
 # (below its track floor) > lead/architect > burst engineer.
 P_FIX, P_TESTER, P_INTEGRATOR, P_ENGINEER, P_PLANNER, P_BURST = range(6)
@@ -52,6 +53,7 @@ class Config:
     max_integrators: int = 1
     max_open_prs: int = 10
     max_ready_unpr: int = 6
+    max_active_features: int = 10   # features planned or built at once
     local_builds: int = field(default_factory=default_local_builds)
     max_runs_per_hour: int = 60
     max_turns: int = 80
@@ -177,6 +179,12 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
     for t in tasks:
         kind = "planner" if t["kind"] == "wake" and t["state"] == "queued" \
             else KIND_OF_STATE.get(t["state"]) if t["kind"] == "work" else None
+        if kind == "engineer" and t["not_before"] >= HOLD:
+            # Waits for another feature: not launchable, but not a gap that
+            # should wake the lead either.
+            eligible_by_track[t["track"]] = \
+                eligible_by_track.get(t["track"], 0) + 1
+            continue
         if kind is None or not ready(t):
             continue
         if kind in ("fixer", "integrator"):

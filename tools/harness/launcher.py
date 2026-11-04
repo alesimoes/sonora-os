@@ -184,16 +184,22 @@ class GitWorktrees:
         return os.path.join(self.root, ".claude", "worktrees",
                             re.sub(r"[^\w.-]", "_", task_id))
 
-    def ensure(self, task_id, branch):
+    def _exists(self, ref):
+        return subprocess.run(
+            ["git", "-C", self.root, "rev-parse", "--verify", "-q", ref],
+            capture_output=True).returncode == 0
+
+    def ensure(self, task_id, branch, base=None):
+        """`base` is where a new branch starts (a contract's sub-branch for a
+        dependant); a base that does not exist yet falls back to main."""
         wt = self.path(task_id)
         if os.path.isdir(wt):
             return wt
         os.makedirs(os.path.dirname(wt), exist_ok=True)
-        exists = subprocess.run(
-            ["git", "-C", self.root, "rev-parse", "--verify", "-q", branch],
-            capture_output=True).returncode == 0
+        start = base if base and self._exists(base) else self.base
         cmd = ["git", "-C", self.root, "worktree", "add"]
-        cmd += [wt, branch] if exists else ["-b", branch, wt, self.base]
+        cmd += [wt, branch] if self._exists(branch) \
+            else ["-b", branch, wt, start]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode:
             raise RuntimeError("git worktree add: " + r.stderr.strip())

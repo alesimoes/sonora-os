@@ -32,6 +32,8 @@ NUMBER_KINDS = ("adr", "protocol", "format", "window")
 MIGRATIONS = (
     ("tasks", "integrated", "INTEGER DEFAULT 0"),
     ("tasks", "fix_kind", "TEXT"),
+    ("tasks", "event", "TEXT"),
+    ("tasks", "start_from", "TEXT"),
     ("features", "fixes", "INTEGER DEFAULT 0"),
     ("features", "job_reds", "TEXT DEFAULT '{}'"),
 )

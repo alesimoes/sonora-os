@@ -631,6 +631,25 @@ lines into `queued` tasks on start (and on `orchestrator.py import`), and
 afterwards the database is the truth, with AGENT-QUEUE regenerated read-only
 from it so existing habits keep working.
 
+`status.json` schema as the local dashboard (`renderOrch` in
+`tools/dashboard.html`) parses it; every field it does not read is additive:
+
+- `updated`: ISO local time string (the panel prints its first 19 chars);
+  `updated_ts` the epoch seconds.
+- `pools`: object `{name: {floor, live, working, paused, reason?}}`; the
+  panel draws `working` against `floor`. Names: `fix`, `qa`, `merge`,
+  `build`, `plan` (floor 0) and `build:<track>` (the track floors).
+- `features`: array of `{name, id, track, state, pr, tasks[], tasks_done,
+  tasks_total, fixes, adr, protocol, partial, age, blocked_reason}`. The panel
+  shows `name`, `state`, the PR link and one cell per `tasks[]` entry, coloured
+  from `tasks[].state` by regex (done|ok|merged|x|feito, block|wait|fail|red,
+  doing|work|run|progress|building). Raw states such as `ci_fix` and `bugfix`
+  contain an `x`, so `tasks[].state` is one of `queued building working done
+  red blocked` and the real state is `tasks[].stage` (also `agent`,
+  `engineer`, `attempts`, `bounces`).
+- `waits_on_owner`: array of `{title, task, branch, note}`; the panel prints
+  `title`.
+
 ### 7. Implementation plan: PR 0 spike, then three end-to-end PRs, then shadow mode
 
 Each PR is complete for its layer and tested with a fake `claude`
@@ -674,6 +693,54 @@ spends quota.
   `tools/dashboard.py`, a start-up snippet. PRs 1 and 2 wrap every item in a
   one-task feature so the schema does not change. Tests: lead output creates
   assignments; the invariant report; adopting runs after a daemon restart.
+- **PR 3 as built.** `harness/plans.py` (validators; the schema files
+  `planning/orchestrator/plan.schema.json` and `assignments.schema.json` are
+  read by a subset validator so the schema is the only copy of the shape),
+  `harness/flow.py` (feature flow), `harness/queueimport.py`,
+  `harness/shadow.py`. Deviations from the text of 4a, all forced by git or by
+  several features running at once:
+  - Sub-branches are `sub/<feature>/<task>`, not `feat/<feature>/<task>`: git
+    cannot hold the refs `feat/f` and `feat/f/t1` together.
+  - Plan and table live per feature: `.harness/plan/<feature>.plan.json` and
+    `<feature>.assignments.json` (one shared `assignments.json` cannot serve
+    two features). The accepted plan is copied to
+    `planning/orchestrator/plans/<feature>.plan.json` (git-ignored state).
+  - The daemon creates the tasks (`<feature>.<task>`) when the lead's table is
+    valid, names the engineers (`eng_name`, written back into the table as
+    `engineer_name`) and sends each `assign`. `start_from` becomes the base
+    of the task's worktree branch; a base that does not exist yet falls back
+    to main. A plan with `depends_on_feature` creates its tasks held
+    (`not_before` = HOLD) until that feature is `merged`.
+  - A plan may set `reserved.adr`/`protocol` to null (not needed) but never to
+    a number other than the one the daemon reserved for the feature; formats
+    must be a subset of the reserved ones. Feature requests are reserved under
+    the owner `feature:<id>` when planning opens (`wants`, default `adr`).
+  - Wake runs (kind `wake`, role architect/lead) carry `event`, the feature and
+    the replayed channel log (`.harness/log/messages.jsonl` filtered by
+    feature, last 80 messages) in their prompt. A wake whose file is invalid
+    is relaunched with the reasons as its note; after `max_attempts` the wake
+    and the feature are `blocked` and listed in `waits-on-owner.md`. Lead
+    wakes for `task_done`, `qa_fail`, `agent_dead` fire only for features that
+    have a plan; `pool_under_floor` and `bug_ruling` are unchanged. A lead's
+    `plan_request` message to the daemon (answer to `pool_under_floor`)
+    becomes a `queued` feature, out-of-v1 ids refused.
+  - `queued` features are promoted to `planning` in queue order while fewer
+    than `max_active_features` (10) are planning or being built, and not
+    before a feature named in their "Waits on" has merged. Dry-run never
+    promotes (it logs `dry_run_promote`).
+  - `orchestrator.py import-queue PATH [--wants adr,protocol]` creates one
+    feature per V1 row of `planning/AGENT-QUEUE.md` (the table `Order | Item |
+    Agent | Waits on`); rows naming MIDI, video, immersive, surround or
+    instruments are skipped; re-running it adds nothing.
+  - Adoption: on start the daemon keeps every active run whose pid is alive,
+    tells the new broker their names and lets `_poll_runs` finish them by pid
+    and `result.json`; a dead one is relaunched under the same name. Limit: a
+    client connected to the old broker cannot reconnect (the broker port and
+    token are per start), so an adopted run reports through `result.json`
+    only.
+  - Feature state is derived each tick from its tasks: `planning` (plan
+    requested), `distributing` (plan accepted, table pending), `building`,
+    `qa`, `integrating`; PR 2 owns `pr_open`, `ci_fix`, `merged`, `blocked`.
 - **Shadow-mode rollout (configuration, not a PR).** The daemon runs
   `--dry-run` beside the in-session coordinator and must log the same launch
   decisions for a day (differences are read and either fixed or accepted by

@@ -19,8 +19,10 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import heartbeat, launcher, numbers, scheduler, status  # noqa: E402
+from harness import (heartbeat, launcher, numbers, scheduler, shadow,  # noqa: E402
+                     status)
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
+from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge  # noqa: E402
 from harness.store import Store  # noqa: E402
 
@@ -35,7 +37,7 @@ def make_broker(root):
 class Orchestrator:
     def __init__(self, root, cfg=None, broker=None, dry_run=True,
                  fake_claude=None, clock=time.time, worktrees=None,
-                 seed_fn=None, log=None, forge=None):
+                 seed_fn=None, log=None, forge=None, shadow_agents=None):
         self.root = os.path.abspath(root)
         self.cfg = cfg or scheduler.load_config(
             os.path.join(self.root, "planning", "orchestrator",
@@ -62,6 +64,12 @@ class Orchestrator:
         self.usage_pause_until = 0.0
         self.dry_logged = set()
         self.last_gaps = {}
+        self.flow = Flow(self)
+        self.shadow = None
+        if shadow_agents:   # shadow rollout: never launches, only compares
+            self.dry_run = True
+            self.shadow = shadow.Shadow(self._p("shadow.log"), shadow_agents,
+                                        clock)
 
     # -- paths / switches ---------------------------------------------
     def _p(self, name):
@@ -103,17 +111,19 @@ class Orchestrator:
                 if msg.get("type") == "done":
                     self.done_msgs[r["id"]] = (self.clock(),
                                                msg.get("body"))
+                elif msg.get("type") == "plan_request" and                         r["role"] == "planner":
+                    self.flow.on_proposal(msg.get("body"), name)
 
-    def _tell(self, to, type, body):
+    def _tell(self, to, type, body, feature=None, task=None):
         if self.dry_run:
             return
         try:
-            self.broker.tell(to, type, body)
+            self.broker.tell(to, type, body, feature=feature, task=task)
         except Exception as e:  # a lost note must not stop the daemon
             self.log(f"tell {to} {type} failed: {e}")
 
     def _open_channel(self, t, name):
-        members = {name, "lead"}
+        members = {name, "lead", "architect"}
         for o in self.store.tasks():
             if o["feature_id"] == t["feature_id"]:
                 members.update(x for x in (o["eng_name"], o["cur_name"]) if x)
@@ -148,6 +158,7 @@ class Orchestrator:
         self._poll_runs(now)
         self._open_pending_prs(now)
         self._watch_prs(now)
+        self.flow.tick(now)
         paused = self.paused()
         runs = self._enriched_runs(now)
         plan = scheduler.plan(
@@ -156,6 +167,9 @@ class Orchestrator:
             hour_budget=self.cfg.max_runs_per_hour
             - self.store.runs_started_since(now - 3600))
         self.last_gaps = plan.gaps
+        if self.shadow:
+            self.shadow.record(self.store.tasks(), plan.launches,
+                               self.cfg.floors)
         for role, kind, detail in plan.wakes:
             self._ensure_wake(role, kind, detail)
         if not stop_now:
@@ -252,7 +266,10 @@ class Orchestrator:
                 t["branch"], t["worktree"] = fb, wt
                 self.store.set_task(t["id"], worktree=wt)
             elif t["kind"] == "work":
-                wt = self.worktrees.ensure(t["id"], t["branch"])
+                wt = self.worktrees.ensure(
+                    t["id"], t["branch"],
+                    **({"base": t["start_from"]} if t.get("start_from")
+                       else {}))
                 self.store.set_task(t["id"], worktree=wt)
                 t["worktree"] = wt
             else:
@@ -295,13 +312,26 @@ class Orchestrator:
             return f["branch"]
         return tasks[0]["branch"] if len(tasks) == 1 else f"feat/{fid}"
 
+    def _merge_order(self, fid):
+        tasks = self._feature_tasks(fid)
+        try:
+            order = json.loads(self.store.get_meta(f"merge_order:{fid}", "[]"))
+        except ValueError:
+            order = []
+        pos = {f"{fid}.{n}": i for i, n in enumerate(order)}
+        return sorted(tasks, key=lambda x: pos.get(x["id"], len(pos)))
+
     def _feature_key(self, fid):
         """Worktree key: a lone task integrates in its own worktree (git
         allows a branch in one worktree only)."""
         tasks = self._feature_tasks(fid)
-        return tasks[0]["id"] if len(tasks) == 1 else f"feature-{fid}"
+        if len(tasks) == 1 and not self.flow.is_planned(fid):
+            return tasks[0]["id"]
+        return f"feature-{fid}"
 
     def _extra(self, t, kind):
+        if t["kind"] == "wake":
+            return self.flow.wake_context(t)
         nums = [f"{r['kind']}={r['number']}" for r in self.store.reservations()
                 if r["task_id"] == t["id"]]
         extra = ("reservations: " + " ".join(nums)) if nums else ""
@@ -312,7 +342,7 @@ class Orchestrator:
                 "keeping both sides' intent, rerun the narrow tests, commit. "
                 "Do not push, open or merge a PR: the daemon does.")
         elif kind == "integrator":
-            subs = [x["branch"] for x in self._feature_tasks(t["feature_id"])]
+            subs = [x["branch"] for x in self._merge_order(t["feature_id"])]
             extra += (
                 "\nIntegrator run for feature %s on branch %s. Merge the "
                 "sub-branches in this order: %s (skip any already merged). "
@@ -435,7 +465,10 @@ class Orchestrator:
         self.store.event(t["id"], "run_failed", f"{why} (#{n})")
         if n > self.cfg.max_attempts:
             self._block(t, f"{why}; {self.cfg.max_attempts} relaunches spent")
-            self._tell("lead", "agent_dead", {"task": t["id"], "why": why})
+            self._tell("lead", "agent_dead", {"task": t["id"], "why": why},
+                       feature=t.get("feature_id"), task=t["id"])
+            if t["kind"] == "work":
+                self._lead_event("agent_dead", t)
             return
         back = self.cfg.backoff_s[min(n - 1, len(self.cfg.backoff_s) - 1)]
         self.store.set_task(t["id"], attempts=n, not_before=now + back)
@@ -444,6 +477,7 @@ class Orchestrator:
         self._release(t)
         if t["kind"] == "wake":
             self.store.set_task(t["id"], state="blocked", note=why)
+            self.flow.on_wake_blocked(self.store.get_task(t["id"]))
         else:
             self.store.advance(t["id"], "blocked", note=why)
         with open(self._p("waits-on-owner.md"), "a", encoding="utf-8") as f:
@@ -461,10 +495,19 @@ class Orchestrator:
             self._block(t, data.get("summary", "blocked by agent"))
             return
         if t["kind"] == "wake":
-            if st == "done":
-                self.store.set_task(t["id"], state="merged")
-            else:
+            if st != "done":
                 self._count_failure(t, "planner run failed", now)
+                return
+            ok, errs = self.flow.on_wake_done(t)
+            if ok:
+                self.store.set_task(t["id"], state="merged")
+                return
+            # An invalid plan or table is never obeyed: the same role is
+            # relaunched with the reasons in front of it.
+            self.store.set_task(t["id"], note=(
+                "Your previous file was rejected by the daemon; fix every "
+                "point and write it again:\n- " + "\n- ".join(errs[:12])))
+            self._count_failure(t, f"invalid file: {errs[0]}", now)
             return
         if kind == "tester":
             blocking = [f for f in data.get("findings", [])
@@ -480,7 +523,9 @@ class Orchestrator:
             return
         if kind == "engineer":
             self.store.advance(t["id"], "qa")
-            self._tell("lead", "task_done", {"task": t["id"]})
+            self._tell("lead", "task_done", {"task": t["id"]},
+                       feature=t["feature_id"], task=t["id"])
+            self._lead_event("task_done", t)
         elif kind in ("integrator", "fixer"):
             if t["state"] == "integrating":
                 self._integrated(t, data, now)
@@ -678,25 +723,56 @@ class Orchestrator:
             self._block(t, "third bounce: owner decision")
             return
         self.store.advance(t["id"], "bugfix")
-        self._tell("lead", "qa_fail", {"task": t["id"], "bounces": n})
+        self._tell("lead", "qa_fail", {"task": t["id"], "bounces": n},
+                   feature=t["feature_id"], task=t["id"])
+        self._lead_event("qa_fail", t)
         if n == 2:
-            self._ensure_wake("architect", "bug_ruling", t["id"])
+            self._ensure_wake("architect", "bug_ruling", t["id"],
+                              feature=t["feature_id"])
 
-    def _ensure_wake(self, role, kind, detail, brief=None):
+    def _ensure_wake(self, role, kind, detail, brief=None, feature=None,
+                     body=None):
         prefix = f"wake-{role}-{kind}-{detail}"
         for w in self.store.tasks(kind="wake"):
             if w["id"].startswith(prefix) and w["state"] in ("queued",
                                                              "blocked"):
                 return
         n = self.store.next_counter("wake")
-        self.store.add_task(f"{prefix}-{n}", None, role, kind="wake",
+        wid = f"{prefix}-{n}"
+        self.store.add_task(wid, None, role, kind="wake", feature_id=feature,
                             brief=brief or f"event {kind}: {detail}")
-        self._tell(role, kind, {"detail": detail})
+        self.store.set_task(wid, event=kind)
+        self._tell(role, kind, body or {"detail": detail}, feature=feature)
+
+    def _lead_event(self, kind, t):
+        """Wake the lead for a task of a planned feature (ADR-0047 4a)."""
+        fid = t.get("feature_id")
+        if fid and self.flow.is_planned(fid):
+            self._ensure_wake("lead", kind, t["id"], feature=fid,
+                              body={"task": t["id"]})
 
     # -- loop ---------------------------------------------------------
+    def adopt_runs(self):
+        """After a daemon restart the claude processes of the previous
+        daemon are still running. They stay in the store as active runs and
+        _poll_runs watches them by pid and result file, so nothing is
+        launched twice. The new broker is told their names; their mailboxes
+        are on disk. A client that connected to the old broker cannot
+        reconnect (new port and token) and finishes on result.json alone."""
+        adopted = []
+        for r in self.store.active_runs():
+            if launcher.pid_alive(r["pid"]):
+                self.broker.expect(r["name"])
+                self.store.set_run(r["id"], last_beat=self.clock(),
+                                   suspect=0)
+                self.store.event(r["task_id"], "adopted", r["id"])
+                adopted.append(r["id"])
+        return adopted
+
     def run(self, once=False, max_ticks=None, exit_when_drained=False,
             sleep=time.sleep):
         self.broker.start()
+        self.adopt_runs()
         n = 0
         try:
             while True:
@@ -728,6 +804,13 @@ def main(argv=None):
     r.add_argument("--once", action="store_true")
     r.add_argument("--exit-when-drained", action="store_true")
     r.add_argument("--no-broker", action="store_true")
+    r.add_argument("--shadow", action="store_true",
+                   help="dry run that logs differences from the live agents")
+    r.add_argument("--shadow-agents",
+                   help="JSON file of the agents the coordinator runs")
+    q = sub.add_parser("import-queue")
+    q.add_argument("path")
+    q.add_argument("--wants", default="adr")
     for c in ("status", "drain", "stop", "resume"):
         sub.add_parser(c)
     p = sub.add_parser("pause")
@@ -785,11 +868,22 @@ def main(argv=None):
             depends_on=[x for x in args.depends_on.split(",") if x],
             wants=[x for x in args.wants.split(",") if x])
         o.close()
+    elif args.cmd == "import-queue":
+        o = Orchestrator(root)
+        with open(args.path, encoding="utf-8") as f:
+            made = o.flow.import_queue(
+                f.read(), wants=[x for x in args.wants.split(",") if x])
+        o.close()
+        print(f"imported {len(made)} feature(s): {', '.join(made)}")
     elif args.cmd == "run":
+        if args.shadow and not args.shadow_agents:
+            ap.error("--shadow needs --shadow-agents FILE")
         try:
             broker = NullBroker() if args.no_broker else make_broker(root)
             o = Orchestrator(root, broker=broker, dry_run=not args.live,
                              fake_claude=args.fake_claude,
+                             shadow_agents=args.shadow_agents
+                             if args.shadow else None,
                              log=lambda m: print(m, flush=True))
         except launcher.ModelError as e:
             print(f"orchestrator: refusing to start: {e}", file=sys.stderr)
