@@ -310,17 +310,21 @@ class GhForge(Forge):
                 r = self.run(["gh", "api", "--allow-escape-sequences",
                               f"repos/{{owner}}/{{repo}}/actions/jobs/"
                               f"{j['id']}/logs"], self.root, 120)
-                lines = []
+                lines, recent, tail = [], [], []
                 for ln in (r.stdout or "").splitlines():
                     ln = re.sub(r"\x1b\[[0-9;]*m", "", ln)
                     ln = re.sub(r"^\S+Z ", "", ln).strip()
+                    if ln.startswith("##[error]"):
+                        tail = recent[-10:]   # what the failing step printed
+                    if ln and not ln.startswith("##["):
+                        recent.append(ln[:240])
                     if self.FAIL_LINE.search(ln) and \
                             not ln.startswith(("echo ", "+ echo")) and \
                             "Process completed with exit code" not in ln:
                         lines.append(ln[:240])
                 out.append(f"[{j['name']}]")
-                out += lines[-per_job:] or ["(no error line found; read "
-                                            "the log)"]
+                out += lines[-per_job:] or tail or [
+                    "(no error line found; read the log)"]
         return "\n".join(out[:60])
 
     def contains(self, worktree, branch):
