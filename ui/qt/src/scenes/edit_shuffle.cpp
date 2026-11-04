@@ -20,8 +20,7 @@ const ShotRegistrar registrar{[] {
         const auto second = c.playlist->regions[1].id;
         c.model.invoke(QStringLiteral("edit.mode.shuffle"), -1);
         c.session.controller().select_region(second);
-        if (!c.model.invoke(QStringLiteral("edit.cut"), -1))
-            std::fprintf(stderr, "sonora-ui: shuffle: %s\n", qPrintable(c.model.statusText()));
+        c.model.invoke(QStringLiteral("edit.cut"), -1);
         c.model.invoke(QStringLiteral("zoom.fit_session"), -1);
     }); };
     return s;

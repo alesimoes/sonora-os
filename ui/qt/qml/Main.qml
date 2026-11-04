@@ -1714,10 +1714,12 @@ Rectangle {
             problem = ""
             visible = true
             forceActiveFocus()
+            root.shell.setTextEntry(true)
         }
         function close() {
             visible = false
             focus = false
+            root.shell.setTextEntry(false)
         }
         function choose(argument) {
             if (root.shell.invokeWith(track >= 0 ? "track.colour" : "region.colour", track, argument))
@@ -1804,7 +1806,7 @@ Rectangle {
                     objectName: "paletteClose"
                     text: "Close"
                     implicitHeight: 24
-                    onClicked: colourPalette.visible = false
+                    onClicked: colourPalette.close()
                 }
             }
         }

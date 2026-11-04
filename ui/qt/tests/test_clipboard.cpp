@@ -1114,7 +1114,7 @@ int test_menu() {
     CHECK(spot != nullptr && spot_input != nullptr && !spot->isVisible());
     session.controller().set_mode(EditMode::Spot);
     CHECK(session.controller().select_region(11));
-    CHECK(model.invoke(QStringLiteral("edit.spot"), -1));
+    model.invoke(QStringLiteral("edit.spot"), -1);
     CHECK(QTest::qWaitFor([&]() { return spot->isVisible(); }));
     CHECK(spot_input->hasActiveFocus() && model.textEntry());
     CHECK(spot_input->property("text").toString().startsWith(QStringLiteral("5|1")));

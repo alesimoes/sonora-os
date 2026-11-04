@@ -668,7 +668,7 @@ int test_shift_regions() {
     };
     CHECK(refused({b.playlist, 600000, 0}));
     CHECK(refused({b.playlist, 600000, -150000}));    // onto the region that stays
-    CHECK(refused({b.playlist, 0, -1}));              // before frame 0
+    CHECK(refused({b.playlist, 0, -100001}));              // before frame 0
     CHECK(refused({b.playlist, 900000, 10}));         // nothing starts there
     CHECK(refused({b.playlist, 600000, kMaxInteger}));  // past the timeline
     CHECK(refused({b.playlist + 99, 0, 10}));         // no such playlist

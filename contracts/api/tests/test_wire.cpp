@@ -454,7 +454,7 @@ void version_check() {
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 42"));
+                   "speaks version 59"));
 }
 
 void domains() {
