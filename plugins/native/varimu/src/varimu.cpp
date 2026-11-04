@@ -32,7 +32,7 @@ const ParamInfo kParams[kParamCount] = {
     {"iron", "Output transformer", Unit::Percent, Taper::Linear, 0.0f, 100.0f, 0.0f, 20.0f, true, false, false, "%.0f %%", nullptr, 0},
     {"mix", "Mix", Unit::Percent, Taper::Linear, 0.0f, 100.0f, 100.0f, 20.0f, true, false, false, "%.0f %%", nullptr, 0},
     {"external_sc", "External key", Unit::Toggle, Taper::Stepped, 0.0f, 1.0f, 0.0f, 0.0f, false, false, true, "%.0f", kOffOn, 2},
-    {"quality", "Quality", Unit::Choice, Taper::Stepped, 0.0f, 2.0f, 1.0f, 0.0f, false, true, false, "%.0f", kQualities, 3},
+    {"quality", "Quality", Unit::Choice, Taper::Stepped, 0.0f, 2.0f, 0.0f, 0.0f, false, true, false, "%.0f", kQualities, 3},
 };
 
 const Descriptor kDesc = {"org.sonora.varimu", "Sonora Vari-Mu", "Dynamics", 1, kParams, kParamCount, 1, 2, true};
@@ -109,24 +109,28 @@ protected:
         latency_ = 0;
         if (factor_ > 1) {
             const double passband = std::fmin(0.4535, 20000.0 / sample_rate());
-            if (!os_.prepare(factor_, chs, max_frames(), passband)) return false;
+            // Channels chs..2 chs-1 up-sample the key, for the detector.
+            if (!os_.prepare(factor_, 2 * chs, max_frames(), passband)) return false;
             latency_ = os_.latency();
         }
         set_latency(latency_);
         for (std::uint32_t c = 0; c < chs; ++c) {
             dry_[c].prepare(latency_ + 1);
             xin_[c].assign(max_frames(), 0.0f);
-            gain_[c].assign(max_frames(), 1.0);
+            key_[c].assign(max_frames(), 0.0f);
+            gain_[c].assign(static_cast<std::size_t>(max_frames()) * factor_, 1.0);
             buf_[c].assign(factor_ == 1 ? max_frames() : 0, 0.0);
         }
         wet_.assign(max_frames(), 0.0f);
         out_gain_.assign(max_frames(), 1.0);
+        scale_.assign(max_frames(), 1.0);
+        link_.assign(max_frames(), 1.0);
         iron_.assign(max_frames(), 0.0);
         mix_.assign(max_frames(), 1.0);
         const double fs = sample_rate();
         a_flux_ = 1.0 - std::exp(-dsp::kTwoPi * kFluxHz / fs);
         a_prim_ = 1.0 - std::exp(-dsp::kTwoPi * kPrimaryHz / fs);
-        a_rip_ = 1.0 - std::exp(-dsp::kTwoPi * kRippleHz / fs);
+        a_rip_ = 1.0 - std::exp(-dsp::kTwoPi * kRippleHz / (fs * factor_));
         a_dc_ = 1.0 - std::exp(-dsp::kTwoPi * kDcHz / fs);
         gin_db_ = thr_db_ = out_db_ = 1e9;
         update_times();
@@ -164,10 +168,9 @@ protected:
                 out_gain_[k] = cached_gain(smoother(kOutput).next(), out_db_, outg_);
                 iron_[k] = smoother(kIron).next() * 0.01;
                 mix_[k] = smoother(kMix).next() * 0.01;
-                const double scale = kRho / thr;
+                scale_[k] = kRho / thr;
+                link_[k] = link;
 
-                double r[kMaxCh];
-                double rmax = 0.0;
                 for (std::uint32_t c = 0; c < chs; ++c) {
                     Channel& s = ch_[c];
                     const double x = keyed ? sc[c][k] : in[c][k] * gin;
@@ -175,10 +178,35 @@ protected:
                     s.hp1 += a_hpf_ * (x - s.hp1);
                     const double h1 = x - s.hp1;
                     s.hp2 += a_hpf_ * (h1 - s.hp2);
-                    const double key = x + hpw * ((h1 - s.hp2) - x);
-                    r[c] = std::fabs(key);
-                    if (r[c] > rmax) rmax = r[c];
+                    key_[c][k] = static_cast<float>(x + hpw * ((h1 - s.hp2) - x));
                     xin_[c][k] = static_cast<float>(in[c][k] * gin);
+                }
+            }
+        }
+
+        // The detector runs at the oversampled rate. Rectified at the base
+        // rate, a tone near fs/4 is sampled at its peaks' own beat: |x| has
+        // harmonics at 2f, 4f, ..., and 4f folded into the control band
+        // (measured -89.1 dBc at 44.1 kHz, 10 kHz tone; a second ripple pole
+        // after the rectifier did nothing, -89.3, since the fold happens at
+        // the sampling; a peak held across two sub-samples fixed 10 kHz,
+        // -102, but not 12 kHz, -89.0). The key goes through the same
+        // up-sampling filter as the signal, so the two stay aligned.
+        const double* ky[kMaxCh] = {};
+        if (f > 1)
+            for (std::uint32_t c = 0; c < chs; ++c) ky[c] = os_.up(chs + c, key_[c].data(), frames);
+        {
+            const std::uint32_t total = frames * f;
+            for (std::uint32_t n = 0; n < total; ++n) {
+                const std::uint32_t k = n / f;
+                const double scale = scale_[k];
+                const double link = link_[k];
+                double r[kMaxCh];
+                double rmax = 0.0;
+                for (std::uint32_t c = 0; c < chs; ++c) {
+                    const double m = f > 1 ? std::fabs(ky[c][n]) : std::fabs(static_cast<double>(key_[c][k]));
+                    r[c] = m;
+                    if (m > rmax) rmax = m;
                 }
                 for (std::uint32_t c = 0; c < chs; ++c) {
                     Channel& s = ch_[c];
@@ -198,7 +226,7 @@ protected:
                     const double z = s.rip * scale;
                     const double u = kUCeiling * z / (1.0 + z);
                     const double v = 1.0 - u;
-                    gain_[c][k] = v * std::sqrt(v);
+                    gain_[c][n] = v * std::sqrt(v);
                 }
             }
         }
@@ -212,23 +240,16 @@ protected:
                 y = buf_[c].data();
                 for (std::uint32_t k = 0; k < frames; ++k) y[k] = xin_[c][k];
             }
-            double g0 = s.gprev;
-            for (std::uint32_t k = 0; k < frames; ++k) {
-                const double g1 = gain_[c][k];
-                const double k2 = kK2Rest + kK2Reduction * (1.0 - g1);
-                for (std::uint32_t j = 0; j < f; ++j) {
-                    // The gain moves in a ramp across the base-rate step.
-                    const double g = g0 + (g1 - g0) * static_cast<double>(j + 1) / static_cast<double>(f);
-                    // The grid swing is bounded first (smoothly, so the cubic
-                    // below never turns over on a hot input), then the curve.
-                    const double raw = y[k * f + j] / kCellRail;
-                    const double r2 = raw * raw;
-                    const double x = y[k * f + j] / std::sqrt(std::sqrt(1.0 + r2 * r2));
-                    y[k * f + j] = g * (x + k2 * x * x - kK3 * x * x * x);
-                }
-                g0 = g1;
+            for (std::uint32_t n = 0; n < frames * f; ++n) {
+                const double g = gain_[c][n];
+                const double k2 = kK2Rest + kK2Reduction * (1.0 - g);
+                // The grid swing is bounded first (smoothly, so the cubic
+                // below never turns over on a hot input), then the curve.
+                const double raw = y[n] / kCellRail;
+                const double r2 = raw * raw;
+                const double x = y[n] / std::sqrt(std::sqrt(1.0 + r2 * r2));
+                y[n] = g * (x + k2 * x * x - kK3 * x * x * x);
             }
-            s.gprev = g0;
             if (f > 1) os_.down(c, wet_.data(), frames);
             for (std::uint32_t k = 0; k < frames; ++k) {
                 double w = f > 1 ? static_cast<double>(wet_[k]) : y[k];
@@ -261,7 +282,8 @@ private:
         long t = std::lround(value(kTimeConstant));
         t = t < 0 ? 0 : (t > 5 ? 5 : t);
         const Times& tm = kTimeTable[t];
-        const double fs = sample_rate();
+        // The networks run at the oversampled rate (the detector's).
+        const double fs = sample_rate() * factor_;
         a_att_ = 1.0 - std::exp(-1.0 / (tm.attack * fs));
         a_rel1_ = 1.0 - std::exp(-1.0 / (tm.fast * fs));
         slow_ = tm.slow > 0.0;
@@ -275,7 +297,8 @@ private:
     dsp::Oversampler os_;
     Channel ch_[kMaxCh];
     dsp::DelayLine dry_[kMaxCh];
-    std::vector<float> xin_[kMaxCh];
+    std::vector<float> xin_[kMaxCh], key_[kMaxCh];
+    std::vector<double> scale_, link_;
     std::vector<double> gain_[kMaxCh];
     std::vector<double> buf_[kMaxCh];
     std::vector<float> wet_;

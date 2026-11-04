@@ -483,7 +483,7 @@ void cpu_qualities(Suite& s, const Config& golden) {
 
 measure::Config varimu_golden_config() {
     // No quality: it reconfigures, so the golden renders at the default
-    // (standard) and only the host fixture's reconfigure case moves it.
+    // (eco) and only the host fixture's reconfigure case moves it.
     return {{"input", 3.0f}, {"threshold", -24.0f}, {"time_constant", 4.0f}, {"sc_hpf_on", 1.0f},
             {"iron", 40.0f}, {"output", 1.0f},  {"mix", 90.0f}};
 }
