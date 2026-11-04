@@ -2259,7 +2259,7 @@ not start or extend those items before the Complete DAW closes (owner,
       check per defect found so far. `tools/test-boot-qemu.sh`.
 - [x] A way to watch it boot by hand: `tools/run-qemu.sh`, going through the
       real bootloader with the shipped command line.
-- [ ] bext OriginationDate/OriginationTime: `WavWriter` leaves both zero
+- [x] (#16, 90742dde) bext OriginationDate/OriginationTime: `WavWriter` leaves both zero
       (`common/audiofile/src/wav_writer.cpp:83-92`). EBU Tech 3285 v2 §2.3:
       10 ASCII characters, year-month-day, and 8 ASCII characters,
       hour-minute-second (separator `-` recommended). Every DAW shows a blank
@@ -2272,6 +2272,7 @@ not start or extend those items before the Complete DAW closes (owner,
       (#321) Stale: `WavWriter` fills both fields since #16. What remains is deleting the `v.known(...)` branch in
       `tools/bwf-interop.py` (~line 482) and fixing the "Defect: OriginationDate/Time empty" entry in
       `brain/INDEX.md` and `brain/research/bwf-interop.md`.
+  - [ ] Delete the `v.known(...)` xfail branch in `tools/bwf-interop.py` and fix the "Defect: OriginationDate/Time empty" entry in `brain/INDEX.md` and `brain/research/bwf-interop.md` (the fields are filled since #16).
 - [ ] Run the boot test in CI. Needs the ISO built first, which takes tens of
       minutes, so it belongs in a separate workflow on a schedule or manual
       dispatch rather than on every push.
@@ -2859,8 +2860,9 @@ ADR-0011 "For the owner".
   - [ ] Plugin knob lane awareness: a knob under a Read/Touch/Latch/Trim lane lies now that #250 plays lanes: show the lane value at the playhead, mark the knob automated, hold a notice on a move (ADR-0027 §2). ui-engineer.
   - [ ] `Knob.qml`: keyboard control and `Accessible` roles; `param_origin()`/`param_position()` return NaN for an infinite min or max (#257 review).
   - [ ] Meters in the generic editor wait for the telemetry region (the line above).
-- [ ] N1: engine track and master meters on `common/dsp` (peak, loudness,
+- [x] (#315, #332, #346) N1: engine track and master meters on `common/dsp` (peak, loudness,
       true-peak), gated by rt-safety-auditor. rt-engineer.
+  - [ ] N1 meters follow-ups, unverified at the 2026-11-04 audit: peak hold, K-system scale and RTSan coverage of the meter path.
 - [x] N2 slice 1, `feature/dsp-n2`: the FDN reverb end to end.
       `common/dsp` `fdn.h` (16 lines, Hadamard, three-band T60 per line
       after Jot and Chaigne, lossless freeze), `plugins/native/reverb`
