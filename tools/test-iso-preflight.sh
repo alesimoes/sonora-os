@@ -58,6 +58,25 @@ grep -v '^Inst pipewire' "$tmp/good" >"$tmp/nopw"
 pf_check_simulated "$tmp/nopw" pipewire=1.6.9-2~bpo13+1 2>"$tmp/err" && bad "missing pipewire passed"
 grep -q '<not installed>' "$tmp/err" || bad "missing package not reported"
 
+# apt-cache output shaped like the real one (trixie, snapshot 20261101).
+policy='linux-image-rt-amd64:
+  Installed: (none)
+  Candidate: 6.12.107-1
+  Version table:
+     6.12.107-1 500
+        500 http://snapshot.debian.org/archive/debian/20261101T000000Z trixie/main amd64 Packages'
+pf_has_candidate "$policy" || bad "real policy output rejected: the false negative came back"
+pf_has_candidate "$(printf 'linux-image-rt-amd64:\n  Installed: (none)\n  Candidate: (none)\n  Version table:')" &&
+  bad "Candidate: (none) accepted"
+pf_has_candidate "" && bad "empty policy accepted"
+mad='  pipewire | 1.6.9-2~bpo13+1 | http://snapshot.debian.org/archive/debian/20261101T000000Z trixie-backports/main amd64 Packages'
+pf_has_version "$mad" 1.6.9-2~bpo13+1 || bad "madison line with the pin rejected"
+pf_has_version "$mad" 1.4.2-1 && bad "madison without the pin accepted"
+# grep -q closes the pipe at the first hit; under pipefail the producer's
+# SIGPIPE (141) turned a hit into a miss. Large output must still match.
+big="$(yes "$mad" | head -n 20000)"
+pf_has_version "$big" 1.6.9-2~bpo13+1 || bad "large madison output rejected (SIGPIPE under pipefail)"
+
 # build-iso.sh wiring.
 grep -q -- '--check' "$ROOT/tools/build-iso.sh" || bad "build-iso.sh has no --check"
 grep -q 'iso-preflight.sh inside' "$ROOT/tools/build-iso.sh" || bad "build-iso.sh does not run the pre-flight"

@@ -89,6 +89,12 @@ pf_check_simulated() {
   return "$rc"
 }
 
+# pf_has_version MADISON VERSION: madison output lists " VERSION " as a field.
+pf_has_version() { grep -qF " $2 " <<<"$1"; }
+
+# pf_has_candidate POLICY: `apt-cache policy` output names a real Candidate.
+pf_has_candidate() { grep -Eq '^ *Candidate: [^(]' <<<"$1"; }
+
 # pf_inside: the container half. PF_ROOT is the repository, read-only.
 pf_inside() {
   local src="$PF_ROOT" ts dev pref pwv wpv work=/tmp/pf pkg
@@ -124,13 +130,16 @@ pf_inside() {
     { pf_die "snapshot $ts is not reachable (snapshot.debian.org down?). For a development build set SONORA_DEV_SNAPSHOT=<another timestamp>; it is never a release."; return 1; }
 
   # A pin names a version apt must be able to see: say so before the build.
+  # Query into a variable, then match: `apt-cache | grep -q` under pipefail
+  # fails when grep exits at the first hit and apt-cache dies of SIGPIPE, a
+  # false "does not exist" that came and went with output timing.
   for pkg in pipewire pipewire-jack libspa-0.2-modules; do
-    apt-cache "${apt[@]}" madison "$pkg" | grep -qF " $pwv " ||
+    pf_has_version "$(apt-cache "${apt[@]}" madison "$pkg")" "$pwv" ||
       { pf_die "$pkg $pwv is not in snapshot $ts."; return 1; }
   done
-  apt-cache "${apt[@]}" madison wireplumber | grep -qF " $wpv " ||
+  pf_has_version "$(apt-cache "${apt[@]}" madison wireplumber)" "$wpv" ||
     { pf_die "wireplumber $wpv is not in snapshot $ts (trixie itself ships an older one; the pin comes from trixie-backports, see iso/README.md Versions)."; return 1; }
-  apt-cache "${apt[@]}" madison linux-image-rt-amd64 | grep -q . ||
+  pf_has_candidate "$(apt-cache "${apt[@]}" policy linux-image-rt-amd64)" ||
     { pf_die "linux-image-rt-amd64 does not exist in trixie at snapshot $ts; --linux-flavours rt-amd64 cannot work."; return 1; }
 
   mapfile -t pins < <(pf_packages "$src/iso/config/package-lists")
