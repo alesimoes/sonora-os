@@ -252,6 +252,52 @@ class Train(support.DaemonCase):
         o.tick()
         self.assertEqual(len(self.forge.merged), 2)
 
+    # -- bundles -----------------------------------------------------------
+    def test_bundle_joins_prs_of_one_context_into_one_pr(self):
+        o = self.make()
+        self.forge.add_pr(10, "eq", ["plugins/native/eq/a.cpp"],
+                          checks={"build": "fail"}, title="EQ")
+        self.forge.add_pr(11, "comp", ["plugins/native/comp/a.cpp"],
+                          checks={"build": "pending"}, mergeable="no")
+        self.forge.add_pr(12, "ui", ["ui/qt/a.cpp"], checks={"b": "pending"})
+        o.train.adopt()
+        o.train.bundle("plugins", [10, 11])
+        self.forge.left_out = {"comp"}        # the integrator left #11 out
+        o.tick()
+        runs = o.store.runs_of("bundle-plugins")
+        self.assertEqual([r["role"] for r in runs], ["integrator"])
+        self.assertEqual(o.worktrees.starts, ["origin/main"])
+        extra = o._extra(o.store.get_task("bundle-plugins"), "integrator")
+        self.assertIn("Bundle run", extra)
+        self.assertIn("#10 eq; #11 comp", extra)
+        self.assertNotIn("Conflict run", extra)
+        # members get no agent of their own while bundled
+        self.assertEqual(o.store.runs_of("pr-10"), [])
+        self.assertEqual(o.store.runs_of("pr-11"), [])
+        self.assertTrue(self.pump(
+            o, lambda: o.store.get_feature("bundle-plugins")["pr"]))
+        n = o.store.get_feature("bundle-plugins")["pr"]
+        created = self.forge.created[-1]
+        self.assertEqual((created["branch"], created["base"]),
+                         ("bundle/plugins", "main"))
+        self.assertIn("- #10 EQ", created["body"])
+        self.assertEqual([p for p, _ in self.forge.closed], [10])
+        self.assertIn(f"#{n}", self.forge.closed[0][1])
+        self.assertEqual(state(o, "pr-10"), "merged")
+        self.assertIsNone(self.info(o, 11)["bundled_into"])   # back alone
+        self.assertEqual(state(o, "bundle-plugins"), "pr_open")
+        # the bundle PR then rides the train like any other
+        self.forge.checks(n, build="pass")
+        self.poll(o)
+        self.assertIn(n, [p for p, _ in self.forge.merged])
+
+    def test_bundle_refuses_a_pr_not_on_the_train(self):
+        o = self.make()
+        self.forge.add_pr(10, "a")
+        o.train.adopt()
+        with self.assertRaises(ValueError):
+            o.train.bundle("x", [10, 99])
+
     def test_status_lists_the_train(self):
         o = self.make()
         self.forge.add_pr(10, "a", checks={"build": "pending", "doc": "pass"})

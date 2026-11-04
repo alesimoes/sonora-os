@@ -205,11 +205,12 @@ class GitWorktrees:
             raise RuntimeError("git worktree add: " + r.stderr.strip())
         return wt
 
-    def ensure_pr(self, key, branch):
+    def ensure_pr(self, key, branch, start=None):
         """Worktree for an adopted PR, at the PR's head on origin, every time
         a fixer starts (the last fixer's commits were pushed by the daemon).
         The local branch is train/<branch>: the PR's own name may be checked
-        out in another worktree, which git refuses twice."""
+        out in another worktree, which git refuses twice. `start` is where a
+        branch not yet on origin begins (a bundle starts from main)."""
         wt = self.path(key)
         local = f"train/{branch}"
 
@@ -219,16 +220,23 @@ class GitWorktrees:
             if r.returncode:
                 raise RuntimeError(f"git {a[0]}: " + r.stderr.strip())
 
-        git("fetch", "-q", "origin",
-            f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+        ref = f"origin/{branch}"
+        try:
+            git("fetch", "-q", "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+        except RuntimeError:
+            if not start:
+                raise
+            git("fetch", "-q", "origin")
+            ref = start
         if not os.path.isdir(wt):
             os.makedirs(os.path.dirname(wt), exist_ok=True)
-            git("worktree", "add", "-B", local, wt, f"origin/{branch}")
+            git("worktree", "add", "-B", local, wt, ref)
         else:
             # Leftovers of a fixer that died before committing are dropped:
             # what counts is on origin.
             git("reset", "-q", "--hard", cwd=wt)
-            git("checkout", "-q", "-B", local, f"origin/{branch}", cwd=wt)
+            git("checkout", "-q", "-B", local, ref, cwd=wt)
             git("clean", "-qfd", cwd=wt)
         return wt
 

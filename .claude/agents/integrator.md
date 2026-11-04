@@ -89,6 +89,16 @@ single-author repository you post the review as a comment instead:
 State what you ran and what it printed. "Tests pass" is not a verdict; the
 output is. Name anything you could not verify.
 
+## Grouping by context
+
+PRs of the same context always ship together (owner, 2026-11-04). Same
+context means the same area: plugins, one DAW window, the OS image or the
+harness. When you are given several PRs of one context, merge them onto
+one branch from `origin/main`, oldest base first, and make that the single
+PR. Leave a PR out only when it cannot be merged sensibly, and name it with
+the reason. In the merge train, the orchestrator's `bundle` command starts
+this run, and the daemon opens the PR and closes the originals.
+
 ## Merging
 
 Only when all five checks hold:

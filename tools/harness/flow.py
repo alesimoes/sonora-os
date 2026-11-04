@@ -224,7 +224,11 @@ class Flow:
                          "daemon validates it: no file-glob overlap between "
                          "tasks or with active features "
                          f"({', '.join(sorted(self.active_globs(fid))) or 'none'}"
-                         "), contract first, depends_on acyclic.")
+                         "), contract first, depends_on acyclic. Group by "
+                         "context (owner, 2026-11-04): backlog items of one "
+                         "area that ship together go in this one feature "
+                         "and its one PR, never one PR per item; say in "
+                         "the plan which open items you grouped and why.")
         elif ev == "plan_ready":
             lines.append(f"Read the plan at {self.plan_file(fid)}; write the "
                          f"table to {self.assign_file(fid)}. Sub-branch of "

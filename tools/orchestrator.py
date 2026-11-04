@@ -69,6 +69,7 @@ class Orchestrator:
         self.last_gaps = {}
         self.flow = Flow(self)
         self.train = Train(self)
+        self.attribution = ATTRIBUTION
         self.shadow = None
         if shadow_agents:   # shadow rollout: never launches, only compares
             self.dry_run = True
@@ -287,7 +288,9 @@ class Orchestrator:
                     and self.train.is_adopted(t["feature_id"]):
                 fb = self._feature_branch(t["feature_id"])
                 wt = self.worktrees.ensure_pr(
-                    self._feature_key(t["feature_id"]), fb)
+                    self._feature_key(t["feature_id"]), fb,
+                    **({"start": "origin/main"}
+                       if self.train.is_bundle(t["feature_id"]) else {}))
                 t["branch"], t["worktree"] = fb, wt
                 self.store.set_task(t["id"], worktree=wt)
             elif t["kind"] == "work" and ln.kind in ("integrator", "fixer"):
@@ -366,7 +369,10 @@ class Orchestrator:
         nums = [f"{r['kind']}={r['number']}" for r in self.store.reservations()
                 if r["task_id"] == t["id"]]
         extra = ("reservations: " + " ".join(nums)) if nums else ""
-        if kind == "integrator" and t["state"] == "ci_fix":
+        bundle = t["feature_id"] and self.train.is_bundle(t["feature_id"])             and not (self.store.get_feature(t["feature_id"]) or {}).get("pr")
+        if kind == "integrator" and bundle:
+            extra += self.train.bundle_brief(t["feature_id"])
+        elif kind == "integrator" and t["state"] == "ci_fix":
             extra += (
                 "\nConflict run: the PR for this branch conflicts with main. "
                 "Merge origin/main into the branch, resolve the conflicts "
@@ -588,7 +594,7 @@ class Orchestrator:
             if t["state"] == "integrating":
                 self._integrated(t, data, now)
             elif t["state"] == "ci_fix":
-                self._fix_done(t, now)
+                self._fix_done(t, now, data)
 
     # -- PR lifecycle -------------------------------------------------
     def _pr_count(self):
@@ -690,12 +696,16 @@ class Orchestrator:
         lines += ["", ATTRIBUTION]
         return title, "\n".join(lines)
 
-    def _fix_done(self, t, now):
+    def _fix_done(self, t, now, data=None):
         fid = t["feature_id"]
         f = self.store.get_feature(fid)
         branch = self._feature_branch(fid)
         try:
-            if self.train.is_adopted(fid):
+            if self.train.is_bundle(fid) and not f["pr"]:
+                wt = t.get("worktree") or self.worktrees.path(
+                    self._feature_key(fid))
+                self.train.open_bundle(fid, wt, data)
+            elif self.train.is_adopted(fid):
                 wt = t.get("worktree") or self.worktrees.path(
                     self._feature_key(fid))
                 self.forge.push_head(wt, branch)
@@ -906,6 +916,10 @@ def main(argv=None):
     a.add_argument("--brief", default="")
     a.add_argument("--depends-on", default="")
     a.add_argument("--wants", default="")
+    b = sub.add_parser("bundle", help="join open train PRs of one context "
+                       "into one PR (stop the daemon first)")
+    b.add_argument("name")
+    b.add_argument("prs", nargs="+", type=int)
     t = sub.add_parser("adopt", help="put open PRs on the merge train "
                        "(stop the daemon first: one writer of state.json)")
     t.add_argument("prs", nargs="*", type=int,
@@ -953,6 +967,12 @@ def main(argv=None):
         finally:
             o.close()
         print("adopted: " + (" ".join(f"#{n}" for n in got) or "none"))
+    elif args.cmd == "bundle":
+        o = Orchestrator(root)
+        try:
+            print("bundle: " + o.train.bundle(args.name, args.prs))
+        finally:
+            o.close()
     elif args.cmd == "add":
         o = Orchestrator(root)
         o.store.add_task(

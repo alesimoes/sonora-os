@@ -197,7 +197,8 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             if kind == "integrator" and (t.get("integrated") or any(
                     s["state"] not in DONE_STATES for s in sibs)):
                 continue  # waiting for sibling tasks, or PR being opened
-            if kind == "fixer" and t.get("fix_kind") == "conflict":
+            if kind == "fixer" and t.get("fix_kind") in ("conflict",
+                                                         "bundle"):
                 kind = "integrator"
         if kind == "engineer":
             if not store_deps_ok(t, by_id):

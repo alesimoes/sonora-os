@@ -191,9 +191,18 @@ class FakeForge(Forge):
     def push_head(self, worktree, branch):
         self._chk("push")
         self.pushed.append(branch)
-        n = next(k for k, p in self.prs.items() if p["branch"] == branch)
-        if getattr(self, "fix_commits", True):
+        n = next((k for k, p in self.prs.items() if p["branch"] == branch
+                  and p["state"] == "open"), None)
+        if n is not None and getattr(self, "fix_commits", True):
             self._new_head(n)
+
+    def close_pr(self, pr, comment):
+        self._chk("close_pr")
+        self.prs[pr]["state"] = "closed"
+        self.closed = getattr(self, "closed", []) + [(pr, comment)]
+
+    def contains(self, worktree, branch):
+        return branch not in getattr(self, "left_out", ())
 
 
 class DirWorktrees:
@@ -212,8 +221,9 @@ class DirWorktrees:
     def path(self, task_id):
         return os.path.join(self.root, "wt", task_id)
 
-    def ensure_pr(self, key, branch):
+    def ensure_pr(self, key, branch, start=None):
         self.pr_checkouts = getattr(self, "pr_checkouts", []) + [branch]
+        self.starts = getattr(self, "starts", []) + [start]
         return self.ensure(key, branch)
 
     def remove(self, task_id):

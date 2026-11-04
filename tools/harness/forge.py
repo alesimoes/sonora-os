@@ -92,6 +92,14 @@ class Forge:
         on a local train/ branch, so another worktree may hold the name)."""
         raise NotImplementedError
 
+    def close_pr(self, pr, comment):
+        raise NotImplementedError
+
+    def contains(self, worktree, branch):
+        """True when origin/<branch>'s head is in the worktree's HEAD (a
+        bundle took that PR)."""
+        raise NotImplementedError
+
 
 def run(argv, cwd=None, timeout=120):
     try:
@@ -263,6 +271,18 @@ class GhForge(Forge):
     def push_head(self, worktree, branch):
         self._ok(["git", "push", "origin", f"HEAD:refs/heads/{branch}"],
                  worktree, timeout=300)
+
+    def close_pr(self, pr, comment):
+        self._ok(["gh", "pr", "close", str(pr), "--comment", comment],
+                 timeout=60)
+
+    def contains(self, worktree, branch):
+        self._ok(["git", "fetch", "-q", "origin",
+                  f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+                 worktree, timeout=300)
+        r = self.run(["git", "merge-base", "--is-ancestor",
+                      f"origin/{branch}", "HEAD"], worktree, 60)
+        return r.returncode == 0
 
     def pre_pr(self, worktree):
         script = os.path.join(worktree, "tools", "pre-pr.sh")
