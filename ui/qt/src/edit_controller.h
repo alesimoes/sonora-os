@@ -461,6 +461,9 @@ public:
     // not Input, so it goes to Input. Refused on a MIDI or instrument
     // track, whose engine track carries no audio of its own (ADR-0014 M-1).
     bool toggle_input_monitor(int track, std::string& why);
+    // TrackPunch (TrackMix::track_punch, ADR-0043): whether the armed track
+    // records in punch takes. Refused on a MIDI or instrument track.
+    bool toggle_track_punch(int track, std::string& why);
     // Off, Read, Touch, Latch, Write, Trim (Touch/Trim), Write/Trim and
     // round to Off: the selector's order. Pro Tools' own order is unverified
     // (brain/research/protools-logic-key-bindings.md has no automation modes).

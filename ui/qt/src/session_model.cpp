@@ -438,6 +438,11 @@ void SessionModel::installCommands(CommandRegistry& local) {
                                          why);
     });
 
+    // TrackMix::track_punch, saved with the session and no undo step.
+    simple("track.toggle_track_punch", [this](const CommandContext& ctx, Why& why) {
+        return ctl_.toggle_track_punch(ctx.has_target() ? ctx.target : ctl_.selection().track, why);
+    });
+
     simple("track.step_automation_mode", [this](const CommandContext& ctx, Why& why) {
         return ctl_.step_automation_mode(ctx.has_target() ? ctx.target : ctl_.selection().track,
                                          why);

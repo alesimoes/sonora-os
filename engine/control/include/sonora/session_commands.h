@@ -46,6 +46,11 @@ using LoopFor = std::function<bool(LoopRange& loop, std::string& refusal)>;
 // no audio (ADR-0014 M-1).
 using MayArm = std::function<bool(std::size_t engine_track, std::string& why)>;
 
+// Asked when transport.record is pressed during a take: true is Pro Tools'
+// QuickPunch, where the record key punches out (and the next press in) with
+// the transport rolling, instead of leaving the take alone (ADR-0043).
+using QuickPunchOn = std::function<bool()>;
+
 // `take` is the number the next take will be written under; `quit` is set by
 // app.quit. Both are owned by the caller and must outlive `reg`, as must
 // `may_record`, `punch_for` and what they refer to. Without `may_record`
@@ -73,6 +78,7 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record = nullptr,
                               PlaybackController* playback = nullptr,
                               PunchFor punch_for = nullptr, MayArm may_arm = nullptr,
-                              LoopFor loop_for = nullptr, bool* record_ready = nullptr);
+                              LoopFor loop_for = nullptr, bool* record_ready = nullptr,
+                              QuickPunchOn quick_punch = nullptr);
 
 }  // namespace sonora

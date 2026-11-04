@@ -436,7 +436,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                  }
                                  return false;
                              },
-                             &record_ready_);
+                             &record_ready_,
+                             [this]() { return document_->current().settings.transport.quick_punch; });
     if (!opts_.plugin_host.empty()) {
         // For the engine process's life (amendment of 2026-10-19, item 3):
         // its catalog outlives a backend activation.

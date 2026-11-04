@@ -14,7 +14,8 @@ namespace sonora {
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record,
                               PlaybackController* playback, PunchFor punch_for,
-                              MayArm may_arm, LoopFor loop_for, bool* record_ready) {
+                              MayArm may_arm, LoopFor loop_for, bool* record_ready,
+                              QuickPunchOn quick_punch) {
     // Shared by the handlers that set and clear it; the caller's when given,
     // which it must keep alive as long as `reg`.
     const std::shared_ptr<bool> ready =
@@ -109,9 +110,15 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     // during a take it leaves the take alone rather than closing it and
     // opening the next, which is what a second press of a record key means
     // in both applications.
+    // QuickPunch (ADR-0043) is Pro Tools' record key doing what transport.punch
+    // does: out at the second press, in again at the third.
     reg.install("transport.record",
-                [&session, start](const CommandContext&, std::string& why) {
+                [&session, &take, start, quick_punch](const CommandContext&, std::string& why) {
         if (session.transport().state() == TransportState::Recording) {
+            if (quick_punch && quick_punch() && !session.loop_take_running()) {
+                session.punch_out();
+                ++take;
+            }
             return true;
         }
         return start(why);

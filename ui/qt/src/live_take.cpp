@@ -24,7 +24,8 @@ struct Window {
 
 Window window_of(const model::Transport& t) {
     Window w;
-    if (t.punch[0] >= 0 && t.punch[1] > t.punch[0]) {
+    // QuickPunch uses no range (ADR-0043), as document_punch() does.
+    if (!t.quick_punch && t.punch[0] >= 0 && t.punch[1] > t.punch[0]) {
         w.from = t.punch[0];
         w.to = t.punch[1];
     } else if (t.loop_record && t.loop[0] >= 0 && t.loop[1] > t.loop[0]) {

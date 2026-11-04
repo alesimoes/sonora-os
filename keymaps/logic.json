@@ -14,6 +14,11 @@
       "verified": false,
       "comment": "Set Locators by Selection and Enable Cycle, Command-U: the Edit selection becomes the cycle area and Cycle turns on. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md."
     },
+    "ctrl+alt+p": {
+      "command": "transport.punch_selection",
+      "verified": false,
+      "comment": "Logic's Autopunch is on while punch locators are set. Its Set Punch Locators by Selection key command is not in the 12.3 guide's default list, so this chord is unconfirmed (ADR-0043):the Edit selection becomes the punch range and PUNCH lights; transport.clear_punch turns it off."
+    },
     "k": {
       "command": "transport.toggle_click",
       "verified": false,

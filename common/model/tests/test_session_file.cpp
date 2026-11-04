@@ -574,7 +574,7 @@ int test_v5_migrates() {
         CHECK(n.encoded == read_fixture(n.ref.file.c_str()));
     }
     std::int64_t version = 0;
-    CHECK(file_format_version(out, version) && version == 18);
+    CHECK(file_format_version(out, version) && version == kFormatVersion);
     // A version 5 file cannot carry what version 5 does not define.
     CHECK(refused(edit(v5, "\"offset_ticks\": 480000,",
                        "\"offset_ticks\": 480000,\n              \"data\": {},"),
@@ -1998,19 +1998,25 @@ int test_v18_migrates_and_record_modes() {
     std::string set = edit(cur, "\"input_only\": false", "\"input_only\": true");
     set = edit(set, "\"rolls_on\": true", "\"rolls_on\": false");
     set = edit(set, "\"quick_punch\": false", "\"quick_punch\": true");
-    set = edit(set, "\"track_punch\": true", "\"track_punch\": false");
+    set = edit(set, "\"solo_safe\": false,\n      \"track_punch\": true",
+               "\"solo_safe\": false,\n      \"track_punch\": false");
     Loaded s;
     if (!load(set, s, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     CHECK(load(set, s, e));
     const Transport& st = s.snapshot.settings.transport;
     CHECK(st.input_only && !st.rolls_on && st.quick_punch);
-    CHECK(!s.snapshot.mix.tracks[0].track_punch);
+    std::size_t out_of_punch = 0;
+    for (const TrackMix& m : s.snapshot.mix.tracks) {
+        if (!m.track_punch) ++out_of_punch;
+    }
+    CHECK(out_of_punch == 1);
     CHECK(save(s, out) && out == set);
     // A MIDI track has no audio to punch: the key is another kind's.
     CHECK(refused(edit(cur, "\"kind\": \"midi\"", "\"kind\": \"midi\",\n      \"track_punch\": true"),
                   "track_punch", nullptr));
     // And an audio track must say it.
-    CHECK(refused(edit(cur, "      \"track_punch\": true,\n", ""),
+    CHECK(refused(edit(cur, "\"solo_safe\": false,\n      \"track_punch\": true,\n",
+                       "\"solo_safe\": false,\n"),
                   "missing required key \"track_punch\"", "tracks[0]"));
     return 0;
 }

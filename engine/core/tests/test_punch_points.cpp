@@ -623,6 +623,165 @@ int test_input_mode_ignores_the_transport() {
     return 0;
 }
 
+// Pro Tools' Input Only Monitoring (ADR-0043): with it on, an armed track is
+// heard from its input stopped, rolling over its clip and through a punch,
+// where Auto Input hears playback; a disarmed track keeps Auto's rule, and a
+// track whose monitor is Off stays silent. Switching it ramps, never steps,
+// and no callback touches the heap.
+int test_input_only_monitoring() {
+    Rig rig("input_only", 2);
+    Session& s = *rig.session;
+    const uint32_t a = rig.source(5, 40 * kChunk);
+    const uint32_t b = rig.source(6, 40 * kChunk);
+    SegmentSpec on0;
+    on0.end = 40 * kChunk;
+    on0.source_slot = a;
+    SegmentSpec on1 = on0;
+    on1.track = 1;
+    on1.source_slot = b;
+    CHECK(publish_plan(s, make_plan(s.plans().next_epoch(), 2, {on0, on1}, kChunk)));
+    sonora::Track& armed = *s.tracks()[0];
+    sonora::Track& idle = *s.tracks()[1];
+    armed.set_pan(-1.0f);
+    idle.set_pan(1.0f);
+    armed.set_rec_armed(true);
+    idle.set_rec_armed(false);
+    CHECK(!s.input_only());
+    s.set_input_only(true);
+    CHECK(s.input_only());
+    reset_heap_counts();
+
+    const auto heard = [&](uint64_t at, bool armed_input, bool idle_plays) {
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const float want0 = armed_input ? static_cast<float>(at + i)
+                                            : source_value(5, 0, static_cast<int64_t>(at + i));
+            const float want1 = idle_plays ? source_value(6, 0, static_cast<int64_t>(at + i)) : 0.0f;
+            if (!near(rig.out[0][i], want0) || !near(rig.out[1][i], want1)) return false;
+        }
+        return true;
+    };
+
+    // Stopped: the armed track hears its input, the idle one nothing.
+    rig.block();
+    rig.block();
+    CHECK(heard(s.transport().playhead(), true, false));
+
+    // Rolling over both clips: Input Only keeps the input where Auto plays.
+    s.play();
+    rig.block();
+    rig.block();
+    uint64_t at = s.transport().playhead();
+    rig.block();
+    CHECK(heard(at, true, true));
+
+    // Through a punch: the input at every block, the punch points included.
+    idle.set_rec_armed(true);
+    const uint64_t base = s.transport().playhead();
+    PunchRange r;
+    r.capture_from = r.monitor_in = base + 4 * kBlock;
+    r.capture_to = r.monitor_out = base + 8 * kBlock;
+    std::string error;
+    CHECK(s.start_punch(s.next_free_take(), r, &error));
+    for (int k = 0; k < 11; ++k) {
+        at = s.transport().playhead();
+        rig.block();
+        CHECK(s.transport().state() == TransportState::Recording);
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            CHECK(rig.out[0][i] == static_cast<float>(at + i));
+            // The track armed just above ramps over the first block.
+            if (k > 0) CHECK(rig.out[1][i] == static_cast<float>(at + i));
+        }
+    }
+    CHECK(heap_untouched());
+    CHECK(s.playback_misses() == 0);
+    CHECK(s.stop(&error));
+
+    // Back to Auto Input while rolling: the armed track ramps from the input
+    // to playback over the monitor ramp, a frame at a time.
+    idle.set_rec_armed(false);
+    s.play();
+    rig.block();
+    rig.block();
+    s.set_input_only(false);
+    at = s.transport().playhead();
+    rig.block();
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        const float w = 1.0f - static_cast<float>(i + 1) / kRamp;
+        const float want = w * static_cast<float>(at + i) +
+                           (1.0f - w) * source_value(5, 0, static_cast<int64_t>(at + i));
+        CHECK(near(rig.out[0][i], want, 1e-4f));
+    }
+    at = s.transport().playhead();
+    rig.block();
+    CHECK(heard(at, false, true));
+    CHECK(s.stop(&error));
+
+    // Monitor Off stays silent whatever the switch says.
+    s.set_input_only(true);
+    armed.set_monitor(sonora::Track::Monitor::Off);
+    rig.block();
+    rig.block();
+    CHECK(rig.out[0][0] == 0.0f && rig.out[0][kBlock - 1] == 0.0f);
+    return 0;
+}
+
+// Pro Tools' TrackPunch (ADR-0043): an armed track with track_punch off sits a
+// punch take out: no file for it, its playback heard between the punch
+// points. A plain take records it as any armed track.
+int test_track_punch_off_sits_the_punch_out() {
+    Rig rig("track_punch", 2);
+    Session& s = *rig.session;
+    const uint32_t a = rig.source(5, 40 * kChunk);
+    const uint32_t b = rig.source(6, 40 * kChunk);
+    SegmentSpec on0;
+    on0.end = 40 * kChunk;
+    on0.source_slot = a;
+    SegmentSpec on1 = on0;
+    on1.track = 1;
+    on1.source_slot = b;
+    CHECK(publish_plan(s, make_plan(s.plans().next_epoch(), 2, {on0, on1}, kChunk)));
+    s.tracks()[0]->set_pan(-1.0f);
+    s.tracks()[1]->set_pan(1.0f);
+    CHECK(s.tracks()[1]->punch_enabled());
+    s.tracks()[1]->set_punch_enabled(false);
+    s.disk().start();
+
+    s.play();
+    rig.block();
+    rig.block();
+    const uint64_t base = s.transport().playhead();
+    PunchRange r;
+    r.capture_from = r.monitor_in = base + 4 * kBlock;
+    r.capture_to = r.monitor_out = base + 8 * kBlock;
+    std::string error;
+    const int take = s.next_free_take();
+    CHECK(s.start_punch(take, r, &error));
+    for (int k = 0; k < 10; ++k) {
+        const uint64_t at = s.transport().playhead();
+        rig.block();
+        if (k == 3 || k == 4 || k == 7 || k == 8) continue;   // a punch crossfade
+        const bool inside = k > 4 && k < 7;
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            // Track 0 follows the punch; track 1 never leaves playback.
+            const float play0 = source_value(5, 0, static_cast<int64_t>(at + i));
+            CHECK(near(rig.out[0][i], inside ? static_cast<float>(at + i) : play0));
+            CHECK(near(rig.out[1][i], source_value(6, 0, static_cast<int64_t>(at + i))));
+        }
+    }
+    CHECK(s.stop(&error));
+    CHECK(fs::exists(rig.file(0, take)));
+    CHECK(!fs::exists(rig.file(1, take)));
+    CHECK(check_file(rig.file(0, take)).ok);
+
+    // A whole take records both.
+    const int plain = s.next_free_take();
+    CHECK(s.start_recording(plain, &error));
+    for (int k = 0; k < 4; ++k) rig.block();
+    CHECK(s.stop(&error));
+    CHECK(fs::exists(rig.file(0, plain)) && fs::exists(rig.file(1, plain)));
+    return 0;
+}
+
 // Holds the callback it is called from, right after the transport is loaded
 // and before anything is drained, while armed.
 struct Stall {
@@ -1076,6 +1235,8 @@ int main(int argc, char** argv) {
         {"auto_monitor_crossfades", test_auto_monitor_crossfades_at_the_punch_points},
         {"other_switches_ramp", test_other_switches_ramp},
         {"input_mode_ignores_the_transport", test_input_mode_ignores_the_transport},
+        {"input_only_monitoring", test_input_only_monitoring},
+        {"track_punch_off", test_track_punch_off_sits_the_punch_out},
         {"burst_of_punches", test_burst_of_punches_keeps_the_running_range},
         {"full_punch_ring", test_full_punch_ring_is_refused},
         {"punch_over_a_punch", test_punch_over_a_punch},
