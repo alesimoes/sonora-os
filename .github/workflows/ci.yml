@@ -126,15 +126,12 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -DSONORA_PLATFORM=neutral
 
+      # sonora_portable (sonora_define_portable_target, plugins/native/
+      # CMakeLists.txt): every library and executable under common/json,
+      # common/dsp and plugins/native, so a new test target or processor is
+      # built here with no edit to this file.
       - name: Build
-        run: >-
-          cmake --build build --config Release --parallel
-          --target sonora_dsp sonora_native_sdk sonora_dsp_measure sonora-dsp-measure
-          test_json test_native_sdk test_measure_time_bars
-          test_dsp_filters test_dsp_convolver test_dsp_oversampling test_dsp_loudness test_dsp_meter test_dsp_dynamics
-          test_dsp_limiter test_dsp_fdn test_dsp_triode test_dsp_triode_generic
-          test_dsp_opto test_dsp_fet test_dsp_noise test_dsp_transformer test_dsp_transformer_generic
-          test_dsp_tape test_dsp_tape_generic test_dsp_convolver_generic test_dsp_neural test_native_ampcab
+        run: cmake --build build --config Release --parallel --target sonora_portable
 
       - name: Test
         env:

@@ -1,21 +1,12 @@
 # sonora-dsp-measure links every processor's suite: a wiring executable at
 # the top of the native tree, as engine/app is for the engine.
 add_executable(sonora-dsp-measure main.cpp host_fixture.cpp)
-target_link_libraries(sonora-dsp-measure PRIVATE
-  sonora_native_eq_suite
-  sonora_native_compressor_suite
-  sonora_native_gate_suite
-  sonora_native_deesser_suite
-  sonora_native_limiter_suite
-  sonora_native_delay_suite
-  sonora_native_chorus_suite
-  sonora_native_phaser_suite
-  sonora_native_reverb_suite
-  sonora_native_tube_suite
-  sonora_native_opto_suite
-  sonora_native_fet_suite
-  sonora_native_tape_suite
-  sonora_native_saturator_suite
-  sonora_native_cab_suite
-  sonora_native_mixbus_suite
-)
+# Every processor with a tests/suite.cpp (SONORA_NATIVE_SUITES, from
+# plugins/native/CMakeLists.txt), which also generates the dispatch and
+# fixture tables main.cpp and host_fixture.cpp include.
+set(_suites)
+foreach(p ${SONORA_NATIVE_SUITES})
+  list(APPEND _suites sonora_native_${p}_suite)
+endforeach()
+target_link_libraries(sonora-dsp-measure PRIVATE ${_suites})
+target_include_directories(sonora-dsp-measure PRIVATE ${SONORA_NATIVE_GENERATED_DIR})
