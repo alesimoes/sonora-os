@@ -62,6 +62,9 @@ same files: the 4 DAW tracks, 2 OS packaging and 2 native plugins (owner,
 next items. After 3–4 merges, or near 150k of context, it writes the handoff
 and carries on.
 
+The agent queue is `planning/AGENT-QUEUE.md`: when an agent reports, the
+coordinator closes it (`tools/bg-status.sh --kill`) and launches the next line
+in the same turn, keeping up to 10 working.
 The coordinator runs unattended: no human reads the terminal, answers a
 question or runs a slash command such as /clear. Never end a turn waiting
 on the owner. A decision with a recommended default is taken and recorded;
@@ -113,6 +116,9 @@ Each of these cost a fix round of 30–60 minutes this session. CI is slow
 (the sanitizer job alone takes about 50 minutes), so a PR that fails on
 something below is a PR that waits an hour.
 
+- Run `tools/pre-pr.sh` (whitespace, exec bits, shellcheck as CI runs it, ADR
+  numbers against main and open PRs, no BACKLOG edit, protocol version reserved)
+  and fix what it lists before you push. Most of our red CI came from these.
 - First check the BACKLOG item is not already done on main (`git log
   origin/main --oneline -S`, grep the code). Many checkboxes are stale: if it
   is done, say so in your report and stop, or take the next item.
