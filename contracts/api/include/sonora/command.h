@@ -309,6 +309,16 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"session.leave_recovered", CommandTarget::None,
          "Leave the recovered takes in Audio Files, off the timeline"},
 
+        // --- consolidate (ADR-0031 §6, protocol 43) ---
+        // The argument is api/consolidate_argument.h's. The reply says only
+        // whether the render started; progress and the end are Consolidate
+        // events. The interface's own edit.consolidate is the key; this is
+        // what it sends.
+        {"session.consolidate", CommandTarget::None,
+         "Render a range of a track's playlist to one file and replace the range with it", true},
+        {"session.consolidate_cancel", CommandTarget::None,
+         "Stop the consolidate render that is running"},
+
         // --- the round trip (ADR-0019, update of 2026-10-26) ---
         // Argument: "OUT:IN", the output and input port numbers from 1
         // (parse_latency_ports()), which the operator has cabled together.
