@@ -250,6 +250,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
          "Separate the region at the selection"},
         {"edit.heal_separation", CommandTarget::None, "Heal a separation"},
         {"edit.consolidate", CommandTarget::None, "Consolidate the selection"},
+        {"edit.strip_silence", CommandTarget::None,
+         "Remove quiet stretches from the selected regions "
+         "(argument: threshold dB, minimum silence ms, start pad ms, end pad ms)",
+         true},
         {"edit.fade_to_start", CommandTarget::None,
          "Fade from the region start to the insertion point"},
         {"edit.fade_to_end", CommandTarget::None,
