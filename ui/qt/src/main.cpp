@@ -665,6 +665,7 @@ int main(int argc, char** argv) {
     QObject::connect(&model, &ShellModel::sessionFolder, &session, &SessionModel::setEngineFolder);
     link_transport(model, session, transport);
     link_marker_locate(model, session);
+    session.setLayoutsFile(default_layouts_file());
     ShellModel::PluginSinks plugin_sinks;
     plugin_sinks.catalog = [&inserts](const api::PluginCatalog& c) { inserts.onCatalog(c); };
     plugin_sinks.fault = [&inserts](uint64_t insert, const std::string& text) {

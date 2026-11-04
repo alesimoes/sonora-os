@@ -21,9 +21,12 @@ command -v cygpath >/dev/null 2>&1 && src="$(cygpath -w "$ROOT")"
 
 docker build -q --label org.sonora=1 -t "$IMAGE" - >/dev/null <<'EOF'
 FROM debian:trixie
-RUN apt-get update \
- && apt-get install -y --no-install-recommends systemd systemd-sysv dbus kbd procps \
- && rm -rf /var/lib/apt/lists/*
+RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
+ for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
+ if apt-get $A update && apt-get $A install -y --no-install-recommends systemd systemd-sysv dbus kbd procps \
+ ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
+ [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
+ rm -rf /var/lib/apt/lists/*
 EOF
 
 # Runs inside the container before systemd. $1 is the UI stub's behaviour.
@@ -41,11 +44,15 @@ chmod 644 /etc/systemd/system/sonora-*.service
 stub() { printf "#!/bin/sh\n%s\n" "$2" > "/usr/local/bin/$1"; chmod 755 "/usr/local/bin/$1"; }
 stub sonora-compositor "exec sleep infinity"
 stub sonora-wait-for-display "exit 0"
+# The real one: the fallback unit runs it as ExecCondition=.
+cp /src/iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up /usr/local/bin/
+chmod 755 /usr/local/bin/sonora-display-gave-up
 stub sonora-wait-for-audio "exit 0"
 stub sonora-engine "exec sleep infinity"
 stub sonora-smoketest "exit 0"
 case "$ui" in
   broken) stub sonora-ui "exit 3" ;;
+  failing) stub sonora-ui "exit 1" ;;
   *) stub sonora-ui "exec sleep infinity" ;;
 esac
 if [ "$ui" = verify ]; then
@@ -95,6 +102,29 @@ wait_for() {
 expect() { local s; s="$(state "$1")"; [ "$s" = "$2" ] || bad "$1 is $s, expected $2"; }
 flag() { docker exec "$cid" test -e /run/sonora-display-failed; }
 
+# recover UNIT: SIGKILL its main process inside the container and print the
+# milliseconds until it runs again under a new PID; fails if that takes over
+# 3 s. The same rule as sonora-smoketest's kill_and_recover.
+# shellcheck disable=SC2016 # expanded by the container's sh
+recover_sh='
+u="$1"
+old="$(systemctl show -p MainPID --value "$u")"
+[ -n "$old" ] && [ "$old" != 0 ] || exit 1
+t0="$(date +%s%N)"
+kill -9 "$old"
+while :; do
+  p="$(systemctl show -p MainPID --value "$u")"
+  if [ "$p" != 0 ] && [ "$p" != "$old" ] && systemctl is-active --quiet "$u"; then
+    echo $(( ($(date +%s%N) - t0) / 1000000 ))
+    exit 0
+  fi
+  [ $(( ($(date +%s%N) - t0) / 1000000 )) -ge 3000 ] && exit 1
+  sleep 0.1
+done'
+recover() {
+  docker exec "$cid" sh -c "$recover_sh" sh "$1"
+}
+
 run() {
   scenario="$1"
   local ui="$2"
@@ -116,16 +146,34 @@ run() {
       expect sonora-session.service inactive
       flag && bad "fallback ran with a healthy UI"
       ;;
-    gui-broken)
+    gui-kill)
+      wait_for sonora-ui.service active || bad "UI never became active"
+      sleep 2
+      ms="$(recover sonora-ui.service)" || bad "UI did not come back within 3 s of kill -9"
+      echo "kill -9 of the UI: back after ${ms:-?} ms"
+      sleep 2
+      ms="$(recover sonora-compositor.service)" || bad "compositor did not come back within 3 s of kill -9"
+      echo "kill -9 of the compositor: back after ${ms:-?} ms"
+      wait_for sonora-ui.service active || bad "UI did not follow the compositor back"
+      expect sonora-session.service inactive
+      flag && bad "fallback ran after two SIGKILLs"
+      ;;
+    gui-broken|gui-failing)
       wait_for sonora-session.service active || bad "session never took over after the UI failed"
       flag || bad "fallback flag /run/sonora-display-failed missing"
       expect sonora-compositor.service inactive
+      if [ "$scenario" = gui-failing ]; then
+        # Counted from the journal: NRestarts is reset when the limit trips.
+        n="$(docker exec "$cid" journalctl -b -u sonora-ui.service --no-pager 2>/dev/null | grep -c 'Scheduled restart job')"
+        [ "${n:-0}" -ge 3 ] || bad "the failing UI was restarted ${n:-0} times; this did not test a repeated failure"
+      fi
       expect sonora-ui.service failed
       docker exec "$cid" pgrep -u sonora -x sleep >/dev/null || bad "no engine stub running"
       ;;
   esac
   if [ "$fail" -ne 0 ]; then
     docker exec "$cid" systemctl --no-pager status 'sonora-*' 2>&1 | tail -40 >&2 || true
+    docker exec "$cid" journalctl -b --no-pager -u 'sonora-*' 2>&1 | tail -40 >&2 || true
   fi
   docker rm -f "$cid" >/dev/null
   cid=
@@ -134,6 +182,10 @@ run() {
 run plain healthy
 run gui healthy sonora.gui
 run gui-broken broken sonora.gui
+run gui-kill healthy sonora.gui
+# Exit 1 is retried (only 3 is not): five restarts in 60 s trip the start
+# limit, and only then does OnFailure= hand tty1 to the session.
+run gui-failing failing sonora.gui
 
 [ "$fail" -eq 0 ] && echo "ok: display fallback hands tty1 back to sonora-session; units verify"
 exit "$fail"
