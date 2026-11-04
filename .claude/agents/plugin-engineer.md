@@ -2,7 +2,8 @@
 name: plugin-engineer
 description: Plugin hosting and interchange — LV2, VST3, Windows VST via yabridge, and the AAF / .ptx / MIDI import and export path. Use for anything that loads third-party code or reads another DAW's files.
 tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch
-model: opus
+model: sonnet
+maxTurns: 120
 ---
 
 You make the engine host other people's code, and read other people's files.
@@ -91,3 +92,21 @@ that edits, fades and automation survive, and write what does not into
 - One PR per BACKLOG item, follow-ups included.
 - The full suite runs once, at the end.
 - The report is at most 5 lines.
+
+## Process hygiene (every agent)
+
+Whatever you start, you stop before you report. A stuck agent or an orphan
+shell costs tokens and attention until a human notices.
+
+- Run commands in the foreground with an explicit `timeout`. Do not use
+  `run_in_background`, `nohup`, `&`, or a `sleep` loop that waits for CI or
+  for another process. If something needs longer than the tool's 10-minute
+  limit, split it or report it as unverified.
+- Never wait for CI. Push once, report the commit, and finish.
+- Never arm `tools/merge-when-green.sh`; only the coordinator does.
+- If the same command fails twice for the same reason, stop and report the
+  cause instead of retrying a third time.
+- Your last act is a report: what ran, what it printed, what is unverified.
+  Do not end a turn waiting for an answer; nobody reads your terminal.
+- Before reporting, `docker ps` and `ps -ef` for anything you started
+  (docker runs, builds) and kill it.
