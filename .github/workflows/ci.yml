@@ -141,6 +141,12 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-write-usb.ps1
 
+      # tools/umc-wsl.ps1 against fake usbipd, wsl and winget on PATH; nothing
+      # elevated, no USB.
+      - name: tools/umc-wsl.ps1 against fake usbipd and wsl
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-umc-wsl.ps1
+
   ui:
     name: Qt interface build and headless tests
     needs: changes
