@@ -1,0 +1,20 @@
+[Unit]
+Description=Confirm a trial slot after the engine has stayed up
+Documentation=file:///usr/local/bin/sonora-update
+# Only on an installed A/B system; the live stick has no sonora.slot= and no
+# slot to commit.
+ConditionKernelCommandLine=sonora.slot
+After=sonora-session.service
+
+[Service]
+Type=oneshot
+# The settle time: a slot that boots but crashes the engine a minute later must
+# not commit. If the engine is down by then, confirm refuses and the boot
+# counter keeps running down to the rollback.
+ExecStartPre=/bin/sleep 60
+ExecStart=/usr/local/bin/sonora-update confirm
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

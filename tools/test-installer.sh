@@ -6,7 +6,7 @@
 # chroot'ed commands (update-initramfs, grub-install, update-grub), which a
 # fake rootfs cannot run. Whether GRUB really boots the result is for the QEMU
 # check (ADR-0032 "Unverified"). Needs Docker that allows --privileged.
-set -euo pipefail
+set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [ "${1:-}" != "--inside" ]; then
@@ -47,6 +47,8 @@ case $1 in
             mkdir -p "$r/boot/efi/EFI/BOOT"; echo x >"$r/boot/efi/EFI/BOOT/BOOTX64.EFI"
         else
             mkdir -p "$r/boot/efi/EFI/sonora"; echo x >"$r/boot/efi/EFI/sonora/grubx64.efi"
+            # grub-install --uefi-secure-boot also copies the signed shim
+            echo x >"$r/boot/efi/EFI/sonora/shimx64.efi"
         fi ;;
     update-grub)
         # Stands in for a copy that went wrong after the files were checked.
@@ -76,21 +78,48 @@ bad() { echo "FAIL $1"; fails=$((fails + 1)); }
 expect_code() { # name want got
     if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (exit $3, want $2)"; fi
 }
-newimg() { rm -f $T/disk.img; truncate -s 2G $T/disk.img; : >$T/calls; }
-# Mounts the root partition of the image read-only at $T/m.
-inspect() {
-    L=$(losetup -f --show -P $T/disk.img)
-    sleep 0.5
-    for p in "${L}p1" "${L}p2" "${L}p3"; do
-        if [ ! -b "$p" ] && m=$(cat "/sys/class/block/${p##*/}/dev" 2>/dev/null); then
-            mknod "$p" b "${m%:*}" "${m#*:}"
-        fi
+# Detaches every loop device backed by the test image, deleted file included
+# (losetup -j misses a backing file that was already removed).
+detach_all() {
+    local l
+    mountpoint -q $T/m 2>/dev/null && umount $T/m 2>/dev/null
+    for l in $(losetup -nO NAME,BACK-FILE 2>/dev/null | awk -v f="$T/disk.img" '$2 == f || $2 == f "(deleted)" {print $1}'); do
+        losetup -d "$l" 2>/dev/null || true
     done
-    ROOTDEV=$(blkid -t LABEL=sonora-root -o device | head -n 1)
-    mkdir -p $T/m
-    mount -o ro "$ROOTDEV" $T/m
 }
-release() { umount $T/m; losetup -d "$L"; }
+trap detach_all EXIT
+detach_all
+newimg() { detach_all; rm -f $T/disk.img; truncate -s 2G $T/disk.img; : >$T/calls; }
+# Mounts the root partition of the image read-only at $T/m. Sets INSPECT_OK;
+# a failure is reported and the run goes on, so one flaky mount cannot hide
+# the checks after it.
+inspect() {
+    INSPECT_OK=0
+    L=$(losetup -f --show -P $T/disk.img) || { bad "inspect: losetup failed"; return 0; }
+    local i p n m ROOTDEV=
+    # The kernel scans partitions after the attach returns: wait for them.
+    for i in $(seq 50); do
+        [ -e "/sys/class/block/${L##*/}/${L##*/}p2" ] && break
+        [ "$i" = 10 ] && { partx -u "$L" 2>/dev/null || blockdev --rereadpt "$L" 2>/dev/null || true; }
+        sleep 0.1
+    done
+    for n in 1 2 3; do
+        p="${L}p$n"
+        m=$(cat "/sys/class/block/${p##*/}/dev" 2>/dev/null) || continue
+        rm -f "$p"
+        mknod "$p" b "${m%:*}" "${m#*:}"
+    done
+    # This loop's partitions only: a leaked loop may carry the same label.
+    for p in "${L}"p*; do
+        [ -b "$p" ] || continue
+        if [ "$(blkid -s LABEL -o value "$p" 2>/dev/null)" = sonora-root ]; then ROOTDEV=$p; break; fi
+    done
+    if [ -z "$ROOTDEV" ]; then bad "inspect: no sonora-root partition on $L ($(echo "${L}"p*))"; return 0; fi
+    mkdir -p $T/m
+    if mount -o ro "$ROOTDEV" $T/m; then INSPECT_OK=1; else bad "inspect: mount -o ro $ROOTDEV $T/m failed"; fi
+    ROOTDEV_LAST=$ROOTDEV
+}
+release() { detach_all; }
 
 # 1. UEFI success
 newimg
@@ -104,9 +133,9 @@ if [ "$(sfdisk -d $T/disk.img | grep -c 'start=')" = 2 ]; then ok "two partition
 inspect
 if [ -s $T/m/var/lib/sonora/installed ]; then ok "marker written"; else bad "marker missing"; fi
 if [ -f $T/m/etc/machine-id ] && [ ! -s $T/m/etc/machine-id ]; then ok "machine-id emptied"; else bad "machine-id"; fi
-if [ ! -e $T/m/var/lib/dbus/machine-id ]; then ok "dbus machine-id removed"; else bad "dbus machine-id"; fi
+if [ "$INSPECT_OK" = 1 ] && [ ! -e $T/m/var/lib/dbus/machine-id ]; then ok "dbus machine-id removed"; else bad "dbus machine-id"; fi
 ru=$(sed -n 's/^UUID=\([^ ]*\) \/ .*/\1/p' $T/m/etc/fstab)
-if [ "$(blkid -s UUID -o value "$ROOTDEV")" = "$ru" ]; then ok "fstab root UUID is the partition's"; else bad "fstab root UUID"; fi
+if [ "$(blkid -s UUID -o value "$ROOTDEV_LAST")" = "$ru" ]; then ok "fstab root UUID is the partition's"; else bad "fstab root UUID"; fi
 if grep -q 'ext4 noatime' $T/m/etc/fstab; then ok "root mounted noatime"; else bad "noatime"; fi
 if grep -q 'GRUB_CMDLINE_LINUX_DEFAULT=.*threadirqs' $T/m/etc/default/grub.d/90-sonora.cfg; then ok "cmdline keeps threadirqs"; else bad "threadirqs"; fi
 # session carry-over: identical on the target, and the stick's copy untouched
@@ -124,7 +153,7 @@ FAKE_KERNEL=6.12.0-amd64 "$INST" --yes --target $T/disk.img >/dev/null 2>$T/err 
 expect_code "non-rt default entry exits 9" 9 "$rc"
 if grep -q 'not the rt kernel' $T/err; then ok "names the failed check"; else bad "failed check not named"; fi
 inspect
-if [ ! -e $T/m/var/lib/sonora/installed ]; then ok "no marker after failed check"; else bad "marker after failure"; fi
+if [ "$INSPECT_OK" = 1 ] && [ ! -e $T/m/var/lib/sonora/installed ]; then ok "no marker after failed check"; else bad "marker after failure"; fi
 release
 
 # 2b. a carried file that does not verify: exit 11, no marker, source intact
@@ -133,7 +162,7 @@ FAKE_CORRUPT=1 "$INST" --yes --target $T/disk.img >/dev/null 2>$T/err && rc=0 ||
 expect_code "corrupt carry-over exits 11" 11 "$rc"
 if grep -q 'do not match the stick' $T/err; then ok "mismatch is named"; else bad "mismatch not named"; fi
 inspect
-if [ ! -e $T/m/var/lib/sonora/installed ]; then ok "no marker after a failed carry-over"; else bad "marker after failed carry-over"; fi
+if [ "$INSPECT_OK" = 1 ] && [ ! -e $T/m/var/lib/sonora/installed ]; then ok "no marker after a failed carry-over"; else bad "marker after failed carry-over"; fi
 release
 if [ "$(cd "$T/sessions" && find . -type f -exec sha256sum {} + | sort -k2)" = "$SRC_SUMS" ]; then ok "stick's sessions untouched after a failure"; else bad "stick's sessions changed by a failure"; fi
 
