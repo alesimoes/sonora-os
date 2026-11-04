@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// A closed folder (ADR-0042): one narrow card where its first track was, in
+// A closed folder (ADR-0048): one narrow card where its first track was, in
 // place of every track it holds. It names the folder and how many tracks it
 // hides, and mutes or solos them all at once; a click on the name opens it
 // again. Whether a folder is shown closed is the window's, not the

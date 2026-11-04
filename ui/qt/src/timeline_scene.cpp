@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 
 #include "theme.h"
@@ -62,6 +63,56 @@ void draw_fade_curve(double fx0, double fx1, bool rising, FadeShape shape, doubl
     }
 }
 
+// A clip's level in dB where its source plays frame `src`: its own gain and
+// the line on top, linear in amplitude between points as the engine plays it.
+double clip_db_at(const Region& r, Frames src) {
+    const auto& line = r.gain_line;
+    if (line.empty()) return r.gain_db;
+    if (src <= line.front().at) return r.gain_db + line.front().db;
+    if (src >= line.back().at) return r.gain_db + line.back().db;
+    std::size_t hi = 1;
+    while (line[hi].at <= src) ++hi;
+    const GainPoint& a = line[hi - 1];
+    const GainPoint& b = line[hi];
+    const double ga = std::pow(10.0, a.db / 20.0), gb = std::pow(10.0, b.db / 20.0);
+    const double x = static_cast<double>(src - a.at) / static_cast<double>(b.at - a.at);
+    return r.gain_db + 20.0 * std::log10(ga + x * (gb - ga));
+}
+
+// The clip gain scale: +12 dB at the top of the waveform area, -36 dB at the
+// bottom.
+constexpr double kGainTopDb = 12.0, kGainBottomDb = -36.0;
+double gain_y(double db, double wy, double wh) {
+    const double c = std::clamp(db, kGainBottomDb, kGainTopDb);
+    return wy + (kGainTopDb - c) / (kGainTopDb - kGainBottomDb) * wh;
+}
+
+// The gain line over pixels [cx0, cx1) of a region drawn from x0, one column a
+// pixel as the fades are, with a handle square on each point. The region's
+// frame `src` plays at x0 + (src - offset) / fpp.
+void draw_gain_line(const Region& r, Frames offset, double x0, double cx0, double cx1, double wy,
+                    double wh, const ViewState& v, uint32_t colour, std::vector<SceneRect>& out) {
+    if (wh <= 8) return;
+    const int first = static_cast<int>(std::floor(cx0));
+    const int last = static_cast<int>(std::ceil(cx1));
+    double prev = -1;
+    for (int px = first; px < last; ++px) {
+        const Frames src = offset + static_cast<Frames>(std::llround((px + 0.5 - x0) * v.fpp));
+        const double yc = gain_y(clip_db_at(r, src), wy, wh);
+        const double from = prev < 0 ? yc : prev;
+        add(out, px, std::min(from, yc) - 0.5, 1.0, std::max(1.0, std::abs(yc - from) + 1.0),
+            colour);
+        prev = yc;
+    }
+    for (const GainPoint& p : r.gain_line) {
+        const double hx = x0 + static_cast<double>(p.at - offset) / v.fpp;
+        if (hx < cx0 || hx > cx1) continue;
+        const double hy = gain_y(r.gain_db + p.db, wy, wh);
+        add(out, hx - 3, hy - 3, 6, 6, colour);
+        add(out, hx - 2, hy - 2, 4, 4, theme::kFadeShade | 0xff000000u);
+    }
+}
+
 // One region at [pos, pos + len) reading its source from `offset`, drawn on
 // lane `lane_y`, with the fades `fades` says are heard. `ghost` draws it
 // translucent (a drag's origin).
@@ -98,8 +149,14 @@ void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const R
         for (int i = 0; i < count; ++i) {
             const double px = first_px + i;
             if (px < cx0 - 0.5 || px >= cx1) continue;
-            const double top = std::max(wy, mid - std::min(1.0, static_cast<double>(buf[i].max) * v.wave_scale) * half);
-            const double bot = std::min(wy + wh, mid - std::max(-1.0, static_cast<double>(buf[i].min) * v.wave_scale) * half);
+            // The waveform is drawn at the clip's level, so a boost shows.
+            double lin = 1.0;
+            if (r.gain_db != 0.0f || !r.gain_line.empty()) {
+                const Frames src = offset + static_cast<Frames>(std::llround((px + 0.5 - x0) * v.fpp));
+                lin = std::pow(10.0, clip_db_at(r, src) / 20.0);
+            }
+            const double top = std::max(wy, mid - std::min(1.0, static_cast<double>(buf[i].max) * v.wave_scale * lin) * half);
+            const double bot = std::min(wy + wh, mid - std::max(-1.0, static_cast<double>(buf[i].min) * v.wave_scale * lin) * half);
             add(out.rects, px, top, 1.0, std::max(1.0, bot - top), wave);
         }
     }
@@ -119,10 +176,21 @@ void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const R
                             wh, line, shade, out.rects);
         }
     }
+    // The clip gain line, on a region that has one or a level of its own.
+    if (!r.mute && !ghost && (r.gain_db != 0.0f || !r.gain_line.empty())) {
+        draw_gain_line(r, offset, x0, cx0, cx1, wy, wh, v, theme::kGainLine, out.rects);
+    }
     if (selected && !ghost) outline(out.rects, cx0, y, cx1 - cx0, h, 1.5, theme::kRegionSelectedOutline);
     if (!ghost && x1 - x0 > 24) {
+        // A level of its own is part of the name, as Pro Tools' clip name shows it.
+        std::string label = r.name;
+        if (r.gain_db != 0.0f) {
+            char gain[24];
+            std::snprintf(gain, sizeof gain, "  %+.1f dB", static_cast<double>(r.gain_db));
+            label += gain;
+        }
         out.labels.push_back({static_cast<float>(cx0 + 4), static_cast<float>(y),
-                              static_cast<float>(cx1 - cx0 - 8), r.name, theme::kText,
+                              static_cast<float>(cx1 - cx0 - 8), label, theme::kText,
                               theme::kTextCaption});
     }
 }

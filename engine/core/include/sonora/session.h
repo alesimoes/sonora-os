@@ -490,6 +490,13 @@ public:
     float aux_gain(uint32_t bus) const;
     uint32_t max_buses() const { return max_buses_; }
 
+    // Input Only Monitoring (ADR-0043), against Auto Input: with it on, an
+    // armed track that is not monitor-Off is heard from its input whatever the
+    // transport does, a punch included. Read once per block by the audio
+    // thread; any thread sets it.
+    bool input_only() const { return input_only_.load(std::memory_order_relaxed); }
+    void set_input_only(bool on) { input_only_.store(on, std::memory_order_relaxed); }
+
     // Monitor bus gain, linear. Mix state, ramped per block.
     void set_bus_gain(float g) { bus_gain_.store(g, std::memory_order_relaxed); }
     float bus_gain() const { return bus_gain_.load(std::memory_order_relaxed); }
@@ -1030,7 +1037,7 @@ private:
     // Per engine track this block: 0 when muted or solo-muted, else 1; the
     // fader's linear gain; the pan. What its sends' coefficients read.
     std::unique_ptr<float[]> track_open_;
-    // The VCAs' factor on the fader this block (ADR-0042), and open * vca
+    // The VCAs' factor on the fader this block (ADR-0048), and open * vca
     // last callback: a change of either crossfades an automated fader.
     std::unique_ptr<float[]> track_vca_;
     std::unique_ptr<float[]> track_level_;
@@ -1236,6 +1243,10 @@ private:
     // Its only writer is the audio thread; begin_take() clears it before
     // the take it starts can be seen.
     std::atomic<uint32_t> punch_passed_{0};
+    std::atomic<bool> input_only_{false};
+    // Whether the take the audio thread is in is a punch take: TrackPunch
+    // applies to it. Set with the block's punch record, audio thread alone.
+    bool take_punched_ = false;
     // set_roll_end(). The audio thread clears it with a compare-exchange
     // once it has stopped the roll, so an end the control thread sets for
     // the next roll meanwhile is kept.

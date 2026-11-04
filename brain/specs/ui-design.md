@@ -376,7 +376,7 @@ because of principle 1.
   context menu, labelled "Remove bus and its sends", and it is one undo
   step.
 
-**Update, 2026-11-04 (ADR-0042).** Two more kinds, again with no new colour.
+**Update, 2026-11-04 (ADR-0048).** Two more kinds, again with no new colour.
 
 | Kind | Kind band | Controls | Surface and place |
 |---|---|---|---|

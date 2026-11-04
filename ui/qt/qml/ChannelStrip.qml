@@ -71,7 +71,7 @@ Rectangle {
     readonly property bool soloSafe: !isBus && session.soloSafes[track] === true
     readonly property bool inputMonitor: !isBus && session.inputMonitors[track] === true
     // The folder this strip is in, an index or -1, and the VCAs that hold it
-    // (MixModel, ADR-0042).
+    // (MixModel, ADR-0048).
     readonly property int folderIndex: isBus || mixer === null || track >= mixer.trackFolders.length
                                        ? -1 : mixer.trackFolders[track]
     // Some VCA or folder exists: the tag row is there on every strip.
@@ -79,6 +79,11 @@ Rectangle {
     readonly property alias faderZone: faderArea
     readonly property string vcaNames: isBus || mixer === null || track >= mixer.trackVcas.length
                                        ? "" : mixer.trackVcas[track]
+    // The group this strip is in (MixModel, ADR-0041): an index, -1 for none.
+    readonly property int groupIndex: isBus || mixer === null || track >= mixer.trackGroups.length
+                                      ? -1 : mixer.trackGroups[track]
+    readonly property bool groupSuspended: groupIndex >= 0 && mixer.groupSuspended[groupIndex] === true
+    readonly property color groupColour: Theme.paletteColour((groupIndex * 5 + 3) % 16)
     // Another track's solo silences this one; a console shows that, so does
     // this. SessionModel applies the engine's rule, solo safe included.
     readonly property bool implicitlyMuted: !isBus && session.implicitMutes[track] === true
@@ -218,6 +223,35 @@ Rectangle {
             text: strip.isBus ? "Out 1-2" : "In " + (strip.track + 1)
             color: strip.selected ? Theme.textSecondary : Theme.textTertiary
             font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
+        }
+
+        // The group tag: the group's colour and name; a click selects the
+        // track, whose group the buttons above the strips then act on.
+        Rectangle {
+            // Takes no height on a strip in no group, so an ungrouped mix keeps its fader.
+            visible: !strip.isBus && strip.groupIndex >= 0
+            objectName: strip.isBus ? "" : "groupTag" + strip.track
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: parent.width - 2 * Theme.space2
+            height: 12
+            radius: Theme.radiusSmall
+            color: strip.groupIndex >= 0 ? strip.groupColour : "transparent"
+            opacity: strip.groupSuspended ? 0.4 : 1.0
+            Text {
+                anchors.fill: parent
+                anchors.leftMargin: 2; anchors.rightMargin: 2
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+                text: strip.groupIndex < 0 ? "" : mixer.groupNames[strip.groupIndex]
+                color: Theme.textOnAccent
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+            }
+            MouseArea {
+                anchors.fill: parent
+                enabled: strip.groupIndex >= 0
+                onClicked: strip.session.selectTrack(strip.track)
+            }
         }
 
         // Pan: a bar filled from the centre toward the side it leans.

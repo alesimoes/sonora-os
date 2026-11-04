@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// VCA masters and folders (ADR-0042): the operations, what is undoable and
+// VCA masters and folders (ADR-0048): the operations, what is undoable and
 // what is not, a deleted track leaving its VCA and folder (and coming back
 // with undo), the refusals, and the codec, window and session file.
 #include <optional>
@@ -180,14 +180,14 @@ int test_codec_window_and_file() {
     broken.insert(open + 1, "9999, ");
     Loaded bad;
     CHECK(!deserialize(broken, bad, le));
-    // A version 18 file cannot carry the keys.
-    std::string v18 = bytes;
-    const std::size_t ver = v18.find("\"sonora_session\": 19");
+    // A version 19 file cannot carry the keys.
+    std::string v19 = bytes;
+    const std::size_t ver = v19.find("\"sonora_session\": 20");
     CHECK(ver != std::string::npos);
-    v18.replace(ver, 20, "\"sonora_session\": 18");
+    v19.replace(ver, 20, "\"sonora_session\": 19");
     Loaded old;
-    CHECK(!deserialize(v18, old, le));
-    CHECK(mentions(le.message, "version 18 does not define"));
+    CHECK(!deserialize(v19, old, le));
+    CHECK(mentions(le.message, "version 19 does not define"));
     return 0;
 }
 

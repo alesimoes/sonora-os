@@ -359,9 +359,74 @@ int test_fade_gains_by_hand() {
     return 0;
 }
 
+// A clip's gain line (clip gain): linear between points, held outside them, a
+// step where two points share a frame, in source frames, so it follows the
+// region. Typed in here from the definition, not from the engine's code, and
+// the same whole as split into awkward blocks, with the fades on top.
+float line_value(const std::vector<sonora::PlanAutoPoint>& p, int64_t src) {
+    if (src < p.front().at) return p.front().value;
+    std::size_t lo = 0;
+    for (std::size_t i = 0; i < p.size(); ++i) {
+        if (p[i].at <= src) lo = i;
+    }
+    if (lo + 1 == p.size()) return p[lo].value;
+    const double x = static_cast<double>(src - p[lo].at) /
+                     static_cast<double>(p[lo + 1].at - p[lo].at);
+    return static_cast<float>(p[lo].value + x * (p[lo + 1].value - p[lo].value));
+}
+
+int test_gain_line() {
+    constexpr uint32_t kOne = 4096;
+    SegmentSpec sp = faded_region(200, 3800, 300, 400, FadeCurve::Linear, FadeCurve::SCurve);
+    // Source frame 37 plays at 200; the points are in source frames.
+    sp.line = {{37 + 100, 1.0f}, {37 + 1100, 0.25f}, {37 + 2000, 0.25f},
+               {37 + 2000, 2.0f}, {37 + 3000, 0.5f}};
+    const auto want = [&](int64_t t) {
+        return expected(sp, t) * line_value(sp.line, sp.source_offset + (t - sp.start));
+    };
+    std::vector<float> whole;
+    std::vector<float> split;
+    {
+        Rig rig("line_whole", kOne);
+        CHECK(rig.load(sp));
+        CHECK(rig.locate(0));
+        reset_heap_counts();
+        rig.session->play();
+        rig.roll(kOne, {kOne}, whole);
+        CHECK(heap_untouched());
+        CHECK(rig.session->playback_misses() == 0);
+    }
+    {
+        Rig rig("line_split", kOne);
+        CHECK(rig.load(sp));
+        CHECK(rig.locate(0));
+        reset_heap_counts();
+        rig.session->play();
+        rig.roll(kOne, {1, 2, 3, 7, 61, 97, 255, 256, 257, 999}, split);
+        CHECK(heap_untouched());
+        CHECK(rig.session->playback_misses() == 0);
+    }
+    CHECK(whole.size() == kOne && split.size() == kOne);
+    for (int64_t t = 0; t < kOne; ++t) {
+        const auto i = static_cast<std::size_t>(t);
+        const float w = want(t);
+        const float tol = 5e-6f * (std::fabs(w) > 1.0f ? std::fabs(w) : 1.0f);
+        if (std::fabs(whole[i] - w) > tol || std::fabs(split[i] - w) > tol) {
+            std::fprintf(stderr, "  line, frame %lld: whole %.7f split %.7f want %.7f\n",
+                         static_cast<long long>(t), static_cast<double>(whole[i]),
+                         static_cast<double>(split[i]), static_cast<double>(w));
+            return 1;
+        }
+    }
+    // The step is in the reference too: 0.25 the frame before, 2.0 at it.
+    CHECK(line_value(sp.line, 37 + 1999) == 0.25f && line_value(sp.line, 37 + 2000) == 2.0f);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
+    if (test_gain_line()) return 1;
     if (test_block_split_invariance()) return 1;
     if (test_locate_inside_a_fade()) return 1;
     if (test_loop_wrap_inside_fades()) return 1;

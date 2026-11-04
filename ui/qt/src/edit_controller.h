@@ -424,6 +424,19 @@ public:
     bool rename_region(const std::string& name, std::string& why);
     // A palette index, or model::kTrackColour for the track's.
     bool set_region_colour(int colour, std::string& why);
+    // --- clip gain (edit_clip_gain.cpp) ---
+    // On the selected region, each one undo step. set_clip_gain is the
+    // region's own level in dB (-144 to +24); a nudge adds to it and is
+    // refused at the limit. A gain point sits at a timeline frame inside
+    // the region, `db` its level on top of the clip's; the first one also
+    // holds both ends at 0 dB. The line is stored in source frames.
+    bool set_clip_gain(float db, std::string& why);
+    bool nudge_clip_gain(float delta_db, std::string& why);
+    bool set_gain_point(model::Frames at, float db, std::string& why);
+    bool remove_gain_point(model::Frames at, std::string& why);
+    bool clear_gain_line(std::string& why);
+    // The line's level (dB, 0 with none) at a timeline frame of `r`.
+    static float clip_line_db_at(const model::Region& r, model::Frames timeline_frame);
     // The palette index a region is drawn in: its own, else its track's.
     static int region_colour(const model::TrackEdit& t, const model::Region& r) {
         return r.colour == model::kTrackColour ? t.colour : r.colour;
@@ -445,7 +458,7 @@ public:
     // the pool, and undo brings them back.
     bool delete_unused_playlists(int track, std::string& why);
 
-    // --- VCA masters and folders (ADR-0042) ---
+    // --- VCA masters and folders (ADR-0048) ---
     // A VCA of `count` tracks from `first` down (the selected tracks): one
     // SetVca, one undo step. `name` empty takes "VCA N". A track may be on
     // several VCAs.
@@ -467,6 +480,23 @@ public:
     bool folder_toggle(int track, bool solo, std::string& why);
     // The index in snapshot().edit->folders of the folder `track` is in, or -1.
     int folder_index(int track) const;
+    // --- mix and edit groups (ADR-0041) ---
+    // Group `count` tracks from `first` down (the selected tracks): one
+    // SetGroup, one undo step. `name` empty takes "Group N". `attrs` is
+    // model::kGroup* bits; a track already in a group is refused by name,
+    // since a track is in one group at most.
+    bool group_tracks(int first, int count, const std::string& name, std::uint8_t attrs,
+                      std::string& why);
+    // The group `track` is in goes; the tracks and their mix stay.
+    bool dissolve_group(int track, std::string& why);
+    // Pro Tools' suspend: the group stays and links nothing, or links again.
+    bool toggle_group_suspend(int track, std::string& why);
+    // Relative or Absolute volume for `track`'s group.
+    bool set_group_relative(int track, bool relative, std::string& why);
+    // Link or unlink one attribute (model::kGroup*) on `track`'s group.
+    bool toggle_group_attribute(int track, std::uint8_t attr, std::string& why);
+    // The index in snapshot().edit->groups of the group `track` is in, or -1.
+    int group_index(int track) const;
 
     // --- mix: not undoable, but still operations ---
     bool set_gain(int track, float db, std::string& why);
@@ -484,6 +514,9 @@ public:
     // not Input, so it goes to Input. Refused on a MIDI or instrument
     // track, whose engine track carries no audio of its own (ADR-0014 M-1).
     bool toggle_input_monitor(int track, std::string& why);
+    // TrackPunch (TrackMix::track_punch, ADR-0043): whether the armed track
+    // records in punch takes. Refused on a MIDI or instrument track.
+    bool toggle_track_punch(int track, std::string& why);
     // Off, Read, Touch, Latch, Write, Trim (Touch/Trim), Write/Trim and
     // round to Off: the selector's order. Pro Tools' own order is unverified
     // (brain/research/protools-logic-key-bindings.md has no automation modes).
@@ -506,6 +539,9 @@ private:
     // is off screen (as follow() pages).
     void reveal(model::Frames frame);
     const model::TrackEdit* track(int index) const;
+    // `m` as one SetMix, or with the members `m`'s group links as one
+    // Compound of SetMix: one revision, so the group moves together.
+    bool submit_mix(const model::TrackMix& m, std::string& why);
     // The region a command acts on: the selected one, else the one under
     // the insertion point on the selected track.
     const model::Region* target_region(int& track_index) const;

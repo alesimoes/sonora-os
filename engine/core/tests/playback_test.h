@@ -227,6 +227,8 @@ struct SegmentSpec {
     int64_t fade_out = 0;
     sonora::FadeCurve fade_in_shape = sonora::FadeCurve::Linear;
     sonora::FadeCurve fade_out_shape = sonora::FadeCurve::Linear;
+    // The clip gain line: source frames and linear gains.
+    std::vector<sonora::PlanAutoPoint> line;
 };
 
 // The Phase 2 graph over `tracks` engine tracks (0..tracks-1), with the
@@ -250,12 +252,15 @@ inline sonora::PlaybackPlan* make_plan(uint64_t epoch, uint32_t tracks,
     sizes.edges = tracks + 1;
     sizes.chunk_slots = slots;
     sizes.track_mix = track_mix;
-    sizes.auto_points = auto_points;
+    uint32_t line_total = 0;
+    for (const SegmentSpec& s : specs) line_total += static_cast<uint32_t>(s.line.size());
+    sizes.auto_points = auto_points + line_total;
     sonora::PlaybackPlan* p = sonora::create_plan(sizes);
     p->epoch = epoch;
     p->chunk_frames = chunk_frames;
     p->pan_exponent = 0.5f;
     uint32_t slot = 0;
+    uint32_t line_at = auto_points;
     for (uint32_t i = 0; i < specs.size(); ++i) {
         const SegmentSpec& s = specs[i];
         sonora::PlanSegment& g = p->segments[i];
@@ -268,6 +273,9 @@ inline sonora::PlaybackPlan* make_plan(uint64_t epoch, uint32_t tracks,
         g.fade_out_start = s.end - s.fade_out;
         g.fade_in_shape = s.fade_in_shape;
         g.fade_out_shape = s.fade_out_shape;
+        g.gain_first = line_at;
+        g.gain_count = static_cast<uint32_t>(s.line.size());
+        for (const sonora::PlanAutoPoint& pt : s.line) p->auto_points[line_at++] = pt;
         const int64_t first = s.source_offset / chunk_frames;
         const int64_t last = (s.source_offset + (s.end - s.start) - 1) / chunk_frames;
         for (uint16_t c = 0; c < s.channels; ++c) {

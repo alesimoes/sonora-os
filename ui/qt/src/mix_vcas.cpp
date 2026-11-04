@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// VCA masters and folders in the Mix window (ADR-0042): what the strips and
+// VCA masters and folders in the Mix window (ADR-0048): what the strips and
 // the folder cards read, and what a hand on them does. See mix_model.h.
 #include <QList>
 #include <QStringList>

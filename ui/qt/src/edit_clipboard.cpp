@@ -204,6 +204,9 @@ std::string step_text(const std::string& label) {
         {"SetRegionColour", "Colour Region"},        {"SetVca", "VCA Master"},
         {"RemoveVca", "Delete VCA Master"},          {"SetFolder", "Folder"},
         {"RemoveFolder", "Dissolve Folder"},
+        {"SetRegionColour", "Colour Region"},        {"SetGroup", "Group Tracks"},
+        {"RemoveGroup", "Ungroup Tracks"},
+        {"SetRegionGain", "Clip Gain"},
     };
     const auto it = kWords.find(label);
     return it != kWords.end() ? it->second : label;

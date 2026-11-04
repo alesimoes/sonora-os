@@ -65,7 +65,7 @@ public:
     bool soloed() const { return soloed_.load(std::memory_order_relaxed); }
     void set_soloed(bool v) { soloed_.store(v, std::memory_order_relaxed); }
 
-    // What the VCAs this track is on do to it, linear (ADR-0042): the sum of
+    // What the VCAs this track is on do to it, linear (ADR-0048): the sum of
     // their gains in dB, and 0 while any of them is muted. Not the fader, so
     // the fader and its automation play as written; the audio thread
     // multiplies the two. 1 when no VCA holds the track.
@@ -75,6 +75,17 @@ public:
     // Another track's solo does not mute this one; its own mute still does.
     bool solo_safe() const { return solo_safe_.load(std::memory_order_relaxed); }
     void set_solo_safe(bool v) { solo_safe_.store(v, std::memory_order_relaxed); }
+
+    // TrackPunch (ADR-0043): off, an armed track sits a punch take out -- no
+    // file, playback heard -- and records in plain takes as usual. Read by
+    // begin_take() and, per block, by the audio thread.
+    bool punch_enabled() const { return punch_enabled_.load(std::memory_order_relaxed); }
+    void set_punch_enabled(bool v) { punch_enabled_.store(v, std::memory_order_relaxed); }
+    // Whether this track records in the running punch take: fixed by
+    // begin_take() when it decides which tracks get a file, so a TrackPunch
+    // flipped part way neither stops a file nor opens a window without one.
+    bool in_punch_take() const { return in_punch_take_.load(std::memory_order_relaxed); }
+    void set_in_punch_take(bool v) { in_punch_take_.store(v, std::memory_order_relaxed); }
 
     // What the track sends to the monitor bus. Auto: the input while armed
     // and stopped or recording, playback otherwise (session-format.md).
@@ -196,6 +207,8 @@ private:
     std::atomic<bool> soloed_{false};
     std::atomic<bool> solo_safe_{false};
     std::atomic<float> vca_gain_{1.0f};
+    std::atomic<bool> punch_enabled_{true};
+    std::atomic<bool> in_punch_take_{true};
     std::atomic<Monitor> monitor_{Monitor::Auto};
     std::atomic<Automation> automation_{Automation::Read};
     std::atomic<uint8_t> touched_{0};

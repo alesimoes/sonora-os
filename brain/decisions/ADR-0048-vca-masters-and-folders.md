@@ -1,4 +1,4 @@
-# ADR-0042 — VCA masters and folders in the Mix window
+# ADR-0048 — VCA masters and folders in the Mix window
 
 - Status: Accepted (recommended defaults, taken with no owner available,
   2026-11-04)
@@ -7,9 +7,10 @@
   Compound, mix outside undo), ADR-0022 (buses: structure undoable, values
   not), ADR-0023 (the positional engine; a deleted track leaves what held it)
 - Progress items: `ui.mixer.vca`, `ui.mixer.folders` (mixing, V1)
-- Numbers are placeholders for the coordinator to renumber: session format
-  19, window format 16, protocol 46, this ADR 0042 (the groups branch holds
-  19, 16 and 45 and ADR-0041).
+- Numbers (coordinator, 2026-11-04): session format 20 (a v19 -> v20
+  migration on top of the session-model train's v19), window format 17,
+  protocol 51 (48 is the session-model train, 49 bounce, 50 preferences).
+  Renumbered from the placeholders 19, 16, 46 and ADR-0042.
 
 ## Summary
 
@@ -31,8 +32,8 @@
   in at most one. Mute and solo on a folder are one Compound of `SetMix`
   over its members. Whether a folder is shown closed is the window's, not
   the session's, and goes back to open when a session opens.
-- §5: session format 19 (`vcas`, each with its dB and mute, and `folders`,
-  only when there are some), window format 16, protocol 46. Commands
+- §5: session format 20 (`vcas`, each with its dB and mute, and `folders`,
+  only when there are some), window format 17, protocol 51. Commands
   `vca.new`, `vca.delete`, `folder.new`, `folder.dissolve`.
 
 ## 1. Where they live

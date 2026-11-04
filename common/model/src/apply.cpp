@@ -745,10 +745,65 @@ public:
                            [&](auto& r) { r.name = op.name; });
     }
 
+    bool operator()(const SetGroup& op) {
+        const auto& groups = before_.edit->groups;
+        const auto at = std::find_if(groups.begin(), groups.end(),
+                                     [&](const Group& g) { return g.id == op.group; });
+        if (at == groups.end() && !fresh(op.group)) return false;
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        Group g;
+        g.id = op.group;
+        g.name = op.name;
+        g.members = op.members;
+        g.attrs = op.attrs;
+        g.relative = op.relative;
+        g.active = op.active;
+        if (at == groups.end()) {
+            edit->groups.push_back(std::move(g));
+        } else {
+            edit->groups[static_cast<std::size_t>(at - groups.begin())] = std::move(g);
+        }
+        std::string where;
+        const std::string why = detail::group_problem(*edit, where);
+        if (!why.empty()) return fail("group" + where + ": " + why);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        if (at == groups.end()) after_.next_id = op.group + 1;
+        return true;
+    }
+
+    bool operator()(const RemoveGroup& op) {
+        const auto& groups = before_.edit->groups;
+        const auto at = std::find_if(groups.begin(), groups.end(),
+                                     [&](const Group& g) { return g.id == op.group; });
+        if (at == groups.end()) return fail("group " + str(op.group) + " does not exist");
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        edit->groups.erase(edit->groups.begin() + (at - groups.begin()));
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
     bool operator()(const SetRegionColour& op) {
         if (!detail::region_colour_ok(op.colour)) return fail(detail::region_colour_problem());
         return edit_region(op.playlist, op.region,
                            [&](auto& r) { r.colour = op.colour; });
+    }
+
+    bool operator()(const SetRegionGain& op) {
+        if (!(op.gain_db >= kMinGainDb && op.gain_db <= kMaxGainDb)) {
+            return fail("gain_db must be from -144 to 24 dB");
+        }
+        const std::string bad = gain_line_problem(op.gain_line);
+        if (!bad.empty()) return fail(bad);
+        return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
+            const std::size_t i = region_index(p, op.region);
+            if (i == kNone) return no_region(op.region, op.playlist);
+            p.regions[i].gain_db = op.gain_db;
+            p.regions[i].gain_line = op.gain_line;
+            mark(i, i);
+            return true;
+        });
     }
 
     bool operator()(const ReorderTracks& op) {
@@ -778,12 +833,22 @@ public:
         auto edit = std::make_shared<EditState>(*before_.edit);
         edit->tracks.erase(edit->tracks.begin() + static_cast<std::ptrdiff_t>(t));
         // A VCA or a folder does not keep a track that is gone; undo brings
-        // both back with the track (ADR-0042 §1).
+        // both back with the track (ADR-0048 §1).
         const auto drop = [&](std::vector<Id>& members) {
             members.erase(std::remove(members.begin(), members.end(), op.track), members.end());
         };
         for (Vca& v : edit->vcas) drop(v.members);
         for (Folder& f : edit->folders) drop(f.members);
+        // A group of fewer than two tracks links nothing: it goes, and undo
+        // brings it back with the track.
+        for (Group& g : edit->groups) {
+            g.members.erase(std::remove(g.members.begin(), g.members.end(), op.track),
+                            g.members.end());
+        }
+        edit->groups.erase(
+            std::remove_if(edit->groups.begin(), edit->groups.end(),
+                           [](const Group& g) { return g.members.size() < 2; }),
+            edit->groups.end());
         after_ = before_;
         after_.edit = std::move(edit);
         return true;

@@ -564,7 +564,7 @@ int test_solo_safe() {
     return 0;
 }
 
-// ADR-0042: a VCA's factor multiplies the fader, and a lane-less automated
+// ADR-0048: a VCA's factor multiplies the fader, and a lane-less automated
 // or static track plays it the same; 1 is no VCA, 0 a muted one.
 int test_vca_gain_scales_the_fader() {
     Rig rig(1);

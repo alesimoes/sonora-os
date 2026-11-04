@@ -224,6 +224,11 @@
       "command": "track.toggle_arm",
       "comment": "Record enable the tracks holding the edit cursor or selection. This build has no selection yet, so until it does this key reports that it failed; the numbered arms below work today."
     },
+    "ctrl+g": {
+      "command": "group.new",
+      "verified": false,
+      "comment": "Group the selected tracks, Control+G. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
     "shift+s": "track.toggle_solo",
     "shift+m": "track.toggle_mute",
     "shift+i": "track.toggle_input_monitor",
@@ -289,6 +294,21 @@
       "command": "track.new",
       "verified": false,
       "comment": "Track > New, Command+Shift+N: opens New Tracks, which asks how many. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md."
+    },
+    "ctrl+alt+up": {
+      "command": "clip.gain_up",
+      "origin": "sonora",
+      "comment": "Nudge the selected clip's gain up 1 dB (Clip Gain). Pro Tools has no single key for it."
+    },
+    "ctrl+alt+down": {
+      "command": "clip.gain_down",
+      "origin": "sonora",
+      "comment": "Nudge the selected clip's gain down 1 dB (Clip Gain)."
+    },
+    "ctrl+alt+g": {
+      "command": "clip.gain",
+      "origin": "sonora",
+      "comment": "Clip Gain: opens the dialog to type the selected clip's gain in dB."
     },
     "ctrl+shift+r": {
       "command": "region.rename",

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// VCA masters and folders (ADR-0042) in the interface:
+// VCA masters and folders (ADR-0048) in the interface:
 //
 //   - making, re-membering and removing a VCA, and a folder, is one
 //     operation and one undo step each; a VCA's fader and mute are not an

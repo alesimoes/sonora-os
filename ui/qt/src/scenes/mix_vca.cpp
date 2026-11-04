@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// VCA masters and an open folder (ADR-0042) in the Mix window: "Drums" and
+// VCA masters and an open folder (ADR-0048) in the Mix window: "Drums" and
 // "Overheads" strips to the right of the returns, each with its fader and
 // mute, their names on the tracks they hold (a track can be on two VCAs),
 // and a folder tag on the tracks of the "Keys" folder.

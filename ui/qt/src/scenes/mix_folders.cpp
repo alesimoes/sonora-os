@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Folders (ADR-0042) in the Mix window: "Guitars" closed into one narrow
+// Folders (ADR-0048) in the Mix window: "Guitars" closed into one narrow
 // card where its first track was, its three strips gone, with a mute, a
 // solo, Open and Ungroup; "Keys" open beside it, wearing its tag.
 #include <QQuickItem>

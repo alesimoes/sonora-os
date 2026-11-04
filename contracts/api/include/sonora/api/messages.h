@@ -161,13 +161,24 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
-// 46 (ADR-0042, VCA masters and folders; follows 42 and the numbers other
-//   branches hold, 43 to 45): new operation kinds SetVca, RemoveVca,
+// 48 (the session-model train: ADR-0041 groups, ADR-0042 clip gain, ADR-0043
+//   record modes, one bump for the three; follows 42, 43 to 47 are other
+//   work's): new operation kinds SetGroup, RemoveGroup and SetRegionGain; an
+//   edit state in the undo window carries "groups" and a region "gain_line";
+//   SetSettings carries transport.input_only, rolls_on and quick_punch and an
+//   audio track's mix track_punch (undo window format 16, session format 19);
+//   the commands group.new, group.dissolve, group.toggle_suspend, clip.gain,
+//   transport.toggle_input_only, transport.toggle_pre_post_roll,
+//   transport.toggle_quick_punch (engine) and track.toggle_track_punch
+//   (interface). A version-42 peer refuses the operations, the keys and the
+//   window, and answers the commands NotImplemented.
+// 51 (ADR-0048, VCA masters and folders; follows 48, the session-model train,
+//   49, bounce, and 50, preferences): new operation kinds SetVca, RemoveVca,
 //   SetVcaMix, SetFolder and RemoveFolder, the undo window carries "vcas",
-//   "folders" and "vca_mix" (window format 16, session format 19), and the
+//   "folders" and "vca_mix" (window format 17, session format 20), and the
 //   commands vca.new, vca.delete, folder.new and folder.dissolve. A
-//   version-42 peer refuses the operations and the window.
-constexpr uint32_t kProtocolVersion = 46;
+//   version-48 peer refuses the operations and the window.
+constexpr uint32_t kProtocolVersion = 51;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

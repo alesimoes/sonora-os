@@ -417,7 +417,7 @@ int test_arm_and_input_follow_the_track() {
     return 0;
 }
 
-// ADR-0042: the control thread writes each engine track's VCA factor (the
+// ADR-0048: the control thread writes each engine track's VCA factor (the
 // dB of its VCAs added, 0 for a muted one) and it goes with the document
 // track when a reorder moves it, as the fader does.
 int test_vca_factor_follows_the_document_track() {

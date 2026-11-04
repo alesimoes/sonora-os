@@ -81,6 +81,11 @@ struct PlanSegment {
     uint32_t chunk_count[2] = {0, 0};
     uint16_t channels = 1;
     float gain = 1.0f;                       // linear region gain
+    // The clip's gain line: gain_count points (0: a flat clip) at gain_first in
+    // PlaybackPlan::auto_points, `at` a SOURCE frame and `value` a LINEAR gain
+    // (not dB), multiplied with `gain`.
+    uint32_t gain_first = 0;
+    uint32_t gain_count = 0;
     FadeCurve fade_in_shape = FadeCurve::Linear;
     FadeCurve fade_out_shape = FadeCurve::Linear;
 };
@@ -209,7 +214,7 @@ struct PlanTrackMix {
     uint8_t touched = 0;
     // Track::trim() of the same track, stamped with `touched`.
     float trim = 1.0f;
-    // Track::vca_gain() of the track that arrives here (ADR-0042).
+    // Track::vca_gain() of the track that arrives here (ADR-0048).
     float vca = 1.0f;
     // The document track this plan plays on the engine track, 0 for none.
     // Set in every plan, with or without a mix_serial: the audio thread

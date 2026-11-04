@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// A VCA master (ADR-0042): a fader and a mute that scale the tracks it
+// A VCA master (ADR-0048): a fader and a mute that scale the tracks it
 // holds, with no audio of its own. Laid out as AuxStrip below its name so
 // every fader starts at the same height; the tracks it holds wear its name
 // on their strips. "Set" makes it hold the selected tracks, the x by the

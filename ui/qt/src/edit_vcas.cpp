@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// VCA masters and folders (ADR-0042) on the Edit controller. Making,
+// VCA masters and folders (ADR-0048) on the Edit controller. Making,
 // re-membering and removing either is one operation and one undo step; a
 // VCA's fader and mute are SetVcaMix, saved and not undone; a folder's mute
 // and solo are one Compound of SetMix over its members, so the engine hears

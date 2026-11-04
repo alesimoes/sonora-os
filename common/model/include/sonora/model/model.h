@@ -98,6 +98,21 @@ inline constexpr std::uint8_t auto_colour(std::size_t display_index) {
     return static_cast<std::uint8_t>(display_index % kAutoColours);
 }
 
+// One point of a clip's gain line (Pro Tools' Clip Gain, Logic's region
+// gain): `at` is a SOURCE frame, not a timeline one, so moving, trimming or
+// splitting the region never has to rewrite the line. The gain between two
+// points is linear in amplitude; before the first and after the last it is
+// held. `db` is added to the region's gain_db.
+struct GainPoint {
+    Frames at = 0;
+    float db = 0.0f;
+    bool operator==(const GainPoint& o) const { return at == o.at && db == o.db; }
+};
+inline constexpr std::size_t kMaxGainPoints = 256;
+// Empty when `line` is a valid gain line: strictly increasing, non-negative
+// frames, finite dB within the gain range, at most kMaxGainPoints points.
+std::string gain_line_problem(const std::vector<GainPoint>& line);
+
 struct Region {
     Id id = 0;
     std::string name;
@@ -107,6 +122,8 @@ struct Region {
     Frames source_offset = 0;  // the source frame that plays at `position`
     std::vector<SourceRef> channels;  // one per track channel
     float gain_db = 0.0f;
+    // Strictly increasing `at`, at most kMaxGainPoints; empty is a flat clip.
+    std::vector<GainPoint> gain_line;
     bool mute = false;
     Fade fade_in, fade_out;
 
@@ -648,7 +665,7 @@ struct Bus {
     bool operator==(const Bus& o) const;
 };
 
-// --- VCA masters and folders (ADR-0042, session format version 19) -------
+// --- VCA masters and folders (ADR-0048, session format version 19) -------
 
 inline constexpr std::size_t kMaxVcas = 32;
 inline constexpr std::size_t kMaxFolders = 64;
@@ -675,6 +692,39 @@ struct Folder {
     std::vector<Id> members;   // track ids, in no required order
     bool operator==(const Folder& o) const {
         return id == o.id && name == o.name && members == o.members;
+    }
+};
+
+// --- groups (ADR-0041, session format version 19) --------------------------
+
+inline constexpr std::size_t kMaxGroups = 64;
+
+// What a group links, as Pro Tools' Mix/Edit Groups attributes do. Volume,
+// Mute, Solo and Arm are the mix side; Selection and Edit the edit side.
+inline constexpr std::uint8_t kGroupVolume = 1;
+inline constexpr std::uint8_t kGroupMute = 2;
+inline constexpr std::uint8_t kGroupSolo = 4;
+inline constexpr std::uint8_t kGroupArm = 8;
+inline constexpr std::uint8_t kGroupSelection = 16;
+inline constexpr std::uint8_t kGroupEdit = 32;
+inline constexpr std::uint8_t kGroupAllAttributes = 63;
+
+// A set of tracks that share the attributes in `attrs`. A track is in at
+// most one group. Structure, so undoable; a group's effect on the faders is
+// never stored: it is a SetMix per member (groups.h).
+struct Group {
+    Id id = 0;
+    std::string name;
+    std::vector<Id> members;   // track ids, at least two
+    std::uint8_t attrs = kGroupVolume | kGroupMute | kGroupSolo | kGroupArm;
+    // Volume only: a move shifts every member by the same dB (Pro Tools'
+    // Relative) rather than setting them all to one value (Absolute).
+    bool relative = true;
+    // Pro Tools' group suspend: kept, but links nothing.
+    bool active = true;
+    bool operator==(const Group& o) const {
+        return id == o.id && name == o.name && members == o.members && attrs == o.attrs &&
+               relative == o.relative && active == o.active;
     }
 };
 
@@ -809,10 +859,11 @@ struct EditState {
     std::vector<std::shared_ptr<const TrackEdit>> tracks;   // display order
     std::shared_ptr<const MarkerList> markers;
     std::vector<Bus> buses;   // display order
-    std::vector<Vca> vcas;          // creation order (ADR-0042)
+    std::vector<Vca> vcas;          // creation order (ADR-0048)
     std::vector<Folder> folders;    // creation order
     // The Master's lanes: Volume only (ADR-0027 §9).
     AutomationLanes master_automation;
+    std::vector<Group> groups;   // creation order
     bool operator==(const EditState& o) const;
 };
 
@@ -892,6 +943,11 @@ struct TrackMix {
     MidiRouting midi;
     // A strip setting, saved and not undone, as in Pro Tools (ADR-0027 §1).
     AutomationMode automation = AutomationMode::Read;
+    // Pro Tools' TrackPunch, per track: whether this track's record-enable
+    // holds in a punch take. An armed track with it off sits the punch out
+    // (no file, playback heard) and records in plain takes as any other.
+    // Audio tracks only; saved and not undoable, like `monitor`.
+    bool track_punch = true;
     bool operator==(const TrackMix& o) const;
 };
 
@@ -938,7 +994,7 @@ struct BusMix {
     }
 };
 
-// A VCA master's fader and mute: saved and not undoable (ADR-0042).
+// A VCA master's fader and mute: saved and not undoable (ADR-0048).
 struct VcaMix {
     Id vca = 0;
     float gain_db = 0.0f;
@@ -1023,11 +1079,24 @@ struct Transport {
     // both together (transport.toggle_cycle). ADR-0016, update "loop record
     // as a record mode".
     bool loop_record = false;
+    // Pro Tools' Input Only Monitoring against Auto Input (the default):
+    // with it on, an armed track is heard from its input whatever the
+    // transport does, a punch included (ADR-0043).
+    bool input_only = false;
+    // Pro Tools' Pre/Post-Roll switch: off, a take or a punch starts at the
+    // record point and a punch stops the roll at B, the rolls kept for when
+    // it is turned on again.
+    bool rolls_on = true;
+    // Pro Tools' QuickPunch record mode: the record key punches in and out on
+    // the fly, the punch range is not used, and every pass is a take of its
+    // own, kept in the track's take history (ADR-0043).
+    bool quick_punch = false;
     bool operator==(const Transport& o) const {
         return loop == o.loop && punch == o.punch && pre_roll == o.pre_roll &&
                post_roll == o.post_roll && punch_crossfade == o.punch_crossfade &&
                count_off_bars == o.count_off_bars && loop_playback == o.loop_playback &&
-               loop_record == o.loop_record;
+               loop_record == o.loop_record && input_only == o.input_only &&
+               rolls_on == o.rolls_on && quick_punch == o.quick_punch;
     }
 };
 inline constexpr std::uint32_t kMaxCountOffBars = 99;

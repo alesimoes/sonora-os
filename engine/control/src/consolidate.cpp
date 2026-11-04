@@ -12,6 +12,7 @@
 #include "sonora/fade_curve.h"
 #include "sonora/model/comping.h"
 #include "sonora/model/operations.h"
+#include "sonora/plan_builder.h"
 #include "sonora/playback_plan.h"
 #include "sonora/session_files/session_folder.h"
 #include "sonora/wav_reader.h"
@@ -30,6 +31,7 @@ struct Segment {
     int64_t fade_in_end = 0, fade_out_start = 0;
     FadeCurve fade_in_shape = FadeCurve::Linear, fade_out_shape = FadeCurve::Linear;
     const model::Region* region = nullptr;
+    std::vector<PlanAutoPoint> line;   // the clip gain line, as the plan plays it
 };
 
 FadeCurve curve_of(model::FadeShape s) {
@@ -45,6 +47,10 @@ FadeCurve curve_of(model::FadeShape s) {
 // file sounds like the range it replaces.
 float gain_at(const Segment& s, int64_t t) {
     float g = s.gain;
+    if (!s.line.empty()) {
+        g *= auto_lane_value(s.line.data(), static_cast<uint32_t>(s.line.size()),
+                             s.source_offset + (t - s.start));
+    }
     if (t < s.fade_in_end) {
         const float x = static_cast<float>(t - s.start) / static_cast<float>(s.fade_in_end - s.start);
         g *= fade_in_gain(s.fade_in_shape, x);
@@ -130,6 +136,7 @@ bool render_range(const model::Snapshot& snapshot, const std::string& session_di
         s.end = r.end();
         s.source_offset = r.source_offset;
         s.gain = auto_gain_of_db(r.gain_db);
+        plan_gain_line(r, s.line);
         s.fade_in_end = r.position + r.fade_in.length;
         s.fade_in_shape = curve_of(r.fade_in.shape);
         s.fade_out_start = r.end() - r.fade_out.length;
@@ -353,6 +360,32 @@ bool consolidate(model::Document& document, const Session& session,
     if (!document.apply(c, u, why)) return refused(why);
     updates.push_back(std::move(u));
     return true;
+}
+
+bool render_clip_gain(model::Document& document, const Session& session,
+                      const std::string& session_dir, model::Id track, model::Id region,
+                      const ConsolidateHooks& hooks,
+                      std::vector<model::ReplicationUpdate>& updates, std::string& error) {
+    const model::Snapshot now = document.current();
+    const model::TrackEdit* t = track_of(now, track);
+    if (t == nullptr) {
+        error = "no such track; nothing was rendered";
+        return false;
+    }
+    for (const auto& pl : t->playlists) {
+        if (pl->id != t->active_playlist) continue;
+        for (const model::Region& r : pl->regions) {
+            if (r.id != region) continue;
+            ConsolidateRequest rq;
+            rq.track = track;
+            rq.start = r.position;
+            rq.end = r.end();
+            rq.name = r.name;
+            return consolidate(document, session, session_dir, rq, hooks, updates, error);
+        }
+    }
+    error = "no such region on the track's playlist; nothing was rendered";
+    return false;
 }
 
 }  // namespace sonora

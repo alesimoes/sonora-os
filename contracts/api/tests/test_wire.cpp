@@ -436,10 +436,12 @@ void version_check() {
     // (ADR-0027 §9; follows 40).
     // 42: meters.reset, and state layout 8's loudness (ADR-0013 amendment of
     // 2026-11-03; follows 41).
-    // 46: SetVca, RemoveVca, SetVcaMix, SetFolder, RemoveFolder, the VCA and
+    // 48: the session-model train (groups, clip gain, record modes; window
+    // format 16, session format 19).
+    // 51: SetVca, RemoveVca, SetVcaMix, SetFolder, RemoveFolder, the VCA and
     // folder state in the window and the vca.* and folder.* commands
-    // (ADR-0042).
-    CHECK(kProtocolVersion == 46);
+    // (ADR-0048).
+    CHECK(kProtocolVersion == 51);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -450,13 +452,13 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 46 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 51 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 46"));
+                   "speaks version 51"));
 }
 
 void domains() {
