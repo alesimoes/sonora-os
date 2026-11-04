@@ -275,8 +275,10 @@ class Orchestrator:
         stream = os.path.join(run_dir, "stream.log")
         try:
             os.makedirs(run_dir, exist_ok=True)
-            if t["kind"] == "work" and ln.kind == "fixer" and \
-                    self.train.is_adopted(t["feature_id"]):
+            # A conflict run is the integrator's, a red check the fixer's;
+            # on the train both work at the PR's head on origin.
+            if t["kind"] == "work" and ln.kind in ("fixer", "integrator") \
+                    and self.train.is_adopted(t["feature_id"]):
                 fb = self._feature_branch(t["feature_id"])
                 wt = self.worktrees.ensure_pr(
                     self._feature_key(t["feature_id"]), fb)
@@ -364,6 +366,15 @@ class Orchestrator:
                 "Merge origin/main into the branch, resolve the conflicts "
                 "keeping both sides' intent, rerun the narrow tests, commit. "
                 "Do not push, open or merge a PR: the daemon does.")
+            ti = self.train.info(t["feature_id"]) if t["feature_id"] else None
+            if ti:
+                extra += (
+                    "\nMerge-train PR #%s (branch %s), checked out here at its "
+                    "head on origin on a local train/ branch. Watch protocol, "
+                    "ADR and format numbers main may have taken since: "
+                    "renumber the PR's to the next free one and say so in "
+                    "result.json. Never edit planning/BACKLOG.md beyond the "
+                    "conflict itself." % (ti.get("pr"), ti.get("branch")))
         elif kind == "integrator":
             subs = [x["branch"] for x in self._merge_order(t["feature_id"])]
             extra += (

@@ -160,6 +160,21 @@ class Train(support.DaemonCase):
         self.assertIn("Merge-train PR #10", extra)
         self.assertIn("git merge origin/main", extra)
 
+    def test_conflict_run_works_at_the_pr_head_and_is_pushed(self):
+        o = self.make()
+        self.forge.add_pr(10, "a", checks={"build": "pass"}, mergeable="no")
+        o.train.adopt()
+        o.tick()
+        runs = o.store.runs_of("pr-10")
+        self.assertEqual([r["role"] for r in runs], ["integrator"])
+        self.assertEqual(o.worktrees.pr_checkouts, ["a"])
+        self.assertIn("Merge-train PR #10",
+                      o._extra(o.store.get_task("pr-10"), "integrator"))
+        self.forge.prs[10]["mergeable"] = "yes"
+        self.assertTrue(self.pump(o, lambda: state(o, "pr-10") == "pr_open"))
+        self.assertEqual(self.forge.pushed, ["a"])
+        self.assertEqual(self.forge.enqueued, [])
+
     def test_fixer_that_commits_nothing_gets_a_rerun(self):
         o = self.make()
         self.forge.add_pr(10, "a", checks={"build": "fail"})
