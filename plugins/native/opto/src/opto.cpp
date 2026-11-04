@@ -43,11 +43,34 @@ const Descriptor kDesc = {"org.sonora.opto", "Sonora Opto", "Dynamics", 1, kPara
 constexpr std::uint32_t kControl = 16;
 constexpr std::uint32_t kMaxCh = 2;
 
+// What an editor draws (ui_hints.h). The gain reduction is the cell's own
+// state (OptoChannel), not an estimate from the signal.
+constexpr std::uint32_t kMeterGr = 0, kMeterIn = 1, kMeterOut = 2;
+const MeterDecl kMeters[] = {kGainReductionMeter, kInputMeter, kOutputMeter};
+const ParamHint kHints[] = {
+    {"peak_reduction", "Compression", Widget::Knob, nullptr},
+    {"gain", "Compression", Widget::Knob, nullptr},
+    {"mode", "Mode", Widget::Choice, nullptr},
+    {"emphasis", "Side-chain", Widget::Knob, nullptr},
+    {"external_sc", "Side-chain", Widget::Switch, nullptr},
+    {"link", "Stereo", Widget::Switch, nullptr},
+    {"mix", "Stereo", Widget::Knob, nullptr},
+    {"quality", "Quality", Widget::Choice, nullptr},
+};
+const UiHints kUi = {kHints, sizeof kHints / sizeof kHints[0], kMeters, 3, nullptr, 0};
+
 class Opto final : public ProcessorBase {
 public:
-    Opto() : ProcessorBase(kDesc) {}
+    Opto() : ProcessorBase(kDesc) { publish_levels(kMeterIn, kMeterOut); }
+    const UiHints* ui_hints() const noexcept override { return &kUi; }
 
 protected:
+    void on_publish(Telemetry& t) noexcept override {
+        double gr = ch_[0].gain_reduction_db();
+        if (channels() == 2) gr = std::fmax(gr, ch_[1].gain_reduction_db());
+        t.meter(kMeterGr, static_cast<float>(gr > 0.0 ? gr : 0.0));
+    }
+
     bool on_prepare() override {
         long q = std::lround(value(kQuality));
         q = q < 0 ? 0 : (q > 2 ? 2 : q);

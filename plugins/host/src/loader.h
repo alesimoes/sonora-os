@@ -17,6 +17,14 @@ namespace sonora::plugin_host {
 void* open_library(const std::string& path, std::string& error);
 void* library_symbol(void* library, const char* name);
 void close_library(void* library);
+// Hands a Sonora native plugin's library the insert's telemetry block
+// (ADR-0057): calls its sonora_native_telemetry_bind(block) when it exports
+// one. False for a library that does not (every third-party plugin) or when
+// nothing was bound. Main thread, right after the plugin was instantiated.
+bool bind_native_telemetry(void* library, void* block);
+// The same for a library lilv opened, found by its path (a library that is
+// already loaded is shared, not loaded again).
+bool bind_native_telemetry_at(const std::string& path, void* block);
 
 // The directory part of the platform's per-user and system VST3 locations
 // (Linux: ~/.vst3, /usr/lib/vst3, /usr/local/lib/vst3), in search order.

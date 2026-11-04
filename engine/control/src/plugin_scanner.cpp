@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <deque>
@@ -89,6 +90,145 @@ uint16_t catalog_channels(uint32_t in, uint32_t out) {
     return uint16_t(std::max<uint32_t>(1, std::min<uint32_t>(std::max(in, out), 64)));
 }
 
+namespace {
+
+bool hint_text(const json::Value* v, std::string& out, std::size_t cap) {
+    if (v == nullptr || !v->is_string() || v->text().size() > cap) return false;
+    out = v->text();
+    return true;
+}
+
+bool hint_float(const json::Value* v, float& out) {
+    return v != nullptr && v->is_number() && v->to_float(out) && std::isfinite(out);
+}
+
+}  // namespace
+
+bool apply_descriptor_hints(api::PluginInfo& info, const std::string& text) {
+    json::Value root;
+    json::Error err;
+    if (!json::parse(text, root, err) || !root.is_object()) return false;
+    std::vector<api::PluginMeterInfo> meters;
+    std::vector<api::PluginCurveInfo> curves;
+    if (const json::Value* list = root.find("meters")) {
+        if (!list->is_array() || list->items().size() > api::wire::kMaxPluginMeters) return false;
+        for (const json::Value& o : list->items()) {
+            api::PluginMeterInfo m;
+            m.slot = uint32_t(meters.size());
+            std::string kind;
+            if (!o.is_object() || !hint_text(o.find("id"), m.id, api::wire::kMaxParamKeyBytes) ||
+                !hint_text(o.find("name"), m.name, 256) || !hint_text(o.find("unit"), m.unit, 32) ||
+                !hint_text(o.find("kind"), kind, 32) || !hint_float(o.find("min"), m.min) ||
+                !hint_float(o.find("max"), m.max) || m.min > m.max) {
+                return false;
+            }
+            if (kind == "gain_reduction") m.kind = uint32_t(api::PluginMeterKind::GainReduction);
+            else if (kind == "input") m.kind = uint32_t(api::PluginMeterKind::InputLevel);
+            else if (kind == "output") m.kind = uint32_t(api::PluginMeterKind::OutputLevel);
+            else if (kind == "other") m.kind = uint32_t(api::PluginMeterKind::Other);
+            else return false;
+            for (const auto& each : meters)
+                if (each.id == m.id) return false;
+            meters.push_back(std::move(m));
+        }
+    }
+    if (const json::Value* list = root.find("curves")) {
+        if (!list->is_array() || list->items().size() > api::wire::kMaxPluginCurves) return false;
+        for (const json::Value& o : list->items()) {
+            api::PluginCurveInfo c;
+            c.slot = uint32_t(curves.size());
+            const json::Value* points = o.is_object() ? o.find("points") : nullptr;
+            const json::Value* x_log = o.is_object() ? o.find("x_log") : nullptr;
+            std::int64_t n = 0;
+            if (!o.is_object() || !hint_text(o.find("id"), c.id, api::wire::kMaxParamKeyBytes) ||
+                !hint_text(o.find("name"), c.name, 256) || !hint_text(o.find("x_unit"), c.x_unit, 32) ||
+                !hint_text(o.find("y_unit"), c.y_unit, 32) || points == nullptr || !points->to_int64(n) ||
+                n < 2 || n > int64_t(api::wire::kMaxCurvePoints) || x_log == nullptr || !x_log->is_bool() ||
+                !hint_float(o.find("x_min"), c.x_min) || !hint_float(o.find("x_max"), c.x_max) ||
+                !hint_float(o.find("y_min"), c.y_min) || !hint_float(o.find("y_max"), c.y_max)) {
+                return false;
+            }
+            c.points = uint32_t(n);
+            c.x_log = x_log->as_bool();
+            if (!(c.x_min < c.x_max && c.y_min <= c.y_max) || (c.x_log && c.x_min <= 0.0f)) return false;
+            for (const auto& each : curves)
+                if (each.id == c.id) return false;
+            curves.push_back(std::move(c));
+        }
+    }
+    // Parameters: by the table's id (an LV2 port symbol is that id), else by
+    // name (a VST3 key is a number). All checked before any is set.
+    struct Hint {
+        std::size_t param;
+        std::string section, curve_source;
+        uint32_t widget = 0;
+    };
+    std::vector<Hint> hints;
+    if (const json::Value* list = root.find("params")) {
+        if (!list->is_array()) return false;
+        for (const json::Value& o : list->items()) {
+            if (!o.is_object()) return false;
+            const json::Value* section = o.find("section");
+            const json::Value* widget = o.find("widget");
+            const json::Value* source = o.find("curve_source");
+            if (section == nullptr && widget == nullptr && source == nullptr) continue;
+            std::string id, name;
+            hint_text(o.find("id"), id, 256);
+            hint_text(o.find("name"), name, 256);
+            std::size_t at = info.params.size();
+            for (std::size_t i = 0; i < info.params.size() && at == info.params.size(); ++i)
+                if (!id.empty() && info.params[i].key == id) at = i;
+            for (std::size_t i = 0; i < info.params.size() && at == info.params.size(); ++i)
+                if (!name.empty() && info.params[i].name == name) at = i;
+            if (at == info.params.size()) continue;  // a parameter this catalog did not keep
+            const api::PluginParam& q = info.params[at];
+            Hint h;
+            h.param = at;
+            if (section != nullptr && !hint_text(section, h.section, api::wire::kMaxParamSectionBytes)) return false;
+            if (widget != nullptr) {
+                std::string w;
+                if (!hint_text(widget, w, 16)) return false;
+                if (w == "knob") h.widget = uint32_t(api::PluginWidget::Knob);
+                else if (w == "fader") h.widget = uint32_t(api::PluginWidget::Fader);
+                else if (w == "switch") h.widget = uint32_t(api::PluginWidget::Switch);
+                else if (w == "choice") h.widget = uint32_t(api::PluginWidget::Choice);
+                else return false;
+                // What the decoder would refuse: the format reported another shape.
+                if (h.widget == uint32_t(api::PluginWidget::Switch) && q.steps != 2) h.widget = 0;
+                if (h.widget == uint32_t(api::PluginWidget::Choice) && q.steps < 2) h.widget = 0;
+            }
+            if (source != nullptr) {
+                if (!hint_text(source, h.curve_source, api::wire::kMaxParamKeyBytes)) return false;
+                bool found = false;
+                for (const auto& c : curves) found = found || c.id == h.curve_source;
+                if (!found) return false;
+            }
+            hints.push_back(std::move(h));
+        }
+    }
+    info.meters = std::move(meters);
+    info.curves = std::move(curves);
+    for (Hint& h : hints) {
+        api::PluginParam& q = info.params[h.param];
+        q.section = std::move(h.section);
+        q.widget = h.widget;
+        q.curve_source = std::move(h.curve_source);
+    }
+    return true;
+}
+
+namespace {
+
+// A Sonora native bundle carries descriptor.json (plugins/native/format): at
+// the top of an LV2 bundle, in Contents/Resources of a VST3 one.
+std::string bundle_descriptor(const std::string& bundle, bool vst3) {
+    namespace fs = std::filesystem;
+    const fs::path base(bundle);
+    return read_file((vst3 ? base / "Contents" / "Resources" / "descriptor.json" : base / "descriptor.json").string());
+}
+
+}  // namespace
+
 api::PluginInfo catalog_entry(const pr::Record& r) {
     api::PluginInfo p;
     const bool vst3 = r.format == "vst3";
@@ -121,6 +261,13 @@ api::PluginInfo catalog_entry(const pr::Record& r) {
         a.steps = q.steps;
         if (q.labels.size() <= api::wire::kMaxParamLabels) a.labels = q.labels;
         p.params.push_back(std::move(a));
+    }
+    // What a Sonora native plugin says about its editor (ADR-0057). A bundle
+    // with no descriptor, or one this engine cannot take whole, is shown as
+    // any plugin is: the hints are all optional.
+    if (r.ok() && !r.bundle.empty()) {
+        const std::string descriptor = bundle_descriptor(r.bundle, vst3);
+        if (!descriptor.empty()) apply_descriptor_hints(p, descriptor);
     }
     return p;
 }

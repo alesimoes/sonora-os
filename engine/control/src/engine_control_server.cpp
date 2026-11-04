@@ -12,6 +12,7 @@
 #include "sonora/active_folder.h"
 #include "sonora/api/consolidate_argument.h"
 #include "sonora/api/wire.h"
+#include "sonora/plugin_telemetry.h"
 #include "sonora/audio_backend.h"
 #include "sonora/closed_take.h"
 #include "sonora/consolidate.h"
@@ -1951,6 +1952,28 @@ void EngineControlServer::follow_scanner() {
     }
 }
 
+void EngineControlServer::forward_telemetry() {
+    if (!hosting_ || !scanner_ || clients_.empty()) return;
+    telemetry_reads_.clear();
+    hosting_->read_telemetry(telemetry_reads_);
+    const uint64_t now = steady_ns();
+    const auto catalog = scanner_->catalog();
+    std::set<uint64_t> live;
+    for (const PluginHosting::TelemetryRead& r : telemetry_reads_) {
+        live.insert(r.insert);
+        const api::PluginInfo* info = catalog_find(*catalog, r.plugin.format, r.plugin.id);
+        api::PluginTelemetry frame;
+        if (info == nullptr || !telemetry_frame(*info, r.insert, r.snapshot, frame)) continue;
+        if (!telemetry_throttle_.admit(r.insert, r.snapshot.sequence, now)) continue;
+        std::string bytes, why;
+        if (api::wire::encode(frame, bytes, why)) send(bytes);
+    }
+    // An insert that is gone starts afresh if its id ever comes back.
+    for (const uint64_t id : telemetry_live_)
+        if (live.count(id) == 0) telemetry_throttle_.forget(id);
+    telemetry_live_ = std::move(live);
+}
+
 std::string EngineControlServer::transport_refusal(const model::Snapshot& doc,
                                                    model::MemberRef member) const {
     const auto* set = member.get_if<model::SetSettings>();
@@ -3612,6 +3635,7 @@ void EngineControlServer::tick() {
             post_transient(e);
         }
         show_inserts(false);
+        forward_telemetry();
     }
     follow_flushes();
     // Every plug-in of the session just opened has loaded or failed, or the

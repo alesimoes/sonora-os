@@ -94,6 +94,7 @@
 #include "travesty/component.h"
 #include "travesty/edit_controller.h"
 #include "travesty/factory.h"
+#include "sonora/plugin/telemetry.h"
 
 // Counts every operator new while armed. The executable exports it
 // (ENABLE_EXPORTS), so the bundle, loaded later, binds to this one. It sees
@@ -133,6 +134,9 @@ constexpr int kBlocks = 64;
 // output port beside the event input (DISTRHO_LV2_USE_EVENTS_OUT).
 bool g_state_ports = false;
 bool g_memoryless = false;  // --memoryless 1, see carries_state()
+// --telemetry 1: the processor publishes through native::Telemetry, so the
+// host's hand-over (sonora_native_telemetry_bind) must land in its block.
+bool g_telemetry = false;
 
 // --- VST3, through travesty ---------------------------------------------
 
@@ -938,6 +942,15 @@ int lv2_lazy(const char* path, const char* bundle, uint32_t inputs, uint32_t out
 
     LV2_Handle h = desc->instantiate(desc, 48000.0, bundle, features.data());
     CHECK(h != nullptr);
+    // What sonora-plugin-host does right after it instantiates a plugin
+    // (plugins/host loader_linux.cpp): hand the insert's block over.
+    sonora::plugin::TelemetryBlock tel{};
+    {
+        using Bind = int (*)(void*);
+        const auto bind = reinterpret_cast<Bind>(dlsym(lib, "sonora_native_telemetry_bind"));
+        CHECK(bind != nullptr);   // every bundle exports it, published or not
+        CHECK(bind(&tel) == (g_telemetry ? 1 : 0));
+    }
     Block b(max_block, static_cast<int32_t>(inputs), static_cast<int32_t>(outputs));
     // DPF's LV2 port order: the audio inputs (the key input's last), the
     // audio outputs, then one port that is the transport input in a bundle
@@ -971,6 +984,16 @@ int lv2_lazy(const char* path, const char* bundle, uint32_t inputs, uint32_t out
     if (allocations != 0) std::fprintf(stderr, "%ld allocations inside run()\n", allocations);
     CHECK(allocations == 0);
     CHECK(b.finite());
+    sonora::plugin::TelemetrySnapshot snap;
+    const bool read = tel.read(snap);
+    if (g_telemetry) {
+        // Frames reached the engine's side of the block, with at least one
+        // meter published, and no value that was not finite.
+        CHECK(read && snap.sequence > 0 && snap.meter_mask != 0);
+        CHECK(tel.rejected.load() == 0);
+    } else {
+        CHECK(!read);
+    }
     return 0;
 }
 
@@ -1421,6 +1444,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i + 1 < argc; i += 2) {
         if (std::strcmp(argv[i], "--state") == 0) g_state_ports = std::atoi(argv[i + 1]) != 0;
         else if (std::strcmp(argv[i], "--memoryless") == 0) g_memoryless = std::atoi(argv[i + 1]) != 0;
+        else if (std::strcmp(argv[i], "--telemetry") == 0) g_telemetry = std::atoi(argv[i + 1]) != 0;
         else if (std::strcmp(argv[i], "--uri") == 0) uri = argv[i + 1];
         else if (std::strcmp(argv[i], "--vst3") == 0) vst3 = argv[i + 1];
         else if (std::strcmp(argv[i], "--lv2") == 0) lv2 = argv[i + 1];

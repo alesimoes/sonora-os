@@ -1737,6 +1737,7 @@ std::unique_ptr<Processor> Vst3World::instantiate(const std::string& id, const C
         !p->start(config, &in, &out, &key, error))
         return nullptr;
     p->begin_processing();
+    if (config.telemetry != nullptr) bind_native_telemetry(m->library, config.telemetry);
     return p;
 }
 

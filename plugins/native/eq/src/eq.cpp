@@ -2,6 +2,7 @@
 #include "sonora/native/eq.h"
 
 #include <array>
+#include <complex>
 #include <cmath>
 #include <vector>
 
@@ -83,11 +84,101 @@ constexpr int kStages = 14;
 constexpr int kGroups = 8;
 constexpr std::uint32_t kControl = 16;  // base-rate samples between retunes
 
+// What an editor draws (ui_hints.h): sections per band, level meters and the
+// magnitude response of the whole EQ, which every band's controls shape.
+constexpr std::uint32_t kMeterIn = 0, kMeterOut = 1;
+constexpr std::uint32_t kCurvePoints = 128;
+constexpr float kCurveFmin = 20.0f, kCurveFmax = 20000.0f;
+constexpr float kCurveDbMin = -24.0f, kCurveDbMax = 24.0f;
+const MeterDecl kMeters[] = {kInputMeter, kOutputMeter};
+const CurveDecl kCurves[] = {{"response", "Frequency response", "Hz", "dB", kCurvePoints, true, kCurveFmin,
+                              kCurveFmax, kCurveDbMin, kCurveDbMax}};
+const ParamHint kHints[] = {
+    {"mode", "Output", Widget::Choice, nullptr},
+    {"output", "Output", Widget::Knob, "response"},
+    {"hpf_on", "High-pass", Widget::Switch, "response"},
+    {"hpf_freq", "High-pass", Widget::Knob, "response"},
+    {"hpf_slope", "High-pass", Widget::Choice, "response"},
+    {"lpf_on", "Low-pass", Widget::Switch, "response"},
+    {"lpf_freq", "Low-pass", Widget::Knob, "response"},
+    {"lpf_slope", "Low-pass", Widget::Choice, "response"},
+    {"low_shelf_on", "Low shelf", Widget::Switch, "response"},
+    {"low_shelf_freq", "Low shelf", Widget::Knob, "response"},
+    {"low_shelf_gain", "Low shelf", Widget::Knob, "response"},
+    {"low_shelf_q", "Low shelf", Widget::Knob, "response"},
+    {"high_shelf_on", "High shelf", Widget::Switch, "response"},
+    {"high_shelf_freq", "High shelf", Widget::Knob, "response"},
+    {"high_shelf_gain", "High shelf", Widget::Knob, "response"},
+    {"high_shelf_q", "High shelf", Widget::Knob, "response"},
+    {"bell1_on", "Bell 1", Widget::Switch, "response"},
+    {"bell1_freq", "Bell 1", Widget::Knob, "response"},
+    {"bell1_gain", "Bell 1", Widget::Knob, "response"},
+    {"bell1_q", "Bell 1", Widget::Knob, "response"},
+    {"bell2_on", "Bell 2", Widget::Switch, "response"},
+    {"bell2_freq", "Bell 2", Widget::Knob, "response"},
+    {"bell2_gain", "Bell 2", Widget::Knob, "response"},
+    {"bell2_q", "Bell 2", Widget::Knob, "response"},
+    {"bell3_on", "Bell 3", Widget::Switch, "response"},
+    {"bell3_freq", "Bell 3", Widget::Knob, "response"},
+    {"bell3_gain", "Bell 3", Widget::Knob, "response"},
+    {"bell3_q", "Bell 3", Widget::Knob, "response"},
+    {"bell4_on", "Bell 4", Widget::Switch, "response"},
+    {"bell4_freq", "Bell 4", Widget::Knob, "response"},
+    {"bell4_gain", "Bell 4", Widget::Knob, "response"},
+    {"bell4_q", "Bell 4", Widget::Knob, "response"},
+};
+const UiHints kUi = {kHints, sizeof kHints / sizeof kHints[0], kMeters, 2, kCurves, 1};
+
 class Eq final : public ProcessorBase {
 public:
-    Eq() : ProcessorBase(kDesc) {}
+    Eq() : ProcessorBase(kDesc) { publish_levels(kMeterIn, kMeterOut); }
+    const UiHints* ui_hints() const noexcept override { return &kUi; }
 
 protected:
+    // The response of the bands as they are set (the targets, not the
+    // smoothed values in flight), recomputed only when a parameter moved.
+    void on_publish(Telemetry& t) noexcept override {
+        bool changed = !curve_valid_;
+        for (std::uint32_t i = kMode; i < kParamCount; ++i) {
+            if (value(i) != curve_params_[i]) {
+                curve_params_[i] = value(i);
+                changed = true;
+            }
+        }
+        if (!changed) return;
+        curve_valid_ = true;
+        dsp::BiquadCoeffs sections[kStages];
+        int n = 0;
+        const auto add_filter = [&](bool high_pass, std::uint32_t on, std::uint32_t freq, std::uint32_t slope) {
+            if (value(on) < 0.5f) return;
+            dsp::FilterSpec secs[5];
+            const int count = dsp::butterworth_sections(sections_for(static_cast<int>(value(slope))), high_pass,
+                                                        value(freq), secs);
+            for (int k = 0; k < count && n < kStages; ++k) sections[n++] = dsp::design_matched(secs[k], irate_);
+        };
+        const auto add_band = [&](dsp::Shape shape, std::uint32_t on, std::uint32_t freq, std::uint32_t gain_i,
+                                  std::uint32_t q) {
+            const double eff = value(gain_i) * (value(on) >= 0.5f ? 1.0 : 0.0);
+            if (eff == 0.0 || n >= kStages) return;
+            sections[n++] = dsp::design_matched({shape, value(freq), value(q), eff}, irate_);
+        };
+        add_filter(true, kHpfOn, kHpfFreq, kHpfSlope);
+        add_filter(false, kLpfOn, kLpfFreq, kLpfSlope);
+        add_band(dsp::Shape::LowShelf, kLowShelfOn, kLowShelfFreq, kLowShelfGain, kLowShelfQ);
+        add_band(dsp::Shape::HighShelf, kHighShelfOn, kHighShelfFreq, kHighShelfGain, kHighShelfQ);
+        for (int b = 0; b < 4; ++b)
+            add_band(dsp::Shape::Peak, bell(b, 0), bell(b, 1), bell(b, 2), bell(b, 3));
+        const double out_db = value(kOutput);
+        const double ratio = static_cast<double>(kCurveFmax) / kCurveFmin;
+        for (std::uint32_t i = 0; i < kCurvePoints; ++i) {
+            const double f = kCurveFmin * std::pow(ratio, static_cast<double>(i) / (kCurvePoints - 1));
+            double mag = 1.0;
+            for (int s = 0; s < n; ++s) mag *= std::abs(dsp::response(sections[s], f, irate_));
+            curve_[i] = static_cast<float>(out_db + dsp::gain_to_db(mag, -200.0));
+        }
+        t.curve(0, curve_, kCurvePoints);
+    }
+
     bool on_prepare() override {
         factor_ = value(kMode) >= 0.5f ? 2u : 1u;
         irate_ = sample_rate() * factor_;
@@ -100,6 +191,7 @@ protected:
         hpf_sections_ = sections_for(static_cast<int>(value(kHpfSlope)));
         lpf_sections_ = sections_for(static_cast<int>(value(kLpfSlope)));
         retune(0, true);
+        curve_valid_ = false;
         return true;
     }
 
@@ -303,6 +395,9 @@ private:
     std::vector<std::array<dsp::SvfState, kStages>> st_;
     std::vector<double> work_;
     std::vector<double*> bufs_;
+    float curve_[kCurvePoints] = {};
+    float curve_params_[kParamCount] = {};
+    bool curve_valid_ = false;
 };
 
 }  // namespace

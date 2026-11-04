@@ -32,6 +32,7 @@
 #include "DistrhoPlugin.hpp"
 #include "sonora/native/format/bridge.h"
 #include "sonora/native/format/entry.h"
+#include "sonora/native/telemetry.h"
 
 START_NAMESPACE_DISTRHO
 
@@ -46,8 +47,13 @@ const sonora::native::Processor& bundle_probe() {
     // DPF asks for the parameter and state counts before the instance
     // exists (the Plugin base constructor), so the tables are read from a
     // probe instance once. They are static data; the probe is never prepared.
-    static const std::unique_ptr<sonora::native::Processor> probe =
-        sonora::native::format::make_bundle_processor();
+    static const std::unique_ptr<sonora::native::Processor> probe = [] {
+        auto p = sonora::native::format::make_bundle_processor();
+        // The probe lives for the whole run and never publishes: it must not
+        // be the instance a host's bind_pending() finds first.
+        sonora::native::Telemetry::bind_pending(nullptr);
+        return p;
+    }();
     return *probe;
 }
 
@@ -249,3 +255,13 @@ private:
 Plugin* createPlugin() { return new SonoraPlugin(); }
 
 END_NAMESPACE_DISTRHO
+
+// The one extra symbol a bundle exports (lv2.version, vst3 version script):
+// sonora-plugin-host calls it right after it instantiates the plugin, with
+// the insert's block of the telemetry region (ADR-0057), so the processor's
+// native::Telemetry writes where the engine reads. A host that does not
+// know it, or a third-party plugin that has none, leaves everything as it
+// was. Returns 1 when an instance was bound.
+extern "C" __attribute__((visibility("default"))) int sonora_native_telemetry_bind(void* block) {
+    return sonora::native::Telemetry::bind_pending(block) ? 1 : 0;
+}

@@ -32,6 +32,9 @@ public:
     // `paths`: this instance's plugin-file folders (state_paths.h), or null
     // for none (--probe, --list). Outlives the chain.
     bool add(const std::string& id, ChainError& error, StatePaths* paths = nullptr);
+    // The mapped telemetry region (read-write here), set before add(): the
+    // plugin of chain instance n is handed block n. Null: none.
+    void set_telemetry(void* region_base) { telemetry_base_ = region_base; }
     // Run blocks of silence and check what each plugin did against what it
     // declared. Must pass before the chain is offered to the engine.
     bool validate(ChainError& error);
@@ -142,6 +145,7 @@ private:
     PluginSource& source_;
     ChainConfig config_;
     std::vector<std::unique_ptr<Processor>> slots_;
+    void* telemetry_base_ = nullptr;
     std::vector<BypassLine> bypass_;  // one per slot; ring empty when designated
     // Stage k is slot k's input and slot k-1's output. Each channel buffer is
     // max_frames samples followed by guard_frames_ canary words. The inner

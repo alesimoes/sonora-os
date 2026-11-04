@@ -27,7 +27,8 @@ int main(int argc, char** argv) {
             // Index 0 is the bypass, which DPF's LV2 exporter writes as the
             // standard lv2:enabled port, inverted (plugin.cpp).
             const sonora::native::FormatSymbol lv2_bypass{0, "lv2", "lv2_enabled", true};
-            const std::string json = sonora::native::descriptor_json(p->descriptor(), &lv2_bypass, 1, p->files());
+            const std::string json = sonora::native::descriptor_json(p->descriptor(), &lv2_bypass, 1, p->files(),
+                                                              p->ui_hints());
             std::FILE* f = std::fopen(argv[i + 1], "wb");
             if (f == nullptr || std::fwrite(json.data(), 1, json.size(), f) != json.size() ||
                 std::fclose(f) != 0) {

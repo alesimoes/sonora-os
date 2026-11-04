@@ -51,6 +51,15 @@ std::string join(const std::vector<std::string>& v, char sep) {
 
 HostRegistry::~HostRegistry() = default;
 
+bool HostProcess::read_telemetry(uint32_t instance, plugin::TelemetrySnapshot& out) const {
+    if (!telemetry_region_ || instance >= telemetry_instances_) return false;
+    // Our own mapping of a region the host's plugins write: every word is
+    // untrusted, which TelemetryBlock::read accounts for (bounded counts,
+    // non-finite values replaced, a bounded retry, no wait).
+    const plugin::TelemetryBlock* block = plugin::telemetry_block(telemetry_region_->data(), instance);
+    return block != nullptr && block->read(out);
+}
+
 HostProcess::~HostProcess() {
     // On the control thread, so never stop()'s 2 s Shutdown grace (#191
     // review): one SIGKILL and a bounded reap. A child the kill has not
@@ -824,6 +833,19 @@ std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::s
     if (!host->region_->lock(lock_error)) ++lock_failures_;
     host->header_ = plugin::init_header(host->base_, host->layout_, config_.sample_rate, config_.block_frames, n,
                                         spec.param_counts.data(), config_.host_rt_priority);
+    // The telemetry region (ADR-0057): a region of its own, shared writable
+    // with the host (its plugins write it) and read by this process. Not
+    // essential: without it the chain runs and the interface shows no
+    // meters, so a failure here is not the chain's.
+    {
+        std::string terr;
+        host->telemetry_region_ = platform::SharedRegion::create_shared_writable(
+            "sonora-plugin-telemetry", plugin::telemetry_region_size(), terr);
+        if (host->telemetry_region_) {
+            plugin::telemetry_init(host->telemetry_region_->writable_data(), n);
+            host->telemetry_instances_ = n;
+        }
+    }
     std::atomic<float>* table = plugin::value_table(host->base_, host->layout_);
     for (uint32_t s = 0; s < host->map_.param_slots; ++s)
         plugin::seed_value(table, s, s < spec.values.size() ? spec.values[s] : 0.f);
@@ -886,6 +908,10 @@ std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::s
 
     std::vector<std::string> argv = {config_.host_path, "--control-fd", "3", "--shm-fd", "4", "--clock-fd", "5",
                                      "--engine-pid", std::to_string(platform::current_process_id())};
+    if (host->telemetry_region_) {
+        argv.push_back("--telemetry-fd");
+        argv.push_back("6");
+    }
     for (const std::string& b : config_.bundles) {
         argv.push_back("--bundle");
         argv.push_back(b);
@@ -893,6 +919,7 @@ std::unique_ptr<HostProcess> HostSupervisor::spawn(const ChainSpec& spec, std::s
     platform::ChildProcess::Options o;
     o.handles = {{3, child_end}};
     o.regions = {{4, host->region_.get(), true}, {5, clock_region_.get(), false}};
+    if (host->telemetry_region_) o.regions.push_back({6, host->telemetry_region_.get(), true});
     host->child_ = platform::ChildProcess::spawn(argv, o, error);
     // The child's copy is in place (or there is no child): ours goes now, so
     // the host's exit closes the pair.

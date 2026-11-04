@@ -79,7 +79,7 @@ add_custom_target(sonora_native_bundles ALL)
 # operator new.
 add_executable(sonora_native_bundle_driver tests/linux/bundle_driver.cpp)
 target_include_directories(sonora_native_bundle_driver SYSTEM PRIVATE ${SONORA_DPF_DIR}/distrho/src)
-target_link_libraries(sonora_native_bundle_driver PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+target_link_libraries(sonora_native_bundle_driver PRIVATE ${CMAKE_DL_LIBS} Threads::Threads sonora_plugin_protocol)
 set_target_properties(sonora_native_bundle_driver PROPERTIES ENABLE_EXPORTS ON)
 target_compile_options(sonora_native_bundle_driver PRIVATE $<$<CXX_COMPILER_ID:GNU>:-Wno-mismatched-new-delete>)
 
@@ -101,11 +101,13 @@ target_compile_options(sonora_native_bundle_driver PRIVATE $<$<CXX_COMPILER_ID:G
 # MEMORYLESS: with its defaults the processor keeps no signal memory (the
 # cabinet with no response is a unit impulse), so the driver's "a burst left
 # state that reset() cleared" proof is waived for it (bundle_driver.cpp).
+# TELEMETRY: the processor publishes through native::Telemetry; the LV2 driver
+# then checks the host hand-over lands (--telemetry 1).
 # SIDECHAIN: the processor takes a key (Descriptor::sidechain), and each
 # layout gets a key input with as many channels as its main input.
 option(SONORA_INSTALL_EXPERIMENTAL "Install bundles marked EXPERIMENTAL" OFF)
 function(sonora_native_plugin name)
-  cmake_parse_arguments(P "TIMEPOS;SIDECHAIN;EXPERIMENTAL;FILES;MEMORYLESS" "FACTORY;DISPLAY;UID;MONO_UID;LV2_CATEGORY;VST3_CATEGORIES" "LINK" ${ARGN})
+  cmake_parse_arguments(P "TIMEPOS;SIDECHAIN;EXPERIMENTAL;FILES;MEMORYLESS;TELEMETRY" "FACTORY;DISPLAY;UID;MONO_UID;LV2_CATEGORY;VST3_CATEGORIES" "LINK" ${ARGN})
   foreach(uid "${P_UID}" "${P_MONO_UID}")
     string(LENGTH "${uid}" uid_len)
     if(NOT uid_len EQUAL 4)
@@ -208,7 +210,7 @@ function(_sonora_native_bundle name suffix channels uid display)
     OUTPUT_NAME sonora-${b}
     LIBRARY_OUTPUT_DIRECTORY ${vst3_bundle}/Contents/${SONORA_VST3_ARCH})
   target_link_options(sonora-${b}-vst3 PRIVATE
-    -Wl,--version-script=${SONORA_DPF_DIR}/utils/symbols/vst3.version ${no_undefined})
+    -Wl,--version-script=${SONORA_FORMAT_DIR}/src/dpf/vst3.version ${no_undefined})
 
   # The generated files (ADR-0011 §2.4, one table): the LV2 TTL, by DPF's
   # exporter, and the JSON descriptor the Sonora UI builds the editor from
@@ -249,6 +251,9 @@ function(_sonora_native_bundle name suffix channels uid display)
     set(memoryless_args --memoryless 1)
   endif()
   list(APPEND state_args ${memoryless_args})
+  if(P_TELEMETRY)
+    list(APPEND state_args --telemetry 1)
+  endif()
   add_test(NAME native_format_lazy_lv2_${b}
            COMMAND ${drive} --lv2 $<TARGET_FILE:sonora-${b}-lv2> --bundle ${lv2_bundle}/
                    --inputs ${inputs} --outputs ${SONORA_CHANNELS} ${state_args} --scenario lazy)

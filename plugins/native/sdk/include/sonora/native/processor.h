@@ -10,6 +10,7 @@
 
 #include "sonora/native/files.h"
 #include "sonora/native/param.h"
+#include "sonora/native/ui_hints.h"
 #include "sonora/rt.h"
 
 namespace sonora::native {
@@ -78,6 +79,10 @@ public:
 
     // The processor's file slots, or null when it has none (most do not).
     // For control threads: see files.h.
+    // What an editor draws beyond the table (ui_hints.h), or null: static
+    // data, valid for the processor's lifetime.
+    virtual const UiHints* ui_hints() const noexcept { return nullptr; }
+
     virtual FileSlots* files() noexcept { return nullptr; }
     virtual const FileSlots* files() const noexcept { return nullptr; }
 };

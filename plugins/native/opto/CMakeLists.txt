@@ -36,4 +36,4 @@ endif()
 
 # The LV2 and VST3 bundles, stereo and mono, with the key input.
 sonora_native_plugin(opto FACTORY make_opto DISPLAY "Sonora Opto" UID SNop MONO_UID SMop
-  LV2_CATEGORY "lv2:CompressorPlugin" VST3_CATEGORIES "Fx|Dynamics" SIDECHAIN)
+  LV2_CATEGORY "lv2:CompressorPlugin" VST3_CATEGORIES "Fx|Dynamics" SIDECHAIN TELEMETRY)

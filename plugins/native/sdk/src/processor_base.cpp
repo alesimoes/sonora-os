@@ -185,6 +185,7 @@ void ProcessorBase::process(const AudioBuffers& io, const ParamEvent* events,
     }
     std::uint32_t ev = 0;
     std::uint32_t done = 0;
+    peak_in_ = peak_out_ = 0.0f;
     while (done < io.frames) {
         std::uint32_t chunk = io.frames - done;
         if (chunk > max_frames_) chunk = max_frames_;
@@ -196,6 +197,12 @@ void ProcessorBase::process(const AudioBuffers& io, const ParamEvent* events,
             for (std::uint32_t i = 0; i < chunk; ++i) {
                 const float x = src[i];
                 dst[i] = valid_sample(x) ? x : 0.0f;
+            }
+            if (publishing_) {
+                for (std::uint32_t i = 0; i < chunk; ++i) {
+                    const float a = std::fabs(dst[i]);
+                    if (a > peak_in_) peak_in_ = a;
+                }
             }
             float* sdst = &sc_buf_[static_cast<std::size_t>(c) * max_frames_];
             if (io.sidechain != nullptr && io.sidechain_channels > 0) {
@@ -241,6 +248,13 @@ void ProcessorBase::process(const AudioBuffers& io, const ParamEvent* events,
             }
             on_reset();
             ++nonfinite_blocks_;
+        } else if (publishing_) {
+            for (std::uint32_t c = 0; c < channels_; ++c) {
+                for (std::uint32_t i = 0; i < chunk; ++i) {
+                    const float a = std::fabs(io.out[c][done + i]);
+                    if (a > peak_out_) peak_out_ = a;
+                }
+            }
         }
         done += chunk;
     }
@@ -249,6 +263,14 @@ void ProcessorBase::process(const AudioBuffers& io, const ParamEvent* events,
     if (bounded_) {
         ++bounded_blocks_;
         bounded_ = false;
+    }
+    if (publishing_) {
+        const auto db = [](float peak) { return peak > 1e-6f ? 20.0f * std::log10(peak) : -120.0f; };
+        telemetry_.begin();
+        if (in_slot_ != kNoSlot) telemetry_.meter(in_slot_, db(peak_in_));
+        if (out_slot_ != kNoSlot) telemetry_.meter(out_slot_, db(peak_out_));
+        on_publish(telemetry_);
+        telemetry_.end();
     }
 }
 
