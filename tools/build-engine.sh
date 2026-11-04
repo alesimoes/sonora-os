@@ -72,17 +72,48 @@ fi
 # The build directory is container-specific; keep it out of the host tree.
 # Unlimited memlock, as the appliance grants it, so test_memory_lock can
 # check that locking works and not only that a finite limit is refused.
-docker run --rm --ulimit memlock=-1:-1 -e SONORA_STAGE_ONLY="$STAGE_ONLY" -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -lc '
+# One of a few global build slots (tools/build-slot.sh), -j the share of the
+# CPUs one slot owns, and a ccache shared by every worktree: /src is the same
+# path in all of them, so their objects hit each other's cache.
+#
+# On Docker Desktop /src is a bind mount of an NTFS folder, and every file
+# operation of a configure or a compile crosses that boundary. There the build
+# tree lives on a named volume per checkout (reused, so builds stay
+# incremental) and only the finished executables are copied back to
+# build-container/, where tools/build-iso.sh and the interop tests look. On a
+# Linux host the bind mount is native and the tree stays in the checkout.
+JOBS="$("$ROOT/tools/build-slot.sh" --jobs)"
+BUILD_VOL=()
+if [[ "$(uname -s)" != Linux ]]; then
+  ID="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
+  BUILD_VOL=(-v "sonora-build-$ID:/build" -e SONORA_BUILD_DIR=/build/container)
+fi
+# shellcheck disable=SC2016  # the script is expanded inside the container
+"$ROOT/tools/build-slot.sh" docker run --rm --ulimit memlock=-1:-1 \
+  -e SONORA_STAGE_ONLY="$STAGE_ONLY" -e SONORA_JOBS="$JOBS" \
+  -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=10G "${BUILD_VOL[@]}" \
+  -v sonora-ccache:/root/.ccache -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -lc '
   set -euo pipefail
+  B="${SONORA_BUILD_DIR:-build-container}"
+  export CMAKE_CXX_COMPILER_LAUNCHER=ccache CMAKE_C_COMPILER_LAUNCHER=ccache
+  ccache -z >/dev/null
+  finish() {
+    ccache -s | grep -iE "hit|cache size" || true
+    if [[ "$B" != build-container ]]; then
+      mkdir -p build-container
+      find "$B" -maxdepth 1 -type f -perm -u+x -exec cp -f {} build-container/ \;
+    fi
+  }
+  trap finish EXIT
   # forget_pre_m1_tree, inside the container where the tree was configured.
-  if grep -qs "^CMAKE_HOME_DIRECTORY:INTERNAL=.*/engine\$" build-container/CMakeCache.txt; then
-    rm -rf build-container
+  if grep -qs "^CMAKE_HOME_DIRECTORY:INTERNAL=.*/engine\$" "$B/CMakeCache.txt"; then
+    rm -rf "$B"
   fi
-  cmake -S . -B build-container -DCMAKE_BUILD_TYPE=Release
+  cmake -S . -B "$B" -DCMAKE_BUILD_TYPE=Release
   if [[ "$SONORA_STAGE_ONLY" == 1 ]]; then
-    cmake --build build-container -j"$(nproc)" --target sonora-engine sonora-tui
+    cmake --build "$B" -j"$SONORA_JOBS" --target sonora-engine sonora-tui
     exit 0
   fi
-  cmake --build build-container -j"$(nproc)"
-  ctest --test-dir build-container --output-on-failure
+  cmake --build "$B" -j"$SONORA_JOBS"
+  ctest --test-dir "$B" --output-on-failure
 '

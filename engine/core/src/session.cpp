@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/session.h"
 
-#include <dirent.h>
-#include <sys/stat.h>
-
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -11,8 +8,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -24,9 +23,13 @@ namespace sonora {
 namespace {
 
 bool make_dir(const std::string& path) {
-    if (::mkdir(path.c_str(), 0775) == 0) return true;
-    struct stat st{};
-    return ::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    // The non-throwing overloads only: a refusal is an answer here, not an
+    // exception. create_directory is false both for "already there" and for
+    // a failure, so a directory is what settles it.
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (fs::create_directory(path, ec)) return true;
+    return !ec && fs::is_directory(path, ec);
 }
 
 std::string audio_dir(const std::string& session_dir) {
@@ -624,13 +627,15 @@ int Session::next_free_take() const {
     // Every track shares the take number, so any file of ours counts, on any
     // track, armed now, open now, or neither.
     int highest = 0;
-    DIR* d = ::opendir(audio_dir(*folder_).c_str());
-    if (!d) return 1;
-    while (const dirent* e = ::readdir(d)) {
-        const int n = take_of(e->d_name);
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::directory_iterator it(audio_dir(*folder_), ec);
+    if (ec) return 1;
+    for (const fs::directory_iterator end; it != end; it.increment(ec)) {
+        if (ec) break;
+        const int n = take_of(it->path().filename().string());
         if (n > highest) highest = n;
     }
-    ::closedir(d);
     return highest + 1;
 }
 

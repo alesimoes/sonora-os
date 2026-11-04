@@ -62,6 +62,9 @@ same files: the 4 DAW tracks, 2 OS packaging and 2 native plugins (owner,
 next items. After 3–4 merges, or near 150k of context, it writes the handoff
 and carries on.
 
+The agent queue is `planning/AGENT-QUEUE.md`: when an agent reports, the
+coordinator closes it (`tools/bg-status.sh --kill`) and launches the next line
+in the same turn, keeping up to 10 working.
 The coordinator runs unattended: no human reads the terminal, answers a
 question or runs a slash command such as /clear. Never end a turn waiting
 on the owner. A decision with a recommended default is taken and recorded;
@@ -69,7 +72,22 @@ a real blocker goes in the handoff under "waits on the owner" and the work
 moves to the next item. When agents finish and none are running, launch
 the next items in the same turn. Context is reclaimed by auto-compaction,
 which the handoff survives.
-One PR per BACKLOG item, follow-ups included. Every agent and every review runs on Sonnet,
+A PR is opened only for a task complete end to end: the whole path a user or
+the next layer depends on (contract, engine, UI, tests, docs, screenshots), so
+fewer PRs wait on CI and fewer branches conflict. No PR for half an item (an
+engine half whose UI half is a separate PR, a standalone ADR for code that is
+still to come): the ADR travels with the code it decides, and a slice stays on
+its branch until the feature works end to end. A PR may be partial only when
+the rest needs hardware or an owner decision, and its title says so. Contracts go first, as a task of their
+own: a small PR with the headers or wire change, the ADR, a fake implementation
+and a test, merged before the work that builds on it; agents that depend on it
+start from its branch and rebase when it lands. Changing a merged contract is
+an amendment asked of its owner, never a side edit. When two or three agents
+work on one task, each pushes to a sub-branch, a named integrator merges them
+into one feature branch, and that branch is the single PR. The coordinator
+reserves ADR numbers and the next protocol version when it launches an agent.
+Commit to the branch at the end of every stage, PR or not, so a stopped agent
+loses nothing. One PR per BACKLOG item, follow-ups included. Every agent and every review runs on Sonnet,
 never Opus (owner, 2026-11-03: it burns the weekly quota); the RT path,
 contracts, storage and recovery get a more careful brief, not a bigger model. Only a blocking finding sends a PR back; non-blocking ones become
 BACKLOG lines, batched into one follow-ups PR per track. A re-review is a
@@ -82,12 +100,25 @@ started before reporting (see "Process hygiene" in each agent file). The
 coordinator ends every turn with `tools/bg-status.sh` (`--kill` removes
 duplicates and orphan docker runs).
 
+## Build budget (every agent)
+
+Builds, not coding, are the bottleneck: ten agents each running a 16-job build
+saturate the machine and every build slows down. Write the whole slice first
+(code, tests, docs), then build and test once per milestone, at most three
+build cycles per task. No rebuild per edit; read the code instead. Use the
+narrowest target, keep the build directory so it stays incremental, never
+start a second container for the same worktree, and never wait on a build.
+The heavy docker runs go through `tools/build-slot.sh` once it lands.
+
 ## Before opening a PR (every agent)
 
 Each of these cost a fix round of 30–60 minutes this session. CI is slow
 (the sanitizer job alone takes about 50 minutes), so a PR that fails on
 something below is a PR that waits an hour.
 
+- Run `tools/pre-pr.sh` (whitespace, exec bits, shellcheck as CI runs it, ADR
+  numbers against main and open PRs, no BACKLOG edit, protocol version reserved)
+  and fix what it lists before you push. Most of our red CI came from these.
 - First check the BACKLOG item is not already done on main (`git log
   origin/main --oneline -S`, grep the code). Many checkboxes are stale: if it
   is done, say so in your report and stop, or take the next item.

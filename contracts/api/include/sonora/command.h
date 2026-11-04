@@ -365,6 +365,16 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // latency.* commands.
         {"window.latency", CommandTarget::None, "Show or hide the Latency window",
          false, CommandDomain::Interface},
+        // Pro Tools' Window > Configuration and Logic's screensets: which
+        // windows are open and where, in nine numbered slots. The argument
+        // is the slot, 1 to 9. The panel lists the slots.
+        {"window.configurations", CommandTarget::None,
+         "Show or hide the Window Configurations list", false, CommandDomain::Interface},
+        {"window.config_store", CommandTarget::None,
+         "Store the open windows and their places in a numbered window configuration", true,
+         CommandDomain::Interface},
+        {"window.config_recall", CommandTarget::None,
+         "Recall a numbered window configuration", true, CommandDomain::Interface},
 
         // --- application ---
         {"app.save", CommandTarget::None, "Save the session"},

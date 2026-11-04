@@ -35,6 +35,31 @@ host_path() {
   exit 1
 }
 
+# Modes (ADR-0010 stage 1), each one boot:
+#   (none)        the shipped boot: session on tty1, display stack skipped
+#   --gui         sonora.gui: labwc and the UI run; the smoke test times the
+#                 first frame and SIGKILLs the UI, then labwc, expecting both
+#                 back within 3 s
+#   --gui-broken  sonora.gui sonora.break_ui: the UI is made to fail
+#                 repeatedly; the fallback must end on tty1 with the session
+case "${1:-}" in
+  "") ;;
+  --gui) QEMU_APPEND_EXTRA="sonora.gui${QEMU_APPEND_EXTRA:+ $QEMU_APPEND_EXTRA}" ;;
+  --gui-broken) QEMU_APPEND_EXTRA="sonora.gui sonora.break_ui${QEMU_APPEND_EXTRA:+ $QEMU_APPEND_EXTRA}" ;;
+  *) echo "usage: $0 [--gui | --gui-broken]" >&2; exit 2 ;;
+esac
+
+# The compressed size is a recorded number (ADR-0010 unverified item 7). A
+# ceiling is enforced only when SONORA_ISO_MAX_MB is set, since the ADR names
+# none.
+ISO_BYTES="$(wc -c <"$ISO" | tr -d '[:space:]')"
+ISO_MB=$(( ISO_BYTES / 1048576 ))
+echo "iso size: ${ISO_MB} MiB (${ISO_BYTES} bytes)"
+if [[ -n "${SONORA_ISO_MAX_MB:-}" && "$ISO_MB" -gt "$SONORA_ISO_MAX_MB" ]]; then
+  echo "BOOT TEST FAIL: the ISO is ${ISO_MB} MiB, over SONORA_ISO_MAX_MB=${SONORA_ISO_MAX_MB}." >&2
+  exit 1
+fi
+
 # A verdict about yesterday's ISO is worse than no verdict. This project has
 # already shipped one script that reported success for a failed build.
 for newer in "$ROOT/iso/config" "$ROOT/iso/auto/config" "$ROOT/CMakeLists.txt" \
