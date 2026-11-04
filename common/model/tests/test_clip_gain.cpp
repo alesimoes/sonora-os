@@ -48,6 +48,7 @@ int test_clip_gain() {
     const Region* r = find(h.current(), rid);
     CHECK(r != nullptr && r->gain_db == -2.0f && r->gain_line == line);
 
+    std::string error;
     // One step back restores both the level and the line.
     CHECK(h.undo());
     r = find(h.current(), rid);
