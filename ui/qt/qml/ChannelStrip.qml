@@ -165,7 +165,8 @@ Rectangle {
         // The group tag: the group's colour and name; a click selects the
         // track, whose group the buttons above the strips then act on.
         Rectangle {
-            visible: !strip.isBus
+            // Takes no height on a strip in no group, so an ungrouped mix keeps its fader.
+            visible: !strip.isBus && strip.groupIndex >= 0
             objectName: strip.isBus ? "" : "groupTag" + strip.track
             anchors.horizontalCenter: parent.horizontalCenter
             width: parent.width - 2 * Theme.space2

@@ -942,22 +942,22 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 18,", "\"sonora_session\": 19,"),
-                  "format version 19, newer than this program, which reads up to version 18",
+    CHECK(refused(edit(text, "\"sonora_session\": 19,", "\"sonora_session\": 20,"),
+                  "format version 20, newer than this program, which reads up to version 19",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 18,", "\"sonora_session\": 19,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 19,", "\"sonora_session\": 20,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 18,",
+    CHECK(refused(edit(text, "\"sonora_session\": 19,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 18,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 19,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 18,", "\"sonora_session\": 17.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 19,", "\"sonora_session\": 17.0,"),
                   "integer format version", "sonora_session"));
     // A current file must have the keys versions 2 and 3 added; only the
     // migrations fill them in for an older file.
@@ -970,8 +970,8 @@ int test_versions() {
                   "must be true or false", "tracks[1].solo_safe",
                   line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 18,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 18,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 19,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 19,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));

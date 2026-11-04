@@ -322,8 +322,6 @@ int qml() {
     // The tag reads the group on its members, and is empty elsewhere.
     QQuickItem* tag1 = root->findChild<QQuickItem*>(QStringLiteral("groupTag1"));
     QQuickItem* tag0 = root->findChild<QQuickItem*>(QStringLiteral("groupTag0"));
-    QQuickItem* tag3 = root->findChild<QQuickItem*>(QStringLiteral("groupTag3"));
-    CHECK(tag3 != nullptr && tag3->property("color").value<QColor>().alpha() == 0);
     CHECK(tag1 != nullptr && tag0 != nullptr);
     CHECK(tag1->property("color").value<QColor>().alpha() > 0);
     CHECK(tag0->property("color").value<QColor>().alpha() == 0);

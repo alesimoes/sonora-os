@@ -197,6 +197,8 @@ std::vector<Operation> one_of_each() {
             SetTrackColour{2, 13},
             SetRegionName{3, 11, "Verse \xC3\xA9"},
             SetRegionColour{3, 11, kTrackColour},
+            SetGroup{40, "Drums \xC3\xA9", {2, 5}, 0x0F, false, true},
+            RemoveGroup{40},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 
