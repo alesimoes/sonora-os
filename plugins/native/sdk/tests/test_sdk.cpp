@@ -277,6 +277,71 @@ int test_state_round_trip() {
     return 0;
 }
 
+// A Toy with one file slot "ir" that accepts any path ending in ".ok".
+class FileToy : public Toy, public FileSlots {
+public:
+    std::uint32_t slot_count() const noexcept override { return 1; }
+    const FileSlotInfo& slot(std::uint32_t) const noexcept override {
+        static const FileSlotInfo info{"ir", "Impulse response", "wav"};
+        return info;
+    }
+    bool load(std::uint32_t, const std::string& p, std::string& error) override {
+        if (!p.empty() && (p.size() < 3 || p.compare(p.size() - 3, 3, ".ok") != 0)) {
+            error = "cannot read " + p;
+            return false;
+        }
+        path_ = p;
+        return true;
+    }
+    std::string path(std::uint32_t) const override { return path_; }
+    FileSlots* files() noexcept override { return this; }
+    const FileSlots* files() const noexcept override { return this; }
+
+private:
+    std::string path_;
+};
+
+int test_state_carries_files() {
+    FileToy t;
+    std::string err;
+    // At its default a slot is not written, so a state of a file-less
+    // processor and one with an empty slot are the same text.
+    CHECK(save_state(t).find("\"files\"") == std::string::npos);
+    CHECK(t.load(0, "Plugin Files/abc/cab.ok", err));
+    t.set_param(1, -6.0f);
+    const std::string s = save_state(t);
+    CHECK(s.find("\"files\"") != std::string::npos && s.find("Plugin Files/abc/cab.ok") != std::string::npos);
+
+    FileToy u;
+    CHECK(load_state(u, s, err));
+    CHECK(u.path(0) == "Plugin Files/abc/cab.ok" && u.param(1) == -6.0f);
+
+    // A state without "files" puts the slot back to its default.
+    CHECK(load_state(u, "{\"processor\": \"org.sonora.test\", \"state_version\": 1, \"params\": {}}", err));
+    CHECK(u.path(0).empty());
+
+    // A file that cannot be read fails the whole load and changes nothing,
+    // values included.
+    CHECK(u.load(0, "keep.ok", err));
+    u.set_param(1, 3.0f);
+    CHECK(!load_state(u, "{\"processor\": \"org.sonora.test\", \"state_version\": 1, \"params\": {\"gain\": -9.0}, "
+                         "\"files\": {\"ir\": \"missing.wav\"}}", err));
+    CHECK(err.find("ir") != std::string::npos && err.find("missing.wav") != std::string::npos);
+    CHECK(u.path(0) == "keep.ok" && u.param(1) == 3.0f);
+    // An unknown slot, a non-path value, and a file for a processor with no slots.
+    CHECK(!load_state(u, "{\"processor\": \"org.sonora.test\", \"state_version\": 1, \"params\": {}, \"files\": {\"er\": \"a.ok\"}}", err));
+    CHECK(err.find("er") != std::string::npos);
+    CHECK(!load_state(u, "{\"processor\": \"org.sonora.test\", \"state_version\": 1, \"params\": {}, \"files\": {\"ir\": 3}}", err));
+    Toy plain;
+    CHECK(!load_state(plain, s, err));
+
+    // The descriptor lists the slot for a chooser.
+    const std::string d = descriptor_json(kDesc, nullptr, 0, t.files());
+    CHECK(d.find("\"extensions\": \"wav\"") != std::string::npos);
+    CHECK(descriptor_json(kDesc).find("\"files\"") == std::string::npos);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -288,6 +353,7 @@ int main() {
     failed += test_nonfinite_output_resets();
     failed += test_in_place_and_oversized_blocks();
     failed += test_state_round_trip();
+    failed += test_state_carries_files();
     if (failed != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failed);
         return 1;

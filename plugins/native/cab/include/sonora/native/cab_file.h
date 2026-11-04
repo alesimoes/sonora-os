@@ -17,4 +17,6 @@ namespace sonora::native {
 // what is wrong with the file.
 Cab::LoadResult load_cab_ir_wav(Cab& cab, const std::string& path, std::string& error);
 
+// make_cab_plugin() (cab.h) is defined here.
+
 }  // namespace sonora::native

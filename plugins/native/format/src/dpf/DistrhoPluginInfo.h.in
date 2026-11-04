@@ -31,6 +31,9 @@
 #define DISTRHO_PLUGIN_NUM_INPUTS (SONORA_CHANNELS + SONORA_SIDECHAIN_CHANNELS)
 #define DISTRHO_PLUGIN_NUM_OUTPUTS SONORA_CHANNELS
 #define DISTRHO_PLUGIN_WANT_LATENCY 1
+// Only a processor with file slots (native/files.h) has plugin state: its
+// files. Parameters are ports and VST3 parameters, never state.
+#define DISTRHO_PLUGIN_WANT_STATE @SONORA_FILE_STATE@
 // Only processors that follow a host tempo ask for the transport.
 #define DISTRHO_PLUGIN_WANT_TIMEPOS @SONORA_TIMEPOS@
 

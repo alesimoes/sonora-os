@@ -8,6 +8,7 @@
 
 #include <cstdint>
 
+#include "sonora/native/files.h"
 #include "sonora/native/param.h"
 #include "sonora/rt.h"
 
@@ -74,6 +75,11 @@ public:
     // allocation), but a playing host sends events instead, or the change
     // is a step. A reconfiguring value waits for the next prepare().
     virtual bool set_param(std::uint32_t index, float value) noexcept SONORA_RT = 0;
+
+    // The processor's file slots, or null when it has none (most do not).
+    // For control threads: see files.h.
+    virtual FileSlots* files() noexcept { return nullptr; }
+    virtual const FileSlots* files() const noexcept { return nullptr; }
 };
 
 }  // namespace sonora::native

@@ -490,6 +490,57 @@ EditPreset for that plugin, and after a rescan.
   VST3 plugin that keeps files names them inside its own stream, and we
   cannot see them (Consequences).
 
+**Amendment of 2026-11-03: Sonora's own plugins carry files (the cabinet's
+impulse response).** The host half above is unchanged. This is the plugin
+half, decided on the recommended defaults, no owner present.
+
+- *SDK.* A processor declares file slots (`plugins/native/sdk`,
+  `native/files.h`: `FileSlots`, reached through `Processor::files()`, null
+  for a processor with none). A slot has a stable id (append-only, like a
+  parameter id), a name and file extensions. `load(slot, path)` reads the
+  file and is for a control thread only; an empty path puts the default
+  back; a failed load leaves the slot as it was. A slot is state, not a
+  parameter: it has no port, no lane, and is never automated.
+- *Our JSON state* (`save_state`/`load_state`, presets, the harness) gains
+  an optional `"files": {"<slot id>": "<path>"}`, written only for a slot
+  not at its default. Version-1 states of processors without slots are
+  byte for byte unchanged, so `state_version` does not move. A state
+  without `files` puts the slots back to their defaults. A slot id the
+  processor does not have, or a file that cannot be read, fails the load
+  before any value is applied.
+- *LV2.* Each slot is a DPF filename-path state: `<uri>#<slot id>`, an
+  `atom:Path` property the host may write (`patch:writable`). `save()`
+  stores it through the host's `state:mapPath` `abstract_path`, and
+  `restore()` reads it through `absolute_path`: that is the §6 mechanism
+  above, so the file lands in `<session>/Plugin Files/<sha256>/<basename>`
+  with no new host code. A `patch:Set` in `run()` is handed to the LV2
+  Worker, which calls the processor's `load()` off the audio thread. DPF
+  keeps the last value the host gave for the save, so a path whose file
+  failed to load is still saved as given; the sound is the previous
+  response and the reason goes to stderr.
+- *Untrusted path.* A state path is untrusted input. The SDK does not know
+  the host's Plugin Files folder, so confinement to it is the host's
+  guarantee alone (`state:mapPath` hands the plugin only paths it placed).
+  `load_cab_ir_wav` still refuses, on every route, a NUL, a path over 4096
+  bytes, a `://` URL, any `..` component, and anything that is not a regular
+  file as `symlink_status` sees it (a symlink, directory, FIFO or device,
+  so `/dev/stdin` cannot block the restoring thread), before any open.
+- *VST3.* Component state holds the slot as a string (DPF's state stream),
+  restored on the host's main thread. There is no path mapping in VST3, so
+  the path is saved as the user chose it and the file is not copied into
+  the session: a session moved to another machine finds the plugin without
+  its response, as with any VST3 that keeps a path (Consequences). A
+  per-slot "embed the bytes" mode in the stream is the answer if this
+  matters; it is not built, because the cabinet's LV2 bundle is the one
+  Sonora loads first.
+- *Threads.* `FileSlots::load()` may block on a file read and, for the
+  cabinet, waits up to 200 ms for the audio thread to take the previous
+  response over. It never runs in `process()`. The processor hands its
+  data over with an atomic exchange, as the cabinet's kernels do.
+- *Not done here:* the editor's file chooser (the descriptor lists the
+  slots, `"files": [{id, name, extensions}]`, for the UI to build one) and
+  the host's "Collect plugin files" action.
+
 ### §7 Versions
 
 | Slice | Host wire | Session format | Protocol | Window format |

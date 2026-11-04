@@ -3,8 +3,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <mutex>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "sonora/dsp/convolver.h"
@@ -74,9 +77,56 @@ std::vector<double> resample(const float* x, std::size_t n, double from, double 
     return y;
 }
 
-class CabImpl final : public Cab {
+const FileSlotInfo kIrSlot = {"ir", "Impulse response", "wav"};
+
+// A load that meets the previous one still waiting to be taken over (Busy)
+// waits for the audio thread's next block: 40 x 5 ms. A host that restores
+// state with no audio running gives up after that and the slot keeps its
+// old response.
+constexpr int kBusyTries = 40;
+constexpr int kBusyWaitMs = 5;
+
+class CabImpl final : public Cab, public FileSlots {
 public:
     CabImpl() : Cab(kDesc) {}
+
+    void set_ir_reader(IrReader reader) override { reader_ = reader; }
+    FileSlots* files() noexcept override { return reader_ != nullptr ? this : nullptr; }
+    const FileSlots* files() const noexcept override { return reader_ != nullptr ? this : nullptr; }
+
+    std::uint32_t slot_count() const noexcept override { return 1; }
+    const FileSlotInfo& slot(std::uint32_t) const noexcept override { return kIrSlot; }
+
+    bool load(std::uint32_t index, const std::string& path, std::string& error) override {
+        if (index != 0 || reader_ == nullptr) {
+            error = "no such file slot";
+            return false;
+        }
+        // One file load at a time: two control threads (a restore and a
+        // chooser) would otherwise leave path_ naming the other's response.
+        std::lock_guard<std::mutex> lock(file_mutex_);
+        if (path.empty() && path_.empty()) return true;
+        LoadResult r = LoadResult::Busy;
+        for (int attempt = 0; attempt < kBusyTries && r == LoadResult::Busy; ++attempt) {
+            if (attempt > 0) std::this_thread::sleep_for(std::chrono::milliseconds(kBusyWaitMs));
+            r = path.empty() ? clear_ir() : reader_(*this, path, error);
+        }
+        if (r == LoadResult::Busy) {
+            error = "the previous response is still being taken over; no audio is running to finish it";
+            return false;
+        }
+        if (r == LoadResult::Invalid) {
+            if (error.empty()) error = "not a usable impulse response";
+            return false;
+        }
+        path_ = path;
+        return true;
+    }
+
+    std::string path(std::uint32_t) const override {
+        std::lock_guard<std::mutex> lock(file_mutex_);
+        return path_;
+    }
 
     LoadResult load_ir(const float* ir, std::size_t frames, double ir_rate) override {
         if (ir == nullptr || frames == 0 || !(ir_rate >= 1000.0 && ir_rate <= 768000.0)) return LoadResult::Invalid;
@@ -84,6 +134,27 @@ public:
             if (!dsp::is_finite(ir[i]) || std::fabs(ir[i]) > 1e9f) return LoadResult::Invalid;
         }
         std::lock_guard<std::mutex> lock(load_mutex_);
+        return load_locked(ir, frames, ir_rate);
+    }
+
+protected:
+    // The response of a cab with nothing loaded: a unit impulse at the
+    // session rate (resampling one would change its gain).
+    LoadResult clear_ir() {
+        std::lock_guard<std::mutex> lock(load_mutex_);
+        if (!prepared_) {
+            source_.clear();
+            return LoadResult::Ok;
+        }
+        const float one = 1.0f;
+        const LoadResult r = load_locked(&one, 1, sample_rate());
+        // Not kept as the source: a later prepare() at another rate would
+        // resample it, and a resampled impulse is not a unit one.
+        if (r == LoadResult::Ok) source_.clear();
+        return r;
+    }
+
+    LoadResult load_locked(const float* ir, std::size_t frames, double ir_rate) {
         if (!prepared_) {
             source_.assign(ir, ir + frames);
             source_rate_ = ir_rate;
@@ -215,6 +286,9 @@ private:
         return k.set(taps.data(), static_cast<std::uint32_t>(taps.size()));
     }
 
+    IrReader reader_ = nullptr;
+    mutable std::mutex file_mutex_;  // control threads only; held across a whole file load
+    std::string path_;
     std::mutex load_mutex_;  // control threads only; never taken by render()
     bool prepared_ = false;
     std::vector<float> source_;

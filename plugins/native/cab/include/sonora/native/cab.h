@@ -26,14 +26,17 @@
 //   10 ms (LoadResult::Truncated). Before any response is loaded the
 //   cabinet is a unit impulse.
 //
-// What it does not do yet: the response chosen through plugin state. The
-// state is a canonical JSON of parameter values (native/state.h); a file
-// reference needs the ADR-0029 §6 path mapping, which the SDK and the
-// format layer do not carry. See the PR.
+// The response is also the cabinet's one file slot, "ir" (native/files.h,
+// ADR-0029 §6): a plugin state carries its path, the host places the file,
+// and files()->load() reads it on a control thread through the reader that
+// make_cab_plugin() (cab_file.h) installs. A cab from make_cab() has no
+// reader and so no slot: the neutral build has no WAV reader. Loading an
+// empty path puts the unit impulse back.
 #pragma once
 
 #include <cstddef>
 #include <memory>
+#include <string>
 
 #include "sonora/native/processor_base.h"
 
@@ -64,10 +67,21 @@ public:
     // `ir` is mono at `ir_rate` Hz.
     virtual LoadResult load_ir(const float* ir, std::size_t frames, double ir_rate) = 0;
 
+    // Reads the file of the "ir" slot into a Cab (load_cab_ir_wav is one).
+    using IrReader = LoadResult (*)(Cab& cab, const std::string& path, std::string& error);
+    // Turns the file slot on. Before the cab is shared with another thread.
+    virtual void set_ir_reader(IrReader reader) = 0;
+
 protected:
     Cab(const Descriptor& d) : ProcessorBase(d) {}
 };
 
 std::unique_ptr<Cab> make_cab();
+
+// A cabinet with its "ir" file slot on: files()->load() reads a WAV through
+// load_cab_ir_wav(). The factory of the LV2 and VST3 bundles, whose state
+// carries the response's path. Defined in sonora_native_cab_file (cab_file.cpp),
+// not in this library, which has no WAV reader.
+std::unique_ptr<Cab> make_cab_plugin();
 
 }  // namespace sonora::native

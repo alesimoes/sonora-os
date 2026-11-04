@@ -31,11 +31,19 @@ struct FormatSymbol {
 
 // With `symbols`, each listed parameter gets a "formats" object:
 // {"lv2": {"symbol": "lv2_enabled", "inverted": true}}.
+// With `files`, a "files" array lists the slots (id, name, extensions) for an
+// editor's file chooser.
 std::string descriptor_json(const Descriptor& d, const FormatSymbol* symbols = nullptr,
-                            std::uint32_t symbol_count = 0);
+                            std::uint32_t symbol_count = 0, const FileSlots* files = nullptr);
 
+// A processor with file slots (files.h) also saves their paths under
+// "files": {"<slot id>": "<path>"}, only for a slot not at its default. What
+// a path means across machines is the host's business (ADR-0029 §6); the
+// state carries it as the format gave it.
 std::string save_state(const Processor& p);
-// On failure the processor is unchanged and `error` says why.
+// On failure the processor is unchanged and `error` says why. A file that
+// cannot be read is such a failure, found before any value is applied; with
+// several slots, those before the failing one are already loaded.
 bool load_state(Processor& p, const std::string& text, std::string& error);
 
 }  // namespace sonora::native
