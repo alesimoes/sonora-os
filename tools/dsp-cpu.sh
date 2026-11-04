@@ -58,6 +58,7 @@ if [[ ${#PROCESSORS[@]} -eq 0 ]]; then
     opto
     phaser
     reverb
+    saturator
     tape
     tube
   )
