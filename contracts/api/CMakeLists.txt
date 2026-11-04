@@ -19,6 +19,11 @@ add_executable(test_api_wire tests/test_wire.cpp)
 target_link_libraries(test_api_wire PRIVATE sonora_api)
 add_test(NAME api_wire COMMAND test_api_wire)
 
+# Bounce Mix's wire argument (contract only, protocol version pending).
+add_executable(test_bounce_wire tests/test_bounce_wire.cpp)
+target_link_libraries(test_bounce_wire PRIVATE sonora_api)
+add_test(NAME bounce_wire COMMAND test_bounce_wire)
+
 add_executable(test_api_state_view tests/test_state_view.cpp)
 target_link_libraries(test_api_state_view PRIVATE sonora_api)
 add_test(NAME api_state_view COMMAND test_api_state_view)
