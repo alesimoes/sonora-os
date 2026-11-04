@@ -4,7 +4,9 @@
 # engine job has just built, on a pty in the same container.
 FROM debian:trixie-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
+ for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
+ if apt-get $A update && apt-get $A install -y --no-install-recommends \
       build-essential \
       ccache \
       cmake \
@@ -13,7 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       locales \
       python3 \
-    && rm -rf /var/lib/apt/lists/* \
+    ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
+    [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
+    rm -rf /var/lib/apt/lists/* \
     && sed -i 's/^# *de_DE.UTF-8 UTF-8/de_DE.UTF-8 UTF-8/' /etc/locale.gen \
     && locale-gen
 
