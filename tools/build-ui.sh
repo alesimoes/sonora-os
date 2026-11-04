@@ -121,7 +121,21 @@ if [[ "$(uname -s)" == Linux ]]; then
   AS_CALLER=(--user "$(id -u):$(id -g)" -e HOME=/tmp)
 fi
 
-docker run --rm "${AS_CALLER[@]}" \
-  -e LANG=C.UTF-8 \
+# One of a few global build slots (tools/build-slot.sh), -j its share of the
+# CPUs, and the ccache every worktree shares (/src is the same path in all).
+# On a Linux host the container runs as the caller, who cannot write the
+# volume's root-owned /root/.ccache: ccache then finds no usable cache and
+# compiles normally.
+JOBS="$("$ROOT/tools/build-slot.sh" --jobs)"
+# Off a Linux host the tree is on a volume per checkout, not in the NTFS bind
+# mount (see tools/build-engine.sh).
+BUILD_VOL=()
+if [[ "$(uname -s)" != Linux ]]; then
+  ID="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
+  BUILD_VOL=(-v "sonora-build-$ID:/build" -e SONORA_BUILD_DIR=/build/ui)
+fi
+"$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" \
+  -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=10G "${BUILD_VOL[@]}" \
+  -v sonora-ccache:/root/.ccache \
   -v "$(host_path "$ROOT"):/src" "${OUT_MOUNT[@]}" -w /src "$IMAGE" \
   tools/build-ui-entrypoint.sh "$MODE" "$SHOT_NAME" "$SECONDS_EACH"
