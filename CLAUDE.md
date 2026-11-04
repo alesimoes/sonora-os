@@ -97,6 +97,16 @@ started before reporting (see "Process hygiene" in each agent file). The
 coordinator ends every turn with `tools/bg-status.sh` (`--kill` removes
 duplicates and orphan docker runs).
 
+## Build budget (every agent)
+
+Builds, not coding, are the bottleneck: ten agents each running a 16-job build
+saturate the machine and every build slows down. Write the whole slice first
+(code, tests, docs), then build and test once per milestone, at most three
+build cycles per task. No rebuild per edit; read the code instead. Use the
+narrowest target, keep the build directory so it stays incremental, never
+start a second container for the same worktree, and never wait on a build.
+The heavy docker runs go through `tools/build-slot.sh` once it lands.
+
 ## Before opening a PR (every agent)
 
 Each of these cost a fix round of 30–60 minutes this session. CI is slow

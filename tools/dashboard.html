@@ -49,6 +49,15 @@ h1{font-size:21px;margin:0;letter-spacing:-.01em}
 .kpi span{color:var(--muted);font-size:12px}
 .kpi.warn{--c:var(--amber)} .kpi.bad{--c:var(--rose)} .kpi.ok{--c:var(--mint)} .kpi.vio{--c:var(--violet)}
 
+.usage{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin:-8px 0 22px}
+.gauge{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:13px 16px;backdrop-filter:blur(10px)}
+.gauge .gh{display:flex;align-items:baseline;gap:8px}
+.gauge .gh span{color:var(--muted);font-size:12px}
+.gauge .gh b{margin-left:auto;font-size:24px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.gauge .track2{height:8px;border-radius:5px;background:var(--line);overflow:hidden;margin:9px 0 6px}
+.gauge .track2 i{display:block;height:100%;width:var(--w);border-radius:5px;background:linear-gradient(90deg,var(--mint),var(--cyan));transition:width .6s}
+.gauge.hi .track2 i{background:linear-gradient(90deg,var(--amber),var(--rose))}
+.gauge small{color:var(--faint);font-size:11.5px}
 .cols{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:20px}
 @media (max-width:1050px){.cols{grid-template-columns:1fr}}
 .sect{display:flex;align-items:baseline;gap:10px;margin:0 0 10px}
@@ -110,6 +119,7 @@ footer{color:var(--faint);font-size:12px;margin-top:8px}
   </header>
   <p class="err" id="err"></p>
   <section class="kpis" id="kpis" aria-label="Resumo"></section>
+  <section class="usage" id="usage" aria-label="Consumo"></section>
   <div class="cols">
     <section>
       <div id="tracks"></div>
@@ -131,7 +141,14 @@ const CLS=s=>s==='no worktree'?'nowt':s;
 const ORDER={waiting:0,'no worktree':0,building:1,working:2,paused:3,done:4,unknown:5};
 let lastOk=0;
 function kpi(n,label,cls){return `<div class="kpi ${cls||''}"><b>${n}</b><span>${label}</span></div>`}
-function render(s){
+const until=t=>{if(!t)return '';const s=Math.max(0,Math.round(t-Date.now()/1000));const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+'d '+h+'h':h?h+'h '+m+'min':m+' min'};
+function gauge(label,pct,sub,reset){if(typeof pct!=='number')return `<div class="gauge"><div class="gh"><span>${label}</span><b>-</b></div><small>sem dado (a linha de status ainda não gravou)</small></div>`;
+  return `<div class="gauge ${pct>=80?'hi':''}"><div class="gh"><span>${label}</span><b>${Math.round(pct)}%</b></div><div class="track2" style="--w:${Math.min(100,pct)}%"><i></i></div><small>${sub||''}${reset?' · renova em '+until(reset):''}</small></div>`}
+function renderUsage(u){
+  const ses=u.sessions||[];const main=ses.find(x=>/sound/i.test(x.cwd||''))||ses[0];
+  const ctx=main?gauge('Contexto desta sessão',main.context_pct,(main.model||'')+(main.context_tokens?' · '+Math.round(main.context_tokens/1000)+'k tokens':'')):gauge('Contexto desta sessão');
+  document.getElementById('usage').innerHTML=gauge('Consumo da semana',u.week?.used_percentage,'limite semanal do plano',u.week?.resets_at)+gauge('Janela de 5 horas',u.five_hour?.used_percentage,'limite de curto prazo',u.five_hour?.resets_at)+ctx}
+function render(s){renderUsage(s.usage||{});
   const act=s.agents.filter(a=>!['done','paused'].includes(a.state));
   const waiting=act.filter(a=>a.state==='waiting'||a.state==='no worktree').length;
   const busy=act.filter(a=>a.state==='building'||a.state==='working').length;

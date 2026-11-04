@@ -75,3 +75,5 @@ shell costs tokens and attention until a human notices.
   Do not end a turn waiting for an answer; nobody reads your terminal.
 - Before reporting, `docker ps` and `ps -ef` for anything you started
   (docker runs, builds) and kill it.
+
+- Build budget: finish the whole slice before building; at most three build cycles per task, narrowest target, no rebuild per edit (CLAUDE.md "Build budget").
