@@ -1,0 +1,19 @@
+{
+  "processor": "org.sonora.mastering",
+  "class": "D",
+  "note": "ADR-0011 N4 and 3.5, ADR-0046; bars set from the first measured run (see the PR). The console is built from the Sonora EQ (zero latency), compressor, saturator (eco) and limiter, so the stage bars live in their own quality.json files; here: the neutral console equals its input (neutral.max_abs); each stage in the console equals the standalone processor with the same settings, noise through both, latency aligned (wiring.max_abs: the parameter mapping, the fixed Q 0.7, the shelf corners 100 Hz and 10 kHz, the 12 dB knee); width against mid/side and mono at 0 %; the limiter's ceiling never exceeded on the 16x reference meter with +12 dB of gain ahead of it and saturation in; saturation raises THD+N at 100 % over 0 %; auto-level reaches the target within autolevel.target_lu on noise (a 40 s render, the last 8 s measured) and stops at its +12 dB trim when the target is out of reach, and is a no-op when off. CPU: the whole console against class D (400 us p99.9, 800 us max); the saturator runs at its eco quality.",
+  "neutral": {"max_abs": 1e-5},
+  "wiring": {"max_abs": 1e-4},
+  "width": {"max_error": 2e-5, "mono_abs": 1e-6},
+  "ceiling": {"max_dbtp": 0.0},
+  "saturation": {"min_rise_db": 30.0},
+  "autolevel": {"target_lu": 0.5, "clamp_lu": 0.5, "off_lu": 0.05},
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["low_gain", "lowmid_gain", "highmid_gain", "high_gain", "comp_threshold", "comp_ratio", "comp_mix", "sat_mix", "gain", "ceiling"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 400.0,
+    "max_us": 800.0
+  }
+}

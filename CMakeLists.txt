@@ -111,6 +111,11 @@ add_subdirectory(common/dsp)
 # measurement harness, and every processor directory found under
 # plugins/native (see plugins/native/README.md: adding one edits no list).
 add_subdirectory(plugins/native)
+if(SONORA_PLATFORM STREQUAL "linux")
+# sonora-analyze: the offline analysis passes and the mix assistant's planner
+# (ADR-0011 3.4, ADR-0046). On common/model, so Linux-only like it.
+add_subdirectory(plugins/analyze)
+endif()
 
 # The neutral modules and their tests, as one target: what CI's Portable
 # (MSVC) job builds, so a new test target there needs no edit to ci.yml.
