@@ -181,6 +181,11 @@
       "origin": "sonora",
       "comment": "Ours. Not in Logic's key-command tables, but the guide's event-editor prose gives Option-Shift-D for Deselect All there, so it is close quarters."
     },
+    "cmd+shift+i": {
+      "command": "session.import_audio",
+      "verified": false,
+      "comment": "Import Audio File, Shift-Command-I: the browser for WAV files, each becoming a new track. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md."
+    },
     "alt+cmd+n": {
       "command": "track.new",
       "verified": false,

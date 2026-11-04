@@ -608,6 +608,7 @@ Rectangle {
                     { name: "fileSaveAsTemplate", label: "Save as Template…", command: "app.save_as_template" },
                     { name: "", label: "", command: "" },
                     { name: "fileOpen", label: "Open…", command: "open" },
+                    { name: "fileImportAudio", label: "Import Audio…", command: "session.import_audio" },
                     { name: "fileNewFromTemplate", label: "New from Template…", command: "app.new_from_template" }
                 ]
                 Item {
@@ -2152,6 +2153,12 @@ Rectangle {
         }
     }
 
+    ImportPanel {
+        id: importPanel
+        shell: root.shell
+        session: root.session
+    }
+
     // A refused gesture speaks on the status line, like a refused key; so
     // does a save or an open that worked.
     Connections {
@@ -2163,6 +2170,7 @@ Rectangle {
         function onSaveAsRequested(copy, name, where) { saveAsPanel.show(copy, name, where) }
         function onSaveAsTemplateRequested(name, where) { saveAsPanel.showTemplate(name, where) }
         function onTemplateBrowserRequested() { templatePanel.show() }
+        function onImportBrowserRequested() { importPanel.show() }
         function onPlaylistRenameRequested(track, current) { playlistRenamePanel.show(track, current) }
         function onNameRequested(track, current) { namePanel.show(track, current) }
         function onColourRequested(track, current) { colourPalette.show(track, current) }

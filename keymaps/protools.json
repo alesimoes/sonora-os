@@ -270,6 +270,11 @@
       "verified": false,
       "comment": "Duplicate Playlist on the selected track, Control+Option+Backslash on a Mac. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md (ADR-0026)."
     },
+    "ctrl+shift+i": {
+      "command": "session.import_audio",
+      "verified": false,
+      "comment": "File > Import > Audio, Command+Shift+I: the browser for WAV files, each becoming a new track. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md."
+    },
     "ctrl+shift+n": {
       "command": "track.new",
       "verified": false,

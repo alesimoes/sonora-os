@@ -28,6 +28,7 @@
 #include "peak_source.h"
 #include "session_files.h"
 #include "sonora/model/sequence_file.h"
+#include "import_model.h"
 #include "time_format.h"
 #include "timeline_document.h"
 #include "timeline_scene.h"
@@ -482,6 +483,8 @@ public:
     Q_INVOKABLE bool deleteTemplate(const QString& name);
     Q_INVOKABLE bool saveAsTemplate(const QString& name, bool markers);
     Q_INVOKABLE bool newFromTemplate(const QString& file, const QString& name, bool discard);
+    // The Import Audio browser's model (import_model.h), made on first use.
+    Q_INVOKABLE QObject* importer();
     bool openRecordingFolder(const QString& folder, bool discard, std::string& why);
 
     // --- Mix window ---
@@ -569,6 +572,8 @@ signals:
     void saveAsTemplateRequested(const QString& name, const QString& where);
     // app.new_from_template: the window shows the template browser.
     void templateBrowserRequested();
+    // session.import_audio: the window shows the Import Audio browser.
+    void importBrowserRequested();
     void templateMarkersChanged();
     // What the operator must see and may not be looking at when it happens:
     // a Save As the engine refused after the dialog closed. Held in the
@@ -671,6 +676,7 @@ private:
     // refused (commandRefusal), so no take starts in the template's folder.
     bool making_from_template_ = false;
     EditController ctl_;
+    ImportModel* import_ = nullptr;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");
     bool undo_history_open_ = false;

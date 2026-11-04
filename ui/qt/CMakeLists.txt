@@ -68,12 +68,14 @@ add_library(sonora_ui_qt STATIC
   src/send_controller.h src/send_controller.cpp
   src/send_model.h src/send_model.cpp
   src/refusal_page.h src/refusal_page.cpp
+  src/audio_importer.h src/audio_importer.cpp
+  src/import_model.h src/import_model.cpp
 )
 set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
 target_include_directories(sonora_ui_qt PUBLIC src)
 # FakeEngine: the engine behind the adapter when no real one is running,
 # and in the tests (control_adapter.h).
-target_link_libraries(sonora_ui_qt PUBLIC sonora_base sonora_keymap sonora_model sonora_api sonora_api_fake
+target_link_libraries(sonora_ui_qt PUBLIC sonora_base sonora_keymap sonora_model sonora_api sonora_api_fake sonora_audiofile
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
 # Only measure.cpp uses it, for per-thread CPU time (ADR-0008 V5).
 target_link_libraries(sonora_ui_qt PRIVATE sonora_platform)
@@ -83,7 +85,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
         qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml
-        qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
+        qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml
 )
 
 # The screenshot scenes register themselves (scenes/screenshot_scene.h): in
@@ -320,3 +322,10 @@ target_link_libraries(test_ui_mix_layout PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_mix_layout COMMAND test_ui_mix_layout)
 set_tests_properties(ui_mix_layout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
                      FAIL_REGULAR_EXPRESSION "Binding loop")
+
+# Import Audio (ui.editing.import): the copy at the session rate, the one-step
+# placement, the refusals, the browser, on FakeEngine.
+add_executable(test_ui_import tests/test_import.cpp)
+target_link_libraries(test_ui_import PRIVATE sonora_ui_qt)
+add_test(NAME ui_import COMMAND test_ui_import)
+set_tests_properties(ui_import PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

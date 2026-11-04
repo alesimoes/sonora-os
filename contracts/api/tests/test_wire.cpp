@@ -469,7 +469,8 @@ void domains() {
                                id == "window.transport" ||
                                id == "window.undo_history" ||
                                id == "window.memory_locations" || id == "window.latency" ||
-                               id == "app.save_as_template" || id == "app.new_from_template";
+                               id == "app.save_as_template" || id == "app.new_from_template" ||
+                               id == "session.import_audio";
         if (interface != (spec.domain == CommandDomain::Interface)) {
             std::fprintf(stderr, "FAIL %s is in the wrong domain\n", spec.id);
             ++failures;
