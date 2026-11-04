@@ -21,9 +21,12 @@ command -v cygpath >/dev/null 2>&1 && src="$(cygpath -w "$ROOT")"
 
 docker build -q --label org.sonora=1 -t "$IMAGE" - >/dev/null <<'EOF'
 FROM debian:trixie
-RUN apt-get update \
- && apt-get install -y --no-install-recommends systemd systemd-sysv dbus kbd procps \
- && rm -rf /var/lib/apt/lists/*
+RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
+ for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
+ if apt-get $A update && apt-get $A install -y --no-install-recommends systemd systemd-sysv dbus kbd procps \
+ ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
+ [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
+ rm -rf /var/lib/apt/lists/*
 EOF
 
 # Runs inside the container before systemd. $1 is the UI stub's behaviour.
