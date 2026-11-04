@@ -1871,9 +1871,8 @@ int test_v18_migrates_and_groups() {
     CHECK(save(l, out));
     CHECK(out == as_v19(v18));
     CHECK(out == read_fixture(kCurrent));
-    CHECK(!load(edit(v18, "\"buses\": [],", "\"buses\": [],
-  \"groups\": [],"), l, e));
-    CHECK(mentions(e.message, "groups"));
+    CHECK(!load(edit(v18, "\"buses\": [],", "\"buses\": [],\n  \"groups\": [],"), l, e));
+    CHECK(mentions(e.text(), "groups"));
     return 0;
 }
 
