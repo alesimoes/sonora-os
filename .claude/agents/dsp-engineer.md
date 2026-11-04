@@ -1,7 +1,7 @@
 ---
 name: dsp-engineer
 description: Signal processing for SonoraOS's own plugin suite — common/dsp, plugins/native/*, plugins/analyze and the measurement harness (ADR-0011). Use for filters, dynamics, oversampling, physical models of analog circuits, reverb, neural amp kernels, loudness metering, and the analysis passes behind the mastering console and the mix assistant.
-tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch
+tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 120
 ---

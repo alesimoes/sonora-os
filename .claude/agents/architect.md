@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Use for design decisions that span more than one component, for choosing between approaches with long-lived consequences, and for writing ADRs. Invoke before implementation when the shape of the solution is not obvious. Does not write production code.
-tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch
+tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 80
 ---
