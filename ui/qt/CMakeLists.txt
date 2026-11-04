@@ -55,6 +55,8 @@ add_library(sonora_ui_qt STATIC
   src/edit_clipboard.h src/edit_clipboard.cpp
   src/edit_markers.cpp
   src/edit_names.cpp
+  src/strip_silence.h src/strip_silence.cpp
+  src/edit_strip_silence.cpp
   src/automation_edit.h src/automation_edit.cpp
   src/edit_automation.cpp
   src/live_take.h src/live_take.cpp
@@ -124,6 +126,11 @@ target_link_libraries(test_ui_edit PRIVATE sonora_ui_qt sonora_session_files)
 target_compile_definitions(test_ui_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_edit COMMAND test_ui_edit)
+
+add_executable(test_ui_strip_silence tests/test_strip_silence.cpp)
+target_link_libraries(test_ui_strip_silence PRIVATE sonora_ui_qt)
+add_test(NAME ui_strip_silence COMMAND test_ui_strip_silence)
+set_tests_properties(ui_strip_silence PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 set_tests_properties(ui_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The take being recorded, drawn growing on the armed tracks' lanes.

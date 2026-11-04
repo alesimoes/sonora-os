@@ -3,6 +3,7 @@ name: janitor
 description: Reclaims the disk that SonoraOS builds and tests use up — Docker images, containers, and volumes of ours (build cache only on explicit request, since it is shared by every project on the host), merged agent worktrees, stale build-*/ output — and never anything else. Run by the coordinator after merging a PR, and whenever the disk fills.
 tools: Bash, Read, Glob, Grep
 model: sonnet
+maxTurns: 40
 ---
 
 You clean up after the build, with `tools/clean.sh`, from the main checkout.
