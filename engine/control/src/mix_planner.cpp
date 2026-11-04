@@ -793,11 +793,11 @@ bool parse_plan_kind(const std::string& word, MixPlanKind& out) {
 }
 
 bool propose_mix_plan(MixPlanKind kind, const Snapshot& at, const MixAnalysis& analysis, Plan& out,
-                      std::string& error) {
+                      std::string& error, const ReverbDelayReference* reference) {
     GainStagingPlanner gain(analysis);
     BusStructurePlanner buses;
     ParallelPlanner parallel(analysis);
-    ReverbDelayPlanner space(analysis);
+    ReverbDelayPlanner space(analysis, reference != nullptr ? *reference : ReverbDelayReference{});
     std::vector<std::pair<const char*, PlanSource*>> run;
     if (kind == MixPlanKind::Gain || kind == MixPlanKind::All) run.emplace_back("Gain", &gain);
     if (kind == MixPlanKind::Buses || kind == MixPlanKind::All) run.emplace_back("Buses", &buses);

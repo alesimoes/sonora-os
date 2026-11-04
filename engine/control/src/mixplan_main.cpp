@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// sonora-mixplan SESSION.sonora [gain|buses|parallel|space|all]
+// sonora-mixplan SESSION.sonora [gain|buses|parallel|space|all] [--reference REF.wav]
 //
 // Reads a session, measures its audio, and prints the plan the mix
 // assistant's rules propose, with the diff accepting it would make. Changes
@@ -12,15 +12,28 @@
 
 #include "sonora/mix_planner.h"
 #include "sonora/model/session_file.h"
+#include "sonora/space_measure.h"
 
 int main(int argc, char** argv) {
-    if (argc < 2 || argc > 3) {
-        std::fprintf(stderr, "usage: sonora-mixplan SESSION.sonora [gain|buses|parallel|space|all]\n");
+    std::string reference_path;
+    int n = argc;
+    if (n >= 4 && std::string(argv[n - 2]) == "--reference") {
+        reference_path = argv[n - 1];
+        n -= 2;
+    }
+    if (n < 2 || n > 3) {
+        std::fprintf(stderr, "usage: sonora-mixplan SESSION.sonora [gain|buses|parallel|space|all] "
+                             "[--reference REF.wav]\n");
         return 2;
     }
     sonora::MixPlanKind kind = sonora::MixPlanKind::All;
-    if (argc == 3 && !sonora::parse_plan_kind(argv[2], kind)) {
+    if (n == 3 && !sonora::parse_plan_kind(argv[2], kind)) {
         std::fprintf(stderr, "sonora-mixplan: \"%s\" is not gain, buses, parallel, space or all\n", argv[2]);
+        return 2;
+    }
+    if (!reference_path.empty() && kind != sonora::MixPlanKind::Space &&
+        kind != sonora::MixPlanKind::All) {
+        std::fprintf(stderr, "sonora-mixplan: --reference applies to space or all\n");
         return 2;
     }
     const std::string path = argv[1];
@@ -48,8 +61,23 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::fprintf(stderr, "\n");
+    // The reference's space, measured here and printed so the operator sees
+    // which numbers came from the file and which stayed at the defaults.
+    sonora::ReverbDelayReference reference;
+    const bool has_reference = !reference_path.empty();
+    if (has_reference) {
+        sonora::SpaceMeasure measured;
+        if (!sonora::measure_space_file(reference_path, measured, error)) {
+            std::fprintf(stderr, "sonora-mixplan: %s\n", error.c_str());
+            return 1;
+        }
+        reference = sonora::to_reference(measured);
+        std::printf("Reference %s\n%s\n", reference_path.c_str(),
+                    sonora::describe_space(measured).c_str());
+    }
     sonora::model::Plan plan;
-    if (!sonora::propose_mix_plan(kind, loaded.snapshot, analysis, plan, error)) {
+    if (!sonora::propose_mix_plan(kind, loaded.snapshot, analysis, plan, error,
+                                  has_reference ? &reference : nullptr)) {
         std::fprintf(stderr, "sonora-mixplan: %s\n", error.c_str());
         return 1;
     }
