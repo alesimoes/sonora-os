@@ -24,6 +24,7 @@ add_library(sonora_control STATIC
   src/consolidate.cpp
   src/consolidate_job.cpp
   src/mix_planner.cpp
+  src/space_measure.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -246,3 +247,8 @@ add_executable(test_mix_planner tests/test_mix_planner.cpp)
 target_include_directories(test_mix_planner PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
 target_link_libraries(test_mix_planner PRIVATE sonora_control)
 add_test(NAME mix_planner COMMAND test_mix_planner)
+
+# Reverb and delay space of a reference recording (ADR-0045 8).
+add_executable(test_space_measure tests/test_space_measure.cpp)
+target_link_libraries(test_space_measure PRIVATE sonora_control)
+add_test(NAME space_measure COMMAND test_space_measure)

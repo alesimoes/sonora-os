@@ -184,7 +184,8 @@ bool parse_plan_kind(const std::string& word, MixPlanKind& out);
 // plans: ids are carried on, `needs` re-indexed. "All" is gain staging, then
 // buses, parallel, then space (reverb and delay). Fails with `error` when no planner has a step.
 bool propose_mix_plan(MixPlanKind kind, const model::Snapshot& at, const MixAnalysis& analysis,
-                      model::Plan& out, std::string& error);
+                      model::Plan& out, std::string& error,
+                      const ReverbDelayReference* reference = nullptr);
 
 // The text preview: each step with its reason and dependencies, the notes,
 // then the diff accepting it all would make. False, with `error`, when the

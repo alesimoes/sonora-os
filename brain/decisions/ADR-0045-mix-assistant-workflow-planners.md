@@ -96,6 +96,40 @@ our own processors only.
    protocol bump). `propose_mix_plan(Space)` and `All` run it last;
    `sonora-mixplan FILE space` prints it.
 
+   **Measuring the reference (`space_measure`).** `sonora-mixplan FILE space
+   --reference REF.wav` fills the `ReverbDelayReference` from the audio, in
+   `engine/control` (offline, never `process`; `plugins/analyze` was not on
+   main). WAV/BWF only: FLAC is refused with a message to convert it. Mid
+   signal at 1 ms resolution, at most 15 minutes. Each estimate is optional;
+   one not found leaves the planner's default and the printout says so.
+   - *Decay:* free decays (a level peak, its plateau end, then a fall of at
+     least 30 dB before the next rise) are integrated backwards (Schroeder,
+     JASA 37, 1965); T20 (-5..-25 dB, R^2 >= 0.95) x 3 is the RT60, EDT
+     (0..-10 dB) x 6 the early time; the median of the decays. A simpler
+     cousin of the blind estimators (Loellmann et al., IWAENC 2010), not
+     their maximum-likelihood method.
+   - *Pre-delay and wet level:* isolated transients (20 dB quiet before),
+     a gap 10 dB down within 150 ms, then the tail rising 6 dB. Pre-delay =
+     transient to tail onset; DRR = direct energy / tail energy (ACE
+     Challenge definition, Eaton et al. 2016); the reverb send estimate is
+     -DRR clamped to -40..0 dB. Needs such transients: a dense mix gives
+     "not found", not a guess.
+   - *Echo:* mean-removed autocorrelation of the onset strength (5 ms RMS
+     steps) of the side signal when it holds over 10 % of the mid energy,
+     else of the mid; first peak within 60 % of the largest between 60 ms and
+     1.5 s, strength >= 0.2. The echo level is the first repeat's amplitude
+     under its source over clean onsets. The planner snaps the time to a
+     note; the strength tells the operator how sure to be, since a steady
+     rhythm also correlates (the snap to the tempo grid hides most of that).
+   - *Tempo:* the same autocorrelation, 75..160 bpm; printed, the session's
+     tempo still decides the snap.
+   Tests (`test_space_measure`) build signals of known RT60 (0.6, 1.2, 2.0 s),
+   pre-delay (20, 45, 90 ms), DRR (exact from the generated energies), echo
+   (375, 562.5 ms, -6 dB) and tempo (96, 120, 140 bpm) at 48 and 44.1 kHz.
+   Tolerances: RT60 10 %, pre-delay 4 ms, DRR 2 dB, echo 10 ms, level 3 dB,
+   tempo 2 bpm. Not tested: real recordings, where tails overlap and these
+   estimates degrade.
+
 ## Consequences
 
 - The thresholds above are starting rules, not tuned against mixes; they are
