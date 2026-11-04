@@ -16,10 +16,10 @@ Rectangle {
     required property ShellModel shell
     required property SessionModel session
     required property MixModel mixer
-    property int index: 0
+    property int vcaIndex: 0
     property var info: ({ name: "", gainDb: 0, gainText: "0.0", mute: false, count: 0 })
 
-    objectName: "vca" + index
+    objectName: "vca" + vcaIndex
     color: Theme.panel
     radius: Theme.radius
     border.color: Theme.borderSubtle
@@ -43,30 +43,30 @@ Rectangle {
             font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
         }
         Text {
-            objectName: "vcaCount" + vca.index
+            objectName: "vcaCount" + vca.vcaIndex
             anchors.horizontalCenter: parent.horizontalCenter
             text: vca.info.count === 1 ? "1 track" : vca.info.count + " tracks"
             color: vca.info.count === 0 ? Theme.caution : Theme.textSecondary
             font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
         }
         SButton {
-            objectName: "vcaMute" + vca.index
+            objectName: "vcaMute" + vca.vcaIndex
             anchors.horizontalCenter: parent.horizontalCenter
             text: "M"; implicitWidth: 18; implicitHeight: 18; fontPx: Theme.textCaption
             active: vca.info.mute; activeColour: Theme.mute
-            onClicked: vca.mixer.toggleVcaMute(vca.index)
+            onClicked: vca.mixer.toggleVcaMute(vca.vcaIndex)
         }
         SButton {
-            objectName: "vcaSet" + vca.index
+            objectName: "vcaSet" + vca.vcaIndex
             anchors.horizontalCenter: parent.horizontalCenter
             text: "Set"; implicitHeight: 18; fontPx: Theme.textCaption; bold: false
-            onClicked: vca.mixer.assignVca(vca.index)
+            onClicked: vca.mixer.assignVca(vca.vcaIndex)
         }
     }
 
     Item {
         id: faderArea
-        objectName: "vcaFaderZone" + vca.index
+        objectName: "vcaFaderZone" + vca.vcaIndex
         anchors { left: parent.left; right: parent.right; top: top.bottom; bottom: readout.top
                   topMargin: Theme.space3; bottomMargin: Theme.space2 }
         readonly property real capH: 26
@@ -93,17 +93,17 @@ Rectangle {
             Rectangle { anchors.centerIn: parent; width: parent.width - 6; height: 2; color: Theme.text }
         }
         MouseArea {
-            objectName: "vcaFader" + vca.index
+            objectName: "vcaFader" + vca.vcaIndex
             x: slotWell.x - 18; width: 36 + slotWell.width
             height: parent.height
             property real lastY: 0
             onPressed: (m) => {
                 lastY = m.y
-                if (m.modifiers & Qt.AltModifier) vca.mixer.resetVca(vca.index)
+                if (m.modifiers & Qt.AltModifier) vca.mixer.resetVca(vca.vcaIndex)
             }
             onPositionChanged: (m) => {
                 if (!pressed || (m.modifiers & Qt.AltModifier)) return
-                vca.mixer.vcaDrag(vca.index, m.y - lastY, faderArea.travel,
+                vca.mixer.vcaDrag(vca.vcaIndex, m.y - lastY, faderArea.travel,
                                   (m.modifiers & Qt.ControlModifier) !== 0)
                 lastY = m.y
             }
@@ -119,12 +119,12 @@ Rectangle {
         color: Theme.sunken
         ValueField {
             id: gainField
-            objectName: "vcaGainValue" + vca.index
+            objectName: "vcaGainValue" + vca.vcaIndex
             anchors.fill: parent
             shell: vca.shell
             text: vca.info.gainText
             textColour: vca.info.gainDb > 0.05 ? Theme.caution : Theme.text
-            onSubmitted: (t) => { if (vca.mixer.setVcaGainText(vca.index, t)) gainField.finish() }
+            onSubmitted: (t) => { if (vca.mixer.setVcaGainText(vca.vcaIndex, t)) gainField.finish() }
         }
     }
     Rectangle {
@@ -144,10 +144,10 @@ Rectangle {
         }
         SButton {
             id: remove
-            objectName: "vcaRemove" + vca.index
+            objectName: "vcaRemove" + vca.vcaIndex
             anchors { right: parent.right; verticalCenter: parent.verticalCenter; rightMargin: 2 }
             text: "×"; implicitWidth: 16; implicitHeight: 16; fontPx: Theme.textCaption; bold: false
-            onClicked: vca.mixer.removeVca(vca.index)
+            onClicked: vca.mixer.removeVca(vca.vcaIndex)
         }
     }
 }

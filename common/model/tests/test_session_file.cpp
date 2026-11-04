@@ -1867,8 +1867,8 @@ int test_v17_migrates_and_strip_lanes() {
     CHECK(l.snapshot.edit->master_automation.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(v17));
-    CHECK(out == read_fixture(kNoVcas));
+    CHECK(out == as_v19(as_v18(v17)));
+    CHECK(out == read_fixture(kCurrent));
 
     // An aux bus gains "automation": [] after its sends.
     const std::string bus =

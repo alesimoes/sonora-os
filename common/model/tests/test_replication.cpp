@@ -197,6 +197,11 @@ std::vector<Operation> one_of_each() {
             SetTrackColour{2, 13},
             SetRegionName{3, 11, "Verse \xC3\xA9"},
             SetRegionColour{3, 11, kTrackColour},
+            SetVca{70, "Drums Ã©", {2, 3}},
+            RemoveVca{70},
+            SetVcaMix{VcaMix{70, -4.5f, true}},
+            SetFolder{71, "Kit", {2}},
+            RemoveFolder{71},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 

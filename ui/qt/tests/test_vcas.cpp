@@ -180,15 +180,17 @@ int commands_and_structure() {
     CHECK(r.connect());
     std::string why;
     CommandContext none;
-    // Nothing selected: refused by name, and held.
-    CHECK(r.router.local().dispatch("vca.new", none, why) == DispatchResult::Failed);
-    CHECK(!r.held.empty() && r.held.back().find("no track") != std::string::npos);
     r.session.controller().select_range(0, 0, 0, 3);
     none.argument = "Drums";
     CHECK(r.router.local().dispatch("vca.new", none, why) == DispatchResult::Ok);
     r.settle();
     CHECK(r.doc.snapshot().edit->vcas.size() == 1 && r.doc.snapshot().edit->vcas[0].name == "Drums");
     CHECK(r.session.undoText() == QStringLiteral("Undo VCA Master"));
+    // A second of the same name is refused, and the refusal is held.
+    r.held.clear();
+    CHECK(r.router.local().dispatch("vca.new", none, why) == DispatchResult::Failed);
+    CHECK(r.held.size() == 1 && r.held[0].find("already named \"Drums\"") != std::string::npos);
+    CHECK(r.doc.snapshot().edit->vcas.size() == 1);
     CHECK(r.mixer.trackVcas() == QStringList({"Drums", "Drums", "Drums", ""}));
     const QVariantMap info = r.mixer.vcas()[0].toMap();
     CHECK(info.value("count").toInt() == 3 && info.value("gainText").toString() == "0.0");
@@ -319,7 +321,7 @@ int qml() {
     CHECK(named(root, QStringLiteral("folderTag2"))->isVisible());
     CHECK(r.mixer.folderCards().isEmpty());
 
-    // + VCA with nothing held out is a held refusal; with a selection a VCA.
+    // + VCA makes one of the selected tracks.
     r.held.clear();
     r.session.controller().select_range(3, 0, 0, 1);
     QQuickItem* newVca = named(root, QStringLiteral("newVca"));

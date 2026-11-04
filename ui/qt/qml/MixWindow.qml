@@ -240,6 +240,7 @@ Rectangle {
             VcaStrip {
                 required property int index
                 required property var modelData
+                vcaIndex: index
                 x: (mix.slotCount + mix.auxCount + index) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height
