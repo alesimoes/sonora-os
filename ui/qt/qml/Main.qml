@@ -123,10 +123,48 @@ Rectangle {
         }
     }
 
+    // --- window configurations: where the floating windows are ---------------
+    // Each Loader below reports its place as it changes (and once, at its
+    // default); a recalled configuration moves them back inside this window,
+    // so one made on a larger display never leaves a window off the screen.
+    function reportPlace(id, loader) { root.session.windowPlaced(id, Math.round(loader.x), Math.round(loader.y)) }
+    function applyPlaces() {
+        const all = { "transport": transportLoader, "undo_history": undoHistoryLoader,
+                      "memory_locations": memoryLocationsLoader, "latency": latencyLoader }
+        for (const id in all) {
+            const p = root.session.windowPlace(id)
+            if (p.x === undefined) continue
+            const l = all[id]
+            l.x = Math.max(0, Math.min(root.width - l.width, p.x))
+            l.y = Math.max(0, Math.min(root.height - l.height, p.y))
+        }
+    }
+    Connections {
+        target: root.session
+        function onWindowPlacesRecalled() { root.applyPlaces() }
+    }
+
+    // --- the Window Configurations list, floating over either window ---
+    Loader {
+        id: windowConfigsLoader
+        objectName: "windowConfigsLoader"
+        x: Math.round((root.width - width) / 2)
+        y: body.y + Theme.space6
+        z: 9
+        sourceComponent: WindowConfigsWindow {
+            objectName: "windowConfigsWindow"
+            shell: root.shell
+            session: root.session
+            mover: windowConfigsLoader
+        }
+    }
+
     // --- the Transport window, floating over either window ---
     Loader {
         id: transportLoader
         objectName: "transportLoader"
+        onXChanged: root.reportPlace("transport", transportLoader)
+        onYChanged: root.reportPlace("transport", transportLoader)
         active: root.transport !== null
         // Top right of the windows to begin with; where it is dragged after.
         x: root.width - width - Theme.space6
@@ -145,6 +183,8 @@ Rectangle {
     Loader {
         id: undoHistoryLoader
         objectName: "undoHistoryLoader"
+        onXChanged: root.reportPlace("undo_history", undoHistoryLoader)
+        onYChanged: root.reportPlace("undo_history", undoHistoryLoader)
         // Below the Transport window's place, at the left of the timeline.
         x: Theme.trackHeaderWidth + Theme.space6
         y: body.y + Theme.space6
@@ -161,6 +201,8 @@ Rectangle {
     Loader {
         id: memoryLocationsLoader
         objectName: "memoryLocationsLoader"
+        onXChanged: root.reportPlace("memory_locations", memoryLocationsLoader)
+        onYChanged: root.reportPlace("memory_locations", memoryLocationsLoader)
         // At the right, under the Transport window's place, so it leaves the
         // rulers and the Undo History window's place in view.
         x: root.width - width - Theme.space6
@@ -178,6 +220,8 @@ Rectangle {
     Loader {
         id: latencyLoader
         objectName: "latencyLoader"
+        onXChanged: root.reportPlace("latency", latencyLoader)
+        onYChanged: root.reportPlace("latency", latencyLoader)
         x: root.width - width - Theme.space6
         y: body.y + Theme.space6
         z: 8
@@ -1841,6 +1885,18 @@ Rectangle {
                 onClicked: {
                     setupMenu.visible = false
                     root.shell.invoke("window.latency", -1)
+                }
+            }
+            SButton {
+                objectName: "setupWindowConfigs"
+                width: setupColumn.width
+                implicitHeight: 26
+                bold: false
+                fontPx: Theme.textBody
+                text: "Window Configurations…"
+                onClicked: {
+                    setupMenu.visible = false
+                    root.shell.invoke("window.configurations", -1)
                 }
             }
         }

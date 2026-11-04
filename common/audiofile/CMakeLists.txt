@@ -16,9 +16,17 @@ add_test(NAME wav_reader COMMAND test_wav_reader)
 # A child process started while a take is open does not inherit it
 # (ADR-0008 V3: OS-specific tests live in tests/posix, built if(UNIX)).
 if(UNIX)
-  add_executable(test_wav_writer_cloexec tests/posix/test_wav_writer_cloexec.cpp)
-  target_link_libraries(test_wav_writer_cloexec PRIVATE sonora_audiofile sonora_platform)
-  add_test(NAME wav_writer_cloexec COMMAND test_wav_writer_cloexec)
+  # Needs the POSIX create_exclusive, not the unsupported stub's.
+  if(SONORA_PLATFORM STREQUAL "linux")
+    add_executable(test_wav_writer_cloexec tests/posix/test_wav_writer_cloexec.cpp)
+    target_link_libraries(test_wav_writer_cloexec PRIVATE sonora_audiofile sonora_platform)
+    add_test(NAME wav_writer_cloexec COMMAND test_wav_writer_cloexec)
+  endif()
+
+  # A file-size limit stands in for a full disk (RLIMIT_FSIZE).
+  add_executable(test_wav_writer_full_disk tests/posix/test_wav_writer_full_disk.cpp)
+  target_link_libraries(test_wav_writer_full_disk PRIVATE sonora_audiofile)
+  add_test(NAME wav_writer_full_disk COMMAND test_wav_writer_full_disk)
 endif()
 
 # A take whose engine died before closing it gets the length on disk

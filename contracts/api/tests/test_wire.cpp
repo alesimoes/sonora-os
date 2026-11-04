@@ -469,6 +469,8 @@ void domains() {
                                id == "window.transport" ||
                                id == "window.undo_history" ||
                                id == "window.memory_locations" || id == "window.latency" ||
+                               id == "window.configurations" || id == "window.config_store" ||
+                               id == "window.config_recall" ||
                                id == "app.save_as_template" || id == "app.new_from_template" ||
                                id == "session.import_audio";
         if (interface != (spec.domain == CommandDomain::Interface)) {
