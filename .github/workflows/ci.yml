@@ -4,12 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Pushes to main run only the cheap jobs (the runner pool was saturated by
-  # the full CI of every merge); the heavy jobs run on PRs and here, so main
-  # is never unchecked for more than a day.
-  schedule:
-    - cron: "47 3 * * *"
-  workflow_dispatch:
 
 # A new push to a PR cancels its stale run. Runs on main are never cancelled:
 # each merge keeps its own result, so the group is unique per run there.
@@ -33,7 +27,7 @@ jobs:
       # counts as passing for branch protection, and `gh pr checks` buckets it
       # "skipping", which tools/merge-when-green.sh does not treat as failing).
       # On the PR merge commit, HEAD^1 is the base, so this is the PR's diff.
-      # Pushes to main skip the heavy jobs; schedule and manual runs build everything.
+      # Pushes to main always build everything.
       - name: Does the change touch anything but documentation?
         id: filter
         run: |
@@ -51,7 +45,7 @@ jobs:
   engine:
     name: Engine build and tests
     needs: changes
-    if: github.event_name != 'push' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     # In tools/Dockerfile.build, the image tools/build-engine.sh uses: Debian
     # trixie and its GCC 14, the compiler and baseline x86-64 codegen the
     # appliance ships. The runner's own compiler moved with ubuntu-latest
@@ -113,7 +107,7 @@ jobs:
   portable:
     name: Portable modules under MSVC
     needs: changes
-    if: github.event_name != 'push' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     # ADR-0008 §4: MSVC has no <unistd.h> or <sys/stat.h>, so a POSIX use in a
     # module that claims to be neutral fails to compile here, and the tests
     # run against the real UCRT. SONORA_PLATFORM=neutral configures only
@@ -153,7 +147,7 @@ jobs:
   ui:
     name: Qt interface build and headless tests
     needs: changes
-    if: github.event_name != 'push' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     # In tools/Dockerfile.ui, the image tools/build-ui.sh uses: Debian trixie
     # and its Qt 6.8, the Qt the product ships. ui/qt needs 6.7 (QSGTextNode,
     # QFont::Tag); Ubuntu 24.04's apt has 6.4, on which ui/qt skipped itself
@@ -193,7 +187,7 @@ jobs:
   sanitizers:
     name: Thread and address sanitizers
     needs: changes
-    if: github.event_name != 'push' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     # GCC 14's TSan, ASan and UBSan, in the engine job's trixie image: the
     # shipped compiler's instrumentation, not whatever the runner carries.
     runs-on: ubuntu-24.04
@@ -305,7 +299,7 @@ jobs:
   rtsan:
     name: RealtimeSanitizer over the SONORA_RT call graph
     needs: changes
-    if: github.event_name != 'push' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     # Its own build: -fsanitize=realtime cannot be combined with ASan or
     # TSan, and needs Clang 20 or later (clang-22 from trixie main, in
     # tools/Dockerfile.rtsan). Every SONORA_RT function is
@@ -349,7 +343,7 @@ jobs:
   record:
     name: Records audio against PipeWire
     needs: changes
-    if: github.event_name != 'push' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     # tools/build-engine.sh builds the engine in the sonora-build image, as
     # the engine job does; only Docker runs on the host.
     runs-on: ubuntu-24.04
@@ -382,7 +376,7 @@ jobs:
   interop:
     name: BWF files read back by third-party tools
     needs: changes
-    if: github.event_name != 'push' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     # The engine is built as in the record job, in the sonora-build image.
     runs-on: ubuntu-24.04
     steps:
@@ -415,7 +409,7 @@ jobs:
   quantum:
     name: Quantum and rate stay pinned
     needs: changes
-    if: github.event_name != 'push' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -430,7 +424,7 @@ jobs:
   plugins:
     name: Plugin host against real LV2 and VST3 plugins
     needs: changes
-    if: github.event_name != 'push' && needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -599,13 +593,25 @@ jobs:
       - name: Install shellcheck and dbus-x11
         run: sudo apt-get update && sudo apt-get install -y shellcheck dbus-x11
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty
+        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck
 
       - name: Read-only root, capped RAM writes
         run: tools/test-ro-root.sh
 
       - name: Secure Boot chain, static
         run: tools/test-secure-boot.sh
+
+      - name: Installed root, swap sizing and fstab
+        run: tools/test-rootfs.sh
+
+      - name: Update policy files
+        run: tools/test-updates.sh
+
+      - name: A/B updates, slot logic against files
+        run: tools/test-ab-updates.sh
+
+      - name: Policy check items match the image script
+        run: tools/test-policycheck-qemu.sh --static
 
       - name: Merge gate decisions, against a fake gh
         run: tools/test-merge-checks.sh
