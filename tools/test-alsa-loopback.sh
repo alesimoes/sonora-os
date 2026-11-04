@@ -33,6 +33,7 @@ grep -qs Loopback /proc/asound/cards || skip "no snd-aloop card (modprobe snd-al
 
 WORK="$(mktemp -d)"
 PIDS=()
+# shellcheck disable=SC2329  # run by the EXIT trap
 cleanup() {
   for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
