@@ -312,7 +312,7 @@ class LauncherTests(unittest.TestCase):
 
     def test_fake_claude_swap_and_run_files(self):
         self.assertEqual(launcher.claude_argv(None), ["claude"])
-        self.assertEqual(launcher.claude_argv("f.py")[1], "f.py")
+        self.assertEqual(launcher.claude_argv("f.py")[-1], "f.py")
         d = tempfile.mkdtemp()
         try:
             env = launcher.run_env("eng-1", "t", "f", d, 99, "tok", "r.json")

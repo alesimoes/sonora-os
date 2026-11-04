@@ -334,7 +334,12 @@ class Orchestrator:
         self.store.set_run(r["id"], ended=self.clock(), exit=code,
                            outcome=outcome)
         self.activity.forget(r["id"])
-        self.procs.pop(r["id"], None)
+        proc = self.procs.pop(r["id"], None)
+        if proc is not None:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
 
     def _kill_all(self, why):
         for r in self.store.active_runs():

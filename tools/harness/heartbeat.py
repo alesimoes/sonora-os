@@ -54,9 +54,11 @@ class Activity:
         self.sig = {}
 
     def _signature(self, worktree):
-        head = _git(worktree, "rev-parse", "HEAD")
-        status = _git(worktree, "status", "--porcelain")
-        if head is None and status is None:
+        # One git call: the branch.oid header is HEAD, the rest are changes.
+        out = None
+        if os.path.exists(os.path.join(worktree, ".git")):
+            out = _git(worktree, "status", "--porcelain=v2", "--branch")
+        if out is None:
             files = []
             n = 0
             for dp, dn, fn in os.walk(worktree):
@@ -69,10 +71,14 @@ class Activity:
                     break
             return hashlib.sha1(repr(sorted(files)).encode()).hexdigest()
         stamps = []
-        for line in (status or "").splitlines():
-            stamps.append((line, _mtime(os.path.join(worktree, line[3:]
-                                                     .strip('"')))))
-        return hashlib.sha1(repr((head, stamps)).encode()).hexdigest()
+        for line in out.splitlines():
+            if line.startswith("# branch.oid"):
+                stamps.append((line, 0))
+            elif not line.startswith("#"):
+                path = line.split(" ", 8)[-1] if line[0] in "12" else line[2:]
+                stamps.append((line, _mtime(os.path.join(
+                    worktree, path.split("\t")[0].strip('"')))))
+        return hashlib.sha1(repr(stamps).encode()).hexdigest()
 
     def sample(self, run_id, worktree, stream_path, last_beat, now):
         beat = max(last_beat or 0, _mtime(stream_path))

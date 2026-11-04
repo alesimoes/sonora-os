@@ -104,6 +104,6 @@ class DaemonCase(unittest.TestCase):
             o.tick()
             if until():
                 return True
-            time.sleep(0.05)
+            time.sleep(0.02)
         o.tick()
         return until()

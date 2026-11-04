@@ -70,7 +70,7 @@ def build_command(claude, agent, prompt, mcp_path, settings_path,
 
 def claude_argv(fake_claude=None, which="claude"):
     if fake_claude:
-        return [sys.executable, str(fake_claude)]
+        return [sys.executable, "-S", str(fake_claude)]  # -S: fast start
     return [which]
 
 
