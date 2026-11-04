@@ -317,6 +317,67 @@ void SessionModel::installCommands(CommandRegistry& local) {
         }
         return ctl_.set_region_colour(colour, why);
     });
+    // Clip gain. A level is a number of dB, with or without a trailing "dB".
+    const auto db_of = [](const std::string& text, float& out) {
+        char* end = nullptr;
+        const double v = std::strtod(text.c_str(), &end);
+        if (end == text.c_str() || !std::isfinite(v)) return false;
+        while (*end == ' ') ++end;
+        if (*end != ' ' && std::string(end) != "dB" && std::string(end) != "db") return false;
+        out = static_cast<float>(v);
+        return true;
+    };
+    const auto bad_db = [](const std::string& arg) {
+        return "\"" + arg + "\" is not a level in dB; type a number such as -3.5";
+    };
+    simple("clip.gain", [this, db_of, bad_db](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) {
+            const Region* r = ctl_.selected_region(why);
+            if (r == nullptr) return false;
+            emit clipGainRequested(static_cast<double>(r->gain_db));
+            return true;
+        }
+        float db = 0.0f;
+        if (!db_of(ctx.argument, db)) {
+            why = bad_db(ctx.argument);
+            return false;
+        }
+        return ctl_.set_clip_gain(db, why);
+    });
+    const auto nudge = [this, db_of, bad_db](float sign) {
+        return [this, db_of, bad_db, sign](const CommandContext& ctx, Why& why) {
+            float step = 1.0f;
+            if (!ctx.argument.empty() && (!db_of(ctx.argument, step) || step <= 0.0f)) {
+                why = bad_db(ctx.argument);
+                return false;
+            }
+            return ctl_.nudge_clip_gain(sign * step, why);
+        };
+    };
+    simple("clip.gain_up", nudge(1.0f));
+    simple("clip.gain_down", nudge(-1.0f));
+    simple("clip.gain_point", [this, db_of, bad_db](const CommandContext& ctx, Why& why) {
+        const Region* r = ctl_.selected_region(why);
+        if (r == nullptr) return false;
+        const model::Frames at = ctl_.selection().insertion;
+        float db = EditController::clip_line_db_at(*r, at);
+        if (!ctx.argument.empty() && !db_of(ctx.argument, db)) {
+            why = bad_db(ctx.argument);
+            return false;
+        }
+        return ctl_.set_gain_point(at, db, why);
+    });
+    simple("clip.gain_point_remove", [this](const CommandContext&, Why& why) {
+        return ctl_.remove_gain_point(ctl_.selection().insertion, why);
+    });
+    simple("clip.gain_line_clear",
+           [this](const CommandContext&, Why& why) { return ctl_.clear_gain_line(why); });
+    simple("clip.gain_render", [this](const CommandContext&, Why& why) {
+        if (ctl_.selected_region(why) == nullptr) return false;
+        why = "Render Clip Gain bakes the clip through Consolidate, which this interface does "
+              "not drive yet; the engine renders it";
+        return false;
+    });
     simple("track.playlist_delete_unused", [this, row](const CommandContext& ctx, Why& why) {
         const int i = row(ctx);
         return playlistCommand(i, false,

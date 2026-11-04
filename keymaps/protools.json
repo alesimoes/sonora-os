@@ -275,6 +275,21 @@
       "verified": false,
       "comment": "Track > New, Command+Shift+N: opens New Tracks, which asks how many. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md."
     },
+    "ctrl+alt+up": {
+      "command": "clip.gain_up",
+      "origin": "sonora",
+      "comment": "Nudge the selected clip's gain up 1 dB (Clip Gain). Pro Tools has no single key for it."
+    },
+    "ctrl+alt+down": {
+      "command": "clip.gain_down",
+      "origin": "sonora",
+      "comment": "Nudge the selected clip's gain down 1 dB (Clip Gain)."
+    },
+    "ctrl+alt+g": {
+      "command": "clip.gain",
+      "origin": "sonora",
+      "comment": "Clip Gain: opens the dialog to type the selected clip's gain in dB."
+    },
     "ctrl+shift+r": {
       "command": "region.rename",
       "verified": false,

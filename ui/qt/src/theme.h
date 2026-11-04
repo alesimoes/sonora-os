@@ -67,6 +67,8 @@ constexpr uint32_t kRegionSelectedOutline = kAccent;
 // Fades: the gain curve as a `text` line, the part of the region the fade
 // takes away darkened beneath it, a crossfade as a faint box over the cut.
 constexpr uint32_t kFadeLine = 0xffe8ebef;
+// Clip gain: the line and its breakpoints, on top of the waveform.
+constexpr uint32_t kGainLine = 0xffffc247;
 constexpr uint32_t kFadeShade = 0x8c000000;       // black at 55 %
 constexpr uint32_t kCrossfadeFill = 0x1fe8ebef;   // text at 12 %
 constexpr uint32_t kCrossfadeEdge = 0x80e8ebef;   // text at 50 %
