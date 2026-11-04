@@ -119,3 +119,7 @@ Thumbs.db
 .ccache/
 
 .harness/
+planning/orchestrator/state.db*
+planning/orchestrator/status.json
+planning/orchestrator/STOP*
+planning/orchestrator/waits-on-owner.md

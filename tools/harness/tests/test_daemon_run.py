@@ -233,14 +233,17 @@ class RunTests(support.DaemonCase):
         self.add(o, "a")
         o.tick()
         r = o.store.active_runs()[0]
-        o.broker.emit("suspect", r["name"])
+        o.broker.emit("suspect", name=r["name"])
+        o.drain_events()
         self.assertEqual(o.store.get_run(r["id"])["suspect"], 1)
         self.clock.offset += 5
-        o.broker.emit("registered", r["name"])
+        o.broker.emit("registered", name=r["name"])
+        o.drain_events()
         got = o.store.get_run(r["id"])
         self.assertEqual(got["suspect"], 0)
         self.assertGreater(got["last_beat"], r["last_beat"] + 4)
-        self.assertEqual(o.broker.expected[0][1], "a")
+        self.assertIn(r["name"], o.broker.expected)
+        self.assertEqual(o.broker.claims[r["name"]], ["a/**"])
 
     def test_numbers_reserved_at_first_launch_and_in_prompt(self):
         o = self.make(floors={"daw": 2})

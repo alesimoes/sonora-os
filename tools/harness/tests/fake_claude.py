@@ -6,6 +6,8 @@ Without a file the mode is $FAKE_CLAUDE_DEFAULT or "done".
 
 Modes: done | fail | blocked | bug | invalid | hang | die | limit |
        sleep:<seconds>   (then done)
+       client            (register with the real broker, send
+                          `done` to the daemon, then done)
 """
 import json
 import os
@@ -46,6 +48,15 @@ def main(argv):
                       "mode": mode}), flush=True)
     if mode.startswith("sleep:"):
         time.sleep(float(mode.split(":")[1]))
+        mode = "done"
+    if mode == "client":
+        sys.path.insert(0, os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__)))))
+        from harness.client import Client
+        c = Client.from_env()
+        c.connect()
+        c.send("daemon", "done", {"who": c.whoami()["name"]})
+        c.close()
         mode = "done"
     if mode == "hang":
         while True:

@@ -18,14 +18,18 @@ import orchestrator  # noqa: E402
 
 
 class StubBroker:
-    """The four things the daemon needs from the broker (ADR-0047 4b)."""
+    """The BrokerHost surface the daemon uses, recording calls (the real
+    broker is exercised in test_integration)."""
     port = 4242
+    token = "stub-token"
 
     def __init__(self):
         self.started = self.stopped = False
         self.sent = []
         self.expected = []
-        self.on_event = None
+        self.channels = {}
+        self.claims = {}
+        self.events = []
 
     def start(self):
         self.started = True
@@ -33,14 +37,28 @@ class StubBroker:
     def stop(self):
         self.stopped = True
 
-    def send_as_daemon(self, to, type, body):
-        self.sent.append((to, type, body))
+    def drain_events(self):
+        out, self.events = self.events, []
+        return out
 
-    def expect_agent(self, name, token, task, feature):
-        self.expected.append((name, task))
+    def expect(self, *names):
+        self.expected.extend(names)
 
-    def emit(self, kind, name):
-        self.on_event(kind, name)
+    def open_channel(self, feature, members):
+        self.channels[feature] = set(members)
+
+    def claim_for(self, owner, paths):
+        self.claims[owner] = list(paths)
+        return []
+
+    def release_for(self, owner, paths=()):
+        return int(self.claims.pop(owner, None) is not None)
+
+    def tell(self, to, type_, body=None, feature=None, task=None):
+        self.sent.append((to, type_, body))
+
+    def emit(self, kind, **data):
+        self.events.append((kind, data))
 
 
 class DirWorktrees:
@@ -87,12 +105,12 @@ class DaemonCase(unittest.TestCase):
         with open(os.path.join(self.fake_dir, name), "w") as f:
             f.write("\n".join(modes))
 
-    def make(self, dry_run=False, floors=None, **cfg):
+    def make(self, dry_run=False, floors=None, broker=None, **cfg):
         c = scheduler.Config(cap=cfg.pop("cap", 20),
                              floors=floors or {"daw": 2, "os": 1},
                              backoff_s=(0, 0, 0), local_builds=3, **cfg)
         o = orchestrator.Orchestrator(
-            self.tmp, cfg=c, broker=StubBroker(), dry_run=dry_run,
+            self.tmp, cfg=c, broker=broker or StubBroker(), dry_run=dry_run,
             fake_claude=FAKE, clock=self.clock,
             worktrees=DirWorktrees(self.tmp), seed_fn=lambda k: 10)
         self.orchs.append(o)

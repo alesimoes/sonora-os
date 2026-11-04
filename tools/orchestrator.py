@@ -20,36 +20,14 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import heartbeat, launcher, scheduler, status  # noqa: E402
+from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.store import Store  # noqa: E402
 
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer"}
 
 
-class NullBroker:
-    """Used when no broker module is present (dry-run, tests)."""
-    port = 0
-
-    def __init__(self):
-        self.on_event = None
-
-    def start(self):
-        pass
-
-    def stop(self):
-        pass
-
-    def send_as_daemon(self, to, type, body):
-        pass
-
-
 def make_broker(root):
-    try:
-        from harness.broker import Broker
-    except ImportError:
-        print("orchestrator: harness.broker not available; running without "
-              "a broker", file=sys.stderr)
-        return NullBroker()
-    return Broker(os.path.join(root, ".harness"))
+    return BrokerHost(os.path.join(root, ".harness"))
 
 
 class Orchestrator:
@@ -73,10 +51,6 @@ class Orchestrator:
         self.seed_fn = seed_fn or self._default_seed
         self.log = log or (lambda m: None)
         self.broker = broker or NullBroker()
-        if hasattr(self.broker, "set_event_callback"):
-            self.broker.set_event_callback(self.on_broker_event)
-        else:
-            self.broker.on_event = self.on_broker_event
         self.procs = {}
         self.activity = heartbeat.Activity()
         self.usage_pause_until = 0.0
@@ -99,8 +73,13 @@ class Orchestrator:
             return set()
 
     # -- broker -------------------------------------------------------
-    def on_broker_event(self, kind, *args, **kw):
-        name = next((a for a in args if isinstance(a, str)), kw.get("name"))
+    def drain_events(self):
+        """Apply broker events on this thread (the broker runs on its own)."""
+        for kind, data in self.broker.drain_events():
+            self.on_broker_event(kind, **data)
+
+    def on_broker_event(self, kind, **data):
+        name = data.get("name") or (data.get("msg") or {}).get("from")
         for r in self.store.active_runs():
             if r["name"] != name:
                 continue
@@ -109,10 +88,32 @@ class Orchestrator:
             elif kind == "suspect":
                 self.store.set_run(r["id"], suspect=1)
                 self.store.event(r["task_id"], "suspect", f"{name} closed")
+            elif kind == "unacked":
+                self.store.event(r["task_id"], "unacked", f"{name}")
+            if kind == "message":
+                msg = data["msg"]
+                self.store.event(r["task_id"], "message",
+                                 f"{msg.get('type')} from {name}")
 
     def _tell(self, to, type, body):
-        if not self.dry_run:
-            self.broker.send_as_daemon(to, type, body)
+        if self.dry_run:
+            return
+        try:
+            self.broker.tell(to, type, body)
+        except Exception as e:  # a lost note must not stop the daemon
+            self.log(f"tell {to} {type} failed: {e}")
+
+    def _open_channel(self, t, name):
+        members = {name, "lead"}
+        for o in self.store.tasks():
+            if o["feature_id"] == t["feature_id"]:
+                members.update(x for x in (o["eng_name"], o["cur_name"]) if x)
+        self.broker.open_channel(t["feature_id"], members)
+
+    def _release(self, t):
+        for name in (t["eng_name"], t["cur_name"]):
+            if name:
+                self.broker.release_for(name)
 
     # -- numbers ------------------------------------------------------
     def _default_seed(self, kind):
@@ -149,6 +150,7 @@ class Orchestrator:
     # -- the tick -----------------------------------------------------
     def tick(self):
         now = self.clock()
+        self.drain_events()
         stop, stop_now = self.kill_switch()
         if stop_now:
             self._kill_all("STOP.NOW")
@@ -227,6 +229,12 @@ class Orchestrator:
             self._reserve_numbers(t)
             t = self.store.get_task(t["id"])
         name = self._name_for(t, ln.kind)
+        if t["kind"] == "work" and t["files"] and                 ln.kind in ("engineer", "fixer"):
+            denied = self.broker.claim_for(name, t["files"])
+            if denied:
+                self.store.event(t["id"], "claim_denied", json.dumps(denied))
+                self.store.set_task(t["id"], not_before=now + 60)
+                return None
         run_n = self.store.next_counter("run")
         run_id = f"{t['id']}-r{run_n}"
         run_dir = os.path.join(self.hdir, "runs", run_id)
@@ -240,13 +248,12 @@ class Orchestrator:
                 t["worktree"] = wt
             else:
                 wt = self.root
-            token = launcher.new_token()
-            port = getattr(self.broker, "port", 0)
-            if hasattr(self.broker, "expect_agent"):
-                self.broker.expect_agent(name, token, t["id"],
-                                         t["feature_id"])
+            self.broker.expect(name)
+            if t["feature_id"]:
+                self._open_channel(t, name)
             env = launcher.run_env(name, t["id"], t["feature_id"], self.hdir,
-                                   port, token, result_path)
+                                   self.broker.port, self.broker.token,
+                                   result_path)
             mcp, settings = launcher.write_run_files(run_dir, env)
             prompt = launcher.build_prompt(t, run_id, name, ln.kind,
                                            result_path, self._extra(t, ln.kind))
@@ -366,6 +373,7 @@ class Orchestrator:
         self.store.set_task(t["id"], attempts=n, not_before=now + back)
 
     def _block(self, t, why):
+        self._release(t)
         if t["kind"] == "wake":
             self.store.set_task(t["id"], state="blocked", note=why)
         else:
@@ -408,6 +416,7 @@ class Orchestrator:
             if data.get("pr"):
                 self.store.set_task(t["id"], pr=int(data["pr"]))
             self.store.advance(t["id"], "pr_open")
+            self._release(t)
 
     def _bounce(self, t):
         n = t["bounces"] + 1
