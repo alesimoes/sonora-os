@@ -127,3 +127,65 @@ configure `contracts/`; this is a proposed edge in ADR-0011 2.2's table.
   thread, scribbled words, no allocation), `native_telemetry` (the SDK helper,
   no allocation), `api_wire` (round trips, each refusal, absent hints, the
   throttle) and `api_conformance_fake` (a scripted frame through the codec).
+
+## Amendment: native.editors (the plumbing the first section left out)
+
+Protocol stays 65; `kTelemetryVersion` stays 1 except one behaviour:
+`begin_write()` clears `meter_mask`, so a frame states which meters it
+publishes and a bit left from an earlier frame cannot show a stale value as
+live; `read()` zeroes a non-finite meter as well as unmasking it, and
+`encode(PluginTelemetry)` refuses what `decode` refuses.
+
+**Host.** The engine creates one telemetry region per host process
+(`HostProcess`, `create_shared_writable`, `telemetry_init` for the chain's
+instance count), passes it as descriptor 6 with `--telemetry-fd 6` and keeps
+its own mapping, which only `HostProcess::read_telemetry` reads. A region that
+cannot be made, or that the host finds not to be layout 1, leaves the chain
+running with no telemetry, said on the host's stderr and shown by the
+interface as "waiting"; telemetry is never a reason for a chain not to start.
+The host maps it read-write, checks the header, and hands block *n* to the
+plugin of chain instance *n*.
+
+**Hand-over to a plugin.** The plugin is loaded by lilv or by the VST3 module
+loader, so nothing of ours is between the host and its constructor. Each
+Sonora bundle exports one symbol, `sonora_native_telemetry_bind(void*)`
+(`lv2.version`, `vst3.version`); right after instantiating, the host calls it
+with the block. `native::Telemetry` enrols itself in a small per-library list
+when it is made; the call binds the oldest instance made since the last call
+and leaves the others private, because a mono plugin run once per channel has
+several instances and only one may write the insert's block. The DPF probe
+instance, which lives for the whole run, withdraws itself. A third-party
+plugin has no such symbol and publishes nothing.
+
+**Declaration.** A processor returns `UiHints` (`ui_hints.h`): per parameter
+a section, a widget and the curve it shapes, and its meters and curves, whose
+slot is their place in the table. `descriptor_json` writes them into the
+bundle's `descriptor.json`; the scan worker reads that file
+(`apply_descriptor_hints`, engine/control) into the catalog entry, matching
+parameters by the table's id (LV2 port symbol) and by name for VST3, whose key
+is a number. All or nothing: a descriptor the decoder would refuse is not
+applied.
+
+**Engine loop.** Each control-thread turn after the hosting poll,
+`PluginHosting::read_telemetry` collects the latest frame of every insert of
+every running host, `telemetry_frame` keeps only the slots the catalog
+declared, `TelemetryThrottle` admits at most 30 a second per insert and none
+for a sequence already sent, and the frame goes to every client.
+
+**Adoption.** `ProcessorBase::publish_levels` makes `process()` publish input
+and output peak (dBFS) once per call, and `on_publish` lets a processor add
+its own meters and curves inside the same frame. The compressor publishes its
+gain reduction and the static transfer curve; the FET and the opto publish the
+gate's and the cell's own gain reduction; the limiter publishes the deepest
+reduction of its look-ahead stage and its true-peak guard; the EQ publishes its
+magnitude response (128 points, 20 Hz to 20 kHz) recomputed only when a
+parameter moved. Not adopted here: the Vari-Mu (not on main), the reverb and
+the cabinet (their panels are generic).
+
+**Interface.** The panel groups controls by section, draws each as its plugin
+asks, shows values with their unit, and draws the plugin's curves and meters
+above the controls. A meter that was not published, or whose frames stopped,
+draws no bar and says so. The header has Bypass and A/B compare: B starts as a
+copy of A and each toggle plays the other set as one gesture. A preset menu is
+not there: the engine's preset store has no interface message, which is a
+contract of its own.

@@ -184,6 +184,8 @@ public:
         std::function<void(const api::PluginCatalog&)> catalog;
         std::function<void(uint64_t insert, const std::string& text)> fault;
         std::function<void(const EngineFrame&, bool alive)> frame;
+        // One frame of a plugin's telemetry (ADR-0057), as the engine sent it.
+        std::function<void(const api::PluginTelemetry&)> telemetry;
     };
     void setPluginSinks(PluginSinks s) { plugin_sinks_ = std::move(s); }
 
@@ -347,6 +349,7 @@ private:
     LiveTakeSink live_take_sink_;
     PluginSinks plugin_sinks_;
     api::PluginCatalog catalog_;   // kept, so taking one reuses its storage
+    std::vector<api::PluginTelemetry> telemetry_;   // likewise
     std::vector<CommandOutcome> replies_;
     std::vector<EngineEvent> events_;
     EngineFrame frame_;

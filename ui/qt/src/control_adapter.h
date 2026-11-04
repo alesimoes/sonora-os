@@ -50,6 +50,7 @@ public:
     uint64_t send_aux_gain(uint64_t bus, float linear) override;
     uint64_t send_plugin_parameter(uint64_t insert, const std::string& key, float value) override;
     bool take_catalog(api::PluginCatalog& out) override;
+    bool take_telemetry(std::vector<api::PluginTelemetry>& out) override;
 
     using ModelSink = std::function<void(const std::vector<api::ModelUpdate>& updates,
                                          const std::vector<api::CommandReply>& replies)>;
@@ -107,6 +108,9 @@ private:
     std::vector<EngineEvent> events_;   // received, not yet taken
     api::PluginCatalog catalog_;        // the latest received
     bool catalog_new_ = false;          // and not yet taken
+    // Telemetry frames received and not yet taken; capped, the oldest
+    // dropped, so a shell that stops taking them does not grow this.
+    std::vector<api::PluginTelemetry> telemetry_;
     mutable api::StateFrame state_;     // kept, so a tick does not allocate
 };
 

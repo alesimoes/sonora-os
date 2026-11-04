@@ -612,6 +612,7 @@ int main(int argc, char** argv) {
         inserts.onFault(insert, text);
     };
     plugin_sinks.frame = [&inserts](const EngineFrame& f, bool alive) { inserts.onFrame(f, alive); };
+    plugin_sinks.telemetry = [&inserts](const api::PluginTelemetry& t) { inserts.onTelemetry(t); };
     model.setPluginSinks(std::move(plugin_sinks));
     session.setWindow(a.opt.window);
     if (!engine_notice.empty()) model.addNotice(QString::fromStdString(engine_notice));

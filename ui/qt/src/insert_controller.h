@@ -171,6 +171,34 @@ public:
     bool param_end(std::string& why);
     bool gesture_running() const { return gesture_insert_ != kNoId; }
 
+    // --- telemetry (ADR-0057): what the insert's plugin publishes ---
+    // A frame older than this reads as none: a meter that stopped moving
+    // because nothing arrives must not look like a quiet signal.
+    static constexpr uint64_t kTelemetryStaleNs = 1'000'000'000ull;
+    // Keeps the latest frame of `f.insert`, stamped `now_ns`. True when it
+    // replaced one (the panel redraws); a frame for an insert the document
+    // does not have is dropped.
+    bool set_telemetry(const api::PluginTelemetry& f, uint64_t now_ns);
+    // The insert's latest frame, or null when none arrived or the last one is
+    // older than kTelemetryStaleNs at `now_ns`. `ever` says whether any frame
+    // ever came (so "waiting" and "stopped" are told apart).
+    const api::PluginTelemetry* telemetry(model::Id insert, uint64_t now_ns, bool* ever = nullptr) const;
+    void clear_telemetry() { telemetry_.clear(); }
+    // Forgets the frames and A/B sets of inserts the document no longer has:
+    // a session opened in their place must not inherit them.
+    void prune_inserts();
+
+    // --- A/B compare ---
+    // Two parameter sets of one insert. B starts as a copy of A; toggling
+    // keeps what the plugin sounds like now in the set being left and plays
+    // the other, as one gesture (one undo step, and the engine hears each
+    // value). Per insert, for the panel being open: reset by compare_reset().
+    char compare_slot(model::Id insert) const;
+    // False, with `why`, when a control is being moved or the plugin's
+    // parameters are unknown (no catalog entry).
+    bool compare_toggle(model::Id insert, std::string& why);
+    void compare_reset() { compare_.clear(); }
+
 private:
     const model::TrackEdit* track(int index) const;
     const model::Insert* insert_at(int track, int slot) const;
@@ -205,6 +233,17 @@ private:
 
     model::Id gesture_insert_ = kNoId;
     std::map<std::string, float> gesture_;   // by key, the values moved
+
+    struct Stamped {
+        api::PluginTelemetry frame;
+        uint64_t at_ns = 0;
+    };
+    std::map<model::Id, Stamped> telemetry_;
+    struct Compare {
+        char slot = 'A';
+        std::map<std::string, float> sets[2];
+    };
+    std::map<model::Id, Compare> compare_;
 };
 
 }  // namespace sonora::ui
