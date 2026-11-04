@@ -379,6 +379,16 @@ public:
     void play();
     void stop_playback();
 
+    // Varispeed (ADR-0033): a roll plays `ratio` times as fast, pitch
+    // following, as tape does. Linear interpolation between source frames.
+    // Refused, changing nothing, outside [kMinVarispeed, kMaxVarispeed] or
+    // when not finite. Applies to a plain roll only: a take, a playback loop
+    // and a post-roll play at 1.0. 1.0 on every session open. Control thread.
+    static constexpr float kMinVarispeed = 0.5f;
+    static constexpr float kMaxVarispeed = 2.0f;
+    bool set_varispeed(float ratio, std::string* error = nullptr);
+    float varispeed() const { return varispeed_.load(std::memory_order_relaxed); }
+
     // Post-roll: a roll stops at `frame`. The audio thread plays the frames
     // before it, silences the rest of that block's playback, leaves the
     // playhead on it (or where it is, if already past) and stops the
@@ -723,6 +733,11 @@ private:
              uint32_t n, bool rolling, bool recording, uint64_t playhead) noexcept SONORA_RT;
     void render_track(const PlaybackPlan& plan, uint32_t plan_track, uint64_t from,
                       uint32_t n, float* const out[2]) noexcept SONORA_RT;
+    // render_track(), or under varispeed the source read at the ratio's
+    // fractional positions: `n` output frames from timeline `from` plus the
+    // phase carried since the last chunk.
+    void render_playback(const PlaybackPlan& plan, uint32_t plan_track, uint64_t from,
+                         uint32_t n, float* const out[2]) noexcept SONORA_RT;
     void render_segment(const PlaybackPlan& plan, const PlanSegment& seg, uint64_t from,
                         uint32_t n, float* const out[2]) noexcept SONORA_RT;
     // Steps 1-2 of the monitor-bus plan into `out`; true when it is stereo.
@@ -1192,6 +1207,11 @@ private:
     // Frames of this block a roll plays before its roll end; the whole
     // block when it has none in it.
     uint32_t play_until_ = 0;
+    std::atomic<float> varispeed_{1.0f};
+    std::unique_ptr<float[]> vs_buf_;        // 2 x max_block: the source span
+    bool vs_on_ = false;                     // this block plays off-speed
+    double vs_ratio_ = 1.0;
+    double vs_phase_ = 0.0;                  // fraction of a frame past the playhead
 
     std::atomic<float> bus_gain_{1.0f};
     std::unique_ptr<dsp::TrackMeter[]> track_meters_;   // one per engine track
