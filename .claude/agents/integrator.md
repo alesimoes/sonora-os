@@ -3,7 +3,7 @@ name: integrator
 description: The merge gate. Reviews an open pull request, checks that CI is green and that the claims in the description were actually verified, posts the verdict to the PR, and merges when it passes. Use when a feature branch is ready to land.
 tools: Read, Grep, Glob, Bash, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
-maxTurns: 80
+maxTurns: 200
 ---
 
 You decide whether work lands on `main` when the routine path cannot: you

@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SonoraOS ao vivo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* HUD: azul quase preto, ciano holografico, ambar para atencao, vermelho so para falha. */
+:root{
+  --bg:#03080f; --panel:rgba(8,22,36,.62); --line:rgba(70,200,230,.16); --line2:rgba(70,200,230,.34);
+  --ink:#d8f3fa; --muted:#7fa6b5; --faint:#4b6b79;
+  --cyan:#3fe0f5; --teal:#18b6a4; --amber:#ffb347; --red:#ff4d5e; --slate:#5d7c8a;
+  --disp:"Rajdhani","Bahnschrift","Segoe UI Semibold","Arial Narrow",sans-serif;
+  --mono:"JetBrains Mono","Cascadia Mono",ui-monospace,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:
+    radial-gradient(900px 600px at 50% -10%, rgba(63,224,245,.10), transparent 60%),
+    radial-gradient(700px 500px at 100% 100%, rgba(24,182,164,.07), transparent 60%), var(--bg);
+  background-attachment:fixed; color:var(--ink); font:14px/1.4 var(--disp); min-height:100vh; letter-spacing:.02em;
+}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:56px 56px;opacity:.22;
+  -webkit-mask-image:radial-gradient(ellipse at 50% 30%,#000,transparent 75%);mask-image:radial-gradient(ellipse at 50% 30%,#000,transparent 75%)}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:5;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 1px,transparent 1px 3px);opacity:.35}
+main{position:relative;z-index:1;max-width:none;width:100%;box-sizing:border-box;margin:0;padding:14px 22px 40px}
+.mono,.m{font-family:var(--mono)}
+h1{margin:0;font-size:20px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;text-shadow:0 0 9px rgba(63,224,245,.3)}
+.sub{color:var(--muted);font-family:var(--mono);font-size:10.5px}
+@keyframes blink{50%{opacity:.35}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* faixa de consumo */
+.topbar{display:flex;align-items:center;gap:22px;flex-wrap:wrap;padding-bottom:10px;border-bottom:1px solid var(--line);margin-bottom:14px;position:relative}
+.topbar::after{content:"";position:absolute;left:0;bottom:-1px;width:160px;height:1px;background:var(--cyan);box-shadow:0 0 5px var(--cyan)}
+.gauges{display:flex;gap:20px;flex-wrap:wrap;margin-left:6px}
+.g{display:flex;align-items:center;gap:8px}
+.g svg{width:40px;height:40px;flex:none}
+.g .bg{fill:none;stroke:var(--line2);stroke-width:7;opacity:.5}
+.g .fg{fill:none;stroke:var(--cyan);stroke-width:7;stroke-linecap:round;transition:stroke-dasharray .9s cubic-bezier(.2,.8,.2,1),stroke .4s;filter:drop-shadow(0 0 2px var(--cyan))}
+.g.hi .fg{stroke:var(--amber);filter:drop-shadow(0 0 2px var(--amber))}
+.g.crit .fg{stroke:var(--red);filter:drop-shadow(0 0 2px var(--red))}
+.g text{font-family:var(--disp);fill:var(--ink);font-size:30px;font-weight:600;text-anchor:middle}
+.g .gt{display:flex;flex-direction:column;line-height:1.15}
+.g .gl{font-size:12.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--ink)}
+.g small{color:var(--faint);font:10px/1.2 var(--mono);white-space:nowrap}
+.pill{display:flex;align-items:center;gap:7px;font:11px var(--mono);color:var(--muted);padding:3px 10px;border:1px solid var(--line)}
+.pill b{color:var(--ink);font-weight:500}
+.pill.bad{border-color:var(--red);color:var(--red)} .pill.warn{border-color:var(--amber);color:var(--amber)}
+.clock{text-align:right;font-family:var(--mono)}
+.clock b{display:block;font-size:19px;font-weight:400;color:var(--cyan);letter-spacing:.08em;text-shadow:0 0 8px rgba(63,224,245,.3);font-variant-numeric:tabular-nums}
+.clock span{font-size:10.5px;color:var(--muted)}
+.live{display:flex;align-items:center;gap:8px;font:11px var(--mono);color:var(--muted);padding:5px 12px;border:1px solid var(--line);clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--cyan);box-shadow:0 0 4px var(--cyan);animation:blink 2s ease-in-out infinite}
+.dot.stale{background:var(--red);box-shadow:0 0 4px var(--red)}
+
+.panel{position:relative;background:var(--panel);border:1px solid var(--line);backdrop-filter:blur(8px)}
+.panel::before,.panel::after{content:"";position:absolute;width:10px;height:10px;border:1px solid var(--cyan);opacity:.8}
+.panel::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
+.panel::after{bottom:-1px;right:-1px;border-left:0;border-top:0}
+.ph{display:flex;align-items:baseline;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line)}
+.ph h2{margin:0;font-size:14px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan)}
+.ph i{font:normal 11px var(--mono);color:var(--faint);margin-left:auto}
+.pb{padding:12px 14px}
+.hero{margin-bottom:16px}
+.hero .ph h2{font-size:15px}
+.hero .ph i{margin-left:0}
+
+/* pipeline */
+.pipe{display:flex;flex-wrap:wrap;row-gap:12px;align-items:flex-start;padding:16px 14px 12px;overflow:visible}
+.stg{--c:var(--cyan);flex:1 1 0;min-width:96px;text-align:center;cursor:pointer;background:none;border:0;color:inherit;font:inherit;padding:0 4px;position:relative}
+.stg.idle{--c:var(--slate)} .stg.fix{--c:var(--red)} .stg.q{--c:var(--teal)} .stg.ci{--c:var(--amber)} .stg.mg{--c:#7dffb0}
+.nd{width:54px;height:54px;margin:0 auto;border-radius:50%;border:1.5px solid var(--c);display:grid;place-items:center;font:600 22px var(--disp);color:var(--c);background:rgba(4,14,24,.85);position:relative;transition:box-shadow .4s,background .3s}
+.stg.on .nd{box-shadow:0 0 14px -2px var(--c),inset 0 0 10px -4px var(--c)}
+.stg.on .nd::after{content:"";position:absolute;inset:-6px;border-radius:50%;border:1px dashed var(--c);opacity:.55;animation:spin 14s linear infinite}
+.stg.idle .nd{opacity:.5}
+.stg.sel .nd{background:var(--c);color:var(--bg)}
+.stg:hover .nd{border-width:2.5px}
+.sl{margin-top:7px;font-size:14px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--ink)}
+.stg small{display:block;color:var(--faint);font:10px var(--mono)}
+.who{margin-top:5px;display:flex;flex-direction:column;gap:2px;align-items:center}
+.who span{font:10.5px var(--mono);color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who span.more{color:var(--faint)}
+.con{flex:0 0 34px;height:54px;position:relative}
+.con::before{content:"";position:absolute;left:0;right:0;top:26px;height:2px;background-color:var(--line);
+  background-image:linear-gradient(90deg,transparent 0,var(--cyan) 50%,transparent 100%);background-size:24px 100%;background-repeat:repeat-x;animation:flow2 1.8s linear infinite;opacity:.7}
+.con.off::before{animation:none;background-image:none;opacity:.5}
+@keyframes flow2{from{background-position:-24px 0}to{background-position:0 0}}
+.filt{display:none;align-items:center;gap:10px;padding:0 14px 10px;font:11px var(--mono);color:var(--amber)}
+.filt.show{display:flex}
+.filt button{font:inherit;background:none;border:1px solid var(--amber);color:var(--amber);cursor:pointer;padding:0 8px}
+
+/* agentes */
+.tg{margin-left:auto;font:11px var(--mono);color:var(--muted)}
+.tg label{cursor:pointer;display:flex;gap:5px;align-items:center}
+.note{padding:7px 14px;font:11px var(--mono);color:var(--faint);border-top:1px solid var(--line)}
+.note b{color:var(--muted);font-weight:500}
+.trk{--t:var(--cyan);border-top:1px solid var(--line)}
+.trk.os{--t:#a99cff} .trk.pl{--t:#5ef0a8} .trk.hx{--t:#ff7ad9}
+.th{display:flex;align-items:center;gap:12px;padding:8px 14px}
+.th h2{margin:0;font-size:15px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--t);text-shadow:0 0 6px var(--t)}
+.cnt{font:500 12px var(--mono);color:var(--ink)} .cnt.low{color:var(--amber)} .cnt.zero{color:var(--red)}
+.cells{display:flex;gap:3px;flex:0 1 160px}
+.cells i{flex:1;height:7px;border:1px solid var(--t);opacity:.45;transition:background .5s}
+.cells i.on{background:var(--t);opacity:1;box-shadow:0 0 4px var(--t)}
+.th .rest{margin-left:auto;font:11px var(--mono);color:var(--faint)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;padding:2px 14px 14px}
+.card{--c:var(--t);position:relative;border:1px solid var(--line);background:rgba(4,14,24,.6);padding:9px 11px;transition:border-color .3s,opacity .3s;overflow:hidden}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--t);box-shadow:0 0 6px var(--t)}
+.card:hover{border-color:var(--t)}
+.card.working{border-color:color-mix(in srgb,var(--t) 55%,transparent)}
+.card.working::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 30%,color-mix(in srgb,var(--t) 14%,transparent) 50%,transparent 70%);background-size:220% 100%;animation:sweep 3.2s linear infinite;pointer-events:none}
+@keyframes sweep{from{background-position:120% 0}to{background-position:-120% 0}}
+.card.waiting{--c:var(--amber);opacity:.62} .card.nowt{--c:var(--red)}
+.card.done,.card.paused{--c:var(--slate);opacity:.45}
+.card .top{display:flex;align-items:center;gap:9px}
+.orb{width:16px;height:16px;flex:none;position:relative;border-radius:50%;background:var(--c);box-shadow:0 0 6px var(--c);transform:scale(.55)}
+.card.working .orb::before{content:"";position:absolute;inset:-4px;border-radius:50%;border:1.5px solid var(--c);animation:ping 1.8s ease-out infinite}
+.card.building{--c:var(--cyan)}
+.card.building .orb{background:none;box-shadow:none;transform:none;border:2px solid color-mix(in srgb,var(--c) 25%,transparent);border-top-color:var(--c);border-right-color:var(--c);animation:spin 1.1s linear infinite}
+@keyframes ping{from{transform:scale(.6);opacity:.9}to{transform:scale(2.1);opacity:0}}
+.card h3{margin:0;font-size:15px;font-weight:600;line-height:1.2;letter-spacing:.03em;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.state{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--c);white-space:nowrap}
+.meta{display:flex;flex-wrap:wrap;align-items:center;gap:3px 10px;margin-top:6px;color:var(--muted);font:11px var(--mono)}
+.meta .m{color:var(--faint)}
+.sg{padding:0 6px;border:1px solid var(--line2);color:var(--muted)}
+.idle{height:2px;margin-top:7px;background:var(--line);overflow:hidden}
+.idle i{display:block;height:100%;width:var(--w,0%);background:var(--c);box-shadow:0 0 3px var(--c);transition:width .8s}
+.chip{display:inline-block;padding:0 7px;font:11px var(--mono);border:1px solid var(--line2);color:var(--cyan);text-decoration:none}
+.chip.red{color:var(--red);border-color:var(--red)} .chip.wait{color:var(--amber);border-color:var(--amber)} .chip.ok{color:var(--teal);border-color:var(--teal)}
+a.chip:hover{text-shadow:0 0 4px currentColor}
+
+/* secundario */
+.cols{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px}
+@media (max-width:1050px){.cols{grid-template-columns:1fr}}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.row{padding:9px 14px;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.prh{display:flex;gap:8px;align-items:baseline}
+.train .tbar{height:8px;background:var(--line);margin:6px 0 10px}.train .tbar i{display:block;height:100%;background:var(--teal);box-shadow:0 0 4px var(--teal);transition:width .8s}
+.train .tcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.train .tc{border:1px solid var(--line);padding:6px 8px;min-width:0;display:block}.train .tc h3{margin:0 0 4px;font:11px var(--mono);letter-spacing:.08em;text-transform:uppercase}
+.train .tc h3{cursor:pointer;user-select:none}.train .tc h3::before{content:'▾ '}.train .tc.closed h3::before{content:'▸ '}.train .tc.closed .tr{display:none}
+.train .trbtns{margin-left:auto;display:flex;gap:4px}.train .trbtns button{font:11px var(--mono);background:none;color:var(--slate);border:1px solid var(--line);padding:2px 8px;cursor:pointer}.train .trbtns button:hover{color:var(--cyan);border-color:var(--cyan)}
+.train.hidden .tcols,.train.hidden .tbar{display:none}
+.train .tc.g h3{color:var(--teal)}.train .tc.r h3{color:var(--red)}.train .tc.y h3,.train .tc.q h3{color:var(--amber)}.train .tc.m h3{color:var(--cyan)}.train .tc.x h3{color:var(--slate)}
+.train .tr{font:11.5px var(--mono);color:var(--muted);padding:2px 0;overflow-wrap:anywhere}.train .tr .st{color:var(--red)}
+.prn{font:12.5px var(--mono);color:var(--cyan);text-decoration:none}
+a.prn:hover,a.prt:hover{text-shadow:0 0 4px var(--cyan);text-decoration:underline}
+.prt{font-weight:500;font-size:15px;flex:1;min-width:0;color:var(--ink);text-decoration:none}
+.br{font:10.5px var(--mono);color:var(--faint);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.br .conf{color:var(--red)}
+.seg{display:flex;height:4px;gap:2px;margin:8px 0 5px;background:var(--line)}
+.seg i{display:block;height:100%;transition:width .6s}
+.seg .p{background:var(--teal)} .seg .r{background:var(--amber);animation:flow 1.6s linear infinite;
+  background-image:linear-gradient(90deg,transparent,rgba(255,255,255,.4),transparent);background-size:50px 100%}
+.seg .f{background:var(--red);box-shadow:0 0 3px var(--red)}
+@keyframes flow{from{background-position:-50px 0}to{background-position:50px 0}}
+.det{font:11.5px var(--mono);color:var(--muted);display:flex;flex-wrap:wrap;gap:3px 14px}
+.det .bad{color:var(--red)} .det .wait{color:var(--amber)} .det .good{color:var(--teal)}
+.tag{font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;padding:0 7px;border:1px solid;white-space:nowrap}
+.tag.q{color:var(--teal)} .tag.n{color:var(--amber)} .tag.d{color:var(--red)}
+.crow{display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;align-items:center}
+.crow .id{font:11.5px var(--mono);color:var(--faint)}
+.empty{padding:14px;color:var(--faint);text-align:center;font:12px var(--mono)}
+.err{color:var(--red);margin:0 0 10px;font:12px var(--mono)}
+.err:empty{display:none}
+.pool{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;margin-bottom:8px}
+.pool .nm{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.pool b{font:12px var(--mono);font-weight:500}
+.pool .bar{grid-column:1/-1;height:4px;background:var(--line);position:relative}
+.pool .bar i{display:block;height:100%;background:var(--cyan);box-shadow:0 0 3px var(--cyan);transition:width .8s}
+.pool.low .bar i{background:var(--amber);box-shadow:0 0 3px var(--amber)}
+.pool .bar u{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--ink)}
+.feat{padding:8px 0;border-top:1px solid var(--line)}
+.feat .fh{display:flex;gap:8px;align-items:baseline;font-size:15px}
+.strip{display:flex;gap:2px;margin-top:5px}
+.strip i{flex:1;height:5px;background:var(--line2);max-width:26px}
+.strip i.done{background:var(--teal)} .strip i.doing{background:var(--cyan);box-shadow:0 0 3px var(--cyan);animation:blink 1.6s infinite} .strip i.block{background:var(--amber)}
+.owner{margin-top:8px;border:1px solid var(--amber);padding:6px 10px;color:var(--amber);font:12px var(--mono)}
+.owner li{margin-left:14px}
+.owner ul{margin:4px 0 0;padding:0}
+.log{font:11.5px/1.6 var(--mono);max-height:230px;overflow:hidden;padding:8px 14px;-webkit-mask-image:linear-gradient(#000 75%,transparent);mask-image:linear-gradient(#000 75%,transparent)}
+.log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted);animation:in .6s ease-out}
+.log time{color:var(--faint);margin-right:8px}
+.log .ok{color:var(--teal)} .log .warn{color:var(--amber)} .log .bad{color:var(--red)} .log .info{color:var(--cyan)}
+@keyframes in{from{opacity:0;transform:translateX(-8px)}}
+
+/* orquestrador */
+.ob{font:600 13px var(--disp);letter-spacing:.18em;text-transform:uppercase;padding:2px 12px;border:1px solid var(--c,var(--cyan));color:var(--c,var(--cyan));box-shadow:0 0 8px -2px var(--c,var(--cyan))}
+.ob.live{--c:#7dffb0} .ob.shadow{--c:var(--amber)} .ob.off{--c:var(--slate);box-shadow:none}
+.ohead{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;padding:12px 14px 4px;font:12px var(--mono);color:var(--muted)}
+.ohead b{color:var(--ink);font-weight:500}
+.ohead .ks{color:var(--red);border:1px solid var(--red);padding:0 8px}
+.capbar{display:flex;gap:2px;width:150px}.capbar i{flex:1;height:8px;border:1px solid var(--cyan);opacity:.5}.capbar i.on{background:var(--cyan);opacity:1;box-shadow:0 0 4px var(--cyan)}
+.pools{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:8px 14px}
+.pl{border:1px solid var(--line);background:rgba(4,14,24,.6);padding:7px 10px;--c:var(--cyan)}
+.pl.low{--c:var(--amber)} .pl.zero{--c:var(--red)} .pl.paused{--c:var(--slate);opacity:.6} .pl.nofloor{--c:var(--slate)}
+.pl .pn{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.pl .pv{font:500 17px var(--mono);color:var(--c);text-shadow:0 0 6px var(--c)}
+.pl .pv small{font-size:11px;color:var(--faint)}
+.pl .bar{height:3px;background:var(--line);margin-top:4px}.pl .bar i{display:block;height:100%;background:var(--c);transition:width .8s}
+.pl .why{font:10.5px var(--mono);color:var(--faint);margin-top:3px;min-height:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kan{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px;overflow:visible;padding:8px 14px 14px;align-items:start}
+.kc{min-width:0;--c:var(--cyan)}
+.kc.s-queued{--c:var(--slate)} .kc.s-planning{--c:#a99cff} .kc.s-distributing{--c:var(--teal)} .kc.s-qa{--c:#5ef0a8} .kc.s-integrating{--c:#ff7ad9} .kc.s-pr_open,.kc.s-ci_fix{--c:var(--amber)} .kc.s-merged{--c:#7dffb0} .kc.s-blocked{--c:var(--red)}
+.kc.sep{margin-left:10px;border-left:1px dashed var(--line2);padding-left:10px}
+.kh{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid var(--c);padding-bottom:3px;margin-bottom:6px;font-size:13px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--c)}
+.kh span{font:12px var(--mono)}
+.fc{border:1px solid var(--line);border-left:2px solid var(--c);background:rgba(4,14,24,.6);padding:6px 8px;margin-bottom:6px}
+.fc .fn{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fc .fm{font:10.5px var(--mono);color:var(--faint);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.fc .fm.bad,.fc .fm .bad{color:var(--red)}
+.owner.big{margin:10px 14px 0;padding:10px 14px;font-size:14px;border-width:2px;box-shadow:0 0 12px -3px var(--amber);font-family:var(--disp);letter-spacing:.04em}
+.owner.big h3{margin:0 0 4px;font-size:15px;letter-spacing:.2em;text-transform:uppercase}
+.leg{border-top:1px solid var(--line);margin-top:4px}
+.leg .lh{padding:8px 14px 0;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--faint)}
+.leg .grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
+.leg .card{padding:6px 9px;opacity:.9}.leg .card h3{font-size:13px}
+.rcard .tk{font:11px var(--mono);color:var(--muted);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+footer{color:var(--faint);font:11px var(--mono);margin-top:2px}
+:focus-visible{outline:1px solid var(--cyan);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+html,body{overflow-x:hidden;max-width:100vw}
+</style>
+</head>
+<body>
+<main>
+  <header class="topbar">
+    <div><h1>SonoraOS</h1><div class="sub" id="sub">conectando</div></div>
+    <div class="gauges" id="usage"></div>
+    <div class="pill" id="pill"></div>
+    <div class="live" style="margin-left:auto"><span class="dot" id="dot"></span><span id="livetxt">sincronizando</span></div>
+    <div class="clock"><b id="clock">--:--:--</b><span id="date"></span></div>
+  </header>
+  <p class="err" id="err"></p>
+
+  <section class="panel hero train" aria-label="Fila de merge">
+    <div class="ph"><h2>Merge train</h2><i id="trmeta"></i>
+      <span class="trbtns"><button type="button" id="trall" onclick="trAll()">Recolher tudo</button><button type="button" id="trpanel" onclick="trPanel()">Ocultar painel</button></span></div>
+    <div class="tbar"><i id="trbar" style="width:0"></i></div>
+    <div class="tcols" id="trcols"></div>
+  </section>
+
+  <section class="panel hero" id="orchhero" aria-label="Orquestrador" hidden>
+    <div class="ph"><h2>Orquestrador</h2><span class="ob off" id="omode">-</span><i id="orchmeta"></i></div>
+    <div id="owaits"></div>
+    <div class="ohead" id="ohead"></div>
+    <div class="pools" id="opools"></div>
+    <div class="kan" id="okan"></div>
+  </section>
+
+  <section class="panel hero" id="pipehero" aria-label="Fluxo de trabalho">
+    <div class="ph"><h2>Fluxo de trabalho</h2><i id="pipemeta">clique numa etapa para filtrar</i></div>
+    <div class="pipe" id="pipe"></div>
+    <div class="filt" id="filt"><span id="filttxt"></span><button id="filtx" type="button">limpar filtro</button></div>
+  </section>
+
+  <section class="panel hero" aria-label="Agentes">
+    <div class="ph"><h2>Agentes</h2><i id="agcount"></i>
+      <span class="tg"><label><input type="checkbox" id="showdone"> mostrar terminados</label></span></div>
+    <div id="oruns"></div>
+    <div id="tracks"></div>
+    <div class="note">A meta conta só agentes <b>trabalhando</b>. Buildando (anel girando) não conta: o agente espera o container, não está escrevendo.</div>
+  </section>
+
+  <div class="cols">
+    <section class="col">
+      <div class="panel"><div class="ph"><h2>Log do sistema</h2><i>eventos recentes</i></div><div class="log" id="log"><div class="info">aguardando eventos</div></div></div>
+      <div class="panel"><div class="ph"><h2>PRs abertos</h2><i id="prcount"></i></div><div id="prs"></div></div>
+    </section>
+    <aside class="col">
+      <div class="panel"><div class="ph"><h2>Watchers de merge</h2><i id="wcount"></i></div><div id="ws"></div></div>
+      <div class="panel"><div class="ph"><h2>Containers</h2><i id="ccount"></i></div><div id="cs"></div></div>
+      <footer>Estado do agente é inferido: container montando o worktree = buildando; arquivo ou git mudou nos últimos 3 min = trabalhando; nada disso = aguardando.</footer>
+    </aside>
+  </div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const dur=s=>s==null?'sem sinal':s<90?s+' s':s<5400?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h';
+const NAME={building:'buildando',working:'trabalhando',waiting:'aguardando',done:'terminou',paused:'pausado',unknown:'?','no worktree':'sem worktree'};
+const CLS=s=>s==='no worktree'?'nowt':s;
+const ORDER={working:0,building:1,waiting:2,'no worktree':2,paused:3,done:4,unknown:5};
+const PRURL='https://github.com/alesimoes/sonora-os/pull/';
+/* trilhas: chave, nome, meta, classe, regex */
+const TRACKS=[['daw','DAW',8,'',/daw/i],['os','OS',4,'os',/(^|[^a-z])os([^a-z]|$)|packag|iso|distro/i],['pl','Plugins',2,'pl',/plugin/i],['hx','Harness',0,'hx',/./]];
+const trackOf=a=>TRACKS.find(t=>t[4].test(a.track||''))||TRACKS[3];
+/* etapas do processo */
+const STAGES=[['plan','Planejar','arquiteto / líder',''],['code','Codificar','agente trabalhando',''],['build','Build/Testes','container montado',''],
+  ['pr','PR aberto','sem CI rodando',''],['ci','CI','checks rodando','ci'],['fix','Correção','check vermelho','fix'],
+  ['queue','Fila de merge','watcher, verde','q'],['merge','Merge','saiu da lista','mg']];
+let lastOk=0,lastState=null,selStage=null;
+const until=t=>{if(!t)return '';const s=Math.max(0,Math.round(t-Date.now()/1000));const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+'d '+h+'h':h?h+'h '+m+'min':m+' min'};
+
+function clock(){const d=new Date();$('clock').textContent=d.toLocaleTimeString('pt-BR');$('date').textContent=d.toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'short',year:'numeric'})}
+
+/* medidores: o DOM e criado uma vez e so os atributos mudam, para a transicao rodar */
+const GDEF=[['gw','Semana'],['g5','5 horas'],['gc','Contexto']];
+$('usage').innerHTML=GDEF.map(([id,l])=>`<div class="g" id="${id}"><svg viewBox="0 0 60 60"><circle class="bg" cx="30" cy="30" r="25"/><circle class="fg" cx="30" cy="30" r="25" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 30 30)"/><text x="30" y="38">-</text></svg><div class="gt"><span class="gl">${l}</span><small>&nbsp;</small></div></div>`).join('');
+function setGauge(id,pct,sub){const g=$(id),ok=typeof pct==='number';const p=ok?Math.max(0,Math.min(100,pct)):0;
+  g.querySelector('.fg').setAttribute('stroke-dasharray',p+' 100');g.querySelector('text').textContent=ok?Math.round(pct):'-';
+  g.classList.toggle('hi',ok&&pct>=80&&pct<95);g.classList.toggle('crit',ok&&pct>=95);
+  g.querySelector('small').textContent=ok?sub||'':'sem dado'}
+function renderUsage(u){const ses=u.sessions||[];const main=ses.find(x=>/sound/i.test(x.cwd||''))||ses[0];
+  setGauge('gw',u.week?.used_percentage,u.week?.resets_at?'renova em '+until(u.week.resets_at):'');
+  setGauge('g5',u.five_hour?.used_percentage,u.five_hour?.resets_at?'renova em '+until(u.five_hour.resets_at):'');
+  setGauge('gc',main?.context_pct,main?((main.model||'')+(main.context_tokens?' · '+Math.round(main.context_tokens/1000)+'k':'')):'')}
+
+/* log de eventos e PRs que acabaram de sair da lista */
+let prev=null;const logLines=[];let gone=[];
+function ev(cls,txt){const t=new Date().toLocaleTimeString('pt-BR');logLines.unshift(`<div class="${cls}"><time>${t}</time>${E(txt)}</div>`);if(logLines.length>40)logLines.pop();$('log').innerHTML=logLines.join('')}
+function diff(s){
+  const cur={ag:Object.fromEntries(s.agents.map(a=>[a.id,a])),pr:Object.fromEntries(s.prs.map(p=>[p.number,p]))};
+  if(prev){
+    for(const id in cur.ag){const a=cur.ag[id],o=prev.ag[id];
+      if(!o)ev('info','agente novo: '+a.label);
+      else if(o.state!==a.state){
+        if(a.state==='done')ev('ok','agente terminou: '+a.label);
+        else if(a.state==='waiting')ev('warn','agente aguardando: '+a.label);
+        else ev('info',a.label+' → '+(NAME[a.state]||a.state))}}
+    for(const n in cur.pr){const p=cur.pr[n],o=prev.pr[n];
+      if(!o)ev('info','PR #'+n+' aberto: '+p.title);
+      else if(p.failed.length&&!o.failed.length)ev('bad','PR #'+n+' vermelho: '+p.failed.join(', '));
+      else if(!p.failed.length&&o.failed.length)ev('ok','PR #'+n+' voltou a verde');}
+    for(const n in prev.pr)if(!cur.pr[n]){ev('ok','PR #'+n+' saiu da lista (mergeado ou fechado)');gone.push({n:+n,title:prev.pr[n].title,t:Date.now()})}
+  }else ev('info','painel conectado: '+s.agents.length+' agentes, '+s.prs.length+' PRs');
+  gone=gone.filter(g=>Date.now()-g.t<15*60e3);
+  prev=cur}
+
+/* etapa vinda do orquestrador (status.json): tasks[].stage com pr, quando existir */
+function orchStages(o){const m={};if(!o||typeof o!=='object')return m;
+  const feats=Array.isArray(o.features)?o.features:Object.values(o.features||{});
+  const map=v=>{v=String(v||'').toLowerCase();
+    return /plan|design|arquit/.test(v)?'plan':/fix|corre|repair/.test(v)?'fix':/queue|fila|watch/.test(v)?'queue':/merg/.test(v)?'merge':/\bci\b|check/.test(v)?'ci':/build|test/.test(v)?'build':/open|\bpr\b/.test(v)?'pr':/cod|impl|work|doing|progress/.test(v)?'code':null};
+  feats.forEach(f=>{const pr0=f&&f.pr;(Array.isArray(f&&f.tasks)?f.tasks:[]).forEach(t=>{
+    if(!t||typeof t!=='object')return;const st=map(t.stage),pr=t.pr||pr0;if(st&&pr)m[pr]=st})});
+  return m}
+
+/* etapa de cada PR e de cada agente */
+function prStage(p,watch,orch){
+  if(p.failed.length)return 'fix';
+  if(p.pending.length)return 'ci';
+  if(watch[p.number])return 'queue';
+  return orch[p.number]||'pr'}
+function agentStage(a,prs,watch,orch){
+  if(['done','paused'].includes(a.state))return null;
+  const p=a.pr&&prs[a.pr];
+  if(p)return orch[a.pr]&&!p.failed.length&&!p.pending.length&&!watch[a.pr]?orch[a.pr]:prStage(p,watch,orch);
+  if(a.pr&&orch[a.pr])return orch[a.pr];
+  if(a.state==='building')return 'build';
+  if(a.state==='working')return /fix|corre/i.test(a.label)?'fix':/architect|arquit|planej|plan\b|lead|l[ií]der/i.test(a.label)?'plan':'code';
+  return null}
+
+/* Colunas do merge train recolhíveis; o estado sobrevive ao refresh. */
+const TRK='sonora.train.closed';
+let trClosed=new Set(JSON.parse(localStorage.getItem(TRK)||'[]'));
+const trSave=()=>localStorage.setItem(TRK,JSON.stringify([...trClosed]));
+function trCol(c,h,a,empty){
+  return `<div class="tc ${c}${trClosed.has(h)?' closed':''}" data-h="${E(h)}"><h3 onclick="trToggle(this.parentNode)">${h} · ${a.length}</h3>${a.map(x=>`<div class="tr">${x}</div>`).join('')||`<div class="tr">${empty||'-'}</div>`}</div>`}
+function trToggle(el){const h=el.dataset.h;el.classList.toggle('closed')?trClosed.add(h):trClosed.delete(h);trSave();trAllLabel()}
+/* Um botão só: recolhe tudo se alguma coluna está aberta, senão expande. */
+function trAllLabel(){const cs=[...document.querySelectorAll('#trcols .tc')],b=$('trall');
+  if(b)b.textContent=cs.length&&cs.every(el=>el.classList.contains('closed'))?'Expandir tudo':'Recolher tudo'}
+function trAll(){const cs=[...document.querySelectorAll('#trcols .tc')],close=!cs.every(el=>el.classList.contains('closed'));
+  cs.forEach(el=>{el.classList.toggle('closed',close);close?trClosed.add(el.dataset.h):trClosed.delete(el.dataset.h)});trSave();trAllLabel()}
+function trPanel(){const p=document.querySelector('section.train'),hid=p.classList.toggle('hidden');$('trpanel').textContent=hid?'Mostrar painel':'Ocultar painel';localStorage.setItem(TRK+'.panel',hid?'1':'')}
+addEventListener('DOMContentLoaded',()=>{if(localStorage.getItem(TRK+'.panel'))trPanel()});
+
+/* Merge train do orquestrador (status.json .train): quem cuida de cada PR e
+   qual o próximo passo. Sem orquestrador, cai no cálculo local abaixo. */
+function renderOrchTrain(s,tr){
+  const L=n=>`<a class="prn" href="${PRURL}${n}" target="_blank" rel="noopener">#${n}</a>`;
+  const merged=s.merged||[],o=s.orchestrator||{};
+  const C={merge:[],ci:[],ref:[],vaga:[],fix:[],stack:[],blk:[],bun:[]};
+  const row=(r,extra)=>`${L(r.pr)} ${E((r.title||'').slice(0,40))}<div class="st">${extra}</div>`;
+  tr.forEach(r=>{
+    const ph=r.phase||'',nx=E(r.next||''),who=r.fixer?`<b>${E(r.fixer)}</b> (${E(r.agent||'')}) trabalhando`:'';
+    if(ph==='juntando'){C.bun.push(`<b>${E(r.title||'bundle')}</b><div class="st">${who||'aguarda integrator'} · ${nx}</div>`);return}
+    if(ph==='no bundle')return;
+    if(r.state==='ci_fix'||ph==='fixer'||ph==='conflito')C.fix.push(row(r,(who||'aguarda agente livre ('+E(r.agent||'')+')')+' · '+(ph==='conflito'?'conflito com a main':'vermelho: '+E((r.failing||[]).slice(0,2).join(', ')))));
+    else if(ph==='empilhado'||ph==='retarget')C.stack.push(row(r,nx));
+    else if(ph==='aguardando vaga')C.vaga.push(row(r,'vermelho/cancelado: '+E((r.failing||[]).slice(0,2).join(', '))));
+    else if(ph==='atualizado'||ph==='rerodando')C.ref.push(row(r,E(r.last_action||'')+' · '+nx));
+    else if(ph==='CI rodando')C.ci.push(row(r,`CI ${r.passed??'?'}/${r.total??'?'}`));
+    else if(ph==='mergeado'||r.state==='merged')return;
+    else if(ph==='verde')C.merge.push(row(r,nx||'merge'));
+    else if(ph==='bloqueado'||ph==='fechado'||r.state==='blocked')C.blk.push(row(r,nx||'decisão do owner'));
+    else C.ci.push(row(r,nx||ph))});
+  const open=tr.filter(r=>r.state!=='merged').length,n=merged.length,tot=n+open;
+  const live=(o.runs||[]).length;
+  $('trmeta').textContent=`${n} mergeados hoje · ${open} no trem · ${live} agente(s) do orquestrador · CI: ${C.ci.length+C.ref.length}/${o.train_slots||'?'} vagas`+(o.gh_paused_until?' · GitHub rate limit: pausado':'');
+  $('trbar').style.width=(tot?100*n/tot:0)+'%';
+  const col=trCol;
+  const last=merged.slice(0,8).map(p=>`${L(p.number)} ${E(p.title).slice(0,36)}`);
+  if(merged.length>8)last.push(`+${merged.length-8} antes`);
+  $('trcols').innerHTML=col('m','Mergeados hoje',last)+col('q','Bundles juntando PRs',C.bun)+col('g','Verde → merge',C.merge)
+    +col('y','CI rodando',C.ci)+col('y','Refresh sem agente',C.ref)+col('x','Aguardando vaga no CI',C.vaga)
+    +col('r','Agente corrigindo',C.fix)+col('q','Empilhado',C.stack)+col('r','Bloqueado (owner)',C.blk);trAllLabel()}
+
+function renderTrain(s){
+  const tr=s.orchestrator&&Array.isArray(s.orchestrator.train)?s.orchestrator.train:null;
+  if(tr&&tr.length)return renderOrchTrain(s,tr);
+  const L=n=>`<a class="prn" href="${PRURL}${n}" target="_blank" rel="noopener">#${n}</a>`;
+  const open=s.prs,merged=s.merged||[];
+  const byBranch=Object.fromEntries(open.map(p=>[p.branch,p]));
+  const B={g:[],y:[],r:[],x:[],q:[],m:[]};
+  open.forEach(p=>{
+    const t=E(p.title).slice(0,48);
+    if(p.base&&p.base!=='main'){const w=byBranch[p.base];B.q.push(`${L(p.number)} ${w?'aguarda '+L(w.number):'base '+E(p.base)}`);return}
+    if(p.mergeable==='CONFLICTING'||p.merge==='DIRTY'){B.m.push(`${L(p.number)} ${t}`);return}
+    if(p.failed.length){
+      const det=(p.failed_details||[]).filter(d=>d.conclusion!=='CANCELLED');
+      if(p.cancelled&&p.cancelled.length===p.failed.length){B.x.push(`${L(p.number)} ${t} <span class="st">(${p.cancelled.length} cancelados)</span>`);return}
+      B.r.push(`${L(p.number)} ${det.map(d=>E(d.name)+(d.step?` <span class="st">› ${E(d.step)}</span>`:'')).join('; ')||E(p.failed.join(', '))}`);return}
+    if(p.pending.length){B.y.push(`${L(p.number)} ${p.passed}/${p.total||p.passed+p.pending.length} ${t}`);return}
+    if(!p.total){B.x.push(`${L(p.number)} sem run`);return}
+    B.g.push(`${L(p.number)} ${t}`)});
+  const n=merged.length,tot=n+open.length;
+  $('trmeta').textContent=n+' mergeados hoje de '+tot+' ('+(tot?Math.round(100*n/tot):0)+'%)';
+  $('trbar').style.width=(tot?100*n/tot:0)+'%';
+  const col=trCol;
+  $('trcols').innerHTML=col('m','Mergeados hoje',merged.map(p=>`${L(p.number)} ${E(p.title).slice(0,44)}`))
+    +col('g','Verde (pronto p/ merge)',B.g)+col('y','Rodando',B.y)+col('r','Vermelho',B.r)
+    +col('x','Cancelado / sem run',B.x)+col('r','Conflito',B.m)+col('q','Empilhado',B.q);trAllLabel()}
+
+function render(s){
+  lastState=s;
+  renderTrain(s);
+  diff(s);
+  renderUsage(s.usage||{});
+  const act=s.agents.filter(a=>!['done','paused'].includes(a.state));
+  const working=s.agents.filter(a=>a.state==='working');
+  const waiting=act.filter(a=>a.state==='waiting'||a.state==='no worktree').length;
+  // Cancelled checks are a superseded or stopped run, not a failure.
+  const red=s.prs.filter(p=>p.failed.length>(p.cancelled||[]).length).length;
+  const dups=Object.values(s.watchers.reduce((m,w)=>(m[w.pr]=(m[w.pr]||0)+1,m),{})).filter(n=>n>1).length;
+  const pill=$('pill');pill.className='pill'+(red?' bad':waiting?' warn':'');
+  pill.innerHTML=`<span><b>${working.length}</b> trabalhando</span><span><b>${act.length}</b> ativos</span><span><b>${waiting}</b> aguardando</span><span><b>${red}</b> vermelho${red===1?'':'s'}</span>`+(dups?`<span>${dups} watcher duplicado</span>`:'');
+  const watch={};s.watchers.forEach(x=>{watch[x.pr]=(watch[x.pr]||0)+1});
+  const prs=Object.fromEntries(s.prs.map(p=>[p.number,p]));
+  const orch=orchStages(s.orchestrator);
+  const aSt=Object.fromEntries(s.agents.map(a=>[a.id,agentStage(a,prs,watch,orch)]));
+  const pSt=Object.fromEntries(s.prs.map(p=>[p.number,prStage(p,watch,orch)]));
+  renderPipe(s,aSt,pSt);
+  renderAgents(s,aSt,prs,watch);
+  renderPRs(s,watch,pSt);
+  /* containers */
+  const owner=c=>{const a=s.agents.find(a=>a.containers.includes(c.id));return a?E(a.label):'<span style="color:var(--faint)">sem dono conhecido</span>'};
+  const now=Date.now()/1000;
+  $('ccount').textContent=s.containers.length+' rodando';
+  $('cs').innerHTML=s.containers.map(c=>`<div class="row crow"><span class="id">${c.id}</span><span>${owner(c)}<div class="br">${E(c.image)}</div></span><span class="sub">${dur(Math.round(now-Date.parse(c.started)/1000))}</span></div>`).join('')||'<div class="empty">Nenhum container.</div>';
+  $('wcount').textContent=s.watchers.length+' ativos';
+  $('ws').innerHTML=s.watchers.map(x=>`<div class="row crow"><span class="id">pid ${E(x.pid)}</span><span><a class="prn" href="${PRURL}${x.pr}" target="_blank" rel="noopener">PR #${x.pr}</a></span><span class="sub">${E(x.since)}</span></div>`).join('')||'<div class="empty">Nenhum watcher.</div>';
+  renderOrch(s.orchestrator);
+  $('err').textContent=(s.errors||[]).join(' | ');
+}
+
+/* pipeline: nos brilhantes ligados por linhas animadas; clique filtra */
+function renderPipe(s,aSt,pSt){
+  if(s.orchestrator&&typeof s.orchestrator==='object'){selStage=null;return}
+  const items={};STAGES.forEach(x=>items[x[0]]=[]);
+  s.agents.forEach(a=>{const st=aSt[a.id];if(st)items[st].push({k:'a',t:a.label,pr:a.pr})});
+  const owned=new Set(s.agents.filter(a=>aSt[a.id]&&a.pr).map(a=>a.pr));
+  s.prs.forEach(p=>{if(!owned.has(p.number))items[pSt[p.number]].push({k:'p',t:'#'+p.number+' '+p.title,pr:p.number})});
+  gone.forEach(g=>items.merge.push({k:'p',t:'#'+g.n+' '+g.title,pr:g.n}));
+  const parts=[];
+  STAGES.forEach(([id,name,hint,cls],i)=>{
+    const n=items[id].length,list=items[id];
+    parts.push(`<button type="button" class="stg ${cls} ${n?'on':'idle'} ${selStage===id?'sel':''}" data-st="${id}" aria-pressed="${selStage===id}" title="${E(hint)}">
+      <div class="nd">${n}</div><div class="sl">${name}</div><small>${E(hint)}</small>
+      <div class="who">${list.slice(0,3).map(x=>`<span>${E(x.t)}</span>`).join('')}${list.length>3?`<span class="more">+${list.length-3}</span>`:''}</div></button>`);
+    if(i<STAGES.length-1)parts.push(`<div class="con ${n?'':'off'}" aria-hidden="true"></div>`)});
+  $('pipe').innerHTML=parts.join('');
+  $('pipemeta').textContent=orchStagesActive(s)?'etapas do orquestrador quando disponíveis; clique para filtrar':'etapas inferidas do estado; clique para filtrar';
+  const f=$('filt');f.classList.toggle('show',!!selStage);
+  if(selStage)$('filttxt').textContent='filtro: '+STAGES.find(x=>x[0]===selStage)[1]+' (agentes e PRs)'}
+const orchStagesActive=s=>Object.keys(orchStages(s.orchestrator)).length>0;
+$('pipe').addEventListener('click',e=>{const b=e.target.closest('.stg');if(!b)return;selStage=selStage===b.dataset.st?null:b.dataset.st;if(lastState)render(lastState)});
+$('filtx').addEventListener('click',()=>{selStage=null;if(lastState)render(lastState)});
+$('showdone').addEventListener('change',()=>{if(lastState)render(lastState)});
+
+/* agentes agrupados por trilha */
+function renderAgents(s,aSt,prs,watch){
+  const showDone=$('showdone').checked;
+  const by={};TRACKS.forEach(t=>by[t[0]]=[]);s.agents.forEach(a=>by[trackOf(a)[0]].push(a));
+  const hidden=s.agents.filter(a=>['done','paused'].includes(a.state)).length;
+  $('agcount').textContent=s.agents.filter(a=>!['done','paused'].includes(a.state)).length+' ativos de '+s.agents.length+(hidden&&!showDone?' · '+hidden+' terminados ocultos':'');
+  const orchOn=!!s.orchestrator&&typeof s.orchestrator==='object';
+  $('oruns').innerHTML=orchOn?orchRuns(s.orchestrator):'';
+  const legacy=orchOn?'<div class="leg"><div class="lh">Coordenador (legado)</div>':'';
+  $('tracks').innerHTML=legacy+(TRACKS.map(([key,name,tgt,cls])=>{
+    const all=by[key];if(!all.length&&!tgt)return '';
+    const w=all.filter(a=>a.state==='working').length,b=all.filter(a=>a.state==='building').length;
+    let list=all.filter(a=>showDone||!['done','paused'].includes(a.state));
+    if(selStage)list=list.filter(a=>aSt[a.id]===selStage);
+    list.sort((x,y)=>ORDER[x.state]-ORDER[y.state]);
+    const cells=tgt?`<div class="cells">${Array.from({length:Math.max(tgt,w)},(_,i)=>`<i class="${i<w?'on':''}"></i>`).join('')}</div>`:'';
+    const cc=tgt?`<span class="cnt ${w===0?'zero':w<tgt?'low':''}">${w} / ${tgt} trabalhando</span>`:`<span class="cnt">${w} trabalhando</span>`;
+    return `<div class="trk ${cls}"><div class="th"><h2>${name}</h2>${cc}${cells}<span class="rest">${b?b+' buildando (não conta) · ':''}${all.filter(a=>a.state==='waiting'||a.state==='no worktree').length} aguardando</span></div>
+    <div class="grid">${list.map(a=>card(a,aSt[a.id],prs,watch)).join('')||`<div class="empty" style="grid-column:1/-1">${selStage?'Nenhum agente desta trilha nesta etapa.':'Nenhum agente nesta trilha.'}</div>`}</div></div>`}).join('')||(orchOn?'<div class="empty">Nenhum subagente do coordenador.</div>':'<div class="empty">Nenhum agente no arquivo de rótulos.</div>'))+(orchOn?'</div>':'')}
+function card(a,st,prs,watch){
+  const live=!['done','paused'].includes(a.state);
+  const wi=a.idle_seconds==null?0:Math.min(100,Math.round(a.idle_seconds/600*100));
+  const p=a.pr&&prs[a.pr];
+  const pc=p?(p.failed.length?'red':p.pending.length?'wait':'ok'):'';
+  const sn=st&&STAGES.find(x=>x[0]===st);
+  return `<article class="card ${CLS(a.state)}"><div class="top"><span class="orb"></span><h3 title="${E(a.label)}">${E(a.label)}</h3><span class="state">${E(NAME[a.state]||a.state)}</span></div>
+  <div class="meta"><span class="m">${E(a.id.slice(0,7))}</span>${a.pr?`<a class="chip ${pc}" href="${PRURL}${a.pr}" target="_blank" rel="noopener">PR #${a.pr}</a>`:''}${sn?`<span class="sg">${sn[1]}</span>`:''}
+  ${a.state==='building'&&a.containers.length?`<span style="color:var(--cyan)">${E(a.containers.join(' '))}</span>`:''}
+  ${live?`<span>parado há ${dur(a.idle_seconds)}</span>`:''}${a.dirty?`<span>${a.dirty} arquivo${a.dirty>1?'s':''}</span>`:''}</div>
+  ${live?`<div class="idle" style="--w:${wi}%"><i></i></div>`:''}</article>`}
+
+function renderPRs(s,watch,pSt){
+  const list=selStage?s.prs.filter(p=>pSt[p.number]===selStage):s.prs;
+  $('prcount').textContent=list.length+(selStage?' de '+s.prs.length:' abertos');
+  $('prs').innerHTML=list.map(p=>{
+    const tot=Math.max(1,p.passed+p.pending.length+p.failed.length);
+    const q=watch[p.number]>1?`<span class="tag d">${watch[p.number]} watchers</span>`:watch[p.number]?'<span class="tag q">na fila</span>':'<span class="tag n">sem watcher</span>';
+    const det=[];
+    if(p.failed.length)det.push(`<span class="bad">falhou: ${p.failed.map(E).join(', ')}</span>`);
+    if(p.pending.length)det.push(`<span class="wait">rodando: ${p.pending.map(E).join(', ')}</span>`);
+    if(!p.failed.length&&!p.pending.length)det.push(`<span class="good">todos os ${p.passed} checks verdes</span>`);
+    const conflict=p.merge==='DIRTY';
+    return `<div class="row"><div class="prh"><a class="prn" href="${PRURL}${p.number}" target="_blank" rel="noopener">#${p.number}</a><a class="prt" href="${PRURL}${p.number}" target="_blank" rel="noopener">${E(p.title)}</a>${q}</div>
+    <div class="br">${E(p.branch)} · <span class="${conflict?'conf':''}">${E(conflict?'DIRTY (conflito)':p.merge||'')}</span></div>
+    <div class="seg"><i class="p" style="width:${p.passed/tot*100}%"></i><i class="r" style="width:${p.pending.length/tot*100}%"></i><i class="f" style="width:${p.failed.length/tot*100}%"></i></div>
+    <div class="det">${det.join('')}</div></div>`}).join('')||`<div class="empty">${selStage?'Nenhum PR nesta etapa.':'Nenhum PR aberto.'}</div>`}
+
+/* orquestrador: substitui o pipeline quando o status.json existe */
+const KSTATES=[['queued','Na fila'],['planning','Planejando'],['distributing','Distribuindo'],['building','Construindo'],['qa','QA'],['integrating','Integrando'],['pr_open','PR aberto'],['ci_fix','Correção de CI'],['merged','Mergeado']];
+const POOLS=['plan','build:daw','build:os','build:plugin','qa','fix','merge'];
+const tstate=t=>{const v=String(typeof t==='object'?(t.state||t.status||''):t).toLowerCase();return /done|ok|merged|feito|complete/.test(v)?'done':/block|fail|red|stuck/.test(v)?'block':/doing|work|run|progress|build|review|qa/.test(v)?'doing':''};
+function renderOrch(o){
+  const hero=$('orchhero');
+  hero.hidden=!o||typeof o!=='object';
+  $('pipehero').hidden=!hero.hidden;
+  if(hero.hidden){$('oruns').innerHTML='';return}
+  const mode=String(o.mode||'').toLowerCase();
+  const mb=$('omode');
+  mb.className='ob '+(mode==='live'?'live':/shadow|dry|sombra/.test(mode)?'shadow':'off');
+  mb.textContent=mode==='live'?'LIVE':/shadow|dry|sombra/.test(mode)?'sombra':'parado';
+  $('orchmeta').textContent=o.updated?'atualizado '+String(o.updated).slice(0,19).replace('T',' '):'';
+  const runs=Array.isArray(o.runs)?o.runs:[];
+  const cap=Number(o.cap)||0,used=Number.isFinite(+o.live)?+o.live:runs.length;
+  let hd=`<span>agentes <b>${used} / ${cap||'?'}</b></span>`;
+  if(cap)hd+=`<span class="capbar">${Array.from({length:Math.min(cap,40)},(_,i)=>`<i class="${i<used?'on':''}"></i>`).join('')}</span>`;
+  hd+=`<span>PRs abertos <b>${o.open_prs??0}</b>${o.max_open_prs?' / '+o.max_open_prs:''}</span>`;
+  if(o.ready_unpr!=null)hd+=`<span>prontos sem PR <b>${o.ready_unpr}</b></span>`;
+  if(o.runs_last_hour!=null)hd+=`<span>execuções na última hora <b>${o.runs_last_hour}</b></span>`;
+  const rs=Array.isArray(o.reservations)?o.reservations.length:0;if(rs)hd+=`<span>reservas <b>${rs}</b></span>`;
+  if(o.kill_switch)hd+=`<span class="ks">KILL SWITCH: ${E(typeof o.kill_switch==='object'?JSON.stringify(o.kill_switch):o.kill_switch)}</span>`;
+  if(o.usage_pause_until){const t=Number(o.usage_pause_until)||Date.parse(o.usage_pause_until)/1000;hd+=`<span class="ks">pausa por consumo${t?' · volta em '+until(t):''}</span>`}
+  $('ohead').innerHTML=hd;
+  const P=o.pools||{};
+  const names=POOLS.filter(n=>P[n]).concat(Object.keys(P).filter(n=>!POOLS.includes(n)&&((P[n].floor||0)>0||(P[n].live||0)>0)));
+  $('opools').innerHTML=names.map(n=>{const p=P[n]||{},fl=p.floor||0,lv=p.live||0,wk=p.working||0,mx=Math.max(fl,lv,1);
+    const cls=p.paused?'paused':!fl?'nofloor':lv===0?'zero':lv<fl?'low':'';
+    return `<div class="pl ${cls}"><div class="pn">${E(n)}${p.paused?' · pausado':''}</div><div class="pv">${lv}<small> vivos / ${wk} trab. / piso ${fl}</small></div><div class="bar"><i style="width:${lv/mx*100}%"></i></div><div class="why" title="${E(p.reason||'')}">${E(p.reason||(lv<fl?'abaixo do piso':''))}</div></div>`}).join('')||'<div class="empty">status.json sem pools.</div>';
+  const feats=(Array.isArray(o.features)?o.features:Object.entries(o.features||{}).map(([name,v])=>({name,...v}))).filter(f=>f&&typeof f==='object');
+  const fcard=f=>{const tasks=Array.isArray(f.tasks)?f.tasks:[];
+    const pr=f.pr?`<a class="prn" href="${PRURL}${f.pr}" target="_blank" rel="noopener">PR #${f.pr}</a>`:'';
+    return `<div class="fc"><div class="fn" title="${E(f.name||f.id)}">${E(f.name||f.id||'?')}</div>
+      <div class="fm">${pr}${f.track?`<span>${E(f.track)}</span>`:''}${f.adr?`<span>ADR-${E(f.adr)}</span>`:''}${f.fixes?`<span class="bad">${f.fixes} correç${f.fixes>1?'ões':'ão'}</span>`:''}${f.partial?'<span>parcial</span>':''}${tasks.length?`<span>${f.tasks_done??0}/${f.tasks_total??tasks.length}</span>`:''}</div>
+      ${f.blocked_reason?`<div class="fm bad">${E(f.blocked_reason)}</div>`:''}
+      ${tasks.length?`<div class="strip">${tasks.map(t=>`<i class="${tstate(t)}" title="${E(typeof t==='object'?[t.name||t.id||'',t.stage||'',t.state||''].filter(Boolean).join(' · '):t)}"></i>`).join('')}</div>`:''}</div>`};
+  const col=(id,name,list,sep)=>`<div class="kc s-${id} ${sep?'sep':''}"><div class="kh">${name}<span>${list.length}</span></div>${list.map(fcard).join('')||'<div class="empty" style="padding:6px">-</div>'}</div>`;
+  const known=new Set(KSTATES.map(k=>k[0]));
+  const bl=Array.isArray(o.blocked)?o.blocked:[];
+  const blocked=feats.filter(f=>f.state==='blocked'||bl.includes(f.id));
+  const rest=feats.filter(f=>!blocked.includes(f));
+  const extra=[...new Set(rest.map(f=>f.state).filter(x=>x&&!known.has(x)))];
+  $('okan').innerHTML=KSTATES.map(([id,n])=>col(id,n,rest.filter(f=>f.state===id))).join('')+extra.map(x=>col(x,E(x),rest.filter(f=>f.state===x))).join('')+col('blocked','Bloqueado',blocked,true);
+  const waits=o.waits_on_owner||o.waits||[],wl=Array.isArray(waits)?waits:[waits];
+  $('owaits').innerHTML=wl.length?`<div class="owner big"><h3>Espera o dono (${wl.length})</h3><ul>${wl.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||x.question||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`:'';
+}
+function orchRuns(o){
+  if(!o||!Array.isArray(o.runs))return '';
+  const now=Date.now()/1000;
+  const cards=o.runs.map(r=>{const age=r.started?Math.round(now-r.started):null;
+    const cls=r.suspect?'waiting':r.building?'building':r.working===false?'waiting':'working';
+    const st=r.suspect?'suspeito':r.building?'buildando':r.working===false?'ocioso':'trabalhando';
+    return `<article class="card rcard ${cls}"><div class="top"><span class="orb"></span><h3 title="${E(r.id||r.name)}">${E(r.name||r.id||'?')}</h3><span class="state">${st}</span></div>
+    <div class="meta"><span class="sg">${E(r.role||'?')}</span>${r.pool?`<span class="sg">${E(r.pool)}</span>`:''}<span>${age==null?'':dur(age)}</span><span class="m">pid ${E(r.pid)}</span></div>
+    <div class="tk" title="${E(r.task)}">${E(r.task||'')}</div></article>`}).join('');
+  return `<div class="trk"><div class="th"><h2>Orquestrador</h2><span class="cnt">${o.runs.length} em execução</span><span class="rest">${E(o.mode||'')}</span></div><div class="grid">${cards||'<div class="empty" style="grid-column:1/-1">Nenhum agente em execução.</div>'}</div></div>`}
+
+async function tick(){
+  try{const r=await fetch('/api/state',{cache:'no-store'});const s=await r.json();lastOk=Date.now();render(s);
+    $('sub').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR');}
+  catch(e){$('err').textContent='sem resposta do servidor: '+e}
+}
+function pulse(){const age=(Date.now()-lastOk)/1000,stale=!lastOk||age>15;
+  $('dot').classList.toggle('stale',stale);
+  $('livetxt').textContent=stale?'sem sincronia':'ao vivo · '+Math.round(age)+' s'}
+clock();tick();setInterval(tick,5000);setInterval(()=>{pulse();clock()},1000);
+</script>
+</body>
+</html>
