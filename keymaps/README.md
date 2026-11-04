@@ -328,6 +328,14 @@ whole file. That split is what lets these profiles carry the real bindings for
 edit modes and tools before the editor they drive exists, without any key ever
 silently doing nothing.
 
+## Coverage
+
+`ui/keymap/tests/test_keymap_coverage.cpp` lists the shortcuts the vendors
+document (chord and command name, from the research note) and fails when one
+whose command exists in the catalogue is not bound. Ones whose command does
+not exist are printed as pending; adding the command makes the test demand
+its key.
+
 ## Unverified and Sonora bindings
 
 These are two different things, and the files say which.

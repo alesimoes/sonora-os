@@ -49,6 +49,16 @@
     "f9": "tool.scrub",
     "f10": "tool.pencil",
     "escape": "tool.next",
+    "alt+1": "edit.mode.shuffle",
+    "alt+2": "edit.mode.slip",
+    "alt+3": "edit.mode.spot",
+    "alt+4": "edit.mode.grid",
+    "ctrl+1": "tool.zoom",
+    "ctrl+2": "tool.trim",
+    "ctrl+3": "tool.select",
+    "ctrl+4": "tool.grab",
+    "ctrl+5": "tool.scrub",
+    "ctrl+6": "tool.pencil",
     "ctrl+7": {
       "command": "tool.smart",
       "comment": "Command+7 / Control+7. Pro Tools also engages the Smart Tool by holding F6+F7 or F7+F8 together; this schema binds one chord to one command and cannot express two keys held at once."
@@ -138,6 +148,11 @@
     },
     "alt+r": "edit.repeat",
     "alt+shift+3": "edit.consolidate",
+    "ctrl+u": {
+      "command": "edit.strip_silence",
+      "verified": false,
+      "comment": "Pro Tools opens its Strip Silence window on Ctrl+U (from memory, not yet checked against Avid's guide). Here it strips with the defaults: -40 dB, 100 ms, 10 ms pads."
+    },
 
     "a": {
       "command": "edit.trim_start_to_insertion",

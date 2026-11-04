@@ -12,6 +12,7 @@ set(SONORA_MODEL_SOURCES
   src/model.cpp
   src/musical_map.cpp
   src/op_codec.cpp
+  src/plan.cpp
   src/sequence_file.cpp
   src/replication.cpp
   src/session_file.cpp
@@ -103,6 +104,11 @@ add_test(NAME model_replication COMMAND test_model_replication)
 add_executable(test_model_compound tests/test_compound.cpp)
 target_link_libraries(test_model_compound PRIVATE sonora_model_audited)
 add_test(NAME model_compound COMMAND test_model_compound)
+
+# Plans (ADR-0038): diff preview, partial acceptance, one compound undo.
+add_executable(test_model_plan tests/test_plan.cpp)
+target_link_libraries(test_model_plan PRIVATE sonora_model_audited)
+add_test(NAME model_plan COMMAND test_model_plan)
 
 # Range-local validation (BACKLOG Track 2 item 8), audited member by member.
 add_executable(test_model_local_edit tests/test_local_edit.cpp)
