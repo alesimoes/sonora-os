@@ -5,6 +5,7 @@
 #   tools/bg-status.sh          list
 #   tools/bg-status.sh --kill   kill duplicate watchers and docker runs whose
 #                               worktree is gone or merged
+# shellcheck disable=SC2009  # pgrep is not on every Git Bash
 set -u
 kill_mode=0
 [ "${1:-}" = --kill ] && kill_mode=1

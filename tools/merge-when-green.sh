@@ -24,6 +24,7 @@ set -u
 lockroot=${TMPDIR:-/tmp}/sonora-merge-locks
 mkdir -p "$lockroot"
 mylocks=""
+# shellcheck disable=SC2329  # runs from the trap
 release() { for l in $mylocks; do rm -rf "$l"; done; }
 trap release EXIT INT TERM
 for pr in "$@"; do
