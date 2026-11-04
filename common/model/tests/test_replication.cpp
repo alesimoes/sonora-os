@@ -443,7 +443,7 @@ bool same_history(const Replica& r, const Document& d) {
 // the first Undo after a resync found nothing to undo on the replica and
 // every Undo and Redo after that desynced it.
 int test_resync_keeps_the_undo_window() {
-    Document doc(new_session(settings()), 64 * 1024);
+    Document doc(new_session(settings()), 72 * 1024);
     std::string error;
     ReplicationUpdate u;
     Ids ids(doc.current());
