@@ -34,7 +34,7 @@ using sonora::WavWriter;
 // Where the writer puts them: RIFF ckSize at 4, the data ckSize just
 // before the first sample (bext 602 and fmt 16 bytes before it).
 constexpr long kRiffSize = 4;
-constexpr long kDataSize = 12 + (8 + 602) + (8 + 16) + 4;
+constexpr long kDataSize = 12 + (8 + 28) + (8 + 602) + (8 + 16) + 4;
 constexpr long kAudio = kDataSize + 4;
 
 std::vector<uint8_t> slurp(const std::string& path) {
@@ -241,6 +241,7 @@ int main() {
     {
         std::remove(path.c_str());
         WavWriter w;
+        w.set_rf64_allowed(false);
         w.set_riff_size_limit(kAudio - 8 + 16);
         CHECK(w.open(path, 48000, 1, WavWriter::Format::Int24, 4800));
         std::vector<float> s(6);
@@ -281,7 +282,7 @@ int main() {
     // takes are known to end with it.
     {
         auto b = unfinalised(finished(path, 1, WavWriter::Format::Float32, 10), 40);
-        std::memcpy(b.data() + 12 + 8 + 256, "Other DAW    ", 13);
+        std::memcpy(b.data() + 12 + (8 + 28) + 8 + 256, "Other DAW    ", 13);
         spill(path, b);
         const TakeRecovery r = sonora::recover_take(path);
         CHECK(r.outcome == TakeRecovery::Outcome::NotOurs);
@@ -331,6 +332,40 @@ int main() {
         CHECK(sonora::recover_takes(dir.string()).empty());
         // A folder that is not there yet: a new session.
         CHECK(sonora::recover_takes((dir / "missing").string()).empty());
+    }
+
+    // --- an RF64 take: finished is left alone, a stale ds64 is repaired ---
+    {
+        std::remove(path.c_str());
+        WavWriter w;
+        w.set_riff_size_limit(kAudio - 8 + 12);
+        CHECK(w.open(path, 48000, 1, WavWriter::Format::Float32, 4800));
+        std::vector<float> s(10);
+        for (std::size_t i = 0; i < s.size(); ++i) s[i] = static_cast<float>(i) / 1024.0f;
+        CHECK(w.write(s.data(), 10));
+        CHECK(w.is_rf64());
+        CHECK(w.close());
+        const auto good = slurp(path);
+        CHECK(std::memcmp(good.data(), "RF64", 4) == 0);
+
+        TakeRecovery r = sonora::recover_take(path);
+        CHECK(r.outcome == TakeRecovery::Outcome::Intact);
+        CHECK(r.frames == 10);
+        CHECK(slurp(path) == good);
+
+        // Killed after a checkpoint of 6 frames: ds64 counts them, the file
+        // holds 10 and no pad (even here).
+        auto b = good;
+        const uint64_t riff6 = (kAudio - 8) + 6 * 4;
+        const uint64_t data6 = 6 * 4;
+        std::memcpy(b.data() + 20, &riff6, 8);
+        std::memcpy(b.data() + 28, &data6, 8);
+        spill(path, b);
+        r = sonora::recover_take(path);
+        CHECK(r.outcome == TakeRecovery::Outcome::Repaired);
+        CHECK(r.frames == 10);
+        CHECK(slurp(path) == good);
+        CHECK(samples_match(path, 10, 1));
     }
 
     fs::remove_all(dir);

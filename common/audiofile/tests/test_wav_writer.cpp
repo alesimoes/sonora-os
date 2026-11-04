@@ -76,7 +76,7 @@ bool broken_clock(std::tm&) { return false; }
 
 // RIFF ckSize of a file with no audio: "WAVE", then the bext, fmt and data
 // chunk headers and payloads up to the first sample.
-constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+constexpr uint32_t kEmptyRiffSize = 4 + (8 + 28) + (8 + 602) + (8 + 16) + 8;
 
 }  // namespace
 
@@ -409,6 +409,7 @@ int main() {
         std::remove(path.c_str());
         sonora::WavWriter w;
         // Room for exactly 10 mono 24-bit frames.
+        w.set_rf64_allowed(false);
         w.set_riff_size_limit(kEmptyRiffSize + 10 * 3);
         CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
         const std::vector<float> block(8, 0.25f);
@@ -446,6 +447,7 @@ int main() {
         sonora::WavWriter w;
         // 5 mono 24-bit frames are 15 bytes and need a pad byte: 16 do not
         // fit in 15, so only 4 frames may be written.
+        w.set_rf64_allowed(false);
         w.set_riff_size_limit(kEmptyRiffSize + 15);
         CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
         const std::vector<float> block(5, 0.25f);
@@ -459,6 +461,7 @@ int main() {
         // Stereo float: 8 bytes a frame, 20 bytes of room, 2 whole frames.
         std::remove(path.c_str());
         sonora::WavWriter s;
+        s.set_rf64_allowed(false);
         s.set_riff_size_limit(kEmptyRiffSize + 20);
         CHECK(s.open(path, 48000, 2, sonora::WavWriter::Format::Float32, 0));
         const std::vector<float> stereo(2 * 3, 0.25f);
@@ -564,6 +567,7 @@ int main() {
         std::remove(path.c_str());
         sonora::WavWriter w;
         CHECK(!w.checkpoint());
+        w.set_rf64_allowed(false);
         w.set_riff_size_limit(kEmptyRiffSize + 6);
         CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
         const std::vector<float> block(4, 0.25f);
@@ -575,6 +579,88 @@ int main() {
         const auto b = slurp(path);
         CHECK(read_u32(b, 4) == b.size() - 8);
         CHECK(w.failure() == "take reached the 4 GB WAV limit");
+    }
+
+    // --- past the 32-bit limit the take becomes RF64, in place ---
+    //
+    // A small limit stands in for 2^32 - 1. Mono 24-bit, 16 frames: 10 fit
+    // a plain WAV, the block that crosses converts the header and goes on.
+    {
+        const auto u64 = [](const std::vector<uint8_t>& b, long off) {
+            uint64_t v = 0;
+            std::memcpy(&v, b.data() + off, 8);
+            return v;
+        };
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        w.set_riff_size_limit(kEmptyRiffSize + 10 * 3);
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        std::vector<float> a(8), c(8);
+        for (int i = 0; i < 8; ++i) {
+            a[i] = static_cast<float>(i) / 64.0f;
+            c[i] = static_cast<float>(i + 8) / 64.0f;
+        }
+        CHECK(w.write(a.data(), 8));
+        CHECK(!w.is_rf64());
+        CHECK(w.write(c.data(), 8));
+        CHECK(w.is_rf64());
+        CHECK(!w.failed());
+        CHECK(w.frames_written() == 16);
+        CHECK(w.checkpoint());
+        CHECK(w.close());
+
+        const auto b = slurp(path);
+        CHECK(std::memcmp(b.data(), "RF64", 4) == 0);
+        CHECK(read_u32(b, 4) == 0xFFFFFFFFu);
+        CHECK(std::memcmp(b.data() + 12, "ds64", 4) == 0);
+        CHECK(read_u32(b, 16) == 28);
+        CHECK(u64(b, 20) == b.size() - 8);
+        CHECK(u64(b, 28) == 16 * 3);
+        CHECK(u64(b, 36) == 16);
+        const long data = find_chunk(b, "data");
+        CHECK(data > 0);
+        CHECK(read_u32(b, data - 4) == 0xFFFFFFFFu);
+
+        sonora::WavReader r;
+        std::string err;
+        CHECK(r.open(path, err));
+        CHECK(r.frames() == 16);
+        std::vector<float> got(16);
+        CHECK(r.read(0, 16, got.data()) == 16);
+        for (int i = 0; i < 16; ++i) CHECK(got[i] == static_cast<float>(i) / 64.0f);
+
+        // The next take on the same writer is a plain WAV again.
+        std::remove(path.c_str());
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Int24, 0));
+        CHECK(!w.is_rf64());
+        CHECK(w.close());
+        const auto plain = slurp(path);
+        CHECK(std::memcmp(plain.data(), "RIFF", 4) == 0);
+        CHECK(std::memcmp(plain.data() + 12, "JUNK", 4) == 0);
+    }
+
+    // A reader sees the size ds64 states, not the all-ones field, so a
+    // header that describes more than 4 GiB of audio reads as such.
+    {
+        std::remove(path.c_str());
+        sonora::WavWriter w;
+        w.set_riff_size_limit(kEmptyRiffSize);
+        CHECK(w.open(path, 48000, 1, sonora::WavWriter::Format::Float32, 0));
+        const std::vector<float> one(1, 0.5f);
+        CHECK(w.write(one.data(), 1));
+        CHECK(w.close());
+        auto b = slurp(path);
+        const uint64_t big = 6ull * 1024 * 1024 * 1024;  // 6 GiB of float mono
+        std::memcpy(b.data() + 20, &big, 8);
+        std::memcpy(b.data() + 28, &big, 8);
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        CHECK(f != nullptr);
+        std::fwrite(b.data(), 1, b.size(), f);
+        std::fclose(f);
+        sonora::WavReader r;
+        std::string err;
+        CHECK(r.open(path, err));
+        CHECK(r.frames() == static_cast<int64_t>(big / 4));
     }
 
     std::remove(path.c_str());
