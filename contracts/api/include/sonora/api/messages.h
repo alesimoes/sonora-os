@@ -161,7 +161,11 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
-constexpr uint32_t kProtocolVersion = 42;
+// 59 (ADR-0009 update of 2026-11-04, Shuffle; follows 42, the numbers
+//   between are other branches'): the operation kind ShiftRegions, the
+//   ripple Shuffle's Clear, Cut, Paste, Duplicate and Repeat end with. A
+//   version-42 peer's op decoder refuses the kind.
+constexpr uint32_t kProtocolVersion = 59;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

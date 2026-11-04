@@ -517,6 +517,13 @@ struct Encoder {
         v.set("timebase", name_of(kTimebases, o.timebase));
         return v;
     }
+    Value operator()(const ShiftRegions& o) const {
+        Value v = with_kind("ShiftRegions");
+        v.set("playlist", id_value(o.playlist));
+        v.set("from", integer(o.from));
+        v.set("delta", integer(o.delta));
+        return v;
+    }
     Value operator()(const RemoveRegion& o) const {
         Value v = with_kind("RemoveRegion");
         v.set("playlist", id_value(o.playlist));
@@ -858,6 +865,18 @@ public:
 
     bool frames(const Value& obj, const std::string& path, const char* key, Frames& out) {
         return integer(obj, path, key, kMaxInteger, out);
+    }
+
+    // A signed distance: ShiftRegions' delta.
+    bool offset(const Value& obj, const std::string& path, const char* key, Frames& out) {
+        const Value& v = *obj.find(key);
+        std::int64_t n = 0;
+        if (!v.is_number() || !v.is_integer_lexeme() || !v.to_int64(n) || n < -kMaxInteger ||
+            n > kMaxInteger) {
+            return fail(at(path, key), "must be an integer within +-" + std::to_string(kMaxInteger));
+        }
+        out = n;
+        return true;
     }
 
     bool real(const Value& obj, const std::string& path, const char* key, float& out) {
@@ -1475,6 +1494,14 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
             !rd.frames(v, "", "at", o.at) || !rd.id(v, "", "new_right_id", o.new_right_id) ||
             !rd.choice(v, "", "timebase", kTimebases, o.timebase)) {
+            return false;
+        }
+        out = o;
+    } else if (kind == "ShiftRegions") {
+        ShiftRegions o;
+        if (!rd.keys(v, "", {"op", "playlist", "from", "delta"}) ||
+            !rd.id(v, "", "playlist", o.playlist) || !rd.frames(v, "", "from", o.from) ||
+            !rd.offset(v, "", "delta", o.delta)) {
             return false;
         }
         out = o;
@@ -2667,7 +2694,7 @@ const char* const kNames[] = {
     "SetMidiRouting", "RecordLoopTake", "AddBus", "RemoveBus",
     "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
     "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "EditAutomation",
-    "SetTrackColour", "SetRegionName", "SetRegionColour", "Compound"};
+    "SetTrackColour", "SetRegionName", "SetRegionColour", "ShiftRegions", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

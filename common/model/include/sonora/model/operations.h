@@ -155,6 +155,21 @@ struct RemoveRegion {
     Id region = 0;
 };
 
+// Shuffle's ripple (ADR-0009, update of 2026-11-04): every region of the
+// playlist that starts at or after `from` moves by `delta` frames, later or
+// earlier, keeping its order and the gaps between them. A region that
+// straddles `from` stays (split it first). Refused when `delta` is 0, when
+// a moved region would start before 0 or pass the timeline, or, going
+// earlier, when the first moved region would land on one that stays. A
+// crossfade between a region that stays and one that moves is dropped,
+// as every edit drops one whose regions no longer butt. Audio playlists
+// only; a MIDI playlist is refused.
+struct ShiftRegions {
+    Id playlist = 0;
+    Frames from = 0;
+    Frames delta = 0;
+};
+
 enum class FadeEnd : std::uint8_t { In, Out };
 
 struct SetFade {
@@ -548,7 +563,7 @@ using Member =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, ShiftRegions>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -583,7 +598,7 @@ using Operation =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, Compound>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, ShiftRegions, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

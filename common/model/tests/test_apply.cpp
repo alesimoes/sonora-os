@@ -630,6 +630,51 @@ int test_punch_shortens_the_fade_it_meets() {
     return 0;
 }
 
+// Shuffle's ripple: the tail moves as one, the gaps between its regions
+// stay, one undo step puts it back, and what would overlap is refused.
+int test_shift_regions() {
+    Base b;
+    CHECK(make_base(b) == 0);
+    Ids ids(b.h.current());
+    const AddSource s2 = add_source(ids, 1'000'000, 1, b.track);
+    CHECK_APPLY(b.h, s2);
+    const Id second = ids();
+    CHECK_APPLY(b.h, (PlaceRegion{b.playlist, region(second, s2.source.id, 600000, 100000)}));
+    const Id third = ids();
+    CHECK_APPLY(b.h, (PlaceRegion{b.playlist, region(third, s2.source.id, 800000, 50000)}));
+    const auto before = b.h.current().edit;
+
+    CHECK_APPLY(b.h, (ShiftRegions{b.playlist, 600000, -50000}));
+    Playlist p = playlist_of(b.h.current(), 0);
+    CHECK(p.regions.size() == 3);
+    CHECK(find(p, b.r)->position == 100000);
+    CHECK(find(p, second)->position == 550000);
+    CHECK(find(p, third)->position == 750000);
+    CHECK(invariants_hold(b.h.current()));
+    CHECK(b.h.undo());
+    CHECK(*b.h.current().edit == *before);
+
+    CHECK_APPLY(b.h, (ShiftRegions{b.playlist, 600000, 25000}));
+    p = playlist_of(b.h.current(), 0);
+    CHECK(find(p, second)->position == 625000 && find(p, third)->position == 825000);
+    CHECK(invariants_hold(b.h.current()));
+    CHECK(b.h.undo());
+
+    std::string err;
+    const auto refused = [&](ShiftRegions op) {
+        const auto edit = b.h.current().edit;
+        const bool ok = b.h.apply(op, err);
+        return !ok && b.h.current().edit == edit && !err.empty();
+    };
+    CHECK(refused({b.playlist, 600000, 0}));
+    CHECK(refused({b.playlist, 600000, -150000}));    // onto the region that stays
+    CHECK(refused({b.playlist, 0, -1}));              // before frame 0
+    CHECK(refused({b.playlist, 900000, 10}));         // nothing starts there
+    CHECK(refused({b.playlist, 600000, kMaxInteger}));  // past the timeline
+    CHECK(refused({b.playlist + 99, 0, 10}));         // no such playlist
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -655,6 +700,7 @@ int main() {
     t(test_trim_shortens_a_fade_into_the_crossfade);
     t(test_punch_shortens_the_fade_it_meets);
     t(test_clearing_a_crossfade_shortens_the_fade_it_reveals);
+    t(test_shift_regions);
     if (failed != 0) {
         std::fprintf(stderr, "model_apply: %d of %d failed\n", failed, run);
         return 1;
