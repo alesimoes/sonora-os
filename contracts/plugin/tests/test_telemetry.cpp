@@ -6,6 +6,7 @@
 #include "sonora/plugin/telemetry.h"
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -137,6 +138,9 @@ void no_torn_frame() {
             for (uint32_t m = 0; m < kMaxTelemetryMeters; ++m) b->set_meter(m, v);
             b->set_curve(0, curve, kMaxCurvePoints);
             b->end_write();
+            // A plugin publishes once per block, not in a tight loop; one that
+            // never paused would starve every reader, which is also tolerated.
+            std::this_thread::sleep_for(std::chrono::microseconds(20));
         }
     });
     long reads = 0, torn = 0;

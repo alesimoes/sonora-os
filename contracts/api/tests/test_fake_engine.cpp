@@ -606,6 +606,7 @@ void plugin_telemetry() {
     req.action = ModelAction::Apply;
     CHECK(sonora::model::encode_operation(add, req.op, error));
     e.submit(req);
+    e.poll(in);
 
     PluginTelemetry t;
     t.sequence = 1;
