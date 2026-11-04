@@ -20,7 +20,7 @@
 #include <initializer_list>
 #include <thread>
 
-#include "sonora/quit_signals.h"
+#include "sonora/platform/process_setup.h"
 
 #define CHECK(cond)                                                      \
     do {                                                                 \
@@ -35,19 +35,19 @@ namespace {
 
 int test_each_signal_sets_the_flag() {
     for (const int sig : {SIGHUP, SIGTERM, SIGINT}) {
-        sonora::clear_quit_request();
-        CHECK(!sonora::quit_requested());
+        sonora::platform::clear_quit_request();
+        CHECK(!sonora::platform::quit_requested());
         // Without a handler, SIGHUP and SIGTERM terminate this process here
         // and ctest reports the test as failed.
         CHECK(std::raise(sig) == 0);
-        CHECK(sonora::quit_requested());
+        CHECK(sonora::platform::quit_requested());
     }
     return 0;
 }
 
 int test_signal_handled_on_another_thread() {
     for (const int sig : {SIGHUP, SIGTERM, SIGINT}) {
-        sonora::clear_quit_request();
+        sonora::platform::clear_quit_request();
         std::atomic<bool> polling{false};
         // raise() delivers to the calling thread, so the handler runs there,
         // as it ran on the accept loop in the CI report.
@@ -58,7 +58,7 @@ int test_signal_handled_on_another_thread() {
         });
         bool seen = false;
         polling.store(true, std::memory_order_release);
-        for (long i = 0; i < 2000000000L && !seen; ++i) seen = sonora::quit_requested();
+        for (long i = 0; i < 2000000000L && !seen; ++i) seen = sonora::platform::quit_requested();
         other.join();
         CHECK(seen);
     }
@@ -68,7 +68,7 @@ int test_signal_handled_on_another_thread() {
 }  // namespace
 
 int main() {
-    sonora::install_quit_signals();
+    sonora::platform::install_quit_handlers();
     if (test_each_signal_sets_the_flag()) return 1;
     if (test_signal_handled_on_another_thread()) return 1;
     std::printf("test_quit_signals: ok\n");

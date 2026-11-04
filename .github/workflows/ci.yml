@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+  packages: read
+
 # A new push to a PR cancels its stale run. Runs on main are never cancelled:
 # each merge keeps its own result, so the group is unique per run there.
 concurrency:
@@ -17,6 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      image_build: ${{ steps.filter.outputs.image_build }}
+      image_ui: ${{ steps.filter.outputs.image_ui }}
+      image_rtsan: ${{ steps.filter.outputs.image_rtsan }}
+      image_plugins: ${{ steps.filter.outputs.image_plugins }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,8 +40,23 @@ jobs:
         id: filter
         run: |
           code=true
+          # Images come prebuilt from images.yml (main only); a change to an
+          # image's inputs, or to the tooling that builds or pulls images,
+          # must be built here, as the published one is the old one.
+          # Also on main, where images.yml runs in parallel with this.
+          tooling='\.github/actions/sonora-image/.*|\.github/workflows/images\.yml'
+          files=$(git diff --no-renames --name-only HEAD^1 HEAD || true)
+          for pair in build:tools/Dockerfile.build \
+                      ui:'tools/Dockerfile.ui|audio-stack/pipewire-sonora.conf' \
+                      rtsan:tools/Dockerfile.rtsan \
+                      plugins:tools/Dockerfile.plugins; do
+            if printf '%s\n' "$files" | grep -qE "^(${pair#*:}|${tooling})$"; then
+              echo "image_${pair%%:*}=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "image_${pair%%:*}=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
           if [ "${{ github.event_name }}" = pull_request ]; then
-            files=$(git diff --no-renames --name-only HEAD^1 HEAD)
             if [ -n "$files" ] && ! printf '%s\n' "$files" |
                  grep -qvE '^(planning|brain|docs)/|\.md$'; then
               code=false
@@ -56,18 +79,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build the sonora-build image (cached)
-        uses: docker/build-push-action@v6
+      - name: Get the sonora-build image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
         with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
           context: tools
-          file: tools/Dockerfile.build
-          tags: sonora-build:trixie
-          labels: org.sonora=1
-          load: true
-          cache-from: type=gha,scope=sonora-build
-          cache-to: type=gha,scope=sonora-build,mode=max
+          rebuild: ${{ needs.changes.outputs.image_build }}
 
       # Unlimited memlock as tools/build-engine.sh and the appliance grant
       # it, so test_memory_lock checks that locking works.
@@ -122,7 +140,8 @@ jobs:
 
       # sonora_portable (sonora_define_portable_target, plugins/native/
       # CMakeLists.txt): every library and executable under common/json,
-      # common/dsp and plugins/native, so a new test target or processor is
+      # common/dsp, common/platform (the unsupported stubs), common/audiofile
+      # and plugins/native, so a new test target or processor is
       # built here with no edit to this file.
       - name: Build
         run: cmake --build build --config Release --parallel --target sonora_portable
@@ -157,18 +176,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build the sonora-ui image (cached)
-        uses: docker/build-push-action@v6
+      - name: Get the sonora-ui image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
         with:
+          name: sonora-ui
+          dockerfile: tools/Dockerfile.ui
           context: .
-          file: tools/Dockerfile.ui
-          tags: sonora-ui:trixie
-          labels: org.sonora=1
-          load: true
-          cache-from: type=gha,scope=sonora-ui
-          cache-to: type=gha,scope=sonora-ui,mode=max
+          rebuild: ${{ needs.changes.outputs.image_ui }}
 
       - name: Compiler
         run: docker run --rm sonora-ui:trixie c++ --version
@@ -194,18 +208,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build the sonora-build image (cached)
-        uses: docker/build-push-action@v6
+      - name: Get the sonora-build image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
         with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
           context: tools
-          file: tools/Dockerfile.build
-          tags: sonora-build:trixie
-          labels: org.sonora=1
-          load: true
-          cache-from: type=gha,scope=sonora-build
-          cache-to: type=gha,scope=sonora-build,mode=max
+          rebuild: ${{ needs.changes.outputs.image_build }}
 
       - name: Start the build container
         run: |
@@ -319,18 +328,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build the sonora-rtsan image (cached)
-        uses: docker/build-push-action@v6
+      - name: Get the sonora-rtsan image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
         with:
+          name: sonora-rtsan
+          dockerfile: tools/Dockerfile.rtsan
           context: tools
-          file: tools/Dockerfile.rtsan
-          tags: sonora-rtsan:trixie
-          labels: org.sonora=1
-          load: true
-          cache-from: type=gha,scope=sonora-rtsan
-          cache-to: type=gha,scope=sonora-rtsan,mode=max
+          rebuild: ${{ needs.changes.outputs.image_rtsan }}
 
       - name: Compiler
         run: docker run --rm sonora-rtsan:trixie clang++-22 --version
@@ -350,17 +354,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build the sonora-build image (cached)
-        uses: docker/build-push-action@v6
+      - name: Get the sonora-build image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
         with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
           context: tools
-          file: tools/Dockerfile.build
-          tags: sonora-build:trixie
-          labels: org.sonora=1
-          load: true
-          cache-from: type=gha,scope=sonora-build
+          rebuild: ${{ needs.changes.outputs.image_build }}
 
       - name: Compiler
         run: docker run --rm sonora-build:trixie c++ --version
@@ -382,17 +382,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build the sonora-build image (cached)
-        uses: docker/build-push-action@v6
+      - name: Get the sonora-build image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
         with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
           context: tools
-          file: tools/Dockerfile.build
-          tags: sonora-build:trixie
-          labels: org.sonora=1
-          load: true
-          cache-from: type=gha,scope=sonora-build
+          rebuild: ${{ needs.changes.outputs.image_build }}
 
       - name: Compiler
         run: docker run --rm sonora-build:trixie c++ --version
@@ -429,21 +425,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-buildx-action@v3
-
-      # The image builds lv2lint and Steinberg's VST3 validator from source
-      # (Debian packages neither), which takes minutes; its layers are
-      # cached in the Actions cache like the UI image's.
-      - name: Build the sonora-plugins image (cached)
-        uses: docker/build-push-action@v6
+      - name: Get the sonora-plugins image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
         with:
+          name: sonora-plugins
+          dockerfile: tools/Dockerfile.plugins
           context: tools
-          file: tools/Dockerfile.plugins
-          tags: sonora-plugins:trixie
-          labels: org.sonora=1
-          load: true
-          cache-from: type=gha,scope=sonora-plugins
-          cache-to: type=gha,scope=sonora-plugins,mode=max
+          rebuild: ${{ needs.changes.outputs.image_plugins }}
 
       - name: Compiler
         run: docker run --rm sonora-plugins:trixie c++ --version
@@ -591,12 +579,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install shellcheck and dbus-x11
-        run: sudo apt-get update && sudo apt-get install -y shellcheck dbus-x11
+        run: for d in 0 15 45; do sleep "$d"; sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y shellcheck dbus-x11 && exit 0; done; echo "apt failed after 3 attempts" >&2; exit 1
       - name: Check
         run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck
 
       - name: Read-only root, capped RAM writes
         run: tools/test-ro-root.sh
+
+      - name: Build slot limiter
+        run: tools/test-build-slot.sh
 
       - name: Secure Boot chain, static
         run: tools/test-secure-boot.sh

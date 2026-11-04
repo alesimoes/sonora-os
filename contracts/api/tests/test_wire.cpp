@@ -500,6 +500,8 @@ void domains() {
                                id == "window.undo_history" ||
                                id == "window.memory_locations" || id == "window.latency" ||
                                id == "window.bounce" ||
+                               id == "window.configurations" || id == "window.config_store" ||
+                               id == "window.config_recall" ||
                                id == "app.save_as_template" || id == "app.new_from_template";
         if (interface != (spec.domain == CommandDomain::Interface)) {
             std::fprintf(stderr, "FAIL %s is in the wrong domain\n", spec.id);
