@@ -1,0 +1,407 @@
+#!/bin/sh
+# sonora-install: whole-disk install of the running SonoraOS stick (ADR-0032).
+#
+# Copies the squashfs the stick booted, so the installed system is the tested
+# image. The exit codes and the "STEP n/N name" lines are the interface; the
+# screens only call this script.
+#
+#   sonora-install [--yes] [--allow-removable] [--select-only] [--list] [--target DISK]
+#
+# --list prints one candidate disk per line as DEVICE<TAB>BYTES<TAB>MODEL and
+# exits 0; it opens nothing for writing. Screens use it to offer the choice.
+#
+# Sessions on the running stick (/home/sonora/Sessions, which is the stick's
+# persistence overlay when there is one) are copied to the installed system in
+# step 4 and checked file by file with SHA-256 in step 7. The stick's copy is
+# only ever read. A recording that is still running while the copy happens
+# changes files under the checksum list; that fails with exit 11 and the
+# operator stops recording and runs the install again.
+#
+# Screens (the tty2 front end sonora-install-tty, a Qt page later) need only
+# three things from this program, none of which is a private detail:
+#   - progress: stdout lines "STEP n/7 name", n = 1..7, in order;
+#   - result: the exit code below; the last line on stderr names the reason;
+#   - the erase confirmation is theirs to ask; they pass --yes after it.
+#
+# --select-only prints the disk it would erase and exits 0 before anything is
+# written (used by the tests and by screens that preview the choice).
+#
+# Exit codes: 0 installed and self-checked, 2 usage, 3 target refused,
+# 4 partitioning, 5 formatting, 6 copy, 7 configuration, 8 boot loader,
+# 9 self-check failed, 10 not root or a tool is missing, 11 session carry-over
+# failed or did not verify.
+#
+# SONORA_* variables exist so the logic runs against a file image in a
+# container; on the stick none is set. While any of SONORA_SYSBLOCK,
+# SONORA_ALLOW_FILE or SONORA_IN_TARGET is set, only a regular file or a loop
+# device may be written, so a test can never reach a real disk.
+set -u
+
+MEDIUM=${SONORA_MEDIUM:-/run/live/medium}
+SQUASHFS=${SONORA_SQUASHFS:-$MEDIUM/live/filesystem.squashfs}
+SYSBLOCK=${SONORA_SYSBLOCK:-/sys/block}
+# The stick's cmdline minus the live-only words. iso/auto/config carries the
+# full line; tools/test-installer.sh keeps the two in step.
+CMDLINE=${SONORA_CMDLINE:-quiet splash threadirqs}
+LIVE_PKGS="live-boot live-boot-initramfs-tools live-config live-config-systemd"
+ESP_MIB=512
+STEPS=7
+
+# Where the running system keeps its sessions; the target always gets the
+# standard path. The variable exists for the container test only.
+SESSIONS=${SONORA_SESSIONS:-/home/sonora/Sessions}
+SESSIONS_DEST=/home/sonora/Sessions
+
+YES=0
+LIST=0
+REMOVABLE=0
+SELECT_ONLY=0
+TARGET=
+WORK=
+LOOP=
+DEV=
+EFI=0
+ROOT_UUID=
+ESP_UUID=
+ROOTP=
+ESPP=
+
+step() { echo "STEP $1/$STEPS $2"; }
+fail() { echo "sonora-install: $2" >&2; exit "$1"; }
+
+in_target() {
+    if [ -n "${SONORA_IN_TARGET:-}" ]; then
+        # shellcheck disable=SC2086 # a command prefix, split on purpose
+        $SONORA_IN_TARGET "$WORK/root" "$@"
+    else
+        chroot "$WORK/root" "$@"
+    fi
+}
+
+cleanup() {
+    if [ -n "$WORK" ]; then
+        for m in run sys proc dev/pts dev boot/efi; do
+            mountpoint -q "$WORK/root/$m" 2>/dev/null && umount "$WORK/root/$m"
+        done
+        mountpoint -q "$WORK/root" 2>/dev/null && umount "$WORK/root"
+        rmdir "${WORK:?}/root" 2>/dev/null
+        rm -f "${WORK:?}/sessions.sha" "$WORK/sessions.err" "$WORK/uuids"
+        rmdir "${WORK:?}" 2>/dev/null
+    fi
+    [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null
+    return 0
+}
+trap cleanup EXIT
+
+usage() {
+    echo "usage: sonora-install [--yes] [--allow-removable] [--select-only] [--list] [--target DISK]" >&2
+    exit 2
+}
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --yes) YES=1 ;;
+        --allow-removable) REMOVABLE=1 ;;
+        --select-only) SELECT_ONLY=1 ;;
+        --list) LIST=1 ;;
+        --target) [ $# -ge 2 ] || usage; TARGET=$2; shift ;;
+        *) usage ;;
+    esac
+    shift
+done
+
+# Device nodes may be missing in a container; the sysfs dev number is enough.
+wait_node() {
+    n=${1##*/}
+    i=0
+    while [ ! -b "$1" ] && [ $i -lt 20 ]; do
+        if [ -r "/sys/class/block/$n/dev" ]; then
+            IFS=: read -r maj min <"/sys/class/block/$n/dev"
+            mknod "$1" b "$maj" "$min" 2>/dev/null
+        fi
+        [ -b "$1" ] || sleep 0.2
+        i=$((i + 1))
+    done
+    [ -b "$1" ]
+}
+
+part_name() {
+    case $1 in
+        *[0-9]) echo "${1}p$2" ;;
+        *) echo "$1$2" ;;
+    esac
+}
+
+# The disk the stick booted from, so it can never be the target.
+boot_disk() {
+    src=$(findmnt -n -o SOURCE "$MEDIUM" 2>/dev/null) || return 0
+    [ -n "$src" ] || return 0
+    pk=$(lsblk -n -o PKNAME "$src" 2>/dev/null | head -n 1)
+    if [ -n "$pk" ]; then echo "/dev/$pk"; else echo "$src"; fi
+}
+
+# Internal, fixed, non-USB disks, one per line.
+candidates() {
+    bd=$(boot_disk)
+    for d in "$SYSBLOCK"/*; do
+        n=${d##*/}
+        case $n in loop* | ram* | sr* | zram* | fd* | dm-* | md*) continue ;; esac
+        [ "$(cat "$d/removable" 2>/dev/null)" = 0 ] || continue
+        case $(readlink -f "$d/device" 2>/dev/null) in */usb*) continue ;; esac
+        [ "/dev/$n" = "$bd" ] && continue
+        echo "/dev/$n"
+    done
+}
+
+list_candidates() {
+    for d in $(candidates); do
+        n=${d##*/}
+        sectors=$(cat "$SYSBLOCK/$n/size" 2>/dev/null || echo 0)
+        model=$(tr -s ' ' <"$SYSBLOCK/$n/device/model" 2>/dev/null | sed 's/ *$//')
+        printf '%s	%s	%s
+' "$d" $((sectors * 512)) "${model:-unknown}"
+    done
+}
+
+is_usb_or_removable() {
+    n=${1##*/}
+    [ "$(cat "$SYSBLOCK/$n/removable" 2>/dev/null)" = 1 ] && return 0
+    case $(readlink -f "$SYSBLOCK/$n/device" 2>/dev/null) in */usb*) return 0 ;; esac
+    return 1
+}
+
+# Refuses anything but a regular file or a loop device when a test hook is set.
+hook_guard() {
+    [ -n "${SONORA_SYSBLOCK:-}${SONORA_ALLOW_FILE:-}${SONORA_IN_TARGET:-}" ] || return 0
+    [ -f "$1" ] && return 0
+    case $1 in /dev/loop[0-9]*) [ -b "$1" ] && return 0 ;; esac
+    fail 3 "test hooks are set; refusing to write $1 (not a regular file or loop device)"
+}
+
+select_target() {
+    step 1 select
+    if [ -z "$TARGET" ]; then
+        list=$(candidates)
+        count=$(printf '%s\n' "$list" | grep -c .)
+        if [ "$count" -ne 1 ]; then
+            echo "candidates:" >&2
+            printf '%s\n' "$list" >&2
+            fail 3 "name the disk with --target ($count internal candidates)"
+        fi
+        TARGET=$list
+        if [ $SELECT_ONLY -eq 1 ]; then echo "$TARGET"; exit 0; fi
+    else
+        hook_guard "$TARGET"
+        if [ $SELECT_ONLY -eq 1 ]; then echo "$TARGET"; exit 0; fi
+    fi
+    if [ -f "$TARGET" ] && [ "${SONORA_ALLOW_FILE:-0}" = 1 ]; then
+        :
+    elif [ ! -b "$TARGET" ]; then
+        fail 3 "$TARGET is not a block device"
+    elif [ "$TARGET" = "$(boot_disk)" ]; then
+        fail 3 "$TARGET is the disk this system booted from"
+    elif is_usb_or_removable "$TARGET" && [ $REMOVABLE -ne 1 ]; then
+        fail 3 "$TARGET is removable or USB; pass --allow-removable"
+    fi
+    if [ $YES -ne 1 ]; then
+        echo "This ERASES $TARGET. Type its name to continue:" >&2
+        read -r answer
+        [ "$answer" = "$TARGET" ] || fail 3 "confirmation did not match"
+    fi
+}
+
+attach() {
+    if [ -f "$TARGET" ]; then
+        LOOP=$(losetup -f --show -P "$TARGET") || fail 4 "cannot attach $TARGET"
+        DEV=$LOOP
+    else
+        DEV=$TARGET
+    fi
+    case ${SONORA_EFI:-} in
+        1) EFI=1 ;;
+        0) EFI=0 ;;
+        *) [ -d /sys/firmware/efi ] && EFI=1 ;;
+    esac
+}
+
+partition() {
+    step 2 partition
+    hook_guard "$TARGET"
+    attach
+    # The BIOS boot partition exists only where it is needed.
+    if [ $EFI -eq 1 ]; then
+        layout="size=${ESP_MIB}MiB, type=U, name=ESP
+type=L, name=sonora-root"
+        espn=1
+        rootn=2
+    else
+        layout="size=1MiB, type=21686148-6449-6E6F-744E-656564454649, name=bios
+size=${ESP_MIB}MiB, type=U, name=ESP
+type=L, name=sonora-root"
+        espn=2
+        rootn=3
+    fi
+    wipefs -a "$DEV" >/dev/null 2>&1
+    printf 'label: gpt\n%s\n' "$layout" | sfdisk --quiet "$DEV" ||
+        fail 4 "sfdisk failed on $DEV"
+    partprobe "$DEV" 2>/dev/null
+    ESPP=$(part_name "$DEV" $espn)
+    ROOTP=$(part_name "$DEV" $rootn)
+    wait_node "$ESPP" || fail 4 "partitions did not appear"
+    wait_node "$ROOTP" || fail 4 "partitions did not appear"
+}
+
+format() {
+    step 3 format
+    ROOT_UUID=$(cat /proc/sys/kernel/random/uuid)
+    volid=$(tr -d - </proc/sys/kernel/random/uuid | cut -c1-8 | tr a-f A-F)
+    mkfs.ext4 -q -F -L sonora-root -U "$ROOT_UUID" "$ROOTP" || fail 5 "mkfs.ext4 failed"
+    mkfs.vfat -F 32 -n SONORAEFI -i "$volid" "$ESPP" >/dev/null || fail 5 "mkfs.vfat failed"
+    ESP_UUID=$(printf '%s' "$volid" | sed 's/^\(....\)\(....\)$/\1-\2/')
+}
+
+copy() {
+    step 4 copy
+    [ -r "$SQUASHFS" ] || fail 6 "$SQUASHFS not readable"
+    WORK=$(mktemp -d /tmp/sonora-install.XXXXXX) || fail 6 "no temp directory"
+    mkdir "$WORK/root"
+    mount -o noatime "$ROOTP" "$WORK/root" || fail 6 "cannot mount $ROOTP"
+    unsquashfs -f -n -d "$WORK/root" "$SQUASHFS" >/dev/null || fail 6 "unsquashfs failed"
+    mkdir -p "$WORK/root/boot/efi"
+    mount "$ESPP" "$WORK/root/boot/efi" || fail 6 "cannot mount the ESP"
+    carry_sessions
+}
+
+# SHA-256 of every regular file under $1, paths relative to it.
+manifest() {
+    (cd "$1" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum)
+}
+
+# The checksums are taken from the stick before the copy and checked against
+# the installed copy at the end, so a copy that went wrong cannot vouch for
+# itself. Nothing here writes below $SESSIONS.
+carry_sessions() {
+    : >"$WORK/sessions.sha"
+    if [ ! -d "$SESSIONS" ]; then
+        echo "INFO no sessions on this system to carry over"
+        return 0
+    fi
+    manifest "$SESSIONS" >"$WORK/sessions.sha" || fail 11 "cannot read the sessions in $SESSIONS"
+    dest=$WORK/root$SESSIONS_DEST
+    mkdir -p "$dest" || fail 11 "cannot create $SESSIONS_DEST on the target"
+    cp -a "$SESSIONS/." "$dest/" || fail 11 "copying the sessions failed (target full?)"
+    chown --reference="$SESSIONS" "$dest" 2>/dev/null
+    echo "INFO carried over $(grep -c . "$WORK/sessions.sha") session files"
+}
+
+verify_sessions() {
+    [ -s "$WORK/sessions.sha" ] || return 0
+    dest=$WORK/root$SESSIONS_DEST
+    sync
+    if ! (cd "$dest" && sha256sum -c --quiet "$WORK/sessions.sha" >"$WORK/sessions.err" 2>&1); then
+        head -n 3 "$WORK/sessions.err" >&2
+        fail 11 "session files on the target do not match the stick (was a take recording during the install?)"
+    fi
+    have=$(manifest "$dest" | grep -c .)
+    want=$(grep -c . "$WORK/sessions.sha")
+    [ "$have" = "$want" ] || fail 11 "target holds $have session files, the stick had $want"
+}
+
+configure() {
+    step 5 configure
+    r=$WORK/root
+    cat >"$r/etc/fstab" <<FSTAB || fail 7 "cannot write fstab"
+UUID=$ROOT_UUID / ext4 noatime,errors=remount-ro 0 1
+UUID=$ESP_UUID /boot/efi vfat umask=0077 0 2
+FSTAB
+    # An empty id is filled in by systemd at first boot, so clones differ.
+    : >"$r/etc/machine-id"
+    echo sonora >"$r/etc/hostname"
+    rm -f "$r/var/lib/dbus/machine-id"
+    mkdir -p "$r/etc/default/grub.d" "$r/var/lib/sonora"
+    cat >"$r/etc/default/grub.d/90-sonora.cfg" <<GRUBCFG
+GRUB_CMDLINE_LINUX_DEFAULT="$CMDLINE"
+GRUB_DISABLE_OS_PROBER=true
+GRUB_TIMEOUT=2
+GRUBCFG
+    if [ -z "${SONORA_IN_TARGET:-}" ]; then
+        for d in dev dev/pts proc sys run; do
+            mount --bind "/$d" "$r/$d" || fail 7 "cannot bind /$d"
+        done
+    fi
+    for p in $LIVE_PKGS; do
+        if in_target dpkg -s "$p" >/dev/null 2>&1; then
+            in_target dpkg --purge --force-depends "$p" >/dev/null 2>&1 ||
+                fail 7 "cannot remove $p"
+        fi
+    done
+    in_target update-initramfs -u -k all >/dev/null || fail 7 "update-initramfs failed"
+}
+
+bootloader() {
+    step 6 bootloader
+    if [ $EFI -eq 1 ]; then
+        in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+            --bootloader-id=sonora --no-floppy || fail 8 "grub-install (NVRAM entry) failed"
+        # Firmware that forgets its NVRAM still finds the removable path.
+        in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+            --removable --no-floppy || fail 8 "grub-install --removable failed"
+        # grub-install already wrote the entry; this only reports it.
+        in_target efibootmgr >/dev/null 2>&1 ||
+            echo "sonora-install: efibootmgr unavailable, removable path only" >&2
+    else
+        in_target grub-install --target=i386-pc --no-floppy "$DEV" ||
+            fail 8 "grub-install (BIOS) failed"
+    fi
+    in_target update-grub >/dev/null 2>&1 || fail 8 "update-grub failed"
+}
+
+check_fail() {
+    echo "sonora-install: self-check failed: $1" >&2
+    exit 9
+}
+
+selfcheck() {
+    step 7 selfcheck
+    r=$WORK/root
+    cfg=$r/boot/grub/grub.cfg
+    [ -s "$cfg" ] || check_fail "no grub.cfg"
+    first=$(grep -m 1 '^[[:space:]]*linux[[:space:]]' "$cfg")
+    case $first in
+        *rt-amd64*) ;;
+        *) check_fail "default boot entry is not the rt kernel: $first" ;;
+    esac
+    ls "$r"/boot/initrd.img-*rt-amd64 >/dev/null 2>&1 || check_fail "no initramfs for the rt kernel"
+    sed -n 's/^UUID=\([^ ]*\) .*/\1/p' "$r/etc/fstab" >"$WORK/uuids"
+    while read -r u; do
+        found=0
+        for p in "$ROOTP" "$ESPP"; do
+            [ "$(blkid -s UUID -o value "$p")" = "$u" ] && found=1
+        done
+        [ $found -eq 1 ] || check_fail "fstab UUID $u does not resolve"
+    done <"$WORK/uuids"
+    [ "$(grep -c . "$WORK/uuids")" -eq 2 ] || check_fail "fstab does not name both partitions"
+    if [ $EFI -eq 1 ]; then
+        ls "$r"/boot/efi/EFI/sonora/*.efi >/dev/null 2>&1 || check_fail "no loader under EFI/sonora"
+        [ -s "$r/boot/efi/EFI/BOOT/BOOTX64.EFI" ] || check_fail "no removable-path loader"
+    fi
+    verify_sessions
+    # Last, so the marker means every check above passed.
+    date -u +%Y-%m-%dT%H:%M:%SZ >"$r/var/lib/sonora/installed" || check_fail "cannot write the marker"
+    sync
+}
+
+[ "$(id -u)" = 0 ] || fail 10 "must run as root"
+for t in sfdisk wipefs mkfs.ext4 mkfs.vfat unsquashfs mount blkid findmnt lsblk losetup; do
+    command -v "$t" >/dev/null 2>&1 || fail 10 "missing tool: $t"
+done
+
+if [ $LIST -eq 1 ]; then list_candidates; exit 0; fi
+select_target
+partition
+format
+copy
+configure
+bootloader
+selfcheck
+echo "sonora-install: installed to $TARGET"

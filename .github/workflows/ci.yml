@@ -104,6 +104,12 @@ jobs:
       - name: Quit during a failed take
         run: docker exec build python3 tools/failed-take-quit.py --engine build/sonora-engine
 
+      # system.hardening.crash_recovery, software half: SIGKILL the engine
+      # mid-take, reopen the folder, check every take is repaired and loses
+      # nothing already on disk. Fake backend, no hardware.
+      - name: Kill mid-take, reopen the session
+        run: docker exec build python3 tools/crash-recovery-kill.py --engine build/sonora-engine
+
   portable:
     name: Portable modules under MSVC
     needs: changes
@@ -120,15 +126,12 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -DSONORA_PLATFORM=neutral
 
+      # sonora_portable (sonora_define_portable_target, plugins/native/
+      # CMakeLists.txt): every library and executable under common/json,
+      # common/dsp and plugins/native, so a new test target or processor is
+      # built here with no edit to this file.
       - name: Build
-        run: >-
-          cmake --build build --config Release --parallel
-          --target sonora_dsp sonora_native_sdk sonora_dsp_measure sonora-dsp-measure
-          test_json test_native_sdk test_measure_time_bars
-          test_dsp_filters test_dsp_convolver test_dsp_oversampling test_dsp_loudness test_dsp_meter test_dsp_dynamics
-          test_dsp_limiter test_dsp_fdn test_dsp_triode test_dsp_triode_generic
-          test_dsp_opto test_dsp_fet test_dsp_noise test_dsp_transformer test_dsp_transformer_generic
-          test_dsp_tape test_dsp_tape_generic test_dsp_convolver_generic test_dsp_neural test_native_ampcab
+        run: cmake --build build --config Release --parallel --target sonora_portable
 
       - name: Test
         env:
@@ -140,6 +143,12 @@ jobs:
       - name: tools/write-usb.ps1 against fake disks
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-write-usb.ps1
+
+      # tools/umc-wsl.ps1 against fake usbipd, wsl and winget on PATH; nothing
+      # elevated, no USB.
+      - name: tools/umc-wsl.ps1 against fake usbipd and wsl
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-umc-wsl.ps1
 
   ui:
     name: Qt interface build and headless tests
@@ -590,10 +599,13 @@ jobs:
       - name: Install shellcheck and dbus-x11
         run: sudo apt-get update && sudo apt-get install -y shellcheck dbus-x11
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest
+        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty
 
       - name: Read-only root, capped RAM writes
         run: tools/test-ro-root.sh
+
+      - name: Secure Boot chain, static
+        run: tools/test-secure-boot.sh
 
       - name: Merge gate decisions, against a fake gh
         run: tools/test-merge-checks.sh
@@ -604,8 +616,14 @@ jobs:
       - name: RT limits agree across limits.d, unit and hook
         run: tools/test-rt-limits.sh
 
+      - name: umc-measure.sh logic, against fake arecord/pw-jack/engine
+        run: tools/test-umc-measure.sh
+
       - name: Image config (backports pins, RT kernel, tty1 session, no VT gettys)
         run: tools/test-image-config.sh
+
+      - name: Installer text screen (tty2) against a stub installer
+        run: tools/test-installer-tty.sh
 
       # labwc 0.8.3 headless: Ctrl+Alt+Fn reaches the UI (srvrkeys:none, through
       # a nested labwc's own keymap); an X11 editor's title bar and close button.

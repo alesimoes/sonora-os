@@ -196,6 +196,10 @@
       "verified": false,
       "comment": "Name Track, Shift-Return: names the selected track. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md (ADR-0023, update of 2026-11-02)."
     },
+    "numpad_enter": {
+      "command": "transport.play",
+      "comment": "Play, Enter on the numeric keypad (Global Commands; brain/research/protools-logic-key-bindings.md section 2.1)."
+    },
     "shift+n": {
       "command": "region.rename",
       "verified": false,

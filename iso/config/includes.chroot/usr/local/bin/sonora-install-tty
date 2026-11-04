@@ -1,0 +1,157 @@
+#!/bin/sh
+# sonora-install-tty: the text screen for sonora-install, run on tty2 by
+# sonora-installer.service when the stick is booted with sonora.install
+# (ADR-0032). It holds no install logic: it lists the disks the script offers,
+# asks the operator to confirm the erase, runs `sonora-install --yes --target`
+# and turns "STEP n/7 name" lines and the exit code into what is on screen.
+#
+# The later Qt page in sonora-ui replaces this file and nothing else. What it
+# may rely on, all of it printed or returned by sonora-install itself:
+#   sonora-install --list               DEVICE<TAB>BYTES<TAB>MODEL per disk
+#   sonora-install --yes --target DEV   stdout "STEP n/7 name" and "INFO ..."
+#                                       lines; exit code as in its header; the
+#                                       last stderr line names a failure
+# A page that asks for the typed device name before passing --yes behaves the
+# same as this one. Nothing here is a second opinion about which disk is safe.
+#
+# SONORA_INSTALL, SONORA_REBOOT and SONORA_INSTALL_LOG exist so the test can
+# drive this with a stub and no disk; on the stick none is set.
+set -u
+
+INSTALL=${SONORA_INSTALL:-/usr/local/bin/sonora-install}
+REBOOT=${SONORA_REBOOT:-systemctl reboot}
+LOG=${SONORA_INSTALL_LOG:-/run/sonora-install.log}
+STEPS=7
+
+say() { printf '%s\n' "$*"; }
+
+bar() { # n total
+    i=0
+    out=
+    while [ $i -lt "$2" ]; do
+        if [ $i -lt "$1" ]; then out="$out#"; else out="$out-"; fi
+        i=$((i + 1))
+    done
+    printf '%s' "$out"
+}
+
+human() { # bytes -> "238 GB"
+    awk -v b="$1" 'BEGIN { printf "%.0f GB", b / 1000000000 }'
+}
+
+reason() { # exit code
+    case $1 in
+        3) echo "The disk was refused." ;;
+        4) echo "The disk could not be partitioned." ;;
+        5) echo "The partitions could not be formatted." ;;
+        6) echo "Copying the system failed." ;;
+        7) echo "The system could not be configured." ;;
+        8) echo "The boot loader could not be installed." ;;
+        9) echo "The finished install failed its own check; it will not boot reliably." ;;
+        10) echo "The installer could not start (not root, or a tool is missing)." ;;
+        11) echo "Your sessions did not copy cleanly. The ones on the stick are untouched." ;;
+        *) echo "The installer stopped with code $1." ;;
+    esac
+}
+
+back_to_session() {
+    # tty1 belongs to the engine; the live session is still running there.
+    chvt 1 2>/dev/null
+    exit 0
+}
+
+pick_disk() {
+    list=$("$INSTALL" --list 2>/dev/null)
+    if [ -z "$list" ]; then
+        say "No internal disk was found. The installer never erases the stick"
+        say "it is running from, and USB disks are not offered."
+        say "Press Enter to go back to the recording session."
+        read -r _
+        back_to_session
+    fi
+    say "Disks that can be installed to:"
+    n=0
+    printf '%s\n' "$list" | while IFS="$(printf '\t')" read -r dev bytes model; do
+        n=$((n + 1))
+        say "  $n) $dev  $(human "$bytes")  $model"
+    done
+    count=$(printf '%s\n' "$list" | grep -c .)
+    while :; do
+        printf 'Number of the disk, or q for the recording session: '
+        read -r pick || back_to_session
+        case $pick in
+            q | Q) back_to_session ;;
+            '' | *[!0-9]*) continue ;;
+        esac
+        [ "$pick" -ge 1 ] && [ "$pick" -le "$count" ] && break
+    done
+    row=$(printf '%s\n' "$list" | sed -n "${pick}p")
+    DISK=$(printf '%s' "$row" | cut -f1)
+    DISK_DESC="$DISK  $(human "$(printf '%s' "$row" | cut -f2)")  $(printf '%s' "$row" | cut -f3)"
+}
+
+confirm() {
+    say ""
+    say "  ERASE EVERYTHING on: $DISK_DESC"
+    say ""
+    say "Your sessions on this stick are copied to the new system; the stick's"
+    say "own copy is not touched."
+    printf 'Type the disk name (%s) to erase it and install, anything else cancels: ' "$DISK"
+    read -r typed || return 1
+    [ "$typed" = "$DISK" ]
+}
+
+run_install() {
+    fifo=$(mktemp -u /tmp/sonora-install-fifo.XXXXXX) || return 10
+    mkfifo "$fifo" || return 10
+    : >"$LOG"
+    "$INSTALL" --yes --target "$DISK" >"$fifo" 2>&1 &
+    pid=$!
+    while IFS= read -r line; do
+        printf '%s\n' "$line" >>"$LOG"
+        case $line in
+            "STEP "*)
+                n=${line#STEP }
+                n=${n%%/*}
+                name=${line#* }
+                name=${name#* }
+                say "[$(bar "$n" $STEPS)] STEP $n/$STEPS  $name"
+                ;;
+            INFO*) say "    ${line#INFO }" ;;
+        esac
+    done <"$fifo"
+    wait "$pid"
+    rc=$?
+    rm -f "$fifo"
+    return "$rc"
+}
+
+say "SonoraOS installer"
+say "=================="
+while :; do
+    pick_disk
+    if ! confirm; then
+        say "Cancelled. Nothing was written."
+        say ""
+        continue
+    fi
+    run_install
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        say ""
+        say "INSTALLED to $DISK. Every check passed."
+        say "Remove the USB stick, then press Enter to restart."
+        read -r _
+        # shellcheck disable=SC2086 # a command with arguments, split on purpose
+        $REBOOT
+        exit 0
+    fi
+    say ""
+    say "INSTALL FAILED (code $rc): $(reason "$rc")"
+    last=$(grep -v '^STEP \|^INFO ' "$LOG" | tail -n 1)
+    [ -z "$last" ] || say "  $last"
+    say "  Full output: $LOG"
+    say "Press Enter to start over, or q for the recording session."
+    read -r again || back_to_session
+    case $again in q | Q) back_to_session ;; esac
+done
