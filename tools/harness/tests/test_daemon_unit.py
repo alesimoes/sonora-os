@@ -3,9 +3,11 @@ import glob
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 import support  # noqa: F401  (sets sys.path)
 from harness import launcher, scheduler, status
@@ -15,7 +17,7 @@ NOW = 1_000_000.0
 
 
 def mkstore(tmp):
-    return Store(os.path.join(tmp, "s.db"), clock=lambda: NOW)
+    return Store(os.path.join(tmp, "s.json"), clock=lambda: NOW)
 
 
 def plan(store, runs=(), cfg=None, **kw):
@@ -77,24 +79,212 @@ class StoreTests(Base):
         self.assertEqual(self.s.reserve("protocol", "x", 50), 51)
         self.assertEqual(self.s.reserve("adr", "z", 60), 61)
 
-    def test_two_writers_one_database(self):
-        other = Store(self.s.path)
+    def test_threads_share_one_store(self):
         errs = []
 
-        def w(store, tag):
+        def w(tag):
             try:
-                for i in range(50):
-                    store.event(tag, "k", str(i))
-                    store.next_counter("c")
+                for i in range(30):
+                    self.s.event(tag, "k", str(i))
+                    self.s.next_counter("c")
             except Exception as e:  # pragma: no cover
                 errs.append(e)
-        ts = [threading.Thread(target=w, args=(x, t))
-              for x, t in ((self.s, "a"), (other, "b"))]
+        ts = [threading.Thread(target=w, args=(t,)) for t in ("a", "b")]
         [t.start() for t in ts]
         [t.join() for t in ts]
-        other.close()
         self.assertEqual(errs, [])
-        self.assertEqual(self.s.get_meta("c"), "100")
+        self.assertEqual(self.s.get_meta("c"), "60")
+        self.assertEqual(len(self.s.events(limit=1000)), 60)
+
+    def test_unique_feature_pr(self):
+        self.s.add_feature("f1", "daw")
+        self.s.add_feature("f2", "daw")
+        self.s.set_feature("f1", pr=7)
+        self.s.set_feature("f1", pr=7)
+        with self.assertRaises(StateError):
+            self.s.set_feature("f2", pr=7)
+        self.assertIsNone(self.s.get_feature("f2")["pr"])
+
+    def test_tx_rolls_back_on_error(self):
+        self.s.add_task("a", "daw", "rt-engineer")
+        with self.assertRaises(RuntimeError):
+            with self.s.tx():
+                self.s.set_task("a", note="x")
+                raise RuntimeError
+        self.assertEqual(self.s.get_task("a")["note"], "")
+        self.assertEqual(mkstore(self.tmp).get_task("a")["note"], "")
+
+    def test_state_survives_reopen(self):
+        self.s.add_task("a", "daw", "rt-engineer", files=["x/**"])
+        self.s.add_run(id="r1", task_id="a", role="engineer", name="n",
+                       started=NOW)
+        self.s.reserve("adr", "a", 10)
+        self.s.set_meta("k", 5)
+        t = mkstore(self.tmp)
+        self.assertEqual(t.get_task("a")["files"], ["x/**"])
+        self.assertEqual([r["id"] for r in t.active_runs()], ["r1"])
+        self.assertEqual(t.reserve("adr", "a", 10), 11)
+        self.assertEqual(t.get_meta("k"), "5")
+        self.assertIsNotNone(t.get_feature("a"))
+
+    def test_heartbeat_is_saved_by_flush(self):
+        self.s.add_task("a", "daw", "rt-engineer")
+        self.s.add_run(id="r1", task_id="a", role="engineer", name="n",
+                       started=NOW, last_beat=NOW)
+        self.s.set_run("r1", last_beat=NOW + 5)
+        self.assertEqual(mkstore(self.tmp).get_run("r1")["last_beat"], NOW)
+        self.s.flush()
+        self.assertEqual(mkstore(self.tmp).get_run("r1")["last_beat"],
+                         NOW + 5)
+
+
+class StorePersistenceTests(Base):
+    def state(self):
+        with open(self.s.path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_save_failure_keeps_old_file_and_retries(self):
+        self.s.add_task("a", "daw", "rt-engineer")
+        before = self.state()
+        with mock.patch("harness.store.os.replace",
+                        side_effect=OSError("disk gone")):
+            with self.assertRaises(OSError):
+                self.s.set_task("a", note="new")
+        self.assertEqual(self.state(), before)
+        self.assertEqual([n for n in os.listdir(self.tmp)
+                          if n.endswith(".tmp")], [])
+        self.assertEqual(mkstore(self.tmp).get_task("a")["note"], "")
+        self.s.flush()   # dirty stayed set; the retry lands
+        self.assertEqual(mkstore(self.tmp).get_task("a")["note"], "new")
+
+    def test_save_failure_inside_tx_commit(self):
+        self.s.add_task("a", "daw", "rt-engineer")
+        with mock.patch("harness.store.os.replace",
+                        side_effect=OSError("disk gone")):
+            with self.assertRaises(OSError):
+                self.s.advance("a", "building")
+        self.assertEqual(mkstore(self.tmp).get_task("a")["state"], "queued")
+
+    def test_future_schema_refused(self):
+        with open(self.s.path, "w") as f:
+            json.dump({"schema": 99}, f)
+        with self.assertRaises(StateError):
+            mkstore(self.tmp)
+
+    def test_run_whose_task_is_missing_is_quarantined(self):
+        self.s.add_task("a", "daw", "rt-engineer")
+        self.s.add_run(id="r1", task_id="a", role="engineer", name="n",
+                       started=NOW)
+        self.s.add_run(id="r2", task_id="a", role="engineer", name="m",
+                       started=NOW)
+        doc = self.state()
+        del doc["tasks"]["a"]
+        with open(self.s.path, "w") as f:
+            json.dump(doc, f)
+        t = mkstore(self.tmp)   # must not raise
+        self.assertEqual(t.active_runs(), [])
+        self.assertIsNone(t.get_task("a"))
+        with open(os.path.join(self.tmp, "s.quarantine.json")) as f:
+            q = json.load(f)
+        self.assertEqual({(x["table"], x["key"]) for x in q},
+                         {("runs", "r1"), ("runs", "r2")})
+        self.assertTrue(t.events(kind="quarantined"))
+        self.assertEqual(self.state()["runs"], {})   # cleaned file saved
+
+    def test_other_violations_are_quarantined(self):
+        self.s.add_task("a", "daw", "rt-engineer")
+        self.s.add_task("b", "daw", "rt-engineer")
+        self.s.add_task("c", "daw", "rt-engineer")
+        doc = self.state()
+        doc["tasks"]["a"]["state"] = "bogus"
+        doc["tasks"]["b"]["feature_id"] = "nope"
+        doc["features"]["a"]["pr"] = 3
+        doc["features"]["b"]["pr"] = 3
+        doc["reservations"] = [{"kind": "adr", "number": 5, "task_id": "c"},
+                               {"kind": "adr", "number": 5, "task_id": "d"},
+                               {"kind": "zzz", "number": 1}]
+        with open(self.s.path, "w") as f:
+            json.dump(doc, f)
+        t = mkstore(self.tmp)
+        self.assertEqual([x["id"] for x in t.tasks()], ["c"])
+        self.assertEqual(len(t.reservations()), 1)
+        with open(os.path.join(self.tmp, "s.quarantine.json")) as f:
+            self.assertGreaterEqual(len(json.load(f)), 4)
+
+    def test_migration_from_sqlite(self):
+        db = os.path.join(self.tmp, "old.db")
+        c = sqlite3.connect(db)
+        c.executescript("""
+        CREATE TABLE features(id TEXT PRIMARY KEY, plan_path TEXT, branch TEXT,
+          track TEXT, state TEXT DEFAULT 'planning', pr INTEGER, adr_no INTEGER,
+          protocol_no INTEGER, partial INTEGER DEFAULT 0, created REAL,
+          updated REAL);
+        CREATE TABLE tasks(id TEXT PRIMARY KEY, kind TEXT DEFAULT 'work',
+          backlog_id TEXT, feature_id TEXT, track TEXT, agent TEXT, state TEXT,
+          branch TEXT, worktree TEXT, pr INTEGER, adr_no INTEGER,
+          protocol_no INTEGER, attempts INTEGER DEFAULT 0,
+          bounces INTEGER DEFAULT 0, depends_on TEXT DEFAULT '[]',
+          files TEXT DEFAULT '[]', brief TEXT DEFAULT '', eng_name TEXT,
+          cur_name TEXT, wants TEXT DEFAULT '', not_before REAL DEFAULT 0,
+          priority INTEGER DEFAULT 0, created REAL, updated REAL,
+          note TEXT DEFAULT '');
+        CREATE TABLE runs(id TEXT PRIMARY KEY, task_id TEXT, role TEXT,
+          name TEXT, state TEXT, pid INTEGER, started REAL, last_beat REAL,
+          ended REAL, exit INTEGER, result_path TEXT, stream_path TEXT,
+          worktree TEXT, session_id TEXT, suspect INTEGER DEFAULT 0,
+          outcome TEXT);
+        CREATE TABLE events(ts REAL, task_id TEXT, kind TEXT, detail TEXT);
+        CREATE TABLE reservations(kind TEXT, number INTEGER, task_id TEXT,
+          PRIMARY KEY(kind, number));
+        CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO features(id, track, pr, created) VALUES('f','daw',9,1);
+        INSERT INTO tasks(id, feature_id, track, state, depends_on, files,
+          created) VALUES('t','f','daw','qa','["x"]','["a/**"]',1);
+        INSERT INTO tasks(id, feature_id, track, state, created)
+          VALUES('orphan','gone','daw','qa',2);
+        INSERT INTO runs(id, task_id, started) VALUES('r','t',5);
+        INSERT INTO reservations VALUES('adr', 60, 't');
+        INSERT INTO meta VALUES('run','12');
+        INSERT INTO events VALUES(1.0, 't', 'old', 'ev');
+        """)
+        c.commit()
+        c.close()
+        t = Store(os.path.join(self.tmp, "old.json"), clock=lambda: NOW)
+        self.assertEqual(t.get_task("t")["depends_on"], ["x"])
+        self.assertEqual(t.get_task("t")["files"], ["a/**"])
+        self.assertEqual(t.get_feature("f")["pr"], 9)
+        self.assertEqual(t.get_task("t")["attempts"], 0)
+        self.assertEqual(t.next_counter("run"), 13)
+        self.assertEqual(t.reserve("adr", "new", 10), 61)
+        self.assertEqual(len(t.runs_of("t")), 1)
+        self.assertIsNone(t.get_task("orphan"))   # quarantined
+        self.assertTrue(os.path.exists(db + ".migrated"))
+        self.assertFalse(os.path.exists(db))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "old.json")))
+        self.assertTrue(t.events(kind="old"))
+        # a second open reads the JSON and does not migrate again
+        self.assertEqual(Store(t.path).get_task("t")["state"], "qa")
+
+    def test_event_rotation(self):
+        with mock.patch("harness.store.EVENT_ROTATE_BYTES", 400):
+            for i in range(40):
+                self.s.event("a", "k", f"event number {i}")
+        names = sorted(n for n in os.listdir(self.tmp)
+                       if n.startswith("events"))
+        self.assertGreater(len(names), 2)
+        self.assertIn("events.1.jsonl", names)
+        evs = self.s.events(limit=1000)
+        self.assertEqual([e["detail"] for e in evs],
+                         [f"event number {i}" for i in range(39, -1, -1)])
+        self.assertEqual(len(self.s.events(limit=5)), 5)
+        self.assertEqual(self.s.events(limit=1)[0]["detail"],
+                         "event number 39")
+
+    def test_torn_last_event_line_is_skipped(self):
+        self.s.event("a", "k", "one")
+        with open(self.s.events_path, "a") as f:
+            f.write('{"ts": 1, "task')
+        self.assertEqual([e["detail"] for e in self.s.events()], ["one"])
 
 
 class SchedulerTests(Base):

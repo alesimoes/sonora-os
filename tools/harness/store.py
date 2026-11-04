@@ -1,11 +1,31 @@
 """State store of the orchestrator (ADR-0047 sections 2 and 4a).
 
-One SQLite file in WAL mode. Every mutation runs in BEGIN IMMEDIATE, so the
-daemon and a manual CLI call cannot interleave. Task state changes go through
-advance() only; no role writes state.
+One JSON document, `state.json`, held in memory by the daemon (the only
+writer) and replaced atomically on disk: write a temp file in the same
+directory, flush and fsync it, os.replace it over the old one, fsync the
+directory where the platform allows. A crash therefore leaves the previous
+complete file or the new complete file, never half of one.
+
+Saving policy: every mutating call that is not inside tx() saves before it
+returns; tx() saves once when its outermost block exits cleanly and restores
+the in-memory state when the block raises. The one exception is a run's
+heartbeat (`last_beat`, `suspect`): it only marks the document dirty, because
+adopt_runs() resets both after a restart and an fsync per run per tick buys
+nothing. The tick ends with flush(), which saves whatever is dirty. A failed
+save raises, leaves the old file untouched and keeps the document dirty, so
+the next save retries.
+
+Events go to `events.jsonl` (append-only, one JSON object per line, flushed,
+rotated to `events.<n>.jsonl` at about 5 MB). Rows that fail validation on
+load go to `state.quarantine.json` instead of stopping the daemon.
+
+Task state changes go through advance() only; no role writes state.
 """
 import json
+import os
+import pickle
 import sqlite3
+import tempfile
 import threading
 import time
 
@@ -28,140 +48,388 @@ STATES = frozenset(TRANSITIONS)
 AGENT_STATES = ("queued", "building", "bugfix", "qa", "integrating", "ci_fix")
 OPEN_PR_STATES = ("pr_open", "ci_fix")
 NUMBER_KINDS = ("adr", "protocol", "format", "window")
-# Columns added after the first schema; applied to an existing database too.
-MIGRATIONS = (
-    ("tasks", "integrated", "INTEGER DEFAULT 0"),
-    ("tasks", "fix_kind", "TEXT"),
-    ("tasks", "event", "TEXT"),
-    ("tasks", "start_from", "TEXT"),
-    ("features", "fixes", "INTEGER DEFAULT 0"),
-    ("features", "job_reds", "TEXT DEFAULT '{}'"),
-)
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS features(
-  id TEXT PRIMARY KEY, plan_path TEXT, branch TEXT, track TEXT,
-  state TEXT DEFAULT 'planning', pr INTEGER, adr_no INTEGER,
-  protocol_no INTEGER, partial INTEGER DEFAULT 0, created REAL, updated REAL);
-CREATE UNIQUE INDEX IF NOT EXISTS features_pr ON features(pr)
-  WHERE pr IS NOT NULL;
-CREATE TABLE IF NOT EXISTS tasks(
-  id TEXT PRIMARY KEY, kind TEXT DEFAULT 'work', backlog_id TEXT,
-  feature_id TEXT, track TEXT, agent TEXT, state TEXT, branch TEXT,
-  worktree TEXT, pr INTEGER, adr_no INTEGER, protocol_no INTEGER,
-  attempts INTEGER DEFAULT 0, bounces INTEGER DEFAULT 0,
-  depends_on TEXT DEFAULT '[]', files TEXT DEFAULT '[]', brief TEXT DEFAULT '',
-  eng_name TEXT, cur_name TEXT, wants TEXT DEFAULT '', not_before REAL DEFAULT 0, priority INTEGER
-  DEFAULT 0, created REAL, updated REAL, note TEXT DEFAULT '');
-CREATE TABLE IF NOT EXISTS runs(
-  id TEXT PRIMARY KEY, task_id TEXT, role TEXT, name TEXT, state TEXT,
-  pid INTEGER, started REAL, last_beat REAL, ended REAL, exit INTEGER,
-  result_path TEXT, stream_path TEXT, worktree TEXT, session_id TEXT,
-  suspect INTEGER DEFAULT 0, outcome TEXT);
-CREATE TABLE IF NOT EXISTS events(
-  ts REAL, task_id TEXT, kind TEXT, detail TEXT);
-CREATE TABLE IF NOT EXISTS reservations(
-  kind TEXT, number INTEGER, task_id TEXT, PRIMARY KEY(kind, number));
-CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-"""
+SCHEMA_VERSION = 1
+EVENT_ROTATE_BYTES = 5 * 1024 * 1024
+# Heartbeat fields: a change to only these does not force a save.
+VOLATILE_RUN_FIELDS = frozenset({"last_beat", "suspect"})
+
+FEATURE_COLS = {
+    "id": None, "plan_path": None, "branch": None, "track": None,
+    "state": "planning", "pr": None, "adr_no": None, "protocol_no": None,
+    "partial": 0, "created": None, "updated": None, "fixes": 0,
+    "job_reds": "{}",
+}
+TASK_COLS = {
+    "id": None, "kind": "work", "backlog_id": None, "feature_id": None,
+    "track": None, "agent": None, "state": None, "branch": None,
+    "worktree": None, "pr": None, "adr_no": None, "protocol_no": None,
+    "attempts": 0, "bounces": 0, "depends_on": [], "files": [], "brief": "",
+    "eng_name": None, "cur_name": None, "wants": "", "not_before": 0,
+    "priority": 0, "created": None, "updated": None, "note": "",
+    "integrated": 0, "fix_kind": None, "event": None, "start_from": None,
+}
+RUN_COLS = {
+    "id": None, "task_id": None, "role": None, "name": None, "state": None,
+    "pid": None, "started": None, "last_beat": None, "ended": None,
+    "exit": None, "result_path": None, "stream_path": None, "worktree": None,
+    "session_id": None, "suspect": 0, "outcome": None,
+}
 
 
 class StateError(Exception):
     pass
 
 
+def _row(cols, src):
+    """A row with every known column present; unknown keys are kept."""
+    out = {}
+    for k, default in cols.items():
+        v = src.get(k, default)
+        out[k] = list(v) if isinstance(v, list) else v
+    for k, v in src.items():
+        out.setdefault(k, v)
+    return out
+
+
+def _empty():
+    return {"schema": SCHEMA_VERSION, "features": {}, "tasks": {}, "runs": {},
+            "reservations": [], "meta": {}}
+
+
+def _fsync_dir(d):
+    try:
+        fd = os.open(d, os.O_RDONLY)
+    except OSError:      # Windows cannot open a directory
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def write_json_atomic(path, doc):
+    d = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".state-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        for i in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:   # Windows: a reader holds the target
+                if i == 4:
+                    raise
+                time.sleep(0.05 * (i + 1))
+        _fsync_dir(d)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 class Store:
     def __init__(self, path, clock=time.time):
         self.path = str(path)
         self.clock = clock
+        self._dir = os.path.dirname(os.path.abspath(self.path))
         self._lock = threading.RLock()
-        self._db = sqlite3.connect(self.path, timeout=30,
-                                   isolation_level=None,
-                                   check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
-        self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA busy_timeout=30000")
-        self._db.executescript(SCHEMA)
-        for table, col, decl in MIGRATIONS:
-            have = [r["name"] for r in self._db.execute(
-                f"PRAGMA table_info({table})")]
-            if col not in have:
-                self._db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         self._depth = 0
+        self._dirty = False
+        self._snap = None
+        self.events_path = os.path.join(self._dir, "events.jsonl")
+        self.quarantine_path = os.path.join(
+            self._dir, os.path.splitext(os.path.basename(self.path))[0]
+            + ".quarantine.json")
+        self._d = _empty()
+        self._load()
 
     def close(self):
-        self._db.close()
+        self.flush()
+
+    def flush(self):
+        """Save if anything changed since the last save."""
+        with self._lock:
+            if self._dirty:
+                self._save()
+
+    # -- persistence --------------------------------------------------
+    def _save(self):
+        write_json_atomic(self.path, self._d)
+        self._dirty = False
+
+    def _mutated(self, volatile=False):
+        self._dirty = True
+        if not volatile and self._depth == 0:
+            self._save()
+
+    def _load(self):
+        legacy = os.path.splitext(self.path)[0] + ".db"
+        if not os.path.exists(self.path):
+            if os.path.exists(legacy):
+                self._migrate(legacy)
+            return
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, ValueError) as e:
+            raise StateError(f"{self.path} is unreadable: {e}")
+        if not isinstance(doc, dict) or "schema" not in doc:
+            raise StateError(f"{self.path} has no schema field")
+        if doc["schema"] != SCHEMA_VERSION:
+            raise StateError(f"{self.path}: schema {doc['schema']!r}, this "
+                             f"daemon reads {SCHEMA_VERSION}")
+        base = _empty()
+        for k in ("features", "tasks", "runs", "meta"):
+            v = doc.get(k, base[k])
+            base[k] = v if isinstance(v, dict) else {}
+        r = doc.get("reservations", [])
+        base["reservations"] = r if isinstance(r, list) else []
+        self._d = base
+        if self._validate():
+            self._save()
+
+    def _validate(self):
+        """Move rows that break the invariants into the quarantine file.
+        Returns True when anything moved."""
+        d, bad = self._d, []
+
+        def drop(table, key, row, why):
+            bad.append({"ts": self.clock(), "table": table, "key": key,
+                        "reason": why, "row": row})
+
+        feats = {}
+        for k, r in d["features"].items():
+            if not isinstance(r, dict) or r.get("id") != k:
+                drop("features", k, r, "malformed row")
+                continue
+            r = _row(FEATURE_COLS, r)
+            if r["pr"] is not None and any(
+                    o["pr"] == r["pr"] for o in feats.values()):
+                drop("features", k, r, f"duplicate pr {r['pr']}")
+                continue
+            feats[k] = r
+        tasks = {}
+        for k, r in d["tasks"].items():
+            if not isinstance(r, dict) or r.get("id") != k:
+                drop("tasks", k, r, "malformed row")
+                continue
+            r = _row(TASK_COLS, r)
+            if r["state"] not in STATES:
+                drop("tasks", k, r, f"unknown state {r['state']!r}")
+            elif r["kind"] == "work" and r["feature_id"] not in feats:
+                drop("tasks", k, r, f"feature {r['feature_id']!r} missing")
+            else:
+                tasks[k] = r
+        runs = {}
+        for k, r in d["runs"].items():
+            if not isinstance(r, dict) or r.get("id") != k:
+                drop("runs", k, r, "malformed row")
+                continue
+            r = _row(RUN_COLS, r)
+            if r["task_id"] not in tasks:
+                drop("runs", k, r, f"task {r['task_id']!r} missing")
+            elif r["state"] is not None and r["state"] not in STATES:
+                drop("runs", k, r, f"unknown state {r['state']!r}")
+            else:
+                runs[k] = r
+        resv, seen = [], set()
+        for r in d["reservations"]:
+            ok = (isinstance(r, dict) and r.get("kind") in NUMBER_KINDS
+                  and isinstance(r.get("number"), int)
+                  and (r["kind"], r["number"]) not in seen)
+            if not ok:
+                drop("reservations", None, r, "malformed or duplicate")
+                continue
+            seen.add((r["kind"], r["number"]))
+            resv.append({"kind": r["kind"], "number": r["number"],
+                         "task_id": r.get("task_id")})
+        d["features"], d["tasks"], d["runs"] = feats, tasks, runs
+        d["reservations"] = resv
+        d["meta"] = {str(k): str(v) for k, v in d["meta"].items()}
+        if not bad:
+            return False
+        old = []
+        try:
+            with open(self.quarantine_path, encoding="utf-8") as f:
+                old = json.load(f)
+        except (OSError, ValueError):
+            pass
+        write_json_atomic(self.quarantine_path,
+                          (old if isinstance(old, list) else []) + bad)
+        for b in bad:
+            tid = b["key"] if b["table"] in ("tasks", "runs") else None
+            self.event(tid, "quarantined",
+                       f"{b['table']}/{b['key']}: {b['reason']}")
+        self._dirty = True
+        return True
+
+    def _migrate(self, legacy):
+        """One-time import of the old SQLite file; the file is renamed to
+        state.db.migrated afterwards and never opened again."""
+        db = sqlite3.connect("file:" + legacy.replace("\\", "/")
+                             .replace("?", "%3f") + "?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        d = _empty()
+        try:
+            def rows(table):
+                try:
+                    return [dict(r) for r in db.execute(
+                        f"SELECT * FROM {table} ORDER BY rowid")]
+                except sqlite3.Error:
+                    return []
+            for r in rows("features"):
+                d["features"][r["id"]] = _row(FEATURE_COLS, r)
+            for r in rows("tasks"):
+                for c in ("depends_on", "files"):
+                    r[c] = json.loads(r.get(c) or "[]")
+                d["tasks"][r["id"]] = _row(TASK_COLS, r)
+            for r in rows("runs"):
+                d["runs"][r["id"]] = _row(RUN_COLS, r)
+            d["reservations"] = [
+                {"kind": r["kind"], "number": r["number"],
+                 "task_id": r["task_id"]} for r in rows("reservations")]
+            d["meta"] = {r["key"]: str(r["value"]) for r in rows("meta")}
+            events = rows("events")
+        finally:
+            db.close()
+        if events and not os.path.exists(self.events_path):
+            with open(self.events_path, "w", encoding="utf-8") as f:
+                for e in events:
+                    f.write(json.dumps({k: e.get(k) for k in (
+                        "ts", "task_id", "kind", "detail")}) + "\n")
+        self._d = d
+        self._validate()
+        self._save()
+        for suffix in ("", "-wal", "-shm"):
+            if os.path.exists(legacy + suffix):
+                os.replace(legacy + suffix, legacy + suffix + ".migrated")
+        self.event(None, "migrated", "state.db -> state.json")
 
     # -- transactions -------------------------------------------------
     def tx(self):
         return _Tx(self)
 
-    def _q(self, sql, args=()):
-        with self._lock:
-            return self._db.execute(sql, args).fetchall()
-
-    def _x(self, sql, args=()):
-        with self._lock:
-            return self._db.execute(sql, args)
-
     # -- events -------------------------------------------------------
     def event(self, task_id, kind, detail=""):
         if not isinstance(detail, str):
             detail = json.dumps(detail, sort_keys=True)
-        self._x("INSERT INTO events VALUES(?,?,?,?)",
-                (self.clock(), task_id, kind, detail))
+        line = json.dumps({"ts": self.clock(), "task_id": task_id,
+                           "kind": kind, "detail": detail}) + "\n"
+        with self._lock:
+            try:
+                if os.path.getsize(self.events_path) >= EVENT_ROTATE_BYTES:
+                    os.replace(self.events_path, os.path.join(
+                        self._dir, f"events.{self._next_rotation()}.jsonl"))
+            except OSError:
+                pass
+            with open(self.events_path, "a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+
+    def _rotated(self):
+        out = []
+        for n in os.listdir(self._dir):
+            p = n.split(".")
+            if len(p) == 3 and p[0] == "events" and p[2] == "jsonl" \
+                    and p[1].isdigit():
+                out.append((int(p[1]), os.path.join(self._dir, n)))
+        return sorted(out)
+
+    def _next_rotation(self):
+        r = self._rotated()
+        return r[-1][0] + 1 if r else 1
 
     def events(self, task_id=None, kind=None, limit=200):
-        sql, args, cond = "SELECT * FROM events", [], []
-        if task_id is not None:
-            cond.append("task_id=?")
-            args.append(task_id)
-        if kind is not None:
-            cond.append("kind=?")
-            args.append(kind)
-        if cond:
-            sql += " WHERE " + " AND ".join(cond)
-        sql += " ORDER BY rowid DESC LIMIT ?"
-        return [dict(r) for r in self._q(sql, (*args, limit))]
+        """Newest first."""
+        files = [p for _, p in reversed(self._rotated())]
+        files.insert(0, self.events_path)
+        out = []
+        with self._lock:
+            for p in files:
+                try:
+                    with open(p, encoding="utf-8") as f:
+                        lines = f.read().splitlines()
+                except OSError:
+                    continue
+                for ln in reversed(lines):
+                    try:
+                        e = json.loads(ln)
+                    except ValueError:    # a torn last line after a crash
+                        continue
+                    if task_id is not None and e.get("task_id") != task_id:
+                        continue
+                    if kind is not None and e.get("kind") != kind:
+                        continue
+                    out.append(e)
+                    if len(out) >= limit:
+                        return out
+        return out
 
     # -- meta ---------------------------------------------------------
     def next_counter(self, key):
-        with self.tx():
-            row = self._q("SELECT value FROM meta WHERE key=?", (key,))
-            n = int(row[0]["value"]) + 1 if row else 1
-            self._x("INSERT OR REPLACE INTO meta VALUES(?,?)", (key, str(n)))
+        with self._lock:
+            n = int(self._d["meta"].get(key, 0)) + 1
+            self._d["meta"][key] = str(n)
+            self._mutated()
         return n
 
     def get_meta(self, key, default=None):
-        row = self._q("SELECT value FROM meta WHERE key=?", (key,))
-        return row[0]["value"] if row else default
+        return self._d["meta"].get(key, default)
 
     def set_meta(self, key, value):
-        self._x("INSERT OR REPLACE INTO meta VALUES(?,?)", (key, str(value)))
+        with self._lock:
+            self._d["meta"][key] = str(value)
+            self._mutated()
 
     # -- features -----------------------------------------------------
     def add_feature(self, id, track, branch=None, plan_path=None,
                     partial=False):
         now = self.clock()
-        self._x("INSERT INTO features(id,plan_path,branch,track,partial,"
-                "created,updated) VALUES(?,?,?,?,?,?,?)",
-                (id, plan_path, branch, track, int(partial), now, now))
+        with self._lock:
+            if id in self._d["features"]:
+                raise StateError(f"feature {id} exists")
+            self._d["features"][id] = _row(FEATURE_COLS, {
+                "id": id, "plan_path": plan_path, "branch": branch,
+                "track": track, "partial": int(partial), "created": now,
+                "updated": now})
+            self._mutated()
 
     def ensure_feature(self, id, track, branch=None):
         now = self.clock()
-        self._x("INSERT OR IGNORE INTO features(id,branch,track,created,"
-                "updated) VALUES(?,?,?,?,?)", (id, branch, track, now, now))
+        with self._lock:
+            if id in self._d["features"]:
+                return
+            self._d["features"][id] = _row(FEATURE_COLS, {
+                "id": id, "branch": branch, "track": track, "created": now,
+                "updated": now})
+            self._mutated()
 
     def get_feature(self, id):
-        r = self._q("SELECT * FROM features WHERE id=?", (id,))
-        return dict(r[0]) if r else None
+        r = self._d["features"].get(id)
+        return dict(r) if r else None
 
     def features(self):
-        return [dict(r) for r in self._q("SELECT * FROM features "
-                                         "ORDER BY created")]
+        with self._lock:
+            return sorted((dict(r) for r in self._d["features"].values()),
+                          key=lambda r: r["created"] or 0)
 
     def set_feature(self, id, **fields):
-        self._update("features", id, fields)
+        pr = fields.get("pr")
+        with self._lock:
+            if pr is not None and any(
+                    f["pr"] == pr and f["id"] != id
+                    for f in self._d["features"].values()):
+                raise StateError(f"PR {pr} already belongs to another "
+                                 f"feature")
+            self._update("features", id, fields)
 
     # -- tasks --------------------------------------------------------
     def add_task(self, id, track, agent, state="queued", kind="work",
@@ -170,37 +438,39 @@ class Store:
         now = self.clock()
         if state not in STATES:
             raise StateError(f"unknown state {state}")
-        self._x("INSERT INTO tasks(id,kind,backlog_id,feature_id,track,agent,"
-                "state,branch,depends_on,files,brief,priority,wants,created,updated)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (id, kind, backlog_id, feature_id, track, agent, state,
-                 branch or f"feat/{id}", json.dumps(list(depends_on)),
-                 json.dumps(list(files)), brief, priority, ",".join(wants),
-                 now, now))
-        if kind == "work":
-            # Every item is a feature; a lone task is a one-task feature.
-            fid = feature_id or id
-            self.ensure_feature(fid, track)
-            if fid != feature_id:
-                self._x("UPDATE tasks SET feature_id=? WHERE id=?", (fid, id))
-        self.event(id, "task_added", state)
+        with self._lock:
+            if id in self._d["tasks"]:
+                raise StateError(f"task {id} exists")
+            fid = feature_id
+            if kind == "work":
+                # Every item is a feature; a lone task is a one-task feature.
+                fid = feature_id or id
+                if fid not in self._d["features"]:
+                    self._d["features"][fid] = _row(FEATURE_COLS, {
+                        "id": fid, "track": track, "created": now,
+                        "updated": now})
+            self._d["tasks"][id] = _row(TASK_COLS, {
+                "id": id, "kind": kind, "backlog_id": backlog_id,
+                "feature_id": fid, "track": track, "agent": agent,
+                "state": state, "branch": branch or f"feat/{id}",
+                "depends_on": list(depends_on), "files": list(files),
+                "brief": brief, "priority": priority,
+                "wants": ",".join(wants), "created": now, "updated": now})
+            self._dirty = True
+            self.event(id, "task_added", state)
+            self._mutated()
 
     def get_task(self, id):
-        r = self._q("SELECT * FROM tasks WHERE id=?", (id,))
-        return _task(r[0]) if r else None
+        r = self._d["tasks"].get(id)
+        return _copy(r) if r else None
 
     def tasks(self, states=None, kind=None):
-        sql, args, cond = "SELECT * FROM tasks", [], []
-        if states:
-            cond.append("state IN (%s)" % ",".join("?" * len(states)))
-            args += list(states)
-        if kind:
-            cond.append("kind=?")
-            args.append(kind)
-        if cond:
-            sql += " WHERE " + " AND ".join(cond)
-        return [_task(r) for r in self._q(sql + " ORDER BY priority, created",
-                                          args)]
+        with self._lock:
+            out = [r for r in self._d["tasks"].values()
+                   if (not states or r["state"] in states)
+                   and (not kind or r["kind"] == kind)]
+            out.sort(key=lambda r: (r["priority"] or 0, r["created"] or 0))
+            return [_copy(r) for r in out]
 
     def set_task(self, id, **fields):
         self._update("tasks", id, fields)
@@ -208,10 +478,12 @@ class Store:
     def _update(self, table, id, fields):
         if not fields:
             return
-        fields = dict(fields, updated=self.clock())
-        cols = ",".join(f"{k}=?" for k in fields)
-        self._x(f"UPDATE {table} SET {cols} WHERE id=?",
-                (*fields.values(), id))
+        with self._lock:
+            row = self._d[table].get(id)
+            if row is None:
+                return
+            row.update(fields, updated=self.clock())
+            self._mutated()
 
     def advance(self, id, new_state, note=None):
         """The one state-machine entry point. Resets attempts and the
@@ -263,39 +535,50 @@ class Store:
 
     # -- runs ---------------------------------------------------------
     def add_run(self, **f):
-        cols = ",".join(f)
-        self._x(f"INSERT INTO runs({cols}) VALUES({','.join('?' * len(f))})",
-                tuple(f.values()))
+        with self._lock:
+            if f.get("id") in self._d["runs"]:
+                raise StateError(f"run {f.get('id')} exists")
+            self._d["runs"][f["id"]] = _row(RUN_COLS, f)
+            self._mutated()
 
     def get_run(self, id):
-        r = self._q("SELECT * FROM runs WHERE id=?", (id,))
-        return dict(r[0]) if r else None
+        r = self._d["runs"].get(id)
+        return dict(r) if r else None
 
     def set_run(self, id, **fields):
-        cols = ",".join(f"{k}=?" for k in fields)
-        self._x(f"UPDATE runs SET {cols} WHERE id=?", (*fields.values(), id))
+        with self._lock:
+            row = self._d["runs"].get(id)
+            if row is None or not fields:
+                return
+            row.update(fields)
+            self._mutated(volatile=set(fields) <= VOLATILE_RUN_FIELDS)
+
+    def _sorted_runs(self, pred):
+        with self._lock:
+            rs = [r for r in self._d["runs"].values() if pred(r)]
+            rs.sort(key=lambda r: r["started"] or 0)
+            return rs
 
     def active_runs(self):
-        return [dict(r) for r in self._q(
-            "SELECT * FROM runs WHERE ended IS NULL ORDER BY started")]
+        return [dict(r) for r in self._sorted_runs(
+            lambda r: r["ended"] is None)]
 
     def runs_of(self, task_id):
-        return [dict(r) for r in self._q(
-            "SELECT * FROM runs WHERE task_id=? ORDER BY started", (task_id,))]
+        return [dict(r) for r in self._sorted_runs(
+            lambda r: r["task_id"] == task_id)]
 
     def last_run_of_name(self, name):
-        r = self._q("SELECT * FROM runs WHERE name=? ORDER BY started DESC "
-                    "LIMIT 1", (name,))
-        return dict(r[0]) if r else None
+        rs = self._sorted_runs(lambda r: r["name"] == name)
+        return dict(rs[-1]) if rs else None
 
     def last_run_name(self, task_id, role):
-        r = self._q("SELECT name FROM runs WHERE task_id=? AND role=? "
-                    "ORDER BY started DESC LIMIT 1", (task_id, role))
-        return r[0]["name"] if r else None
+        rs = self._sorted_runs(
+            lambda r: r["task_id"] == task_id and r["role"] == role)
+        return rs[-1]["name"] if rs else None
 
     def runs_started_since(self, ts):
-        return self._q("SELECT COUNT(*) c FROM runs WHERE started>=?",
-                       (ts,))[0]["c"]
+        return len(self._sorted_runs(
+            lambda r: r["started"] is not None and r["started"] >= ts))
 
     # -- number reservation ------------------------------------------
     def reserve(self, kind, task_id, seed):
@@ -304,47 +587,56 @@ class Store:
         if kind not in NUMBER_KINDS:
             raise StateError(f"unknown number kind {kind}")
         with self.tx():
-            r = self._q("SELECT number FROM reservations WHERE kind=? AND "
-                        "task_id=?", (kind, task_id))
-            if r:
-                return r[0]["number"]
-            m = self._q("SELECT MAX(number) m FROM reservations WHERE kind=?",
-                        (kind,))[0]["m"] or 0
-            n = max(int(seed), m) + 1
-            self._x("INSERT INTO reservations VALUES(?,?,?)",
-                    (kind, n, task_id))
+            mine = [r for r in self._d["reservations"] if r["kind"] == kind]
+            for r in mine:
+                if r["task_id"] == task_id:
+                    return r["number"]
+            n = max([int(seed)] + [r["number"] for r in mine]) + 1
+            self._d["reservations"].append(
+                {"kind": kind, "number": n, "task_id": task_id})
+            self._mutated()
             self.event(task_id, "reserved", f"{kind}={n}")
         return n
 
     def reservations(self):
-        return [dict(r) for r in self._q("SELECT * FROM reservations "
-                                         "ORDER BY kind, number")]
+        with self._lock:
+            return sorted((dict(r) for r in self._d["reservations"]),
+                          key=lambda r: (r["kind"], r["number"]))
 
 
-def _task(row):
+def _copy(row):
     t = dict(row)
-    t["depends_on"] = json.loads(t["depends_on"] or "[]")
-    t["files"] = json.loads(t["files"] or "[]")
+    t["depends_on"] = list(t["depends_on"])
+    t["files"] = list(t["files"])
     return t
 
 
 class _Tx:
-    """Re-entrant BEGIN IMMEDIATE; nested use joins the outer transaction."""
+    """Re-entrant; nested use joins the outer block. The outermost block
+    saves once on a clean exit and restores the document on an exception."""
 
     def __init__(self, store):
         self.s = store
 
     def __enter__(self):
-        self.s._lock.acquire()
-        if self.s._depth == 0:
-            self.s._db.execute("BEGIN IMMEDIATE")
-        self.s._depth += 1
+        s = self.s
+        s._lock.acquire()
+        if s._depth == 0:
+            s._snap = (pickle.dumps(s._d), s._dirty)
+        s._depth += 1
 
     def __exit__(self, et, ev, tb):
-        self.s._depth -= 1
+        s = self.s
+        s._depth -= 1
         try:
-            if self.s._depth == 0:
-                self.s._db.execute("ROLLBACK" if et else "COMMIT")
+            if s._depth == 0:
+                snap, was_dirty = s._snap
+                s._snap = None
+                if et:
+                    s._d = pickle.loads(snap)
+                    s._dirty = was_dirty
+                elif s._dirty:
+                    s._save()
         finally:
-            self.s._lock.release()
+            s._lock.release()
         return False

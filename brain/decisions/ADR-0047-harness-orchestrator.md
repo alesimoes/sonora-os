@@ -14,8 +14,10 @@
   processes, one worktree each. The daemon decides nothing that needs
   judgement; roles decide, the daemon enforces pools, caps, file claims,
   number reservations and retries.
-- §2: state is one SQLite file, `planning/orchestrator/state.db` (git-ignored),
-  with a state machine from `queued` to `merged`.
+- §2: state is one JSON document, `planning/orchestrator/state.json`
+  (git-ignored), held in memory by the daemon and replaced atomically, plus an
+  append-only `events.jsonl`; a state machine from `queued` to `merged`.
+  (Amended 2026-11-04: was SQLite.)
 - §3: heartbeat = process liveness plus git/worktree/result-file activity (and
   the live broker connection); relaunch from the WIP branch, 3 tries, then a
   "waits on the owner" note.
@@ -101,12 +103,49 @@ privileged docker tests (below). It reads `status.json` instead of polling.
 
 ### 2. State store
 
-One SQLite file (`sqlite3` is in the standard library; WAL mode;
-`BEGIN IMMEDIATE` per transition gives atomicity and a single-writer lock for
-free). A JSON file would need our own lock and rewrite-whole-file atomics and
-would not survive two writers (daemon plus a manual `orchestrator.py set`).
-Located in the main checkout under `planning/orchestrator/`, git-ignored;
-worktrees are under `.claude/worktrees/<task>`.
+**Amended 2026-11-04 (owner): JSON, not SQLite.** State is one document,
+`planning/orchestrator/state.json` (git-ignored, under the main checkout;
+worktrees are under `.claude/worktrees/<task>`):
+
+    {schema: 1, features: {id: {...}}, tasks: {id: {...}}, runs: {id: {...}},
+     reservations: [{kind, number, task_id}], meta: {key: string}}
+
+Why: the daemon is the only writer (the CLI `status` reads `status.json`; a
+manual change goes through the daemon's files, not a second writer), the
+volume is small (hundreds of rows), and a text file can be read, diffed and
+repaired by hand. SQLite gave transactions we do not need across processes and
+cost us an opaque binary file whose constraint failures stopped the daemon.
+The `Store` class keeps its method names and semantics; only its storage
+changed.
+
+- **Atomic save.** Write a temp file in the same directory, flush, fsync,
+  `os.replace`, fsync the directory where the platform allows. A crash leaves
+  the old or the new complete file. A failed save raises, keeps the old file
+  and leaves the in-memory document dirty so the next save retries.
+- **When it saves.** After every mutating call, or once when the outermost
+  `tx()` exits cleanly (a raising `tx()` restores the in-memory document and
+  writes nothing). The exception is a run heartbeat (`last_beat`, `suspect`),
+  which only marks the document dirty; the tick ends with `flush()`.
+  Correctness over speed: nothing that launches or ends a process is deferred.
+- **Events.** `events.jsonl`, one JSON object per line, flushed on append and
+  rotated to `events.<n>.jsonl` at about 5 MB; `events()` reads newest first
+  across files and ignores a torn last line.
+- **Validation on load.** Unknown schema version refuses to start (never
+  guess at a newer file). Rows that break an invariant are moved to
+  `state.quarantine.json` with a `quarantined` event and the daemon carries
+  on: a run whose task is missing, a work task whose feature is missing, a
+  task or run with a state outside the allowed set, a second feature claiming
+  the same PR, a malformed or duplicate reservation. A file that is not valid
+  JSON stops the daemon with a clear error; the atomic save makes that a
+  hand-edit, not a crash.
+- **Unique PR.** At most one feature holds a given PR number; `set_feature`
+  refuses a duplicate (it was a unique SQL index).
+- **Migration.** If `state.json` is absent and `state.db` exists, the daemon
+  imports it (read-only `sqlite3`), validates it like any load, writes
+  `state.json` and renames `state.db` (and its `-wal` and `-shm`) to
+  `*.migrated`.
+
+The tables below are the logical model, now documents in the same file.
 
 Tables: `tasks`, `runs`, `events`, `reservations`.
 
@@ -437,7 +476,7 @@ names.
 
 - Route: stamp `id` (ulid) and a per-recipient `seq`, append to the durable log
   and the recipient's mailbox, then push to the live connection (if any).
-- Claims: the broker holds the claim table (SQLite, §2) and is the only writer.
+- Claims: the broker holds the claim table (state store, §2) and is the only writer.
   `claim` is all-or-nothing and atomic in the broker's single event loop: a
   second claim on a path (or on a path under a claimed directory glob) is
   refused with the owner's name, and the client must `send` an `ask` to `lead`
@@ -760,8 +799,9 @@ better than a model, and a program is testable for free. Keeping the judgement
 the "agents do the work, reviewers review" rule: no role reviews its own diff,
 the daemon never reads code.
 
-SQLite over JSON because the transition needs to be atomic across tasks, runs
-and reservations, and because the daemon and the CLI both write.
+JSON over SQLite (amended 2026-11-04, see section 2): one in-memory document
+with whole-file atomic replacement makes every transition atomic, and the
+daemon is the only writer.
 
 Observing activity from outside (process, git, files) over agent-written
 heartbeats because the failure we care about is an agent that has stopped
@@ -806,7 +846,9 @@ doing anything, including remembering to report it.
 - **Agent holds the connection through a Bash background process.** Violates
   the no-background rule and dies with the shell; the MCP server is the
   supported long-lived tool process.
-- **JSON file with lock.** Reimplements transactions badly; rejected for SQLite.
+- **JSON file with lock (original rejection of JSON).** Reversed 2026-11-04:
+  with a single writer there is nothing to lock; SQLite is now the rejected
+  option (opaque file, constraint failures that stopped the daemon).
 - **Resume the dead session (`--resume`) instead of a fresh context.** Cheaper
   in tokens on paper, but a session that died on a corrupt state or a loop
   resumes into the same loop. Fresh context from the branch is deterministic.

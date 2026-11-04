@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -50,7 +51,7 @@ class Orchestrator:
         self.clock = clock
         self.dry_run = dry_run
         self.fake_claude = fake_claude
-        self.store = Store(os.path.join(self.odir, "state.db"), clock)
+        self.store = Store(os.path.join(self.odir, "state.json"), clock)
         self.worktrees = worktrees or launcher.GitWorktrees(self.root)
         self.forge = forge or GhForge(self.root)
         self.seed_fn = seed_fn or self._default_seed
@@ -791,12 +792,15 @@ class Orchestrator:
                 try:
                     self.tick()
                 except Exception as e:  # one bad tick must not stop the daemon
-                    import traceback
                     traceback.print_exc()
                     try:
                         self.store.event(None, "tick_error", repr(e)[:300])
                     except Exception:
                         pass
+                try:
+                    self.store.flush()   # heartbeats are saved here
+                except Exception:
+                    traceback.print_exc()
                 n += 1
                 stop, _ = self.kill_switch()
                 if once or (max_ticks and n >= max_ticks):
