@@ -22,12 +22,20 @@ slots_valid_name() { case "$1" in a | b) return 0 ;; *) return 1 ;; esac; }
 slots_other() { case "$1" in a) echo b ;; b) echo a ;; *) return 1 ;; esac; }
 slots_label() { slots_valid_name "$1" && echo "sonora-$1"; }
 
-# slots_min_disk_mib: smallest disk the layout fits, with 4 GiB for data.
-slots_min_disk_mib() { echo $((SLOTS_ESP_MIB + 2 * SLOTS_SLOT_MIB + 4096 + 2)); }
+SLOTS_DATA_MIN_MIB=${SLOTS_DATA_MIN_MIB:-4096}
+
+# slots_min_disk_mib: smallest disk the layout fits: ESP, two slots, the
+# minimum data partition and 2 MiB for the GPT copies and alignment.
+slots_min_disk_mib() { echo $((SLOTS_ESP_MIB + 2 * SLOTS_SLOT_MIB + SLOTS_DATA_MIN_MIB + 2)); }
 
 # slots_layout_script: sfdisk input. The data partition takes the rest of the
-# disk, so a bigger disk grows sessions, never the slots.
+# disk, so a bigger disk grows sessions, never the slots. With DISK_MIB it
+# refuses a disk that is too small, before sfdisk fails with a raw error.
 slots_layout_script() {
+    if [ -n "${1:-}" ] && [ "$1" -lt "$(slots_min_disk_mib)" ]; then
+        echo "disk of $1 MiB is smaller than the $(slots_min_disk_mib) MiB the A/B layout needs" >&2
+        return 1
+    fi
     cat <<EOT
 label: gpt
 size=${SLOTS_ESP_MIB}MiB, type=U, name="sonora-esp"

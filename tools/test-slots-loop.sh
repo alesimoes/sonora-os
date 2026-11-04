@@ -21,9 +21,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-export SLOTS_SLOT_MIB=64
-truncate -s 400M "$T/disk.img"
-slots_layout_script | sfdisk -q "$T/disk.img"
+# The ESP default (512 MiB) alone exceeds a small image: shrink every part.
+export SLOTS_ESP_MIB=32 SLOTS_SLOT_MIB=64 SLOTS_DATA_MIN_MIB=64
+DISK_MIB=400
+truncate -s ${DISK_MIB}M "$T/disk.img"
+slots_layout_script "$DISK_MIB" | sfdisk -q "$T/disk.img"
 LOOP=$(losetup --find --show --partscan "$T/disk.img")
 sfdisk -l "$LOOP" | grep -c "$LOOP"p >/dev/null || { echo "FAIL: no partitions on $LOOP" >&2; exit 1; }
 mkfs.ext4 -q -L sonora-a "${LOOP}p2"

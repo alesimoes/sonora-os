@@ -24,6 +24,11 @@ eq "layout: partitions" "$(printf '%s\n' "$lay" | grep -c 'name=')" 4
 printf '%s\n' "$lay" | grep -q 'name="sonora-b"' || bad "layout: no slot b"
 eq "layout: data takes the rest" "$(printf '%s\n' "$lay" | tail -n 1)" 'type=L, name="sonora-data"'
 eq "min disk" "$(slots_min_disk_mib)" $((512 + 2 * 6144 + 4096 + 2))
+# Same arithmetic as sfdisk: the fixed partitions must leave room for data.
+eq "min disk fits fixed parts" "$(( $(slots_min_disk_mib) - 2 - SLOTS_DATA_MIN_MIB ))" $((512 + 2 * 6144))
+slots_layout_script 1000 >/dev/null 2>&1 && bad "layout accepts a 1000 MiB disk"
+slots_layout_script "$(slots_min_disk_mib)" >/dev/null 2>&1 || bad "layout refuses the minimum disk"
+SLOTS_SLOT_MIB=64 SLOTS_ESP_MIB=512 slots_layout_script 400 >/dev/null 2>&1 && bad "layout accepts 400 MiB with a 512 MiB ESP"
 eq "label" "$(slots_label b)" sonora-b
 slots_label c >/dev/null 2>&1 && bad "label accepts c"
 
