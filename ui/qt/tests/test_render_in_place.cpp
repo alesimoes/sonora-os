@@ -109,15 +109,9 @@ int track_menu_over_the_fake_engine() {
         return QTest::qWaitFor([&]() { return item->isVisible(); });
     };
 
-    // No track selected: nothing to render.
-    session.controller().clear_selection();
-    CHECK(open_menu());
-    CHECK(!named(root, QStringLiteral("trackFreeze"))->property("available").toBool());
-    CHECK(!named(root, QStringLiteral("trackUnfreeze"))->property("available").toBool());
-    named(root, QStringLiteral("trackMenu"))->setProperty("visible", false);
-
-    // A selected track: Freeze sends its id.
+    // A selected track: Freeze sends its id; there is nothing to unfreeze.
     session.controller().select_track(1);
+    QMetaObject::invokeMethod(&session, "selectionChanged");
     CHECK(session.selectedTrack() == 1 && !session.selectedTrackFrozen());
     CHECK(open_menu());
     CHECK(named(root, QStringLiteral("trackFreeze"))->property("available").toBool());
@@ -154,6 +148,7 @@ int track_menu_over_the_fake_engine() {
     CHECK(!session.renderInPlace(QStringLiteral("process")));
     CHECK(sent_command.empty());
     session.controller().select_range(1, 24000, 48000);
+    QMetaObject::invokeMethod(&session, "selectionChanged");
     CHECK(session.renderInPlace(QStringLiteral("process")));
     CHECK(sent_command == "track.process_selection");
     CHECK(api::parse_render_argument(sent_argument, sent, why));

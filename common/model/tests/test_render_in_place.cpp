@@ -78,7 +78,10 @@ bool make(Fixture& f, RenderKind kind, Frames sel_start, Frames sel_end, Frames 
     if (!render_range_of(now, f.vox.track, kind, sel_start, sel_end, range, why)) return false;
     Ids ids(now);
     AddSource add = add_source(ids, file_frames, file_channels, f.vox.track);
+    // What the engine's print is: a file the session did not record.
     add.source.kind = SourceKind::Imported;
+    add.source.take = 0;
+    add.source.recorded_on_track = 0;
     Compound c;
     c.ops.push_back(add);
     // The members are asked of the snapshot with the source in it.
@@ -200,7 +203,7 @@ int test_process_replaces_the_selection_on_a_copy() {
     CHECK(p.regions[1].channels[0].source != f.raw);
     CHECK(p.regions[2].position == 30000 && p.regions[2].end() == 97000);
     CHECK(p.regions[2].channels[0].source == f.raw);
-    CHECK(*playlist(f, f.original) == *playlist(before, f.original));
+    CHECK(*playlist(f, f.original) == *playlist_in(before, f.original));
     CHECK(!active_of(f, f.first));
     CHECK(f.h.undo());
     CHECK(vox(f).active_playlist == f.original && active_of(f, f.first));

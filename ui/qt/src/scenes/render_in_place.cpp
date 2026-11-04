@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Render in place (plugins.graph.freeze, plugins.offline; ADR-0051): a track
-// selected, Track > Freeze asked for, the render under way in the footer with
-// its Cancel while the Track menu shows the commands waiting; then, as a
-// second scene, how it ended, held in the footer until dismissed.
+// selected and Track > Freeze asked for, the Track menu showing the four
+// commands and the held notice of how the render ended in the footer; then, as
+// a second scene, the engine refusing one while the transport rolls, the
+// reason held in the footer instead of the 2.5 s status line.
 #include <QQuickItem>
 
 #include "screenshot_scene.h"
@@ -22,32 +23,28 @@ void open_track_menu(ShotContext& c) {
     menu->setProperty("visible", true);
 }
 
-void freeze(ShotContext& c) {
-    c.model.invoke(QStringLiteral("track.select"), c.track);
-    c.session.renderInPlace(QStringLiteral("freeze"));
-    // The demo's fake engine says half, then Done a poll later.
-    c.model.tick();
-}
-
-const ShotRegistrar running{[] {
+const ShotRegistrar done{[] {
     ShotScene s;
     s.name = QStringLiteral("render-in-place");
     s.take = false;
     s.apply = [](ShotContext& c) {
-        freeze(c);
+        c.model.invoke(QStringLiteral("track.select"), c.track);
+        // The demo's fake engine says Running, then Done a poll later.
+        c.session.renderInPlace(QStringLiteral("freeze"));
         open_track_menu(c);
     };
     return s;
 }()};
 
-const ShotRegistrar done{[] {
+const ShotRegistrar refused{[] {
     ShotScene s;
-    s.name = QStringLiteral("render-in-place-done");
+    s.name = QStringLiteral("render-in-place-refused");
     s.take = false;
     s.apply = [](ShotContext& c) {
-        freeze(c);
-        c.model.tick();
-        open_track_menu(c);
+        c.model.invoke(QStringLiteral("track.select"), c.track);
+        // A render needs the transport stopped.
+        c.model.invoke(QStringLiteral("transport.play"), -1);
+        c.session.renderInPlace(QStringLiteral("freeze"));
     };
     return s;
 }()};
