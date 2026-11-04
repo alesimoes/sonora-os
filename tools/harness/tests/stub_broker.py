@@ -28,6 +28,12 @@ class StubBroker:
 
     def stop(self):
         self._stop = True
+        # On Linux close() alone leaves the port listening while another
+        # thread is blocked in accept(); shutdown wakes it and ends the listen.
+        try:
+            self.srv.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.srv.close()
         for c in self.conns:
             try:
