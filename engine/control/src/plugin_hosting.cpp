@@ -1624,6 +1624,22 @@ uint32_t PluginHosting::hosts() const {
     return n;
 }
 
+void PluginHosting::read_telemetry(std::vector<TelemetryRead>& out) {
+    for (auto& [track, cp] : chains_) {
+        Chain& c = *cp;
+        if (!c.running || c.running->down() || !c.running->host()) continue;
+        plugin_client::HostProcess& h = *c.running->host();
+        if (!h.has_telemetry()) continue;
+        for (uint32_t i = 0; i < c.running_spec.size(); ++i) {
+            TelemetryRead r;
+            if (!h.read_telemetry(i, r.snapshot)) continue;
+            r.insert = c.running_spec[i].insert;
+            r.plugin = c.running_spec[i].plugin;
+            out.push_back(std::move(r));
+        }
+    }
+}
+
 bool PluginHosting::host_value(model::Id insert, const std::string& key, float& value) {
     for (auto& [track, cp] : chains_) {
         Chain& c = *cp;

@@ -1652,6 +1652,17 @@ int scenario_native(const Args& a) {
                   (unsigned long long)blocks, worst);
     (void)tolerance;
     check(worst == 0.0, what);
+    // ADR-0057: the host mapped the telemetry region and handed the EQ its
+    // block, so the engine's side reads what process() published: input and
+    // output level, and a 128-point response; an instance the chain does not
+    // have reads nothing.
+    HostProcess* host = rig.chain->host();
+    plugin::TelemetrySnapshot snap;
+    check(host != nullptr && host->has_telemetry(), "the host process got a telemetry region");
+    check(host != nullptr && host->read_telemetry(0, snap) && snap.sequence > 0 && (snap.meter_mask & 3u) == 3u &&
+              snap.curve_points[0] == plugin::kMaxCurvePoints,
+          "the EQ's meters and response arrived through the region the host bound");
+    check(host != nullptr && !host->read_telemetry(1, snap), "no telemetry for an instance the chain does not have");
     return 0;
 }
 

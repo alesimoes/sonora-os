@@ -133,6 +133,11 @@ if(UNIX)
   add_test(NAME plugin_scanner COMMAND test_plugin_scanner --host $<TARGET_FILE:fake_plugin_host>)
   # The catalog through the control server: item 6's resolution, the
   # catalog sent, plugin.rescan refused during a take.
+  # native.editors: the descriptor hints of a Sonora bundle into the catalog,
+  # and the telemetry frame built from the catalog's declaration (ADR-0057).
+  add_executable(test_descriptor_hints tests/test_descriptor_hints.cpp)
+  target_link_libraries(test_descriptor_hints PRIVATE sonora_control)
+  add_test(NAME descriptor_hints COMMAND test_descriptor_hints)
   add_executable(test_plugin_catalog tests/test_plugin_catalog.cpp)
   target_link_libraries(test_plugin_catalog PRIVATE sonora_control sonora_backend_fake Threads::Threads)
   add_dependencies(test_plugin_catalog fake_plugin_host)
@@ -198,6 +203,17 @@ if(TARGET sonora-plugin-host)
     add_test(NAME plugin_hosting_${scenario} COMMAND ${_ph} --scenario ${scenario})
     list(APPEND _ph_tests plugin_hosting_${scenario})
   endforeach()
+  # native.editors (ADR-0057): the real host, a Sonora EQ and its descriptor.
+  get_property(_eq_mono_uri GLOBAL PROPERTY SONORA_NATIVE_eq-mono_LV2_URI)
+  if(_eq_mono_uri)
+    add_dependencies(test_plugin_hosting sonora_native_bundles)
+    add_test(NAME plugin_hosting_telemetry
+             COMMAND ${_ph} --bundle ${SONORA_NATIVE_LV2_DIR}/sonora-eq-mono.lv2
+                     --eq-uri ${_eq_mono_uri}
+                     --eq-descriptor ${SONORA_NATIVE_LV2_DIR}/sonora-eq-mono.lv2/descriptor.json
+                     --scenario telemetry)
+    list(APPEND _ph_tests plugin_hosting_telemetry)
+  endif()
   set_tests_properties(${_ph_tests} PROPERTIES LABELS plugins RUN_SERIAL TRUE)
   if(SONORA_PLUGIN_TESTS_ALLOW_SKIP)
     set_tests_properties(${_ph_tests} PROPERTIES SKIP_RETURN_CODE 77)

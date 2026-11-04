@@ -57,6 +57,7 @@
 #include <vector>
 
 #include "sonora/model/model.h"
+#include "sonora/plugin/telemetry.h"
 #include "sonora/model/operations.h"
 #include "sonora/plan_graph.h"
 #include "sonora/platform/wait_set.h"
@@ -205,6 +206,20 @@ public:
     // runs poll(), which services each (reaps the exit, sends the frames).
     // Replaces `out`'s contents; empty when hosting is disabled.
     void watch(std::vector<platform::WaitSet::Watch>& out) const;
+
+    // One insert's latest telemetry frame (ADR-0057), as its plugin's
+    // process() last published it.
+    struct TelemetryRead {
+        model::Id insert = 0;
+        model::PluginRef plugin;
+        plugin::TelemetrySnapshot snapshot;
+    };
+    // Appends a frame for every insert of every running host that has
+    // published one: what the control thread reads each turn, before the
+    // throttle (api::TelemetryThrottle) decides what is sent. Never waits
+    // and never touches the audio thread: it reads the engine's own mapping
+    // of each host's telemetry region.
+    void read_telemetry(std::vector<TelemetryRead>& out);
 
     // What the running host of `insert` reads for `key` (empty: its bypass)
     // in its channel's last-value table: the store as the last submit

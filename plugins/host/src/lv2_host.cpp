@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "lv2_host.h"
 
+#include "loader.h"
 #include "lv2_worker.h"
 #include "state_paths.h"
 
@@ -697,6 +698,16 @@ std::unique_ptr<Processor> Lv2World::instantiate(const std::string& uri, const C
     }
     auto proc = std::make_unique<Lv2Processor>(*this, config);
     if (!proc->init(*this, p, describe(p), config.sample_rate, config.channels, in, out, key, error)) return nullptr;
+    if (config.telemetry != nullptr) {
+        // A Sonora native plugin's library exports the hand-over; lilv has
+        // it mapped already, so the path finds the same library.
+        if (const LilvNode* lib = lilv_plugin_get_library_uri(p)) {
+            if (char* path = lilv_file_uri_parse(lilv_node_as_uri(lib), nullptr)) {
+                bind_native_telemetry_at(path, config.telemetry);
+                lilv_free(path);
+            }
+        }
+    }
     return proc;
 }
 

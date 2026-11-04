@@ -36,11 +36,32 @@ const ParamInfo kParams[kParamCount] = {
 
 const Descriptor kDesc = {"org.sonora.limiter", "Sonora Limiter", "Dynamics", 1, kParams, kParamCount, 1, 2, false};
 
+// What an editor draws (ui_hints.h). The gain reduction is the deepest the
+// look-ahead stage or the true-peak guard took since the last frame.
+constexpr std::uint32_t kMeterGr = 0, kMeterIn = 1, kMeterOut = 2;
+const MeterDecl kMeters[] = {kGainReductionMeter, kInputMeter, kOutputMeter};
+const ParamHint kHints[] = {
+    {"input", "Level", Widget::Knob, nullptr},
+    {"ceiling", "Level", Widget::Knob, nullptr},
+    {"release", "Timing", Widget::Knob, nullptr},
+    {"lookahead", "Timing", Widget::Knob, nullptr},
+    {"true_peak", "Detection", Widget::Switch, nullptr},
+    {"link", "Detection", Widget::Choice, nullptr},
+};
+const UiHints kUi = {kHints, sizeof kHints / sizeof kHints[0], kMeters, 3, nullptr, 0};
+
 class Limiter final : public ProcessorBase {
 public:
-    Limiter() : ProcessorBase(kDesc) {}
+    Limiter() : ProcessorBase(kDesc) { publish_levels(kMeterIn, kMeterOut); }
+    const UiHints* ui_hints() const noexcept override { return &kUi; }
 
 protected:
+    void on_publish(Telemetry& t) noexcept override {
+        // Both report the deepest reduction as a value <= 0.
+        const double deepest = std::fmin(lim_.take_gain_reduction_db(), guard_.take_gain_reduction_db());
+        t.meter(kMeterGr, static_cast<float>(deepest < 0.0 ? -deepest : 0.0));
+    }
+
     bool on_prepare() override {
         const auto la = static_cast<std::uint32_t>(std::lround(value(kLookahead) * 1e-3 * sample_rate()));
         const auto gla = static_cast<std::uint32_t>(std::lround(kGuardLookaheadSeconds * sample_rate()));

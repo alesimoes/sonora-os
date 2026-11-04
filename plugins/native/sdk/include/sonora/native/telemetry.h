@@ -21,6 +21,8 @@
 // The engine reads it at kTelemetryMaxHz, whatever the block rate.
 #pragma once
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 #include "sonora/plugin/telemetry.h"
@@ -30,9 +32,29 @@ namespace sonora::native {
 
 class Telemetry {
 public:
-    Telemetry() noexcept : block_(&local_) {}
+    Telemetry() noexcept : block_(&local_) { enrol(this); }
+    ~Telemetry() { withdraw(this); }
     Telemetry(const Telemetry&) = delete;
     Telemetry& operator=(const Telemetry&) = delete;
+
+    // How a plugin host that loaded this library hands the instance it just
+    // created its shared block (the library exports it as
+    // sonora_native_telemetry_bind, format/src/dpf/plugin.cpp). Binds the
+    // oldest instance made since the last call and leaves the rest private:
+    // a mono plugin run once per channel has several, and only one may write
+    // the insert's block. True when one was bound. Control thread, before
+    // audio, while the host instantiates one plugin at a time.
+    static bool bind_pending(void* shared_block) noexcept {
+        auto* slots = pending();
+        Telemetry* first = nullptr;
+        for (std::size_t i = 0; i < kPending; ++i) {
+            Telemetry* t = slots[i].exchange(nullptr);
+            if (first == nullptr) first = t;
+        }
+        if (first == nullptr || shared_block == nullptr) return false;
+        first->bind(static_cast<plugin::TelemetryBlock*>(shared_block));
+        return true;
+    }
 
     // Not real-time. nullptr goes back to the private block.
     void bind(plugin::TelemetryBlock* shared) noexcept { block_ = shared != nullptr ? shared : &local_; }
@@ -60,6 +82,26 @@ public:
     bool read(plugin::TelemetrySnapshot& out) const noexcept { return block_->read(out); }
 
 private:
+    static constexpr std::size_t kPending = 8;
+    static std::atomic<Telemetry*>* pending() noexcept {
+        static std::atomic<Telemetry*> slots[kPending] = {};
+        return slots;
+    }
+    static void enrol(Telemetry* t) noexcept {
+        auto* slots = pending();
+        for (std::size_t i = 0; i < kPending; ++i) {
+            Telemetry* none = nullptr;
+            if (slots[i].compare_exchange_strong(none, t)) return;
+        }
+    }
+    static void withdraw(Telemetry* t) noexcept {
+        auto* slots = pending();
+        for (std::size_t i = 0; i < kPending; ++i) {
+            Telemetry* me = t;
+            slots[i].compare_exchange_strong(me, nullptr);
+        }
+    }
+
     plugin::TelemetryBlock local_{};
     plugin::TelemetryBlock* block_;
 };

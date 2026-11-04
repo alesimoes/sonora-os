@@ -16,6 +16,8 @@ else()
   endfunction()
 endif()
 add_subdirectory(measure)
+# Tests that span processors (the editors' hints and telemetry); no processor.
+add_subdirectory(editor_tests)
 
 # CONFIGURE_DEPENDS: a new directory re-runs CMake on the next build, in an
 # existing build tree too.
@@ -26,7 +28,7 @@ set(SONORA_NATIVE_PROCESSORS)
 set(SONORA_NATIVE_SUITES)
 foreach(_f ${_dirs})
   get_filename_component(_name ${_f} DIRECTORY)
-  if(_name STREQUAL "sdk" OR _name STREQUAL "format" OR _name STREQUAL "measure")
+  if(_name STREQUAL "sdk" OR _name STREQUAL "format" OR _name STREQUAL "measure" OR _name STREQUAL "editor_tests")
     continue()
   endif()
   list(APPEND SONORA_NATIVE_PROCESSORS ${_name})
