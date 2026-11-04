@@ -19,9 +19,9 @@ const ShotRegistrar registrar{[] {
             const model::Region& r = p->regions.front();
             auto& ctl = c.session.controller();
             std::string why;
-            if (!ctl.select_region(r.id)) return;
             ctl.set_insertion(r.position + r.length / 2);
             c.model.invoke(QStringLiteral("zoom.in"), -1);
+            if (!ctl.select_region(r.id)) return;
             ctl.set_clip_gain(-3.0f, why);
             ctl.set_gain_point(r.position + r.length / 2, -9.0f, why);
         });

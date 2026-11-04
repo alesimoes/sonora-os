@@ -116,8 +116,7 @@ int test_commands() {
     CHECK(local.dispatch("clip.gain_down", arg, why) == DispatchResult::Ok);
     CHECK(first_region(doc, 1).gain_db == 1.5f);
 
-    session.controller().set_insertion(first_region(doc, 1).position + 1000);
-    arg.argument = "-8";
+    arg.argument = "-8@0.01";
     CHECK(local.dispatch("clip.gain_point", arg, why) == DispatchResult::Ok);
     CHECK(first_region(doc, 1).gain_line.size() == 3);
     CHECK(local.dispatch("clip.gain_line_clear", none, why) == DispatchResult::Ok);
