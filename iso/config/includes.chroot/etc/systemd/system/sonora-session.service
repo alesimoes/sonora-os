@@ -6,6 +6,9 @@ Description=Sonora recording session
 After=sound.target systemd-user-sessions.service
 Wants=sound.target
 Conflicts=getty@tty1.service
+# ADR-0010 stage 2: one engine per machine; the fallback replaces the display
+# stack's engine with this one.
+Conflicts=sonora-engine.service
 # The default start limit (5 in 10 s) would stop a crash-looping engine for
 # good and leave tty1 blank with no way back. Never give up.
 StartLimitIntervalSec=0

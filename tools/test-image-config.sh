@@ -342,6 +342,49 @@ if [ -f "$COMP" ] && [ -f "$UIU" ]; then
   grep -qx 'BindsTo=sonora-compositor.service' "$UIU" || bad "UI unit is not bound to the compositor"
   grep -qx 'RestartPreventExitStatus=3' "$UIU" || bad "UI unit retries the 'unfit display' exit"
 fi
+# --- kiosk stage 2: the engine as its own unit, editors on labwc ---
+# The engine and the display stack must fail and restart separately: a
+# compositor or UI crash that restarts the engine ends the take in progress.
+ENG="$INC/etc/systemd/system/sonora-engine.service"
+RUN="$INC/usr/local/bin/sonora-engine-run"
+for f in "$ENG" "$RUN" "$INC/usr/share/sonora/labwc/autostart"; do
+  [ -f "$f" ] || bad "kiosk stage 2 lacks ${f#"$INC"/}"
+done
+if [ -f "$ENG" ] && [ -f "$UIU" ]; then
+  grep -qx 'ConditionKernelCommandLine=sonora.gui' "$ENG" || bad "engine unit is not gated on sonora.gui"
+  grep -qx 'ConditionPathExists=!/run/sonora-display-failed' "$ENG" || bad "engine unit does not stand down after the display fallback"
+  grep -qx 'Conflicts=sonora-session.service' "$ENG" || bad "engine unit can run beside sonora-session (two engines)"
+  grep -qx 'Restart=always' "$ENG" || bad "engine unit does not restart"
+  grep -qx 'StartLimitIntervalSec=0' "$ENG" || bad "engine unit gives up after a crash loop"
+  grep -qx 'LimitRTPRIO=95' "$ENG" || bad "engine unit has no RT priority grant"
+  grep -qx 'LimitMEMLOCK=infinity' "$ENG" || bad "engine unit has no memlock grant"
+  grep -qx 'ExecStart=/usr/local/bin/sonora-engine-run' "$ENG" || bad "engine unit does not start the launcher"
+  grep -Eq '^(BindsTo|Requires|PartOf)=' "$ENG" && bad "engine unit is tied to another unit's stop; a UI or labwc crash would end the take"
+  grep -qx 'Wants=sonora-engine.service' "$UIU" || bad "UI unit does not pull in the engine"
+  grep -qx 'After=sonora-engine.service' "$UIU" || bad "UI unit is not ordered after the engine"
+  grep -Eq '^(BindsTo|Requires)=.*sonora-engine' "$UIU" && bad "UI unit is bound to the engine; the engine's restart would restart the UI"
+  grep -Eq '^ExecStart=/usr/local/bin/sonora-ui --kiosk$' "$UIU" || bad "UI unit does not run the real-engine kiosk (--demo left in?)"
+  grep -qx 'Restart=always' "$UIU" || bad "UI unit does not restart"
+  grep -Eq '^Conflicts=.*sonora-engine.service' "$UNIT" || bad "session unit does not displace the display stack's engine"
+fi
+grep -qx 'chmod 0755 /usr/local/bin/sonora-engine-run' "$HOOK" || bad "hook does not chmod sonora-engine-run"
+grep -qx 'chmod 0755 /usr/share/sonora/labwc/autostart' "$HOOK" || bad "hook does not chmod the labwc autostart"
+# The engine is pulled in by the UI; enabling it would start it without sonora.gui checks.
+grep -q 'systemctl enable sonora-engine.service' "$HOOK" && bad "hook enables the engine unit; the UI unit pulls it in"
+grep -q 'display.env' "$RUN" 2>/dev/null || bad "engine launcher does not read the display file"
+grep -q 'display.env' "$INC/usr/share/sonora/labwc/autostart" 2>/dev/null || bad "labwc autostart does not write the display file"
+grep -Eq -- '--headless' "$RUN" 2>/dev/null || bad "engine launcher is not headless"
+RC="$INC/usr/share/sonora/labwc/rc.xml"
+# Editors are every window but the UI: no rule may strip their title bar, the
+# operator's only way to move or close a misbehaving one.
+if [ -f "$RC" ]; then
+  grep -c 'serverDecoration="no"' "$RC" | grep -qx 1 || bad "rc.xml undecorates more than one window rule"
+  grep -q 'windowRule identifier="sonora-ui" serverDecoration="no"' "$RC" || bad "rc.xml: the only undecorated window is not sonora-ui"
+  grep -q '<policy>center</policy>' "$RC" || bad "rc.xml: editors are not centred"
+  grep -q '<repeatRate>' "$RC" || bad "rc.xml sets no key repeat"
+fi
+grep -q 'XKB_DEFAULT_LAYOUT' "$INC/usr/local/bin/sonora-compositor" || bad "compositor wrapper does not map the keyboard layout"
+
 grep -q '^session .*pam_systemd.so' "$INC/etc/pam.d/sonora-ui" 2>/dev/null || bad "pam sonora-ui does not open a logind session"
 grep -Ev '^[[:space:]]*#' "$INC/etc/pam.d/sonora-ui" 2>/dev/null | grep -q pam_limits && bad "pam sonora-ui loads pam_limits; the UI would inherit rtprio 95"
 
