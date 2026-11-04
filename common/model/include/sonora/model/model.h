@@ -98,6 +98,21 @@ inline constexpr std::uint8_t auto_colour(std::size_t display_index) {
     return static_cast<std::uint8_t>(display_index % kAutoColours);
 }
 
+// One point of a clip's gain line (Pro Tools' Clip Gain, Logic's region
+// gain): `at` is a SOURCE frame, not a timeline one, so moving, trimming or
+// splitting the region never has to rewrite the line. The gain between two
+// points is linear in amplitude; before the first and after the last it is
+// held. `db` is added to the region's gain_db.
+struct GainPoint {
+    Frames at = 0;
+    float db = 0.0f;
+    bool operator==(const GainPoint& o) const { return at == o.at && db == o.db; }
+};
+inline constexpr std::size_t kMaxGainPoints = 256;
+// Empty when `line` is a valid gain line: strictly increasing, non-negative
+// frames, finite dB within the gain range, at most kMaxGainPoints points.
+std::string gain_line_problem(const std::vector<GainPoint>& line);
+
 struct Region {
     Id id = 0;
     std::string name;
@@ -107,6 +122,8 @@ struct Region {
     Frames source_offset = 0;  // the source frame that plays at `position`
     std::vector<SourceRef> channels;  // one per track channel
     float gain_db = 0.0f;
+    // Strictly increasing `at`, at most kMaxGainPoints; empty is a flat clip.
+    std::vector<GainPoint> gain_line;
     bool mute = false;
     Fade fade_in, fade_out;
 

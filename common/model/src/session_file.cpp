@@ -546,10 +546,35 @@ bool v17_to_v18(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v18 -> v19 (clip gain): nothing is filled in; a region may carry
+// "gain_line". A version 18 file holding one is refused, as its reader would.
+bool v18_to_v19(Value& root, std::vector<Repair>&, std::string& error) {
+    const Value* list = root.find("tracks");
+    if (list == nullptr || !list->is_array()) return true;
+    for (std::size_t i = 0; i < list->items().size(); ++i) {
+        const Value& t = list->items()[i];
+        const Value* pls = t.is_object() ? t.find("playlists") : nullptr;
+        if (pls == nullptr || !pls->is_array()) continue;
+        for (const Value& pl : pls->items()) {
+            const Value* rs = pl.is_object() ? pl.find("regions") : nullptr;
+            if (rs == nullptr || !rs->is_array()) continue;
+            for (const Value& r : rs->items()) {
+                if (r.is_object() && r.find("gain_line") != nullptr) {
+                    error = "tracks[" + std::to_string(i) +
+                            "] has a region with \"gain_line\", which version 18 does not "
+                            "define";
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
      v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
-     v16_to_v17, v17_to_v18}};
+     v16_to_v17, v17_to_v18, v18_to_v19}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -594,6 +619,15 @@ Value region_value(const Region& r) {
     }
     v.set("source_offset", integer(r.source_offset));
     v.set("gain_db", Value::number_float(r.gain_db));
+    // Only a clip with a line: a file without one stays readable by format 18.
+    if (!r.gain_line.empty()) {
+        Value& line = v.set("gain_line", Value::array());
+        for (const GainPoint& g : r.gain_line) {
+            Value& e = line.push(Value::object());
+            e.set("at", integer(g.at));
+            e.set("db", Value::number_float(g.db));
+        }
+    }
     v.set("mute", Value::boolean(r.mute));
     v.set("fade_in", fade_value(r.fade_in));
     v.set("fade_out", fade_value(r.fade_out));
@@ -1362,7 +1396,7 @@ bool read_region(Reader& rd, const Value& v, const std::string& p, Region& r) {
     if (!rd.keys(v, p,
                  {"id", "name", "position", "length", "source", "source_offset",
                   "gain_db", "mute", "fade_in", "fade_out"},
-                 {"colour"})) {
+                 {"colour", "gain_line"})) {
         return false;
     }
     if (!rd.id(v, p, "id", r.id)) return false;
@@ -1383,6 +1417,20 @@ bool read_region(Reader& rd, const Value& v, const std::string& p, Region& r) {
     }
     if (!rd.frames(v, p, "source_offset", r.source_offset)) return false;
     if (!rd.real(v, p, "gain_db", r.gain_db)) return false;
+    if (v.find("gain_line") != nullptr) {
+        const Value* line = nullptr;
+        if (!rd.array(v, p, "gain_line", line)) return false;
+        for (std::size_t i = 0; i < line->items().size(); ++i) {
+            const Value& e = line->items()[i];
+            const std::string gp = index_path(p + ".gain_line", i);
+            GainPoint g;
+            if (!rd.keys(e, gp, {"at", "db"}) || !rd.frames(e, gp, "at", g.at) ||
+                !rd.real(e, gp, "db", g.db)) {
+                return false;
+            }
+            r.gain_line.push_back(g);
+        }
+    }
     if (!rd.flag(v, p, "mute", r.mute)) return false;
     if (!read_fade(rd, v, p, "fade_in", r.fade_in)) return false;
     return read_fade(rd, v, p, "fade_out", r.fade_out);

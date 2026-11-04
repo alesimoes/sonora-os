@@ -270,10 +270,11 @@ std::string as_v17(const std::string& v16) {
     return edit(v16, "\"sonora_session\": 16,", "\"sonora_session\": 17,");
 }
 
-// What v17 -> v18 makes of a file with no aux bus: the version and the
-// Master's empty lanes (ADR-0027 §9).
+// What v17 -> v19 makes of a file with no aux bus: the version (19 adds only
+// an optional key, so nothing else changes) and the Master's empty lanes
+// (ADR-0027 §9).
 std::string as_v18(const std::string& v17) {
-    return edit(edit(v17, "\"sonora_session\": 17,", "\"sonora_session\": 18,"),
+    return edit(edit(v17, "\"sonora_session\": 17,", "\"sonora_session\": 19,"),
                 "    \"pan_law_db\": -3.0\n  },",
                 "    \"pan_law_db\": -3.0,\n    \"automation\": []\n  },");
 }
@@ -285,7 +286,9 @@ std::string as_current(const std::string& v4) {
 
 // The current version's frozen fixture: what this build writes. Its
 // sequence files are in fixtures/MIDI Sequences/.
-constexpr const char* kCurrent = "v18-strip-lanes.sonora";
+constexpr const char* kCurrent = "v19-clip-gain.sonora";
+// The version 18 fixture: the same session before clip gain lines.
+constexpr const char* kNoClipGain = "v18-strip-lanes.sonora";
 // The version 17 fixture: the same session before strip lanes.
 constexpr const char* kNoStripLanes = "v17-plugin-files.sonora";
 // The version 16 fixture: the same session before plugin files.
@@ -324,7 +327,7 @@ int test_fixture_is_canonical() {
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     g_folder.reads = 0;
     CHECK(load(text, l, e));
-    CHECK(l.file_version == 18);
+    CHECK(l.file_version == 19);
     CHECK(l.repairs.empty());
     CHECK(l.missing_sequences.empty());
     // Three regions' sequences, each file read once.
@@ -335,8 +338,8 @@ int test_fixture_is_canonical() {
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v18-strip-lanes.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v18-strip-lanes.out.sonora\n");
+        std::ofstream("v19-clip-gain.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v19-clip-gain.out.sonora\n");
     }
     CHECK(out == text);
     // And each sequence encodes to the bytes of the file that names it.
@@ -549,7 +552,7 @@ int test_v5_migrates() {
         CHECK(n.encoded == read_fixture(n.ref.file.c_str()));
     }
     std::int64_t version = 0;
-    CHECK(file_format_version(out, version) && version == 18);
+    CHECK(file_format_version(out, version) && version == 19);
     // A version 5 file cannot carry what version 5 does not define.
     CHECK(refused(edit(v5, "\"offset_ticks\": 480000,",
                        "\"offset_ticks\": 480000,\n              \"data\": {},"),
@@ -1937,6 +1940,52 @@ int test_v17_migrates_and_strip_lanes() {
     return 0;
 }
 
+// Version 19 (clip gain): a region may carry "gain_line", source-frame points
+// with a dB each. A version 18 file opens unchanged; one already carrying a
+// line is refused, as a version 18 reader would.
+int test_v18_migrates_and_clip_gain_line() {
+    const std::string v18 = read_fixture(kNoClipGain);
+    CHECK(!v18.empty());
+    Loaded l;
+    LoadError e;
+    CHECK(load(v18, l, e));
+    CHECK(l.file_version == 18 && l.repairs.empty());
+    std::string out;
+    CHECK(save(l, out));
+    CHECK(out == read_fixture(kCurrent));
+
+    const std::string anchor =
+        "              \"source_offset\": 24000,\n              \"gain_db\": 0.0,\n";
+    const std::string line =
+        anchor + "              \"gain_line\": [\n                {\n                  \"at\": 24000,\n"
+                 "                  \"db\": -3.0\n                },\n                {\n"
+                 "                  \"at\": 48000,\n                  \"db\": 6.5\n                }\n"
+                 "              ],\n";
+    const std::string cur = read_fixture(kCurrent);
+    const std::string with_line = edit(cur, anchor, line);
+    Loaded g;
+    if (!load(with_line, g, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
+    CHECK(load(with_line, g, e));
+    const Region& r = g.snapshot.edit->tracks[0]->playlists[0]->regions[0];
+    CHECK(r.gain_line.size() == 2 && r.gain_line[0].at == 24000 && r.gain_line[0].db == -3.0f &&
+          r.gain_line[1].at == 48000 && r.gain_line[1].db == 6.5f);
+    CHECK(save(g, out));
+    if (out != with_line) {
+        std::ofstream("v19-line.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved line differs; wrote v19-line.out.sonora\n");
+    }
+    CHECK(out == with_line);
+    CHECK(refused(edit(v18, anchor, line),
+                  "migrating from format version 18: tracks[0] has a region with \"gain_line\"",
+                  nullptr));
+    CHECK(refused(edit(with_line, "\"at\": 48000,", "\"at\": 24000,"),
+                  "gain_line points must be in increasing order", nullptr));
+    CHECK(refused(edit(with_line, "\"db\": 6.5", "\"db\": 99.0"), "gain_line point's db", nullptr));
+    CHECK(refused(edit(with_line, "\"db\": -3.0", "\"db\": -3.0,\n                  \"x\": 1"),
+                  "unknown key", nullptr));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1955,6 +2004,7 @@ int main() {
     t(test_v15_migrates_and_trim);
     t(test_v16_migrates_and_plugin_files);
     t(test_v17_migrates_and_strip_lanes);
+    t(test_v18_migrates_and_clip_gain_line);
     t(test_v1_migrates);
     t(test_v2_migrates);
     t(test_v3_migrates);

@@ -269,6 +269,16 @@ struct SetRegionColour {
     std::uint8_t colour = kTrackColour;
 };
 
+// A clip's gain (Pro Tools' Clip Gain): the region's own gain_db and its gain
+// line, replaced whole so one undo step restores both. The UI nudges by
+// sending the new level; an empty line is a flat clip. Audio regions only.
+struct SetRegionGain {
+    Id playlist = 0;
+    Id region = 0;
+    float gain_db = 0.0f;
+    std::vector<GainPoint> gain_line;
+};
+
 // A permutation of every track id, in the new display order.
 struct ReorderTracks {
     std::vector<Id> order;
@@ -548,7 +558,7 @@ using Member =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetRegionGain>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -583,7 +593,7 @@ using Operation =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, Compound>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetRegionGain, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");
