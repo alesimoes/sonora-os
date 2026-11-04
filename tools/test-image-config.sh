@@ -342,6 +342,52 @@ if [ -f "$COMP" ] && [ -f "$UIU" ]; then
   grep -qx 'BindsTo=sonora-compositor.service' "$UIU" || bad "UI unit is not bound to the compositor"
   grep -qx 'RestartPreventExitStatus=3' "$UIU" || bad "UI unit retries the 'unfit display' exit"
 fi
+# --- kiosk stage 2: the engine as its own unit, editors on labwc ---
+# The engine and the display stack must fail and restart separately: a
+# compositor or UI crash that restarts the engine ends the take in progress.
+ENG="$INC/etc/systemd/system/sonora-engine.service"
+RUN="$INC/usr/local/bin/sonora-engine-run"
+for f in "$ENG" "$RUN" "$INC/usr/share/sonora/labwc/autostart"; do
+  [ -f "$f" ] || bad "kiosk stage 2 lacks ${f#"$INC"/}"
+done
+if [ -f "$ENG" ] && [ -f "$UIU" ]; then
+  grep -qx 'ConditionKernelCommandLine=sonora.gui' "$ENG" || bad "engine unit is not gated on sonora.gui"
+  grep -qx 'ConditionPathExists=!/run/sonora-display-failed' "$ENG" || bad "engine unit does not stand down after the display fallback"
+  # Not Conflicts=: the session is enabled at boot, and a Conflicts= between two
+  # units in one boot transaction made systemd drop the session (measured in
+  # tools/test-display-fallback.sh). The fallback stops the engine by hand.
+  grep -Eq '^Conflicts=.*sonora-(session|engine)' "$ENG" "$UNIT" && bad "Conflicts= between the engine and the session unit"
+  grep -Eq '^ExecStart=-/usr/bin/systemctl stop .*sonora-engine\.service' "$FALLBACK" || bad "fallback does not stop the display stack's engine"
+  grep -qx 'Restart=always' "$ENG" || bad "engine unit does not restart"
+  grep -qx 'StartLimitIntervalSec=0' "$ENG" || bad "engine unit gives up after a crash loop"
+  grep -qx 'LimitRTPRIO=95' "$ENG" || bad "engine unit has no RT priority grant"
+  grep -qx 'LimitMEMLOCK=infinity' "$ENG" || bad "engine unit has no memlock grant"
+  grep -qx 'ExecStart=/usr/local/bin/sonora-engine-run' "$ENG" || bad "engine unit does not start the launcher"
+  grep -Eq '^(BindsTo|Requires|PartOf)=' "$ENG" && bad "engine unit is tied to another unit's stop; a UI or labwc crash would end the take"
+  grep -qx 'Wants=sonora-engine.service' "$UIU" || bad "UI unit does not pull in the engine"
+  grep -qx 'After=sonora-engine.service' "$UIU" || bad "UI unit is not ordered after the engine"
+  grep -Eq '^(BindsTo|Requires)=.*sonora-engine' "$UIU" && bad "UI unit is bound to the engine; the engine's restart would restart the UI"
+  grep -Eq '^ExecStart=/usr/local/bin/sonora-ui --kiosk$' "$UIU" || bad "UI unit does not run the real-engine kiosk (--demo left in?)"
+  grep -qx 'Restart=always' "$UIU" || bad "UI unit does not restart"
+fi
+grep -qx 'chmod 0755 /usr/local/bin/sonora-engine-run' "$HOOK" || bad "hook does not chmod sonora-engine-run"
+grep -qx 'chmod 0755 /usr/share/sonora/labwc/autostart' "$HOOK" || bad "hook does not chmod the labwc autostart"
+# The engine is pulled in by the UI; enabling it would start it without sonora.gui checks.
+grep -q 'systemctl enable sonora-engine.service' "$HOOK" && bad "hook enables the engine unit; the UI unit pulls it in"
+grep -q 'display.env' "$RUN" 2>/dev/null || bad "engine launcher does not read the display file"
+grep -q 'display.env' "$INC/usr/share/sonora/labwc/autostart" 2>/dev/null || bad "labwc autostart does not write the display file"
+grep -Eq -- '--headless' "$RUN" 2>/dev/null || bad "engine launcher is not headless"
+RC="$INC/usr/share/sonora/labwc/rc.xml"
+# Editors are every window but the UI: no rule may strip their title bar, the
+# operator's only way to move or close a misbehaving one.
+if [ -f "$RC" ]; then
+  grep -c 'serverDecoration="no"' "$RC" | grep -qx 1 || bad "rc.xml undecorates more than one window rule"
+  grep -q 'windowRule identifier="sonora-ui" serverDecoration="no"' "$RC" || bad "rc.xml: the only undecorated window is not sonora-ui"
+  grep -q '<policy>center</policy>' "$RC" || bad "rc.xml: editors are not centred"
+  grep -q '<repeatRate>' "$RC" || bad "rc.xml sets no key repeat"
+fi
+grep -q 'XKB_DEFAULT_LAYOUT' "$INC/usr/local/bin/sonora-compositor" || bad "compositor wrapper does not map the keyboard layout"
+
 grep -q '^session .*pam_systemd.so' "$INC/etc/pam.d/sonora-ui" 2>/dev/null || bad "pam sonora-ui does not open a logind session"
 grep -Ev '^[[:space:]]*#' "$INC/etc/pam.d/sonora-ui" 2>/dev/null | grep -q pam_limits && bad "pam sonora-ui loads pam_limits; the UI would inherit rtprio 95"
 
@@ -368,6 +414,122 @@ grep -q -- '--gui)' "$BOOT_QEMU" || bad "test-boot-qemu.sh has no --gui mode"
 grep -q -- '--gui-broken)' "$BOOT_QEMU" || bad "test-boot-qemu.sh has no --gui-broken mode"
 grep -q 'sonora.gui sonora.break_ui' "$BOOT_QEMU" || bad "--gui-broken does not pass sonora.break_ui"
 grep -q 'iso size' "$BOOT_QEMU" || bad "test-boot-qemu.sh does not record the ISO size"
+
+# --- Windows plugins: Wine and yabridge in the image (ADR-0017 Y6) ---
+YB_HOOK="$ROOT/iso/config/hooks/normal/0200-sonora-yabridge.hook.chroot"
+YB_LIST="$ROOT/iso/config/package-lists/windows-plugins.list.chroot"
+YB_UNIT="$INC/etc/systemd/system/sonora-windows-plugins.service"
+YB_SCRIPT="$INC/usr/local/bin/sonora-windows-plugins"
+YB_DOCKER="$ROOT/tools/Dockerfile.yabridge"
+for f in "$YB_HOOK" "$YB_LIST" "$YB_UNIT" "$YB_SCRIPT" "$YB_DOCKER"; do
+  [ -f "$f" ] || bad "missing ${f#"$ROOT"/}"
+done
+if [ -f "$YB_HOOK" ] && [ -f "$YB_DOCKER" ]; then
+  for k in VERSION SHA256; do
+    h="$(sed -nE "s/^SONORA_YABRIDGE_$k=([^[:space:]]+)$/\1/p" "$YB_HOOK")"
+    d="$(sed -nE "s/^ARG YABRIDGE_$k=([^[:space:]]+)$/\1/p" "$YB_DOCKER")"
+    [ -n "$h" ] || bad "yabridge hook: no SONORA_YABRIDGE_$k pin"
+    [ "$h" = "$d" ] || bad "yabridge $k: hook '$h' differs from Dockerfile.yabridge '$d'"
+  done
+  h="$(sed -nE 's/^SONORA_YABRIDGE_SHA256=(.*)$/\1/p' "$YB_HOOK")"
+  printf '%s' "$h" | grep -Eq '^[0-9a-f]{64}$' || bad "yabridge hook: SHA-256 pin is not 64 hex digits"
+  grep -q 'sha256sum -c' "$YB_HOOK" || bad "yabridge hook does not verify the tarball"
+  grep -Eq 'SONORA_WINE_SERIES=[0-9]+\.[0-9]+' "$YB_HOOK" || bad "yabridge hook does not pin the Wine series"
+  grep -q 'chmod 0755 /usr/local/bin/sonora-windows-plugins' "$YB_HOOK" || bad "yabridge hook does not chmod the setup script"
+  grep -q 'systemctl enable sonora-windows-plugins.service' "$YB_HOOK" || bad "yabridge hook does not enable the setup unit"
+fi
+if [ -f "$YB_LIST" ]; then
+  grep -Eqx 'wine64' "$YB_LIST" || bad "windows-plugins list lacks wine64"
+  grep -Eqx 'wine32|libwine:i386' "$YB_LIST" && bad "windows-plugins list pulls 32-bit Wine"
+fi
+if [ -f "$YB_UNIT" ]; then
+  grep -Eqx 'User=sonora' "$YB_UNIT" || bad "windows-plugins unit does not run as the operator"
+  grep -Eq '^Type=oneshot' "$YB_UNIT" || bad "windows-plugins unit is not oneshot"
+  grep -Eq '^(Before|Requires|RequiredBy)=.*sonora-session' "$YB_UNIT" && bad "windows-plugins unit is ordered against the engine"
+  grep -Eq '^LimitRTPRIO' "$YB_UNIT" && bad "windows-plugins unit asks for real time"
+fi
+if [ -f "$YB_SCRIPT" ]; then
+  grep -q 'yabridgectl sync' "$YB_SCRIPT" || bad "sonora-windows-plugins does not run yabridgectl sync"
+  grep -q 'wineboot --init' "$YB_SCRIPT" || bad "sonora-windows-plugins does not create the prefix"
+  grep -v "^[[:space:]]*#" "$YB_SCRIPT" | grep -q "set --path" && bad "script uses yabridgectl set --path (panics in 5.1.1)"
+  # Behaviour, without Wine: --check changes nothing and never fails.
+  chk_home="$(mktemp -d)"
+  out="$(HOME="$chk_home" PATH="$chk_home/bin:$PATH" sh -c '
+    mkdir -p "$HOME/bin"; for t in wineboot yabridgectl; do printf "#!/bin/sh
+exit 0
+" > "$HOME/bin/$t"; chmod +x "$HOME/bin/$t"; done
+    sh "'"$YB_SCRIPT"'" --check "$HOME/p"' 2>&1)" || bad "sonora-windows-plugins --check failed: $out"
+  printf '%s
+' "$out" | grep -q 'would be created' || bad "--check does not report the missing prefix: $out"
+  [ -e "$chk_home/.wine" ] && bad "--check created the prefix"
+  rm -rf "$chk_home"
+fi
+
+# --- every binary the image runs is in the image ---
+# A unit or a launcher that names /usr/local/bin/<x> for an <x> that nothing
+# stages boots into a restart loop (or, for the plugin host, into an engine
+# that silently has no inserts). Each such path must be a file tracked in
+# includes.chroot or listed in iso/staged.list, which build-iso.sh stages.
+STAGED="$ROOT/iso/staged.list"
+BIN="$INC/usr/local/bin"
+if [ ! -f "$STAGED" ]; then
+  bad "missing iso/staged.list"
+else
+  staged_paths="$(awk '!/^[[:space:]]*(#|$)/ { print $1 }' "$STAGED")"
+  required_paths="$(awk '$2 == "required" { print $1 }' "$STAGED")"
+  refs="$(grep -rhEv '^[[:space:]]*#' "$INC/etc/systemd/system" "$BIN" "$HOOK" 2>/dev/null |
+    grep -Eo '/usr/local/bin/[A-Za-z0-9._-]+' | sort -u || true)"
+  [ -n "$refs" ] || bad "found no /usr/local/bin reference in the units and launchers: the check is blind"
+  for p in $refs; do
+    [ -f "$INC$p" ] && continue
+    printf '%s\n' "$staged_paths" | grep -qxF "$p" || bad "$p is run by a unit or launcher but is neither tracked in includes.chroot nor in iso/staged.list"
+  done
+  # A listed binary needs a way in: build-iso.sh must name it, or the producer
+  # it comes from (sonora-plugin-host and its siblings are installed by a loop).
+  for p in $required_paths; do
+    case "$p" in
+      */) continue ;;
+    esac
+    n="$(basename "$p")"
+    grep -q "$n" "$BUILD_ISO" || grep -q "$n" "$ROOT/tools/build-plugins.sh" || bad "$n is required by iso/staged.list but build-iso.sh never stages it"
+  done
+  for p in $required_paths; do
+    case "$p" in
+      /usr/local/bin/*) printf '%s\n' "$refs" | grep -qxF "$p" || [ "$p" = /usr/local/bin/sonora-tui ] || bad "$p is staged but nothing runs it" ;;
+    esac
+  done
+  printf '%s\n' "$staged_paths" | grep -qxF /usr/local/bin/sonora-plugin-host || bad "iso/staged.list does not stage sonora-plugin-host"
+  printf '%s\n' "$staged_paths" | grep -qxF /usr/local/lib/lv2/ || bad "iso/staged.list does not stage the LV2 bundles"
+  printf '%s\n' "$staged_paths" | grep -qxF /usr/local/lib/vst3/ || bad "iso/staged.list does not stage the VST3 bundles"
+  printf '%s\n' "$staged_paths" | grep -qxF /usr/share/sonora/keymaps/ || bad "iso/staged.list does not stage the keymap profiles"
+fi
+grep -q -- '--list-staged' "$BUILD_ISO" || bad "build-iso.sh has no --list-staged"
+grep -q -- '--stage' "$ROOT/tools/build-plugins.sh" || bad "build-plugins.sh has no --stage mode for the image"
+grep -q 'build-plugins.sh" --stage' "$BUILD_ISO" || bad "build-iso.sh does not build the plugin host and bundles"
+grep -q 'usr/local/lib/lv2' "$BUILD_ISO" || bad "build-iso.sh does not stage the LV2 bundles"
+grep -q 'usr/local/lib/vst3' "$BUILD_ISO" || bad "build-iso.sh does not stage the VST3 bundles"
+grep -qE 'SONORA_WITH_UI:-1' "$BUILD_ISO" || bad "build-iso.sh no longer stages sonora-ui by default"
+ls "$ROOT"/keymaps/*.json >/dev/null 2>&1 || bad "no keymaps/*.json to stage"
+# Runtime libraries of what is staged, from the package list.
+for pkg in liblilv-0-0 libx11-6 qt6-wayland libqt6quick6 qml6-module-qtquick; do
+  grep -qx "$pkg" "$PKGS" || bad "package list lacks $pkg, which sonora-plugin-host or sonora-ui needs at run time"
+done
+
+# --- the terminal UI on tty2 (ADR-0010 stage 2) ---
+TUIU="$INC/etc/systemd/system/sonora-tui.service"
+if [ ! -f "$TUIU" ]; then
+  bad "missing sonora-tui.service"
+else
+  grep -qx 'ExecStart=/usr/local/bin/sonora-tui' "$TUIU" || bad "tui unit does not run sonora-tui"
+  grep -qx 'TTYPath=/dev/tty2' "$TUIU" || bad "tui unit is not on tty2"
+  grep -qx 'Conflicts=getty@tty2.service' "$TUIU" || bad "tui unit does not displace the tty2 getty"
+  grep -qx 'Restart=always' "$TUIU" || bad "tui unit does not restart"
+  grep -qx 'StandardInput=tty' "$TUIU" || bad "tui unit has no tty input"
+  grep -qx 'ConditionKernelCommandLine=sonora.gui' "$TUIU" || bad "tui unit runs without the display stack"
+  grep -qx 'ConditionKernelCommandLine=!sonora.install' "$TUIU" || bad "tui unit fights the installer for tty2"
+  grep -qx 'Wants=sonora-engine.service' "$TUIU" || bad "tui unit does not pull in the engine"
+  grep -qx 'systemctl enable sonora-tui.service' "$HOOK" || bad "hook does not enable the tui unit"
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "ok: whole archive from snapshot $auto_ts (hook checks .list and deb822); test bases by digest; pipewire $pw_pin, wireplumber $wp_pin; rt kernel; tty1 owned, no VT gettys; sysctl ${#sc[@]} keys; smoketest powers off in order"

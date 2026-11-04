@@ -1,0 +1,81 @@
+#!/bin/sh
+# Wine prefix and yabridge sync for the operator's Windows VST3 plugins
+# (ADR-0017 Y6). Runs as the operator, never as root: the prefix belongs to
+# the account that runs the plugin host. Safe to run again at any time.
+#
+#   sonora-windows-plugins [DIR...]   DIR: folders holding Windows .vst3
+#                                     bundles. Default: ~/Windows-Plugins and
+#                                     the prefix's Common Files/VST3.
+#   sonora-windows-plugins --check    print what it would do, change nothing
+#
+# The engine's plugin scan walks ~/.vst3, which is where `yabridgectl sync`
+# writes its Linux bundles (~/.vst3/yabridge), so nothing else is needed for
+# the next scan to find them. Exit 0 whenever the system still boots as it
+# did: a missing plugin folder is not an error.
+set -u
+
+check=0
+if [ "${1:-}" = "--check" ]; then
+  check=1
+  shift
+fi
+
+if [ "$(id -u)" = 0 ]; then
+  echo "sonora-windows-plugins: run as the operator, not root." >&2
+  exit 1
+fi
+
+HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"
+export HOME
+# The same prefix the plugin scanner uses: $WINEPREFIX, else ~/.wine.
+prefix="${WINEPREFIX:-$HOME/.wine}"
+export WINEPREFIX="$prefix"
+# No Mono or Gecko download prompt, no Wine debug noise in the journal.
+export WINEDLLOVERRIDES="mscoree,mshtml="
+export WINEDEBUG="-all"
+stamp_dir="$HOME/.local/state/sonora"
+stamp="$stamp_dir/windows-plugins.done"
+
+if ! command -v wineboot >/dev/null 2>&1 || ! command -v yabridgectl >/dev/null 2>&1; then
+  echo "sonora-windows-plugins: Wine or yabridge is not installed; nothing to do." >&2
+  exit 0
+fi
+
+if [ "$#" -eq 0 ]; then
+  set -- "$HOME/Windows-Plugins" "$prefix/drive_c/Program Files/Common Files/VST3"
+fi
+
+if [ "$check" -eq 1 ]; then
+  echo "prefix: $prefix ($([ -f "$prefix/system.reg" ] && echo present || echo would be created))"
+  for d in "$@"; do
+    echo "folder: $d ($([ -d "$d" ] && echo present || echo absent))"
+  done
+  echo "then: yabridgectl sync -> $HOME/.vst3/yabridge"
+  exit 0
+fi
+
+if [ ! -f "$prefix/system.reg" ]; then
+  echo "sonora-windows-plugins: creating the Wine prefix at $prefix"
+  wineboot --init || echo "sonora-windows-plugins: wineboot failed; the scan will retry." >&2
+  # wineboot exits before the registry is saved; the scanner waits the same way.
+  wineserver -w 2>/dev/null || true
+fi
+
+# A crashing plugin must not raise Wine's crash dialog on a kiosk (ADR-0017 Y4).
+wine reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f >/dev/null 2>&1 ||
+  echo "sonora-windows-plugins: could not turn off Wine's crash dialog." >&2
+
+mkdir -p "$HOME/Windows-Plugins" "$HOME/.vst3"
+for d in "$@"; do
+  [ -d "$d" ] || continue
+  yabridgectl add "$d" || echo "sonora-windows-plugins: could not add $d" >&2
+done
+# `yabridgectl set --path` panics in 5.1.1 (ADR-0017 Y1): the default search
+# path (/usr/lib on this image) is the only one used.
+if yabridgectl sync; then
+  mkdir -p "$stamp_dir"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$stamp"
+else
+  echo "sonora-windows-plugins: yabridgectl sync failed; run again after fixing." >&2
+fi
+exit 0

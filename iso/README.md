@@ -134,6 +134,28 @@ date (both places), both versions in
 `tools/Dockerfile.runtime` reads the same two files, so the container tests
 follow.
 
+Why WirePlumber is pinned to a backport: trixie ships 0.5.8 with PipeWire
+1.4.2. WirePlumber 0.5.12 travels with PipeWire 1.6.9 from trixie-backports
+(ADR-0002 takes PipeWire from backports), and `brain/research/quantum-pin.md`
+("Re-run on PipeWire 1.6.9") re-ran the quantum pin on that pair. Backports
+keeps only its newest upload, so the pin resolves only through the dated
+snapshot, and the hook fails the build on any other version.
+
+## Build robustness
+
+- `tools/build-iso.sh --check` resolves every package list entry, the
+  PipeWire/WirePlumber pins and `linux-image-rt-amd64` in a `debian:trixie`
+  container with `apt-get -s`, in about a minute, and builds nothing. A normal
+  build runs the same check first, so an unreachable snapshot or a pin the
+  snapshot no longer has stops the build in a minute with a named cause, not
+  after the bootstrap. Fetches retry with backoff (5, 15, 45 s;
+  `SONORA_RETRY_DELAY` changes the first step).
+- When snapshot.debian.org is down for hours, a development build can use
+  another timestamp: `SONORA_DEV_SNAPSHOT=20261025T000000Z tools/build-iso.sh`.
+  The pins must still resolve there (the check says if not). The result is
+  `iso/sonora-dev.iso`, its BUILD_ID ends in `-dev`, and `SONORA_RELEASE=1`
+  refuses the combination. The committed timestamp is unchanged.
+
 ## Display stack (ADR-0010, stage 1)
 
 Off by default. With `sonora.gui` on the kernel command line,

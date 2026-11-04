@@ -9,6 +9,23 @@ IMAGE=sonora-livebuild:trixie
 # cached one.
 VOLUME="${SONORA_LB_VOLUME:-sonora-livebuild-work}"
 
+# shellcheck source=tools/iso-preflight.sh
+. "$ROOT/tools/iso-preflight.sh"
+
+# SONORA_DEV_SNAPSHOT=<YYYYMMDDTHHMMSSZ>: a development build from another
+# snapshot when the committed one is unreachable (snapshot.debian.org has been
+# down for hours). The pins must still resolve there. It is not a release: the
+# image is named sonora-dev.iso, its BUILD_ID says -dev, and SONORA_RELEASE=1
+# refuses it. Unset, nothing here changes.
+DEV_SNAPSHOT="$(pf_dev_env)" || exit 1
+OUT_NAME=sonora.iso
+if [[ -n "$DEV_SNAPSHOT" ]]; then
+  OUT_NAME=sonora-dev.iso
+  echo "WARNING: DEVELOPMENT BUILD from snapshot $DEV_SNAPSHOT, not the committed one. Output: iso/$OUT_NAME. Not a release." >&2
+fi
+CHECK_ONLY=0
+[[ "${1:-}" == "--check" ]] && CHECK_ONLY=1
+
 # Git Bash on Windows rewrites anything that looks like a Unix path before it
 # reaches the executable, so a container path like /src arrives as
 # C:/Program Files/Git/src. MSYS2_ARG_CONV_EXCL turns that off, which means we
@@ -40,6 +57,7 @@ stamp_build_id() {
      sha="$(git -C "$repo" rev-parse --short=9 HEAD 2>/dev/null)"; then
     id="$date.$sha"
     [[ -z "$(git -C "$repo" status --porcelain -- iso audio-stack engine 2>/dev/null)" ]] || id="$id-dirty"
+    [[ -z "$DEV_SNAPSHOT" ]] || id="$id-dev"
   else
     id="unstamped"
   fi
@@ -47,23 +65,59 @@ stamp_build_id() {
   printf '%s\n' "$id" >"$ROOT/iso/config/includes.chroot/usr/share/sonora/build-id"
   echo "BUILD_ID=$id"
 }
-stamp_build_id
+
+# --list-staged: what iso/staged.list says the image carries beyond the tracked
+# files, and what is staged in includes.chroot right now with its size. Builds
+# nothing, needs no Docker.
+list_staged() {
+  local path kind by size target total=0 bytes
+  printf '%-40s %-9s %-10s %s\n' PATH KIND STAGED "BUILT BY"
+  while read -r path kind by; do
+    case "$path" in ''|'#'*) continue ;; esac
+    target="$ROOT/iso/config/includes.chroot$path"
+    if [[ -e "$target" ]]; then
+      bytes="$(du -sk "$target" | cut -f1)"
+      total=$((total + bytes))
+      size="${bytes}K"
+    else
+      size="no"
+    fi
+    printf '%-40s %-9s %-10s %s\n' "$path" "$kind" "$size" "$by"
+  done <"$ROOT/iso/staged.list"
+  echo "staged now: ${total}K (du -sk, before squashfs compression)"
+}
+case "${1:-}" in
+  --list-staged) list_staged; exit 0 ;;
+  ''|--check) ;;
+  *) echo "usage: tools/build-iso.sh [--check|--list-staged]" >&2; exit 2 ;;
+esac
+
+[[ "$CHECK_ONLY" == 1 ]] || stamp_build_id
 
 # iso/sonora.iso.sha256, in sha256sum's format. tools/write-usb.ps1 refuses to
 # erase a stick for an image that no longer matches it: a copy cut short by a
 # full disk or an interrupted transfer can still boot partway, which is worse
 # than not booting.
 write_sidecar() {
-  (cd "$ROOT/iso" && rm -f sonora.iso.sha256 && sha256sum sonora.iso > sonora.iso.sha256)
-  cat "$ROOT/iso/sonora.iso.sha256"
+  (cd "$ROOT/iso" && rm -f "$OUT_NAME.sha256" && sha256sum "$OUT_NAME" > "$OUT_NAME.sha256")
+  cat "$ROOT/iso/$OUT_NAME.sha256"
 }
 
 if [[ "$(uname -s)" == "Linux" && "$(id -u)" == "0" ]] && command -v lb >/dev/null; then
+  if [[ "$CHECK_ONLY" == 1 ]]; then
+    pf_inside
+    exit $?
+  fi
+  pf_inside
   cd "$ROOT/iso"
+  if [[ -n "$DEV_SNAPSHOT" ]]; then
+    echo "error: a development snapshot needs the container path (it rewrites a copy of the configuration)." >&2
+    exit 1
+  fi
   lb clean
   lb config
   lb build
-  mv -f live-image-amd64.hybrid.iso sonora.iso
+  mv -f live-image-amd64.hybrid.iso "$OUT_NAME"
   write_sidecar
   echo "built: $ROOT/iso/sonora.iso"
   exit 0
@@ -78,6 +132,14 @@ docker info >/dev/null 2>&1 || {
 docker build -t "$IMAGE" --label org.sonora=1 \
   -f "$(host_path "$ROOT/tools")/Dockerfile.livebuild" \
   "$(host_path "$ROOT/tools")"
+
+# --check: resolve every package and pin in a trixie container and stop. About
+# a minute, no chroot, no engine build (tools/iso-preflight.sh).
+if [[ "$CHECK_ONLY" == 1 ]]; then
+  docker run --rm -e SONORA_DEV_SNAPSHOT="$DEV_SNAPSHOT" -e SONORA_RETRY_DELAY \
+    -v "$(host_path "$ROOT"):/src:ro" "$IMAGE" bash /src/tools/iso-preflight.sh inside
+  exit $?
+fi
 
 # The engine and UI builds print thousands of lines, so they go to a log
 # under iso/ (ignored by git) rather than the terminal. Not to /dev/null: a
@@ -122,21 +184,53 @@ install -m 0755 "$(dirname "$ENGINE")/sonora-tui" "$STAGE/sonora-tui"
 echo "staged the engine and sonora-tui into includes.chroot/usr/local/bin/"
 
 # The graphical interface (ADR-0010) needs Qt, which the engine image lacks, so
-# it is built by tools/build-ui.sh and staged only on request: SONORA_WITH_UI=1.
-# Without it any stale copy is removed, so an image never ships a binary from
-# an older commit; sonora-ui.service stays inert without sonora.gui anyway.
+# it is built by tools/build-ui.sh. Staged by default now that stage 2 starts
+# it at boot; SONORA_WITH_UI=0 skips it (a faster build of an image without
+# the display stack, whose unit is inert without sonora.gui anyway). Any stale
+# copy is removed first, so an image never ships a binary from an older commit.
 rm -f "$STAGE/sonora-ui"
-if [[ "${SONORA_WITH_UI:-0}" == 1 ]]; then
+if [[ "${SONORA_WITH_UI:-1}" == 1 ]]; then
   echo "Building the interface for the image..."
   run_logged build-ui "$ROOT/tools/build-ui.sh" --stage
   UI="$(find "$ROOT/build-ui-container" -name sonora-ui -type f 2>/dev/null | head -n 1)"
   [[ -n "$UI" ]] || {
-    echo "error: SONORA_WITH_UI=1 but no sonora-ui binary was found to stage." >&2
+    echo "error: the interface was built but no sonora-ui binary was found to stage." >&2
     exit 1
   }
   install -m 0755 "$UI" "$STAGE/sonora-ui"
   echo "staged sonora-ui"
 fi
+
+# The plugin host and the native LV2 and VST3 bundles, built in the
+# sonora-plugins image (the only one with lilv and the VST3 SDK). Without the
+# host the engine starts without --plugin-host (sonora-engine-run) and every
+# insert is silently unavailable. Bundles go to /usr/local/lib/{lv2,vst3}, on
+# the default search path of lilv and of the host's VST3 loader.
+# SONORA_WITH_PLUGINS=0 skips all of it.
+INCLUDES="$ROOT/iso/config/includes.chroot"
+rm -f "$STAGE/sonora-plugin-host" "$STAGE/sonora-analyze" "$STAGE/sonora-mixplan"
+rm -rf "$INCLUDES/usr/local/lib/lv2" "$INCLUDES/usr/local/lib/vst3"
+if [[ "${SONORA_WITH_PLUGINS:-1}" == 1 ]]; then
+  echo "Building the plugin host and the native bundles for the image..."
+  run_logged build-plugins "$ROOT/tools/build-plugins.sh" --stage
+  PSTAGE="$ROOT/build-plugins/stage/usr/local"
+  [[ -f "$PSTAGE/bin/sonora-plugin-host" ]] || {
+    echo "error: the plugins were built but no sonora-plugin-host was found to stage." >&2
+    exit 1
+  }
+  for tool in "$PSTAGE"/bin/*; do
+    install -m 0755 "$tool" "$STAGE/$(basename "$tool")"
+  done
+  mkdir -p "$INCLUDES/usr/local/lib"
+  cp -r "$PSTAGE/lib/lv2" "$PSTAGE/lib/vst3" "$INCLUDES/usr/local/lib/"
+  echo "staged sonora-plugin-host and the bundles into includes.chroot/usr/local/"
+fi
+
+# The Keys menu's profiles: sonora-ui reads /usr/share/sonora/keymaps.
+mkdir -p "$INCLUDES/usr/share/sonora/keymaps"
+install -m 0644 "$ROOT"/keymaps/*.json "$INCLUDES/usr/share/sonora/keymaps/"
+
+list_staged
 
 
 # live-build must not work on the bind-mounted host directory. debootstrap
@@ -148,7 +242,8 @@ fi
 # tools/clean.sh removes it only with --deep.
 docker volume create --label org.sonora=1 "$VOLUME" >/dev/null
 
-docker run --rm --privileged \
+docker run --rm --privileged -e SONORA_DEV_SNAPSHOT="$DEV_SNAPSHOT" -e SONORA_RETRY_DELAY \
+  -e OUT_NAME="$OUT_NAME" \
   -v "$(host_path "$ROOT"):/src:ro" \
   -v "$VOLUME:/work" \
   -w /work "$IMAGE" bash -lc '
@@ -162,6 +257,17 @@ docker run --rm --privileged \
   # rebuild back into twenty.
   rm -rf auto config
   cp -r /src/iso/auto /src/iso/config .
+
+  # Fail in a minute, not after the bootstrap: unreachable snapshot, a pin or
+  # the RT kernel that does not resolve (tools/iso-preflight.sh).
+  PF_ROOT=/src bash /src/tools/iso-preflight.sh inside
+
+  # Development fallback: the one timestamp in auto/config and in the
+  # backports list, which the hook requires to be equal.
+  if [ -n "${SONORA_DEV_SNAPSHOT:-}" ]; then
+    old="$(sed -n "s/^SONORA_SNAPSHOT=//p" auto/config)"
+    sed -i "s/$old/$SONORA_DEV_SNAPSHOT/" auto/config config/archives/sonora-backports.list.chroot
+  fi
 
   # cache/bootstrap is a whole debootstrapped tree, reused as is: after a
   # snapshot bump it would keep the old base (and kernel) under the new
@@ -178,7 +284,7 @@ docker run --rm --privileged \
   lb config
   lb build
 
-  cp -f live-image-amd64.hybrid.iso /work/sonora.iso
+  cp -f live-image-amd64.hybrid.iso "/work/$OUT_NAME"
   echo "iso ready in the volume"
 '
 
@@ -187,8 +293,8 @@ docker run --rm --privileged \
 docker run --rm \
   -v "$(host_path "$ROOT/iso"):/out" \
   -v "$VOLUME:/work" \
-  "$IMAGE" bash -lc 'cp -f /work/sonora.iso /out/sonora.iso'
+  -e OUT_NAME="$OUT_NAME" "$IMAGE" bash -lc 'cp -f "/work/$OUT_NAME" "/out/$OUT_NAME"'
 
 write_sidecar
-ls -lh "$ROOT/iso/sonora.iso"
-echo "built: $ROOT/iso/sonora.iso"
+ls -lh "$ROOT/iso/$OUT_NAME"
+echo "built: $ROOT/iso/$OUT_NAME"
