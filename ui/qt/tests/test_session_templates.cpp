@@ -601,12 +601,13 @@ int the_commands_ask_then_save() {
 
 // The shared list holds every catalog command that records or punches, so
 // one added to the catalog cannot start a take in a template's folder
-// unseen. transport.clear_punch only removes the range.
+// unseen. transport.clear_punch only removes the range and
+// track.toggle_track_punch only flips a track's flag.
 int every_record_or_punch_command_is_a_take_command() {
     for (const CommandSpec& spec : command_catalog()) {
         const std::string id = spec.id;
         const bool records = id.find("record") != std::string::npos || id.find("punch") != std::string::npos;
-        if (!records || id == "transport.clear_punch") continue;
+        if (!records || id == "transport.clear_punch" || id == "track.toggle_track_punch") continue;
         if (!is_take_command(id)) {
             std::fprintf(stderr, "  %s records or punches and is not in take_commands()\n", id.c_str());
             return 1;

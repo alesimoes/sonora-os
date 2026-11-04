@@ -577,7 +577,7 @@ int test_quick_punch_record_key() {
     bool quick = false;
     sonora::install_session_commands(reg, s, take, quit, nullptr, nullptr,
                                      [](sonora::PunchRange&) { return false; }, nullptr,
-                                     nullptr, nullptr, [&quick]() { return quick; });
+                                     nullptr, nullptr, nullptr, [&quick]() { return quick; });
     s.disk().start();
     s.tracks()[0]->set_rec_armed(true);
     s.play();

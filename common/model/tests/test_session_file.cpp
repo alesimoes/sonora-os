@@ -357,8 +357,7 @@ int test_fixture_is_canonical() {
     CHECK(save(l, out));
     if (out != text) {
         std::ofstream("v19-current.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v19-current.out.sonora
-");
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v19-current.out.sonora\n");
     }
     CHECK(out == text);
     // And each sequence encodes to the bytes of the file that names it.
