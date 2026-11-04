@@ -1,6 +1,10 @@
 [Unit]
 Description=Hand tty1 back to the recording session after the display stack failed
 ConditionKernelCommandLine=sonora.gui
+# It is started on every failure of the display units and usually skips itself
+# (ExecCondition= below); a skipped start still counts toward the default limit
+# of 5 in 10 s, and the start that matters, the sixth failure's, was refused.
+StartLimitIntervalSec=0
 
 # Started only by OnFailure= of the compositor and UI units.
 #
@@ -12,6 +16,8 @@ ConditionKernelCommandLine=sonora.gui
 # terminal UI. The flag lives in /run, so the next boot tries the display again.
 [Service]
 Type=oneshot
+# systemd runs OnFailure= on every failure, restarted or not; see the script.
+ExecCondition=/usr/local/bin/sonora-display-gave-up
 ExecStart=/usr/bin/touch /run/sonora-display-failed
 # Stopped first and synchronously: both units want tty1. The UI is BindsTo= the
 # compositor, so it goes too; it is named in case the compositor already failed.

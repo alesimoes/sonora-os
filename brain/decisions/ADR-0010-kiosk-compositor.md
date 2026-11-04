@@ -399,6 +399,20 @@ measurement.
    `OnFailure` + `RestartPreventExitStatus` are expected to reach tty2 within
    about 10 s, and to do nothing to the engine. That is reasoned from
    systemd.unit(5), not run. Owner: distro-engineer, stage 1.
+
+   *Update, 2026-11-04 (systemd 257.13 in a container, stub binaries):* the
+   reasoning was wrong in one place. systemd 257 starts `OnFailure=` units on
+   every failure, also one that `Restart=always` has just scheduled a restart
+   for (`Failed with result 'signal'`, `Triggering OnFailure=`, `Scheduled
+   restart job`, in that order, for every variant tried). So `kill -9` of the
+   UI ran the fallback at once, which stopped the compositor and started the
+   session: one crash cost the operator the display for the whole boot. The
+   fallback now has `ExecCondition=/usr/local/bin/sonora-display-gave-up`,
+   which skips it while either unit is in SubState `auto-restart`.
+   `tools/test-display-fallback.sh` covers `kill -9` of the UI and of the
+   compositor (back under a new PID within 3 s) and a UI that exits 1 until
+   the start limit trips (fallback runs). Still not run: the same on a real
+   image, with a real labwc and tty1 (QEMU `--gui` / `--gui-broken`).
 5. **Logind session from a system unit with `PAMName=` and `pam_systemd`.**
    Documented for cage, not yet run in our image. Owner: distro-engineer,
    stage 1.
