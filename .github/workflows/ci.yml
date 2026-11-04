@@ -585,6 +585,9 @@ jobs:
       - name: Read-only root, capped RAM writes
         run: tools/test-ro-root.sh
 
+      - name: Build slot limiter
+        run: tools/test-build-slot.sh
+
       - name: Secure Boot chain, static
         run: tools/test-secure-boot.sh
 
