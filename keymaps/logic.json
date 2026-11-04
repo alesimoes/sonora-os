@@ -73,7 +73,7 @@
     "e": {
       "command": "window.event_list",
       "verified": false,
-      "comment": "Logic's Show Event List key is E; not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md. Ours lists a lane's automation points, not Logic's MIDI events."
+      "comment": "Logic's Show Event List key is E; not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md. The Sonora window lists a lane's automation points, not Logic's MIDI events."
     },
     "ctrl+alt+t": {
       "command": "automation.thin",
