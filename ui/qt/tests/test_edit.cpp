@@ -459,8 +459,27 @@ int test_controller() {
     OK(!c.press(a_mid, lower, why));
     OK(why.find("Shuffle") != std::string::npos);
     OK(c.drag().kind == Drag::Kind::None);
+    OK(!c.spot_region(30 * kBar, why) && why.find("Shuffle") != std::string::npos);
+    OK(!c.nudge(1, why) && why.find("Shuffle") != std::string::npos);
+    // Spot: a click on a region asks where it starts instead of dragging it,
+    // and the time typed places it exactly, on no grid.
     c.set_mode(EditMode::Spot);
-    OK(!c.trim_start_to_insertion(why));
+    c.set_grid(GridValue::Bar);
+    OK(c.take_spot_request() == kNoId);
+    OK(c.press(a_mid, lower, why));
+    OK(c.take_spot_request() == 10 && c.selection().region == 10);
+    OK(c.drag().kind == Drag::Kind::None);
+    OK(c.take_spot_request() == kNoId);
+    OK(c.release(a_mid, lower, why));
+    OK(c.spot_region(30 * kBar + 123, why));
+    OK(region(doc.snapshot(), 10)->position == 30 * kBar + 123);
+    OK(c.selection().region == 10 && c.selection().start == 30 * kBar + 123);
+    OK(c.undo(why));
+    OK(!c.spot_region(-5, why) && !why.empty());
+    // Trims and nudges are free in Spot, as in Slip.
+    c.set_insertion(kBar + kBar / 2);
+    OK(c.trim_start_to_insertion(why));
+    OK(c.undo(why));
     c.set_mode(EditMode::Slip);
     c.next_mode();
     OK(c.mode() == EditMode::Spot);

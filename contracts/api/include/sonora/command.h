@@ -241,6 +241,8 @@ inline const std::vector<CommandSpec>& command_catalog() {
          false, CommandDomain::Interface},
         {"edit.duplicate", CommandTarget::None, "Duplicate the selection"},
         {"edit.repeat", CommandTarget::None, "Repeat the selection"},
+        {"edit.spot", CommandTarget::None,
+         "Spot the selected region to a start time typed in the main counter's format", true},
         {"edit.select_all", CommandTarget::None, "Select all"},
         {"edit.trim_start_to_insertion", CommandTarget::None,
          "Trim the region start to the insertion point"},

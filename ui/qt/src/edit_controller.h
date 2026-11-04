@@ -259,15 +259,23 @@ public:
     // reason when no lane range is selected or nothing would go.
     bool thin_automation(std::string& why);
     bool nudge(int direction, std::string& why);
+    // Spot mode: the selected region placed so that it starts exactly at
+    // `to`, typed, never snapped (Pro Tools' Spot dialog, start time). What
+    // it lands on is overwritten, as a drag in Slip does. Refused in Shuffle.
+    bool spot_region(model::Frames to, std::string& why);
+    // A click on a region in Spot mode leaves the region here for the
+    // window to ask where it starts; kNoId once taken, and when no click
+    // asked.
+    model::Id take_spot_request() { return std::exchange(spot_request_, kNoId); }
 
     // --- the clipboard (edit_clipboard.h) ---
     // On a selected region, or a time range on the selected tracks, every
     // track of it in the same compound. Each
     // edit is one compound, so one undo step labelled with its name; one
     // that needs more than model::kMaxCompoundMembers members is refused
-    // before anything is sent. Shuffle would ripple every later region,
-    // which waits for ShiftRegions, so Cut, Paste, Duplicate and Repeat
-    // refuse it.
+    // before anything is sent. In Shuffle, Clear and Cut close the gap, and
+    // Paste, Duplicate and Repeat open one, by moving every later region
+    // (ShiftRegions) inside the same compound.
     //
     // Copy changes no document and is no undo step, as in Pro Tools.
     bool copy(std::string& why);
@@ -509,7 +517,12 @@ private:
                     std::string& why) const;
     // `span` becomes the selection: a range on its tracks, no region.
     void select_span(int first, int count, model::Frames a, model::Frames b);
+    // Refuses, by name, a gesture whose Shuffle form is not built (Strip
+    // Silence); the ones that are build their ripple (shuffle_shift).
     bool refuse_shuffle(const char* gesture, const char* nothing_was, std::string& why) const;
+    // Shuffle moves regions, not the automation under them: names the tracks
+    // whose lanes now sit out of step, as a held notice.
+    void note_shuffle_automation(const char* gesture, int first, int count);
     // One gesture's members as one Compound labelled `gesture`, refused
     // unsent past the member limit.
     bool submit_compound(std::vector<model::Member> members, const char* gesture,
@@ -565,6 +578,7 @@ private:
     int repeat_count_ = 1;
     Locator locate_;
     uint64_t clipboard_serial_ = 0;
+    model::Id spot_request_ = kNoId;
 };
 
 // --- fades, as the engine plays them ---

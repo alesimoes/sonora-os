@@ -3,7 +3,7 @@
 // Cut, Copy, Paste, Duplicate, Repeat and Clear (edit_clipboard.h): each gesture one
 // compound and one labelled undo step; past model::kMaxCompoundMembers
 // refused before anything is sent, in the operator's words, changing
-// nothing; Shuffle refused by name. Then the Edit menu in the real QML,
+// nothing; Shuffle rippling the regions after it. Then the Edit menu in the real QML,
 // loaded on the offscreen platform: its undo text, and its items sending
 // what the keys send.
 #include <QGuiApplication>
@@ -234,22 +234,143 @@ int test_cut_clear_duplicate() {
     CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Separate");
     CHECK(c.undo(why) && !doc.can_undo());
 
-    // Shuffle would ripple: refused by name, nothing changed. Copy changes
-    // no region, so Shuffle allows it.
-    c.set_mode(EditMode::Shuffle);
-    const uint64_t r0 = doc.revision();
-    CHECK(c.select_region(10));
-    CHECK(!c.cut(why) && has(why, "Shuffle") && has(why, "ShiftRegions") && has(why, "Nothing was cut."));
-    CHECK(!c.clear(why) && has(why, "Nothing was cleared."));
-    CHECK(!c.duplicate(why) && has(why, "Nothing was duplicated."));
-    CHECK(c.copy(why));
-    CHECK(!c.paste(why) && has(why, "Nothing was pasted."));
-    CHECK(doc.revision() == r0);
     // Spot and Grid paste as Slip does.
     c.set_mode(EditMode::Spot);
     c.select_track(1);
     c.set_insertion(0);
     CHECK(c.paste(why));
+    return 0;
+}
+
+// --- Shuffle: every gap closes or opens (ShiftRegions) ----------------------
+
+Frames start_of(const Snapshot& s, Id region, int track = 0) {
+    for (const Region& r : lane(s, track).regions) {
+        if (r.id == region) return r.position;
+    }
+    return -1;
+}
+
+int test_shuffle() {
+    ModelDocument doc(two_regions());   // A [1, 3) bars, B [4, 5)
+    EditController c(doc);
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    c.set_mode(EditMode::Shuffle);
+    std::string why;
+
+    // Cut closes the gap A leaves: B moves up by A's length, in one step.
+    CHECK(c.select_region(10));
+    CHECK(c.cut(why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 1 && start_of(doc.snapshot(), 11) == 2 * kBar);
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Cut");
+    CHECK(valid(doc.snapshot()));
+    // Paste at the insertion point opens a gap the clipboard's length (2 bars).
+    c.select_track(0);
+    c.set_insertion(0);
+    CHECK(c.paste(why));
+    CHECK(start_of(doc.snapshot(), 11) == 4 * kBar);
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 2 && lane(doc.snapshot(), 0).regions[0].position == 0);
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why) && c.undo(why));
+    CHECK(start_of(doc.snapshot(), 10) == kBar && start_of(doc.snapshot(), 11) == 4 * kBar);
+
+    // Clear on a region closes its gap too.
+    CHECK(c.select_region(10));
+    CHECK(c.clear(why));
+    CHECK(start_of(doc.snapshot(), 11) == 2 * kBar && doc.undo_label() == "Clear");
+    CHECK(c.undo(why));
+
+    // Clear on a range inside A: the part after it moves up by the range's
+    // length, and so does B.
+    select_range(c, 0, kBar + kBar / 2, 2 * kBar + kBar / 2);
+    CHECK(c.clear(why));
+    {
+        const Playlist& p = lane(doc.snapshot(), 0);
+        CHECK(p.regions.size() == 3);
+        CHECK(p.regions[0].position == kBar && p.regions[0].end() == kBar + kBar / 2);
+        CHECK(p.regions[1].position == kBar + kBar / 2 && p.regions[1].end() == 2 * kBar);
+        CHECK(p.regions[2].id == 11 && p.regions[2].position == 3 * kBar);
+    }
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+
+    // Paste at an insertion point inside A splits it and opens the gap.
+    CHECK(c.select_region(10));
+    CHECK(c.copy(why));
+    c.select_track(0);
+    c.set_insertion(2 * kBar);
+    CHECK(c.paste(why));
+    {
+        const Playlist& p = lane(doc.snapshot(), 0);
+        CHECK(p.regions.size() == 4);
+        CHECK(p.regions[0].end() == 2 * kBar && p.regions[1].position == 2 * kBar);
+        CHECK(p.regions[1].end() == 4 * kBar && p.regions[2].position == 4 * kBar);
+        CHECK(p.regions[3].id == 11 && p.regions[3].position == 6 * kBar);
+    }
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+
+    // Paste over a range replaces it: B (1 bar) for A's 2 bars pulls B up by one.
+    CHECK(c.select_region(11));
+    CHECK(c.copy(why));
+    select_range(c, 0, kBar, 3 * kBar);
+    CHECK(c.paste(why));
+    {
+        const Playlist& p = lane(doc.snapshot(), 0);
+        CHECK(p.regions.size() == 2);
+        CHECK(p.regions[0].position == kBar && p.regions[0].length == kBar);
+        CHECK(p.regions[1].id == 11 && p.regions[1].position == 3 * kBar);
+    }
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+
+    // Duplicate and Repeat push what follows by what they add.
+    CHECK(c.select_region(10));
+    CHECK(c.duplicate(why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 3 && start_of(doc.snapshot(), 11) == 6 * kBar);
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+    CHECK(c.select_region(10));
+    CHECK(c.repeat(2, why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 4 && start_of(doc.snapshot(), 11) == 8 * kBar);
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+
+    // The last region has nothing after it to move: no ripple member.
+    CHECK(c.select_region(11));
+    CHECK(c.cut(why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 1 && start_of(doc.snapshot(), 10) == kBar);
+    CHECK(c.undo(why));
+
+    // Moves and trims with the mouse stay refused by name; Strip Silence too.
+    CHECK(!c.nudge(1, why) && has(why, "Shuffle"));
+    CHECK(c.take_follow_notice().empty());
+    return 0;
+}
+
+// Shuffle moves regions, not the automation under them: the notice says so,
+// naming the track.
+int test_shuffle_automation_notice() {
+    ModelDocument doc(two_regions());
+    EditController c(doc);
+    c.set_viewport(4000, 400);
+    std::string why;
+    c.set_mode(EditMode::Shuffle);
+    c.select_track(0);
+    // A volume breakpoint, through the Pencil's own operation.
+    model::EditAutomation e;
+    e.track = doc.snapshot().edit->tracks[0]->id;
+    e.param = AutomationParam::Volume;
+    e.from = 0;
+    e.to = 8 * kBar;
+    e.points = {{kBar, -6.0f}};
+    CHECK(doc.submit(e, why));
+    CHECK(c.select_region(10));
+    CHECK(c.clear(why));
+    const std::string notice = c.take_follow_notice();
+    CHECK(has(notice, "Shuffle Clear") && has(notice, doc.snapshot().edit->tracks[0]->name.c_str()));
+    CHECK(c.take_follow_notice().empty());
     return 0;
 }
 
@@ -441,10 +562,6 @@ int test_repeat() {
     CHECK(c.select_region(11));
     CHECK(!c.repeat(0, why) && has(why, "1 or more") && has(why, "nothing was repeated"));
     CHECK(!c.repeat(-2, why) && has(why, "1 or more"));
-    c.set_mode(EditMode::Shuffle);
-    CHECK(!c.can_repeat(why) && has(why, "Shuffle") && has(why, "Nothing was repeated."));
-    CHECK(!c.repeat(2, why) && has(why, "Shuffle"));
-    c.set_mode(EditMode::Slip);
     CHECK(doc.revision() == r0 && c.repeat_count() == 2);
 
     // A crossfade held in the range comes with every copy, between that
@@ -832,11 +949,6 @@ int test_several_tracks() {
     CHECK(!c.trim_start_to_insertion(why) && has(why, "on several tracks"));
     CHECK(doc.revision() == r0);
 
-    // Shuffle refuses on several tracks as on one.
-    c.set_mode(EditMode::Shuffle);
-    CHECK(!c.paste(why) && has(why, "Shuffle"));
-    c.set_mode(EditMode::Slip);
-
     // Select All: every track, from the start to the last region's end.
     CHECK(c.select_all(why));
     CHECK(c.selection().track == 0 && c.selection().tracks == 3 && c.selection().start == 0 &&
@@ -1031,7 +1143,8 @@ int test_menu() {
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
-    if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() ||
+    if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() || test_shuffle() ||
+        test_shuffle_automation_notice() ||
         test_repeat_count_text() || test_fades_and_crossfades() ||
         test_cut_edges_lose_fades() ||
         test_limit() || test_several_tracks() || test_menu()) {

@@ -1361,3 +1361,36 @@ dialects, and `common/base` is RT-safe by definition, which a DOM is not.
 together. Rejected because ADR-0007 §2 puts the builder in `engine/control`,
 and moving it would put model-reading code in the module whose callees may
 be on the audio thread.
+
+## Update, 2026-11-04: ShiftRegions and Shuffle (protocol 59)
+
+Status: **Accepted** on the recommended default (owner delegation). It
+delivers the `ShiftRegions` the compound-operations update above reserved.
+
+**Decision.** A new member operation `ShiftRegions{playlist, from, delta}`:
+every region of an audio playlist that starts at or after `from` moves by
+`delta` frames (either sign), keeping order and the gaps between them. A
+region that straddles `from` stays, so a gesture that opens a gap inside a
+region first splits it (`SplitRegion`) in the same compound.
+
+- **Refused**, changing nothing: `delta` 0; no region starting at or after
+  `from`; a moved region before frame 0 or past `kMaxInteger`; going
+  earlier, the first moved region landing on one that stays; a MIDI playlist.
+- **Crossfades** between a region that stays and one that moves are dropped
+  (they no longer butt), as every edit drops one it breaks; those between
+  two moved regions travel with them.
+- **Wire.** `{"op": "ShiftRegions", "playlist", "from", "delta"}`, `delta` a
+  signed integer within +-2^53-1. Appended after `SetRegionColour` in
+  `Member` and `Operation`, so the kinds before it keep their index.
+  `kProtocolVersion` 59; no session-format change (operations are not
+  stored in the session file, and the undo window holds snapshots).
+- **Undo** is the snapshot restore every edit has: one compound, one step.
+
+**Shuffle in the Edit window** (`ui.editing.modes`): Clear and Cut close the
+gap (shift by minus the removed length, from its end); Paste, Duplicate and
+Repeat open one (split, shift by the added length, place without the clear
+a Slip paste does); a Paste over a range replaces it and shifts by the
+difference. Moves, trims, nudges and Strip Silence in Shuffle stay refused
+by name. Automation does not follow the ripple: the Edit window holds a
+notice naming the tracks whose lanes are now out of step (Pro Tools'
+Automation Follows Edit for Shuffle is open).
