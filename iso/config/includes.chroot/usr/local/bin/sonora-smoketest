@@ -60,6 +60,8 @@ VIRTUALCARD=0
 EXPECT_INSTALLED=0
 EXPECT_FILE=
 EXPECT_SHA=
+# sonora.policycheck: assert the running mounts, limits, sysctls and units.
+POLICYCHECK=0
 # Words, not lines: /proc/cmdline is one line of parameters.
 # shellcheck disable=SC2013
 for word in $(cat /proc/cmdline); do
@@ -67,6 +69,7 @@ for word in $(cat /proc/cmdline); do
     sonora.expect_capture=*) EXPECT_CAPTURE="${word#sonora.expect_capture=}" ;;
     sonora.gui) GUI=1 ;;
     sonora.virtualcard) VIRTUALCARD=1 ;;
+    sonora.policycheck) POLICYCHECK=1 ;;
     sonora.expect_fallback) EXPECT_FALLBACK=1 ;;
     sonora.expect_installed) EXPECT_INSTALLED=1 ;;
     sonora.expect_file=*) EXPECT_FILE="${word#sonora.expect_file=}" ;;
@@ -208,6 +211,13 @@ if [ "$VIRTUALCARD" = 1 ]; then
   echo "SMOKETEST info  sonora.virtualcard: snd-dummy rme9652"
   # shellcheck disable=SC1091
   . /usr/local/bin/sonora-virtualcard-test
+fi
+
+# --- 3c. policy of the running system, when asked for ---
+if [ "$POLICYCHECK" = 1 ]; then
+  echo "SMOKETEST info  sonora.policycheck: asserting the running policy"
+  # shellcheck disable=SC1091
+  . /usr/local/bin/sonora-policycheck
 fi
 
 # --- 4. how many capture channels the audio server really offers ---
