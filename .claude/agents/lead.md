@@ -1,7 +1,7 @@
 ---
 name: lead
 description: Distributes a feature plan to engineers and testers. A short, event-driven run started by the orchestrator (ADR-0047) on plan_ready, task_done, qa_fail, agent_dead or pool_under_floor. Writes assignments, never code.
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 80
 ---

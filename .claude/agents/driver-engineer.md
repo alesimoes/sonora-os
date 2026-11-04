@@ -1,7 +1,7 @@
 ---
 name: driver-engineer
 description: Hardware enablement — USB audio interfaces, ALSA, kernel modules and quirks, control surfaces (HUI, Mackie Control), clock and sync (word clock, ADAT, LTC, MTC). Use when the system has to talk to a physical device.
-tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch
+tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 120
 ---

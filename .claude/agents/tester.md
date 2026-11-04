@@ -1,7 +1,7 @@
 ---
 name: tester
 description: The per-task QA gate of the orchestrated flow (ADR-0047). A fresh run for each finished task attempt, never the author. Reviews the diff as code-reviewer does, runs the task's accept commands, applies rt-safety-auditor checks on RT files, and reports pass or a bug.
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 80
 ---
