@@ -299,6 +299,17 @@ int ride_moves_the_group() {
     return 0;
 }
 
+namespace {
+// By the visual tree: findChild would miss items the QML parents elsewhere.
+QQuickItem* named(QQuickItem* item, const QString& name) {
+    if (item->objectName() == name) return item;
+    for (QQuickItem* c : item->childItems()) {
+        if (QQuickItem* f = named(c, name)) return f;
+    }
+    return nullptr;
+}
+}  // namespace
+
 int qml() {
     Rig r;
     CHECK(r.connect());
@@ -320,20 +331,20 @@ int qml() {
     QQuickItem* root = view.rootObject();
     CHECK(root != nullptr);
     // The tag reads the group on its members, and is empty elsewhere.
-    QQuickItem* tag1 = root->findChild<QQuickItem*>(QStringLiteral("groupTag1"));
-    QQuickItem* tag0 = root->findChild<QQuickItem*>(QStringLiteral("groupTag0"));
+    QQuickItem* tag1 = named(root, QStringLiteral("groupTag1"));
+    QQuickItem* tag0 = named(root, QStringLiteral("groupTag0"));
     CHECK(tag1 != nullptr && tag0 != nullptr);
     CHECK(tag1->property("color").value<QColor>().alpha() > 0);
     CHECK(tag0->property("color").value<QColor>().alpha() == 0);
     // The buttons act on the selected track's group.
     r.session.selectTrack(1);
-    QQuickItem* suspend = root->findChild<QQuickItem*>(QStringLiteral("groupSuspend"));
+    QQuickItem* suspend = named(root, QStringLiteral("groupSuspend"));
     CHECK(suspend != nullptr);
     QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier,
                       suspend->mapToScene(QPointF(suspend->width() / 2, suspend->height() / 2)).toPoint());
     r.settle();
     CHECK(!r.doc.snapshot().edit->groups[0].active);
-    QQuickItem* ungroup = root->findChild<QQuickItem*>(QStringLiteral("groupDissolve"));
+    QQuickItem* ungroup = named(root, QStringLiteral("groupDissolve"));
     CHECK(ungroup != nullptr);
     QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier,
                       ungroup->mapToScene(QPointF(ungroup->width() / 2, ungroup->height() / 2)).toPoint());
