@@ -23,6 +23,7 @@ add_library(sonora_control STATIC
   src/preset_store.cpp
   src/consolidate.cpp
   src/consolidate_job.cpp
+  src/mix_planner.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -236,3 +237,12 @@ add_executable(test_automation_writer tests/test_automation_writer.cpp)
 target_include_directories(test_automation_writer PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
 target_link_libraries(test_automation_writer PRIVATE sonora_control)
 add_test(NAME automation_writer COMMAND test_automation_writer)
+
+# The mix assistant's rule-based planners (ADR-0045): analysis, gain staging,
+# bus structure, parallel sends; and the command line that prints a plan.
+add_executable(sonora-mixplan src/mixplan_main.cpp)
+target_link_libraries(sonora-mixplan PRIVATE sonora_control)
+add_executable(test_mix_planner tests/test_mix_planner.cpp)
+target_include_directories(test_mix_planner PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
+target_link_libraries(test_mix_planner PRIVATE sonora_control)
+add_test(NAME mix_planner COMMAND test_mix_planner)
