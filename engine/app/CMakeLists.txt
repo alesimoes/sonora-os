@@ -6,7 +6,8 @@ target_include_directories(sonora-engine PRIVATE include)
 # ui/ is linked. On a terminal the engine starts sonora-tui, a separate
 # executable, from beside itself; the dependency below only builds it there.
 target_link_libraries(sonora-engine PRIVATE
-  sonora_control sonora_core sonora_backend_jack sonora_backend_fake sonora_platform
+  sonora_control sonora_core sonora_backend_jack sonora_backend_alsa sonora_backend_fake
+  sonora_platform
   Threads::Threads)
 add_dependencies(sonora-engine sonora-tui)
 

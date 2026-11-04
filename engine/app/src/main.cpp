@@ -33,6 +33,7 @@
 #include "sonora/engine_control_in_process.h"
 #include "sonora/engine_control_server.h"
 #include "sonora/exit_watchdog.h"
+#include "sonora/alsa_backend.h"
 #include "sonora/fake_backend.h"
 #include "sonora/jack_backend.h"
 #include "sonora/machine_latency.h"
@@ -49,11 +50,16 @@ namespace {
 
 using sonora::backend::AudioBackend;
 
+// --alsa-period and friends; read when the "alsa" backend is made.
+sonora::AlsaBackend::Options g_alsa_options;
+
 // The one place that names a concrete backend; everything below speaks
 // AudioBackend. "fake" is drivers/fake on its own thread at real-time pace,
 // shaped as the UMC1820, so the whole engine runs with no audio server;
-// "fake:onboard" is a laptop's 2-input onboard audio instead.
+// "fake:onboard" is a laptop's 2-input onboard audio instead. "alsa" is the
+// card itself, no server (ADR-0053).
 std::unique_ptr<AudioBackend> make_backend(const std::string& name) {
+    if (name == "alsa") return std::make_unique<sonora::AlsaBackend>(g_alsa_options);
     if (name == "jack") return std::make_unique<sonora::JackBackend>();
     if (name == "fake" || name == "fake:onboard") {
         sonora::FakeBackend::Config cfg = name == "fake"
@@ -607,6 +613,30 @@ int main(int argc, char** argv) {
                 return 2;
             }
             cfg.touch_return_ms = static_cast<uint32_t>(n);
+        } else if (std::strcmp(argv[i], "--alsa-period") == 0 && i + 1 < argc) {
+            char* end = nullptr;
+            const long long n = std::strtoll(argv[++i], &end, 10);
+            if (end == argv[i] || *end != '\0' || n < 16 || n > 8192) {
+                std::fprintf(stderr, "sonora: --alsa-period takes 16 to 8192 frames\n");
+                return 2;
+            }
+            g_alsa_options.period_frames = static_cast<uint32_t>(n);
+        } else if (std::strcmp(argv[i], "--alsa-periods") == 0 && i + 1 < argc) {
+            char* end = nullptr;
+            const long long n = std::strtoll(argv[++i], &end, 10);
+            if (end == argv[i] || *end != '\0' || n < 2 || n > 8) {
+                std::fprintf(stderr, "sonora: --alsa-periods takes 2 to 8\n");
+                return 2;
+            }
+            g_alsa_options.periods = static_cast<uint32_t>(n);
+        } else if (std::strcmp(argv[i], "--alsa-rtprio") == 0 && i + 1 < argc) {
+            char* end = nullptr;
+            const long long n = std::strtoll(argv[++i], &end, 10);
+            if (end == argv[i] || *end != '\0' || n < 0 || n > 99) {
+                std::fprintf(stderr, "sonora: --alsa-rtprio takes 0 (off) to 99\n");
+                return 2;
+            }
+            g_alsa_options.rt_priority = static_cast<int>(n);
         } else if (std::strcmp(argv[i], "--backups") == 0 && i + 1 < argc) {
             char* end = nullptr;
             const long long n = std::strtoll(argv[++i], &end, 10);
@@ -635,7 +665,12 @@ int main(int argc, char** argv) {
                 "                    none, the one onboard device\n"
                 "  --backend NAME    jack (default), or fake: no audio server, an\n"
                 "                    18-in UMC1820 with a distinct tone per channel\n"
-                "                    (fake:onboard: 2-in onboard audio instead)\n"
+                "                    (fake:onboard: 2-in onboard audio instead), or\n"
+                "                    alsa: the card directly, no server, nothing else\n"
+                "                    may hold it (--device names the card by id)\n"
+                "  --alsa-period N   alsa: frames per period (default 128)\n"
+                "  --alsa-periods N  alsa: periods in the ring (default 2)\n"
+                "  --alsa-rtprio N   alsa: SCHED_FIFO priority (default 70, 0: off)\n"
                 "  --rate HZ         session sample rate (default 48000)\n"
                 "  --float           record 32-bit float instead of 24-bit\n"
                 "  --arm-all         arm every track at startup\n"
@@ -700,7 +735,7 @@ int main(int argc, char** argv) {
 
     // Before anything else is set up: a misspelled backend is a usage error.
     if (!make_backend(backend_name)) {
-        std::fprintf(stderr, "sonora: unknown backend %s (jack, fake, fake:onboard)\n",
+        std::fprintf(stderr, "sonora: unknown backend %s (jack, alsa, fake, fake:onboard)\n",
                      backend_name.c_str());
         return 2;
     }
