@@ -112,8 +112,16 @@ $files"
   fi
 
   gh pr merge "$pr" --squash --match-head-commit "$head" || { skip "$pr" "gh pr merge failed"; continue; }
-  git push -q origin --delete "$branch" ||
-    echo "#$pr: merged; the remote branch $branch was not deleted" >&2
+  # Deleting a branch another open PR is based on makes GitHub close that PR
+  # (it happened to a stacked PR). Keep the branch while any open PR targets it.
+  dependents=$(gh pr list --state open --base "$branch" --json number --jq '.[].number' 2>/dev/null | tr '
+' ' ')
+  if [ -n "$dependents" ]; then
+    echo "#$pr: merged; kept branch $branch, open PRs are based on it: $dependents(retarget them to main)" >&2
+  else
+    git push -q origin --delete "$branch" ||
+      echo "#$pr: merged; the remote branch $branch was not deleted" >&2
+  fi
   echo "#$pr: merged"
 done
 exit "$skipped"

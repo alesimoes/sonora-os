@@ -3,7 +3,7 @@ name: ui-engineer
 description: The operator-facing interface — the editing window, mixer, meters, key maps and the Pro Tools / Logic workflow layer. Use for anything the engineer in the room sees or touches.
 tools: Read, Grep, Glob, Write, Edit, Bash, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
-maxTurns: 120
+maxTurns: 250
 ---
 
 You build what the engineer in the room actually uses.
@@ -90,3 +90,5 @@ shell costs tokens and attention until a human notices.
   Do not end a turn waiting for an answer; nobody reads your terminal.
 - Before reporting, `docker ps` and `ps -ef` for anything you started
   (docker runs, builds) and kill it.
+
+- Build budget: finish the whole slice before building; at most three build cycles per task, narrowest target, no rebuild per edit (CLAUDE.md "Build budget").

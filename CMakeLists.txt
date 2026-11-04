@@ -122,6 +122,8 @@ if(NOT SONORA_PLATFORM STREQUAL "linux")
 endif()
 add_subdirectory(contracts/api)
 add_subdirectory(contracts/backend)
+# Control surface events in, feedback out (ADR-0007 4.4, ADR-0040).
+add_subdirectory(contracts/surfaces)
 # The engine <-> plugin host shared-memory layout, accepted as layout 1
 # (ADR-0012 §5).
 add_subdirectory(contracts/plugin)
@@ -130,6 +132,8 @@ add_subdirectory(contracts/plugin)
 # whose end-to-end tests run it when it is built.
 add_subdirectory(plugins/host)
 add_subdirectory(engine/core)
+# Offline converters (ADR-0007 M10); the engine never links them.
+add_subdirectory(interchange)
 add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
 # Platform-neutral (ADR-0008): the backend engine tests run on, any OS.
