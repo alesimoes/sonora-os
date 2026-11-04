@@ -1,0 +1,26 @@
+{
+  "processor": "org.sonora.vocal_balance",
+  "class": "A",
+  "note": "ADR-0011 3.2, first bars (set before the first run; see the PR for the measured figures). The reference is the detector's stated arithmetic. The surroundings of a band are the wide (Q 0.7) level less the narrow (selectivity) one, so a peak cancels out of them; the excess is the narrow level over the surroundings in dB, less the bias 10 log10(r / (1 - r)), r = 0.7 / selectivity, which is what a smooth spectrum reads (0 dB), floored at 30 dB of surroundings under the narrow level. The reduction is the excess over the threshold through a 6 dB knee, times depth, capped by the band's cut, and the matched peak bell takes exactly that off a tone at its centre. tone_cut_db is the worst departure for a tone alone (excess 30 dB less the bias) over 3 bands x 3 selectivities x 3 thresholds x 2 depths (the other bands capped at 0). noise_db: flat noise has no peak, so the band leaves it alone. bed_db: a tone 12 and 4 dB over the noise in the narrow band on a white bed (noise power from the equivalent noise bandwidth of the very filter, integrated), against the stated curve through the knee; the estimate of a narrow band's power is noisy, hence the looser bar. bell_db: a probe 1.25 x above the triggering tone against the matched peak design at the measured cut, Q 1.5, 4, 12. delta_null: processed + delta = input. mix_db: 50 % mix is the mean of dry and wet. solo: a tone at a band's centre passes (neighbour bands add up to 1 dB), 100 Hz is under every band. time_tolerance: attack and release are held as differences (40 ms vs 0.5 ms; 300 ms vs 10 ms), since the detector's window (5 ms and up) and its -80 dBFS gate add a fixed lag to both. The zipper tone sits on band 2 with a cut running, the bar moved down by the tone's 6 dB; the standard 100 Hz sweep proves the coefficient ramps.",
+  "vocal_balance": {
+    "identity_db": 0.01,
+    "tone_cut_db": 0.35,
+    "noise_db": 0.5,
+    "bed_db": 1.0,
+    "bell_db": 0.3,
+    "delta_null": 1e-5,
+    "delta_min": 0.001,
+    "mix_db": 0.05,
+    "solo_pass_db": 1.0,
+    "solo_stop_db": -20.0,
+    "time_tolerance": 0.25
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["depth", "sharpness", "selectivity", "threshold", "attack", "release", "mix", "output", "freq1", "freq2", "freq3", "freq4", "freq5", "cut1", "cut2", "cut3", "cut4", "cut5"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}
