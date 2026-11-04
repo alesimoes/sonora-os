@@ -35,7 +35,7 @@ U=/src/iso/config/includes.chroot/etc/systemd/system
 useradd -u 1000 -m -U sonora
 cp "$U"/sonora-compositor.service "$U"/sonora-ui.service \
    "$U"/sonora-display-fallback.service "$U"/sonora-session.service \
-   "$U"/sonora-smoketest.service /etc/systemd/system/
+   "$U"/sonora-smoketest.service "$U"/sonora-engine.service /etc/systemd/system/
 # The index has them 100644; a Windows bind mount shows every file executable.
 chmod 644 /etc/systemd/system/sonora-*.service
 stub() { printf "#!/bin/sh\n%s\n" "$2" > "/usr/local/bin/$1"; chmod 755 "/usr/local/bin/$1"; }
@@ -46,6 +46,8 @@ cp /src/iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up /usr/loc
 chmod 755 /usr/local/bin/sonora-display-gave-up
 stub sonora-wait-for-audio "exit 0"
 stub sonora-engine "exec sleep infinity"
+# Stage 2: the display stack runs the engine through this launcher.
+stub sonora-engine-run "exec sleep infinity"
 stub sonora-smoketest "exit 0"
 case "$ui" in
   broken) stub sonora-ui "exit 3" ;;
@@ -61,6 +63,11 @@ for u in sonora-compositor sonora-session; do
   printf "[Service]\nPAMName=\nTTYPath=\nTTYReset=no\nTTYVHangup=no\nTTYVTDisallocate=no\nStandardInput=null\nStandardOutput=journal\nUtmpIdentifier=\n" \
     > "/etc/systemd/system/$u.service.d/container.conf"
 done
+# systemd orders a User= service after user@UID.service on its own, and the
+# user manager cannot start in a container (no logind session): its start job
+# would hold the engine, and the UI behind it, for ever. A real image has the
+# manager running through lingering. Masked here; Wants= on it is then ignored.
+ln -s /dev/null /etc/systemd/system/user@1000.service
 systemctl enable sonora-compositor.service sonora-session.service >/dev/null 2>&1
 exec /sbin/init "$@"
 '
@@ -97,6 +104,7 @@ wait_for() {
   return 1
 }
 expect() { local s; s="$(state "$1")"; [ "$s" = "$2" ] || bad "$1 is $s, expected $2"; }
+mainpid() { docker exec "$cid" systemctl show -p MainPID --value "$1"; }
 flag() { docker exec "$cid" test -e /run/sonora-display-failed; }
 
 # recover UNIT: SIGKILL its main process inside the container and print the
@@ -141,24 +149,37 @@ run() {
       expect sonora-compositor.service active
       expect sonora-ui.service active
       expect sonora-session.service inactive
+      expect sonora-engine.service active
       flag && bad "fallback ran with a healthy UI"
       ;;
     gui-kill)
       wait_for sonora-ui.service active || bad "UI never became active"
       sleep 2
+      eng="$(mainpid sonora-engine.service)"
+      [ -n "$eng" ] && [ "$eng" != 0 ] || bad "engine has no main process"
       ms="$(recover sonora-ui.service)" || bad "UI did not come back within 3 s of kill -9"
       echo "kill -9 of the UI: back after ${ms:-?} ms"
       sleep 2
       ms="$(recover sonora-compositor.service)" || bad "compositor did not come back within 3 s of kill -9"
       echo "kill -9 of the compositor: back after ${ms:-?} ms"
       wait_for sonora-ui.service active || bad "UI did not follow the compositor back"
+      # The take must outlive the display stack: same PID, never restarted.
+      [ "$(mainpid sonora-engine.service)" = "$eng" ] || bad "the engine restarted when the UI and compositor were killed"
+      # And the other way round: the engine's own restart policy, with the UI
+      # left alone.
+      ui="$(mainpid sonora-ui.service)"
+      ms="$(recover sonora-engine.service)" || bad "engine did not come back within 3 s of kill -9"
+      echo "kill -9 of the engine: back after ${ms:-?} ms"
+      [ "$(mainpid sonora-ui.service)" = "$ui" ] || bad "the UI restarted when only the engine was killed"
       expect sonora-session.service inactive
-      flag && bad "fallback ran after two SIGKILLs"
+      expect sonora-engine.service active
+      flag && bad "fallback ran after the SIGKILLs"
       ;;
     gui-broken|gui-failing)
       wait_for sonora-session.service active || bad "session never took over after the UI failed"
       flag || bad "fallback flag /run/sonora-display-failed missing"
       expect sonora-compositor.service inactive
+      expect sonora-engine.service inactive
       if [ "$scenario" = gui-failing ]; then
         # Counted from the journal: NRestarts is reset when the limit trips.
         n="$(docker exec "$cid" journalctl -b -u sonora-ui.service --no-pager 2>/dev/null | grep -c 'Scheduled restart job')"
