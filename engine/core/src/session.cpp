@@ -1095,6 +1095,45 @@ bool monitor_ramp_touches(uint64_t at, uint32_t len, uint64_t from,
     return start <= last && start + static_cast<int64_t>(len) >= first;
 }
 
+// Adds `run` frames of `data`, which play at timeline frame t, to `d` under
+// the segment's clip gain line (and its fades when `faded`). The line is
+// linear between points, so each stretch inside one pair of points is a
+// straight ramp: one search per stretch, not per frame.
+void add_with_gain_line(const PlanAutoPoint* p, uint32_t n, const PlanSegment& s, int64_t t,
+                        int64_t run, bool faded, const float* data, float* d) noexcept SONORA_RT {
+    int64_t i = 0;
+    while (i < run) {
+        const int64_t src = s.source_offset + (t + i - s.start);
+        int64_t len = run - i;
+        float g0 = p[n - 1].value;
+        float slope = 0.0f;
+        if (src < p[0].at) {
+            g0 = p[0].value;
+            if (p[0].at - src < len) len = p[0].at - src;
+        } else if (src < p[n - 1].at) {
+            // p[lo].at <= src < p[lo + 1].at: a step's second point wins.
+            uint32_t lo = 0;
+            uint32_t hi = n - 1;
+            while (hi - lo > 1) {
+                const uint32_t mid = lo + (hi - lo) / 2;
+                if (p[mid].at <= src) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            slope = (p[hi].value - p[lo].value) / static_cast<float>(p[hi].at - p[lo].at);
+            g0 = p[lo].value + slope * static_cast<float>(src - p[lo].at);
+            if (p[hi].at - src < len) len = p[hi].at - src;
+        }
+        for (int64_t j = 0; j < len; ++j) {
+            const float g = g0 + slope * static_cast<float>(j);
+            d[i + j] += data[i + j] * g * (faded ? segment_gain(s, t + i + j) : s.gain);
+        }
+        i += len;
+    }
+}
+
 }  // namespace
 
 void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
@@ -3050,7 +3089,10 @@ void Session::render_segment(const PlaybackPlan& plan, const PlanSegment& seg, u
                 const float* data = reader_->chunk_data(buf) + within;
                 const bool faded = t < seg.fade_in_end || t + run > seg.fade_out_start;
                 float* d = dst + (t - t0);
-                if (!faded && seg.gain == 1.0f) {
+                if (seg.gain_count > 0) {
+                    add_with_gain_line(plan.auto_points + seg.gain_first, seg.gain_count, seg, t,
+                                       run, faded, data, d);
+                } else if (!faded && seg.gain == 1.0f) {
                     for (int64_t i = 0; i < run; ++i) d[i] += data[i];
                 } else if (!faded) {
                     for (int64_t i = 0; i < run; ++i) d[i] += data[i] * seg.gain;
