@@ -342,10 +342,10 @@ bootloader() {
     step 6 bootloader
     if [ $EFI -eq 1 ]; then
         in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
-            --bootloader-id=sonora --no-floppy || fail 8 "grub-install (NVRAM entry) failed"
+            --bootloader-id=sonora --uefi-secure-boot --no-floppy || fail 8 "grub-install (NVRAM entry) failed"
         # Firmware that forgets its NVRAM still finds the removable path.
         in_target grub-install --target=x86_64-efi --efi-directory=/boot/efi \
-            --removable --no-floppy || fail 8 "grub-install --removable failed"
+            --removable --uefi-secure-boot --no-floppy || fail 8 "grub-install --removable failed"
         # grub-install already wrote the entry; this only reports it.
         in_target efibootmgr >/dev/null 2>&1 ||
             echo "sonora-install: efibootmgr unavailable, removable path only" >&2
@@ -383,6 +383,9 @@ selfcheck() {
     [ "$(grep -c . "$WORK/uuids")" -eq 2 ] || check_fail "fstab does not name both partitions"
     if [ $EFI -eq 1 ]; then
         ls "$r"/boot/efi/EFI/sonora/*.efi >/dev/null 2>&1 || check_fail "no loader under EFI/sonora"
+        # Secure Boot (ADR-0034): the signed shim and signed GRUB, not a bare grub.
+        [ -s "$r/boot/efi/EFI/sonora/shimx64.efi" ] || check_fail "no signed shim under EFI/sonora"
+        [ -s "$r/boot/efi/EFI/sonora/grubx64.efi" ] || check_fail "no signed GRUB under EFI/sonora"
         [ -s "$r/boot/efi/EFI/BOOT/BOOTX64.EFI" ] || check_fail "no removable-path loader"
     fi
     verify_sessions
