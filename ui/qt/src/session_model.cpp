@@ -66,6 +66,9 @@ SessionModel::SessionModel(TimelineDocument& doc, const PeakSource& peaks, bool 
       saved_revision_(doc.revision()),
       ctl_(doc) {
     updateCounters(true);
+    // The list is a view over this session's work; the next one starts
+    // without it.
+    connect(this, &SessionModel::sessionOpened, this, [this]() { setWindowConfigsOpen(false); });
 }
 
 void SessionModel::installCommands(CommandRegistry& local) {
@@ -381,6 +384,26 @@ void SessionModel::installCommands(CommandRegistry& local) {
         setLatencyOpen(!latency_open_);
         return true;
     });
+    local.install("window.configurations", [this](const CommandContext&) {
+        setWindowConfigsOpen(!window_configs_open_);
+        return true;
+    });
+    // The argument is the slot. A bad or empty one is refused with its
+    // reason: the screen must not move on a guess.
+    const auto slot_of = [](const CommandContext& ctx, int& slot, Why& why) {
+        bool ok = false;
+        slot = QString::fromStdString(ctx.argument).trimmed().toInt(&ok);
+        if (!ok) why = "name a window configuration, 1 to " + std::to_string(WindowLayouts::kSlots);
+        return ok;
+    };
+    simple("window.config_store", [this, slot_of](const CommandContext& ctx, Why& why) {
+        int slot = 0;
+        return slot_of(ctx, slot, why) && storeWindowConfig(slot, why);
+    });
+    simple("window.config_recall", [this, slot_of](const CommandContext& ctx, Why& why) {
+        int slot = 0;
+        return slot_of(ctx, slot, why) && recallWindowConfig(slot, why);
+    });
     simple("edit.separate_at_selection",
            [this](const CommandContext&, Why& why) { return ctl_.separate(why); });
     simple("edit.heal_separation",
@@ -596,6 +619,7 @@ bool SessionModel::undoHistoryTrimmed() const {
 void SessionModel::setUndoHistoryOpen(bool on) {
     if (on == undo_history_open_) return;
     undo_history_open_ = on;
+    layouts_.setOpen(QStringLiteral("undo_history"), on);
     emit undoHistoryOpenChanged();
 }
 
@@ -641,13 +665,93 @@ QVariantList SessionModel::markers() const {
 void SessionModel::setMemoryLocationsOpen(bool on) {
     if (on == memory_locations_open_) return;
     memory_locations_open_ = on;
+    layouts_.setOpen(QStringLiteral("memory_locations"), on);
     emit memoryLocationsOpenChanged();
 }
 
 void SessionModel::setLatencyOpen(bool on) {
     if (on == latency_open_) return;
     latency_open_ = on;
+    layouts_.setOpen(QStringLiteral("latency"), on);
     emit latencyOpenChanged();
+}
+
+QVariantList SessionModel::windowConfigs() const {
+    QVariantList list;
+    for (int n = 1; n <= WindowLayouts::kSlots; ++n) {
+        QVariantMap m;
+        m.insert(QStringLiteral("slot"), n);
+        m.insert(QStringLiteral("stored"), layouts_.stored(n));
+        m.insert(QStringLiteral("summary"), layouts_.summary(n));
+        list.push_back(m);
+    }
+    return list;
+}
+
+void SessionModel::setWindowConfigsOpen(bool on) {
+    if (on == window_configs_open_) return;
+    window_configs_open_ = on;
+    emit windowConfigsOpenChanged();
+}
+
+void SessionModel::windowPlaced(const QString& id, int x, int y) { layouts_.place(id, x, y); }
+
+QVariantMap SessionModel::windowPlace(const QString& id) const {
+    QVariantMap m;
+    const auto it = layouts_.current().windows.find(id);
+    if (it == layouts_.current().windows.end() || !it->second.placed) return m;
+    m.insert(QStringLiteral("x"), it->second.x);
+    m.insert(QStringLiteral("y"), it->second.y);
+    return m;
+}
+
+void SessionModel::noteWindowOpen(const QString& id, bool open) { layouts_.setOpen(id, open); }
+
+void SessionModel::setLayoutsFile(const QString& path) {
+    layouts_file_ = path;
+    QString why;
+    if (!path.isEmpty() && !layouts_.load(path, why)) {
+        emit heldNotice(QStringLiteral("Window configurations not loaded: ") + why);
+    }
+    emit windowConfigsChanged();
+}
+
+bool SessionModel::storeWindowConfig(int slot, std::string& why) {
+    QString reason;
+    if (!layouts_.store(slot, reason)) {
+        why = reason.toStdString();
+        emit heldNotice(reason);
+        return false;
+    }
+    emit windowConfigsChanged();
+    if (!layouts_file_.isEmpty() && !layouts_.save(layouts_file_, reason)) {
+        // Kept for this run, lost at the next: say so where it stays in view.
+        emit heldNotice(QStringLiteral("Window configuration ") + QString::number(slot) +
+                        QStringLiteral(" is stored for now but could not be saved: ") + reason);
+    }
+    return true;
+}
+
+bool SessionModel::recallWindowConfig(int slot, std::string& why) {
+    QString reason;
+    if (!layouts_.recall(slot, reason)) {
+        why = reason.toStdString();
+        emit heldNotice(reason);
+        return false;
+    }
+    // Copy first: the setters below write back into layouts_.
+    const WindowLayout target = layouts_.current();
+    const auto open_of = [&target](const char* id) {
+        const auto it = target.windows.find(QString::fromLatin1(id));
+        return it != target.windows.end() && it->second.open;
+    };
+    setWindow(target.view);
+    setUndoHistoryOpen(open_of("undo_history"));
+    setMemoryLocationsOpen(open_of("memory_locations"));
+    setLatencyOpen(open_of("latency"));
+    if (transport_open_hook_) transport_open_hook_(open_of("transport"));
+    emit windowPlacesRecalled();
+    return true;
 }
 
 bool SessionModel::recallMarker(int row) {
@@ -1205,6 +1309,7 @@ bool SessionModel::enterCounter(const QString& text) {
 void SessionModel::setWindow(const QString& w) {
     if (w == window_ || (w != QStringLiteral("edit") && w != QStringLiteral("mix"))) return;
     window_ = w;
+    layouts_.setView(w);
     emit windowChanged();
 }
 

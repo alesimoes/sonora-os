@@ -36,13 +36,16 @@ command -v cygpath >/dev/null 2>&1 && src="$(cygpath -w "$ROOT")"
 # libc6-dev is left to match the base image's libc6.
 docker build -q --label org.sonora=1 -t "$IMAGE" - >/dev/null <<'EOF'
 FROM debian:trixie
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
+ for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
+ if apt-get $A update && apt-get $A install -y --no-install-recommends \
       labwc=0.8.3-1 libwlroots-0.18=0.18.2-3 xwayland=2:24.1.6-1 \
       wev=1.0.0-3 x11-utils=7.7+7 \
       gcc=4:14.2.0-1 libc6-dev pkg-config=1.8.1-4 \
       libwayland-dev=1.23.1-3 libxkbcommon-dev=1.7.0-2 \
- && rm -rf /var/lib/apt/lists/*
+ ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
+ [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
+ rm -rf /var/lib/apt/lists/*
 EOF
 
 # Runs inside the container. $1 is the run: shipped or control.
