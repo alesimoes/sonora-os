@@ -234,7 +234,7 @@ ModelUpdate to_wire(const model::ReplicationUpdate& u) {
 }  // namespace
 
 std::vector<PluginInfo> fake_catalog() {
-    std::vector<PluginInfo> c(4);
+    std::vector<PluginInfo> c(7);
     c[0].format = PluginFormat::Lv2;
     c[0].id = "urn:sonora:fake:gain";
     c[0].name = "Fake Gain";
@@ -289,6 +289,107 @@ std::vector<PluginInfo> fake_catalog() {
          6.0f}};
     c[2].curves = {{0, "transfer", "Transfer", "dB", "dB", 128, false, -60.0f, 0.0f, -60.0f, 0.0f}};
 
+    // native.editors (ADR-0057): an EQ with bands in sections and a response
+    // curve, a cabinet and a reverb that group their controls and publish
+    // levels. What the editor draws from, each without a hand-made panel.
+    const uint32_t kAuto = kParamAutomatable;
+    const auto widget = [](PluginParam& p, const char* section, PluginWidget w,
+                           const char* curve = "") {
+        p.section = section;
+        p.widget = static_cast<uint32_t>(w);
+        p.curve_source = curve;
+    };
+    c[4].format = PluginFormat::Lv2;
+    c[4].id = "urn:sonora:fake:eq";
+    c[4].name = "Fake EQ";
+    c[4].vendor = "Sonora";
+    c[4].version = "1.0.0";
+    c[4].categories = {"EQ"};
+    c[4].inputs = c[4].outputs = 1;
+    c[4].params = {
+        param(0, "low_on", "Low shelf", 0.0f, 1.0f, 1.0f, kAuto | kParamToggle, "", 2),
+        param(1, "low_freq", "Frequency", 20.0f, 2000.0f, 100.0f, kAuto | kParamLogarithmic, "Hz"),
+        param(2, "low_gain", "Gain", -24.0f, 24.0f, 3.0f, kAuto, "dB"),
+        param(3, "b1_on", "Bell 1", 0.0f, 1.0f, 1.0f, kAuto | kParamToggle, "", 2),
+        param(4, "b1_freq", "Frequency", 20.0f, 20000.0f, 400.0f, kAuto | kParamLogarithmic, "Hz"),
+        param(5, "b1_gain", "Gain", -24.0f, 24.0f, -4.0f, kAuto, "dB"),
+        param(6, "b1_q", "Q", 0.1f, 18.0f, 1.2f, kAuto | kParamLogarithmic),
+        param(7, "b2_on", "Bell 2", 0.0f, 1.0f, 1.0f, kAuto | kParamToggle, "", 2),
+        param(8, "b2_freq", "Frequency", 20.0f, 20000.0f, 3200.0f, kAuto | kParamLogarithmic, "Hz"),
+        param(9, "b2_gain", "Gain", -24.0f, 24.0f, 5.0f, kAuto, "dB"),
+        param(10, "b2_q", "Q", 0.1f, 18.0f, 0.9f, kAuto | kParamLogarithmic),
+        param(11, "high_on", "High shelf", 0.0f, 1.0f, 1.0f, kAuto | kParamToggle, "", 2),
+        param(12, "high_freq", "Frequency", 1000.0f, 20000.0f, 10000.0f, kAuto | kParamLogarithmic, "Hz"),
+        param(13, "high_gain", "Gain", -24.0f, 24.0f, 2.0f, kAuto, "dB"),
+        param(14, "output", "Output", -24.0f, 24.0f, 0.0f, kAuto, "dB"),
+    };
+    const char* const eq_sections[] = {"Low shelf", "Low shelf", "Low shelf", "Bell 1", "Bell 1", "Bell 1",
+                                       "Bell 1",    "Bell 2",    "Bell 2",    "Bell 2", "Bell 2", "High shelf",
+                                       "High shelf", "High shelf", "Output"};
+    for (std::size_t i = 0; i < c[4].params.size(); ++i) {
+        const bool toggle = c[4].params[i].steps == 2;
+        widget(c[4].params[i], eq_sections[i], toggle ? PluginWidget::Switch : PluginWidget::Knob, "response");
+    }
+    c[4].meters = {
+        {0, "in", "Input", "dB", static_cast<uint32_t>(PluginMeterKind::InputLevel), -60.0f, 6.0f},
+        {1, "out", "Output", "dB", static_cast<uint32_t>(PluginMeterKind::OutputLevel), -60.0f, 6.0f}};
+    c[4].curves = {{0, "response", "Frequency response", "Hz", "dB", 128, true, 20.0f, 20000.0f, -24.0f, 24.0f}};
+
+    c[5].format = PluginFormat::Lv2;
+    c[5].id = "urn:sonora:fake:cab";
+    c[5].name = "Fake Cabinet";
+    c[5].vendor = "Sonora";
+    c[5].version = "1.0.0";
+    c[5].categories = {"Amp"};
+    c[5].inputs = c[5].outputs = 1;
+    c[5].params = {
+        param(0, "cab", "Cabinet", 0.0f, 3.0f, 0.0f, kAuto | kParamEnum, "", 4,
+              {"4x12", "2x12", "1x12", "Open"}),
+        param(1, "mic", "Microphone", 0.0f, 2.0f, 0.0f, kAuto | kParamEnum, "", 3,
+              {"Dynamic", "Ribbon", "Condenser"}),
+        param(2, "distance", "Distance", 0.0f, 100.0f, 30.0f, kAuto, "%"),
+        param(3, "axis", "Off-axis", 0.0f, 90.0f, 15.0f, kAuto, "deg"),
+        param(4, "low_cut", "Low cut", 20.0f, 400.0f, 70.0f, kAuto | kParamLogarithmic, "Hz"),
+        param(5, "high_cut", "High cut", 2000.0f, 20000.0f, 8000.0f, kAuto | kParamLogarithmic, "Hz"),
+        param(6, "trim", "Trim", -24.0f, 12.0f, 0.0f, kAuto, "dB"),
+        param(7, "mix", "Mix", 0.0f, 100.0f, 100.0f, kAuto, "%"),
+    };
+    {
+        const char* const sections[] = {"Cabinet", "Microphone", "Microphone", "Microphone", "Filter", "Filter",
+                                        "Output", "Output"};
+        for (std::size_t i = 0; i < c[5].params.size(); ++i) {
+            widget(c[5].params[i], sections[i], c[5].params[i].steps >= 2 ? PluginWidget::Choice : PluginWidget::Knob);
+        }
+    }
+    c[5].meters = {
+        {0, "in", "Input", "dB", static_cast<uint32_t>(PluginMeterKind::InputLevel), -60.0f, 6.0f},
+        {1, "out", "Output", "dB", static_cast<uint32_t>(PluginMeterKind::OutputLevel), -60.0f, 6.0f}};
+
+    c[6].format = PluginFormat::Lv2;
+    c[6].id = "urn:sonora:fake:reverb";
+    c[6].name = "Fake Reverb";
+    c[6].vendor = "Sonora";
+    c[6].version = "1.0.0";
+    c[6].categories = {"Reverb"};
+    c[6].inputs = c[6].outputs = 1;
+    c[6].params = {
+        param(0, "type", "Space", 0.0f, 2.0f, 1.0f, kAuto | kParamEnum, "", 3, {"Room", "Hall", "Plate"}),
+        param(1, "decay", "Decay", 0.2f, 12.0f, 2.4f, kAuto | kParamLogarithmic, "s"),
+        param(2, "predelay", "Pre-delay", 0.0f, 250.0f, 24.0f, kAuto, "ms"),
+        param(3, "size", "Size", 0.0f, 100.0f, 60.0f, kAuto, "%"),
+        param(4, "damping", "Damping", 1000.0f, 20000.0f, 6000.0f, kAuto | kParamLogarithmic, "Hz"),
+        param(5, "width", "Width", 0.0f, 100.0f, 80.0f, kAuto, "%"),
+        param(6, "mix", "Mix", 0.0f, 100.0f, 22.0f, kAuto, "%"),
+    };
+    {
+        const char* const sections[] = {"Space", "Space", "Space", "Space", "Tone", "Output", "Output"};
+        for (std::size_t i = 0; i < c[6].params.size(); ++i) {
+            widget(c[6].params[i], sections[i], c[6].params[i].steps >= 2 ? PluginWidget::Choice : PluginWidget::Knob);
+        }
+    }
+    c[6].meters = {
+        {0, "in", "Input", "dB", static_cast<uint32_t>(PluginMeterKind::InputLevel), -60.0f, 6.0f},
+        {1, "out", "Output", "dB", static_cast<uint32_t>(PluginMeterKind::OutputLevel), -60.0f, 6.0f}};
     c[3].format = PluginFormat::Lv2;
     c[3].id = "urn:sonora:fake:refused";
     c[3].name = "Fake Refused";

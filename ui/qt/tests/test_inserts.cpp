@@ -24,8 +24,10 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "control_adapter.h"
@@ -59,7 +61,7 @@ namespace {
 const std::string kSha(64, 'a');
 
 // Catalog indices in fake_catalog().
-constexpr int kGain = 0, kLimiter = 1, kComp = 2, kRefused = 3;
+constexpr int kGain = 0, kLimiter = 1, kComp = 2, kRefused = 3, kEq = 4;
 
 struct Rig {
     api::testing::FakeEngine fake{config()};
@@ -104,6 +106,7 @@ struct Rig {
         sinks.catalog = [this](const api::PluginCatalog& c) { inserts.onCatalog(c); };
         sinks.fault = [this](uint64_t insert, const std::string& text) { inserts.onFault(insert, text); };
         sinks.frame = [this](const EngineFrame& f, bool alive) { inserts.onFrame(f, alive); };
+        sinks.telemetry = [this](const api::PluginTelemetry& t) { inserts.onTelemetry(t); };
         shell.setPluginSinks(std::move(sinks));
         session.installCommands(router.local());
         router.prepare({});
@@ -132,7 +135,7 @@ int catalog_and_chooser() {
     Rig r;
     CHECK(r.connect());
     CHECK(r.ctl().has_catalog());
-    CHECK(r.ctl().plugins().size() == 4);
+    CHECK(r.ctl().plugins().size() == 7);
     const auto cats = r.ctl().categories();
     CHECK(std::find(cats.begin(), cats.end(), "Dynamics") != cats.end());
     CHECK(std::find(cats.begin(), cats.end(), "Utility") != cats.end());
@@ -142,13 +145,13 @@ int catalog_and_chooser() {
     CHECK(found.size() == 1 && found[0] == kComp);
     found = r.ctl().browse("Dynamics", "");
     CHECK(found.size() == 2);
-    CHECK(r.ctl().browse("", "sonora").size() == 4);
+    CHECK(r.ctl().browse("", "sonora").size() == 7);
     // Shown with the reason, never hidden.
     CHECK(r.ctl().refusal(kLimiter, 0).find("stereo") != std::string::npos);
     CHECK(r.ctl().refusal(kRefused, 0).find("instance-access") != std::string::npos);
     CHECK(r.ctl().refusal(kGain, 0).empty());
     const QVariantList rows = r.inserts.browse(QString(), QString());
-    CHECK(rows.size() == 4);
+    CHECK(rows.size() == 7);
     // ADR-0017 Y2: the fake's compressor is a Windows build through
     // yabridge, and says so; the others are native and say nothing.
     for (const QVariant& row : rows) {
@@ -460,6 +463,127 @@ int parameters_and_delay() {
     return 0;
 }
 
+// native.editors (ADR-0057): the panel groups by section and draws as the
+// plugin asks; what the plugin publishes arrives through the whole path (the
+// fake engine's frame, the codec, the adapter, the shell's tick) and shows as
+// meters and a curve; a meter the plugin did not publish, or that stopped,
+// shows no value; A/B compare plays the other set as one gesture.
+int editors() {
+    Rig r;
+    CHECK(r.connect());
+    std::string why;
+    CHECK(r.ctl().add(0, 0, kComp, why));
+    CHECK(r.ctl().add(1, 0, kGain, why));
+    CHECK(r.ctl().add(2, 0, kEq, why));
+    r.settle();
+    const model::Id comp = r.slot(0, 0).insert;
+    uint64_t now = 5'000'000'000ull;
+    r.inserts.setClock([&now] { return now; });
+    const auto key = [](const char* k) { return QString::fromLatin1(k); };
+    const auto pause = [] { std::this_thread::sleep_for(std::chrono::milliseconds(40)); };
+
+    // Sections, widgets, units and the curve a parameter shapes.
+    r.inserts.openPanel(0, 0);
+    const QVariantList sections = r.inserts.panelSections();
+    CHECK(sections.size() == 2);
+    const auto section = [&](int i) { return sections[i].toMap(); };
+    const auto in_section = [&](int i, int k) { return section(i)[key("params")].toList()[k].toMap(); };
+    CHECK(section(0)[key("name")].toString() == key("Compressor") && section(0)[key("params")].toList().size() == 2);
+    CHECK(section(1)[key("name")].toString() == key("Detector") && section(1)[key("params")].toList().size() == 1);
+    CHECK(in_section(0, 0)[key("unit")].toString() == key("dB"));
+    CHECK(in_section(0, 1)[key("curveSource")].toString() == key("transfer"));
+    CHECK(in_section(1, 0)[key("control")].toString() == key("choices"));
+    // A plugin that declares nothing is one unnamed section, as it was.
+    r.inserts.openPanel(1, 0);
+    CHECK(r.inserts.panelSections().size() == 1 &&
+          r.inserts.panelSections()[0].toMap()[key("name")].toString().isEmpty());
+    CHECK(r.inserts.telemetryState() == key("none") && r.inserts.panelMeters().isEmpty());
+    // The EQ's switches and per-band sections.
+    r.inserts.openPanel(2, 0);
+    CHECK(r.inserts.panelSections().size() == 5);
+    const QVariantMap band = r.inserts.panelSections()[1].toMap();
+    CHECK(band[key("name")].toString() == key("Bell 1") &&
+          band[key("params")].toList()[0].toMap()[key("control")].toString() == key("toggle"));
+    CHECK(r.inserts.panelCurves().size() == 1 && r.inserts.panelMeters().size() == 2);
+
+    // Meters and curve: nothing yet, then a frame.
+    r.inserts.openPanel(0, 0);
+    CHECK(r.inserts.panelMeters().size() == 3 && r.inserts.panelCurves().size() == 1);
+    CHECK(r.inserts.telemetryState() == key("waiting"));
+    CHECK(!r.inserts.panelMeterValues()[key("gr")].toMap()[key("valid")].toBool());
+    CHECK(r.inserts.panelCurveData()[key("transfer")].toList().isEmpty());
+    api::PluginTelemetry t;
+    t.sequence = 1;
+    t.meter_mask = 0b101;   // the input was not published
+    t.meters = {6.5f, 99.0f, -5.0f};
+    t.curves = {std::vector<float>(128, -3.0f)};
+    CHECK(r.fake.script_plugin_telemetry(comp, t));
+    r.settle();
+    CHECK(r.inserts.telemetryState() == key("live"));
+    const QVariantMap gr = r.inserts.panelMeterValues()[key("gr")].toMap();
+    CHECK(gr[key("valid")].toBool() && std::fabs(gr[key("value")].toReal() - 6.5) < 1e-4 &&
+          gr[key("text")].toString() == key("6.5 dB") && std::fabs(gr[key("fraction")].toReal() - 6.5 / 24.0) < 1e-4);
+    CHECK(!r.inserts.panelMeterValues()[key("in")].toMap()[key("valid")].toBool());   // unpublished: no value
+    CHECK(r.inserts.panelMeterValues()[key("out")].toMap()[key("valid")].toBool());
+    CHECK(r.inserts.panelCurveData()[key("transfer")].toList().size() == 128);
+    // The frames stop: said, and no meter keeps its last value.
+    now += 2'000'000'000ull;
+    r.settle();
+    CHECK(r.inserts.telemetryState() == key("stopped"));
+    CHECK(!r.inserts.panelMeterValues()[key("gr")].toMap()[key("valid")].toBool());
+    CHECK(r.inserts.panelCurveData()[key("transfer")].toList().isEmpty());
+    // They come back.
+    pause();
+    t.sequence = 2;
+    CHECK(r.fake.script_plugin_telemetry(comp, t));
+    r.settle();
+    CHECK(r.inserts.telemetryState() == key("live"));
+    // A frame for an insert that is not in the document is dropped.
+    api::PluginTelemetry stray = t;
+    stray.insert = 99999;
+    r.inserts.onTelemetry(stray);
+    CHECK(r.ctl().telemetry(99999, now) == nullptr);
+    // A new connection's engine starts afresh.
+    r.inserts.onLinkReplaced();
+    CHECK(r.inserts.telemetryState() == key("waiting"));
+
+    // A/B: B starts as A; toggling plays the other set as one undoable step.
+    r.inserts.paramStep(key("7"), 1);   // mode RMS (A)
+    r.settle();
+    CHECK(r.inserts.compareSlot() == key("A"));
+    r.inserts.toggleCompare();
+    r.settle();
+    CHECK(r.inserts.compareSlot() == key("B"));
+    CHECK(r.inserts.panelValues()[key("7")].toMap()[key("text")].toString() == key("RMS"));   // B began as a copy
+    r.inserts.paramStep(key("7"), 2);   // B: feedback
+    r.settle();
+    r.inserts.toggleCompare();          // back to A
+    r.settle();
+    CHECK(r.inserts.compareSlot() == key("A"));
+    CHECK(r.inserts.panelValues()[key("7")].toMap()[key("text")].toString() == key("RMS"));
+    CHECK(std::fabs(r.fake.plugin_value(comp, "7") - 0.5f) < 1e-6f);   // the plugin heard it
+    r.inserts.toggleCompare();
+    r.settle();
+    CHECK(r.inserts.panelValues()[key("7")].toMap()[key("text")].toString() == key("Feedback"));
+    CHECK(r.values(comp) != nullptr);
+    bool feedback_saved = false;
+    for (const model::ParamValue& pv : r.values(comp)->params) feedback_saved = feedback_saved || (pv.key == "7" && pv.value == 1.0f);
+    CHECK(feedback_saved);   // one gesture recorded the whole set
+    // Closing the panel drops the sets: they do not outlive their panel.
+    r.inserts.closePanel();
+    CHECK(r.inserts.compareSlot() == key("A"));
+    r.inserts.openPanel(0, 0);
+    CHECK(r.inserts.compareSlot() == key("A"));
+    // Refused loudly while a control is held.
+    r.inserts.paramBegin();
+    r.inserts.paramPosition(key("0"), 0.4);
+    std::string held;
+    CHECK(!r.ctl().compare_toggle(comp, held) && held.find("moving") != std::string::npos);
+    r.inserts.paramEnd();
+    std::printf("  editors: ok\n");
+    return 0;
+}
+
 int save_flushes_first() {
     Rig r;
     CHECK(r.connect());
@@ -732,6 +856,30 @@ int qml() {
     QTest::mouseClick(&view, Qt::LeftButton, {}, centre(named(root, QStringLiteral("choice_7_2"))));
     r.settle();
     CHECK(std::fabs(r.fake.plugin_value(comp, "7") - 1.0f) < 1e-6f);
+    // What the plugin publishes is drawn from its frames, and says "no data"
+    // before the first one (ADR-0057).
+    QQuickItem* gr_bar = named(root, QStringLiteral("meter_gr"));
+    QQuickItem* curve = named(root, QStringLiteral("curve_transfer"));
+    CHECK(gr_bar != nullptr && gr_bar->isVisible() && !gr_bar->property("valid").toBool());
+    CHECK(curve != nullptr && curve->isVisible() && curve->property("points").toList().isEmpty());
+    api::PluginTelemetry frame;
+    frame.sequence = 1;
+    frame.meter_mask = 0b111;
+    frame.meters = {9.0f, -12.0f, -3.0f};
+    frame.curves = {std::vector<float>(128, -6.0f)};
+    CHECK(r.fake.script_plugin_telemetry(comp, frame));
+    r.settle();
+    QTest::qWait(30);
+    CHECK(gr_bar->property("valid").toBool() && std::fabs(gr_bar->property("fraction").toReal() - 9.0 / 24.0) < 1e-3 &&
+          gr_bar->property("valueText").toString() == QStringLiteral("9.0 dB"));
+    CHECK(curve->property("points").toList().size() == 128);
+    // A/B compare is in the header: a click plays the other set.
+    QQuickItem* ab = named(root, QStringLiteral("insertPanelCompare"));
+    CHECK(ab != nullptr && ab->isVisible() && ab->property("text").toString() == QStringLiteral("A/B  A"));
+    QTest::mouseClick(&view, Qt::LeftButton, {}, centre(ab));
+    r.settle();
+    QTest::qWait(30);
+    CHECK(r.inserts.compareSlot() == QStringLiteral("B") && ab->property("active").toBool());
     // A toggle is a switch that says what it is set to.
     r.inserts.openPanel(1, 2);
     QTest::qWait(30);
@@ -761,6 +909,7 @@ int main(int argc, char** argv) {
     if (short_names() != 0) return 1;
     if (faults() != 0) return 1;
     if (parameters_and_delay() != 0) return 1;
+    if (editors() != 0) return 1;
     if (save_flushes_first() != 0) return 1;
     if (qml() != 0) return 1;
     std::printf("ui inserts: all checks passed\n");

@@ -215,7 +215,7 @@ void scripted_plugins() {
     CHECK(replica.synced());
     CHECK(in.catalogs.size() == 1 && in.catalogs[0].generation == 1);
     const std::vector<PluginInfo> catalog = in.catalogs[0].plugins;
-    CHECK(catalog.size() == 4);
+    CHECK(catalog.size() == 7);
     const auto ref = [&](std::size_t i) {
         return sonora::model::PluginRef{static_cast<sonora::model::PluginFormat>(catalog[i].format),
                                         catalog[i].id, catalog[i].name, catalog[i].version};

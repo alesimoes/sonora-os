@@ -683,6 +683,7 @@ int main(int argc, char** argv) {
         inserts.onFault(insert, text);
     };
     plugin_sinks.frame = [&inserts](const EngineFrame& f, bool alive) { inserts.onFrame(f, alive); };
+    plugin_sinks.telemetry = [&inserts](const api::PluginTelemetry& t) { inserts.onTelemetry(t); };
     model.setPluginSinks(std::move(plugin_sinks));
     LoudnessModel loudness(
         // A sent command answers later, on the status line; invokeWith

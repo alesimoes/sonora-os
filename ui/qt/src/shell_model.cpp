@@ -615,6 +615,10 @@ void ShellModel::tick() {
     }
     takeEvents();
     if (engine_.take_catalog(catalog_) && plugin_sinks_.catalog) plugin_sinks_.catalog(catalog_);
+    telemetry_.clear();
+    if (engine_.take_telemetry(telemetry_) && plugin_sinks_.telemetry) {
+        for (const api::PluginTelemetry& t : telemetry_) plugin_sinks_.telemetry(t);
+    }
 
     const bool alive = engine_.engine_alive(now_ns_());
     // Read only while dead: a live engine's link has nothing to say, and the

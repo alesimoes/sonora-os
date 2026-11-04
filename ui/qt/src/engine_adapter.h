@@ -261,6 +261,15 @@ public:
     // spelled again: it is plain data, and a field-for-field copy would be a
     // second catalog format to keep in step for nothing.
     virtual bool take_catalog(api::PluginCatalog& out) = 0;
+    // The PluginTelemetry frames poll() has received since the last call,
+    // oldest first (ADR-0057): gain reduction, levels and curves of the
+    // inserts that publish them. Appends to `out`; true when it added any.
+    // The engine sends at most 30 a second per insert, so this stays small.
+    // An adapter with no source has none.
+    virtual bool take_telemetry(std::vector<api::PluginTelemetry>& out) {
+        (void)out;
+        return false;
+    }
 };
 
 }  // namespace sonora::ui
