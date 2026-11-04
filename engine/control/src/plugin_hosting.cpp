@@ -28,6 +28,7 @@
 #include "sonora/plugin_client/plugin_client.h"
 #include "sonora/plugin_scanner.h"
 #include "sonora/session.h"
+#include "sonora/sha256.h"
 
 namespace sonora {
 
@@ -133,6 +134,42 @@ bool insert_in(const model::Snapshot& doc, model::Id insert) {
         for (const model::Insert& in : t->inserts)
             if (in.id == insert) return true;
     return false;
+}
+
+// ADR-0029 §6: a session received from elsewhere (a stick, a copy) names
+// files the host never saw saved. Before the plugin is handed a path into
+// "Plugin Files/", the file is the one the session named: a real file (no
+// link on the way), of the size named, and, up to a cap that keeps the
+// control loop from stalling on a sample library, with the sha256 named.
+// Empty when it is.
+std::string plugin_files_on_disk_problem(const std::string& folder, const std::vector<model::PluginFileRef>& files) {
+    namespace fs = std::filesystem;
+    constexpr uint64_t kHashBudget = uint64_t(256) << 20;
+    uint64_t hashed = 0;
+    for (const model::PluginFileRef& f : files) {
+        const std::string why = model::plugin_file_problem(f);
+        if (!why.empty()) return f.path + ": " + why;
+        fs::path at = fs::path(folder);
+        std::error_code ec;
+        for (const fs::path& part : fs::path(f.path)) {
+            at /= part;
+            if (fs::is_symlink(fs::symlink_status(at, ec))) return f.path + " is behind a link";
+        }
+        const fs::file_status st = fs::symlink_status(at, ec);
+        if (ec || !fs::is_regular_file(st)) return f.path + " is missing";
+        const uint64_t size = fs::file_size(at, ec);
+        if (ec || size != f.bytes) return f.path + " is not the size the session named";
+        if (hashed + size > kHashBudget) continue;
+        std::ifstream in(at, std::ios::binary);
+        if (!in) return f.path + " could not be read";
+        Sha256 sha;
+        std::vector<char> buf(std::size_t(1) << 20);
+        while (in.read(buf.data(), std::streamsize(buf.size())) || in.gcount() > 0)
+            sha.update(buf.data(), std::size_t(in.gcount()));
+        hashed += size;
+        if (sha.hex() != f.sha256) return f.path + " does not match its checksum";
+    }
+    return {};
 }
 
 }  // namespace
@@ -607,6 +644,13 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const st
                 if (!f && size != 0) why = "its file could not be read";
                 else if (!pc::state_matches(ss.str(), m->state->sha256)) why = "its file does not match its checksum";
                 else state = ss.str();
+            }
+            if (why.empty()) {
+                const std::string file_why = plugin_files_on_disk_problem(*session_.folder(), m->state->files);
+                if (!file_why.empty()) {
+                    why = "a file it names: " + file_why;
+                    state.clear();
+                }
             }
             if (!why.empty()) lost[in->id] = Chain::LostState{*m->state, std::move(why)};
         }
