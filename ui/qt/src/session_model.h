@@ -108,6 +108,9 @@ class SessionModel : public QObject {
     // once a lane is open, so the headers place themselves by `top`.
     Q_PROPERTY(QVariantList trackRows READ trackRows NOTIFY rowsChanged)
     Q_PROPERTY(qreal autolaneHeight READ autolaneHeight NOTIFY viewChanged)
+    Q_PROPERTY(qreal compLaneHeight READ compLaneHeight NOTIFY viewChanged)
+    Q_PROPERTY(bool quickSwipe READ quickSwipe NOTIFY editStateChanged)
+    Q_PROPERTY(QVariantMap laneSelection READ laneSelection NOTIFY selectionChanged)
     // The lanes a disclosed track shows, top to bottom (kLaneCount names).
     Q_PROPERTY(QStringList autolaneNames READ autolaneNames CONSTANT)
     Q_PROPERTY(QList<bool> mutes READ mutes NOTIFY mixChanged)
@@ -334,6 +337,11 @@ public:
     QStringList playlistNames() const;
     QVariantList trackRows() const;
     qreal autolaneHeight() const { return ctl_.view().autolane_height; }
+    qreal compLaneHeight() const { return ctl_.view().comp_lane_height; }
+    bool quickSwipe() const { return ctl_.quick_swipe(); }
+    // The range selected on a take lane: {track, lane (its index in the
+    // track's laneNames), ready}, for the lane's Copy to Main button.
+    QVariantMap laneSelection() const;
     QStringList autolaneNames() const;
     // The track's playlists in their order, for its selector's menu.
     Q_INVOKABLE QStringList trackPlaylists(int track) const;
@@ -768,6 +776,7 @@ private:
     ViewState seen_view_;
     bool seen_view_valid_ = false;
     Drag seen_drag_;
+    EditController::LaneSelection seen_lane_;
 };
 
 }  // namespace sonora::ui

@@ -250,9 +250,13 @@ Period + number + `*` keypad sequence (Avid's guide gives it for storing),
 a chord sequence this schema cannot spell (ADR-0004 does not ask
 for more than the workflow), and Logic's number keys are bound elsewhere
 here. Recalling an empty slot is refused and the reason is held in the list.
-`edit.consolidate` (`alt+shift+3`, `ctrl+b` in Logic) stays bound and says
-"not implemented in this build" until the engine can render a new file; the
-window cannot write audio, so it has no stand-in.
+`edit.consolidate` (`alt+shift+3`, `ctrl+b` in Logic) sends the engine the selected
+region or range (`session.consolidate`, ADR-0031 §6.1) and the window holds the
+progress and any failure under it (ADR-0049 §5). Comping (ADR-0049): `ctrl+alt+l`
+shows a track's other playlists as take lanes, `ctrl+alt+c` copies the range
+selected on a lane to the main playlist, `ctrl+alt+n` makes a new comp,
+`ctrl+alt+q` turns Quick Swipe on or off; all four are `"origin": "sonora"` in
+both profiles, since neither application documents a key for them.
 A track command bound without a target acts on the selected track there, so
 `shift+r`, `shift+s` and `shift+m` work in the window and still report that
 they failed at a tty, which has no selection.

@@ -3,6 +3,7 @@
 // The wire codec: every message survives a round trip field for field, and
 // anything that is not a whole, known message is refused with a reason --
 // never read past its end, never half-applied. Plus the command domains.
+#include "sonora/api/consolidate_argument.h"
 #include "sonora/api/wire.h"
 
 #include <cstdio>
@@ -436,9 +437,9 @@ void version_check() {
     // (ADR-0027 §9; follows 40).
     // 42: meters.reset, and state layout 8's loudness (ADR-0013 amendment of
     // 2026-11-03; follows 41).
-    // 48: the session-model train (groups, clip gain, record modes; window
-    // format 16, session format 19).
-    CHECK(kProtocolVersion == 48);
+    // 48: the session-model train; 52: session.consolidate, EventKind::Consolidate
+    // (ADR-0031 §6) and the comping commands.
+    CHECK(kProtocolVersion == 52);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -449,13 +450,60 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 48 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 52 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
+    // A version-48 decoder knows no Consolidate event: it is the first kind
+    // past Latency, which a decoder refuses by range.
+    CHECK(static_cast<uint32_t>(EventKind::Consolidate) ==
+          static_cast<uint32_t>(EventKind::Latency) + 1);
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 48"));
+                   "speaks version 52"));
+}
+
+// Protocol 52: a Consolidate event carries the track in `insert`, the
+// progress in `frame` (thousandths), the state in `flags`; a state this
+// version does not define is refused.
+void consolidate_event() {
+    EngineEvent e;
+    e.kind = EventKind::Consolidate;
+    e.insert = 7;
+    e.frame = 250;
+    e.flags = kConsolidateFailed;
+    e.text = "stop recording before consolidating";
+    std::string bytes, error;
+    wire::encode(e, bytes);
+    EngineEvent back;
+    CHECK(wire::decode(bytes, back, error));
+    CHECK(back.kind == EventKind::Consolidate && back.insert == 7 && back.frame == 250 &&
+          back.flags == kConsolidateFailed && back.text == e.text);
+    e.flags = kConsolidateCancelled + 1;
+    wire::encode(e, bytes);
+    CHECK(!wire::decode(bytes, back, error) && mentions(error, "consolidate"));
+
+    // The argument round-trips, a name with spaces and "=" included, and the
+    // forms that cannot be understood are refused with a reason.
+    ConsolidateArgument a;
+    a.track = 12;
+    a.playlist = 15;
+    a.start = 48000;
+    a.end = 96000;
+    a.name = "Verse = comp 2";
+    ConsolidateArgument b;
+    CHECK(parse_consolidate_argument(format_consolidate_argument(a), b, error));
+    CHECK(b.track == 12 && b.playlist == 15 && b.start == 48000 && b.end == 96000 &&
+          b.name == a.name);
+    CHECK(parse_consolidate_argument("end=9 start=3 track=1", b, error) && b.playlist == 0 &&
+          b.name.empty());
+    for (const char* bad : {"", "track=1 start=0", "track=1 start=0 end=0", "track=1 start=-1 end=5",
+                            "track=0 start=0 end=5", "track=x start=0 end=5",
+                            "track=1 track=2 start=0 end=5", "track=1 start=0 end=5 colour=3",
+                            "track=1 start=0 end=5 junk"}) {
+        error.clear();
+        CHECK(!parse_consolidate_argument(bad, b, error) && !error.empty());
+    }
 }
 
 void domains() {
@@ -474,6 +522,7 @@ void domains() {
                                id == "window.memory_locations" || id == "window.latency" ||
                                id == "window.configurations" || id == "window.config_store" ||
                                id == "window.config_recall" ||
+                               id == "comp.toggle_lanes" || id == "comp.toggle_quick_swipe" ||
                                id == "app.save_as_template" || id == "app.new_from_template";
         if (interface != (spec.domain == CommandDomain::Interface)) {
             std::fprintf(stderr, "FAIL %s is in the wrong domain\n", spec.id);
@@ -794,6 +843,7 @@ int main() {
     plugin_messages();
     refusals();
     version_check();
+    consolidate_event();
     domains();
     frames_carry_large_messages();
     frames_refuse_what_is_out_of_place();

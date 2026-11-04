@@ -207,6 +207,9 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
                 // Measured and set from the Qt interface's Latency window or
                 // --measure-latency; the engine says L at start on stderr.
                 break;
+            case api::EventKind::Consolidate:
+                // The terminal interface has no selection to consolidate.
+                break;
         }
     }
     // Model updates are for an editor's replica; this interface draws none.

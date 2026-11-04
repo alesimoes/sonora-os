@@ -10,9 +10,11 @@
 #include <vector>
 
 #include "sonora/active_folder.h"
+#include "sonora/api/consolidate_argument.h"
 #include "sonora/api/wire.h"
 #include "sonora/audio_backend.h"
 #include "sonora/closed_take.h"
+#include "sonora/consolidate.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/groups.h"
 #include "sonora/model/op_codec.h"
@@ -551,6 +553,45 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                               send_update(u);
                           }
                           withdraw_orphans();
+                          return true;
+                      }));
+    // Consolidate (ADR-0031 §6): the render runs on a worker, never the
+    // audio thread; the edit is committed here, in tick().
+    registry_.install("session.consolidate",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          api::ConsolidateArgument a;
+                          if (!api::parse_consolidate_argument(ctx.argument, a, why)) return false;
+                          if (consolidate_job_.active()) {
+                              why = "a consolidate is already running; cancel it or wait for it";
+                              return false;
+                          }
+                          if (takes_in_flight()) {
+                              why = "stop recording before consolidating; nothing was consolidated";
+                              return false;
+                          }
+                          ConsolidateRequest rq;
+                          rq.track = a.track;
+                          rq.playlist = a.playlist;
+                          rq.start = a.start;
+                          rq.end = a.end;
+                          rq.name = a.name;
+                          const model::Snapshot now = document_->current();
+                          ConsolidateRequest resolved;
+                          if (!consolidate_check(now, rq, resolved, why)) return false;
+                          consolidate_dir_ = *session_.folder();
+                          consolidate_track_ = a.track;
+                          consolidate_said_ = 0;
+                          consolidate_job_.start(now, consolidate_dir_, std::move(resolved));
+                          announce_consolidate(api::kConsolidateRunning, 0, "");
+                          return true;
+                      }));
+    registry_.install("session.consolidate_cancel",
+                      ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          if (!consolidate_job_.active()) {
+                              why = "no consolidate is running";
+                              return false;
+                          }
+                          consolidate_job_.cancel();
                           return true;
                       }));
     // Pro Tools' Loop Playback and Loop Record, Logic's Cycle: session
@@ -1235,6 +1276,7 @@ void EngineControlServer::remember(const api::EngineEvent& event, const std::str
             break;
         case api::EventKind::SessionFolder: session_folder_ = bytes; break;
         case api::EventKind::Latency: latency_ = bytes; break;
+        case api::EventKind::Consolidate: consolidate_ = bytes; break;
     }
 }
 
@@ -1687,7 +1729,7 @@ void EngineControlServer::greet(ClientId id) {
     }
     for (const std::string* e :
          {&session_folder_, &latency_, &inputs_missing_, &take_failed_, &fatal_,
-          &recovery_offer_}) {
+          &recovery_offer_, &consolidate_}) {
         if (!e->empty()) send_to(client, *e);
     }
 }
@@ -3044,6 +3086,59 @@ void EngineControlServer::drop_untitled_autosave() {
 
 uint64_t EngineControlServer::autosaves() const { return saver_->autosaves(); }
 
+void EngineControlServer::announce_consolidate(uint32_t state, uint32_t permille,
+                                               const std::string& text) {
+    api::EngineEvent e;
+    e.kind = api::EventKind::Consolidate;
+    e.insert = consolidate_track_;
+    e.frame = permille;
+    e.flags = state;
+    e.text = text;
+    post_event(e);
+}
+
+void EngineControlServer::follow_consolidate() {
+    if (!consolidate_job_.active()) return;
+    if (!consolidate_job_.finished()) {
+        // A step in a hundred: a long render is not a flood of events.
+        const uint32_t p = consolidate_job_.permille();
+        if (p >= consolidate_said_ + 10) {
+            consolidate_said_ = p;
+            announce_consolidate(api::kConsolidateRunning, p, "");
+        }
+        return;
+    }
+    ConsolidateJob::Result r = consolidate_job_.collect();
+    const std::string file = r.session_dir + "/" + r.rendered.relative_path;
+    if (r.cancelled) {
+        if (r.ok) std::remove(file.c_str());
+        announce_consolidate(api::kConsolidateCancelled, 0,
+                             "consolidate was cancelled; nothing was changed");
+        return;
+    }
+    if (!r.ok) {
+        announce_consolidate(api::kConsolidateFailed, 0, r.error);
+        return;
+    }
+    // Another session was opened, or this one moved, while it rendered: the
+    // file belongs to a folder the document no longer names.
+    if (*session_.folder() != r.session_dir) {
+        std::remove(file.c_str());
+        announce_consolidate(api::kConsolidateFailed, 0,
+                             "the session was closed while consolidating; nothing was changed");
+        return;
+    }
+    std::vector<model::ReplicationUpdate> updates;
+    std::string why;
+    if (!consolidate_commit(*document_, r.session_dir, r.request, r.rendered, updates, why)) {
+        announce_consolidate(api::kConsolidateFailed, 0, why);
+        return;
+    }
+    for (const auto& u : updates) send_update(u);
+    show_document(false);
+    announce_consolidate(api::kConsolidateDone, 1000, r.rendered.relative_path);
+}
+
 void EngineControlServer::follow_saver() {
     saver_->set_take_open(session_.recording_take() != 0);
     saver_->set_transport_stopped(session_.transport().state() == TransportState::Stopped);
@@ -3109,6 +3204,7 @@ void EngineControlServer::follow_saver() {
 void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
+    follow_consolidate();
     autosave_when_due();
     follow_latency();
     follow_reported_latency();

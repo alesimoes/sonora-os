@@ -91,6 +91,12 @@ class ShellModel : public QObject {
     // places or leaves them; a refusal of either stays under it.
     Q_PROPERTY(QStringList recoveryOffer READ recoveryOffer NOTIFY recoveryChanged)
     Q_PROPERTY(int recoveryCount READ recoveryCount NOTIFY recoveryChanged)
+    // A consolidate render (api::EventKind::Consolidate, ADR-0031 §6.1): its
+    // progress while it runs, and a failure or a refusal held until dismissed,
+    // not the status line that clears.
+    Q_PROPERTY(QString consolidateText READ consolidateText NOTIFY consolidateChanged)
+    Q_PROPERTY(bool consolidateFailed READ consolidateFailed NOTIFY consolidateChanged)
+    Q_PROPERTY(bool consolidateRunning READ consolidateRunning NOTIFY consolidateChanged)
     Q_PROPERTY(QString recoveryRefusal READ recoveryRefusal NOTIFY recoveryChanged)
     // The round trip takes are compensated by, and the loopback probe
     // (api::EventKind::Latency, ADR-0019 update of 2026-10-26), for the
@@ -216,6 +222,10 @@ public:
     // What a RecoveryOffer event does: the screenshot scene's way in, as
     // the demo's engine has no takes on disk.
     void showRecoveryOffer(const QString& text, int count);
+    // What a Consolidate event does: the screenshot scene's way in.
+    void showConsolidate(const QString& text, bool failed, bool running) {
+        holdConsolidate(text, failed, running);
+    }
     bool latencyKnown() const { return latency_known_; }
     int latencyFrames() const { return latency_frames_; }
     QString latencyMs() const;
@@ -225,6 +235,10 @@ public:
     QString latencyResult() const { return latency_result_; }
     int latencyOutputs() const { return latency_outputs_; }
     QString latencyRefusal() const { return latency_refusal_; }
+    QString consolidateText() const { return consolidate_text_; }
+    bool consolidateFailed() const { return consolidate_failed_; }
+    bool consolidateRunning() const { return consolidate_running_; }
+    Q_INVOKABLE void dismissConsolidate() { holdConsolidate(QString(), false, false); }
     // The Latency window's buttons: latency.measure on out_`output` and
     // in_`input` (from 1), latency.cancel, latency.set. Each takes away the
     // refusal held from the last one.
@@ -301,6 +315,7 @@ signals:
     void alertChanged();
     void recoveryChanged();
     void latencyChanged();
+    void consolidateChanged();
     void renderPathChanged();
     void keymapChanged();
 
@@ -312,6 +327,7 @@ private:
     // A latency.* command, its refusal held in the window.
     void latencyCommand(const char* command, const QString& argument);
     void holdLatencyRefusal(const QString& why);
+    void holdConsolidate(const QString& text, bool failed, bool running);
     void holdRecordRefusal(const QString& why);
     static bool isRecordCommand(const std::string& c);
     static bool clearsRecordRefusal(const std::string& c);
@@ -396,6 +412,9 @@ private:
     QString latency_result_;
     int latency_outputs_ = 0;
     QString latency_refusal_;
+    QString consolidate_text_;
+    bool consolidate_failed_ = false;
+    bool consolidate_running_ = false;
     QString render_path_ = QStringLiteral("not yet known");
     bool software_ = false;
     bool capture_mode_ = false;

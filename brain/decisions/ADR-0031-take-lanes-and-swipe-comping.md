@@ -27,8 +27,11 @@
   (`model::comp_origin()`), never stored.
 - §5: Consolidate: the engine renders, `model::consolidate_range()` replaces
   the range with one region (one `PlaceRegion`, no version bump).
-- §6: left for later: take folders' collapsed view, MIDI comping, the engine
-  half of Consolidate.
+- §6: the entry point of Consolidate (update of 2026-11-04): the command
+  `session.consolidate`, run on a worker, progress and result as
+  `Consolidate` events, `session.consolidate_cancel`, refused while a take
+  is open; **protocol 52**. Left for later: take folders' collapsed view,
+  MIDI comping.
 
 ## Context
 
@@ -138,8 +141,52 @@ Undo gives back the old regions; the rendered file stays in the pool.
   interface view over §1, `ui.comping.lanes`.
 - MIDI comping: MIDI regions are windows onto shared sequences
   (ADR-0014); refused until MIDI takes need it.
-- The offline writer and the control command that call §5 (the engine half
-  of `ui.comping.consolidate`), and the interface command.
+- The interface half (decided in ADR-0049): `ui/qt`'s `edit.consolidate` handler, which builds
+  the argument below from the selection and shows the events.
+
+### 6.1 The entry point, decided 2026-11-04 (protocol 52)
+
+The interface replica has no Document owner, no session folder and no
+files, so Consolidate is a request to the engine, which does all of §5.
+
+- **Request.** The engine command `session.consolidate`, argument
+  `track=<id> start=<frame> end=<frame> [playlist=<id>] [name=<text>]`
+  (`api/consolidate_argument.h` formats and parses it; the name runs to the
+  end). No playlist is the track's active one. It is a `CommandRequest`,
+  not a new wire message: the reply says only whether the render *started*.
+  The cheap refusals come back in that reply, before any render: a
+  malformed argument, an unknown track, a range the model would refuse
+  (`consolidate_check()`, which asks `model::consolidate_range()` with the
+  file's size), a take recording, requested or closing, and a consolidate
+  already running (one at a time).
+- **Where it runs.** On a worker thread started by the control thread
+  (`ConsolidateJob`), never the audio thread: it touches no part of the
+  session but whether a take is open, which the control thread checks
+  before starting. The worker holds an immutable `Snapshot` copy and
+  renders (`render_range()`); it never touches the `Document`. When it
+  ends, the control thread's tick commits (`consolidate_commit()`) against
+  the document *as it is then*, so an edit made during the render is
+  respected: a removed track or a range the model now refuses leaves no
+  change (the file is removed, or stays in `Audio Files/` out of the pool
+  when the model refuses after the render, as §5 says). The commit is the
+  one `Compound` labelled "Consolidate" and goes to every replica as a
+  `ModelUpdate`; undo is §5's. If another session was opened meanwhile the
+  file is removed and nothing is committed.
+- **Progress and result.** `EventKind::Consolidate`: `insert` the track,
+  `frame` the fraction in thousandths, `flags` one of `kConsolidateRunning`,
+  `Done`, `Failed`, `Cancelled`, `text` the reason or, for Done, the new
+  file. Running is sent at the start and then every 1 % at most (tick-paced).
+  The last event *stands*: a late client is sent it, and it is replaced only
+  by the next request, so a failure is a held notice the interface keeps
+  until the operator dismisses it, not the 2.5 s status line.
+- **Cancel.** `session.consolidate_cancel` sets the worker's cancel flag,
+  polled once per block. The file is removed and nothing reaches the
+  document; the event is Cancelled. A cancel that arrives after the last
+  block still discards the result. Refused when nothing is running.
+- **Shutdown.** The server cancels and joins the worker.
+- **Not a lock on takes.** A take started *during* a render is not
+  refused (the render reads playlist files; a take adds new ones). The
+  render's result is still committed against the current document.
 
 ## Rationale
 

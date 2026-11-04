@@ -78,6 +78,7 @@
 #include "sonora/automation_write.h"
 #include "sonora/automation_writer.h"
 #include "sonora/command.h"
+#include "sonora/consolidate_job.h"
 #include "sonora/machine_latency.h"
 #include "sonora/model/operations.h"
 #include "sonora/orphan_offer.h"
@@ -609,6 +610,16 @@ private:
     // standing Latency event, what it says, and the measurement's cable
     // and pings said so far. The control thread's.
     std::string latency_;
+    // The consolidate render (ADR-0031 §6): a worker renders, this thread
+    // commits. The standing Consolidate event, the session folder it
+    // renders into, and the last progress said.
+    ConsolidateJob consolidate_job_;
+    std::string consolidate_;
+    std::string consolidate_dir_;
+    uint64_t consolidate_track_ = 0;
+    uint32_t consolidate_said_ = 0;
+    void announce_consolidate(uint32_t state, uint32_t permille, const std::string& text);
+    void follow_consolidate();
     api::LatencySource latency_source_ = api::LatencySource::None;
     api::LatencyStatus latency_status_ = api::LatencyStatus::Idle;
     std::string latency_text_;

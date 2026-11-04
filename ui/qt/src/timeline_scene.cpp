@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "sonora/model/comping.h"
 #include "theme.h"
 
 namespace sonora::ui {
@@ -118,7 +119,7 @@ void draw_gain_line(const Region& r, Frames offset, double x0, double cx0, doubl
 // translucent (a drag's origin).
 void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const RegionFades& fades,
                  double lane_y, const ViewState& v, uint32_t palette, bool selected, bool ghost,
-                 const PeakSource& peaks, Scene& out) {
+                 const PeakSource& peaks, Scene& out, const std::string* origin = nullptr) {
     const double x0 = v.x_of(pos), x1 = v.x_of(pos + len);
     if (x1 < 0 || x0 > v.width) return;
     const double cx0 = std::max(0.0, x0), cx1 = std::min(v.width, x1);
@@ -181,14 +182,19 @@ void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const R
         draw_gain_line(r, offset, x0, cx0, cx1, wy, wh, v, theme::kGainLine, out.rects);
     }
     if (selected && !ghost) outline(out.rects, cx0, y, cx1 - cx0, h, 1.5, theme::kRegionSelectedOutline);
+    if (origin != nullptr && x0 >= 0) add(out.rects, x0, y, 3, h, theme::kAccent);
     if (!ghost && x1 - x0 > 24) {
         // A level of its own is part of the name, as Pro Tools' clip name shows it.
-        std::string label = r.name;
+        // A piece of the comp says which take lane it was swiped from, and a
+        // piece still named for its take says that once.
+        const bool named_for_take = origin != nullptr && r.name == *origin;
+        std::string label = named_for_take ? std::string() : r.name;
         if (r.gain_db != 0.0f) {
             char gain[24];
             std::snprintf(gain, sizeof gain, "  %+.1f dB", static_cast<double>(r.gain_db));
             label += gain;
         }
+        if (origin != nullptr) label += std::string(label.empty() ? "" : "  ") + "← " + *origin;
         out.labels.push_back({static_cast<float>(cx0 + 4), static_cast<float>(y),
                               static_cast<float>(cx1 - cx0 - 8), label, theme::kText,
                               theme::kTextCaption});
@@ -382,11 +388,72 @@ void draw_live_take(const LiveTake& live, const ViewState& v, std::vector<SceneR
     }
 }
 
+// The pieces of the comp that came from a take lane are tinted on that lane,
+// so the lanes show what is kept.
+constexpr uint32_t kCompInUse = 0x3d3fc1b0;
+constexpr uint32_t kLaneSwipe = 0x553fc1b0;
+
+// Track `i`'s take lanes under its row (ADR-0031 §1): each playlist but the
+// active one, its regions as the comp's are drawn, a lane at a time. The
+// comp's own pieces are matched to their lane with comp_origin (§4), so a
+// trim that keeps the audio where it was keeps the tint.
+void draw_take_lanes(const TrackEdit& t, int i, const ViewState& v, const Drag& drag,
+                     const EditController::LaneSelection& lane_sel, const PeakSource& peaks,
+                     Scene& out) {
+    const Playlist* main = audio_playlist(t, t.active_playlist);
+    const std::vector<Id> lanes = take_lanes_of(t);
+    ViewState lv = v;
+    lv.track_height = v.comp_lane_height;
+    std::vector<Id> origins;
+    if (main != nullptr) {
+        for (const Region& m : main->regions) origins.push_back(comp_origin(t, m, t.active_playlist));
+    }
+    for (std::size_t k = 0; k < lanes.size(); ++k) {
+        const Playlist* lane = audio_playlist(t, lanes[k]);
+        const double y = v.y_of_complane(i, static_cast<int>(k));
+        if (lane == nullptr || y + v.comp_lane_height < 0 || y > v.height) continue;
+        add(out.rects, 0, y, v.width, v.comp_lane_height, theme::kSunken);
+        add(out.rects, 0, y + v.comp_lane_height - 1, v.width, 1, theme::kBorderSubtle);
+        const uint32_t palette =
+            theme::region_colour(t.colour);
+        for (const Region& r : lane->regions) {
+            draw_region(r, r.position, r.length, r.source_offset, region_fades(*lane, r), y, lv,
+                        r.colour == model::kTrackColour ? palette : theme::region_colour(r.colour),
+                        false, false, peaks, out);
+        }
+        draw_crossfades(*lane, y, lv, out);
+        if (main != nullptr) {
+            for (std::size_t m = 0; m < main->regions.size(); ++m) {
+                if (origins[m] != lane->id) continue;
+                const Region& r = main->regions[m];
+                const double x0 = std::max(0.0, v.x_of(r.position));
+                const double x1 = std::min(v.width, v.x_of(r.end()));
+                add(out.rects, x0, y, x1 - x0, v.comp_lane_height, kCompInUse);
+                add(out.rects, x0, y, x1 - x0, 2, theme::kAccent);
+            }
+        }
+        const bool mine = lane_sel.valid() && lane_sel.track == i && lane_sel.lane == lane->id;
+        Frames a = lane_sel.start, b = lane_sel.end;
+        bool shown = mine;
+        if (drag.kind == Drag::Kind::Swipe && drag.moved && drag.track == i && drag.lane == lane->id) {
+            a = drag.start;
+            b = drag.end;
+            shown = b > a;
+        }
+        if (shown) {
+            const double x0 = std::max(0.0, v.x_of(a)), x1 = std::min(v.width, v.x_of(b));
+            add(out.rects, x0, y, x1 - x0, v.comp_lane_height, kLaneSwipe);
+            outline(out.rects, x0, y, x1 - x0, v.comp_lane_height, 1.5, theme::kAccent);
+        }
+    }
+}
+
 }  // namespace
 
 void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection& sel,
                           const Drag& drag, bool grid_lines, GridValue grid,
-                          const PeakSource& peaks, Scene& out) {
+                          const PeakSource& peaks, Scene& out,
+                          const EditController::LaneSelection& lane_sel) {
     out.clear();
     if (v.width <= 0 || v.height <= 0) return;
     const auto& tracks = s.edit->tracks;
@@ -467,8 +534,16 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
             const bool selected = sel.region == r.id;
             RegionFades fades = region_fades(*p, r);
             if (!dragged) {
+                // With the lanes shown, a piece swiped in says from which.
+                std::string tag;
+                if (v.lanes_shown(static_cast<int>(i)) > 0) {
+                    const Id from = comp_origin(owner, r, owner.active_playlist);
+                    if (const Playlist* lane = from != 0 ? audio_playlist(owner, from) : nullptr) {
+                        tag = lane->name;
+                    }
+                }
                 draw_region(r, r.position, r.length, r.source_offset, fades, y, v, colour_of(r),
-                            selected, false, peaks, out);
+                            selected, false, peaks, out, tag.empty() ? nullptr : &tag);
                 continue;
             }
             switch (drag.kind) {
@@ -493,6 +568,12 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
             }
         }
         draw_crossfades(*p, y, v, out);
+    }
+
+    // Take lanes, under each track that shows them.
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (v.lanes_shown(static_cast<int>(i)) == 0) continue;
+        draw_take_lanes(*tracks[i], static_cast<int>(i), v, drag, lane_sel, peaks, out);
     }
 
     // Automation lanes, over the grid and under the range.

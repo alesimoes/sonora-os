@@ -84,7 +84,7 @@ int ViewState::track_at(double y) const {
 int ViewState::autolane_at(int index, double y) const {
     if (!autolanes_open(index)) return -1;
     const double rel = y - y_of_track(index) - track_height;
-    if (rel < 0) return -1;
+    if (rel < 0 || rel >= kLaneCount * autolane_height) return -1;
     return std::min(kLaneCount - 1, static_cast<int>(rel / autolane_height));
 }
 
@@ -295,6 +295,8 @@ void EditController::document_replaced() {
     tempo_redo_.clear();
     sel_ = Selection{};
     autolanes_open_.clear();
+    comp_lanes_open_.clear();
+    lane_sel_ = LaneSelection{};
     if (!snapshot().edit->tracks.empty()) sel_.track = 0;
     has_saved_view_ = false;
     view_.scroll = 0;
@@ -430,6 +432,8 @@ void EditController::vertical_zoom(bool in) {
     // Lanes grow with the waveforms so a curve can be edited as finely as a
     // clip is read; the clamp keeps a lane usable at both ends.
     view_.autolane_height = std::clamp(ViewState::kAutolaneBaseHeight * view_.wave_scale, 32.0, 224.0);
+    view_.comp_lane_height =
+        std::clamp(ViewState::kCompLaneBaseHeight * view_.wave_scale, 32.0, 160.0);
     if (anchored) {
         refresh_rows();
         view_.scroll_y += anchor_y() - before;
@@ -585,6 +589,20 @@ Hit EditController::hit(double x, double y) const {
         h.zone = HitZone::Automation;
         return h;
     }
+    if (const int cl = view_.complane_at(i, y); cl >= 0) {
+        h.lane = cl;
+        h.zone = HitZone::TakeLane;
+        const std::vector<Id> lanes = take_lane_ids(i);
+        if (static_cast<std::size_t>(cl) < lanes.size()) {
+            if (const Playlist* p = audio_playlist(*track(i), lanes[static_cast<std::size_t>(cl)])) {
+                const Frames f = view_.frame_at(x);
+                for (const Region& r : p->regions) {
+                    if (f >= r.position && f < r.end()) h.region = r.id;
+                }
+            }
+        }
+        return h;
+    }
     h.zone = HitZone::Lane;
     const Region* r = region_at(i, view_.frame_at(x));
     if (r == nullptr) return h;
@@ -604,11 +622,13 @@ Hit EditController::hit(double x, double y) const {
 
 bool EditController::press(double x, double y, std::string& why) {
     drag_ = Drag{};
+    lane_sel_ = LaneSelection{};
     const Hit h = hit(x, y);
     if (h.track < 0) return true;
     select_track(h.track);
     sel_.autolane = sel_.point = -1;
     if (h.zone == HitZone::Automation) return press_autolane(h, x, y, why);
+    if (h.zone == HitZone::TakeLane) return press_takelane(h, x, why);
 
     Drag::Kind kind = Drag::Kind::Range;
     const bool in_region = h.region != kNoId;
@@ -756,6 +776,12 @@ void EditController::move(double x, double y) {
             }
             break;
         }
+        case Drag::Kind::Swipe: {
+            const Frames f = snapped(view_.frame_at(x));
+            drag_.start = std::min(drag_.press_frame, f);
+            drag_.end = std::max(drag_.press_frame, f);
+            break;
+        }
         case Drag::Kind::Point:
         case Drag::Kind::Stroke:
         case Drag::Kind::None: break;
@@ -767,6 +793,7 @@ bool EditController::release(double x, double y, std::string& why) {
     const Drag d = drag_;
     drag_ = Drag{};
     if (d.kind == Drag::Kind::Point || d.kind == Drag::Kind::Stroke) return release_autolane(d, why);
+    if (d.kind == Drag::Kind::Swipe) return release_swipe(d, why);
     if (d.kind == Drag::Kind::None || !d.moved) return true;
     switch (d.kind) {
         case Drag::Kind::Range:
@@ -799,6 +826,7 @@ bool EditController::release(double x, double y, std::string& why) {
                 return false;
             }
             break;
+        case Drag::Kind::Swipe:
         case Drag::Kind::Point:
         case Drag::Kind::Stroke:
         case Drag::Kind::None: break;

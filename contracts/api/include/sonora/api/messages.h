@@ -172,7 +172,12 @@ namespace sonora::api {
 //   transport.toggle_quick_punch (engine) and track.toggle_track_punch
 //   (interface). A version-42 peer refuses the operations, the keys and the
 //   window, and answers the commands NotImplemented.
-constexpr uint32_t kProtocolVersion = 48;
+// 52 (ADR-0031 §6 and the comping interface; follows 48, 49 to 51 are other
+//   work's): the commands session.consolidate and session.consolidate_cancel,
+//   and EventKind::Consolidate, which a version-48 decoder refuses as an
+//   unknown kind; the interface commands comp.* (swipe, copy to main, lane
+//   view) a version-48 peer does not know.
+constexpr uint32_t kProtocolVersion = 52;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -452,7 +457,21 @@ enum class EventKind : uint32_t {
     // start, replaced at every change and at every ping while measuring; a
     // client that attaches later is sent it. Protocol 22.
     Latency = 7,
+    // A consolidate render (ADR-0031 §6, protocol 52): `insert` is the
+    // track's model id, `flags` a kConsolidate* state, `frame` the fraction
+    // rendered in thousandths while Running, `text` why it Failed or what
+    // finished it. One stands from the first request, replaced at every
+    // step and held after the last one until the next request, so a failure
+    // stays on screen until the operator dismisses it and a client that
+    // attaches later is sent it.
+    Consolidate = 8,
 };
+
+// EngineEvent::flags of a Consolidate.
+inline constexpr uint32_t kConsolidateRunning = 0;
+inline constexpr uint32_t kConsolidateDone = 1;       // the range is one region, one undo step
+inline constexpr uint32_t kConsolidateFailed = 2;     // `text` says why; nothing changed
+inline constexpr uint32_t kConsolidateCancelled = 3;  // nothing changed
 
 // EngineEvent::flags of a SessionFolder.
 inline constexpr uint32_t kFolderUntitled = 1u << 0;   // the engine made it ("Untitled <n>")
@@ -494,10 +513,11 @@ struct EngineEvent {
     EventKind kind = EventKind::Notice;
     int32_t track = -1;
     // TakeFailed: the take number. RecoveryOffer: how many takes.
-    // SessionFolder: free bytes. Latency: L in frames. 0 otherwise.
+    // SessionFolder: free bytes. Latency: L in frames. Consolidate: the
+    // fraction rendered, in thousandths. 0 otherwise.
     uint64_t frame = 0;
     // PluginFault: the insert's model id. Latency: the outputs the probe
-    // may use. 0 otherwise. Protocol 3.
+    // may use. Consolidate: the track's model id. 0 otherwise. Protocol 3.
     uint64_t insert = 0;
     std::string text;
     // SessionFolder: kFolder* bits. Latency: latency_flags(). 0 otherwise.

@@ -80,6 +80,7 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
             case api::EventKind::RecoveryOffer: o.kind = EngineEventKind::RecoveryOffer; break;
             case api::EventKind::SessionFolder: o.kind = EngineEventKind::SessionFolder; break;
             case api::EventKind::Latency: o.kind = EngineEventKind::Latency; break;
+            case api::EventKind::Consolidate: o.kind = EngineEventKind::Consolidate; break;
         }
         o.take = e.frame;
         o.insert = e.insert;

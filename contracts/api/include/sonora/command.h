@@ -313,6 +313,21 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // once, so the take is not interrupted by a dialog.
         {"marker.add", CommandTarget::None, "Add a marker, or a selection marker over a range"},
 
+        // --- take lanes and comping (ADR-0031, ADR-0049) ---
+        // Showing the lanes is how the operator looks at a track, so it is the
+        // interface's own; the others are edits of the session (compounds of
+        // the operations the model has), run by the window as Cut is.
+        {"comp.toggle_lanes", CommandTarget::Track,
+         "Show or hide the track's take lanes (its other playlists)", false,
+         CommandDomain::Interface},
+        {"comp.toggle_quick_swipe", CommandTarget::None,
+         "Quick Swipe: a swipe on a take lane copies at once, with short crossfades", false,
+         CommandDomain::Interface},
+        {"comp.copy_to_main", CommandTarget::None,
+         "Copy the range selected on a take lane to the main playlist"},
+        {"comp.new", CommandTarget::Track,
+         "New comp: an empty playlist to swipe the best takes into; the takes show as lanes"},
+
         // --- recovered takes (session-format.md, "Crash recovery") ---
         // The answers to a RecoveryOffer: what the engine found on disk and
         // the open session does not name is placed, or left where it is.
@@ -320,6 +335,16 @@ inline const std::vector<CommandSpec>& command_catalog() {
          "Place the recovered takes where they were recorded"},
         {"session.leave_recovered", CommandTarget::None,
          "Leave the recovered takes in Audio Files, off the timeline"},
+
+        // --- consolidate (ADR-0031 §6, protocol 52) ---
+        // The argument is api/consolidate_argument.h's. The reply says only
+        // whether the render started; progress and the end are Consolidate
+        // events. The interface's own edit.consolidate is the key; this is
+        // what it sends.
+        {"session.consolidate", CommandTarget::None,
+         "Render a range of a track's playlist to one file and replace the range with it", true},
+        {"session.consolidate_cancel", CommandTarget::None,
+         "Stop the consolidate render that is running"},
 
         // --- the round trip (ADR-0019, update of 2026-10-26) ---
         // Argument: "OUT:IN", the output and input port numbers from 1

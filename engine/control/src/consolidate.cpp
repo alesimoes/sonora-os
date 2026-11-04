@@ -306,12 +306,22 @@ bool consolidate(model::Document& document, const Session& session,
         return false;
     }
     const model::Snapshot now = document.current();
+    ConsolidateRequest r;
+    if (!consolidate_check(now, rq, r, error)) return false;
+    RenderedRange rendered;
+    if (!render_range(now, session_dir, r, hooks, rendered, error)) return false;
+    return consolidate_commit(document, session_dir, r, rendered, updates, error);
+}
+
+bool consolidate_check(const model::Snapshot& now, const ConsolidateRequest& rq,
+                       ConsolidateRequest& resolved, std::string& error) {
     const model::TrackEdit* track = track_of(now, rq.track);
     if (track == nullptr) {
         error = "no such track; nothing was consolidated";
         return false;
     }
-    const model::Id playlist = rq.playlist != 0 ? rq.playlist : track->active_playlist;
+    resolved = rq;
+    if (resolved.playlist == 0) resolved.playlist = track->active_playlist;
 
     // Asked of the model first with the file's size, so a range it would
     // refuse costs no render.
@@ -321,13 +331,21 @@ bool consolidate(model::Document& document, const Session& session,
     add.source.channels = track->channels;
     add.source.length = rq.end - rq.start;
     model::Comp comp;
-    if (!plan_members(now, rq, playlist, *track, add, comp, error)) return false;
+    return plan_members(now, resolved, resolved.playlist, *track, add, comp, error);
+}
 
-    RenderedRange rendered;
-    ConsolidateRequest r = rq;
-    r.playlist = playlist;
-    if (!render_range(now, session_dir, r, hooks, rendered, error)) return false;
+bool consolidate_commit(model::Document& document, const std::string& session_dir,
+                        const ConsolidateRequest& r, const RenderedRange& rendered,
+                        std::vector<model::ReplicationUpdate>& updates, std::string& error) {
     const std::string full = session_dir + "/" + rendered.relative_path;
+    // The document may have moved on while a worker rendered.
+    const model::Snapshot now = document.current();
+    const model::TrackEdit* track = track_of(now, r.track);
+    if (track == nullptr) {
+        std::remove(full.c_str());
+        error = "the track was removed while rendering; nothing was consolidated";
+        return false;
+    }
 
     // The numbers come from the file, as for every source.
     WavReader file;
@@ -337,6 +355,8 @@ bool consolidate(model::Document& document, const Session& session,
         error = rendered.relative_path + ": " + why;
         return false;
     }
+    model::AddSource add;
+    add.source.id = now.next_id;
     add.source.path = rendered.relative_path;
     add.source.channels = file.channels();
     add.source.length = file.frames();
@@ -351,7 +371,8 @@ bool consolidate(model::Document& document, const Session& session,
                 std::string(session_files::kAudioDir) + " but not in the session: " + because;
         return false;
     };
-    if (!plan_members(now, r, playlist, *track, add, comp, why)) return refused(why);
+    model::Comp comp;
+    if (!plan_members(now, r, r.playlist, *track, add, comp, why)) return refused(why);
     model::Compound c;
     c.label = "Consolidate";
     c.ops.push_back(add);
