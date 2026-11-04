@@ -372,6 +372,25 @@ bool encode(const PluginTelemetry& m, std::string& out, std::string& error) {
             return false;
         }
     }
+    // What decode refuses is not sent: a frame the peer would drop whole.
+    if ((m.meters.size() < 32 && (m.meter_mask >> m.meters.size()) != 0)) {
+        error = "telemetry mask names a meter that is not sent";
+        return false;
+    }
+    for (float v : m.meters) {
+        if (!std::isfinite(v)) {
+            error = "telemetry carries a meter that is not finite";
+            return false;
+        }
+    }
+    for (const auto& c : m.curves) {
+        for (float v : c) {
+            if (!std::isfinite(v)) {
+                error = "telemetry carries a curve point that is not finite";
+                return false;
+            }
+        }
+    }
     Writer w(out, Type::PluginTelemetry);
     w.u64(m.insert);
     w.u32(m.sequence);

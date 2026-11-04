@@ -61,6 +61,11 @@ struct TelemetrySnapshot {
 // a write is not a data race; the seqlock makes the copy consistent.
 struct TelemetryBlock {
     // Odd while the writer is inside a frame; seq / 2 counts finished frames.
+    // 32 bits: it wraps after 2^31 frames (about 800 days at 30 000 frames
+    // a second of a block-rate publisher; years at 48 kHz / 128). A reader
+    // compares sequences for equality only, so the wrap is harmless, and 0
+    // (never written) is skipped by the reader's `s1 == 0` test, not by the
+    // writer.
     alignas(kCacheLine) std::atomic<uint32_t> seq;
     std::atomic<uint32_t> meter_mask;
     // Values the writer was handed that were not finite, replaced by 0.
@@ -74,6 +79,9 @@ struct TelemetryBlock {
     void begin_write() noexcept SONORA_RT {
         const uint32_t s = seq.load(std::memory_order_relaxed);
         seq.store(s + 1, std::memory_order_relaxed);
+        // A frame states which meters it publishes: a bit left from an
+        // earlier frame would show a stale value as a live one.
+        meter_mask.store(0, std::memory_order_relaxed);
         // The odd value must be visible before any field below changes.
         std::atomic_thread_fence(std::memory_order_release);
     }
@@ -136,7 +144,10 @@ struct TelemetryBlock {
             if (bad) return false;
             t.meter_mask &= (1u << kMaxTelemetryMeters) - 1;
             for (uint32_t i = 0; i < kMaxTelemetryMeters; ++i) {
-                if (!std::isfinite(t.meters[i])) t.meter_mask &= ~(1u << i);
+                if (!std::isfinite(t.meters[i])) {
+                    t.meter_mask &= ~(1u << i);
+                    t.meters[i] = 0.0f;
+                }
             }
             for (uint32_t c = 0; c < kMaxTelemetryCurves; ++c) {
                 for (uint32_t i = 0; i < t.curve_points[c]; ++i) {

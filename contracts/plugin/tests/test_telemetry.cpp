@@ -119,8 +119,24 @@ void non_finite_and_scribbled() {
     b->meter_mask.store(0xFFFFFFFFu);
     CHECK(b->read(s));
     CHECK((s.meter_mask & (1u << 3)) == 0 && (s.meter_mask >> kMaxTelemetryMeters) == 0);
+    CHECK(s.meters[3] == 0.0f);  // the NaN is zeroed, not only unmasked
     b->curve_points[0].store(0xFFFFFFFFu);
     CHECK(!b->read(s));
+}
+
+// A frame's mask is that frame's: a meter not republished is not live.
+void mask_resets_per_frame() {
+    Region r;
+    TelemetryBlock* b = telemetry_block(r.base, 0);
+    TelemetrySnapshot s;
+    b->begin_write();
+    b->set_meter(0, 1.0f);
+    b->set_meter(1, 2.0f);
+    b->end_write();
+    b->begin_write();
+    b->set_meter(0, 3.0f);
+    b->end_write();
+    CHECK(b->read(s) && s.meter_mask == 1u && s.meters[0] == 3.0f);
 }
 
 // A reader never returns a frame that mixes two writes: the writer keeps
@@ -145,6 +161,11 @@ void no_torn_frame() {
     });
     long reads = 0, torn = 0;
     TelemetrySnapshot s;
+    // The writer may not have started yet: wait (bounded) for its first
+    // frame so the loop below cannot spend itself on a block never written.
+    for (int i = 0; i < 5000 && !b->read(s); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
     for (int i = 0; i < 200000; ++i) {
         if (!b->read(s)) continue;
         ++reads;
@@ -181,6 +202,7 @@ int main() {
     layout();
     round_trip();
     non_finite_and_scribbled();
+    mask_resets_per_frame();
     no_torn_frame();
     no_allocation();
     if (failures == 0) std::printf("telemetry: ok\n");
