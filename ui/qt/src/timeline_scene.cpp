@@ -596,12 +596,79 @@ void build_marker_ruler_scene(const model::MarkerList& markers, const ViewState&
     }
 }
 
+namespace {
+
+// The tempo track: the map as a stepped line, level by bpm. A ramp is the
+// staircase of entries it was written as, so it reads as a slope. Every
+// change has a handle on its line and the bpm beside it when there is room.
+void build_tempo_track_scene(const model::SessionSettings& s, const ViewState& v, double height,
+                             Scene& out) {
+    const std::vector<TempoEntry> fallback{TempoEntry{}};
+    const std::vector<TempoEntry>& map = s.tempo.empty() ? fallback : s.tempo;
+    float lo = map.front().bpm, hi = lo;
+    for (const TempoEntry& e : map) {
+        lo = std::min(lo, e.bpm);
+        hi = std::max(hi, e.bpm);
+    }
+    // At least 20 bpm tall, so a map with one tempo is a line mid-track and
+    // a small change does not fill the track.
+    const float span = std::max(hi - lo, 20.0f);
+    const float mid = 0.5f * (hi + lo);
+    lo = mid - 0.5f * span;
+    hi = mid + 0.5f * span;
+    const double top = 6, room_y = height - 12;
+    const auto y_of = [&](float bpm) {
+        return std::floor(top + (hi - bpm) / span * room_y);
+    };
+    for (double g : {0.0, 0.5, 1.0}) {
+        add(out.rects, 0, std::floor(top + g * room_y), v.width, 1, theme::kBorderSubtle);
+    }
+    const float pin_x = 6;
+    out.labels.push_back({pin_x, 1.0f, 60.0f, format_bpm(hi), theme::kTextSecondary,
+                          theme::kTextCaption});
+    out.labels.push_back({pin_x, static_cast<float>(height - 1 - theme::kTextCaption - 2), 60.0f,
+                          format_bpm(lo), theme::kTextSecondary, theme::kTextCaption});
+
+    double last_label_end = -1e9;
+    for (std::size_t i = 0; i < map.size(); ++i) {
+        const TempoEntry& e = map[i];
+        const double x0 = i == 0 ? 0 : std::floor(v.x_of(e.at));
+        const double x1 = i + 1 < map.size() ? std::floor(v.x_of(map[i + 1].at)) : v.width;
+        if (x1 < 0) continue;
+        if (x0 > v.width) break;
+        const double y = y_of(e.bpm);
+        const double a = std::max(0.0, x0), b = std::min<double>(v.width, std::max(x1, x0 + 1));
+        add(out.rects, a, y, std::max(1.0, b - a), 2, theme::kConductor);
+        if (i + 1 < map.size() && x1 >= 0 && x1 <= v.width) {
+            const double y2 = y_of(map[i + 1].bpm);
+            add(out.rects, x1, std::min(y, y2), 1, std::abs(y2 - y) + 2, theme::kConductor);
+        }
+        if (i > 0 && x0 >= 0) {
+            add(out.rects, x0 - 2, y - 2, 6, 6, theme::kConductor);
+            const double lx = x0 + 6;
+            // A ramp's steps are close: label one only where the last label
+            // has ended and the text fits before the next change.
+            if (lx > last_label_end + 6 && x1 - lx >= 34) {
+                out.labels.push_back({static_cast<float>(lx), static_cast<float>(y + 3), 34.0f,
+                                      format_bpm(e.bpm), theme::kText, theme::kTextCaption});
+                last_label_end = lx + 34;
+            }
+        }
+    }
+}
+
+}  // namespace
+
 void build_conductor_ruler_scene(ConductorRuler kind, const model::SessionSettings& s,
                                  const ViewState& v, double height, Scene& out) {
     out.clear();
     if (v.width <= 0 || height <= 0) return;
     add(out.rects, 0, 0, v.width, height, theme::kPanel);
     add(out.rects, 0, height - 1, v.width, 1, theme::kBorderSubtle);
+    if (kind == ConductorRuler::Track) {
+        build_tempo_track_scene(s, v, height, out);
+        return;
+    }
 
     struct Change {
         Frames at;

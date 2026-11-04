@@ -401,6 +401,22 @@ void SessionModel::installCommands(CommandRegistry& local) {
               "not drive yet; the engine renders it";
         return false;
     });
+    simple("tempo.edit", [this](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) {
+            const model::Frames at = ctl_.selection().has_range() ? ctl_.selection().start
+                                                                  : ctl_.selection().insertion;
+            emit tempoRequested(q(format_bpm(tempo_at(at, ctl_.snapshot().settings).bpm)));
+            return true;
+        }
+        return ctl_.edit_tempo(ctx.argument, why);
+    });
+    simple("tempo.undo", [this](const CommandContext&, Why& why) { return ctl_.tempo_undo(why); });
+    simple("tempo.redo", [this](const CommandContext&, Why& why) { return ctl_.tempo_redo(why); });
+    simple("tempo.track", [this](const CommandContext&, Why&) {
+        tempo_track_ = !tempo_track_;
+        emit tempoTrackChanged();
+        return true;
+    });
     simple("track.playlist_delete_unused", [this, row](const CommandContext& ctx, Why& why) {
         const int i = row(ctx);
         return playlistCommand(i, false,

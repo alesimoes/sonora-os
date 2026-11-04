@@ -77,6 +77,8 @@ class SessionModel : public QObject {
     Q_PROPERTY(bool memoryLocationsOpen READ memoryLocationsOpen NOTIFY memoryLocationsOpenChanged)
     // Setup > Latency (ADR-0019, update of 2026-10-26): window.latency.
     Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
+    // The tempo track under the Tempo and Meter rulers (tempo.track).
+    Q_PROPERTY(bool tempoTrackShown READ tempoTrackShown NOTIFY tempoTrackChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(bool automationFollowsEdit READ automationFollowsEdit NOTIFY editStateChanged)
@@ -349,6 +351,7 @@ public:
     bool memoryLocationsOpen() const { return memory_locations_open_; }
     void setMemoryLocationsOpen(bool on);
     bool latencyOpen() const { return latency_open_; }
+    bool tempoTrackShown() const { return tempo_track_; }
     Q_INVOKABLE void setLatencyOpen(bool on);
     // A row of `markers`: recalled (the selection moves to it), or cleared,
     // one undo step.
@@ -532,6 +535,10 @@ signals:
     void markersChanged();
     void memoryLocationsOpenChanged();
     void latencyOpenChanged();
+    void tempoTrackChanged();
+    // tempo.edit without a text: the dialog opens offering the tempo in
+    // force at the range start or the insertion point.
+    void tempoRequested(const QString& current);
     // marker.add with no name, stopped: the window asks for one, offering
     // `name`, and sends marker.add again with it. `what` says where the
     // marker goes ("at 5|1|000", "from 5|1|000 to 9|1|000").
@@ -679,6 +686,7 @@ private:
     bool undo_history_open_ = false;
     bool memory_locations_open_ = false;
     bool latency_open_ = false;
+    bool tempo_track_ = false;
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);

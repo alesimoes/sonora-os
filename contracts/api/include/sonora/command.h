@@ -196,6 +196,18 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"clip.gain_point_remove", CommandTarget::None,
          "Remove the gain point nearest the insertion point"},
         {"clip.gain_line_clear", CommandTarget::None, "Remove the selected clip's gain line"},
+        // Tempo editing (ADR-0050), in the interface: the tempo map is session
+        // settings sent as a SetSettings. Edit takes "96", "120>90", "x2",
+        // "3/4" or "remove" (EditController::edit_tempo) and asks without one;
+        // Track shows or hides the tempo track on the Edit window.
+        {"tempo.edit", CommandTarget::None, "Edit the tempo map: set, ramp, scale, meter",
+         true, CommandDomain::Interface},
+        {"tempo.undo", CommandTarget::None, "Undo the last tempo edit", false,
+         CommandDomain::Interface},
+        {"tempo.redo", CommandTarget::None, "Redo the last undone tempo edit", false,
+         CommandDomain::Interface},
+        {"tempo.track", CommandTarget::None, "Show or hide the tempo track", false,
+         CommandDomain::Interface},
         {"clip.gain_render", CommandTarget::None,
          "Render the selected clip's gain into a new file"},
         // The track's playlist selector (ADR-0026), on the track given or the

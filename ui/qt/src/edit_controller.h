@@ -435,6 +435,33 @@ public:
     bool set_gain_point(model::Frames at, float db, std::string& why);
     bool remove_gain_point(model::Frames at, std::string& why);
     bool clear_gain_line(std::string& why);
+    // --- tempo (edit_tempo.cpp, ADR-0050) ---
+    // Tempo edits are session settings, outside the edit undo: each one is
+    // a SetSettings with the tempo map replaced, and tempo_undo / tempo_redo
+    // step through them on a stack of their own, emptied when the session is
+    // replaced or the map is changed by anyone else.
+    bool set_tempo(model::Frames at, float bpm, std::string& why);
+    // bpm_from <= 0 starts the ramp at the tempo in force at `from`.
+    bool ramp_tempo(model::Frames from, model::Frames to, float bpm_from, float bpm_to,
+                    std::string& why);
+    bool scale_tempo(model::Frames from, model::Frames to, double factor, std::string& why);
+    // The tempo change nearest `at`, the first excepted.
+    bool remove_tempo(model::Frames at, std::string& why);
+    // On the bar line nearest `near`.
+    bool set_meter(model::Frames near, std::uint32_t beats, std::uint32_t note, std::string& why);
+    bool tempo_undo(std::string& why);
+    bool tempo_redo(std::string& why);
+    // What the Tempo dialog and the tempo.edit command take, at the start of
+    // the range or else the insertion point:
+    //   "96"      the tempo becomes 96 bpm there
+    //   "120>90"  ramp from 120 to 90 over the range (">90": from the
+    //             tempo in force)
+    //   "x2"      the range at double the tempo ("x0.5": half)
+    //   "3/4"     a 3/4 bar starts on the nearest bar line
+    //   "remove"  the tempo change nearest the insertion point goes
+    bool edit_tempo(const std::string& text, std::string& why);
+    bool can_tempo_undo() const { return !tempo_undo_.empty(); }
+    bool can_tempo_redo() const { return !tempo_redo_.empty(); }
     // The line's level (dB, 0 with none) at a timeline frame of `r`.
     static float clip_line_db_at(const model::Region& r, model::Frames timeline_frame);
     // The palette index a region is drawn in: its own, else its track's.
@@ -593,6 +620,12 @@ private:
     Tool tool_ = Tool::Smart;
     GridValue grid_ = GridValue::Beat;
     Selection sel_;
+    struct TempoStep {
+        std::vector<model::TempoEntry> before, after;
+    };
+    bool submit_tempo(std::vector<model::TempoEntry> next, std::string& why);
+    bool tempo_step(bool undo, std::string& why);
+    std::vector<TempoStep> tempo_undo_, tempo_redo_;
     Drag drag_;
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;

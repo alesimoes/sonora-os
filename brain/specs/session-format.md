@@ -197,6 +197,10 @@ reader) is exact in 128-bit integers; outside them it could not be. The
 loader and `SetSettings` refuse a value outside by key path; a version 3
 file is brought inside them instead ("Versioning").
 
+A tempo ramp is not a field: the interface writes it as a staircase of
+ordinary entries, two to a beat, so every reader counts it as any other map
+(ADR-0050).
+
 How the map is counted. The interface's counters, ruler and grid read it
 this way, and the click must put its downbeats in the same places:
 
