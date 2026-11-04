@@ -281,6 +281,11 @@ class Store:
         return [dict(r) for r in self._q(
             "SELECT * FROM runs WHERE task_id=? ORDER BY started", (task_id,))]
 
+    def last_run_of_name(self, name):
+        r = self._q("SELECT * FROM runs WHERE name=? ORDER BY started DESC "
+                    "LIMIT 1", (name,))
+        return dict(r[0]) if r else None
+
     def last_run_name(self, task_id, role):
         r = self._q("SELECT name FROM runs WHERE task_id=? AND role=? "
                     "ORDER BY started DESC LIMIT 1", (task_id, role))
