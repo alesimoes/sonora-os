@@ -633,9 +633,11 @@ find_iodelay() {
 }
 
 # jack_iodelay output on stdin -> "<ms> ms (<frames> frames)" of the last
-# "total roundtrip latency" line, or nothing when it never locked on.
+# "total roundtrip latency" line, or nothing when it never locked on. Always
+# succeeds: under set -e -o pipefail a grep with no match would end the script
+# before the report is written.
 iodelay_last() {
-  grep -E "total roundtrip latency" | tail -n 1 |
+  { grep -E "total roundtrip latency" || true; } | tail -n 1 |
     sed -E 's/^ *([0-9.]+) frames +([0-9.]+) ms.*/\2 ms (\1 frames)/'
 }
 
@@ -703,7 +705,7 @@ do_measure() {
         pw-link jack_delay:out "$lout" 2>/dev/null || true
         pw-link "$lin" jack_delay:in 2>/dev/null || true
         sleep 12
-        lat="$(iodelay_last <"$STATE/iodelay.out")"
+        lat="$(iodelay_last <"$STATE/iodelay.out" || true)"
         [[ -n "$lat" ]] ||
           lat="not measured: no signal came back through $lout -> $lin (silent microphone or no cable)"
       else

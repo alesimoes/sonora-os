@@ -214,6 +214,10 @@ if [[ $(echo "nothing" | clock_of) == '?/?' ]]; then ok "clock_of unknown"; else
 iod=$'  128.000 frames      2.667 ms total roundtrip latency\n  250.000 frames      5.208 ms total roundtrip latency\n'
 if [[ $(iodelay_last <<<"$iod") == "5.208 ms (250.000 frames)" ]]; then ok "iodelay_last"; else bad "iodelay_last: $(iodelay_last <<<"$iod")"; fi
 if [[ -z $(echo "no signal" | iodelay_last) ]]; then ok "iodelay_last empty"; else bad "iodelay_last empty"; fi
+# The script runs under set -e -o pipefail: no match must not end it, or the
+# report with "round-trip latency: not measured" is never written.
+reached="$(set -euo pipefail; lat="$(echo "no signal" | iodelay_last)"; echo "reached${lat}")"
+if [[ $reached == reached ]]; then ok "iodelay_last no match survives set -e"; else bad "iodelay_last no match ends a set -e script"; fi
 if printf '48000/128\n48000/128\n' | clock_stable; then ok "stable clock"; else bad "stable clock"; fi
 if printf '48000/128\n48000/256\n' | clock_stable; then bad "moving quantum called stable"; else ok "moving quantum"; fi
 if printf '?/?\n' | clock_stable; then bad "unknown called stable"; else ok "unknown clock"; fi
