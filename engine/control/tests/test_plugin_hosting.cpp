@@ -535,8 +535,11 @@ int scenario_lanes_second_insert(const Args& a) {
     rig.apply(insert_op(100, 500, 0, kEgAmp));
     rig.apply(insert_op(100, 501, 1, kNan));
     // 1 is an hour away: the transport never reaches it, so the plugin
-    // never writes a NaN; the plan still has to hold 0 until then.
-    EditAutomation toggle{100, AutomationParam::Plugin, 0, kMaxInteger, {{0, 0.f}, {48000LL * 3600, 1.f}}};
+    // never writes a NaN; the plan still has to hold the first value until
+    // then. That one is 0.4, not the toggle's default 0 (and under the
+    // plugin's 0.5 threshold): only a value that went through the lane to
+    // instance 1 can read back as 0.4.
+    EditAutomation toggle{100, AutomationParam::Plugin, 0, kMaxInteger, {{0, 0.4f}, {48000LL * 3600, 1.f}}};
     toggle.insert = 501;
     toggle.key = "nan";
     rig.apply(toggle);
@@ -550,14 +553,14 @@ int scenario_lanes_second_insert(const Args& a) {
     }
     const PlanPluginLane& lane = p->plugin_lanes[rig.chain_node(0)->first_plugin_lane];
     check(lane.instance == 1, "the lane names the second instance");
-    check(lane.count == 3, "a toggle's lane holds 0 to the next point: one hold point added");
+    check(lane.count == 3, "a toggle's lane holds 0.4 to the next point: one hold point added");
     if (lane.count == 3) {
         const PlanAutoPoint* pts = p->auto_points + lane.first;
-        check(auto_lane_value(pts, lane.count, 48000LL * 1800) == 0.f, "half way there, still 0, not 0.5");
+        check(auto_lane_value(pts, lane.count, 48000LL * 1800) == 0.4f, "half way there, still 0.4, not 0.7");
     }
     float v = -1.f;
-    check(rig.until([&] { return rig.hosting->host_value(501, "nan", v) && v == 0.f; }, 5000),
-          "the second instance reads the lane's value");
+    check(rig.until([&] { return rig.hosting->host_value(501, "nan", v) && v == 0.4f; }, 5000),
+          "the second instance reads the lane's value, 0.4: not its default 0");
     float g = 0.f;
     check(rig.hosting->host_value(500, "gain", g) && g == 0.f, "the first instance's gain is untouched");
     return failures ? 1 : 0;

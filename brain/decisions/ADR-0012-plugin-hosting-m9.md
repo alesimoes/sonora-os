@@ -1385,9 +1385,10 @@ are untouched.
    **Follow-ups:** LV2 UIs (suil or `ui:X11UI` with `ui:parent`); the
    engine and UI command that sends `OpenEditor` (`plugin.editor.open`),
    which also sets the probe record's `has_editor` and moves its version;
-   O2 (keys while an editor has focus); losing the X server ends the host
-   through Xlib's I/O error exit, so a dead Xwayland costs every chain
-   with an editor open.
+   O2 (keys while an editor has focus). Losing the X server no longer ends
+   the host: an I/O error handler and exit handler let the connection die,
+   every open editor is answered `EditorClosed{ByOperator}` and the display
+   is dropped; the next `OpenEditor` connects anew.
 
 ## Rationale
 

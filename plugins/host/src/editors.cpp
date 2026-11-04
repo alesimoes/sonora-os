@@ -49,6 +49,16 @@ void Editors::close_all() {
 uint64_t Editors::dispatch(std::vector<uint32_t>& closed) {
     if (!display_) return 0;
     const uint64_t due = display_->dispatch();
+    if (display_->lost()) {
+        // The X server is gone and every window with it: each open editor
+        // is closed as if the operator had closed it, then the dead display
+        // goes (windows first: they hold it). The next OpenEditor connects
+        // anew.
+        for (uint32_t i = 0; i < windows_.size(); ++i)
+            if (close(i)) closed.push_back(i);
+        display_.reset();
+        return 0;
+    }
     for (uint32_t i = 0; i < windows_.size(); ++i) {
         EditorWindow* w = windows_[i].get();
         if (!w) continue;

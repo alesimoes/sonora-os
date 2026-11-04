@@ -1020,6 +1020,9 @@ public:
                 p.automatable = (pi.flags & V::ParameterInfo::kCanAutomate) != 0;
                 // stepCount: 0 continuous, 1 a toggle, n a choice of n + 1
                 // values; a list's values are named by the controller.
+                // A very wide one (>= 4096) is not counted or named, but it
+                // still takes only some values: its lane holds.
+                if (pi.stepCount > 0) p.discrete = true;
                 if (pi.stepCount > 0 && pi.stepCount < 4096) {
                     p.steps = static_cast<uint32_t>(pi.stepCount) + 1;
                     p.toggle = pi.stepCount == 1;
