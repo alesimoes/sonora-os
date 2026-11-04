@@ -134,6 +134,8 @@ add_subdirectory(plugins/host)
 add_subdirectory(engine/core)
 add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
+# MCU control surface over a MIDI port (ADR-0055); after contracts/api.
+add_subdirectory(drivers/surfaces)
 # Platform-neutral (ADR-0008): the backend engine tests run on, any OS.
 add_subdirectory(drivers/fake)
 # The engine's side of the plugin boundary (ADR-0012 checklist 4). Linked
