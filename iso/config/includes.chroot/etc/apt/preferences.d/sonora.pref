@@ -1,0 +1,19 @@
+# ADR-0034: the installed system follows Debian stable only, and the RT
+# kernel moves only with a Sonora release, never through a stray upgrade.
+Package: *
+Pin: release a=unstable
+Pin-Priority: -1
+
+Package: *
+Pin: release a=testing
+Pin-Priority: -1
+
+Package: *
+Pin: release a=experimental
+Pin-Priority: -1
+
+# Held: a new kernel on a studio machine is a new latency profile. It is
+# installed by sonora-update (a Sonora release), not by apt upgrade.
+Package: linux-image-* linux-headers-* linux-image-rt-amd64 linux-headers-rt-amd64
+Pin: release *
+Pin-Priority: -1
