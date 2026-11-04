@@ -21,6 +21,7 @@ from .forge import ForgeError, RateLimited
 
 META = "train"
 RATE_PAUSE_S = 600
+RERUN_GRACE_S = 150   # GitHub marks a requested rerun queued within seconds
 LIST_TTL_S = 300
 
 
@@ -323,6 +324,14 @@ class Train:
         # A bundle starts from main, so there is nothing to refresh: its
         # first red goes to a fixer like a refreshed head's.
         refreshed = i.get("refreshed") == head or bool(i.get("bundle"))
+        # A rerun shows the old failures until GitHub starts it; judging
+        # those would send a fixer for a run that is about to happen.
+        if any(c["state"] == "pending" for c in checks):
+            upd["rerun_at"] = None
+        elif i.get("rerun_at") and now - i["rerun_at"] < RERUN_GRACE_S:
+            self._save(fid, phase="rerodando",
+                       next="aguardando o rerun começar", **upd)
+            return
         early = [c["name"] for c in checks if c["state"] == "fail"]
         if early and refreshed:
             # A failed job on a head that will not be refreshed decides it:
@@ -391,6 +400,7 @@ class Train:
             upd["reruns"] = (i.get("reruns", 0) + 1
                              if i.get("reruns_head") == head else 1)
             upd["reruns_head"] = head
+            upd["rerun_at"] = now
             phase = "rerodando"
         else:
             upd["refresh_from"] = head
@@ -416,6 +426,7 @@ class Train:
             self.o.forge.rerun_failed(i.get("pr"), head_before)
             self._save(fid, phase="rerodando", action="fixer: causa externa,"
                        " rerun", refreshed=head_before,
+                       rerun_at=self.o.clock(),
                        next="rerun; vermelho de novo → fixer")
             return
         self._save(fid, phase="CI rodando", action="push do fixer",

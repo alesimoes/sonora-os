@@ -201,6 +201,27 @@ class Train(support.DaemonCase):
         self.assertEqual(len(self.forge.reruns), 2)
         self.assertEqual(self.info(o, 10)["phase"], "rerodando")
 
+    def test_a_rerun_not_started_yet_sends_no_second_fixer(self):
+        o = self.make()
+        self.forge.add_pr(10, "a", checks={"build": "fail"})
+        self.forge.prs[10]["update"] = "uptodate"
+        self.forge.fix_commits = False
+        o.train.adopt()
+        o.tick()                                 # rerun
+        self.forge.checks(10, build="fail")
+        with mock.patch.object(launcher, "git_head", return_value="h0"):
+            self.poll(o)                         # fixer, finds nothing
+            self.assertTrue(self.pump(
+                o, lambda: state(o, "pr-10") == "pr_open"))
+        # GitHub still shows the old failure: the train waits for the rerun
+        self.forge.checks(10, build="fail")
+        self.clock.offset += 30
+        o.ci_polled.clear()
+        o.tick()
+        self.assertEqual(state(o, "pr-10"), "pr_open")
+        self.assertEqual(len(o.store.runs_of("pr-10")), 1)
+        self.assertEqual(self.info(o, 10)["next"], "aguardando o rerun começar")
+
     # -- capacity, stacking, rate limits ---------------------------------
     def test_refreshes_wait_for_a_ci_slot(self):
         o = self.make(train_slots=2)
