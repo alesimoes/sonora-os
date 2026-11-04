@@ -2,10 +2,11 @@
 //
 // The WaveNet kernel (wavenet.h). Layout and loop order, for speed:
 // - Every signal is planar, one row of frames per channel, so the inner
-//   loop of every product runs over the block's frames: contiguous, the
-//   same length for every channel count, and vectorised by the compiler
-//   (no intrinsics, no #ifdef; ADR-0011 §2.3). Every product, the dilated
-//   convolution included, is one matmul_rows() over a list of input rows.
+//   loop of every product runs over the block's frames: contiguous and the
+//   same length for every channel count. Every product, the dilated
+//   convolution included, is one matmul_rows() over a list of input rows;
+//   it and the tanh and sigmoid come from a kernel table (kernels.h), the
+//   generic one or AVX2 chosen at run time, to the same bits.
 // - Each layer keeps the history of its input in a linear buffer of
 //   2 x lookback + max_frames frames per channel. A block is written at
 //   `write`; when the next block would not fit, the last `lookback` frames
@@ -20,6 +21,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "kernels.h"
 #include "sonora/dsp/denormals.h"
 #include "vec_math.h"
 
@@ -72,59 +74,17 @@ constexpr float kInputLimit = 16.0f;
 
 int gate_factor(const LayerArraySpec& a) { return a.gated ? 2 : 1; }
 
-// out[o][t] = the sum over i, in order, of w[o][i] x in[i][t], for o < rows
-// and t < n; out rows are out_stride apart. Every product in the kernel is
-// one of these. Four output rows share each pass over an input row, so the
-// inner loop (vectorised over t) loads the input once per four
-// multiply-adds. On the "standard" convolution (16 x 48 x 128) this was the
-// fastest of four forms tried in the build image with GCC 14 -O3: 21 us
-// against 34 us one row at a time and 63 us for 4 x 8 register tiles, which
-// GCC did not vectorise. Each sum starts at 0 and adds its terms in input
-// order, so the grouping changes no bit of the result.
-void matmul_rows(const float* w, int rows, int nin, const float* const* in, int n, float* out,
-                 std::size_t out_stride) noexcept SONORA_RT {
-    const std::size_t stride_w = static_cast<std::size_t>(nin);
-    int o0 = 0;
-    for (; o0 + 4 <= rows; o0 += 4) {
-        const float* w0 = w + static_cast<std::size_t>(o0) * stride_w;
-        float* r0 = out + static_cast<std::size_t>(o0) * out_stride;
-        float* r1 = r0 + out_stride;
-        float* r2 = r1 + out_stride;
-        float* r3 = r2 + out_stride;
-        for (int t = 0; t < n; ++t) {
-            r0[t] = 0.0f;
-            r1[t] = 0.0f;
-            r2[t] = 0.0f;
-            r3[t] = 0.0f;
-        }
-        for (int i = 0; i < nin; ++i) {
-            const float c0 = w0[i];
-            const float c1 = w0[stride_w + static_cast<std::size_t>(i)];
-            const float c2 = w0[2 * stride_w + static_cast<std::size_t>(i)];
-            const float c3 = w0[3 * stride_w + static_cast<std::size_t>(i)];
-            const float* x = in[i];
-            for (int t = 0; t < n; ++t) {
-                const float v = x[t];
-                r0[t] += c0 * v;
-                r1[t] += c1 * v;
-                r2[t] += c2 * v;
-                r3[t] += c3 * v;
-            }
-        }
-    }
-    for (; o0 < rows; ++o0) {
-        const float* wr = w + static_cast<std::size_t>(o0) * stride_w;
-        float* r = out + static_cast<std::size_t>(o0) * out_stride;
-        for (int t = 0; t < n; ++t) r[t] = 0.0f;
-        for (int i = 0; i < nin; ++i) {
-            const float c = wr[i];
-            const float* x = in[i];
-            for (int t = 0; t < n; ++t) r[t] += c * x[t];
-        }
-    }
+}  // namespace
+
+WaveNet::WaveNet() noexcept : kernels_(&detail::generic_kernels()) {}
+
+void WaveNet::allow_simd(bool allowed) noexcept {
+    allow_simd_ = allowed;
+    const detail::Kernels* simd = allowed ? detail::simd_kernels() : nullptr;
+    kernels_ = simd ? simd : &detail::generic_kernels();
 }
 
-}  // namespace
+const char* WaveNet::kernels_name() const noexcept { return kernels_->name; }
 
 const char* activation_name(Activation a) noexcept {
     for (const auto& n : kActivationNames)
@@ -310,6 +270,7 @@ bool WaveNet::load(const WaveNetSpec& spec, const std::vector<float>& weights, s
     }
     head_scale_ = *it;
     arrays_ = std::move(arrays);
+    allow_simd(allow_simd_);  // reads CPUID once per load, off the audio thread
     receptive_field_ = wavenet_receptive_field(spec);
     return true;
 }
@@ -408,6 +369,7 @@ void WaveNet::run(const float* in, float* out, int n) noexcept SONORA_RT {
         cond[t] = std::min(std::max(finite, -kInputLimit), kInputLimit);
     }
     const float** inputs = inputs_.data();
+    const auto matmul_rows = kernels_->matmul_rows;
 
     for (std::size_t ai = 0; ai < arrays_.size(); ++ai) {
         Array& a = arrays_[ai];
@@ -461,13 +423,20 @@ void WaveNet::run(const float* in, float* out, int n) noexcept SONORA_RT {
             }
 
             // Activation; gated: activation(top) x sigmoid(bottom).
-            for (int o = 0; o < c; ++o)
-                apply_activation(a.spec.activation, z_.data() + static_cast<std::size_t>(o) * mf, n);
+            for (int o = 0; o < c; ++o) {
+                float* zr = z_.data() + static_cast<std::size_t>(o) * mf;
+                if (a.spec.activation == Activation::tanh)
+                    kernels_->tanh(zr, n);
+                else if (a.spec.activation == Activation::sigmoid)
+                    kernels_->sigmoid(zr, n);
+                else
+                    apply_activation(a.spec.activation, zr, n);
+            }
             if (g == 2) {
                 for (int o = 0; o < c; ++o) {
                     float* top = z_.data() + static_cast<std::size_t>(o) * mf;
                     float* bottom = z_.data() + static_cast<std::size_t>(o + c) * mf;
-                    apply_activation(Activation::sigmoid, bottom, n);
+                    kernels_->sigmoid(bottom, n);
                     for (int t = 0; t < n; ++t) top[t] *= bottom[t];
                 }
             }

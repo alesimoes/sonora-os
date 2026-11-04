@@ -10,8 +10,9 @@
 // test does not depend on which libm the build has).
 //
 // Accuracy, held by common/dsp/tests/test_neural.cpp against std::tanh and
-// the sigmoid computed in double over [-20, 20]: absolute error <= 2.5e-7.
-// The equivalence bar is 1e-5 on the output (ADR-0011 §3.2).
+// the sigmoid computed in double over [-20, 20]: absolute error <= 3.5e-7
+// for tanh (measured 3.2e-7), <= 2.5e-7 for the sigmoid. The equivalence
+// bar is 1e-5 on the network's output (ADR-0011 §3.2).
 #pragma once
 
 #include <cmath>
@@ -62,23 +63,37 @@ inline float select_bits(bool c, float a, float b) noexcept {
     return f;
 }
 
-// tanh. Below 0.25 the odd Taylor series to x^9 (next term < 2.2e-9), so
-// small values keep their relative accuracy; above, (1 - e)/(1 + e) with
-// e = e^(-2|x|), which has no cancellation there. |x| is held to 9, where
-// tanh rounds to 1 in float.
+// tanh, as x P(x^2) / Q(x^2) with P of degree 6 and Q of degree 3 in x^2,
+// x held to +-7.9. Odd by construction, so small values keep their
+// relative accuracy, and no branch, exp or select: 20 operations and a
+// divide, half the time of the exp-based form it replaced (4.6 us against
+// 2.2 us per 2 048 values in AVX2 on an i7-11800H). Our own fit:
+// linearised minimax (Loeb's iteration, then Lawson's weights) of
+// tanh(x) on [0, 7.9] in double, x scaled to [0, 1] for conditioning, then
+// a search over the last bits of the float coefficients for the smallest
+// error evaluated in float, in this order of operations. Measured against
+// std::tanh in double on every float step of 5e-5 in [-20, 20] and 2e6
+// random points: max |error| 3.2e-7 (about 5 float ulps below 1; the fit
+// alone is 1.4e-9, the rest is the float rounding of the Horner sums and
+// the divide), |result| <= 1 throughout. tanh(7.9) is within 2.7e-7 of 1.
+// Every SIMD table repeats these operations in this order
+// (src/arch/x86_64/neural_avx2.cpp), so the bits agree.
 inline float tanh_approx(float x) noexcept {
-    const float ax = std::fabs(x);
-    const float a = ax < 9.0f ? ax : 9.0f;
-    const float e = exp_nonpositive(-2.0f * a);
-    const float big = (1.0f - e) / (1.0f + e);
-    const float a2 = a * a;
-    float s = 62.0f / 2835.0f;
-    s = s * a2 - 17.0f / 315.0f;
-    s = s * a2 + 2.0f / 15.0f;
-    s = s * a2 - 1.0f / 3.0f;
-    s = s * a2 + 1.0f;
-    const float small = a * s;
-    return std::copysign(select_bits(a < 0.25f, small, big), x);
+    const float m = x < 7.9f ? x : 7.9f;
+    const float v = m > -7.9f ? m : -7.9f;
+    const float s = v * v;
+    float p = -1.167722603e-13f;
+    p = p * s + 6.393623131e-11f;
+    p = p * s + -2.234931351e-08f;
+    p = p * s + 1.164718196e-05f;
+    p = p * s + 3.149628639e-03f;
+    p = p * s + 1.312453151e-01f;
+    p = p * s + 1.000000119e+00f;
+    float q = 2.613467223e-04f;
+    q = q * s + 2.467588335e-02f;
+    q = q * s + 4.645786583e-01f;
+    q = q * s + 1.0f;
+    return (v * p) / q;
 }
 
 // 1 / (1 + e^-x), with e = e^-|x| so neither branch overflows; |x| held

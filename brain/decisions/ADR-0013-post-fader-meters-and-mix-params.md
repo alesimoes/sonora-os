@@ -157,3 +157,30 @@ part). This amendment does §1's track part and §2 differently.
   meters are about 3.1 ms, over a 2.67 ms quantum at 128 / 48 kHz), so it
   is spread at most a few loudness meters per callback. Turning loudness on
   for track meters belongs with it.
+
+## Amendment, 2026-11-03 (second): loudness in the block and the meter reset (state layout 8, protocol 42)
+
+- **Layout 8.** A `MeterState` (momentary, short-term, their maxima,
+  integrated, LRA, true-peak maximum, non-finite count) in `StateHeader` for
+  the master and in each `TrackState`, written by
+  `StateWriter::publish_meters()` after `publish()`, read by
+  `StateView::master_meter()` and `track_meter()`. Plain relaxed words
+  outside the seqlock; a reading beside one a publish older is what a meter
+  is. The control channel needs no read message: the block is the read.
+- **Track loudness.** `SessionConfig::track_loudness` turns BS.1770 and
+  true-peak on for every track meter (off by default, on in the engine app).
+  The meters are still built in the constructor.
+- **Staggered reset.** `Session::reset_meters()` bumps a generation; the
+  audio thread raises `request_reset()` on the master first and then the
+  tracks, at most `kMeterResetsPerCallback` (4) per callback, so 64 stereo
+  meters take 17 callbacks and never fall in one. A request during a pass
+  restarts it. `reset_meter(track)` resets one meter at once.
+- **Protocol 42.** The command `meters.reset` (argument empty or `all`,
+  `master`, or a track index) is the control-channel reset.
+- **Non-finite.** The meter measures a NaN or infinity as silence so it
+  cannot stick in the K-weighting, but the strip must not show silence for
+  a blown-up bus: when a meter's count moved since the last publish, the
+  publisher writes `kNonfinitePeak` (+24 dBFS, finite so readers keep it)
+  as that meter's peak for the tick.
+- **Not done.** `Session::set_bus_gain()` still accepts a non-finite value,
+  and a NaN `bus_applied_` never recovers; a follow-up.

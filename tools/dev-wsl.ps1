@@ -187,9 +187,9 @@ if ($isSelftest) {
 }
 [Console]::OutputEncoding = $prevEnc
 $ErrorActionPreference = $old
-# 143 is the UI ended by SIGTERM (`stop`, or the window closed by WSLg).
-$stopped = $rc -eq 143 -and $first -in @('run', 'all')
-if ($rc -ne 0 -and $first -notin @('status', 'stop') -and -not $stopped) {
+# A UI ended by `stop` already exits 0: dev-wsl.sh maps its 143 (SIGTERM) only
+# when do_stop left its marker, so any other SIGTERM is reported here.
+if ($rc -ne 0 -and $first -notin @('status', 'stop')) {
     $hint = switch -Regex ($first) {
         '^(run|all)$' { 'if the message above says the engine exited before listening, its log is printed there; if it says "no build", run this script without arguments first.' }
         '^selftest$' { 'no microphone? try: selftest --tone' }
@@ -197,5 +197,4 @@ if ($rc -ne 0 -and $first -notin @('status', 'stop') -and -not $stopped) {
     }
     Write-Host "dev-wsl: step '$first' failed (exit $rc). $hint" -ForegroundColor Red
 }
-if ($stopped) { $rc = 0 }
 exit $rc

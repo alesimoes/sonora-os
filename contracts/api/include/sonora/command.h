@@ -133,6 +133,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"track.disarm", CommandTarget::Track, "Record-disarm a track"},
         {"track.toggle_arm", CommandTarget::Track, "Toggle record arm on a track"},
         {"track.arm_all", CommandTarget::None, "Record-arm every track"},
+        // Protocol 42. Argument: empty or "all" (every meter, a few per audio
+        // callback), "master", or a track's index, decimal from 0.
+        {"meters.reset", CommandTarget::None,
+         "Reset the loudness, true-peak and clip readings of one meter or all", true},
         {"track.disarm_all", CommandTarget::None, "Record-disarm every track"},
         {"track.toggle_mute", CommandTarget::Track, "Toggle mute on a track"},
         {"track.toggle_solo", CommandTarget::Track, "Toggle solo on a track"},

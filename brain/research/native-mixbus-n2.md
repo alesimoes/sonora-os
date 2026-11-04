@@ -100,3 +100,37 @@ budget left for part 2's colour stage; over class A (20 µs), which is not
 its class. The cost is the per-sample dB conversions and the three
 detectors; the slope and knee could run at a control rate if part 2 needs
 the room.
+
+## Part 2: the console colour (2026-11-03)
+
+- Design: the line output transformer of `common/dsp/transformer.h` (a
+  driver into a Jiles-Atherton core, with the supply's sag), after the bus
+  compressor and before the width stage, run at the oversampled rate and
+  mixed in by `colour` at that rate, so the dry path is aligned by
+  construction. New ids appended: `quality` (eco 2x, standard 4x, high 8x;
+  default standard; reconfigures), `colour` (0-100 %, default 0) and `sag`
+  (default 100 %). Part 1's ids and indices do not move.
+- Latency: the oversampler's round trip, always (so PDC does not move with
+  the amount): 39 / 45 / 47 samples at 48 kHz for eco / standard / high
+  (69 / 76 / 78 at 44.1, 11 / 16 / 18 at 96); measured equals reported at
+  every quality and rate. The detector sees the undelayed input.
+- Colour 0 %: output equals the compressor's, delayed, to the bit, at
+  every quality (the transformer is not run and its state dropped).
+- Harmonics (standard, colour 100 %, sag 0, -12 dBFS): 1 kHz total 2-9 at
+  -58.2 dB, 40 Hz at -30.1 dB (27.4 dB more at LF). Every harmonic above
+  -90 dBc agrees with the model driven by an ideal oversampled sine to
+  0.17 dB (bar 0.5).
+- Sag: a held 100 Hz tone at -1 dBFS ends 0.107 dB lower with sag 100 %
+  than at 0 %.
+- Aliasing (colour 100 %, 48 kHz, worst of tones 1-19 kHz): nominal -18
+  dBFS eco -92.95, standard -96.96, high -96.53 dBc; hot (-6 dBFS) eco
+  -61.8, standard -85.7, high -85.3 dBc, reported.
+- CPU, q128, 48 kHz, stereo, per-block minimum of 5 runs, on the owner's
+  laptop in the container with other containers running (reference kernel
+  83.8 us here against 32.6 us on the reference machine, so x2.57):
+  eco colour 0 % p99.9 52.8 us, colour 100 % 88.1 us (92.7 us at +12 dB),
+  i.e. 34.3 and 36.1 us on the reference machine, inside class B (60 us).
+  Uncalibrated on this loaded machine eco colour 100 % reads 82.7-91.1 us,
+  over the bar: the machine, not the stage. Standard colour 100 % reads
+  137.6 us (uncalibrated) and high is higher: over class B, reported, and
+  eco is the mode that meets the class (ADR-0011 3.5).

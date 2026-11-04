@@ -51,6 +51,10 @@ namespace sonora::dsp {
 // spectra of the tail's partitions. Built off the audio thread.
 class ConvolutionKernel {
 public:
+    // 1e30 is 600 dB over any impulse response; the sum of the longest
+    // kernel's taps stays far inside double.
+    static constexpr double kMaxTap = 1e30;
+
     // partition: P, a power of two from 16 to 4096. max_taps bounds every
     // later set(). Allocates.
     bool prepare(std::uint32_t partition, std::uint32_t max_taps);
@@ -58,7 +62,8 @@ public:
     // Copies and transforms h[0..taps). Allocates nothing; O(taps log P),
     // so it is for a loader thread, not for process(). Refused (false, the
     // kernel unchanged) when taps is 0 or over max_taps, or when a tap is
-    // not finite. After prepare() the kernel is a unit impulse.
+    // not finite or past +-kMaxTap (a finite tap near DBL_MAX would overflow
+    // the partition spectra, whose bins sum P taps). After prepare() the kernel is a unit impulse.
     bool set(const double* h, std::uint32_t taps) noexcept;
 
     std::uint32_t partition() const noexcept { return p_; }

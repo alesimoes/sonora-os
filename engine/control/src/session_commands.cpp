@@ -2,6 +2,7 @@
 #include "sonora/session_commands.h"
 
 #include <cstddef>
+#include <exception>
 #include <memory>
 #include <string>
 
@@ -284,6 +285,37 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         auto& tr = session.tracks()[idx];
         if (!tr->rec_armed() && may_arm && !may_arm(idx, why)) return false;
         tr->set_rec_armed(!tr->rec_armed());
+        return true;
+    });
+
+    // Staggered inside the session for "all" (Session::reset_meters()); a
+    // single meter is one reset in one callback.
+    reg.install("meters.reset", [&session](const CommandContext& ctx, std::string& why) {
+        const std::string& a = ctx.argument;
+        if (a.empty() || a == "all") {
+            session.reset_meters();
+            return true;
+        }
+        if (a == "master") {
+            session.reset_meter(-1);
+            return true;
+        }
+        std::size_t used = 0;
+        unsigned long idx = 0;
+        try {
+            idx = std::stoul(a, &used);
+        } catch (const std::exception&) {
+            used = 0;
+        }
+        if (used == 0 || used != a.size()) {
+            why = "meters.reset takes all, master or a track index, not \"" + a + "\"";
+            return false;
+        }
+        if (idx >= session.tracks().size()) {
+            why = "there is no track " + std::to_string(idx + 1);
+            return false;
+        }
+        session.reset_meter(static_cast<int>(idx));
         return true;
     });
 

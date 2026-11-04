@@ -49,6 +49,7 @@ if [[ ${#PROCESSORS[@]} -eq 0 ]]; then
   PROCESSORS=(
     chorus
     compressor
+    deesser
     delay
     eq
     fet

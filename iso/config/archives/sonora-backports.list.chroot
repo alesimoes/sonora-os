@@ -9,9 +9,10 @@
 # date, and apt would otherwise reject it as stale.
 #
 # http on purpose: apt still checks the InRelease signature and every hash in
-# it, and the exact pins plus the hook catch a replayed older snapshot. https
-# would need ca-certificates before this source's first update, which neither
-# the chroot nor tools/Dockerfile.runtime has (ADR-0002, 2026-11-02 amendment).
+# it, and the exact pins plus the hook catch a replayed older snapshot for
+# PipeWire and WirePlumber, the only packages taken from it. https would need
+# ca-certificates before this source's first update, which neither the chroot
+# nor tools/Dockerfile.runtime has (ADR-0002, 2026-11-02 amendment).
 #
 # Build-time only. live-build removes *.chroot archives after the hooks have
 # run, so the shipped system carries no snapshot source.
