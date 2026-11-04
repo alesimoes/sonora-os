@@ -295,3 +295,16 @@ sign-off (Y6) is still open: it needs the UMC1820.
   kiosk reason as the installers; packaging must do the same. The test
   runs only under `tools/test-yabridge.sh` (CI skips it, 77). Which of the
   two outcomes Wine 10.0 and yabridge 5.1.1 give is not yet measured.
+
+## Update, 2026-11-04: appliance packaging (Y6)
+
+The "Appliance packaging" item of Y6 is made. The image carries Wine 10.0
+(64-bit, from the snapshot) and yabridge 5.1.1 (pinned by SHA-256, fetched by
+the 0200 hook, checked against `tools/Dockerfile.yabridge` by
+`tools/test-image-config.sh`). A oneshot unit creates the prefix under the
+operator's account and runs `yabridgectl sync` once; `sonora-windows-plugins`
+does it again on demand. The scan needed no change. Provenance, licences,
+the RT notes and the owner's hardware commands are in
+`brain/research/yabridge-packaging.md`. Still open, and still gating the offer
+to the operator: the deadline sign-off on the appliance with a real Windows
+plugin, and whether Wine's audio threads get RT priority there.
