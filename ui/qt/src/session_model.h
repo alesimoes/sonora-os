@@ -26,6 +26,7 @@
 #include "edit_controller.h"
 #include "engine_adapter.h"
 #include "peak_source.h"
+#include "preferences.h"
 #include "session_files.h"
 #include "sonora/model/sequence_file.h"
 #include "import_model.h"
@@ -88,6 +89,14 @@ class SessionModel : public QObject {
     Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
     // File > Bounce Mix: the Bounce window (ui.mixer.bounce).
     Q_PROPERTY(bool bounceOpen READ bounceOpen NOTIFY bounceOpenChanged)
+    // Setup > Preferences: window.preferences, what the operator starts with
+    // (counter format, grid, edit mode) and why a save or a read was refused.
+    Q_PROPERTY(bool preferencesOpen READ preferencesOpen NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefCounter READ prefCounter NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefGrid READ prefGrid NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefMode READ prefMode NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefRefusal READ prefRefusal NOTIFY preferencesChanged)
+    Q_PROPERTY(QString preferencesFile READ preferencesFile NOTIFY preferencesChanged)
     // Window configurations: the nine slots, {slot, stored, summary}, and
     // the list that shows them (window.configurations).
     Q_PROPERTY(QVariantList windowConfigs READ windowConfigs NOTIFY windowConfigsChanged)
@@ -378,6 +387,20 @@ public:
     bool latencyOpen() const { return latency_open_; }
     bool bounceOpen() const { return bounce_open_; }
     Q_INVOKABLE void setBounceOpen(bool on);
+    bool preferencesOpen() const { return prefs_open_; }
+    QString prefCounter() const { return QString::fromLatin1(time_format_name(prefs_.counter)); }
+    QString prefGrid() const { return QString::fromLatin1(grid_value_name(prefs_.grid)); }
+    QString prefMode() const { return QString::fromLatin1(edit_mode_name(prefs_.mode)); }
+    QString prefRefusal() const { return prefs_refusal_; }
+    QString preferencesFile() const { return prefs_file_; }
+    Q_INVOKABLE void setPreferencesOpen(bool on);
+    // The file the preferences live in; read now and applied. A file that
+    // cannot be read leaves the defaults and holds the reason in the window.
+    void setPreferencesFile(const QString& file);
+    // One choice: `what` is "counter", "grid" or "mode", `value` a name from
+    // the window's lists. It applies at once and is saved; a name that is not
+    // in the list, or a save that fails, is held in the window.
+    Q_INVOKABLE bool setPreference(const QString& what, const QString& value);
     Q_INVOKABLE void setLatencyOpen(bool on);
 
     // --- window configurations (window.config_store, window.config_recall) ---
@@ -589,6 +612,7 @@ signals:
     void memoryLocationsOpenChanged();
     void latencyOpenChanged();
     void bounceOpenChanged();
+    void preferencesChanged();
     void windowConfigsChanged();
     void windowConfigsOpenChanged();
     // A recalled configuration moved the floating windows: read
@@ -744,6 +768,11 @@ private:
     int seen_event_lane_ = 0;
     bool latency_open_ = false;
     bool bounce_open_ = false;
+    bool prefs_open_ = false;
+    Preferences prefs_;
+    QString prefs_file_, prefs_refusal_;
+    void applyPreferences();
+    void setCounterFormat(TimeFormat main);
     bool window_configs_open_ = false;
     WindowLayouts layouts_;
     QString layouts_file_;

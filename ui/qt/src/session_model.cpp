@@ -398,6 +398,10 @@ void SessionModel::installCommands(CommandRegistry& local) {
         setBounceOpen(!bounce_open_);
         return true;
     });
+    local.install("window.preferences", [this](const CommandContext&) {
+        setPreferencesOpen(!prefs_open_);
+        return true;
+    });
     local.install("window.configurations", [this](const CommandContext&) {
         setWindowConfigsOpen(!window_configs_open_);
         return true;
@@ -1397,11 +1401,15 @@ void SessionModel::cycleMainCounter() {
     // format menu runs; the sub counter shows Min:Secs, or Bars|Beats when
     // the main one already does.
     switch (main_fmt_) {
-        case TimeFormat::BarsBeats: main_fmt_ = TimeFormat::MinSec; break;
-        case TimeFormat::MinSec: main_fmt_ = TimeFormat::Timecode; break;
-        case TimeFormat::Timecode: main_fmt_ = TimeFormat::Samples; break;
-        case TimeFormat::Samples: main_fmt_ = TimeFormat::BarsBeats; break;
+        case TimeFormat::BarsBeats: setCounterFormat(TimeFormat::MinSec); break;
+        case TimeFormat::MinSec: setCounterFormat(TimeFormat::Timecode); break;
+        case TimeFormat::Timecode: setCounterFormat(TimeFormat::Samples); break;
+        case TimeFormat::Samples: setCounterFormat(TimeFormat::BarsBeats); break;
     }
+}
+
+void SessionModel::setCounterFormat(TimeFormat main) {
+    main_fmt_ = main;
     sub_fmt_ = main_fmt_ == TimeFormat::MinSec ? TimeFormat::BarsBeats : TimeFormat::MinSec;
     main_counter_.clear();
     updateCounters(true);

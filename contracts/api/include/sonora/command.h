@@ -342,6 +342,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // File > Bounce Mix…: the dialog that sends mix.bounce.
         {"window.bounce", CommandTarget::None, "Show or hide the Bounce Mix window",
          false, CommandDomain::Interface},
+        // Setup > Preferences: the operator's own defaults, kept per machine
+        // by the interface; the engine is not asked.
+        {"window.preferences", CommandTarget::None, "Show or hide the Preferences window",
+         false, CommandDomain::Interface},
         // Pro Tools' Window > Configuration and Logic's screensets: which
         // windows are open and where, in nine numbered slots. The argument
         // is the slot, 1 to 9. The panel lists the slots.

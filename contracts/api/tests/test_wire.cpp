@@ -500,7 +500,7 @@ void domains() {
                                id == "automation.toggle_follows_edit" ||
                                id == "window.transport" ||
                                id == "window.undo_history" ||
-                               id == "window.memory_locations" || id == "window.latency" ||
+                               id == "window.memory_locations" || id == "window.latency" || id == "window.preferences" ||
                                id == "window.bounce" ||
                                id == "window.configurations" || id == "window.config_store" ||
                                id == "window.config_recall" ||

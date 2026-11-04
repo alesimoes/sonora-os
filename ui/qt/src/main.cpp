@@ -515,6 +515,7 @@ int main(int argc, char** argv) {
     SyntheticPeakSource peaks(rate, 120.0);
     SessionModel session(document, peaks, true);
     if (!a.opt.sessions_dir.isEmpty()) session.setSessionsDir(a.opt.sessions_dir);
+    session.setPreferencesFile(default_preferences_file());
     document.on_refused = [&session](const std::string& why) {
         emit session.notice(QString::fromStdString(why));
     };

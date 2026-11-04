@@ -57,6 +57,8 @@ add_library(sonora_ui_qt STATIC
   src/edit_names.cpp
   src/strip_silence.h src/strip_silence.cpp
   src/edit_strip_silence.cpp
+  src/edit_preferences.cpp
+  src/preferences.h src/preferences.cpp
   src/automation_edit.h src/automation_edit.cpp
   src/edit_automation.cpp
   src/live_take.h src/live_take.cpp
@@ -88,9 +90,8 @@ qt_add_resources(sonora_ui_qt sonora_qml
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/WindowConfigsWindow.qml
+        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml
         qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
-        qml/LoudnessPanel.qml
 )
 
 # The screenshot scenes register themselves (scenes/screenshot_scene.h): in
@@ -242,6 +243,13 @@ target_compile_definitions(test_ui_bounce_window PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_bounce_window COMMAND test_ui_bounce_window)
 set_tests_properties(ui_bounce_window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# Setup > Preferences: the window, the file it keeps, a bad file refused.
+add_executable(test_ui_preferences tests/test_preferences.cpp)
+target_link_libraries(test_ui_preferences PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_preferences PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_preferences COMMAND test_ui_preferences)
+set_tests_properties(ui_preferences PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Counters, ruler, grid and snap through the whole tempo map; the Transport
 # window's model on a scripted transport; then the window in the real QML,
