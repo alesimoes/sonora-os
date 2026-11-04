@@ -1,7 +1,7 @@
 ---
 name: distro-engineer
 description: Use for the bootable image — live-build configuration, package lists, RT kernel, PipeWire and ALSA configuration, systemd units, udev rules, USB persistence, boot testing.
-tools: Read, Grep, Glob, Write, Edit, Bash
+tools: Read, Grep, Glob, Write, Edit, Bash, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 250
 ---

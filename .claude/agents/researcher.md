@@ -1,7 +1,7 @@
 ---
 name: researcher
 description: Investigates file formats, protocols, kernel behaviour and hardware before implementation, and writes the findings into brain/. Use when a task depends on a fact nobody in the project has established.
-tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch
+tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 250
 ---
