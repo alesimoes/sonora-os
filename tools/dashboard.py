@@ -169,7 +169,8 @@ def read_usage():
 def read_orchestrator():
     """planning/orchestrator/status.json when the coordinator writes it; None otherwise."""
     try:
-        with open(os.path.join(ROOT, "planning", "orchestrator", "status.json"), encoding="utf-8") as f:
+        path = os.environ.get("SONORA_ORCH_STATUS") or os.path.join(ROOT, "planning", "orchestrator", "status.json")
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return None
