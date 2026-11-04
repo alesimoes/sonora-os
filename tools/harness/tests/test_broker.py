@@ -25,22 +25,25 @@ class Client:
         line = await asyncio.wait_for(self.r.readline(), 3)
         return P.decode(line) if line else None
 
-    async def req(self, t, **kw):
+    async def req(self, op, **kw):
         """Send a request, return its reply; pushes are queued in inbox."""
         self.n += 1
         rid = str(self.n)
-        self.w.write(P.encode(dict(kw, t=t, rid=rid)))
+        self.w.write(P.encode(dict(kw, op=op, rid=rid)))
         await self.w.drain()
         while True:
             f = await self._read()
             if f is None or f.get("rid") == rid:
                 return f
-            if f["t"] == "deliver":
+            if f.get("op") == "deliver":
                 self.inbox.append(f["msg"])
 
-    async def register(self, name, token, last=0):
-        return await self.req("register", name=name, token=token,
-                              last_acked_seq=last)
+    async def register(self, name, token, last=None):
+        extra = {} if last is None else {"last_acked_seq": last}
+        r = await self.req("register", name=name, token=token, **extra)
+        if r and r.get("ok"):
+            self.inbox.extend(r["pending"])
+        return r
 
     async def pushes(self, n):
         while len(self.inbox) < n:
@@ -49,7 +52,7 @@ class Client:
         return self.inbox
 
     def ack(self, seq):
-        self.w.write(P.encode({"t": "ack", "seq": seq}))
+        self.w.write(P.encode({"op": "ack", "seq": seq, "rid": "a"}))
 
     async def close(self):
         self.w.close()
@@ -87,13 +90,13 @@ class BrokerTest(unittest.IsolatedAsyncioTestCase):
     async def agent(self, name, last=0):
         c = await self.raw()
         r = await c.register(name, self.broker.token, last)
-        self.assertEqual(r["t"], "ok", r)
+        self.assertTrue(r["ok"], r)
         return c
 
     async def test_bad_token(self):
         c = await self.raw()
         r = await c.register("eng-1", "wrong")
-        self.assertEqual((r["t"], r["code"]), ("error", P.E_BAD_TOKEN))
+        self.assertEqual((r["ok"], r["code"]), (False, P.E_BAD_TOKEN))
         self.assertIsNone(await c._read())  # closed
         self.assertNotIn("eng-1", self.broker.conns)
 
@@ -125,7 +128,7 @@ class BrokerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((msgs[0]["from"], msgs[0]["seq"], msgs[0]["body"]),
                          ("eng-1", 1, {"x": 1}))
         r = await o.req("ping")
-        self.assertEqual(r["t"], "ok")
+        self.assertTrue(r["ok"])
         self.assertEqual(o.inbox, [])
 
     async def test_unknown_recipient(self):
@@ -171,7 +174,7 @@ class BrokerTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
         t3 = await self.agent("tester-1", last=0)
         r = await t3.req("ping")
-        self.assertEqual((r["t"], t3.inbox), ("ok", []))
+        self.assertEqual((r["ok"], t3.inbox), (True, []))
 
     async def test_claim_race_one_winner(self):
         a = await self.agent("eng-1")
@@ -179,47 +182,46 @@ class BrokerTest(unittest.IsolatedAsyncioTestCase):
         ra, rb = await asyncio.gather(
             a.req("claim", paths=["engine/a.cpp", "engine/b.cpp"]),
             b.req("claim", paths=["engine/b.cpp", "ui/c.cpp"]))
-        wins = [r for r in (ra, rb) if r["t"] == "ok"]
-        losses = [r for r in (ra, rb) if r["t"] == "claim_denied"]
+        wins = [r for r in (ra, rb) if r["ok"]]
+        losses = [r for r in (ra, rb) if r.get("code") == "claim_denied"]
         self.assertEqual((len(wins), len(losses)), (1, 1))
         self.assertEqual(losses[0]["denied"][0]["path"], "engine/b.cpp")
         # all-or-nothing: the loser holds nothing
-        loser = "eng-2" if ra["t"] == "ok" else "eng-1"
+        loser = "eng-2" if ra["ok"] else "eng-1"
         self.assertNotIn(loser, self.broker.claims.values())
 
     async def test_directory_glob_claim_and_release(self):
         a = await self.agent("eng-1")
         b = await self.agent("eng-2")
-        self.assertEqual((await a.req("claim", paths=["engine/mixer/**"]))["t"],
-                         "ok")
+        self.assertTrue((await a.req("claim", paths=["engine/mixer/**"]))["ok"])
         r = await b.req("claim", paths=["engine/mixer/pan.cpp"])
         self.assertEqual(r["denied"][0]["owner"], "eng-1")
         self.assertTrue(overlaps("src/**", "src/a/*.cpp"))
         self.assertFalse(overlaps("src/a/*.cpp", "src/b/*.cpp"))
         await a.req("release", paths=[])
-        self.assertEqual((await b.req("claim", paths=["engine/mixer/pan.cpp"]))
-                         ["t"], "ok")
+        self.assertTrue((await b.req("claim",
+                                     paths=["engine/mixer/pan.cpp"]))["ok"])
 
     async def test_check_allow_deny(self):
         a = await self.agent("eng-1")
         b = await self.agent("eng-2")
         await a.req("claim", paths=["engine/x.cpp"])
         r = await a.req("check", path="engine/x.cpp")
-        self.assertTrue(r["allow"])
+        self.assertTrue(r["allowed"])
         r = await b.req("check", path="engine/x.cpp")
-        self.assertEqual((r["allow"], r["owner"]), (False, "eng-1"))
+        self.assertEqual((r["allowed"], r["owner"]), (False, "eng-1"))
         r = await b.req("check", path="engine/free.cpp")
-        self.assertFalse(r["allow"])
+        self.assertFalse(r["allowed"])
         self.assertIn("claim it first", r["reason"])
         # short hook-style connection without register
         c = await self.raw()
         r = await c.req("check", path="engine/x.cpp", name="eng-1",
                         token=self.broker.token)
-        self.assertTrue(r["allow"])
+        self.assertTrue(r["allowed"])
         c2 = await self.raw()
         r = await c2.req("check", path="engine/x.cpp", name="eng-1",
                          token="bad")
-        self.assertEqual(r["t"], "error")
+        self.assertFalse(r["ok"])
 
     async def test_suspect_on_close(self):
         a = await self.agent("eng-1")

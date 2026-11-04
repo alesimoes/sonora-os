@@ -227,7 +227,7 @@ class Broker:
                 self.box.set_acked(r, seq)
                 self._event(P.EV_MESSAGE, msg=msg)
             elif r in self.conns:
-                self.conns[r].send({"t": "deliver", "msg": msg})
+                self.conns[r].send({"op": "deliver", "msg": msg})
         return mid, recipients
 
     # ---- connection handling --------------------------------------------
@@ -268,14 +268,13 @@ class Broker:
 
     def _dispatch(self, conn, f, rid):
         """Returns False to close the connection."""
-        t = f["t"]
+        t = f["op"]
         if t == "register":
             return self._register(conn, f, rid)
         if conn.name is None:
             if t == "check" and self._auth(f.get("token", "")) and \
                     P.valid_name(str(f.get("name", ""))):
-                conn.send(dict(self.check_path(f["name"], f["path"]),
-                               t="check_result", rid=rid))
+                conn.send(self._check_reply(rid, f["name"], f["path"]))
                 return True
             raise P.ProtocolError(P.E_NOT_REGISTERED, "register first")
         name = conn.name
@@ -284,6 +283,7 @@ class Broker:
             conn.send(P.reply_ok(rid))
         elif t == "ack":
             self.box.set_acked(name, f["seq"])
+            conn.send(P.reply_ok(rid))
         elif t == "send":
             mid, rcpt = self.send(
                 name, f["to"], f["type"], f.get("body"), f.get("feature"),
@@ -293,16 +293,24 @@ class Broker:
             paths = [_norm(p) for p in f["paths"]]
             denied = self.claim_for(name, paths)
             if denied:
-                conn.send({"t": "claim_denied", "rid": rid, "denied": denied})
+                d = denied[0]
+                conn.send(P.reply_error(
+                    rid, P.E_CLAIM_DENIED,
+                    "%s claimed by %s" % (d["path"], d["owner"]),
+                    denied=denied))
             else:
                 conn.send(P.reply_ok(rid, claimed=paths))
         elif t == "release":
             conn.send(P.reply_ok(rid, released=self.release_for(
                 name, f["paths"])))
         elif t == "check":
-            conn.send(dict(self.check_path(name, f["path"]),
-                           t="check_result", rid=rid))
+            conn.send(self._check_reply(rid, name, f["path"]))
         return True
+
+    def _check_reply(self, rid, name, path):
+        r = self.check_path(name, path)
+        return P.reply_ok(rid, allowed=r["allow"], owner=r["owner"],
+                          reason=r["reason"])
 
     def _register(self, conn, f, rid):
         name = f["name"]
@@ -325,8 +333,7 @@ class Broker:
             self.box.set_acked(name, client_acked)
         after = max(client_acked, self.box.get_acked(name))
         self.seq.setdefault(name, self.box.max_seq(name))
-        conn.send(P.reply_ok(rid, name=name, last_acked_seq=after))
-        for m in self.box.unacked(name, after):
-            conn.send({"t": "deliver", "msg": m})
+        conn.send(P.reply_ok(rid, name=name, last_acked_seq=after,
+                             pending=self.box.unacked(name, after)))
         self._event(P.EV_REGISTERED, name=name)
         return True

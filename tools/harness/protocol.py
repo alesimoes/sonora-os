@@ -1,30 +1,35 @@
 """Wire contract of the harness broker (ADR-0047 section 4b).
 
 Transport: TCP on 127.0.0.1, newline-delimited JSON, one object per line,
-UTF-8, at most MAX_FRAME bytes. Every frame has "v" (PROTOCOL_VERSION) and
-"t" (frame type).
+UTF-8, at most MAX_FRAME bytes. Every frame has "v" (PROTOCOL_VERSION).
+Requests carry "op" and "rid"; replies carry the same "rid" and "ok"; the
+broker's pushes are {"op": "deliver", "msg": {...}}.
 
-Client -> broker requests (optional "rid" is echoed in the reply):
-  register {name, token, last_acked_seq}   first frame of a connection;
-        reply ok {name, last_acked_seq}, then one "deliver" frame per
-        unacked message with seq > max(last_acked_seq, stored .acked).
-  ping {}                                   reply ok {}
-  ack {seq}                                 cumulative, no reply; marks every
-        message with seq <= N delivered for this name.
+Replies: {rid, ok: true, ...} or {rid, ok: false, code, error}. "code" is
+machine readable (E_* below), "error" is a human sentence.
+
+Requests (client -> broker):
+  register {name, token, last_acked_seq?}  first frame of a connection. Reply
+        ok {name, last_acked_seq, pending: [msg...]}: every stored message
+        with seq > max(last_acked_seq, stored ack), in seq order. Omit
+        last_acked_seq to use the stored ack. Bad token / duplicate / unknown
+        name: ok false and the connection is closed.
+  ping {}                                   reply ok
+  ack {seq}                                 cumulative; reply ok
   send {to, type, body, feature?, task?, reply_to?, needs_ack?}
-        to = a name | "feat/<id>" (channel) | "role:<r>" (live names
-        starting "<r>-" or equal to "<r>"). reply ok {id, recipients}.
-  claim {paths}     all-or-nothing; reply ok {claimed} or "claim_denied"
-        {denied: [{path, owner}]}.
+        to = a name | "feat/<id>" (channel) | "role:<r>" (live names equal to
+        or starting "<r>-"). Reply ok {id, recipients}.
+  claim {paths}     all-or-nothing. Reply ok {claimed}, or ok false with
+        code claim_denied, error "<path> claimed by <owner>", denied
+        [{path, owner}].
   release {paths}   reply ok {released}. paths=[] releases all of the caller.
-  check {path}      reply "check_result" {allow, owner, reason}. May be sent
-        without register on a short connection by adding "name" and "token".
+  check {path}      reply ok {allowed, owner, reason}. A short connection may
+        skip register by adding "name" and "token" to the check.
 
-Broker -> client:
-  ok / error {code, msg} / claim_denied / check_result  (replies, carry rid)
-  deliver {msg}     server push; msg is the message envelope below.
+Pushes (broker -> client): {"op": "deliver", "msg": <envelope>}, sent after
+the register reply for messages that arrive while connected.
 
-Message envelope (also what is stored in mail/<name>/ and log/messages.jsonl):
+Envelope (also stored in mail/<name>/ and log/messages.jsonl):
   {v, id, seq, ts, from, to, feature, task, type, reply_to, needs_ack, body}
   "seq" is per recipient and strictly increasing; delivery is at-least-once,
   handlers must be idempotent on "id".
@@ -67,6 +72,7 @@ E_NOT_REGISTERED = "not_registered"
 E_BAD_TYPE = "bad_type"
 E_NO_RECIPIENT = "no_recipient"
 E_BAD_PATH = "bad_path"
+E_CLAIM_DENIED = "claim_denied"
 E_NOT_MEMBER = "not_member"   # send to a channel the sender is not in
 
 # Event names passed to Broker's on_event callback.
@@ -115,16 +121,14 @@ def decode(line):
         raise ProtocolError(E_BAD_FRAME, f"not json: {e}")
     if not isinstance(frame, dict):
         raise ProtocolError(E_BAD_FRAME, "frame must be an object")
-    if frame.get("v") != PROTOCOL_VERSION:
+    if frame.get("v", PROTOCOL_VERSION) != PROTOCOL_VERSION:  # v optional
         raise ProtocolError(E_BAD_FRAME, "unsupported version")
-    if not isinstance(frame.get("t"), str):
-        raise ProtocolError(E_BAD_FRAME, "missing t")
     return frame
 
 
 def _need(frame, key, typ):
     if not isinstance(frame.get(key), typ):
-        raise ProtocolError(E_BAD_FRAME, f"{frame['t']}: {key} must be "
+        raise ProtocolError(E_BAD_FRAME, f"{frame['op']}: {key} must be "
                             f"{typ.__name__}")
 
 
@@ -134,7 +138,7 @@ def valid_name(name):
 
 
 def validate_request(frame):
-    t = frame["t"]
+    t = frame.get("op")
     if t not in REQUESTS:
         raise ProtocolError(E_BAD_FRAME, f"unknown request {t}")
     if t == "register":
@@ -161,11 +165,12 @@ def validate_request(frame):
 
 
 def reply_ok(rid, **fields):
-    return {"t": "ok", "rid": rid, **fields}
+    return {"rid": rid, "ok": True, **fields}
 
 
-def reply_error(rid, code, msg=""):
-    return {"t": "error", "rid": rid, "code": code, "msg": msg}
+def reply_error(rid, code, msg="", **fields):
+    return {"rid": rid, "ok": False, "code": code,
+            "error": f"{code}: {msg}" if msg else code, **fields}
 
 
 def env_connection(environ=None):
