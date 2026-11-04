@@ -28,6 +28,15 @@ truncate -s ${DISK_MIB}M "$T/disk.img"
 slots_layout_script "$DISK_MIB" | sfdisk -q "$T/disk.img"
 LOOP=$(losetup --find --show --partscan "$T/disk.img")
 sfdisk -l "$LOOP" | grep -c "$LOOP"p >/dev/null || { echo "FAIL: no partitions on $LOOP" >&2; exit 1; }
+# A container has no udev: create the partition nodes from sysfs, as
+# tools/test-installer.sh does.
+sleep 0.5
+for n in 1 2 3 4; do
+    p="${LOOP}p$n"
+    if [ ! -b "$p" ] && m=$(cat "/sys/class/block/${p##*/}/dev" 2>/dev/null); then
+        mknod "$p" b "${m%:*}" "${m#*:}"
+    fi
+done
 mkfs.ext4 -q -L sonora-a "${LOOP}p2"
 mkfs.ext4 -q -L sonora-data "${LOOP}p4"
 
