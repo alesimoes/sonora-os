@@ -73,8 +73,14 @@ One PR per BACKLOG item, follow-ups included. Review is tiered: Sonnet for
 UI-only and test-only PRs, Opus for the RT path, contracts, storage and
 recovery. Only a blocking finding sends a PR back; non-blocking ones become
 BACKLOG lines, batched into one follow-ups PR per track. A re-review is a
-fresh Sonnet agent that checks only the fix's diff. Approved green PRs merge
-with `tools/merge-when-green.sh PR...`; the `integrator` is for conflicts.
+fresh Sonnet agent that checks only the fix's diff. A PR enters the merge queue the moment it is opened:
+`tools/enqueue-pr.sh PR...` (one detached merge-when-green per PR, a lock
+refuses duplicates, it gives up after 4 h); a blocking finding runs
+`tools/enqueue-pr.sh --cancel PR`. The `integrator` is for conflicts.
+Agents never wait for CI, never background anything, and stop what they
+started before reporting (see "Process hygiene" in each agent file). The
+coordinator ends every turn with `tools/bg-status.sh` (`--kill` removes
+duplicates and orphan docker runs).
 
 ## Before opening a PR (every agent)
 
