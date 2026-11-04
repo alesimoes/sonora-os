@@ -44,24 +44,12 @@ SECONDS_ARG="${2:-60}"
 shift $(( $# > 2 ? 2 : $# ))
 PROCESSORS=("$@")
 if [[ ${#PROCESSORS[@]} -eq 0 ]]; then
-  # One name per line, alphabetical, so PRs adding a processor do not
-  # conflict with each other on a shared line.
-  PROCESSORS=(
-    chorus
-    compressor
-    deesser
-    delay
-    eq
-    fet
-    gate
-    limiter
-    opto
-    phaser
-    reverb
-    saturator
-    tape
-    tube
-  )
+  # Every processor the harness drives: a directory with tests/suite.cpp
+  # (plugins/native/README.md), so adding one edits nothing here.
+  for suite in "$ROOT"/plugins/native/*/tests/suite.cpp; do
+    p="${suite%/tests/suite.cpp}"
+    PROCESSORS+=("${p##*/}")
+  done
 fi
 MEASURE="$BUILD/sonora-dsp-measure"
 OUT="$BUILD/dsp-reports-cpu"
