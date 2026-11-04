@@ -197,14 +197,14 @@ std::vector<Operation> one_of_each() {
             SetTrackColour{2, 13},
             SetRegionName{3, 11, "Verse \xC3\xA9"},
             SetRegionColour{3, 11, kTrackColour},
+            SetGroup{40, "Drums \xC3\xA9", {2, 5}, 0x0F, false, true},
+            RemoveGroup{40},
+            SetRegionGain{3, 11, -3.5f, {{0, -6.0f}, {48000, 0.0f}}},
             SetVca{70, "Drums Ã©", {2, 3}},
             RemoveVca{70},
             SetVcaMix{VcaMix{70, -4.5f, true}},
             SetFolder{71, "Kit", {2}},
             RemoveFolder{71},
-            SetGroup{40, "Drums \xC3\xA9", {2, 5}, 0x0F, false, true},
-            RemoveGroup{40},
-            SetRegionGain{3, 11, -3.5f, {{0, -6.0f}, {48000, 0.0f}}},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 
