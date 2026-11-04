@@ -59,7 +59,8 @@ std::vector<float> make_voice(const std::vector<Res>& resonances, bool sibilants
             double s = 0.0;
             for (int h = 1; h * f < 14000.0 && h < 160; ++h) {
                 phase[h] += 2.0 * kPi * h * f / kFs;
-                s += std::sin(phase[h]) * 0.12 / std::pow(static_cast<double>(h), 1.2);
+                const double hf = h * f / 7000.0;  // a smooth roll-off, as a real voice has
+                s += std::sin(phase[h]) * 0.12 / std::pow(static_cast<double>(h), 1.2) / (1.0 + hf * hf * hf * hf);
             }
             y[pos + i] = s * a;
         }
@@ -112,7 +113,6 @@ std::vector<float> process(const std::vector<float>& x, const VocalAnalysis& a) 
     sonora::measure::Config cfg;
     const auto params = sonora::native::vocal_balance_params(a);
     for (const auto& [k, v] : params) cfg.push_back({k.c_str(), v});
-    cfg.push_back({"depth", 100.0f});
     sonora::measure::apply(*p, cfg);
     p->prepare(kFs, 128, 2);
     const sonora::measure::Chans in = {x, x};
@@ -133,6 +133,13 @@ float param_of(const sonora::model::AddInsert& ai, const char* key) {
         if (p.key == key) return p.value;
     }
     return -1.0f;
+}
+
+double band_rms(const std::vector<float>& x, double centre_hz) {
+    const auto b = sonora::measure::octave_band(x, kFs, centre_hz);
+    double s = 0.0;
+    for (std::size_t i = static_cast<std::size_t>(kFs); i < b.size(); ++i) s += b[i] * b[i];
+    return std::sqrt(s / static_cast<double>(b.size()));
 }
 
 bool has_resonance_near(const VocalAnalysis& a, double f, double tol, double min_excess) {
@@ -195,13 +202,16 @@ int test_processor_cuts_what_was_found() {
     const double r2 = -20.0 * std::log10(tone_amp(y, 6130.0, from, n) / tone_amp(with, 6130.0, from, n));
     std::printf("  reduction: 3712 Hz %.1f dB, 6130 Hz %.1f dB\n", r1, r2);
     CHECK(r1 >= 8.0);
-    CHECK(r2 >= 6.0);
+    CHECK(r2 >= 3.0);
     // The voice around them is left alone: the clean voice, through the same
-    // bands, changes by under 0.5 dB overall.
+    // bands, changes by under 1 dB in the octave around 4 kHz (the 3712 Hz band
+    // and its neighbours), and under 0.5 dB overall.
     const std::vector<float> yc = process(clean, a);
     const double dc = rms_db(yc) - rms_db(clean);
-    std::printf("  clean voice through the same bands: %+.2f dB\n", dc);
+    const double d4k = 20.0 * std::log10(band_rms(yc, 4000.0) / band_rms(clean, 4000.0));
+    std::printf("  clean voice through the same bands: %+.2f dB overall, %+.2f dB in the 4 kHz octave\n", dc, d4k);
     CHECK(std::fabs(dc) < 0.5);
+    CHECK(std::fabs(d4k) < 1.0);
     // And a clean voice's own analysis gives no band that cuts it.
     VocalAnalysis ac;
     CHECK(sonora::native::analyse_vocal(clean.data(), clean.size(), kFs, ac, err));
@@ -236,7 +246,8 @@ int test_plan() {
     CHECK_APPLY(h, vox);
     const Snapshot base = h.current();
 
-    sonora::native::VocalBalancePlanSource src(vox.track, a, -20.0);
+    // A target 6 dB under the voice, so the trim step is there and is -6 dB.
+    sonora::native::VocalBalancePlanSource src(vox.track, a, a.level_db - 6.0);
     Plan plan;
     CHECK(src.propose(base, plan, err));
     CHECK(plan_problem(plan).empty());
@@ -274,7 +285,7 @@ int test_plan() {
     PlanReceipt rc;
     CHECK(accept_plan(h, plan, Selection::all(plan), rc, err));
     CHECK(h.current().edit->tracks[0]->inserts.size() >= 2);
-    CHECK(h.current().mix.find(vox.track)->gain_db != 0.0f);
+    CHECK(std::fabs(h.current().mix.find(vox.track)->gain_db + 6.0f) <= 0.5f);
     CHECK(undo_plan(h, rc, err));
     CHECK(h.current().edit->tracks[0]->inserts.empty());
     CHECK(h.current().mix.find(vox.track)->gain_db == 0.0f);

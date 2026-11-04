@@ -6,16 +6,18 @@
 
 #include "sonora/dsp/fft.h"
 #include "sonora/native/vocal_balance_analysis.h"
-#include "sonora/native/vocal_balance.h"
 
 namespace sonora::native {
 
 namespace {
 
+// The processor's band count (vocal_balance.h); this library does not link the SDK.
+constexpr std::size_t kMaxBands = 5;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kLowHz = 100.0;
 constexpr double kHighHz = 16000.0;
 constexpr double kResonanceFloorHz = 250.0;  // below it the window is under 6 bins and harmonics dominate
+constexpr double kResonanceCeilHz = 12000.0;  // above it a voice has little, and band limits of the recording show
 constexpr double kMinExcessDb = 3.0;
 constexpr double kPercentile = 0.30;
 constexpr int kHistBins = 140;               // 0.5 dB from -30 to +40
@@ -172,8 +174,9 @@ bool analyse_vocal(const float* mono, std::size_t frames, double fs, VocalAnalys
         double f, q, ex;
     };
     std::vector<Cand> cands;
+    const std::uint32_t pk_hi = std::min<std::uint32_t>(kmax, static_cast<std::uint32_t>(kResonanceCeilHz / bin_hz));
     const std::uint32_t pk_lo = std::max<std::uint32_t>(kmin + 1, static_cast<std::uint32_t>(std::ceil(kResonanceFloorHz / bin_hz)));
-    for (std::uint32_t k = pk_lo; k + 1 <= kmax; ++k) {
+    for (std::uint32_t k = pk_lo; k + 1 <= pk_hi; ++k) {
         const double a = q30[k - 1 - kmin], b = q30[k - kmin], c = q30[k + 1 - kmin];
         if (b < kMinExcessDb || b <= a || b < c) continue;
         double delta = 0.0;
@@ -184,6 +187,11 @@ bool analyse_vocal(const float* mono, std::size_t frames, double fs, VocalAnalys
         std::uint32_t l = k, r = k;
         while (l > kmin && q30[l - kmin] > 0.5 * b) --l;
         while (r < kmax && q30[r - kmin] > 0.5 * b) ++r;
+        // A resonance falls away on both sides at a similar rate. The edge
+        // of a band limit (a codec's low-pass, an anti-alias filter) leaves
+        // a plateau on one side and a drop on the other: not a resonance.
+        const double up = std::max(1.0, static_cast<double>(r - k)), down = std::max(1.0, static_cast<double>(k - l));
+        if (up > 4.0 * down || down > 4.0 * up) continue;
         const double width = std::max(static_cast<double>(r - l), 1.0) * bin_hz;
         cands.push_back({f, std::min(16.0, std::max(1.0, f / width)), b});
     }
@@ -197,7 +205,7 @@ bool analyse_vocal(const float* mono, std::size_t frames, double fs, VocalAnalys
         }
         if (crowded) continue;
         kept.push_back(c);
-        if (kept.size() == vocal_balance::kMaxBands) break;
+        if (kept.size() == kMaxBands) break;
     }
     std::sort(kept.begin(), kept.end(), [](const Cand& x, const Cand& y) { return x.f < y.f; });
     for (const Cand& c : kept) {
@@ -236,6 +244,13 @@ bool analyse_vocal(const float* mono, std::size_t frames, double fs, VocalAnalys
             for (std::uint32_t k = kmin; k <= kmax; ++k) {
                 const double f = k * bin_hz;
                 if (f < z.lo || f >= z.hi) continue;
+                // A resonance already found is not also a tilt: leave its
+                // 1/6 octave out, or it would be cut twice.
+                bool masked = false;
+                for (const Cand& r : kept) {
+                    if (f > r.f / 1.1225 && f < r.f * 1.1225) masked = true;
+                }
+                if (masked) continue;
                 s += mean_db[k - kmin] - (icpt + slope * std::log2(f));
                 ++c;
             }
@@ -270,13 +285,13 @@ bool analyse_vocal(const float* mono, std::size_t frames, double fs, VocalAnalys
 }
 
 std::vector<std::pair<std::string, float>> vocal_balance_params(const VocalAnalysis& a) {
-    static const float kDefaults[vocal_balance::kMaxBands] = {280.0f, 1000.0f, 3300.0f, 4600.0f, 7500.0f};
+    static const float kDefaults[kMaxBands] = {280.0f, 1000.0f, 3300.0f, 4600.0f, 7500.0f};
     std::vector<std::pair<std::string, float>> p;
-    const std::size_t found = std::min<std::size_t>(a.resonances.size(), vocal_balance::kMaxBands);
+    const std::size_t found = std::min<std::size_t>(a.resonances.size(), kMaxBands);
     const std::size_t n = std::max<std::size_t>(3, found);
     p.emplace_back("bands", static_cast<float>(n - 3));
     std::vector<double> qs;
-    for (std::size_t i = 0; i < vocal_balance::kMaxBands; ++i) {
+    for (std::size_t i = 0; i < kMaxBands; ++i) {
         const std::string idx = std::to_string(i + 1);
         if (i < found) {
             p.emplace_back("freq" + idx, static_cast<float>(std::min(16000.0, std::max(100.0, a.resonances[i].freq_hz))));
@@ -289,6 +304,14 @@ std::vector<std::pair<std::string, float>> vocal_balance_params(const VocalAnaly
         }
     }
     p.emplace_back("sharpness", static_cast<float>(qs.empty() ? 4.0 : percentile(qs, 0.5)));
+    // The analysis already chose persistent peaks, so the live detector only
+    // has to follow them: a low threshold and full depth, the cap per band
+    // being the analysis's cut. (Measured: against a voice the wide detector
+    // also holds the skirts of the loud low harmonics, so a resonance reads
+    // about 6 dB less excess than against noise; the default threshold of 6 dB
+    // left a 22 dB-over resonance cut by 6 of its 12 dB.)
+    p.emplace_back("threshold", 2.0f);
+    p.emplace_back("depth", 100.0f);
     return p;
 }
 

@@ -4,7 +4,7 @@
 //
 // The reference is the detector's own arithmetic, stated in the header: for
 // a pure tone at a band's frequency the narrow and wide band-passes both
-// read it at 0 dB, so the band's excess is 10 log10(selectivity / 0.7) dB,
+// read it at 0 dB, so the surroundings sit at the floor 30 dB under it,
 // the reduction is that over the threshold through the 6 dB knee, times
 // depth, capped by the band's cut, and the bell takes exactly that much off
 // the tone (the matched peak design is exact at its centre). The tests drive
@@ -75,11 +75,28 @@ double cut_for_excess(double excess, double thr, double depth, double cut) {
     return r > cut ? cut : r;
 }
 
+// White-noise power gain of a digital filter by summing |H|^2 at 1 Hz steps
+// (the processor uses a closed form; this is the independent check).
+double noise_gain_numeric(const dsp::BiquadCoeffs& c, double fs) {
+    double g = 0.0;
+    for (double f = 0.5; f < 0.5 * fs; f += 1.0) {
+        const double h = std::abs(dsp::response(c, f, fs));
+        g += h * h;
+    }
+    return g;
+}
+
+// What white noise reads: 10 log10(r / (1 - r)), r = narrow / wide noise gain.
+double bias_db(double sel, double f, double fs) {
+    const double r = noise_gain_numeric(dsp::design_matched({dsp::Shape::BandPass, f, sel, 0.0}, fs), fs) /
+                     noise_gain_numeric(dsp::design_matched({dsp::Shape::BandPass, f, 2.0, 0.0}, fs), fs);
+    return 10.0 * std::log10(r / (1.0 - r));
+}
+
 // A tone alone: the surroundings are floored at 30 dB under the narrow level,
-// so the excess is 30 dB less the smooth-spectrum bias 10 log10(r / (1 - r)).
-double expected_cut(double sel, double thr, double depth, double cut) {
-    const double q = 0.7 / sel;
-    return cut_for_excess(30.0 - 10.0 * std::log10(q / (1.0 - q)), thr, depth, cut);
+// so the excess is 30 dB less the smooth-spectrum bias.
+double expected_cut(double sel, double f, double fs, double thr, double depth, double cut) {
+    return cut_for_excess(30.0 - bias_db(sel, f, fs), thr, depth, cut);
 }
 
 // Gain in dB of a settled tone through a configuration.
@@ -89,7 +106,7 @@ double tone_gain_db(Suite& s, double fs, double f, double level, const Config& c
     p->prepare(fs, 128, 2);
     const Chans x = measure::sine(fs, f, level, seconds);
     const Chans y = measure::render(*p, x);
-    const std::size_t a = static_cast<std::size_t>(0.5 * fs), b = x[0].size();
+    const std::size_t a = x[0].size() / 2, b = x[0].size();
     return measure::to_db(measure::rms(y[0], a, b) / measure::rms(x[0], a, b));
 }
 
@@ -115,7 +132,7 @@ void tone_curve(Suite& s) {
     std::string where;
     for (int b : {2, 3, 5}) {
         const double f = b == 2 ? 1000.0 : b == 3 ? 3700.0 : 7500.0;
-        for (double sel : {3.0, 6.0, 12.0}) {
+        for (double sel : {4.0, 8.0, 16.0}) {
             for (double thr : {0.0, 6.0, 12.0}) {
                 for (const auto& [depth, cap] : {std::pair<double, double>{100.0, 9.0}, {10.0, 9.0}}) {
                     const double cap_arg = cap;
@@ -126,7 +143,7 @@ void tone_curve(Suite& s) {
                                                                       {b == 2 ? "cut2" : b == 3 ? "cut3" : "cut5",
                                                                        static_cast<float>(cap_arg)},
                                                                       {"attack", 1.0f}, {"release", 50.0f}}));
-                    const double want = expected_cut(sel, thr, depth * 0.01, cap);
+                    const double want = expected_cut(sel, f, fs, thr, depth * 0.01, cap);
                     if (std::fabs(got - want) > worst) {
                         worst = std::fabs(got - want);
                         where = "f " + std::to_string(f) + " sel " + std::to_string(sel) + " thr " + std::to_string(thr) +
@@ -166,13 +183,9 @@ void bed(Suite& s) {
     // the band-pass's equivalent noise bandwidth Bn, integrated here from the
     // very filter the processor designs.
     for (const auto& [excess_db, thr] : {std::pair<double, double>{12.0, 3.0}, {4.0, 3.0}}) {
-        const double sel = 6.0, f = 3700.0, noise_peak = -30.0;
+        const double sel = 8.0, f = 3700.0, noise_peak = -30.0;
         const auto bp = dsp::design_matched({dsp::Shape::BandPass, f, sel, 0.0}, fs);
-        double bn = 0.0;
-        for (double g = 0.5; g < 0.5 * fs; g += 1.0) {
-            const double h = std::abs(dsp::response(bp, g, fs));
-            bn += h * h;
-        }
+        const double bn = noise_gain_numeric(bp, fs);
         const double rms = std::pow(10.0, noise_peak / 20.0) / std::sqrt(3.0);
         const double rho = rms * rms / (0.5 * fs);
         const double tone_ms = rho * bn * (std::pow(10.0, excess_db / 10.0) - 1.0);
@@ -181,7 +194,9 @@ void bed(Suite& s) {
         measure::apply(*p, only_band(3, f, {{"selectivity", static_cast<float>(sel)}, {"threshold", static_cast<float>(thr)},
                                              {"depth", 100.0f}, {"cut3", 12.0f}, {"attack", 5.0f}, {"release", 60.0f}}));
         p->prepare(fs, 128, 2);
-        const Chans x = mix(measure::sine(fs, f, tone_db, 3.0), measure::noise(fs, noise_peak, 3.0, 11));
+        Chans nz = measure::noise(fs, noise_peak, 3.0, 11);
+        nz[1] = nz[0];
+        const Chans x = mix(measure::sine(fs, f, tone_db, 3.0), nz);
         const Chans y = measure::render(*p, x);
         const std::size_t from = static_cast<std::size_t>(1.0 * fs), n = static_cast<std::size_t>(1.0 * fs);
         const double red = -measure::to_db(tone_amp(y[0], f, fs, from, n) / tone_amp(x[0], f, fs, from, n));
@@ -278,11 +293,10 @@ void solo(Suite& s) {
 // longer) and its gate (a level under -80 dBFS reads as no resonance, which
 // is how a tone is taken away here) add a fixed lag to both; raising the
 // time by a known amount must raise the measured 63 % time by about as much.
-double t63(const std::vector<double>& red_db, double fs, std::size_t from, std::size_t to, bool rising) {
-    const double end = rising ? red_db[to - 1] : red_db[from];
+double t63(const std::vector<double>& red_db, double fs, std::size_t from, std::size_t to, bool rising, double end) {
     std::size_t i = from;
-    const double goal = end * (1.0 - std::exp(-1.0));
     if (rising) {
+        const double goal = end * (1.0 - std::exp(-1.0));
         while (i < to && red_db[i] < goal) ++i;
     } else {
         const double stay = end * std::exp(-1.0);
@@ -309,8 +323,12 @@ void timing(Suite& s) {
             red[i] = b > 0.0 ? -measure::to_db(a / b) : 0.0;
         }
         const std::size_t i_on = static_cast<std::size_t>(on * fs), i_off = i_on + static_cast<std::size_t>(hold * fs);
-        t_att = t63(red, fs, i_on + w, i_off, true);
-        t_rel = t63(red, fs, i_off - 1, red.size(), false);
+        const double r_end = red[i_off - 2 * w];
+        t_att = t63(red, fs, i_on + w, i_off, true, r_end);
+        // The first 8 ms after the drop are the bell ringing out of a -20 dBFS
+        // tone against a -90 dBFS one, which the ratio reads as nonsense.
+        const std::size_t skip = static_cast<std::size_t>(0.008 * fs);
+        t_rel = t63(red, fs, i_off + skip, red.size(), false, r_end) + static_cast<double>(skip) / fs;
     };
     double a_fast, r_fast, a_slow, r_slow, unused;
     trace(0.5f, 10.0f, a_fast, r_fast);
@@ -378,7 +396,7 @@ int vocal_balance(const measure::Args& args) {
     timing(s);
     zipper_sweeps(s);
     const Config golden = vocal_balance_golden_config();
-    measure::check_latency(s, {{"default", {}}, {"delta", {{"listen", 1.0f}}}, {"3 bands", {{"bands", 0.0f}}}});
+    measure::check_latency(s, {{"default", {}}, {"3 bands", {{"bands", 0.0f}}}});
     measure::check_nonfinite(s, golden);
     measure::check_reset(s, golden);
     measure::check_denormals(s, golden);

@@ -31,7 +31,7 @@ const ParamInfo kParams[kParamCount] = {
     {"bands", "Bands", Unit::Choice, Taper::Stepped, 0.0f, 2.0f, 1.0f, 0.0f, false, false, true, "%.0f", kBandCounts, 3},
     {"depth", "Depth", Unit::Percent, Taper::Linear, 0.0f, 100.0f, 60.0f, 20.0f, true, false, false, "%.0f %%", nullptr, 0},
     {"sharpness", "Sharpness", Unit::Q, Taper::Log, 1.0f, 16.0f, 4.0f, 20.0f, true, false, false, "%.2f", nullptr, 0},
-    {"selectivity", "Selectivity", Unit::Q, Taper::Log, 2.0f, 16.0f, 6.0f, 20.0f, true, false, false, "%.1f", nullptr, 0},
+    {"selectivity", "Selectivity", Unit::Q, Taper::Log, 4.0f, 24.0f, 8.0f, 20.0f, true, false, false, "%.1f", nullptr, 0},
     {"threshold", "Threshold", Unit::Decibel, Taper::Linear, 0.0f, 24.0f, 6.0f, 20.0f, true, false, false, "%.1f dB", nullptr, 0},
     {"attack", "Attack", Unit::Milliseconds, Taper::Log, 0.5f, 50.0f, 8.0f, 20.0f, true, false, false, "%.1f ms", nullptr, 0},
     {"release", "Release", Unit::Milliseconds, Taper::Log, 10.0f, 1000.0f, 80.0f, 20.0f, true, false, false, "%.0f ms", nullptr, 0},
@@ -84,8 +84,23 @@ inline double ten_log10(double x) noexcept {
     return kTenOverLn10 * (ln_m + e * kLn2);
 }
 
+// Sum of the squared impulse response of a biquad: the power gain for white
+// noise, in closed form (the autocorrelation of 1/A(z) at lags 0..2, which
+// follows from g[n] = d[n] - a1 g[n-1] - a2 g[n-2]; see Jury's tables), so
+// the detector bias is that of the digital filters, not of their analog
+// prototypes, at any frequency and rate.
+double noise_gain(const dsp::BiquadCoeffs& c) noexcept {
+    const double s = 1.0 + c.a2;
+    const double rho0 = s / ((1.0 - c.a2) * (s * s - c.a1 * c.a1));
+    const double rho1 = -c.a1 / s * rho0;
+    const double rho2 = -c.a1 * rho1 - c.a2 * rho0;
+    return rho0 * (c.b0 * c.b0 + c.b1 * c.b1 + c.b2 * c.b2) + 2.0 * rho1 * (c.b0 * c.b1 + c.b1 * c.b2) +
+           2.0 * rho2 * c.b0 * c.b2;
+}
+
 struct Band {
     dsp::SvfRamp narrow, wide, bell;
+    double bias = 0.0;      // 10 log10(r / (1 - r)), r = narrow / wide noise gain: what white noise reads
     dsp::SvfState nb[kMaxCh], wb[kMaxCh], bl[kMaxCh];
     dsp::MeanSquare nms[kMaxCh], wms[kMaxCh];
     double msn[kMaxCh] = {0.0, 0.0};
@@ -230,8 +245,6 @@ protected:
             // The control step: the excess of the narrow level over the
             // wide, per band, then the reduction through the knee, depth and
             // the band's cap, and the branching smoother.
-            const double ratio_q = kWideQ / smoother(kSelectivity).current();
-            const double bias = ten_log10(ratio_q / (1.0 - ratio_q));
             for (std::uint32_t i = 0; i < nb; ++i) {
                 Band& bd = bands_[i];
                 double target = 0.0;
@@ -244,7 +257,7 @@ protected:
                     double around = bd.msw[c] - bd.msn[c];
                     const double floor_ms = 1e-3 * bd.msw[c];
                     if (around < floor_ms) around = floor_ms;
-                    const double excess = ten_log10((bd.msn[c] + 1e-30) / around) - bias;
+                    const double excess = ten_log10((bd.msn[c] + 1e-30) / around) - bd.bias;
                     const double x = excess - thr;
                     double r;
                     if (x <= -0.5 * kKneeDb) r = 0.0;
@@ -293,8 +306,14 @@ private:
         Band& b = bands_[i];
         const double f = band_freq(i);
         const double sel = smoother(kSelectivity).current();
-        const auto n = dsp::to_svf(dsp::design_matched({dsp::Shape::BandPass, f, sel, 0.0}, sample_rate()));
-        const auto w = dsp::to_svf(dsp::design_matched({dsp::Shape::BandPass, f, kWideQ, 0.0}, sample_rate()));
+        const auto nc = dsp::design_matched({dsp::Shape::BandPass, f, sel, 0.0}, sample_rate());
+        const auto wc = dsp::design_matched({dsp::Shape::BandPass, f, kWideQ, 0.0}, sample_rate());
+        double r = noise_gain(nc) / noise_gain(wc);
+        if (r > 0.95) r = 0.95;
+        if (r < 1e-3) r = 1e-3;
+        b.bias = ten_log10(r / (1.0 - r));
+        const auto n = dsp::to_svf(nc);
+        const auto w = dsp::to_svf(wc);
         if (jump) {
             b.narrow.set(n);
             b.wide.set(w);
