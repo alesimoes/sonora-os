@@ -1,0 +1,6 @@
+# USB autosuspend would put an idle audio interface to sleep and make the engine
+# wait for a multi-millisecond resume when it opens the card, or mid-session on
+# a quiet input. Keep every audio-class (bInterfaceClass 01) USB device powered.
+# The match is on the interface and the write goes to its parent device, so no
+# vendor id is assumed and an interface we have not seen is covered.
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTR{bInterfaceClass}=="01", RUN+="/bin/sh -c 'echo on > /sys$env{DEVPATH}/../power/control'"
