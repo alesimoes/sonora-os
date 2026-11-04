@@ -30,6 +30,8 @@
 
 #include "automation_edit.h"
 #include "edit_clipboard.h"
+#include "peak_source.h"
+#include "strip_silence.h"
 #include "time_format.h"
 #include "timeline_document.h"
 
@@ -241,6 +243,12 @@ public:
     // they still play one stretch of one source. Refused, naming the pair,
     // when the join would change what plays (moved, faded, gain, mute).
     bool heal_separation(std::string& why);
+    // Strip Silence on the selected region, or the regions a selected range
+    // covers whole: each stretch that stays under the threshold for the
+    // minimum time is separated out and removed, leaving gaps (Slip, Spot,
+    // Grid). One undo step. Refused, naming the threshold, when nothing is
+    // quiet enough or everything is.
+    bool strip_silence(const PeakSource& peaks, const StripParams& params, std::string& why);
     bool trim_start_to_insertion(std::string& why);
     bool trim_end_to_insertion(std::string& why);
     // A region selected, or a time range on the selected track: removes
