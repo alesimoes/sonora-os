@@ -864,6 +864,10 @@ bool Session::begin_take(int take_number, const PunchRange* range, const LoopRan
         o.first->set_current_slot(o.second);
         o.first->set_slot_take(o.second, take_number, transport_->next_start());
     }
+    // Ordered before the audio thread sees the take by the transport store
+    // below.
+    for (auto& t : tracks_) t->set_in_punch_take(false);
+    for (const auto& o : opened) o.first->set_in_punch_take(true);
     // A take started over another ends it here.
     keep_origin(transport_->playhead());
     Closing& c = closing_[take_number];
@@ -1514,7 +1518,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
     for (std::size_t i = 0; i < tracks_.size(); ++i) {
         Track& t = *tracks_[i];
         uint32_t& window = window_take_[i];
-        const bool wanted = in_range && t.rec_armed() && (!take_punched_ || t.punch_enabled());
+        const bool wanted = in_range && t.rec_armed() && (!take_punched_ || t.in_punch_take());
         CaptureBoundary b{};
         b.track = static_cast<uint32_t>(i);
         // Timeline frames are the playhead's less the take's L (ADR-0019 §2).
@@ -1532,7 +1536,7 @@ void Session::capture(const backend::AudioBlock& block, bool recording, uint32_t
             }
             window = kNoWindow;
         }
-        if (passed && t.rec_armed() && (!take_punched_ || t.punch_enabled())) {
+        if (passed && t.rec_armed() && (!take_punched_ || t.in_punch_take())) {
             b.kind = CaptureBoundary::Kind::Open;
             b.take = take;
             b.start = start;
@@ -1929,7 +1933,7 @@ bool Session::render_source(const PlaybackPlan& plan, const PlanNode& node,
     const bool input_only = armed && mon != Track::Monitor::Off &&
                             input_only_.load(std::memory_order_relaxed);
     // A track that sits a punch take out (TrackPunch) is not recording in it.
-    const bool in_take = recording && (!take_punched_ || tracks_[e]->punch_enabled());
+    const bool in_take = recording && (!take_punched_ || tracks_[e]->in_punch_take());
     // Auto: the input while armed and stopped or recording, playback
     // otherwise; in a take, the punch points say where, frame by frame.
     const bool by_punch =

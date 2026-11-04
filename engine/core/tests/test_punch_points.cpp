@@ -782,6 +782,62 @@ int test_track_punch_off_sits_the_punch_out() {
     return 0;
 }
 
+// Data loss, PR #393 review: TrackPunch flipped under a running punch take. The
+// set that records is fixed when the take starts; the file of a track that
+// was in is whole to capture_to, a track that was out stays out, and what the
+// operator hears does not change part way.
+int test_track_punch_toggled_mid_take_changes_nothing() {
+    Rig rig("track_punch_toggle", 2);
+    Session& s = *rig.session;
+    const uint32_t a = rig.source(5, 40 * kChunk);
+    const uint32_t b = rig.source(6, 40 * kChunk);
+    SegmentSpec on0;
+    on0.end = 40 * kChunk;
+    on0.source_slot = a;
+    SegmentSpec on1 = on0;
+    on1.track = 1;
+    on1.source_slot = b;
+    CHECK(publish_plan(s, make_plan(s.plans().next_epoch(), 2, {on0, on1}, kChunk)));
+    s.tracks()[0]->set_pan(-1.0f);
+    s.tracks()[1]->set_pan(1.0f);
+    s.tracks()[1]->set_punch_enabled(false);
+    s.disk().start();
+
+    s.play();
+    rig.block();
+    rig.block();
+    const uint64_t base = s.transport().playhead();
+    PunchRange r;
+    r.capture_from = r.monitor_in = base + 4 * kBlock;
+    r.capture_to = r.monitor_out = base + 8 * kBlock;
+    std::string error;
+    const int take = s.next_free_take();
+    CHECK(s.start_punch(take, r, &error));
+    for (int k = 0; k < 10; ++k) {
+        if (k == 5) {
+            // Both directions, inside the capture range.
+            s.tracks()[0]->set_punch_enabled(false);
+            s.tracks()[1]->set_punch_enabled(true);
+        }
+        const uint64_t at = s.transport().playhead();
+        rig.block();
+        if (k == 3 || k == 4 || k == 7 || k == 8) continue;   // a punch crossfade
+        const bool inside = k > 4 && k < 7;
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const float play0 = source_value(5, 0, static_cast<int64_t>(at + i));
+            CHECK(near(rig.out[0][i], inside ? static_cast<float>(at + i) : play0));
+            CHECK(near(rig.out[1][i], source_value(6, 0, static_cast<int64_t>(at + i))));
+        }
+    }
+    CHECK(s.stop(&error));
+    CHECK(fs::exists(rig.file(0, take)));
+    CHECK(!fs::exists(rig.file(1, take)));
+    const FileCheck f = check_file(rig.file(0, take));
+    CHECK(f.ok);
+    CHECK(f.frames == static_cast<int64_t>(r.capture_to - r.capture_from));
+    return 0;
+}
+
 // Holds the callback it is called from, right after the transport is loaded
 // and before anything is drained, while armed.
 struct Stall {
@@ -1237,6 +1293,7 @@ int main(int argc, char** argv) {
         {"input_mode_ignores_the_transport", test_input_mode_ignores_the_transport},
         {"input_only_monitoring", test_input_only_monitoring},
         {"track_punch_off", test_track_punch_off_sits_the_punch_out},
+        {"track_punch_toggled_mid_take", test_track_punch_toggled_mid_take_changes_nothing},
         {"burst_of_punches", test_burst_of_punches_keeps_the_running_range},
         {"full_punch_ring", test_full_punch_ring_is_refused},
         {"punch_over_a_punch", test_punch_over_a_punch},
