@@ -18,6 +18,30 @@ set -u
 
 [ $# -ge 1 ] || { echo "usage: tools/merge-when-green.sh PR..." >&2; exit 2; }
 
+# One watcher per PR, and none that outlives its purpose: a second launch for
+# the same PR exits at once, and every watcher gives up after
+# SONORA_MERGE_DEADLINE seconds (default 4 h) instead of idling for days.
+lockroot=${TMPDIR:-/tmp}/sonora-merge-locks
+mkdir -p "$lockroot"
+mylocks=""
+# shellcheck disable=SC2329  # runs from the trap
+release() { for l in $mylocks; do rm -rf "$l"; done; }
+trap release EXIT INT TERM
+for pr in "$@"; do
+  lock=$lockroot/$pr.lock
+  if ! mkdir "$lock" 2>/dev/null; then
+    if kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null; then
+      echo "#$pr: another merge-when-green (pid $(cat "$lock/pid")) already watches it; exiting" >&2
+      exit 3
+    fi
+    rm -rf "$lock"; mkdir "$lock"
+  fi
+  echo $$ > "$lock/pid"
+  mylocks="$mylocks $lock"
+done
+deadline=$(( $(date +%s) + ${SONORA_MERGE_DEADLINE:-14400} ))
+expired() { [ "$(date +%s)" -ge "$deadline" ]; }
+
 skipped=0
 skip() {  # PR, reason
   echo "#$1: skipped: $2" >&2
@@ -25,6 +49,7 @@ skip() {  # PR, reason
 }
 
 for pr in "$@"; do
+  if expired; then skip "$pr" "deadline reached while waiting"; continue; fi
   # GitHub computes mergeability after a push; UNKNOWN until it has.
   tries=0
   while :; do
@@ -66,7 +91,8 @@ $files"
   # 10 minutes, until every heavy check is present (passed or skipped).
   tries=0
   while :; do
-    gh pr checks "$pr" --watch --interval 60 >/dev/null 2>&1 || true
+    timeout 3600 gh pr checks "$pr" --watch --interval 60 >/dev/null 2>&1 || true
+    expired && break
     missing=$(gh pr checks "$pr" --json name,state \
       --jq '.[] | [.name, .state] | @tsv' 2>/dev/null | missing_heavy_checks)
     [ -n "$missing" ] || break
@@ -75,6 +101,7 @@ $files"
       grep -qx -e FAILURE -e CANCELLED -e ERROR -e TIMED_OUT -e STARTUP_FAILURE && break
     tries=$((tries + 1))
     [ "$tries" -lt 10 ] || break
+    expired && break
     sleep 60
   done
   # The loop's snapshot only decides when to stop waiting: a push since then

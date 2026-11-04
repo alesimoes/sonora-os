@@ -204,7 +204,7 @@ fi
   "${ACCEL[@]}" \
   -kernel "$W/vmlinuz" \
   -initrd "$W/initrd.img" \
-  -append "boot=live components quiet splash persistence username=sonora hostname=sonora threadirqs console=ttyS0,115200 sonora.smoketest" \
+  -append "boot=live components quiet splash persistence username=sonora hostname=sonora threadirqs console=ttyS0,115200 sonora.smoketest${QEMU_APPEND_EXTRA:+ $QEMU_APPEND_EXTRA}" \
   -cdrom "$I/sonora.iso" \
   -device intel-hda -device hda-duplex \
   -serial "file:$W/serial.log" \

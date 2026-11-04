@@ -47,12 +47,15 @@ EXPECT_CAPTURE=1
 # fallback must have handed tty1 back to the session (ADR-0010 stage 1).
 GUI=0
 EXPECT_FALLBACK=0
+# sonora.virtualcard: load snd-dummy (26 capture channels) and record from it.
+VIRTUALCARD=0
 # Words, not lines: /proc/cmdline is one line of parameters.
 # shellcheck disable=SC2013
 for word in $(cat /proc/cmdline); do
   case "$word" in
     sonora.expect_capture=*) EXPECT_CAPTURE="${word#sonora.expect_capture=}" ;;
     sonora.gui) GUI=1 ;;
+    sonora.virtualcard) VIRTUALCARD=1 ;;
     sonora.expect_fallback) EXPECT_FALLBACK=1 ;;
   esac
 done
@@ -166,6 +169,14 @@ check "no serial login prompt" sh -c '! systemctl is-active --quiet "serial-gett
 # Asked of logind, not grepped from the drop-in: a stock file that outranks it
 # would leave Ctrl+Alt+F2 opening a passwordless login.
 check "no VT login prompts" sh -c 'busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager NAutoVTs | grep -qx "u 0"'
+
+# --- 3b. a virtual multichannel card, when asked for ---
+# Before section 4 so its capture_AUX count includes the card.
+if [ "$VIRTUALCARD" = 1 ]; then
+  echo "SMOKETEST info  sonora.virtualcard: snd-dummy rme9652"
+  # shellcheck disable=SC1091
+  . /usr/local/bin/sonora-virtualcard-test
+fi
 
 # --- 4. how many capture channels the audio server really offers ---
 # Counted and asserted, not just printed. A UMC1820 appearing as two channels

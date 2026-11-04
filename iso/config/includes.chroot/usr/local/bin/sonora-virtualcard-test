@@ -1,0 +1,89 @@
+#!/bin/sh
+# Virtual multichannel card, through the real ALSA -> PipeWire -> JACK -> engine
+# path in the image kernel. Sourced by sonora-smoketest under sonora.virtualcard
+# (it uses check/fail from there); prints SMOKETEST lines.
+#
+# snd-dummy model=rme9652 presents 26 capture channels (brain/research/
+# adr-0007-measurements.md section 5), more than the 18 of a UMC1820, with no
+# WirePlumber rule beyond the shipped pro-audio one. It is a platform device,
+# not USB, so what this cannot see is the udev rule and real USB timing.
+#
+# What it asserts, each a defect that happened or was predicted:
+#   - the card enumerates in the Pro Audio profile with >= 18 ports ON ONE NODE
+#     (counting across nodes passes on snd-aloop's 64 from two nodes);
+#   - JACK sees AUX0..AUX25 in numeric order after the engine's natural sort
+#     (a lexicographic sort puts AUX10 before AUX2);
+#   - the engine records 18 tracks for 3 s from it: 18 files, right length.
+RUNUSER="su - sonora -c"
+PWENV="XDG_RUNTIME_DIR=/run/user/1000"
+WANT=18
+SECONDS_TO_RECORD=3
+
+if ! modprobe snd-dummy model=rme9652 2>/dev/null; then
+  fail "modprobe snd-dummy model=rme9652 failed (module missing from the kernel?)"
+  return 0
+fi
+
+# The card hot-plugs into a running WirePlumber; wait for its pro-input node.
+i=0
+NODE=""
+while [ "$i" -lt 30 ]; do
+  # shellcheck disable=SC2086
+  NODE="$($RUNUSER "$PWENV pw-link -o 2>/dev/null" 2>/dev/null | grep 'snd_dummy.*pro-input' | sed 's/:capture_AUX[0-9]*$//' | sort -u | head -1)"
+  [ -n "$NODE" ] && break
+  i=$((i + 1))
+  sleep 1
+done
+echo "SMOKETEST info  virtual card node: ${NODE:-none}"
+if [ -z "$NODE" ]; then
+  fail "snd-dummy card never appeared as a pro-input node"
+  return 0
+fi
+
+# shellcheck disable=SC2086
+PER_NODE="$($RUNUSER "$PWENV pw-link -o 2>/dev/null" 2>/dev/null | grep -c "^$NODE:capture_AUX")"
+echo "SMOKETEST info  virtual card capture ports on that node: $PER_NODE (want at least $WANT)"
+if [ "$PER_NODE" -ge "$WANT" ] 2>/dev/null; then
+  echo "SMOKETEST ok    virtual card exposes $PER_NODE ports on one node"
+else
+  fail "virtual card exposes $PER_NODE ports on its node, want $WANT"
+fi
+
+# The engine's own session would grab the only non-USB device after its wait;
+# stop it so this run is the one recording.
+systemctl stop sonora-session.service 2>/dev/null
+
+# Native order of the JACK ports, as the JACK API returns them, must contain
+# AUX0..AUX(n-1) once each; the numeric order is the engine's job and is
+# verified by the file check below (track N carries channel N).
+# shellcheck disable=SC2086
+JACK_PORTS="$($RUNUSER "$PWENV pw-jack jack_lsp 2>/dev/null" 2>/dev/null | grep ":capture_AUX" | grep -F "$NODE")"
+UNIQUE="$(printf '%s\n' "$JACK_PORTS" | sort -u | wc -l)"
+if [ "$UNIQUE" -ge "$WANT" ] 2>/dev/null; then
+  echo "SMOKETEST ok    JACK lists $UNIQUE distinct capture ports for the card"
+else
+  fail "JACK lists $UNIQUE capture ports for the card, want $WANT"
+fi
+
+DIR=/home/sonora/Sessions/virtual-card
+rm -rf "$DIR"
+# shellcheck disable=SC2086
+if $RUNUSER "$PWENV pw-jack /usr/local/bin/sonora-engine --dir $DIR --tracks $WANT --rate 48000 --arm-all --device snd_dummy --wait-for-inputs 10 --record $SECONDS_TO_RECORD >/tmp/virtualcard-engine.out 2>/tmp/virtualcard-engine.err"; then
+  echo "SMOKETEST ok    engine recorded from the virtual card"
+else
+  fail "engine exited non-zero recording from the virtual card"
+  sed 's/^/SMOKETEST info    engine: /' /tmp/virtualcard-engine.err | tail -5
+fi
+FILES="$(find "$DIR" -name '*.wav' 2>/dev/null | wc -l)"
+if [ "$FILES" = "$WANT" ]; then
+  echo "SMOKETEST ok    $FILES track files written"
+else
+  fail "$FILES track files written, want $WANT"
+fi
+# 48000 Hz * 3 s * 4 bytes (32-bit) is the floor of each file's size.
+SHORT="$(find "$DIR" -name '*.wav' -size -$((48000 * SECONDS_TO_RECORD / 2))c 2>/dev/null | wc -l)"
+if [ "$SHORT" = 0 ] && [ "$FILES" -gt 0 ]; then
+  echo "SMOKETEST ok    no track file shorter than half the take"
+else
+  fail "$SHORT track files are far shorter than the take"
+fi

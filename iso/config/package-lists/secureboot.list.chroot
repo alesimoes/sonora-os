@@ -1,0 +1,13 @@
+# Secure Boot chain for the installed system (ADR-0034). All from the
+# image's own Debian suite; nothing from unstable.
+# shim-signed: Microsoft-signed shim carrying Debian's CA.
+shim-signed
+# GRUB signed by Debian, verified by shim.
+grub-efi-amd64-signed
+# grub-install needs the unsigned modules to build the image it then swaps
+# for the signed one.
+grub-efi-amd64-bin
+# NVRAM entry; the --removable path needs no tool but the entry does.
+efibootmgr
+# Reports the state (mokutil --sb-state) and enrols a key if ever needed.
+mokutil
