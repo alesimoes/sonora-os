@@ -65,6 +65,33 @@ stamp_build_id() {
   printf '%s\n' "$id" >"$ROOT/iso/config/includes.chroot/usr/share/sonora/build-id"
   echo "BUILD_ID=$id"
 }
+
+# --list-staged: what iso/staged.list says the image carries beyond the tracked
+# files, and what is staged in includes.chroot right now with its size. Builds
+# nothing, needs no Docker.
+list_staged() {
+  local path kind by size target total=0 bytes
+  printf '%-40s %-9s %-10s %s\n' PATH KIND STAGED "BUILT BY"
+  while read -r path kind by; do
+    case "$path" in ''|'#'*) continue ;; esac
+    target="$ROOT/iso/config/includes.chroot$path"
+    if [[ -e "$target" ]]; then
+      bytes="$(du -sk "$target" | cut -f1)"
+      total=$((total + bytes))
+      size="${bytes}K"
+    else
+      size="no"
+    fi
+    printf '%-40s %-9s %-10s %s\n' "$path" "$kind" "$size" "$by"
+  done <"$ROOT/iso/staged.list"
+  echo "staged now: ${total}K (du -sk, before squashfs compression)"
+}
+case "${1:-}" in
+  --list-staged) list_staged; exit 0 ;;
+  ''|--check) ;;
+  *) echo "usage: tools/build-iso.sh [--check|--list-staged]" >&2; exit 2 ;;
+esac
+
 [[ "$CHECK_ONLY" == 1 ]] || stamp_build_id
 
 # iso/sonora.iso.sha256, in sha256sum's format. tools/write-usb.ps1 refuses to
@@ -157,21 +184,53 @@ install -m 0755 "$(dirname "$ENGINE")/sonora-tui" "$STAGE/sonora-tui"
 echo "staged the engine and sonora-tui into includes.chroot/usr/local/bin/"
 
 # The graphical interface (ADR-0010) needs Qt, which the engine image lacks, so
-# it is built by tools/build-ui.sh and staged only on request: SONORA_WITH_UI=1.
-# Without it any stale copy is removed, so an image never ships a binary from
-# an older commit; sonora-ui.service stays inert without sonora.gui anyway.
+# it is built by tools/build-ui.sh. Staged by default now that stage 2 starts
+# it at boot; SONORA_WITH_UI=0 skips it (a faster build of an image without
+# the display stack, whose unit is inert without sonora.gui anyway). Any stale
+# copy is removed first, so an image never ships a binary from an older commit.
 rm -f "$STAGE/sonora-ui"
-if [[ "${SONORA_WITH_UI:-0}" == 1 ]]; then
+if [[ "${SONORA_WITH_UI:-1}" == 1 ]]; then
   echo "Building the interface for the image..."
   run_logged build-ui "$ROOT/tools/build-ui.sh" --stage
   UI="$(find "$ROOT/build-ui-container" -name sonora-ui -type f 2>/dev/null | head -n 1)"
   [[ -n "$UI" ]] || {
-    echo "error: SONORA_WITH_UI=1 but no sonora-ui binary was found to stage." >&2
+    echo "error: the interface was built but no sonora-ui binary was found to stage." >&2
     exit 1
   }
   install -m 0755 "$UI" "$STAGE/sonora-ui"
   echo "staged sonora-ui"
 fi
+
+# The plugin host and the native LV2 and VST3 bundles, built in the
+# sonora-plugins image (the only one with lilv and the VST3 SDK). Without the
+# host the engine starts without --plugin-host (sonora-engine-run) and every
+# insert is silently unavailable. Bundles go to /usr/local/lib/{lv2,vst3}, on
+# the default search path of lilv and of the host's VST3 loader.
+# SONORA_WITH_PLUGINS=0 skips all of it.
+INCLUDES="$ROOT/iso/config/includes.chroot"
+rm -f "$STAGE/sonora-plugin-host" "$STAGE/sonora-analyze" "$STAGE/sonora-mixplan"
+rm -rf "$INCLUDES/usr/local/lib/lv2" "$INCLUDES/usr/local/lib/vst3"
+if [[ "${SONORA_WITH_PLUGINS:-1}" == 1 ]]; then
+  echo "Building the plugin host and the native bundles for the image..."
+  run_logged build-plugins "$ROOT/tools/build-plugins.sh" --stage
+  PSTAGE="$ROOT/build-plugins/stage/usr/local"
+  [[ -f "$PSTAGE/bin/sonora-plugin-host" ]] || {
+    echo "error: the plugins were built but no sonora-plugin-host was found to stage." >&2
+    exit 1
+  }
+  for tool in "$PSTAGE"/bin/*; do
+    install -m 0755 "$tool" "$STAGE/$(basename "$tool")"
+  done
+  mkdir -p "$INCLUDES/usr/local/lib"
+  cp -r "$PSTAGE/lib/lv2" "$PSTAGE/lib/vst3" "$INCLUDES/usr/local/lib/"
+  echo "staged sonora-plugin-host and the bundles into includes.chroot/usr/local/"
+fi
+
+# The Keys menu's profiles: sonora-ui reads /usr/share/sonora/keymaps.
+mkdir -p "$INCLUDES/usr/share/sonora/keymaps"
+install -m 0644 "$ROOT"/keymaps/*.json "$INCLUDES/usr/share/sonora/keymaps/"
+
+list_staged
 
 
 # live-build must not work on the bind-mounted host directory. debootstrap

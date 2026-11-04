@@ -379,6 +379,15 @@ distro-engineer:
 >   centred. A restarted engine re-reads the file; a restarted labwc leaves it
 >   stale until the engine restarts too (unverified, usually the same number).
 > - `sonora-tui.service` on tty2 is not part of this change.
+>
+> **Amendment, 2026-11-04 (image runtime binaries).** `sonora-tui.service`
+> now exists as the table in section 4 says, with two conditions beyond it:
+> `ConditionKernelCommandLine=!sonora.install` (the installer screen owns
+> tty2 then) and `ConditionPathExists=!/run/sonora-display-failed` (after the
+> fallback, `sonora-session.service` has the engine start the terminal UI on
+> tty1 itself). It `Wants=` the engine, never `BindsTo=`. `iso/staged.list`
+> names every binary the image stages; `tools/test-image-config.sh` fails a
+> unit or launcher that runs one that is neither tracked nor listed.
 
 **Stage 3: before the Phase 4 plugin ADR.**
 
