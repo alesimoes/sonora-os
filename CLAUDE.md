@@ -75,8 +75,16 @@ fewer PRs wait on CI and fewer branches conflict. No PR for half an item (an
 engine half whose UI half is a separate PR, a standalone ADR for code that is
 still to come): the ADR travels with the code it decides, and a slice stays on
 its branch until the feature works end to end. A PR may be partial only when
-the rest needs hardware or an owner decision, and its title says so. One PR
-per BACKLOG item, follow-ups included. Every agent and every review runs on Sonnet,
+the rest needs hardware or an owner decision, and its title says so. Contracts go first, as a task of their
+own: a small PR with the headers or wire change, the ADR, a fake implementation
+and a test, merged before the work that builds on it; agents that depend on it
+start from its branch and rebase when it lands. Changing a merged contract is
+an amendment asked of its owner, never a side edit. When two or three agents
+work on one task, each pushes to a sub-branch, a named integrator merges them
+into one feature branch, and that branch is the single PR. The coordinator
+reserves ADR numbers and the next protocol version when it launches an agent.
+Commit to the branch at the end of every stage, PR or not, so a stopped agent
+loses nothing. One PR per BACKLOG item, follow-ups included. Every agent and every review runs on Sonnet,
 never Opus (owner, 2026-11-03: it burns the weekly quota); the RT path,
 contracts, storage and recovery get a more careful brief, not a bigger model. Only a blocking finding sends a PR back; non-blocking ones become
 BACKLOG lines, batched into one follow-ups PR per track. A re-review is a
