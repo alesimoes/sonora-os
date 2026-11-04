@@ -49,11 +49,10 @@ int test_clip_gain() {
     CHECK(r != nullptr && r->gain_db == -2.0f && r->gain_line == line);
 
     // One step back restores both the level and the line.
-    std::string error;
-    CHECK(h.undo(error));
+    CHECK(h.undo());
     r = find(h.current(), rid);
     CHECK(r != nullptr && r->gain_db == 0.0f && r->gain_line.empty());
-    CHECK(h.redo(error));
+    CHECK(h.redo());
     CHECK(find(h.current(), rid)->gain_line == line);
 
     // The line is in source frames: a move leaves it alone, a split gives
