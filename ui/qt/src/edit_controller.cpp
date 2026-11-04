@@ -1712,7 +1712,7 @@ bool fader_gain(float db, float& gain, std::string& why) {
 bool EditController::set_gain(int index, float db, std::string& why) {
     TrackMix m;
     if (!mix_target(snapshot(), index, m, why) || !fader_gain(db, m.gain_db, why)) return false;
-    return submit(SetMix{m}, why);
+    return submit_mix(m, why);
 }
 
 bool EditController::set_pan(int index, float pan, std::string& why) {
@@ -1730,14 +1730,14 @@ bool EditController::toggle_mute(int index, std::string& why) {
     TrackMix m;
     if (!mix_target(snapshot(), index, m, why)) return false;
     m.mute = !m.mute;
-    return submit(SetMix{m}, why);
+    return submit_mix(m, why);
 }
 
 bool EditController::toggle_solo(int index, std::string& why) {
     TrackMix m;
     if (!mix_target(snapshot(), index, m, why)) return false;
     m.solo = !m.solo;
-    return submit(SetMix{m}, why);
+    return submit_mix(m, why);
 }
 
 bool EditController::toggle_solo_safe(int index, std::string& why) {

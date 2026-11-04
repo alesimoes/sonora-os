@@ -14,7 +14,8 @@ namespace sonora {
 void install_session_commands(CommandRegistry& reg, Session& session, int& take,
                               bool& quit, MayRecord may_record,
                               PlaybackController* playback, PunchFor punch_for,
-                              MayArm may_arm, LoopFor loop_for, bool* record_ready) {
+                              MayArm may_arm, LoopFor loop_for, bool* record_ready,
+                              ArmPeers arm_peers) {
     // Shared by the handlers that set and clear it; the caller's when given,
     // which it must keep alive as long as `reg`.
     const std::shared_ptr<bool> ready =
@@ -268,8 +269,8 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
     };
 
     reg.install("track.toggle_arm",
-                [&session, take_running, may_arm](const CommandContext& ctx,
-                                                  std::string& why) {
+                [&session, take_running, may_arm, arm_peers](const CommandContext& ctx,
+                                                             std::string& why) {
         // No selection exists yet, and guessing a track is the
         // port-ordering defect in another form.
         if (!ctx.has_target()) {
@@ -284,7 +285,20 @@ void install_session_commands(CommandRegistry& reg, Session& session, int& take,
         if (take_running(why)) return false;
         auto& tr = session.tracks()[idx];
         if (!tr->rec_armed() && may_arm && !may_arm(idx, why)) return false;
-        tr->set_rec_armed(!tr->rec_armed());
+        const bool arm = !tr->rec_armed();
+        tr->set_rec_armed(arm);
+        // The group follows the track that was pressed. A peer that may not
+        // record (a MIDI track) is left as it is rather than refusing the
+        // press, and a peer is armed only if the take is not running, which
+        // was checked above.
+        if (arm_peers) {
+            for (const std::size_t peer : arm_peers(idx)) {
+                if (peer >= session.tracks().size() || peer == idx) continue;
+                std::string ignored;
+                if (arm && may_arm && !may_arm(peer, ignored)) continue;
+                session.tracks()[peer]->set_rec_armed(arm);
+            }
+        }
         return true;
     });
 

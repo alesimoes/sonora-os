@@ -14,6 +14,7 @@
 #include "sonora/audio_backend.h"
 #include "sonora/closed_take.h"
 #include "sonora/frame_text.h"
+#include "sonora/model/groups.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
@@ -418,7 +419,22 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                  }
                                  return false;
                              },
-                             &record_ready_);
+                             &record_ready_,
+                             [this](std::size_t engine_track) {
+                                 // Positional: engine track i plays the
+                                 // document's display track i.
+                                 std::vector<std::size_t> peers;
+                                 const model::Snapshot doc = document_->current();
+                                 const auto& tracks = doc.edit->tracks;
+                                 if (engine_track >= tracks.size()) return peers;
+                                 for (const model::Id id : model::group_peers(
+                                          *doc.edit, tracks[engine_track]->id, model::kGroupArm)) {
+                                     for (std::size_t i = 0; i < tracks.size(); ++i) {
+                                         if (tracks[i]->id == id) peers.push_back(i);
+                                     }
+                                 }
+                                 return peers;
+                             });
     if (!opts_.plugin_host.empty()) {
         // For the engine process's life (amendment of 2026-10-19, item 3):
         // its catalog outlives a backend activation.

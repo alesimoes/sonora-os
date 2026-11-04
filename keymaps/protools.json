@@ -224,6 +224,11 @@
       "command": "track.toggle_arm",
       "comment": "Record enable the tracks holding the edit cursor or selection. This build has no selection yet, so until it does this key reports that it failed; the numbered arms below work today."
     },
+    "ctrl+g": {
+      "command": "group.new",
+      "verified": false,
+      "comment": "Group the selected tracks, Control+G. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
     "shift+s": "track.toggle_solo",
     "shift+m": "track.toggle_mute",
     "shift+i": "track.toggle_input_monitor",

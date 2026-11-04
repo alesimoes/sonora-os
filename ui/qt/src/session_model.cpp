@@ -430,6 +430,22 @@ void SessionModel::installCommands(CommandRegistry& local) {
     simple("track.toggle_solo", [this](const CommandContext& ctx, Why& why) {
         return ctl_.toggle_solo(ctx.has_target() ? ctx.target : ctl_.selection().track, why);
     });
+    // Mix and edit groups (ADR-0041). New groups the selected tracks; the
+    // others act on the track given or the selected one.
+    simple("group.new", [this](const CommandContext& ctx, Why& why) {
+        const Selection& s = ctl_.selection();
+        return ctl_.group_tracks(s.track, s.tracks, ctx.argument,
+                                 model::kGroupVolume | model::kGroupMute | model::kGroupSolo |
+                                     model::kGroupArm,
+                                 why);
+    });
+    simple("group.dissolve", [this](const CommandContext& ctx, Why& why) {
+        return ctl_.dissolve_group(ctx.has_target() ? ctx.target : ctl_.selection().track, why);
+    });
+    simple("group.toggle_suspend", [this](const CommandContext& ctx, Why& why) {
+        return ctl_.toggle_group_suspend(ctx.has_target() ? ctx.target : ctl_.selection().track,
+                                         why);
+    });
     // The interface's, as mute and solo are: Input mode is the document's
     // (TrackMix::monitor), saved with the session, and the engine follows
     // it through the mix it applies (PlaybackController::apply_monitoring).

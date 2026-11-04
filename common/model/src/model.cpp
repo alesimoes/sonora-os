@@ -201,7 +201,7 @@ const AutomationLane* find_lane(const AutomationLanes& lanes, const AutomationLa
 }
 
 bool EditState::operator==(const EditState& o) const {
-    if (tracks.size() != o.tracks.size() || buses != o.buses ||
+    if (tracks.size() != o.tracks.size() || buses != o.buses || groups != o.groups ||
         !same_lanes(master_automation, o.master_automation)) {
         return false;
     }
@@ -1648,6 +1648,33 @@ std::string send_mix_problem(const SendMix& m, std::string& where) {
     return {};
 }
 
+std::string group_problem(const EditState& e, std::string& where) {
+    where.clear();
+    if (e.groups.size() > kMaxGroups) {
+        return "a session holds at most " + std::to_string(kMaxGroups) + " groups";
+    }
+    std::unordered_set<Id> tracks;
+    for (const auto& t : e.tracks) tracks.insert(t->id);
+    std::unordered_set<Id> taken;
+    for (std::size_t g = 0; g < e.groups.size(); ++g) {
+        const Group& grp = e.groups[g];
+        where = "[" + std::to_string(g) + "]";
+        if (!valid_text(grp.name)) return "the name is not valid UTF-8";
+        if (grp.members.size() < 2) return "a group needs at least two tracks";
+        if (grp.attrs == 0 || (grp.attrs & ~kGroupAllAttributes) != 0) {
+            return "attrs must be a non-empty set of the six group attributes";
+        }
+        for (const Id m : grp.members) {
+            if (tracks.count(m) == 0) return "track " + std::to_string(m) + " does not exist";
+            if (!taken.insert(m).second) {
+                return "track " + std::to_string(m) + " is in two groups";
+            }
+        }
+    }
+    where.clear();
+    return {};
+}
+
 std::string bus_mix_problem(const BusMix& m, std::string& where) {
     where.clear();
     if (!gain_in_range(m.gain_db)) {
@@ -2011,6 +2038,16 @@ bool check_invariants(const Snapshot& s, std::string& error) {
         if (bus.output == bus.id) {
             error = path + ".output: a bus cannot be its own output";
             return false;
+        }
+    }
+    {
+        const std::string group_why = detail::group_problem(*s.edit, where);
+        if (!group_why.empty()) {
+            error = "groups" + where + ": " + group_why;
+            return false;
+        }
+        for (std::size_t i = 0; i < s.edit->groups.size(); ++i) {
+            if (!claim(s.edit->groups[i].id, "groups[" + std::to_string(i) + "]")) return false;
         }
     }
     why = bus_loop_problem(*s.edit, where);
