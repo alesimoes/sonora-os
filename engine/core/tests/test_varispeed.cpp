@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Varispeed (ADR-0032): a roll at ratio r plays the source at fractional
+// Varispeed (ADR-0033): a roll at ratio r plays the source at fractional
 // positions start + i * r, linearly interpolated, and the playhead advances
 // by the source frames consumed, carrying the fraction between blocks.
 //

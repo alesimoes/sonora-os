@@ -1,4 +1,4 @@
-# ADR-0032 — Varispeed: a plain roll at a ratio, pitch following
+# ADR-0033 — Varispeed: a plain roll at a ratio, pitch following
 
 - Status: Accepted (recommended defaults, taken by the implementer with no
   owner available, 2026-11-04)

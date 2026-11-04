@@ -1341,7 +1341,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         }
     }
     // Off-speed only for a plain roll: a loop, a take or a post-roll counts
-    // timeline frames one for one (ADR-0032 §3).
+    // timeline frames one for one (ADR-0033 §3).
     const float ratio = varispeed_.load(std::memory_order_relaxed);
     vs_on_ = rolling && !recording && !roll_stops && loop_to_ == 0 && ratio != 1.0f;
     vs_ratio_ = ratio;
@@ -1491,7 +1491,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (uint32_t i = 0; i < 2 * max_buses_; ++i) aux_gain_[i] = aux_target_[i];
 
     // The click counts timeline frames at speed 1; off-speed it is silent
-    // rather than wrong (ADR-0032 §3).
+    // rather than wrong (ADR-0033 §3).
     if (plan_valid_ && !vs_on_) {
         click_->render(*plan, block, rolling, playhead, play_until_, loop_from_, loop_to_);
     }

@@ -379,7 +379,7 @@ public:
     void play();
     void stop_playback();
 
-    // Varispeed (ADR-0032): a roll plays `ratio` times as fast, pitch
+    // Varispeed (ADR-0033): a roll plays `ratio` times as fast, pitch
     // following, as tape does. Linear interpolation between source frames.
     // Refused, changing nothing, outside [kMinVarispeed, kMaxVarispeed] or
     // when not finite. Applies to a plain roll only: a take, a playback loop
