@@ -614,6 +614,16 @@ int main(int argc, char** argv) {
     };
     plugin_sinks.frame = [&inserts](const EngineFrame& f, bool alive) { inserts.onFrame(f, alive); };
     model.setPluginSinks(std::move(plugin_sinks));
+    LoudnessModel loudness(
+        // A sent command answers later, on the status line; invokeWith
+        // returns true only for the interface's own, so it says nothing here.
+        [&model](const QString& argument) {
+            model.invokeWith(QStringLiteral("meters.reset"), -1, argument);
+            return true;
+        },
+        [&model]() { return model.implemented(QStringLiteral("meters.reset")); });
+    model.setLoudnessSink([&loudness](const EngineFrame& f, bool alive) { loudness.onFrame(f, alive); });
+    QObject::connect(&session, &SessionModel::sessionOpened, &loudness, &LoudnessModel::sessionOpened);
     session.setWindow(a.opt.window);
     if (!engine_notice.empty()) model.addNotice(QString::fromStdString(engine_notice));
     if (!keymap_dir_notice.empty()) model.addNotice(QString::fromStdString(keymap_dir_notice));
@@ -649,6 +659,7 @@ int main(int argc, char** argv) {
                                {QStringLiteral("session"), QVariant::fromValue(&session)},
                                {QStringLiteral("inserts"), QVariant::fromValue(&inserts)},
                                {QStringLiteral("sends"), QVariant::fromValue(&sends)},
+                               {QStringLiteral("loudness"), QVariant::fromValue(&loudness)},
                                {QStringLiteral("mixer"), QVariant::fromValue(&mixer)}});
     QObject::connect(view.engine(), &QQmlEngine::quit, &app, &QCoreApplication::quit);
     probe_render_path(&view, &model, on_render_path, &a);

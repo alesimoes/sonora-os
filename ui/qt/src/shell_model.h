@@ -198,6 +198,10 @@ public:
         std::function<void(const EngineFrame&, bool alive)> frame;
     };
     void setPluginSinks(PluginSinks s) { plugin_sinks_ = std::move(s); }
+    // The master's loudness (LoudnessModel), at the state rate, alive or
+    // not: a dead engine's reading is "no data", not the last one.
+    using LoudnessSink = std::function<void(const EngineFrame&, bool alive)>;
+    void setLoudnessSink(LoudnessSink s) { loudness_sink_ = std::move(s); }
 
     // Measurement hooks; null when not measuring.
     void setTickStats(TickStats* s) { stats_ = s; }
@@ -377,6 +381,7 @@ private:
     TransportSink transport_sink_;
     LiveTakeSink live_take_sink_;
     PluginSinks plugin_sinks_;
+    LoudnessSink loudness_sink_;
     api::PluginCatalog catalog_;   // kept, so taking one reuses its storage
     std::vector<CommandOutcome> replies_;
     std::vector<EngineEvent> events_;
