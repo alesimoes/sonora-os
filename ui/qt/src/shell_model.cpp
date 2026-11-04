@@ -421,12 +421,22 @@ void ShellModel::setBounceNotice(const QString& text) {
     emit noticesChanged();
 }
 
-void ShellModel::startBounce(bool real_time, bool float32, bool normalise, qreal target_lufs,
+void ShellModel::startBounce(bool real_time, const QString& file, int bits, int rate,
+                             const QString& dither, bool normalise, qreal target_lufs,
                              const QString& name) {
     holdBounceRefusal(QString());
     api::BounceOptions o;
     o.mode = real_time ? api::BounceMode::RealTime : api::BounceMode::Offline;
-    o.format = float32 ? api::BounceFormat::Float32 : api::BounceFormat::Int24;
+    o.format = bits == 32 ? api::BounceFormat::Float32
+               : bits == 16 ? api::BounceFormat::Int16 : api::BounceFormat::Int24;
+    o.file = file == QStringLiteral("wav") ? api::BounceFile::Wav
+             : file == QStringLiteral("aiff") ? api::BounceFile::Aiff
+             : file == QStringLiteral("flac") ? api::BounceFile::Flac : api::BounceFile::Bwf;
+    o.sample_rate = rate > 0 ? static_cast<uint32_t>(rate) : 0;
+    o.dither = dither == QStringLiteral("none") ? api::BounceDither::None
+               : dither == QStringLiteral("tpdf") ? api::BounceDither::Tpdf
+               : dither == QStringLiteral("shaped") ? api::BounceDither::Shaped
+                                                    : api::BounceDither::Auto;
     o.normalise = normalise;
     o.target_lufs = static_cast<double>(target_lufs);
     o.name = name.trimmed().toStdString();

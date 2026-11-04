@@ -15,9 +15,18 @@ Rectangle {
     required property SessionModel session
     property Item mover: win
     property bool realTime: false
-    property bool float32: false
+    property string file: "bwf"
+    property int bits: 24
+    property int rate: 0
+    property string dither: "auto"
     property bool normalise: false
     property int targetLufs: -16
+
+    // FLAC and AIFF hold no 32-bit float.
+    function setFile(f) {
+        file = f
+        if (bits === 32 && f !== "bwf" && f !== "wav") bits = 24
+    }
 
     width: 420
     height: column.implicitHeight + 2 * Theme.space3
@@ -111,18 +120,88 @@ Rectangle {
         Overline { text: "FILE" }
         Row {
             spacing: Theme.space2
+            Repeater {
+                model: [["bwf", "BWF"], ["wav", "WAV"], ["aiff", "AIFF"], ["flac", "FLAC"]]
+                SButton {
+                    required property var modelData
+                    objectName: "bounceFile_" + modelData[0]
+                    text: modelData[1]; implicitWidth: 90
+                    active: win.file === modelData[0]
+                    onClicked: win.setFile(modelData[0])
+                }
+            }
+        }
+        Row {
+            spacing: Theme.space2
+            SButton {
+                objectName: "bounceInt16"
+                text: "16-bit"; implicitWidth: 90
+                active: win.bits === 16
+                onClicked: win.bits = 16
+            }
             SButton {
                 objectName: "bounceInt24"
-                text: "24-bit"; implicitWidth: 120
-                active: !win.float32
-                onClicked: win.float32 = false
+                text: "24-bit"; implicitWidth: 90
+                active: win.bits === 24
+                onClicked: win.bits = 24
             }
             SButton {
                 objectName: "bounceFloat32"
                 text: "32-bit float"; implicitWidth: 120
-                active: win.float32
-                onClicked: win.float32 = true
+                available: win.file === "bwf" || win.file === "wav"
+                active: win.bits === 32
+                onClicked: win.bits = 32
             }
+        }
+        Text {
+            objectName: "bounceFileHelp"
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: win.file === "bwf"
+                  ? "Broadcast Wave: a WAV that also says where on the timeline it starts."
+                  : win.file === "wav" ? "Plain WAV, no timeline origin."
+                  : win.file === "aiff" ? "AIFF, 16 or 24 bits."
+                  : "FLAC, lossless and about half the size; 16 or 24 bits."
+            color: Theme.textTertiary
+            font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+        }
+
+        Overline { text: "SAMPLE RATE" }
+        Row {
+            spacing: Theme.space2
+            Repeater {
+                model: [[0, "Session"], [44100, "44.1k"], [48000, "48k"], [88200, "88.2k"], [96000, "96k"]]
+                SButton {
+                    required property var modelData
+                    objectName: "bounceRate_" + modelData[0]
+                    text: modelData[1]; implicitWidth: 72
+                    active: win.rate === modelData[0]
+                    onClicked: win.rate = modelData[0]
+                }
+            }
+        }
+
+        Overline { text: "DITHER" }
+        Row {
+            spacing: Theme.space2
+            Repeater {
+                model: [["auto", "Auto"], ["none", "Off"], ["tpdf", "TPDF"], ["shaped", "Shaped"]]
+                SButton {
+                    required property var modelData
+                    objectName: "bounceDither_" + modelData[0]
+                    text: modelData[1]; implicitWidth: 90
+                    available: win.bits !== 32
+                    active: win.dither === modelData[0]
+                    onClicked: win.dither = modelData[0]
+                }
+            }
+        }
+        Text {
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: "Auto adds TPDF dither when the file is 16-bit. Shaped moves the noise up, out of the middle of the spectrum. 32-bit float is never dithered."
+            color: Theme.textTertiary
+            font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
         }
         Rectangle {
             width: parent.width
@@ -224,8 +303,9 @@ Rectangle {
                 text: "Bounce"; implicitWidth: 96
                 available: win.shell.bounceAvailable && !win.shell.bounceRunning
                 onClicked: {
-                    win.shell.startBounce(win.realTime, win.float32, win.normalise,
-                                          win.targetLufs, nameInput.text)
+                    win.shell.startBounce(win.realTime, win.file, win.bits, win.rate,
+                                          win.dither, win.normalise, win.targetLufs,
+                                          nameInput.text)
                     nameInput.focus = false
                 }
             }
