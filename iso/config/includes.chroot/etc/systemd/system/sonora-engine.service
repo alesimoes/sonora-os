@@ -11,8 +11,6 @@ ConditionPathExists=!/run/sonora-display-failed
 # lingering user manager creates.
 Wants=sound.target user@1000.service
 After=sound.target user@1000.service systemd-user-sessions.service
-# One engine per machine. Starting the session (the fallback) stops this one.
-Conflicts=sonora-session.service
 # Separate from the UI's budget: a crash-looping engine is retried for ever,
 # because the operator has no other way back to a working machine.
 StartLimitIntervalSec=0

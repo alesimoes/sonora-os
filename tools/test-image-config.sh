@@ -353,7 +353,11 @@ done
 if [ -f "$ENG" ] && [ -f "$UIU" ]; then
   grep -qx 'ConditionKernelCommandLine=sonora.gui' "$ENG" || bad "engine unit is not gated on sonora.gui"
   grep -qx 'ConditionPathExists=!/run/sonora-display-failed' "$ENG" || bad "engine unit does not stand down after the display fallback"
-  grep -qx 'Conflicts=sonora-session.service' "$ENG" || bad "engine unit can run beside sonora-session (two engines)"
+  # Not Conflicts=: the session is enabled at boot, and a Conflicts= between two
+  # units in one boot transaction made systemd drop the session (measured in
+  # tools/test-display-fallback.sh). The fallback stops the engine by hand.
+  grep -Eq '^Conflicts=.*sonora-(session|engine)' "$ENG" "$UNIT" && bad "Conflicts= between the engine and the session unit"
+  grep -Eq '^ExecStart=-/usr/bin/systemctl stop .*sonora-engine\.service' "$FALLBACK" || bad "fallback does not stop the display stack's engine"
   grep -qx 'Restart=always' "$ENG" || bad "engine unit does not restart"
   grep -qx 'StartLimitIntervalSec=0' "$ENG" || bad "engine unit gives up after a crash loop"
   grep -qx 'LimitRTPRIO=95' "$ENG" || bad "engine unit has no RT priority grant"
@@ -365,7 +369,6 @@ if [ -f "$ENG" ] && [ -f "$UIU" ]; then
   grep -Eq '^(BindsTo|Requires)=.*sonora-engine' "$UIU" && bad "UI unit is bound to the engine; the engine's restart would restart the UI"
   grep -Eq '^ExecStart=/usr/local/bin/sonora-ui --kiosk$' "$UIU" || bad "UI unit does not run the real-engine kiosk (--demo left in?)"
   grep -qx 'Restart=always' "$UIU" || bad "UI unit does not restart"
-  grep -Eq '^Conflicts=.*sonora-engine.service' "$UNIT" || bad "session unit does not displace the display stack's engine"
 fi
 grep -qx 'chmod 0755 /usr/local/bin/sonora-engine-run' "$HOOK" || bad "hook does not chmod sonora-engine-run"
 grep -qx 'chmod 0755 /usr/share/sonora/labwc/autostart' "$HOOK" || bad "hook does not chmod the labwc autostart"

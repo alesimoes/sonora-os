@@ -63,6 +63,11 @@ for u in sonora-compositor sonora-session; do
   printf "[Service]\nPAMName=\nTTYPath=\nTTYReset=no\nTTYVHangup=no\nTTYVTDisallocate=no\nStandardInput=null\nStandardOutput=journal\nUtmpIdentifier=\n" \
     > "/etc/systemd/system/$u.service.d/container.conf"
 done
+# systemd orders a User= service after user@UID.service on its own, and the
+# user manager cannot start in a container (no logind session): its start job
+# would hold the engine, and the UI behind it, for ever. A real image has the
+# manager running through lingering. Masked here; Wants= on it is then ignored.
+ln -s /dev/null /etc/systemd/system/user@1000.service
 systemctl enable sonora-compositor.service sonora-session.service >/dev/null 2>&1
 exec /sbin/init "$@"
 '

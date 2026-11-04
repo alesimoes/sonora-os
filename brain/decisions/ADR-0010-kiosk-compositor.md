@@ -367,8 +367,10 @@ distro-engineer:
 >   labwc or engine crash restarts only that unit. The engine: `Restart=always`,
 >   no start limit, `OOMScoreAdjust=-900`. The UI keeps 5 starts in 60 s, then
 >   the fallback.
-> - `sonora-session.service` `Conflicts=` the engine, so the fallback swaps
->   the display stack's engine for the tty1 session (one engine per machine).
+> - The fallback stops the engine with the compositor and UI before it starts
+>   `sonora-session.service` (one engine per machine). No `Conflicts=` between
+>   the two: both sit in the boot transaction and systemd then dropped the
+>   session (seen in `tools/test-display-fallback.sh`).
 > - Editors: labwc's `autostart` writes its Xwayland `DISPLAY` to
 >   `$XDG_RUNTIME_DIR/sonora/display.env`; `sonora-engine-run` exports it to
 >   the engine, so the plugin host's X11 editors open on it. That labwc has

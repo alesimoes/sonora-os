@@ -19,12 +19,15 @@ Type=oneshot
 # systemd runs OnFailure= on every failure, restarted or not; see the script.
 ExecCondition=/usr/local/bin/sonora-display-gave-up
 ExecStart=/usr/bin/touch /run/sonora-display-failed
-# Stopped first and synchronously: both units want tty1. The UI is BindsTo= the
+# Stopped first and synchronously: both units want tty1, and the display
+# stack's engine (sonora-engine.service) must not run beside the session's.
+# A Conflicts= between them is not used: both are in the boot transaction and
+# systemd then drops the session. The UI is BindsTo= the
 # compositor, so it goes too; it is named in case the compositor already failed.
 # The '-' matters: without it a stop that returns non-zero (a cancelled job)
 # ends the oneshot here, and tty1 is left with neither the display nor the
 # session. The session's Conflicts=getty@tty1 is all it needs from tty1.
-ExecStart=-/usr/bin/systemctl stop sonora-compositor.service sonora-ui.service
+ExecStart=-/usr/bin/systemctl stop sonora-compositor.service sonora-ui.service sonora-engine.service
 # --no-block: the session waits up to a minute for the audio server and inputs,
 # and nothing here should be held up by that.
 ExecStart=/usr/bin/systemctl --no-block start sonora-session.service
