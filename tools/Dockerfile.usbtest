@@ -7,7 +7,9 @@
 # fails the test rather than a user.
 FROM debian:trixie
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
+ for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
+ if apt-get $A update && apt-get $A install -y --no-install-recommends \
       util-linux \
       fdisk \
       e2fsprogs \
@@ -15,6 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       qemu-utils \
       perl-base \
       strace \
-    && rm -rf /var/lib/apt/lists/*
+    ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
+    [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
+    rm -rf /var/lib/apt/lists/*
 
 CMD ["bash"]

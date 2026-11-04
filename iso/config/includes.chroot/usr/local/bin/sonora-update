@@ -1,0 +1,167 @@
+#!/bin/sh
+# shellcheck disable=SC2015,SC2016,SC2018,SC2019,SC2094
+# sonora-update: A/B image updates (ADR-0044).
+#
+#   sonora-update apply (--from DIR | --url BASE) [--dry-run] [--allow-downgrade]
+#   sonora-update rollback [--dry-run]
+#   sonora-update confirm
+#   sonora-update status
+#
+# apply writes a signed image to the slot we are NOT running and arms a trial
+# boot of it. It never reboots, never touches the running slot or the data
+# partition, and refuses while a session is open. Exit codes: 0 done, 1 error,
+# 2 refused (nothing changed), 3 usage.
+set -u
+
+LIB=${SONORA_LIB:-/usr/local/lib/sonora/slots.sh}
+ENVFILE=${SONORA_GRUBENV:-/boot/efi/EFI/sonora/grubenv}
+CMDLINE_FILE=${SONORA_CMDLINE_FILE:-/proc/cmdline}
+FLAG=${SONORA_UPDATES_FLAG:-/var/lib/sonora/updates-allowed}
+SCRATCH=${SONORA_SCRATCH:-/home/.sonora-update}
+RELEASE_FILE=${SONORA_RELEASE_FILE:-/etc/sonora-release}
+# Exit 0 = a session is open, 1 = none; anything else (including a missing
+# probe) is "cannot tell", which refuses.
+SESSION_PROBE=${SONORA_SESSION_PROBE:-/usr/local/bin/sonora-session-open}
+HEALTH_CMD=${SONORA_HEALTH_CMD:-"systemctl is-active --quiet sonora-session.service"}
+ESP=${SONORA_ESP:-/boot/efi}
+
+# shellcheck source=/dev/null
+. "$LIB" || { echo "cannot load $LIB" >&2; exit 1; }
+
+say() { echo "sonora-update: $*"; }
+die() { say "$*" >&2; exit "${2:-1}"; }
+
+dry=0
+allow_down=0
+src=
+mode=
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) dry=1 ;;
+        --allow-downgrade) allow_down=1 ;;
+        --from) mode=dir; src=${2:-}; shift ;;
+        --url) mode=url; src=${2:-}; shift ;;
+        *) die "unknown argument $1" 3 ;;
+    esac
+    shift
+done
+
+current_slot() {
+    slots_current "$(cat "$CMDLINE_FILE")" || die "not booted from an A/B slot (no sonora.slot= on the command line)" 2
+}
+
+# The ESP is read-only in normal running; open it for one write and close it.
+esp_rw() { [ "${SONORA_NO_REMOUNT:-0}" = 1 ] || mount -o remount,rw "$ESP"; }
+esp_ro() { [ "${SONORA_NO_REMOUNT:-0}" = 1 ] || mount -o remount,ro "$ESP"; }
+env_do() {  # env_do FUNCTION ARGS...: run a slots_ function that writes the env
+    esp_rw || die "cannot make $ESP writable" 1
+    "$@"
+    _rc=$?
+    esp_ro || die "cannot return $ESP to read-only; do not continue" 1
+    return $_rc
+}
+
+# The update-allowed gate of ADR-0035: the flag exists only while the tool
+# runs and only if the engine says no session is open.
+gate_open() {
+    "$SESSION_PROBE" >/dev/null 2>&1
+    case $? in
+        0) die "a session is open; close it first (nothing was changed)" 2 ;;
+        1) ;;
+        *) die "cannot tell whether a session is open ($SESSION_PROBE); refusing" 2 ;;
+    esac
+    if [ "$dry" = 0 ]; then
+        mkdir -p "$(dirname "$FLAG")" && : >"$FLAG" || die "cannot create $FLAG" 1
+    fi
+}
+cleanup() {
+    [ "$dry" = 1 ] || rm -f "$FLAG"
+    [ -z "${work:-}" ] || rm -rf "$work"
+}
+
+fetch() {  # fetch NAME: from the stick directory or over https into $work
+    case "$mode" in
+        dir) cp "$src/$1" "$work/$1" ;;
+        url) curl -fsSL --proto '=https' --max-time 3600 -o "$work/$1" "$src/$1" ;;
+    esac
+}
+
+do_apply() {
+    [ -n "$mode" ] && [ -n "$src" ] || die "apply needs --from DIR or --url BASE" 3
+    cur=$(current_slot) || exit $?
+    [ -f "$ENVFILE" ] || die "no $ENVFILE" 1
+    target=$(slots_inactive "$ENVFILE" "$cur") || exit $?
+    label=$(slots_label "$target")
+    trap cleanup EXIT
+    gate_open
+    work="$SCRATCH/apply.$$"
+    mkdir -p "$work" || die "cannot create $work" 1
+
+    fetch SHA256SUMS && fetch SHA256SUMS.sig || die "cannot fetch the manifest" 1
+    slots_verify_signature "$work" || die "the manifest is not signed by the Sonora key; nothing written" 2
+    names=$(slots_bundle_names "$work/SHA256SUMS") || die "manifest names a bad path; nothing written" 2
+    for need in VERSION vmlinuz initrd.img filesystem.squashfs; do
+        printf '%s\n' "$names" | grep -qx "$need" || die "manifest lacks $need" 2
+    done
+    fetch VERSION && slots_verify_hashes "$work" VERSION || die "VERSION fails its checksum" 2
+    new=$(head -n 1 "$work/VERSION")
+    old=$(head -n 1 "$RELEASE_FILE" 2>/dev/null || echo 0)
+    if ! slots_newer "$new" "$old" && [ "$allow_down" = 0 ]; then
+        die "image $new is not newer than $old (use --allow-downgrade)" 2
+    fi
+
+    say "plan: $old -> $new, write slot $target ($label), then trial-boot it $SLOTS_TRIES times"
+    if [ "$dry" = 1 ]; then
+        say "dry run: nothing fetched, written or armed"
+        return 0
+    fi
+
+    for n in vmlinuz initrd.img filesystem.squashfs; do
+        fetch "$n" || die "cannot fetch $n" 1
+    done
+    slots_verify_hashes "$work" || die "payload fails its checksum; nothing written" 2
+
+    dev=$(eval "echo \"\${SONORA_SLOT_DEV_$(echo "$target" | tr a-z A-Z):-/dev/disk/by-label/$label}\"")
+    # Disarm first: while the slot is half-written it must not be bootable.
+    env_do slots_env_set "$ENVFILE" "sonora_valid_$target" 0 || die "cannot update $ENVFILE" 1
+    slots_write_image "$work" "$dev" "$label" || die "writing $dev failed; the running slot is untouched" 1
+    env_do slots_mark_written "$ENVFILE" "$target" || die "cannot arm the trial in $ENVFILE" 1
+    say "slot $target holds $new. Reboot when the session is finished; if it does not come up healthy $SLOTS_TRIES times the machine returns to $cur by itself."
+}
+
+do_rollback() {
+    [ -f "$ENVFILE" ] || die "no $ENVFILE" 1
+    if [ "$dry" = 1 ]; then
+        say "dry run: would run rollback on $ENVFILE (committed $(slots_env_get "$ENVFILE" sonora_slot), trial '$(slots_env_get "$ENVFILE" sonora_trial)')"
+        return 0
+    fi
+    env_do slots_rollback "$ENVFILE" || die "rollback refused" 2
+    say "rollback armed: the next boot uses slot $(slots_env_get "$ENVFILE" sonora_slot)"
+}
+
+do_confirm() {
+    cur=$(current_slot) || exit $?
+    # Healthy means the engine is still up after the settle time the unit waits.
+    # shellcheck disable=SC2086
+    $HEALTH_CMD || die "engine not running; not confirming slot $cur" 2
+    env_do slots_confirm "$ENVFILE" "$cur" || die "confirm refused" 2
+    say "slot $cur confirmed"
+}
+
+do_status() {
+    [ -f "$ENVFILE" ] || die "no $ENVFILE" 1
+    for k in sonora_slot sonora_trial sonora_tries sonora_valid_a sonora_valid_b; do
+        echo "$k=$(slots_env_get "$ENVFILE" "$k")"
+    done
+    echo "running=$(slots_current "$(cat "$CMDLINE_FILE")" || echo none)"
+}
+
+case "$cmd" in
+    apply) do_apply ;;
+    rollback) do_rollback ;;
+    confirm) do_confirm ;;
+    status) do_status ;;
+    *) die "usage: sonora-update apply|rollback|confirm|status" 3 ;;
+esac
