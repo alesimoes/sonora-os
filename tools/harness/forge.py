@@ -315,6 +315,7 @@ class GhForge(Forge):
                     ln = re.sub(r"\x1b\[[0-9;]*m", "", ln)
                     ln = re.sub(r"^\S+Z ", "", ln).strip()
                     if self.FAIL_LINE.search(ln) and \
+                            not ln.startswith(("echo ", "+ echo")) and \
                             "Process completed with exit code" not in ln:
                         lines.append(ln[:240])
                 out.append(f"[{j['name']}]")

@@ -773,9 +773,7 @@ class Orchestrator:
             else "red: " + ", ".join(jobs)
         note = f"PR #{f['pr']} {what}"
         if detail:
-            note += "
-Why, from the CI logs (start here):
-" + detail
+            note += "\nWhy, from the CI logs (start here):\n" + detail
         self.store.advance_feature(f["id"], "ci_fix", fix_kind=fix_kind,
                                    note=note)
         self.store.event(ts[0]["id"], "ci_red", ", ".join(jobs))
