@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Static check of the update policy (ADR-0034). It proves the files say what
+# Static check of the update policy (ADR-0035). It proves the files say what
 # the ADR says; it cannot prove apt's behaviour on an installed machine.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,4 +43,4 @@ if grep -Eq '^[[:space:]]*unattended-upgrades' "$ROOT"/iso/config/package-lists/
 fi
 
 [ "$fail" -eq 0 ] || exit 1
-echo "ok: update policy files agree with ADR-0034 (UNVERIFIED on an installed machine)"
+echo "ok: update policy files agree with ADR-0035 (UNVERIFIED on an installed machine)"

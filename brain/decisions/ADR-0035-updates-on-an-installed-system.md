@@ -1,12 +1,12 @@
-# ADR-0034 — Updates on an installed system: apt with holds now, A/B later
+# ADR-0035 — Updates on an installed system: apt with holds now, A/B later
 
 - Status: Accepted (recommended default, taken with no owner available,
   2026-11-04)
 - Date: 2026-11-04
 - Item: `system.install.updates`
 - Relates to: ADR-0002 (Debian base), ADR-0005 (USB persistence), ADR-0032
-  (installer). Number 0034: 0033 is claimed by varispeed; the Secure Boot
-  ADR should take a higher one.
+  (installer). Number 0035: 0033 is claimed by varispeed and 0034 by the Secure Boot
+  chain ADR.
 
 ## Summary
 
