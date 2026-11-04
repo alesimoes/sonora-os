@@ -94,3 +94,26 @@ after); `docker-desktop` stayed Running.
 Hearing the tone from the laptop speakers; the mic (Windows Settings >
 Privacy > Microphone for WSLg); that the UI window is usable at llvmpipe
 speed.
+
+## The UMC1820 in WSL2 through usbipd-win
+
+`tools/umc-wsl.ps1` (tested by `tools/test-umc-wsl.ps1` against fake
+`usbipd`/`wsl`) passes the Behringer UMC1820 (1397:0503) from Windows to the
+Debian distro, whose 6.6.x microsoft-standard-WSL2 kernel has snd-usb-audio.ko.
+Owner steps, from a normal PowerShell unless marked:
+
+1. `tools\umc-wsl.ps1 check` - read-only; says what is missing.
+2. Elevated: `winget install --exact --id dorssel.usbipd-win` (`install` prints
+   this when run non-elevated). Open a new shell.
+3. Elevated, once: `usbipd bind --hardware-id 1397:0503`. Then
+   `tools\umc-wsl.ps1 attach` (plain `usbipd attach --wsl Debian`, repeat after
+   every WSL restart or replug).
+4. `tools\umc-wsl.ps1 verify` - modprobe, `arecord -l`, /proc/asound/cards,
+   capture channels, `pw-jack jack_lsp` ports.
+5. `tools\umc-wsl.ps1 detach` gives it back to Windows.
+
+Caveats. While attached Windows has no UMC1820 (no sound from it, the
+TUSBAUDIO driver idles). USB/IP puts a virtual network link under the
+isochronous audio, so latency and xruns are worse and variable: this is a
+FUNCTIONAL check (enumeration, channel count, ports) and its numbers are NOT
+valid as the bare-metal figures the OS items (drivers.usb.*) require.

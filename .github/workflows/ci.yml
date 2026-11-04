@@ -144,6 +144,12 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-write-usb.ps1
 
+      # tools/umc-wsl.ps1 against fake usbipd, wsl and winget on PATH; nothing
+      # elevated, no USB.
+      - name: tools/umc-wsl.ps1 against fake usbipd and wsl
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-umc-wsl.ps1
+
   ui:
     name: Qt interface build and headless tests
     needs: changes
@@ -593,13 +599,25 @@ jobs:
       - name: Install shellcheck and dbus-x11
         run: sudo apt-get update && sudo apt-get install -y shellcheck dbus-x11
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty
+        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck
 
       - name: Read-only root, capped RAM writes
         run: tools/test-ro-root.sh
 
       - name: Secure Boot chain, static
         run: tools/test-secure-boot.sh
+
+      - name: Installed root, swap sizing and fstab
+        run: tools/test-rootfs.sh
+
+      - name: Update policy files
+        run: tools/test-updates.sh
+
+      - name: A/B updates, slot logic against files
+        run: tools/test-ab-updates.sh
+
+      - name: Policy check items match the image script
+        run: tools/test-policycheck-qemu.sh --static
 
       - name: Merge gate decisions, against a fake gh
         run: tools/test-merge-checks.sh
@@ -609,6 +627,9 @@ jobs:
 
       - name: RT limits agree across limits.d, unit and hook
         run: tools/test-rt-limits.sh
+
+      - name: umc-measure.sh logic, against fake arecord/pw-jack/engine
+        run: tools/test-umc-measure.sh
 
       - name: Image config (backports pins, RT kernel, tty1 session, no VT gettys)
         run: tools/test-image-config.sh
