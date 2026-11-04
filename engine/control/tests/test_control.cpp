@@ -350,7 +350,8 @@ void same_commands_as_the_fake() {
     // An interface sends its selection as play's range only to an engine
     // announcing it (ADR-0007 §6); the fake announces what the engine does.
     CHECK(real.hello().capabilities ==
-          (std::vector<std::string>{api::kCapabilityPlayRange, api::kCapabilityBounce}));
+          (std::vector<std::string>{api::kCapabilityPlayRange, api::kCapabilityBounce,
+                                      api::kCapabilityRender}));
     CHECK(real.hello().capabilities == api::testing::FakeEngine::Config{}.capabilities);
     // app.quit is installed by install_session_commands but belongs to the
     // interface (ADR-0007 §5): never announced, and refused if sent.
@@ -3594,7 +3595,7 @@ void a_bounce_reaches_the_interface() {
         }
         return out;
     };
-    CHECK(real.hello().capabilities.back() == api::kCapabilityBounce);
+    CHECK(real.hello().capabilities.back() == api::kCapabilityRender);
     const api::CommandReply none = run("mix.bounce_cancel", "");
     CHECK(none.result == DispatchResult::Failed && none.message == "no bounce is running");
     CHECK(run("mix.bounce", "mode=sideways").result == DispatchResult::Failed);
@@ -3615,6 +3616,21 @@ void a_bounce_reaches_the_interface() {
     const std::vector<api::EngineEvent> late = late_greeting(real, in);
     const auto held = bounce_events(late);
     CHECK(held.size() == 1 && held[0].flags == static_cast<uint32_t>(api::BounceState::Done));
+
+    // Render in place (ADR-0051): each refusal says why, no render starts and
+    // no Render event is sent. The rolling render is test_render_in_place's.
+    const std::string track = "track=" + std::to_string(doc.current().edit->tracks[0]->id);
+    const api::CommandReply no_render = run("track.render_cancel", "");
+    CHECK(no_render.result == DispatchResult::Failed && no_render.message == "no render is running");
+    CHECK(run("track.freeze", "").result == DispatchResult::Failed);
+    for (const char* id : {"track.freeze", "track.commit", "track.process_selection"}) {
+        const api::CommandReply r = run(id, (track + " start=10 end=900").c_str());
+        CHECK(r.result == DispatchResult::Failed);
+        CHECK(r.message.find("no active plug-in insert") != std::string::npos);
+    }
+    const api::CommandReply thaw = run("track.unfreeze", track.c_str());
+    CHECK(thaw.result == DispatchResult::Failed && thaw.message.find("is not frozen") != std::string::npos);
+    for (const auto& e : in.events) CHECK(e.kind != api::EventKind::Render);
 }
 
 int main() {

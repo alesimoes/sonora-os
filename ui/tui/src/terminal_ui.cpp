@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "sonora/api/bounce.h"
+#include "sonora/api/render.h"
 #include "sonora/tty_mode.h"
 
 namespace sonora::tui {
