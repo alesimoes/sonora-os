@@ -93,14 +93,32 @@ void clear_range(const Playlist& p, Frames a, Frames b, const NextId& id,
 }
 
 void paste_clip(const Playlist& p, Frames at, const Clip& clip, const NextId& id,
-                std::vector<Member>& out) {
-    repeat_clip(p, at, clip, 1, id, out);
+                std::vector<Member>& out, bool clear) {
+    repeat_clip(p, at, clip, 1, id, out, clear);
+}
+
+void shuffle_shift(const Playlist& p, Frames from, Frames delta, std::vector<Member>& out) {
+    if (delta == 0) return;
+    // ShiftRegions is refused when nothing starts at or after `from`; a
+    // region that ends past it either starts there or is cut there.
+    const bool tail = std::any_of(p.regions.begin(), p.regions.end(),
+                                  [from](const Region& r) { return r.end() > from; });
+    if (tail) out.push_back(ShiftRegions{p.id, from, delta});
+}
+
+void shuffle_open(const Playlist& p, Frames at, Frames length, const NextId& id,
+                  std::vector<Member>& out) {
+    if (length <= 0) return;
+    for (const Region& r : p.regions) {
+        if (r.position < at && r.end() > at) out.push_back(SplitRegion{p.id, r.id, at, id()});
+    }
+    shuffle_shift(p, at, length, out);
 }
 
 void repeat_clip(const Playlist& p, Frames at, const Clip& clip, int count, const NextId& id,
-                 std::vector<Member>& out) {
+                 std::vector<Member>& out, bool clear) {
     if (count < 1) return;
-    clear_range(p, at, at + clip.length * count, id, out);
+    if (clear) clear_range(p, at, at + clip.length * count, id, out);
     for (int i = 0; i < count; ++i) {
         const Frames origin = at + clip.length * i;
         std::map<Id, Id> renamed;

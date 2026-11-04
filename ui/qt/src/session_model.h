@@ -596,6 +596,10 @@ signals:
     // edit.repeat again with it. `what` says what one copy is ("2.000 s of
     // Gtr"), so the number is asked about something the operator can see.
     void repeatRequested(int count, const QString& what);
+    // A click on a region in Spot mode, or edit.spot with no time: the window
+    // asks where `name` starts, offering `start` in the main counter's
+    // format, and sends edit.spot again with the time typed.
+    void spotRequested(const QString& name, const QString& start);
     // track.new without a count: the window asks how many, offering 1.
     void newTracksRequested();
     // track.playlist_rename without a name: the window asks, offering the
@@ -645,6 +649,9 @@ private:
     // Re-publishes what changed since the last call and marks the items.
     void sync();
     bool run(bool ok, const std::string& why);
+    // Asks where the selected region starts (spotRequested); refused when
+    // none is selected.
+    bool askSpot();
     bool setRollText(bool pre, const QString& text);
     void updateCounters(bool force);
     // The save itself, once the document holds what the file must;

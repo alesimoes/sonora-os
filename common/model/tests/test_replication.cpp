@@ -207,6 +207,7 @@ std::vector<Operation> one_of_each() {
             SetVcaMix{VcaMix{70, -4.5f, true}},
             SetFolder{71, "Kit", {2}},
             RemoveFolder{71},
+            ShiftRegions{2, 96000, -48000},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 

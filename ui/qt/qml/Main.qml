@@ -1788,7 +1788,7 @@ Rectangle {
         anchors.fill: parent
         visible: colourPalette.visible
         z: 9
-        onClicked: colourPalette.visible = false
+        onClicked: colourPalette.close()
     }
     Rectangle {
         id: colourPalette
@@ -1811,12 +1811,22 @@ Rectangle {
             current = c
             problem = ""
             visible = true
+            forceActiveFocus()
+            root.shell.setTextEntry(true)
+        }
+        function close() {
+            visible = false
+            focus = false
+            root.shell.setTextEntry(false)
         }
         function choose(argument) {
             if (root.shell.invokeWith(track >= 0 ? "track.colour" : "region.colour", track, argument))
-                visible = false
+                close()
             else problem = root.shell.statusText
         }
+        // Escape closes it as it does every other dialog; with no text field
+        // of its own, the palette takes the keyboard while it is open.
+        Keys.onEscapePressed: colourPalette.close()
 
         Column {
             id: paletteColumn
@@ -1894,7 +1904,7 @@ Rectangle {
                     objectName: "paletteClose"
                     text: "Close"
                     implicitHeight: 24
-                    onClicked: colourPalette.visible = false
+                    onClicked: colourPalette.close()
                 }
             }
         }
@@ -2062,6 +2072,117 @@ Rectangle {
                     implicitHeight: 24
                     active: true
                     onClicked: repeatPanel.accept()
+                }
+            }
+        }
+    }
+
+    // --- Spot: where a region starts ---------------------------------------------
+    // Pro Tools' Spot mode: a click on a region, or edit.spot with no time,
+    // asks for its start in the main counter's format. OK and Return send
+    // edit.spot with the text through the same router; a refused time leaves
+    // the dialog open with the reason on the status line.
+    MouseArea {
+        anchors.fill: parent
+        visible: spotPanel.visible
+        z: 9
+        onClicked: spotPanel.close()
+    }
+    Rectangle {
+        id: spotPanel
+        objectName: "spotPanel"
+        property string regionName
+        visible: false
+        z: 10
+        anchors.centerIn: parent
+        width: 340
+        height: spotColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        function show(name, start) {
+            spotPanel.regionName = name
+            spotInput.text = start
+            visible = true
+            spotInput.forceActiveFocus()
+            spotInput.selectAll()
+        }
+        function close() {
+            visible = false
+            spotInput.focus = false
+            root.shell.setTextEntry(false)
+        }
+        function accept() {
+            if (root.shell.invokeWith("edit.spot", -1, spotInput.text)) close()
+        }
+
+        Column {
+            id: spotColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: "Spot"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                objectName: "spotWhat"
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Where " + spotPanel.regionName + " starts. What it lands on is replaced."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                spacing: Theme.space2
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Start"
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                }
+                Rectangle {
+                    width: 150
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.window
+                    border.color: spotInput.activeFocus ? Theme.accent : Theme.borderStrong
+                    TextInput {
+                        id: spotInput
+                        objectName: "spotInput"
+                        anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                        horizontalAlignment: TextInput.AlignRight
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.selectionFill
+                        selectedTextColor: Theme.text
+                        font { family: Theme.fontFamily; pixelSize: Theme.textBody; features: { "tnum": 1 } }
+                        onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                        Keys.onEscapePressed: spotPanel.close()
+                        Keys.onReturnPressed: spotPanel.accept()
+                        Keys.onEnterPressed: spotPanel.accept()
+                    }
+                }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "spotCancel"
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: spotPanel.close()
+                }
+                SButton {
+                    objectName: "spotOk"
+                    text: "OK"
+                    implicitHeight: 24
+                    active: true
+                    onClicked: spotPanel.accept()
                 }
             }
         }
@@ -2269,6 +2390,7 @@ Rectangle {
         function onRefused(why) { root.shell.say(why) }
         function onNotice(text) { root.shell.say(text) }
         function onRepeatRequested(count, what) { repeatPanel.show(count, what) }
+        function onSpotRequested(name, start) { spotPanel.show(name, start) }
         function onNewTracksRequested() { newTracksPanel.show() }
         function onSaveAsRequested(copy, name, where) { saveAsPanel.show(copy, name, where) }
         function onSaveAsTemplateRequested(name, where) { saveAsPanel.showTemplate(name, where) }

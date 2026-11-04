@@ -584,6 +584,13 @@ void SessionModel::installCommands(CommandRegistry& local) {
         }
         return ctl_.repeat(count, why);
     });
+    // Pro Tools' Spot dialog: the start time typed in the counter's format.
+    simple("edit.spot", [this](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) return askSpot();
+        Frames at = 0;
+        if (!parse_time(main_fmt_, ctx.argument, ctl_.snapshot().settings, at, why)) return false;
+        return ctl_.spot_region(at, why);
+    });
     // Pro Tools' New Memory Location: stopped, the window asks for the name
     // and sends it back as the argument; rolling, the marker is named and
     // dropped at the playhead at once, as Pro Tools does when playing. The
@@ -1455,6 +1462,15 @@ void SessionModel::press(qreal x, qreal y) {
     const bool ok = ctl_.press(x, y, why);
     if (ctl_.drag().kind == Drag::Kind::Swipe) setTrackRefusal(QString());
     run(ok, why);
+    if (ctl_.take_spot_request() != kNoId) askSpot();
+}
+
+bool SessionModel::askSpot() {
+    std::string why;
+    const Region* r = ctl_.selected_region(why);
+    if (r == nullptr) return run(false, "select a region to spot");
+    emit spotRequested(q(r->name), q(format_time(main_fmt_, r->position, ctl_.snapshot().settings)));
+    return true;
 }
 
 void SessionModel::drag(qreal x, qreal y) {

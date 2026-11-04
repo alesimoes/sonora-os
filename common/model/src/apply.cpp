@@ -563,6 +563,54 @@ public:
         });
     }
 
+    bool operator()(const ShiftRegions& op) {
+        if (!not_midi(op.playlist, "a MIDI playlist has no Shuffle ripple")) return false;
+        if (op.delta == 0) return fail("shifting by 0 frames");
+        return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
+            // Regions are sorted by position, so those that move are a tail.
+            std::size_t first = p.regions.size();
+            Frames stay_end = 0;
+            for (std::size_t i = 0; i < p.regions.size(); ++i) {
+                if (p.regions[i].position >= op.from) {
+                    first = i;
+                    break;
+                }
+                stay_end = std::max(stay_end, p.regions[i].end());
+            }
+            if (first == p.regions.size()) return fail("no region starts at or after " + str(op.from));
+            const Frames lowest = p.regions[first].position;
+            Frames highest_end = 0;
+            for (std::size_t i = first; i < p.regions.size(); ++i) {
+                highest_end = std::max(highest_end, p.regions[i].end());
+            }
+            if (op.delta < 0) {
+                if (lowest + op.delta < 0) {
+                    return fail("shifting before timeline frame 0");
+                }
+                if (lowest + op.delta < stay_end) {
+                    return fail("shifting by " + str(op.delta) +
+                                " would land on a region that stays");
+                }
+            } else if (op.delta > kMaxInteger - highest_end) {
+                return fail("shifting past the end of the timeline");
+            }
+            std::vector<Id> ids;
+            for (std::size_t i = first; i < p.regions.size(); ++i) ids.push_back(p.regions[i].id);
+            // Later regions first when moving later, so none is moved onto one
+            // not yet moved.
+            if (op.delta > 0) std::reverse(ids.begin(), ids.end());
+            for (const Id id : ids) {
+                const std::size_t i = region_index(p, id);
+                Region r = p.regions[i];
+                erase_region(p, i);
+                r.position += op.delta;
+                insert_region(p, std::move(r));
+            }
+            drop_broken_crossfades(p);
+            return true;
+        });
+    }
+
     bool operator()(const SetFade& op) {
         if (!not_midi(op.playlist, "a MIDI region has no fades")) return false;
         return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {

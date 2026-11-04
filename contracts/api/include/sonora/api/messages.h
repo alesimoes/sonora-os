@@ -188,7 +188,10 @@ namespace sonora::api {
 //   clip.ungroup, clip.loop, clip.unloop and sample.* (interface) and
 //   sample.edit (engine). A version-48 peer refuses the operations and the
 //   keys, and answers sample.edit NotImplemented.
-constexpr uint32_t kProtocolVersion = 57;
+// 59 (ADR-0009 update of 2026-11-04, Shuffle): the operation kind ShiftRegions, the
+//   ripple Shuffle's Clear, Cut, Paste, Duplicate and Repeat end with. A
+//   version-42 peer's op decoder refuses the kind.
+constexpr uint32_t kProtocolVersion = 59;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
