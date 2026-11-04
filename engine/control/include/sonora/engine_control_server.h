@@ -77,6 +77,7 @@
 #include "sonora/api/wire.h"
 #include "sonora/automation_write.h"
 #include "sonora/automation_writer.h"
+#include "sonora/bounce_job.h"
 #include "sonora/command.h"
 #include "sonora/machine_latency.h"
 #include "sonora/model/operations.h"
@@ -609,6 +610,15 @@ private:
     // standing Latency event, what it says, and the measurement's cable
     // and pings said so far. The control thread's.
     std::string latency_;
+    // Bounce Mix (ui.mixer.bounce): a worker or the audio thread's tap renders,
+    // this thread starts it and says how it ended. The standing Bounce event,
+    // and the last progress said.
+    BounceJob bounce_job_;
+    std::string bounce_;
+    uint32_t bounce_said_ = 0;
+    void announce_bounce(api::BounceState state, uint32_t permille, uint64_t frames,
+                         const std::string& text);
+    void follow_bounce();
     api::LatencySource latency_source_ = api::LatencySource::None;
     api::LatencyStatus latency_status_ = api::LatencyStatus::Idle;
     std::string latency_text_;

@@ -78,6 +78,8 @@ class SessionModel : public QObject {
     Q_PROPERTY(bool memoryLocationsOpen READ memoryLocationsOpen NOTIFY memoryLocationsOpenChanged)
     // Setup > Latency (ADR-0019, update of 2026-10-26): window.latency.
     Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
+    // File > Bounce Mix: the Bounce window (ui.mixer.bounce).
+    Q_PROPERTY(bool bounceOpen READ bounceOpen NOTIFY bounceOpenChanged)
     // Window configurations: the nine slots, {slot, stored, summary}, and
     // the list that shows them (window.configurations).
     Q_PROPERTY(QVariantList windowConfigs READ windowConfigs NOTIFY windowConfigsChanged)
@@ -354,6 +356,8 @@ public:
     bool memoryLocationsOpen() const { return memory_locations_open_; }
     void setMemoryLocationsOpen(bool on);
     bool latencyOpen() const { return latency_open_; }
+    bool bounceOpen() const { return bounce_open_; }
+    Q_INVOKABLE void setBounceOpen(bool on);
     Q_INVOKABLE void setLatencyOpen(bool on);
 
     // --- window configurations (window.config_store, window.config_recall) ---
@@ -560,6 +564,7 @@ signals:
     void markersChanged();
     void memoryLocationsOpenChanged();
     void latencyOpenChanged();
+    void bounceOpenChanged();
     void windowConfigsChanged();
     void windowConfigsOpenChanged();
     // A recalled configuration moved the floating windows: read
@@ -709,6 +714,7 @@ private:
     bool undo_history_open_ = false;
     bool memory_locations_open_ = false;
     bool latency_open_ = false;
+    bool bounce_open_ = false;
     bool window_configs_open_ = false;
     WindowLayouts layouts_;
     QString layouts_file_;

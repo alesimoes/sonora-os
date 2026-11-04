@@ -384,6 +384,10 @@ void SessionModel::installCommands(CommandRegistry& local) {
         setLatencyOpen(!latency_open_);
         return true;
     });
+    local.install("window.bounce", [this](const CommandContext&) {
+        setBounceOpen(!bounce_open_);
+        return true;
+    });
     local.install("window.configurations", [this](const CommandContext&) {
         setWindowConfigsOpen(!window_configs_open_);
         return true;
@@ -674,6 +678,12 @@ void SessionModel::setLatencyOpen(bool on) {
     latency_open_ = on;
     layouts_.setOpen(QStringLiteral("latency"), on);
     emit latencyOpenChanged();
+}
+
+void SessionModel::setBounceOpen(bool on) {
+    if (on == bounce_open_) return;
+    bounce_open_ = on;
+    emit bounceOpenChanged();
 }
 
 QVariantList SessionModel::windowConfigs() const {

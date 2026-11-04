@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <chrono>
 
+#include "sonora/api/bounce.h"
+
 #include "meter_item.h"
 #include "meter_model.h"
 #include "qt_keys.h"
@@ -399,6 +401,60 @@ void ShellModel::setLatency(int frames) {
     latencyCommand("latency.set", QString::number(frames));
 }
 
+bool ShellModel::bounceAvailable() const {
+    const auto& caps = engine_.info().capabilities;
+    return std::find(caps.begin(), caps.end(), api::kCapabilityBounce) != caps.end();
+}
+
+void ShellModel::holdBounceRefusal(const QString& why) {
+    if (bounce_refusal_ == why) return;
+    bounce_refusal_ = why;
+    emit bounceChanged();
+}
+
+// Held in the footer's notices like the recovery offer's: no 2.5 s status.
+void ShellModel::setBounceNotice(const QString& text) {
+    if (text == bounce_notice_) return;
+    if (!bounce_notice_.isEmpty()) notices_.removeOne(bounce_notice_);
+    bounce_notice_ = text;
+    if (!text.isEmpty()) notices_ << text;
+    emit noticesChanged();
+}
+
+void ShellModel::startBounce(bool real_time, bool float32, bool normalise, qreal target_lufs,
+                             const QString& name) {
+    holdBounceRefusal(QString());
+    api::BounceOptions o;
+    o.mode = real_time ? api::BounceMode::RealTime : api::BounceMode::Offline;
+    o.format = float32 ? api::BounceFormat::Float32 : api::BounceFormat::Int24;
+    o.normalise = normalise;
+    o.target_lufs = static_cast<double>(target_lufs);
+    o.name = name.trimmed().toStdString();
+    CommandContext ctx;
+    ctx.argument = api::format_bounce_argument(o);
+    const RouteResult r = router_.invoke("mix.bounce", ctx);
+    report(r);
+    // Refused before it left (not implemented, say): held as an engine's is.
+    if (r.kind != RouteResult::Kind::Sent && !r.message.empty()) {
+        holdBounceRefusal(QString::fromStdString(r.message));
+    }
+}
+
+void ShellModel::cancelBounce() {
+    holdBounceRefusal(QString());
+    CommandContext ctx;
+    report(router_.invoke("mix.bounce_cancel", ctx));
+}
+
+void ShellModel::dismissBounce() {
+    setBounceNotice(QString());
+    if (bounce_state_ != 0) {
+        bounce_state_ = -1;
+        bounce_progress_ = 0.0;
+    }
+    emit bounceChanged();
+}
+
 qreal ShellModel::scaleY(qreal db, qreal h) const {
     const float top = meter_over_band(static_cast<float>(h)) + 1.0f;
     const float span = static_cast<float>(h) - top;
@@ -489,6 +545,9 @@ void ShellModel::tick() {
             emit recoveryChanged();
         }
         if (latency) holdLatencyRefusal(QString::fromStdString(why));
+        if (r.command.compare(0, 10, "mix.bounce") == 0) {
+            holdBounceRefusal(QString::fromStdString(why));
+        }
         say(QString::fromStdString(r.command + ": " + why));
     }
     takeEvents();
@@ -601,6 +660,29 @@ void ShellModel::takeEvents() {
                 latency_outputs_ = static_cast<int>(e.insert);
                 emit latencyChanged();
                 break;
+            case EngineEventKind::Bounce: {
+                const auto state = static_cast<api::BounceState>(e.flags);
+                bounce_state_ = static_cast<int>(e.flags);
+                bounce_progress_ = state == api::BounceState::Running
+                                       ? std::min<qreal>(1.0, static_cast<qreal>(e.take) / 1000.0)
+                                       : (state == api::BounceState::Done ? 1.0 : 0.0);
+                // One notice stands at a time: the last bounce's is replaced
+                // by the next one's and held until put away.
+                switch (state) {
+                    case api::BounceState::Running: setBounceNotice(QString()); break;
+                    case api::BounceState::Done:
+                        setBounceNotice(QStringLiteral("Bounced to ") + text);
+                        break;
+                    case api::BounceState::Failed:
+                        setBounceNotice(QStringLiteral("Bounce failed: ") + text);
+                        break;
+                    case api::BounceState::Cancelled:
+                        setBounceNotice(QStringLiteral("Bounce stopped: ") + text);
+                        break;
+                }
+                emit bounceChanged();
+                break;
+            }
             case EngineEventKind::PluginFault:
                 if (plugin_sinks_.fault) {
                     plugin_sinks_.fault(e.insert, e.text);

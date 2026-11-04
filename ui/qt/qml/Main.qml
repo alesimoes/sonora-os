@@ -233,6 +233,21 @@ Rectangle {
         }
     }
 
+    // --- the Bounce window (File > Bounce Mix…), floating over either window ---
+    Loader {
+        id: bounceLoader
+        objectName: "bounceLoader"
+        x: root.width - width - Theme.space6
+        y: body.y + Theme.space6
+        z: 8
+        sourceComponent: BounceWindow {
+            objectName: "bounceWindow"
+            shell: root.shell
+            session: root.session
+            mover: bounceLoader
+        }
+    }
+
     // --- footer -------------------------------------------------------------------
     Rectangle {
         id: footer
@@ -650,6 +665,8 @@ Rectangle {
                     { name: "fileSaveAs", label: "Save As…", command: "app.save_as" },
                     { name: "fileSaveCopyIn", label: "Save Copy In…", command: "app.save_copy_in" },
                     { name: "fileSaveAsTemplate", label: "Save as Template…", command: "app.save_as_template" },
+                    { name: "", label: "", command: "" },
+                    { name: "fileBounceMix", label: "Bounce Mix…", command: "window.bounce" },
                     { name: "", label: "", command: "" },
                     { name: "fileOpen", label: "Open…", command: "open" },
                     { name: "fileNewFromTemplate", label: "New from Template…", command: "app.new_from_template" }

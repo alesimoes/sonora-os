@@ -11,6 +11,7 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "sonora/api/bounce.h"
 #include "sonora/tty_mode.h"
 
 namespace sonora::tui {
@@ -206,6 +207,13 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
             case api::EventKind::Latency:
                 // Measured and set from the Qt interface's Latency window or
                 // --measure-latency; the engine says L at start on stderr.
+                break;
+            case api::EventKind::Bounce:
+                // Started from the Qt interface's window; here only how it
+                // ended is worth a line.
+                if (e.flags != static_cast<uint32_t>(api::BounceState::Running)) {
+                    notices_.push_back("bounce: " + e.text);
+                }
                 break;
         }
     }
