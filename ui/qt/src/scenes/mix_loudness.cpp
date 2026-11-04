@@ -4,6 +4,8 @@
 // measures no loudness, so the panel is given a reading (LoudnessModel::
 // showDemo): EBU R128 chosen as the target, the integrated value inside its
 // tolerance and the true peak under the ceiling.
+#include <QQuickItem>
+
 #include "loudness_model.h"
 #include "screenshot_scene.h"
 
