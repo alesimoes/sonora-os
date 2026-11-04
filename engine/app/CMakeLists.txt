@@ -1,5 +1,5 @@
 add_executable(sonora-engine
-  src/main.cpp src/quit_signals.cpp src/memory_lock.cpp src/exit_watchdog.cpp
+  src/main.cpp src/exit_watchdog.cpp
   src/device_policy.cpp src/plugin_paths.cpp)
 target_include_directories(sonora-engine PRIVATE include)
 # Headless since M7: interfaces connect on the control socket. Nothing of
@@ -12,17 +12,11 @@ add_dependencies(sonora-engine sonora-tui)
 
 install(TARGETS sonora-engine RUNTIME DESTINATION bin)
 
+# Memory locking and the quit signals moved behind common/platform
+# (process_setup.h, ADR-0008 P3); their tests went with them.
+
 # Compiled in again rather than shared through a library: the test needs one
 # file, and an engine/app library is not a target ADR-0007 defines.
-add_executable(test_quit_signals tests/test_quit_signals.cpp src/quit_signals.cpp)
-target_include_directories(test_quit_signals PRIVATE include)
-target_link_libraries(test_quit_signals PRIVATE Threads::Threads)
-add_test(NAME quit_signals COMMAND test_quit_signals)
-
-add_executable(test_memory_lock tests/test_memory_lock.cpp src/memory_lock.cpp)
-target_include_directories(test_memory_lock PRIVATE include)
-add_test(NAME memory_lock COMMAND test_memory_lock)
-
 add_executable(test_exit_watchdog tests/test_exit_watchdog.cpp src/exit_watchdog.cpp)
 target_include_directories(test_exit_watchdog PRIVATE include)
 target_link_libraries(test_exit_watchdog PRIVATE Threads::Threads)
