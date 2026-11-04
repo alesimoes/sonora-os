@@ -226,6 +226,15 @@ RoleGuess guess_by_name_or_plugin(const TrackEdit& t) {
     return {};
 }
 
+// New tracks take the palette in turn (auto_colour), so a shared colour means
+// something only when the operator moved it off the one its place gets.
+bool colour_chosen(const EditState& edit, const TrackEdit& t) {
+    for (std::size_t i = 0; i < edit.tracks.size(); ++i) {
+        if (edit.tracks[i]->id == t.id) return t.colour != auto_colour(i);
+    }
+    return false;
+}
+
 // --- plan assembly ---------------------------------------------------------------
 
 Id next_free_id(const Snapshot& at, const Plan& plan) {
@@ -315,13 +324,13 @@ const char* role_name(Role role) {
 
 RoleGuess classify_track(const EditState& edit, const TrackEdit& track) {
     RoleGuess g = guess_by_name_or_plugin(track);
-    if (g.role != Role::Unknown || track.colour == 0) return g;
+    if (g.role != Role::Unknown || !colour_chosen(edit, track)) return g;
     // A colour is the operator's grouping: borrow it only when every other
     // classified track of that colour agrees.
     Role agreed = Role::Unknown;
     std::string by;
     for (const auto& o : edit.tracks) {
-        if (o->id == track.id || o->colour != track.colour) continue;
+        if (o->id == track.id || o->colour != track.colour || !colour_chosen(edit, *o)) continue;
         const RoleGuess og = guess_by_name_or_plugin(*o);
         if (og.role == Role::Unknown) continue;
         if (agreed != Role::Unknown && agreed != og.role) return {};
@@ -375,7 +384,8 @@ bool GainStagingPlanner::propose(const Snapshot& at, Plan& out, std::string& err
             c.delta = std::min(c.delta, options_.ceiling_dbtp - post_tp);
             c.limit = "limited by the " + num(options_.ceiling_dbtp) + " dBTP peak ceiling";
         }
-        c.delta = round_half(c.delta);
+        // Rounding a capped boost to the nearest half dB could step over the cap.
+        c.delta = c.limit.empty() ? round_half(c.delta) : floor_half(c.delta);
     }
 
     // The master: powers of uncorrelated peaks add. Over the headroom, every

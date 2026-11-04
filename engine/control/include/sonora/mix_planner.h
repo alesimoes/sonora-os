@@ -65,8 +65,9 @@ struct RoleGuess {
     Role role = Role::Unknown;
     std::string why;   // "name \"Kick In\" matches \"kick\""
 };
-// From the track's name, then its plugin inserts, then the colour (not the
-// default 0) it shares with a track of `edit` that the name classifies.
+// From the track's name, then its plugin inserts, then a colour the operator
+// chose (not the palette's automatic one) that it shares with a track of
+// `edit` that those classify.
 RoleGuess classify_track(const model::EditState& edit, const model::TrackEdit& track);
 
 // --- planners -------------------------------------------------------------------

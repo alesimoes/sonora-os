@@ -54,8 +54,9 @@ our own processors only.
 4. **Roles.** Keyword tables on name tokens (short abbreviations match whole
    tokens only: "oh" is not "ohm"; "Bass Guitar" is a bass). Then inserts
    (`deesser` is vocals, `ampcab` guitars, a plugin name by the same table).
-   Then colour: a track of the default colour 0 never borrows; any other
-   borrows only when every classified track of that colour agrees. The
+   Then colour: new tracks take the palette in turn (`auto_colour`), so only a
+   colour the operator moved off its place's own counts; such a track borrows
+   only when every classified track of that colour agrees. The
    reason quotes the evidence.
 5. **Parallel sends and the missing aux insert.** The model has no insert
    on an aux bus (BACKLOG "Aux and Master inserts"; `AddInsert` takes a

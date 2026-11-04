@@ -18,6 +18,7 @@
 #include "sonora/wav_writer.h"
 
 using namespace model_test;
+using namespace sonora;
 namespace fs = std::filesystem;
 
 namespace {
@@ -50,6 +51,7 @@ struct Rig {
 
     // Mono track with one region of the signal. Returns its id.
     Id add(const std::string& name, const Signal& s) {
+        if (ids.next < h.current().next_id) ids.next = h.current().next_id;   // after a plan
         const AddTrack t = add_track(ids, name);
         if (!h.apply(t, err_)) return fail(err_);
         const AddSource src = add_source(ids, static_cast<Frames>(kLen), 1, t.track);
@@ -92,7 +94,7 @@ int check_apply_and_undo(Rig& r, const Plan& plan, bool expect_step) {
     PlanReceipt rc;
     CHECK(accept_plan(r.h, plan, Selection::all(plan), rc, error));
     CHECK(pv.result == r.h.current());
-    CHECK(r.h.current().revision == before.revision + 1);
+    if (expect_step) CHECK(r.h.current().revision == before.revision + 1);
     CHECK(r.h.undo_depth() == depth + (expect_step ? 1 : 0));
     CHECK(undo_plan(r.h, rc, error));
     CHECK(*r.h.current().edit == *before.edit);
@@ -103,7 +105,7 @@ int check_apply_and_undo(Rig& r, const Plan& plan, bool expect_step) {
 
 int test_analysis() {
     Rig r;
-    const Id snare = r.add("Snare", bursts(200, 0.9, 2400, 24000));
+    const Id snare = r.add("Snare", bursts(200, 0.9, 12000, 24000));
     const Id vocal = r.add("Vocal", tone(440, 0.01));
     CHECK(snare != 0 && vocal != 0);
     MixAnalysis a;
@@ -120,7 +122,7 @@ int test_analysis() {
     CHECK(std::fabs(v->peak_dbfs - (-40.0)) < 0.1);
     CHECK(std::fabs(v->rms_dbfs - (-43.0)) < 0.1);   // a sine's RMS is 3 dB under its peak
     CHECK(v->lufs > -45.0 && v->lufs < -41.0);
-    CHECK(s->lufs > -8.0 && s->lufs < -1.0);   // gated: the silence between hits is left out
+    CHECK(s->lufs > -11.0 && s->lufs < -5.0);   // gated: the silence between hits is left out
     CHECK(s->true_peak_dbtp >= s->peak_dbfs - 0.1);
     CHECK(!seen.empty() && seen.back() > 0.999);
     for (std::size_t i = 1; i < seen.size(); ++i) CHECK(seen[i] >= seen[i - 1]);
@@ -145,7 +147,7 @@ int test_analysis() {
 
 int test_gain_staging() {
     Rig r;
-    const Id snare = r.add("Snare", bursts(200, 0.9, 2400, 24000));
+    const Id snare = r.add("Snare", bursts(200, 0.9, 12000, 24000));
     const Id vocal = r.add("Vocal", tone(440, 0.01));
     CHECK(snare != 0 && vocal != 0);
     MixAnalysis a;
@@ -161,9 +163,9 @@ int test_gain_staging() {
     CHECK(trim != nullptr && raise != nullptr);
     const float snare_db = std::get<SetMix>(trim->op).mix.gain_db;
     const float vocal_db = std::get<SetMix>(raise->op).mix.gain_db;
-    // Both land on the target: the loud snare comes down about 19 dB, the
+    // Both land on the target: the loud snare comes down about 15 dB, the
     // quiet vocal up about 20.
-    CHECK(snare_db < -15.0f && snare_db > -23.0f);
+    CHECK(snare_db < -12.0f && snare_db > -19.0f);
     CHECK(vocal_db > 16.0f && vocal_db < 24.0f);
     const TrackAnalysis* sa = a.find(snare);
     const TrackAnalysis* va = a.find(vocal);
@@ -183,6 +185,8 @@ int test_gain_staging() {
     CHECK(gain_of(r.h.current(), snare) == 0.0f);
 
     // After the trims there is nothing to do: not an empty success.
+    // The undo moved the revision on: a plan is proposed again.
+    CHECK(gp.propose(r.h.current(), plan, error));
     PlanReceipt rc;
     CHECK(accept_plan(r.h, plan, Selection::all(plan), rc, error));
     MixAnalysis b = a;   // the audio is unchanged, the faders moved
@@ -206,7 +210,10 @@ int test_gain_staging_limits() {
     std::string error;
     CHECK(analyse_session(r.h.current(), r.dir.string(), AnalysisHooks{}, a, error));
     Plan plan;
-    GainStagingPlanner gp(a);
+    // One track alone is its own master: a thin headroom keeps the boost.
+    GainStagingOptions thin;
+    thin.master_headroom_db = 1.0;
+    GainStagingPlanner gp(a, thin);
     CHECK(gp.propose(r.h.current(), plan, error));
     bool muted_noted = false;
     for (const PlanNote& n : plan.notes) muted_noted = muted_noted || n.subject == "Track Quiet";
@@ -250,8 +257,8 @@ int test_roles() {
     const Id tr7 = r.add("Track 7", tone(60, 0.1));
     const Id plug = r.add("Track 8", tone(60, 0.1));
     CHECK(plug != 0);
-    CHECK_APPLY(r.h, (SetTrackColour{gtr, 3}));
-    CHECK_APPLY(r.h, (SetTrackColour{tr7, 3}));
+    CHECK_APPLY(r.h, (SetTrackColour{gtr, 12}));
+    CHECK_APPLY(r.h, (SetTrackColour{tr7, 12}));
     AddInsert de;
     de.track = plug;
     de.insert = r.ids();
@@ -309,6 +316,7 @@ int test_bus_structure() {
     CHECK(pv.resolved.applied.empty() && pv.resolved.dropped.size() == 2);
 
     CHECK(check_apply_and_undo(r, plan, true) == 0);
+    CHECK(bp.propose(r.h.current(), plan, error));
     PlanReceipt rc;
     CHECK(accept_plan(r.h, plan, Selection::all(plan), rc, error));
     const Id drums = r.h.current().edit->buses[0].id;
@@ -408,6 +416,8 @@ int test_parallel_drums_and_all() {
     CHECK(all.steps.size() > plan.steps.size());
     CHECK(check_apply_and_undo(r, all, true) == 0);
 
+    CHECK(propose_mix_plan(MixPlanKind::All, r.h.current(), a, all, error));
+
     // Partial: reject one drum's route only; the rest still applies.
     std::size_t route = 0;
     for (std::size_t i = 0; i < all.steps.size(); ++i)
@@ -438,7 +448,7 @@ int test_parallel_drums_and_all() {
 
 int test_stale_plan_refused() {
     Rig r;
-    r.add("Snare", bursts(200, 0.9, 2400, 24000));
+    r.add("Snare", bursts(200, 0.9, 12000, 24000));
     MixAnalysis a;
     std::string error;
     CHECK(analyse_session(r.h.current(), r.dir.string(), AnalysisHooks{}, a, error));
