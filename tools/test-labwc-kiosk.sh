@@ -41,10 +41,13 @@ RUN sed -i -E \
       /etc/apt/sources.list.d/debian.sources \
  && ! grep -E '^URIs:' /etc/apt/sources.list.d/debian.sources | grep -v "snapshot\.debian\.org/archive/debian\(-security\)\?/$SNAP/\$" \
  && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99sonora-snapshot.conf
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
+ for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
+ if apt-get $A update && apt-get $A install -y --no-install-recommends \
       labwc=0.8.3-1 libwlroots-0.18=0.18.2-3 wev=1.0.0-3 wtype=0.4-3 wlrctl=0.2.2-2 \
- && rm -rf /var/lib/apt/lists/*
+ ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
+ [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
+ rm -rf /var/lib/apt/lists/*
 EOF
 
 # Runs inside the container. $1 is the run: shipped or defaults.

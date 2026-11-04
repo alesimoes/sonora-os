@@ -809,7 +809,7 @@ int scenario_state_not_restored(const Args& a) {
     for (int i = 0; i < 4; ++i) rig.apply(track_op(tracks[i], tracks[i] + 1, std::string(1, char('A' + i))));
     for (int i = 0; i < 4; ++i) {
         rig.apply(insert_op(tracks[i], inserts[i], 0, kEgAmp, {{"gain", -3.f}}));
-        rig.apply(SetInsertState{inserts[i], StateRef{pc::state_file_name(shas[i]), shas[i], 1}});
+        rig.apply(SetInsertState{inserts[i], StateRef{pc::state_file_name(shas[i]), shas[i], 1, {}}});
     }
     rig.show(true);
     check(rig.until([&] { return rig.bound_at(0, kBlock) && rig.bound_at(1, kBlock) && rig.bound_at(2, kBlock) &&
@@ -1091,6 +1091,25 @@ int scenario_plugin_files_restore(const Args& a) {
     m = rig.history.current().mix.find_insert(500);
     check(m && m->state && m->state->files.size() == 1 && m->state->files[0] == file,
           "  and its state names the same file again");
+
+    // A session received from elsewhere: the file is the size the state
+    // names but not its bytes. The plugin must not be handed it.
+    const fs::path named = moved / file.path;
+    fs::permissions(named, fs::perms::owner_write, fs::perm_options::add, ec);
+    {
+        std::ofstream out(named, std::ios::binary | std::ios::trunc);
+        out << std::string(size_t(file.bytes), 'x');
+    }
+    check(fs::file_size(named, ec) == file.bytes && !ec, "the file is altered, same size");
+    rig.show(true);
+    check(rig.until(
+              [&] {
+                  const auto& fl = rig.hosting->faults();
+                  return fl.count(500) && fl.at(500).find("not restored") != std::string::npos;
+              },
+              15000),
+          "an altered plugin file: the saved state is not restored, and the operator is told");
+    if (rig.hosting->faults().count(500)) std::printf("  fault: %s\n", rig.hosting->faults().at(500).c_str());
     fs::remove_all(moved);
     return failures ? 1 : 0;
 }

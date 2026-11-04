@@ -75,4 +75,4 @@ echo "=== running the engine against PipeWire ==="
 # container before running it.
 # Unlimited memlock as sonora-session.service grants it: the engine refuses
 # to start without it.
-docker run --rm --ulimit memlock=-1:-1   -e RECORD_SECONDS="${RECORD_SECONDS:-3}"   -e TRACKS="${TRACKS:-18}"   -e RATE="${RATE:-48000}"   -e QUANTUM="${QUANTUM:-128}"   -v "$(host_path "$(dirname "$ENGINE")"):/engine-build:ro"   "$IMAGE_ID"
+"$ROOT/tools/build-slot.sh" docker run --rm --ulimit memlock=-1:-1   -e RECORD_SECONDS="${RECORD_SECONDS:-3}"   -e TRACKS="${TRACKS:-18}"   -e RATE="${RATE:-48000}"   -e QUANTUM="${QUANTUM:-128}"   -v "$(host_path "$(dirname "$ENGINE")"):/engine-build:ro"   "$IMAGE_ID"
