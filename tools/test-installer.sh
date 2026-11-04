@@ -44,6 +44,8 @@ case $1 in
             mkdir -p "$r/boot/efi/EFI/BOOT"; echo x >"$r/boot/efi/EFI/BOOT/BOOTX64.EFI"
         else
             mkdir -p "$r/boot/efi/EFI/sonora"; echo x >"$r/boot/efi/EFI/sonora/grubx64.efi"
+            # grub-install --uefi-secure-boot also copies the signed shim
+            echo x >"$r/boot/efi/EFI/sonora/shimx64.efi"
         fi ;;
     update-grub)
         mkdir -p "$r/boot/grub"
