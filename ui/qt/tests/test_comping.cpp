@@ -169,7 +169,7 @@ int test_swipe() {
     CHECK(ls.valid() && ls.track == kVox && ls.start == kBar && ls.end == 3 * kBar);
     CHECK(!c.selection().has_range());
     // A Clear now reaches neither the lane nor the comp through it.
-    CHECK(!c.clear(why) || f.doc.snapshot().revision == rev);
+    CHECK(!c.clear(why) && why == "nothing is selected" && f.doc.snapshot().revision == rev);
     CHECK(c.lane_selection().valid());
 
     // Copy to Main Playlist: one step, the comp plays take 2 over the range
@@ -327,7 +327,7 @@ int test_scene() {
     build();
     CHECK(c.drag().kind == Drag::Kind::Swipe);
     CHECK(colour_at(2 * kBar, y0 - 5) == kSwipe || colour_at(2 * kBar, f.lane_y(0) + 20) == kSwipe);
-    CHECK(c.release(sx(3 * kBar), y0, why));
+    CHECK(c.release(f.x(3 * kBar), y0, why));
     build();
     CHECK(c.lane_selection().valid());
 
@@ -399,6 +399,7 @@ int test_commands() {
     CHECK(session.undoText() == QStringLiteral("Undo New Comp"));
 
     // Consolidate sends the engine the selection; nothing selected is refused here.
+    session.controller().clear_selection();
     CHECK(local.dispatch("edit.consolidate", CommandContext{}, why) == DispatchResult::Failed);
     CHECK(why.find("select a region") != std::string::npos && sent.empty());
     session.controller().select_range(kVox, kBar, 3 * kBar);

@@ -349,7 +349,8 @@ Item {
                     Text {
                         id: headerName
                         x: Theme.space3; y: Theme.space2
-                        width: (parent.width - 2 * Theme.space3 - 14) * 0.45
+                        // Narrower where the takes button needs the room.
+                        width: (parent.width - 2 * Theme.space3 - 14) * ((header.row.takes || 0) > 0 ? 0.34 : 0.45)
                         elide: Text.ElideRight
                         text: header.modelData
                         color: header.selected ? Theme.text : Theme.textSecondary
@@ -377,7 +378,7 @@ Item {
                         x: headerName.x + headerName.width + Theme.space1
                         y: Theme.space2 - 2
                         width: parent.width - x - Theme.space3 - 14 - 24 -
-                               ((header.row.takes || 0) > 0 ? 36 : 0)
+                               ((header.row.takes || 0) > 0 ? 32 : 0)
                         implicitHeight: 20
                         bold: false
                         fontPx: Theme.textCaption
@@ -398,7 +399,7 @@ Item {
                         visible: (header.row.takes || 0) > 0
                         x: playlistSelector.x + playlistSelector.width + Theme.space1
                         y: Theme.space2 - 2
-                        implicitWidth: 32; implicitHeight: 20
+                        implicitWidth: 28; implicitHeight: 20
                         fontPx: Theme.textCaption
                         active: header.row.lanesShown === true
                         text: "\u2261 " + (header.row.takes || 0)

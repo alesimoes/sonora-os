@@ -185,14 +185,16 @@ void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const R
     if (origin != nullptr && x0 >= 0) add(out.rects, x0, y, 3, h, theme::kAccent);
     if (!ghost && x1 - x0 > 24) {
         // A level of its own is part of the name, as Pro Tools' clip name shows it.
-        std::string label = r.name;
+        // A piece of the comp says which take lane it was swiped from, and a
+        // piece still named for its take says that once.
+        const bool named_for_take = origin != nullptr && r.name == *origin;
+        std::string label = named_for_take ? std::string() : r.name;
         if (r.gain_db != 0.0f) {
             char gain[24];
             std::snprintf(gain, sizeof gain, "  %+.1f dB", static_cast<double>(r.gain_db));
             label += gain;
         }
-        // Which take lane this piece of the comp was swiped from.
-        if (origin != nullptr) label += "  ← " + *origin;
+        if (origin != nullptr) label += std::string(label.empty() ? "" : "  ") + "← " + *origin;
         out.labels.push_back({static_cast<float>(cx0 + 4), static_cast<float>(y),
                               static_cast<float>(cx1 - cx0 - 8), label, theme::kText,
                               theme::kTextCaption});

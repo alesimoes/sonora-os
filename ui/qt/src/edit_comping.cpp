@@ -186,8 +186,8 @@ bool EditController::comp_copy_to_main(std::string& why) {
     if (c.seam_crossfade > 0 && comp.seams_faded < comp.seams) {
         char text[200];
         std::snprintf(text, sizeof text,
-                      "%zu of %zu joins kept a hard cut: the takes have no audio to spare beyond "
-                      "the swipe for a crossfade there",
+                      "%zu of %zu joins kept a hard cut: a crossfade there needs audio to spare in "
+                      "both takes and no fade already on the edge",
                       comp.seams - comp.seams_faded, comp.seams);
         why = text;
     } else {

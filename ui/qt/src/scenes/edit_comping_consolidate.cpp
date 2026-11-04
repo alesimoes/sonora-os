@@ -23,6 +23,8 @@ const ShotRegistrar registrar{[] {
             // The range across the comp on the track's own row, then the
             // key's command; the engine's answer arrives as events, shown
             // after the demo engine has finished its own.
+            // The Selector, as an engineer picks a range with it.
+            c.model.invokeWith(QStringLiteral("tool.select"), -1, QString());
             auto& ctl = c.session.controller();
             const auto x = [&](int n) { return ctl.view().x_of(n * bar(c)); };
             const double y = ctl.view().y_of_track(kVox) + 12;
