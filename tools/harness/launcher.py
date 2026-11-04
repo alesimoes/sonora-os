@@ -11,6 +11,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import threading
 
 MODEL = "sonnet"
 FORBIDDEN_ENV = ("CLAUDE_MODEL", "ANTHROPIC_MODEL")
@@ -36,6 +37,8 @@ def check_models(root, env=None):
     for k in FORBIDDEN_ENV:
         if env.get(k) and env[k].strip().lower() != MODEL:
             raise ModelError(f"{k}={env[k]} but only {MODEL} is allowed")
+    _check_settings_model(os.path.join(root, ".claude", "settings.json"))
+    _check_settings_model(os.path.join(root, ".claude", "settings.local.json"))
     agents = os.path.join(root, ".claude", "agents")
     if not os.path.isdir(agents):
         return
@@ -50,6 +53,25 @@ def check_models(root, env=None):
                     line.split(":", 1)[1].strip().strip("'\"") != MODEL:
                 raise ModelError(f"{fn} says {line.strip()}; "
                                  f"only {MODEL} is allowed")
+
+
+def _check_settings_model(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(cfg, dict):
+        return
+    found = [("model", cfg.get("model"))]
+    senv = cfg.get("env")
+    for k in FORBIDDEN_ENV:
+        found.append((f"env.{k}", senv.get(k) if isinstance(senv, dict)
+                      else None))
+    for k, v in found:
+        if v and str(v).strip().lower() != MODEL:
+            raise ModelError(f"{os.path.basename(path)} sets {k}={v} but "
+                             f"only {MODEL} is allowed")
 
 
 def build_command(claude, agent, prompt, mcp_path, settings_path,
@@ -85,7 +107,18 @@ def hook_settings(harness_py):
             {"type": "command", "command": cmd("check", "--hook")}]}]}}
 
 
+SECRET_KEYS = ("SONORA_HARNESS_TOKEN", "SONORA_TOKEN")
+
+
+def public_env(env):
+    """The part of the launch env that may be written to disk. The token
+    reaches the MCP server through the env Claude Code inherits from the
+    spawned process (ADR-0047 'Auth and exposure')."""
+    return {k: v for k, v in env.items() if k not in SECRET_KEYS}
+
+
 def mcp_config(env):
+    env = public_env(env)
     return {"mcpServers": {"harness": {
         "command": sys.executable,
         "args": [os.path.join(TOOLS_DIR, "harness_mcp.py")],
@@ -176,18 +209,34 @@ def spawn(argv, env, cwd, stream_path):
     full.update(env)
     for k in FORBIDDEN_ENV:
         full.pop(k, None)
-    out = open(stream_path, "ab")
+    secrets_ = [full[k] for k in SECRET_KEYS if full.get(k)]
     kw = {}
     if os.name == "nt":
         kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kw["start_new_session"] = True
-    try:
-        return subprocess.Popen(argv, cwd=cwd, env=full, stdout=out,
-                                stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, **kw)
-    finally:
-        out.close()
+    proc = subprocess.Popen(argv, cwd=cwd, env=full, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, **kw)
+    open(stream_path, "ab").close()
+    proc.pump = threading.Thread(target=_pump, daemon=True,
+                                 args=(proc.stdout, stream_path, secrets_))
+    proc.pump.start()
+    return proc
+
+
+def redact(data, secrets_):
+    for sec in secrets_:
+        data = data.replace(sec.encode(), b"***")
+    return data
+
+
+def _pump(src, path, secrets_):
+    """Copy the child's output to the stream log with secrets replaced."""
+    with src, open(path, "ab") as out:
+        for line in iter(src.readline, b""):
+            out.write(redact(line, secrets_))
+            out.flush()
 
 
 def kill_tree(pid):

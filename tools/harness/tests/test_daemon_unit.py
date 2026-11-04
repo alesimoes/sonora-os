@@ -296,6 +296,47 @@ class LauncherTests(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_settings_json_model_must_be_sonnet(self):
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, ".claude"))
+            p = os.path.join(d, ".claude", "settings.json")
+            for body in ({"model": "opus"},
+                         {"env": {"ANTHROPIC_MODEL": "claude-opus-4"}}):
+                with open(p, "w") as f:
+                    json.dump(body, f)
+                with self.assertRaises(launcher.ModelError):
+                    launcher.check_models(d, env={})
+            with open(p, "w") as f:
+                json.dump({"model": "sonnet", "env": {"X": "1"}}, f)
+            launcher.check_models(d, env={})
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_token_not_on_disk_and_stream_redacted(self):
+        import sys
+        d = tempfile.mkdtemp()
+        try:
+            env = launcher.run_env("eng-1", "t", "f", d, 99, "sekrit-tok",
+                                   "r.json")
+            run = os.path.join(d, "run")
+            launcher.write_run_files(run, env)
+            stream = os.path.join(run, "stream.log")
+            p = launcher.spawn(
+                [sys.executable, "-c",
+                 "import os;print('tok=' + os.environ['SONORA_HARNESS_TOKEN']"
+                 " + os.environ['SONORA_TOKEN'])"], env, d, stream)
+            p.wait()
+            p.pump.join(5)
+            for root, _, files in os.walk(d):
+                for fn in files:
+                    with open(os.path.join(root, fn), "rb") as f:
+                        self.assertNotIn(b"sekrit-tok", f.read(), fn)
+            with open(stream, "rb") as f:
+                self.assertIn(b"tok=******", f.read())
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     def test_repo_agents_are_all_sonnet(self):
         root = os.path.dirname(support.TOOLS)
         launcher.check_models(root, env={})
