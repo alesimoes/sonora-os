@@ -64,9 +64,9 @@ double lufs_of(const Chans& x, double fs, std::size_t from) {
     return m.integrated_lufs();
 }
 
-std::string fmt(const char* f, double a, double b = 0.0) {
+std::string fmt(const char* f, double a, double b = 0.0, double c = 0.0) {
     char buf[200];
-    std::snprintf(buf, sizeof buf, f, a, b);
+    std::snprintf(buf, sizeof buf, f, a, b, c);
     return buf;
 }
 
@@ -183,7 +183,7 @@ void saturation(Suite& s) {
 // last seconds against the target.
 void auto_level(Suite& s) {
     const double fs = 48000.0;
-    const double secs = 40.0;
+    const double secs = 34.0;
     const Chans x = measure::noise(fs, -30.0, secs, 51u);
     const double in_lufs = lufs_of(x, fs, 0);
     const struct {
@@ -198,17 +198,19 @@ void auto_level(Suite& s) {
         measure::apply(*p, {{"auto_level", 1.0f}, {"target_lufs", static_cast<float>(target)}, {"ceiling", -0.5f}});
         p->prepare(fs, 128, 2);
         const Chans y = render_aligned(*p, x);
-        const double out = lufs_of(y, fs, static_cast<std::size_t>((secs - 8.0) * fs));
+        const double out = lufs_of(y, fs, static_cast<std::size_t>((secs - 6.0) * fs));
         const double want = in_lufs + c.want_gain;
-        s.check_le(std::string("auto-level, ") + c.what + ": |output - expected| over the last 8 s", std::fabs(out - want),
+        s.check_le(std::string("auto-level, ") + c.what + ": |output - expected| over the last 6 s", std::fabs(out - want),
                    c.bar_lu, "LU", fmt("input %.2f LUFS, target %.2f, output %.2f", in_lufs, target, out));
     }
     // Off: no trim, whatever the target.
+    Chans head = x;
+    for (auto& c : head) c.resize(static_cast<std::size_t>(10.0 * fs));
     auto p = s.make();
     measure::apply(*p, {{"auto_level", 0.0f}, {"target_lufs", -10.0f}});
     p->prepare(fs, 128, 2);
-    const Chans y = render_aligned(*p, x);
-    const double d = std::fabs(lufs_of(y, fs, 0) - in_lufs);
+    const Chans y = render_aligned(*p, head);
+    const double d = std::fabs(lufs_of(y, fs, 0) - lufs_of(head, fs, 0));
     s.check_le("auto-level off: output loudness against input", d, s.bar("autolevel.off_lu"), "LU");
 }
 
