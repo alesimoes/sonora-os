@@ -28,7 +28,8 @@ from harness.forge import ForgeError, GhForge  # noqa: E402
 from harness.store import Store  # noqa: E402
 from harness.train import Train  # noqa: E402
 
-NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer"}
+NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer",
+               "integrator": "integrator"}
 ATTRIBUTION = "\U0001F916 Generated with [Claude Code](https://claude.com/claude-code)"
 
 
@@ -224,8 +225,10 @@ class Orchestrator:
     def _name_for(self, t, kind):
         if kind == "planner":
             return t["agent"]
-        if kind == "integrator":
+        if kind == "integrator" and self.cfg.max_integrators <= 1:
             return "integrator"
+        # Several integrators at once (merge-train conflict runs) need their
+        # own broker names: messages, claims and done are matched by name.
         col = "eng_name" if kind == "engineer" else "cur_name"
         name = t[col]
         if not name:

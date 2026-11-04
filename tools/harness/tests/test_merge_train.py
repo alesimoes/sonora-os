@@ -175,6 +175,17 @@ class Train(support.DaemonCase):
         self.assertEqual(self.forge.pushed, ["a"])
         self.assertEqual(self.forge.enqueued, [])
 
+    def test_parallel_conflict_runs_have_their_own_names(self):
+        o = self.make(max_integrators=2)
+        for n in (10, 11):
+            self.forge.add_pr(n, f"b{n}", [f"x{n}/a.cpp"],
+                              checks={"build": "pass"}, mergeable="no")
+        o.train.adopt()
+        o.tick()
+        names = [r["name"] for r in o.store.active_runs()]
+        self.assertEqual(len(names), 2)
+        self.assertEqual(len(set(names)), 2)
+
     def test_fixer_that_commits_nothing_gets_a_rerun(self):
         o = self.make()
         self.forge.add_pr(10, "a", checks={"build": "fail"})
