@@ -443,4 +443,38 @@ bool EditController::thin_automation(std::string& why) {
     return true;
 }
 
+bool EditController::write_automation_to_selection(std::string& why) {
+    const TrackEdit* t = track(sel_.track);
+    if (!autolane_selected() || t == nullptr || !sel_.has_range()) {
+        why = "select a range of an automation lane first; nothing was written";
+        return false;
+    }
+    const AutomationParam p = lane_param(sel_.autolane);
+    std::vector<std::string> hidden;
+    std::vector<EditAutomation> ops;
+    for (int i : lane_range_tracks(hidden)) {
+        const TrackEdit* ti = track(i);
+        const TrackMix* m = snapshot().mix.find(ti->id);
+        float v = 0.0f;
+        if (m != nullptr && p == AutomationParam::Volume) v = m->gain_db;
+        if (m != nullptr && p == AutomationParam::Pan) v = m->pan;
+        AutomationLane none;
+        none.param = p;
+        const AutomationLane* l = ti->lane(p);
+        EditAutomation op;
+        if (write_range_op(ti->id, l != nullptr ? *l : none, sel_.start, sel_.end, v, op)) {
+            ops.push_back(std::move(op));
+        }
+    }
+    if (ops.empty()) {
+        why = "the selection on " + lane_range_label() + " cannot be written; nothing was written";
+        return false;
+    }
+    if (!submit_lane_ops(std::move(ops), "Write Automation to Selection", "written", why)) {
+        return false;
+    }
+    note_lanes_hidden("Write", hidden);
+    return true;
+}
+
 }  // namespace sonora::ui

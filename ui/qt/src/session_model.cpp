@@ -139,6 +139,9 @@ void SessionModel::installCommands(CommandRegistry& local) {
         return true;
     });
     simple("edit.clear", [this](const CommandContext&, Why& why) { return ctl_.clear(why); });
+    simple("automation.write_selection", [this](const CommandContext&, Why& why) {
+        return ctl_.write_automation_to_selection(why);
+    });
     simple("automation.thin",
            [this](const CommandContext&, Why& why) { return ctl_.thin_automation(why); });
     simple("automation.toggle_follows_edit", [this](const CommandContext&, Why&) {

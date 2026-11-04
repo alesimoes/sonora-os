@@ -985,6 +985,28 @@ int test_scene() {
 
 }  // namespace
 
+// Write to Selection holds the strip's value flat across the range.
+int test_write_selection() {
+    ModelDocument doc(make_empty_session(1, kRate));
+    EditController ctl(doc);
+    ctl.set_viewport(1000, 600);
+    std::string why;
+    OK(ctl.toggle_autolanes(0, why));
+    OK(!ctl.write_automation_to_selection(why) && why.find("select a range") != std::string::npos);
+    OK(seed(doc, 0, AutomationParam::Volume, {{0, -40.0f}, {50000, -10.0f}, {200000, -20.0f}}));
+    OK(drag_lane_range(ctl, 0, 0, 0, 0, 0, 100000, why));
+    const uint64_t r = doc.snapshot().revision;
+    OK(ctl.write_automation_to_selection(why));
+    OK(doc.snapshot().revision == r + 1);
+    const AutomationLane* l = lane(doc, 0, AutomationParam::Volume);
+    for (const AutomationPoint& p : l->points) {
+        if (p.at < 100000) OK(p.value == 0.0f);
+    }
+    OK(l->points.back() == (AutomationPoint{200000, -20.0f}));
+    OK(valid(doc.snapshot()));
+    return 0;
+}
+
 int main() {
     // Every test runs, so one failure does not hide the next.
     const int failed = test_values() + test_wide_plugin_lane() + test_operations() +
@@ -992,7 +1014,7 @@ int main() {
                        test_range_commands() + test_follow_ops() + test_follow_at_the_lane_cap() +
                        test_thin_exact() + test_undo_drops_the_picked_point() + test_tool_cycle() +
                        test_zoom_keeps_the_selection_still() + test_range_across_tracks() +
-                       test_trim_lane() + test_scene();
+                       test_trim_lane() + test_write_selection() + test_scene();
     if (failed != 0) {
         std::fprintf(stderr, "ui automation: %d tests failed\n", failed);
         return 1;

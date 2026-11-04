@@ -114,6 +114,13 @@ bool clear_range_op(model::Id track, const model::AutomationLane& lane, model::F
 bool thin_range_op(model::Id track, const model::AutomationLane& lane, model::Frames a,
                    model::Frames b, model::EditAutomation& out);
 
+// [a, b) written flat at `value` (Pro Tools' Write to Selection): the lane
+// holds `value` from `a` to the last frame of the range and joins what
+// follows from there. `value` is kept in the lane's range. False for an
+// empty range or a value that is not finite.
+bool write_range_op(model::Id track, const model::AutomationLane& lane, model::Frames a,
+                    model::Frames b, float value, model::EditAutomation& out);
+
 // `clip` laid over [at, at + clip.length).
 bool paste_op(model::Id track, const AutomationClip& clip, model::Frames at,
               model::EditAutomation& out);

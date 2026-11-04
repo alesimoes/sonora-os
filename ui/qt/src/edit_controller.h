@@ -250,6 +250,10 @@ public:
     // Thin the selected lane's range (`automation.thin`); refused with a
     // reason when no lane range is selected or nothing would go.
     bool thin_automation(std::string& why);
+    // Write to Selection (`automation.write_selection`): the selected lane
+    // range held flat at the track's fader or pan as it stands now (Volume
+    // Trim: 0 dB). Refused with a reason when no lane range is selected.
+    bool write_automation_to_selection(std::string& why);
     bool nudge(int direction, std::string& why);
 
     // --- the clipboard (edit_clipboard.h) ---
