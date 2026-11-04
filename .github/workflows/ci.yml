@@ -21,6 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      core: ${{ steps.filter.outputs.core }}
+      ui: ${{ steps.filter.outputs.ui }}
+      plugins: ${{ steps.filter.outputs.plugins }}
+      portable: ${{ steps.filter.outputs.portable }}
+      audio: ${{ steps.filter.outputs.audio }}
       image_build: ${{ steps.filter.outputs.image_build }}
       image_ui: ${{ steps.filter.outputs.image_ui }}
       image_rtsan: ${{ steps.filter.outputs.image_rtsan }}
@@ -65,10 +70,53 @@ jobs:
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
+          # Which heavy jobs this PR can affect. With six jobs running at
+          # once for the whole repository, a plugin-only or UI-only PR that
+          # ran the sanitizers, PipeWire and Ardour jobs held the queue for
+          # every other PR (2026-11-04: 40 PRs, 60+ jobs queued). A skipped
+          # job counts as passing. Main always runs everything, and anything
+          # not classified below (build system, workflows, the scripts these
+          # jobs run) counts as everything.
+          #   core:     engine, common, drivers, contracts
+          #   ui:       ui/ and the key maps
+          #   plugins:  plugins/
+          #   portable: what the MSVC job builds (common/, plugins/native)
+          #   audio:    the audio stack the record and quantum jobs exercise
+          core=false ui=false plugins=false portable=false audio=false
+          if [ "${{ github.event_name }}" != pull_request ] || [ -z "$files" ]; then
+            core=true ui=true plugins=true portable=true audio=true
+          elif [ "$code" = true ]; then
+            while IFS= read -r f; do
+              case "$f" in
+                planning/*|brain/*|docs/*|*.md) ;;
+                engine/*|drivers/*|contracts/*) core=true ;;
+                common/*) core=true portable=true ;;
+                ui/*|keymaps/*) ui=true ;;
+                plugins/native/*) plugins=true portable=true ;;
+                plugins/*) plugins=true ;;
+                audio-stack/*) audio=true ;;
+                # Checked by the cheap jobs (shellcheck, progress, modes),
+                # which always run: the image, the harness, the dashboard,
+                # Windows scripts and scripts no heavy job runs.
+                iso/*|.claude/*|tools/harness/*|tools/harness*.py|tools/orchestrator.py) ;;
+                tools/dashboard*|tools/*.ps1|tools/*.lua|planning/orchestrator/*) ;;
+                tools/build-*|tools/test-engine-docker.sh|tools/test-bwf-interop.sh) core=true ui=true plugins=true portable=true audio=true ;;
+                tools/test-quantum-pin.sh|tools/rtsan-*|tools/failed-take-quit.py|tools/crash-recovery-kill.py) core=true ui=true plugins=true portable=true audio=true ;;
+                tools/Dockerfile*|tools/*.cmake|tools/*.supp) core=true ui=true plugins=true portable=true audio=true ;;
+                tools/*) ;;
+                *) core=true ui=true plugins=true portable=true audio=true ;;
+              esac
+            done <<< "$files"
+          fi
+          for k in core ui plugins portable audio; do
+            echo "$k=${!k}" >> "$GITHUB_OUTPUT"
+            echo "$k=${!k}"
+          done
+
   engine:
     name: Engine build and tests
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.plugins == 'true'
     # In tools/Dockerfile.build, the image tools/build-engine.sh uses: Debian
     # trixie and its GCC 14, the compiler and baseline x86-64 codegen the
     # appliance ships. The runner's own compiler moved with ubuntu-latest
@@ -125,7 +173,7 @@ jobs:
   portable:
     name: Portable modules under MSVC
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.portable == 'true'
     # ADR-0008 §4: MSVC has no <unistd.h> or <sys/stat.h>, so a POSIX use in a
     # module that claims to be neutral fails to compile here, and the tests
     # run against the real UCRT. SONORA_PLATFORM=neutral configures only
@@ -166,7 +214,7 @@ jobs:
   ui:
     name: Qt interface build and headless tests
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.ui == 'true'
     # In tools/Dockerfile.ui, the image tools/build-ui.sh uses: Debian trixie
     # and its Qt 6.8, the Qt the product ships. ui/qt needs 6.7 (QSGTextNode,
     # QFont::Tag); Ubuntu 24.04's apt has 6.4, on which ui/qt skipped itself
@@ -201,7 +249,7 @@ jobs:
   sanitizers:
     name: Thread and address sanitizers
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.core == 'true'
     # GCC 14's TSan, ASan and UBSan, in the engine job's trixie image: the
     # shipped compiler's instrumentation, not whatever the runner carries.
     runs-on: ubuntu-24.04
@@ -308,7 +356,7 @@ jobs:
   rtsan:
     name: RealtimeSanitizer over the SONORA_RT call graph
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.plugins == 'true'
     # Its own build: -fsanitize=realtime cannot be combined with ASan or
     # TSan, and needs Clang 20 or later (clang-22 from trixie main, in
     # tools/Dockerfile.rtsan). Every SONORA_RT function is
@@ -347,7 +395,7 @@ jobs:
   record:
     name: Records audio against PipeWire
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.audio == 'true'
     # tools/build-engine.sh builds the engine in the sonora-build image, as
     # the engine job does; only Docker runs on the host.
     runs-on: ubuntu-24.04
@@ -376,7 +424,7 @@ jobs:
   interop:
     name: BWF files read back by third-party tools
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.core == 'true'
     # The engine is built as in the record job, in the sonora-build image.
     runs-on: ubuntu-24.04
     steps:
@@ -405,7 +453,7 @@ jobs:
   quantum:
     name: Quantum and rate stay pinned
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.audio == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -420,7 +468,7 @@ jobs:
   plugins:
     name: Plugin host against real LV2 and VST3 plugins
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.plugins == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
