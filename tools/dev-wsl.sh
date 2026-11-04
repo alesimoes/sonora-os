@@ -736,8 +736,8 @@ do_measure() {
   wait "$take" 2>/dev/null || true
   # The socket may serve one client at a time: ask again once the take has
   # let go, and keep what it said when it still gives no state.
-  local state="" raw="" try
-  for try in 1 2 3; do
+  local state="" raw=""
+  for _ in 1 2 3; do
     raw="$("${ctl[@]}" state 2>&1 || true)"
     state="$(grep -i "xruns=" <<<"$raw" || true)"
     [[ -n $state ]] && break
