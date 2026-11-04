@@ -242,6 +242,12 @@ int cancel_and_an_empty_range_leave_no_file() {
 }
 
 // The audio thread: blocks of 256 frames, a little faster than real time.
+// A roll runs at the audio clock, which a sanitizer build slows several times
+// over: the wait is bounded by wall time, generously, not by a count of polls.
+std::chrono::steady_clock::time_point deadline() {
+    return std::chrono::steady_clock::now() + std::chrono::seconds(120);
+}
+
 struct Driver {
     explicit Driver(Session& s) : s_(s) {
         thread_ = std::thread([this] {
@@ -291,7 +297,7 @@ int real_time_bounce_records_the_master() {
         CHECK(rt.start(r.doc->current(), r.dir, o, err));
         CHECK(!rt.start(r.doc->current(), r.dir, o, err));   // one at a time
         bool ended = false;
-        for (int i = 0; i < 3000 && !ended; ++i) {
+        for (const auto until = deadline(); !ended && std::chrono::steady_clock::now() < until;) {
             ctl.pump();
             ended = rt.poll(res, err, cancelled);
             if (!ended) std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -323,7 +329,7 @@ int real_time_bounce_records_the_master() {
         std::this_thread::sleep_for(std::chrono::milliseconds(60));
         rt.cancel();
         bool ended = false;
-        for (int i = 0; i < 3000 && !ended; ++i) {
+        for (const auto until = deadline(); !ended && std::chrono::steady_clock::now() < until;) {
             ctl.pump();
             ended = rt.poll(res, err, cancelled);
             if (!ended) std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -408,7 +414,7 @@ int real_time_bounce_refuses_a_roll_the_disk_missed() {
         // Nothing new becomes resident from here: the roll outruns the
         // chunks the start left, and each block past them is a miss.
         g_hold_reader = true;
-        for (int i = 0; i < 4000 && !ended; ++i) {
+        for (const auto until = deadline(); !ended && std::chrono::steady_clock::now() < until;) {
             ctl.pump();
             ended = rt.poll(res, err, cancelled);
             if (!ended) std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -438,7 +444,7 @@ int job_runs_offline_and_cancels() {
     std::string err;
     CHECK_BOUNCE(job.start(*r.session, ctl, r.doc->current(), r.dir, o, err), err);
     CHECK(job.active());
-    for (int i = 0; i < 5000 && !job.finished(); ++i) {
+    for (const auto until = deadline(); !job.finished() && std::chrono::steady_clock::now() < until;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     CHECK(job.finished());
