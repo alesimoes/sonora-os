@@ -423,6 +423,8 @@ class Orchestrator:
                 self.store.event(task["id"], "usage_pause", f"{wait:.0f}s")
                 continue
             self._end_run(r, verdict, code)
+            if task is None:  # task removed while its run was alive
+                continue
             heartbeat.wip_checkpoint(r["worktree"] if task["kind"] == "work"
                                      else None)
             self._count_failure(task, f"run {r['id']} {verdict}", now)
@@ -786,7 +788,15 @@ class Orchestrator:
         n = 0
         try:
             while True:
-                self.tick()
+                try:
+                    self.tick()
+                except Exception as e:  # one bad tick must not stop the daemon
+                    import traceback
+                    traceback.print_exc()
+                    try:
+                        self.store.event(None, "tick_error", repr(e)[:300])
+                    except Exception:
+                        pass
                 n += 1
                 stop, _ = self.kill_switch()
                 if once or (max_ticks and n >= max_ticks):
