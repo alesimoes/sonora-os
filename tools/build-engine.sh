@@ -85,7 +85,7 @@ fi
 JOBS="$("$ROOT/tools/build-slot.sh" --jobs)"
 BUILD_VOL=()
 if [[ "$(uname -s)" != Linux ]]; then
-  ID="$(basename "$ROOT" | tr -c 'A-Za-z0-9_.-' '_')"
+  ID="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
   BUILD_VOL=(-v "sonora-build-$ID:/build" -e SONORA_BUILD_DIR=/build/container)
 fi
 # shellcheck disable=SC2016  # the script is expanded inside the container

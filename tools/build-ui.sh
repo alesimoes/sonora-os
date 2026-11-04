@@ -131,7 +131,7 @@ JOBS="$("$ROOT/tools/build-slot.sh" --jobs)"
 # mount (see tools/build-engine.sh).
 BUILD_VOL=()
 if [[ "$(uname -s)" != Linux ]]; then
-  ID="$(basename "$ROOT" | tr -c 'A-Za-z0-9_.-' '_')"
+  ID="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
   BUILD_VOL=(-v "sonora-build-$ID:/build" -e SONORA_BUILD_DIR=/build/ui)
 fi
 "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" \
