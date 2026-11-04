@@ -634,6 +634,9 @@ jobs:
       - name: Image config (backports pins, RT kernel, tty1 session, no VT gettys)
         run: tools/test-image-config.sh
 
+      - name: Image build pre-flight logic (pins, retry, dev-snapshot gate)
+        run: tools/test-iso-preflight.sh
+
       - name: Installer text screen (tty2) against a stub installer
         run: tools/test-installer-tty.sh
 

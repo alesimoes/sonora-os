@@ -9,6 +9,23 @@ IMAGE=sonora-livebuild:trixie
 # cached one.
 VOLUME="${SONORA_LB_VOLUME:-sonora-livebuild-work}"
 
+# shellcheck source=tools/iso-preflight.sh
+. "$ROOT/tools/iso-preflight.sh"
+
+# SONORA_DEV_SNAPSHOT=<YYYYMMDDTHHMMSSZ>: a development build from another
+# snapshot when the committed one is unreachable (snapshot.debian.org has been
+# down for hours). The pins must still resolve there. It is not a release: the
+# image is named sonora-dev.iso, its BUILD_ID says -dev, and SONORA_RELEASE=1
+# refuses it. Unset, nothing here changes.
+DEV_SNAPSHOT="$(pf_dev_env)" || exit 1
+OUT_NAME=sonora.iso
+if [[ -n "$DEV_SNAPSHOT" ]]; then
+  OUT_NAME=sonora-dev.iso
+  echo "WARNING: DEVELOPMENT BUILD from snapshot $DEV_SNAPSHOT, not the committed one. Output: iso/$OUT_NAME. Not a release." >&2
+fi
+CHECK_ONLY=0
+[[ "${1:-}" == "--check" ]] && CHECK_ONLY=1
+
 # Git Bash on Windows rewrites anything that looks like a Unix path before it
 # reaches the executable, so a container path like /src arrives as
 # C:/Program Files/Git/src. MSYS2_ARG_CONV_EXCL turns that off, which means we
@@ -40,6 +57,7 @@ stamp_build_id() {
      sha="$(git -C "$repo" rev-parse --short=9 HEAD 2>/dev/null)"; then
     id="$date.$sha"
     [[ -z "$(git -C "$repo" status --porcelain -- iso audio-stack engine 2>/dev/null)" ]] || id="$id-dirty"
+    [[ -z "$DEV_SNAPSHOT" ]] || id="$id-dev"
   else
     id="unstamped"
   fi
@@ -47,23 +65,32 @@ stamp_build_id() {
   printf '%s\n' "$id" >"$ROOT/iso/config/includes.chroot/usr/share/sonora/build-id"
   echo "BUILD_ID=$id"
 }
-stamp_build_id
+[[ "$CHECK_ONLY" == 1 ]] || stamp_build_id
 
 # iso/sonora.iso.sha256, in sha256sum's format. tools/write-usb.ps1 refuses to
 # erase a stick for an image that no longer matches it: a copy cut short by a
 # full disk or an interrupted transfer can still boot partway, which is worse
 # than not booting.
 write_sidecar() {
-  (cd "$ROOT/iso" && rm -f sonora.iso.sha256 && sha256sum sonora.iso > sonora.iso.sha256)
-  cat "$ROOT/iso/sonora.iso.sha256"
+  (cd "$ROOT/iso" && rm -f "$OUT_NAME.sha256" && sha256sum "$OUT_NAME" > "$OUT_NAME.sha256")
+  cat "$ROOT/iso/$OUT_NAME.sha256"
 }
 
 if [[ "$(uname -s)" == "Linux" && "$(id -u)" == "0" ]] && command -v lb >/dev/null; then
+  if [[ "$CHECK_ONLY" == 1 ]]; then
+    pf_inside
+    exit $?
+  fi
+  pf_inside
   cd "$ROOT/iso"
+  if [[ -n "$DEV_SNAPSHOT" ]]; then
+    echo "error: a development snapshot needs the container path (it rewrites a copy of the configuration)." >&2
+    exit 1
+  fi
   lb clean
   lb config
   lb build
-  mv -f live-image-amd64.hybrid.iso sonora.iso
+  mv -f live-image-amd64.hybrid.iso "$OUT_NAME"
   write_sidecar
   echo "built: $ROOT/iso/sonora.iso"
   exit 0
@@ -78,6 +105,14 @@ docker info >/dev/null 2>&1 || {
 docker build -t "$IMAGE" --label org.sonora=1 \
   -f "$(host_path "$ROOT/tools")/Dockerfile.livebuild" \
   "$(host_path "$ROOT/tools")"
+
+# --check: resolve every package and pin in a trixie container and stop. About
+# a minute, no chroot, no engine build (tools/iso-preflight.sh).
+if [[ "$CHECK_ONLY" == 1 ]]; then
+  docker run --rm -e SONORA_DEV_SNAPSHOT="$DEV_SNAPSHOT" -e SONORA_RETRY_DELAY \
+    -v "$(host_path "$ROOT"):/src:ro" "$IMAGE" bash /src/tools/iso-preflight.sh inside
+  exit $?
+fi
 
 # The engine and UI builds print thousands of lines, so they go to a log
 # under iso/ (ignored by git) rather than the terminal. Not to /dev/null: a
@@ -148,7 +183,8 @@ fi
 # tools/clean.sh removes it only with --deep.
 docker volume create --label org.sonora=1 "$VOLUME" >/dev/null
 
-docker run --rm --privileged \
+docker run --rm --privileged -e SONORA_DEV_SNAPSHOT="$DEV_SNAPSHOT" -e SONORA_RETRY_DELAY \
+  -e OUT_NAME="$OUT_NAME" \
   -v "$(host_path "$ROOT"):/src:ro" \
   -v "$VOLUME:/work" \
   -w /work "$IMAGE" bash -lc '
@@ -162,6 +198,17 @@ docker run --rm --privileged \
   # rebuild back into twenty.
   rm -rf auto config
   cp -r /src/iso/auto /src/iso/config .
+
+  # Fail in a minute, not after the bootstrap: unreachable snapshot, a pin or
+  # the RT kernel that does not resolve (tools/iso-preflight.sh).
+  PF_ROOT=/src bash /src/tools/iso-preflight.sh inside
+
+  # Development fallback: the one timestamp in auto/config and in the
+  # backports list, which the hook requires to be equal.
+  if [ -n "${SONORA_DEV_SNAPSHOT:-}" ]; then
+    old="$(sed -n "s/^SONORA_SNAPSHOT=//p" auto/config)"
+    sed -i "s/$old/$SONORA_DEV_SNAPSHOT/" auto/config config/archives/sonora-backports.list.chroot
+  fi
 
   # cache/bootstrap is a whole debootstrapped tree, reused as is: after a
   # snapshot bump it would keep the old base (and kernel) under the new
@@ -178,7 +225,7 @@ docker run --rm --privileged \
   lb config
   lb build
 
-  cp -f live-image-amd64.hybrid.iso /work/sonora.iso
+  cp -f live-image-amd64.hybrid.iso "/work/$OUT_NAME"
   echo "iso ready in the volume"
 '
 
@@ -187,8 +234,8 @@ docker run --rm --privileged \
 docker run --rm \
   -v "$(host_path "$ROOT/iso"):/out" \
   -v "$VOLUME:/work" \
-  "$IMAGE" bash -lc 'cp -f /work/sonora.iso /out/sonora.iso'
+  -e OUT_NAME="$OUT_NAME" "$IMAGE" bash -lc 'cp -f "/work/$OUT_NAME" "/out/$OUT_NAME"'
 
 write_sidecar
-ls -lh "$ROOT/iso/sonora.iso"
-echo "built: $ROOT/iso/sonora.iso"
+ls -lh "$ROOT/iso/$OUT_NAME"
+echo "built: $ROOT/iso/$OUT_NAME"
