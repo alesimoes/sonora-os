@@ -30,6 +30,35 @@ change gets from an idea to a commit.
 | `integrator` | The merge gate | A feature branch is ready to land on `main` |
 | `janitor` | Disk: Docker objects of ours, merged worktrees, stale `build-*/` (`tools/clean.sh`) | After every merge, and when the disk fills |
 
+## Who owns which directory
+
+ADR-0007 §1. A squad writes only in its own directories; a change elsewhere
+goes to the owner as a request. "Jointly" means both parties review.
+
+| Directory | Owner |
+|---|---|
+| `contracts/api` | ui-engineer + rt-engineer jointly |
+| `contracts/backend` | rt-engineer + driver-engineer jointly |
+| `contracts/plugin`, `contracts/surfaces` | plugin-engineer + rt-engineer; surfaces with driver-engineer |
+| `common/base`, `common/audiofile`, `common/model`, `common/session_files`, `common/json`, `common/platform`, `common/midi` | rt-engineer (ui- and plugin-engineer review `common/model`) |
+| `common/dsp`, `plugins/native/*` | dsp-engineer |
+| `engine/core`, `engine/control`, `engine/app` | rt-engineer |
+| `engine/plugin_client` | plugin-engineer writes; rt-engineer and rt-safety-auditor gate |
+| `drivers/jack`, `drivers/fake`, `drivers/support`, `engine/sync`, `drivers/surfaces` | driver-engineer |
+| `ui/keymap`, `ui/client`, `ui/tui`, `ui/qt`, `keymaps/` | ui-engineer |
+| `plugins/host`, `interchange/` | plugin-engineer |
+| `iso/`, `audio-stack/`, `tools/`, `.github/` | distro-engineer |
+
+Two CI gates keep this honest. `tools/check-deps.sh` fails on an include
+across an edge ADR-0007 §1 does not draw, and on a vendor header (`<jack/>`,
+Qt, plugin SDKs) outside its one directory; the allowed edges are in
+`tools/module-deps.allow`, violations that exist on main in
+`tools/module-deps.known`. `tools/contracts-lock.sh` fails when a contract
+header changed and `contracts/CONTRACTS.lock` was not regenerated
+(`--update`); regenerating it is the deliberate step that needs the §6
+reviews. `ctest -L core|control|ui|contracts|drivers|base|model|native...`
+runs one module's tests; the gate remains the full `ctest`.
+
 The three implementer roles do not overlap by accident. A plugin crash must
 not take the session down, a device that enumerates is not a device that
 works, and a meter that lies is worse than a meter that is missing — each of
