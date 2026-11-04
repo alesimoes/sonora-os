@@ -22,6 +22,7 @@ MixModel::MixModel(SessionModel& session, GainSender sender, EngineTracks engine
     // Every change to the document reaches the windows through
     // contentChanged (SessionModel::sync), a whole new document included.
     connect(&session_, &SessionModel::contentChanged, this, &MixModel::documentChanged);
+    connect(&session_, &SessionModel::contentChanged, this, &MixModel::groupsChanged);
     connect(&session_, &SessionModel::sessionOpened, this, &MixModel::sessionOpened);
 }
 
@@ -159,6 +160,8 @@ void MixModel::dropRide(const std::string& why) {
     ride_id_ = 0;
     ride_sent_live_ = false;
     ride_touched_ = false;
+    releasePeers(true);
+    ride_peers_.clear();
     // The steps went to an engine gain atomic by index, and one that
     // crossed another interface's edit may sit on whichever track is there
     // now (the header says why the engine cannot see it). Past the
@@ -256,6 +259,7 @@ void MixModel::beginRide(int track) {
     if (live(track)) {
         sendLive(track, ride_db_, api::Gesture::Touch);
         ride_touched_ = true;
+        if (!trim) beginPeers(track);
     }
     emit rideChanged();
     if (trim) emit trimsChanged();
@@ -269,6 +273,7 @@ void MixModel::ride(int track, qreal dy, qreal travel, bool fine) {
     ride_db_ = db;
     if (live(track)) {
         sendLive(track, db);
+        movePeers(db);
         ride_sent_live_ = true;
         ride_wrote_ = ride_wrote_ || (!ride_trim_ && writes(track));
     } else {
@@ -303,6 +308,7 @@ void MixModel::endRide(int track) {
     ride_touched_ = false;
     ride_wrote_ = false;
     if (touched) sendLive(track, db, api::Gesture::Release);
+    releasePeers(false);
     // A Touch ride is the pass's lane; the engine glides back to
     // the static, which the cap shows again.
     if (sent && !wrote) {
@@ -312,8 +318,13 @@ void MixModel::endRide(int track) {
         // The engine is where the ride left it; the document refused that,
         // so the engine goes back to what the document holds, which is what
         // the cap now shows.
-        if (!ok && live(track)) sendLive(track, session_.stripGain(track), api::Gesture::Release);
+        if (!ok && live(track)) {
+            sendLive(track, session_.stripGain(track), api::Gesture::Release);
+            // The members the ride moved go back to the document with it.
+            releasePeers(true);
+        }
     }
+    ride_peers_.clear();
     emit rideChanged();
 }
 
@@ -385,9 +396,12 @@ bool MixModel::setAutomationMode(int track, const QString& mode) {
 }
 
 void MixModel::setAll(bool solo, bool on) {
-    const QList<bool> now = solo ? session_.solos() : session_.mutes();
-    for (int i = 0; i < now.size(); ++i) {
-        if (now[i] == on) continue;
+    const int n = (solo ? session_.solos() : session_.mutes()).size();
+    for (int i = 0; i < n; ++i) {
+        // Read again each time: a toggle on a member of a group has already
+        // moved the others, and toggling them back would undo it.
+        const QList<bool> now = solo ? session_.solos() : session_.mutes();
+        if (now.value(i) == on) continue;
         std::string why;
         EditController& c = session_.controller();
         const bool ok = solo ? c.toggle_solo(i, why) : c.toggle_mute(i, why);

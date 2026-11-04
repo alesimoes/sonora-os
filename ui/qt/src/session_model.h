@@ -593,6 +593,9 @@ signals:
     // the track (or, -1, the selected region), its colour marked; `current`
     // is a palette index, or -1 for a region wearing its track's.
     void colourRequested(int track, int current);
+    // clip.gain without a level: the dialog opens on the selected clip's
+    // current gain in dB.
+    void clipGainRequested(double current);
     void trackRefusalChanged();
     // app.save_as or app.save_copy_in without a name: the window asks for
     // one, offering `name` (the first free one), and says where it goes.

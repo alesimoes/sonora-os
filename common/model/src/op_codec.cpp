@@ -95,6 +95,16 @@ Value fade_value(const Fade& f) {
     return v;
 }
 
+Value gain_line_value(const std::vector<GainPoint>& line) {
+    Value a = Value::array();
+    for (const GainPoint& p : line) {
+        Value& e = a.push(Value::object());
+        e.set("at", integer(p.at));
+        e.set("db", Value::number_float(p.db));
+    }
+    return a;
+}
+
 Value region_value(const Region& r) {
     Value v = Value::object();
     v.set("id", id_value(r.id));
@@ -110,6 +120,7 @@ Value region_value(const Region& r) {
     }
     v.set("source_offset", integer(r.source_offset));
     v.set("gain_db", Value::number_float(r.gain_db));
+    v.set("gain_line", gain_line_value(r.gain_line));
     v.set("mute", Value::boolean(r.mute));
     v.set("fade_in", fade_value(r.fade_in));
     v.set("fade_out", fade_value(r.fade_out));
@@ -163,6 +174,7 @@ Value mix_value(const TrackMix& m) {
     v.set("midi_input", port_value(m.midi.in_port, m.midi.in_channel));
     v.set("midi_output", port_value(m.midi.out_port, m.midi.out_channel));
     v.set("automation", name_of(kAutomationModes, m.automation));
+    v.set("track_punch", Value::boolean(m.track_punch));
     return v;
 }
 
@@ -308,6 +320,9 @@ Value settings_value(const SessionSettings& s) {
     tr.set("count_off_bars", integer(s.transport.count_off_bars));
     tr.set("loop_playback", Value::boolean(s.transport.loop_playback));
     tr.set("loop_record", Value::boolean(s.transport.loop_record));
+    tr.set("input_only", Value::boolean(s.transport.input_only));
+    tr.set("rolls_on", Value::boolean(s.transport.rolls_on));
+    tr.set("quick_punch", Value::boolean(s.transport.quick_punch));
     v.set("session_id", Value::string(s.session_id));
     Value& left = v.set("left_takes", Value::array());
     for (const std::string& path : s.left_takes) left.push(Value::string(path));
@@ -414,6 +429,18 @@ Value aux_bus_value(const Bus& b) {
     Value& sends = v.set("sends", Value::array());
     for (const Send& sd : b.sends) sends.push(send_value(sd));
     v.set("output", id_value(b.output));
+    return v;
+}
+
+Value group_value(const Group& g) {
+    Value v = Value::object();
+    v.set("id", id_value(g.id));
+    v.set("name", Value::string(g.name));
+    Value& members = v.set("members", Value::array());
+    for (const Id m : g.members) members.push(id_value(m));
+    v.set("attrs", integer(g.attrs));
+    v.set("relative", Value::boolean(g.relative));
+    v.set("active", Value::boolean(g.active));
     return v;
 }
 
@@ -599,10 +626,35 @@ struct Encoder {
         v.set("colour", integer(o.colour));
         return v;
     }
+    Value operator()(const SetRegionGain& o) const {
+        Value v = with_kind("SetRegionGain");
+        v.set("playlist", id_value(o.playlist));
+        v.set("region", id_value(o.region));
+        v.set("gain_db", Value::number_float(o.gain_db));
+        v.set("gain_line", gain_line_value(o.gain_line));
+        return v;
+    }
     Value operator()(const ReorderTracks& o) const {
         Value v = with_kind("ReorderTracks");
         Value& order = v.set("order", Value::array());
         for (const Id id : o.order) order.push(id_value(id));
+        return v;
+    }
+    Value operator()(const SetGroup& o) const {
+        Group g;
+        g.id = o.group;
+        g.name = o.name;
+        g.members = o.members;
+        g.attrs = o.attrs;
+        g.relative = o.relative;
+        g.active = o.active;
+        Value v = group_value(g);
+        v.set("op", Value::string("SetGroup"));
+        return v;
+    }
+    Value operator()(const RemoveGroup& o) const {
+        Value v = with_kind("RemoveGroup");
+        v.set("group", id_value(o.group));
         return v;
     }
     Value operator()(const RemoveTrack& o) const {
@@ -946,9 +998,27 @@ bool read_fade(Reader& rd, const Value& obj, const std::string& path, const char
            rd.choice(v, p, "shape", kShapes, f.shape);
 }
 
+bool read_gain_line(Reader& rd, const Value& v, const std::string& p,
+                    std::vector<GainPoint>& line) {
+    const Value* a = nullptr;
+    if (!rd.array(v, p, "gain_line", a)) return false;
+    if (a->items().size() > kMaxGainPoints) {
+        return rd.fail("gain_line", "holds more than " + std::to_string(kMaxGainPoints) + " points");
+    }
+    const std::string gp = p + ".gain_line";
+    for (const Value& e : a->items()) {
+        if (!rd.keys(e, gp, {"at", "db"})) return false;
+        GainPoint pt;
+        if (!rd.frames(e, gp, "at", pt.at) || !rd.real(e, gp, "db", pt.db)) return false;
+        line.push_back(pt);
+    }
+    return true;
+}
+
 bool read_region_value(Reader& rd, const Value& v, const std::string& p, Region& r) {
     if (!rd.keys(v, p, {"id", "name", "colour", "position", "length", "source",
-                        "source_offset", "gain_db", "mute", "fade_in", "fade_out"})) {
+                        "source_offset", "gain_db", "gain_line", "mute", "fade_in",
+                        "fade_out"})) {
         return false;
     }
     if (!rd.id(v, p, "id", r.id) || !rd.text(v, p, "name", r.name) ||
@@ -968,7 +1038,8 @@ bool read_region_value(Reader& rd, const Value& v, const std::string& p, Region&
         r.channels.push_back(ref);
     }
     return rd.frames(v, p, "source_offset", r.source_offset) &&
-           rd.real(v, p, "gain_db", r.gain_db) && rd.flag(v, p, "mute", r.mute) &&
+           rd.real(v, p, "gain_db", r.gain_db) && read_gain_line(rd, v, p, r.gain_line) &&
+           rd.flag(v, p, "mute", r.mute) &&
            read_fade(rd, v, p, "fade_in", r.fade_in) &&
            read_fade(rd, v, p, "fade_out", r.fade_out);
 }
@@ -1091,7 +1162,7 @@ bool read_midi_region_value(Reader& rd, const Value& v, const std::string& p, Mi
 bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& m) {
     if (!rd.keys(v, p,
                  {"track", "input", "monitor", "gain_db", "pan", "mute", "solo", "solo_safe",
-                  "midi_input", "midi_output", "automation"}) ||
+                  "midi_input", "midi_output", "automation", "track_punch"}) ||
         !rd.id(v, p, "track", m.track)) {
         return false;
     }
@@ -1108,7 +1179,8 @@ bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& 
            rd.real(v, p, "gain_db", m.gain_db) && rd.real(v, p, "pan", m.pan) &&
            rd.flag(v, p, "mute", m.mute) && rd.flag(v, p, "solo", m.solo) &&
            rd.flag(v, p, "solo_safe", m.solo_safe) && read_routing(rd, v, p, m.midi) &&
-           rd.choice(v, p, "automation", kAutomationModes, m.automation);
+           rd.choice(v, p, "automation", kAutomationModes, m.automation) &&
+           rd.flag(v, p, "track_punch", m.track_punch);
 }
 
 // Shape only; apply() and check_invariants() judge order and range.
@@ -1208,7 +1280,7 @@ bool read_settings(Reader& rd, const Value& obj, SessionSettings& s) {
     std::int64_t bars = 0;
     if (!rd.keys(tr, trp,
                  {"loop", "punch", "pre_roll", "post_roll", "punch_crossfade", "count_off_bars",
-                  "loop_playback", "loop_record"}) ||
+                  "loop_playback", "loop_record", "input_only", "rolls_on", "quick_punch"}) ||
         !rd.range(tr, trp, "loop", kMaxInteger, loop) ||
         !rd.range(tr, trp, "punch", kMaxInteger, punch) ||
         !rd.frames(tr, trp, "pre_roll", s.transport.pre_roll) ||
@@ -1216,7 +1288,10 @@ bool read_settings(Reader& rd, const Value& obj, SessionSettings& s) {
         !rd.frames(tr, trp, "punch_crossfade", s.transport.punch_crossfade) ||
         !rd.integer(tr, trp, "count_off_bars", kMaxCountOffBars, bars) ||
         !rd.flag(tr, trp, "loop_playback", s.transport.loop_playback) ||
-        !rd.flag(tr, trp, "loop_record", s.transport.loop_record)) {
+        !rd.flag(tr, trp, "loop_record", s.transport.loop_record) ||
+        !rd.flag(tr, trp, "input_only", s.transport.input_only) ||
+        !rd.flag(tr, trp, "rolls_on", s.transport.rolls_on) ||
+        !rd.flag(tr, trp, "quick_punch", s.transport.quick_punch)) {
         return false;
     }
     s.transport.count_off_bars = static_cast<std::uint32_t>(bars);
@@ -1349,6 +1424,29 @@ bool read_aux_bus_value(Reader& rd, const Value& v, const std::string& p, Bus& b
         Send sd;
         if (!read_send_value(rd, e, Reader::at(p, "sends"), sd)) return false;
         b.sends.push_back(sd);
+    }
+    return true;
+}
+
+bool read_group_value(Reader& rd, const Value& v, const std::string& p, bool with_op, Group& g) {
+    const Value* members = nullptr;
+    std::int64_t attrs = 0;
+    const bool keys = with_op ? rd.keys(v, p, {"op", "id", "name", "members", "attrs", "relative",
+                                              "active"})
+                              : rd.keys(v, p, {"id", "name", "members", "attrs", "relative",
+                                              "active"});
+    if (!keys || !rd.id(v, p, "id", g.id) || !rd.text(v, p, "name", g.name) ||
+        !rd.array(v, p, "members", members) || !rd.integer(v, p, "attrs", 255, attrs) ||
+        !rd.flag(v, p, "relative", g.relative) || !rd.flag(v, p, "active", g.active)) {
+        return false;
+    }
+    g.attrs = static_cast<std::uint8_t>(attrs);
+    for (const Value& e : members->items()) {
+        std::int64_t n = 0;
+        if (!e.is_integer_lexeme() || !e.to_int64(n) || n < 0 || n > kMaxInteger) {
+            return rd.fail(Reader::at(p, "members"), "must hold track ids");
+        }
+        g.members.push_back(static_cast<Id>(n));
     }
     return true;
 }
@@ -1569,6 +1667,14 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = o;
+    } else if (kind == "SetRegionGain") {
+        SetRegionGain o;
+        if (!rd.keys(v, "", {"op", "playlist", "region", "gain_db", "gain_line"}) ||
+            !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
+            !rd.real(v, "", "gain_db", o.gain_db) || !read_gain_line(rd, v, "", o.gain_line)) {
+            return false;
+        }
+        out = std::move(o);
     } else if (kind == "ReorderTracks") {
         ReorderTracks o;
         const Value* order = nullptr;
@@ -1581,6 +1687,21 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             o.order.push_back(static_cast<Id>(n));
         }
         out = std::move(o);
+    } else if (kind == "SetGroup") {
+        Group g;
+        if (!read_group_value(rd, v, "", true, g)) return false;
+        SetGroup o;
+        o.group = g.id;
+        o.name = std::move(g.name);
+        o.members = std::move(g.members);
+        o.attrs = g.attrs;
+        o.relative = g.relative;
+        o.active = g.active;
+        out = std::move(o);
+    } else if (kind == "RemoveGroup") {
+        RemoveGroup o;
+        if (!rd.keys(v, "", {"op", "group"}) || !rd.id(v, "", "group", o.group)) return false;
+        out = o;
     } else if (kind == "RemoveTrack") {
         RemoveTrack o;
         if (!rd.keys(v, "", {"op", "track"}) || !rd.id(v, "", "track", o.track)) return false;
@@ -1863,7 +1984,11 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 // 15: lanes are one table, "lanes", that each edit track's, aux bus's and
 //    edit state's "master_automation" index; a lane may be a mute, send
 //    level or send pan lane, the last two with their send (ADR-0027 §9).
-constexpr std::int64_t kWindowFormat = 15;
+// 16: the session-model train (one window format for three features): an edit
+//    state carries "groups" (ADR-0041), a region carries "gain_line"
+//    (ADR-0042), each track mix carries track_punch and the transport
+//    input_only, rolls_on and quick_punch (ADR-0043).
+constexpr std::int64_t kWindowFormat = 16;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1922,6 +2047,8 @@ public:
             bs.push(std::move(bv));
         }
         ev.set("master_automation", lane_refs(e.master_automation));
+        Value& gs = ev.set("groups", Value::array());
+        for (const Group& g : e.groups) gs.push(group_value(g));
         edits_.push(std::move(ev));
         return ix;
     }
@@ -2366,10 +2493,17 @@ bool read_edits(Reader& rd, const Value& root,
         auto es = std::make_shared<EditState>();
         const Value* ts = nullptr;
         const Value* bs = nullptr;
-        if (!rd.keys(e, "edits", {"tracks", "markers", "buses", "master_automation"}) ||
+        const Value* gs = nullptr;
+        if (!rd.keys(e, "edits", {"tracks", "markers", "buses", "master_automation", "groups"}) ||
             !rd.array(e, "edits", "tracks", ts) || !rd.array(e, "edits", "buses", bs) ||
+            !rd.array(e, "edits", "groups", gs) ||
             !read_lane_refs(rd, e, "edits", "master_automation", lanes, es->master_automation)) {
             return false;
+        }
+        for (const Value& g : gs->items()) {
+            Group grp;
+            if (!read_group_value(rd, g, "edits.groups", false, grp)) return false;
+            es->groups.push_back(std::move(grp));
         }
         for (const Value& b : bs->items()) {
             Bus bus;
@@ -2667,7 +2801,8 @@ const char* const kNames[] = {
     "SetMidiRouting", "RecordLoopTake", "AddBus", "RemoveBus",
     "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
     "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "EditAutomation",
-    "SetTrackColour", "SetRegionName", "SetRegionColour", "Compound"};
+    "SetTrackColour", "SetRegionName", "SetRegionColour", "SetGroup", "RemoveGroup",
+    "SetRegionGain", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

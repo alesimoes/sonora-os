@@ -69,6 +69,17 @@ public:
     bool solo_safe() const { return solo_safe_.load(std::memory_order_relaxed); }
     void set_solo_safe(bool v) { solo_safe_.store(v, std::memory_order_relaxed); }
 
+    // TrackPunch (ADR-0043): off, an armed track sits a punch take out -- no
+    // file, playback heard -- and records in plain takes as usual. Read by
+    // begin_take() and, per block, by the audio thread.
+    bool punch_enabled() const { return punch_enabled_.load(std::memory_order_relaxed); }
+    void set_punch_enabled(bool v) { punch_enabled_.store(v, std::memory_order_relaxed); }
+    // Whether this track records in the running punch take: fixed by
+    // begin_take() when it decides which tracks get a file, so a TrackPunch
+    // flipped part way neither stops a file nor opens a window without one.
+    bool in_punch_take() const { return in_punch_take_.load(std::memory_order_relaxed); }
+    void set_in_punch_take(bool v) { in_punch_take_.store(v, std::memory_order_relaxed); }
+
     // What the track sends to the monitor bus. Auto: the input while armed
     // and stopped or recording, playback otherwise (session-format.md).
     enum class Monitor : uint8_t { Auto = 0, Input = 1, Off = 2 };
@@ -188,6 +199,8 @@ private:
     std::atomic<float> trim_{1.0f};
     std::atomic<bool> soloed_{false};
     std::atomic<bool> solo_safe_{false};
+    std::atomic<bool> punch_enabled_{true};
+    std::atomic<bool> in_punch_take_{true};
     std::atomic<Monitor> monitor_{Monitor::Auto};
     std::atomic<Automation> automation_{Automation::Read};
     std::atomic<uint8_t> touched_{0};

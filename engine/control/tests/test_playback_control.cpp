@@ -196,8 +196,11 @@ int test_build_from_model() {
     a.fade_in = {100, FadeShape::Linear};
     a.fade_out = {200, FadeShape::EqualPower};
     a.gain_db = -6.0f;
+    a.gain_line = {{500, 0.0f}, {1500, -6.0f}};
     CHECK_APPLY(h, (PlaceRegion{101, a, 0}));
-    CHECK_APPLY(h, (PlaceRegion{101, region(211, 2, 4000, 2000, 1000), 0}));
+    Region second = region(211, 2, 4000, 2000, 1000);
+    second.gain_line = {{1200, 6.0f}};
+    CHECK_APPLY(h, (PlaceRegion{101, second, 0}));
     CHECK_APPLY(h, (SetCrossfade{101, Crossfade{210, 211, 128, Align::Centre, FadeShape::SCurve}}));
     Region muted = region(212, 1, 0, 500, 0);
     muted.mute = true;
@@ -233,6 +236,16 @@ int test_build_from_model() {
     CHECK(r.fade_in_shape == sonora::FadeCurve::SCurve);
     CHECK(r.end == 6000);
     CHECK(l.source_slot[0] != r.source_slot[0]);
+    // The clip gain lines: source frames and linear gains, each run at its
+    // own place in the plan's points, the crossfade having moved r's offset
+    // without touching its points.
+    CHECK(l.gain_count == 2 && r.gain_count == 1 && l.gain_first != r.gain_first);
+    CHECK(p.auto_points[l.gain_first].at == 500 && p.auto_points[l.gain_first].value == 1.0f);
+    CHECK(p.auto_points[l.gain_first + 1].at == 1500);
+    CHECK(std::fabs(p.auto_points[l.gain_first + 1].value - std::pow(10.0f, -6.0f / 20.0f)) <
+          1e-6f);
+    CHECK(p.auto_points[r.gain_first].at == 1200);
+    CHECK(std::fabs(p.auto_points[r.gain_first].value - std::pow(10.0f, 6.0f / 20.0f)) < 1e-5f);
     // Chunk slots: one per source chunk each segment spans, laid end to end.
     CHECK(l.first_chunk_index[0] == 500 / kChunk);
     CHECK(l.chunk_count[0] == (500 + 3064 - 1) / kChunk - 500 / kChunk + 1);

@@ -161,7 +161,18 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
-constexpr uint32_t kProtocolVersion = 42;
+// 48 (the session-model train: ADR-0041 groups, ADR-0042 clip gain, ADR-0043
+//   record modes, one bump for the three; follows 42, 43 to 47 are other
+//   work's): new operation kinds SetGroup, RemoveGroup and SetRegionGain; an
+//   edit state in the undo window carries "groups" and a region "gain_line";
+//   SetSettings carries transport.input_only, rolls_on and quick_punch and an
+//   audio track's mix track_punch (undo window format 16, session format 19);
+//   the commands group.new, group.dissolve, group.toggle_suspend, clip.gain,
+//   transport.toggle_input_only, transport.toggle_pre_post_roll,
+//   transport.toggle_quick_punch (engine) and track.toggle_track_punch
+//   (interface). A version-42 peer refuses the operations, the keys and the
+//   window, and answers the commands NotImplemented.
+constexpr uint32_t kProtocolVersion = 48;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

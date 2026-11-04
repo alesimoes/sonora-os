@@ -270,22 +270,43 @@ std::string as_v17(const std::string& v16) {
     return edit(v16, "\"sonora_session\": 16,", "\"sonora_session\": 17,");
 }
 
-// What v17 -> v18 makes of a file with no aux bus: the version and the
-// Master's empty lanes (ADR-0027 §9).
+// What v17 -> v19 makes of a file with no aux bus: the version (19 adds only
+// an optional key, so nothing else changes) and the Master's empty lanes
+// (ADR-0027 §9).
 std::string as_v18(const std::string& v17) {
     return edit(edit(v17, "\"sonora_session\": 17,", "\"sonora_session\": 18,"),
                 "    \"pan_law_db\": -3.0\n  },",
                 "    \"pan_law_db\": -3.0,\n    \"automation\": []\n  },");
 }
 
+// What v18 -> v19 makes of a file (ADR-0041, ADR-0042, ADR-0043): the version,
+// the transport's three record switches at their defaults, and
+// "track_punch": true after every audio track's solo_safe.
+std::string as_v19(const std::string& v18) {
+    std::string s = edit(v18, "\"sonora_session\": 18,", "\"sonora_session\": 19,");
+    s = edit(s, "    \"loop_record\": false\n  },",
+             "    \"loop_record\": false,\n    \"input_only\": false,\n"
+             "    \"rolls_on\": true,\n    \"quick_punch\": false\n  },");
+    std::size_t at = 0;
+    while ((at = s.find("\"kind\": \"audio\"", at)) != std::string::npos) {
+        const std::size_t eol = s.find('\n', s.find("\"solo_safe\":", at));
+        s.insert(eol, "\n      \"track_punch\": true,");
+        at = eol;
+    }
+    return s;
+}
+
 // A version 4 file with no MIDI region, as this build saves it.
 std::string as_current(const std::string& v4) {
-    return as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(as_v6(as_v5(v4))))))))))))));
+    return as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(as_v6(as_v5(v4)))))))))))))));
 }
 
 // The current version's frozen fixture: what this build writes. Its
 // sequence files are in fixtures/MIDI Sequences/.
-constexpr const char* kCurrent = "v18-strip-lanes.sonora";
+constexpr const char* kCurrent = "v19-current.sonora";
+// The version 18 fixture: the same session before groups, clip gain lines and
+// the record modes.
+constexpr const char* kNoGroups = "v18-strip-lanes.sonora";
 // The version 17 fixture: the same session before strip lanes.
 constexpr const char* kNoStripLanes = "v17-plugin-files.sonora";
 // The version 16 fixture: the same session before plugin files.
@@ -324,7 +345,7 @@ int test_fixture_is_canonical() {
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     g_folder.reads = 0;
     CHECK(load(text, l, e));
-    CHECK(l.file_version == 18);
+    CHECK(l.file_version == kFormatVersion && kFormatVersion == 19);
     CHECK(l.repairs.empty());
     CHECK(l.missing_sequences.empty());
     // Three regions' sequences, each file read once.
@@ -335,8 +356,8 @@ int test_fixture_is_canonical() {
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v18-strip-lanes.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v18-strip-lanes.out.sonora\n");
+        std::ofstream("v19-current.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v19-current.out.sonora\n");
     }
     CHECK(out == text);
     // And each sequence encodes to the bytes of the file that names it.
@@ -536,7 +557,7 @@ int test_v5_migrates() {
     CHECK(mentions(l.repairs[0].now, "MIDI Sequences/"));
     CHECK(mentions(l.repairs[0].why, "version 5 file is kept as a backup"));
     Loaded current;
-    const std::string v10 = as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(read_fixture(kNoSessionId)))))))))))));
+    const std::string v10 = as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(read_fixture(kNoSessionId))))))))))))));
     CHECK(load(v10, current, e));
     CHECK(same_document(l.snapshot, current.snapshot));
     std::string out;
@@ -549,7 +570,7 @@ int test_v5_migrates() {
         CHECK(n.encoded == read_fixture(n.ref.file.c_str()));
     }
     std::int64_t version = 0;
-    CHECK(file_format_version(out, version) && version == 18);
+    CHECK(file_format_version(out, version) && version == kFormatVersion);
     // A version 5 file cannot carry what version 5 does not define.
     CHECK(refused(edit(v5, "\"offset_ticks\": 480000,",
                        "\"offset_ticks\": 480000,\n              \"data\": {},"),
@@ -934,22 +955,22 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 18,", "\"sonora_session\": 19,"),
-                  "format version 19, newer than this program, which reads up to version 18",
+    CHECK(refused(edit(text, "\"sonora_session\": 19,", "\"sonora_session\": 20,"),
+                  "format version 20, newer than this program, which reads up to version 19",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 18,", "\"sonora_session\": 19,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 19,", "\"sonora_session\": 20,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 18,",
+    CHECK(refused(edit(text, "\"sonora_session\": 19,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 18,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 19,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 18,", "\"sonora_session\": 17.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 19,", "\"sonora_session\": 17.0,"),
                   "integer format version", "sonora_session"));
     // A current file must have the keys versions 2 and 3 added; only the
     // migrations fill them in for an older file.
@@ -962,8 +983,8 @@ int test_versions() {
                   "must be true or false", "tracks[1].solo_safe",
                   line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 18,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 18,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 19,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 19,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));
@@ -1237,7 +1258,7 @@ int test_v6_migrates_and_session_id() {
     CHECK(l.snapshot.settings.session_id.empty() && l.snapshot.settings.left_takes.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(v6)))))))))))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(v6))))))))))))));
     const std::string last = "\n  ]\n}\n";
     CHECK(refused(v6.substr(0, v6.size() - last.size()) + "\n  ],\n  \"session_id\": \"\"\n}\n",
                   "migrating from format version 6: the file has \"session_id\"", nullptr));
@@ -1288,7 +1309,7 @@ int test_v7_migrates_and_count_off() {
     CHECK(l.snapshot.settings.transport.count_off_bars == 2);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(v7))))))))))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(v7)))))))))))));
     CHECK(out == read_fixture(kCurrent));
     CHECK(refused(edit(v7, "\"punch_crossfade\": 240", "\"punch_crossfade\": 240,\n    \"count_off_bars\": 2"),
                   "migrating from format version 7: the file has \"transport.count_off_bars\"",
@@ -1323,7 +1344,7 @@ int test_v8_migrates_and_loop_playback() {
     CHECK(!l.snapshot.settings.transport.loop_playback);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(v8)))))))))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(v8))))))))))));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string ranged = edit(v8, "\"loop\": [0, 0]", "\"loop\": [480000, 960000]");
@@ -1371,7 +1392,7 @@ int test_v9_migrates_and_loop_record() {
     CHECK(!l.snapshot.settings.transport.loop_record);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(v9))))))))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(v9)))))))))));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string on9 = edit(edit(v9, "\"loop\": [0, 0]", "\"loop\": [480000, 960000]"),
@@ -1419,7 +1440,7 @@ int test_v10_migrates_and_sends() {
     for (const auto& t : l.snapshot.edit->tracks) CHECK(t->sends.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(v10)))))))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(v10))))))))));
     CHECK(out == read_fixture(kCurrent));
     CHECK(refused(edit(v10, "\"markers\": [", "\"buses\": [],\n  \"markers\": ["),
                   "migrating from format version 10: the file has \"buses\"", nullptr));
@@ -1477,7 +1498,7 @@ int test_v11_migrates_and_outputs() {
     for (const auto& t : l.snapshot.edit->tracks) CHECK(t->output == kMasterOutput);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(v11))))))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(v11)))))))));
     CHECK(out == read_fixture(kCurrent));
     // The first track's: the one whose inserts are not empty.
     CHECK(refused(edit(v11, "      ],\n      \"sends\": [],\n      \"playlists\": [",
@@ -1545,7 +1566,7 @@ int test_v12_migrates_and_automation() {
     }
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(v12)))))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(v12))))))));
     CHECK(out == read_fixture(kCurrent));
     CHECK(refused(edit(v12, "      ],\n      \"sends\": [],\n      \"output\": 0,",
                        "      ],\n      \"sends\": [],\n      \"output\": 0,\n      \"automation\": [],"),
@@ -1608,8 +1629,8 @@ int test_v13_migrates_and_plugin_lanes() {
     CHECK(l.file_version == 13 && l.repairs.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(as_v16(as_v15(as_v14(v13))))));
-    CHECK(out == as_v18(as_v17(as_v16(as_v15(read_fixture(kNoColours))))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(v13)))))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(read_fixture(kNoColours)))))));
 
     // The first track's limiter (insert 42, an LV2 plugin).
     const std::string first = "      ],\n      \"sends\": [],\n      \"output\": 0,\n      ";
@@ -1672,7 +1693,7 @@ int test_v14_migrates_and_colours() {
     }
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(as_v16(as_v15(v14)))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(v14))))));
     CHECK(out == read_fixture(kCurrent));
     CHECK(refused(edit(v14, "\"name\": \"Lead Vox\",", "\"name\": \"Lead Vox\",\n      \"colour\": 3,"),
                   "migrating from format version 14: tracks[0] has \"colour\"", nullptr));
@@ -1712,7 +1733,7 @@ int test_v15_migrates_and_trim() {
     CHECK(same_document(l.snapshot, current.snapshot));
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(as_v16(v15))));
+    CHECK(out == as_v19(as_v18(as_v17(as_v16(v15)))));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string first = "      ],\n      \"sends\": [],\n      \"output\": 0,\n      ";
@@ -1781,7 +1802,7 @@ int test_v16_migrates_and_plugin_files() {
     CHECK(l.file_version == 16 && l.repairs.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(as_v17(v16)));
+    CHECK(out == as_v19(as_v18(as_v17(v16))));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string sha(64, 'b');
@@ -1849,6 +1870,25 @@ int test_v16_migrates_and_plugin_files() {
 // the Master. A version 17 file opens with none: every bus and the monitor
 // bus gain empty lanes. One already carrying them, or a mute or send lane on
 // a track, is refused, as a version 17 reader would.
+// Version 19 (ADR-0041): groups. A version 18 file opens with none and saves
+// as the current fixture; one that already holds "groups" is refused.
+int test_v18_migrates_and_groups() {
+    const std::string v18 = read_fixture(kNoGroups);
+    CHECK(!v18.empty());
+    Loaded l;
+    LoadError e;
+    CHECK(load(v18, l, e));
+    CHECK(l.file_version == 18 && l.repairs.empty());
+    CHECK(l.snapshot.edit->groups.empty());
+    std::string out;
+    CHECK(save(l, out));
+    CHECK(out == as_v19(v18));
+    CHECK(out == read_fixture(kCurrent));
+    CHECK(!load(edit(v18, "\"buses\": [],", "\"buses\": [],\n  \"groups\": [],"), l, e));
+    CHECK(mentions(e.text(), "groups"));
+    return 0;
+}
+
 int test_v17_migrates_and_strip_lanes() {
     const std::string v17 = read_fixture(kNoStripLanes);
     CHECK(!v17.empty());
@@ -1859,7 +1899,7 @@ int test_v17_migrates_and_strip_lanes() {
     CHECK(l.snapshot.edit->master_automation.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v18(v17));
+    CHECK(out == as_v19(as_v18(v17)));
     CHECK(out == read_fixture(kCurrent));
 
     // An aux bus gains "automation": [] after its sends.
@@ -1937,6 +1977,93 @@ int test_v17_migrates_and_strip_lanes() {
     return 0;
 }
 
+// Version 19 (ADR-0041 groups, ADR-0042 clip gain, ADR-0043 record modes): a
+// version 18 file opens with no group, no gain line, Auto Input, the rolls on,
+// no QuickPunch and every audio track in the punch, and saves as the current
+// fixture. A region may carry "gain_line", source-frame points with a dB each;
+// a version 18 file already carrying a line, a group or a record key is
+// refused, as a version 18 reader would.
+int test_v18_migrates_and_session_model() {
+    const std::string v18 = read_fixture(kNoGroups);
+    CHECK(!v18.empty());
+    Loaded l;
+    LoadError e;
+    CHECK(load(v18, l, e));
+    CHECK(l.file_version == 18 && l.repairs.empty());
+    const Transport& tr = l.snapshot.settings.transport;
+    CHECK(!tr.input_only && tr.rolls_on && !tr.quick_punch);
+    std::size_t audio = 0;
+    for (const TrackMix& m : l.snapshot.mix.tracks) {
+        if (m.track_punch) ++audio;
+    }
+    CHECK(audio == l.snapshot.mix.tracks.size());
+    std::string out;
+    CHECK(save(l, out));
+    CHECK(out == read_fixture(kCurrent));
+
+    const std::string anchor =
+        "              \"source_offset\": 24000,\n              \"gain_db\": 0.0,\n";
+    const std::string line =
+        anchor + "              \"gain_line\": [\n                {\n                  \"at\": 24000,\n"
+                 "                  \"db\": -3.0\n                },\n                {\n"
+                 "                  \"at\": 48000,\n                  \"db\": 6.5\n                }\n"
+                 "              ],\n";
+    const std::string cur = read_fixture(kCurrent);
+    const std::string with_line = edit(cur, anchor, line);
+    Loaded g;
+    if (!load(with_line, g, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
+    CHECK(load(with_line, g, e));
+    const Region& r = g.snapshot.edit->tracks[0]->playlists[0]->regions[0];
+    CHECK(r.gain_line.size() == 2 && r.gain_line[0].at == 24000 && r.gain_line[0].db == -3.0f &&
+          r.gain_line[1].at == 48000 && r.gain_line[1].db == 6.5f);
+    CHECK(save(g, out));
+    if (out != with_line) {
+        std::ofstream("v19-line.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved line differs; wrote v19-line.out.sonora\n");
+    }
+    CHECK(out == with_line);
+    CHECK(refused(edit(v18, anchor, line),
+                  "migrating from format version 18: tracks[0] has a region with \"gain_line\"",
+                  nullptr));
+    CHECK(refused(edit(with_line, "\"at\": 48000,", "\"at\": 24000,"),
+                  "gain_line points must be in increasing order", nullptr));
+    CHECK(refused(edit(with_line, "\"db\": 6.5", "\"db\": 99.0"), "gain_line point's db", nullptr));
+    CHECK(refused(edit(with_line, "\"db\": -3.0", "\"db\": -3.0,\n                  \"x\": 1"),
+                  "unknown key", nullptr));
+    // A file that already holds a key this step adds is refused, as a
+    // version 19 reader would.
+    CHECK(refused(edit(v18, "    \"loop_record\": false\n",
+                       "    \"loop_record\": false,\n    \"quick_punch\": true\n"),
+                  "migrating from format version 18: the file has \"transport.quick_punch\"",
+                  nullptr));
+
+    // Non-default values survive a save and a load.
+    std::string set = edit(cur, "\"input_only\": false", "\"input_only\": true");
+    set = edit(set, "\"rolls_on\": true", "\"rolls_on\": false");
+    set = edit(set, "\"quick_punch\": false", "\"quick_punch\": true");
+    set = edit(set, "\"solo_safe\": false,\n      \"track_punch\": true",
+               "\"solo_safe\": false,\n      \"track_punch\": false");
+    Loaded s;
+    if (!load(set, s, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
+    CHECK(load(set, s, e));
+    const Transport& st = s.snapshot.settings.transport;
+    CHECK(st.input_only && !st.rolls_on && st.quick_punch);
+    std::size_t out_of_punch = 0;
+    for (const TrackMix& m : s.snapshot.mix.tracks) {
+        if (!m.track_punch) ++out_of_punch;
+    }
+    CHECK(out_of_punch == 1);
+    CHECK(save(s, out) && out == set);
+    // A MIDI track has no audio to punch: the key is another kind's.
+    CHECK(refused(edit(cur, "\"kind\": \"midi\"", "\"kind\": \"midi\",\n      \"track_punch\": true"),
+                  "track_punch", nullptr));
+    // And an audio track must say it.
+    CHECK(refused(edit(cur, "\"solo_safe\": false,\n      \"track_punch\": true,\n",
+                       "\"solo_safe\": false,\n"),
+                  "missing required key \"track_punch\"", "tracks[0]"));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1955,6 +2082,8 @@ int main() {
     t(test_v15_migrates_and_trim);
     t(test_v16_migrates_and_plugin_files);
     t(test_v17_migrates_and_strip_lanes);
+    t(test_v18_migrates_and_groups);
+    t(test_v18_migrates_and_session_model);
     t(test_v1_migrates);
     t(test_v2_migrates);
     t(test_v3_migrates);
