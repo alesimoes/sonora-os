@@ -1,0 +1,32 @@
+[Unit]
+Description=SonoraOS installer (text screen on tty2)
+Documentation=file:///usr/local/bin/sonora-install-tty
+# Inert on the shipped boot: it runs only when the stick is booted with
+# sonora.install (added at the boot menu), only from a live medium, and never
+# on a system that is already installed, so an installed machine cannot offer
+# to erase itself. Under sonora.gui tty2 belongs to the terminal UI of
+# ADR-0010 stage 2; the two are not meant to be asked for together.
+ConditionKernelCommandLine=sonora.install
+ConditionPathExists=/run/live/medium
+ConditionPathExists=!/var/lib/sonora/installed
+After=multi-user.target
+Conflicts=getty@tty2.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sonora-install-tty
+ExecStartPost=-/usr/bin/chvt 2
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/tty2
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+# The screen only leaves on purpose (restart, or back to the engine on tty1),
+# never to a shell; a crash of the screen itself brings it back.
+Restart=on-failure
+RestartSec=2
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target
