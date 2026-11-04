@@ -295,7 +295,7 @@
       "origin": "sonora",
       "comment": "Copy Selection to Main Playlist (ADR-0031, ADR-0049). Pro Tools has it as a button on the playlist lane and no documented key; the range selected on a take lane goes to the active playlist."
     },
-    "ctrl+alt+l": {
+    "ctrl+alt+shift+t": {
       "command": "comp.toggle_lanes",
       "origin": "sonora",
       "comment": "Show or hide the selected track's playlists as lanes under it (Pro Tools' Playlists track view). No documented key."

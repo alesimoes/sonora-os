@@ -14,7 +14,7 @@ track. Or record a take, make a **New Playlist** from the playlist selector on
 the track header, and record the next onto it.
 
 A track with other playlists shows a **`≡ 2`** button on its header, the
-number of takes it holds. Click it (or `ctrl+alt+l`): the takes appear as
+number of takes it holds. Click it (or `ctrl+alt+l`, or `ctrl+alt+shift+t` under the Pro Tools keys): the takes appear as
 lanes under the track, one row each, named by their playlist. Click again to
 put them away. A track with a single playlist has no button; asking for the
 lanes by key says what makes some.

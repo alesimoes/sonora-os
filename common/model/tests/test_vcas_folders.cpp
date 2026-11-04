@@ -182,7 +182,7 @@ int test_codec_window_and_file() {
     CHECK(!deserialize(broken, bad, le));
     // A version 19 file cannot carry the keys.
     std::string v19 = bytes;
-    const std::size_t ver = v19.find("\"sonora_session\": 20");
+    const std::size_t ver = v19.find("\"sonora_session\": 24");
     CHECK(ver != std::string::npos);
     v19.replace(ver, 20, "\"sonora_session\": 19");
     Loaded old;

@@ -252,7 +252,7 @@ for more than the workflow), and Logic's number keys are bound elsewhere
 here. Recalling an empty slot is refused and the reason is held in the list.
 `edit.consolidate` (`alt+shift+3`, `ctrl+b` in Logic) sends the engine the selected
 region or range (`session.consolidate`, ADR-0031 §6.1) and the window holds the
-progress and any failure under it (ADR-0049 §5). Comping (ADR-0049): `ctrl+alt+l`
+progress and any failure under it (ADR-0049 §5). Comping (ADR-0049): `ctrl+alt+l` (`ctrl+alt+shift+t` in `protools.json`, where `ctrl+alt+l` is Loop Clip, ADR-0052)
 shows a track's other playlists as take lanes, `ctrl+alt+c` copies the range
 selected on a lane to the main playlist, `ctrl+alt+n` makes a new comp,
 `ctrl+alt+q` turns Quick Swipe on or off; all four are `"origin": "sonora"` in
