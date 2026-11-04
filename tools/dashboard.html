@@ -4,200 +4,376 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SonoraOS ao vivo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: header with live pulse, KPI strip, agents grouped by track on the left, PRs and containers on the right. */
+/* HUD: azul quase preto, ciano holografico, ambar para atencao, vermelho so para falha. */
 :root{
-  --bg:#0a0e14; --bg2:#0f1520; --panel:rgba(22,30,43,.72); --panel-solid:#141c28; --line:rgba(150,170,200,.14); --line2:rgba(150,170,200,.26);
-  --ink:#e9eef6; --muted:#8c99ad; --faint:#5b6678;
-  --cyan:#43d9ff; --mint:#3be0a8; --amber:#ffb454; --rose:#ff6b81; --slate:#7d8aa0; --violet:#a78bfa;
-  --font:"Segoe UI Variable Text","Segoe UI",ui-sans-serif,system-ui,-apple-system,sans-serif;
-  --mono:"Cascadia Mono","SF Mono",ui-monospace,Consolas,monospace;
+  --bg:#03080f; --bg2:#071320; --panel:rgba(8,22,36,.62); --line:rgba(70,200,230,.16); --line2:rgba(70,200,230,.34);
+  --ink:#d8f3fa; --muted:#7fa6b5; --faint:#4b6b79;
+  --cyan:#3fe0f5; --teal:#18b6a4; --amber:#ffb347; --red:#ff4d5e; --slate:#5d7c8a;
+  --disp:"Rajdhani","Bahnschrift","Segoe UI Semibold","Arial Narrow",sans-serif;
+  --mono:"JetBrains Mono","Cascadia Mono",ui-monospace,Consolas,monospace;
   color-scheme:dark;
 }
-@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){
-  --bg:#eef1f6; --bg2:#e6eaf2; --panel:rgba(255,255,255,.82); --panel-solid:#ffffff; --line:rgba(40,60,90,.12); --line2:rgba(40,60,90,.22);
-  --ink:#15202e; --muted:#566377; --faint:#8a95a6;
-  --cyan:#0a8db3; --mint:#0f9d6e; --amber:#b86a00; --rose:#d1334d; --slate:#5d6a80; --violet:#6d4fd6; color-scheme:light;}}
 *{box-sizing:border-box}
 html,body{margin:0}
 body{
   background:
-    radial-gradient(1000px 520px at 12% -10%, color-mix(in srgb,var(--cyan) 14%,transparent), transparent 60%),
-    radial-gradient(900px 480px at 100% 0%, color-mix(in srgb,var(--violet) 12%,transparent), transparent 55%),
-    var(--bg);
-  background-attachment:fixed;
-  color:var(--ink); font:14px/1.45 var(--font); min-height:100vh;
+    radial-gradient(900px 600px at 50% -10%, rgba(63,224,245,.10), transparent 60%),
+    radial-gradient(700px 500px at 100% 100%, rgba(24,182,164,.07), transparent 60%), var(--bg);
+  background-attachment:fixed; color:var(--ink); font:14px/1.4 var(--disp); min-height:100vh; letter-spacing:.02em;
 }
-main{max-width:1440px;margin:0 auto;padding:22px 22px 60px}
-header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:20px}
-.mark{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;
-  background:linear-gradient(135deg,var(--cyan),var(--violet));color:#07101a;font-weight:800;letter-spacing:-.02em;
-  box-shadow:0 8px 28px color-mix(in srgb,var(--cyan) 35%,transparent)}
-h1{font-size:21px;margin:0;letter-spacing:-.01em}
-.sub{color:var(--muted);font-size:12.5px}
-.live{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--muted);
-  padding:7px 12px;border:1px solid var(--line);border-radius:99px;background:var(--panel);backdrop-filter:blur(10px)}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--mint);position:relative}
-.dot::after{content:"";position:absolute;inset:-5px;border-radius:50%;border:1.5px solid var(--mint);opacity:.0;animation:ping 2s ease-out infinite}
-.dot.stale{background:var(--rose)} .dot.stale::after{border-color:var(--rose)}
-@keyframes ping{0%{transform:scale(.4);opacity:.8}100%{transform:scale(1.5);opacity:0}}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:56px 56px;opacity:.22;
+  -webkit-mask-image:radial-gradient(ellipse at 50% 30%,#000,transparent 75%);mask-image:radial-gradient(ellipse at 50% 30%,#000,transparent 75%)}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:5;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.18) 0 1px,transparent 1px 3px);opacity:.35}
+main{position:relative;z-index:1;max-width:1560px;margin:0 auto;padding:18px 22px 40px}
+.mono,.m{font-family:var(--mono)}
+header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding-bottom:12px;border-bottom:1px solid var(--line);margin-bottom:16px;position:relative}
+header::after{content:"";position:absolute;left:0;bottom:-1px;width:160px;height:1px;background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
+h1{margin:0;font-size:26px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;text-shadow:0 0 14px rgba(63,224,245,.5)}
+.sub{color:var(--muted);font-family:var(--mono);font-size:11.5px}
+.clock{margin-left:auto;text-align:right;font-family:var(--mono)}
+.clock b{display:block;font-size:24px;font-weight:400;color:var(--cyan);letter-spacing:.08em;text-shadow:0 0 12px rgba(63,224,245,.5);font-variant-numeric:tabular-nums}
+.clock span{font-size:11px;color:var(--muted)}
+.live{display:flex;align-items:center;gap:8px;font:11.5px var(--mono);color:var(--muted);padding:6px 12px;border:1px solid var(--line);clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--cyan);box-shadow:0 0 8px var(--cyan);animation:blink 2s ease-in-out infinite}
+.dot.stale{background:var(--red);box-shadow:0 0 8px var(--red)}
+@keyframes blink{50%{opacity:.35}}
 
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(172px,1fr));gap:12px;margin-bottom:22px}
-.kpi{position:relative;overflow:hidden;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;backdrop-filter:blur(10px)}
-.kpi::before{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--c,var(--cyan));opacity:.9}
-.kpi b{display:block;font-size:34px;line-height:1.05;font-weight:650;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
-.kpi span{color:var(--muted);font-size:12px}
-.kpi.warn{--c:var(--amber)} .kpi.bad{--c:var(--rose)} .kpi.ok{--c:var(--mint)} .kpi.vio{--c:var(--violet)}
+.hud{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:16px;margin-bottom:16px}
+@media (max-width:1000px){.hud{grid-template-columns:1fr}}
+.panel{position:relative;background:var(--panel);border:1px solid var(--line);backdrop-filter:blur(8px)}
+.panel::before,.panel::after{content:"";position:absolute;width:10px;height:10px;border:1px solid var(--cyan);opacity:.8}
+.panel::before{top:-1px;left:-1px;border-right:0;border-bottom:0}
+.panel::after{bottom:-1px;right:-1px;border-left:0;border-top:0}
+.ph{display:flex;align-items:baseline;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line)}
+.ph h2{margin:0;font-size:14px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan)}
+.ph i{font:normal 11px var(--mono);color:var(--faint);margin-left:auto}
+.pb{padding:12px 14px}
 
-.usage{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin:-8px 0 22px}
-.gauge{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:13px 16px;backdrop-filter:blur(10px)}
-.gauge .gh{display:flex;align-items:baseline;gap:8px}
-.gauge .gh span{color:var(--muted);font-size:12px}
-.gauge .gh b{margin-left:auto;font-size:24px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-.gauge .track2{height:8px;border-radius:5px;background:var(--line);overflow:hidden;margin:9px 0 6px}
-.gauge .track2 i{display:block;height:100%;width:var(--w);border-radius:5px;background:linear-gradient(90deg,var(--mint),var(--cyan));transition:width .6s}
-.gauge.hi .track2 i{background:linear-gradient(90deg,var(--amber),var(--rose))}
-.gauge small{color:var(--faint);font-size:11.5px}
-.cols{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:20px}
+/* nucleo */
+.core{padding:14px 14px 12px;text-align:center}
+.core svg{width:100%;max-width:300px;height:auto;overflow:visible;--k:var(--cyan)}
+.core.warn svg{--k:var(--amber)} .core.bad svg{--k:var(--red)}
+.rot{transform-origin:100px 100px;animation:spin 40s linear infinite}
+.rot.r2{animation-duration:26s;animation-direction:reverse}
+.rot.r3{animation-duration:70s}
+@keyframes spin{to{transform:rotate(360deg)}}
+.core .arc{transition:stroke-dasharray .9s cubic-bezier(.2,.8,.2,1),stroke .4s}
+.core text{font-family:var(--disp);fill:var(--ink)}
+.core .big{font-size:40px;font-weight:600;fill:var(--k);filter:drop-shadow(0 0 6px var(--k))}
+.core .lbl{font-size:8px;letter-spacing:.25em;fill:var(--muted);text-transform:uppercase}
+.status{font-size:15px;letter-spacing:.3em;text-transform:uppercase;color:var(--cyan);margin-top:2px}
+.core.warn .status{color:var(--amber)} .core.bad .status{color:var(--red)}
+.status small{display:block;letter-spacing:.04em;text-transform:none;font:11.5px var(--mono);color:var(--muted);margin-top:3px}
+
+/* medidores */
+.gauges{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:12px 8px 6px}
+@media (max-width:560px){.gauges{grid-template-columns:1fr}}
+.g{text-align:center;padding:0 4px}
+.g svg{width:100%;max-width:150px;height:auto}
+.g .bg{fill:none;stroke:var(--line2);stroke-width:5;opacity:.5}
+.g .fg{fill:none;stroke:var(--cyan);stroke-width:5;stroke-linecap:butt;transition:stroke-dasharray .9s cubic-bezier(.2,.8,.2,1),stroke .4s;filter:drop-shadow(0 0 3px var(--cyan))}
+.g .tick{fill:none;stroke:var(--line2);stroke-width:5;stroke-dasharray:.4 3.6}
+.g.hi .fg{stroke:var(--amber);filter:drop-shadow(0 0 3px var(--amber))}
+.g.crit .fg{stroke:var(--red);filter:drop-shadow(0 0 3px var(--red))}
+.g text{font-family:var(--disp);fill:var(--ink);font-size:25px;font-weight:600;text-anchor:middle}
+.g .gl{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.g small{display:block;color:var(--faint);font:10.5px/1.3 var(--mono);margin-top:2px}
+.staff{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;padding:6px 14px 14px}
+.sbar .sh{display:flex;justify-content:space-between;font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.sbar .sh b{font:500 13px var(--mono);color:var(--ink)}
+.cells{display:flex;gap:3px;margin-top:6px}
+.cells i{flex:1;height:9px;border:1px solid var(--line2);transition:background .5s,box-shadow .5s}
+.cells i.on{background:var(--cyan);box-shadow:0 0 6px var(--cyan);border-color:var(--cyan)}
+.sbar.low .cells i.on{background:var(--amber);border-color:var(--amber);box-shadow:0 0 6px var(--amber)}
+.sbar.zero .sh b{color:var(--amber)}
+
+.kpis{display:flex;flex-wrap:wrap;gap:8px 22px;padding:9px 14px;border-top:1px solid var(--line);font:12px var(--mono);color:var(--muted)}
+.kpis b{color:var(--ink);font-weight:500;margin-right:5px}
+.kpis .bad b{color:var(--red)} .kpis .warn b{color:var(--amber)}
+
+.cols{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:16px}
 @media (max-width:1050px){.cols{grid-template-columns:1fr}}
-.sect{display:flex;align-items:baseline;gap:10px;margin:0 0 10px}
-.sect h2{margin:0;font-size:12px;font-weight:650;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
-.sect i{font-style:normal;color:var(--faint);font-size:12px}
-.track{margin-bottom:22px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
-.card{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:12px 13px 11px;
-  backdrop-filter:blur(10px);transition:border-color .2s,transform .2s}
-.card:hover{border-color:var(--line2);transform:translateY(-1px)}
+.col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(235px,1fr));gap:8px;padding:10px}
+.card{--c:var(--teal);position:relative;border:1px solid var(--line);border-left:2px solid var(--c);background:rgba(4,14,24,.55);padding:8px 10px 8px;transition:border-color .3s,background .3s}
+.card:hover{background:rgba(63,224,245,.06);border-color:var(--c)}
+.card.building{--c:var(--cyan)} .card.working{--c:var(--teal)} .card.waiting{--c:var(--amber)}
+.card.done,.card.paused{--c:var(--slate);opacity:.7} .card.nowt{--c:var(--red)}
 .card .top{display:flex;align-items:center;gap:8px}
-.ring{width:11px;height:11px;border-radius:50%;flex:none;background:var(--c);box-shadow:0 0 0 3px color-mix(in srgb,var(--c) 22%,transparent)}
-.card.building{--c:var(--cyan)} .card.working{--c:var(--mint)} .card.waiting{--c:var(--amber)}
-.card.done,.card.paused{--c:var(--slate)} .card.unknown,.card.nowt{--c:var(--rose)}
-.card.building .ring,.card.working .ring{animation:breathe 1.8s ease-in-out infinite}
-@keyframes breathe{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--c) 6%,transparent)}}
-.card h3{margin:0;font-size:13.5px;font-weight:600;line-height:1.25}
-.state{margin-left:auto;font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--c);white-space:nowrap}
-.meta{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:9px;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
-.meta .m{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
-.idle{height:3px;border-radius:2px;margin-top:9px;background:var(--line);overflow:hidden}
-.idle i{display:block;height:100%;width:var(--w,0%);background:var(--c);border-radius:2px;transition:width .6s}
-.chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:99px;font-size:11px;border:1px solid var(--line2);color:var(--muted)}
-.chip.pr{color:var(--cyan);border-color:color-mix(in srgb,var(--cyan) 40%,transparent)}
+.ring{width:10px;height:10px;border-radius:50%;border:1.5px solid var(--c);flex:none;position:relative}
+.ring::after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--c)}
+.card.building .ring,.card.working .ring{animation:blink 1.8s ease-in-out infinite;box-shadow:0 0 8px var(--c)}
+.card h3{margin:0;font-size:15px;font-weight:600;line-height:1.2;letter-spacing:.03em}
+.state{margin-left:auto;font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--c);white-space:nowrap}
+.meta{display:flex;flex-wrap:wrap;gap:3px 12px;margin-top:6px;color:var(--muted);font:11px var(--mono)}
+.meta .m{color:var(--faint)}
+.idle{height:2px;margin-top:7px;background:var(--line);overflow:hidden}
+.idle i{display:block;height:100%;width:var(--w,0%);background:var(--c);box-shadow:0 0 6px var(--c);transition:width .8s}
+.chip{display:inline-block;padding:0 7px;font:11px var(--mono);border:1px solid var(--line2);color:var(--cyan)}
 
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;backdrop-filter:blur(10px);margin-bottom:22px}
-.row{padding:11px 14px;border-bottom:1px solid var(--line)}
+.row{padding:9px 14px;border-bottom:1px solid var(--line)}
 .row:last-child{border-bottom:0}
 .prh{display:flex;gap:8px;align-items:baseline}
-.prn{font-family:var(--mono);color:var(--cyan);font-size:12.5px}
-.prt{font-weight:560;flex:1;min-width:0}
-.br{font-family:var(--mono);font-size:11px;color:var(--faint);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.seg{display:flex;height:6px;border-radius:3px;overflow:hidden;gap:2px;margin:9px 0 6px;background:var(--line)}
-.seg i{display:block;height:100%}
-.seg .p{background:var(--mint)} .seg .r{background:var(--amber);animation:flow 1.4s linear infinite;
-  background-image:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);background-size:60px 100%;background-color:var(--amber)}
-.seg .f{background:var(--rose)}
-@keyframes flow{from{background-position:-60px 0}to{background-position:60px 0}}
-.det{font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 14px}
-.det .bad{color:var(--rose)} .det .wait{color:var(--amber)} .det .good{color:var(--mint)}
-.tag{font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 8px;border-radius:6px;white-space:nowrap}
-.tag.q{color:var(--mint);background:color-mix(in srgb,var(--mint) 14%,transparent)}
-.tag.n{color:var(--amber);background:color-mix(in srgb,var(--amber) 14%,transparent)}
-.tag.d{color:var(--rose);background:color-mix(in srgb,var(--rose) 16%,transparent)}
+.prn{font:12.5px var(--mono);color:var(--cyan);text-decoration:none}
+a.prn:hover,a.prt:hover{text-shadow:0 0 8px var(--cyan);text-decoration:underline}
+.prt{font-weight:500;font-size:15px;flex:1;min-width:0;color:var(--ink);text-decoration:none}
+.br{font:10.5px var(--mono);color:var(--faint);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.br .conf{color:var(--red)}
+.seg{display:flex;height:4px;gap:2px;margin:8px 0 5px;background:var(--line)}
+.seg i{display:block;height:100%;transition:width .6s}
+.seg .p{background:var(--teal)} .seg .r{background:var(--amber);animation:flow 1.6s linear infinite;
+  background-image:linear-gradient(90deg,transparent,rgba(255,255,255,.4),transparent);background-size:50px 100%}
+.seg .f{background:var(--red);box-shadow:0 0 6px var(--red)}
+@keyframes flow{from{background-position:-50px 0}to{background-position:50px 0}}
+.det{font:11.5px var(--mono);color:var(--muted);display:flex;flex-wrap:wrap;gap:3px 14px}
+.det .bad{color:var(--red)} .det .wait{color:var(--amber)} .det .good{color:var(--teal)}
+.tag{font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;padding:0 7px;border:1px solid;white-space:nowrap}
+.tag.q{color:var(--teal)} .tag.n{color:var(--amber)} .tag.d{color:var(--red)}
 .crow{display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;align-items:center}
-.crow .id{font-family:var(--mono);font-size:12px;color:var(--faint)}
-.empty{padding:16px;color:var(--faint);text-align:center}
-.err{color:var(--rose);margin:0 0 12px;font-size:13px}
-footer{color:var(--faint);font-size:12px;margin-top:8px}
-@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.crow .id{font:11.5px var(--mono);color:var(--faint)}
+.empty{padding:14px;color:var(--faint);text-align:center;font:12px var(--mono)}
+.err{color:var(--red);margin:0 0 10px;font:12px var(--mono)}
+.err:empty{display:none}
+
+/* orquestrador */
+.pool{display:grid;grid-template-columns:1fr auto;gap:2px 10px;align-items:center;margin-bottom:8px}
+.pool .nm{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.pool b{font:12px var(--mono);font-weight:500}
+.pool .bar{grid-column:1/-1;height:4px;background:var(--line);position:relative}
+.pool .bar i{display:block;height:100%;background:var(--cyan);box-shadow:0 0 6px var(--cyan);transition:width .8s}
+.pool.low .bar i{background:var(--amber);box-shadow:0 0 6px var(--amber)}
+.pool .bar u{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--ink)}
+.feat{padding:8px 0;border-top:1px solid var(--line)}
+.feat .fh{display:flex;gap:8px;align-items:baseline;font-size:15px}
+.strip{display:flex;gap:2px;margin-top:5px}
+.strip i{flex:1;height:5px;background:var(--line2);max-width:26px}
+.strip i.done{background:var(--teal)} .strip i.doing{background:var(--cyan);box-shadow:0 0 6px var(--cyan);animation:blink 1.6s infinite} .strip i.block{background:var(--amber)}
+.owner{margin-top:8px;border:1px solid var(--amber);padding:6px 10px;color:var(--amber);font:12px var(--mono)}
+.owner li{margin-left:14px}
+.owner ul{margin:4px 0 0;padding:0}
+
+/* log */
+.log{font:11.5px/1.6 var(--mono);max-height:230px;overflow:hidden;padding:8px 14px;-webkit-mask-image:linear-gradient(#000 75%,transparent);mask-image:linear-gradient(#000 75%,transparent)}
+.log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted);animation:in .6s ease-out}
+.log time{color:var(--faint);margin-right:8px}
+.log .ok{color:var(--teal)} .log .warn{color:var(--amber)} .log .bad{color:var(--red)} .log .info{color:var(--cyan)}
+@keyframes in{from{opacity:0;transform:translateX(-8px)}}
+footer{color:var(--faint);font:11px var(--mono);margin-top:14px}
+:focus-visible{outline:1px solid var(--cyan);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
 <main>
   <header>
-    <div class="mark">S</div>
-    <div><h1>SonoraOS ao vivo</h1><div class="sub" id="sub">conectando</div></div>
+    <div><h1>SonoraOS</h1><div class="sub" id="sub">conectando</div></div>
     <div class="live"><span class="dot" id="dot"></span><span id="livetxt">sincronizando</span></div>
+    <div class="clock"><b id="clock">--:--:--</b><span id="date"></span></div>
   </header>
   <p class="err" id="err"></p>
-  <section class="kpis" id="kpis" aria-label="Resumo"></section>
-  <section class="usage" id="usage" aria-label="Consumo"></section>
+
+  <section class="hud">
+    <div class="panel core" id="core" aria-label="Estado geral">
+      <svg viewBox="0 0 200 200" role="img" aria-label="Núcleo de status">
+        <defs><filter id="glow"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+        <g class="rot r3" fill="none" stroke="var(--k)" opacity=".55">
+          <circle cx="100" cy="100" r="96" stroke-width=".6" stroke-dasharray="1 5"/>
+          <circle cx="100" cy="100" r="90" stroke-width="1.2" stroke-dasharray="30 12 6 12"/>
+        </g>
+        <g class="rot" fill="none" stroke="var(--k)" opacity=".8">
+          <circle cx="100" cy="100" r="80" stroke-width="3" stroke-dasharray="46 20 12 20" filter="url(#glow)"/>
+          <path d="M100 14v8M100 178v8M14 100h8M178 100h8" stroke-width="1.4"/>
+        </g>
+        <g class="rot r2" fill="none" stroke="var(--k)" opacity=".7">
+          <circle cx="100" cy="100" r="64" stroke-width="1" stroke-dasharray="3 3"/>
+          <circle cx="100" cy="100" r="58" stroke-width="5" stroke-dasharray="14 9" opacity=".5"/>
+        </g>
+        <circle cx="100" cy="100" r="72" fill="none" stroke="var(--line2)" stroke-width="5" opacity=".5"/>
+        <circle id="coreArc" class="arc" cx="100" cy="100" r="72" fill="none" stroke="var(--k)" stroke-width="5" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 100 100)" filter="url(#glow)"/>
+        <circle cx="100" cy="100" r="44" fill="rgba(3,8,15,.8)" stroke="var(--k)" stroke-width="1.2"/>
+        <path d="M100 62l33 19v38l-33 19-33-19V81z" fill="none" stroke="var(--k)" stroke-width=".7" opacity=".5"/>
+        <text id="coreN" class="big" x="100" y="105" text-anchor="middle">-</text>
+        <text class="lbl" x="100" y="120" text-anchor="middle" id="coreL">trabalhando</text>
+      </svg>
+      <div class="status" id="coreS">sincronizando<small id="coreD"></small></div>
+    </div>
+
+    <div class="panel">
+      <div class="ph"><h2>Consumo</h2><i>plano</i></div>
+      <div class="gauges" id="usage"></div>
+      <div class="ph" style="border-top:1px solid var(--line)"><h2>Equipe</h2><i>trabalhando / meta</i></div>
+      <div class="staff" id="staff"></div>
+      <div class="kpis" id="kpis"></div>
+    </div>
+  </section>
+
   <div class="cols">
-    <section>
-      <div id="tracks"></div>
+    <section class="col">
+      <div class="panel"><div class="ph"><h2>Agentes</h2><i id="agcount"></i></div><div id="tracks"></div></div>
     </section>
-    <aside>
-      <div class="sect"><h2>PRs abertos</h2><i id="prcount"></i></div>
-      <div class="panel" id="prs"></div>
-      <div class="sect"><h2>Containers</h2><i id="ccount"></i></div>
-      <div class="panel" id="cs"></div>
+    <aside class="col">
+      <div class="panel" id="orchp" hidden><div class="ph"><h2>Orquestrador</h2><i id="orchmeta"></i></div><div class="pb" id="orch"></div></div>
+      <div class="panel"><div class="ph"><h2>PRs abertos</h2><i id="prcount"></i></div><div id="prs"></div></div>
+      <div class="panel"><div class="ph"><h2>Containers</h2><i id="ccount"></i></div><div id="cs"></div></div>
+      <div class="panel"><div class="ph"><h2>Log do sistema</h2><i>eventos recentes</i></div><div class="log" id="log"><div class="info">aguardando eventos</div></div></div>
       <footer>Estado do agente é inferido: container montando o worktree = buildando; arquivo ou git mudou nos últimos 3 min = trabalhando; nada disso = aguardando.</footer>
     </aside>
   </div>
 </main>
 <script>
+const $=id=>document.getElementById(id);
 const E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dur=s=>s==null?'sem sinal':s<90?s+' s':s<5400?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h';
 const NAME={building:'buildando',working:'trabalhando',waiting:'aguardando',done:'terminou',paused:'pausado',unknown:'?','no worktree':'sem worktree'};
 const CLS=s=>s==='no worktree'?'nowt':s;
 const ORDER={waiting:0,'no worktree':0,building:1,working:2,paused:3,done:4,unknown:5};
+const PRURL='https://github.com/alesimoes/sonora-os/pull/';
+const TARGETS=[['DAW',8,/daw/i],['OS',4,/(^|[^a-z])os([^a-z]|$)|packag|iso|distro/i],['Plugins',2,/plugin/i]];
 let lastOk=0;
-function kpi(n,label,cls){return `<div class="kpi ${cls||''}"><b>${n}</b><span>${label}</span></div>`}
 const until=t=>{if(!t)return '';const s=Math.max(0,Math.round(t-Date.now()/1000));const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+'d '+h+'h':h?h+'h '+m+'min':m+' min'};
-function gauge(label,pct,sub,reset){if(typeof pct!=='number')return `<div class="gauge"><div class="gh"><span>${label}</span><b>-</b></div><small>sem dado (a linha de status ainda não gravou)</small></div>`;
-  return `<div class="gauge ${pct>=80?'hi':''}"><div class="gh"><span>${label}</span><b>${Math.round(pct)}%</b></div><div class="track2" style="--w:${Math.min(100,pct)}%"><i></i></div><small>${sub||''}${reset?' · renova em '+until(reset):''}</small></div>`}
-function renderUsage(u){
-  const ses=u.sessions||[];const main=ses.find(x=>/sound/i.test(x.cwd||''))||ses[0];
-  const ctx=main?gauge('Contexto desta sessão',main.context_pct,(main.model||'')+(main.context_tokens?' · '+Math.round(main.context_tokens/1000)+'k tokens':'')):gauge('Contexto desta sessão');
-  document.getElementById('usage').innerHTML=gauge('Consumo da semana',u.week?.used_percentage,'limite semanal do plano',u.week?.resets_at)+gauge('Janela de 5 horas',u.five_hour?.used_percentage,'limite de curto prazo',u.five_hour?.resets_at)+ctx}
-function render(s){renderUsage(s.usage||{});
+
+/* relogio */
+function clock(){const d=new Date();$('clock').textContent=d.toLocaleTimeString('pt-BR');$('date').textContent=d.toLocaleDateString('pt-BR',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}
+
+/* medidores radiais: o DOM e criado uma vez e so os atributos mudam, para a transicao rodar */
+const GDEF=[['gw','Semana'],['g5','5 horas'],['gc','Contexto']];
+$('usage').innerHTML=GDEF.map(([id,l])=>`<div class="g" id="${id}"><svg viewBox="0 0 120 120"><circle class="tick" cx="60" cy="60" r="54" pathLength="100"/><circle class="bg" cx="60" cy="60" r="46"/><circle class="fg" cx="60" cy="60" r="46" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 60 60)"/><text x="60" y="68">-</text></svg><div class="gl">${l}</div><small>&nbsp;</small></div>`).join('');
+function setGauge(id,pct,sub){const g=$(id),ok=typeof pct==='number';const p=ok?Math.max(0,Math.min(100,pct)):0;
+  g.querySelector('.fg').setAttribute('stroke-dasharray',p+' 100');g.querySelector('text').textContent=ok?Math.round(pct)+'%':'-';
+  g.classList.toggle('hi',ok&&pct>=80&&pct<95);g.classList.toggle('crit',ok&&pct>=95);
+  g.querySelector('small').textContent=ok?sub||'':'sem dado (a linha de status ainda não gravou)'}
+function renderUsage(u){const ses=u.sessions||[];const main=ses.find(x=>/sound/i.test(x.cwd||''))||ses[0];
+  setGauge('gw',u.week?.used_percentage,'limite semanal'+(u.week?.resets_at?' · renova em '+until(u.week.resets_at):''));
+  setGauge('g5',u.five_hour?.used_percentage,'curto prazo'+(u.five_hour?.resets_at?' · renova em '+until(u.five_hour.resets_at):''));
+  setGauge('gc',main?.context_pct,main?((main.model||'')+(main.context_tokens?' · '+Math.round(main.context_tokens/1000)+'k tokens':'')):'')}
+
+/* equipe vs metas */
+function renderStaff(s){
+  const busy=s.agents.filter(a=>a.state==='building'||a.state==='working');
+  let tot=0,tgt=0;
+  $('staff').innerHTML=TARGETS.map(([n,t,re])=>{
+    const w=busy.filter(a=>re.test(a.track||'')).length;tot+=Math.min(w,t);tgt+=t;
+    const cells=Array.from({length:Math.max(t,w)},(_,i)=>`<i class="${i<w?'on':''}"></i>`).join('');
+    return `<div class="sbar ${w<t?'low':''} ${w===0?'zero':''}"><div class="sh"><span>${n}</span><b>${w} / ${t}</b></div><div class="cells">${cells}</div></div>`}).join('');
+  return [tot,tgt,busy.length]}
+
+/* log de eventos: compara o estado anterior com o novo */
+let prev=null;const logLines=[];
+function ev(cls,txt){const t=new Date().toLocaleTimeString('pt-BR');logLines.unshift(`<div class="${cls}"><time>${t}</time>${E(txt)}</div>`);if(logLines.length>40)logLines.pop();$('log').innerHTML=logLines.join('')}
+function diff(s){
+  const cur={ag:Object.fromEntries(s.agents.map(a=>[a.id,a])),pr:Object.fromEntries(s.prs.map(p=>[p.number,p]))};
+  if(prev){
+    for(const id in cur.ag){const a=cur.ag[id],o=prev.ag[id];
+      if(!o)ev('info','agente novo: '+a.label);
+      else if(o.state!==a.state){
+        if(a.state==='done')ev('ok','agente terminou: '+a.label);
+        else if(a.state==='waiting')ev('warn','agente aguardando: '+a.label);
+        else ev('info',a.label+' → '+(NAME[a.state]||a.state))}}
+    for(const n in cur.pr){const p=cur.pr[n],o=prev.pr[n];
+      if(!o)ev('info','PR #'+n+' aberto: '+p.title);
+      else if(p.failed.length&&!o.failed.length)ev('bad','PR #'+n+' vermelho: '+p.failed.join(', '));
+      else if(!p.failed.length&&o.failed.length)ev('ok','PR #'+n+' voltou a verde');}
+    for(const n in prev.pr)if(!cur.pr[n])ev('ok','PR #'+n+' saiu da lista (mergeado ou fechado)');
+  }else ev('info','painel conectado: '+s.agents.length+' agentes, '+s.prs.length+' PRs');
+  prev=cur}
+
+function render(s){
+  renderUsage(s.usage||{});
+  const [tot,tgt,busy]=renderStaff(s);
   const act=s.agents.filter(a=>!['done','paused'].includes(a.state));
   const waiting=act.filter(a=>a.state==='waiting'||a.state==='no worktree').length;
-  const busy=act.filter(a=>a.state==='building'||a.state==='working').length;
   const red=s.prs.filter(p=>p.failed.length).length;
   const dups=Object.values(s.watchers.reduce((m,w)=>(m[w.pr]=(m[w.pr]||0)+1,m),{})).filter(n=>n>1).length;
-  document.getElementById('kpis').innerHTML=
-    kpi(act.length,'agentes ativos','vio')+kpi(busy,'buildando ou trabalhando','ok')+
-    kpi(waiting,'aguardando',waiting?'warn':'')+kpi(s.prs.length,'PRs abertos')+
-    kpi(red,'PRs com check vermelho',red?'bad':'ok')+kpi(s.containers.length,'containers')+kpi(s.watchers.length-dups*0,'watchers de merge',dups?'bad':'');
+  /* nucleo */
+  const ratio=tgt?Math.min(1,tot/tgt):0;
+  const cls=red?'bad':ratio<.6?'warn':'';
+  const core=$('core');core.classList.toggle('bad',!!red);core.classList.toggle('warn',!red&&ratio<.6);
+  $('coreArc').setAttribute('stroke-dasharray',(ratio*100)+' 100');
+  $('coreN').textContent=tot+'/'+tgt;
+  $('coreS').firstChild.nodeValue=red?'atenção: falha':ratio<.6?'equipe abaixo da meta':'sistema nominal';
+  $('coreD').textContent=busy+' agentes ativos · '+red+' PR'+(red===1?'':'s')+' vermelho'+(red===1?'':'s');
+  $('kpis').innerHTML=
+    `<span><b>${act.length}</b>agentes ativos</span><span class="${waiting?'warn':''}"><b>${waiting}</b>aguardando</span>`+
+    `<span><b>${s.prs.length}</b>PRs abertos</span><span class="${red?'bad':''}"><b>${red}</b>PRs com check vermelho</span>`+
+    `<span><b>${s.containers.length}</b>containers</span><span class="${dups?'bad':''}"><b>${s.watchers.length}</b>watchers de merge</span>`;
+  $('agcount').textContent=act.length+' ativos de '+s.agents.length;
+  /* agentes */
   const by={};s.agents.forEach(a=>{(by[a.track||'Outros']=by[a.track||'Outros']||[]).push(a)});
-  document.getElementById('tracks').innerHTML=Object.keys(by).map(t=>{
+  $('tracks').innerHTML=Object.keys(by).map(t=>{
     const list=by[t].slice().sort((a,b)=>ORDER[a.state]-ORDER[b.state]);
     const n=list.filter(a=>!['done','paused'].includes(a.state)).length;
-    return `<div class="track"><div class="sect"><h2>${E(t)}</h2><i>${n} ativos de ${list.length}</i></div><div class="grid">`+
+    return `<div class="ph" style="border-top:1px solid var(--line)"><h2 style="color:var(--ink)">${E(t)}</h2><i>${n} ativos de ${list.length}</i></div><div class="grid">`+
     list.map(a=>{
       const w=a.idle_seconds==null?0:Math.min(100,Math.round(a.idle_seconds/600*100));
       const showIdle=!['done','paused'].includes(a.state);
       return `<article class="card ${CLS(a.state)}"><div class="top"><span class="ring"></span><h3>${E(a.label)}</h3><span class="state">${E(NAME[a.state]||a.state)}</span></div>
-      <div class="meta"><span class="m">${E(a.id.slice(0,7))}</span>${a.pr?`<span class="chip pr">PR #${a.pr}</span>`:''}
+      <div class="meta"><span class="m">${E(a.id.slice(0,7))}</span>${a.pr?`<a class="chip" href="${PRURL}${a.pr}" target="_blank" rel="noopener" style="text-decoration:none">PR #${a.pr}</a>`:''}
       ${showIdle?`<span>parado há ${dur(a.idle_seconds)}</span>`:''}${a.containers.length?`<span>${a.containers.length} container${a.containers.length>1?'s':''}</span>`:''}${a.dirty?`<span>${a.dirty} arquivo${a.dirty>1?'s':''} alterado${a.dirty>1?'s':''}</span>`:''}</div>
-      ${showIdle?`<div class="idle" style="--w:${w}%"><i></i></div>`:''}</article>`}).join('')+`</div></div>`}).join('')||'<div class="empty">Nenhum agente no arquivo de rótulos.</div>';
+      ${showIdle?`<div class="idle" style="--w:${w}%"><i></i></div>`:''}</article>`}).join('')+`</div>`}).join('')||'<div class="empty">Nenhum agente no arquivo de rótulos.</div>';
+  /* PRs */
   const w={};s.watchers.forEach(x=>{w[x.pr]=(w[x.pr]||0)+1});
-  document.getElementById('prcount').textContent=s.prs.length+' abertos';
-  document.getElementById('prs').innerHTML=s.prs.map(p=>{
+  $('prcount').textContent=s.prs.length+' abertos';
+  $('prs').innerHTML=s.prs.map(p=>{
     const tot=Math.max(1,p.passed+p.pending.length+p.failed.length);
     const q=w[p.number]>1?`<span class="tag d">${w[p.number]} watchers</span>`:w[p.number]?'<span class="tag q">na fila</span>':'<span class="tag n">sem watcher</span>';
     const det=[];
     if(p.failed.length)det.push(`<span class="bad">falhou: ${p.failed.map(E).join(', ')}</span>`);
     if(p.pending.length)det.push(`<span class="wait">rodando: ${p.pending.map(E).join(', ')}</span>`);
     if(!p.failed.length&&!p.pending.length)det.push(`<span class="good">todos os ${p.passed} checks verdes</span>`);
-    return `<div class="row"><div class="prh"><span class="prn">#${p.number}</span><span class="prt">${E(p.title)}</span>${q}</div>
-    <div class="br">${E(p.branch)} · ${E(p.merge||'')}</div>
+    const conflict=p.merge==='DIRTY';
+    return `<div class="row"><div class="prh"><a class="prn" href="${PRURL}${p.number}" target="_blank" rel="noopener">#${p.number}</a><a class="prt" href="${PRURL}${p.number}" target="_blank" rel="noopener">${E(p.title)}</a>${q}</div>
+    <div class="br">${E(p.branch)} · <span class="${conflict?'conf':''}">${E(conflict?'DIRTY (conflito)':p.merge||'')}</span></div>
     <div class="seg"><i class="p" style="width:${p.passed/tot*100}%"></i><i class="r" style="width:${p.pending.length/tot*100}%"></i><i class="f" style="width:${p.failed.length/tot*100}%"></i></div>
     <div class="det">${det.join('')}</div></div>`}).join('')||'<div class="empty">Nenhum PR aberto.</div>';
+  /* containers */
   const owner=c=>{const a=s.agents.find(a=>a.containers.includes(c.id));return a?E(a.label):'<span style="color:var(--faint)">sem dono conhecido</span>'};
   const now=Date.now()/1000;
-  document.getElementById('ccount').textContent=s.containers.length+' rodando';
-  document.getElementById('cs').innerHTML=s.containers.map(c=>`<div class="row crow"><span class="id">${c.id}</span><span>${owner(c)}<div class="br">${E(c.image)}</div></span><span class="sub">${dur(Math.round(now-Date.parse(c.started)/1000))}</span></div>`).join('')||'<div class="empty">Nenhum container.</div>';
-  document.getElementById('err').textContent=s.errors.join(' | ');
+  $('ccount').textContent=s.containers.length+' rodando';
+  $('cs').innerHTML=s.containers.map(c=>`<div class="row crow"><span class="id">${c.id}</span><span>${owner(c)}<div class="br">${E(c.image)}</div></span><span class="sub">${dur(Math.round(now-Date.parse(c.started)/1000))}</span></div>`).join('')||'<div class="empty">Nenhum container.</div>';
+  renderOrch(s.orchestrator,w);
+  $('err').textContent=(s.errors||[]).join(' | ');
+  diff(s);
 }
+
+/* orquestrador: formato tolerante, tudo opcional */
+function renderOrch(o,w){
+  const box=$('orchp');
+  if(!o||typeof o!=='object'){box.hidden=true;return}
+  box.hidden=false;
+  let pools=o.pools||[];
+  if(!Array.isArray(pools))pools=Object.entries(pools).map(([name,v])=>typeof v==='object'?{name,...v}:{name,working:v});
+  const feats=Array.isArray(o.features)?o.features:Object.entries(o.features||{}).map(([name,v])=>({name,...v}));
+  const waits=o.waits_on_owner||o.waits||[];
+  $('orchmeta').textContent=o.updated?String(o.updated).slice(0,19).replace('T',' '):'';
+  const num=v=>typeof v==='number'?v:(v&&typeof v==='object'?(v.length??0):0);
+  let h=pools.map(p=>{const wk=num(p.working??p.active??p.count),fl=num(p.floor??p.min??p.target),mx=Math.max(wk,fl,1);
+    return `<div class="pool ${wk<fl?'low':''}"><span class="nm">${E(p.name||p.pool||'?')}</span><b>${wk} / piso ${fl}</b><div class="bar"><i style="width:${wk/mx*100}%"></i><u style="left:${fl/mx*100}%"></u></div></div>`}).join('');
+  h+=feats.map(f=>{
+    const tasks=f.tasks||f.strip||[];
+    const st=t=>{const v=String(typeof t==='object'?(t.state||t.status||''):t).toLowerCase();return /done|ok|merged|x|feito/.test(v)?'done':/block|wait|fail|red/.test(v)?'block':/doing|work|run|progress|building/.test(v)?'doing':''};
+    const pr=f.pr?`<a class="prn" href="${PRURL}${f.pr}" target="_blank" rel="noopener">#${f.pr}</a>`:'';
+    return `<div class="feat"><div class="fh">${pr}<span style="flex:1;min-width:0">${E(f.name||f.title||f.id||'?')}</span>${f.state||f.status?`<span class="m" style="font-size:11px;color:var(--muted)">${E(f.state||f.status)}</span>`:''}</div>
+    ${Array.isArray(tasks)&&tasks.length?`<div class="strip">${tasks.map(t=>`<i class="${st(t)}" title="${E(typeof t==='object'?(t.name||t.title||''):t)}"></i>`).join('')}</div>`:''}</div>`}).join('');
+  const wl=Array.isArray(waits)?waits:[waits];
+  if(wl.length)h+=`<div class="owner">espera o dono:<ul>${wl.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`;
+  $('orch').innerHTML=h||'<div class="empty">status.json sem pools nem features.</div>';
+}
+
 async function tick(){
   try{const r=await fetch('/api/state',{cache:'no-store'});const s=await r.json();lastOk=Date.now();render(s);
-    document.getElementById('sub').textContent=new Date().toLocaleString('pt-BR');}
-  catch(e){document.getElementById('err').textContent='sem resposta do servidor: '+e}
+    $('sub').textContent='painel de agentes · atualizado '+new Date().toLocaleTimeString('pt-BR');}
+  catch(e){$('err').textContent='sem resposta do servidor: '+e}
 }
 function pulse(){const age=(Date.now()-lastOk)/1000,stale=!lastOk||age>15;
-  document.getElementById('dot').classList.toggle('stale',stale);
-  document.getElementById('livetxt').textContent=stale?'sem sincronia':'ao vivo, atualizado há '+Math.round(age)+' s'}
-tick();setInterval(tick,5000);setInterval(pulse,1000);
+  $('dot').classList.toggle('stale',stale);
+  $('livetxt').textContent=stale?'sem sincronia':'ao vivo, atualizado há '+Math.round(age)+' s'}
+clock();tick();setInterval(tick,5000);setInterval(()=>{pulse();clock()},1000);
 </script>
 </body>
 </html>

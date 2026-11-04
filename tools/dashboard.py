@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 WORKING_SECONDS = 180
-state = {"usage": {"sessions": [], "week": None, "five_hour": None}, "updated": 0, "agents": [], "prs": [], "watchers": [], "containers": [], "errors": []}
+state = {"usage": {"sessions": [], "week": None, "five_hour": None}, "updated": 0, "agents": [], "prs": [], "watchers": [], "containers": [], "errors": [], "orchestrator": None}
 lock = threading.Lock()
 
 
@@ -166,6 +166,15 @@ def read_usage():
     return {"sessions": rows, "week": pick("seven_day"), "five_hour": pick("five_hour")}
 
 
+def read_orchestrator():
+    """planning/orchestrator/status.json when the coordinator writes it; None otherwise."""
+    try:
+        with open(os.path.join(ROOT, "planning", "orchestrator", "status.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def refresh_loop(agents_file):
     last_pr, prs = 0, []
     while True:
@@ -184,7 +193,7 @@ def refresh_loop(agents_file):
         containers = read_containers()
         watchers = read_watchers()
         with lock:
-            state.update(updated=int(time.time()), prs=prs, watchers=watchers, containers=containers, usage=read_usage())
+            state.update(updated=int(time.time()), prs=prs, watchers=watchers, containers=containers, usage=read_usage(), orchestrator=read_orchestrator())
         agents = read_agents(labels, containers)
         with lock:
             state.update(updated=int(time.time()), agents=agents, prs=prs,
