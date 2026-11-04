@@ -983,8 +983,6 @@ int test_scene() {
     return 0;
 }
 
-}  // namespace
-
 // Write to Selection holds the strip's value flat across the range.
 int test_write_selection() {
     ModelDocument doc(make_empty_session(1, kRate));
@@ -1004,8 +1002,13 @@ int test_write_selection() {
     }
     OK(l->points.back() == (AutomationPoint{200000, -20.0f}));
     OK(valid(doc.snapshot()));
+    // One undo step puts the ride back.
+    OK(ctl.undo(why));
+    OK(lane(doc, 0, AutomationParam::Volume)->points[0] == (AutomationPoint{0, -40.0f}));
     return 0;
 }
+
+}  // namespace
 
 int main() {
     // Every test runs, so one failure does not hide the next.

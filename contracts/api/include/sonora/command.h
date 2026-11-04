@@ -37,7 +37,7 @@ enum class CommandTarget {
 enum class CommandDomain {
     Engine,     // transport.*, track.*, edit operations, nudge.*, app.save
     Interface,  // tool.*, zoom.*, edit.mode.*, focus.*, window.transport,
-                // window.undo_history, window.memory_locations, app.quit,
+                // window.undo_history, window.memory_locations, window.event_list, app.quit,
                 // app.save_as_template, app.new_from_template
 };
 
@@ -236,6 +236,9 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"automation.write_selection", CommandTarget::None,
          "Write the track's current fader or pan flat across the selected automation range",
          false, CommandDomain::Interface},
+        {"automation.snapshot", CommandTarget::None,
+         "Add a breakpoint at the insertion point holding the track's current fader or pan",
+         false, CommandDomain::Interface},
         {"automation.thin", CommandTarget::None,
          "Thin the selected automation range to the fewest breakpoints that keep its shape",
          false, CommandDomain::Interface},
@@ -319,6 +322,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // it changes goes through marker operations, undoable like any edit.
         {"window.memory_locations", CommandTarget::None,
          "Show or hide the Memory Locations window", false, CommandDomain::Interface},
+        // Logic's Event List, for the automation points of one lane of the
+        // selected track. What it changes goes through EditAutomation, undoable.
+        {"window.event_list", CommandTarget::None,
+         "Show or hide the automation Event List window", false, CommandDomain::Interface},
         // Setup > Latency: measures and sets the round trip through the
         // latency.* commands.
         {"window.latency", CommandTarget::None, "Show or hide the Latency window",

@@ -142,6 +142,9 @@ void SessionModel::installCommands(CommandRegistry& local) {
     simple("automation.write_selection", [this](const CommandContext&, Why& why) {
         return ctl_.write_automation_to_selection(why);
     });
+    simple("automation.snapshot", [this](const CommandContext&, Why& why) {
+        return ctl_.snapshot_automation(why);
+    });
     simple("automation.thin",
            [this](const CommandContext&, Why& why) { return ctl_.thin_automation(why); });
     simple("automation.toggle_follows_edit", [this](const CommandContext&, Why&) {
@@ -380,6 +383,10 @@ void SessionModel::installCommands(CommandRegistry& local) {
         setMemoryLocationsOpen(!memory_locations_open_);
         return true;
     });
+    local.install("window.event_list", [this](const CommandContext&) {
+        setEventListOpen(!event_list_open_);
+        return true;
+    });
     local.install("window.latency", [this](const CommandContext&) {
         setLatencyOpen(!latency_open_);
         return true;
@@ -513,6 +520,7 @@ void SessionModel::sync() {
         emit contentChanged();
         emit mixChanged();
         emit markersChanged();
+        emit eventListChanged();
         emit rowsChanged();
         if (dirty() != seen_dirty_) {
             seen_dirty_ = dirty();
@@ -542,7 +550,12 @@ void SessionModel::sync() {
         seen_sel_valid_ = true;
         content = overlay = true;
         emit selectionChanged();
+        emit eventListChanged();
         updateCounters(true);
+    }
+    if (ctl_.event_lane() != seen_event_lane_) {
+        seen_event_lane_ = ctl_.event_lane();
+        emit eventListChanged();
     }
     if (!seen_view_valid_ || !same(seen_view_, ctl_.view())) {
         seen_view_ = ctl_.view();
@@ -640,6 +653,74 @@ void SessionModel::setMemoryLocationsOpen(bool on) {
     if (on == memory_locations_open_) return;
     memory_locations_open_ = on;
     emit memoryLocationsOpenChanged();
+}
+
+void SessionModel::setEventListOpen(bool on) {
+    if (on == event_list_open_) return;
+    event_list_open_ = on;
+    emit eventListOpenChanged();
+}
+
+QString SessionModel::eventListTitle() const {
+    const int t = ctl_.selection().track;
+    if (t < 0 || t >= static_cast<int>(ctl_.snapshot().edit->tracks.size())) {
+        return QStringLiteral("No track selected");
+    }
+    return q(ctl_.snapshot().edit->tracks[static_cast<std::size_t>(t)]->name) + QStringLiteral(" - ") +
+           QString::fromLatin1(lane_name(lane_param(ctl_.event_lane())));
+}
+
+QVariantList SessionModel::eventList() const {
+    QVariantList rows;
+    const model::AutomationLane* l = ctl_.event_points();
+    if (l == nullptr) return rows;
+    const auto& settings = ctl_.snapshot().settings;
+    const model::AutomationParam p = l->param;
+    for (std::size_t i = 0; i < l->points.size(); ++i) {
+        const model::AutomationPoint& pt = l->points[i];
+        QVariantMap row;
+        row[QStringLiteral("number")] = static_cast<int>(i) + 1;
+        row[QStringLiteral("time")] = q(format_time(main_fmt_, pt.at, settings));
+        row[QStringLiteral("value")] = q(lane_value_text(p, pt.value));
+        // The second of a step's two points at one frame.
+        row[QStringLiteral("step")] = i > 0 && l->points[i - 1].at == pt.at;
+        rows.push_back(row);
+    }
+    return rows;
+}
+
+void SessionModel::setEventLane(int lane) {
+    ctl_.set_event_lane(lane);
+    sync();
+}
+
+bool SessionModel::eventEdit(int row, const QString& time, const QString& value) {
+    const model::AutomationLane* l = ctl_.event_points();
+    if (l == nullptr || row < 0 || static_cast<std::size_t>(row) >= l->points.size()) {
+        return run(false, "that event is no longer in the lane");
+    }
+    const model::AutomationPoint& was = l->points[static_cast<std::size_t>(row)];
+    model::Frames at = was.at;
+    float v = was.value;
+    std::string why;
+    if (!time.trimmed().isEmpty() &&
+        !parse_time(main_fmt_, time.trimmed().toStdString(), ctl_.snapshot().settings, at, why)) {
+        return run(false, why);
+    }
+    if (!value.trimmed().isEmpty()) {
+        // The spelling the strip's own readout takes (fader_taper.h); Volume
+        // Trim is in dB too.
+        const bool ok = l->param == model::AutomationParam::Pan
+                            ? parse_pan_text(value.trimmed().toStdString(), v, why)
+                            : parse_gain_text(value.trimmed().toStdString(), v, why);
+        if (!ok) return run(false, why);
+    }
+    return run(ctl_.event_edit(static_cast<std::size_t>(row), at, v, why), why);
+}
+
+bool SessionModel::eventDelete(int row) {
+    std::string why;
+    return run(ctl_.event_delete(static_cast<std::size_t>(std::max(row, 0)), why), why);
 }
 
 void SessionModel::setLatencyOpen(bool on) {
@@ -1184,6 +1265,7 @@ void SessionModel::cycleMainCounter() {
     main_counter_.clear();
     updateCounters(true);
     emit selectionChanged();
+    emit eventListChanged();
     emit markersChanged();   // the Memory Locations window shows the main counter's format
 }
 

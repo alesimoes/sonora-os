@@ -174,6 +174,21 @@ Rectangle {
         }
     }
 
+    // --- the automation Event List, floating over either window ---
+    Loader {
+        id: eventListLoader
+        objectName: "eventListLoader"
+        x: root.width - width - Theme.space6 - 40
+        y: body.y + 120
+        z: 8
+        sourceComponent: EventListWindow {
+            objectName: "eventListWindow"
+            shell: root.shell
+            session: root.session
+            mover: eventListLoader
+        }
+    }
+
     // --- the Latency window (Setup > Latency…), floating over either window ---
     Loader {
         id: latencyLoader
@@ -1191,7 +1206,10 @@ Rectangle {
                     { name: "editSelectAll", label: "Select All", command: "edit.select_all", on: true },
                     { name: "", label: "", command: "", on: false },
                     { name: "editNewMarker", label: "New Marker…", command: "marker.add", on: true },
-                    { name: "editMemoryLocations", label: "Memory Locations", command: "window.memory_locations", on: true }
+                    { name: "editMemoryLocations", label: "Memory Locations", command: "window.memory_locations",on: true },
+                    { name: "editEventList", label: "Automation Event List", command: "window.event_list", on: true },
+                    { name: "editWriteSelection", label: "Write Automation to Selection", command: "automation.write_selection", on: true },
+                    { name: "editSnapshotAutomation", label: "Snapshot Automation", command: "automation.snapshot", on: true }
                 ]
                 Item {
                     required property var modelData

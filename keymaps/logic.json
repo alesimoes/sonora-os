@@ -60,6 +60,22 @@
     "cmd+t": "edit.separate_at_selection",
     "cmd+j": "edit.heal_separation",
     "cmd+r": "edit.repeat",
+    "ctrl+alt+w": {
+      "command": "automation.write_selection",
+      "origin": "sonora",
+      "verified": false,
+      "comment": "Ours. Logic writes automation by mode; no key for a flat write is documented. Holds the track's fader or pan flat across the selected lane range."
+    },
+    "ctrl+alt+k": {
+      "command": "automation.snapshot",
+      "origin": "sonora",
+      "comment": "Ours. One breakpoint at the insertion point holding the fader or pan as it stands, on the Event List's lane."
+    },
+    "e": {
+      "command": "window.event_list",
+      "verified": false,
+      "comment": "Logic's Show Event List key is E; not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md. Ours lists a lane's automation points, not Logic's MIDI events."
+    },
     "ctrl+alt+t": {
       "command": "automation.thin",
       "origin": "sonora",

@@ -76,6 +76,13 @@ class SessionModel : public QObject {
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
     Q_PROPERTY(bool memoryLocationsOpen READ memoryLocationsOpen NOTIFY memoryLocationsOpenChanged)
     // Setup > Latency (ADR-0019, update of 2026-10-26): window.latency.
+    // The Event List window: the points of one automation lane of the
+    // selected track, in time order (Logic's Event List, Pro Tools' lane
+    // breakpoints), each editable by value and time.
+    Q_PROPERTY(bool eventListOpen READ eventListOpen NOTIFY eventListOpenChanged)
+    Q_PROPERTY(QVariantList eventList READ eventList NOTIFY eventListChanged)
+    Q_PROPERTY(QString eventListTitle READ eventListTitle NOTIFY eventListChanged)
+    Q_PROPERTY(int eventLane READ eventLane NOTIFY eventListChanged)
     Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
@@ -348,6 +355,18 @@ public:
     QVariantList markers() const;
     bool memoryLocationsOpen() const { return memory_locations_open_; }
     void setMemoryLocationsOpen(bool on);
+    bool eventListOpen() const { return event_list_open_; }
+    void setEventListOpen(bool on);
+    QVariantList eventList() const;
+    QString eventListTitle() const;
+    int eventLane() const { return ctl_.event_lane(); }
+    // The lane the list shows: 0 Volume, 1 Pan, 2 Volume Trim.
+    Q_INVOKABLE void setEventLane(int lane);
+    // Row `row` given the value and time typed in the window: the value as the
+    // lane says it ("-6.0", "<30" for a pan), the time in the main counter's
+    // format. Either may be empty to keep what the row has. One undo step.
+    Q_INVOKABLE bool eventEdit(int row, const QString& time, const QString& value);
+    Q_INVOKABLE bool eventDelete(int row);
     bool latencyOpen() const { return latency_open_; }
     Q_INVOKABLE void setLatencyOpen(bool on);
     // A row of `markers`: recalled (the selection moves to it), or cleared,
@@ -530,6 +549,8 @@ signals:
     void repairsChanged();
     void undoHistoryOpenChanged();
     void markersChanged();
+    void eventListOpenChanged();
+    void eventListChanged();
     void memoryLocationsOpenChanged();
     void latencyOpenChanged();
     // marker.add with no name, stopped: the window asks for one, offering
@@ -675,6 +696,8 @@ private:
     QString window_ = QStringLiteral("edit");
     bool undo_history_open_ = false;
     bool memory_locations_open_ = false;
+    bool event_list_open_ = false;
+    int seen_event_lane_ = 0;
     bool latency_open_ = false;
 
     QVariantList repairs_;
