@@ -168,6 +168,15 @@ void round_trips() {
         CHECK(mentions(error, "names no session file"));
         CHECK(!wire::decode_load(std::string(wire::kMaxSavePath + 1, 'a') + std::string(1, '\0'),
                                  file, load, error));
+        // A template's Load (protocol 54): the prefix is part of the path,
+        // which still ends at the first NUL, and no real path starts with it.
+        {
+            const std::string tpath = std::string(kLoadTemplatePrefix) + "/t/Vocals/Vocals.sonora";
+            CHECK(wire::decode_load(wire::encode_load(tpath, "{}"), file, load, error));
+            CHECK(file == tpath && load == "{}");
+            CHECK(file.rfind(kLoadTemplatePrefix, 0) == 0);
+            CHECK(kLoadTemplatePrefix[0] == '@');
+        }
         // SaveAs (protocol 29): the path, the flags in decimal, the bytes;
         // a flag this protocol does not know is refused, never ignored.
         m.action = ModelAction::SaveAs;
@@ -439,7 +448,9 @@ void version_check() {
     // 2026-11-03; follows 41).
     // 49: mix.bounce, mix.bounce_cancel and EventKind::Bounce (ui.mixer.bounce;
     // follows 48, 43 to 48 being other PRs').
-    CHECK(kProtocolVersion == 49);
+    CHECK(kProtocolVersion == 62);
+    // 61: mix.bounce's file=, rate=, dither= words (interchange.audio.export).
+    // 62: Load's template prefix (daw.model.session_mgmt, ADR-0030 amendment).
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -450,7 +461,7 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 49 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 62 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // A version-42 decoder knows no Bounce event: the first kind past
@@ -460,7 +471,7 @@ void version_check() {
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 49"));
+                   "speaks version 62"));
 }
 
 // Protocol 49: a Bounce event carries the fraction in `frame`, the frames in

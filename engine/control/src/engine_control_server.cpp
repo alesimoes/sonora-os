@@ -1410,12 +1410,64 @@ void EngineControlServer::follow_latency() {
     if (keep) keep_latency(r.frames, latency_source_);
 }
 
+namespace {
+// A template's plugin states and files, copied into the new session's folder
+// so each insert starts from them. Regular files only, never through a link;
+// the template is only read.
+bool copy_template_state(const std::string& from, const std::string& to, std::string& why) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* sub : {session_files::kPluginStateDir, session_files::kPluginFilesDir}) {
+        const fs::path base = fs::path(from) / sub;
+        if (!fs::is_directory(fs::symlink_status(base, ec))) continue;
+        for (fs::recursive_directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec)) {
+            std::error_code type;
+            if (!fs::is_regular_file(it->symlink_status(type)) || it->path().extension() == ".tmp") continue;
+            const fs::path rel = it->path().lexically_relative(from);
+            const fs::path dest = fs::path(to) / rel;
+            fs::create_directories(dest.parent_path(), type);
+            if (!type) fs::copy_file(it->path(), dest, fs::copy_options::skip_existing, type);
+            if (type) {
+                why = it->path().string() + ": " + type.message();
+                return false;
+            }
+        }
+        if (ec) {
+            why = base.string() + ": " + ec.message();
+            return false;
+        }
+    }
+    return true;
+}
+}  // namespace
+
 bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::string& why,
                                std::vector<std::string>& notices, bool& entered) {
     entered = false;
     std::string file;
     std::string_view bytes;
     if (!api::wire::decode_load(m.op, file, bytes, why)) return false;
+    // A template (protocol 54, ADR-0030): its folder is only read; the
+    // session lives in a fresh Untitled folder, so nothing recorded, autosaved
+    // or half-saved can land beside the template.
+    std::string template_folder;
+    const std::string_view template_prefix = api::kLoadTemplatePrefix;
+    if (file.compare(0, template_prefix.size(), template_prefix) == 0) {
+        file.erase(0, template_prefix.size());
+        namespace fs = std::filesystem;
+        const fs::path t(file);
+        std::error_code ec;
+        if (opts_.sessions_root.empty()) {
+            why = "this engine has no sessions folder to make a session from a template in";
+            return false;
+        }
+        if (!t.is_absolute() || t.extension() != ".sonora" || !fs::is_regular_file(t, ec)) {
+            why = "there is no template session file at " + file;
+            return false;
+        }
+        template_folder = fs::path(session_files::session_folder_of(file)).lexically_normal().string();
+        file.clear();
+    }
     const auto l = loads_.find(from);
     model::LoadParts* parts = l != loads_.end() ? l->second.parts.get() : nullptr;
     if (session_.loop_take_running()) {
@@ -1445,7 +1497,8 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
     ActiveFolder::Kind kind = ActiveFolder::Kind::Named;
     // A new session in a fresh Untitled folder; one with nothing in it yet
     // is as good as a new one, and is kept.
-    const bool new_folder = file.empty() && !opts_.sessions_root.empty() && !folder_->fresh();
+    const bool new_folder = file.empty() && !opts_.sessions_root.empty() &&
+                            (!folder_->fresh() || !template_folder.empty());
     if (!file.empty()) {
         const fs::path p(file);
         std::error_code ec;
@@ -1502,13 +1555,23 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
             return false;
         }
         kind = ActiveFolder::Kind::Untitled;
+        if (!template_folder.empty() && !copy_template_state(template_folder, folder, why)) {
+            std::error_code ec;
+            fs::remove_all(folder, ec);
+            why = "the template's plugin states could not be copied: " + why;
+            return false;
+        }
     }
     if (!folder.empty()) {
         if (!folder_->enter(session_, folder, kind, why, notices)) {
             if (new_folder) {
                 std::error_code ec;
-                fs::remove(fs::path(folder) / "Audio Files", ec);
-                fs::remove(folder, ec);
+                if (!template_folder.empty()) {
+                    fs::remove_all(folder, ec);
+                } else {
+                    fs::remove(fs::path(folder) / "Audio Files", ec);
+                    fs::remove(folder, ec);
+                }
             }
             why = (new_folder ? "the new session's folder could not be opened: "
                               : "the session's folder could not be opened: ") +

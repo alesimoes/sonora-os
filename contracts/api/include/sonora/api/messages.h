@@ -170,7 +170,19 @@ namespace sonora::api {
 //   the words file=, rate= and dither= and format=int16. A version-49 engine
 //   would refuse them one by one; the bump makes it refuse the connection
 //   instead of writing a 24-bit BWF for a request that asked for a FLAC.
-constexpr uint32_t kProtocolVersion = 61;
+// 62 (daw.model.session_mgmt, ADR-0030 amendment; follows 61, the highest taken in
+//   this bundle): a Load whose file starts with kLoadTemplatePrefix opens
+//   a template as a new session in a fresh Untitled folder, never in the
+//   template's own. A version-42 engine refuses the path as not absolute.
+constexpr uint32_t kProtocolVersion = 62;
+
+// ModelAction::Load's file, when it starts with this and names a template's
+// session file: the engine makes a new Untitled folder in its sessions
+// folder, copies the template's "Plugin State" and "Plugin Files" into it,
+// and enters that folder with the document the Load carries. The template's
+// folder is only read, so a take, an autosave or a failed Save As cannot
+// write into it (ADR-0030 section 3). A path never starts with '@'.
+inline constexpr const char* kLoadTemplatePrefix = "@template:";
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

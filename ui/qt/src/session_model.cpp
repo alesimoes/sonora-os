@@ -2133,8 +2133,15 @@ QString SessionModel::saveAsRoot() const {
 
 bool SessionModel::inTemplateFolder() const {
     if (engine_folder_.isEmpty() || templates_dir_.isEmpty()) return false;
-    const QString root = QDir::cleanPath(QFileInfo(templates_dir_).absoluteFilePath());
-    const QString folder = QDir::cleanPath(QFileInfo(engine_folder_).absoluteFilePath());
+    // Canonical, so a symlinked templates folder (or one that is also the
+    // sessions folder) is still recognised; the cleaned path for one not there.
+    const auto resolved = [](const QString& path) {
+        const QFileInfo i(path);
+        const QString c = i.canonicalFilePath();
+        return c.isEmpty() ? QDir::cleanPath(i.absoluteFilePath()) : c;
+    };
+    const QString root = resolved(templates_dir_);
+    const QString folder = resolved(engine_folder_);
     return folder.startsWith(root + QLatin1Char('/'));
 }
 
@@ -2214,9 +2221,12 @@ bool SessionModel::newSessionFromTemplate(const QString& file, const QString& na
     }
     Snapshot made =
         model::session_from_template(loaded.snapshot, wanted.toStdString(), model::new_session_id());
-    // The template's path: the engine enters its folder, so each plugin
-    // starts from the state the template keeps there (ADR-0030 §3).
-    const std::string path = QFileInfo(file).absoluteFilePath().toStdString();
+    // The template's path with the Load's template prefix (protocol 54): the
+    // engine copies the plugin states the template keeps into a new
+    // Untitled folder and enters that, never the template's own
+    // (ADR-0030 §3, amended).
+    const std::string path =
+        std::string(api::kLoadTemplatePrefix) + QFileInfo(file).absoluteFilePath().toStdString();
     if (!doc_.reset(std::move(made), path, why)) {
         emit openNotice(file + QStringLiteral(" was not opened: ") + q(why));
         return false;
