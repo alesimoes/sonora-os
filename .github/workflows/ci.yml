@@ -599,9 +599,7 @@ jobs:
       - name: Install shellcheck and dbus-x11
         run: sudo apt-get update && sudo apt-get install -y shellcheck dbus-x11
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty
-
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh
+        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh
 
       - name: Read-only root, capped RAM writes
         run: tools/test-ro-root.sh

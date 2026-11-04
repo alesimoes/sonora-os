@@ -119,6 +119,7 @@ chmod 0755 /usr/local/bin/sonora-install
 chmod 0755 /usr/local/bin/sonora-install-tty
 chmod 0755 /usr/local/bin/sonora-compositor
 chmod 0755 /usr/local/bin/sonora-wait-for-display
+chmod 0755 /usr/local/bin/sonora-display-gave-up
 # sonora-ui is staged only when a UI build exists; the units are inert without
 # sonora.gui, so its absence must not fail the build.
 [ -e /usr/local/bin/sonora-ui ] && chmod 0755 /usr/local/bin/sonora-ui
