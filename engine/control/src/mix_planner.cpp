@@ -254,10 +254,15 @@ const Bus* find_bus_named(const EditState& e, const std::string& name) {
     return nullptr;
 }
 
-bool has_send_slot(const TrackEdit& t, std::uint8_t& slot) {
+// A slot neither the track nor an AddSend already in `plan` uses.
+bool has_send_slot(const TrackEdit& t, const Plan& plan, std::uint8_t& slot) {
     for (std::uint8_t s = 0; s < kSendSlots; ++s) {
-        const bool taken = std::any_of(t.sends.begin(), t.sends.end(),
-                                       [&](const Send& x) { return x.slot == s; });
+        bool taken = std::any_of(t.sends.begin(), t.sends.end(),
+                                 [&](const Send& x) { return x.slot == s; });
+        for (const PlanStep& st : plan.steps) {
+            const auto* a = std::get_if<AddSend>(&st.op);
+            if (a != nullptr && a->strip == t.id && a->slot == s) taken = true;
+        }
         if (!taken) {
             slot = s;
             return true;
@@ -534,7 +539,7 @@ bool ParallelPlanner::propose(const Snapshot& at, Plan& out, std::string& error)
         plan.steps.push_back({ab, "Add " + bus_name + " bus", why, {}});
         for (const Strip& m : members) {
             std::uint8_t slot = 0;
-            if (!has_send_slot(*m.track, slot)) {
+            if (!has_send_slot(*m.track, plan, slot)) {
                 plan.notes.push_back({"Track " + m.track->name, "no free send slot: no send to " +
                                                                    bus_name});
                 continue;
@@ -690,7 +695,7 @@ bool ReverbDelayPlanner::propose(const Snapshot& at, Plan& out, std::string& err
         plan.steps.push_back({ab, "Add " + bus_name + " bus", why, {}});
         for (const Strip& m : members) {
             std::uint8_t slot = 0;
-            if (!has_send_slot(*m.track, slot)) {
+            if (!has_send_slot(*m.track, plan, slot)) {
                 plan.notes.push_back({"Track " + m.track->name, "no free send slot: no send to " +
                                                                    bus_name});
                 continue;
@@ -821,7 +826,13 @@ bool propose_mix_plan(MixPlanKind kind, const Snapshot& at, const MixAnalysis& a
         }
         for (PlanNote& n : p.notes) joined.notes.push_back(std::move(n));
         joined.label = joined.label.empty() ? p.label : "Mix Assistant";
-        view.next_id = next_free_id(view, joined);
+        // The next planner sees the session as the plan so far leaves it, so
+        // it does not take a send slot this plan already used.
+        const Id next = next_free_id(view, joined);
+        PlanPreview so_far;
+        std::string ignored;
+        if (preview(at, joined, Selection::all(joined), so_far, ignored)) view = so_far.result;
+        view.next_id = std::max(view.next_id, next);
     }
     if (joined.steps.empty()) {
         error = "nothing to propose";

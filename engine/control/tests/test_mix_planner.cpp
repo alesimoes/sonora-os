@@ -509,6 +509,15 @@ int test_reverb_delay() {
     CHECK(std::fabs(param_of(rp.suggestions()[0].processor, "decay") - 2.0f) < 1e-4f);
     CHECK(param_of(rp.suggestions()[1].processor, "note_l") == 8.0f);   // 1/8 = 500 ms is nearest 375
 
+    // Parallel drums and the drum room both send from the same tracks: the
+    // joined plan must give each send its own slot (it previews and undoes).
+    Plan all;
+    CHECK(propose_mix_plan(MixPlanKind::All, r.h.current(), a, all, error));
+    int room_sends = 0;
+    for (const PlanStep& s : all.steps) room_sends += s.title.find("to Drum Room") != std::string::npos;
+    CHECK(room_sends == 2);
+    CHECK(check_apply_and_undo(r, all, true) == 0);
+
     // Excess: a wet reference is pulled back by the same amount on both.
     ReverbDelayReference wet;
     wet.reverb_wet_db = -6.0;
