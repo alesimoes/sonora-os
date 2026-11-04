@@ -14,6 +14,7 @@
 #include <utility>
 #include <variant>
 
+#include "sonora/api/consolidate_argument.h"
 #include "sonora/api/wire.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/op_codec.h"
@@ -281,6 +282,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.toggle_loop_record", "transport.toggle_cycle",
         "transport.cycle_selection", "transport.punch_selection", "transport.clear_punch",
         "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready", "meters.reset",
+        "session.consolidate", "session.consolidate_cancel",
     };
     return ids;
 }
@@ -1610,6 +1612,30 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     };
     const std::string& id = r.command;
     if (id.compare(0, 8, "latency.") == 0) return latency_command(r, why);
+    // The words of engine/control's handler. The fake renders and edits
+    // nothing: it answers the request and says Running, then Done, so an
+    // interface can be driven; the render itself is test_consolidate's.
+    if (id == "session.consolidate") {
+        ConsolidateArgument a;
+        if (!parse_consolidate_argument(r.argument, a, why)) return false;
+        if (recording) {
+            why = "stop recording before consolidating; nothing was consolidated";
+            return false;
+        }
+        for (const char* state : {"", "done"}) {
+            EngineEvent e;
+            e.kind = EventKind::Consolidate;
+            e.insert = a.track;
+            e.frame = state[0] == ' ' ? 0 : 1000;
+            e.flags = state[0] == ' ' ? kConsolidateRunning : kConsolidateDone;
+            post_event(e);
+        }
+        return true;
+    }
+    if (id == "session.consolidate_cancel") {
+        why = "no consolidate is running";
+        return false;
+    }
     if (id == "session.place_recovered") return place_recovered(why);
     if (id == "session.leave_recovered") {
         if (offered_.empty()) {
