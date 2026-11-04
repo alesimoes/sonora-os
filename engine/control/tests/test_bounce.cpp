@@ -411,6 +411,16 @@ int real_time_bounce_refuses_a_roll_the_disk_missed() {
     {
         Driver audio(*r.session);
         CHECK(rt.start(r.doc->current(), r.dir, o, err));
+        // play() asks for a new generation and the roll waits until the
+        // reader has made it resident; holding before that never lets the
+        // transport roll (a slow machine hit this).
+        const auto rolling = deadline();
+        while (r.session->transport().state() == TransportState::Stopped &&
+               std::chrono::steady_clock::now() < rolling) {
+            ctl.pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(r.session->transport().state() != TransportState::Stopped);
         // Nothing new becomes resident from here: the roll outruns the
         // chunks the start left, and each block past them is a miss.
         g_hold_reader = true;
