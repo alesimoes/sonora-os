@@ -330,6 +330,31 @@
       "origin": "sonora",
       "comment": "Clip Gain: opens the dialog to type the selected clip's gain in dB."
     },
+    "ctrl+alt+j": {
+      "command": "clip.group",
+      "origin": "sonora",
+      "comment": "Group the clips in the selected range (ADR-0052). Pro Tools' Group Clips is Command+Option+G, which Clip Gain holds here, so this chord is ours."
+    },
+    "ctrl+alt+shift+g": {
+      "command": "clip.ungroup",
+      "verified": false,
+      "comment": "Ungroup the selected clip's group (Pro Tools: Ungroup Clip, Command+Option+Shift+G). Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
+    "ctrl+alt+l": {
+      "command": "clip.loop",
+      "verified": false,
+      "comment": "Loop the selected clip or group (Pro Tools: Loop Clip, Command+Option+L), asking nothing: the last count, 3 repeats at first. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
+    "ctrl+alt+shift+l": {
+      "command": "clip.unloop",
+      "origin": "sonora",
+      "comment": "Remove the repeats of the selected loop (Pro Tools has no key for Unloop)."
+    },
+    "ctrl+alt+r": {
+      "command": "sample.repair",
+      "origin": "sonora",
+      "comment": "Repair a click: redraw the samples the Selector holds from their neighbours, into a new file (ADR-0052). The other sample edits are in the Sample Edit panel."
+    },
     "ctrl+shift+r": {
       "command": "region.rename",
       "verified": false,

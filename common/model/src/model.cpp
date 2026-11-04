@@ -118,7 +118,8 @@ bool Region::operator==(const Region& o) const {
            length == o.length && source_offset == o.source_offset &&
            channels == o.channels && gain_db == o.gain_db && gain_line == o.gain_line &&
            mute == o.mute &&
-           fade_in == o.fade_in && fade_out == o.fade_out;
+           fade_in == o.fade_in && fade_out == o.fade_out && clip_group == o.clip_group &&
+           loop == o.loop;
 }
 
 bool Playlist::operator==(const Playlist& o) const {
@@ -980,6 +981,8 @@ std::string region_problem(const Region& r, const SourcePool& pool,
         return "fade_in.length + fade_out.length is longer than the region";
     }
     if (!gain_in_range(r.gain_db)) return "gain_db " + gain_range();
+    if (r.clip_group > static_cast<Id>(kMaxInteger)) return "clip_group is out of range";
+    if (r.loop > 0 && r.clip_group == 0) return "a loop repeat must belong to a clip group";
     return line_problem(r.gain_line);
 }
 

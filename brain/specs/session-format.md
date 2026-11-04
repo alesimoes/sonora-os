@@ -1087,7 +1087,17 @@ amplitude, held before the first and after the last. `transport` gains
 `loop_record`, and every audio track `"track_punch": true`, after
 `solo_safe`; a MIDI or instrument track has none. A version 18 file cannot
 carry any of these. The frozen v18 fixture loads through the migration and
-saves as `v19-current.sonora`, byte for byte.
+saves as `v24-current.sonora`, byte for byte (the current fixture was
+`v19-current.sonora` until version 24; versions 20 to 23 change nothing in it).
+
+**v23→v24 (clip groups and loops, ADR-0052):** a region may carry
+`"clip_group"`, the id of a region of the same playlist (the group's name),
+and `"loop"`, a repeat number from 1; each is written only when non-zero, after
+`fade_out`. A repeat (`loop` above 0) must have a `clip_group`. Nothing is
+filled in. A version 23 file cannot carry either key, and a file at 23 or
+lower that does is refused by the migration, as a reader of that version
+would. Versions 20 to 23 are other work's (reserved when this landed); each
+adds its own step to the migration table.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

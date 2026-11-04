@@ -439,7 +439,11 @@ void version_check() {
     // 2026-11-03; follows 41).
     // 48: the session-model train; 52: session.consolidate, EventKind::Consolidate
     // (ADR-0031 §6) and the comping commands.
-    CHECK(kProtocolVersion == 52);
+    // 57: ADR-0052 clip groups, loops and sample edits (window format 20,
+    // session format 24; follows 48, the session-model train: groups, clip
+    // gain, record modes; window
+    // format 16, session format 19).
+    CHECK(kProtocolVersion == 57);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -450,7 +454,7 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 52 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 57 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // A version-48 decoder knows no Consolidate event: it is the first kind
@@ -460,7 +464,7 @@ void version_check() {
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 52"));
+                   "speaks version 57"));
 }
 
 // Protocol 52: a Consolidate event carries the track in `insert`, the

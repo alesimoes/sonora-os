@@ -601,10 +601,40 @@ bool v18_to_v19(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v19 -> v24 (ADR-0052 clip groups and loops): versions 20 to 23 are other
+// work's, reserved by the coordinator; each of those lands its own step in
+// place of `carried`. A file that holds "clip_group" or "loop" on a region is
+// refused, as a reader of the version before would refuse it; one without
+// them opens unchanged.
+bool carried(Value&, std::vector<Repair>&, std::string&) { return true; }
+
+bool v23_to_v24(Value& root, std::vector<Repair>&, std::string& error) {
+    const Value* list = root.find("tracks");
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
+        const Value& t = list->items()[i];
+        const Value* pls = t.is_object() ? t.find("playlists") : nullptr;
+        if (pls == nullptr || !pls->is_array()) continue;
+        for (const Value& pl : pls->items()) {
+            const Value* rs = pl.is_object() ? pl.find("regions") : nullptr;
+            if (rs == nullptr || !rs->is_array()) continue;
+            for (const Value& r : rs->items()) {
+                for (const char* key : {"clip_group", "loop"}) {
+                    if (r.is_object() && r.find(key) != nullptr) {
+                        error = "tracks[" + std::to_string(i) + "] has a region with \"" + key +
+                                "\", which version 23 does not define";
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
      v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
-     v16_to_v17, v17_to_v18, v18_to_v19}};
+     v16_to_v17, v17_to_v18, v18_to_v19, carried, carried, carried, carried, v23_to_v24}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -661,6 +691,9 @@ Value region_value(const Region& r) {
     v.set("mute", Value::boolean(r.mute));
     v.set("fade_in", fade_value(r.fade_in));
     v.set("fade_out", fade_value(r.fade_out));
+    // Only a grouped clip: a file without any stays readable by format 23.
+    if (r.clip_group != 0) v.set("clip_group", id_value(r.clip_group));
+    if (r.loop != 0) v.set("loop", integer(r.loop));
     return v;
 }
 
@@ -1430,7 +1463,7 @@ bool read_region(Reader& rd, const Value& v, const std::string& p, Region& r) {
     if (!rd.keys(v, p,
                  {"id", "name", "position", "length", "source", "source_offset",
                   "gain_db", "mute", "fade_in", "fade_out"},
-                 {"colour", "gain_line"})) {
+                 {"colour", "gain_line", "clip_group", "loop"})) {
         return false;
     }
     if (!rd.id(v, p, "id", r.id)) return false;
@@ -1467,7 +1500,10 @@ bool read_region(Reader& rd, const Value& v, const std::string& p, Region& r) {
     }
     if (!rd.flag(v, p, "mute", r.mute)) return false;
     if (!read_fade(rd, v, p, "fade_in", r.fade_in)) return false;
-    return read_fade(rd, v, p, "fade_out", r.fade_out);
+    if (!read_fade(rd, v, p, "fade_out", r.fade_out)) return false;
+    if (v.find("clip_group") != nullptr && !rd.id(v, p, "clip_group", r.clip_group)) return false;
+    if (v.find("loop") != nullptr && !rd.small(v, p, "loop", r.loop)) return false;
+    return true;
 }
 
 bool read_playlist(Reader& rd, const Value& v, const std::string& p,

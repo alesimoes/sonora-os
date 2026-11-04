@@ -24,6 +24,7 @@
 #include "sonora/plugin_block_list.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/plugin_scanner.h"
+#include "sonora/sample_edit.h"
 #include "sonora/session.h"
 #include "sonora/session_files/session_folder.h"
 #include "sonora/session_saver.h"
@@ -641,6 +642,27 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                 return true;
             }));
     }
+    // Sample-level editing (ADR-0052): a copy of the region's span with the
+    // stretch processed, written beside the take, never over it. On the
+    // control thread: it reads and writes files, and the audio thread never
+    // waits for it.
+    registry_.install("sample.edit",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          if (take_open_or_requested()) {
+                              why = "stop recording before editing samples; nothing was edited";
+                              return false;
+                          }
+                          SampleEditRequest request;
+                          if (!parse_sample_edit(ctx.argument, request, why)) return false;
+                          std::vector<model::ReplicationUpdate> updates;
+                          if (!sample_edit(*document_, session_, *session_.folder(), request,
+                                           updates, why)) {
+                              return false;
+                          }
+                          for (const auto& u : updates) send_update(u);
+                          show_document(false);
+                          return true;
+                      }));
     install_latency_commands();
     for (const auto& spec : command_catalog()) {
         if (spec.domain == CommandDomain::Engine && registry_.implemented(spec.id)) {

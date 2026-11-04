@@ -11,6 +11,7 @@
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 
 #include "fader_taper.h"
@@ -422,6 +423,64 @@ void SessionModel::installCommands(CommandRegistry& local) {
         emit tempoTrackChanged();
         return true;
     });
+    // --- clip groups and loops (ADR-0052) ---
+    simple("clip.group", [this](const CommandContext&, Why& why) { return ctl_.group_clips(why); });
+    simple("clip.ungroup", [this](const CommandContext&, Why& why) { return ctl_.ungroup_clip(why); });
+    simple("clip.unloop", [this](const CommandContext&, Why& why) { return ctl_.unloop_clip(why); });
+    simple("clip.loop", [this](const CommandContext& ctx, Why& why) {
+        int count = ctl_.loop_count();
+        if (!ctx.argument.empty() && !parse_repeat_count(ctx.argument, count)) {
+            why = "\"" + ctx.argument +
+                  "\" is not a number of repeats; type a whole number, 1 or more. Nothing was "
+                  "looped.";
+            return false;
+        }
+        return ctl_.loop_clip(count, why);
+    });
+    // --- sample-level editing (ADR-0052): the engine writes the new file ---
+    const auto sample = [this, db_of, &simple](const char* command, const char* verb, bool takes_db,
+                                      bool needs_arg) {
+        simple(command, [this, db_of, command, verb, takes_db, needs_arg](const CommandContext& ctx,
+                                                                 Why& why) {
+            std::string param = ctx.argument;
+            if (takes_db && !param.empty()) {
+                float db = 0.0f;
+                if (!db_of(param, db)) {
+                    why = "\"" + param + "\" is not a level in dB; type a number such as -3.5";
+                    return false;
+                }
+                char buf[32];
+                std::snprintf(buf, sizeof buf, "%g", static_cast<double>(db));
+                param = buf;
+            }
+            if (needs_arg && param.empty()) {
+                why = takes_db ? "give the change in dB, such as -3"
+                               : "give the points as FRAME:LEVEL,FRAME:LEVEL";
+                return false;
+            }
+            if (!takes_db && !needs_arg && !param.empty()) {
+                why = std::string(command) + " takes no argument";
+                return false;
+            }
+            std::string argument;
+            if (!ctl_.sample_edit_argument(verb, param, argument, why)) return false;
+            if (!send_command_) {
+                why = "no engine to edit the samples; nothing was edited";
+                return false;
+            }
+            send_command_(QStringLiteral("sample.edit"), q(argument));
+            return true;
+        });
+    };
+    sample("sample.repair", "repair", false, false);
+    sample("sample.draw", "draw", false, true);
+    sample("sample.silence", "silence", false, false);
+    sample("sample.reverse", "reverse", false, false);
+    sample("sample.invert", "invert", false, false);
+    sample("sample.gain", "gain", true, true);
+    sample("sample.normalize", "normalize", true, false);
+    sample("sample.fade_in", "fade_in", false, false);
+    sample("sample.fade_out", "fade_out", false, false);
     simple("track.playlist_delete_unused", [this, row](const CommandContext& ctx, Why& why) {
         const int i = row(ctx);
         return playlistCommand(i, false,

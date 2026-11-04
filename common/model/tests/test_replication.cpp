@@ -200,6 +200,8 @@ std::vector<Operation> one_of_each() {
             SetGroup{40, "Drums \xC3\xA9", {2, 5}, 0x0F, false, true},
             RemoveGroup{40},
             SetRegionGain{3, 11, -3.5f, {{0, -6.0f}, {48000, 0.0f}}},
+            SetClipGroup{3, 11, {{11, 0}, {12, 2}}},
+            SetRegionSources{3, 11, {{7, 0}, {7, 1}}, 4800, {{0, -6.0f}}},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 
@@ -588,8 +590,8 @@ int test_window_refuses_what_does_not_fit() {
         return !decode_window(WindowParts{u.parts, bytes}, out, err) && !out.has_value() &&
                mentions(err, why);
     };
-    CHECK(refused("\"window_format\": 16", "\"window_format\": 15", "window_format"));
-    CHECK(refused("\"window_format\": 16", "\"window_format\": 17", "window_format"));
+    CHECK(refused("\"window_format\": 20", "\"window_format\": 19", "window_format"));
+    CHECK(refused("\"window_format\": 20", "\"window_format\": 21", "window_format"));
     CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
     CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
     CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));

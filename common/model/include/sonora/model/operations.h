@@ -279,6 +279,35 @@ struct SetRegionGain {
     std::vector<GainPoint> gain_line;
 };
 
+// Clip groups and loops (ADR-0052): sets `clip_group` and `loop` of each named
+// region of an audio playlist, one undo step. `group` 0 ungroups them and
+// clears their loop number; otherwise it must be the id of one of the named
+// regions, and no region outside the list may already carry it. Each member's
+// `loop` is 0 or the repeat number Loop Clip gave it.
+struct ClipGroupMember {
+    Id region = 0;
+    std::uint16_t loop = 0;
+    bool operator==(const ClipGroupMember& o) const { return region == o.region && loop == o.loop; }
+};
+struct SetClipGroup {
+    Id playlist = 0;
+    Id group = 0;
+    std::vector<ClipGroupMember> members;   // 1 to kMaxCompoundMembers
+};
+
+// Points a region at other files (ADR-0052, the destructive sample edits): its
+// channels, `source_offset` and gain line replaced whole, so one undo step
+// returns to the original take. The new sources must already be in the pool
+// and hold the region's span; crossfades that lose their handle are dropped
+// as after any edit. Audio regions only.
+struct SetRegionSources {
+    Id playlist = 0;
+    Id region = 0;
+    std::vector<SourceRef> channels;
+    Frames source_offset = 0;
+    std::vector<GainPoint> gain_line;
+};
+
 // A permutation of every track id, in the new display order.
 struct ReorderTracks {
     std::vector<Id> order;
@@ -579,7 +608,7 @@ using Member =
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
                  EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetGroup,
-                 RemoveGroup, SetRegionGain>;
+                 RemoveGroup, SetRegionGain, SetClipGroup, SetRegionSources>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -615,7 +644,7 @@ using Operation =
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
                  EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetGroup,
-                 RemoveGroup, SetRegionGain, Compound>;
+                 RemoveGroup, SetRegionGain, SetClipGroup, SetRegionSources, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

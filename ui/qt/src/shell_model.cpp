@@ -504,6 +504,12 @@ void ShellModel::tick() {
         if (r.command == "session.consolidate") {
             holdConsolidate(QString::fromStdString(why), true, false);
         }
+        // A destructive edit the engine would not make (a take is recording, a
+        // file will not read): held until dismissed, not on the status line
+        // that clears, so the operator does not believe the samples changed.
+        if (r.command == "sample.edit") {
+            addNotice(QStringLiteral("Sample edit refused: ") + QString::fromStdString(why));
+        }
         say(QString::fromStdString(r.command + ": " + why));
     }
     takeEvents();

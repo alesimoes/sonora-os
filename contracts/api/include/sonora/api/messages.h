@@ -177,7 +177,14 @@ namespace sonora::api {
 //   and EventKind::Consolidate, which a version-48 decoder refuses as an
 //   unknown kind; the interface commands comp.* (swipe, copy to main, lane
 //   view) a version-48 peer does not know.
-constexpr uint32_t kProtocolVersion = 52;
+// 57 (ADR-0052 clip groups, loops and sample edits, on top of 52's consolidate and comping; follows 48, 49 to 56 are
+//   other work's): new operation kinds SetClipGroup and SetRegionSources; a
+//   region in an operation and in the undo window carries "clip_group" and
+//   "loop" (window format 20, session format 24); the commands clip.group,
+//   clip.ungroup, clip.loop, clip.unloop and sample.* (interface) and
+//   sample.edit (engine). A version-48 peer refuses the operations and the
+//   keys, and answers sample.edit NotImplemented.
+constexpr uint32_t kProtocolVersion = 57;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

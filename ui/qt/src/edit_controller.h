@@ -494,6 +494,22 @@ public:
     bool can_tempo_redo() const { return !tempo_redo_.empty(); }
     // The line's level (dB, 0 with none) at a timeline frame of `r`.
     static float clip_line_db_at(const model::Region& r, model::Frames timeline_frame);
+    // --- clip groups, loops and sample edits (edit_clip_groups.cpp; ADR-0052) ---
+    // Group joins the clips the range selection touches on the selected track
+    // (two or more, none already grouped); Ungroup frees the selected clip's
+    // group. Loop lays `count` repeats after the selected clip, or after its
+    // group, taking out the repeats an earlier Loop laid; Unloop takes them
+    // out. A group moves as one (Move, Nudge): the same distance for every
+    // member, stopping at the session start. Each is one undo step.
+    bool group_clips(std::string& why);
+    bool ungroup_clip(std::string& why);
+    bool loop_clip(int count, std::string& why);
+    bool unloop_clip(std::string& why);
+    int loop_count() const { return loop_count_; }
+    // The engine's sample.edit argument for `verb` on the range selection,
+    // which must lie inside one clip; otherwise why not.
+    bool sample_edit_argument(const std::string& verb, const std::string& param,
+                              std::string& argument, std::string& why) const;
     // The palette index a region is drawn in: its own, else its track's.
     static int region_colour(const model::TrackEdit& t, const model::Region& r) {
         return r.colour == model::kTrackColour ? t.colour : r.colour;
@@ -669,6 +685,9 @@ private:
     void note_left_behind(const char* gesture, const std::vector<std::string>& lanes);
     // A region move, its lanes following when Automation Follows Edit is on.
     bool submit_move(const model::MoveRegion& op, std::string& why);
+    // The moves that carry a clip group with the clip `op` moves; false when
+    // the clip is in no group.
+    bool group_move_ops(const model::MoveRegion& op, std::vector<model::Member>& out) const;
 
     TimelineDocument& doc_;
     void refresh_rows() const;
@@ -721,6 +740,7 @@ private:
     LaneSelection lane_sel_;
     bool quick_swipe_ = false;
     int repeat_count_ = 1;
+    int loop_count_ = 3;
     Locator locate_;
     uint64_t clipboard_serial_ = 0;
 };

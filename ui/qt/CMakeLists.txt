@@ -59,6 +59,7 @@ add_library(sonora_ui_qt STATIC
   src/mix_groups.cpp
   src/edit_clip_gain.cpp
   src/edit_tempo.cpp
+  src/edit_clip_groups.cpp
   src/strip_silence.h src/strip_silence.cpp
   src/edit_strip_silence.cpp
   src/automation_edit.h src/automation_edit.cpp
@@ -216,6 +217,11 @@ target_compile_definitions(test_ui_tempo_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_tempo_edit COMMAND test_ui_tempo_edit)
 set_tests_properties(ui_tempo_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# Clip groups, loops and the sample edit request (ADR-0052).
+add_executable(test_ui_clip_groups tests/test_clip_groups.cpp)
+target_link_libraries(test_ui_clip_groups PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_clip_groups COMMAND test_ui_clip_groups)
+set_tests_properties(ui_clip_groups PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_executable(test_ui_names_colours tests/test_names_colours.cpp)
 target_link_libraries(test_ui_names_colours PRIVATE sonora_ui_qt Qt6::Test)
