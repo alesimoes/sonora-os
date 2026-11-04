@@ -67,6 +67,7 @@ E_NOT_REGISTERED = "not_registered"
 E_BAD_TYPE = "bad_type"
 E_NO_RECIPIENT = "no_recipient"
 E_BAD_PATH = "bad_path"
+E_NOT_MEMBER = "not_member"   # send to a channel the sender is not in
 
 # Event names passed to Broker's on_event callback.
 EV_REGISTERED = "registered"
