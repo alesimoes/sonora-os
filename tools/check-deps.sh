@@ -27,6 +27,7 @@ TOPS=(common contracts engine drivers ui plugins interchange)
 # because its processors share an SDK by design.
 AWK_MODOF='function modof(p,   a) {
     if (p ~ /^plugins\/native\//) return "plugins/native"
+    if (p ~ /^interchange(\/|$)/) return "interchange"
     split(p, a, "/"); return a[1] "/" a[2]
 }'
 

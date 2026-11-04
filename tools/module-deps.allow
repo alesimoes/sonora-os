@@ -85,3 +85,6 @@ ui/qt -> ui/keymap
 ui/tui -> contracts/api
 ui/tui -> ui/client
 ui/tui -> ui/keymap
+interchange -> common/midi
+interchange -> common/model
+interchange -> common/session_files
