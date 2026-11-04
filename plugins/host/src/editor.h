@@ -83,6 +83,11 @@ public:
     // watcher poll again. Returns when the next timer is due (monotonic_ns),
     // or 0 with none: the main loop sleeps no longer than that.
     virtual uint64_t dispatch() = 0;
+
+    // The server went away (Xwayland restarted): the connection and every
+    // window with it are dead. Set by dispatch(); the owner closes its
+    // editors and drops this display, and the next OpenEditor opens a new one.
+    virtual bool lost() const { return false; }
 };
 
 }  // namespace sonora::plugin_host
