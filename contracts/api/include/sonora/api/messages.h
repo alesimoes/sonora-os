@@ -166,7 +166,11 @@ namespace sonora::api {
 //   capability "mix.bounce", and EventKind::Bounce, which a version-42
 //   decoder refuses as an unknown kind. 43 to 48 are other PRs' and are not
 //   in this tree.
-constexpr uint32_t kProtocolVersion = 49;
+// 61 (interchange.audio.export; 50 to 60 are other PRs'): mix.bounce takes
+//   the words file=, rate= and dither= and format=int16. A version-49 engine
+//   would refuse them one by one; the bump makes it refuse the connection
+//   instead of writing a 24-bit BWF for a request that asked for a FLAC.
+constexpr uint32_t kProtocolVersion = 61;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

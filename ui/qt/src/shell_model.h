@@ -252,7 +252,10 @@ public:
     // The Bounce window's buttons: mix.bounce of the whole session (the end
     // of the last region), mix.bounce_cancel, and the notice put away.
     // `target_lufs` only counts when `normalise` is on.
-    Q_INVOKABLE void startBounce(bool real_time, bool float32, bool normalise, qreal target_lufs,
+    // `file` is bwf, wav, aiff or flac; `bits` 16, 24 or 32 (float); `rate`
+    // 0 for the session's; `dither` auto, none, tpdf or shaped.
+    Q_INVOKABLE void startBounce(bool real_time, const QString& file, int bits, int rate,
+                                 const QString& dither, bool normalise, qreal target_lufs,
                                  const QString& name);
     Q_INVOKABLE void cancelBounce();
     Q_INVOKABLE void dismissBounce();

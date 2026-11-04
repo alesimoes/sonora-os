@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -187,6 +188,78 @@ int offline_bounce_is_the_mix_as_played() {
     for (int64_t i = 0; i < frames; i += 97) {
         CHECK(std::fabs(d[static_cast<std::size_t>(2 * i)] - sine_at(24000 + i) * kCentre) < 1e-4f);
     }
+    return 0;
+}
+
+bool starts_with(const std::string& path, const char* magic) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (f == nullptr) return false;
+    char b[4] = {};
+    const bool ok = std::fread(b, 1, 4, f) == 4 && std::memcmp(b, magic, 4) == 0;
+    std::fclose(f);
+    return ok;
+}
+
+int the_file_type_depth_rate_and_dither_are_honoured() {
+    Rig r;
+    CHECK(make_rig(r, "bounce_t_export"));
+    BounceHooks hooks;
+    BounceResult res;
+    std::string err;
+    api::BounceOptions o;
+    o.name = "Out";
+
+    // A 16-bit WAV at 44.1 kHz: tpdf by default, the length follows the rate.
+    o.file = api::BounceFile::Wav;
+    o.format = api::BounceFormat::Int16;
+    o.sample_rate = 44100;
+    CHECK_BOUNCE(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err), err);
+    CHECK(res.relative_path == "Bounced Files/Out_01.wav");
+    CHECK(res.frames == 88200);
+    WavReader rd;
+    CHECK(rd.open(r.dir + "/" + res.relative_path, err));
+    CHECK(rd.sample_rate() == 44100 && rd.frames() == 88200 && rd.encoding() == WavReader::Encoding::Pcm16);
+    CHECK(rd.description().empty());   // a plain WAV: no bext
+    // 1 kHz, 0.1 at the centre gain, whatever the rate: the peak is kept.
+    std::vector<float> d(88200 * 2);
+    CHECK(rd.read(0, 88200, d.data()) == 88200);
+    float peak = 0.0f;
+    for (int i = 20000; i < 60000; ++i) peak = std::max(peak, std::fabs(d[2 * static_cast<std::size_t>(i)]));
+    CHECK(std::fabs(peak - kAmp * kCentre) < 0.002f);
+
+    // The same name in another type is a name of its own; each type is what
+    // its magic says, and no render file is left behind.
+    const struct { api::BounceFile f; const char* ext; const char* magic; } types[] = {
+        {api::BounceFile::Bwf, ".wav", "RIFF"}, {api::BounceFile::Aiff, ".aiff", "FORM"},
+        {api::BounceFile::Flac, ".flac", "fLaC"}};
+    for (const auto& t : types) {
+        o.file = t.f;
+        o.format = api::BounceFormat::Int24;
+        o.sample_rate = 0;
+        CHECK_BOUNCE(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err), err);
+        CHECK(res.relative_path.size() > 4 &&
+              res.relative_path.substr(res.relative_path.size() - std::strlen(t.ext)) == t.ext);
+        CHECK(starts_with(r.dir + "/" + res.relative_path, t.magic));
+        CHECK(res.frames == kLength);
+    }
+    int files = 0;
+    for (const auto& e : fs::directory_iterator(r.dir + "/Bounced Files")) {
+        CHECK(e.path().extension() != ".render");
+        ++files;
+    }
+    CHECK(files == 4);
+
+    // A pair the type cannot hold is refused before anything is written.
+    o.file = api::BounceFile::Flac;
+    o.format = api::BounceFormat::Float32;
+    CHECK(!bounce_check(r.doc->current(), o, err) && err.find("FLAC") != std::string::npos);
+    CHECK(!bounce_offline(r.doc->current(), r.dir, o, hooks, res, err));
+    int after = 0;
+    for (const auto& e : fs::directory_iterator(r.dir + "/Bounced Files")) {
+        (void)e;
+        ++after;
+    }
+    CHECK(after == 4);
     return 0;
 }
 
@@ -471,6 +544,7 @@ int main() {
     int rc = 0;
     rc |= tap_counts_an_overrun_and_stays_aligned();
     rc |= offline_bounce_is_the_mix_as_played();
+    rc |= the_file_type_depth_rate_and_dither_are_honoured();
     rc |= normalise_reaches_the_target_and_stops_at_the_ceiling();
     rc |= normalise_refuses_a_mix_with_an_infinite_sample();
     rc |= cancel_and_an_empty_range_leave_no_file();
