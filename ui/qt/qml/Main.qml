@@ -1690,7 +1690,7 @@ Rectangle {
         anchors.fill: parent
         visible: colourPalette.visible
         z: 9
-        onClicked: colourPalette.visible = false
+        onClicked: colourPalette.close()
     }
     Rectangle {
         id: colourPalette
@@ -1713,12 +1713,20 @@ Rectangle {
             current = c
             problem = ""
             visible = true
+            forceActiveFocus()
+        }
+        function close() {
+            visible = false
+            focus = false
         }
         function choose(argument) {
             if (root.shell.invokeWith(track >= 0 ? "track.colour" : "region.colour", track, argument))
-                visible = false
+                close()
             else problem = root.shell.statusText
         }
+        // Escape closes it as it does every other dialog; with no text field
+        // of its own, the palette takes the keyboard while it is open.
+        Keys.onEscapePressed: colourPalette.close()
 
         Column {
             id: paletteColumn

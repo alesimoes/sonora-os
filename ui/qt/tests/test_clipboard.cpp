@@ -1106,6 +1106,30 @@ int test_menu() {
     CHECK(!panel->isVisible() && !model.textEntry());
     CHECK(lane(document.snapshot(), 0).regions.size() == 2);
 
+    // Spot: edit.spot with no time asks where the selected region starts,
+    // offering it in the counter's format; a time that is none leaves the
+    // dialog open, and the one typed places the region exactly there.
+    QQuickItem* spot = named(root, QStringLiteral("spotPanel"));
+    QQuickItem* spot_input = named(root, QStringLiteral("spotInput"));
+    CHECK(spot != nullptr && spot_input != nullptr && !spot->isVisible());
+    session.controller().set_mode(EditMode::Spot);
+    CHECK(session.controller().select_region(11));
+    CHECK(model.invoke(QStringLiteral("edit.spot"), -1));
+    CHECK(QTest::qWaitFor([&]() { return spot->isVisible(); }));
+    CHECK(spot_input->hasActiveFocus() && model.textEntry());
+    CHECK(spot_input->property("text").toString().startsWith(QStringLiteral("5|1")));
+    const uint64_t spot_rev = document.revision();
+    spot_input->setProperty("text", QStringLiteral("soon"));
+    QTest::keyClick(&view, Qt::Key_Return);
+    CHECK(spot->isVisible() && document.revision() == spot_rev);
+    spot_input->setProperty("text", QStringLiteral("10|1"));
+    QTest::keyClick(&view, Qt::Key_Return);
+    CHECK(!spot->isVisible() && !model.textEntry());
+    CHECK(lane(document.snapshot(), 0).regions.back().position == 9 * kBar);
+    CHECK(session.controller().undo(why));
+    session.documentUpdated();
+    session.controller().set_mode(EditMode::Slip);
+
     // Ctrl+A, Pro Tools' Select All: both tracks. Copied, then pasted from
     // the second: the second lane, empty, is left out and nothing is said.
     key(view, Qt::Key_A, Qt::ControlModifier);

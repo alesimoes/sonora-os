@@ -313,6 +313,11 @@ int test_window() {
     click(view, menu_item(root, QStringLiteral("trackColourItem")));
     CHECK(QTest::qWaitFor([&]() { return palette->isVisible(); }));
     CHECK(palette->property("track").toInt() == 2);
+    // Escape closes it, as it does the other dialogs.
+    QTest::keyClick(&view, Qt::Key_Escape);
+    CHECK(!palette->isVisible());
+    CHECK(model.invokeWith(QStringLiteral("track.colour"), 2, QString()));
+    CHECK(QTest::qWaitFor([&]() { return palette->isVisible(); }));
     click(view, must(root, QStringLiteral("paletteClose")));
     CHECK(!palette->isVisible());
 
