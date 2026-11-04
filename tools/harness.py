@@ -6,15 +6,18 @@
   harness.py inbox --brief --hook    PostToolUse: prints nothing when empty
   harness.py check --hook            PreToolUse (Edit|Write|MultiEdit): reads the
                                      hook JSON on stdin, exit 2 to deny, fail closed
-One short broker connection per call; name, port and token from SONORA_* env.
+One short, unregistered broker connection per call (it never takes the
+agent's name, which its MCP connection owns); name, port and token from the
+SONORA_* env. send tags the message with SONORA_FEATURE and SONORA_TASK.
 """
 import argparse
 import json
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "harness"))
-from client import Client, HarnessError, brief, env_config, oneshot  # noqa: E402
+from client import HarnessError, brief, env_config, oneshot  # noqa: E402
 
 
 def hook_path():
@@ -26,15 +29,34 @@ def hook_path():
     return ti.get("file_path") or ti.get("path")
 
 
-def cmd_check(c, a):
+def call(cfg, op, **fields):
+    """One token-authenticated request on a short connection that does not
+    register: the CLI must never take the agent's name, which its MCP
+    connection owns."""
+    r = oneshot(cfg["port"], cfg["name"], cfg["token"], op, **fields)
+    if not r.get("ok"):
+        raise HarnessError(str(r.get("error", "refused")))
+    return r
+
+
+def cmd_check(cfg, a):
     if not a.path:
         print("check needs PATH", file=sys.stderr)
         return 2
-    ok, why = c.check(a.path)
-    if ok:
+    r = call(cfg, "check", path=a.path)
+    if r.get("allowed", True):
         return 0
-    print(f"harness: {a.path} denied: {why}", file=sys.stderr)
+    print(f"harness: {a.path} denied: {r.get('reason', '')}", file=sys.stderr)
     return 2
+
+
+def cmd_recv(cfg, a):
+    end = time.time() + a.wait
+    while True:
+        msgs = call(cfg, "inbox", limit=a.max, ack=True).get("messages", [])
+        if msgs or time.time() >= end:
+            return msgs
+        time.sleep(0.5)
 
 
 def run_hook(a, hook_inbox):
@@ -76,6 +98,8 @@ def main(argv):
     s.add_argument("type")
     s.add_argument("body", nargs="?", default="")
     s.add_argument("--reply-to")
+    s.add_argument("--feature", help="default: SONORA_FEATURE")
+    s.add_argument("--task", help="default: SONORA_TASK")
     for name in ("recv", "inbox"):
         r = sub.add_parser(name)
         r.add_argument("--max", type=int, default=20)
@@ -93,43 +117,43 @@ def main(argv):
     if hook_inbox or (a.verb == "check" and a.hook):
         return run_hook(a, hook_inbox)
     try:
-        c = Client.from_env(ping=False, timeout=5.0, reconnect_window=0)
-        c.connect()
-    except (HarnessError, OSError, ValueError) as e:
+        cfg = env_config()
+    except (HarnessError, ValueError) as e:
         print(f"harness: {e}", file=sys.stderr)
         return 1
+    feature = a.feature if a.verb == "send" and a.feature else \
+        os.environ.get("SONORA_FEATURE") or None
+    task = a.task if a.verb == "send" and a.task else \
+        os.environ.get("SONORA_TASK") or None
     try:
         if a.verb == "whoami":
-            print(json.dumps(c.whoami()))
+            r = call(cfg, "whoami")
+            print(json.dumps({"name": cfg["name"], "feature": feature,
+                              "task": task, "channels": r.get("channels", [])}))
         elif a.verb == "send":
             try:
                 body = json.loads(a.body) if a.body.startswith(("{", "[")) else a.body
             except ValueError:
                 body = a.body
-            print(json.dumps(c.send(a.to, a.type, body, a.reply_to)))
+            print(json.dumps(call(cfg, "send", to=a.to, type=a.type, body=body,
+                                  reply_to=a.reply_to, feature=feature,
+                                  task=task)))
         elif a.verb in ("recv", "inbox"):
-            msgs = c.recv(a.max, a.wait)
-            if hook_inbox:
-                if msgs:
-                    text = "Harness messages:\n" + "\n".join(brief(m) for m in msgs)
-                    print(json.dumps({"hookSpecificOutput": {
-                        "hookEventName": "PostToolUse", "additionalContext": text}}))
-            elif a.brief:
+            msgs = cmd_recv(cfg, a)
+            if a.brief:
                 for m in msgs:
                     print(brief(m))
             else:
                 print(json.dumps(msgs))
         elif a.verb == "claim":
-            print(json.dumps(c.claim(a.paths)))
+            print(json.dumps(call(cfg, "claim", paths=a.paths)))
         elif a.verb == "release":
-            print(json.dumps(c.release(a.paths)))
+            print(json.dumps(call(cfg, "release", paths=a.paths)))
         elif a.verb == "check":
-            return cmd_check(c, a)
-    except HarnessError as e:
+            return cmd_check(cfg, a)
+    except (HarnessError, OSError, ValueError) as e:
         print(f"harness: {e}", file=sys.stderr)
         return 1
-    finally:
-        c.close()
     return 0
 
 

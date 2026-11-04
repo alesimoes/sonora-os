@@ -249,8 +249,9 @@ class RunTests(support.DaemonCase):
         o = self.make(floors={"daw": 2})
         for t in ("a", "b"):
             self.add(o, t, wants=("adr", "protocol"))
-        self.assertTrue(self.pump(o, lambda: os.path.exists(
-            os.path.join(self.fake_dir, "argv.log"))))
+        log = os.path.join(self.fake_dir, "argv.log")
+        self.assertTrue(self.pump(o, lambda: os.path.exists(log)
+                                  and len(open(log).readlines()) >= 2))
         a, b = o.store.get_task("a"), o.store.get_task("b")
         self.assertEqual({a["adr_no"], b["adr_no"]}, {11, 12})
         self.assertEqual({a["protocol_no"], b["protocol_no"]}, {11, 12})

@@ -1,6 +1,7 @@
 import asyncio
 import os
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -252,6 +253,59 @@ class BrokerTest(unittest.IsolatedAsyncioTestCase):
         a = await self.agent("eng-1")
         await a.req("send", to="tester-1", type="note")
         self.assertEqual((await t.pushes(2))[1]["seq"], 2)
+
+    async def test_ack_and_ask_timers_survive_a_restart(self):
+        token = self.broker.token
+        self.broker.expect("eng-1", "lead")
+        self.broker.send("daemon", "eng-1", "bug", {"x": 1}, needs_ack=True)
+        mid, _ = self.broker.send("eng-1", "lead", "ask",
+                                  {"default": "take B"})
+        await self.broker.stop()
+        self.broker = await self.mk(token=token)
+        self.assertEqual([w["to"] for w in self.broker.ack_wait], ["eng-1"])
+        left = self.broker.open_asks[mid]["due"] - self.broker.clock()
+        self.assertTrue(0 < left <= self.broker.ask_default_s, left)
+        # time passes: the default answer arrives and the bug is redelivered
+        self.broker.clock = lambda: time.monotonic() + 5000
+        self.broker.tick()
+        self.assertEqual(self.broker.open_asks, {})
+        a = await self.agent("eng-1")
+        types = [m["type"] for m in await a.pushes(2)]
+        self.assertEqual(sorted(types), ["answer", "bug"])
+        answer = [m for m in a.inbox if m["type"] == "answer"][0]
+        self.assertEqual(answer["body"], {"text": "take B", "default": True})
+        self.assertEqual(answer["reply_to"], mid)
+
+    async def test_oneshot_ops_do_not_take_the_registered_name(self):
+        self.broker.expect("eng-1", "lead")
+        a = await self.agent("eng-1")
+        c = await self.raw()
+        tok = self.broker.token
+        r = await c.req("send", name="eng-1", token=tok, to="lead",
+                        type="note", body="hi", feature="f1", task="t1")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.broker.conns["eng-1"].name, "eng-1")
+        c2 = await self.raw()
+        r = await c2.req("claim", name="eng-1", token=tok, paths=["a/**"])
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self.broker.claims, {"a/**": "eng-1"})
+        c3 = await self.raw()
+        r = await c3.req("claim", name="eng-1", token="wrong", paths=["b"])
+        self.assertEqual(r["code"], P.E_NOT_REGISTERED)
+        c4 = await self.raw()
+        r = await c4.req("inbox", name="ghost", token=tok)
+        self.assertEqual(r["code"], P.E_UNKNOWN_NAME)
+        # the message carries the feature and task the sender gave
+        last = self.broker.box.unacked("lead", 0)[-1]
+        self.assertEqual((last["from"], last["feature"], last["task"]),
+                         ("eng-1", "f1", "t1"))
+        # inbox returns and acks for the name, beside the live connection
+        self.broker.send("daemon", "eng-1", "note", "later")
+        c5 = await self.raw()
+        r = await c5.req("inbox", name="eng-1", token=tok, ack=True)
+        self.assertEqual([m["body"] for m in r["messages"]], ["later"])
+        self.assertEqual(self.broker.box.get_acked("eng-1"), r["messages"][0]["seq"])
+        await a.pushes(1)
 
     async def test_crash_safe_write(self):
         path = os.path.join(self.dir, "mail", "x", "0000000001-note-a.json")

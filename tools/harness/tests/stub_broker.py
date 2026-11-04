@@ -51,7 +51,8 @@ class StubBroker:
             for line in c.makefile("rb"):
                 r = json.loads(line)
                 op, rid = r["op"], r["rid"]
-                if name is None and op in ("check", "peek"):
+                if name is None and op in ("check", "peek", "send", "claim",
+                                           "release", "inbox", "whoami"):
                     if r.get("token") != TOKEN:
                         out({"rid": rid, "ok": False, "error": "bad token"})
                         return
@@ -98,6 +99,14 @@ class StubBroker:
                     if ms:
                         self.hook_seen[name] = ms[-1]["seq"]
                     out({"rid": rid, "ok": True, "messages": ms})
+                elif op == "inbox":
+                    ms = [m for m in self.mail.get(name, [])
+                          if m["seq"] > self.acked.get(name, 0)][:r.get("limit", 20)]
+                    if ms and r.get("ack"):
+                        self.acked[name] = ms[-1]["seq"]
+                    out({"rid": rid, "ok": True, "messages": ms})
+                elif op == "whoami":
+                    out({"rid": rid, "ok": True, "name": name, "channels": []})
                 elif op == "ping":
                     out({"rid": rid, "ok": True})
         except (OSError, ValueError):

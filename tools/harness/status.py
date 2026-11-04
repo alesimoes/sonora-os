@@ -49,7 +49,7 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
         mine = [t for t in tasks if t["feature_id"] == f["id"]]
         feats.append({
             "id": f["id"], "track": f["track"], "state": f["state"],
-            "pr": f["pr"], "tasks_done": sum(
+            "pr": f["pr"], "fixes": f["fixes"], "tasks_done": sum(
                 1 for t in mine if t["state"] in DONE_STATES),
             "tasks_total": len(mine),
             "strip": [[t["id"], t["state"][:1], t["eng_name"]] for t in mine]})
@@ -59,8 +59,11 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
         "usage_pause_until": usage_pause_until or None,
         "cap": cfg.cap, "live": len(runs), "paused": sorted(paused),
         "runs_last_hour": hour_runs,
-        "open_prs": sum(1 for t in tasks if t["state"] in ("pr_open",
-                                                          "ci_fix")),
+        "open_prs": len({t["feature_id"] for t in tasks
+                         if t["state"] in ("pr_open", "ci_fix")}),
+        "max_open_prs": cfg.max_open_prs,
+        "ready_unpr": sum(1 for t in tasks if t["state"] == "integrating"),
+        "max_ready_unpr": cfg.max_ready_unpr,
         "pools": pools,
         "runs": [{"id": r["id"], "task": r["task_id"], "role": r["role"],
                   "name": r["name"], "pid": r["pid"], "started": r["started"],
