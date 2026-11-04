@@ -177,6 +177,8 @@ systemctl enable sonora-installer.service
 # Same for the display stack (ADR-0010): ConditionKernelCommandLine=sonora.gui
 # on the compositor and UI units; sonora-session.service carries the negation.
 systemctl enable sonora-compositor.service
+# The terminal UI on tty2 (ADR-0010 stage 2); same sonora.gui condition.
+systemctl enable sonora-tui.service
 # Inert on the live stick: ConditionKernelCommandLine=sonora.slot (ADR-0044).
 systemctl enable sonora-confirm.service
 # No display manager and no login prompt on tty1: the unit owns that tty.

@@ -1,0 +1,24 @@
+# What tools/build-iso.sh stages into iso/config/includes.chroot: every runtime
+# binary the image's units and launchers name that is not a script tracked in
+# includes.chroot. tools/test-image-config.sh checks that each /usr/local/bin
+# path a unit or launcher runs is either a tracked file or listed here, and
+# that build-iso.sh has an install line for each required entry.
+# `build-iso.sh --list-staged` prints this with what is staged now.
+#
+# <path in the image>                  <required|optional>  <built by>
+/usr/local/bin/sonora-engine           required  tools/build-engine.sh
+/usr/local/bin/sonora-tui              required  tools/build-engine.sh
+/usr/local/bin/sonora-ui               required  tools/build-ui.sh --stage
+/usr/local/bin/sonora-plugin-host      required  tools/build-plugins.sh --stage
+# ADR-0011 4: offline passes launched by engine/control. No target exists yet;
+# staged the day tools/build-plugins.sh --stage finds one.
+/usr/local/bin/sonora-analyze          optional  tools/build-plugins.sh --stage
+/usr/local/bin/sonora-mixplan          optional  tools/build-plugins.sh --stage
+# ADR-0044: the engine's "is a session open" probe. Nothing produces it yet, and
+# sonora-update refuses when it cannot tell, which is the safe direction.
+/usr/local/bin/sonora-session-open     optional  (not written yet, ADR-0044)
+# Directories: every bundle below, the ones cmake installs (not EXPERIMENTAL).
+/usr/local/lib/lv2/                    required  tools/build-plugins.sh --stage
+/usr/local/lib/vst3/                   required  tools/build-plugins.sh --stage
+# The Keys menu's profiles; sonora-ui looks in /usr/share/sonora/keymaps.
+/usr/share/sonora/keymaps/             required  keymaps/*.json
