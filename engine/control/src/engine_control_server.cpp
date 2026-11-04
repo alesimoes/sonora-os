@@ -178,6 +178,21 @@ bool edit_transport_field(const std::string& id, model::Transport& tr, uint32_t 
         tr.punch = {{0, 0}};
         return true;
     }
+    // ADR-0043: three record switches, flipped one each. Input Only is a
+    // monitor decision and may change under a take; the other two change how
+    // the next take starts (take_punch_refusal()).
+    if (id == "transport.toggle_input_only") {
+        tr.input_only = !tr.input_only;
+        return true;
+    }
+    if (id == "transport.toggle_pre_post_roll") {
+        tr.rolls_on = !tr.rolls_on;
+        return true;
+    }
+    if (id == "transport.toggle_quick_punch") {
+        tr.quick_punch = !tr.quick_punch;
+        return true;
+    }
     const bool pre = id == "transport.set_pre_roll";
     if (argument.empty()) {
         why = pre ? "no pre-roll given" : "no post-roll given";
@@ -201,6 +216,9 @@ bool edit_transport_field(const std::string& id, model::Transport& tr, uint32_t 
 // change saved under it would leave the session saying a range the take did
 // not use. The rolls are in no file, so a change waits for the next roll.
 std::string take_punch_refusal(const model::Transport& was, const model::Transport& now) {
+    if (now.quick_punch != was.quick_punch || now.rolls_on != was.rolls_on) {
+        return "a take is recording; the record mode changes after Stop";
+    }
     if (now.punch == was.punch) return {};
     return "a take is recording; the punch range changes after Stop";
 }
@@ -542,7 +560,9 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
             }));
     }
     for (const char* id : {"transport.punch_selection", "transport.clear_punch",
-                           "transport.set_pre_roll", "transport.set_post_roll"}) {
+                           "transport.set_pre_roll", "transport.set_post_roll",
+                           "transport.toggle_input_only", "transport.toggle_pre_post_roll",
+                           "transport.toggle_quick_punch"}) {
         registry_.install(
             id, ExplainingHandler([this, id = std::string(id)](const CommandContext& ctx,
                                                                std::string& why) {

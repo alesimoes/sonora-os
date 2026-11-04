@@ -59,7 +59,11 @@ namespace sonora::model {
 // 18: a lane may be "mute", "send_level" or "send_pan", the last two with
 //    "send"; every bus and "monitor_bus" carry "automation" (ADR-0027 §9).
 //    A version 17 file opens with none.
-constexpr std::int64_t kFormatVersion = 18;
+// 19: taken by the groups and clip gain work (not in this tree).
+// 20: "transport.input_only", "transport.rolls_on", "transport.quick_punch",
+//    and "track_punch" on every audio track (ADR-0043). A version 19 file
+//    opens with Auto Input, the rolls on, no QuickPunch, every track in.
+constexpr std::int64_t kFormatVersion = 20;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

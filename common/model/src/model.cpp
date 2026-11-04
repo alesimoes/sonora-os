@@ -233,7 +233,7 @@ bool TrackMix::operator==(const TrackMix& o) const {
     return track == o.track && input == o.input && monitor == o.monitor &&
            gain_db == o.gain_db && pan == o.pan && mute == o.mute &&
            solo == o.solo && solo_safe == o.solo_safe && midi == o.midi &&
-           automation == o.automation;
+           automation == o.automation && track_punch == o.track_punch;
 }
 
 const Source* SourcePool::find(Id id) const {

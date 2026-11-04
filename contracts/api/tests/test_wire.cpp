@@ -436,7 +436,8 @@ void version_check() {
     // (ADR-0027 §9; follows 40).
     // 42: meters.reset, and state layout 8's loudness (ADR-0013 amendment of
     // 2026-11-03; follows 41).
-    CHECK(kProtocolVersion == 42);
+    // 48: record modes and TrackPunch (ADR-0043; 43 to 47 are other work's).
+    CHECK(kProtocolVersion == 48);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.

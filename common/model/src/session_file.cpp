@@ -546,10 +546,50 @@ bool v17_to_v18(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v18 -> v19: no change here. The number belongs to the groups and clip gain
+// PR (open at the time of ADR-0043); until it lands the step is a no-op so
+// the table has no hole.
+bool v18_to_v19(Value&, std::vector<Repair>&, std::string&) { return true; }
+
+// v19 -> v20 (ADR-0043): the transport gains "input_only" (off, Auto Input),
+// "rolls_on" (on) and "quick_punch" (off), and every audio track "track_punch"
+// (on), so a version 19 session records and monitors as it did.
+bool v19_to_v20(Value& root, std::vector<Repair>&, std::string& error) {
+    Value* tr = root.find("transport");
+    if (tr != nullptr && tr->is_object()) {
+        for (const char* key : {"input_only", "rolls_on", "quick_punch"}) {
+            if (tr->find(key) != nullptr) {
+                error = std::string("the file has \"transport.") + key +
+                        "\", which version 19 does not define";
+                return false;
+            }
+        }
+        tr->set("input_only", Value::boolean(false));
+        tr->set("rolls_on", Value::boolean(true));
+        tr->set("quick_punch", Value::boolean(false));
+    }
+    Value* tracks = root.find("tracks");
+    if (tracks != nullptr && tracks->is_array()) {
+        for (std::size_t i = 0; i < tracks->items().size(); ++i) {
+            Value& t = tracks->items()[i];
+            if (!t.is_object()) continue;
+            const Value* kind = t.find("kind");
+            if (kind == nullptr || !kind->is_string() || kind->text() != "audio") continue;
+            if (t.find("track_punch") != nullptr) {
+                error = "tracks[" + std::to_string(i) +
+                        "] has \"track_punch\", which version 19 does not define";
+                return false;
+            }
+            t.set("track_punch", Value::boolean(true));
+        }
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
      v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
-     v16_to_v17, v17_to_v18}};
+     v16_to_v17, v17_to_v18, v18_to_v19, v19_to_v20}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -992,7 +1032,8 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
     const Value& tr = *root.find("transport");
     if (!rd.keys(tr, "transport",
                  {"loop", "punch", "pre_roll", "post_roll", "punch_crossfade",
-                  "count_off_bars", "loop_playback", "loop_record"})) {
+                  "count_off_bars", "loop_playback", "loop_record", "input_only", "rolls_on",
+                  "quick_punch"})) {
         return false;
     }
     if (!rd.range(tr, "transport", "loop", s.transport.loop)) return false;
@@ -1009,6 +1050,9 @@ bool read_settings(Reader& rd, const Value& root, SessionSettings& s) {
     s.transport.count_off_bars = static_cast<std::uint32_t>(bars);
     if (!rd.flag(tr, "transport", "loop_playback", s.transport.loop_playback)) return false;
     if (!rd.flag(tr, "transport", "loop_record", s.transport.loop_record)) return false;
+    if (!rd.flag(tr, "transport", "input_only", s.transport.input_only)) return false;
+    if (!rd.flag(tr, "transport", "rolls_on", s.transport.rolls_on)) return false;
+    if (!rd.flag(tr, "transport", "quick_punch", s.transport.quick_punch)) return false;
     if (!rd.text(root, "", "session_id", s.session_id)) return false;
     const Value* left = nullptr;
     if (!rd.array(root, "", "left_takes", left)) return false;
@@ -1683,9 +1727,9 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
         if (audio) {
             keys_ok = rd.keys(v, p,
                               {"id", "kind", "name", "colour", "channels", "input", "monitor",
-                               "gain_db", "pan", "mute", "solo", "solo_safe", "active_playlist",
-                               "inserts", "sends", "output", "automation", "automation_mode",
-                               "playlists"});
+                               "gain_db", "pan", "mute", "solo", "solo_safe", "track_punch",
+                               "active_playlist", "inserts", "sends", "output", "automation",
+                               "automation_mode", "playlists"});
         } else if (midi) {
             keys_ok = rd.keys(v, p,
                               {"id", "kind", "name", "colour", "midi_input", "midi_output",
@@ -1750,6 +1794,7 @@ bool read_tracks(Reader& rd, const Value& root, const SourcePool& pool, Sequence
         if (!rd.flag(v, p, "mute", m.mute)) return false;
         if (!rd.flag(v, p, "solo", m.solo)) return false;
         if (!rd.flag(v, p, "solo_safe", m.solo_safe)) return false;
+        if (audio && !rd.flag(v, p, "track_punch", m.track_punch)) return false;
         if (!midi && !rd.choice(v, p, "automation_mode", kAutomationModes, m.automation)) {
             return false;
         }
@@ -1899,6 +1944,9 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
     tr.set("count_off_bars", integer(st.transport.count_off_bars));
     tr.set("loop_playback", Value::boolean(st.transport.loop_playback));
     tr.set("loop_record", Value::boolean(st.transport.loop_record));
+    tr.set("input_only", Value::boolean(st.transport.input_only));
+    tr.set("rolls_on", Value::boolean(st.transport.rolls_on));
+    tr.set("quick_punch", Value::boolean(st.transport.quick_punch));
     Value& bus = root.set("monitor_bus", Value::object());
     bus.set("outputs", pair(s.mix.bus.outputs[0], s.mix.bus.outputs[1]));
     bus.set("gain_db", Value::number_float(s.mix.bus.gain_db));
@@ -1939,6 +1987,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
         tv.set("mute", Value::boolean(m.mute));
         tv.set("solo", Value::boolean(m.solo));
         tv.set("solo_safe", Value::boolean(m.solo_safe));
+        if (audio) tv.set("track_punch", Value::boolean(m.track_punch));
         tv.set("active_playlist", id_value(t.active_playlist));
         if (!midi) {
             Value& inserts = tv.set("inserts", Value::array());

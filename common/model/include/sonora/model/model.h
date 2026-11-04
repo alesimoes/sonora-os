@@ -860,6 +860,11 @@ struct TrackMix {
     MidiRouting midi;
     // A strip setting, saved and not undone, as in Pro Tools (ADR-0027 §1).
     AutomationMode automation = AutomationMode::Read;
+    // Pro Tools' TrackPunch, per track: whether this track's record-enable
+    // holds in a punch take. An armed track with it off sits the punch out
+    // (no file, playback heard) and records in plain takes as any other.
+    // Audio tracks only; saved and not undoable, like `monitor`.
+    bool track_punch = true;
     bool operator==(const TrackMix& o) const;
 };
 
@@ -978,11 +983,24 @@ struct Transport {
     // both together (transport.toggle_cycle). ADR-0016, update "loop record
     // as a record mode".
     bool loop_record = false;
+    // Pro Tools' Input Only Monitoring against Auto Input (the default):
+    // with it on, an armed track is heard from its input whatever the
+    // transport does, a punch included (ADR-0043).
+    bool input_only = false;
+    // Pro Tools' Pre/Post-Roll switch: off, a take or a punch starts at the
+    // record point and a punch stops the roll at B, the rolls kept for when
+    // it is turned on again.
+    bool rolls_on = true;
+    // Pro Tools' QuickPunch record mode: the record key punches in and out on
+    // the fly, the punch range is not used, and every pass is a take of its
+    // own, kept in the track's take history (ADR-0043).
+    bool quick_punch = false;
     bool operator==(const Transport& o) const {
         return loop == o.loop && punch == o.punch && pre_roll == o.pre_roll &&
                post_roll == o.post_roll && punch_crossfade == o.punch_crossfade &&
                count_off_bars == o.count_off_bars && loop_playback == o.loop_playback &&
-               loop_record == o.loop_record;
+               loop_record == o.loop_record && input_only == o.input_only &&
+               rolls_on == o.rolls_on && quick_punch == o.quick_punch;
     }
 };
 inline constexpr std::uint32_t kMaxCountOffBars = 99;

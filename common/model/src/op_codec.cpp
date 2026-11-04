@@ -163,6 +163,7 @@ Value mix_value(const TrackMix& m) {
     v.set("midi_input", port_value(m.midi.in_port, m.midi.in_channel));
     v.set("midi_output", port_value(m.midi.out_port, m.midi.out_channel));
     v.set("automation", name_of(kAutomationModes, m.automation));
+    v.set("track_punch", Value::boolean(m.track_punch));
     return v;
 }
 
@@ -308,6 +309,9 @@ Value settings_value(const SessionSettings& s) {
     tr.set("count_off_bars", integer(s.transport.count_off_bars));
     tr.set("loop_playback", Value::boolean(s.transport.loop_playback));
     tr.set("loop_record", Value::boolean(s.transport.loop_record));
+    tr.set("input_only", Value::boolean(s.transport.input_only));
+    tr.set("rolls_on", Value::boolean(s.transport.rolls_on));
+    tr.set("quick_punch", Value::boolean(s.transport.quick_punch));
     v.set("session_id", Value::string(s.session_id));
     Value& left = v.set("left_takes", Value::array());
     for (const std::string& path : s.left_takes) left.push(Value::string(path));
@@ -1091,7 +1095,7 @@ bool read_midi_region_value(Reader& rd, const Value& v, const std::string& p, Mi
 bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& m) {
     if (!rd.keys(v, p,
                  {"track", "input", "monitor", "gain_db", "pan", "mute", "solo", "solo_safe",
-                  "midi_input", "midi_output", "automation"}) ||
+                  "midi_input", "midi_output", "automation", "track_punch"}) ||
         !rd.id(v, p, "track", m.track)) {
         return false;
     }
@@ -1108,7 +1112,8 @@ bool read_mix_value(Reader& rd, const Value& v, const std::string& p, TrackMix& 
            rd.real(v, p, "gain_db", m.gain_db) && rd.real(v, p, "pan", m.pan) &&
            rd.flag(v, p, "mute", m.mute) && rd.flag(v, p, "solo", m.solo) &&
            rd.flag(v, p, "solo_safe", m.solo_safe) && read_routing(rd, v, p, m.midi) &&
-           rd.choice(v, p, "automation", kAutomationModes, m.automation);
+           rd.choice(v, p, "automation", kAutomationModes, m.automation) &&
+           rd.flag(v, p, "track_punch", m.track_punch);
 }
 
 // Shape only; apply() and check_invariants() judge order and range.
@@ -1208,7 +1213,7 @@ bool read_settings(Reader& rd, const Value& obj, SessionSettings& s) {
     std::int64_t bars = 0;
     if (!rd.keys(tr, trp,
                  {"loop", "punch", "pre_roll", "post_roll", "punch_crossfade", "count_off_bars",
-                  "loop_playback", "loop_record"}) ||
+                  "loop_playback", "loop_record", "input_only", "rolls_on", "quick_punch"}) ||
         !rd.range(tr, trp, "loop", kMaxInteger, loop) ||
         !rd.range(tr, trp, "punch", kMaxInteger, punch) ||
         !rd.frames(tr, trp, "pre_roll", s.transport.pre_roll) ||
@@ -1216,7 +1221,10 @@ bool read_settings(Reader& rd, const Value& obj, SessionSettings& s) {
         !rd.frames(tr, trp, "punch_crossfade", s.transport.punch_crossfade) ||
         !rd.integer(tr, trp, "count_off_bars", kMaxCountOffBars, bars) ||
         !rd.flag(tr, trp, "loop_playback", s.transport.loop_playback) ||
-        !rd.flag(tr, trp, "loop_record", s.transport.loop_record)) {
+        !rd.flag(tr, trp, "loop_record", s.transport.loop_record) ||
+        !rd.flag(tr, trp, "input_only", s.transport.input_only) ||
+        !rd.flag(tr, trp, "rolls_on", s.transport.rolls_on) ||
+        !rd.flag(tr, trp, "quick_punch", s.transport.quick_punch)) {
         return false;
     }
     s.transport.count_off_bars = static_cast<std::uint32_t>(bars);
@@ -1863,7 +1871,9 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 // 15: lanes are one table, "lanes", that each edit track's, aux bus's and
 //    edit state's "master_automation" index; a lane may be a mute, send
 //    level or send pan lane, the last two with their send (ADR-0027 §9).
-constexpr std::int64_t kWindowFormat = 15;
+// 16: each track mix carries track_punch, the transport input_only, rolls_on
+//    and quick_punch (ADR-0043).
+constexpr std::int64_t kWindowFormat = 16;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on

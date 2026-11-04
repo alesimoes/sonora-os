@@ -224,7 +224,10 @@ this way, and the click must put its downbeats in the same places:
   "punch_crossfade": 240,
   "count_off_bars": 2,
   "loop_playback": false,
-  "loop_record": false
+  "loop_record": false,
+  "input_only": false,
+  "rolls_on": true,
+  "quick_punch": false
 }
 ```
 
@@ -251,6 +254,13 @@ timeline selection makes the selection `loop`. `transport.punch_selection`
 rolls; each changes its one field at the engine, and `punch` does not change
 while a take is open (ADR-0016, update "transport settings at the
 authority").
+`input_only`, `rolls_on` and `quick_punch` (version 20, ADR-0043) are the
+record modes. `input_only` is Pro Tools' Input Only Monitoring against Auto
+Input (`false`): on, an armed track is heard from its input whatever the
+transport does. `rolls_on` is the Pre/Post-Roll switch: off, a take starts at
+the record point and a punch stops at B, `pre_roll` and `post_roll` kept for
+the next time it is on. `quick_punch` is Pro Tools' QuickPunch: the record key
+punches in and out on the fly and the punch range is not used.
 Transport settings are saved but are not undoable.
 
 ### `monitor_bus`: Phase 2's fixed stereo bus
@@ -1060,6 +1070,14 @@ after `pan_law_db`. A lane's `param` may be `"mute"`, `"send_level"` or
 `"send_pan"`, the last two with `send`. A version 17 file cannot carry any
 of them. The frozen v17 fixture loads through it and saves as
 `v18-strip-lanes.sonora`, byte for byte.
+
+**v18→v19:** the groups and clip gain work's number; in this tree a no-op.
+
+**v19→v20 (record modes, ADR-0043):** `transport` gains `"input_only": false`,
+`"rolls_on": true` and `"quick_punch": false`, after `loop_record`, and every
+audio track `"track_punch": true`, after `solo_safe`. A MIDI or instrument track
+has none. A version 19 file cannot carry any of them. The frozen v18 fixture
+loads through it and saves as `v20-record-modes.sonora`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and
