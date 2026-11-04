@@ -154,7 +154,11 @@ foreach(obj IN LISTS WAKE_OBJECTS)
   get_filename_component(name ${obj} NAME)
   if(name MATCHES "^wake\\.cpp\\.o(bj)?$")
     set(found_wake TRUE)
-    check_allowed(${obj} "wake_all's object" "^syscall$" "^__rtsan_(disable|enable)$")
+    # _GLOBAL_OFFSET_TABLE_ is the address table every position-independent
+    # object references (sonora_platform is built PIC for the cab plugin): a
+    # data symbol, no code behind it, so it cannot block or allocate.
+    check_allowed(${obj} "wake_all's object" "^syscall$" "^__rtsan_(disable|enable)$"
+                  "^_GLOBAL_OFFSET_TABLE_$")
   endif()
 endforeach()
 if(NOT found_wake)
