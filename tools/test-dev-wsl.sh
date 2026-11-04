@@ -207,5 +207,17 @@ if [[ $rc == 1 ]]; then ok "--log keeps the exit code"; else bad "--log exit $rc
 if grep -q "unknown step no-such-step" "$TMP/l/out.log"; then ok "--log has stderr"; else bad "--log content"; fi
 if LC_ALL=C grep -q -P '\x00' "$TMP/l/out.log"; then bad "--log is not UTF-8 (NUL bytes)"; else ok "--log has no UTF-16"; fi
 
+# measure: parsers of the clock and of jack_iodelay.
+top=$'S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT  NAME\nS   30      0      0  0.0ns  0.0ns  ---  ---    0        Dummy-Driver\nR   45    128  48000 10.0us  20.0us 0.00 0.01    3 S16LE 2 48000 sonora\n'
+if [[ $(clock_of <<<"$top") == 48000/128 ]]; then ok "clock_of"; else bad "clock_of: $(clock_of <<<"$top")"; fi
+if [[ $(echo "nothing" | clock_of) == '?/?' ]]; then ok "clock_of unknown"; else bad "clock_of unknown"; fi
+iod=$'  128.000 frames      2.667 ms total roundtrip latency\n  250.000 frames      5.208 ms total roundtrip latency\n'
+if [[ $(iodelay_last <<<"$iod") == "5.208 ms (250.000 frames)" ]]; then ok "iodelay_last"; else bad "iodelay_last: $(iodelay_last <<<"$iod")"; fi
+if [[ -z $(echo "no signal" | iodelay_last) ]]; then ok "iodelay_last empty"; else bad "iodelay_last empty"; fi
+if printf '48000/128\n48000/128\n' | clock_stable; then ok "stable clock"; else bad "stable clock"; fi
+if printf '48000/128\n48000/256\n' | clock_stable; then bad "moving quantum called stable"; else ok "moving quantum"; fi
+if printf '?/?\n' | clock_stable; then bad "unknown called stable"; else ok "unknown clock"; fi
+if : | clock_stable; then bad "no samples called stable"; else ok "no samples"; fi
+
 echo "RESULT failed=$fail"
 exit "$fail"

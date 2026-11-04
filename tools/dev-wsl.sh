@@ -16,6 +16,14 @@
 #                               from a test tone, play it back to the
 #                               speakers, and print the levels of the take
 #                               and of what reached the speakers
+#   tools/dev-wsl.sh measure [SECONDS] [--loop-out PORT --loop-in PORT]
+#                               engine recording for SECONDS (default 600);
+#                               prints the graph's quantum and rate every
+#                               30 s, the engine's xruns, and the round-trip
+#                               latency (jack_iodelay) when a loop exists:
+#                               by default the speakers to the microphone
+#                               (needs a working mic), or two JACK ports
+#                               joined by a cable
 #   tools/dev-wsl.sh user [NAME]  (as root) make NAME (default sonora, or the
 #                               existing uid 1000) the distro's default user
 #   tools/dev-wsl.sh --log FILE STEP ...
@@ -104,7 +112,7 @@ PACKAGES=(
   libgl1-mesa-dri libglx-mesa0 libegl-mesa0 fonts-inter
   pipewire pipewire-bin pipewire-jack libpipewire-0.3-modules libspa-0.2-modules
   wireplumber libpulse0 pulseaudio-utils
-  dbus dbus-x11 python3 procps
+  dbus dbus-x11 python3 procps jack-example-tools
 )
 
 # Root needs no sudo, and a Debian distro installed with --no-launch has
@@ -585,6 +593,126 @@ PY
   say "selftest passed; the files are in $dir"
 }
 
+# --- measure ---------------------------------------------------------------
+
+# `pw-top -b` text on stdin (columns S ID QUANT RATE WAIT BUSY W/Q B/Q ERR
+# FORMAT NAME): the QUANT and RATE of the last row that has both, printed as
+# "RATE/QUANTUM", or "?/?" when no node is running.
+clock_of() {
+  awk '$3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && $3 > 0 && $4 > 0 { r = $4; q = $3 }
+       END { print (q ? r "/" q : "?/?") }'
+}
+
+# jack_iodelay output on stdin -> "<ms> ms (<frames> frames)" of the last
+# "total roundtrip latency" line, or nothing when it never locked on.
+iodelay_last() {
+  grep -E "total roundtrip latency" | tail -n 1 |
+    sed -E 's/^ *([0-9.]+) frames +([0-9.]+) ms.*/\2 ms (\1 frames)/'
+}
+
+# stdin: one "RATE/QUANTUM" per line. Succeeds when there is at least one
+# sample, none is unknown and all are equal: a quantum that moves mid-session
+# changes our block size.
+clock_stable() {
+  local lines
+  lines="$(sort -u | grep . || true)"
+  [[ -n $lines && $(wc -l <<<"$lines") -eq 1 && $lines != *'?'* ]]
+}
+
+do_measure() {
+  local seconds=600 lout="" lin=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      [0-9]*) seconds="$1"; shift ;;
+      --loop-out) lout="${2:?--loop-out needs a port}"; shift 2 ;;
+      --loop-in) lin="${2:?--loop-in needs a port}"; shift 2 ;;
+      *) die "measure: unknown argument $1" ;;
+    esac
+  done
+  if engine_running; then
+    say "an engine is running; PipeWire is used as it is, never restarted"
+    AUDIO_KEEP=1
+  fi
+  do_audio
+  [[ -x "$BUILD/sonora-engine" && -x "$BUILD/sonora-ctl" ]] ||
+    die "no build in $BUILD; run: tools/dev-wsl.sh build"
+  engine_args
+  local dir="$STATE/measure-session" sock="$STATE/measure.sock" out="$STATE/measure.txt"
+  rm -rf "$dir"
+  : >"$out"
+  PIDS=()
+  trap 'for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done' EXIT
+  pw-jack "$BUILD/sonora-engine" --backend jack --tracks 2 --dir "$dir" --headless \
+    --no-memlock "${ENGINE_EXTRA[@]}" --control-socket "$sock" \
+    >"$STATE/engine.out" 2>"$STATE/engine.err" &
+  local engine=$!
+  PIDS+=("$engine")
+  patch_engine "$MIC" || true
+  wait_for 30 test -S "$sock" || die "the engine never opened $sock; see $STATE/engine.err"
+  local ctl=("$BUILD/sonora-ctl" --control-socket "$sock")
+
+  # Round trip first: it needs the engine's graph only as company, and a
+  # missing loop must not cost ten minutes before it is reported.
+  local lat="not measured"
+  if ! command -v jack_iodelay >/dev/null; then
+    lat="not measured: jack_iodelay missing (tools/dev-wsl.sh deps installs jack-example-tools)"
+  else
+    if [[ -z "$lout" || -z "$lin" ]]; then
+      mapfile -t spk < <(node_ports "$SPEAKERS" -i)
+      mapfile -t mic < <(node_ports "$MIC" -o)
+      lout="${spk[0]:-}"; lin="${mic[0]:-}"
+    fi
+    if [[ -z "$lout" || -z "$lin" ]]; then
+      lat="not measured: no loop ports (pass --loop-out and --loop-in)"
+    else
+      pw-jack jack_iodelay >"$STATE/iodelay.out" 2>&1 &
+      local iod=$!
+      PIDS+=("$iod")
+      if wait_for 10 bash -c "pw-link -i 2>/dev/null | grep -q '^jack_delay:in$'"; then
+        pw-link jack_delay:out "$lout" 2>/dev/null || true
+        pw-link "$lin" jack_delay:in 2>/dev/null || true
+        sleep 12
+        lat="$(iodelay_last <"$STATE/iodelay.out")"
+        [[ -n "$lat" ]] ||
+          lat="not measured: no signal came back through $lout -> $lin (silent microphone or no cable)"
+      else
+        lat="not measured: jack_iodelay did not start"
+      fi
+      kill "$iod" 2>/dev/null || true
+      wait "$iod" 2>/dev/null || true
+    fi
+  fi
+
+  say "measuring ${seconds}s; the graph clock is sampled every 30 s"
+  "${ctl[@]}" take "$seconds" >"$STATE/take.out" 2>&1 &
+  local take=$!
+  PIDS+=("$take")
+  local t=0 clocks=()
+  while ((t < seconds)) && kill -0 "$take" 2>/dev/null; do
+    clocks+=("$(pw-top -b -n 2 2>/dev/null | clock_of)")
+    sleep "$((seconds - t < 30 ? seconds - t : 30))"
+    t=$((t + 30))
+  done
+  wait "$take" 2>/dev/null || true
+  local state
+  state="$("${ctl[@]}" state 2>&1 | grep -i "xrun\|overrun" || true)"
+  kill -TERM "$engine" 2>/dev/null || true
+  wait "$engine" 2>/dev/null || true
+
+  local distinct
+  distinct="$(printf '%s\n' "${clocks[@]}" | sort -u | paste -sd' ' -)"
+  {
+    echo "dev-wsl measure: $(date -u +%FT%TZ), ${seconds}s, ${#clocks[@]} clock samples"
+    echo "clock rate/quantum seen: $distinct"
+    if printf '%s\n' "${clocks[@]}" | clock_stable; then echo "quantum: stable"; else echo "quantum: NOT stable or unknown"; fi
+    echo "engine: ${state:-no state}"
+    echo "pw-top (ERR column):"
+    pw-top -b -n 2 2>/dev/null | tail -n 12 || true
+    echo "round-trip latency: $lat"
+  } | tee "$out"
+  say "also written to $out; the take checks are in $STATE/take.out"
+}
+
 # --- user ------------------------------------------------------------------
 
 # wsl.conf on stdin -> stdout with default=NAME in its [user] section. The
@@ -749,6 +877,7 @@ case "$cmd" in
   stop) do_stop ;;
   status) do_status ;;
   selftest) do_selftest "$@" ;;
+  measure) do_measure "$@" ;;
   user) do_user "$@" ;;
   all|--) [[ "${1:-}" == -- ]] && shift; do_deps; do_build; do_run -- "$@" ;;
   -h|--help) sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//' ;;
