@@ -30,7 +30,7 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
   -webkit-mask-image:radial-gradient(ellipse at 50% 30%,#000,transparent 75%);mask-image:radial-gradient(ellipse at 50% 30%,#000,transparent 75%)}
 body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:5;
   background:repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 1px,transparent 1px 3px);opacity:.35}
-main{position:relative;z-index:1;max-width:1560px;margin:0 auto;padding:14px 22px 40px}
+main{position:relative;z-index:1;max-width:none;width:100%;box-sizing:border-box;margin:0;padding:14px 22px 40px}
 .mono,.m{font-family:var(--mono)}
 h1{margin:0;font-size:20px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;text-shadow:0 0 9px rgba(63,224,245,.3)}
 .sub{color:var(--muted);font-family:var(--mono);font-size:10.5px}
@@ -74,8 +74,8 @@ h1{margin:0;font-size:20px;font-weight:600;letter-spacing:.22em;text-transform:u
 .hero .ph i{margin-left:0}
 
 /* pipeline */
-.pipe{display:flex;align-items:flex-start;padding:16px 14px 12px;overflow-x:auto}
-.stg{--c:var(--cyan);flex:1 1 0;min-width:116px;text-align:center;cursor:pointer;background:none;border:0;color:inherit;font:inherit;padding:0 4px;position:relative}
+.pipe{display:flex;flex-wrap:wrap;row-gap:12px;align-items:flex-start;padding:16px 14px 12px;overflow:visible}
+.stg{--c:var(--cyan);flex:1 1 0;min-width:96px;text-align:center;cursor:pointer;background:none;border:0;color:inherit;font:inherit;padding:0 4px;position:relative}
 .stg.idle{--c:var(--slate)} .stg.fix{--c:var(--red)} .stg.q{--c:var(--teal)} .stg.ci{--c:var(--amber)} .stg.mg{--c:#7dffb0}
 .nd{width:54px;height:54px;margin:0 auto;border-radius:50%;border:1.5px solid var(--c);display:grid;place-items:center;font:600 22px var(--disp);color:var(--c);background:rgba(4,14,24,.85);position:relative;transition:box-shadow .4s,background .3s}
 .stg.on .nd{box-shadow:0 0 14px -2px var(--c),inset 0 0 10px -4px var(--c)}
@@ -200,8 +200,8 @@ a.prn:hover,a.prt:hover{text-shadow:0 0 4px var(--cyan);text-decoration:underlin
 .pl .pv small{font-size:11px;color:var(--faint)}
 .pl .bar{height:3px;background:var(--line);margin-top:4px}.pl .bar i{display:block;height:100%;background:var(--c);transition:width .8s}
 .pl .why{font:10.5px var(--mono);color:var(--faint);margin-top:3px;min-height:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.kan{display:flex;gap:8px;overflow-x:auto;padding:8px 14px 14px;align-items:flex-start}
-.kc{flex:1 0 150px;min-width:150px;--c:var(--cyan)}
+.kan{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px;overflow:visible;padding:8px 14px 14px;align-items:start}
+.kc{min-width:0;--c:var(--cyan)}
 .kc.s-queued{--c:var(--slate)} .kc.s-planning{--c:#a99cff} .kc.s-distributing{--c:var(--teal)} .kc.s-qa{--c:#5ef0a8} .kc.s-integrating{--c:#ff7ad9} .kc.s-pr_open,.kc.s-ci_fix{--c:var(--amber)} .kc.s-merged{--c:#7dffb0} .kc.s-blocked{--c:var(--red)}
 .kc.sep{margin-left:10px;border-left:1px dashed var(--line2);padding-left:10px}
 .kh{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid var(--c);padding-bottom:3px;margin-bottom:6px;font-size:13px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--c)}
@@ -220,6 +220,7 @@ a.prn:hover,a.prt:hover{text-shadow:0 0 4px var(--cyan);text-decoration:underlin
 footer{color:var(--faint);font:11px var(--mono);margin-top:2px}
 :focus-visible{outline:1px solid var(--cyan);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+html,body{overflow-x:hidden;max-width:100vw}
 </style>
 </head>
 <body>
