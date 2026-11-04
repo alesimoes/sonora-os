@@ -25,6 +25,10 @@ def read_result(path):
     if not isinstance(data.get("summary", ""), str):
         return None, "bad summary"
     for k in ("findings", "followups", "unverified"):
+        # Agents often write one sentence here; losing a finished run over
+        # the shape of a note costs a whole relaunch.
+        if isinstance(data.get(k), str):
+            data[k] = [data[k]] if data[k].strip() else []
         if not isinstance(data.get(k, []), list):
             return None, f"{k} must be a list"
     return data, None
