@@ -116,7 +116,11 @@ Both builds need Linux; on Windows or macOS they run in a container.
 
 | Path | Contents |
 |---|---|
-| `engine/` | The recording engine. C++17, CMake. |
+| `engine/` | The recording engine (`core`, `control`, `app`, `plugin_client`). C++17, CMake. |
+| `common/`, `contracts/` | Shared libraries, and the interfaces between modules (ADR-0007). |
+| `drivers/` | Audio backends: JACK/PipeWire and the fake used in tests. |
+| `ui/` | The control-API client, key maps, terminal and Qt interfaces. |
+| `plugins/` | The native plugin suite and the out-of-process plugin host. |
 | `iso/` | `live-build` configuration for the bootable image. |
 | `audio-stack/` | PipeWire, RT limits and kernel tuning. |
 | `keymaps/` | Swappable command maps. |

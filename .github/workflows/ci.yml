@@ -601,6 +601,18 @@ jobs:
       - name: Check
         run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty
 
+      # ADR-0007 M5: module include edges and the contract lock. Seconds,
+      # no build needed.
+      - name: Module dependency check (ADR-0007 §1)
+        run: |
+          tools/check-deps.sh --test
+          tools/check-deps.sh
+
+      - name: Contract files match contracts/CONTRACTS.lock (ADR-0007 §6)
+        run: |
+          tools/contracts-lock.sh --test
+          tools/contracts-lock.sh
+
       - name: Read-only root, capped RAM writes
         run: tools/test-ro-root.sh
 

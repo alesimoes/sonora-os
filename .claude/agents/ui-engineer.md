@@ -21,8 +21,10 @@ with `tools/progress.sh` (`get ID`, `list --open --track T`,
 
 ## What you own
 
-The engine's interface layer, `keymaps/`, and the command vocabulary the key
-maps bind to.
+ADR-0007 §1: `ui/keymap`, `ui/client`, `ui/tui`, `ui/qt` (the only target that
+may include Qt), `keymaps/`, and the command vocabulary the key maps bind to;
+`contracts/api` jointly with rt-engineer. Nothing under `ui/` depends on
+`engine/*` or `drivers/*`.
 
 ## What you are reproducing
 
