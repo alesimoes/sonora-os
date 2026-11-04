@@ -145,7 +145,10 @@ void no_torn_frame() {
     });
     long reads = 0, torn = 0;
     TelemetrySnapshot s;
-    for (int i = 0; i < 200000; ++i) {
+    // The reader can finish its loop before the writer thread is scheduled
+    // (seq still 0, every read false), so run until it has seen real frames.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    for (int i = 0; i < 200000 || (reads < 1000 && std::chrono::steady_clock::now() < deadline); ++i) {
         if (!b->read(s)) continue;
         ++reads;
         for (uint32_t m = 0; m < kMaxTelemetryMeters; ++m) {
