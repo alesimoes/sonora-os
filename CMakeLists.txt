@@ -107,36 +107,14 @@ endif()
 # Neutral DSP for the native plugin suite and the meters (ADR-0011 §2.1),
 # layer 1 on common/base.
 add_subdirectory(common/dsp)
-# The native plugin suite (ADR-0011): the Processor interface, the format
-# adapters (each processor's directory asks them for its LV2 and VST3
-# bundles), then the measurement harness, then each processor.
-add_subdirectory(plugins/native/sdk)
-if(SONORA_PLATFORM STREQUAL "linux")
-add_subdirectory(plugins/native/format)
-else()
-# The LV2 and VST3 bundles are Linux-only; the processors still call this.
-function(sonora_native_plugin)
-endfunction()
-endif()
-add_subdirectory(plugins/native/measure)
-add_subdirectory(plugins/native/eq)
-add_subdirectory(plugins/native/compressor)
-add_subdirectory(plugins/native/gate)
-add_subdirectory(plugins/native/deesser)
-add_subdirectory(plugins/native/limiter)
-add_subdirectory(plugins/native/delay)
-add_subdirectory(plugins/native/chorus)
-add_subdirectory(plugins/native/phaser)
-add_subdirectory(plugins/native/reverb)
-add_subdirectory(plugins/native/tube)
-add_subdirectory(plugins/native/opto)
-add_subdirectory(plugins/native/fet)
-add_subdirectory(plugins/native/tape)
-add_subdirectory(plugins/native/saturator)
-add_subdirectory(plugins/native/ampcab)
-add_subdirectory(plugins/native/cab)
-add_subdirectory(plugins/native/mixbus)
-add_subdirectory(plugins/native/measure/app)
+# The native plugin suite (ADR-0011): the SDK, the format adapters, the
+# measurement harness, and every processor directory found under
+# plugins/native (see plugins/native/README.md: adding one edits no list).
+add_subdirectory(plugins/native)
+
+# The neutral modules and their tests, as one target: what CI's Portable
+# (MSVC) job builds, so a new test target there needs no edit to ci.yml.
+sonora_define_portable_target()
 
 # Everything below is POSIX or Qt: the neutral build stops here.
 if(NOT SONORA_PLATFORM STREQUAL "linux")
@@ -144,6 +122,8 @@ if(NOT SONORA_PLATFORM STREQUAL "linux")
 endif()
 add_subdirectory(contracts/api)
 add_subdirectory(contracts/backend)
+# Control surface events in, feedback out (ADR-0007 4.4, ADR-0040).
+add_subdirectory(contracts/surfaces)
 # The engine <-> plugin host shared-memory layout, accepted as layout 1
 # (ADR-0012 §5).
 add_subdirectory(contracts/plugin)

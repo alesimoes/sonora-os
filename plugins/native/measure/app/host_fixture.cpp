@@ -66,40 +66,10 @@
 #include <vector>
 
 #include "sonora/measure/measure.h"
-#include "sonora/native/cab.h"
-#include "sonora/native/chorus.h"
-#include "sonora/native/compressor.h"
-#include "sonora/native/delay.h"
-#include "sonora/native/eq.h"
-#include "sonora/native/fet.h"
-#include "sonora/native/deesser.h"
-#include "sonora/native/gate.h"
-#include "sonora/native/limiter.h"
-#include "sonora/native/mixbus.h"
-#include "sonora/native/reverb.h"
-#include "sonora/native/saturator.h"
-#include "sonora/native/tape.h"
-#include "sonora/native/opto.h"
-#include "sonora/native/phaser.h"
-#include "sonora/native/tube.h"
+#include "fixture_headers.inc"
 
 namespace sonora::native::suites {
-measure::Config eq_golden_config();
-measure::Config compressor_golden_config();
-measure::Config gate_golden_config();
-measure::Config deesser_golden_config();
-measure::Config limiter_golden_config();
-measure::Config delay_golden_config();
-measure::Config chorus_golden_config();
-measure::Config phaser_golden_config();
-measure::Config reverb_golden_config();
-measure::Config tube_golden_config();
-measure::Config opto_golden_config();
-measure::Config fet_golden_config();
-measure::Config tape_golden_config();
-measure::Config saturator_golden_config();
-measure::Config mixbus_golden_config();
-measure::Config cab_golden_config();
+#include "fixture_golden_decls.inc"
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -147,53 +117,10 @@ struct Target {
     bool golden_file = true;
 };
 
+// One entry per processor, from plugins/native/<name>/tests/host_fixture.inc
+// (listed by plugins/native/CMakeLists.txt; nothing here to edit for a new one).
 const Target kTargets[] = {
-    {"eq", [] { return native::make_eq(); }, native::suites::eq_golden_config, true,
-     {"bell1_gain", -6.0f}, {{"mode", 0.0f}}},
-    {"compressor", [] { return native::make_compressor(); }, native::suites::compressor_golden_config, true,
-     {"threshold", -40.0f}, {}},
-    {"gate", [] { return native::make_gate(); }, native::suites::gate_golden_config, true,
-     {"threshold", -10.0f}, {}},
-    {"deesser", [] { return native::make_deesser(); }, native::suites::deesser_golden_config, true,
-     {"threshold", -50.0f}, {}},
-    {"limiter", [] { return native::make_limiter(); }, native::suites::limiter_golden_config, true,
-     {"ceiling", -4.0f}, {{"lookahead", 3.0f}}},
-    {"delay", [] { return native::make_delay(); }, native::suites::delay_golden_config, true,
-     {"mix", 70.0f}, {}},
-    {"phaser", [] { return native::make_phaser(); }, native::suites::phaser_golden_config, false,
-     {"mix", 20.0f}, {}},
-    {"chorus", [] { return native::make_chorus(); }, native::suites::chorus_golden_config, false,
-     {"mix", 20.0f}, {}},
-    {"reverb", [] { return native::make_reverb(); }, native::suites::reverb_golden_config, true,
-     {"decay", 4.0f}, {}},
-    // Quality changes the oversampling factor, and so the latency.
-    {"tube", [] { return native::make_tube(); }, native::suites::tube_golden_config, true,
-     {"drive", 24.0f}, {{"quality", 2.0f}}},
-    // Quality changes the oversampling factor, and so the latency.
-    {"opto", [] { return native::make_opto(); }, native::suites::opto_golden_config, true,
-     {"peak_reduction", 95.0f}, {{"quality", 0.0f}}},
-    // Quality changes the oversampling factor, and so the latency. The
-    // rest point is an equilibrium the first steps settle to within
-    // 1e-11 V, far inside the golden bar, so the preroll is free.
-    {"fet", [] { return native::make_fet(); }, native::suites::fet_golden_config, true,
-     {"ratio", 3.0f}, {{"quality", 0.0f}}},
-    // Quality changes the oversampling factor, and so the latency. Silence
-    // leaves the tape's state at zero, so the preroll is free.
-    {"tape", [] { return native::make_tape(); }, native::suites::tape_golden_config, true,
-     {"drive", 18.0f}, {{"quality", 2.0f}}},
-    // Quality changes the oversampling factor, and so the latency. Silence
-    // leaves every state at zero, so the preroll is free.
-    {"saturator", [] { return native::make_saturator(); }, native::suites::saturator_golden_config, true,
-     {"drive", 30.0f}, {{"quality", 2.0f}}},
-    // Quality changes the oversampling factor, and so the latency. Silence
-    // leaves the detectors, the side-chain filter and the oversampler at zero;
-    // the transformer at rest is an equilibrium (checked by the fixture).
-    {"mixbus", [] { return native::make_mixbus(); }, native::suites::mixbus_golden_config, true,
-     {"threshold", -32.0f}, {{"quality", 0.0f}}},
-    // Zero latency, no response loaded: a unit impulse under the output and
-    // mix controls, which is what the host can reach (see golden_file).
-    {"cab", [] { return native::make_cab(); }, native::suites::cab_golden_config, true,
-     {"output", -9.0f}, {}, false},
+#include "fixture_targets.inc"
 };
 
 struct Case {
