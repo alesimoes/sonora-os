@@ -27,6 +27,7 @@
 //   activates it (DistrhoPluginVST3.cpp, fillInBusInfoDetails).
 #include <cstring>
 #include <memory>
+#include <string>
 
 #include "DistrhoPlugin.hpp"
 #include "sonora/native/format/bridge.h"
@@ -41,13 +42,26 @@ using sonora::native::ParamInfo;
 using sonora::native::Taper;
 using sonora::native::Unit;
 
-const Descriptor& bundle_descriptor() {
-    // DPF asks for the parameter count before the instance exists (the
-    // Plugin base constructor), so the table is read from a probe instance
-    // once. The table is static data; the probe is never prepared.
+const sonora::native::Processor& bundle_probe() {
+    // DPF asks for the parameter and state counts before the instance
+    // exists (the Plugin base constructor), so the tables are read from a
+    // probe instance once. They are static data; the probe is never prepared.
     static const std::unique_ptr<sonora::native::Processor> probe =
         sonora::native::format::make_bundle_processor();
-    return probe->descriptor();
+    return *probe;
+}
+
+const Descriptor& bundle_descriptor() { return bundle_probe().descriptor(); }
+
+// Slots of file state (ADR-0029 §6 amendment): one DPF state each. Only a
+// bundle built with FILES has the state feature on (DistrhoPluginInfo.h).
+uint32_t bundle_state_count() {
+#if DISTRHO_PLUGIN_WANT_STATE
+    const sonora::native::FileSlots* f = bundle_probe().files();
+    return f != nullptr ? f->slot_count() : 0;
+#else
+    return 0;
+#endif
 }
 
 const char* unit_text(Unit u) {
@@ -69,7 +83,7 @@ const char* unit_text(Unit u) {
 class SonoraPlugin final : public Plugin {
 public:
     SonoraPlugin()
-        : Plugin(bundle_descriptor().param_count, 0, 0),
+        : Plugin(bundle_descriptor().param_count, 0, bundle_state_count()),
           bridge_(sonora::native::format::make_bundle_processor(), SONORA_CHANNELS,
                   SONORA_SIDECHAIN_CHANNELS) {
         // Prepared once here so the latency is known before the host
@@ -143,6 +157,41 @@ protected:
             p.enumValues.values = values;
         }
     }
+
+#if DISTRHO_PLUGIN_WANT_STATE
+    // A file slot is a filename-path state: in LV2 an atom:Path property
+    // the host writes (patch:Set, delivered to setState() on DPF's Worker
+    // thread, never in run()) and saves through state:mapPath, so the file
+    // lands in the session's Plugin Files folder and the state names it
+    // relative to the session (ADR-0029 §6). In VST3 it is a plain string
+    // in the component state: the path is saved as given, and no host
+    // places the file (ADR-0029, amendment).
+    void initState(uint32_t index, State& state) override {
+        const sonora::native::FileSlots* files = bridge_.processor().files();
+        if (files == nullptr || index >= files->slot_count()) return;
+        const sonora::native::FileSlotInfo& info = files->slot(index);
+        state.hints = kStateIsFilenamePath;
+        state.key = info.id;
+        state.label = info.name;
+    }
+
+    // The host's main thread or DPF's Worker (LV2 restore() and patch:Set,
+    // VST3 setState()), the threads where a file may be read. A file that
+    // does not load leaves the previous response in place; there is no
+    // channel to the host for the reason, so it goes to stderr.
+    void setState(const char* key, const char* value) override {
+        sonora::native::FileSlots* files = bridge_.processor().files();
+        if (files == nullptr || key == nullptr || value == nullptr) return;
+        for (uint32_t i = 0; i < files->slot_count(); ++i) {
+            if (std::strcmp(key, files->slot(i).id) != 0) continue;
+            std::string error;
+            if (!files->load(i, value, error)) {
+                d_stderr("sonora: %s: cannot load '%s': %s", key, value, error.c_str());
+            }
+            return;
+        }
+    }
+#endif
 
     float getParameterValue(uint32_t index) const override { return bridge_.value(index); }
     void setParameterValue(uint32_t index, float value) override { bridge_.set_value(index, value); }

@@ -66,6 +66,7 @@
 #include <vector>
 
 #include "sonora/measure/measure.h"
+#include "sonora/native/cab.h"
 #include "sonora/native/chorus.h"
 #include "sonora/native/compressor.h"
 #include "sonora/native/delay.h"
@@ -76,6 +77,7 @@
 #include "sonora/native/limiter.h"
 #include "sonora/native/mixbus.h"
 #include "sonora/native/reverb.h"
+#include "sonora/native/saturator.h"
 #include "sonora/native/tape.h"
 #include "sonora/native/opto.h"
 #include "sonora/native/phaser.h"
@@ -95,7 +97,9 @@ measure::Config tube_golden_config();
 measure::Config opto_golden_config();
 measure::Config fet_golden_config();
 measure::Config tape_golden_config();
+measure::Config saturator_golden_config();
 measure::Config mixbus_golden_config();
+measure::Config cab_golden_config();
 }  // namespace sonora::native::suites
 
 namespace sonora::measure {
@@ -134,6 +138,13 @@ struct Target {
     // The values of the reconfigure case; empty for a processor without a
     // latency-changing parameter.
     Config reconfigure;
+    // Whether the committed golden file is what this reference renders. The
+    // cabinet's golden file is rendered with a response loaded; the bundle
+    // in this fixture has none (plugin_driver carries no state: the file
+    // slot is exercised by the bundle driver's --scenario state), so its
+    // reference is the cabinet with nothing loaded and the file is not
+    // compared.
+    bool golden_file = true;
 };
 
 const Target kTargets[] = {
@@ -171,10 +182,18 @@ const Target kTargets[] = {
     {"tape", [] { return native::make_tape(); }, native::suites::tape_golden_config, true,
      {"drive", 18.0f}, {{"quality", 2.0f}}},
     // Quality changes the oversampling factor, and so the latency. Silence
+    // leaves every state at zero, so the preroll is free.
+    {"saturator", [] { return native::make_saturator(); }, native::suites::saturator_golden_config, true,
+     {"drive", 30.0f}, {{"quality", 2.0f}}},
+    // Quality changes the oversampling factor, and so the latency. Silence
     // leaves the detectors, the side-chain filter and the oversampler at zero;
     // the transformer at rest is an equilibrium (checked by the fixture).
     {"mixbus", [] { return native::make_mixbus(); }, native::suites::mixbus_golden_config, true,
      {"threshold", -32.0f}, {{"quality", 0.0f}}},
+    // Zero latency, no response loaded: a unit impulse under the output and
+    // mix controls, which is what the host can reach (see golden_file).
+    {"cab", [] { return native::make_cab(); }, native::suites::cab_golden_config, true,
+     {"output", -9.0f}, {}, false},
 };
 
 struct Case {
@@ -398,7 +417,7 @@ int write_case(const Target& t, const std::string& dir, const std::string& golde
     // The LV2 golden case has no host tempo, so it is the golden render
     // again, after the preroll: the expected output is tied to the
     // committed golden file, not only to whatever the Processor does today.
-    if (!golden_dir.empty() && !vst3 && std::strcmp(k.name, "golden") == 0) {
+    if (!golden_dir.empty() && t.golden_file && !vst3 && std::strcmp(k.name, "golden") == 0) {
         char file[64];
         std::snprintf(file, sizeof file, "/%s-%d.wav", t.name, static_cast<int>(k.fs));
         Chans ref;
