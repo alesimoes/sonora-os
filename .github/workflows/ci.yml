@@ -599,7 +599,7 @@ jobs:
       - name: Install shellcheck and dbus-x11
         run: sudo apt-get update && sudo apt-get install -y shellcheck dbus-x11
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty
+        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-acceptance
 
       - name: Read-only root, capped RAM writes
         run: tools/test-ro-root.sh
@@ -618,6 +618,9 @@ jobs:
 
       - name: umc-measure.sh logic, against fake arecord/pw-jack/engine
         run: tools/test-umc-measure.sh
+
+      - name: sonora-acceptance logic, against a fake /proc, /sys and engine
+        run: tools/test-sonora-acceptance.sh
 
       - name: Image config (backports pins, RT kernel, tty1 session, no VT gettys)
         run: tools/test-image-config.sh
