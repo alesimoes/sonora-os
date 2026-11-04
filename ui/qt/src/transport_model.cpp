@@ -188,6 +188,13 @@ void TransportModel::refreshTempo(bool force) {
 
 void link_transport(ShellModel& shell, SessionModel& session, TransportModel& transport) {
     transport.counter_led_ = true;
+    // A window configuration stores and recalls the Transport window with
+    // the others.
+    session.setTransportOpenHook([&transport](bool on) { transport.setOpen(on); });
+    QObject::connect(&transport, &TransportModel::openChanged, &session, [&session, &transport]() {
+        session.noteWindowOpen(QStringLiteral("transport"), transport.open());
+    });
+    session.noteWindowOpen(QStringLiteral("transport"), transport.open());
     // The window takes the playhead first, so that when SessionModel
     // publishes its counters in the same tick the window publishes the same
     // position with them.

@@ -40,7 +40,7 @@ A binding's value is either a command name, or an object with:
 |---|---|
 | `command` | required; a name from `contracts/api/include/sonora/command.h` |
 | `target` | track number as the operator sees it, counting from 1, up to 1024. Only for commands that take a track. Without one, a track command acts on the selection -- and this build has no selection yet, so such a key reports that it failed, is left out of the on-screen key list, and does not count as a way to arm. |
-| `argument` | free-form string for a command that needs a value. No command in this build takes one, so supplying it is a load error rather than a field that is quietly ignored. |
+| `argument` | free-form string for a command that needs a value. Only for a command whose `CommandSpec::takes_argument` is set; for any other, supplying it is a load error rather than a field that is quietly ignored. |
 | `origin` | `"vendor"` (the default): the application's own key for this command. `"sonora"`: a chord we chose because the application has no key for the command -- arming track 3 by number, say. |
 | `verified` | `false` marks a vendor binding we have not confirmed against the application's documentation. Defaults to `true`. Not allowed with `"origin": "sonora"`, which has nothing to be confirmed against. |
 | `focus` | `"commands"`: the binding runs only while Pro Tools' Commands Keyboard Focus is on (see "Commands Keyboard Focus" below). The only value; Pro Tools' Clip List and Groups List focuses do not exist here, and naming one is a load error. Not allowed on `focus.commands` itself, which could then never turn focus back on. |
@@ -239,6 +239,17 @@ the playhead at once) and `window.memory_locations`, the Memory Locations
 window (`ctrl+numpad_5` in `protools.json`, `"verified": false`). Both are on
 the Edit menu; `logic.json` binds neither until Logic's own keys are
 confirmed.
+`window.configurations`, `window.config_store` and `window.config_recall` are
+Window > Configuration (Logic: screensets): nine numbered slots of which of
+Edit and Mix is in front and which floating windows (Transport, Undo History,
+Memory Locations, Latency) are open and where, kept per machine in
+`$XDG_CONFIG_HOME/sonora/window-layouts.json`, never in the session. The
+list is on the Setup menu; the other two take the slot as `argument`
+(`"argument": "2"`). No profile binds them: Pro Tools' keys are the
+Period + number + `*` keypad sequence (Avid's guide gives it for storing),
+a chord sequence this schema cannot spell (ADR-0004 does not ask
+for more than the workflow), and Logic's number keys are bound elsewhere
+here. Recalling an empty slot is refused and the reason is held in the list.
 `edit.consolidate` (`alt+shift+3`, `ctrl+b` in Logic) stays bound and says
 "not implemented in this build" until the engine can render a new file; the
 window cannot write audio, so it has no stand-in.
@@ -252,7 +263,8 @@ The window sends a command where its `CommandSpec::domain` says
 (`contracts/api/include/sonora/command.h`, ADR-0007 §5). An Interface command
 (`tool.*`, `zoom.*`, `edit.mode.*`, `focus.*`, `window.transport`,
 `window.undo_history`, `window.memory_locations`, `window.latency`,
-`window.preferences` (Setup > Preferences; no profile binds a key), `app.quit`,
+`window.preferences` (Setup > Preferences; no profile binds a key),
+`window.configurations`, `window.config_store`, `window.config_recall`, `app.quit`,
 `app.save_as_template`, `app.new_from_template`) runs in the window
 and never reaches the engine, even if an engine lists it. The two template
 commands have no key in either profile: Pro Tools ships no default shortcut

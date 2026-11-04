@@ -41,7 +41,9 @@ RUN ts="$(grep -Eo '[0-9]{8}T[0-9]{6}Z' /etc/apt/sources.list.d/sonora-backports
 #
 # dbus-x11 is here for dbus-launch, which wireplumber needs; the dbus package
 # alone does not provide it.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
+ for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
+ if apt-get $A update && apt-get $A install -y --no-install-recommends \
       pipewire \
       pipewire-bin \
       pipewire-jack \
@@ -53,7 +55,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 \
       procps \
       ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
+    [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
+    rm -rf /var/lib/apt/lists/*
 
 # A pin that matches nothing falls back to trixie's PipeWire silently; a pass
 # against that would say nothing about the image.
