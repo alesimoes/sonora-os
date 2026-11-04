@@ -44,6 +44,12 @@ add_executable(test_record_fake tests/test_record_fake.cpp)
 target_link_libraries(test_record_fake PRIVATE sonora_core sonora_backend_fake)
 add_test(NAME record_fake COMMAND test_record_fake)
 
+# The session folder through std::filesystem (ADR-0008 P1): a path that is a
+# file refuses the take.
+add_executable(test_session_dirs tests/test_session_dirs.cpp)
+target_link_libraries(test_session_dirs PRIVATE sonora_core)
+add_test(NAME session_dirs COMMAND test_session_dirs)
+
 # ADR-0009 §4.1's required stress test; CI runs it under TSan.
 add_executable(test_plan_exchange tests/test_plan_exchange.cpp)
 target_link_libraries(test_plan_exchange PRIVATE sonora_core)

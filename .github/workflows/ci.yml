@@ -140,7 +140,8 @@ jobs:
 
       # sonora_portable (sonora_define_portable_target, plugins/native/
       # CMakeLists.txt): every library and executable under common/json,
-      # common/dsp and plugins/native, so a new test target or processor is
+      # common/dsp, common/platform (the unsupported stubs), common/audiofile
+      # and plugins/native, so a new test target or processor is
       # built here with no edit to this file.
       - name: Build
         run: cmake --build build --config Release --parallel --target sonora_portable
