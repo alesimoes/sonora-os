@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "sonora/api/bounce.h"
 #include "sonora/api/state_block.h"
 
 using namespace sonora;
@@ -436,7 +437,9 @@ void version_check() {
     // (ADR-0027 §9; follows 40).
     // 42: meters.reset, and state layout 8's loudness (ADR-0013 amendment of
     // 2026-11-03; follows 41).
-    CHECK(kProtocolVersion == 42);
+    // 49: mix.bounce, mix.bounce_cancel and EventKind::Bounce (ui.mixer.bounce;
+    // follows 48, 43 to 48 being other PRs').
+    CHECK(kProtocolVersion == 49);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -447,13 +450,40 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 42 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 49 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
+    // A version-42 decoder knows no Bounce event: the first kind past
+    // Latency, which a decoder refuses by range.
+    CHECK(static_cast<uint32_t>(EventKind::Bounce) ==
+          static_cast<uint32_t>(EventKind::Latency) + 1);
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 42"));
+                   "speaks version 49"));
+}
+
+// Protocol 49: a Bounce event carries the fraction in `frame`, the frames in
+// `insert`, the state in `flags`; a state this version does not define is
+// refused. The commands are in the catalog and are the engine's.
+void bounce_event() {
+    EngineEvent e;
+    e.kind = EventKind::Bounce;
+    e.insert = 96000;
+    e.frame = 250;
+    e.flags = static_cast<uint32_t>(BounceState::Failed);
+    e.text = "stop recording before bouncing";
+    std::string bytes, error;
+    wire::encode(e, bytes);
+    EngineEvent back;
+    CHECK(wire::decode(bytes, back, error));
+    CHECK(back.kind == EventKind::Bounce && back.insert == 96000 && back.frame == 250 &&
+          back.flags == e.flags && back.text == e.text);
+    e.flags = static_cast<uint32_t>(BounceState::Cancelled) + 1;
+    wire::encode(e, bytes);
+    CHECK(!wire::decode(bytes, back, error) && mentions(error, "bounce"));
+    CHECK(find_command("mix.bounce") != nullptr && is_engine_command("mix.bounce"));
+    CHECK(find_command("mix.bounce_cancel") != nullptr);
 }
 
 void domains() {
@@ -469,6 +499,7 @@ void domains() {
                                id == "window.transport" ||
                                id == "window.undo_history" ||
                                id == "window.memory_locations" || id == "window.latency" ||
+                               id == "window.bounce" ||
                                id == "app.save_as_template" || id == "app.new_from_template";
         if (interface != (spec.domain == CommandDomain::Interface)) {
             std::fprintf(stderr, "FAIL %s is in the wrong domain\n", spec.id);
@@ -789,6 +820,7 @@ int main() {
     plugin_messages();
     refusals();
     version_check();
+    bounce_event();
     domains();
     frames_carry_large_messages();
     frames_refuse_what_is_out_of_place();

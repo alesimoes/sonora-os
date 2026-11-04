@@ -281,6 +281,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.toggle_loop_record", "transport.toggle_cycle",
         "transport.cycle_selection", "transport.punch_selection", "transport.clear_punch",
         "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready", "meters.reset",
+        "mix.bounce", "mix.bounce_cancel",
     };
     return ids;
 }
@@ -388,6 +389,7 @@ bool FakeEngine::connect(std::string& error) {
     offer_recovered();
     if (!folder_.empty()) announce_folder();
     announce_latency();
+    if (!bounce_event_.empty()) queue(outbound_, bounce_event_);
     return true;
 }
 
@@ -1314,6 +1316,7 @@ void FakeEngine::poll(Inbox& inbox) {
     }
     check_take();
     check_latency();
+    check_bounce();
     publish();
 
     // The client's half: everything back through the codec.
@@ -1610,6 +1613,39 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     };
     const std::string& id = r.command;
     if (id.compare(0, 8, "latency.") == 0) return latency_command(r, why);
+    // The words of engine/control's handlers. The fake renders nothing: it
+    // says Running, then Done on the next poll, so an interface can be
+    // driven; the render is test_bounce's.
+    if (id == "mix.bounce") {
+        BounceOptions o;
+        if (!parse_bounce_argument(r.argument, o, why)) return false;
+        if (recording) {
+            why = "stop recording before bouncing";
+            return false;
+        }
+        if (bounce_running_) {
+            why = "a bounce is already running; cancel it or wait for it";
+            return false;
+        }
+        if (o.mode == BounceMode::RealTime && mode_ != TransportState::Stopped) {
+            why = "stop the transport before bouncing in real time";
+            return false;
+        }
+        bounce_running_ = true;
+        bounce_age_ = 0;
+        announce_bounce(static_cast<uint32_t>(BounceState::Running), 500, "");
+        return true;
+    }
+    if (id == "mix.bounce_cancel") {
+        if (!bounce_running_) {
+            why = "no bounce is running";
+            return false;
+        }
+        bounce_running_ = false;
+        announce_bounce(static_cast<uint32_t>(BounceState::Cancelled), 0,
+                        "the bounce was cancelled; no file was kept");
+        return true;
+    }
     if (id == "session.place_recovered") return place_recovered(why);
     if (id == "session.leave_recovered") {
         if (offered_.empty()) {
@@ -1822,6 +1858,27 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     return false;
 }
 
+// The server holds the last Bounce event for a client that attaches later;
+// so does the fake.
+void FakeEngine::announce_bounce(uint32_t state, uint32_t permille, const std::string& text) {
+    EngineEvent e;
+    e.kind = EventKind::Bounce;
+    e.frame = permille;
+    e.flags = state;
+    e.text = text;
+    if (state == static_cast<uint32_t>(BounceState::Done)) e.insert = 48000;
+    bounce_event_.clear();
+    wire::encode(e, bounce_event_);
+    post_event(e);
+}
+
+void FakeEngine::check_bounce() {
+    if (!bounce_running_) return;
+    if (bounce_age_++ < 1) return;
+    bounce_running_ = false;
+    announce_bounce(static_cast<uint32_t>(BounceState::Done), 1000, "Bounced Files/Bounce_01.wav");
+}
+
 void FakeEngine::announce_latency() {
     EngineEvent e;
     e.kind = EventKind::Latency;
@@ -1953,6 +2010,7 @@ void FakeEngine::publish() {
     tf.playhead = playhead();
     tf.xruns = xruns_;
     tf.clock_steps = clock_steps_;
+    tf.overruns = overruns_;
     tf.health_flags = health_;
     tf.inputs_connected = inputs_connected_ ? cfg_.tracks : 0;
     tf.buffer_frames = cfg_.buffer_frames;

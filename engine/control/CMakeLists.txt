@@ -23,6 +23,7 @@ add_library(sonora_control STATIC
   src/preset_store.cpp
   src/consolidate.cpp
   src/bounce.cpp
+  src/bounce_job.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no

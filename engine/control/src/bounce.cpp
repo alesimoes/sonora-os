@@ -94,6 +94,11 @@ public:
             for (std::size_t i = 0; i < k; ++i) {
                 buf_[2 * i] = l[done + i];
                 buf_[2 * i + 1] = r[done + i];
+                // max() would pass over a NaN and keep the old peak.
+                if (!std::isfinite(l[done + i]) || !std::isfinite(r[done + i])) {
+                    nonfinite_ = true;
+                    continue;
+                }
                 peak_ = std::max({peak_, std::fabs(l[done + i]), std::fabs(r[done + i])});
             }
             const float* planes[2] = {l + done, r + done};
@@ -118,6 +123,14 @@ public:
         if (!writer_.checkpoint() || !writer_.close()) {
             error = "cannot write " + file_ + ": " +
                     (writer_.failure().empty() ? "the disk refused it" : writer_.failure());
+            abandon();
+            return false;
+        }
+        if (opts.normalise && nonfinite_) {
+            // A gain from a peak of infinity is zero: the file would be
+            // silent. Better no file than that one.
+            error = "the mix holds a sample that is infinite or not a number, so it cannot be "
+                    "normalised; nothing was kept";
             abandon();
             return false;
         }
@@ -206,6 +219,7 @@ private:
     uint64_t start_ = 0;
     uint64_t frames_ = 0;
     float peak_ = 0.0f;
+    bool nonfinite_ = false;
 };
 
 std::string stem_of(const model::Snapshot& s, const api::BounceOptions& o) {
@@ -237,12 +251,24 @@ model::Frames bounce_extent(const model::Snapshot& snapshot) {
     return end;
 }
 
+bool bounce_check(const model::Snapshot& snapshot, const api::BounceOptions& opts,
+                  std::string& error) {
+    uint64_t start = 0, end = 0;
+    if (!range_of(snapshot, opts, start, end, error)) return false;
+    if (opts.mode == api::BounceMode::Offline && any_active_insert(snapshot)) {
+        error = "offline bounce does not run plug-in inserts; bounce in real time instead";
+        return false;
+    }
+    return true;
+}
+
 bool bounce_offline(const model::Snapshot& snapshot, const std::string& session_dir,
                     const api::BounceOptions& opts, const BounceHooks& hooks, BounceResult& out,
                     std::string& error) {
     out = BounceResult{};
     uint64_t start = 0, end = 0;
     if (!range_of(snapshot, opts, start, end, error)) return false;
+    // `opts.mode` is ignored here, so the insert refusal is not bounce_check's.
     if (any_active_insert(snapshot)) {
         error = "offline bounce does not run plug-in inserts; bounce in real time instead";
         return false;
@@ -371,6 +397,9 @@ struct RealTimeBounce::Run {
     BounceResult result;
     std::string error;
     bool cancelled = false;
+    // Playback misses before the roll: a later one is a block the disk did
+    // not serve, which the live master then holds as silence.
+    uint64_t misses_before = 0;
 };
 
 RealTimeBounce::RealTimeBounce(Session& session, PlaybackController& playback)
@@ -416,6 +445,7 @@ bool RealTimeBounce::start(const model::Snapshot& snapshot, const std::string& s
         run->sink.abandon();
         return false;
     }
+    run->misses_before = session_.playback_misses();
     run_ = std::move(run);
     tap_ = std::make_unique<MasterTap>(static_cast<std::size_t>(rate) * 2);
     cancel_.store(false);
@@ -477,9 +507,14 @@ void RealTimeBounce::work() {
         progress_.store(static_cast<double>(done) / static_cast<double>(r.total),
                         std::memory_order_relaxed);
     }
+    const uint64_t missed = session_.playback_misses() - r.misses_before;
     if (tap_->lost_frames() != 0) {
         fail("the bounce lost " + std::to_string(tap_->lost_frames()) +
              " frames to a full ring; nothing was kept");
+    } else if (missed != 0) {
+        fail("the disk did not keep up for " + std::to_string(missed) +
+             " block(s) of the roll, so the file has gaps; nothing was kept. Bounce offline "
+             "instead");
     } else {
         std::string why;
         if (!r.sink.finish(r.opts, r.result, why)) r.error = why;

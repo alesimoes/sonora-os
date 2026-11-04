@@ -55,6 +55,8 @@ add_library(sonora_ui_qt STATIC
   src/edit_clipboard.h src/edit_clipboard.cpp
   src/edit_markers.cpp
   src/edit_names.cpp
+  src/strip_silence.h src/strip_silence.cpp
+  src/edit_strip_silence.cpp
   src/automation_edit.h src/automation_edit.cpp
   src/edit_automation.cpp
   src/live_take.h src/live_take.cpp
@@ -82,7 +84,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml
+        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml qml/BounceWindow.qml
         qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
 )
 
@@ -124,6 +126,11 @@ target_link_libraries(test_ui_edit PRIVATE sonora_ui_qt sonora_session_files)
 target_compile_definitions(test_ui_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_edit COMMAND test_ui_edit)
+
+add_executable(test_ui_strip_silence tests/test_strip_silence.cpp)
+target_link_libraries(test_ui_strip_silence PRIVATE sonora_ui_qt)
+add_test(NAME ui_strip_silence COMMAND test_ui_strip_silence)
+set_tests_properties(ui_strip_silence PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 set_tests_properties(ui_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The take being recorded, drawn growing on the armed tracks' lanes.
@@ -202,6 +209,15 @@ target_compile_definitions(test_ui_latency PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_latency COMMAND test_ui_latency)
 set_tests_properties(ui_latency PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# File > Bounce Mix (ui.mixer.bounce): the window over FakeEngine's wire, the
+# argument its choices make, progress, the held notice and the held refusal.
+add_executable(test_ui_bounce_window tests/test_bounce_window.cpp)
+target_link_libraries(test_ui_bounce_window PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_bounce_window PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_bounce_window COMMAND test_ui_bounce_window)
+set_tests_properties(ui_bounce_window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Counters, ruler, grid and snap through the whole tempo map; the Transport
 # window's model on a scripted transport; then the window in the real QML,

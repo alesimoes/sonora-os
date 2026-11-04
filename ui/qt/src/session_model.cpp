@@ -381,10 +381,19 @@ void SessionModel::installCommands(CommandRegistry& local) {
         setLatencyOpen(!latency_open_);
         return true;
     });
+    local.install("window.bounce", [this](const CommandContext&) {
+        setBounceOpen(!bounce_open_);
+        return true;
+    });
     simple("edit.separate_at_selection",
            [this](const CommandContext&, Why& why) { return ctl_.separate(why); });
     simple("edit.heal_separation",
            [this](const CommandContext&, Why& why) { return ctl_.heal_separation(why); });
+    simple("edit.strip_silence", [this](const CommandContext& ctx, Why& why) {
+        StripParams params;
+        return parse_strip_params(ctx.argument, params, why) &&
+               ctl_.strip_silence(peaks_, params, why);
+    });
     simple("edit.trim_start_to_insertion",
            [this](const CommandContext&, Why& why) { return ctl_.trim_start_to_insertion(why); });
     simple("edit.trim_end_to_insertion",
@@ -643,6 +652,12 @@ void SessionModel::setLatencyOpen(bool on) {
     if (on == latency_open_) return;
     latency_open_ = on;
     emit latencyOpenChanged();
+}
+
+void SessionModel::setBounceOpen(bool on) {
+    if (on == bounce_open_) return;
+    bounce_open_ = on;
+    emit bounceOpenChanged();
 }
 
 bool SessionModel::recallMarker(int row) {

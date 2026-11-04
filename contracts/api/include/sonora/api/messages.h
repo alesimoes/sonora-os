@@ -161,7 +161,12 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
-constexpr uint32_t kProtocolVersion = 42;
+// 49 (ui.mixer.bounce; follows 48, the highest any open PR reserved when
+//   this was cut): the commands mix.bounce and mix.bounce_cancel, the
+//   capability "mix.bounce", and EventKind::Bounce, which a version-42
+//   decoder refuses as an unknown kind. 43 to 48 are other PRs' and are not
+//   in this tree.
+constexpr uint32_t kProtocolVersion = 49;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -441,6 +446,13 @@ enum class EventKind : uint32_t {
     // start, replaced at every change and at every ping while measuring; a
     // client that attaches later is sent it. Protocol 22.
     Latency = 7,
+    // A Bounce Mix render (api/bounce.h, protocol 49): `frame` the fraction
+    // rendered in thousandths, `insert` the frames in the file once Done,
+    // `flags` a BounceState, `text` the file's relative path once Done or why
+    // it Failed or was Cancelled. One stands from the first progress, held
+    // after the last until the next bounce, so a failure stays on screen
+    // until dismissed and a client that attaches later is sent it.
+    Bounce = 8,
 };
 
 // EngineEvent::flags of a SessionFolder.

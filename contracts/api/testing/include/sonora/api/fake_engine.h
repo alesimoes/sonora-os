@@ -60,6 +60,7 @@
 #include <string>
 #include <vector>
 
+#include "sonora/api/bounce.h"
 #include "sonora/api/engine_control.h"
 #include "sonora/api/state_block.h"
 #include "sonora/api/state_view.h"
@@ -107,7 +108,7 @@ public:
         std::vector<std::string> planned_commands;
         // Hello's capabilities. The fake parses a play range as the engine
         // does; clear this to stand in for an engine that predates it.
-        std::vector<std::string> capabilities = {kCapabilityPlayRange};
+        std::vector<std::string> capabilities = {kCapabilityPlayRange, kCapabilityBounce};
         // The engine's midi_max_entries (ADR-0015 §5), so a test can make a
         // Load the engine refuses without 2^24 notes.
         uint64_t midi_max_entries = uint64_t{1} << 24;
@@ -165,6 +166,9 @@ public:
     void set_health_flags(uint32_t flags) { health_ = flags; }
     void add_xruns(uint32_t n) { xruns_ += n; }
     void add_clock_steps(uint32_t n) { clock_steps_ += n; }
+    // Capture frames lost, all tracks: counted apart from xruns (the
+    // audio callback missing its deadline), as the real engine does.
+    void add_overruns(uint32_t n) { overruns_ += n; }
     // Layout 5: spans played as silence, as the real engine counts them.
     void add_playback_misses(uint32_t n) { playback_misses_ += n; }
     // A locate held back for its window, kTransportLocating, until cleared.
@@ -407,6 +411,7 @@ private:
     bool inputs_connected_ = true;
     uint32_t xruns_ = 0;
     uint32_t clock_steps_ = 0;
+    uint32_t overruns_ = 0;
     uint64_t start_ns_ = 0;
     uint64_t last_publish_ns_ = 0;
 
@@ -446,6 +451,11 @@ private:
     LatencySource latency_source_ = LatencySource::None;
     LatencyStatus latency_status_ = LatencyStatus::Idle;
     std::string latency_text_;
+    bool bounce_running_ = false;
+    uint32_t bounce_age_ = 0;
+    std::string bounce_event_;
+    void announce_bounce(uint32_t state, uint32_t permille, const std::string& text);
+    void check_bounce();
     bool measuring_ = false;
     bool cancel_asked_ = false;
     uint32_t measure_output_ = 0;

@@ -12,12 +12,14 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "sonora/bounce.h"
+#include "sonora/bounce_job.h"
 #include "sonora/closed_take.h"
 #include "sonora/model/operations.h"
 #include "sonora/playback_controller.h"
@@ -44,9 +46,19 @@
         }                                                                \
     } while (0)
 
+namespace sonora {
+// The reader's hold hook is private to it, as in test_control.
+struct DiskReaderTestAccess {
+    static void set_hold_hook(DiskReader& r, DiskReader::HoldHook hook, void* context) {
+        r.set_hold_hook(hook, context);
+    }
+};
+}  // namespace sonora
+
 namespace {
 
 using namespace sonora;
+std::atomic<bool> g_hold_reader{false};
 namespace fs = std::filesystem;
 
 constexpr uint32_t kRate = 48000;
@@ -76,7 +88,10 @@ struct Rig {
 
 // One mono track playing a 1 kHz sine (48 samples a period, so it repeats
 // exactly) from frame 0 for kLength frames.
-bool make_rig(Rig& r, const std::string& dir) {
+// The source and its one region are `file_frames` long. `infinite` puts one
+// infinite sample in the file.
+bool make_rig(Rig& r, const std::string& dir, int64_t file_frames = kLength,
+              bool infinite = false) {
     fs::remove_all(dir);
     r.dir = dir;
     r.session = std::make_unique<Session>(config(dir));
@@ -84,8 +99,9 @@ bool make_rig(Rig& r, const std::string& dir) {
     r.doc = std::make_unique<model::Document>(engine_document(*r.session));
     WavWriter w;
     if (!w.open(dir + "/Audio Files/s.wav", kRate, 1, WavWriter::Format::Float32, 0)) return false;
-    std::vector<float> data(kLength);
-    for (int64_t i = 0; i < kLength; ++i) data[static_cast<std::size_t>(i)] = sine_at(i);
+    std::vector<float> data(static_cast<std::size_t>(file_frames));
+    for (int64_t i = 0; i < file_frames; ++i) data[static_cast<std::size_t>(i)] = sine_at(i);
+    if (infinite) data[1000] = std::numeric_limits<float>::infinity();
     if (!w.write(data.data(), data.size()) || !w.close()) return false;
 
     const model::TrackEdit& t = *r.doc->current().edit->tracks[0];
@@ -95,7 +111,7 @@ bool make_rig(Rig& r, const std::string& dir) {
     add.source.id = r.doc->current().next_id;
     add.source.path = "Audio Files/s.wav";
     add.source.channels = 1;
-    add.source.length = kLength;
+    add.source.length = file_frames;
     add.source.format = model::AudioFormat::Float32;
     if (!r.doc->apply(add, u, err)) return false;
     model::PlaceRegion p;
@@ -103,7 +119,7 @@ bool make_rig(Rig& r, const std::string& dir) {
     p.region.id = r.doc->current().next_id;
     p.region.name = "r";
     p.region.position = 0;
-    p.region.length = kLength;
+    p.region.length = file_frames;
     p.region.channels.push_back({add.source.id, 0});
     p.split_right_id = p.region.id + 100;
     return r.doc->apply(p, u, err);
@@ -132,7 +148,7 @@ bool matches_mix(const std::string& path, int64_t frames_wanted, float gain, flo
     return true;
 }
 
-int test_offline_is_the_mix() {
+int offline_bounce_is_the_mix_as_played() {
     Rig r;
     CHECK(make_rig(r, "bounce_t1"));
     api::BounceOptions o;
@@ -174,7 +190,7 @@ int test_offline_is_the_mix() {
     return 0;
 }
 
-int test_normalise_and_ceiling() {
+int normalise_reaches_the_target_and_stops_at_the_ceiling() {
     Rig r;
     CHECK(make_rig(r, "bounce_t2"));
     api::BounceOptions o;
@@ -198,7 +214,7 @@ int test_normalise_and_ceiling() {
     return 0;
 }
 
-int test_cancel_leaves_nothing() {
+int cancel_and_an_empty_range_leave_no_file() {
     Rig r;
     CHECK(make_rig(r, "bounce_t3"));
     api::BounceOptions o;
@@ -252,7 +268,7 @@ struct Driver {
     std::thread thread_;
 };
 
-int test_real_time_records_the_master() {
+int real_time_bounce_records_the_master() {
     Rig r;
     CHECK(make_rig(r, "bounce_t4"));
     r.session->reader().start();
@@ -325,7 +341,7 @@ int test_real_time_records_the_master() {
 
 // A full ring is counted, never waited on; a chunk that does not fit whole
 // is dropped so the ring stays frame-aligned.
-int test_tap_counts_overrun() {
+int tap_counts_an_overrun_and_stays_aligned() {
     MasterTap tap(300);
     std::vector<float> l(256, 1.0f), r(256, -1.0f);
     tap.push(l.data(), r.data(), 256);
@@ -338,15 +354,123 @@ int test_tap_counts_overrun() {
     return 0;
 }
 
+// A peak of infinity would make the gain zero and the file silent: the
+// bounce is refused with its reason, and still succeeds without normalise.
+int normalise_refuses_a_mix_with_an_infinite_sample() {
+    Rig r;
+    CHECK(make_rig(r, "bounce_t5", kLength, true));
+    api::BounceOptions o;
+    o.format = api::BounceFormat::Float32;
+    o.normalise = true;
+    BounceResult res;
+    std::string err;
+    BounceHooks hooks;
+    CHECK(!bounce_offline(r.doc->current(), r.dir, o, hooks, res, err));
+    CHECK(err.find("infinite") != std::string::npos);
+    std::size_t files = 0;
+    for (const auto& e : fs::directory_iterator(r.dir + "/Bounced Files")) {
+        (void)e;
+        ++files;
+    }
+    CHECK(files == 0);
+    o.normalise = false;
+    CHECK_BOUNCE(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err), err);
+    CHECK(res.gain_db == 0.0);
+    return 0;
+}
+
+// The disk reader is held once the roll starts: blocks past the resident
+// chunks are silence in the live master. The bounce says so rather than keep
+// a file with a hole.
+int real_time_bounce_refuses_a_roll_the_disk_missed() {
+    Rig r;
+    CHECK(make_rig(r, "bounce_t6", 480000));   // 10 s: far past what stays resident
+    g_hold_reader = false;
+    DiskReaderTestAccess::set_hold_hook(
+        r.session->reader(), [](void*) { return g_hold_reader.load(); }, nullptr);
+    r.session->reader().start();
+    PlaybackController ctl(*r.session);
+    std::string err;
+    CHECK(ctl.show(r.doc->current(), err));
+    CHECK(ctl.settle(5.0));
+    ctl.apply_mix(r.doc->current());
+    RealTimeBounce rt(*r.session, ctl);
+    api::BounceOptions o;
+    o.mode = api::BounceMode::RealTime;
+    o.format = api::BounceFormat::Float32;
+    o.end = 480000;
+    BounceResult res;
+    bool cancelled = false;
+    bool ended = false;
+    {
+        Driver audio(*r.session);
+        CHECK(rt.start(r.doc->current(), r.dir, o, err));
+        // Nothing new becomes resident from here: the roll outruns the
+        // chunks the start left, and each block past them is a miss.
+        g_hold_reader = true;
+        for (int i = 0; i < 4000 && !ended; ++i) {
+            ctl.pump();
+            ended = rt.poll(res, err, cancelled);
+            if (!ended) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+    g_hold_reader = false;
+    CHECK(ended && !cancelled);
+    CHECK_BOUNCE(err.find("did not keep up") != std::string::npos, err);
+    std::size_t files = 0;
+    for (const auto& e : fs::directory_iterator(r.dir + "/Bounced Files")) {
+        (void)e;
+        ++files;
+    }
+    CHECK(files == 0);
+    return 0;
+}
+
+// The control server's way in: a job, offline, reports progress and a
+// result; a second job cancelled part way reports it and leaves no file.
+int job_runs_offline_and_cancels() {
+    Rig r;
+    CHECK(make_rig(r, "bounce_t7"));
+    PlaybackController ctl(*r.session);
+    api::BounceOptions o;
+    o.format = api::BounceFormat::Float32;
+    BounceJob job;
+    std::string err;
+    CHECK_BOUNCE(job.start(*r.session, ctl, r.doc->current(), r.dir, o, err), err);
+    CHECK(job.active());
+    for (int i = 0; i < 5000 && !job.finished(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(job.finished());
+    BounceJob::Result done = job.collect();
+    CHECK(done.ok && !done.cancelled && done.bounced.frames == kLength);
+    CHECK(!job.active());
+    CHECK(fs::exists(r.dir + "/" + done.bounced.relative_path));
+
+    CHECK_BOUNCE(job.start(*r.session, ctl, r.doc->current(), r.dir, o, err), err);
+    CHECK(job.abandon());
+    CHECK(!job.active());
+    std::size_t files = 0;
+    for (const auto& e : fs::directory_iterator(r.dir + "/Bounced Files")) {
+        (void)e;
+        ++files;
+    }
+    CHECK(files == 1);   // the first bounce's
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     int rc = 0;
-    rc |= test_tap_counts_overrun();
-    rc |= test_offline_is_the_mix();
-    rc |= test_normalise_and_ceiling();
-    rc |= test_cancel_leaves_nothing();
-    rc |= test_real_time_records_the_master();
+    rc |= tap_counts_an_overrun_and_stays_aligned();
+    rc |= offline_bounce_is_the_mix_as_played();
+    rc |= normalise_reaches_the_target_and_stops_at_the_ceiling();
+    rc |= normalise_refuses_a_mix_with_an_infinite_sample();
+    rc |= cancel_and_an_empty_range_leave_no_file();
+    rc |= real_time_bounce_records_the_master();
+    rc |= real_time_bounce_refuses_a_roll_the_disk_missed();
+    rc |= job_runs_offline_and_cancels();
     if (rc == 0) std::printf("bounce: ok\n");
     return rc;
 }

@@ -1,26 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Bounce Mix on the wire (ui.mixer.bounce). CONTRACT ONLY: not yet in the
-// command catalog, and kProtocolVersion is not bumped by this header. The
-// version is 44 (reserved by the coordinator; 43 is the consolidate command,
-// PR #367). The wire entry lands in a follow-up on top of #367: the two
-// commands, EventKind::Bounce, the capability, the bump to 44.
+// Bounce Mix on the wire (ui.mixer.bounce, protocol 49).
 //
 //   Command  "mix.bounce"         argument: format_bounce_argument()
 //   Command  "mix.bounce_cancel"  no argument; refused when none runs.
-//   Event    EventKind::Bounce (next free value) while one runs or ended:
-//              frame  = frames rendered so far
-//              insert = frames in all
+//   Event    EventKind::Bounce while one runs or ended:
+//              frame  = frames rendered so far, in thousandths of the whole
+//                       while Running (the fraction, as Consolidate says it)
+//              insert = frames in all, once known (Done), else 0
 //              flags  = BounceState
 //              text   = the file's path relative to the session folder once
-//                       Done, the reason once Failed, empty otherwise
+//                       Done, the reason once Failed or Cancelled, empty
+//                       while Running
 //            One stands from the first progress on; a client that attaches
 //            later is sent it. Done, Failed and Cancelled are held notices
 //            the interface shows until dismissed, not a status line.
 //   Capability "mix.bounce" in Hello::capabilities.
 //
-// The argument is "key=value" words split on ';', the name last and the rest
-// of the field (a name may hold ';' and '='), like take_description().
+// The argument is "key=value" words split on spaces, the name last and the
+// rest of the field (a name may hold spaces, ';' and '='), the style of
+// session.consolidate's:
+//   "mode=offline|realtime start=<frame> end=<frame> format=int24|float32
+//    [normalise=<LUFS>] [name=<text>]"
 #pragma once
 
 #include <cstdint>
@@ -52,10 +53,10 @@ struct BounceOptions {
 
 inline std::string format_bounce_argument(const BounceOptions& o) {
     std::string s = std::string("mode=") + (o.mode == BounceMode::RealTime ? "realtime" : "offline");
-    s += ";start=" + std::to_string(o.start) + ";end=" + std::to_string(o.end);
-    s += std::string(";format=") + (o.format == BounceFormat::Float32 ? "float32" : "int24");
-    if (o.normalise) s += ";normalise=" + std::to_string(o.target_lufs);
-    s += ";name=" + o.name;
+    s += " start=" + std::to_string(o.start) + " end=" + std::to_string(o.end);
+    s += std::string(" format=") + (o.format == BounceFormat::Float32 ? "float32" : "int24");
+    if (o.normalise) s += " normalise=" + std::to_string(o.target_lufs);
+    if (!o.name.empty()) s += " name=" + o.name;
     return s;
 }
 
@@ -63,10 +64,14 @@ inline std::string format_bounce_argument(const BounceOptions& o) {
 inline bool parse_bounce_argument(const std::string& arg, BounceOptions& out, std::string& why) {
     BounceOptions o;
     std::size_t pos = 0;
-    while (pos <= arg.size() && !arg.empty()) {
+    while (pos < arg.size()) {
+        if (arg[pos] == ' ') {
+            ++pos;
+            continue;
+        }
         const std::size_t eq = arg.find('=', pos);
         if (eq == std::string::npos) {
-            why = "bounce argument: \"" + arg.substr(pos) + "\" is not key=value";
+            why = "mix.bounce: \"" + arg.substr(pos) + "\" is not key=value";
             return false;
         }
         const std::string key = arg.substr(pos, eq - pos);
@@ -74,9 +79,10 @@ inline bool parse_bounce_argument(const std::string& arg, BounceOptions& out, st
             o.name = arg.substr(eq + 1);
             break;
         }
-        std::size_t semi = arg.find(';', eq);
-        if (semi == std::string::npos) semi = arg.size();
-        const std::string v = arg.substr(eq + 1, semi - eq - 1);
+        std::size_t stop = arg.find(' ', eq);
+        if (stop == std::string::npos) stop = arg.size();
+        const std::string v = arg.substr(eq + 1, stop - eq - 1);
+        pos = stop;
         char* endp = nullptr;
         if (key == "mode") {
             if (v == "offline") o.mode = BounceMode::Offline;
@@ -84,7 +90,8 @@ inline bool parse_bounce_argument(const std::string& arg, BounceOptions& out, st
             else { why = "bounce mode is offline or realtime, not \"" + v + "\""; return false; }
         } else if (key == "start" || key == "end") {
             const unsigned long long n = std::strtoull(v.c_str(), &endp, 10);
-            if (v.empty() || *endp != '\0' || v[0] == '-') {
+            // 18 digits: far past any session, and strtoull cannot overflow.
+            if (v.empty() || v.size() > 18 || *endp != '\0' || v[0] == '-' || v[0] == '+') {
                 why = "bounce " + key + " is a frame number, not \"" + v + "\"";
                 return false;
             }
@@ -95,17 +102,17 @@ inline bool parse_bounce_argument(const std::string& arg, BounceOptions& out, st
             else { why = "bounce format is int24 or float32, not \"" + v + "\""; return false; }
         } else if (key == "normalise") {
             const double d = std::strtod(v.c_str(), &endp);
-            if (v.empty() || *endp != '\0' || d < -70.0 || d > 0.0) {
+            // !(in range) also refuses NaN.
+            if (v.empty() || *endp != '\0' || !(d >= -70.0 && d <= 0.0)) {
                 why = "bounce normalise is a target between -70 and 0 LUFS";
                 return false;
             }
             o.normalise = true;
             o.target_lufs = d;
         } else {
-            why = "bounce argument: unknown word \"" + key + "\"";
+            why = "mix.bounce: unknown word \"" + key + "\"";
             return false;
         }
-        pos = semi + 1;
     }
     if (o.end != 0 && o.end <= o.start) {
         why = "the range to bounce is empty";

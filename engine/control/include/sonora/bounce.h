@@ -53,6 +53,11 @@ inline constexpr const char* kBouncedDir = "Bounced Files";
 // The frame after the last region on any audio track's active playlist.
 model::Frames bounce_extent(const model::Snapshot& snapshot);
 
+// What a bounce start refuses at once, with its reason: an empty range, and
+// for the offline mode a session with an active plug-in insert.
+bool bounce_check(const model::Snapshot& snapshot, const api::BounceOptions& opts,
+                  std::string& error);
+
 // Renders offline. `opts.mode` is ignored. On failure `error` says why and
 // no file is left behind.
 bool bounce_offline(const model::Snapshot& snapshot, const std::string& session_dir,

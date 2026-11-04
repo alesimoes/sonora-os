@@ -518,6 +518,46 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                           withdraw_orphans();
                           return true;
                       }));
+    // Bounce Mix (ui.mixer.bounce): the render runs on a worker, or on the
+    // live audio thread's tap, never here; this thread starts it and says how
+    // it ended (follow_bounce()).
+    registry_.install("mix.bounce",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          api::BounceOptions o;
+                          if (!api::parse_bounce_argument(ctx.argument, o, why)) return false;
+                          if (bounce_job_.active()) {
+                              why = "a bounce is already running; cancel it or wait for it";
+                              return false;
+                          }
+                          if (takes_in_flight()) {
+                              why = "stop recording before bouncing";
+                              return false;
+                          }
+                          if (o.mode == api::BounceMode::RealTime &&
+                              (session_.transport().state() != TransportState::Stopped ||
+                               playback_busy())) {
+                              why = "stop the transport before bouncing in real time";
+                              return false;
+                          }
+                          const model::Snapshot now = document_->current();
+                          if (!bounce_check(now, o, why)) return false;
+                          bounce_said_ = 0;
+                          if (!bounce_job_.start(session_, *playback_, now, *session_.folder(), o,
+                                                 why)) {
+                              return false;
+                          }
+                          announce_bounce(api::BounceState::Running, 0, 0, "");
+                          return true;
+                      }));
+    registry_.install("mix.bounce_cancel",
+                      ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          if (!bounce_job_.active()) {
+                              why = "no bounce is running";
+                              return false;
+                          }
+                          bounce_job_.cancel();
+                          return true;
+                      }));
     // Pro Tools' Loop Playback and Loop Record, Logic's Cycle: session
     // settings, saved and outside undo like the range (ADR-0016, updates
     // "the loop on switch", "loop record as a record mode" and "Logic's
@@ -1198,6 +1238,7 @@ void EngineControlServer::remember(const api::EngineEvent& event, const std::str
             break;
         case api::EventKind::SessionFolder: session_folder_ = bytes; break;
         case api::EventKind::Latency: latency_ = bytes; break;
+        case api::EventKind::Bounce: bounce_ = bytes; break;
     }
 }
 
@@ -1628,6 +1669,7 @@ void EngineControlServer::greet(ClientId id) {
         implemented_.end()) {
         hello.capabilities.push_back(api::kCapabilityPlayRange);
     }
+    hello.capabilities.push_back(api::kCapabilityBounce);
     std::string bytes;
     api::wire::encode(hello, bytes);
     send_to(client, bytes);
@@ -1650,7 +1692,7 @@ void EngineControlServer::greet(ClientId id) {
     }
     for (const std::string* e :
          {&session_folder_, &latency_, &inputs_missing_, &take_failed_, &fatal_,
-          &recovery_offer_}) {
+          &recovery_offer_, &bounce_}) {
         if (!e->empty()) send_to(client, *e);
     }
 }
@@ -2797,7 +2839,15 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             if (hosting_) hosting_->show(document_->current(), m.action == api::ModelAction::Load);
             if (m.action == api::ModelAction::Load) {
                 open_deadline_ms_ = steady_ms_now() + opts_.plugin_open_wait_ms;
-                // The last session's offer is not this one's.
+                // The last session's offer is not this one's, nor its bounce:
+                // stopped, its file removed, its standing event dropped.
+                const bool bounce_was_running = bounce_job_.abandon();
+                bounce_.clear();
+                bounce_said_ = 0;
+                if (bounce_was_running) {
+                    announce_bounce(api::BounceState::Cancelled, 0, 0,
+                                    "the session was closed; the bounce was stopped");
+                }
                 withdraw_orphans();
                 offer_orphans();
             }
@@ -3007,6 +3057,51 @@ void EngineControlServer::drop_untitled_autosave() {
 
 uint64_t EngineControlServer::autosaves() const { return saver_->autosaves(); }
 
+void EngineControlServer::announce_bounce(api::BounceState state, uint32_t permille,
+                                          uint64_t frames, const std::string& text) {
+    api::EngineEvent e;
+    e.kind = api::EventKind::Bounce;
+    e.frame = permille;
+    e.insert = frames;
+    e.flags = static_cast<uint32_t>(state);
+    e.text = text;
+    post_event(e);
+}
+
+void EngineControlServer::follow_bounce() {
+    if (!bounce_job_.active()) return;
+    if (!bounce_job_.finished()) {
+        // A step in a hundred: a long bounce is not a flood of events.
+        const uint32_t p = bounce_job_.permille();
+        if (p >= bounce_said_ + 10) {
+            bounce_said_ = p;
+            announce_bounce(api::BounceState::Running, p, 0, "");
+        }
+        return;
+    }
+    BounceJob::Result r = bounce_job_.collect();
+    const std::string file = r.session_dir + "/" + r.bounced.relative_path;
+    if (r.cancelled) {
+        if (r.ok) std::remove(file.c_str());
+        announce_bounce(api::BounceState::Cancelled, 0, 0,
+                        "the bounce was cancelled; no file was kept");
+        return;
+    }
+    if (!r.ok) {
+        announce_bounce(api::BounceState::Failed, 0, 0, r.error);
+        return;
+    }
+    // The session was saved as another folder while it rendered: the file is
+    // in the old one, and the notice would name a path that is not here.
+    if (*session_.folder() != r.session_dir) {
+        std::remove(file.c_str());
+        announce_bounce(api::BounceState::Failed, 0, 0,
+                        "the session moved while bouncing; no file was kept");
+        return;
+    }
+    announce_bounce(api::BounceState::Done, 1000, r.bounced.frames, r.bounced.relative_path);
+}
+
 void EngineControlServer::follow_saver() {
     saver_->set_take_open(session_.recording_take() != 0);
     saver_->set_transport_stopped(session_.transport().state() == TransportState::Stopped);
@@ -3072,6 +3167,7 @@ void EngineControlServer::follow_saver() {
 void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
+    follow_bounce();
     autosave_when_due();
     follow_latency();
     follow_reported_latency();
