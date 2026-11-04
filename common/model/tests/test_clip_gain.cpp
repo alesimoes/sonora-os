@@ -14,7 +14,7 @@ namespace {
 
 bool refused(History& h, const Operation& op, const char* says) {
     const Snapshot before = h.current();
-
+    std::string error;
     if (h.apply(op, error)) {
         std::fprintf(stderr, "  applied, expected \"%s\"\n", says);
         return false;
@@ -49,7 +49,6 @@ int test_clip_gain() {
     CHECK(r != nullptr && r->gain_db == -2.0f && r->gain_line == line);
 
     // One step back restores both the level and the line.
-    std::string error;
     CHECK(h.undo());
     r = find(h.current(), rid);
     CHECK(r != nullptr && r->gain_db == 0.0f && r->gain_line.empty());
