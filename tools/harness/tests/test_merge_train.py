@@ -291,6 +291,22 @@ class Train(support.DaemonCase):
         self.poll(o)
         self.assertIn(n, [p for p, _ in self.forge.merged])
 
+    def test_red_bundle_gets_a_fixer_before_its_ci_ends(self):
+        o = self.make()
+        self.forge.add_pr(10, "a", ["engine/a.cpp"], checks={"b": "pass"})
+        o.train.adopt()
+        o.train.bundle("eng", [10])
+        self.assertTrue(self.pump(
+            o, lambda: o.store.get_feature("bundle-eng")["pr"]))
+        n = o.store.get_feature("bundle-eng")["pr"]
+        self.forge.checks(n, engine="fail", sanitizers="pending")
+        self.poll(o)
+        t = o.store.get_task("bundle-eng")
+        self.assertEqual((t["state"], t["fix_kind"]), ("ci_fix", "ci"))
+        self.assertFalse(getattr(self.forge, "updated", []))  # no refresh
+        extra = o._extra(t, "fixer")
+        self.assertIn(f"Merge-train PR #{n}", extra)
+
     def test_bundle_refuses_a_pr_not_on_the_train(self):
         o = self.make()
         self.forge.add_pr(10, "a")

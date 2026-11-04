@@ -48,8 +48,10 @@ class RunTests(support.DaemonCase):
                 return []
         self.pump(o, lambda: len(read()) >= 3)
         argvs = read()
-        # engineer, tester and the lead woken by the empty pool
-        self.assertEqual(len(argvs), 3)
+        # engineer, tester and the lead woken by the empty pool; the next
+        # launch (the integrator) can land in the same tick, so at least 3.
+        # What this test guards is that every one of them is Sonnet.
+        self.assertGreaterEqual(len(argvs), 3)
         for a in argvs:
             self.assertEqual(a[a.index("--model") + 1], "sonnet")
             self.assertEqual(a.count("--model"), 1)

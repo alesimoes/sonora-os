@@ -320,6 +320,19 @@ class Train:
             o._red(f, ts, ["merge-conflict"], "conflict")
             return
 
+        # A bundle starts from main, so there is nothing to refresh: its
+        # first red goes to a fixer like a refreshed head's.
+        refreshed = i.get("refreshed") == head or bool(i.get("bundle"))
+        early = [c["name"] for c in checks if c["state"] == "fail"]
+        if early and refreshed:
+            # A failed job on a head that will not be refreshed decides it:
+            # the fixer starts now instead of after the slowest job (the
+            # sanitizers run ~50 min); its push cancels the rest.
+            self._save(fid, phase="fixer", action="fixer (CI)",
+                       next="fixer corrige: " + ", ".join(early[:3]), **upd)
+            o._red(f, ts, early, "ci")
+            return
+
         if any(c["state"] == "pending" for c in checks):
             self._save(fid, phase="CI rodando",
                        next=f"CI {passed}/{len(checks)}", **upd)
@@ -342,7 +355,6 @@ class Train:
             o._merged(f, ts)
             return
 
-        refreshed = i.get("refreshed") == head
         if not fails and refreshed and i.get("reruns_head") == head \
                 and i.get("reruns", 0) >= 2:
             self._save(fid, phase="bloqueado", next="cancelado 3x no mesmo "
