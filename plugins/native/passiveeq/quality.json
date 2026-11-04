@@ -1,0 +1,17 @@
+{
+  "processor": "org.sonora.passiveeq",
+  "class": "A",
+  "note": "ADR-0011 3.2 and 3.5; first bars, to be set from the first measured run (see the PR). Response: the processor's gain at a tone against the product of its sections' analog prototypes (common/dsp analog_response), seven settings, tones to a third of the rate; the sections are matched designs (Vicanek 2016), so the bar is the design's, 0.3 dB, with headroom for the other compilers. The network's defining interaction is held as a relation of the model: equal low boost and cut at 60 Hz (10/10 dB) leave a bump at 20 Hz and a dip between 90 and 200 Hz. Iron on is common/dsp's large core, as in the transformer processor: small signal unity from 40 Hz up, distortion rising with level and falling with frequency. Aliasing of the core is the transformer suite's. CPU: class A, measured with iron on (the golden config): 15.2 us p99.9 and 15.6 us max on the reference scale (39.1 and 40.2 us on an i7-11800H under a loaded host, runner scale 2.572, q128 48 kHz stereo, 20 s).",
+  "response": {"magnitude_db": 0.3},
+  "flat_db": 0.02,
+  "interaction": {"bump_db": 1.0, "dip_db": 2.0},
+  "bandwidth_db": 3.0,
+  "iron": {"small_signal_db": 0.5, "lf_first_db": 10.0},
+  "linear_thdn_db": -110.0,
+  "hot": {"max_abs": 100.0},
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["lf_boost", "lf_atten", "hf_boost", "hf_q", "hf_atten", "drive", "output"],
+  "golden_abs": 1e-6,
+  "cpu": {"p999_us": 20.0, "max_us": 50.0}
+}
