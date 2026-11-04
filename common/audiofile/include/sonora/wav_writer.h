@@ -22,8 +22,10 @@ public:
     // is none to give.
     using LocalClock = bool (*)(std::tm& out);
 
-    // The largest RIFF ckSize a plain WAV can state. Until RF64 lands, a take
-    // stops growing here rather than writing a header that has wrapped.
+    // The largest RIFF ckSize a plain WAV can state. A take that would grow
+    // past it becomes RF64 (EBU Tech 3306) in place: every file reserves a
+    // JUNK chunk for ds64, and write() turns it into one, on the disk
+    // thread, just before the first frame that does not fit.
     static constexpr uint64_t kRiffSizeLimit = 0xFFFFFFFFu;
 
     WavWriter() = default;
@@ -92,9 +94,16 @@ public:
     // before open().
     void set_description(std::string description) { description_ = std::move(description); }
 
-    // Tests lower this to reach the limit without writing 4 GiB; it cannot
-    // be raised past kRiffSizeLimit. Set before open().
+    // Tests lower this to reach the switch to RF64 (or the stop, if RF64 is
+    // not allowed) without writing 4 GiB; it cannot be raised past
+    // kRiffSizeLimit. Set before open().
     void set_riff_size_limit(uint64_t bytes);
+
+    // Default true. False keeps a plain WAV: the take then stops at the
+    // limit with a failure instead of becoming RF64. Set before open().
+    void set_rf64_allowed(bool allowed) { rf64_allowed_ = allowed; }
+
+    bool is_rf64() const { return rf64_; }
 
     // Whether this take has failed, and why. Safe to ask from another thread
     // while the take runs; failure() is settled once failed() is true, and
@@ -120,6 +129,9 @@ private:
                       uint64_t time_reference);
     // Writes the RIFF and data sizes and a pending time_reference in place.
     void patch_sizes(uint64_t riff_bytes, uint64_t data_bytes);
+    // Turns the reserved JUNK chunk into ds64 and the headers into RF64's.
+    // Marks the take failed, returning false, if the disk refuses.
+    bool convert_to_rf64();
     void fail(const char* why);
     uint32_t bytes_per_frame() const;
 
@@ -134,6 +146,8 @@ private:
     uint64_t time_reference_ = 0;
     bool patch_time_reference_ = false;
     bool folder_synced_ = false;
+    bool rf64_ = false;
+    bool rf64_allowed_ = true;
     LocalClock clock_ = nullptr;
     SyncData sync_ = nullptr;
     uint64_t riff_size_limit_ = kRiffSizeLimit;

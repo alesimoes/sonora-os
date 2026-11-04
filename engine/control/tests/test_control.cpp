@@ -162,6 +162,7 @@ public:
     // Track 1's next take stops writing after a few frames: the WAV size
     // limit, lowered, stands in for a full disk. Called while stopped.
     void set_takes_fail(bool fail) {
+        session_.tracks()[0]->writer().set_rf64_allowed(false);
         session_.tracks()[0]->writer().set_riff_size_limit(fail ? kFailingRiffSize
                                                                 : WavWriter::kRiffSizeLimit);
     }
