@@ -365,8 +365,7 @@ int test_fixture_is_canonical() {
     CHECK(save(l, out));
     if (out != text) {
         std::ofstream("v20-current.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v20-current.out.sonora
-");
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v20-current.out.sonora\n");
     }
     CHECK(out == text);
     // And each sequence encodes to the bytes of the file that names it.
@@ -1913,11 +1912,9 @@ int test_v19_migrates_and_vcas() {
     CHECK(save(l, out));
     CHECK(out == as_v20(v19));
     CHECK(out == read_fixture(kCurrent));
-    CHECK(!load(edit(v19, "\"buses\": [],", "\"buses\": [],
-  \"vcas\": [],"), l, e));
+    CHECK(!load(edit(v19, "\"buses\": [],", "\"buses\": [],\n  \"vcas\": [],"), l, e));
     CHECK(mentions(e.text(), "vcas"));
-    CHECK(!load(edit(v19, "\"buses\": [],", "\"buses\": [],
-  \"folders\": [],"), l, e));
+    CHECK(!load(edit(v19, "\"buses\": [],", "\"buses\": [],\n  \"folders\": [],"), l, e));
     CHECK(mentions(e.text(), "folders"));
     return 0;
 }
