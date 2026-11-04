@@ -49,7 +49,7 @@ struct Rig {
     api::testing::FakeEngine fake{config()};
     ControlAdapter engine{fake};
     ReplicaDocument doc{[this](const api::ModelRequest& r) { return engine.submitModel(r); },
-                        make_empty_session(2, 48000)};
+                        make_empty_session(6, 48000)};
     SyntheticPeakSource peaks{48000, 120.0};
     SessionModel session{doc, peaks, true};
     KeyRouter router{KeyMap::built_in_default(), api::testing::FakeEngine::engine_commands(),
@@ -62,7 +62,7 @@ struct Rig {
 
     static api::testing::FakeEngine::Config config() {
         api::testing::FakeEngine::Config c;
-        c.tracks = 2;
+        c.tracks = 6;
         return c;
     }
     Rig() {
@@ -81,6 +81,15 @@ struct Rig {
         std::string error;
         if (!engine.connect(error)) return false;
         settle();
+        if (!doc.synced()) return false;
+        // The fake engine runs with the tracks it was started with and
+        // refuses another past them, as the engine does past its inputs:
+        // free one so the import has room.
+        std::string why;
+        for (int i = 0; i < 4; ++i) {
+            if (!doc.submit(model::RemoveTrack{doc.snapshot().edit->tracks.back()->id}, why)) return false;
+            settle();
+        }
         return doc.synced();
     }
     void settle() {
