@@ -31,6 +31,7 @@ add_library(sonora_dsp STATIC
   src/limiter.cpp
   src/loudness.cpp
   src/meter.cpp
+  src/neural/kernels.cpp
   src/neural/wavenet.cpp
   src/noise.cpp
   src/opto.cpp
@@ -46,7 +47,22 @@ add_library(sonora_dsp STATIC
   src/arch/${SONORA_DSP_ARCH}/tape_pair.cpp
   src/arch/${SONORA_DSP_ARCH}/triode_pair.cpp
   src/arch/${SONORA_DSP_ARCH}/transformer_pair.cpp
+  src/arch/${SONORA_DSP_ARCH}/neural_simd.cpp
 )
+# The WaveNet's AVX2 kernels (src/arch/x86_64/neural_avx2.cpp): this one
+# file is compiled for AVX2, without FMA, and is called only after CPUID
+# has found AVX2 (neural_simd.cpp); everything else stays at the x86-64
+# baseline, so the library still runs on a processor without it. CPUID is
+# spelled per compiler family, so its file is chosen here too.
+if(SONORA_DSP_ARCH STREQUAL "x86_64")
+  if(MSVC)
+    target_sources(sonora_dsp PRIVATE src/arch/x86_64/neural_avx2.cpp src/arch/x86_64/cpu_msvc.cpp)
+    set_source_files_properties(src/arch/x86_64/neural_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+  else()
+    target_sources(sonora_dsp PRIVATE src/arch/x86_64/neural_avx2.cpp src/arch/x86_64/cpu_gnu.cpp)
+    set_source_files_properties(src/arch/x86_64/neural_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mno-fma")
+  endif()
+endif()
 target_include_directories(sonora_dsp PUBLIC include)
 target_link_libraries(sonora_dsp PUBLIC sonora_base)
 # No fused multiply-add contraction: golden files must not depend on what a
@@ -60,7 +76,7 @@ target_compile_options(sonora_dsp PUBLIC
 # frames through pointers GCC cannot prove distinct; its -O2 "very cheap"
 # vectoriser will not version a loop for aliasing, -O3 does. Element-wise,
 # so vectorising reorders no sum: the output is the same bits either way.
-set_source_files_properties(src/neural/wavenet.cpp PROPERTIES COMPILE_OPTIONS
+set_source_files_properties(src/neural/wavenet.cpp src/neural/kernels.cpp PROPERTIES COMPILE_OPTIONS
   "$<$<AND:$<CXX_COMPILER_ID:GNU>,$<NOT:$<CONFIG:Debug>>>:-O3>")
 
 foreach(t filters convolver oversampling loudness meter dynamics limiter fdn triode opto fet noise tape transformer neural)

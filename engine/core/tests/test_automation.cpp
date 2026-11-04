@@ -8,7 +8,8 @@
 // ramped on a partly automated track, and no allocation. Live writes (§3):
 // Touch plays and stamps the fader while held and returns to the lane over
 // the return time (to the static value where there is no lane, over the
-// configured AutoMatch time), Latch holds until the stop, Write writes every parameter
+// configured AutoMatch time; a new plan does not end the return, a Load and a
+// track moved off the row do), Latch holds until the stop, Write writes every parameter
 // and splits a span at the loop's end, a full ring is counted.
 #define PLAYBACK_TEST_COUNT_HEAP 1
 #include "playback_test.h"
@@ -17,7 +18,9 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -73,6 +76,11 @@ struct Rig {
     uint32_t slot = 0;
     // A Touch return at 250 ms outlasts kSourceFrames.
     int64_t source_frames = kSourceFrames;
+    // Plan tracks playing the source, row r on engine track r; row 0 hard
+    // left (out[0]), row 1 hard right (out[1]). Lanes are row 0's.
+    uint32_t rows = 1;
+    // Run on each plan before it is published (a pending mix, say).
+    std::function<void(sonora::PlaybackPlan&)> shape;
 
     explicit Rig(const std::string& name, int tracks = 1, uint32_t automatch_ms = 250,
                  int64_t frames = kSourceFrames)
@@ -126,12 +134,18 @@ struct Rig {
                  const std::vector<uint64_t>& owners = {},
                  const std::vector<PlanAutoPoint>& trim = {}) {
         Session& s = *session;
-        SegmentSpec sp;
-        sp.end = source_frames;
-        sp.source_slot = slot;
+        std::vector<SegmentSpec> specs;
+        for (uint32_t r = 0; r < rows; ++r) {
+            SegmentSpec sp;
+            sp.track = r;
+            sp.end = source_frames;
+            sp.source_slot = slot;
+            specs.push_back(sp);
+        }
         const auto total = static_cast<uint32_t>(volume.size() + pan.size() + trim.size());
         const auto mix = static_cast<uint32_t>(owners.size());
-        sonora::PlaybackPlan* p = make_plan(s.plans().next_epoch(), 1, {sp}, kChunk, 0, mix, total);
+        sonora::PlaybackPlan* p =
+            make_plan(s.plans().next_epoch(), rows, specs, kChunk, 0, mix, total);
         for (uint32_t e = 0; e < mix; ++e) p->track_mix[e].track = owners[e];
         uint32_t at = 0;
         p->tracks[0].auto_first[kAutoVolume] = at;
@@ -143,6 +157,7 @@ struct Rig {
         p->tracks[0].auto_first[kAutoTrim] = at;
         p->tracks[0].auto_count[kAutoTrim] = static_cast<uint32_t>(trim.size());
         for (const PlanAutoPoint& v : trim) p->auto_points[at++] = v;
+        if (shape) shape(*p);
         if (!publish_plan(s, p)) return false;
         s.reader().run_pass();
         return true;
@@ -553,14 +568,30 @@ constexpr int64_t kReleaseAt = 4000;
 constexpr float kStaticDb = -6.0f;
 constexpr float kRideDb = 6.0f;
 
+// `during`, when set, runs before each callback of the return with the
+// frame that callback starts at; `owners` are the plan's from the start.
 // `static_late`: the release callback runs before the played value is back
 // at the static, as when it falls between the two stores of
 // PlaybackController::touch(); Track::static_gain() holds it throughout.
+using DuringReturn = std::function<void(Rig&, int64_t)>;
+
+// `right`, when given, gets out[1] (row 1) as `out` gets out[0].
 int touch_returns_to_static(uint32_t block, uint32_t automatch_ms, std::vector<float>& out,
-                            int64_t& len, bool static_late = false) {
-    Rig rig("touch_no_lane", 1, automatch_ms, 72 * kChunk);
+                            int64_t& len, const DuringReturn& during = {},
+                            const std::vector<uint64_t>& owners = {},
+                            std::vector<float>* right = nullptr, bool static_late = false) {
+    Rig rig("touch_no_lane", owners.empty() ? 1 : static_cast<int>(owners.size()), automatch_ms,
+            72 * kChunk);
+    rig.rows = owners.empty() ? 1 : static_cast<uint32_t>(owners.size());
     CHECK(rig.load({}));
+    if (!owners.empty()) CHECK(rig.publish({}, {}, owners));
     Session& s = *rig.session;
+    for (std::size_t e = 1; e < s.tracks().size(); ++e) {
+        s.tracks()[e]->set_pan(1.0f);
+        // The static too: a return moved onto this row reads static_gain().
+        s.tracks()[e]->set_mix_gain(gain_of_db(kStaticDb));
+        s.tracks()[e]->set_automation(Track::Automation::Touch);
+    }
     Track& track = *s.tracks()[0];
     track.set_mix_gain(gain_of_db(kStaticDb));
     track.set_automation(Track::Automation::Touch);
@@ -579,13 +610,16 @@ int touch_returns_to_static(uint32_t block, uint32_t automatch_ms, std::vector<f
     if (!static_late) track.set_gain(gain_of_db(kStaticDb));
     len = static_cast<int64_t>(s.touch_return_frames());
     out.clear();
+    if (right != nullptr) right->clear();
     reset_heap_counts();
     for (int64_t t = kReleaseAt; t < kReleaseAt + len + 4 * static_cast<int64_t>(block);
          t += block) {
+        if (during) during(rig, t);
         rig.block(block);
         if (static_late && t == kReleaseAt) track.set_gain(gain_of_db(kStaticDb));
         for (uint32_t i = 0; i < block; ++i) {
             out.push_back(rig.out[0][i] / source_value(5, 0, t + i));
+            if (right != nullptr) right->push_back(rig.out[1][i] / source_value(5, 0, t + i));
         }
     }
     CHECK(heap_untouched());
@@ -602,7 +636,11 @@ int touch_returns_to_static(uint32_t block, uint32_t automatch_ms, std::vector<f
 // The audio is the return lane the writer writes (a line in dB from the
 // ride to the static over the return time), frame for frame from the
 // callback after the release; no step at the release; the static after.
-bool glides_like_the_lane(const std::vector<float>& g, uint32_t block, int64_t len) {
+// The callback starting at index `loose` (a new plan's) may crossfade into
+// the curve from the last value applied, as on any new plan: there a frame
+// lies between that value and the curve.
+bool glides_like_the_lane(const std::vector<float>& g, uint32_t block, int64_t len,
+                          std::size_t loose = SIZE_MAX) {
     const float ride = gain_of_db(kRideDb);
     const float fixed = gain_of_db(kStaticDb);
     for (std::size_t i = 0; i < g.size(); ++i) {
@@ -620,7 +658,11 @@ bool glides_like_the_lane(const std::vector<float>& g, uint32_t block, int64_t l
         const float want = f >= kReleaseAt + len + kAutoGridFrames
                                ? fixed
                                : expected_return(kRideDb, kStaticDb, kReleaseAt, len, f);
-        if (!near(g[i], want, 1e-4f)) {
+        const bool crossfade = i >= loose && i < loose + block && loose > 0;
+        const float lo = crossfade ? std::min(g[loose - 1], want) : want;
+        const float hi = crossfade ? std::max(g[loose - 1], want) : want;
+        if (!(near(g[i], want, 1e-4f) ||
+              (crossfade && g[i] >= lo * 0.9999f && g[i] <= hi * 1.0001f))) {
             std::fprintf(stderr, "  return: frame %lld applies %.6f, want %.6f\n",
                          static_cast<long long>(f), static_cast<double>(g[i]),
                          static_cast<double>(want));
@@ -662,8 +704,153 @@ int test_touch_with_no_lane_returns_to_the_static_value() {
 int test_a_release_before_the_static_returns_to_the_static() {
     std::vector<float> g;
     int64_t len = 0;
-    CHECK(touch_returns_to_static(kBlock, 250, g, len, true) == 0);
+    CHECK(touch_returns_to_static(kBlock, 250, g, len, {}, {}, nullptr, true) == 0);
     CHECK(glides_like_the_lane(g, kBlock, len));
+    return 0;
+}
+
+// An edit mid-return publishes a new plan; the playhead has not moved, so
+// the glide goes on (#282 review: it used to snap to the static over one
+// callback). Owners unchanged, and with none.
+int test_a_new_plan_keeps_the_return() {
+    const int64_t edit_at = kReleaseAt + 10 * static_cast<int64_t>(kBlock);
+    for (const std::vector<uint64_t>& owners :
+         {std::vector<uint64_t>{}, std::vector<uint64_t>{11}}) {
+        std::vector<float> g;
+        int64_t len = 0;
+        bool published = false;
+        const DuringReturn edit = [&](Rig& rig, int64_t t) {
+            if (t == edit_at) published = rig.publish({}, {}, owners);
+        };
+        CHECK(touch_returns_to_static(kBlock, 250, g, len, edit, owners) == 0);
+        CHECK(published);
+        CHECK(glides_like_the_lane(g, kBlock, len, static_cast<std::size_t>(edit_at - kReleaseAt)));
+    }
+    return 0;
+}
+
+// The return is its track's: a plan swapping two tracks' rows ends it on
+// the row it left and carries it on to the row it reached, and
+// forget_latches() (a Load) ends every return.
+int test_a_return_stays_with_its_track() {
+    const int64_t edit_at = kReleaseAt + 10 * static_cast<int64_t>(kBlock);
+    const float fixed = gain_of_db(kStaticDb);
+    std::vector<float> g;
+    std::vector<float> moved;
+    int64_t len = 0;
+    bool published = false;
+    // Both tracks rest at the same static and mode, so the atomics need not
+    // follow the swap as adopt_track_mix() would make them.
+    const DuringReturn swap = [&](Rig& rig, int64_t t) {
+        if (t == edit_at) published = rig.publish({}, {}, {12, 11});
+    };
+    CHECK(touch_returns_to_static(kBlock, 250, g, len, swap, {11, 12}, &moved) == 0);
+    CHECK(published);
+    const auto after = static_cast<std::size_t>(edit_at - kReleaseAt) + kBlock;
+    CHECK(g.size() > after + kBlock && moved.size() == g.size());
+    for (std::size_t i = after; i < after + kBlock && i < g.size(); ++i) {
+        if (!near(g[i], fixed, 1e-4f)) {
+            std::fprintf(stderr, "  left: index %zu applies %.6f\n", i, static_cast<double>(g[i]));
+            CHECK(near(g[i], fixed, 1e-4f));
+            break;
+        }
+    }
+    // Track 11 on row 1 goes on gliding where it was, not from row 1's
+    // static.
+    for (std::size_t i = after; i < after + kBlock && i < moved.size(); ++i) {
+        const int64_t f = kReleaseAt + static_cast<int64_t>(i);
+        const float want = expected_return(kRideDb, kStaticDb, kReleaseAt, len, f);
+        if (!near(moved[i], want, 1e-4f)) {
+            std::fprintf(stderr, "  arrived: index %zu applies %.6f, want %.6f\n", i,
+                         static_cast<double>(moved[i]), static_cast<double>(want));
+            CHECK(near(moved[i], want, 1e-4f));
+            break;
+        }
+    }
+
+    const DuringReturn load = [&](Rig& rig, int64_t t) {
+        if (t == edit_at) rig.session->forget_latches();
+    };
+    CHECK(touch_returns_to_static(kBlock, 250, g, len, load) == 0);
+    for (std::size_t i = after; i < after + kBlock && i < g.size(); ++i) {
+        if (!near(g[i], fixed, 1e-4f)) {
+            std::fprintf(stderr, "  forgotten: index %zu applies %.6f\n", i,
+                         static_cast<double>(g[i]));
+            CHECK(near(g[i], fixed, 1e-4f));
+            break;
+        }
+    }
+    return 0;
+}
+
+// A fader held through a Load (#302 review B1): the control thread clears
+// the touch flags and calls forget_latches(), then publishes the Load's
+// plan, whose track reuses the old id. The release that callback sees is
+// the Load's, not the operator's, and starts no return: the static plays
+// from the callback after. `pending`: the plan before the Load still
+// carries the touch in a pending mix, so the release is seen only on the
+// Load plan's first callback, after the owners are followed.
+int load_with_a_fader_held(bool pending) {
+    Rig rig(pending ? "load_held_pending" : "load_held", 1, 250, 72 * kChunk);
+    CHECK(rig.load({}));
+    CHECK(rig.publish({}, {}, {11}));
+    Session& s = *rig.session;
+    Track& track = *s.tracks()[0];
+    track.set_gain(gain_of_db(kStaticDb));
+    track.set_automation(Track::Automation::Touch);
+    CHECK(rig.park(static_cast<uint64_t>(kReleaseAt - 4 * static_cast<int64_t>(kBlock))));
+    s.play();
+    rig.block();
+    track.set_gain(gain_of_db(kRideDb));
+    track.set_touched(kAutoVolume, true);
+    rig.block();
+    rig.block();
+    CHECK(!drained(s).empty());
+
+    const auto mix = [](uint32_t serial, float db, uint8_t touched) {
+        return [=](sonora::PlaybackPlan& p) {
+            p.mix_serial = serial;
+            sonora::PlanTrackMix& m = p.track_mix[0];
+            m.gain = gain_of_db(db);
+            m.pan = -1.0f;
+            m.automation = static_cast<uint8_t>(Track::Automation::Touch);
+            m.touched = touched;
+        };
+    };
+    if (pending) {
+        rig.shape = mix(5, kRideDb, static_cast<uint8_t>(1u << kAutoVolume));
+        CHECK(rig.publish({}, {}, {11}));
+    }
+    // EngineControlServer::drop_pass(), then the Load's document mix.
+    track.set_touched(kAutoVolume, false);
+    track.set_gain(gain_of_db(kStaticDb));
+    s.forget_latches();
+    if (pending) {
+        rig.block();
+        rig.shape = mix(6, kStaticDb, 0);
+    }
+    CHECK(rig.publish({}, {}, {11}));
+    rig.block();
+    const auto t = static_cast<int64_t>(s.transport().playhead());
+    rig.block();
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        const float g = rig.out[0][i] / source_value(5, 0, t + i);
+        if (!near(g, gain_of_db(kStaticDb), 1e-4f)) {
+            std::fprintf(stderr, "  after the Load: frame %lld applies %.6f\n",
+                         static_cast<long long>(t + i), static_cast<double>(g));
+            CHECK(near(g, gain_of_db(kStaticDb), 1e-4f));
+            break;
+        }
+    }
+    return 0;
+}
+
+int test_a_load_with_a_fader_held_starts_no_return() {
+    // Both run whatever the first gives: they are two routes to one bug.
+    const int direct = load_with_a_fader_held(false);
+    const int pending = load_with_a_fader_held(true);
+    CHECK(direct == 0);
+    CHECK(pending == 0);
     return 0;
 }
 
@@ -1100,6 +1287,10 @@ int main() {
       "test_touch_with_no_lane_returns_to_the_static_value");
     t(test_a_release_before_the_static_returns_to_the_static,
       "test_a_release_before_the_static_returns_to_the_static");
+    t(test_a_new_plan_keeps_the_return, "test_a_new_plan_keeps_the_return");
+    t(test_a_return_stays_with_its_track, "test_a_return_stays_with_its_track");
+    t(test_a_load_with_a_fader_held_starts_no_return,
+      "test_a_load_with_a_fader_held_starts_no_return");
     t(test_automatch_time_sets_the_return, "test_automatch_time_sets_the_return");
     t(test_latch_holds_until_stop, "test_latch_holds_until_stop");
     t(test_forgotten_latches_play_the_lane, "test_forgotten_latches_play_the_lane");

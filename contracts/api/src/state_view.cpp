@@ -261,6 +261,30 @@ float StateView::take_post_peak(uint32_t index, uint32_t side) {
                      post_cursors_[std::size_t{index} * kPostPeakSides + side]);
 }
 
+namespace {
+MeterFields load_meter(const MeterState& m) {
+    MeterFields f;
+    f.momentary = m.momentary.load(std::memory_order_acquire);
+    f.short_term = m.short_term.load(std::memory_order_acquire);
+    f.max_momentary = m.max_momentary.load(std::memory_order_acquire);
+    f.max_short_term = m.max_short_term.load(std::memory_order_acquire);
+    f.integrated = m.integrated.load(std::memory_order_acquire);
+    f.range_lu = m.range_lu.load(std::memory_order_acquire);
+    f.true_peak_max_db = m.true_peak_max_db.load(std::memory_order_acquire);
+    f.nonfinite = m.nonfinite.load(std::memory_order_acquire);
+    return f;
+}
+}  // namespace
+
+MeterFields StateView::master_meter() const {
+    return header_ == nullptr ? MeterFields{} : load_meter(header_->master_meter);
+}
+
+MeterFields StateView::track_meter(uint32_t index) const {
+    return header_ == nullptr || index >= track_count() ? MeterFields{}
+                                                       : load_meter(tracks_[index].meter);
+}
+
 float StateView::take_from(const PeakRing& ring, uint64_t& cursor) const {
     const uint64_t now = header_->heartbeat.load(std::memory_order_acquire);
     if (now <= cursor) return 0.0f;

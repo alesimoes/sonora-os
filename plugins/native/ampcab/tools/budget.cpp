@@ -70,8 +70,8 @@ int main(int argc, char** argv) {
     const Size sizes[] = {{"nano", 4}, {"feather", 8}, {"lite", 12}, {"standard", 16}};
     std::printf("WaveNet per block at q%d, %.0f Hz, mono; %d blocks (%.0f s) each\n", q, fs, blocks,
                 blocks * q / fs);
-    std::printf("%-9s %8s %8s %10s %8s %9s %8s\n", "size", "weights", "p50 us", "p99.9 us", "max us", "RT load",
-                "CPU us");
+    std::printf("%-9s %-8s %8s %8s %10s %8s %9s %8s\n", "size", "kernels", "weights", "p50 us", "p99.9 us",
+                "max us", "RT load", "CPU us");
     std::uint32_t s = 1;
     auto noise = [&s]() {
         s ^= s << 13;
@@ -79,18 +79,25 @@ int main(int argc, char** argv) {
         s ^= s << 5;
         return static_cast<float>(static_cast<double>(s) / 2147483648.0 - 1.0);
     };
-    for (const Size& sz : sizes) {
+    // Each size with the generic kernels, then with the SIMD table when
+    // this processor has one (WaveNet::allow_simd): the same bits, so the
+    // difference is the table's alone.
+    for (int pass = 0; pass < 2 * 4; ++pass) {
+        const Size& sz = sizes[pass / 2];
+        const bool simd = pass % 2 == 1;
         const WaveNetSpec spec = preset(sz.channels);
         std::vector<float> w(wavenet_weight_count(spec));
         const float scale = 1.5f / std::sqrt(static_cast<float>(sz.channels * 3));
         for (float& v : w) v = noise() * scale;
         w.back() = 0.02f;
         WaveNet net;
+        net.allow_simd(simd);
         std::string err;
         if (!net.load(spec, w, &err)) {
             std::fprintf(stderr, "%s: %s\n", sz.name, err.c_str());
             return 1;
         }
+        if (simd && std::string(net.kernels_name()) == "generic") continue;
         net.prepare(q);
         // A guitar-like input, made beforehand: noise at -12 dBFS under a
         // 110 Hz tone at -6 dBFS.
@@ -119,8 +126,8 @@ int main(int argc, char** argv) {
         const double p50 = us[us.size() / 2];
         const double p999 = us[std::min(us.size() - 1, static_cast<std::size_t>(us.size() * 0.999))];
         const double mx = us.back();
-        std::printf("%-9s %8zu %8.1f %10.1f %8.1f %8.1f%% %8.1f\n", sz.name, w.size(), p50, p999, mx,
-                    100.0 * p50 / (q / fs * 1e6), cpu_us);
+        std::printf("%-9s %-8s %8zu %8.1f %10.1f %8.1f %8.1f%% %8.1f\n", sz.name, net.kernels_name(), w.size(), p50,
+                    p999, mx, 100.0 * p50 / (q / fs * 1e6), cpu_us);
     }
     std::printf("class E: p99.9 <= 250 us, max <= 500 us, with the cabinet IR included\n");
     return 0;

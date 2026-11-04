@@ -5,6 +5,7 @@ target_link_libraries(sonora-dsp-measure PRIVATE
   sonora_native_eq_suite
   sonora_native_compressor_suite
   sonora_native_gate_suite
+  sonora_native_deesser_suite
   sonora_native_limiter_suite
   sonora_native_delay_suite
   sonora_native_chorus_suite

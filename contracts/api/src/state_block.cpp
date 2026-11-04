@@ -15,6 +15,23 @@ uint64_t pack_peak(uint64_t tick, float peak) {
     return (tick & 0xFFFFFFFFull) << 32 | bits;
 }
 
+void store_meter(MeterState& to, const MeterFields& from) {
+    constexpr auto rel = std::memory_order_release;
+    to.momentary.store(from.momentary, rel);
+    to.short_term.store(from.short_term, rel);
+    to.max_momentary.store(from.max_momentary, rel);
+    to.max_short_term.store(from.max_short_term, rel);
+    to.integrated.store(from.integrated, rel);
+    to.range_lu.store(from.range_lu, rel);
+    to.true_peak_max_db.store(from.true_peak_max_db, rel);
+    to.nonfinite.store(from.nonfinite, rel);
+}
+
+void init_meter(MeterState& m) {
+    const MeterFields none;
+    store_meter(m, none);
+}
+
 }  // namespace
 
 bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks,
@@ -51,6 +68,8 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
         for (auto& s : ring.entries) s.store(0, std::memory_order_relaxed);
     }
 
+    init_meter(h->master_meter);
+
     TrackState* t = state_tracks(memory);
     for (uint32_t i = 0; i < capacity_tracks; ++i) {
         auto* ts = new (&t[i]) TrackState;
@@ -63,6 +82,7 @@ bool StateWriter::init(void* memory, std::size_t bytes, uint32_t capacity_tracks
         for (PeakRing& ring : ts->post_peaks) {
             for (auto& s : ring.entries) s.store(0, std::memory_order_relaxed);
         }
+        init_meter(ts->meter);
         for (InsertState& in : ts->inserts) {
             in.flags.store(0, std::memory_order_relaxed);
             in.latency_frames.store(0, std::memory_order_relaxed);
@@ -180,6 +200,13 @@ void StateWriter::publish(const TransportFields& transport, const TrackFields* t
     }
     h.heartbeat.store(tick, std::memory_order_release);
     tick_ = tick;
+}
+
+void StateWriter::publish_meters(const MeterFields* master, const MeterFields* tracks) {
+    if (header_ == nullptr) return;
+    if (master != nullptr) store_meter(header_->master_meter, *master);
+    if (tracks == nullptr) return;
+    for (uint32_t i = 0; i < track_count_; ++i) store_meter(tracks_[i].meter, tracks[i]);
 }
 
 void StateWriter::begin_write_for_test() {

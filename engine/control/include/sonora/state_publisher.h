@@ -109,6 +109,8 @@ private:
     std::vector<float> peaks_;
     std::vector<float> post_peaks_;   // track * kPostPeakSides + side
     std::vector<uint32_t> clips_;
+    std::vector<api::MeterFields> meters_;   // tracks, then the master
+    std::vector<uint64_t> nonfinite_seen_;   // the same order
 
     std::atomic<bool> stop_{false};
     std::atomic<uint64_t> publishes_{0};

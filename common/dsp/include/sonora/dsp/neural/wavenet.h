@@ -88,9 +88,13 @@ std::size_t wavenet_weight_count(const WaveNetSpec& spec);
 // Samples of history the output depends on, past the current one.
 int wavenet_receptive_field(const WaveNetSpec& spec);
 
+namespace detail {
+struct Kernels;
+}  // namespace detail
+
 class WaveNet {
 public:
-    WaveNet() = default;
+    WaveNet() noexcept;
     WaveNet(const WaveNet&) = delete;
     WaveNet& operator=(const WaveNet&) = delete;
 
@@ -121,6 +125,14 @@ public:
     // run in pieces. Non-finite input is read as silence and input is held
     // to +-16 (24 dB over full scale), so the output stays finite.
     void process(const float* in, float* out, int frames) noexcept SONORA_RT;
+
+    // Not real-time. Whether the kernel may use the processor's SIMD table
+    // (AVX2 on x86-64, chosen at run time) or keeps the generic one. Both
+    // give the same bits; the switch is for the test that holds them equal
+    // and for the budget tool's before and after. Allowed by default.
+    void allow_simd(bool allowed) noexcept;
+    // "generic" or the SIMD table's name ("avx2"), for the record.
+    const char* kernels_name() const noexcept;
 
     int receptive_field() const { return receptive_field_; }
     int max_frames() const { return max_frames_; }
@@ -160,6 +172,8 @@ private:
     std::vector<float> z_;          // [2*C_max][max_frames]
     std::vector<float> acc_;        // [C_max][max_frames]
     std::vector<const float*> inputs_;  // one product's input rows, K x C at most
+    const detail::Kernels* kernels_;  // never null
+    bool allow_simd_ = true;
     float head_scale_ = 0.0f;
     int max_frames_ = 0;
     int receptive_field_ = 0;

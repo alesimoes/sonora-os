@@ -16,10 +16,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <new>
 #include <string>
 #include <vector>
 
+#include "../src/neural/kernels.h"
 #include "check.h"
 #include "sonora/dsp/neural/wavenet.h"
 
@@ -81,8 +83,9 @@ const Activation kAll[] = {Activation::tanh,       Activation::fast_tanh, Activa
 int test_activations() {
     std::vector<float> x;
     for (int i = -400000; i <= 400000; ++i) x.push_back(static_cast<float>(i) * 5e-5f);
-    // And the edges: tiny, the 0.25 and 9 joins of tanh_approx, large.
-    for (float v : {1e-30f, 1e-8f, 0.2499999f, 0.25f, 0.2500001f, 8.999f, 9.0f, 9.001f, 50.0f, 1e4f}) {
+    // And the edges: tiny, tanh_approx's clamp at 7.9, the sigmoid's at
+    // 80, large.
+    for (float v : {1e-30f, 1e-8f, 0.25f, 7.8999f, 7.9f, 7.9001f, 9.0f, 50.0f, 79.9f, 80.0f, 80.1f, 1e4f}) {
         x.push_back(v);
         x.push_back(-v);
     }
@@ -99,7 +102,10 @@ int test_activations() {
         // Fasttanh is the format's own float formula (vec_math.h): its
         // distance from the same formula in double is that formula's float
         // rounding, which the reference shares. The others are ours.
-        CHECK_LE(worst, a == Activation::fast_tanh ? 1e-6 : 2.5e-7, activation_name(a));
+        // tanh is a rational form (vec_math.h): its float rounding near 1
+        // is about 5 ulps, 3.2e-7 measured; the network's own bar is 1e-5.
+        const double bar = a == Activation::fast_tanh ? 1e-6 : (a == Activation::tanh ? 3.5e-7 : 2.5e-7);
+        CHECK_LE(worst, bar, activation_name(a));
     }
     // Names round-trip; an unknown one is refused.
     for (Activation a : kAll) {
@@ -413,6 +419,115 @@ int test_refusals() {
     return 0;
 }
 
+bool same_bits(const float* a, const float* b, std::size_t n) {
+    return std::memcmp(a, b, n * sizeof(float)) == 0;
+}
+
+// The SIMD kernel table (AVX2 on x86-64, kernels.h) gives the generic
+// one's bits: products at every row count and frame count that exercise
+// its 8-, 4- and 1-row tiles and its scalar tail, the activations over the
+// sweep test_activations() uses plus NaN and Inf at every tail length, and
+// whole networks through WaveNet::process at several block sizes. A
+// capture then sounds the same on every machine, and the equivalence test
+// against the reference, run on whichever table the runner picked, holds
+// for both.
+int test_simd_bits() {
+    const detail::Kernels& gen = detail::generic_kernels();
+    const detail::Kernels* simd = detail::simd_kernels();
+    if (simd == nullptr) {
+        std::printf("  simd: no SIMD kernel table on this processor; the generic one runs\n");
+        WaveNet net;
+        CHECK(std::strcmp(net.kernels_name(), "generic") == 0);
+        return 0;
+    }
+    std::printf("  simd: checking the %s table against the generic one\n", simd->name);
+
+    Noise noise(1234);
+    const int max_nin = 48, max_n = 130;
+    std::vector<float> rows_in(static_cast<std::size_t>(max_nin * max_n));
+    for (float& v : rows_in) v = noise.next() * 3.0f;
+    // Zeros, signed zeros and tiny and huge values among the inputs.
+    rows_in[0] = 0.0f;
+    rows_in[1] = -0.0f;
+    rows_in[2] = 1e-38f;
+    rows_in[3] = 3e38f;
+    std::vector<const float*> in(static_cast<std::size_t>(max_nin));
+    for (int i = 0; i < max_nin; ++i) in[static_cast<std::size_t>(i)] = rows_in.data() + i * max_n;
+    long products = 0;
+    for (int rows : {1, 3, 4, 5, 8, 9, 12, 16, 17, 32}) {
+        for (int nin : {1, 3, 16, 48}) {
+            std::vector<float> w(static_cast<std::size_t>(rows * nin));
+            for (float& v : w) v = noise.next();
+            for (int n : {1, 7, 8, 9, 37, 128, 130}) {
+                const std::size_t stride = static_cast<std::size_t>(max_n) + 3;
+                std::vector<float> a(stride * static_cast<std::size_t>(rows), 7.0f), b = a;
+                gen.matmul_rows(w.data(), rows, nin, in.data(), n, a.data(), stride);
+                simd->matmul_rows(w.data(), rows, nin, in.data(), n, b.data(), stride);
+                if (!same_bits(a.data(), b.data(), a.size())) {
+                    std::fprintf(stderr, "  matmul differs: rows %d nin %d n %d\n", rows, nin, n);
+                    CHECK(false);
+                }
+                ++products;
+            }
+        }
+    }
+    std::printf("  simd: %ld products identical\n", products);
+
+    std::vector<float> x;
+    for (int i = -400000; i <= 400000; ++i) x.push_back(static_cast<float>(i) * 5e-5f);
+    for (float v : {1e-30f, 1e-8f, 0.25f, 7.8999f, 7.9f, 7.9001f, 9.0f, 50.0f, 79.9f, 80.0f, 80.1f, 1e4f, 3e38f,
+                    INFINITY}) {
+        x.push_back(v);
+        x.push_back(-v);
+    }
+    x.push_back(NAN);
+    x.push_back(-0.0f);
+    for (int which = 0; which < 2; ++which) {
+        auto fg = which == 0 ? gen.tanh : gen.sigmoid;
+        auto fs = which == 0 ? simd->tanh : simd->sigmoid;
+        std::vector<float> a = x, b = x;
+        fg(a.data(), static_cast<int>(a.size()));
+        fs(b.data(), static_cast<int>(b.size()));
+        CHECK(same_bits(a.data(), b.data(), a.size()));
+        // Every tail length: the padded last vector.
+        for (int n = 1; n <= 17; ++n) {
+            std::vector<float> c(x.end() - 40, x.end()), d = c;
+            fg(c.data(), n);
+            fs(d.data(), n);
+            CHECK(same_bits(c.data(), d.data(), c.size()));
+        }
+    }
+
+    // Whole networks: the standard size, and a gated one with a sigmoid
+    // array, so every dispatched kernel runs inside process().
+    WaveNetSpec gated;
+    gated.arrays.push_back(array_spec(1, 6, 5, 3, {1, 2, 4, 8}, Activation::tanh, true, false));
+    gated.arrays.push_back(array_spec(6, 5, 1, 2, {16, 1, 3}, Activation::sigmoid, false, true));
+    const WaveNetSpec specs[] = {standard_spec(), gated};
+    const std::vector<float> sig = test_signal(dsp_quick() ? 3000 : 12000, 77);
+    for (const WaveNetSpec& spec : specs) {
+        const std::vector<float> wts = random_weights(spec, 4242);
+        for (int block : {37, 128}) {
+            WaveNet g, s;
+            g.allow_simd(false);
+            CHECK(g.load(spec, wts, nullptr) && s.load(spec, wts, nullptr));
+            CHECK(std::strcmp(g.kernels_name(), "generic") == 0);
+            CHECK(std::strcmp(s.kernels_name(), simd->name) == 0);
+            g.prepare(128);
+            s.prepare(128);
+            std::vector<float> yg(sig.size()), ys(sig.size());
+            for (std::size_t at = 0; at < sig.size(); at += static_cast<std::size_t>(block)) {
+                const int n = static_cast<int>(std::min<std::size_t>(static_cast<std::size_t>(block), sig.size() - at));
+                g.process(sig.data() + at, yg.data() + at, n);
+                s.process(sig.data() + at, ys.data() + at, n);
+            }
+            CHECK(same_bits(yg.data(), ys.data(), sig.size()));
+        }
+    }
+    std::printf("  simd: whole networks identical to the generic kernel\n");
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -421,6 +536,7 @@ int main() {
     failed += test_against_naive();
     failed += test_blocks_reset_nonfinite_alloc();
     failed += test_refusals();
+    failed += test_simd_bits();
     if (failed != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failed);
         return 1;
