@@ -232,7 +232,10 @@ int main() {
     std::printf("recovered: %lld frames; lost to kill -9: %lld frames (%.1f ms)\n",
                 static_cast<long long>(recovered.frames), static_cast<long long>(lost),
                 static_cast<double>(lost) / 48.0);
-    CHECK(lost >= 0);
+    // `produced` is stored after process() returns, so the disk thread can
+    // have written the last block before the child published it and a kill
+    // in between leaves the file up to one block ahead of `end`.
+    CHECK(lost >= -static_cast<int64_t>(kBlock));
     CHECK(lost <= 4800);
     // Nothing left to do a second time.
     CHECK(sonora::recover_take(take).outcome == sonora::TakeRecovery::Outcome::Intact);
