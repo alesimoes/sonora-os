@@ -70,6 +70,9 @@ struct Rig {
                                    const std::vector<api::CommandReply>& r) {
             if (doc.receive(u, r)) session.documentUpdated();
         });
+        doc.on_refused = [](const std::string& why) {
+            std::fprintf(stderr, "engine refused: %s\n", why.c_str());
+        };
         session.installCommands(router.local());
         router.prepare({});
         session.setEngineFolder(folder.path());
@@ -136,7 +139,7 @@ int end_to_end() {
     const Source& src = s.sources->sources.back();
     CHECK(src.path == "Audio Files/Guitar DI.wav" && src.kind == SourceKind::Imported);
     CHECK(src.channels == 2 && src.length == 48000);
-    const Region& reg = *s.edit->tracks.back()->playlists[0]->regions.front();
+    const Region& reg = s.edit->tracks.back()->playlists[0]->regions.front();
     CHECK(reg.position == 0 && reg.length == 48000 && reg.channels.size() == 2);
     CHECK(reg.channels[0].source == src.id && reg.channels[1].channel == 1);
     WavReader rd;
@@ -187,8 +190,8 @@ int several_files_at_the_cursor_are_one_step() {
     CHECK(track_count(r) == before + 2);
     const Snapshot& s = r.doc.snapshot();
     CHECK(s.edit->tracks[before]->name == "tone" && s.edit->tracks[before + 1]->name == "tone 2");
-    CHECK(s.edit->tracks[before]->playlists[0]->regions.front()->position == 24000);
-    CHECK(s.edit->tracks[before + 1]->playlists[0]->regions.front()->length == 4800);  // 96 -> 48 kHz
+    CHECK(s.edit->tracks[before]->playlists[0]->regions.front().position == 24000);
+    CHECK(s.edit->tracks[before + 1]->playlists[0]->regions.front().length == 4800);  // 96 -> 48 kHz
     std::string why;
     CHECK(r.session.controller().undo(why));
     r.settle();
