@@ -127,6 +127,8 @@ if(NOT SONORA_PLATFORM STREQUAL "linux")
 endif()
 add_subdirectory(contracts/api)
 add_subdirectory(contracts/backend)
+# Control surface events in, feedback out (ADR-0007 4.4, ADR-0040).
+add_subdirectory(contracts/surfaces)
 # The engine <-> plugin host shared-memory layout, accepted as layout 1
 # (ADR-0012 §5).
 add_subdirectory(contracts/plugin)
