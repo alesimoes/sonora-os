@@ -197,6 +197,7 @@ std::vector<Operation> one_of_each() {
             SetTrackColour{2, 13},
             SetRegionName{3, 11, "Verse \xC3\xA9"},
             SetRegionColour{3, 11, kTrackColour},
+            SetRegionGain{3, 11, -3.5f, {{0, -6.0f}, {48000, 0.0f}}},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 

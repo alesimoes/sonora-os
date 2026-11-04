@@ -323,7 +323,8 @@ void SessionModel::installCommands(CommandRegistry& local) {
         const double v = std::strtod(text.c_str(), &end);
         if (end == text.c_str() || !std::isfinite(v)) return false;
         while (*end == ' ') ++end;
-        if (*end != ' ' && std::string(end) != "dB" && std::string(end) != "db") return false;
+        const std::string rest(end);
+        if (!rest.empty() && rest != "dB" && rest != "db") return false;
         out = static_cast<float>(v);
         return true;
     };
@@ -356,19 +357,41 @@ void SessionModel::installCommands(CommandRegistry& local) {
     };
     simple("clip.gain_up", nudge(1.0f));
     simple("clip.gain_down", nudge(-1.0f));
-    simple("clip.gain_point", [this, db_of, bad_db](const CommandContext& ctx, Why& why) {
+    const auto gain_place = [this](const Region& r) {
+        const model::Frames i = ctl_.selection().insertion;
+        return i > r.position && i < r.end() ? i : r.position + r.length / 2;
+    };
+    simple("clip.gain_point", [this, db_of, bad_db, gain_place](const CommandContext& ctx, Why& why) {
         const Region* r = ctl_.selected_region(why);
         if (r == nullptr) return false;
-        const model::Frames at = ctl_.selection().insertion;
+        // "DB" or "DB@SECONDS" into the clip. Without a place: the insertion
+        // point when it is inside the clip past its start, else the middle
+        // (selecting a clip puts the insertion point at its start).
+        model::Frames at = gain_place(*r);
+        std::string level = ctx.argument;
+        const std::size_t atsign = level.find('@');
+        if (atsign != std::string::npos) {
+            char* end = nullptr;
+            const std::string secs = level.substr(atsign + 1);
+            const double s = std::strtod(secs.c_str(), &end);
+            if (end == secs.c_str() || *end != '\0' || !(s >= 0.0)) {
+                why = "\"" + secs + "\" is not a time in seconds into the clip";
+                return false;
+            }
+            at = r->position + static_cast<model::Frames>(s * ctl_.snapshot().settings.sample_rate);
+            level = level.substr(0, atsign);
+        }
         float db = EditController::clip_line_db_at(*r, at);
-        if (!ctx.argument.empty() && !db_of(ctx.argument, db)) {
-            why = bad_db(ctx.argument);
+        if (!level.empty() && !db_of(level, db)) {
+            why = bad_db(level);
             return false;
         }
         return ctl_.set_gain_point(at, db, why);
     });
-    simple("clip.gain_point_remove", [this](const CommandContext&, Why& why) {
-        return ctl_.remove_gain_point(ctl_.selection().insertion, why);
+    simple("clip.gain_point_remove", [this, gain_place](const CommandContext&, Why& why) {
+        const Region* r = ctl_.selected_region(why);
+        if (r == nullptr) return false;
+        return ctl_.remove_gain_point(gain_place(*r), why);
     });
     simple("clip.gain_line_clear",
            [this](const CommandContext&, Why& why) { return ctl_.clear_gain_line(why); });
