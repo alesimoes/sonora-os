@@ -138,8 +138,23 @@ struct TrackSnapshot {
     std::array<InsertSlotSnapshot, kInsertSlotCount> inserts{};   // slot A first
 };
 
+// The master's loudness as last published (state block layout 8, protocol
+// 42): LUFS and dBTP, -200 for none yet. `nonfinite` counts samples the
+// meter replaced since its reset, so a strip can say it measured a fault.
+struct LoudnessReading {
+    float momentary = -200.0f;
+    float short_term = -200.0f;
+    float max_momentary = -200.0f;
+    float max_short_term = -200.0f;
+    float integrated = -200.0f;
+    float range_lu = 0.0f;
+    float true_peak_max_db = -200.0f;
+    uint32_t nonfinite = 0;
+};
+
 // StateView::frame: the transport and every track from one publish.
 struct EngineFrame {
+    LoudnessReading master_loudness;
     TransportSnapshot transport;
     std::vector<TrackSnapshot> tracks;   // info().track_count entries
 };

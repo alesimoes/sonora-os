@@ -20,6 +20,8 @@ Rectangle {
     property SendModel sends: null
     // Fader rides, typed values and modifier clicks; null where not wired.
     property MixModel mixer: null
+    // The master's loudness readout and its panel; null where not wired.
+    property LoudnessModel loudness: null
 
     width: 1280
     height: 720
@@ -109,6 +111,7 @@ Rectangle {
             inserts: root.inserts
             sends: root.sends
             mixer: root.mixer
+            loudness: root.loudness
         }
 
         // Over the windows, not instead of them: says why the meters are empty.

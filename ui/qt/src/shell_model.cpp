@@ -557,6 +557,7 @@ void ShellModel::tick() {
     }
     if (refresh) refreshState(false);
     if (refresh && plugin_sinks_.frame) plugin_sinks_.frame(frame_, alive);
+    if (refresh && loudness_sink_) loudness_sink_(frame_, alive);
     if (!status_.isEmpty() && t0 > status_until_ns_) {
         status_.clear();
         emit statusChanged();

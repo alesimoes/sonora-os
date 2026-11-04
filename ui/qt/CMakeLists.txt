@@ -67,6 +67,7 @@ add_library(sonora_ui_qt STATIC
   src/insert_controller.h src/insert_controller.cpp
   src/insert_model.h src/insert_model.cpp
   src/mix_model.h src/mix_model.cpp
+  src/loudness_model.h src/loudness_model.cpp
   src/send_controller.h src/send_controller.cpp
   src/send_model.h src/send_model.cpp
   src/refusal_page.h src/refusal_page.cpp
@@ -86,6 +87,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
         qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml
         qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
+        qml/LoudnessPanel.qml
 )
 
 # The screenshot scenes register themselves (scenes/screenshot_scene.h): in
@@ -275,6 +277,13 @@ add_executable(test_ui_mix tests/test_mix.cpp)
 target_link_libraries(test_ui_mix PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_mix COMMAND test_ui_mix)
 set_tests_properties(ui_mix PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The master's loudness: the readings as the engine publishes them, the
+# target presets, the reset and its refusals, the panel in QML.
+add_executable(test_ui_loudness tests/test_loudness.cpp)
+target_link_libraries(test_ui_loudness PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_loudness COMMAND test_ui_loudness)
+set_tests_properties(ui_loudness PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Key maps on the control API: commands routed by domain, the Commands
 # Keyboard Focus toggle, the profile switch and what it remembers, on
