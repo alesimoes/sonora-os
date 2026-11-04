@@ -18,6 +18,12 @@
   agent does not need to cooperate. Relaunch from the WIP branch, 3 tries,
   then a "waits on the owner" note.
 - §4: eight roles, each with a structured `result.json`.
+- §4a (owner refinement): the flow is architect -> lead -> engineers and
+  testers -> integrator; a plan file, the lead's assignment table, and
+  one feature = one branch = one PR in the store and on the dashboard.
+- §4b (owner addition): agents talk through files in a git-ignored
+  `.harness/` (inbox/outbox, plan, claims, board, events), atomic writes,
+  file claims that stop two engineers editing one file, polled by a hook.
 - §5: three pools (build, qa, fix) with floors, a 20 cap, a CI budget, kill
   switch and dry-run.
 - §6: the daemon writes `status.json`; the dashboard reads it.
@@ -219,6 +225,212 @@ to `status.json`; the in-session coordinator (or the owner) runs it per the
 standing "run privileged tests myself" rule and posts the result to the PR.
 The task does not block on it unless the PR is partial by design.
 
+### 4a. Feature flow: architect, lead, engineers and testers, integrator
+
+Owner refinement (2026-11-04). The unit of delivery is a **feature**, not a
+task. Flow:
+
+    feature --> architect --> plan.json --> lead --> assignments
+        --> engineers (one sub-branch each) + QA per finished task
+        --> integrator (merge sub-branches, pre-pr, ONE PR, enqueue)
+        --> ci-fixer / conflict-fixer on red --> merged
+
+1. **Architect plans.** For a BACKLOG item or group it writes
+   `.harness/plan/<feature>.plan.json` (a copy is committed on the feature
+   branch under `planning/orchestrator/plans/`; the daemon ingests and
+   validates it): the ADR (if any) and the reserved numbers, then a task list
+   ordered contract first, then engine, UI, tests, docs slices. It owns file
+   ownership: every task lists `files` (globs) that no other task of any
+   active feature may list; the daemon rejects a plan with overlap. It writes
+   no product code.
+2. **Lead distributes.** It reads the plan and the live `status.json`, writes
+   `assignments.json` and starts nothing itself. It never writes product code.
+3. **Engineers and testers** work the assignments; each finished task gets its
+   own fresh QA agent (the lead's table names the tester role per task).
+4. **Integrator merges.** When every task of the feature is `qa: pass`, the
+   integrator merges the sub-branches into the feature branch in the plan's
+   order, resolves conflicts, runs `tools/pre-pr.sh`, and the daemon opens the
+   single PR and runs `tools/enqueue-pr.sh`. A separate ci-fixer takes over on
+   red. A single-task feature skips the merge but not the rest.
+
+Plan-file schema (`plan.schema.json`, version 1):
+
+    { "version": 1, "feature": "time.varispeed", "backlog_ids": ["..."],
+      "track": "daw|os|plugin", "feature_branch": "feat/<feature>",
+      "reserved": { "adr": 47, "protocol": null, "formats": [] },
+      "adr": "brain/decisions/ADR-0047-....md" | null,
+      "tasks": [
+        { "id": "t1", "kind": "contract|engine|ui|tests|docs",
+          "title": "...", "brief": "<= 15 lines, what and done-when",
+          "files": ["contracts/...", "engine/..."],
+          "depends_on": [], "agent": "rt-engineer|ui-engineer|...",
+          "needs_privileged": false, "accept": ["command that must pass"] } ],
+      "merge_order": ["t1","t2","t3"],
+      "pr": { "title": "...", "partial": false, "partial_reason": null } }
+
+A contract task has no dependencies and merges before dependants start from
+its sub-branch (CLAUDE.md contract rule); when a contract is a separate
+feature, `depends_on_feature` names it and the feature waits in `queued`.
+
+Lead's assignment table (`assignments.json`, one row per task, rewritten on
+every change and appended to `events`):
+
+| task | engineer agent | tester | sub-branch | order | start-from | slot |
+|---|---|---|---|---|---|---|
+| t1 | rt-engineer | qa | `feat/<f>/t1` | 1 | feature branch | build |
+| t2 | ui-engineer | qa | `feat/<f>/t2` | 2 | `feat/<f>/t1` | build |
+
+The daemon enforces what the lead decides: it launches a row only when
+`depends_on` tasks are `qa: pass`, the files are free, and a pool seat is
+open; the lead can reorder or reassign, never exceed floors or overlap. A
+lead that returns an invalid table is relaunched, not obeyed.
+
+Store additions: table `features(id, plan_path, branch, track, state, pr,
+adr_no, protocol_no, partial, created, updated)`; `tasks.feature_id`
+references it, and a task's `branch` is its sub-branch. Feature state is
+derived: `planning` -> `distributing` -> `building` -> `integrating` ->
+`pr_open` -> `ci_fix` -> `merged` (or `blocked`). Exactly one row of
+`features` owns a `pr`, and a unique index on `pr` forbids two features
+sharing one; a task never has a PR of its own. The task-level state machine
+in §2 applies per task up to `qa: pass`; `integrating`, `pr_open`, `ci_fix`
+and `merged` are feature states. The `designing` state of §2 is the feature's
+`planning` state, and the lead does not create tasks (the architect's plan
+does), superseding the lead wording in the §4 table.
+
+Dashboard view (`status.json` `features[]`, rendered by `tools/dashboard.py`):
+a table grouped by feature, one line per PR: feature, track, PR number and
+link, feature state, tasks done/total with a per-task strip (state letter and
+agent), CI status, attempts, age, blocked reason. Below it, open PRs by
+feature against `max_open_prs`, and the "waits on the owner" list.
+
+### 4b. Inter-agent communication: `.harness/`
+
+Owner addition (2026-11-04). Purpose: no code conflicts, everyone in tune.
+Files, not a socket: a headless `claude -p` agent has no listener, so a socket
+would need a broker process, a port, and a client the model must drive
+through Bash; files are inspectable, survive daemon and agent restarts,
+replay in tests and need no extra moving part. A socket is justified only if
+polling latency measured in the fake-claude tests exceeds 5 s, which we do not
+expect (agents work in minutes).
+
+**Location.** `<main checkout>/.harness/`, added to `.gitignore`. Worktrees
+share it because the daemon passes `SONORA_HARNESS=<abs path>` (plus
+`SONORA_AGENT_ID`, `SONORA_TASK`, `SONORA_FEATURE`) to every run; agents and
+`tools/harness.py` resolve it from that variable, never from the cwd. If the
+variable is unset the helper exits non-zero (fail loudly at start-up).
+
+    .harness/
+      plan/<feature>.plan.json        architect output, read-only after ingest
+      board.json                      task states, rewritten by the daemon only
+      claims/<path-hash>.json         one file per claimed path (see below)
+      inbox/<agent-id>/<seq>-<type>-<msgid>.json   messages to an agent
+      outbox/<agent-id>/...           messages an agent has sent (audit copy)
+      acks/<agent-id>/<msgid>         empty file: message read
+      runs/<run-id>/{stream.log,beat,result.json}
+      events.log                      append-only JSON lines (daemon + helper)
+      STOP, STOP.NOW                  kill switch (see §5)
+
+`agent-id` is `<role>.<task>.<n>`, unique per run, plus the standing ids
+`daemon`, `lead.<feature>` and `architect.<feature>`. The daemon routes: a
+message is written once to the sender's outbox and delivered (hard-linked or
+copied, then renamed) to the recipient's inbox by `tools/harness.py send`, so
+the agent needs no routing knowledge. Broadcast = `to: "feature:<f>"` expands
+to every live agent of that feature.
+
+**Message schema** (`msg.schema.json`, version 1):
+
+    { "v": 1, "id": "<ulid>", "seq": 17, "ts": "...", "from": "...",
+      "to": "...", "feature": "...", "task": "...",
+      "type": "assign|ask|answer|blocked|file_claim|file_release|handoff|"
+              "qa_report|bug|done",
+      "reply_to": "<id>|null", "needs_ack": true,
+      "body": { ... type specific ... } }
+
+Types: `assign` (lead to engineer or tester: task, branch, start-from, files,
+accept); `ask` / `answer` (any to lead or architect and back; the lead answers
+within its own turn or relays to the architect; unanswered `ask` after 20 min
+makes the daemon append the recommended default, per owner rule, and answer
+with it); `blocked` (agent cannot proceed, names the blocker; the lead
+reassigns or escalates); `file_claim` / `file_release` (see claims);
+`handoff` (engineer to qa: sub-branch, commit, commands run and printed,
+unverified); `qa_report` (qa to lead and daemon: pass/fail and findings);
+`bug` (qa to engineer: one blocking finding with where and text; the engineer
+returns it fixed in a `handoff`); `done` (final, mirrors `result.json`).
+Unknown types are ignored by agents and logged by the daemon.
+
+**Atomic writes and ordering.** A writer creates `inbox/<id>/.tmp.<pid>.<rand>`
+in the same directory, fsyncs, then `os.rename`s to the final name (atomic on
+one filesystem; the daemon verifies at start-up that `.harness/` and the
+worktrees share a volume, else it refuses to start). Readers ignore names
+starting with `.tmp.`. Order is the zero-padded `seq`, allocated per recipient
+under an `O_EXCL` lock-file (`inbox/<id>/.seq.lock`, held for microseconds);
+delivery is at-least-once, handlers are idempotent on `id`. Ack =
+creating `acks/<id>/<msgid>`; the sender or the daemon re-delivers an
+unacked `needs_ack` message after 10 min and, after two, tells the lead.
+
+**Cheap polling without a background shell.** Agents cannot listen. The
+daemon installs, in each worktree's `.claude/settings.local.json`, a
+`PostToolUse` hook (and `UserPromptSubmit`) that runs
+`tools/harness.py inbox --brief`: it does one `os.scandir` of the agent's
+inbox, prints nothing when empty (zero tokens) and otherwise prints one line
+per new message ("17 bug from qa.t2.1: src/x.cpp:40 ..."), moving it to
+`read/`. A message the agent must obey is thus injected after its next tool
+call, a few seconds later. The role prompts say: before finishing, run
+`harness.py inbox` once more and answer every `needs_ack`; a final `done` is
+refused by the helper while unacked blocking `bug` or `ask` messages exist.
+Hooks fire between tool calls, so a long single Bash build delays delivery to
+the end of that call, which is acceptable. (Assumption: headless `-p` runs
+honour project hooks; see Unverified 6.)
+
+**File-claim rules (no two engineers on one file).** Ownership is decided
+three times, from coarse to fine:
+
+1. Plan time: the daemon rejects overlapping `files` globs across active
+   features and tasks (§4a).
+2. Launch time: the daemon writes the task's globs to `claims/` as `owner:
+   task` entries; a task whose globs hit an existing claim is not launched.
+3. Edit time: an engineer sends `file_claim` for any path outside its globs
+   before editing it (e.g. `CMakeLists.txt`, a shared header). The helper
+   `harness.py claim PATH...` is atomic: it creates `claims/<hash>.json` with
+   `O_EXCL`; on success it returns ok; if the file exists it prints the owner
+   and returns non-zero, and the engineer must send `ask` to the lead (who
+   sequences the two tasks, or assigns the edit to the owner) rather than edit.
+   Claims carry `task`, `agent`, `ts`, `expires`; they are released by
+   `file_release`, on task `qa: pass`, or by the daemon when the run is
+   declared dead after the WIP checkpoint (the relaunched run inherits the
+   claims of its task id). `.claude/settings.local.json` also installs a
+   `PreToolUse` hook on Edit/Write that calls `harness.py check PATH` and
+   denies the edit when the path is claimed by another task: this makes the
+   rule mechanical, not a prompt request. The integrator is the only role
+   allowed to touch claimed files across tasks, after all are `qa: pass`.
+
+**Heartbeat sharing.** `runs/<run-id>/beat` is touched by the same hooks (each
+helper call updates it), so the daemon gets a free, accurate activity signal
+in addition to the process/git signals of §3; the §3 checks remain the
+authority because a hung agent also stops touching it. The daemon also writes
+`board.json` each tick so any agent can `harness.py board` to see who has what.
+
+**Retention and cleanup.** Messages of a feature move to
+`.harness/archive/<feature>/` on `merged` and are deleted after 7 days by the
+janitor; `claims/` entries are removed with the task; `runs/` logs follow the
+7-day rule of the Consequences; `events.log` rotates at 5 MB. Startup
+reconciliation removes `.tmp.*` files older than 1 hour and claims whose task
+is not in the store.
+
+**What the fake-claude tests assert** (`tools/fake-claude.py` can read its
+inbox, send, claim and exit on a script): atomicity (a writer killed between
+temp and rename leaves no partial message); ordering and idempotent redelivery
+by `id`; hook-style `inbox --brief` prints nothing when empty and one line per
+message otherwise; two fake engineers claiming the same path: exactly one wins,
+the other receives non-zero and sends `ask`; `PreToolUse` `check` denies a
+foreign edit; a `bug` from a fake qa returns the task to `bugfix` and the
+`handoff` returns it to `qa`; an unanswered `ask` gets the default after the
+timeout (clock injected); claims of a killed run are inherited by the
+relaunch and freed on `merged`; `done` is refused with an unacked blocking
+message; the tree has no `.tmp.*` after a crash-and-reconcile; the helper
+fails loudly when `SONORA_HARNESS` is unset; no test touches the network or
+the real `claude`.
+
 ### 5. Staffing policy
 
 Pools and floors (agents truly working, not waiting on a build; a run is
@@ -301,7 +513,10 @@ Each is complete for its layer and tested with a fake `claude`
 `result.json`, optionally exits non-zero, hangs, or writes invalid JSON). None
 spends quota.
 
-- **PR 1, core and heartbeat.** `tools/orchestrator.py` with the state store,
+- **PR 1, core, heartbeat and messaging.** Also carries `tools/harness.py`
+  (`send`, `inbox --brief`, `claim`, `check`, `board`, `release`), the
+  `.harness/` layout, `msg.schema.json`, the `.gitignore` entry, the hook
+  installer for worktrees and every §4b test. Original scope: `tools/orchestrator.py` with the state store,
   `advance()` state machine, launch/heartbeat/relaunch, WIP checkpoint,
   retries and `blocked` note, kill switch, dry-run, `status.json`, number
   reservations, `result.schema.json`, `tools/fake-claude.py`,
@@ -317,7 +532,10 @@ spends quota.
   file-overlap exclusion. Tests: with a fake backlog of 40 tasks the pools
   hold 17 live and never exceed 20; a red PR gets a ci-fixer within one tick;
   CI-budget back-pressure; no overlap launches.
-- **PR 3, lead, architect, import and dashboard.** `lead` and `architect`
+- **PR 3, architect, lead, feature flow, import and dashboard.** Adds the
+  `features` table, plan and assignments schemas with validators, and the
+  feature-grouped dashboard view of §4a. PRs 1 and 2 already wrap every item
+  in a one-task feature so the schema does not change later. Original scope: `lead` and `architect`
   roles and agent files; the AGENT-QUEUE import/regenerate; `status.json`
   section in `tools/dashboard.py`; systemd/Task Scheduler/SessionStart
   start-up snippet; first live run in dry-run, then a supervised live run with
@@ -397,6 +615,12 @@ doing anything, including remembering to report it.
 4. Real CI minutes per PR and the ceiling of concurrently queued workflows on
    the repository, which set `max_open_prs`. Measurement: `gh run list` over
    the last 7 days.
+6. That headless `claude -p` runs execute `PostToolUse` and `PreToolUse`
+   hooks from the worktree's `.claude/settings.local.json` and that a hook's
+   stdout reaches the model. Measurement: one fake task with a hook that
+   prints a marker; check the stream. If it does not, fall back to the
+   prompt rule "run `harness.py inbox` after every build or commit" and keep
+   `check` as a git pre-commit hook.
 5. Whether the account's weekly Sonnet quota sustains 17+ continuous agents;
    the `max_runs_per_hour` default is a guess.
 
