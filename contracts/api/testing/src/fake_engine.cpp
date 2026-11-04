@@ -1953,6 +1953,7 @@ void FakeEngine::publish() {
     tf.playhead = playhead();
     tf.xruns = xruns_;
     tf.clock_steps = clock_steps_;
+    tf.overruns = overruns_;
     tf.health_flags = health_;
     tf.inputs_connected = inputs_connected_ ? cfg_.tracks : 0;
     tf.buffer_frames = cfg_.buffer_frames;
