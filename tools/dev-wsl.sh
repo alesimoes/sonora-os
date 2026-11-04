@@ -135,6 +135,8 @@ do_deps() {
   else
     say "packages: all ${#PACKAGES[@]} installed"
   fi
+  find_iodelay >/dev/null ||
+    say "warning: no jack_iodelay after installing jack-example-tools; round-trip latency will be skipped (dpkg -S jack_iodelay)"
   # The same drop-in the image installs: pipewire-jack's libjack must win
   # over libjack-jackd2-0 (pulled in by the -dev package), or the engine
   # looks for a jackd that is not running.
@@ -596,11 +598,38 @@ PY
 # --- measure ---------------------------------------------------------------
 
 # `pw-top -b` text on stdin (columns S ID QUANT RATE WAIT BUSY W/Q B/Q ERR
-# FORMAT NAME): the QUANT and RATE of the last row that has both, printed as
-# "RATE/QUANTUM", or "?/?" when no node is running.
+# FORMAT NAME): "RATE/QUANTUM" of the node that is running, or "?/?" when the
+# graph is idle (every row then shows QUANT 0 RATE 0). A row for the engine's
+# own client (NAME "sonora") wins; else the last row with both numbers > 0.
 clock_of() {
-  awk '$3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && $3 > 0 && $4 > 0 { r = $4; q = $3 }
-       END { print (q ? r "/" q : "?/?") }'
+  awk '$3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && $3 > 0 && $4 > 0 {
+         if ($NF == "sonora") { er = $4; eq = $3 } else { r = $4; q = $3 } }
+       END { if (eq) print er "/" eq; else print (q ? r "/" q : "?/?") }'
+}
+
+# `pw-metadata -n settings` on stdin -> "RATE/QUANTUM" as configured (a forced
+# value wins over the default), "?/?" when it names neither.
+clock_conf() {
+  grep -o "key:'clock\.[a-z-]*' value:'[0-9]*'" | tr -d "'" | awk '
+    { split($0, a, " "); k = substr(a[1], 5); v[k] = substr(a[2], 7) + 0 }
+    END { r = v["clock.force-rate"]; if (!r) r = v["clock.rate"]
+          q = v["clock.force-quantum"]; if (!q) q = v["clock.quantum"]
+          print (r && q ? r "/" q : "?/?") }'
+}
+
+# Where jack_iodelay is: on PATH, else in the files of the packages that
+# ship it (Debian moved it between jackd2 and jack-example-tools).
+find_iodelay() {
+  local f p
+  command -v jack_iodelay && return 0
+  for p in jack-example-tools jackd2 jackd2-firewire; do
+    f="$(dpkg -L "$p" 2>/dev/null | grep -E '/jack_iodelay$' | head -n 1 || true)"
+    if [[ -n $f && -x $f ]]; then echo "$f"; return 0; fi
+  done
+  for f in /usr/bin /usr/local/bin /usr/lib/jack /usr/lib/x86_64-linux-gnu/jack; do
+    if [[ -x $f/jack_iodelay ]]; then echo "$f/jack_iodelay"; return 0; fi
+  done
+  return 1
 }
 
 # jack_iodelay output on stdin -> "<ms> ms (<frames> frames)" of the last
@@ -611,12 +640,13 @@ iodelay_last() {
 }
 
 # stdin: one "RATE/QUANTUM" per line. Succeeds when there is at least one
-# sample, none is unknown and all are equal: a quantum that moves mid-session
-# changes our block size.
+# sample that saw the graph running, and all of those equal: a quantum that
+# moves mid-session changes our block size. "?/?" is an idle sample (the take
+# had not started or had ended): counted apart, not a verdict.
 clock_stable() {
   local lines
-  lines="$(sort -u | grep . || true)"
-  [[ -n $lines && $(wc -l <<<"$lines") -eq 1 && $lines != *'?'* ]]
+  lines="$(sort -u | grep -v '?' | grep . || true)"
+  [[ -n $lines && $(wc -l <<<"$lines") -eq 1 ]]
 }
 
 do_measure() {
@@ -654,8 +684,9 @@ do_measure() {
   # Round trip first: it needs the engine's graph only as company, and a
   # missing loop must not cost ten minutes before it is reported.
   local lat="not measured"
-  if ! command -v jack_iodelay >/dev/null; then
-    lat="not measured: jack_iodelay missing (tools/dev-wsl.sh deps installs jack-example-tools)"
+  local iodelay
+  if ! iodelay="$(find_iodelay)"; then
+    lat="not measured: jack_iodelay not found (run: tools/dev-wsl.sh deps; dpkg -S jack_iodelay)"
   else
     if [[ -z "$lout" || -z "$lin" ]]; then
       mapfile -t spk < <(node_ports "$SPEAKERS" -i)
@@ -665,7 +696,7 @@ do_measure() {
     if [[ -z "$lout" || -z "$lin" ]]; then
       lat="not measured: no loop ports (pass --loop-out and --loop-in)"
     else
-      pw-jack jack_iodelay >"$STATE/iodelay.out" 2>&1 &
+      pw-jack "$iodelay" >"$STATE/iodelay.out" 2>&1 &
       local iod=$!
       PIDS+=("$iod")
       if wait_for 10 bash -c "pw-link -i 2>/dev/null | grep -q '^jack_delay:in$'"; then
@@ -683,31 +714,56 @@ do_measure() {
     fi
   fi
 
-  say "measuring ${seconds}s; the graph clock is sampled every 30 s"
+  say "measuring ${seconds}s; the graph clock is sampled every 30 s while the take rolls"
   "${ctl[@]}" take "$seconds" >"$STATE/take.out" 2>&1 &
   local take=$!
   PIDS+=("$take")
-  local t=0 clocks=()
-  while ((t < seconds)) && kill -0 "$take" 2>/dev/null; do
-    clocks+=("$(pw-top -b -n 2 2>/dev/null | clock_of)")
-    sleep "$((seconds - t < 30 ? seconds - t : 30))"
+  # The take arms and starts recording first; an idle graph before that is
+  # not a quantum change. It records for $seconds and then plays the take
+  # back, so the window ends when the take does.
+  sleep 5
+  local t=0 clocks=() top="" rolling="" conf one i
+  conf="$(pw-metadata -n settings 0 2>/dev/null | clock_conf || true)"
+  while kill -0 "$take" 2>/dev/null && ((t < 2 * seconds + 60)); do
+    top="$(pw-top -b -n 2 2>/dev/null || true)"
+    one="$(clock_of <<<"$top")"
+    clocks+=("$one")
+    [[ $one != '?/?' ]] && rolling="$top"
+    i=0
+    while ((i < 30)) && kill -0 "$take" 2>/dev/null; do sleep 1; i=$((i + 1)); done
     t=$((t + 30))
   done
   wait "$take" 2>/dev/null || true
-  local state
-  state="$("${ctl[@]}" state 2>&1 | grep -i "xrun\|overrun" || true)"
+  # The socket may serve one client at a time: ask again once the take has
+  # let go, and keep what it said when it still gives no state.
+  local state="" raw="" try
+  for try in 1 2 3; do
+    raw="$("${ctl[@]}" state 2>&1 || true)"
+    state="$(grep -i "xruns=" <<<"$raw" || true)"
+    [[ -n $state ]] && break
+    sleep 1
+  done
+  [[ -n $state ]] || state="$(grep -i "xrun\|overrun" "$STATE/take.out" || true)"
   kill -TERM "$engine" 2>/dev/null || true
   wait "$engine" 2>/dev/null || true
 
-  local distinct
-  distinct="$(printf '%s\n' "${clocks[@]}" | sort -u | paste -sd' ' -)"
+  local distinct idle
+  distinct="$(printf '%s\n' "${clocks[@]}" | grep -v '?' | sort -u | paste -sd' ' - || true)"
+  idle="$(printf '%s\n' "${clocks[@]}" | grep -c '?' || true)"
   {
-    echo "dev-wsl measure: $(date -u +%FT%TZ), ${seconds}s, ${#clocks[@]} clock samples"
-    echo "clock rate/quantum seen: $distinct"
-    if printf '%s\n' "${clocks[@]}" | clock_stable; then echo "quantum: stable"; else echo "quantum: NOT stable or unknown"; fi
-    echo "engine: ${state:-no state}"
-    echo "pw-top (ERR column):"
-    pw-top -b -n 2 2>/dev/null | tail -n 12 || true
+    echo "dev-wsl measure: $(date -u +%FT%TZ), ${seconds}s, ${#clocks[@]} clock samples ($idle idle)"
+    echo "clock configured (pw-metadata) rate/quantum: $conf"
+    echo "clock running (pw-top) rate/quantum seen: ${distinct:-none}"
+    if printf '%s\n' "${clocks[@]}" | clock_stable; then echo "quantum: stable"; else echo "quantum: NOT stable or never seen rolling"; fi
+    if [[ -n $state ]]; then
+      echo "engine: $state"
+    else
+      echo "engine: no state; sonora-ctl state said: ${raw:-nothing}"
+      echo "engine stderr (tail): $(tail -n 3 "$STATE/engine.err" 2>/dev/null | paste -sd'|' -)"
+    fi
+    echo "take: $(grep '^RESULT' "$STATE/take.out" || echo "no RESULT line; $(tail -n 2 "$STATE/take.out" | paste -sd'|' -)")"
+    echo "pw-top while rolling (ERR column):"
+    printf '%s\n' "${rolling:-no sample saw the graph running}" | tail -n 12
     echo "round-trip latency: $lat"
   } | tee "$out"
   say "also written to $out; the take checks are in $STATE/take.out"
