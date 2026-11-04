@@ -7,14 +7,17 @@ add_library(sonora_native_vocal_balance STATIC src/vocal_balance.cpp)
 target_include_directories(sonora_native_vocal_balance PUBLIC include)
 target_link_libraries(sonora_native_vocal_balance PUBLIC sonora_native_sdk PRIVATE sonora_dsp)
 
-add_library(sonora_native_vocal_balance_analysis STATIC src/analysis.cpp src/plan_source.cpp)
-target_include_directories(sonora_native_vocal_balance_analysis PUBLIC include)
-target_link_libraries(sonora_native_vocal_balance_analysis PUBLIC sonora_model PRIVATE sonora_dsp)
-
 add_library(sonora_native_vocal_balance_suite STATIC tests/suite.cpp)
 target_link_libraries(sonora_native_vocal_balance_suite PUBLIC sonora_native_vocal_balance sonora_dsp_measure)
 
 sonora_native_quality_test(vocal_balance)
+
+# The analysis links the session model, which the neutral (MSVC) configuration
+# does not build (SONORA_PLATFORM=linux only), so it and its test are Linux-only.
+if(SONORA_PLATFORM STREQUAL "linux")
+add_library(sonora_native_vocal_balance_analysis STATIC src/analysis.cpp src/plan_source.cpp)
+target_include_directories(sonora_native_vocal_balance_analysis PUBLIC include)
+target_link_libraries(sonora_native_vocal_balance_analysis PUBLIC sonora_model PRIVATE sonora_dsp)
 
 # Synthetic vocals against the analysis and the plan it proposes.
 add_executable(test_vocal_balance_analysis tests/test_analysis.cpp)
@@ -22,6 +25,7 @@ target_link_libraries(test_vocal_balance_analysis PRIVATE
   sonora_native_vocal_balance_analysis sonora_native_vocal_balance sonora_dsp_measure sonora_dsp sonora_model_audited)
 target_include_directories(test_vocal_balance_analysis PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
 add_test(NAME native_vocal_balance_analysis COMMAND test_vocal_balance_analysis)
+endif()
 
 sonora_native_plugin(vocal_balance FACTORY make_vocal_balance DISPLAY "Sonora Vocal Balance" UID SNvb MONO_UID SMvb
   LV2_CATEGORY "lv2:EQPlugin" VST3_CATEGORIES "Fx|EQ")
