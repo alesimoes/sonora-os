@@ -5,14 +5,19 @@
 # image. The exit codes and the "STEP n/N name" lines are the interface; the
 # screens only call this script.
 #
-#   sonora-install [--yes] [--allow-removable] [--target DISK]
+#   sonora-install [--yes] [--allow-removable] [--select-only] [--target DISK]
+#
+# --select-only prints the disk it would erase and exits 0 before anything is
+# written (used by the tests and by screens that preview the choice).
 #
 # Exit codes: 0 installed and self-checked, 2 usage, 3 target refused,
 # 4 partitioning, 5 formatting, 6 copy, 7 configuration, 8 boot loader,
 # 9 self-check failed, 10 not root or a tool is missing.
 #
 # SONORA_* variables exist so the logic runs against a file image in a
-# container; on the stick none is set.
+# container; on the stick none is set. While any of SONORA_SYSBLOCK,
+# SONORA_ALLOW_FILE or SONORA_IN_TARGET is set, only a regular file or a loop
+# device may be written, so a test can never reach a real disk.
 set -u
 
 MEDIUM=${SONORA_MEDIUM:-/run/live/medium}
@@ -27,6 +32,7 @@ STEPS=7
 
 YES=0
 REMOVABLE=0
+SELECT_ONLY=0
 TARGET=
 WORK=
 LOOP=
@@ -64,7 +70,7 @@ cleanup() {
 trap cleanup EXIT
 
 usage() {
-    echo "usage: sonora-install [--yes] [--allow-removable] [--target DISK]" >&2
+    echo "usage: sonora-install [--yes] [--allow-removable] [--select-only] [--target DISK]" >&2
     exit 2
 }
 
@@ -72,6 +78,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --yes) YES=1 ;;
         --allow-removable) REMOVABLE=1 ;;
+        --select-only) SELECT_ONLY=1 ;;
         --target) [ $# -ge 2 ] || usage; TARGET=$2; shift ;;
         *) usage ;;
     esac
@@ -128,6 +135,14 @@ is_usb_or_removable() {
     return 1
 }
 
+# Refuses anything but a regular file or a loop device when a test hook is set.
+hook_guard() {
+    [ -n "${SONORA_SYSBLOCK:-}${SONORA_ALLOW_FILE:-}${SONORA_IN_TARGET:-}" ] || return 0
+    [ -f "$1" ] && return 0
+    case $1 in /dev/loop[0-9]*) [ -b "$1" ] && return 0 ;; esac
+    fail 3 "test hooks are set; refusing to write $1 (not a regular file or loop device)"
+}
+
 select_target() {
     step 1 select
     if [ -z "$TARGET" ]; then
@@ -139,6 +154,10 @@ select_target() {
             fail 3 "name the disk with --target ($count internal candidates)"
         fi
         TARGET=$list
+        if [ $SELECT_ONLY -eq 1 ]; then echo "$TARGET"; exit 0; fi
+    else
+        hook_guard "$TARGET"
+        if [ $SELECT_ONLY -eq 1 ]; then echo "$TARGET"; exit 0; fi
     fi
     if [ -f "$TARGET" ] && [ "${SONORA_ALLOW_FILE:-0}" = 1 ]; then
         :
@@ -172,6 +191,7 @@ attach() {
 
 partition() {
     step 2 partition
+    hook_guard "$TARGET"
     attach
     # The BIOS boot partition exists only where it is needed.
     if [ $EFI -eq 1 ]; then

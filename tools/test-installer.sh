@@ -126,11 +126,14 @@ mkdir -p $T/sys/sda $T/sys/sdb $T/sys/loop0
 echo 0 >$T/sys/sda/removable
 echo 1 >$T/sys/sdb/removable
 echo 0 >$T/sys/loop0/removable
-"$INST" --yes >$T/out 2>&1 && rc=0 || rc=$?
-expect_code "unnamed target picks the one internal disk" 3 "$rc"
-if grep -q '/dev/sda is not a block device' $T/out; then ok "selected /dev/sda, skipped removable and loop"; else bad "candidate choice: $(cat $T/out)"; fi
+# --select-only stops before any write: no path here reaches a real disk.
+"$INST" --yes --select-only >$T/out 2>&1 && rc=0 || rc=$?
+expect_code "unnamed target picks the one internal disk" 0 "$rc"
+if grep -qx '/dev/sda' $T/out; then ok "selected /dev/sda, skipped removable and loop"; else bad "candidate choice: $(cat $T/out)"; fi
+"$INST" --yes --select-only --target /dev/sda >/dev/null 2>&1 && rc=0 || rc=$?
+expect_code "test hooks refuse a real disk" 3 "$rc"
 echo 1 >$T/sys/sda/removable
-"$INST" --yes >$T/out 2>&1 && rc=0 || rc=$?
+"$INST" --yes --select-only >$T/out 2>&1 && rc=0 || rc=$?
 if grep -q '0 internal candidates' $T/out; then ok "no internal disk is reported"; else bad "zero candidates"; fi
 echo n | "$INST" --target $T/disk.img >/dev/null 2>&1 && rc=0 || rc=$?
 expect_code "wrong confirmation exits 3" 3 "$rc"
