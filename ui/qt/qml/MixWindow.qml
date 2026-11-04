@@ -30,6 +30,13 @@ Rectangle {
     property SendModel sends: null
     property MixModel mixer: null
     readonly property int auxCount: sends !== null ? sends.auxes.length : 0
+    // VCA masters and folders (ADR-0048): the strips' places along the
+    // window, a closed folder being one card and its tracks none.
+    readonly property var vcaList: mixer !== null ? mixer.vcas : []
+    readonly property int slotCount: mixer !== null ? mixer.slotCount : session.trackCount
+    function slotOf(i) {
+        return mixer !== null && i < mixer.trackSlots.length ? mixer.trackSlots[i] : i
+    }
     // Clicking the bank in use collapses the sends; the other one, or the
     // collapsed sends' switch, shows that bank.
     function pickSends(first) {
@@ -118,6 +125,18 @@ Rectangle {
             active: mix.mixer !== null && mix.mixer.showInsertsFJ
             onClicked: mix.mixer.showInsertsFJ = !mix.mixer.showInsertsFJ
         }
+        Item { width: Theme.space2; height: 1 }
+        // Of the selected tracks (ADR-0048); a refusal is held.
+        SButton {
+            objectName: "newVca"
+            text: "+ VCA"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.mixer.newVca("")
+        }
+        SButton {
+            objectName: "newFolder"
+            text: "Folder"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.mixer.newFolder("")
+        }
     }
     Row {
         id: sendControls
@@ -175,7 +194,7 @@ Rectangle {
             leftMargin: Theme.space3; rightMargin: Theme.space3; topMargin: Theme.space2; bottomMargin: Theme.space3
         }
         clip: true
-        contentWidth: (mix.session.trackCount + mix.auxCount) * mix.stripWidth
+        contentWidth: (mix.slotCount + mix.auxCount + mix.vcaList.length) * mix.stripWidth
         contentHeight: height
         flickableDirection: Flickable.HorizontalFlick
         boundsBehavior: Flickable.StopAtBounds
@@ -207,7 +226,9 @@ Rectangle {
             ChannelStrip {
                 required property int index
                 required property string modelData
-                x: index * strips.stripWidth
+                readonly property int slot: mix.slotOf(index)
+                visible: slot >= 0
+                x: Math.max(slot, 0) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height
                 shell: mix.shell
@@ -228,7 +249,7 @@ Rectangle {
             AuxStrip {
                 required property int index
                 required property var modelData
-                x: (mix.session.trackCount + index) * strips.stripWidth
+                x: (mix.slotCount + index) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height
                 shell: mix.shell
@@ -236,6 +257,33 @@ Rectangle {
                 sends: mix.sends
                 mixer: mix.mixer
                 bus: index
+                info: modelData
+            }
+        }
+        Repeater {
+            model: mix.mixer !== null ? mix.mixer.folderCards : []
+            FolderCard {
+                required property var modelData
+                x: modelData.slot * strips.stripWidth
+                width: strips.stripWidth - 2
+                height: strips.height
+                mixer: mix.mixer
+                info: modelData
+            }
+        }
+        Repeater {
+            model: mix.vcaList
+            VcaStrip {
+                required property int index
+                required property var modelData
+                vcaIndex: index
+                faderTop: bus.faderZone.y
+                x: (mix.slotCount + mix.auxCount + index) * strips.stripWidth
+                width: strips.stripWidth - 2
+                height: strips.height
+                shell: mix.shell
+                session: mix.session
+                mixer: mix.mixer
                 info: modelData
             }
         }
@@ -287,7 +335,7 @@ Rectangle {
                 return { track: -1, slot: -1 }
             for (let i = 0; i < stripRepeater.count; ++i) {
                 const st = stripRepeater.itemAt(i)
-                if (st === null) continue
+                if (st === null || !st.visible) continue
                 const f = dragLayer.mapToItem(st.insertFrame, x, y)
                 if (f.x < 0 || f.y < 0 || f.x >= st.insertFrame.width || f.y >= st.insertFrame.height) continue
                 const col = st.insertColumn

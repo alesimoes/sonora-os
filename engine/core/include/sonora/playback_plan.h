@@ -214,6 +214,8 @@ struct PlanTrackMix {
     uint8_t touched = 0;
     // Track::trim() of the same track, stamped with `touched`.
     float trim = 1.0f;
+    // Track::vca_gain() of the track that arrives here (ADR-0048).
+    float vca = 1.0f;
     // The document track this plan plays on the engine track, 0 for none.
     // Set in every plan, with or without a mix_serial: the audio thread
     // moves what it keeps per track (a Latch) by it, and a mix serial

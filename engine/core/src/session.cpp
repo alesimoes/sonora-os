@@ -346,6 +346,8 @@ Session::Session(SessionConfig cfg)
     track_gain_.reset(new float[2 * static_cast<std::size_t>(tracks) + 2]());
     track_target_.reset(new float[2 * static_cast<std::size_t>(tracks) + 2]());
     track_open_.reset(new float[tracks + 1]());
+    track_vca_.reset(new float[tracks + 1]);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(tracks) + 1; ++i) track_vca_[i] = 1.0f;
     track_level_.reset(new float[tracks + 1]());
     track_pan_.reset(new float[tracks + 1]());
     track_auto_.reset(new uint8_t[tracks + 1]());
@@ -1437,7 +1439,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         const TrackMixView v = mix_view(*plan, e);
         const float level = v.gain;
         const bool open = !(v.mute || (any_solo && !v.solo && !v.solo_safe && feeds_track_[e] == 0));
-        const float g = open ? level : 0.0f;
+        const float g = open ? level * v.vca : 0.0f;
         const float pan = v.pan;
         float l = 0.0f;
         float r = 0.0f;
@@ -1445,6 +1447,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         track_target_[2 * e] = g * l;
         track_target_[2 * e + 1] = g * r;
         track_open_[e] = open ? 1.0f : 0.0f;
+        track_vca_[e] = v.vca;
         track_level_[e] = level;
         track_pan_[e] = pan;
         track_trim_[e] = v.trim;
@@ -1537,7 +1540,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (std::size_t i = 0; i < 2 * tracks_.size(); ++i) track_gain_[i] = track_target_[i];
     for (std::size_t e = 0; e < tracks_.size(); ++e) {
         track_auto_last_[e] = track_auto_[e];
-        track_open_last_[e] = track_open_[e];
+        track_open_last_[e] = track_open_[e] * track_vca_[e];
     }
     bus_applied_ = bus_target_;
     if (plan_valid_) {
@@ -2264,7 +2267,7 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
         track_ramp_[e] = snap_row_[e] == 0 &&
                          (jumped || static_moved || return_moved || trim_moved ||
                           flags != track_auto_last_[e] || trim != auto_trim_last_[e] ||
-                          track_open_[e] != track_open_last_[e]);
+                          track_open_[e] * track_vca_[e] != track_open_last_[e]);
         const auto t = static_cast<int64_t>(start);
         if ((flags & (1u << kAutoVolume)) != 0) {
             track_level_[e] = auto_gain_of_db(lane_param(plan, pt, e, kAutoVolume, t));
@@ -2419,7 +2422,7 @@ void Session::apply_track_fader(const PlaybackPlan& plan, const PlanTrack& pt, b
     const bool looping = loop_b > loop_a;
     int64_t t = lane_frame(from, lag);
     const bool ramp = track_ramp_[e] != 0;
-    const float open = track_open_[e];
+    const float open = track_open_[e] * track_vca_[e];
     const float inv_block = 1.0f / static_cast<float>(block_frames_);
     const float l0 = track_gain_[2 * e];
     const float r0 = track_gain_[2 * e + 1];
@@ -2538,6 +2541,7 @@ Session::TrackMixView Session::mix_view(const PlaybackPlan& plan,
                            : Track::Automation::Off;
         v.touched = m.touched;
         v.trim = m.trim;
+        v.vca = m.vca;
         return v;
     }
     v.touched = t.touched();
@@ -2551,6 +2555,7 @@ Session::TrackMixView Session::mix_view(const PlaybackPlan& plan,
     v.monitor = t.monitor();
     v.input = t.input();
     v.automation = t.automation();
+    v.vca = t.vca_gain();
     return v;
 }
 
@@ -3019,9 +3024,11 @@ void Session::send_targets(const PlaybackPlan& plan) noexcept SONORA_RT {
         float open = 0.0f;
         float fader = 0.0f;
         float strip_pan = 0.0f;
+        float vca = 1.0f;
         bool stereo = true;
         if (strip < tracks_n) {
             open = track_open_[strip];
+            vca = track_vca_[strip];
             fader = track_level_[strip];
             strip_pan = track_pan_[strip];
             stereo = tracks_[strip]->channels() >= 2;
@@ -3033,7 +3040,7 @@ void Session::send_targets(const PlaybackPlan& plan) noexcept SONORA_RT {
         }
         // Pre-fader is post-insert and pre-pan, and still silenced by its
         // strip's mute, as Pro Tools' default (ADR-0022 §6).
-        const float g = mute ? 0.0f : level * open * (pre ? 1.0f : fader);
+        const float g = mute ? 0.0f : level * open * (pre ? 1.0f : fader * vca);
         float l = 0.0f;
         float r = 0.0f;
         pan_gains(follow ? strip_pan : own_pan, stereo, plan.pan_exponent, l, r);
@@ -3055,7 +3062,7 @@ void Session::send_targets(const PlaybackPlan& plan) noexcept SONORA_RT {
         if (!pre) bits |= static_cast<uint8_t>(flags & (1u << kAutoVolume));
         if (follow) bits |= static_cast<uint8_t>(flags & (1u << kAutoPan));
         SendLane next;
-        next.g = mute ? 0.0f : level * open;
+        next.g = mute ? 0.0f : level * open * (pre ? 1.0f : vca);
         next.fader = (bits & (1u << kAutoVolume)) != 0 ? 0.0f : (pre ? 1.0f : fader);
         next.pan = (bits & (1u << kAutoPan)) != 0 ? 0.0f : (follow ? strip_pan : own_pan);
         next.bits = bits;

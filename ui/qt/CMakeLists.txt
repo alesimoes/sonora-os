@@ -55,6 +55,8 @@ add_library(sonora_ui_qt STATIC
   src/edit_clipboard.h src/edit_clipboard.cpp
   src/edit_markers.cpp
   src/edit_names.cpp
+  src/edit_vcas.cpp
+  src/mix_vcas.cpp
   src/edit_groups.cpp
   src/mix_groups.cpp
   src/edit_clip_gain.cpp
@@ -93,7 +95,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
         qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml
-        qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
+        qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml
 )
 
 # The screenshot scenes register themselves (scenes/screenshot_scene.h): in
@@ -230,14 +232,12 @@ target_compile_definitions(test_ui_names_colours PRIVATE
 add_test(NAME ui_names_colours COMMAND test_ui_names_colours)
 set_tests_properties(ui_names_colours PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
-# Window configurations (ui.workflow.windows): the numbered slots, their file,
-# Store and Recall in the real QML, and an empty slot refused and held.
-add_executable(test_ui_window_layouts tests/test_window_layouts.cpp)
-target_link_libraries(test_ui_window_layouts PRIVATE sonora_ui_qt Qt6::Test)
-target_compile_definitions(test_ui_window_layouts PRIVATE
-  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
-add_test(NAME ui_window_layouts COMMAND test_ui_window_layouts)
-set_tests_properties(ui_window_layouts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# VCA masters and folders (ADR-0048): the controller, the commands, a
+# folder closed into one card, the real QML strips.
+add_executable(test_ui_vcas tests/test_vcas.cpp)
+target_link_libraries(test_ui_vcas PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_vcas COMMAND test_ui_vcas)
+set_tests_properties(ui_vcas PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 # Mix and edit groups (ADR-0041): grouping, the group-aware fader, mute and
 # solo as one compound, a ridden fader moving its group, the commands.
 add_executable(test_ui_groups tests/test_groups.cpp)
@@ -246,6 +246,14 @@ target_compile_definitions(test_ui_groups PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_groups COMMAND test_ui_groups)
 set_tests_properties(ui_groups PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# Window configurations (ui.workflow.windows): the numbered slots, their file,
+# Store and Recall in the real QML, and an empty slot refused and held.
+add_executable(test_ui_window_layouts tests/test_window_layouts.cpp)
+target_link_libraries(test_ui_window_layouts PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_window_layouts PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_window_layouts COMMAND test_ui_window_layouts)
+set_tests_properties(ui_window_layouts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
 # measurement, its figure by hand, and refusals held in the window.

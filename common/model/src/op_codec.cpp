@@ -423,6 +423,24 @@ Value bus_mix_value(const BusMix& m) {
     return v;
 }
 
+Value vca_mix_value(const VcaMix& m) {
+    Value v = Value::object();
+    v.set("vca", id_value(m.vca));
+    v.set("gain_db", Value::number_float(m.gain_db));
+    v.set("mute", Value::boolean(m.mute));
+    return v;
+}
+
+// A VCA or a folder: the same three fields (ADR-0048).
+Value named_set_value(Id id, const std::string& name, const std::vector<Id>& members) {
+    Value v = Value::object();
+    v.set("id", id_value(id));
+    v.set("name", Value::string(name));
+    Value& list = v.set("members", Value::array());
+    for (const Id m : members) list.push(id_value(m));
+    return v;
+}
+
 // Without its lanes, which the window writes by table index.
 Value aux_bus_value(const Bus& b) {
     Value v = Value::object();
@@ -849,6 +867,31 @@ struct Encoder {
     Value operator()(const SetBusMix& o) const {
         Value v = with_kind("SetBusMix");
         v.set("mix", bus_mix_value(o.mix));
+        return v;
+    }
+    Value operator()(const SetVca& o) const {
+        Value v = named_set_value(o.vca, o.name, o.members);
+        v.set("op", Value::string("SetVca"));
+        return v;
+    }
+    Value operator()(const RemoveVca& o) const {
+        Value v = with_kind("RemoveVca");
+        v.set("vca", id_value(o.vca));
+        return v;
+    }
+    Value operator()(const SetVcaMix& o) const {
+        Value v = with_kind("SetVcaMix");
+        v.set("mix", vca_mix_value(o.mix));
+        return v;
+    }
+    Value operator()(const SetFolder& o) const {
+        Value v = named_set_value(o.folder, o.name, o.members);
+        v.set("op", Value::string("SetFolder"));
+        return v;
+    }
+    Value operator()(const RemoveFolder& o) const {
+        Value v = with_kind("RemoveFolder");
+        v.set("folder", id_value(o.folder));
         return v;
     }
     Value operator()(const SetOutput& o) const {
@@ -1440,6 +1483,30 @@ bool read_bus_mix_value(Reader& rd, const Value& v, const std::string& p, BusMix
            rd.flag(v, p, "solo", m.solo);
 }
 
+bool read_vca_mix_value(Reader& rd, const Value& v, const std::string& p, VcaMix& m) {
+    return rd.keys(v, p, {"vca", "gain_db", "mute"}) && rd.id(v, p, "vca", m.vca) &&
+           rd.real(v, p, "gain_db", m.gain_db) && rd.flag(v, p, "mute", m.mute);
+}
+
+bool read_named_set(Reader& rd, const Value& v, const std::string& p, bool with_op, Id& id,
+                    std::string& name, std::vector<Id>& members) {
+    const Value* list = nullptr;
+    const bool keys = with_op ? rd.keys(v, p, {"op", "id", "name", "members"})
+                              : rd.keys(v, p, {"id", "name", "members"});
+    if (!keys || !rd.id(v, p, "id", id) || !rd.text(v, p, "name", name) ||
+        !rd.array(v, p, "members", list)) {
+        return false;
+    }
+    for (const Value& e : list->items()) {
+        std::int64_t n = 0;
+        if (!e.is_integer_lexeme() || !e.to_int64(n) || n < 1 || n > kMaxInteger) {
+            return rd.fail(Reader::at(p, "members"), "must hold track ids");
+        }
+        members.push_back(static_cast<Id>(n));
+    }
+    return true;
+}
+
 bool read_aux_bus_value(Reader& rd, const Value& v, const std::string& p, Bus& b) {
     const Value* sends = nullptr;
     // Its "automation" is table indices, which read_edits resolves.
@@ -1952,6 +2019,29 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = o;
+    } else if (kind == "SetVca") {
+        SetVca o;
+        if (!read_named_set(rd, v, "", true, o.vca, o.name, o.members)) return false;
+        out = std::move(o);
+    } else if (kind == "RemoveVca") {
+        RemoveVca o;
+        if (!rd.keys(v, "", {"op", "vca"}) || !rd.id(v, "", "vca", o.vca)) return false;
+        out = o;
+    } else if (kind == "SetVcaMix") {
+        SetVcaMix o;
+        if (!rd.keys(v, "", {"op", "mix"}) ||
+            !read_vca_mix_value(rd, *v.find("mix"), "mix", o.mix)) {
+            return false;
+        }
+        out = o;
+    } else if (kind == "SetFolder") {
+        SetFolder o;
+        if (!read_named_set(rd, v, "", true, o.folder, o.name, o.members)) return false;
+        out = std::move(o);
+    } else if (kind == "RemoveFolder") {
+        RemoveFolder o;
+        if (!rd.keys(v, "", {"op", "folder"}) || !rd.id(v, "", "folder", o.folder)) return false;
+        out = o;
     } else if (kind == "SetOutput") {
         SetOutput o;
         if (!rd.keys(v, "", {"op", "strip", "output"}) || !rd.id(v, "", "strip", o.strip) ||
@@ -2064,6 +2154,8 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 // 20 (clip groups and loops, ADR-0052; follows 16, 17 to 19 are other work's): a
 //    region carries "clip_group" and "loop", and a region's sources may be
 //    replaced by a sample edit (SetRegionSources).
+// 17 (ADR-0048): the edit state also carries "vcas" and "folders", the mix
+//    "vca_mix"; 18 and 19 are other work's.
 constexpr std::int64_t kWindowFormat = 20;
 
 // Each table entry is written once and referred to by index, so a track or
@@ -2125,6 +2217,10 @@ public:
         ev.set("master_automation", lane_refs(e.master_automation));
         Value& gs = ev.set("groups", Value::array());
         for (const Group& g : e.groups) gs.push(group_value(g));
+        Value& vs = ev.set("vcas", Value::array());
+        for (const Vca& v : e.vcas) vs.push(named_set_value(v.id, v.name, v.members));
+        Value& fs = ev.set("folders", Value::array());
+        for (const Folder& f : e.folders) fs.push(named_set_value(f.id, f.name, f.members));
         edits_.push(std::move(ev));
         return ix;
     }
@@ -2282,6 +2378,8 @@ bool window_value(const History& h, WindowWriter& w, Value& root, std::string& e
     for (const InsertMix& m : cur.mix.inserts) insert_mix.push(insert_mix_value(m));
     Value& bus_mix = root.set("bus_mix", Value::array());
     for (const BusMix& m : cur.mix.buses) bus_mix.push(bus_mix_value(m));
+    Value& vca_mix = root.set("vca_mix", Value::array());
+    for (const VcaMix& m : cur.mix.vcas) vca_mix.push(vca_mix_value(m));
     Value& send_mix = root.set("send_mix", Value::array());
     for (const SendMix& m : cur.mix.sends) send_mix.push(send_mix_value(m));
     Value& sources = root.set("sources", Value::array());
@@ -2570,9 +2668,13 @@ bool read_edits(Reader& rd, const Value& root,
         const Value* ts = nullptr;
         const Value* bs = nullptr;
         const Value* gs = nullptr;
-        if (!rd.keys(e, "edits", {"tracks", "markers", "buses", "master_automation", "groups"}) ||
+        const Value* vs = nullptr;
+        const Value* fs = nullptr;
+        if (!rd.keys(e, "edits", {"tracks", "markers", "buses", "master_automation", "groups",
+                                  "vcas", "folders"}) ||
             !rd.array(e, "edits", "tracks", ts) || !rd.array(e, "edits", "buses", bs) ||
-            !rd.array(e, "edits", "groups", gs) ||
+            !rd.array(e, "edits", "groups", gs) || !rd.array(e, "edits", "vcas", vs) ||
+            !rd.array(e, "edits", "folders", fs) ||
             !read_lane_refs(rd, e, "edits", "master_automation", lanes, es->master_automation)) {
             return false;
         }
@@ -2580,6 +2682,21 @@ bool read_edits(Reader& rd, const Value& root,
             Group grp;
             if (!read_group_value(rd, g, "edits.groups", false, grp)) return false;
             es->groups.push_back(std::move(grp));
+        }
+        for (const Value& x : vs->items()) {
+            Vca vca;
+            if (!read_named_set(rd, x, "edits.vcas", false, vca.id, vca.name, vca.members)) {
+                return false;
+            }
+            es->vcas.push_back(std::move(vca));
+        }
+        for (const Value& x : fs->items()) {
+            Folder folder;
+            if (!read_named_set(rd, x, "edits.folders", false, folder.id, folder.name,
+                                folder.members)) {
+                return false;
+            }
+            es->folders.push_back(std::move(folder));
         }
         for (const Value& b : bs->items()) {
             Bus bus;
@@ -2620,7 +2737,7 @@ bool read_window(Reader& rd, const Value& root,
                                             std::to_string(kWindowFormat));
     }
     if (!rd.keys(root, "", {"window_format", "revision", "next_id", "position", "settings",
-                            "bus", "mix", "insert_mix", "bus_mix", "send_mix", "sources",
+                            "bus", "mix", "insert_mix", "bus_mix", "vca_mix", "send_mix", "sources",
                             "midi_sources", "playlists",
                             "chunks", "leaves", "sequences", "midi_playlists", "lanes",
                             "tracks", "markers", "edits", "steps"})) {
@@ -2660,6 +2777,12 @@ bool read_window(Reader& rd, const Value& root,
         BusMix m;
         if (!read_bus_mix_value(rd, e, "bus_mix", m)) return false;
         cur.mix.buses.push_back(m);
+    }
+    if (!rd.array(root, "", "vca_mix", list)) return false;
+    for (const Value& e : list->items()) {
+        VcaMix m;
+        if (!read_vca_mix_value(rd, e, "vca_mix", m)) return false;
+        cur.mix.vcas.push_back(m);
     }
     if (!rd.array(root, "", "send_mix", list)) return false;
     for (const Value& e : list->items()) {
@@ -2878,7 +3001,8 @@ const char* const kNames[] = {
     "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
     "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "EditAutomation",
     "SetTrackColour", "SetRegionName", "SetRegionColour", "SetGroup", "RemoveGroup",
-    "SetRegionGain", "SetClipGroup", "SetRegionSources", "Compound"};
+    "SetRegionGain", "SetClipGroup", "SetRegionSources", "SetVca", "RemoveVca", "SetVcaMix",
+    "SetFolder", "RemoveFolder", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

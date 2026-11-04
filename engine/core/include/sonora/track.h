@@ -65,6 +65,13 @@ public:
     bool soloed() const { return soloed_.load(std::memory_order_relaxed); }
     void set_soloed(bool v) { soloed_.store(v, std::memory_order_relaxed); }
 
+    // What the VCAs this track is on do to it, linear (ADR-0048): the sum of
+    // their gains in dB, and 0 while any of them is muted. Not the fader, so
+    // the fader and its automation play as written; the audio thread
+    // multiplies the two. 1 when no VCA holds the track.
+    float vca_gain() const { return vca_gain_.load(std::memory_order_relaxed); }
+    void set_vca_gain(float g) { vca_gain_.store(g, std::memory_order_relaxed); }
+
     // Another track's solo does not mute this one; its own mute still does.
     bool solo_safe() const { return solo_safe_.load(std::memory_order_relaxed); }
     void set_solo_safe(bool v) { solo_safe_.store(v, std::memory_order_relaxed); }
@@ -199,6 +206,7 @@ private:
     std::atomic<float> trim_{1.0f};
     std::atomic<bool> soloed_{false};
     std::atomic<bool> solo_safe_{false};
+    std::atomic<float> vca_gain_{1.0f};
     std::atomic<bool> punch_enabled_{true};
     std::atomic<bool> in_punch_take_{true};
     std::atomic<Monitor> monitor_{Monitor::Auto};

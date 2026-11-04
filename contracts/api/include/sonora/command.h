@@ -173,6 +173,13 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // argument the window asks: the name dialog, the colour palette.
         {"track.rename", CommandTarget::Track, "Rename a track", true},
         {"track.colour", CommandTarget::Track, "Colour a track from the palette", true},
+        // VCA masters and folders (ADR-0048, protocol 46). New makes one of the
+        // selected tracks, the argument its name; Delete takes the VCA's name.
+        // Dissolve acts on the folder of the track given or the selected one.
+        {"vca.new", CommandTarget::None, "Make a VCA master of the selected tracks", true},
+        {"vca.delete", CommandTarget::None, "Delete a VCA master by name", true},
+        {"folder.new", CommandTarget::None, "Put the selected tracks in a folder", true},
+        {"folder.dissolve", CommandTarget::Track, "Dissolve a track's folder"},
         // Mix and edit groups (ADR-0041, protocol 48). New groups the
         // selected tracks, with the optional argument as its name; Dissolve
         // and Suspend act on the group of the track given or the selected

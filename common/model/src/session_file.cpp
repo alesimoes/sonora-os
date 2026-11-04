@@ -631,10 +631,23 @@ bool v23_to_v24(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v19 -> v20 (ADR-0048): the session may hold "vcas" and "folders". A version
+// 19 file that holds either key is refused, as a version 19 reader would
+// refuse it; one without them opens unchanged.
+bool v19_to_v20(Value& root, std::vector<Repair>&, std::string& error) {
+    for (const char* key : {"vcas", "folders"}) {
+        if (root.find(key) != nullptr) {
+            error = std::string("the file has \"") + key + "\", which version 19 does not define";
+            return false;
+        }
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
      v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
-     v16_to_v17, v17_to_v18, v18_to_v19, carried, carried, carried, carried, v23_to_v24}};
+     v16_to_v17, v17_to_v18, v18_to_v19, v19_to_v20, carried, carried, carried, v23_to_v24}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -1773,6 +1786,59 @@ bool read_groups(Reader& rd, const Value& root, EditState& edit) {
     return true;
 }
 
+// Absent: none. Which tracks they name is check_invariants' to say.
+bool read_member_ids(Reader& rd, const Value& v, const std::string& p, std::vector<Id>& out) {
+    const Value* members = nullptr;
+    if (!rd.array(v, p, "members", members)) return false;
+    for (std::size_t k = 0; k < members->items().size(); ++k) {
+        const Value& m = members->items()[k];
+        std::int64_t n = 0;
+        if (!m.is_integer_lexeme() || !m.to_int64(n) || n < 1 || n > kMaxInteger) {
+            return rd.fail(m, p + ".members[" + std::to_string(k) + "]", "must be a track id");
+        }
+        out.push_back(static_cast<Id>(n));
+    }
+    return true;
+}
+
+bool read_vcas_and_folders(Reader& rd, const Value& root, EditState& edit, MixState& mix) {
+    if (const Value* list = root.find("vcas")) {
+        if (!list->is_array()) return rd.fail(*list, "vcas", "must be an array");
+        for (std::size_t i = 0; i < list->items().size(); ++i) {
+            const Value& v = list->items()[i];
+            const std::string p = index_path("vcas", i);
+            Vca vca;
+            VcaMix m;
+            if (!rd.keys(v, p, {"id", "name", "members", "gain_db", "mute"}) ||
+                !rd.id(v, p, "id", vca.id) || !rd.claim(vca.id, v, p) ||
+                !rd.text(v, p, "name", vca.name) || !read_member_ids(rd, v, p, vca.members) ||
+                !rd.real(v, p, "gain_db", m.gain_db) || !rd.flag(v, p, "mute", m.mute)) {
+                return false;
+            }
+            std::string where;
+            if (!rd.checked(detail::vca_mix_problem(m, where), v, p, where)) return false;
+            m.vca = vca.id;
+            mix.vcas.push_back(m);
+            edit.vcas.push_back(std::move(vca));
+        }
+    }
+    if (const Value* list = root.find("folders")) {
+        if (!list->is_array()) return rd.fail(*list, "folders", "must be an array");
+        for (std::size_t i = 0; i < list->items().size(); ++i) {
+            const Value& v = list->items()[i];
+            const std::string p = index_path("folders", i);
+            Folder f;
+            if (!rd.keys(v, p, {"id", "name", "members"}) || !rd.id(v, p, "id", f.id) ||
+                !rd.claim(f.id, v, p) || !rd.text(v, p, "name", f.name) ||
+                !read_member_ids(rd, v, p, f.members)) {
+                return false;
+            }
+            edit.folders.push_back(std::move(f));
+        }
+    }
+    return true;
+}
+
 bool read_buses(Reader& rd, const Value& root, EditState& edit, MixState& mix) {
     const Value* list = nullptr;
     if (!rd.array(root, "", "buses", list)) return false;
@@ -2163,6 +2229,30 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
         }
     }
 
+    if (!s.edit->vcas.empty()) {
+        Value& vcas = root.set("vcas", Value::array());
+        for (const Vca& v : s.edit->vcas) {
+            const VcaMix* m = s.mix.find_vca(v.id);
+            Value& vv = vcas.push(Value::object());
+            vv.set("id", id_value(v.id));
+            vv.set("name", Value::string(v.name));
+            Value& members = vv.set("members", Value::array());
+            for (const Id t : v.members) members.push(id_value(t));
+            vv.set("gain_db", Value::number_float(m != nullptr ? m->gain_db : 0.0f));
+            vv.set("mute", Value::boolean(m != nullptr && m->mute));
+        }
+    }
+    if (!s.edit->folders.empty()) {
+        Value& folders = root.set("folders", Value::array());
+        for (const Folder& f : s.edit->folders) {
+            Value& fv = folders.push(Value::object());
+            fv.set("id", id_value(f.id));
+            fv.set("name", Value::string(f.name));
+            Value& members = fv.set("members", Value::array());
+            for (const Id t : f.members) members.push(id_value(t));
+        }
+    }
+
     Value& markers = root.set("markers", Value::array());
     for (const Marker& m : s.edit->markers->markers) {
         Value& mv = markers.push(Value::object());
@@ -2234,7 +2324,7 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error,
                   "sample_rate", "audio_format", "timecode", "tempo", "transport",
                   "monitor_bus", "sources", "midi_sources", "tracks", "buses", "markers",
                   "session_id", "left_takes"},
-                 {"groups"})) {
+                 {"groups", "vcas", "folders"})) {
         return false;
     }
     Loaded loaded;
@@ -2256,6 +2346,7 @@ bool deserialize(std::string_view bytes, Loaded& out, LoadError& error,
     if (!read_tracks(rd, root, *pool, files, *edit, mix)) return false;
     if (!read_buses(rd, root, *edit, mix)) return false;
     if (!read_groups(rd, root, *edit)) return false;
+    if (!read_vcas_and_folders(rd, root, *edit, mix)) return false;
     if (!read_master_automation(rd, root, *edit)) return false;
     auto markers = std::make_shared<MarkerList>();
     if (!read_markers(rd, root, *markers)) return false;

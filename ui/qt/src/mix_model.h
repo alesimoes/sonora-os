@@ -76,9 +76,12 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
+#include <QVariantList>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -122,6 +125,22 @@ class MixModel : public QObject {
     Q_PROPERTY(bool showInsertsAE READ showInsertsAE WRITE setShowInsertsAE NOTIFY viewsChanged)
     Q_PROPERTY(bool showInsertsFJ READ showInsertsFJ WRITE setShowInsertsFJ NOTIFY viewsChanged)
     Q_PROPERTY(bool showSends READ showSends WRITE setShowSends NOTIFY viewsChanged)
+    // VCA masters and folders (ADR-0048). vcas: one map each, {name, gainDb,
+    // gainText, mute, count}. trackVcas: per track, the names of the VCAs it
+    // is on, joined, "" for none. trackFolders: per track, the index in
+    // folders or -1. folders: {name, count, open, mute, solo}. A folder
+    // closed in the window (interface state, back to open when a session
+    // opens) shows as one card at its first track's place and its other
+    // tracks have no slot: trackSlots gives each track's place among the
+    // slotCount, -1 for a hidden one; folderCards: {slot, folder, name,
+    // count, mute, solo} for each closed folder.
+    Q_PROPERTY(QVariantList vcas READ vcas NOTIFY structureChanged)
+    Q_PROPERTY(QStringList trackVcas READ trackVcas NOTIFY structureChanged)
+    Q_PROPERTY(QList<int> trackFolders READ trackFolders NOTIFY structureChanged)
+    Q_PROPERTY(QVariantList folders READ folders NOTIFY structureChanged)
+    Q_PROPERTY(QList<int> trackSlots READ trackSlots NOTIFY structureChanged)
+    Q_PROPERTY(int slotCount READ slotCount NOTIFY structureChanged)
+    Q_PROPERTY(QVariantList folderCards READ folderCards NOTIFY structureChanged)
 
 public:
     static constexpr int kNoRide = -2;
@@ -159,6 +178,32 @@ public:
     void setShowInsertsAE(bool on) { setView(show_inserts_ae_, on); }
     void setShowInsertsFJ(bool on) { setView(show_inserts_fj_, on); }
     void setShowSends(bool on) { setView(show_sends_, on); }
+    QVariantList vcas() const;
+    QStringList trackVcas() const;
+    QList<int> trackFolders() const;
+    QVariantList folders() const;
+    QList<int> trackSlots() const;
+    int slotCount() const;
+    QVariantList folderCards() const;
+
+    // --- VCA masters (ADR-0048) ---
+    // Both take the selected tracks. A refusal is a held notice.
+    Q_INVOKABLE bool newVca(const QString& name);
+    Q_INVOKABLE bool assignVca(int vca);
+    Q_INVOKABLE bool removeVca(int vca);
+    // One step of the VCA fader's drag; each is a SetVcaMix, which the
+    // engine applies as it goes (a VCA has no live parameter of its own).
+    Q_INVOKABLE void vcaDrag(int vca, qreal dy, qreal travel, bool fine);
+    Q_INVOKABLE void resetVca(int vca);
+    Q_INVOKABLE bool setVcaGainText(int vca, const QString& text);
+    Q_INVOKABLE bool toggleVcaMute(int vca);
+    // --- folders ---
+    Q_INVOKABLE bool newFolder(const QString& name);
+    Q_INVOKABLE bool dissolveFolder(int folder);
+    Q_INVOKABLE void toggleFolderOpen(int folder);
+    Q_INVOKABLE bool toggleFolderMute(int folder);
+    Q_INVOKABLE bool toggleFolderSolo(int folder);
+
     // ParameterChanges sent by rides, for the tests.
     uint64_t liveSteps() const { return live_steps_; }
 
@@ -212,6 +257,7 @@ signals:
     void groupsChanged();
     void viewsChanged();
     void trimsChanged();
+    void structureChanged();
 
 private:
     void setView(bool& field, bool on) {
@@ -220,6 +266,11 @@ private:
         emit viewsChanged();
     }
     void resetViews();
+    // The first member of folder `folder` in display order, -1 for none.
+    int folderFirst(int folder) const;
+    bool folderOpen(int folder) const;
+    // A refusal the operator must see: held, not the status line.
+    bool vcaResult(bool ok, const std::string& why);
     // The other members of `track`'s Volume group, set up as a ride begins.
     void beginPeers(int track);
     void movePeers(float db);
@@ -293,6 +344,8 @@ private:
     bool show_inserts_ae_ = true;
     bool show_inserts_fj_ = false;
     bool show_sends_ = true;
+    // Folders shown closed; the interface's, cleared when a session opens.
+    std::set<model::Id> closed_folders_;
 };
 
 }  // namespace sonora::ui

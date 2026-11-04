@@ -202,6 +202,11 @@ std::vector<Operation> one_of_each() {
             SetRegionGain{3, 11, -3.5f, {{0, -6.0f}, {48000, 0.0f}}},
             SetClipGroup{3, 11, {{11, 0}, {12, 2}}},
             SetRegionSources{3, 11, {{7, 0}, {7, 1}}, 4800, {{0, -6.0f}}},
+            SetVca{70, "Drums Ã©", {2, 3}},
+            RemoveVca{70},
+            SetVcaMix{VcaMix{70, -4.5f, true}},
+            SetFolder{71, "Kit", {2}},
+            RemoveFolder{71},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 

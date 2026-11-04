@@ -172,6 +172,10 @@ namespace sonora::api {
 //   transport.toggle_quick_punch (engine) and track.toggle_track_punch
 //   (interface). A version-42 peer refuses the operations, the keys and the
 //   window, and answers the commands NotImplemented.
+// 51 (ADR-0048, VCA masters and folders): new operation kinds SetVca, RemoveVca,
+//   SetVcaMix, SetFolder and RemoveFolder, the undo window carries "vcas",
+//   "folders" and "vca_mix" (window format 17, session format 20), and the
+//   commands vca.new, vca.delete, folder.new and folder.dissolve.
 // 52 (ADR-0031 §6 and the comping interface; follows 48, 49 to 51 are other
 //   work's): the commands session.consolidate and session.consolidate_cancel,
 //   and EventKind::Consolidate, which a version-48 decoder refuses as an

@@ -298,14 +298,24 @@ std::string as_v19(const std::string& v18) {
     return s;
 }
 
+// What v19 -> v20 makes of a file with no VCA or folder (ADR-0048), and the
+// carried steps up to 24: the version alone. The as_v19 above already writes
+// the current number, so only a real version 19 file is changed here.
+std::string as_v20(const std::string& v19) {
+    if (v19.find("\"sonora_session\": 19,") == std::string::npos) return v19;
+    return edit(v19, "\"sonora_session\": 19,", "\"sonora_session\": 24,");
+}
+
 // A version 4 file with no MIDI region, as this build saves it.
 std::string as_current(const std::string& v4) {
-    return as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(as_v6(as_v5(v4)))))))))))))));
+    return as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(as_v6(as_v5(v4))))))))))))))));
 }
 
 // The current version's frozen fixture: what this build writes. Its
 // sequence files are in fixtures/MIDI Sequences/.
 constexpr const char* kCurrent = "v24-current.sonora";
+// The version 19 fixture: the same session before VCAs and folders.
+constexpr const char* kNoVcas = "v19-current.sonora";
 // The version 18 fixture: the same session before groups, clip gain lines and
 // the record modes.
 constexpr const char* kNoGroups = "v18-strip-lanes.sonora";
@@ -559,7 +569,7 @@ int test_v5_migrates() {
     CHECK(mentions(l.repairs[0].now, "MIDI Sequences/"));
     CHECK(mentions(l.repairs[0].why, "version 5 file is kept as a backup"));
     Loaded current;
-    const std::string v10 = as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(read_fixture(kNoSessionId))))))))))))));
+    const std::string v10 = as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(read_fixture(kNoSessionId)))))))))))))));
     CHECK(load(v10, current, e));
     CHECK(same_document(l.snapshot, current.snapshot));
     std::string out;
@@ -1260,7 +1270,7 @@ int test_v6_migrates_and_session_id() {
     CHECK(l.snapshot.settings.session_id.empty() && l.snapshot.settings.left_takes.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(v6))))))))))))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(as_v7(v6)))))))))))))));
     const std::string last = "\n  ]\n}\n";
     CHECK(refused(v6.substr(0, v6.size() - last.size()) + "\n  ],\n  \"session_id\": \"\"\n}\n",
                   "migrating from format version 6: the file has \"session_id\"", nullptr));
@@ -1311,7 +1321,7 @@ int test_v7_migrates_and_count_off() {
     CHECK(l.snapshot.settings.transport.count_off_bars == 2);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(v7)))))))))))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(as_v8(v7))))))))))))));
     CHECK(out == read_fixture(kCurrent));
     CHECK(refused(edit(v7, "\"punch_crossfade\": 240", "\"punch_crossfade\": 240,\n    \"count_off_bars\": 2"),
                   "migrating from format version 7: the file has \"transport.count_off_bars\"",
@@ -1346,7 +1356,7 @@ int test_v8_migrates_and_loop_playback() {
     CHECK(!l.snapshot.settings.transport.loop_playback);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(v8))))))))))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(as_v9(v8)))))))))))));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string ranged = edit(v8, "\"loop\": [0, 0]", "\"loop\": [480000, 960000]");
@@ -1394,7 +1404,7 @@ int test_v9_migrates_and_loop_record() {
     CHECK(!l.snapshot.settings.transport.loop_record);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(v9)))))))))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(as_v10(v9))))))))))));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string on9 = edit(edit(v9, "\"loop\": [0, 0]", "\"loop\": [480000, 960000]"),
@@ -1442,7 +1452,7 @@ int test_v10_migrates_and_sends() {
     for (const auto& t : l.snapshot.edit->tracks) CHECK(t->sends.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(v10))))))))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(as_v11(v10)))))))))));
     CHECK(out == read_fixture(kCurrent));
     CHECK(refused(edit(v10, "\"markers\": [", "\"buses\": [],\n  \"markers\": ["),
                   "migrating from format version 10: the file has \"buses\"", nullptr));
@@ -1500,7 +1510,7 @@ int test_v11_migrates_and_outputs() {
     for (const auto& t : l.snapshot.edit->tracks) CHECK(t->output == kMasterOutput);
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(v11)))))))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(as_v12(v11))))))))));
     CHECK(out == read_fixture(kCurrent));
     // The first track's: the one whose inserts are not empty.
     CHECK(refused(edit(v11, "      ],\n      \"sends\": [],\n      \"playlists\": [",
@@ -1568,7 +1578,7 @@ int test_v12_migrates_and_automation() {
     }
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(v12))))))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(as_v13(v12)))))))));
     CHECK(out == read_fixture(kCurrent));
     CHECK(refused(edit(v12, "      ],\n      \"sends\": [],\n      \"output\": 0,",
                        "      ],\n      \"sends\": [],\n      \"output\": 0,\n      \"automation\": [],"),
@@ -1631,8 +1641,8 @@ int test_v13_migrates_and_plugin_lanes() {
     CHECK(l.file_version == 13 && l.repairs.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(v13)))))));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(read_fixture(kNoColours)))))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(as_v14(v13))))))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(read_fixture(kNoColours))))))));
 
     // The first track's limiter (insert 42, an LV2 plugin).
     const std::string first = "      ],\n      \"sends\": [],\n      \"output\": 0,\n      ";
@@ -1695,7 +1705,7 @@ int test_v14_migrates_and_colours() {
     }
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(as_v15(v14))))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(as_v15(v14)))))));
     CHECK(out == read_fixture(kCurrent));
     CHECK(refused(edit(v14, "\"name\": \"Lead Vox\",", "\"name\": \"Lead Vox\",\n      \"colour\": 3,"),
                   "migrating from format version 14: tracks[0] has \"colour\"", nullptr));
@@ -1735,7 +1745,7 @@ int test_v15_migrates_and_trim() {
     CHECK(same_document(l.snapshot, current.snapshot));
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(as_v16(v15)))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(as_v16(v15))))));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string first = "      ],\n      \"sends\": [],\n      \"output\": 0,\n      ";
@@ -1804,7 +1814,7 @@ int test_v16_migrates_and_plugin_files() {
     CHECK(l.file_version == 16 && l.repairs.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(as_v17(v16))));
+    CHECK(out == as_v20(as_v19(as_v18(as_v17(v16)))));
     CHECK(out == read_fixture(kCurrent));
 
     const std::string sha(64, 'b');
@@ -1884,10 +1894,32 @@ int test_v18_migrates_and_groups() {
     CHECK(l.snapshot.edit->groups.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(v18));
+    CHECK(out == as_v20(as_v19(v18)));
     CHECK(out == read_fixture(kCurrent));
     CHECK(!load(edit(v18, "\"buses\": [],", "\"buses\": [],\n  \"groups\": [],"), l, e));
     CHECK(mentions(e.text(), "groups"));
+    return 0;
+}
+
+// Version 20 (ADR-0048): VCA masters and folders. A version 19 file opens with
+// none and saves as the current fixture; one that already holds "vcas" or
+// "folders" is refused, as a version 19 reader would.
+int test_v19_migrates_and_vcas() {
+    const std::string v19 = read_fixture(kNoVcas);
+    CHECK(!v19.empty());
+    Loaded l;
+    LoadError e;
+    CHECK(load(v19, l, e));
+    CHECK(l.file_version == 19 && l.repairs.empty());
+    CHECK(l.snapshot.edit->vcas.empty() && l.snapshot.edit->folders.empty());
+    std::string out;
+    CHECK(save(l, out));
+    CHECK(out == as_v20(v19));
+    CHECK(out == read_fixture(kCurrent));
+    CHECK(!load(edit(v19, "\"buses\": [],", "\"buses\": [],\n  \"vcas\": [],"), l, e));
+    CHECK(mentions(e.text(), "vcas"));
+    CHECK(!load(edit(v19, "\"buses\": [],", "\"buses\": [],\n  \"folders\": [],"), l, e));
+    CHECK(mentions(e.text(), "folders"));
     return 0;
 }
 
@@ -1901,7 +1933,7 @@ int test_v17_migrates_and_strip_lanes() {
     CHECK(l.snapshot.edit->master_automation.empty());
     std::string out;
     CHECK(save(l, out));
-    CHECK(out == as_v19(as_v18(v17)));
+    CHECK(out == as_v20(as_v19(as_v18(v17))));
     CHECK(out == read_fixture(kCurrent));
 
     // An aux bus gains "automation": [] after its sends.
@@ -2086,6 +2118,7 @@ int main() {
     t(test_v17_migrates_and_strip_lanes);
     t(test_v18_migrates_and_groups);
     t(test_v18_migrates_and_session_model);
+    t(test_v19_migrates_and_vcas);
     t(test_v1_migrates);
     t(test_v2_migrates);
     t(test_v3_migrates);

@@ -1099,6 +1099,15 @@ lower that does is refused by the migration, as a reader of that version
 would. Versions 20 to 23 are other work's (reserved when this landed); each
 adds its own step to the migration table.
 
+**v19→v20 (VCA masters and folders; ADR-0048):** the session may hold
+`"vcas"`, written only when there is one: objects with `id`, `name`,
+`members` (track ids, none allowed), `gain_db` and `mute`; and `"folders"`,
+likewise written only when there is one: `id`, `name`, `members`. A track is
+in at most one folder and on any number of VCAs; ids share the one id space
+and a member must be a track. Absent means none. A version 19 file cannot
+carry either key, so one that does is refused. The frozen v19 fixture loads
+through the migration and saves as `v20-current.sonora`, byte for byte.
+
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and
 `pan_law_db`; each track gains `"output": <id of Main>` and empty `sends`

@@ -120,6 +120,19 @@ bool PlaybackController::atoms_follow(const model::Snapshot& snapshot) const {
            (!atoms_order_ || *atoms_order_ == model::track_order(*snapshot.edit));
 }
 
+static float vca_factor(const model::Snapshot& snapshot, model::Id track) {
+    float db = 0.0f;
+    for (const model::Vca& v : snapshot.edit->vcas) {
+        if (std::find(v.members.begin(), v.members.end(), track) == v.members.end()) continue;
+        const model::VcaMix* m = snapshot.mix.find_vca(v.id);
+        if (m == nullptr) continue;
+        // A muted VCA mutes what it holds; its dB add otherwise (ADR-0048 §3).
+        if (m->mute) return 0.0f;
+        db += m->gain_db;
+    }
+    return gain_of_db(db);
+}
+
 void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
     session_.set_bus_gain(gain_of_db(snapshot.mix.bus.gain_db));
     // The atomics hold another track order: the plan that moves the tracks
@@ -137,6 +150,7 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
         const model::TrackMix* m = snapshot.mix.find(tracks[i]->id);
         if (!m) continue;
         Track& t = *session_.tracks()[i];
+        t.set_vca_gain(vca_factor(snapshot, tracks[i]->id));
         t.set_mix_gain(gain_of_db(m->gain_db));
         t.set_mix_pan(pan_of(m->pan));
         t.set_muted(m->mute);
@@ -424,6 +438,7 @@ void PlaybackController::fill_track_mix(PlaybackPlan& plan, const model::Snapsho
         // plan plays; only its solo and arm must go, or they would silence
         // the other tracks or record a track that is not there.
         m.gain = t.gain();
+        m.vca = t.vca_gain();
         m.pan = t.pan();
         m.mute = t.muted();
         m.solo = false;
@@ -441,6 +456,7 @@ void PlaybackController::fill_track_mix(PlaybackPlan& plan, const model::Snapsho
         const model::TrackMix* found = snapshot.mix.find(doc.id);
         const model::TrackMix& x = found != nullptr ? *found : none;
         m.gain = gain_of_db(x.gain_db);
+        m.vca = vca_factor(snapshot, doc.id);
         m.pan = pan_of(x.pan);
         m.mute = x.mute;
         m.solo = x.solo;
@@ -513,6 +529,7 @@ void PlaybackController::adopt_track_mix(const PlaybackPlan& plan) {
         const PlanTrackMix& m = plan.track_mix[e];
         Track& t = *engine[e];
         t.set_mix_gain(m.gain);
+        t.set_vca_gain(m.vca);
         t.set_mix_pan(m.pan);
         t.set_muted(m.mute);
         t.set_soloed(m.solo);

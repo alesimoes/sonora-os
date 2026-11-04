@@ -439,6 +439,7 @@ void version_check() {
     // 2026-11-03; follows 41).
     // 48: the session-model train; 52: session.consolidate, EventKind::Consolidate
     // (ADR-0031 §6) and the comping commands.
+    // 51: ADR-0048 SetVca ... and the vca.* and folder.* commands.
     // 57: ADR-0052 clip groups, loops and sample edits (window format 20,
     // session format 24; follows 48, the session-model train: groups, clip
     // gain, record modes; window

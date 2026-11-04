@@ -760,6 +760,7 @@ private:
         Track::Automation automation = Track::Automation::Read;
         uint8_t touched = 0;   // Track::touched()
         float trim = 1.0f;     // Track::trim()
+        float vca = 1.0f;      // Track::vca_gain()
     };
     TrackMixView mix_view(const PlaybackPlan& plan, std::size_t e) const noexcept SONORA_RT;
     // What a released parameter p with no lane returns to: the static from
@@ -1036,6 +1037,9 @@ private:
     // Per engine track this block: 0 when muted or solo-muted, else 1; the
     // fader's linear gain; the pan. What its sends' coefficients read.
     std::unique_ptr<float[]> track_open_;
+    // The VCAs' factor on the fader this block (ADR-0048), and open * vca
+    // last callback: a change of either crossfades an automated fader.
+    std::unique_ptr<float[]> track_vca_;
     std::unique_ptr<float[]> track_level_;
     std::unique_ptr<float[]> track_pan_;
     // Automation (ADR-0027 §2), per engine track. Bit kAutoVolume and bit
