@@ -89,6 +89,18 @@ Rectangle {
             active: mix.mixer !== null && mix.mixer.showInsertsFJ
             onClicked: mix.mixer.showInsertsFJ = !mix.mixer.showInsertsFJ
         }
+        Item { width: Theme.space2; height: 1 }
+        // Of the selected tracks (ADR-0042); a refusal is held.
+        SButton {
+            objectName: "newVca"
+            text: "+ VCA"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.mixer.newVca("")
+        }
+        SButton {
+            objectName: "newFolder"
+            text: "Folder"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.mixer.newFolder("")
+        }
     }
     Row {
         id: sendControls
@@ -119,19 +131,6 @@ Rectangle {
             objectName: "newBus"
             text: "+ Bus"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
             onClicked: mix.sends.newBus()
-        }
-        // Of the selected tracks (ADR-0042); a refusal is held.
-        SButton {
-            objectName: "newVca"
-            text: "+ VCA"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
-            visible: mix.mixer !== null
-            onClicked: mix.mixer.newVca("")
-        }
-        SButton {
-            objectName: "newFolder"
-            text: "Folder"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
-            visible: mix.mixer !== null
-            onClicked: mix.mixer.newFolder("")
         }
     }
     Text {

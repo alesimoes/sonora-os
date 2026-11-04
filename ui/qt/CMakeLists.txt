@@ -203,6 +203,13 @@ target_compile_definitions(test_ui_names_colours PRIVATE
 add_test(NAME ui_names_colours COMMAND test_ui_names_colours)
 set_tests_properties(ui_names_colours PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# VCA masters and folders (ADR-0042): the controller, the commands, a
+# folder closed into one card, the real QML strips.
+add_executable(test_ui_vcas tests/test_vcas.cpp)
+target_link_libraries(test_ui_vcas PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_vcas COMMAND test_ui_vcas)
+set_tests_properties(ui_vcas PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
 # measurement, its figure by hand, and refusals held in the window.
 add_executable(test_ui_latency tests/test_latency.cpp)
