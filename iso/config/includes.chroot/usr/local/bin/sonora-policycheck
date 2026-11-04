@@ -1,0 +1,174 @@
+#!/bin/sh
+# shellcheck disable=SC2016,SC2034 # inner shells expand; FAILED is the smoketest's
+# Policy check of the RUNNING system. Sourced by sonora-smoketest under
+# sonora.policycheck. Prints one "POLICY CHECK PASS|FAIL <item>" line per
+# assertion, to the console.
+#
+# The static tests (tools/test-ro-root.sh, test-image-config.sh) read config
+# files and can only claim what the image will do. Each item here reads the
+# live value and compares it with the file in the image that was meant to set
+# it, so a drop-in that is shadowed, misnamed or never read fails here.
+# tools/test-policycheck-qemu.sh requires every item below to appear.
+POLICY_FAILED=0
+SHARE=/usr/share/sonora
+
+pc() {
+  item="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo "POLICY CHECK PASS $item"
+  else
+    echo "POLICY CHECK FAIL $item"
+    POLICY_FAILED=1
+  fi
+}
+
+# --- / is overlay over a read-only squashfs ---
+root_is_overlay_on_squashfs() {
+  [ "$(findmnt -no FSTYPE /)" = overlay ] || return 1
+  lower="$(findmnt -no OPTIONS / | tr ',' '\n' | sed -n 's/^lowerdir=//p' | cut -d: -f1)"
+  [ -n "$lower" ] || return 1
+  [ "$(findmnt -no FSTYPE -T "$lower")" = squashfs ] || return 1
+  findmnt -no OPTIONS -T "$lower" | tr ',' '\n' | grep -qx ro
+}
+pc "root is overlay over read-only squashfs" root_is_overlay_on_squashfs
+
+# --- /home persistence ---
+# QEMU has no labelled "persistence" volume, so /home is on the overlay there;
+# on a stick it must be the volume. Either way the boot line must ask for it
+# and the Sessions directory must be writable by the engine's user.
+persistence_requested() { tr ' ' '\n' </proc/cmdline | grep -qx persistence; }
+pc "persistence requested on the kernel command line" persistence_requested
+home_matches_persistence() {
+  if [ -d /run/live/persistence ] && [ -n "$(ls -A /run/live/persistence 2>/dev/null)" ]; then
+    [ "$(findmnt -no FSTYPE -T /home)" != overlay ] || findmnt -no SOURCE,OPTIONS /home | grep -qi persist
+  else
+    echo "POLICY CHECK info no persistence volume attached; /home is on $(findmnt -no FSTYPE -T /home)" >&2
+    [ "$(findmnt -no FSTYPE -T /home)" = overlay ]
+  fi
+}
+pc "/home is the persistence volume, or the overlay when none is attached" home_matches_persistence
+pc "operator can write the Sessions directory" su sonora -s /bin/sh -c 'f=/home/sonora/Sessions/.policycheck; : >"$f" && rm "$f"'
+
+# --- tmp.mount: active, nosuid,nodev, 512M ---
+tmp_capped() {
+  systemctl is-active --quiet tmp.mount || return 1
+  opts="$(findmnt -no OPTIONS /tmp)"
+  for o in nosuid nodev; do
+    printf '%s\n' "$opts" | tr ',' '\n' | grep -qx "$o" || return 1
+  done
+  # The kernel reports size=512M as size=524288k.
+  printf '%s\n' "$opts" | tr ',' '\n' | grep -qx 'size=524288k'
+}
+pc "tmp.mount active, nosuid,nodev, size 512M" tmp_capped
+
+# --- journald: volatile, 64M ---
+journald_volatile_capped() {
+  [ -d /run/log/journal ] || return 1
+  [ ! -d /var/log/journal ] || return 1
+  # journald states the limit it applied when it opens the runtime journal.
+  journalctl -b -u systemd-journald --no-pager 2>/dev/null |
+    grep -Eq 'Runtime Journal .*Maximum allowed usage is 64\.0M'
+}
+pc "journald volatile, runtime cap 64M" journald_volatile_capped
+
+# --- kernel ---
+pc "running kernel is the RT one (uname -r)" sh -c 'uname -r | grep -q rt'
+pc "running kernel is PREEMPT_RT (/sys/kernel/realtime)" sh -c '[ "$(cat /sys/kernel/realtime 2>/dev/null)" = 1 ]'
+pc "threadirqs on the kernel command line" sh -c 'tr " " "\n" </proc/cmdline | grep -qx threadirqs'
+pc "IRQ handlers run as threads (irq/ kernel threads exist)" sh -c 'ps -eo comm | grep -q "^irq/"'
+
+# --- PipeWire and WirePlumber, and the pinned clock ---
+PWRUN="XDG_RUNTIME_DIR=/run/user/1000"
+pc "pipewire process up" pgrep -x pipewire
+pc "wireplumber process up" pgrep -x wireplumber
+pc "pipewire answers the operator's session" su - sonora -c "$PWRUN pw-cli info 0"
+conf_value() { grep -Ev '^[[:space:]]*#' "$SHARE/pipewire-sonora.conf" | sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p" | head -n 1; }
+clock_pinned() {
+  want_q="$(conf_value default.clock.quantum)"
+  want_r="$(conf_value default.clock.rate)"
+  [ -n "$want_q" ] && [ -n "$want_r" ] || return 1
+  md="$(su - sonora -c "$PWRUN pw-metadata -n settings 0" 2>/dev/null)"
+  # Quantum and rate in the live settings, not just in the file.
+  printf '%s\n' "$md" | grep -q "key:'clock.quantum' value:'$want_q'" &&
+    printf '%s\n' "$md" | grep -q "key:'clock.rate' value:'$want_r'" &&
+    printf '%s\n' "$md" | grep -q "key:'clock.min-quantum' value:'$want_q'" &&
+    printf '%s\n' "$md" | grep -q "key:'clock.max-quantum' value:'$want_q'"
+}
+pc "pipewire clock.quantum/rate equal audio-stack/pipewire-sonora.conf" clock_pinned
+
+# --- RT limits from audio-stack/limits-audio.conf, as the operator gets them ---
+limit_of() { grep -Ev '^[[:space:]]*#' "$SHARE/limits-audio.conf" | awk -v k="$1" '$1 == "@audio" && $3 == k { print $4 }' | head -n 1; }
+limits_applied() {
+  want_rt="$(limit_of rtprio)"
+  want_mem="$(limit_of memlock)"
+  want_nice="$(limit_of nice)"
+  [ -n "$want_rt" ] && [ -n "$want_mem" ] && [ -n "$want_nice" ] || return 1
+  got="$(su - sonora -c 'echo "$(ulimit -r) $(ulimit -l) $(ulimit -e)"' 2>/dev/null)"
+  # ulimit -e is 20 - nice.
+  [ "$got" = "$want_rt $want_mem $((20 - want_nice))" ]
+}
+pc "RT limits (rtprio, memlock, nice) equal audio-stack/limits-audio.conf" limits_applied
+pc "installed limits file is the audio-stack one" cmp -s "$SHARE/limits-audio.conf" /etc/security/limits.d/95-audio.conf
+
+# --- sysctls from audio-stack/sysctl-sonora.conf ---
+sysctls_applied() {
+  n=0
+  for line in $(grep -Ev '^[[:space:]]*(#|$)' "$SHARE/sysctl-sonora.conf" | tr -d ' '); do
+    k="${line%%=*}"
+    v="${line#*=}"
+    n=$((n + 1))
+    if [ "$(cat "/proc/sys/$(printf '%s' "$k" | tr . /)" 2>/dev/null)" != "$v" ]; then
+      echo "POLICY CHECK info $k is not $v" >&2
+      return 1
+    fi
+  done
+  [ "$n" -gt 0 ]
+}
+pc "sysctls equal audio-stack/sysctl-sonora.conf" sysctls_applied
+
+# --- the kiosk path: no VT login prompts ---
+no_vt_gettys() {
+  [ -z "$(systemctl list-units --state=active,activating --plain --no-legend 'getty@*' 'autovt@*' 'serial-getty@*' 2>/dev/null)" ] &&
+    ! systemctl is-enabled --quiet getty@tty1.service 2>/dev/null &&
+    [ ! -e /etc/systemd/system/display-manager.service ]
+}
+pc "no getty on any VT or serial line, no display manager" no_vt_gettys
+
+# --- enabled units against an allowlist ---
+# An unlisted unit is a finding: either a package pulled in a service the
+# kiosk should not run, or the list is stale and gets a deliberate edit.
+unit_allowed() {
+  case "$1" in
+    sonora-session.service|sonora-compositor.service|sonora-smoketest.service) ;;
+    sonora-display-fallback.service) ;;
+    dbus.service|dbus.socket|dbus-*.service|systemd-*|remote-fs.target|getty.target) ;;
+    multi-user.target|graphical.target|sysinit.target|network-online.target) ;;
+    live-config.service|live-boot*.service|live-tools.service) ;;
+    console-setup.service|keyboard-setup.service|alsa-utils.service) ;;
+    pipewire.socket|pipewire-pulse.socket|pipewire.service|pipewire-pulse.service) ;;
+    wireplumber.service|pipewire-session-manager.service|filter-chain.service) ;;
+    e2scrub_*|fstrim.timer|logrotate.timer|dpkg-db-backup.timer|man-db.timer) ;;
+    apt-daily.timer|apt-daily-upgrade.timer) ;;
+    *) return 1 ;;
+  esac
+}
+enabled_units_listed() {
+  bad=""
+  for u in $(systemctl list-unit-files --state=enabled,enabled-runtime --no-legend --plain 2>/dev/null | awk '{ print $1 }'); do
+    unit_allowed "$u" || bad="$bad $u"
+  done
+  if [ -n "$bad" ]; then
+    echo "POLICY CHECK info enabled but not in the allowlist:$bad" >&2
+    return 1
+  fi
+}
+pc "enabled units are all on the allowlist" enabled_units_listed
+echo "POLICY CHECK info enabled units: $(systemctl list-unit-files --state=enabled --no-legend --plain 2>/dev/null | awk '{ printf "%s ", $1 }')"
+
+if [ "$POLICY_FAILED" = 0 ]; then
+  echo "POLICY CHECK RESULT pass"
+else
+  echo "POLICY CHECK RESULT fail"
+  FAILED=1
+fi

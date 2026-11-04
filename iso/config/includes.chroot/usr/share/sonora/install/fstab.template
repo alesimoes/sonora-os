@@ -1,0 +1,10 @@
+# Installed system fstab. sonora-install renders it with sonora-rootfs.sh
+# (render_fstab); the @...@ markers are replaced by UUIDs, never by device
+# names, so a different port order on the next boot cannot mount the wrong disk.
+# noatime: a read must not become a journal write. commit=60: the journal is
+# flushed once a minute, not every five seconds; recording data is flushed by
+# the engine's own disk thread, and vm.dirty_* (99-sonora.conf) bounds the rest.
+# No "discard": inline TRIM stalls the disk thread; fstrim.timer does it weekly.
+UUID=@ROOT_UUID@  /          ext4  noatime,commit=60,errors=remount-ro  0 1
+UUID=@ESP_UUID@   /boot/efi  vfat  umask=0077,noatime,nofail             0 2
+@SWAP_LINE@
