@@ -284,6 +284,18 @@ bool encode(const PluginCatalog& m, std::string& out, std::string& error) {
                         std::to_string(kMaxParamLabels);
                 return false;
             }
+            if (q.section.size() > kMaxParamSectionBytes) {
+                error = p.name + " parameter " + q.name + " has a section of " +
+                        std::to_string(q.section.size()) + " bytes, over the cap of " +
+                        std::to_string(kMaxParamSectionBytes);
+                return false;
+            }
+        }
+        if (p.meters.size() > kMaxPluginMeters || p.curves.size() > kMaxPluginCurves) {
+            error = p.name + " has " + std::to_string(p.meters.size()) + " meters and " +
+                    std::to_string(p.curves.size()) + " curves, over the caps of " +
+                    std::to_string(kMaxPluginMeters) + " and " + std::to_string(kMaxPluginCurves);
+            return false;
         }
     }
     Writer w(out, Type::PluginCatalog);
@@ -314,7 +326,62 @@ bool encode(const PluginCatalog& m, std::string& out, std::string& error) {
             w.str(q.unit);
             w.u32(q.steps);
             w.list(q.labels);
+            w.str(q.section);
+            w.u32(q.widget);
+            w.str(q.curve_source);
         }
+        w.u32(static_cast<uint32_t>(p.meters.size()));
+        for (const PluginMeterInfo& t : p.meters) {
+            w.u32(t.slot);
+            w.str(t.id);
+            w.str(t.name);
+            w.str(t.unit);
+            w.u32(t.kind);
+            w.f32(t.min);
+            w.f32(t.max);
+        }
+        w.u32(static_cast<uint32_t>(p.curves.size()));
+        for (const PluginCurveInfo& t : p.curves) {
+            w.u32(t.slot);
+            w.str(t.id);
+            w.str(t.name);
+            w.str(t.x_unit);
+            w.str(t.y_unit);
+            w.u32(t.points);
+            w.u32(t.x_log ? 1 : 0);
+            w.f32(t.x_min);
+            w.f32(t.x_max);
+            w.f32(t.y_min);
+            w.f32(t.y_max);
+        }
+    }
+    return true;
+}
+
+bool encode(const PluginTelemetry& m, std::string& out, std::string& error) {
+    if (m.meters.size() > kMaxPluginMeters || m.curves.size() > kMaxPluginCurves) {
+        error = "telemetry of " + std::to_string(m.meters.size()) + " meters and " +
+                std::to_string(m.curves.size()) + " curves, over the caps of " +
+                std::to_string(kMaxPluginMeters) + " and " + std::to_string(kMaxPluginCurves);
+        return false;
+    }
+    for (const auto& c : m.curves) {
+        if (c.size() > kMaxCurvePoints) {
+            error = "a curve of " + std::to_string(c.size()) + " points, over the cap of " +
+                    std::to_string(kMaxCurvePoints);
+            return false;
+        }
+    }
+    Writer w(out, Type::PluginTelemetry);
+    w.u64(m.insert);
+    w.u32(m.sequence);
+    w.u32(m.meter_mask);
+    w.u32(static_cast<uint32_t>(m.meters.size()));
+    for (float v : m.meters) w.f32(v);
+    w.u32(static_cast<uint32_t>(m.curves.size()));
+    for (const auto& c : m.curves) {
+        w.u32(static_cast<uint32_t>(c.size()));
+        for (float v : c) w.f32(v);
     }
     return true;
 }
@@ -458,7 +525,9 @@ bool decode(std::string_view bytes, PluginCatalog& out, std::string& error) {
             PluginParam q;
             if (!r.u32(q.index) || !r.str(q.key, kMaxParamKeyBytes) || !r.str(q.name) ||
                 !r.f32(q.min) || !r.f32(q.max) || !r.f32(q.default_value) || !r.u32(q.flags) ||
-                !r.str(q.unit) || !r.u32(q.steps) || !r.list(q.labels, kMaxParamLabels)) {
+                !r.str(q.unit) || !r.u32(q.steps) || !r.list(q.labels, kMaxParamLabels) ||
+                !r.str(q.section, kMaxParamSectionBytes) || !r.u32(q.widget) ||
+                !r.str(q.curve_source, kMaxParamKeyBytes)) {
                 return false;
             }
             const std::string where = p.name + " parameter " + std::to_string(k);
@@ -481,9 +550,104 @@ bool decode(std::string_view bytes, PluginCatalog& out, std::string& error) {
                 return r.fail(where + " has " + std::to_string(q.labels.size()) +
                               " labels for " + std::to_string(q.steps) + " steps");
             }
+            if (q.widget > kLastWidget) {
+                return r.fail(where + " has a widget this version does not define");
+            }
+            if (q.widget == static_cast<uint32_t>(PluginWidget::Switch) && q.steps != 2) {
+                return r.fail(where + " is a switch with " + std::to_string(q.steps) + " steps");
+            }
+            if (q.widget == static_cast<uint32_t>(PluginWidget::Choice) && q.steps < 2) {
+                return r.fail(where + " is a choice with " + std::to_string(q.steps) + " steps");
+            }
             p.params.push_back(std::move(q));
         }
+        uint32_t meters = 0, curves = 0;
+        if (!r.count(meters, kMaxPluginMeters, "meters")) return false;
+        for (uint32_t k = 0; k < meters; ++k) {
+            PluginMeterInfo t;
+            if (!r.u32(t.slot) || !r.str(t.id, kMaxParamKeyBytes) || !r.str(t.name) ||
+                !r.str(t.unit) || !r.u32(t.kind) || !r.f32(t.min) || !r.f32(t.max)) {
+                return false;
+            }
+            const std::string where = p.name + " meter " + std::to_string(k);
+            if (t.slot != k) return r.fail(where + " has slot " + std::to_string(t.slot));
+            if (t.kind > kLastMeterKind) {
+                return r.fail(where + " has a kind this version does not define");
+            }
+            if (!(std::isfinite(t.min) && std::isfinite(t.max) && t.min <= t.max)) {
+                return r.fail(where + " has a range that is not finite or is inverted");
+            }
+            for (const PluginMeterInfo& each : p.meters) {
+                if (each.id == t.id) return r.fail(where + " repeats the id " + t.id);
+            }
+            p.meters.push_back(std::move(t));
+        }
+        if (!r.count(curves, kMaxPluginCurves, "curves")) return false;
+        for (uint32_t k = 0; k < curves; ++k) {
+            PluginCurveInfo t;
+            if (!r.u32(t.slot) || !r.str(t.id, kMaxParamKeyBytes) || !r.str(t.name) ||
+                !r.str(t.x_unit) || !r.str(t.y_unit) || !r.u32(t.points) || !r.flag(t.x_log) ||
+                !r.f32(t.x_min) || !r.f32(t.x_max) || !r.f32(t.y_min) || !r.f32(t.y_max)) {
+                return false;
+            }
+            const std::string where = p.name + " curve " + std::to_string(k);
+            if (t.slot != k) return r.fail(where + " has slot " + std::to_string(t.slot));
+            if (t.points < 2 || t.points > kMaxCurvePoints) {
+                return r.fail(where + " has " + std::to_string(t.points) + " points");
+            }
+            if (!(std::isfinite(t.x_min) && std::isfinite(t.x_max) && t.x_min < t.x_max &&
+                  std::isfinite(t.y_min) && std::isfinite(t.y_max) && t.y_min <= t.y_max) ||
+                (t.x_log && t.x_min <= 0.0f)) {
+                return r.fail(where + " has an axis range that is not finite, inverted, or"
+                                      " not positive on a log axis");
+            }
+            for (const PluginCurveInfo& each : p.curves) {
+                if (each.id == t.id) return r.fail(where + " repeats the id " + t.id);
+            }
+            p.curves.push_back(std::move(t));
+        }
+        for (const PluginParam& q : p.params) {
+            if (q.curve_source.empty()) continue;
+            bool found = false;
+            for (const PluginCurveInfo& c : p.curves) found = found || c.id == q.curve_source;
+            if (!found) {
+                return r.fail(p.name + " parameter " + q.name + " names the curve " +
+                              q.curve_source + ", which the plugin does not publish");
+            }
+        }
         m.plugins.push_back(std::move(p));
+    }
+    if (!r.done()) return false;
+    out = std::move(m);
+    return true;
+}
+
+bool decode(std::string_view bytes, PluginTelemetry& out, std::string& error) {
+    Reader r(bytes, error);
+    PluginTelemetry m;
+    uint32_t meters = 0, curves = 0;
+    if (!r.type(Type::PluginTelemetry) || !r.u64(m.insert) || !r.u32(m.sequence) ||
+        !r.u32(m.meter_mask) || !r.count(meters, kMaxPluginMeters, "meters")) {
+        return false;
+    }
+    m.meters.resize(meters);
+    for (float& v : m.meters) {
+        if (!r.f32(v)) return false;
+        if (!std::isfinite(v)) return r.fail("a meter value that is not finite");
+    }
+    if ((m.meter_mask >> meters) != 0) {
+        return r.fail("a meter mask naming a meter past the " + std::to_string(meters) + " sent");
+    }
+    if (!r.count(curves, kMaxPluginCurves, "curves")) return false;
+    m.curves.resize(curves);
+    for (auto& c : m.curves) {
+        uint32_t points = 0;
+        if (!r.count(points, kMaxCurvePoints, "curve points")) return false;
+        c.resize(points);
+        for (float& v : c) {
+            if (!r.f32(v)) return false;
+            if (!std::isfinite(v)) return r.fail("a curve point that is not finite");
+        }
     }
     if (!r.done()) return false;
     out = std::move(m);
@@ -519,6 +683,12 @@ bool decode_into(std::string_view bytes, Inbox& inbox, std::string& error) {
             PluginCatalog m;
             if (!decode(bytes, m, error)) return false;
             inbox.catalogs.push_back(std::move(m));
+            return true;
+        }
+        case Type::PluginTelemetry: {
+            PluginTelemetry m;
+            if (!decode(bytes, m, error)) return false;
+            inbox.telemetry.push_back(std::move(m));
             return true;
         }
         case Type::Hello:

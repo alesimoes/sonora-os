@@ -253,6 +253,22 @@ std::vector<PluginInfo> fake_catalog() {
                    param(1, "1", "Ratio", 0.0f, 1.0f, 0.25f, kParamAutomatable),
                    param(2, "7", "Mode", 0.0f, 1.0f, 0.0f, kParamAutomatable | kParamEnum, "", 3,
                          {"Peak", "RMS", "Feedback"})};
+    // ADR-0057: a compressor that groups its controls, says how to draw them,
+    // and publishes gain reduction, levels and its transfer curve.
+    c[2].params[0].section = "Compressor";
+    c[2].params[0].widget = static_cast<uint32_t>(PluginWidget::Knob);
+    c[2].params[1].section = "Compressor";
+    c[2].params[1].widget = static_cast<uint32_t>(PluginWidget::Knob);
+    c[2].params[1].curve_source = "transfer";
+    c[2].params[2].section = "Detector";
+    c[2].params[2].widget = static_cast<uint32_t>(PluginWidget::Choice);
+    c[2].meters = {
+        {0, "gr", "Gain reduction", "dB", static_cast<uint32_t>(PluginMeterKind::GainReduction),
+         0.0f, 24.0f},
+        {1, "in", "Input", "dB", static_cast<uint32_t>(PluginMeterKind::InputLevel), -60.0f, 6.0f},
+        {2, "out", "Output", "dB", static_cast<uint32_t>(PluginMeterKind::OutputLevel), -60.0f,
+         6.0f}};
+    c[2].curves = {{0, "transfer", "Transfer", "dB", "dB", 128, false, -60.0f, 0.0f, -60.0f, 0.0f}};
 
     c[3].format = PluginFormat::Lv2;
     c[3].id = "urn:sonora:fake:refused";
@@ -649,6 +665,16 @@ void FakeEngine::script_catalog(std::vector<PluginInfo> plugins) {
     if (!connected_) return;
     send_catalog();
     refresh_faults(false);
+}
+
+bool FakeEngine::script_plugin_telemetry(uint64_t insert, PluginTelemetry frame) {
+    if (!connected_ || find_insert(document_->current(), insert) == nullptr) return false;
+    frame.insert = insert;
+    if (!telemetry_throttle_.admit(insert, frame.sequence, now())) return false;
+    std::string bytes, error;
+    if (!wire::encode(frame, bytes, error)) return false;
+    queue(outbound_, bytes);
+    return true;
 }
 
 void FakeEngine::script_plugin_latency(const std::string& plugin_id, uint32_t frames) {
