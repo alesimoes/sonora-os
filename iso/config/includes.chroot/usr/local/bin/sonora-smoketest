@@ -45,8 +45,12 @@ EXPECT_CAPTURE=1
 # sonora.gui: the display stack runs on tty1 and the session stands down.
 # sonora.expect_fallback: the harness broke the UI on purpose, so the display
 # fallback must have handed tty1 back to the session (ADR-0010 stage 1).
+# sonora.break_ui: this script breaks the UI itself, then expects the fallback
+# (ADR-0010 stage 1: an injected repeated UI failure ends on tty1 with the
+# session). It implies sonora.gui and sonora.expect_fallback.
 GUI=0
 EXPECT_FALLBACK=0
+BREAK_UI=0
 # sonora.virtualcard: load snd-dummy (26 capture channels) and record from it.
 VIRTUALCARD=0
 # Words, not lines: /proc/cmdline is one line of parameters.
@@ -57,13 +61,31 @@ for word in $(cat /proc/cmdline); do
     sonora.gui) GUI=1 ;;
     sonora.virtualcard) VIRTUALCARD=1 ;;
     sonora.expect_fallback) EXPECT_FALLBACK=1 ;;
+    sonora.break_ui) BREAK_UI=1 ;;
   esac
 done
+if [ "$BREAK_UI" = 1 ]; then
+  GUI=1
+  EXPECT_FALLBACK=1
+fi
 # The engine runs from sonora-session, which under sonora.gui starts only
 # through the fallback.
 SESSION_EXPECTED=1
 [ "$GUI" = 1 ] && [ "$EXPECT_FALLBACK" = 0 ] && SESSION_EXPECTED=0
 FLAG=/run/sonora-display-failed
+
+# Milliseconds since the epoch, for the recovery timings below.
+now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
+
+if [ "$BREAK_UI" = 1 ]; then
+  # /bin/false exits 1, which RestartPreventExitStatus=3 does not cover, so the
+  # unit restarts every second until StartLimitBurst=5 trips and OnFailure=
+  # starts the fallback: a repeated failure, not a single one.
+  mkdir -p /run/systemd/system/sonora-ui.service.d
+  printf '[Service]\nExecStart=\nExecStart=/bin/false\n' >/run/systemd/system/sonora-ui.service.d/break.conf
+  systemctl daemon-reload
+  systemctl restart --no-block sonora-ui.service
+fi
 # This unit is ordered after sonora-session, but in the fallback run the
 # session starts later, from OnFailure= of a UI that first has to fail. Wait
 # for the hand-back before the engine checks below sample anything.
@@ -203,6 +225,75 @@ else
   fail "no pro-input node; the pro-audio profile was not applied"
 fi
 
+# --- 5a. display stack timings (ADR-0010 stage 1 smoke checks) ---
+unit_pid() { systemctl show -p MainPID --value "$1" 2>/dev/null; }
+
+# wait_new_pid UNIT OLD_PID LIMIT_MS: poll until UNIT is active with a main PID
+# other than OLD_PID. Prints the milliseconds it took; fails on timeout.
+wait_new_pid() {
+  t0="$(now_ms)"
+  while :; do
+    p="$(unit_pid "$1")"
+    if [ -n "$p" ] && [ "$p" != 0 ] && [ "$p" != "$2" ] && systemctl is-active --quiet "$1"; then
+      echo $(( $(now_ms) - t0 ))
+      return 0
+    fi
+    [ $(( $(now_ms) - t0 )) -ge "$3" ] && return 1
+    sleep 0.1
+  done
+}
+
+# SIGKILL the unit's main process and require it, and the UI behind it, to run
+# again within RECOVER_MS. The PID has to change: a signal the unit shrugged
+# off would pass an "is it active" check taken at once.
+RECOVER_MS=3000
+kill_and_recover() {
+  old="$(unit_pid "$1")"
+  oldui="$(unit_pid sonora-ui.service)"
+  if [ -z "$old" ] || [ "$old" = 0 ]; then
+    fail "$2: nothing to kill, $1 has no main process"
+    return
+  fi
+  kill -9 "$old"
+  if ms="$(wait_new_pid "$1" "$old" "$RECOVER_MS")" &&
+     ms_ui="$(wait_new_pid sonora-ui.service "$oldui" "$RECOVER_MS")"; then
+    echo "SMOKETEST ok    $2 recovered in ${ms} ms (UI ${ms_ui} ms)"
+  else
+    fail "$2 did not recover within ${RECOVER_MS} ms"
+  fi
+  # Settle, so the next kill is not counted against this one.
+  sleep 2
+}
+
+gui_checks() {
+  # The UI logs one line at its first frame (ui/qt/README.md); the journal
+  # holds a unit's stderr. Waited for: Qt on a software renderer can take
+  # many seconds.
+  i=0
+  FRAME_MS=""
+  while [ "$i" -lt 60 ] && [ -z "$FRAME_MS" ]; do
+    FRAME_MS="$(journalctl -b -u sonora-ui.service -o cat --no-pager 2>/dev/null |
+      sed -n 's/.*first frame after \([0-9][0-9]*\) ms.*/\1/p' | tail -n 1)"
+    [ -n "$FRAME_MS" ] || { i=$((i + 1)); sleep 1; }
+  done
+  echo "SMOKETEST info  first frame after ${FRAME_MS:-never} ms of UI uptime; boot uptime $(cut -d' ' -f1 /proc/uptime) s"
+  check "UI logged its first frame" test -n "$FRAME_MS"
+
+  # The renderer labwc and Qt ended up with on a machine with no render node
+  # (QEMU -vga std). Information only; ADR-0010 unverified item 3 records it.
+  echo "SMOKETEST info  /dev/dri: $(find /dev/dri -maxdepth 1 -type c 2>/dev/null | tr '\n' ' ')"
+  journalctl -b -u sonora-compositor.service -o cat --no-pager 2>/dev/null |
+    grep -i -E 'render|gles|pixman|llvmpipe|vulkan|swrast' | head -n 8 |
+    sed 's/^/SMOKETEST info  labwc: /'
+  journalctl -b -u sonora-ui.service -o cat --no-pager 2>/dev/null |
+    grep -i -E 'render|gles|llvmpipe|swrast|opengl' | head -n 4 |
+    sed 's/^/SMOKETEST info  ui: /'
+
+  kill_and_recover sonora-ui.service "kill -9 of the UI"
+  kill_and_recover sonora-compositor.service "kill -9 of labwc"
+  check "display fallback did not run after the kills" test ! -e "$FLAG"
+}
+
 # --- 5. build id and the display stack (ADR-0010) ---
 # The catalog cache keys on BUILD_ID; an empty or missing one shares a cache
 # across images.
@@ -232,6 +323,8 @@ elif [ "$GUI" = 1 ]; then
   check "sonora-ui.service active" systemctl is-active --quiet sonora-ui.service
   check "display fallback did not run" test ! -e "$FLAG"
   check "sonora-session.service not running under sonora.gui" sh -c '! systemctl is-active --quiet sonora-session.service'
+  check "sonora-ui is executable" test -x /usr/local/bin/sonora-ui
+  gui_checks
 else
   # Default boot: the compositor must be enabled (so the flag alone turns it
   # on) yet skipped, and the session must own tty1.

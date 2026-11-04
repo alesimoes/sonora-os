@@ -1,0 +1,16 @@
+#!/bin/sh
+# ExecCondition= of sonora-display-fallback.service: exit 0 when the display
+# stack has really failed, 1 (unit skipped, not failed) when systemd is only
+# restarting it.
+#
+# systemd 257 starts OnFailure= units on every failure, including one that
+# Restart=always is about to repair (measured in tools/test-display-fallback.sh,
+# 2026-11-04: kill -9 of the UI ran the fallback at once, which stopped the
+# compositor and started the session, so a one-off crash cost the operator the
+# display for good). A unit waiting to be restarted is in SubState
+# auto-restart. Only a unit that stays failed (start limit hit, or the "unfit
+# display" exit that RestartPreventExitStatus= refuses to retry) means give up.
+for u in sonora-compositor sonora-ui; do
+  [ "$(systemctl show -p SubState --value "$u.service" 2>/dev/null)" = auto-restart ] && exit 1
+done
+exit 0
