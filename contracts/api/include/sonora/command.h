@@ -198,6 +198,36 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"clip.gain_line_clear", CommandTarget::None, "Remove the selected clip's gain line"},
         {"clip.gain_render", CommandTarget::None,
          "Render the selected clip's gain into a new file"},
+        // Clip groups and loops (ADR-0052). Group joins the clips the range
+        // selection touches on the selected track, so they move together;
+        // Ungroup frees the selected clip's group. Loop repeats the selected
+        // clip or group the number of times in the argument (the last count
+        // without one); Unloop removes the repeats.
+        {"clip.group", CommandTarget::None, "Group the clips in the selected range"},
+        {"clip.ungroup", CommandTarget::None, "Ungroup the selected clip's group"},
+        {"clip.loop", CommandTarget::None,
+         "Loop the selected clip or group (argument: the number of repeats)", true},
+        {"clip.unloop", CommandTarget::None, "Remove the repeats of the selected loop"},
+        // Sample-level editing (ADR-0052), on the selected range inside the
+        // selected clip. Each writes a new file and points the clip at it; the
+        // original take is never changed, and undo puts it back. Repair redraws
+        // a click from its neighbours; Draw takes "FRAME:LEVEL,..." (the Pencil
+        // at sample zoom); Gain and Normalize take dB.
+        {"sample.repair", CommandTarget::None, "Repair a click: redraw the selected samples"},
+        {"sample.draw", CommandTarget::None,
+         "Redraw the selected samples through points (argument: FRAME:LEVEL,...)", true},
+        {"sample.silence", CommandTarget::None, "Silence the selected samples"},
+        {"sample.reverse", CommandTarget::None, "Reverse the selected samples"},
+        {"sample.invert", CommandTarget::None, "Invert the phase of the selected samples"},
+        {"sample.gain", CommandTarget::None, "Change the level of the selected samples in dB", true},
+        {"sample.normalize", CommandTarget::None,
+         "Raise the selected samples to a peak level in dB (0 without an argument)", true},
+        {"sample.fade_in", CommandTarget::None, "Fade the selected samples in"},
+        {"sample.fade_out", CommandTarget::None, "Fade the selected samples out"},
+        // The engine's half: "VERB REGION FROM TO CHANNEL [PARAM]" (see
+        // sample_edit.h). The interface builds it from the selection.
+        {"sample.edit", CommandTarget::None,
+         "Apply a sample edit to a region's range (VERB REGION FROM TO CHANNEL [PARAM])", true},
         // The track's playlist selector (ADR-0026), on the track given or the
         // selected one. Choose takes the playlist's name; Rename the new name,
         // and asks for it without one.

@@ -180,10 +180,15 @@ void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const R
     if (!r.mute && !ghost && (r.gain_db != 0.0f || !r.gain_line.empty())) {
         draw_gain_line(r, offset, x0, cx0, cx1, wy, wh, v, theme::kGainLine, out.rects);
     }
+    if (r.clip_group != 0) {
+        add(out.rects, cx0, y + h - 3, cx1 - cx0, 3,
+            with_alpha(r.loop != 0 ? theme::kClipLoop : theme::kClipGroup, alpha));
+    }
     if (selected && !ghost) outline(out.rects, cx0, y, cx1 - cx0, h, 1.5, theme::kRegionSelectedOutline);
     if (!ghost && x1 - x0 > 24) {
         // A level of its own is part of the name, as Pro Tools' clip name shows it.
         std::string label = r.name;
+        if (r.loop != 0) label += "  loop " + std::to_string(r.loop);
         if (r.gain_db != 0.0f) {
             char gain[24];
             std::snprintf(gain, sizeof gain, "  %+.1f dB", static_cast<double>(r.gain_db));

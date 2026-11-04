@@ -22,6 +22,7 @@ add_library(sonora_control STATIC
   src/machine_latency.cpp
   src/preset_store.cpp
   src/consolidate.cpp
+  src/sample_edit.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -82,6 +83,14 @@ if(UNIX)
   add_executable(test_consolidate tests/test_consolidate.cpp)
   target_link_libraries(test_consolidate PRIVATE sonora_control)
   add_test(NAME consolidate COMMAND test_consolidate)
+endif()
+
+# Sample editing (ADR-0052): the processes, the copy that leaves the take alone,
+# one compound, one undo step.
+if(UNIX)
+  add_executable(test_sample_edit tests/test_sample_edit.cpp)
+  target_link_libraries(test_sample_edit PRIVATE sonora_control)
+  add_test(NAME sample_edit COMMAND test_sample_edit)
 endif()
 
 # A closed take as one compound; a bad file costs one track (ADR-0009

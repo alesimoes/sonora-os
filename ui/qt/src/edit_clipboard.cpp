@@ -108,6 +108,10 @@ void repeat_clip(const Playlist& p, Frames at, const Clip& clip, int count, cons
             Region placed = r;
             placed.id = id();
             placed.position = origin + r.position;
+            // A copy is a new clip, not another member of the group it came
+            // from (ADR-0052).
+            placed.clip_group = 0;
+            placed.loop = 0;
             renamed[r.id] = placed.id;
             // Nothing is beneath any more, so no split id is needed.
             out.push_back(PlaceRegion{p.id, std::move(placed), kNoId});
@@ -204,6 +208,8 @@ std::string step_text(const std::string& label) {
         {"SetRegionColour", "Colour Region"},        {"SetGroup", "Group Tracks"},
         {"RemoveGroup", "Ungroup Tracks"},
         {"SetRegionGain", "Clip Gain"},
+        {"SetClipGroup", "Clip Group"},
+        {"SetRegionSources", "Sample Edit"},
     };
     const auto it = kWords.find(label);
     return it != kWords.end() ? it->second : label;

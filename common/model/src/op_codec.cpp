@@ -124,6 +124,8 @@ Value region_value(const Region& r) {
     v.set("mute", Value::boolean(r.mute));
     v.set("fade_in", fade_value(r.fade_in));
     v.set("fade_out", fade_value(r.fade_out));
+    v.set("clip_group", id_value(r.clip_group));
+    v.set("loop", integer(r.loop));
     return v;
 }
 
@@ -634,6 +636,32 @@ struct Encoder {
         v.set("gain_line", gain_line_value(o.gain_line));
         return v;
     }
+    Value operator()(const SetClipGroup& o) const {
+        Value v = with_kind("SetClipGroup");
+        v.set("playlist", id_value(o.playlist));
+        v.set("group", id_value(o.group));
+        Value& list = v.set("members", Value::array());
+        for (const ClipGroupMember& m : o.members) {
+            Value& e = list.push(Value::object());
+            e.set("region", id_value(m.region));
+            e.set("loop", integer(m.loop));
+        }
+        return v;
+    }
+    Value operator()(const SetRegionSources& o) const {
+        Value v = with_kind("SetRegionSources");
+        v.set("playlist", id_value(o.playlist));
+        v.set("region", id_value(o.region));
+        Value& src = v.set("source", Value::array());
+        for (const SourceRef& c : o.channels) {
+            Value& e = src.push(Value::object());
+            e.set("id", id_value(c.source));
+            e.set("channel", integer(c.channel));
+        }
+        v.set("source_offset", integer(o.source_offset));
+        v.set("gain_line", gain_line_value(o.gain_line));
+        return v;
+    }
     Value operator()(const ReorderTracks& o) const {
         Value v = with_kind("ReorderTracks");
         Value& order = v.set("order", Value::array());
@@ -1018,7 +1046,7 @@ bool read_gain_line(Reader& rd, const Value& v, const std::string& p,
 bool read_region_value(Reader& rd, const Value& v, const std::string& p, Region& r) {
     if (!rd.keys(v, p, {"id", "name", "colour", "position", "length", "source",
                         "source_offset", "gain_db", "gain_line", "mute", "fade_in",
-                        "fade_out"})) {
+                        "fade_out", "clip_group", "loop"})) {
         return false;
     }
     if (!rd.id(v, p, "id", r.id) || !rd.text(v, p, "name", r.name) ||
@@ -1041,7 +1069,8 @@ bool read_region_value(Reader& rd, const Value& v, const std::string& p, Region&
            rd.real(v, p, "gain_db", r.gain_db) && read_gain_line(rd, v, p, r.gain_line) &&
            rd.flag(v, p, "mute", r.mute) &&
            read_fade(rd, v, p, "fade_in", r.fade_in) &&
-           read_fade(rd, v, p, "fade_out", r.fade_out);
+           read_fade(rd, v, p, "fade_out", r.fade_out) && rd.id(v, p, "clip_group", r.clip_group) &&
+           rd.small(v, p, "loop", r.loop);
 }
 
 bool read_region(Reader& rd, const Value& obj, const std::string& path, const char* key,
@@ -1675,6 +1704,50 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = std::move(o);
+    } else if (kind == "SetClipGroup") {
+        SetClipGroup o;
+        const Value* members = nullptr;
+        if (!rd.keys(v, "", {"op", "playlist", "group", "members"}) ||
+            !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "group", o.group) ||
+            !rd.array(v, "", "members", members)) {
+            return false;
+        }
+        if (members->items().size() > kMaxCompoundMembers) {
+            return rd.fail("members", "holds more than " + std::to_string(kMaxCompoundMembers) +
+                                          " regions");
+        }
+        for (const Value& e : members->items()) {
+            ClipGroupMember m;
+            if (!rd.keys(e, "members", {"region", "loop"}) ||
+                !rd.id(e, "members", "region", m.region) ||
+                !rd.small(e, "members", "loop", m.loop)) {
+                return false;
+            }
+            o.members.push_back(m);
+        }
+        out = std::move(o);
+    } else if (kind == "SetRegionSources") {
+        SetRegionSources o;
+        const Value* src = nullptr;
+        if (!rd.keys(v, "", {"op", "playlist", "region", "source", "source_offset", "gain_line"}) ||
+            !rd.id(v, "", "playlist", o.playlist) || !rd.id(v, "", "region", o.region) ||
+            !rd.array(v, "", "source", src)) {
+            return false;
+        }
+        for (const Value& e : src->items()) {
+            if (!rd.keys(e, "source", {"id", "channel"})) return false;
+            SourceRef ref;
+            if (!rd.id(e, "source", "id", ref.source) ||
+                !rd.small(e, "source", "channel", ref.channel)) {
+                return false;
+            }
+            o.channels.push_back(ref);
+        }
+        if (!rd.frames(v, "", "source_offset", o.source_offset) ||
+            !read_gain_line(rd, v, "", o.gain_line)) {
+            return false;
+        }
+        out = std::move(o);
     } else if (kind == "ReorderTracks") {
         ReorderTracks o;
         const Value* order = nullptr;
@@ -1988,7 +2061,10 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 //    state carries "groups" (ADR-0041), a region carries "gain_line"
 //    (ADR-0042), each track mix carries track_punch and the transport
 //    input_only, rolls_on and quick_punch (ADR-0043).
-constexpr std::int64_t kWindowFormat = 16;
+// 20 (clip groups and loops, ADR-0052; follows 16, 17 to 19 are other work's): a
+//    region carries "clip_group" and "loop", and a region's sources may be
+//    replaced by a sample edit (SetRegionSources).
+constexpr std::int64_t kWindowFormat = 20;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -2802,7 +2878,7 @@ const char* const kNames[] = {
     "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
     "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "EditAutomation",
     "SetTrackColour", "SetRegionName", "SetRegionColour", "SetGroup", "RemoveGroup",
-    "SetRegionGain", "Compound"};
+    "SetRegionGain", "SetClipGroup", "SetRegionSources", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

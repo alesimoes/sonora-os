@@ -300,7 +300,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.cycle_selection", "transport.punch_selection", "transport.clear_punch",
         "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready", "meters.reset",
         "transport.toggle_input_only", "transport.toggle_pre_post_roll",
-        "transport.toggle_quick_punch",
+        "transport.toggle_quick_punch", "sample.edit",
     };
     return ids;
 }
@@ -1882,6 +1882,12 @@ bool FakeEngine::latency_command(const CommandRequest& r, std::string& why) {
                         std::to_string(input) + ": 0 of 3 pings";
         announce_latency();
         return true;
+    }
+    if (r.command == "sample.edit") {
+        // The fake engine has no audio files to copy; saying so is the honest
+        // answer, and the interface holds it as a notice.
+        why = "this engine has no audio files to edit; nothing was edited";
+        return false;
     }
     if (r.command == "latency.cancel") {
         if (!measuring_) {

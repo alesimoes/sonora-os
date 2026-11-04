@@ -96,6 +96,10 @@ add_test(NAME model_groups COMMAND test_model_groups)
 add_executable(test_model_clip_gain tests/test_clip_gain.cpp)
 target_link_libraries(test_model_clip_gain PRIVATE sonora_model_audited)
 add_test(NAME model_clip_gain COMMAND test_model_clip_gain)
+# Clip groups, loops and the sample edits' SetRegionSources (ADR-0052).
+add_executable(test_model_clip_groups tests/test_clip_groups.cpp)
+target_link_libraries(test_model_clip_groups PRIVATE sonora_model_audited)
+add_test(NAME model_clip_groups COMMAND test_model_clip_groups)
 # Playlists per track: new, duplicate, choose, rename, delete unused (ADR-0026).
 add_executable(test_model_playlists tests/test_playlists.cpp)
 target_link_libraries(test_model_playlists PRIVATE sonora_model_audited)

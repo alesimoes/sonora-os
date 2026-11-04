@@ -126,6 +126,13 @@ struct Region {
     std::vector<GainPoint> gain_line;
     bool mute = false;
     Fade fade_in, fade_out;
+    // Clip groups and loops (ADR-0052). Regions of one playlist that carry
+    // the same non-zero `clip_group` move together. The group's id is the id
+    // of one of its member regions, so none is reserved for it. `loop` is 0
+    // for a region the operator made and k >= 1 for the k-th repeat Loop
+    // Clip placed; a repeat always has a group.
+    Id clip_group = 0;
+    std::uint16_t loop = 0;
 
     Frames end() const { return position + length; }
     bool operator==(const Region& o) const;

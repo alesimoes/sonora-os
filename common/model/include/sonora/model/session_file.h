@@ -66,7 +66,10 @@ namespace sonora::model {
 //    "track_punch" on every audio track (ADR-0043). A version 18 file opens
 //    with no groups, no gain lines, Auto Input, the rolls on, no QuickPunch
 //    and every track in the punch.
-constexpr std::int64_t kFormatVersion = 19;
+// 24 (clip groups and loops, ADR-0052; 20 to 23 are other work's): a region may
+//    carry "clip_group" and "loop", only when it has them. A version 19 file
+//    opens with no groups.
+constexpr std::int64_t kFormatVersion = 24;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

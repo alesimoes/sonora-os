@@ -1192,6 +1192,10 @@ bool EditController::submit_following(Member op, std::vector<EditAutomation> fol
 }
 
 bool EditController::submit_move(const MoveRegion& op, std::string& why) {
+    // A clip in a group takes its group along (ADR-0052). Automation does not
+    // follow a group's move yet: Automation Follows Edit acts on one clip.
+    std::vector<Member> group;
+    if (group_move_ops(op, group)) return submit_compound(std::move(group), "Move Group", "moved", why);
     std::vector<EditAutomation> follow;
     std::vector<std::string> left_names;
     const TrackEdit* t = nullptr;
