@@ -34,6 +34,11 @@ jobs:
       image_ui: ${{ steps.filter.outputs.image_ui }}
       image_rtsan: ${{ steps.filter.outputs.image_rtsan }}
       image_plugins: ${{ steps.filter.outputs.image_plugins }}
+      image_runtime: ${{ steps.filter.outputs.image_runtime }}
+      image_bwfreaders: ${{ steps.filter.outputs.image_bwfreaders }}
+      image_labwc: ${{ steps.filter.outputs.image_labwc }}
+      image_labwc_input: ${{ steps.filter.outputs.image_labwc_input }}
+      image_systemd: ${{ steps.filter.outputs.image_systemd }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,7 +63,12 @@ jobs:
           for pair in build:tools/Dockerfile.build \
                       ui:'tools/Dockerfile.ui|audio-stack/pipewire-sonora.conf' \
                       rtsan:tools/Dockerfile.rtsan \
-                      plugins:tools/Dockerfile.plugins; do
+                      plugins:tools/Dockerfile.plugins \
+                      bwfreaders:tools/Dockerfile.bwfreaders \
+                      labwc:'tools/Dockerfile.labwc|iso/auto/config' \
+                      labwc_input:tools/Dockerfile.labwc-input \
+                      systemd:tools/Dockerfile.systemd-test \
+                      runtime:'tools/Dockerfile.runtime|audio-stack/pipewire-sonora.conf|iso/config/archives/sonora-(backports\.list|backports\.pref|snapshot\.conf)\.chroot|tools/(test-engine-entrypoint\.sh|verify-recording\.py|test-quantum-entrypoint\.sh|jack-quantum-probe\.py)'; do
             if printf '%s\n' "$files" | grep -qE "^(${pair#*:}|${tooling})$"; then
               echo "image_${pair%%:*}=true" >> "$GITHUB_OUTPUT"
             else
@@ -455,9 +465,18 @@ jobs:
       # The unit tests cover the data path; this covers the thing the product
       # is for. It caught an engine that recorded silence from unconnected
       # ports and reported success, which no unit test would have.
+      - name: Get the sonora-runtime image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-runtime
+          dockerfile: tools/Dockerfile.runtime
+          context: .
+          rebuild: ${{ needs.changes.outputs.image_runtime }}
+
       - name: Record and verify
         env:
           SONORA_BUILD_IMAGE_BUILT: "1"
+          SONORA_RUNTIME_IMAGE_BUILT: "1"
         run: tools/test-engine-docker.sh
 
   interop:
@@ -486,9 +505,27 @@ jobs:
       # ffprobe, soxi, libsndfile, mediainfo and a headless Ardour 8 judge two
       # recorded takes, the second starting off zero. About two minutes, most
       # of it installing Ardour into the reader image.
+      - name: Get the sonora-runtime image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-runtime
+          dockerfile: tools/Dockerfile.runtime
+          context: .
+          rebuild: ${{ needs.changes.outputs.image_runtime }}
+
+      - name: Get the sonora-bwf-readers image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-bwf-readers
+          dockerfile: tools/Dockerfile.bwfreaders
+          context: tools
+          rebuild: ${{ needs.changes.outputs.image_bwfreaders }}
+
       - name: Record two takes and read them back
         env:
           SONORA_BUILD_IMAGE_BUILT: "1"
+          SONORA_RUNTIME_IMAGE_BUILT: "1"
+          SONORA_BWFREADERS_IMAGE_BUILT: "1"
         run: tools/test-bwf-interop.sh
 
   quantum:
@@ -500,11 +537,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Get the sonora-runtime image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-runtime
+          dockerfile: tools/Dockerfile.runtime
+          context: .
+          rebuild: ${{ needs.changes.outputs.image_runtime }}
+
       # Under ADR-0007 M2 a block-size or rate change mid-take ends the take.
       # This tries every client-side route we know of to move the graph off
       # 128 frames at 48 kHz, against the drop-in the image ships. No engine
       # build is needed, so it costs one container image and about a minute.
       - name: Try to move the graph
+        env:
+          SONORA_RUNTIME_IMAGE_BUILT: "1"
         run: tools/test-quantum-pin.sh
 
   plugins:
@@ -673,10 +720,39 @@ jobs:
 
   shellcheck:
     name: Shell scripts
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      # The test images below are built on main by images.yml; this job pulls
+      # them, and builds one only when the change edits its inputs.
+      - name: Read the image snapshot date
+        id: labwc_snap
+        run: echo "snap=$(sed -nE 's/^SONORA_SNAPSHOT=([0-9]{8}T[0-9]{6}Z)$/\1/p' iso/auto/config)" >> "$GITHUB_OUTPUT"
+      - name: Get the sonora-labwc-test image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-labwc-test
+          dockerfile: tools/Dockerfile.labwc
+          context: tools
+          build-args: --build-arg SNAP=${{ steps.labwc_snap.outputs.snap }}
+          rebuild: ${{ needs.changes.outputs.image_labwc }}
+      - name: Get the sonora-labwc-input image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-labwc-input
+          dockerfile: tools/Dockerfile.labwc-input
+          context: tools
+          rebuild: ${{ needs.changes.outputs.image_labwc_input }}
+      - name: Get the sonora-systemd-test image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-systemd-test
+          dockerfile: tools/Dockerfile.systemd-test
+          context: tools
+          rebuild: ${{ needs.changes.outputs.image_systemd }}
       - name: Install shellcheck and dbus-x11
         run: for d in 0 15 45; do sleep "$d"; sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y shellcheck dbus-x11 && exit 0; done; echo "apt failed after 3 attempts" >&2; exit 1
       - name: Check
@@ -724,16 +800,22 @@ jobs:
       # labwc 0.8.3 headless: Ctrl+Alt+Fn reaches the UI (srvrkeys:none, through
       # a nested labwc's own keymap); an X11 editor's title bar and close button.
       - name: labwc input (Ctrl+Alt+Fn, title-bar drag, close button)
+        env:
+          SONORA_LABWC_INPUT_IMAGE_BUILT: "1"
         run: tools/test-labwc-input.sh
 
       # The shipped units under a real systemd (PID 1 in a container): the
       # display fallback hands tty1 back to the session; systemd-analyze verify.
       - name: Display fallback units under systemd
+        env:
+          SONORA_SYSTEMD_IMAGE_BUILT: "1"
         run: tools/test-display-fallback.sh
 
       # The shipped rc.xml under headless labwc 0.8.3, against a run with
       # labwc's defaults: no compositor chord or desktop menu, clicks reach the UI.
       - name: labwc kiosk bindings (keys, desktop menu, client clicks)
+        env:
+          SONORA_LABWC_IMAGE_BUILT: "1"
         run: tools/test-labwc-kiosk.sh
 
       # The image installs the copies under iso/, not audio-stack/ itself, so
