@@ -1,0 +1,17 @@
+{
+  "processor": "org.sonora.tuner",
+  "class": "C",
+  "note": "ADR-0011 3.2 and 3.5; bars set from the first measured run (see the PR) with headroom for the other compilers. Classical throughout: YIN (de Cheveigne and Kawahara 2002) for the pitch, PSOLA (Moulines and Charpentier 1990) for the shift. Detector: harmonic tones from 101 to 893 Hz at 44.1/48/96 kHz, the period within detector.cents of the true one with no frame lost, in noise (20 dB signal-to-noise, detector.noisy_cents, at least detector.noisy_voiced of the frames voiced), with the fundamental missing; white noise, silence and a -85 dBFS tone are not voiced (noise_voiced is a fraction of frames). Chooser: every key and scale against a table of intervals, no wrong note over 1/16-semitone steps. Processor: the output's pitch (a Hann-windowed DFT peak by golden-section search, independent of the detector) against the note asked for within tuning.hard_cents, tuning.amount_cents, tuning.scale_cents; the natural speed's time constant measured from the residual at five instants within tuning.tau_rel of the setting. Transparency: amount 0, noise and silence leave the signal exactly delayed by the reported latency (transparent_abs). Shifter alone: the spectral envelope of a two-formant vowel (a pulse train ringing at 600 and 1800 Hz) kept within formant.envelope_db of the original at shifts up to 100 cents after a common gain is taken out; +400 cents is reported (1.5 dB measured) and so is what resampling would give; level of a voiced tone within level_db. A pure sine corrected by 30 cents: THD+N within purity_db (PSOLA is not transparent on a bare sine: the grains' seams are measured at -37.4 dB). Hot squares to +24 dBFS stay finite and within hot.max_ratio of the input peak. The zipper tone is a 100 Hz sine at the low range. Latency is 2 x ceil(0.75 x longest period / 0.7071) + 4 samples (1486 at 48 kHz, low range) and is exact in all three ranges and rates. CPU: class C, measured on the programme and on a voiced glide at the low range with hard retune (the busiest case); no eco mode needed.",
+  "detector": {"cents": 0.2, "dropouts": 0, "noisy_cents": 2.0, "noisy_voiced": 0.95, "noise_voiced": 0.005},
+  "tuning": {"hard_cents": 0.1, "amount_cents": 0.1, "tau_rel": 0.02, "scale_cents": 0.1},
+  "formant": {"envelope_db": 5.0},
+  "level_db": 0.5,
+  "purity_db": -34.0,
+  "transparent_abs": 1e-6,
+  "hot": {"max_ratio": 1.25},
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -100.0,
+  "zipper": ["key", "scale", "speed", "amount", "reference"],
+  "golden_abs": 1e-6,
+  "cpu": {"p999_us": 150.0, "max_us": 300.0}
+}
