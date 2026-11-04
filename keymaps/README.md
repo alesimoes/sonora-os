@@ -263,7 +263,7 @@ The window sends a command where its `CommandSpec::domain` says
 (`contracts/api/include/sonora/command.h`, ADR-0007 §5). An Interface command
 (`tool.*`, `zoom.*`, `edit.mode.*`, `focus.*`, `window.transport`,
 `window.undo_history`, `window.memory_locations`, `window.configurations`,
-`window.config_store`, `window.config_recall`, `app.quit`,
+`window.config_store`, `window.config_recall`, `window.event_list`, `app.quit`,
 `app.save_as_template`, `app.new_from_template`) runs in the window
 and never reaches the engine, even if an engine lists it. The two template
 commands have no key in either profile: Pro Tools ships no default shortcut

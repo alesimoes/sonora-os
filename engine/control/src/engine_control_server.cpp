@@ -1113,6 +1113,9 @@ void EngineControlServer::finish_pass() {
         }
     }
     if (changed || mix_changed) show_document(mix_changed);
+    // Latch and Write ride over the document's static (apply_mix keeps it
+    // out of the audio while rolling): the pass's end puts it back.
+    apply_mix();
 }
 
 bool EngineControlServer::apply_pass(std::vector<model::EditAutomation>& edits) {

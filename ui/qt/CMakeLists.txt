@@ -85,7 +85,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/WindowConfigsWindow.qml
+        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/WindowConfigsWindow.qml
         qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
 )
 
@@ -172,6 +172,16 @@ target_compile_definitions(test_ui_markers PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_markers COMMAND test_ui_markers)
 set_tests_properties(ui_markers PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The automation Event List and Snapshot: the lane's points listed, edited and
+# deleted, the strip's value written at the insertion point, then the window
+# in the real QML.
+add_executable(test_ui_event_list tests/test_event_list.cpp)
+target_link_libraries(test_ui_event_list PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_event_list PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_event_list COMMAND test_ui_event_list)
+set_tests_properties(ui_event_list PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The Track menu (ADR-0023): new, duplicate, delete, move, their refusals
 # before sending, then the menu, a header's right-click and the New Tracks

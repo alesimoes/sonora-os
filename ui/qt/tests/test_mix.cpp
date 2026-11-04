@@ -1098,11 +1098,10 @@ int written_ride_keeps_the_static() {
     rev = r.doc.revision();
     ride_up(1);
     CHECK(r.doc.revision() == rev + 1 && r.session.stripGain(1) > 0.0);
-    // #282 review B1: Latch and Write keep playing the ride after the
-    // release, so the static is saved with it. Otherwise any mix edit before
-    // the stop (apply_mix() sets every track's gain from the document) and
-    // a second grab (its Touch carries stripGain()) would step the audio and
-    // the lane back to the old static mid-pass.
+    // automation.write: Latch and Write keep the static too. The engine plays
+    // the ride until the pass ends and then restores the document's value
+    // (PlaybackController::apply_mix), so the release saves nothing and a
+    // mix edit mid-pass does not step the document.
     std::string why;
     for (const char* m : {"Latch", "Write"}) {
         CHECK(r.mixer.setAutomationMode(3, m));
@@ -1110,17 +1109,11 @@ int written_ride_keeps_the_static() {
         rev = r.doc.revision();
         const double before = r.session.stripGain(3);
         ride_up(3);
-        const double ridden = r.session.stripGain(3);
-        CHECK(r.doc.revision() == rev + 1 && ridden > before);
+        CHECK(r.doc.revision() == rev && near(r.session.stripGain(3), before));
+        CHECK(!r.sent.empty() && r.sent.back().gesture == api::Gesture::Release);
         CHECK(r.session.controller().toggle_mute(0, why));
         r.settle();
-        CHECK(near(r.session.stripGain(3), ridden));
-        CHECK(near(r.engine_gain(3), fader_linear_gain(static_cast<float>(ridden))));
-        r.mixer.beginRide(3);
-        CHECK(!r.sent.empty() && r.sent.back().gesture == api::Gesture::Touch &&
-              near(r.sent.back().value, fader_linear_gain(static_cast<float>(ridden))));
-        r.mixer.endRide(3);
-        r.settle();
+        CHECK(near(r.session.stripGain(3), before));
         CHECK(r.session.controller().toggle_mute(0, why));
         r.settle();
         CHECK(r.refused.empty());
