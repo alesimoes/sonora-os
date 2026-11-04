@@ -648,6 +648,39 @@ struct Bus {
     bool operator==(const Bus& o) const;
 };
 
+// --- groups (ADR-0041, session format version 19) --------------------------
+
+inline constexpr std::size_t kMaxGroups = 64;
+
+// What a group links, as Pro Tools' Mix/Edit Groups attributes do. Volume,
+// Mute, Solo and Arm are the mix side; Selection and Edit the edit side.
+inline constexpr std::uint8_t kGroupVolume = 1;
+inline constexpr std::uint8_t kGroupMute = 2;
+inline constexpr std::uint8_t kGroupSolo = 4;
+inline constexpr std::uint8_t kGroupArm = 8;
+inline constexpr std::uint8_t kGroupSelection = 16;
+inline constexpr std::uint8_t kGroupEdit = 32;
+inline constexpr std::uint8_t kGroupAllAttributes = 63;
+
+// A set of tracks that share the attributes in `attrs`. A track is in at
+// most one group. Structure, so undoable; a group's effect on the faders is
+// never stored: it is a SetMix per member (groups.h).
+struct Group {
+    Id id = 0;
+    std::string name;
+    std::vector<Id> members;   // track ids, at least two
+    std::uint8_t attrs = kGroupVolume | kGroupMute | kGroupSolo | kGroupArm;
+    // Volume only: a move shifts every member by the same dB (Pro Tools'
+    // Relative) rather than setting them all to one value (Absolute).
+    bool relative = true;
+    // Pro Tools' group suspend: kept, but links nothing.
+    bool active = true;
+    bool operator==(const Group& o) const {
+        return id == o.id && name == o.name && members == o.members && attrs == o.attrs &&
+               relative == o.relative && active == o.active;
+    }
+};
+
 // --- automation (ADR-0027) --------------------------------------------------
 
 // What a lane drives. Volume is in dB, kMinGainDb to kMaxGainDb; pan is
@@ -781,6 +814,7 @@ struct EditState {
     std::vector<Bus> buses;   // display order
     // The Master's lanes: Volume only (ADR-0027 §9).
     AutomationLanes master_automation;
+    std::vector<Group> groups;   // creation order
     bool operator==(const EditState& o) const;
 };
 

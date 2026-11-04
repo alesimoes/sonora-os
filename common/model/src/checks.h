@@ -71,6 +71,8 @@ const Bus* find_bus(const EditState& e, Id bus);
 // `to` cannot be reached.
 std::vector<Id> bus_path(const EditState& e, Id from, Id to);
 // Empty when the buses' sends form no loop; else `where` names a bus on one.
+// Group `where` is "[i]", the group's index.
+std::string group_problem(const EditState& e, std::string& where);
 std::string bus_loop_problem(const EditState& e, std::string& where);
 
 // Automation (ADR-0027). Points: each `at` from 0 to kMaxInteger, sorted, at

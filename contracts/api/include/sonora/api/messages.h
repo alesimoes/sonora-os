@@ -161,7 +161,13 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
-constexpr uint32_t kProtocolVersion = 42;
+// 45 (ADR-0041, mix and edit groups; follows 42, numbers 43 and 44 belong to
+//   other branches): new operation kinds SetGroup and RemoveGroup, an edit
+//   state in the undo window carries "groups" (window format 16, session
+//   format 19), and the commands group.new, group.dissolve and
+//   group.toggle_suspend. A version-42 peer refuses the operations and the
+//   window.
+constexpr uint32_t kProtocolVersion = 45;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.

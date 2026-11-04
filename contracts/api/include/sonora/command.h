@@ -160,6 +160,13 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // argument the window asks: the name dialog, the colour palette.
         {"track.rename", CommandTarget::Track, "Rename a track", true},
         {"track.colour", CommandTarget::Track, "Colour a track from the palette", true},
+        // Mix and edit groups (ADR-0041, protocol 45). New groups the
+        // selected tracks, with the optional argument as its name; Dissolve
+        // and Suspend act on the group of the track given or the selected
+        // one. Suspend toggles: the group stays and links nothing.
+        {"group.new", CommandTarget::None, "Group the selected tracks", true},
+        {"group.dissolve", CommandTarget::Track, "Dissolve a track's group"},
+        {"group.toggle_suspend", CommandTarget::Track, "Suspend or resume a track's group"},
         // On the selected region. Colour "track" wears the track's again.
         {"region.rename", CommandTarget::None, "Rename the selected region", true},
         {"region.colour", CommandTarget::None, "Colour the selected region from the palette",

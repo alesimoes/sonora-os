@@ -59,7 +59,9 @@ namespace sonora::model {
 // 18: a lane may be "mute", "send_level" or "send_pan", the last two with
 //    "send"; every bus and "monitor_bus" carry "automation" (ADR-0027 §9).
 //    A version 17 file opens with none.
-constexpr std::int64_t kFormatVersion = 18;
+// 19: the session may hold "groups" (ADR-0041), only when it has some. A
+//    version 18 file opens unchanged: it has none.
+constexpr std::int64_t kFormatVersion = 19;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

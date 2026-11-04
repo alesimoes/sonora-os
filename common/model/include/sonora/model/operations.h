@@ -535,6 +535,26 @@ struct EditAutomation {
     Id send = 0;
 };
 
+// Mix and edit groups (ADR-0041). SetGroup makes the group `group` when no
+// group has that id (the id is then new, as a bus's is) and replaces its
+// name, members and settings when one does. Undoable, as a structure.
+// Refused: fewer than two members, a member that is not a track or is in
+// another group, no attribute, a name that is not UTF-8, more than
+// kMaxGroups groups.
+struct SetGroup {
+    Id group = 0;
+    std::string name;
+    std::vector<Id> members;
+    std::uint8_t attrs = 0;
+    bool relative = true;
+    bool active = true;
+};
+
+// The members go back to being ungrouped; their mix stays as it is.
+struct RemoveGroup {
+    Id group = 0;
+};
+
 // Every operation but Compound: what a compound holds. The type, not a
 // runtime check, keeps a compound out of a compound.
 using Member =
@@ -548,7 +568,8 @@ using Member =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetGroup,
+                 RemoveGroup>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -583,7 +604,8 @@ using Operation =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, Compound>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetGroup,
+                 RemoveGroup, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

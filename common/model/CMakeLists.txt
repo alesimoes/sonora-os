@@ -6,6 +6,7 @@
 set(SONORA_MODEL_SOURCES
   src/apply.cpp
   src/comping.cpp
+  src/groups.cpp
   src/history.cpp
   src/local_edit.cpp
   src/midi_json.cpp
@@ -85,6 +86,10 @@ add_test(NAME model_comping COMMAND test_model_comping)
 add_executable(test_model_tracks tests/test_tracks.cpp)
 target_link_libraries(test_model_tracks PRIVATE sonora_model_audited)
 add_test(NAME model_tracks COMMAND test_model_tracks)
+# Mix and edit groups (ADR-0041).
+add_executable(test_model_groups tests/test_groups.cpp)
+target_link_libraries(test_model_groups PRIVATE sonora_model_audited)
+add_test(NAME model_groups COMMAND test_model_groups)
 # Playlists per track: new, duplicate, choose, rename, delete unused (ADR-0026).
 add_executable(test_model_playlists tests/test_playlists.cpp)
 target_link_libraries(test_model_playlists PRIVATE sonora_model_audited)

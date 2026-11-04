@@ -417,6 +417,18 @@ Value aux_bus_value(const Bus& b) {
     return v;
 }
 
+Value group_value(const Group& g) {
+    Value v = Value::object();
+    v.set("id", id_value(g.id));
+    v.set("name", Value::string(g.name));
+    Value& members = v.set("members", Value::array());
+    for (const Id m : g.members) members.push(id_value(m));
+    v.set("attrs", integer(g.attrs));
+    v.set("relative", Value::boolean(g.relative));
+    v.set("active", Value::boolean(g.active));
+    return v;
+}
+
 Value with_kind(const char* kind) {
     Value v = Value::object();
     v.set("op", Value::string(kind));
@@ -603,6 +615,23 @@ struct Encoder {
         Value v = with_kind("ReorderTracks");
         Value& order = v.set("order", Value::array());
         for (const Id id : o.order) order.push(id_value(id));
+        return v;
+    }
+    Value operator()(const SetGroup& o) const {
+        Group g;
+        g.id = o.group;
+        g.name = o.name;
+        g.members = o.members;
+        g.attrs = o.attrs;
+        g.relative = o.relative;
+        g.active = o.active;
+        Value v = group_value(g);
+        v.set("op", Value::string("SetGroup"));
+        return v;
+    }
+    Value operator()(const RemoveGroup& o) const {
+        Value v = with_kind("RemoveGroup");
+        v.set("group", id_value(o.group));
         return v;
     }
     Value operator()(const RemoveTrack& o) const {
@@ -1353,6 +1382,29 @@ bool read_aux_bus_value(Reader& rd, const Value& v, const std::string& p, Bus& b
     return true;
 }
 
+bool read_group_value(Reader& rd, const Value& v, const std::string& p, bool with_op, Group& g) {
+    const Value* members = nullptr;
+    std::int64_t attrs = 0;
+    const bool keys = with_op ? rd.keys(v, p, {"op", "id", "name", "members", "attrs", "relative",
+                                              "active"})
+                              : rd.keys(v, p, {"id", "name", "members", "attrs", "relative",
+                                              "active"});
+    if (!keys || !rd.id(v, p, "id", g.id) || !rd.text(v, p, "name", g.name) ||
+        !rd.array(v, p, "members", members) || !rd.integer(v, p, "attrs", 255, attrs) ||
+        !rd.flag(v, p, "relative", g.relative) || !rd.flag(v, p, "active", g.active)) {
+        return false;
+    }
+    g.attrs = static_cast<std::uint8_t>(attrs);
+    for (const Value& e : members->items()) {
+        std::int64_t n = 0;
+        if (!e.is_integer_lexeme() || !e.to_int64(n) || n < 0 || n > kMaxInteger) {
+            return rd.fail(Reader::at(p, "members"), "must hold track ids");
+        }
+        g.members.push_back(static_cast<Id>(n));
+    }
+    return true;
+}
+
 bool decode_compound(Reader& rd, const Value& v, Operation& out);
 
 bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation& out) {
@@ -1581,6 +1633,21 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             o.order.push_back(static_cast<Id>(n));
         }
         out = std::move(o);
+    } else if (kind == "SetGroup") {
+        Group g;
+        if (!read_group_value(rd, v, "", true, g)) return false;
+        SetGroup o;
+        o.group = g.id;
+        o.name = std::move(g.name);
+        o.members = std::move(g.members);
+        o.attrs = g.attrs;
+        o.relative = g.relative;
+        o.active = g.active;
+        out = std::move(o);
+    } else if (kind == "RemoveGroup") {
+        RemoveGroup o;
+        if (!rd.keys(v, "", {"op", "group"}) || !rd.id(v, "", "group", o.group)) return false;
+        out = o;
     } else if (kind == "RemoveTrack") {
         RemoveTrack o;
         if (!rd.keys(v, "", {"op", "track"}) || !rd.id(v, "", "track", o.track)) return false;
@@ -1863,7 +1930,7 @@ bool decode_compound(Reader& rd, const Value& v, Operation& out) {
 // 15: lanes are one table, "lanes", that each edit track's, aux bus's and
 //    edit state's "master_automation" index; a lane may be a mute, send
 //    level or send pan lane, the last two with their send (ADR-0027 §9).
-constexpr std::int64_t kWindowFormat = 15;
+constexpr std::int64_t kWindowFormat = 16;
 
 // Each table entry is written once and referred to by index, so a track or
 // playlist that several steps share crosses once and is shared again on
@@ -1922,6 +1989,8 @@ public:
             bs.push(std::move(bv));
         }
         ev.set("master_automation", lane_refs(e.master_automation));
+        Value& gs = ev.set("groups", Value::array());
+        for (const Group& g : e.groups) gs.push(group_value(g));
         edits_.push(std::move(ev));
         return ix;
     }
@@ -2366,10 +2435,17 @@ bool read_edits(Reader& rd, const Value& root,
         auto es = std::make_shared<EditState>();
         const Value* ts = nullptr;
         const Value* bs = nullptr;
-        if (!rd.keys(e, "edits", {"tracks", "markers", "buses", "master_automation"}) ||
+        const Value* gs = nullptr;
+        if (!rd.keys(e, "edits", {"tracks", "markers", "buses", "master_automation", "groups"}) ||
             !rd.array(e, "edits", "tracks", ts) || !rd.array(e, "edits", "buses", bs) ||
+            !rd.array(e, "edits", "groups", gs) ||
             !read_lane_refs(rd, e, "edits", "master_automation", lanes, es->master_automation)) {
             return false;
+        }
+        for (const Value& g : gs->items()) {
+            Group grp;
+            if (!read_group_value(rd, g, "edits.groups", false, grp)) return false;
+            es->groups.push_back(std::move(grp));
         }
         for (const Value& b : bs->items()) {
             Bus bus;
@@ -2667,7 +2743,8 @@ const char* const kNames[] = {
     "SetMidiRouting", "RecordLoopTake", "AddBus", "RemoveBus",
     "AddSend", "RemoveSend", "SetSendMix", "SetBusMix", "RemoveTrack", "DuplicateTrack",
     "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "EditAutomation",
-    "SetTrackColour", "SetRegionName", "SetRegionColour", "Compound"};
+    "SetTrackColour", "SetRegionName", "SetRegionColour", "SetGroup", "RemoveGroup",
+    "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 
