@@ -65,7 +65,7 @@ SessionConfig config(const std::string& dir) {
 }
 
 float sine_at(int64_t i) {
-    return kAmp * std::sin(2.0f * 3.14159265f * 1000.0f * static_cast<float>(i % 48) / 48.0f);
+    return kAmp * std::sin(2.0f * 3.14159265f * static_cast<float>(i % 48) / 48.0f);
 }
 
 struct Rig {
@@ -191,10 +191,10 @@ int test_normalise_and_ceiling() {
                       std::pow(10.0f, static_cast<float>(res.gain_db) / 20.0f), 2e-4f));
 
     // A target the peak ceiling forbids is reached only as far as the ceiling.
-    o.target_lufs = -1.0;
+    o.target_lufs = 0.0;
     CHECK_BOUNCE(bounce_offline(r.doc->current(), r.dir, o, hooks, res, err), err);
     CHECK(res.peak_dbfs <= -0.99 && res.peak_dbfs > -1.1);
-    CHECK(res.integrated_lufs < -1.0);
+    CHECK(res.integrated_lufs < -0.2);   // 0 LUFS would have needed more gain
     return 0;
 }
 
