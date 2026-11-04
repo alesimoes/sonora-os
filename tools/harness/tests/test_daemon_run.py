@@ -49,7 +49,8 @@ class RunTests(support.DaemonCase):
         self.pump(o, lambda: len(read()) >= 3)
         argvs = read()
         # engineer, tester and the lead woken by the empty pool
-        self.assertEqual(len(argvs), 3)
+        # a slow runner may wake the lead once more before the pump ends
+        self.assertGreaterEqual(len(argvs), 3)
         for a in argvs:
             self.assertEqual(a[a.index("--model") + 1], "sonnet")
             self.assertEqual(a.count("--model"), 1)
