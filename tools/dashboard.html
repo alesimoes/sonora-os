@@ -440,7 +440,8 @@ function render(s){
   const act=s.agents.filter(a=>!['done','paused'].includes(a.state));
   const working=s.agents.filter(a=>a.state==='working');
   const waiting=act.filter(a=>a.state==='waiting'||a.state==='no worktree').length;
-  const red=s.prs.filter(p=>p.failed.length).length;
+  // Cancelled checks are a superseded or stopped run, not a failure.
+  const red=s.prs.filter(p=>p.failed.length>(p.cancelled||[]).length).length;
   const dups=Object.values(s.watchers.reduce((m,w)=>(m[w.pr]=(m[w.pr]||0)+1,m),{})).filter(n=>n>1).length;
   const pill=$('pill');pill.className='pill'+(red?' bad':waiting?' warn':'');
   pill.innerHTML=`<span><b>${working.length}</b> trabalhando</span><span><b>${act.length}</b> ativos</span><span><b>${waiting}</b> aguardando</span><span><b>${red}</b> vermelho${red===1?'':'s'}</span>`+(dups?`<span>${dups} watcher duplicado</span>`:'');
