@@ -26,6 +26,7 @@
 #include "edit_controller.h"
 #include "engine_adapter.h"
 #include "peak_source.h"
+#include "preferences.h"
 #include "session_files.h"
 #include "sonora/model/sequence_file.h"
 #include "time_format.h"
@@ -77,6 +78,14 @@ class SessionModel : public QObject {
     Q_PROPERTY(bool memoryLocationsOpen READ memoryLocationsOpen NOTIFY memoryLocationsOpenChanged)
     // Setup > Latency (ADR-0019, update of 2026-10-26): window.latency.
     Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
+    // Setup > Preferences: window.preferences, what the operator starts with
+    // (counter format, grid, edit mode) and why a save or a read was refused.
+    Q_PROPERTY(bool preferencesOpen READ preferencesOpen NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefCounter READ prefCounter NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefGrid READ prefGrid NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefMode READ prefMode NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefRefusal READ prefRefusal NOTIFY preferencesChanged)
+    Q_PROPERTY(QString preferencesFile READ preferencesFile NOTIFY preferencesChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(bool automationFollowsEdit READ automationFollowsEdit NOTIFY editStateChanged)
@@ -349,6 +358,20 @@ public:
     bool memoryLocationsOpen() const { return memory_locations_open_; }
     void setMemoryLocationsOpen(bool on);
     bool latencyOpen() const { return latency_open_; }
+    bool preferencesOpen() const { return prefs_open_; }
+    QString prefCounter() const { return QString::fromLatin1(time_format_name(prefs_.counter)); }
+    QString prefGrid() const { return QString::fromLatin1(grid_value_name(prefs_.grid)); }
+    QString prefMode() const { return QString::fromLatin1(edit_mode_name(prefs_.mode)); }
+    QString prefRefusal() const { return prefs_refusal_; }
+    QString preferencesFile() const { return prefs_file_; }
+    Q_INVOKABLE void setPreferencesOpen(bool on);
+    // The file the preferences live in; read now and applied. A file that
+    // cannot be read leaves the defaults and holds the reason in the window.
+    void setPreferencesFile(const QString& file);
+    // One choice: `what` is "counter", "grid" or "mode", `value` a name from
+    // the window's lists. It applies at once and is saved; a name that is not
+    // in the list, or a save that fails, is held in the window.
+    Q_INVOKABLE bool setPreference(const QString& what, const QString& value);
     Q_INVOKABLE void setLatencyOpen(bool on);
     // A row of `markers`: recalled (the selection moves to it), or cleared,
     // one undo step.
@@ -532,6 +555,7 @@ signals:
     void markersChanged();
     void memoryLocationsOpenChanged();
     void latencyOpenChanged();
+    void preferencesChanged();
     // marker.add with no name, stopped: the window asks for one, offering
     // `name`, and sends marker.add again with it. `what` says where the
     // marker goes ("at 5|1|000", "from 5|1|000 to 9|1|000").
@@ -676,6 +700,11 @@ private:
     bool undo_history_open_ = false;
     bool memory_locations_open_ = false;
     bool latency_open_ = false;
+    bool prefs_open_ = false;
+    Preferences prefs_;
+    QString prefs_file_, prefs_refusal_;
+    void applyPreferences();
+    void setCounterFormat(TimeFormat main);
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);

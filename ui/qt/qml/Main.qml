@@ -189,6 +189,21 @@ Rectangle {
         }
     }
 
+    // --- the Preferences window (Setup > Preferences…) ---
+    Loader {
+        id: preferencesLoader
+        objectName: "preferencesLoader"
+        x: Theme.space6
+        y: body.y + Theme.space6
+        z: 8
+        sourceComponent: PreferencesWindow {
+            objectName: "preferencesWindow"
+            shell: root.shell
+            session: root.session
+            mover: preferencesLoader
+        }
+    }
+
     // --- footer -------------------------------------------------------------------
     Rectangle {
         id: footer
@@ -1840,6 +1855,18 @@ Rectangle {
                 onClicked: {
                     setupMenu.visible = false
                     root.shell.invoke("window.latency", -1)
+                }
+            }
+            SButton {
+                objectName: "setupPreferences"
+                width: setupColumn.width
+                implicitHeight: 26
+                bold: false
+                fontPx: Theme.textBody
+                text: "Preferences…"
+                onClicked: {
+                    setupMenu.visible = false
+                    root.shell.invoke("window.preferences", -1)
                 }
             }
         }
