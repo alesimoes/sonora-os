@@ -616,6 +616,9 @@ jobs:
       - name: RT limits agree across limits.d, unit and hook
         run: tools/test-rt-limits.sh
 
+      - name: umc-measure.sh logic, against fake arecord/pw-jack/engine
+        run: tools/test-umc-measure.sh
+
       - name: Image config (backports pins, RT kernel, tty1 session, no VT gettys)
         run: tools/test-image-config.sh
 
