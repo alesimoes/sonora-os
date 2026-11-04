@@ -9,15 +9,34 @@ set -euo pipefail
 MODE="${1:-test}"
 SHOT="${2:-}"
 SECONDS_EACH="${3:-20}"
-BUILD=build-ui-container
+# tools/build-ui.sh puts the tree on a volume where the bind mount is slow;
+# the executables are then copied back for tools/build-iso.sh.
+BUILD="${SONORA_BUILD_DIR:-build-ui-container}"
 UI="$BUILD/sonora-ui"
+
+JOBS="${SONORA_JOBS:-$(nproc)}"
+# ccache is shared through a named volume by every worktree (tools/build-ui.sh).
+if command -v ccache >/dev/null; then
+  export CMAKE_CXX_COMPILER_LAUNCHER=ccache CMAKE_C_COMPILER_LAUNCHER=ccache
+  ccache -z >/dev/null
+fi
+finish() {
+  if command -v ccache >/dev/null; then
+    ccache -s | grep -iE "hit|cache size" || true
+  fi
+  if [[ "$BUILD" != build-ui-container ]]; then
+    mkdir -p build-ui-container
+    find "$BUILD" -maxdepth 1 -type f -perm -u+x -exec cp -f {} build-ui-container/ \;
+  fi
+}
+trap finish EXIT
 
 cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release
 
 # The image build needs the binary, not the suite: SONORA_STAGE_ONLY in
 # tools/build-engine.sh says why the suite must not gate it.
 if [[ "$MODE" == stage ]]; then
-  cmake --build "$BUILD" -j"$(nproc)" --target sonora-ui
+  cmake --build "$BUILD" -j"$JOBS" --target sonora-ui
   exit 0
 fi
 
@@ -29,7 +48,7 @@ for t in ui_meter_model ui_keys ui_keymaps ui_edit ui_clipboard ui_inserts ui_sh
   grep -q " $t\$" <<<"$listed" || { echo "error: $t is not registered; is Qt too old?" >&2; exit 1; }
 done
 
-cmake --build "$BUILD" -j"$(nproc)"
+cmake --build "$BUILD" -j"$JOBS"
 QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure
 
 [[ "$MODE" == test ]] && exit 0
