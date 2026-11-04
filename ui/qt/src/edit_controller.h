@@ -437,6 +437,24 @@ public:
     // the pool, and undo brings them back.
     bool delete_unused_playlists(int track, std::string& why);
 
+    // --- mix and edit groups (ADR-0041) ---
+    // Group `count` tracks from `first` down (the selected tracks): one
+    // SetGroup, one undo step. `name` empty takes "Group N". `attrs` is
+    // model::kGroup* bits; a track already in a group is refused by name,
+    // since a track is in one group at most.
+    bool group_tracks(int first, int count, const std::string& name, std::uint8_t attrs,
+                      std::string& why);
+    // The group `track` is in goes; the tracks and their mix stay.
+    bool dissolve_group(int track, std::string& why);
+    // Pro Tools' suspend: the group stays and links nothing, or links again.
+    bool toggle_group_suspend(int track, std::string& why);
+    // Relative or Absolute volume for `track`'s group.
+    bool set_group_relative(int track, bool relative, std::string& why);
+    // Link or unlink one attribute (model::kGroup*) on `track`'s group.
+    bool toggle_group_attribute(int track, std::uint8_t attr, std::string& why);
+    // The index in snapshot().edit->groups of the group `track` is in, or -1.
+    int group_index(int track) const;
+
     // --- mix: not undoable, but still operations ---
     bool set_gain(int track, float db, std::string& why);
     bool set_pan(int track, float pan, std::string& why);
@@ -473,6 +491,9 @@ private:
     // is off screen (as follow() pages).
     void reveal(model::Frames frame);
     const model::TrackEdit* track(int index) const;
+    // `m` as one SetMix, or with the members `m`'s group links as one
+    // Compound of SetMix: one revision, so the group moves together.
+    bool submit_mix(const model::TrackMix& m, std::string& why);
     // The region a command acts on: the selected one, else the one under
     // the insertion point on the selected track.
     const model::Region* target_region(int& track_index) const;

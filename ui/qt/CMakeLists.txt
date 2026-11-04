@@ -55,6 +55,8 @@ add_library(sonora_ui_qt STATIC
   src/edit_clipboard.h src/edit_clipboard.cpp
   src/edit_markers.cpp
   src/edit_names.cpp
+  src/edit_groups.cpp
+  src/mix_groups.cpp
   src/automation_edit.h src/automation_edit.cpp
   src/edit_automation.cpp
   src/live_take.h src/live_take.cpp
@@ -193,6 +195,15 @@ target_compile_definitions(test_ui_names_colours PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_names_colours COMMAND test_ui_names_colours)
 set_tests_properties(ui_names_colours PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Mix and edit groups (ADR-0041): grouping, the group-aware fader, mute and
+# solo as one compound, a ridden fader moving its group, the commands.
+add_executable(test_ui_groups tests/test_groups.cpp)
+target_link_libraries(test_ui_groups PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_groups PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_groups COMMAND test_ui_groups)
+set_tests_properties(ui_groups PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
 # measurement, its figure by hand, and refusals held in the window.

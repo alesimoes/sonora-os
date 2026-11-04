@@ -46,7 +46,7 @@ Rectangle {
     Text {
         id: note
         objectName: "mixNote"
-        anchors { left: parent.left; right: viewControls.left; top: parent.top; margins: Theme.space3; leftMargin: Theme.space4 }
+        anchors { left: parent.left; right: groupControls.left; top: parent.top; margins: Theme.space3; leftMargin: Theme.space4 }
         elide: Text.ElideRight
         text: (mix.inserts !== null && mix.inserts.pluginsDisabled
                ? "This engine hosts no plugins yet: inserts are kept with the session and do not run. "
@@ -54,6 +54,42 @@ Rectangle {
               + (mix.mixer !== null ? mix.mixer.note : "Mix state is kept with the session.")
         color: Theme.caution
         font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+    }
+    // Groups (ADR-0041): Group makes one of the selected tracks; the others
+    // act on the group of the selected track and say so when it is in none.
+    Row {
+        id: groupControls
+        objectName: "groupControls"
+        anchors { right: viewControls.left; rightMargin: Theme.space3; top: parent.top; topMargin: Theme.space1 }
+        spacing: 2
+        visible: mix.mixer !== null
+        width: visible ? implicitWidth : 0
+        readonly property int sel: mix.session.selectedTrack
+        readonly property int group: mix.mixer !== null && sel >= 0 && sel < mix.mixer.trackGroups.length
+                                     ? mix.mixer.trackGroups[sel] : -1
+        SButton {
+            objectName: "groupNew"
+            text: "Group"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.shell.invoke("group.new", -1)
+        }
+        SButton {
+            objectName: "groupSuspend"
+            text: "Suspend"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            active: groupControls.group >= 0 && mix.mixer.groupSuspended[groupControls.group] === true
+            onClicked: mix.shell.invoke("group.toggle_suspend", groupControls.sel)
+        }
+        SButton {
+            objectName: "groupMode"
+            text: groupControls.group >= 0 && mix.mixer.groupSummaries[groupControls.group].indexOf("Absolute") >= 0
+                  ? "Absolute" : "Relative"
+            implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.mixer.setGroupRelative(groupControls.sel, text === "Absolute")
+        }
+        SButton {
+            objectName: "groupDissolve"
+            text: "Ungroup"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.shell.invoke("group.dissolve", groupControls.sel)
+        }
     }
     // The views: which sections of a strip are drawn (MixModel, ui-design.md
     // "Mixer strip anatomy"). A collapsed section gives its height to the fader.

@@ -191,6 +191,50 @@ int test_arm_all_with_nothing_to_arm_is_refused() {
     return 0;
 }
 
+// ADR-0041: arming a track arms and disarms its group with it; a peer that
+// may not record is left alone, and a track outside the group is untouched.
+int test_arm_follows_the_group() {
+    Dir dir("sonora_test_session_commands_arm_group");
+    sonora::SessionConfig cfg;
+    cfg.dir = dir.path.string();
+    cfg.track_count = 4;
+    cfg.ring_seconds = 0.25;
+    sonora::Session s(cfg);
+    CHECK(s.create_dirs());
+    CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(
+        reg, s, take, quit, nullptr, nullptr, nullptr,
+        [](std::size_t engine_track, std::string& why) {
+            if (engine_track != 2) return true;
+            why = "\"Keys\" is a MIDI track; this version records audio only";
+            return false;
+        },
+        nullptr, nullptr,
+        [](std::size_t engine_track) {
+            // Tracks 0, 1 and 2 are one group; 3 is alone.
+            if (engine_track > 2) return std::vector<std::size_t>{};
+            std::vector<std::size_t> peers;
+            for (std::size_t i = 0; i < 3; ++i) {
+                if (i != engine_track) peers.push_back(i);
+            }
+            return peers;
+        });
+    CommandContext first;
+    first.target = 0;
+    CHECK(reg.dispatch("track.toggle_arm", first) == DispatchResult::Ok);
+    CHECK(s.tracks()[0]->rec_armed() && s.tracks()[1]->rec_armed());
+    CHECK(!s.tracks()[2]->rec_armed() && !s.tracks()[3]->rec_armed());
+    CHECK(reg.dispatch("track.toggle_arm", first) == DispatchResult::Ok);
+    for (const auto& t : s.tracks()) CHECK(!t->rec_armed());
+    CommandContext alone;
+    alone.target = 3;
+    CHECK(reg.dispatch("track.toggle_arm", alone) == DispatchResult::Ok);
+    CHECK(s.tracks()[3]->rec_armed() && !s.tracks()[0]->rec_armed());
+    return 0;
+}
+
 // --- with a punch range (PunchFor) ------------------------------------------
 
 constexpr uint64_t kA = 3000, kB = 5000, kH = 1000;
@@ -525,6 +569,7 @@ int main() {
     failures += test_session_commands();
     failures += test_arming_locked_during_take();
     failures += test_arm_all_with_nothing_to_arm_is_refused();
+    failures += test_arm_follows_the_group();
     failures += test_record_rolling_past_the_punch_out_is_refused();
     failures += test_toggle_record_with_a_punch_range_punches();
     failures += test_punch_on_the_fly();
