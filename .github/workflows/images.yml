@@ -1,0 +1,67 @@
+name: Images
+
+# Builds the four build images once and publishes them to GHCR, so the jobs in
+# ci.yml pull them instead of building on every PR (and no longer fill the
+# Actions cache with buildkit layers, which evicted the ccache entries).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tools/Dockerfile.build
+      - tools/Dockerfile.ui
+      - tools/Dockerfile.rtsan
+      - tools/Dockerfile.plugins
+      - audio-stack/pipewire-sonora.conf
+      - .github/workflows/images.yml
+  workflow_dispatch:
+  # Weekly, to pick up base image security updates.
+  schedule:
+    - cron: '17 3 * * 1'
+
+concurrency:
+  group: images
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    name: Image ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: sonora-build
+            dockerfile: tools/Dockerfile.build
+            context: tools
+          - name: sonora-ui
+            dockerfile: tools/Dockerfile.ui
+            context: .
+          - name: sonora-rtsan
+            dockerfile: tools/Dockerfile.rtsan
+            context: tools
+          - name: sonora-plugins
+            dockerfile: tools/Dockerfile.plugins
+            context: tools
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        env:
+          IMAGE: ghcr.io/alesimoes/${{ matrix.name }}
+        run: |
+          docker build --label org.sonora=1 \
+            --label org.opencontainers.image.source=https://github.com/alesimoes/sonora-os \
+            -t "$IMAGE:trixie" -t "$IMAGE:${GITHUB_SHA}" \
+            -f "${{ matrix.dockerfile }}" "${{ matrix.context }}"
+          docker push "$IMAGE:trixie"
+          docker push "$IMAGE:${GITHUB_SHA}"
