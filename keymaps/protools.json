@@ -119,7 +119,6 @@
     "ctrl+alt+w": {
       "command": "automation.write_selection",
       "origin": "sonora",
-      "verified": false,
       "comment": "Ours. Pro Tools has Write to Selection among its automation commands, but no default key for it could be confirmed from Avid's published guides. Holds the track's fader or pan flat across the selected lane range."
     },
     "ctrl+alt+k": {

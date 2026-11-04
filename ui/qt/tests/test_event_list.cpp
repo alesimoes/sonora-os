@@ -142,8 +142,9 @@ int test_snapshot() {
     std::string why;
 
     // No track selected: refused with a reason.
-    c.clear_selection();
-    CHECK(!c.snapshot_automation(why) && why.find("select a track") != std::string::npos);
+    ModelDocument none(make_empty_session(0, kRate));
+    EditController bare(none);
+    CHECK(!bare.snapshot_automation(why) && why.find("select a track") != std::string::npos);
 
     // The fader as it stands, at the insertion point, on a lane that did not exist.
     CHECK(c.set_gain(0, -7.0f, why));
@@ -227,6 +228,7 @@ int test_window() {
     CHECK(QTest::qWaitForWindowExposed(&view));
     QQuickItem* root = view.rootObject();
 
+    std::fprintf(stderr, "window step 1\n");
     // Edit > Automation Event List opens it.
     click(view, named(root, QStringLiteral("editMenuButton")));
     QQuickItem* entry = nullptr;
@@ -243,6 +245,7 @@ int test_window() {
         return rows.size() == 3;
     }));
 
+    std::fprintf(stderr, "window step 2\n");
     // Typing a value into the second row's field sets it.
     std::sort(rows.begin(), rows.end(), [](QQuickItem* a, QQuickItem* b) { return a->y() < b->y(); });
     QQuickItem* value = named(rows[1], QStringLiteral("eventValue"));
@@ -256,18 +259,27 @@ int test_window() {
         return lane(doc, 0, AutomationParam::Volume)->points[1].value == -4.0f;
     }));
 
+    std::fprintf(stderr, "window step 3\n");
     // The row's x deletes it; Snapshot adds one at the insertion point.
+    // The edit rebuilt the rows: the earlier items are gone.
+    CHECK(QTest::qWaitFor([&]() {
+        rows = all_named(win, QStringLiteral("eventListRow"));
+        return rows.size() == 3;
+    }));
+    std::sort(rows.begin(), rows.end(), [](QQuickItem* a, QQuickItem* b) { return a->y() < b->y(); });
     click(view, named(rows[0], QStringLiteral("eventDelete")));
     CHECK(lane(doc, 0, AutomationParam::Volume)->points.size() == 2);
     session.controller().set_insertion(10000);
     click(view, named(win, QStringLiteral("eventListSnapshot")));
     CHECK(lane(doc, 0, AutomationParam::Volume)->points.size() == 3);
 
+    std::fprintf(stderr, "window step 4\n");
     // The lane picker lists Pan, which is empty.
     click(view, named(win, QStringLiteral("eventListLane1")));
     CHECK(session.eventLane() == 1);
     CHECK(QTest::qWaitFor([&]() { return all_named(win, QStringLiteral("eventListRow")).isEmpty(); }));
 
+    std::fprintf(stderr, "window step 5\n");
     // Logic's E key toggles the window.
     QTest::keyClick(&view, Qt::Key_E);
     CHECK(QTest::qWaitFor([&]() { return !session.eventListOpen(); }));

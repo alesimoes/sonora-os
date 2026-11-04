@@ -96,7 +96,7 @@ Rectangle {
             width: parent.width
             height: 14
             Repeater {
-                model: [["#", 2], ["TIME", 60], ["VALUE", 220]]
+                model: [["#", 26], ["TIME", 112], ["VALUE", 252]]
                 Text {
                     required property var modelData
                     x: modelData[1]
@@ -148,6 +148,9 @@ Rectangle {
                         horizontalAlignment: Text.AlignRight
                         font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
                     }
+                    // Each field closes at once and the edit runs after the key
+                    // handler returns: a good edit rebuilds the rows, this one
+                    // with them, and must not do it from inside its own handler.
                     ValueField {
                         id: timeField
                         objectName: "eventTime"
@@ -155,7 +158,11 @@ Rectangle {
                         x: 56; width: 150; height: parent.height
                         text: row.modelData.time
                         textColour: Theme.textSecondary
-                        onSubmitted: (t) => { if (win.session.eventEdit(row.index, t, "")) finish() }
+                        onSubmitted: (t) => {
+                            const at = row.index
+                            timeField.finish()
+                            Qt.callLater(() => { if (!win.session.eventEdit(at, t, "")) timeField.begin() })
+                        }
                     }
                     ValueField {
                         id: valueField
@@ -163,7 +170,11 @@ Rectangle {
                         shell: win.shell
                         x: 216; width: 110; height: parent.height
                         text: row.modelData.value
-                        onSubmitted: (t) => { if (win.session.eventEdit(row.index, "", t)) finish() }
+                        onSubmitted: (t) => {
+                            const at = row.index
+                            valueField.finish()
+                            Qt.callLater(() => { if (!win.session.eventEdit(at, "", t)) valueField.begin() })
+                        }
                     }
                     Text {
                         x: 330

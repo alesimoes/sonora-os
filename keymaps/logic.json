@@ -63,7 +63,6 @@
     "ctrl+alt+w": {
       "command": "automation.write_selection",
       "origin": "sonora",
-      "verified": false,
       "comment": "Ours. Logic writes automation by mode; no key for a flat write is documented. Holds the track's fader or pan flat across the selected lane range."
     },
     "ctrl+alt+k": {
