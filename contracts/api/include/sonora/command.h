@@ -309,7 +309,7 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"session.leave_recovered", CommandTarget::None,
          "Leave the recovered takes in Audio Files, off the timeline"},
 
-        // --- consolidate (ADR-0031 §6, protocol 43) ---
+        // --- consolidate (ADR-0031 §6, protocol 52) ---
         // The argument is api/consolidate_argument.h's. The reply says only
         // whether the render started; progress and the end are Consolidate
         // events. The interface's own edit.consolidate is the key; this is

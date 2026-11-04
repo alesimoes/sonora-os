@@ -457,7 +457,7 @@ enum class EventKind : uint32_t {
     // start, replaced at every change and at every ping while measuring; a
     // client that attaches later is sent it. Protocol 22.
     Latency = 7,
-    // A consolidate render (ADR-0031 §6, protocol 43): `insert` is the
+    // A consolidate render (ADR-0031 §6, protocol 52): `insert` is the
     // track's model id, `flags` a kConsolidate* state, `frame` the fraction
     // rendered in thousandths while Running, `text` why it Failed or what
     // finished it. One stands from the first request, replaced at every
