@@ -356,7 +356,37 @@ function agentStage(a,prs,watch,orch){
   if(a.state==='working')return /fix|corre/i.test(a.label)?'fix':/architect|arquit|planej|plan\b|lead|l[ií]der/i.test(a.label)?'plan':'code';
   return null}
 
+/* Merge train do orquestrador (status.json .train): quem cuida de cada PR e
+   qual o próximo passo. Sem orquestrador, cai no cálculo local abaixo. */
+function renderOrchTrain(s,tr){
+  const L=n=>`<a class="prn" href="${PRURL}${n}" target="_blank" rel="noopener">#${n}</a>`;
+  const merged=s.merged||[],o=s.orchestrator||{};
+  const C={merge:[],ci:[],ref:[],vaga:[],fix:[],stack:[],blk:[]};
+  const row=(r,extra)=>`${L(r.pr)} ${E((r.title||'').slice(0,40))}<div class="st">${extra}</div>`;
+  tr.forEach(r=>{
+    const ph=r.phase||'',nx=E(r.next||''),who=r.fixer?`<b>${E(r.fixer)}</b> (${E(r.agent||'')}) trabalhando`:'';
+    if(r.state==='ci_fix'||ph==='fixer'||ph==='conflito')C.fix.push(row(r,(who||'aguarda agente livre ('+E(r.agent||'')+')')+' · '+(ph==='conflito'?'conflito com a main':'vermelho: '+E((r.failing||[]).slice(0,2).join(', ')))));
+    else if(ph==='empilhado'||ph==='retarget')C.stack.push(row(r,nx));
+    else if(ph==='aguardando vaga')C.vaga.push(row(r,'vermelho/cancelado: '+E((r.failing||[]).slice(0,2).join(', '))));
+    else if(ph==='atualizado'||ph==='rerodando')C.ref.push(row(r,E(r.last_action||'')+' · '+nx));
+    else if(ph==='CI rodando')C.ci.push(row(r,`CI ${r.passed??'?'}/${r.total??'?'}`));
+    else if(ph==='verde'||ph==='mergeado')C.merge.push(row(r,nx||'merge'));
+    else if(ph==='bloqueado'||ph==='fechado'||r.state==='blocked')C.blk.push(row(r,nx||'decisão do owner'));
+    else C.ci.push(row(r,nx||ph))});
+  const open=tr.filter(r=>r.state!=='merged').length,n=merged.length,tot=n+open;
+  const live=(o.runs||[]).length;
+  $('trmeta').textContent=`${n} mergeados hoje · ${open} no trem · ${live} agente(s) do orquestrador · CI: ${C.ci.length+C.ref.length}/${o.train_slots||'?'} vagas`+(o.gh_paused_until?' · GitHub rate limit: pausado':'');
+  $('trbar').style.width=(tot?100*n/tot:0)+'%';
+  const col=(c,h,a)=>`<div class="tc ${c}"><h3>${h} · ${a.length}</h3>${a.map(x=>`<div class="tr">${x}</div>`).join('')||'<div class="tr">-</div>'}</div>`;
+  const last=merged.slice(0,8).map(p=>`${L(p.number)} ${E(p.title).slice(0,36)}`);
+  if(merged.length>8)last.push(`+${merged.length-8} antes`);
+  $('trcols').innerHTML=col('m','Mergeados hoje',last)+col('g','Verde → merge',C.merge)
+    +col('y','CI rodando',C.ci)+col('y','Refresh sem agente',C.ref)+col('x','Aguardando vaga no CI',C.vaga)
+    +col('r','Agente corrigindo',C.fix)+col('q','Empilhado',C.stack)+col('r','Bloqueado (owner)',C.blk)}
+
 function renderTrain(s){
+  const tr=s.orchestrator&&Array.isArray(s.orchestrator.train)?s.orchestrator.train:null;
+  if(tr&&tr.length)return renderOrchTrain(s,tr);
   const L=n=>`<a class="prn" href="${PRURL}${n}" target="_blank" rel="noopener">#${n}</a>`;
   const open=s.prs,merged=s.merged||[];
   const byBranch=Object.fromEntries(open.map(p=>[p.branch,p]));
@@ -367,7 +397,7 @@ function renderTrain(s){
     if(p.mergeable==='CONFLICTING'||p.merge==='DIRTY'){B.m.push(`${L(p.number)} ${t}`);return}
     if(p.failed.length){
       const det=(p.failed_details||[]).filter(d=>d.conclusion!=='CANCELLED');
-      if(p.cancelled&&p.cancelled.length===p.failed.length){B.x.push(`${L(p.number)} cancelado: ${E(p.cancelled.join(', '))}`);return}
+      if(p.cancelled&&p.cancelled.length===p.failed.length){B.x.push(`${L(p.number)} ${t} <span class="st">(${p.cancelled.length} cancelados)</span>`);return}
       B.r.push(`${L(p.number)} ${det.map(d=>E(d.name)+(d.step?` <span class="st">› ${E(d.step)}</span>`:'')).join('; ')||E(p.failed.join(', '))}`);return}
     if(p.pending.length){B.y.push(`${L(p.number)} ${p.passed}/${p.total||p.passed+p.pending.length} ${t}`);return}
     if(!p.total){B.x.push(`${L(p.number)} sem run`);return}
