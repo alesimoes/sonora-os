@@ -628,6 +628,9 @@ jobs:
       - name: RT limits agree across limits.d, unit and hook
         run: tools/test-rt-limits.sh
 
+      - name: RT tuning (rtirq, cpu-latency, USB audio udev rule)
+        run: tools/test-rt-tuning.sh
+
       - name: umc-measure.sh logic, against fake arecord/pw-jack/engine
         run: tools/test-umc-measure.sh
 

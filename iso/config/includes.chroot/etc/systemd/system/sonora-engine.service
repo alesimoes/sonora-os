@@ -9,8 +9,8 @@ ConditionKernelCommandLine=sonora.gui
 ConditionPathExists=!/run/sonora-display-failed
 # The PipeWire socket and the control socket live in /run/user/1000, which the
 # lingering user manager creates.
-Wants=sound.target user@1000.service
-After=sound.target user@1000.service systemd-user-sessions.service
+Wants=sound.target user@1000.service sonora-rtirq.service sonora-cpu-latency.service
+After=sound.target user@1000.service systemd-user-sessions.service sonora-rtirq.service sonora-cpu-latency.service
 # Separate from the UI's budget: a crash-looping engine is retried for ever,
 # because the operator has no other way back to a working machine.
 StartLimitIntervalSec=0
