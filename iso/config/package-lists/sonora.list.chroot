@@ -61,3 +61,12 @@ libgl1-mesa-dri
 libglx-mesa0
 libegl-mesa0
 fonts-dejavu-core
+
+# sonora-install (ADR-0032): partitioning, copying the squashfs the stick
+# booted, and the boot loader for both firmware paths. fdisk provides sfdisk.
+fdisk
+squashfs-tools
+efibootmgr
+grub-efi-amd64-bin
+grub-pc-bin
+grub-common
