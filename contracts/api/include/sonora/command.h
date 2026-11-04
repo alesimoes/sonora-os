@@ -324,6 +324,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // latency.* commands.
         {"window.latency", CommandTarget::None, "Show or hide the Latency window",
          false, CommandDomain::Interface},
+        // Setup > Preferences: the operator's own defaults, kept per machine
+        // by the interface; the engine is not asked.
+        {"window.preferences", CommandTarget::None, "Show or hide the Preferences window",
+         false, CommandDomain::Interface},
 
         // --- application ---
         {"app.save", CommandTarget::None, "Save the session"},
