@@ -226,6 +226,25 @@ int test_backend_failure_ends_the_interface() {
     return 0;
 }
 
+// ui.meters.tui: xruns (the callback missed its deadline) and overruns
+// (capture frames lost) are two counters, never one. The header line is
+// compared whole, as the operator reads it.
+int test_xruns_and_overruns_are_separate() {
+    Rig r;
+    CHECK(r.connect());
+    std::string screen = r.frame();
+    CHECK(mentions(screen, "xruns 0   clock steps 0   overruns 0   misses 0"));
+    r.engine.add_xruns(2);
+    r.engine.add_overruns(7);
+    screen = r.frame();
+    CHECK(mentions(screen,
+                   "  48000 Hz / 128 frames   xruns 2   clock steps 0   overruns 7   misses 0\n"));
+    r.engine.add_xruns(1);
+    screen = r.frame();
+    CHECK(mentions(screen, "xruns 3   clock steps 0   overruns 7"));
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -235,6 +254,7 @@ int main() {
     failures += test_backend_failure_ends_the_interface();
     failures += test_bus_meters_misses_and_locating();
     failures += test_record_ready_is_shown();
+    failures += test_xruns_and_overruns_are_separate();
     if (failures != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failures);
         return 1;
