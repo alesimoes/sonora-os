@@ -73,6 +73,9 @@ class Config:
     permission_mode: str = "acceptEdits"
     seeds: dict = field(default_factory=dict)  # kind -> last used number
     live_pools: object = None  # None: every pool is live when not dry-run
+    train_slots: int = 6        # adopted PRs with CI in flight at once
+    daemon_merge: bool = True   # the daemon merges green PRs itself; no
+    #                             detached merge-when-green watcher per PR
 
     def __post_init__(self):
         self.cap = min(int(self.cap), HARD_CAP)

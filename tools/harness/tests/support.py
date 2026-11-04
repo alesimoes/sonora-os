@@ -130,8 +130,70 @@ class FakeForge(Forge):
     def checks(self, pr, **states):
         self.prs[pr]["checks"] = dict(states)
 
-    def merge(self, pr):
-        self.prs[pr]["state"] = "merged"
+    def merge(self, pr, head_sha=None):
+        self._chk("merge")
+        p = self.prs[pr]
+        if head_sha is not None and head_sha != p.get("head", "h0"):
+            raise ForgeError("head moved")
+        p["state"] = "merged"
+        self.merged = getattr(self, "merged", []) + [(pr, head_sha)]
+
+    # -- merge train --------------------------------------------------
+    def add_pr(self, n, branch, files=(), base="main", checks=None,
+               mergeable="yes", title=""):
+        self.prs[n] = {"branch": branch, "files": list(files), "base": base,
+                       "state": "open", "mergeable": mergeable,
+                       "checks": dict(checks or {}), "head": "h0",
+                       "title": title or branch}
+
+    def list_prs(self):
+        self._chk("list_prs")
+        return [{"number": n, "title": p.get("title", ""),
+                 "branch": p["branch"], "base": p.get("base", "main"),
+                 "files": p["files"]}
+                for n, p in sorted(self.prs.items()) if p["state"] == "open"]
+
+    def pr_detail(self, pr):
+        self._chk("pr_detail")
+        p = self.prs[pr]
+        return {"state": p["state"], "mergeable": p["mergeable"],
+                "base": p.get("base", "main"), "branch": p["branch"],
+                "head_sha": p.get("head", "h0"),
+                "checks": [{"name": k, "state": v}
+                           for k, v in sorted(p["checks"].items())]}
+
+    def _new_head(self, pr):
+        p = self.prs[pr]
+        n = int(p.get("head", "h0")[1:]) + 1
+        p["head"] = f"h{n}"
+        p["checks"] = {k: "pending" for k in p["checks"]}
+
+    def update_branch(self, pr):
+        self._chk("update_branch")
+        r = self.prs[pr].get("update", "ok")
+        self.updated = getattr(self, "updated", []) + [pr]
+        if r == "ok":
+            self._new_head(pr)
+        return r
+
+    def rerun_failed(self, pr, head_sha):
+        self._chk("rerun_failed")
+        self.reruns = getattr(self, "reruns", []) + [(pr, head_sha)]
+        p = self.prs[pr]
+        p["checks"] = {k: ("pending" if v in ("fail", "cancel") else v)
+                       for k, v in p["checks"].items()}
+        return True
+
+    def retarget(self, pr, base):
+        self._chk("retarget")
+        self.prs[pr]["base"] = base
+
+    def push_head(self, worktree, branch):
+        self._chk("push")
+        self.pushed.append(branch)
+        n = next(k for k, p in self.prs.items() if p["branch"] == branch)
+        if getattr(self, "fix_commits", True):
+            self._new_head(n)
 
 
 class DirWorktrees:
@@ -146,6 +208,13 @@ class DirWorktrees:
         p = os.path.join(self.root, "wt", task_id)
         os.makedirs(p, exist_ok=True)
         return p
+
+    def path(self, task_id):
+        return os.path.join(self.root, "wt", task_id)
+
+    def ensure_pr(self, key, branch):
+        self.pr_checkouts = getattr(self, "pr_checkouts", []) + [branch]
+        return self.ensure(key, branch)
 
     def remove(self, task_id):
         pass

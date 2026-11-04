@@ -205,9 +205,42 @@ class GitWorktrees:
             raise RuntimeError("git worktree add: " + r.stderr.strip())
         return wt
 
+    def ensure_pr(self, key, branch):
+        """Worktree for an adopted PR, at the PR's head on origin, every time
+        a fixer starts (the last fixer's commits were pushed by the daemon).
+        The local branch is train/<branch>: the PR's own name may be checked
+        out in another worktree, which git refuses twice."""
+        wt = self.path(key)
+        local = f"train/{branch}"
+
+        def git(*a, cwd=None):
+            r = subprocess.run(["git", "-C", cwd or self.root, *a],
+                               capture_output=True, text=True)
+            if r.returncode:
+                raise RuntimeError(f"git {a[0]}: " + r.stderr.strip())
+
+        git("fetch", "-q", "origin",
+            f"+refs/heads/{branch}:refs/remotes/origin/{branch}")
+        if not os.path.isdir(wt):
+            os.makedirs(os.path.dirname(wt), exist_ok=True)
+            git("worktree", "add", "-B", local, wt, f"origin/{branch}")
+        else:
+            # Leftovers of a fixer that died before committing are dropped:
+            # what counts is on origin.
+            git("reset", "-q", "--hard", cwd=wt)
+            git("checkout", "-q", "-B", local, f"origin/{branch}", cwd=wt)
+            git("clean", "-qfd", cwd=wt)
+        return wt
+
     def remove(self, task_id):
         subprocess.run(["git", "-C", self.root, "worktree", "remove",
                         "--force", self.path(task_id)], capture_output=True)
+
+
+def git_head(worktree):
+    r = subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else None
 
 
 def spawn(argv, env, cwd, stream_path):

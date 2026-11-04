@@ -26,6 +26,7 @@ from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge  # noqa: E402
 from harness.store import Store  # noqa: E402
+from harness.train import Train  # noqa: E402
 
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer"}
 ATTRIBUTION = "\U0001F916 Generated with [Claude Code](https://claude.com/claude-code)"
@@ -66,6 +67,7 @@ class Orchestrator:
         self.dry_logged = set()
         self.last_gaps = {}
         self.flow = Flow(self)
+        self.train = Train(self)
         self.shadow = None
         if shadow_agents:   # shadow rollout: never launches, only compares
             self.dry_run = True
@@ -207,6 +209,9 @@ class Orchestrator:
             "dry-run" if self.dry_run else "live", stop, stop_now,
             self.usage_pause_until, paused,
             self.store.runs_started_since(now - 3600))
+        data["train"] = self.train.rows()
+        data["train_slots"] = self.cfg.train_slots
+        data["gh_paused_until"] = self.train.pause_until or None
         status.write_atomic(self._p("status.json"), data)
 
     # -- launching ----------------------------------------------------
@@ -270,7 +275,14 @@ class Orchestrator:
         stream = os.path.join(run_dir, "stream.log")
         try:
             os.makedirs(run_dir, exist_ok=True)
-            if t["kind"] == "work" and ln.kind in ("integrator", "fixer"):
+            if t["kind"] == "work" and ln.kind == "fixer" and \
+                    self.train.is_adopted(t["feature_id"]):
+                fb = self._feature_branch(t["feature_id"])
+                wt = self.worktrees.ensure_pr(
+                    self._feature_key(t["feature_id"]), fb)
+                t["branch"], t["worktree"] = fb, wt
+                self.store.set_task(t["id"], worktree=wt)
+            elif t["kind"] == "work" and ln.kind in ("integrator", "fixer"):
                 fb = self._feature_branch(t["feature_id"])
                 wt = self.worktrees.ensure(self._feature_key(t["feature_id"]),
                                            fb)
@@ -368,6 +380,20 @@ class Orchestrator:
             extra += "\nFixer brief: no scope change, no test deletion or " \
                      "weakening. Fix the failing checks named in the note, " \
                      "rerun them locally, commit; the daemon pushes."
+            ti = self.train.info(t["feature_id"]) if t["feature_id"] else None
+            if ti:
+                extra += (
+                    "\nMerge-train PR #%s (branch %s), checked out here at "
+                    "its head on origin. Read why it is red before changing "
+                    "anything: `gh pr checks %s`, then `gh run view --job "
+                    "<id> --log-failed` for each failing job. If the cause "
+                    "is outside this PR (runner lost, apt or network "
+                    "failure, a check already fixed on main), say so in "
+                    "result.json and commit nothing. A conflict: `git merge "
+                    "origin/main`, resolve keeping both sides' intent, run "
+                    "the narrow tests. Commit on the current branch; never "
+                    "push, never merge, never edit planning/BACKLOG.md." % (
+                        ti.get("pr"), ti.get("branch"), ti.get("pr")))
         if kind == "tester":
             extra += "\nYou are the tester: review and run accept commands; " \
                      "never edit code."
@@ -650,9 +676,15 @@ class Orchestrator:
         f = self.store.get_feature(fid)
         branch = self._feature_branch(fid)
         try:
-            self.forge.push(self.worktrees.ensure(self._feature_key(fid),
-                                                  branch), branch)
-            self.forge.enqueue(f["pr"])
+            if self.train.is_adopted(fid):
+                wt = t.get("worktree") or self.worktrees.path(
+                    self._feature_key(fid))
+                self.forge.push_head(wt, branch)
+                self.train.after_fix(fid, launcher.git_head(wt))
+            else:
+                self.forge.push(self.worktrees.ensure(self._feature_key(fid),
+                                                      branch), branch)
+                self.forge.enqueue(f["pr"])
         except ForgeError as e:
             self._count_failure(t, f"push after fix failed: {e}", now)
             return
@@ -665,6 +697,13 @@ class Orchestrator:
             if not f["pr"] or not ts or ts[0]["state"] != "pr_open":
                 continue
             if now - self.ci_polled.get(f["id"], 0) < self.cfg.ci_poll_s:
+                continue
+            if self.train.is_adopted(f["id"]):
+                if now < self.train.pause_until:
+                    return
+                self.ci_polled[f["id"]] = now
+                if not self.train.step(f, ts, now):
+                    return
                 continue
             self.ci_polled[f["id"]] = now
             try:
@@ -848,6 +887,10 @@ def main(argv=None):
     a.add_argument("--brief", default="")
     a.add_argument("--depends-on", default="")
     a.add_argument("--wants", default="")
+    t = sub.add_parser("adopt", help="put open PRs on the merge train "
+                       "(stop the daemon first: one writer of state.json)")
+    t.add_argument("prs", nargs="*", type=int,
+                   help="PR numbers; none means every open PR")
     args = ap.parse_args(argv)
     root = os.path.abspath(args.root)
     odir = os.path.join(root, "planning", "orchestrator")
@@ -884,6 +927,13 @@ def main(argv=None):
             cur = set()
         cur = cur - {args.pool} if args.resume else cur | {args.pool}
         status.write_atomic(path, sorted(cur))
+    elif args.cmd == "adopt":
+        o = Orchestrator(root)
+        try:
+            got = o.train.adopt(set(args.prs) or None)
+        finally:
+            o.close()
+        print("adopted: " + (" ".join(f"#{n}" for n in got) or "none"))
     elif args.cmd == "add":
         o = Orchestrator(root)
         o.store.add_task(
