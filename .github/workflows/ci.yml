@@ -595,6 +595,9 @@ jobs:
       - name: Read-only root, capped RAM writes
         run: tools/test-ro-root.sh
 
+      - name: Secure Boot chain, static
+        run: tools/test-secure-boot.sh
+
       - name: Merge gate decisions, against a fake gh
         run: tools/test-merge-checks.sh
 
