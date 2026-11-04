@@ -174,6 +174,36 @@ container), `tools/test-install-qemu.sh` (the exit test: install to a virtio
 disk from the ISO, restart without the stick, find the session). The last two
 have not been run in CI; see the PR that added them.
 
+## Hardware acceptance
+
+One session on the real laptop with the UMC1820 gives evidence for
+system.boot_tests.hardware, system.hardening.soak, system.hardening.crash_recovery,
+drivers.umc1820.* and system.usb.physical. Nothing here has been run on
+hardware yet; `tools/test-sonora-acceptance.sh` checks the kit's decisions
+against a fake machine only.
+
+1. Write the stick (`tools/write-usb.ps1`), plug in the UMC1820, boot the laptop
+   from the stick. At the boot menu press `e` (GRUB) or Tab (ISOLINUX) and add
+   `systemd.debug-shell=1` to the kernel line, then boot. The engine starts as
+   usual; press Ctrl+Alt+F9 for a root shell.
+2. `sonora-acceptance quick` (about 2 minutes). Prints PASS, FAIL or SKIP per
+   check with its evidence: RT kernel, `threadirqs`, rtprio and memlock, CPU
+   governor, UMC1820 USB ID and 18/20 channels, PipeWire pinned at 128/48000,
+   a 60 s 18-channel take with its xrun count, and the take played back.
+3. `sonora-acceptance soak 8` (or the hours you have). Logs a line a minute to
+   `/home/sonora/Acceptance/soak-*.log`, stops itself if free space drops under
+   2 GB, prints a summary.
+4. `sonora-acceptance powercut`, wait for the notice, pull the power (charger
+   out, battery out or hold the power button), boot again with the same
+   `systemd.debug-shell=1`, then `sonora-acceptance recover-check`.
+5. `sonora-acceptance report`. Copy
+   `/home/sonora/Acceptance/report-*.md` off the stick (it lives on the
+   persistence partition) into `brain/research/` and open the PR. The report
+   names the machine, the kernel and command line, and every result.
+
+`quick` and `soak` stop `sonora-session.service` and start it again at the end.
+For the quanta below 128 use `tools/umc-measure.sh`.
+
 ## What is not verified
 
 The image builds and boots in QEMU, both from the ISO (`tools/test-boot-qemu.sh`)

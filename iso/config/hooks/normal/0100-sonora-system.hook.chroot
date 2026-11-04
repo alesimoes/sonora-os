@@ -115,6 +115,7 @@ chmod 0755 /usr/local/bin/sonora-engine
 chmod 0755 /usr/local/bin/sonora-tui
 chmod 0755 /usr/local/bin/sonora-wait-for-audio
 chmod 0755 /usr/local/bin/sonora-smoketest
+chmod 0755 /usr/local/bin/sonora-acceptance
 chmod 0755 /usr/local/bin/sonora-install
 chmod 0755 /usr/local/bin/sonora-install-tty
 chmod 0755 /usr/local/bin/sonora-compositor
