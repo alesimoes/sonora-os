@@ -184,6 +184,39 @@ a.prn:hover,a.prt:hover{text-shadow:0 0 4px var(--cyan);text-decoration:underlin
 .log time{color:var(--faint);margin-right:8px}
 .log .ok{color:var(--teal)} .log .warn{color:var(--amber)} .log .bad{color:var(--red)} .log .info{color:var(--cyan)}
 @keyframes in{from{opacity:0;transform:translateX(-8px)}}
+
+/* orquestrador */
+.ob{font:600 13px var(--disp);letter-spacing:.18em;text-transform:uppercase;padding:2px 12px;border:1px solid var(--c,var(--cyan));color:var(--c,var(--cyan));box-shadow:0 0 8px -2px var(--c,var(--cyan))}
+.ob.live{--c:#7dffb0} .ob.shadow{--c:var(--amber)} .ob.off{--c:var(--slate);box-shadow:none}
+.ohead{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;padding:12px 14px 4px;font:12px var(--mono);color:var(--muted)}
+.ohead b{color:var(--ink);font-weight:500}
+.ohead .ks{color:var(--red);border:1px solid var(--red);padding:0 8px}
+.capbar{display:flex;gap:2px;width:150px}.capbar i{flex:1;height:8px;border:1px solid var(--cyan);opacity:.5}.capbar i.on{background:var(--cyan);opacity:1;box-shadow:0 0 4px var(--cyan)}
+.pools{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:8px 14px}
+.pl{border:1px solid var(--line);background:rgba(4,14,24,.6);padding:7px 10px;--c:var(--cyan)}
+.pl.low{--c:var(--amber)} .pl.zero{--c:var(--red)} .pl.paused{--c:var(--slate);opacity:.6} .pl.nofloor{--c:var(--slate)}
+.pl .pn{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.pl .pv{font:500 17px var(--mono);color:var(--c);text-shadow:0 0 6px var(--c)}
+.pl .pv small{font-size:11px;color:var(--faint)}
+.pl .bar{height:3px;background:var(--line);margin-top:4px}.pl .bar i{display:block;height:100%;background:var(--c);transition:width .8s}
+.pl .why{font:10.5px var(--mono);color:var(--faint);margin-top:3px;min-height:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kan{display:flex;gap:8px;overflow-x:auto;padding:8px 14px 14px;align-items:flex-start}
+.kc{flex:1 0 150px;min-width:150px;--c:var(--cyan)}
+.kc.s-queued{--c:var(--slate)} .kc.s-planning{--c:#a99cff} .kc.s-distributing{--c:var(--teal)} .kc.s-qa{--c:#5ef0a8} .kc.s-integrating{--c:#ff7ad9} .kc.s-pr_open,.kc.s-ci_fix{--c:var(--amber)} .kc.s-merged{--c:#7dffb0} .kc.s-blocked{--c:var(--red)}
+.kc.sep{margin-left:10px;border-left:1px dashed var(--line2);padding-left:10px}
+.kh{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid var(--c);padding-bottom:3px;margin-bottom:6px;font-size:13px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--c)}
+.kh span{font:12px var(--mono)}
+.fc{border:1px solid var(--line);border-left:2px solid var(--c);background:rgba(4,14,24,.6);padding:6px 8px;margin-bottom:6px}
+.fc .fn{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fc .fm{font:10.5px var(--mono);color:var(--faint);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.fc .fm.bad,.fc .fm .bad{color:var(--red)}
+.owner.big{margin:10px 14px 0;padding:10px 14px;font-size:14px;border-width:2px;box-shadow:0 0 12px -3px var(--amber);font-family:var(--disp);letter-spacing:.04em}
+.owner.big h3{margin:0 0 4px;font-size:15px;letter-spacing:.2em;text-transform:uppercase}
+.leg{border-top:1px solid var(--line);margin-top:4px}
+.leg .lh{padding:8px 14px 0;font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--faint)}
+.leg .grid{grid-template-columns:repeat(auto-fill,minmax(210px,1fr))}
+.leg .card{padding:6px 9px;opacity:.9}.leg .card h3{font-size:13px}
+.rcard .tk{font:11px var(--mono);color:var(--muted);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 footer{color:var(--faint);font:11px var(--mono);margin-top:2px}
 :focus-visible{outline:1px solid var(--cyan);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
@@ -200,7 +233,15 @@ footer{color:var(--faint);font:11px var(--mono);margin-top:2px}
   </header>
   <p class="err" id="err"></p>
 
-  <section class="panel hero" aria-label="Fluxo de trabalho">
+  <section class="panel hero" id="orchhero" aria-label="Orquestrador" hidden>
+    <div class="ph"><h2>Orquestrador</h2><span class="ob off" id="omode">-</span><i id="orchmeta"></i></div>
+    <div id="owaits"></div>
+    <div class="ohead" id="ohead"></div>
+    <div class="pools" id="opools"></div>
+    <div class="kan" id="okan"></div>
+  </section>
+
+  <section class="panel hero" id="pipehero" aria-label="Fluxo de trabalho">
     <div class="ph"><h2>Fluxo de trabalho</h2><i id="pipemeta">clique numa etapa para filtrar</i></div>
     <div class="pipe" id="pipe"></div>
     <div class="filt" id="filt"><span id="filttxt"></span><button id="filtx" type="button">limpar filtro</button></div>
@@ -209,6 +250,7 @@ footer{color:var(--faint);font:11px var(--mono);margin-top:2px}
   <section class="panel hero" aria-label="Agentes">
     <div class="ph"><h2>Agentes</h2><i id="agcount"></i>
       <span class="tg"><label><input type="checkbox" id="showdone"> mostrar terminados</label></span></div>
+    <div id="oruns"></div>
     <div id="tracks"></div>
     <div class="note">A meta conta só agentes <b>trabalhando</b>. Buildando (anel girando) não conta: o agente espera o container, não está escrevendo.</div>
   </section>
@@ -219,7 +261,6 @@ footer{color:var(--faint);font:11px var(--mono);margin-top:2px}
       <div class="panel"><div class="ph"><h2>PRs abertos</h2><i id="prcount"></i></div><div id="prs"></div></div>
     </section>
     <aside class="col">
-      <div class="panel" id="orchp" hidden><div class="ph"><h2>Orquestrador</h2><i id="orchmeta"></i></div><div class="pb" id="orch"></div></div>
       <div class="panel"><div class="ph"><h2>Watchers de merge</h2><i id="wcount"></i></div><div id="ws"></div></div>
       <div class="panel"><div class="ph"><h2>Containers</h2><i id="ccount"></i></div><div id="cs"></div></div>
       <footer>Estado do agente é inferido: container montando o worktree = buildando; arquivo ou git mudou nos últimos 3 min = trabalhando; nada disso = aguardando.</footer>
@@ -329,12 +370,13 @@ function render(s){
   $('cs').innerHTML=s.containers.map(c=>`<div class="row crow"><span class="id">${c.id}</span><span>${owner(c)}<div class="br">${E(c.image)}</div></span><span class="sub">${dur(Math.round(now-Date.parse(c.started)/1000))}</span></div>`).join('')||'<div class="empty">Nenhum container.</div>';
   $('wcount').textContent=s.watchers.length+' ativos';
   $('ws').innerHTML=s.watchers.map(x=>`<div class="row crow"><span class="id">pid ${E(x.pid)}</span><span><a class="prn" href="${PRURL}${x.pr}" target="_blank" rel="noopener">PR #${x.pr}</a></span><span class="sub">${E(x.since)}</span></div>`).join('')||'<div class="empty">Nenhum watcher.</div>';
-  renderOrch(s.orchestrator,watch);
+  renderOrch(s.orchestrator);
   $('err').textContent=(s.errors||[]).join(' | ');
 }
 
 /* pipeline: nos brilhantes ligados por linhas animadas; clique filtra */
 function renderPipe(s,aSt,pSt){
+  if(s.orchestrator&&typeof s.orchestrator==='object'){selStage=null;return}
   const items={};STAGES.forEach(x=>items[x[0]]=[]);
   s.agents.forEach(a=>{const st=aSt[a.id];if(st)items[st].push({k:'a',t:a.label,pr:a.pr})});
   const owned=new Set(s.agents.filter(a=>aSt[a.id]&&a.pr).map(a=>a.pr));
@@ -362,7 +404,10 @@ function renderAgents(s,aSt,prs,watch){
   const by={};TRACKS.forEach(t=>by[t[0]]=[]);s.agents.forEach(a=>by[trackOf(a)[0]].push(a));
   const hidden=s.agents.filter(a=>['done','paused'].includes(a.state)).length;
   $('agcount').textContent=s.agents.filter(a=>!['done','paused'].includes(a.state)).length+' ativos de '+s.agents.length+(hidden&&!showDone?' · '+hidden+' terminados ocultos':'');
-  $('tracks').innerHTML=TRACKS.map(([key,name,tgt,cls])=>{
+  const orchOn=!!s.orchestrator&&typeof s.orchestrator==='object';
+  $('oruns').innerHTML=orchOn?orchRuns(s.orchestrator):'';
+  const legacy=orchOn?'<div class="leg"><div class="lh">Coordenador (legado)</div>':'';
+  $('tracks').innerHTML=legacy+(TRACKS.map(([key,name,tgt,cls])=>{
     const all=by[key];if(!all.length&&!tgt)return '';
     const w=all.filter(a=>a.state==='working').length,b=all.filter(a=>a.state==='building').length;
     let list=all.filter(a=>showDone||!['done','paused'].includes(a.state));
@@ -371,7 +416,7 @@ function renderAgents(s,aSt,prs,watch){
     const cells=tgt?`<div class="cells">${Array.from({length:Math.max(tgt,w)},(_,i)=>`<i class="${i<w?'on':''}"></i>`).join('')}</div>`:'';
     const cc=tgt?`<span class="cnt ${w===0?'zero':w<tgt?'low':''}">${w} / ${tgt} trabalhando</span>`:`<span class="cnt">${w} trabalhando</span>`;
     return `<div class="trk ${cls}"><div class="th"><h2>${name}</h2>${cc}${cells}<span class="rest">${b?b+' buildando (não conta) · ':''}${all.filter(a=>a.state==='waiting'||a.state==='no worktree').length} aguardando</span></div>
-    <div class="grid">${list.map(a=>card(a,aSt[a.id],prs,watch)).join('')||`<div class="empty" style="grid-column:1/-1">${selStage?'Nenhum agente desta trilha nesta etapa.':'Nenhum agente nesta trilha.'}</div>`}</div></div>`}).join('')||'<div class="empty">Nenhum agente no arquivo de rótulos.</div>'}
+    <div class="grid">${list.map(a=>card(a,aSt[a.id],prs,watch)).join('')||`<div class="empty" style="grid-column:1/-1">${selStage?'Nenhum agente desta trilha nesta etapa.':'Nenhum agente nesta trilha.'}</div>`}</div></div>`}).join('')||(orchOn?'<div class="empty">Nenhum subagente do coordenador.</div>':'<div class="empty">Nenhum agente no arquivo de rótulos.</div>'))+(orchOn?'</div>':'')}
 function card(a,st,prs,watch){
   const live=!['done','paused'].includes(a.state);
   const wi=a.idle_seconds==null?0:Math.min(100,Math.round(a.idle_seconds/600*100));
@@ -400,29 +445,63 @@ function renderPRs(s,watch,pSt){
     <div class="seg"><i class="p" style="width:${p.passed/tot*100}%"></i><i class="r" style="width:${p.pending.length/tot*100}%"></i><i class="f" style="width:${p.failed.length/tot*100}%"></i></div>
     <div class="det">${det.join('')}</div></div>`}).join('')||`<div class="empty">${selStage?'Nenhum PR nesta etapa.':'Nenhum PR aberto.'}</div>`}
 
-/* orquestrador: formato tolerante, tudo opcional */
-function renderOrch(o,w){
-  const box=$('orchp');
-  if(!o||typeof o!=='object'){box.hidden=true;return}
-  box.hidden=false;
-  let pools=o.pools||[];
-  if(!Array.isArray(pools))pools=Object.entries(pools).map(([name,v])=>typeof v==='object'?{name,...v}:{name,working:v});
-  const feats=Array.isArray(o.features)?o.features:Object.entries(o.features||{}).map(([name,v])=>({name,...v}));
-  const waits=o.waits_on_owner||o.waits||[];
-  $('orchmeta').textContent=o.updated?String(o.updated).slice(0,19).replace('T',' '):'';
-  const num=v=>typeof v==='number'?v:(v&&typeof v==='object'?(v.length??0):0);
-  let h=pools.map(p=>{const wk=num(p.working??p.active??p.count),fl=num(p.floor??p.min??p.target),mx=Math.max(wk,fl,1);
-    return `<div class="pool ${wk<fl?'low':''}"><span class="nm">${E(p.name||p.pool||'?')}</span><b>${wk} / piso ${fl}</b><div class="bar"><i style="width:${wk/mx*100}%"></i><u style="left:${fl/mx*100}%"></u></div></div>`}).join('');
-  h+=feats.map(f=>{
-    const tasks=f.tasks||f.strip||[];
-    const st=t=>{const v=String(typeof t==='object'?(t.state||t.status||''):t).toLowerCase();return /done|ok|merged|x|feito/.test(v)?'done':/block|wait|fail|red/.test(v)?'block':/doing|work|run|progress|building/.test(v)?'doing':''};
-    const pr=f.pr?`<a class="prn" href="${PRURL}${f.pr}" target="_blank" rel="noopener">#${f.pr}</a>`:'';
-    return `<div class="feat"><div class="fh">${pr}<span style="flex:1;min-width:0">${E(f.name||f.title||f.id||'?')}</span>${f.state||f.status?`<span class="m" style="font-size:11px;color:var(--muted)">${E(f.state||f.status)}</span>`:''}</div>
-    ${Array.isArray(tasks)&&tasks.length?`<div class="strip">${tasks.map(t=>`<i class="${st(t)}" title="${E(typeof t==='object'?(t.name||t.title||''):t)}"></i>`).join('')}</div>`:''}</div>`}).join('');
-  const wl=Array.isArray(waits)?waits:[waits];
-  if(wl.length)h+=`<div class="owner">espera o dono:<ul>${wl.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`;
-  $('orch').innerHTML=h||'<div class="empty">status.json sem pools nem features.</div>';
+/* orquestrador: substitui o pipeline quando o status.json existe */
+const KSTATES=[['queued','Na fila'],['planning','Planejando'],['distributing','Distribuindo'],['building','Construindo'],['qa','QA'],['integrating','Integrando'],['pr_open','PR aberto'],['ci_fix','Correção de CI'],['merged','Mergeado']];
+const POOLS=['plan','build:daw','build:os','build:plugin','qa','fix','merge'];
+const tstate=t=>{const v=String(typeof t==='object'?(t.state||t.status||''):t).toLowerCase();return /done|ok|merged|feito|complete/.test(v)?'done':/block|fail|red|stuck/.test(v)?'block':/doing|work|run|progress|build|review|qa/.test(v)?'doing':''};
+function renderOrch(o){
+  const hero=$('orchhero');
+  hero.hidden=!o||typeof o!=='object';
+  $('pipehero').hidden=!hero.hidden;
+  if(hero.hidden){$('oruns').innerHTML='';return}
+  const mode=String(o.mode||'').toLowerCase();
+  const mb=$('omode');
+  mb.className='ob '+(mode==='live'?'live':/shadow|dry|sombra/.test(mode)?'shadow':'off');
+  mb.textContent=mode==='live'?'LIVE':/shadow|dry|sombra/.test(mode)?'sombra':'parado';
+  $('orchmeta').textContent=o.updated?'atualizado '+String(o.updated).slice(0,19).replace('T',' '):'';
+  const runs=Array.isArray(o.runs)?o.runs:[];
+  const cap=Number(o.cap)||0,used=Number.isFinite(+o.live)?+o.live:runs.length;
+  let hd=`<span>agentes <b>${used} / ${cap||'?'}</b></span>`;
+  if(cap)hd+=`<span class="capbar">${Array.from({length:Math.min(cap,40)},(_,i)=>`<i class="${i<used?'on':''}"></i>`).join('')}</span>`;
+  hd+=`<span>PRs abertos <b>${o.open_prs??0}</b>${o.max_open_prs?' / '+o.max_open_prs:''}</span>`;
+  if(o.ready_unpr!=null)hd+=`<span>prontos sem PR <b>${o.ready_unpr}</b></span>`;
+  if(o.runs_last_hour!=null)hd+=`<span>execuções na última hora <b>${o.runs_last_hour}</b></span>`;
+  const rs=Array.isArray(o.reservations)?o.reservations.length:0;if(rs)hd+=`<span>reservas <b>${rs}</b></span>`;
+  if(o.kill_switch)hd+=`<span class="ks">KILL SWITCH: ${E(typeof o.kill_switch==='object'?JSON.stringify(o.kill_switch):o.kill_switch)}</span>`;
+  if(o.usage_pause_until){const t=Number(o.usage_pause_until)||Date.parse(o.usage_pause_until)/1000;hd+=`<span class="ks">pausa por consumo${t?' · volta em '+until(t):''}</span>`}
+  $('ohead').innerHTML=hd;
+  const P=o.pools||{};
+  const names=POOLS.filter(n=>P[n]).concat(Object.keys(P).filter(n=>!POOLS.includes(n)&&((P[n].floor||0)>0||(P[n].live||0)>0)));
+  $('opools').innerHTML=names.map(n=>{const p=P[n]||{},fl=p.floor||0,lv=p.live||0,wk=p.working||0,mx=Math.max(fl,lv,1);
+    const cls=p.paused?'paused':!fl?'nofloor':lv===0?'zero':lv<fl?'low':'';
+    return `<div class="pl ${cls}"><div class="pn">${E(n)}${p.paused?' · pausado':''}</div><div class="pv">${lv}<small> vivos / ${wk} trab. / piso ${fl}</small></div><div class="bar"><i style="width:${lv/mx*100}%"></i></div><div class="why" title="${E(p.reason||'')}">${E(p.reason||(lv<fl?'abaixo do piso':''))}</div></div>`}).join('')||'<div class="empty">status.json sem pools.</div>';
+  const feats=(Array.isArray(o.features)?o.features:Object.entries(o.features||{}).map(([name,v])=>({name,...v}))).filter(f=>f&&typeof f==='object');
+  const fcard=f=>{const tasks=Array.isArray(f.tasks)?f.tasks:[];
+    const pr=f.pr?`<a class="prn" href="${PRURL}${f.pr}" target="_blank" rel="noopener">PR #${f.pr}</a>`:'';
+    return `<div class="fc"><div class="fn" title="${E(f.name||f.id)}">${E(f.name||f.id||'?')}</div>
+      <div class="fm">${pr}${f.track?`<span>${E(f.track)}</span>`:''}${f.adr?`<span>ADR-${E(f.adr)}</span>`:''}${f.fixes?`<span class="bad">${f.fixes} correç${f.fixes>1?'ões':'ão'}</span>`:''}${f.partial?'<span>parcial</span>':''}${tasks.length?`<span>${f.tasks_done??0}/${f.tasks_total??tasks.length}</span>`:''}</div>
+      ${f.blocked_reason?`<div class="fm bad">${E(f.blocked_reason)}</div>`:''}
+      ${tasks.length?`<div class="strip">${tasks.map(t=>`<i class="${tstate(t)}" title="${E(typeof t==='object'?[t.name||t.id||'',t.stage||'',t.state||''].filter(Boolean).join(' · '):t)}"></i>`).join('')}</div>`:''}</div>`};
+  const col=(id,name,list,sep)=>`<div class="kc s-${id} ${sep?'sep':''}"><div class="kh">${name}<span>${list.length}</span></div>${list.map(fcard).join('')||'<div class="empty" style="padding:6px">-</div>'}</div>`;
+  const known=new Set(KSTATES.map(k=>k[0]));
+  const bl=Array.isArray(o.blocked)?o.blocked:[];
+  const blocked=feats.filter(f=>f.state==='blocked'||bl.includes(f.id));
+  const rest=feats.filter(f=>!blocked.includes(f));
+  const extra=[...new Set(rest.map(f=>f.state).filter(x=>x&&!known.has(x)))];
+  $('okan').innerHTML=KSTATES.map(([id,n])=>col(id,n,rest.filter(f=>f.state===id))).join('')+extra.map(x=>col(x,E(x),rest.filter(f=>f.state===x))).join('')+col('blocked','Bloqueado',blocked,true);
+  const waits=o.waits_on_owner||o.waits||[],wl=Array.isArray(waits)?waits:[waits];
+  $('owaits').innerHTML=wl.length?`<div class="owner big"><h3>Espera o dono (${wl.length})</h3><ul>${wl.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||x.question||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`:'';
 }
+function orchRuns(o){
+  if(!o||!Array.isArray(o.runs))return '';
+  const now=Date.now()/1000;
+  const cards=o.runs.map(r=>{const age=r.started?Math.round(now-r.started):null;
+    const cls=r.suspect?'waiting':r.building?'building':r.working===false?'waiting':'working';
+    const st=r.suspect?'suspeito':r.building?'buildando':r.working===false?'ocioso':'trabalhando';
+    return `<article class="card rcard ${cls}"><div class="top"><span class="orb"></span><h3 title="${E(r.id||r.name)}">${E(r.name||r.id||'?')}</h3><span class="state">${st}</span></div>
+    <div class="meta"><span class="sg">${E(r.role||'?')}</span>${r.pool?`<span class="sg">${E(r.pool)}</span>`:''}<span>${age==null?'':dur(age)}</span><span class="m">pid ${E(r.pid)}</span></div>
+    <div class="tk" title="${E(r.task)}">${E(r.task||'')}</div></article>`}).join('');
+  return `<div class="trk"><div class="th"><h2>Orquestrador</h2><span class="cnt">${o.runs.length} em execução</span><span class="rest">${E(o.mode||'')}</span></div><div class="grid">${cards||'<div class="empty" style="grid-column:1/-1">Nenhum agente em execução.</div>'}</div></div>`}
 
 async function tick(){
   try{const r=await fetch('/api/state',{cache:'no-store'});const s=await r.json();lastOk=Date.now();render(s);
