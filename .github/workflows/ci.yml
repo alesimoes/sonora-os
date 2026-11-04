@@ -610,6 +610,9 @@ jobs:
       - name: Installed root, swap sizing and fstab
         run: tools/test-rootfs.sh
 
+      - name: Update policy files
+        run: tools/test-updates.sh
+
       - name: Merge gate decisions, against a fake gh
         run: tools/test-merge-checks.sh
 
