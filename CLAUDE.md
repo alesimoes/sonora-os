@@ -70,7 +70,7 @@ moves to the next item. When agents finish and none are running, launch
 the next items in the same turn. Context is reclaimed by auto-compaction,
 which the handoff survives.
 One PR per BACKLOG item, follow-ups included. Every agent and every review runs on Sonnet,
-never Opus (owner, 2026-11-03: it burns the weekly quota); the RT path,
+never Opus (owner, 2026-11-03: it burns the weekly quota), except the architect, which may be Opus (owner, 2026-11-04); the RT path,
 contracts, storage and recovery get a more careful brief, not a bigger model. Only a blocking finding sends a PR back; non-blocking ones become
 BACKLOG lines, batched into one follow-ups PR per track. A re-review is a
 fresh Sonnet agent that checks only the fix's diff. A PR enters the merge queue the moment it is opened:

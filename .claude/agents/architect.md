@@ -2,7 +2,7 @@
 name: architect
 description: Use for design decisions that span more than one component, for choosing between approaches with long-lived consequences, and for writing ADRs. Invoke before implementation when the shape of the solution is not obvious. Does not write production code.
 tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch
-model: sonnet
+model: opus
 maxTurns: 80
 ---
 
