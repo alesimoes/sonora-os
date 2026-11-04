@@ -390,6 +390,7 @@ bool FakeEngine::connect(std::string& error) {
     offer_recovered();
     if (!folder_.empty()) announce_folder();
     announce_latency();
+    if (!consolidate_event_.empty()) queue(outbound_, consolidate_event_);
     return true;
 }
 
@@ -1316,6 +1317,7 @@ void FakeEngine::poll(Inbox& inbox) {
     }
     check_take();
     check_latency();
+    check_consolidate();
     publish();
 
     // The client's half: everything back through the codec.
@@ -1622,19 +1624,26 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
             why = "stop recording before consolidating; nothing was consolidated";
             return false;
         }
-        for (const char* state : {"", "done"}) {
-            EngineEvent e;
-            e.kind = EventKind::Consolidate;
-            e.insert = a.track;
-            e.frame = state[0] == ' ' ? 0 : 1000;
-            e.flags = state[0] == ' ' ? kConsolidateRunning : kConsolidateDone;
-            post_event(e);
+        if (consolidate_running_) {
+            why = "a consolidate is already running";
+            return false;
         }
+        // Running now and Done on the next poll, so an interface sees both
+        // and a cancel has a poll to arrive in.
+        consolidate_running_ = true;
+        consolidate_age_ = 0;
+        consolidate_track_ = a.track;
+        announce_consolidate(kConsolidateRunning, 500);
         return true;
     }
     if (id == "session.consolidate_cancel") {
-        why = "no consolidate is running";
-        return false;
+        if (!consolidate_running_) {
+            why = "no consolidate is running";
+            return false;
+        }
+        consolidate_running_ = false;
+        announce_consolidate(kConsolidateCancelled, 0);
+        return true;
     }
     if (id == "session.place_recovered") return place_recovered(why);
     if (id == "session.leave_recovered") {
@@ -1846,6 +1855,27 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     }
     why = "not handled";
     return false;
+}
+
+// The server holds the last Consolidate event for a client that attaches
+// later; so does the fake.
+void FakeEngine::announce_consolidate(uint32_t state, uint32_t permille) {
+    EngineEvent e;
+    e.kind = EventKind::Consolidate;
+    e.insert = consolidate_track_;
+    e.frame = permille;
+    e.flags = state;
+    if (state == kConsolidateCancelled) e.text = "consolidate was cancelled; nothing was changed";
+    consolidate_event_.clear();
+    wire::encode(e, consolidate_event_);
+    post_event(e);
+}
+
+void FakeEngine::check_consolidate() {
+    if (!consolidate_running_) return;
+    if (consolidate_age_++ < 1) return;
+    consolidate_running_ = false;
+    announce_consolidate(kConsolidateDone, 1000);
 }
 
 void FakeEngine::announce_latency() {
