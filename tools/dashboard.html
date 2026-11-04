@@ -146,7 +146,7 @@ a.chip:hover{text-shadow:0 0 4px currentColor}
 .prh{display:flex;gap:8px;align-items:baseline}
 .train .tbar{height:8px;background:var(--line);margin:6px 0 10px}.train .tbar i{display:block;height:100%;background:var(--teal);box-shadow:0 0 4px var(--teal);transition:width .8s}
 .train .tcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
-.train .tc{border:1px solid var(--line);padding:6px 8px;min-width:0}.train .tc h3{margin:0 0 4px;font:11px var(--mono);letter-spacing:.08em;text-transform:uppercase}
+.train .tc{border:1px solid var(--line);padding:6px 8px;min-width:0;display:block}.train .tc h3{margin:0 0 4px;font:11px var(--mono);letter-spacing:.08em;text-transform:uppercase}
 .train .tc h3{cursor:pointer;user-select:none}.train .tc h3::before{content:'▾ '}.train .tc.closed h3::before{content:'▸ '}.train .tc.closed .tr{display:none}
 .train .trbtns{margin-left:auto;display:flex;gap:4px}.train .trbtns button{font:11px var(--mono);background:none;color:var(--slate);border:1px solid var(--line);padding:2px 8px;cursor:pointer}.train .trbtns button:hover{color:var(--cyan);border-color:var(--cyan)}
 .train.hidden .tcols,.train.hidden .tbar{display:none}
@@ -381,13 +381,14 @@ function renderOrchTrain(s,tr){
   tr.forEach(r=>{
     const ph=r.phase||'',nx=E(r.next||''),who=r.fixer?`<b>${E(r.fixer)}</b> (${E(r.agent||'')}) trabalhando`:'';
     if(ph==='juntando'){C.bun.push(`<b>${E(r.title||'bundle')}</b><div class="st">${who||'aguarda integrator'} · ${nx}</div>`);return}
-    if(ph==='no bundle'){if(r.state!=='merged')C.bun.push(row(r,nx));return}
+    if(ph==='no bundle')return;
     if(r.state==='ci_fix'||ph==='fixer'||ph==='conflito')C.fix.push(row(r,(who||'aguarda agente livre ('+E(r.agent||'')+')')+' · '+(ph==='conflito'?'conflito com a main':'vermelho: '+E((r.failing||[]).slice(0,2).join(', ')))));
     else if(ph==='empilhado'||ph==='retarget')C.stack.push(row(r,nx));
     else if(ph==='aguardando vaga')C.vaga.push(row(r,'vermelho/cancelado: '+E((r.failing||[]).slice(0,2).join(', '))));
     else if(ph==='atualizado'||ph==='rerodando')C.ref.push(row(r,E(r.last_action||'')+' · '+nx));
     else if(ph==='CI rodando')C.ci.push(row(r,`CI ${r.passed??'?'}/${r.total??'?'}`));
-    else if(ph==='verde'||ph==='mergeado')C.merge.push(row(r,nx||'merge'));
+    else if(ph==='mergeado'||r.state==='merged')return;
+    else if(ph==='verde')C.merge.push(row(r,nx||'merge'));
     else if(ph==='bloqueado'||ph==='fechado'||r.state==='blocked')C.blk.push(row(r,nx||'decisão do owner'));
     else C.ci.push(row(r,nx||ph))});
   const open=tr.filter(r=>r.state!=='merged').length,n=merged.length,tot=n+open;
@@ -397,7 +398,7 @@ function renderOrchTrain(s,tr){
   const col=trCol;
   const last=merged.slice(0,8).map(p=>`${L(p.number)} ${E(p.title).slice(0,36)}`);
   if(merged.length>8)last.push(`+${merged.length-8} antes`);
-  $('trcols').innerHTML=col('m','Mergeados hoje',last)+col('q','Bundles (juntando PRs)',C.bun)+col('g','Verde → merge',C.merge)
+  $('trcols').innerHTML=col('m','Mergeados hoje',last)+col('q','Bundles juntando PRs',C.bun)+col('g','Verde → merge',C.merge)
     +col('y','CI rodando',C.ci)+col('y','Refresh sem agente',C.ref)+col('x','Aguardando vaga no CI',C.vaga)
     +col('r','Agente corrigindo',C.fix)+col('q','Empilhado',C.stack)+col('r','Bloqueado (owner)',C.blk)}
 
