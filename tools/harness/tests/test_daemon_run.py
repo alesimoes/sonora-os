@@ -36,8 +36,18 @@ class RunTests(support.DaemonCase):
         o = self.make(floors={"daw": 1})
         self.add(o, "a")
         self.pump(o, lambda: state(o, "a") == "integrating")
-        with open(os.path.join(self.fake_dir, "argv.log")) as f:
-            argvs = [json.loads(x) for x in f]
+        log = os.path.join(self.fake_dir, "argv.log")
+
+        def read():
+            # the woken lead is launched on the last tick; its fake process
+            # logs argv a moment later
+            try:
+                with open(log) as f:
+                    return [json.loads(x) for x in f if x.strip()]
+            except (OSError, ValueError):
+                return []
+        self.pump(o, lambda: len(read()) >= 3)
+        argvs = read()
         # engineer, tester and the lead woken by the empty pool
         self.assertEqual(len(argvs), 3)
         for a in argvs:
@@ -131,10 +141,19 @@ class RunTests(support.DaemonCase):
         self.add(o, "a")
         self.pump(o, lambda: len(o.store.active_runs()) == 1)
         first = o.store.active_runs()[0]
+        # The fake consumes its script line on startup; killing it before
+        # that would hand the relaunch the "hang" line again.
+        self.assertTrue(self.pump(
+            o, lambda: os.path.getsize(first["stream_path"]) > 0))
         self.clock.offset += o.cfg.suspect_s + 60
         o.tick()
         self.assertEqual(o.store.get_run(first["id"])["suspect"], 1)
         self.clock.offset += o.cfg.stalled_s
+        self.assertTrue(self.pump(
+            o, lambda: o.store.get_run(first["id"])["outcome"] == "stalled"))
+        # The stream log mtime is real time; with the skew kept the relaunched
+        # run would itself look stalled before the fake gets to write.
+        self.clock.offset = 0
         self.assertTrue(self.pump(o, lambda: state(o, "a") == "integrating"))
         self.assertEqual(o.store.get_run(first["id"])["outcome"], "stalled")
         self.assertFalse(launcher.pid_alive(first["pid"]))

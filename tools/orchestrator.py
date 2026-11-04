@@ -94,6 +94,16 @@ class Orchestrator:
 
     def on_broker_event(self, kind, **data):
         name = data.get("name") or (data.get("msg") or {}).get("from")
+        if kind == "message" and not any(
+                r["name"] == name for r in self.store.active_runs()):
+            # An agent sends `done` and then writes result.json; the tick can
+            # end the run before the message is drained, and it must still be
+            # recorded against the task.
+            last = self.store.last_run_of_name(name)
+            if last:
+                self.store.event(last["task_id"], "message",
+                                 f"{data['msg'].get('type')} from {name}")
+            return
         for r in self.store.active_runs():
             if r["name"] != name:
                 continue
