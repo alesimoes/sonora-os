@@ -46,6 +46,8 @@ case $1 in
             mkdir -p "$r/boot/efi/EFI/sonora"; echo x >"$r/boot/efi/EFI/sonora/grubx64.efi"
         fi ;;
     update-grub)
+        # Stands in for a copy that went wrong after the files were checked.
+        [ -z "${FAKE_CORRUPT:-}" ] || echo junk >>"$r/home/sonora/Sessions/Take 1/take one.wav"
         mkdir -p "$r/boot/grub"
         echo "  linux /boot/vmlinuz-${FAKE_KERNEL:-6.12.0-rt-amd64} root=UUID=x" >"$r/boot/grub/grub.cfg" ;;
 esac
@@ -56,6 +58,14 @@ chmod +x $T/fakechroot
 export SONORA_SQUASHFS=$T/fs.squashfs SONORA_ALLOW_FILE=1 SONORA_EFI=1
 export SONORA_IN_TARGET=$T/fakechroot SONORA_SYSBLOCK=$T/sys
 mkdir -p $T/sys
+
+# The stick's sessions: a name with a space, an empty directory, a symlink.
+export SONORA_SESSIONS=$T/sessions
+mkdir -p "$T/sessions/Take 1/Audio" "$T/sessions/Empty"
+head -c 300000 /dev/urandom >"$T/sessions/Take 1/take one.wav"
+echo '{"name":"Take 1"}' >"$T/sessions/Take 1/session.json"
+ln -s "take one.wav" "$T/sessions/Take 1/latest.wav"
+SRC_SUMS=$(cd "$T/sessions" && find . -type f -exec sha256sum {} + | sort -k2)
 
 fails=0
 ok() { echo "ok   $1"; }
@@ -96,6 +106,11 @@ ru=$(sed -n 's/^UUID=\([^ ]*\) \/ .*/\1/p' $T/m/etc/fstab)
 if [ "$(blkid -s UUID -o value "$ROOTDEV")" = "$ru" ]; then ok "fstab root UUID is the partition's"; else bad "fstab root UUID"; fi
 if grep -q 'ext4 noatime' $T/m/etc/fstab; then ok "root mounted noatime"; else bad "noatime"; fi
 if grep -q 'GRUB_CMDLINE_LINUX_DEFAULT=.*threadirqs' $T/m/etc/default/grub.d/90-sonora.cfg; then ok "cmdline keeps threadirqs"; else bad "threadirqs"; fi
+# session carry-over: identical on the target, and the stick's copy untouched
+if diff -r "$T/sessions" "$T/m/home/sonora/Sessions" >/dev/null 2>&1; then ok "sessions carried over byte for byte"; else bad "sessions differ on the target"; fi
+if [ -d "$T/m/home/sonora/Sessions/Empty" ] && [ -L "$T/m/home/sonora/Sessions/Take 1/latest.wav" ]; then ok "empty directory and symlink carried"; else bad "directory or symlink lost"; fi
+if [ "$(cd "$T/sessions" && find . -type f -exec sha256sum {} + | sort -k2)" = "$SRC_SUMS" ]; then ok "stick's sessions untouched"; else bad "stick's sessions changed"; fi
+if grep -q '^INFO carried over 2 session files' <<<"$out"; then ok "carry-over reported"; else bad "carry-over not reported"; fi
 release
 if grep -q 'update-initramfs -u -k all' $T/calls; then ok "initramfs rebuilt for all kernels"; else bad "initramfs call"; fi
 if grep -q -- '--bootloader-id=sonora' $T/calls && grep -q -- '--removable' $T/calls; then ok "NVRAM entry and removable path"; else bad "grub-install calls"; fi
@@ -108,6 +123,22 @@ if grep -q 'not the rt kernel' $T/err; then ok "names the failed check"; else ba
 inspect
 if [ ! -e $T/m/var/lib/sonora/installed ]; then ok "no marker after failed check"; else bad "marker after failure"; fi
 release
+
+# 2b. a carried file that does not verify: exit 11, no marker, source intact
+newimg
+FAKE_CORRUPT=1 "$INST" --yes --target $T/disk.img >/dev/null 2>$T/err && rc=0 || rc=$?
+expect_code "corrupt carry-over exits 11" 11 "$rc"
+if grep -q 'do not match the stick' $T/err; then ok "mismatch is named"; else bad "mismatch not named"; fi
+inspect
+if [ ! -e $T/m/var/lib/sonora/installed ]; then ok "no marker after a failed carry-over"; else bad "marker after failed carry-over"; fi
+release
+if [ "$(cd "$T/sessions" && find . -type f -exec sha256sum {} + | sort -k2)" = "$SRC_SUMS" ]; then ok "stick's sessions untouched after a failure"; else bad "stick's sessions changed by a failure"; fi
+
+# 2c. a stick with no sessions at all installs fine
+newimg
+SONORA_SESSIONS=$T/nonexistent "$INST" --yes --target $T/disk.img >$T/out 2>&1 && rc=0 || rc=$?
+expect_code "no sessions directory exits 0" 0 "$rc"
+if grep -q 'no sessions on this system' $T/out; then ok "says there is nothing to carry"; else bad "silent about missing sessions"; fi
 
 # 3. BIOS layout
 newimg
@@ -132,6 +163,13 @@ expect_code "unnamed target picks the one internal disk" 0 "$rc"
 if grep -qx '/dev/sda' $T/out; then ok "selected /dev/sda, skipped removable and loop"; else bad "candidate choice: $(cat $T/out)"; fi
 "$INST" --yes --select-only --target /dev/sda >/dev/null 2>&1 && rc=0 || rc=$?
 expect_code "test hooks refuse a real disk" 3 "$rc"
+# --list: DEVICE, BYTES, MODEL, tab separated; internal disks only
+mkdir -p $T/sys/sda/device
+echo 2048 >$T/sys/sda/size
+echo 'QEMU HARDDISK   ' >$T/sys/sda/device/model
+"$INST" --list >$T/out 2>&1 && rc=0 || rc=$?
+expect_code "--list exits 0" 0 "$rc"
+if [ "$(cat $T/out)" = "$(printf '/dev/sda	1048576	QEMU HARDDISK')" ]; then ok "--list line is device, bytes, model"; else bad "--list output: $(cat $T/out)"; fi
 echo 1 >$T/sys/sda/removable
 "$INST" --yes --select-only >$T/out 2>&1 && rc=0 || rc=$?
 if grep -q '0 internal candidates' $T/out; then ok "no internal disk is reported"; else bad "zero candidates"; fi

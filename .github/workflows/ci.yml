@@ -144,6 +144,12 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-write-usb.ps1
 
+      # tools/umc-wsl.ps1 against fake usbipd, wsl and winget on PATH; nothing
+      # elevated, no USB.
+      - name: tools/umc-wsl.ps1 against fake usbipd and wsl
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-umc-wsl.ps1
+
   ui:
     name: Qt interface build and headless tests
     needs: changes
@@ -593,7 +599,7 @@ jobs:
       - name: Install shellcheck and dbus-x11
         run: sudo apt-get update && sudo apt-get install -y shellcheck dbus-x11
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-install
+        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty
 
       - name: Read-only root, capped RAM writes
         run: tools/test-ro-root.sh
@@ -612,6 +618,9 @@ jobs:
 
       - name: Image config (backports pins, RT kernel, tty1 session, no VT gettys)
         run: tools/test-image-config.sh
+
+      - name: Installer text screen (tty2) against a stub installer
+        run: tools/test-installer-tty.sh
 
       # labwc 0.8.3 headless: Ctrl+Alt+Fn reaches the UI (srvrkeys:none, through
       # a nested labwc's own keymap); an X11 editor's title bar and close button.
