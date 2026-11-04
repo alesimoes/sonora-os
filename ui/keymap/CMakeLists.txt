@@ -19,3 +19,10 @@ add_test(NAME keymap COMMAND test_keymap)
 add_executable(test_keymap_locale tests/test_keymap_locale.cpp)
 target_link_libraries(test_keymap_locale PRIVATE sonora_keymap)
 add_test(NAME keymap_locale COMMAND test_keymap_locale)
+
+# Documented vendor shortcuts against the profiles (ui.keymaps.coverage).
+add_executable(test_keymap_coverage tests/test_keymap_coverage.cpp)
+target_link_libraries(test_keymap_coverage PRIVATE sonora_keymap)
+target_compile_definitions(test_keymap_coverage PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME keymap_coverage COMMAND test_keymap_coverage)

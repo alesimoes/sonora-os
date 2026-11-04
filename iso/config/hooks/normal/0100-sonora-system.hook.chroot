@@ -115,6 +115,8 @@ chmod 0755 /usr/local/bin/sonora-engine
 chmod 0755 /usr/local/bin/sonora-tui
 chmod 0755 /usr/local/bin/sonora-wait-for-audio
 chmod 0755 /usr/local/bin/sonora-smoketest
+chmod 0755 /usr/local/bin/sonora-install
+chmod 0755 /usr/local/bin/sonora-install-tty
 chmod 0755 /usr/local/bin/sonora-compositor
 chmod 0755 /usr/local/bin/sonora-wait-for-display
 # sonora-ui is staged only when a UI build exists; the units are inert without
@@ -166,6 +168,9 @@ systemctl enable sonora-session.service
 # is inert. Without enabling it the test silently never runs, which is
 # worse than not having it.
 systemctl enable sonora-smoketest.service
+# Same shape for the installer screen (ADR-0032): the unit carries
+# ConditionKernelCommandLine=sonora.install and is inert without it.
+systemctl enable sonora-installer.service
 # Same for the display stack (ADR-0010): ConditionKernelCommandLine=sonora.gui
 # on the compositor and UI units; sonora-session.service carries the negation.
 systemctl enable sonora-compositor.service
