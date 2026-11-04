@@ -11,26 +11,31 @@
 
 - §1: the control loop is a Python daemon, `tools/orchestrator.py`, not a
   long-lived Claude session. Roles run as headless `claude -p --model sonnet`
-  processes, one worktree each.
+  processes, one worktree each. The daemon decides nothing that needs
+  judgement; roles decide, the daemon enforces pools, caps, file claims,
+  number reservations and retries.
 - §2: state is one SQLite file, `planning/orchestrator/state.db` (git-ignored),
   with a state machine from `queued` to `merged`.
-- §3: heartbeat = process liveness plus git/worktree/result-file activity; the
-  agent does not need to cooperate. Relaunch from the WIP branch, 3 tries,
-  then a "waits on the owner" note.
-- §4: eight roles, each with a structured `result.json`.
-- §4a (owner refinement): the flow is architect -> lead -> engineers and
-  testers -> integrator; a plan file, the lead's assignment table, and
-  one feature = one branch = one PR in the store and on the dashboard.
-- §4b (owner decision): agents talk through a broker in the daemon, a
-  loopback TCP server; each agent registers under a name, messages are
-  addressed to names, the broker enforces file claims and reads a live
-  connection as a heartbeat. The client is a per-agent MCP server (CLI
-  fallback); inbound messages show at tool boundaries via a PostToolUse hook.
-  `.harness/` stays as durable log and per-name mailbox.
-- §5: three pools (build, qa, fix) with floors, a 20 cap, a CI budget, kill
-  switch and dry-run.
+- §3: heartbeat = process liveness plus git/worktree/result-file activity (and
+  the live broker connection); relaunch from the WIP branch, 3 tries, then a
+  "waits on the owner" note.
+- §4: roster mapped onto the existing `.claude/agents` files plus two new
+  ones, `lead.md` and `tester.md`; the ci-fixer is the track's engineer with a
+  fixer brief. Each role ends with a structured `result.json`.
+- §4a: one feature = one channel = one branch = one PR. Architect and lead
+  are event-driven short runs; the orchestrator reserves ADR, protocol and
+  format numbers; a tester bounces bugs to the named engineer (two bounces go
+  to the architect, a third blocks).
+- §4b: every agent is a client of a loopback TCP broker in the daemon, with a
+  channel per feature; the orchestrator sees every message and enforces file
+  claims. Client is a per-agent MCP server (CLI fallback); inbound messages
+  show at tool boundaries via a hook. `.harness/` is the durable log and
+  mailbox.
+- §5: staffing in a 20 cap with priority fix > tester > integrator > engineer
+  > lead/architect; CI budget, kill switch, dry-run.
 - §6: the daemon writes `status.json`; the dashboard reads it.
-- §7: three PRs, each tested with a fake `claude`.
+- §7: PR 0 spike, then three PRs tested with a fake `claude`, then shadow-mode
+  rollout beside the in-session coordinator.
 
 ## Context
 
@@ -88,7 +93,7 @@ the next relaunch prompt); each is an independent process with its own startup
 cost; permissions must be pre-granted in the agent files and
 `.claude/settings.json` because nobody answers a prompt. The daemon never
 decides *what* to build or whether a diff is good; it only schedules. Judgement
-stays in the `lead`, `architect` and `qa` roles, so the daemon stays small
+stays in the `lead`, `architect` and `tester` roles, so the daemon stays small
 (target under 1200 lines).
 
 The in-session coordinator remains for the owner's ad-hoc work and for
@@ -123,7 +128,7 @@ State machine (one task is one BACKLOG item, one branch, one PR):
 
 - `building`: an engineer runs; ends with `result.json {status: done}` and a
   pushed WIP-committed branch.
-- `qa`: a fresh qa agent reviews the diff and runs the tests the PR claims.
+- `qa`: a fresh tester reviews the diff and runs the tests the PR claims.
   `pass` -> `integrating` (or `pr_open` when there is one engineer);
   `fail` with findings -> `bugfix`, the same engineer role relaunched with the
   findings file and the branch. QA/bugfix may loop 3 times, then `blocked`.
@@ -137,7 +142,7 @@ State machine (one task is one BACKLOG item, one branch, one PR):
   `tools/enqueue-pr.sh`. A GitHub poll (every 120 s, `gh pr list --json
   number,statusCheckRollup,mergeable,state`) moves it to `ci_fix` on a red
   check or a conflict, to `merged` when the PR is merged.
-- `ci_fix`: a ci-fixer (red check) or conflict-fixer (conflict) is launched.
+- `ci_fix`: a fixer (the track engineer, red check) or the integrator (conflict) is launched.
   It pushes once, and the task returns to `pr_open`. 3 attempts, then
   `blocked`.
 - `merged`: worktree removed, branch deleted, janitor run counted.
@@ -208,23 +213,29 @@ validated by the daemon; an invalid file is treated as a dead run):
       "followups": ["BACKLOG-style line"], "unverified": ["..."],
       "tasks": [ ... lead only ... ], "pr": 0 }
 
-| Role | Reads | Returns |
+| Role | Agent file | Lifetime |
 |---|---|---|
-| lead | `tools/progress.sh list --open --track T`, the BACKLOG heading for each candidate (never whole), `status.json`, open PRs | `tasks[]`: item, track, pool, files it touches (for the no-overlap rule), `needs_adr`, depends_on, one-paragraph brief. Does not write code. Run when a pool is under floor and the queue has fewer than 2x floor `queued` tasks. |
-| architect | brief, CLAUDE.md, INDEX, ROADMAP, ADR Summaries | an ADR file plus INDEX line, committed on the task branch; the ADR travels with the code it decides, so this is a stage of the same task, not a PR. |
-| engineer | the brief, ADR sections, the module it owns; one of the existing `rt-engineer`, `dsp-engineer`, `ui-engineer`, `driver-engineer`, `plugin-engineer`, `distro-engineer` chosen by track | commits on the branch, a `result.json` with commands run and what they printed, `unverified`, the proposed `[x]` line and follow-ups for the PR text. Never edits BACKLOG or progress. |
-| qa | the diff, the PR claims, the ADR; fresh each time, never the author | `findings[]`; may run the narrow tests the claims name (inside build budget) and `rt-safety-auditor` checks on RT paths; cannot edit the code. `pass` only if no blocking finding and every claim is verified or listed `unverified`. This is today's `code-reviewer`, extended. |
-| integrator | sub-branches of one feature | one feature branch, conflicts resolved; no PR; today's `integrator`. |
-| ci-fixer | `gh run view --log-failed` (trimmed), the diff | one fix push for a red check, no scope change, no test deletion or weakening (qa re-checks the fix diff only). |
-| conflict-fixer | `git merge origin/main` conflicts | resolved branch, tests of touched files run. May share a prompt with ci-fixer but is a separate role so the pool can prioritise it. |
-| janitor | `bg-status.sh`, `docker ps`, worktree list | removes merged worktrees, stale containers, scratch logs; today's `janitor`. Daemon-triggered every 3 merges. |
+| architect | `architect.md` (existing) | short run per event (`plan_request`, design `ask`, bug escalated twice) |
+| lead | `lead.md` (NEW) | short run per event (`plan_ready`, `task_done`, `qa_fail`, `agent_dead`, `pool_under_floor`) |
+| engineer | `rt-engineer`, `ui-engineer` (DAW); `dsp-engineer`, `plugin-engineer` (plugins); `distro-engineer`, `driver-engineer` (OS) | one run per task, on its sub-branch |
+| tester | `tester.md` (NEW): `code-reviewer`'s review, plus the task's `accept` commands, plus `rt-safety-auditor` checks when the diff touches the RT call graph | one fresh run per task attempt, never the author |
+| integrator | `integrator.md` (existing) | one run per feature integration; also resolves conflicts |
+| ci-fixer | the track's engineer agent with a fixer brief (no scope change, no test deletion or weakening) | one run per red PR |
+| researcher | `researcher.md` | on an `unverified` item that blocks |
+| janitor | `janitor.md` | every 3 merges |
 
-The `lead` is the only role that creates tasks; QA the only role that moves
-`qa` -> `integrating`; the daemon alone opens PRs and enqueues them
-(`enqueue-pr.sh` is already idempotent). "No two agents on the same files" is
-enforced by the daemon: a task is launched only if its declared file set does
-not intersect any active task's set; the lead's file list is checked again by
-QA against the real diff.
+`code-reviewer` and `rt-safety-auditor` remain as sub-tools of the tester,
+not scheduled roles. Per-role reads and returns are in each agent file; this
+ADR fixes who may do what:
+
+- The architect's plan is the only source of tasks; the lead assigns and
+  never creates or codes. The tester alone moves a task from `qa` to
+  `qa: pass` and cannot edit the code. The daemon alone opens PRs and
+  enqueues them (`enqueue-pr.sh` is idempotent). "No two agents on the same
+  files" is enforced by the daemon from the plan's globs and re-checked by
+  the tester against the real diff.
+- A tester passes only if there is no blocking finding and every claim is
+  verified or listed `unverified`.
 
 Not delegable to a headless subagent: privileged docker / loop-device tests.
 A task whose brief says `needs_privileged` ends `building` -> `qa` with that
@@ -236,30 +247,66 @@ The task does not block on it unless the PR is partial by design.
 ### 4a. Feature flow: architect, lead, engineers and testers, integrator
 
 Owner refinement (2026-11-04). The unit of delivery is a **feature**, not a
-task. Flow:
+task; every feature has a channel (§4b).
 
-    feature --> architect --> plan.json --> lead --> assignments
-        --> engineers (one sub-branch each) + QA per finished task
-        --> integrator (merge sub-branches, pre-pr, ONE PR, enqueue)
-        --> ci-fixer / conflict-fixer on red --> merged
+**Event-driven architect and lead.** Neither is long-lived. The daemon starts
+a short run when an event arrives; the run replays the channel log (its only
+memory), acts, sends its messages and exits. No context to compact, no seat
+held while idle. Events:
 
-1. **Architect plans.** For a BACKLOG item or group it writes
-   `.harness/plan/<feature>.plan.json` (a copy is committed on the feature
-   branch under `planning/orchestrator/plans/`; the daemon ingests and
-   validates it): the ADR (if any) and the reserved numbers, then a task list
-   ordered contract first, then engine, UI, tests, docs slices. It owns file
-   ownership: every task lists `files` (globs) that no other task of any
-   active feature may list; the daemon rejects a plan with overlap. It writes
-   no product code.
-2. **Lead distributes.** It reads the plan and the live `status.json`, writes
-   `assignments.json` and starts nothing itself. It never writes product code.
-3. **Engineers and testers** work the assignments; each finished task gets its
-   own fresh QA agent (the lead's table names the tester role per task).
-4. **Integrator merges.** When every task of the feature is `qa: pass`, the
-   integrator merges the sub-branches into the feature branch in the plan's
-   order, resolves conflicts, runs `tools/pre-pr.sh`, and the daemon opens the
-   single PR and runs `tools/enqueue-pr.sh`. A separate ci-fixer takes over on
-   red. A single-task feature skips the merge but not the rest.
+| Event | Wakes | The run does |
+|---|---|---|
+| `plan_request` (feature opened) | architect | writes the plan |
+| design `ask` from an engineer or lead | architect | answers |
+| a bug bounced twice (step 5) | architect | rules: spec fault or code fault |
+| `plan_ready` | lead | writes assignments, sends `assign` |
+| `task_done`, `qa_fail` | lead | reorders or reassigns if needed |
+| `agent_dead` (3 tries spent) | lead | reassigns or escalates to `owner` |
+| `pool_under_floor` | lead | proposes the next feature for the track |
+
+**Flow.**
+
+    orchestrator opens feature + channel, reserves numbers
+      --> architect (plan.json) --> lead (assignments)
+      --> engineers (one sub-branch each) + a tester per finished task
+      --> integrator (merge sub-branches, pre-pr, ONE PR, enqueue)
+      --> fixer on red, integrator on conflict --> merged
+
+1. **Orchestrator opens.** It picks the next V1 feature (AGENT-QUEUE seed),
+   **reserves the ADR, protocol-version and format numbers itself** and
+   writes them into the plan request. Agents never choose a number; this ends
+   the collisions we had (format numbers 19/20, protocol 43-50). It opens the
+   channel and sends `plan_request` to the architect.
+2. **Architect plans.** It writes `.harness/plan/<feature>.plan.json` (a copy
+   is committed on the feature branch under `planning/orchestrator/plans/`;
+   the daemon ingests it): the ADR (if any), then tasks ordered contract
+   first, then engine, UI, tests, docs. Every task lists `files` (globs) and
+   `accept` commands; the daemon rejects a plan whose globs overlap any active
+   feature's. It writes no product code.
+3. **Lead distributes.** It writes `assignments.json` and sends `assign`. It
+   never writes product code and creates no tasks (the plan does).
+4. **Engineers** claim files, code the whole slice, build at most three times
+   through `build-slot`, commit, and send `done` with commands and outputs.
+   They may `ask` the architect or lead; the orchestrator wakes the addressee,
+   default answer after 20 minutes (§4b).
+5. **Tester**, one fresh run per task attempt and never the author, reviews
+   the diff, runs the task's `accept` commands and sends `qa_report` `pass`,
+   or `bug` addressed to the engineer by name. The orchestrator relaunches
+   that name on the same sub-branch with mailbox replay. **Bounce limits:**
+   two bounces on one task go to the architect (spec or code fault?); a third
+   marks the task `blocked` and puts it on the `owner` list. A feature never
+   waits on a blocked task silently: the lead is woken.
+6. **Integrator**, when every task is `qa: pass`, merges the sub-branches in
+   `merge_order`, runs the full affected tests once and `tools/pre-pr.sh`;
+   the daemon opens ONE PR for the feature and runs `tools/enqueue-pr.sh`. A
+   single-task feature skips the merge but not the rest.
+7. **Red check: the ci-fixer is the track's own engineer agent with a fixer
+   brief**, in the same tick. Fixes need domain knowledge (an RT test, MSVC
+   CMake, the DSP quality bar, a keymap test), so no generic fixer role
+   exists. A conflict goes to the integrator. The same job red after two
+   fixes marks the feature `blocked`. A root cause shared by many PRs (a
+   main-wide check) gets one fixer on `main`; the other PRs just merge `main`
+   after it.
 
 Plan-file schema (`plan.schema.json`, version 1):
 
@@ -283,15 +330,16 @@ feature, `depends_on_feature` names it and the feature waits in `queued`.
 Lead's assignment table (`assignments.json`, one row per task, rewritten on
 every change and appended to `events`):
 
-| task | engineer agent | tester | sub-branch | order | start-from | slot |
-|---|---|---|---|---|---|---|
-| t1 | rt-engineer | qa | `feat/<f>/t1` | 1 | feature branch | build |
-| t2 | ui-engineer | qa | `feat/<f>/t2` | 2 | `feat/<f>/t1` | build |
+| task | engineer agent | tester | sub-branch | order | start-from |
+|---|---|---|---|---|---|
+| t1 | rt-engineer | tester | `feat/<f>/t1` | 1 | feature branch |
+| t2 | ui-engineer | tester | `feat/<f>/t2` | 2 | `feat/<f>/t1` |
 
-The daemon enforces what the lead decides: it launches a row only when
-`depends_on` tasks are `qa: pass`, the files are free, and a pool seat is
-open; the lead can reorder or reassign, never exceed floors or overlap. A
-lead that returns an invalid table is relaunched, not obeyed.
+The lead sends `assign` to each engineer and tester name. The daemon enforces
+what the lead decides: it launches a named run only when its `depends_on`
+tasks are `qa: pass`, the files are free and a seat is open; the lead can
+reorder or reassign, never exceed floors or overlap. A lead that returns an
+invalid table is relaunched, not obeyed.
 
 Store additions: table `features(id, plan_path, branch, track, state, pr,
 adr_no, protocol_no, partial, created, updated)`; `tasks.feature_id`
@@ -302,8 +350,7 @@ derived: `planning` -> `distributing` -> `building` -> `integrating` ->
 sharing one; a task never has a PR of its own. The task-level state machine
 in §2 applies per task up to `qa: pass`; `integrating`, `pr_open`, `ci_fix`
 and `merged` are feature states. The `designing` state of §2 is the feature's
-`planning` state, and the lead does not create tasks (the architect's plan
-does), superseding the lead wording in the §4 table.
+`planning` state.
 
 Dashboard view (`status.json` `features[]`, rendered by `tools/dashboard.py`):
 a table grouped by feature, one line per PR: feature, track, PR number and
@@ -359,22 +406,32 @@ boundaries.
    `.claude/settings.local.json`, a `PostToolUse` hook (and
    `UserPromptSubmit`) running `tools/harness.py recv --brief --hook`. It asks
    the broker for the agent's unread messages and prints nothing when there are
-   none (zero tokens), otherwise one line per message ("17 bug from qa-2: ...")
+   none (zero tokens), otherwise one line per message ("17 bug from tester-2: ...")
    which reaches the model after its next tool call. Messages are marked
    delivered by the broker when the hook (or `recv`) returns them. A long
    single Bash build delays delivery to the end of that call; acceptable.
    There is no push into the model and the design does not pretend otherwise.
 
+**Channels.** The broker opens one channel per feature (`feat/<id>`) when
+the orchestrator opens the feature. Members are the agents working it:
+architect, lead, engineers, testers, integrator; the orchestrator is a member
+of every channel, sees every message and is the only access point (agents have
+no route to each other outside the broker). A message goes to a name
+(`eng-2`) or to the channel (every member). The channel log is the feature's
+history; it is what an event-driven run replays on start (§4a), so no role
+needs a long-lived context.
+
 **Names.** An agent's name is stable and role-shaped, not per run: `lead`,
-`architect`, `eng-1..N`, `qa-1..N`, `integrator`, `ci-fixer`,
-`conflict-fixer`, `janitor`, plus `daemon` (the broker's own address) and
-`owner` (the "waits on the owner" mailbox, read by the dashboard). The daemon
-assigns the name at launch (`SONORA_AGENT_NAME`) and records name -> task ->
-run in the store, so a relaunched run for the same task gets the same name and
-therefore the same mailbox. Register is refused if the name is already
-connected (a duplicate is a bug, reported to `lead`); a registration for a
-name the store does not expect is refused. Addressing: `to` is a name, or
-`feature:<f>` / `role:<r>` for the broker to expand to the live names.
+`architect`, `eng-1..N`, `tester-1..N`, `integrator`, `fixer-N`, `janitor`,
+plus `daemon` (the broker's own address) and `owner` (the "waits on the owner"
+mailbox, read by the dashboard). The daemon assigns the name at launch
+(`SONORA_AGENT_NAME`) and records name -> task -> run in the store, so a
+relaunched run for the same task gets the same name and therefore the same
+mailbox. Register is refused if the name is already connected (a duplicate is
+a bug, reported to `lead`), if the store does not expect it, or if the agent
+is not a member of the channel it names. Addressing: `to` is a name,
+`feat/<id>` for the channel, or `role:<r>` for the broker to expand to live
+names.
 
 **Broker duties.**
 
@@ -397,16 +454,19 @@ name the store does not expect is refused. Addressing: `to` is a name, or
 **Message schema** (`msg.schema.json`, version 1; also the wire frame body):
 
     { "v": 1, "id": "<ulid>", "seq": 17, "ts": "...", "from": "eng-2",
-      "to": "qa-2", "feature": "...", "task": "...",
+      "to": "tester-2", "feature": "...", "task": "...",
       "type": "register|assign|ask|answer|blocked|claim|claim_denied|release|"
-              "handoff|qa_report|bug|done|ping|ack",
+              "handoff|qa_report|bug|done|ping|ack|"
+              "plan_request|plan_ready|task_done|qa_fail|agent_dead|pool_under_floor",
       "reply_to": "<id>|null", "needs_ack": true,
       "body": { ... type specific ... } }
 
 `register` (client to broker: name, token, last_acked_seq; the reply carries
 every unacked message with `seq` above it, which is how a relaunched agent
-gets what it missed); `assign` (lead to eng or qa: task, branch, start-from,
-files, accept); `ask` / `answer` (any to lead or architect and back);
+gets what it missed); `assign` (lead to eng or tester: task, branch,
+start-from, files, accept); `ask` / `answer` (any to lead or architect and
+back); the daemon's wake events `plan_request`, `plan_ready`, `task_done`,
+`qa_fail`, `agent_dead`, `pool_under_floor` (§4a);
 `blocked` (names the blocker; lead reassigns or escalates); `claim` /
 `claim_denied` / `release` (broker-enforced, above; the request and reply
 share `reply_to`); `handoff` (eng to qa: sub-branch, commit, commands run and
@@ -478,8 +538,8 @@ older than 1 hour and claims whose task is not in the store.
 protocol over the real loopback socket to a real broker started in the test on
 port 0 (the OS picks the port, so tests never collide); it can register, send,
 receive, claim, and exit on a script. Asserts: register with a bad token or a
-duplicate name is refused; addressed delivery (a message to `qa-2` reaches only
-`qa-2`); per-recipient ordering by `seq` and idempotent redelivery by `id`;
+duplicate name is refused; addressed delivery (a message to `tester-2` reaches only
+`tester-2`); per-recipient ordering by `seq` and idempotent redelivery by `id`;
 two fake engineers claiming one path, exactly one wins and the other gets
 `claim_denied` and sends `ask`; `check` denies a foreign edit and denies when
 the broker is down; a killed client's socket close marks the run `suspect`
@@ -498,40 +558,40 @@ the real `claude` or any non-loopback network.
 
 ### 5. Staffing policy
 
-Pools and floors (agents truly working, not waiting on a build; a run is
-counted "working" if `last_beat` is under 10 minutes old or it holds a build
-slot with CPU activity):
+Pools and floors count agents truly working, not waiting on a build; a run is
+"working" if `last_beat` is under 10 minutes old or it holds a build slot
+with CPU activity. The hard cap is 20 (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`),
+enforced by the daemon, which launches nothing above it.
 
-| Pool | Roles | Floor | Ceiling |
-|---|---|---|---|
-| build | architect, engineer, integrator | 14 = 8 DAW + 4 OS + 2 plugin | 14 |
-| qa | qa, lead | 2 | 3 |
-| fix | ci-fixer, conflict-fixer, janitor | 1 | 2 (+1 burst) |
+| Pool | Roles | Steady state |
+|---|---|---|
+| build | engineers (DAW, plugin, OS) | 12-14 = 8 DAW + 4 OS + 2 plugin floors |
+| qa | testers | 3-4 |
+| fix | ci-fixer (track engineer, fixer brief), conflict, janitor | 1-2 |
+| merge | integrator | 1 |
+| plan | architect, lead | none standing: event-driven short runs borrow burst seats |
 
-Total at floor is 17; the hard cap is 20, leaving 3 as burst. The daemon
-enforces `total <= min(20, CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS)` itself and
-launches nothing above it.
+Priority each tick (30 s), highest first, with a free-seat count:
 
-Scheduling each tick (30 s), in priority order, with a free slot count:
+1. **Fix**: every `ci_fix`/conflict task gets an agent. Red PRs block the
+   merge queue and cost the most CI time per hour waiting.
+2. **Tester**: every task in `qa` or re-check. Short runs that keep engineers
+   unblocked.
+3. **Integrator**: a feature whose tasks are all `qa: pass`.
+4. **Engineer**: fill each track-family's floor from ready tasks (files free,
+   dependencies `qa: pass`). Families have independent seats.
+5. **Lead / architect**: event runs (§4a). They are short, so they preempt no
+   running agent; they wait one tick for a seat, which is why steady state
+   leaves the top seats open rather than full.
+6. **Burst**: if 1-3 are empty and seats remain under 20, extra engineers.
 
-1. Fix pool first up to its need: every `ci_fix`/conflict task gets an agent
-   (red PRs block the merge queue and cost the most CI time per hour waiting),
-   bounded by the ceiling.
-2. QA next: every task in `qa` or re-check gets an agent up to the ceiling.
-   QA is short and keeps the build agents unblocked.
-3. Build: fill each track's floor from `queued`. If a track has no queued
-   task, launch the `lead` for that track (counts in the qa pool) and
-   meanwhile promote the next-priority task from another track, so the total
-   never idles. Floors are per track-family: DAW tracks have 8 independent
-   seats, OS 4, plugins 2.
-4. Burst: if fix and qa are empty and slots remain under 20, extra build seats
-   up to 20.
-
-"Never empty queue" is a daemon invariant checked each tick and shown on the
-dashboard: for each pool the live count is >= floor, or the reason is shown
-(`no eligible task`, `usage pause`, `CI budget`, `kill switch`). A floor that
-cannot be met because the backlog has nothing eligible is an event for the
-`lead`, not a silent gap.
+If a track has no eligible task, the daemon wakes the lead with
+`pool_under_floor` (§4a) and meanwhile promotes the next-priority task from
+another track, so the total never idles. "Never empty queue" is a daemon
+invariant shown on the dashboard: each pool's live count is at or above its
+floor, or the reason is shown (`no eligible task`, `usage pause`, `CI budget`,
+`kill switch`). A floor that cannot be met because nothing is eligible is an
+event for the lead, not a silent gap.
 
 CI budget (the real bottleneck): at most `max_open_prs` (default 10) PRs open
 at once and at most 4 PRs in `ci_fix` or CI-running state per workflow class.
@@ -571,50 +631,56 @@ lines into `queued` tasks on start (and on `orchestrator.py import`), and
 afterwards the database is the truth, with AGENT-QUEUE regenerated read-only
 from it so existing habits keep working.
 
-### 7. Implementation plan: three end-to-end PRs
+### 7. Implementation plan: PR 0 spike, then three end-to-end PRs, then shadow mode
 
-Each is complete for its layer and tested with a fake `claude`
+Each PR is complete for its layer and tested with a fake `claude`
 (`tools/fake-claude.py`: reads the prompt, sleeps N seconds, writes a canned
 `result.json`, optionally exits non-zero, hangs, or writes invalid JSON). None
 spends quota.
 
-- **PR 1, core, heartbeat and messaging.** Also carries the broker
-  (`tools/harness_broker.py`, run inside the daemon), the clients
-  `tools/harness_mcp.py` and `tools/harness.py` (`whoami`, `send`, `recv`,
-  `claim`, `release`, `check`, `board`), the `.harness/` mailbox and log
-  layout, `msg.schema.json`, the wire protocol, the per-run token, the
-  `.gitignore` entry, the hook installer (PostToolUse, PreToolUse) and
-  `--mcp-config` for worktrees, the fake agent client and every §4b test.
-  Broker, clients and their tests land together: a broker without a client,
-  or claims without the `check` hook, would not work end to end. Original scope: `tools/orchestrator.py` with the state store,
-  `advance()` state machine, launch/heartbeat/relaunch, WIP checkpoint,
-  retries and `blocked` note, kill switch, dry-run, `status.json`, number
-  reservations, `result.schema.json`, `tools/fake-claude.py`,
-  `tools/test-orchestrator.sh` (wired into CI as a plain Python job). Roles in
-  this PR: engineer and qa only. Tests: happy path building -> qa -> done;
-  QA fail returns to bugfix and loops out at 3; dead pid relaunches; hung
-  process killed at the threshold; invalid result treated as dead; Sonnet flag
-  present on every argv; 429 pause; STOP and STOP.NOW; two writers on the DB.
+- **PR 0, spike (no product code, a measurement note in `brain/research/`).**
+  Prove that `claude -p --model sonnet --agent X` loads a project MCP server
+  and runs `PreToolUse`/`PostToolUse` hooks headlessly; measure 15 concurrent
+  `claude` processes on this laptop (RAM, CPU, start-up time) and the token
+  cost of the hook (zero when the mailbox is empty). The result decides MCP
+  versus CLI client (Unverified 7) and the launch cadence of §5. Nothing else
+  starts until it lands.
+- **PR 1, core, heartbeat and broker.** `tools/orchestrator.py` with the
+  state store, `advance()`, launch/heartbeat/relaunch, WIP checkpoint, retries
+  and `blocked` note, kill switch, dry-run, `status.json`, `result.schema.json`,
+  `tools/fake-claude.py`, `tools/test-orchestrator.sh` (plain Python CI job).
+  The broker (`tools/harness_broker.py`, inside the daemon) with per-feature
+  channels, the clients `tools/harness_mcp.py` and `tools/harness.py`, the
+  `.harness/` layout, `msg.schema.json`, per-run token, hook installer,
+  `--mcp-config`, the fake agent client and every §4b test. Roles: engineer and
+  tester. Tests: happy path building -> qa -> done; a tester `bug` bounces and
+  the bounce limits of §4a hold; dead pid relaunches; hung process killed;
+  invalid result treated as dead; Sonnet flag on every argv; 429 pause; STOP
+  and STOP.NOW; two writers on the DB.
 - **PR 2, PR lifecycle and pools.** Staffing scheduler with floors, ceilings,
-  cap 20 and the CI budget; pr_open/ci_fix/conflict handling against a fake
-  `gh` (recorded JSON); `pre-pr.sh` and `enqueue-pr.sh` calls; ci-fixer,
-  conflict-fixer, integrator and janitor roles and their agent files;
-  file-overlap exclusion. Tests: with a fake backlog of 40 tasks the pools
-  hold 17 live and never exceed 20; a red PR gets a ci-fixer within one tick;
-  CI-budget back-pressure; no overlap launches.
-- **PR 3, architect, lead, feature flow, import and dashboard.** Adds the
-  `features` table, plan and assignments schemas with validators, and the
-  feature-grouped dashboard view of §4a. PRs 1 and 2 already wrap every item
-  in a one-task feature so the schema does not change later. Original scope: `lead` and `architect`
-  roles and agent files; the AGENT-QUEUE import/regenerate; `status.json`
-  section in `tools/dashboard.py`; systemd/Task Scheduler/SessionStart
-  start-up snippet; first live run in dry-run, then a supervised live run with
-  1 task per pool before the floors are raised (a config change, not a PR).
-  Tests: lead output creates tasks; the invariant report; adopting runs after a
-  daemon restart mid-flight.
+  priorities, cap 20 and the CI budget; `pr_open`/`ci_fix`/conflict handling
+  against a fake `gh`; `pre-pr.sh` and `enqueue-pr.sh` calls; ci-fixer (track
+  engineer, fixer brief), integrator/conflict and janitor roles; number
+  reservation (ADR, protocol, format); file-overlap exclusion. Tests: with a
+  fake backlog of 40 tasks the pools hold their floors and never exceed 20; a
+  red PR gets a fixer within one tick; same job red after two fixes blocks;
+  CI-budget back-pressure; no overlap launches; two features never get the
+  same reserved number.
+- **PR 3, architect, lead, feature flow, dashboard.** The new `lead.md` and
+  `tester.md` (drafted with this ADR), the `features` table, plan and
+  assignments validators, event-driven architect/lead runs with channel-log
+  replay, the AGENT-QUEUE import/regenerate, the feature-grouped section of
+  `tools/dashboard.py`, a start-up snippet. PRs 1 and 2 wrap every item in a
+  one-task feature so the schema does not change. Tests: lead output creates
+  assignments; the invariant report; adopting runs after a daemon restart.
+- **Shadow-mode rollout (configuration, not a PR).** The daemon runs
+  `--dry-run` beside the in-session coordinator and must log the same launch
+  decisions for a day (differences are read and either fixed or accepted by
+  the coordinator). Then it takes over, one pool at a time: the fix pool, then
+  testers, then builders. Each step is a `live_pools` list in
+  `orchestrator.toml`.
 
-Every step keeps `--dry-run` as the default until the owner or the coordinator
-flips `live = true` in `orchestrator.toml`.
+`--dry-run` stays the default until the coordinator flips a pool live.
 
 ## Rationale
 
