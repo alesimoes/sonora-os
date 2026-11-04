@@ -225,6 +225,11 @@ if [ -f "$FALLBACK" ]; then
   grep -Eq '^ExecStart=-?/usr/bin/systemctl (--no-block )?start sonora-session\.service$' "$FALLBACK" || bad "fallback does not start sonora-session"
   grep -qx "ConditionPathExists=|$flag" "$UNIT" || bad "session condition does not accept $flag"
   grep -qx 'ConditionKernelCommandLine=|!sonora.gui' "$UNIT" || bad "session condition is not '|!sonora.gui'"
+  # systemd 257 runs OnFailure= on every failure, restarted or not; without
+  # this guard a single kill -9 of the UI ends the display for the boot.
+  grep -qx 'ExecCondition=/usr/local/bin/sonora-display-gave-up' "$FALLBACK" || bad "fallback runs on a failure that systemd is about to restart (no ExecCondition=sonora-display-gave-up)"
+  grep -qx 'StartLimitIntervalSec=0' "$FALLBACK" || bad "fallback has a start limit; its skipped runs would use it up before the one that matters"
+  grep -q 'auto-restart' "$INC/usr/local/bin/sonora-display-gave-up" 2>/dev/null || bad "sonora-display-gave-up does not look at auto-restart"
   grep -q 'chvt 2' "$FALLBACK" && bad "fallback switches to tty2, which has no terminal UI before ADR-0010 stage 2"
 fi
 
@@ -307,6 +312,62 @@ if [ -f "$SMOKE_UNIT" ]; then
   grep -Ev '^[[:space:]]*#' "$SMOKE_SCRIPT" | grep -Eq '(systemctl[[:space:]].*(poweroff|halt|reboot)|^[[:space:]]*(poweroff|halt|reboot|shutdown)([[:space:]]|$))' &&
     bad "sonora-smoketest powers off by itself; the unit's SuccessAction= does that"
 fi
+
+# --- display stack staged into the image (ADR-0010 stage 1) ---
+# Each is a way sonora.gui boots to a blank screen with no build error.
+for p in libpam-systemd labwc xwayland qt6-wayland libqt6quick6 qml6-module-qtquick; do
+  grep -qx "$p" "$PKGS" || bad "package list lacks $p (display block)"
+done
+# seatd would satisfy libseat1 and give labwc no logind session.
+grep -Eqx 'seatd|libseat1-seatd' "$PKGS" && bad "package list installs seatd; ADR-0010 section 3 wants logind"
+for f in usr/share/sonora/labwc/rc.xml usr/share/sonora/labwc/menu.xml etc/pam.d/sonora-ui \
+         usr/local/bin/sonora-compositor usr/local/bin/sonora-wait-for-display \
+         etc/systemd/system/sonora-compositor.service etc/systemd/system/sonora-ui.service; do
+  [ -f "$INC/$f" ] || bad "includes.chroot lacks $f"
+done
+for b in sonora-compositor sonora-wait-for-display sonora-display-gave-up; do
+  grep -qx "chmod 0755 /usr/local/bin/$b" "$HOOK" || bad "hook does not chmod $b"
+done
+grep -qx 'systemctl enable sonora-compositor.service' "$HOOK" || bad "hook does not enable the compositor unit"
+grep -q 'sonora-ui' "$HOOK" || bad "hook does not handle sonora-ui"
+COMP="$INC/etc/systemd/system/sonora-compositor.service"
+UIU="$INC/etc/systemd/system/sonora-ui.service"
+if [ -f "$COMP" ] && [ -f "$UIU" ]; then
+  grep -qx 'ConditionKernelCommandLine=sonora.gui' "$COMP" || bad "compositor unit is not gated on sonora.gui"
+  grep -qx 'ConditionKernelCommandLine=sonora.gui' "$UIU" || bad "UI unit is not gated on sonora.gui"
+  grep -qx 'PAMName=sonora-ui' "$COMP" || bad "compositor unit has no PAM session (no logind seat)"
+  grep -qx 'Conflicts=getty@tty1.service' "$COMP" || bad "compositor unit does not displace the tty1 getty"
+  grep -qx 'OnFailure=sonora-display-fallback.service' "$COMP" || bad "compositor failure does not start the fallback"
+  grep -qx 'OnFailure=sonora-display-fallback.service' "$UIU" || bad "UI failure does not start the fallback"
+  grep -qx 'BindsTo=sonora-compositor.service' "$UIU" || bad "UI unit is not bound to the compositor"
+  grep -qx 'RestartPreventExitStatus=3' "$UIU" || bad "UI unit retries the 'unfit display' exit"
+fi
+grep -q '^session .*pam_systemd.so' "$INC/etc/pam.d/sonora-ui" 2>/dev/null || bad "pam sonora-ui does not open a logind session"
+grep -Ev '^[[:space:]]*#' "$INC/etc/pam.d/sonora-ui" 2>/dev/null | grep -q pam_limits && bad "pam sonora-ui loads pam_limits; the UI would inherit rtprio 95"
+
+# sonora-ui is built by tools/build-ui.sh and staged on request.
+BUILD_ISO="$ROOT/tools/build-iso.sh"
+grep -q 'SONORA_WITH_UI' "$BUILD_ISO" || bad "build-iso.sh cannot stage sonora-ui"
+# shellcheck disable=SC2016 # a literal $UI in the script text
+grep -q 'install -m 0755 "\$UI" "\$STAGE/sonora-ui"' "$BUILD_ISO" || bad "build-iso.sh does not install sonora-ui into includes.chroot"
+
+# --- the smoke test's display checks and the QEMU modes that reach them ---
+# The recovery and fallback checks exist only if a boot asks for them, so a
+# harness that never passes the parameter would turn them into dead code.
+BOOT_QEMU="$ROOT/tools/test-boot-qemu.sh"
+if [ -f "$SMOKE_SCRIPT" ]; then
+  grep -q 'first frame after' "$SMOKE_SCRIPT" || bad "smoketest does not look for the UI's first-frame line"
+  grep -q 'kill_and_recover sonora-ui.service' "$SMOKE_SCRIPT" || bad "smoketest does not SIGKILL the UI"
+  grep -q 'kill_and_recover sonora-compositor.service' "$SMOKE_SCRIPT" || bad "smoketest does not SIGKILL labwc"
+  grep -qx 'RECOVER_MS=3000' "$SMOKE_SCRIPT" || bad "smoketest recovery limit is not ADR-0010's 3 s"
+  grep -q 'sonora\.break_ui' "$SMOKE_SCRIPT" || bad "smoketest cannot inject a repeated UI failure"
+  grep -q 'fgconsole' "$SMOKE_SCRIPT" || bad "smoketest does not check the foreground VT after the fallback"
+  grep -q 'find /dev/dri' "$SMOKE_SCRIPT" || bad "smoketest does not record the render node situation"
+fi
+grep -q -- '--gui)' "$BOOT_QEMU" || bad "test-boot-qemu.sh has no --gui mode"
+grep -q -- '--gui-broken)' "$BOOT_QEMU" || bad "test-boot-qemu.sh has no --gui-broken mode"
+grep -q 'sonora.gui sonora.break_ui' "$BOOT_QEMU" || bad "--gui-broken does not pass sonora.break_ui"
+grep -q 'iso size' "$BOOT_QEMU" || bad "test-boot-qemu.sh does not record the ISO size"
 
 if [ "$fail" -eq 0 ]; then
   echo "ok: whole archive from snapshot $auto_ts (hook checks .list and deb822); test bases by digest; pipewire $pw_pin, wireplumber $wp_pin; rt kernel; tty1 owned, no VT gettys; sysctl ${#sc[@]} keys; smoketest powers off in order"
