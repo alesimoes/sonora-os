@@ -117,3 +117,9 @@ Thumbs.db
 # PR. tools/session-start.sh still prints it when it exists.
 /planning/handoffs/main-session.md
 .ccache/
+
+.harness/
+planning/orchestrator/state.db*
+planning/orchestrator/status.json
+planning/orchestrator/STOP*
+planning/orchestrator/waits-on-owner.md

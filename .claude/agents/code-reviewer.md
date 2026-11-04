@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: Reviews changes before they land. Invoke on every diff that touches C++ code (common/, contracts/, engine/, drivers/, ui/), iso/, or what runs automatically in every agent session (.claude/settings.json, .claude/ hooks, tools/session-start.sh), after the implementer reports done and before commit. Reports findings; does not fix them unless asked.
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 80
 ---
