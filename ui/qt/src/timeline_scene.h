@@ -45,10 +45,13 @@ struct Scene {
 };
 
 // The track lanes and everything on them, for a timeline of view.width x
-// view.height. `drag` previews a gesture in progress.
+// view.height. `drag` previews a gesture in progress. The take lanes of the
+// tracks that show them (ADR-0049) are drawn under their rows, `lane_sel` the
+// range selected on one.
 void build_timeline_scene(const model::Snapshot& s, const ViewState& view, const Selection& sel,
                           const Drag& drag, bool grid_lines, GridValue grid,
-                          const PeakSource& peaks, Scene& out);
+                          const PeakSource& peaks, Scene& out,
+                          const EditController::LaneSelection& lane_sel = {});
 
 struct TransportOverlay {
     model::Frames playhead = 0;

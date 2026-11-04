@@ -290,6 +290,26 @@
       "verified": false,
       "comment": "Duplicate Playlist on the selected track, Control+Option+Backslash on a Mac. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md (ADR-0026)."
     },
+    "ctrl+alt+c": {
+      "command": "comp.copy_to_main",
+      "origin": "sonora",
+      "comment": "Copy Selection to Main Playlist (ADR-0031, ADR-0049). Pro Tools has it as a button on the playlist lane and no documented key; the range selected on a take lane goes to the active playlist."
+    },
+    "ctrl+alt+l": {
+      "command": "comp.toggle_lanes",
+      "origin": "sonora",
+      "comment": "Show or hide the selected track's playlists as lanes under it (Pro Tools' Playlists track view). No documented key."
+    },
+    "ctrl+alt+n": {
+      "command": "comp.new",
+      "origin": "sonora",
+      "comment": "New comp: an empty playlist to swipe into, the takes on the lanes under the track. Pro Tools does it as New Playlist then Playlists view; no single key."
+    },
+    "ctrl+alt+q": {
+      "command": "comp.toggle_quick_swipe",
+      "origin": "sonora",
+      "comment": "Quick Swipe on or off: a swipe copies at once, with short crossfades. Pro Tools has none; it is off here and on under Logic."
+    },
     "ctrl+shift+n": {
       "command": "track.new",
       "verified": false,

@@ -64,6 +64,30 @@ struct ViewState {
     double autolane_height = kAutolaneBaseHeight;
     std::vector<double> tops;
     std::vector<std::uint8_t> open;
+    // Take lanes (ADR-0031 §1, ADR-0049): a track's other playlists shown
+    // under its row, below its automation lanes, each `comp_lane_height`
+    // tall. `lanes[i]` is how many track i shows; empty when none does.
+    static constexpr double kCompLaneBaseHeight = 46.0;  // at wave_scale 1
+    double comp_lane_height = kCompLaneBaseHeight;
+    std::vector<std::uint8_t> lanes;
+    int lanes_shown(int index) const {
+        return index >= 0 && static_cast<std::size_t>(index) < lanes.size() ? lanes[index] : 0;
+    }
+    // The top of take lane `lane` (0 first) under track `index`.
+    double y_of_complane(int index, int lane) const {
+        return y_of_track(index) + track_height +
+               (autolanes_open(index) ? kLaneCount * autolane_height : 0.0) +
+               lane * comp_lane_height;
+    }
+    // The take lane under pixel `y`, -1 over the track's own row or its
+    // automation lanes.
+    int complane_at(int index, double y) const {
+        const int n = lanes_shown(index);
+        if (n == 0) return -1;
+        const double rel = y - y_of_complane(index, 0);
+        if (rel < 0) return -1;
+        return std::min(n - 1, static_cast<int>(rel / comp_lane_height));
+    }
 
     double x_of(model::Frames f) const { return (static_cast<double>(f) - scroll) / fpp; }
     model::Frames frame_at(double x) const;
@@ -115,11 +139,15 @@ struct Selection {
 };
 
 // FadeIn / FadeOut: the Smart Tool's top corners, as in Pro Tools.
-enum class HitZone { None, Lane, Body, Select, TrimStart, TrimEnd, FadeIn, FadeOut, Automation };
+enum class HitZone {
+    None, Lane, Body, Select, TrimStart, TrimEnd, FadeIn, FadeOut, Automation,
+    TakeLane   // a take lane under the track: Hit::lane, and its region if one is there
+};
 
 struct Hit {
     int track = -1;
     int autolane = -1;   // with HitZone::Automation
+    int lane = -1;       // with HitZone::TakeLane: an index into take_lane_ids()
     model::Id region = kNoId;
     HitZone zone = HitZone::None;
 };
@@ -128,8 +156,10 @@ struct Hit {
 // release turns it into one operation (timeline-model.md).
 struct Drag {
     // Point: a breakpoint added or moved; Stroke: the Pencil's line.
-    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut, Point, Stroke };
+    // Swipe: a range dragged across a take lane (`lane` its playlist).
+    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut, Point, Stroke, Swipe };
     Kind kind = Kind::None;
+    model::Id lane = 0;
     // An automation gesture: its lane (-1 for the others); the point it
     // holds (-1 for a new one) and where it would be left; or the stroke
     // drawn so far.
@@ -458,6 +488,59 @@ public:
     // the pool, and undo brings them back.
     bool delete_unused_playlists(int track, std::string& why);
 
+    // --- take lanes and comping (edit_comping.cpp, ADR-0031, ADR-0049) ---
+    //
+    // A track's lanes are its playlists other than the active one (the
+    // comp). Showing them is how the operator looks at the session, so it
+    // is interface state, dropped when a session opens, like automation
+    // lanes. A range selected on a lane is the lane selection, apart from
+    // the selection every other edit acts on, so Cut or Clear never reach
+    // the comp through it. Copy to Main Playlist (a button on the lane, a
+    // key) swipes it onto the active playlist as one compound, one undo
+    // step; with Quick Swipe on, the gesture does it as the button comes
+    // up and the joins get a short crossfade, as Logic's does.
+    bool comp_lanes_shown(int track) const;
+    bool toggle_comp_lanes(int track, std::string& why);
+    // The track's lane playlists in their order (ids), and their names.
+    std::vector<model::Id> take_lane_ids(int track) const;
+    std::vector<std::string> take_lane_names(int track) const;
+    // Which lane of the active playlist's regions each was swiped from:
+    // the lane's index in take_lane_ids(), -1 for none (model::comp_origin).
+    int comp_origin_lane(int track, const model::Region& r) const;
+    struct LaneSelection {
+        int track = -1;          // display index
+        model::Id lane = 0;      // the playlist
+        model::Frames start = 0, end = 0;
+        bool valid() const { return lane != 0 && end > start; }
+    };
+    // The lane range selected, or one with valid() false: it also lapses
+    // when its playlist is the active one now or is gone.
+    LaneSelection lane_selection() const;
+    bool select_lane_range(int track, model::Id lane, model::Frames a, model::Frames b,
+                           std::string& why);
+    // A lane's region selected whole: the swipe a click makes.
+    bool select_lane_region(int track, model::Id lane, model::Id region, std::string& why);
+    bool quick_swipe() const { return quick_swipe_; }
+    void set_quick_swipe(bool on) { quick_swipe_ = on; }
+    // Copy Selection to Main Playlist. True with `why` set when the swipe went
+    // ahead but not all of it as asked: the joins that stayed hard cuts.
+    bool comp_copy_to_main(std::string& why);
+    // Pro Tools' Duplicate Playlist for comping, or Logic's new comp: a new
+    // empty playlist named "<active> comp" (numbered when taken) becomes the
+    // active one, so what was active is a take lane, and the lanes open.
+    // One undo step.
+    bool comp_new(int track, std::string& why);
+    // Consolidate's request: the track and the range of the selection (the
+    // selected region's span, or the range on the selected track), for
+    // `session.consolidate`; refused with a reason when there is none.
+    struct ConsolidateRequest {
+        model::Id track = 0;
+        model::Id playlist = 0;
+        model::Frames start = 0, end = 0;
+        std::string name;
+    };
+    bool consolidate_request(ConsolidateRequest& out, std::string& why) const;
+
     // --- mix and edit groups (ADR-0041) ---
     // Group `count` tracks from `first` down (the selected tracks): one
     // SetGroup, one undo step. `name` empty takes "Group N". `attrs` is
@@ -578,6 +661,8 @@ private:
     bool automation_copy(bool cut, std::string& why);
     bool automation_paste(std::string& why);
     bool automation_clear(std::string& why);
+    bool press_takelane(const Hit& h, double x, std::string& why);
+    bool release_swipe(const Drag& d, std::string& why);
     bool press_autolane(const Hit& h, double x, double y, std::string& why);
     bool release_autolane(const Drag& d, std::string& why);
     void move_autolane(double x, double y);
@@ -599,10 +684,20 @@ private:
     Clipboard clipboard_;
     std::vector<AutomationClip> auto_clips_;
     std::set<model::Id> autolanes_open_;
+    std::set<model::Id> comp_lanes_open_;
+    LaneSelection lane_sel_;
+    bool quick_swipe_ = false;
     int repeat_count_ = 1;
     Locator locate_;
     uint64_t clipboard_serial_ = 0;
 };
+
+// The audio playlist `id` of `t`, or null.
+const model::Playlist* audio_playlist(const model::TrackEdit& t, model::Id id);
+// A track's take lanes: its playlists other than the active one, in their
+// order, at most kMaxTakeLanes; none on a MIDI track.
+constexpr std::size_t kMaxTakeLanes = 32;
+std::vector<model::Id> take_lanes_of(const model::TrackEdit& t);
 
 // --- fades, as the engine plays them ---
 //

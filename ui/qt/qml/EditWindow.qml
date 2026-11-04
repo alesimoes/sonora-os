@@ -372,10 +372,12 @@ Item {
                     // Pro Tools' playlist selector: the active playlist's
                     // name; a click opens the playlist menu on this track.
                     SButton {
+                        id: playlistSelector
                         objectName: "playlistSelector" + header.index
                         x: headerName.x + headerName.width + Theme.space1
                         y: Theme.space2 - 2
-                        width: parent.width - x - Theme.space3 - 14 - 24
+                        width: parent.width - x - Theme.space3 - 14 - 24 -
+                               ((header.row.takes || 0) > 0 ? 36 : 0)
                         implicitHeight: 20
                         bold: false
                         fontPx: Theme.textCaption
@@ -386,6 +388,21 @@ Item {
                             const p = mapToItem(null, 0, height)
                             edit.playlistMenuRequested(header.index, p.x, p.y)
                         }
+                    }
+                    // The track's other playlists, the takes of a comp: a click
+                    // shows them as lanes under the track (ADR-0031, ADR-0049).
+                    // Only where there are takes, so a track without any keeps
+                    // its header as it was.
+                    SButton {
+                        objectName: "takes" + header.index
+                        visible: (header.row.takes || 0) > 0
+                        x: playlistSelector.x + playlistSelector.width + Theme.space1
+                        y: Theme.space2 - 2
+                        implicitWidth: 32; implicitHeight: 20
+                        fontPx: Theme.textCaption
+                        active: header.row.lanesShown === true
+                        text: "\u2261 " + (header.row.takes || 0)
+                        onClicked: edit.shell.invoke("comp.toggle_lanes", header.index)
                     }
                     Row {
                         x: Theme.space3
@@ -505,6 +522,80 @@ Item {
                                 text: (laneBlock.modelData.captions || [])[laneHeader.index] || ""
                                 color: Theme.textTertiary
                                 font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // The take lanes under a track (ADR-0031 §1): one row for each of its
+        // other playlists, the name and the button that copies the range
+        // selected on the lane to the main playlist. The lane itself is
+        // drawn by the timeline, level with this name.
+        Item {
+            id: takeHeaders
+            width: Theme.trackHeaderWidth
+            height: parent.height
+            clip: true
+            Repeater {
+                model: edit.session.trackRows
+                Item {
+                    id: takeBlock
+                    required property int index
+                    required property var modelData
+                    visible: modelData.lanesShown === true
+                    y: modelData.top + edit.session.trackHeight + modelData.lanesTop - edit.session.scrollY
+                    width: takeHeaders.width
+                    height: (modelData.laneNames || []).length * edit.session.compLaneHeight
+                    Repeater {
+                        model: takeBlock.modelData.laneNames || []
+                        Rectangle {
+                            id: takeHeader
+                            required property int index
+                            required property string modelData
+                            readonly property bool ready: edit.session.laneSelection.ready === true &&
+                                edit.session.laneSelection.track === takeBlock.index &&
+                                edit.session.laneSelection.lane === index
+                            objectName: "takeHeader" + takeBlock.index + "_" + index
+                            y: index * edit.session.compLaneHeight
+                            width: takeBlock.width
+                            height: edit.session.compLaneHeight
+                            color: Theme.sunken
+                            Rectangle { width: 3; height: parent.height - 2; color: Theme.accent }
+                            Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: Theme.borderSubtle }
+                            Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom } width: 1; color: Theme.borderSubtle }
+                            Text {
+                                x: Theme.space3; y: Theme.space2
+                                width: parent.width - 2 * Theme.space3 - toMain.width - Theme.space1
+                                elide: Text.ElideRight
+                                text: takeHeader.modelData
+                                color: Theme.text
+                                font { family: Theme.fontFamily; pixelSize: Theme.textSmall; weight: Font.DemiBold }
+                            }
+                            // Pro Tools' Copy Selection to Main Playlist. Dimmed
+                            // until a range is selected here; a click then
+                            // says what to select.
+                            SButton {
+                                id: toMain
+                                objectName: "toMain" + takeBlock.index + "_" + takeHeader.index
+                                x: parent.width - width - Theme.space3 - 8
+                                y: Theme.space2 - 2
+                                implicitWidth: 52; implicitHeight: 18
+                                fontPx: Theme.textCaption
+                                text: "To Main"
+                                active: takeHeader.ready
+                                available: takeHeader.ready
+                                onClicked: edit.shell.invoke("comp.copy_to_main", -1)
+                            }
+                            Text {
+                                x: Theme.space3; y: parent.height - height - Theme.space2
+                                width: parent.width - 2 * Theme.space3 - 8
+                                elide: Text.ElideRight
+                                text: edit.session.quickSwipe ? "Quick Swipe: drag to comp"
+                                                              : "Drag a range, then To Main"
+                                color: Theme.textTertiary
+                                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
                             }
                         }
                     }

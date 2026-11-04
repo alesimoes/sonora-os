@@ -62,6 +62,8 @@ add_library(sonora_ui_qt STATIC
   src/edit_strip_silence.cpp
   src/automation_edit.h src/automation_edit.cpp
   src/edit_automation.cpp
+  src/edit_comping.cpp
+  src/comping_demo.h src/comping_demo.cpp
   src/live_take.h src/live_take.cpp
   src/timeline_scene.h src/timeline_scene.cpp
   src/scene_item.h src/scene_item.cpp
@@ -346,3 +348,14 @@ target_link_libraries(test_ui_mix_layout PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_mix_layout COMMAND test_ui_mix_layout)
 set_tests_properties(ui_mix_layout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
                      FAIL_REGULAR_EXPRESSION "Binding loop")
+
+# Comping (ADR-0031, ADR-0049): take lanes under a track, a range dragged
+# across a lane and copied to the main playlist, Quick Swipe, a new comp,
+# Consolidate's request and its held notices; then the exit test, a Pro Tools
+# engineer comping a vocal in the real window (ui.comping.exit_test).
+add_executable(test_ui_comping tests/test_comping.cpp)
+target_link_libraries(test_ui_comping PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_comping PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_comping COMMAND test_ui_comping)
+set_tests_properties(ui_comping PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

@@ -17,6 +17,7 @@
 #include "scene_item.h"
 #include "edit_clipboard.h"
 #include "session_files.h"
+#include "sonora/api/consolidate_argument.h"
 #include "sonora/api/messages.h"
 #include "sonora/command.h"
 #include "sonora/model/session_file.h"
@@ -45,12 +46,13 @@ bool same(const Selection& a, const Selection& b) {
 bool same(const ViewState& a, const ViewState& b) {
     return a.fpp == b.fpp && a.scroll == b.scroll && a.scroll_y == b.scroll_y &&
            a.width == b.width && a.height == b.height && a.track_height == b.track_height &&
-           a.wave_scale == b.wave_scale && a.open == b.open && a.tops == b.tops;
+           a.wave_scale == b.wave_scale && a.open == b.open && a.tops == b.tops &&
+           a.lanes == b.lanes && a.comp_lane_height == b.comp_lane_height;
 }
 
 bool same(const Drag& a, const Drag& b) {
     return a.kind == b.kind && a.moved == b.moved && a.start == b.start && a.end == b.end &&
-           a.region == b.region && a.track_end == b.track_end;
+           a.region == b.region && a.track_end == b.track_end && a.lane == b.lane;
 }
 
 }  // namespace
@@ -406,6 +408,52 @@ void SessionModel::installCommands(CommandRegistry& local) {
         return playlistCommand(i, false,
                                [&](Why& w) { return ctl_.delete_unused_playlists(i, w); }, why);
     });
+    // --- take lanes and comping (ADR-0031, ADR-0049) ---
+    // A refusal is held where the operator is looking (the track refusal line,
+    // with its Dismiss), not on the status line that clears in 2.5 s; so is
+    // the note that Quick Swipe left a join as a cut.
+    const auto comping = [this](bool ok, Why& why) {
+        setTrackRefusal(q(why));
+        if (ok) why.clear();
+        return ok;
+    };
+    simple("comp.toggle_lanes", [this, row, comping](const CommandContext& ctx, Why& why) {
+        const bool ok = ctl_.toggle_comp_lanes(row(ctx), why);
+        return comping(ok, why);
+    });
+    simple("comp.copy_to_main", [this, comping](const CommandContext&, Why& why) {
+        const bool ok = ctl_.comp_copy_to_main(why);
+        return comping(ok, why);
+    });
+    simple("comp.new", [this, row, comping](const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        const bool ok = playlistCommand(i, true, [&](Why& w) { return ctl_.comp_new(i, w); }, why);
+        return comping(ok, why);
+    });
+    simple("comp.toggle_quick_swipe", [this](const CommandContext&, Why&) {
+        ctl_.set_quick_swipe(!ctl_.quick_swipe());
+        return true;
+    });
+    // Consolidate renders on the engine (api/consolidate_argument.h): the
+    // request is the selection, the answer arrives as Consolidate events, so a
+    // failure is a held notice and the new region arrives as an ordinary edit.
+    simple("edit.consolidate", [this](const CommandContext&, Why& why) {
+        EditController::ConsolidateRequest req;
+        if (!ctl_.consolidate_request(req, why)) return false;
+        if (!send_command_) {
+            why = "no engine to render the consolidated file";
+            return false;
+        }
+        api::ConsolidateArgument arg;
+        arg.track = req.track;
+        arg.playlist = req.playlist;
+        arg.start = req.start;
+        arg.end = req.end;
+        arg.name = req.name;
+        send_command_(QStringLiteral("session.consolidate"),
+                      q(api::format_consolidate_argument(arg)));
+        return true;
+    });
     simple("edit.duplicate",
            [this](const CommandContext&, Why& why) { return ctl_.duplicate(why); });
     // Pro Tools' Repeat asks for the number of repeats first. The key sends
@@ -631,7 +679,7 @@ void SessionModel::sync() {
     const int fades = static_cast<int>(ctl_.fade_shape()) * 16 +
                       static_cast<int>(ctl_.crossfade_shape());
     const uint64_t clip = ctl_.clipboard_serial();
-    const int follows = ctl_.automation_follows_edit() ? 1 : 0;
+    const int follows = (ctl_.automation_follows_edit() ? 1 : 0) | (ctl_.quick_swipe() ? 2 : 0);
     if (m != seen_mode_ || t != seen_tool_ || g != seen_grid_ || fades != seen_fades_ ||
         clip != seen_clip_ || follows != seen_follows_) {
         seen_clip_ = clip;
@@ -657,6 +705,15 @@ void SessionModel::sync() {
         content = overlay = true;
         emit viewChanged();
         emit rowsChanged();
+    }
+    {
+        const auto lane = ctl_.lane_selection();
+        if (lane.lane != seen_lane_.lane || lane.track != seen_lane_.track ||
+            lane.start != seen_lane_.start || lane.end != seen_lane_.end) {
+            seen_lane_ = lane;
+            content = true;
+            emit selectionChanged();
+        }
     }
     if (!same(seen_drag_, ctl_.drag())) {
         seen_drag_ = ctl_.drag();
@@ -984,6 +1041,15 @@ QVariantList SessionModel::trackRows() const {
         row[QStringLiteral("top")] = v.tops.size() > i ? v.tops[i] : static_cast<qreal>(i) * v.track_height;
         row[QStringLiteral("shown")] = v.autolanes_open(static_cast<int>(i));
         row[QStringLiteral("canShow")] = t.kind != TrackKind::Midi;
+        // Take lanes (ADR-0031 §1): the other playlists, shown under the
+        // track (and under its automation lanes) when lanesShown.
+        QStringList lane_names;
+        for (const std::string& n : ctl_.take_lane_names(static_cast<int>(i))) lane_names << q(n);
+        row[QStringLiteral("takes")] = static_cast<int>(lane_names.size());
+        row[QStringLiteral("laneNames")] = lane_names;
+        row[QStringLiteral("lanesShown")] = ctl_.comp_lanes_shown(static_cast<int>(i));
+        row[QStringLiteral("lanesTop")] =
+            v.autolanes_open(static_cast<int>(i)) ? kLaneCount * v.autolane_height : 0.0;
         // What each lane is, said in the words of what the engine does with
         // it: a lane the mode leaves unplayed is not "automation" to the ear.
         const TrackMix* mix = s.mix.find(t.id);
@@ -1012,6 +1078,21 @@ QVariantList SessionModel::trackRows() const {
         rows.push_back(row);
     }
     return rows;
+}
+
+QVariantMap SessionModel::laneSelection() const {
+    QVariantMap m;
+    const auto sel = ctl_.lane_selection();
+    int index = -1;
+    if (sel.valid()) {
+        const auto ids = ctl_.take_lane_ids(sel.track);
+        const auto it = std::find(ids.begin(), ids.end(), sel.lane);
+        if (it != ids.end()) index = static_cast<int>(it - ids.begin());
+    }
+    m[QStringLiteral("track")] = sel.valid() ? sel.track : -1;
+    m[QStringLiteral("lane")] = index;
+    m[QStringLiteral("ready")] = index >= 0;
+    return m;
 }
 
 QStringList SessionModel::playlistNames() const {
@@ -1164,7 +1245,9 @@ void SessionModel::setViewport(qreal width, qreal height) {
 
 void SessionModel::press(qreal x, qreal y) {
     std::string why;
-    run(ctl_.press(x, y, why), why);
+    const bool ok = ctl_.press(x, y, why);
+    if (ctl_.drag().kind == Drag::Kind::Swipe) setTrackRefusal(QString());
+    run(ok, why);
 }
 
 void SessionModel::drag(qreal x, qreal y) {
@@ -1174,7 +1257,16 @@ void SessionModel::drag(qreal x, qreal y) {
 
 void SessionModel::release(qreal x, qreal y) {
     std::string why;
-    run(ctl_.release(x, y, why), why);
+    const bool swipe = ctl_.drag().kind == Drag::Kind::Swipe;
+    const bool ok = ctl_.release(x, y, why);
+    // A swipe's refusal, and the note that a join stayed a cut, are held with
+    // the other track refusals; the gesture is over, so the status line would
+    // be gone before it could be read.
+    if (swipe) {
+        setTrackRefusal(q(why));
+        if (ok) why.clear();
+    }
+    run(ok, why);
 }
 
 void SessionModel::doubleClick(qreal x, qreal y) {
@@ -2451,7 +2543,7 @@ void SessionModel::resetPan(int track) {
 
 void SessionModel::buildTimeline(Scene& out) const {
     build_timeline_scene(ctl_.snapshot(), ctl_.view(), ctl_.selection(), ctl_.drag(),
-                         ctl_.grid_lines(), ctl_.grid(), peaks_, out);
+                         ctl_.grid_lines(), ctl_.grid(), peaks_, out, ctl_.lane_selection());
 }
 
 void SessionModel::buildOverlay(std::vector<SceneRect>& out) const {

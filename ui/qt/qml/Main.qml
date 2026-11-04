@@ -263,6 +263,40 @@ Rectangle {
                     font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                 }
             }
+            // Consolidate (ADR-0031 §6.1): the render's progress while it runs,
+            // and a failure or refusal kept until dismissed, not the status
+            // line that clears in 2.5 s.
+            Row {
+                objectName: "consolidateNotice"
+                visible: root.shell.consolidateText.length > 0
+                width: footerColumn.width
+                spacing: Theme.space2
+                SButton {
+                    id: dismissConsolidate
+                    objectName: "dismissConsolidate"
+                    visible: !root.shell.consolidateRunning
+                    text: "Dismiss"
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    onClicked: root.shell.dismissConsolidate()
+                }
+                SButton {
+                    objectName: "cancelConsolidate"
+                    visible: root.shell.consolidateRunning
+                    text: "Cancel"
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    onClicked: root.shell.invoke("session.consolidate_cancel", -1)
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - parent.spacing - dismissConsolidate.width
+                    wrapMode: Text.Wrap
+                    text: (root.shell.consolidateFailed ? "! " : "") + root.shell.consolidateText
+                    color: root.shell.consolidateFailed ? Theme.caution : Theme.textSecondary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                }
+            }
             // An output change refused (ADR-0024), kept until dismissed or
             // until a routing change goes through.
             Row {

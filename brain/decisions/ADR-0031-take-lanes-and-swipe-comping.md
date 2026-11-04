@@ -141,7 +141,7 @@ Undo gives back the old regions; the rendered file stays in the pool.
   interface view over §1, `ui.comping.lanes`.
 - MIDI comping: MIDI regions are windows onto shared sequences
   (ADR-0014); refused until MIDI takes need it.
-- The interface half: `ui/qt`'s `edit.consolidate` handler, which builds
+- The interface half (decided in ADR-0049): `ui/qt`'s `edit.consolidate` handler, which builds
   the argument below from the selection and shows the events.
 
 ### 6.1 The entry point, decided 2026-11-04 (protocol 52)
