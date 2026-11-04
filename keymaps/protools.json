@@ -128,6 +128,11 @@
     },
     "alt+r": "edit.repeat",
     "alt+shift+3": "edit.consolidate",
+    "ctrl+u": {
+      "command": "edit.strip_silence",
+      "verified": false,
+      "comment": "Pro Tools opens its Strip Silence window on Ctrl+U (from memory, not yet checked against Avid's guide). Here it strips with the defaults: -40 dB, 100 ms, 10 ms pads."
+    },
 
     "a": {
       "command": "edit.trim_start_to_insertion",
