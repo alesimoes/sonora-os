@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "sonora/memory_lock.h"
+#include "sonora/platform/process_setup.h"
 
 #define CHECK(cond)                                                      \
     do {                                                                 \
@@ -50,9 +50,9 @@ int test_finite_limit_is_refused() {
         const rlimit small{64 * 1024, 64 * 1024};
         if (::setrlimit(RLIMIT_MEMLOCK, &small) != 0) ::_exit(11);
         std::string why;
-        if (sonora::lock_memory(why)) ::_exit(12);
+        if (sonora::platform::lock_memory(why)) ::_exit(12);
         if (why.find("RLIMIT_MEMLOCK") == std::string::npos) ::_exit(13);
-        if (sonora::locked_kb() != 0) ::_exit(14);
+        if (sonora::platform::locked_kb() != 0) ::_exit(14);
         ::_exit(0);
     }
     int status = 0;
@@ -84,11 +84,11 @@ int test_locks_now_and_later() {
         return 0;
     }
     std::string why;
-    if (!sonora::lock_memory(why)) {
+    if (!sonora::platform::lock_memory(why)) {
         std::fprintf(stderr, "FAIL: lock_memory: %s\n", why.c_str());
         return 1;
     }
-    const long before = sonora::locked_kb();
+    const long before = sonora::platform::locked_kb();
     CHECK(before > 0);
 
     // MCL_FUTURE: what is allocated afterwards is locked too, as the
@@ -99,7 +99,7 @@ int test_locks_now_and_later() {
     static char* volatile keep;
     keep = ring.data();
     (void)keep;
-    const long after = sonora::locked_kb();
+    const long after = sonora::platform::locked_kb();
     CHECK(after - before >= 8 * 1024 * 9 / 10);
     return 0;
 }

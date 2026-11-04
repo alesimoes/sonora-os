@@ -424,7 +424,13 @@ EditPreset for that plugin, and after a rescan.
     copied as new bytes. During a take (`no_copy`) that check counts as a
     read, so the save fails "after the take". A file never seen by this
     host, for example in a received folder, is trusted at restore as
-    before. Verifying a whole folder on open is the engine's job in slice 2.
+    before. Verifying a whole folder on open is the engine's job in slice 2:
+    when the engine builds a chain (open, edit, restart) it checks every file
+    a state names (no link on the path, the size named, and the sha256 for up
+    to 256 MiB of files per state; larger sets are checked by size only so
+    the control loop does not stall). A file that fails loads the plugin
+    without its saved state, with the same "saved state was not restored"
+    fault as a state that does not match its own checksum.
   - **Stale tmp files.** At the host's Load (`session_dir`) and at the first
     save into a folder, the host removes `Plugin Files/.incoming-<pid>-<n>`
     whose pid no longer runs (`kill(pid, 0)` gives `ESRCH`), with `unlinkat`
