@@ -241,6 +241,7 @@ Rectangle {
                 required property int index
                 required property var modelData
                 vcaIndex: index
+                faderTop: bus.faderZone.y
                 x: (mix.slotCount + mix.auxCount + index) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height

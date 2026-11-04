@@ -17,6 +17,8 @@ Rectangle {
     required property SessionModel session
     required property MixModel mixer
     property int vcaIndex: 0
+    // Where the other strips' fader zone starts, so every fader begins level.
+    property real faderTop: 0
     property var info: ({ name: "", gainDb: 0, gainText: "0.0", mute: false, count: 0 })
 
     objectName: "vca" + vcaIndex
@@ -67,8 +69,8 @@ Rectangle {
     Item {
         id: faderArea
         objectName: "vcaFaderZone" + vca.vcaIndex
-        anchors { left: parent.left; right: parent.right; top: top.bottom; bottom: readout.top
-                  topMargin: Theme.space3; bottomMargin: Theme.space2 }
+        anchors { left: parent.left; right: parent.right; top: parent.top; bottom: readout.top
+                  topMargin: Math.max(vca.faderTop, top.height + Theme.space4); bottomMargin: Theme.space2 }
         readonly property real capH: 26
         readonly property real travel: height - capH
         Rectangle {

@@ -74,6 +74,9 @@ Rectangle {
     // (MixModel, ADR-0042).
     readonly property int folderIndex: isBus || mixer === null || track >= mixer.trackFolders.length
                                        ? -1 : mixer.trackFolders[track]
+    // Some VCA or folder exists: the tag row is there on every strip.
+    readonly property bool tagsShown: mixer !== null && (mixer.vcas.length > 0 || mixer.folders.length > 0)
+    readonly property alias faderZone: faderArea
     readonly property string vcaNames: isBus || mixer === null || track >= mixer.trackVcas.length
                                        ? "" : mixer.trackVcas[track]
     // Another track's solo silences this one; a console shows that, so does
@@ -156,48 +159,57 @@ Rectangle {
         anchors { left: parent.left; right: parent.right; top: parent.top; topMargin: Theme.space2 }
         spacing: Theme.space2
 
-        // The folder tag: its name, and a click closes the folder into one card.
-        Rectangle {
-            visible: strip.folderIndex >= 0
-            objectName: strip.isBus ? "" : "folderTag" + strip.track
+        // The folder tag (its name; a click closes the folder into one card)
+        // and the VCA tag (the names of the VCAs that hold the track), side
+        // by side. Every strip, the Master's included, has the row once the
+        // session has a VCA or a folder, so every fader starts at one height.
+        Item {
+            id: tagRow
+            visible: strip.tagsShown
             anchors.horizontalCenter: parent.horizontalCenter
             width: parent.width - 2 * Theme.space2
             height: 12
-            radius: Theme.radiusSmall
-            color: Theme.sunken
-            border.color: Theme.borderStrong
-            Text {
-                anchors { fill: parent; leftMargin: 2; rightMargin: 2 }
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                elide: Text.ElideRight
-                text: strip.folderIndex < 0 ? "" : "\u25BE " + strip.mixer.folders[strip.folderIndex].name
-                color: Theme.textSecondary
-                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+            Rectangle {
+                visible: strip.folderIndex >= 0
+                objectName: strip.isBus ? "" : "folderTag" + strip.track
+                x: 0
+                width: strip.vcaNames !== "" ? tagRow.width / 2 - 1 : tagRow.width
+                height: 12
+                radius: Theme.radiusSmall
+                color: Theme.sunken
+                border.color: Theme.borderStrong
+                Text {
+                    anchors { fill: parent; leftMargin: 2; rightMargin: 2 }
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    text: strip.folderIndex < 0 ? "" : "\u25BE " + strip.mixer.folders[strip.folderIndex].name
+                    color: Theme.textSecondary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: strip.folderIndex >= 0
+                    onClicked: strip.mixer.toggleFolderOpen(strip.folderIndex)
+                }
             }
-            MouseArea {
-                anchors.fill: parent
-                enabled: strip.folderIndex >= 0
-                onClicked: strip.mixer.toggleFolderOpen(strip.folderIndex)
-            }
-        }
-        // The VCAs that hold this track.
-        Rectangle {
-            visible: strip.vcaNames !== ""
-            objectName: strip.isBus ? "" : "vcaTag" + strip.track
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: parent.width - 2 * Theme.space2
-            height: 12
-            radius: Theme.radiusSmall
-            color: Theme.caution
-            Text {
-                anchors { fill: parent; leftMargin: 2; rightMargin: 2 }
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                elide: Text.ElideRight
-                text: strip.vcaNames
-                color: Theme.textOnAccent
-                font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+            Rectangle {
+                visible: strip.vcaNames !== ""
+                objectName: strip.isBus ? "" : "vcaTag" + strip.track
+                x: strip.folderIndex >= 0 ? tagRow.width / 2 + 1 : 0
+                width: strip.folderIndex >= 0 ? tagRow.width / 2 - 1 : tagRow.width
+                height: 12
+                radius: Theme.radiusSmall
+                color: Theme.caution
+                Text {
+                    anchors { fill: parent; leftMargin: 2; rightMargin: 2 }
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    text: strip.vcaNames
+                    color: Theme.textOnAccent
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+                }
             }
         }
 
