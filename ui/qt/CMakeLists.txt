@@ -58,6 +58,7 @@ add_library(sonora_ui_qt STATIC
   src/edit_groups.cpp
   src/mix_groups.cpp
   src/edit_clip_gain.cpp
+  src/edit_tempo.cpp
   src/strip_silence.h src/strip_silence.cpp
   src/edit_strip_silence.cpp
   src/automation_edit.h src/automation_edit.cpp
@@ -88,7 +89,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml
+        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml
         qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
 )
 
@@ -204,6 +205,15 @@ target_compile_definitions(test_ui_clip_gain PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_clip_gain COMMAND test_ui_clip_gain)
 set_tests_properties(ui_clip_gain PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Tempo editing (ADR-0050): set, ramp, scale, meter and remove as SetSettings,
+# Undo Tempo on its own stack, the tempo.edit text, the tempo track scene.
+add_executable(test_ui_tempo_edit tests/test_tempo_edit.cpp)
+target_link_libraries(test_ui_tempo_edit PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_tempo_edit PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_tempo_edit COMMAND test_ui_tempo_edit)
+set_tests_properties(ui_tempo_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 add_executable(test_ui_names_colours tests/test_names_colours.cpp)
 target_link_libraries(test_ui_names_colours PRIVATE sonora_ui_qt Qt6::Test)

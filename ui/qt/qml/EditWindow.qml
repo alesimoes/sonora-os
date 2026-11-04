@@ -206,8 +206,8 @@ Item {
         }
         // Tempo and Meter, from the session's tempo map: what the bars and
         // the grid above and below are read through. A click puts the
-        // insertion point there, as on the time rulers; editing a change is
-        // still to come (BACKLOG Track 3 item 3).
+        // insertion point there, as on the time rulers; a change is edited
+        // with Tempo… in the Edit menu.
         Repeater {
             model: ["Tempo", "Meter"]
             Item {
@@ -236,6 +236,36 @@ Item {
                     kind: index
                     MouseArea { anchors.fill: parent; onClicked: (m) => edit.session.rulerClick(m.x) }
                 }
+            }
+        }
+        // The tempo track (tempo.track): the map as a line, a ramp a slope.
+        // Edited with Tempo… (tempo.edit) at the insertion point or on the
+        // selected range; a click puts the insertion point there.
+        Item {
+            objectName: "tempoTrack"
+            visible: edit.session.tempoTrackShown
+            width: rulers.width
+            height: visible ? 56 : 0
+            Rectangle {
+                width: Theme.trackHeaderWidth; height: parent.height
+                color: Theme.panel
+                Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom } width: 1; color: Theme.borderSubtle }
+                Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: Theme.borderSubtle }
+                Text {
+                    anchors { right: parent.right; rightMargin: Theme.space2; verticalCenter: parent.verticalCenter }
+                    text: "Tempo Track"
+                    color: Theme.textSecondary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+                }
+            }
+            ConductorRuler {
+                objectName: "tempoTrackLine"
+                x: Theme.trackHeaderWidth
+                width: parent.width - Theme.trackHeaderWidth
+                height: parent.height
+                session: edit.session
+                kind: 2
+                MouseArea { anchors.fill: parent; onClicked: (m) => edit.session.rulerClick(m.x) }
             }
         }
         // Markers: a click on one recalls it, Alt-click clears it, as

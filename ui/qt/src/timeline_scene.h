@@ -83,7 +83,8 @@ void build_marker_ruler_scene(const model::MarkerList& markers, const ViewState&
 // at the view's left edge is pinned there, so a view between changes still
 // says what it is in. Read as tempo_index_at() reads the map: an entry out
 // of order is not a change, and one that repeats the value is not drawn.
-enum class ConductorRuler { Tempo, Meter };
+// Track: the tempo track under both, the map as a stepped line (ADR-0050).
+enum class ConductorRuler { Tempo, Meter, Track };
 void build_conductor_ruler_scene(ConductorRuler kind, const model::SessionSettings& s,
                                  const ViewState& view, double height, Scene& out);
 

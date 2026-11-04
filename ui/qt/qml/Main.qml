@@ -1232,6 +1232,10 @@ Rectangle {
                     { name: "editRenameRegion", label: "Rename Region…", command: "region.rename", on: true },
                     { name: "editRegionColour", label: "Region Colour…", command: "region.colour", on: true },
                     { name: "editClipGain", label: "Clip Gain…", command: "clip.gain", on: true },
+                    { name: "editTempo", label: "Tempo…", command: "tempo.edit", on: true },
+                    { name: "editTempoUndo", label: "Undo Tempo", command: "tempo.undo", on: true },
+                    { name: "editTempoRedo", label: "Redo Tempo", command: "tempo.redo", on: true },
+                    { name: "editTempoTrack", label: "Tempo Track", command: "tempo.track", on: true },
                     { name: "", label: "", command: "", on: false },
                     { name: "editSelectAll", label: "Select All", command: "edit.select_all", on: true },
                     { name: "", label: "", command: "", on: false },
@@ -1619,6 +1623,7 @@ Rectangle {
     }
 
     ClipGainPanel { id: clipGainPanel; shell: root.shell }
+    TempoPanel { id: tempoPanel; shell: root.shell }
 
     // --- Rename Track, Rename Region -----------------------------------------------
     // Asked for by track.rename or region.rename with no name (a double-click
@@ -2226,6 +2231,7 @@ Rectangle {
         function onNameRequested(track, current) { namePanel.show(track, current) }
         function onColourRequested(track, current) { colourPalette.show(track, current) }
         function onClipGainRequested(current) { clipGainPanel.show(current) }
+        function onTempoRequested(current) { tempoPanel.show(current) }
         function onMarkerRequested(name, what, range) { markerPanel.show(name, what, range) }
     }
 }

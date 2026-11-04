@@ -466,6 +466,7 @@ void domains() {
         const std::string id = spec.id;
         const bool interface = id.rfind("tool.", 0) == 0 || id.rfind("zoom.", 0) == 0 ||
                                id.rfind("edit.mode.", 0) == 0 || id.rfind("focus.", 0) == 0 ||
+                               id.rfind("tempo.", 0) == 0 ||
                                id == "app.quit" || id == "automation.thin" ||
                                id == "automation.toggle_follows_edit" ||
                                id == "window.transport" ||

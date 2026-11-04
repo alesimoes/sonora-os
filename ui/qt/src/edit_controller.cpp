@@ -291,6 +291,8 @@ EditController::EditController(TimelineDocument& doc) : doc_(doc) {
 void EditController::document_replaced() {
     drag_ = Drag{};
     follow_notice_.clear();
+    tempo_undo_.clear();
+    tempo_redo_.clear();
     sel_ = Selection{};
     autolanes_open_.clear();
     if (!snapshot().edit->tracks.empty()) sel_.track = 0;

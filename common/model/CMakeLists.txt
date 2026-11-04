@@ -18,6 +18,7 @@ set(SONORA_MODEL_SOURCES
   src/replication.cpp
   src/session_file.cpp
   src/session_template.cpp
+  src/tempo_edit.cpp
 )
 add_library(sonora_model STATIC ${SONORA_MODEL_SOURCES})
 target_include_directories(sonora_model PUBLIC include)
@@ -163,3 +164,8 @@ target_link_libraries(measure_midi_session PRIVATE sonora_model sonora_json sono
 add_executable(test_model_sequence_file tests/test_sequence_file.cpp)
 target_link_libraries(test_model_sequence_file PRIVATE sonora_model_audited)
 add_test(NAME model_sequence_file COMMAND test_model_sequence_file)
+
+# Tempo operations (ADR-0050): set, ramp, scale, remove, meter.
+add_executable(test_model_tempo_edit tests/test_tempo_edit.cpp)
+target_link_libraries(test_model_tempo_edit PRIVATE sonora_model_audited)
+add_test(NAME model_tempo_edit COMMAND test_model_tempo_edit)

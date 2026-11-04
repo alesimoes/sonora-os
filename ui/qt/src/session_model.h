@@ -82,6 +82,8 @@ class SessionModel : public QObject {
     // the list that shows them (window.configurations).
     Q_PROPERTY(QVariantList windowConfigs READ windowConfigs NOTIFY windowConfigsChanged)
     Q_PROPERTY(bool windowConfigsOpen READ windowConfigsOpen NOTIFY windowConfigsOpenChanged)
+    // The tempo track under the Tempo and Meter rulers (tempo.track).
+    Q_PROPERTY(bool tempoTrackShown READ tempoTrackShown NOTIFY tempoTrackChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(bool automationFollowsEdit READ automationFollowsEdit NOTIFY editStateChanged)
@@ -354,6 +356,7 @@ public:
     bool memoryLocationsOpen() const { return memory_locations_open_; }
     void setMemoryLocationsOpen(bool on);
     bool latencyOpen() const { return latency_open_; }
+    bool tempoTrackShown() const { return tempo_track_; }
     Q_INVOKABLE void setLatencyOpen(bool on);
 
     // --- window configurations (window.config_store, window.config_recall) ---
@@ -565,6 +568,10 @@ signals:
     // A recalled configuration moved the floating windows: read
     // windowPlace() again for each.
     void windowPlacesRecalled();
+    void tempoTrackChanged();
+    // tempo.edit without a text: the dialog opens offering the tempo in
+    // force at the range start or the insertion point.
+    void tempoRequested(const QString& current);
     // marker.add with no name, stopped: the window asks for one, offering
     // `name`, and sends marker.add again with it. `what` says where the
     // marker goes ("at 5|1|000", "from 5|1|000 to 9|1|000").
@@ -716,6 +723,7 @@ private:
     WindowLayouts layouts_;
     QString layouts_file_;
     std::function<void(bool)> transport_open_hook_;
+    bool tempo_track_ = false;
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);
