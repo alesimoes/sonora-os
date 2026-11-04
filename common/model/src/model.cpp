@@ -201,7 +201,7 @@ const AutomationLane* find_lane(const AutomationLanes& lanes, const AutomationLa
 }
 
 bool EditState::operator==(const EditState& o) const {
-    if (tracks.size() != o.tracks.size() || buses != o.buses ||
+    if (tracks.size() != o.tracks.size() || buses != o.buses || vcas != o.vcas || folders != o.folders ||
         !same_lanes(master_automation, o.master_automation)) {
         return false;
     }
@@ -269,6 +269,13 @@ const InsertMix* MixState::find_insert(Id insert) const {
 const BusMix* MixState::find_bus(Id bus) const {
     for (const BusMix& m : buses) {
         if (m.bus == bus) return &m;
+    }
+    return nullptr;
+}
+
+const VcaMix* MixState::find_vca(Id vca) const {
+    for (const VcaMix& m : vcas) {
+        if (m.vca == vca) return &m;
     }
     return nullptr;
 }
@@ -1648,6 +1655,71 @@ std::string send_mix_problem(const SendMix& m, std::string& where) {
     return {};
 }
 
+std::string vca_mix_problem(const VcaMix& m, std::string& where) {
+    where.clear();
+    if (!gain_in_range(m.gain_db)) {
+        where = "gain_db";
+        return gain_range();
+    }
+    return {};
+}
+
+namespace {
+
+std::string members_problem(const std::vector<Id>& members, const std::unordered_set<Id>& tracks,
+                            std::unordered_set<Id>& seen) {
+    seen.clear();
+    for (const Id m : members) {
+        if (tracks.count(m) == 0) return "track " + std::to_string(m) + " does not exist";
+        if (!seen.insert(m).second) return "track " + std::to_string(m) + " is listed twice";
+    }
+    return {};
+}
+
+}  // namespace
+
+std::string vca_problem(const EditState& e, std::string& where) {
+    where.clear();
+    if (e.vcas.size() > kMaxVcas) {
+        return "a session holds at most " + std::to_string(kMaxVcas) + " VCA masters";
+    }
+    std::unordered_set<Id> tracks;
+    for (const auto& t : e.tracks) tracks.insert(t->id);
+    std::unordered_set<Id> seen;
+    for (std::size_t i = 0; i < e.vcas.size(); ++i) {
+        where = "[" + std::to_string(i) + "]";
+        if (!valid_text(e.vcas[i].name)) return "the name is not valid UTF-8";
+        const std::string why = members_problem(e.vcas[i].members, tracks, seen);
+        if (!why.empty()) return why;
+    }
+    where.clear();
+    return {};
+}
+
+std::string folder_problem(const EditState& e, std::string& where) {
+    where.clear();
+    if (e.folders.size() > kMaxFolders) {
+        return "a session holds at most " + std::to_string(kMaxFolders) + " folders";
+    }
+    std::unordered_set<Id> tracks;
+    for (const auto& t : e.tracks) tracks.insert(t->id);
+    std::unordered_set<Id> seen;
+    std::unordered_set<Id> taken;
+    for (std::size_t i = 0; i < e.folders.size(); ++i) {
+        where = "[" + std::to_string(i) + "]";
+        if (!valid_text(e.folders[i].name)) return "the name is not valid UTF-8";
+        const std::string why = members_problem(e.folders[i].members, tracks, seen);
+        if (!why.empty()) return why;
+        for (const Id m : e.folders[i].members) {
+            if (!taken.insert(m).second) {
+                return "track " + std::to_string(m) + " is in two folders";
+            }
+        }
+    }
+    where.clear();
+    return {};
+}
+
 std::string bus_mix_problem(const BusMix& m, std::string& where) {
     where.clear();
     if (!gain_in_range(m.gain_db)) {
@@ -2011,6 +2083,31 @@ bool check_invariants(const Snapshot& s, std::string& error) {
         if (bus.output == bus.id) {
             error = path + ".output: a bus cannot be its own output";
             return false;
+        }
+    }
+    {
+        why = vca_problem(*s.edit, where);
+        if (!why.empty()) {
+            error = "vcas" + where + ": " + why;
+            return false;
+        }
+        why = folder_problem(*s.edit, where);
+        if (!why.empty()) {
+            error = "folders" + where + ": " + why;
+            return false;
+        }
+        for (std::size_t i = 0; i < s.edit->vcas.size(); ++i) {
+            if (!claim(s.edit->vcas[i].id, "vcas[" + std::to_string(i) + "]")) return false;
+        }
+        for (std::size_t i = 0; i < s.edit->folders.size(); ++i) {
+            if (!claim(s.edit->folders[i].id, "folders[" + std::to_string(i) + "]")) return false;
+        }
+        for (std::size_t i = 0; i < s.mix.vcas.size(); ++i) {
+            why = vca_mix_problem(s.mix.vcas[i], where);
+            if (!why.empty()) {
+                error = "mix.vcas[" + std::to_string(i) + "]." + where + ": " + why;
+                return false;
+            }
         }
     }
     why = bus_loop_problem(*s.edit, where);

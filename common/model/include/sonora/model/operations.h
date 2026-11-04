@@ -535,6 +535,40 @@ struct EditAutomation {
     Id send = 0;
 };
 
+// VCA masters and folders (ADR-0042). SetVca makes the VCA `vca` when no
+// VCA has that id (the id is then new, as a bus's is) and replaces its name
+// and members when one does; SetFolder likewise. Undoable, as structures.
+// Refused: a member that is not a track or is listed twice, a folder member
+// that is in another folder, a name that is not UTF-8, more than kMaxVcas
+// VCAs or kMaxFolders folders.
+struct SetVca {
+    Id vca = 0;
+    std::string name;
+    std::vector<Id> members;
+};
+
+// The members go back to unscaled; their own faders are untouched.
+struct RemoveVca {
+    Id vca = 0;
+};
+
+// Not undoable: a VCA's fader and mute, like every fader. Refused for an id
+// that is not a VCA.
+struct SetVcaMix {
+    VcaMix mix;   // replaces the values of mix.vca
+};
+
+struct SetFolder {
+    Id folder = 0;
+    std::string name;
+    std::vector<Id> members;
+};
+
+// The tracks are left where they are, ungrouped.
+struct RemoveFolder {
+    Id folder = 0;
+};
+
 // Every operation but Compound: what a compound holds. The type, not a
 // runtime check, keeps a compound out of a compound.
 using Member =
@@ -548,7 +582,8 @@ using Member =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetVca,
+                 RemoveVca, SetVcaMix, SetFolder, RemoveFolder>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -583,7 +618,8 @@ using Operation =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, Compound>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetVca,
+                 RemoveVca, SetVcaMix, SetFolder, RemoveFolder, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

@@ -65,6 +65,10 @@ std::string insert_param_count_problem(std::size_t count);
 // unique, one send per destination; not whether the destination exists.
 std::string send_mix_problem(const SendMix& m, std::string& where);
 std::string bus_mix_problem(const BusMix& m, std::string& where);
+// VCA masters and folders (ADR-0042); `where` is "[i]" for the entry at fault.
+std::string vca_mix_problem(const VcaMix& m, std::string& where);
+std::string vca_problem(const EditState& e, std::string& where);
+std::string folder_problem(const EditState& e, std::string& where);
 std::string sends_problem(const std::vector<Send>& sends, std::string& where);
 const Bus* find_bus(const EditState& e, Id bus);
 // The buses from `from` to `to` along sends, both included; empty when

@@ -2664,6 +2664,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         const std::vector<model::Id> order_before = track_order(document_->current());
         const std::vector<model::Id> sends_before = send_layout(document_->current());
         const model::MixState mix_before = document_->current().mix;
+        const std::vector<model::Vca> vcas_before = document_->current().edit->vcas;
         switch (m.action) {
             case api::ModelAction::Apply: {
                 model::Operation op;
@@ -2791,6 +2792,8 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                           track_order(document_->current()) != order_before ||
                           !(mix_after.buses == mix_before.buses) ||
                           !(mix_after.sends == mix_before.sends) ||
+                          !(mix_after.vcas == mix_before.vcas) ||
+                          document_->current().edit->vcas != vcas_before ||
                           send_layout(document_->current()) != sends_before;
             // Chains from the document diff (undo, redo, active, values
             // included), before the plan is built from it.

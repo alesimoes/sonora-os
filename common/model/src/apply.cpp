@@ -777,6 +777,99 @@ public:
         if (t == kNone) return fail("track " + str(op.track) + " does not exist");
         auto edit = std::make_shared<EditState>(*before_.edit);
         edit->tracks.erase(edit->tracks.begin() + static_cast<std::ptrdiff_t>(t));
+        // A VCA or a folder does not keep a track that is gone; undo brings
+        // both back with the track (ADR-0042 §1).
+        const auto drop = [&](std::vector<Id>& members) {
+            members.erase(std::remove(members.begin(), members.end(), op.track), members.end());
+        };
+        for (Vca& v : edit->vcas) drop(v.members);
+        for (Folder& f : edit->folders) drop(f.members);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
+    template <typename T, typename Op>
+    bool set_members(std::vector<T>& list, Id id, const Op& op) {
+        const auto at = std::find_if(list.begin(), list.end(), [&](const T& x) { return x.id == id; });
+        if (at == list.end() && !fresh(id)) return false;
+        T item;
+        item.id = id;
+        item.name = op.name;
+        item.members = op.members;
+        if (at == list.end()) {
+            list.push_back(std::move(item));
+        } else {
+            *at = std::move(item);
+        }
+        return true;
+    }
+
+    bool operator()(const SetVca& op) {
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        const bool is_new = std::none_of(edit->vcas.begin(), edit->vcas.end(),
+                                         [&](const Vca& v) { return v.id == op.vca; });
+        if (!set_members(edit->vcas, op.vca, op)) return false;
+        std::string where;
+        const std::string why = detail::vca_problem(*edit, where);
+        if (!why.empty()) return fail("VCA" + where + ": " + why);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        if (is_new) after_.next_id = op.vca + 1;
+        return true;
+    }
+
+    bool operator()(const RemoveVca& op) {
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        const auto at = std::find_if(edit->vcas.begin(), edit->vcas.end(),
+                                     [&](const Vca& v) { return v.id == op.vca; });
+        if (at == edit->vcas.end()) return fail("VCA " + str(op.vca) + " does not exist");
+        edit->vcas.erase(at);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
+    bool operator()(const SetVcaMix& op) {
+        const auto& vcas = before_.edit->vcas;
+        if (std::none_of(vcas.begin(), vcas.end(), [&](const Vca& v) { return v.id == op.mix.vca; })) {
+            return fail("VCA " + str(op.mix.vca) + " does not exist");
+        }
+        std::string where;
+        const std::string why = detail::vca_mix_problem(op.mix, where);
+        if (!why.empty()) return fail("VCA " + str(op.mix.vca) + "." + where + ": " + why);
+        after_ = before_;
+        auto& list = after_.mix.vcas;
+        const auto at = std::find_if(list.begin(), list.end(),
+                                     [&](const VcaMix& m) { return m.vca == op.mix.vca; });
+        if (at == list.end()) {
+            list.push_back(op.mix);
+        } else {
+            *at = op.mix;
+        }
+        return true;
+    }
+
+    bool operator()(const SetFolder& op) {
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        const bool is_new = std::none_of(edit->folders.begin(), edit->folders.end(),
+                                         [&](const Folder& f) { return f.id == op.folder; });
+        if (!set_members(edit->folders, op.folder, op)) return false;
+        std::string where;
+        const std::string why = detail::folder_problem(*edit, where);
+        if (!why.empty()) return fail("folder" + where + ": " + why);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        if (is_new) after_.next_id = op.folder + 1;
+        return true;
+    }
+
+    bool operator()(const RemoveFolder& op) {
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        const auto at = std::find_if(edit->folders.begin(), edit->folders.end(),
+                                     [&](const Folder& f) { return f.id == op.folder; });
+        if (at == edit->folders.end()) return fail("folder " + str(op.folder) + " does not exist");
+        edit->folders.erase(at);
         after_ = before_;
         after_.edit = std::move(edit);
         return true;
@@ -2407,7 +2500,7 @@ bool leaf_is_undoable(MemberRef m) {
              m.holds<SetSettings>() || m.holds<SetInsertBypass>() ||
              m.holds<SetInsertParams>() || m.holds<SetInsertState>() ||
              m.holds<AddMidiSource>() || m.holds<SetMidiRouting>() ||
-             m.holds<SetSendMix>() || m.holds<SetBusMix>());
+             m.holds<SetSendMix>() || m.holds<SetBusMix>() || m.holds<SetVcaMix>());
 }
 
 }  // namespace

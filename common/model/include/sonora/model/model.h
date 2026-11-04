@@ -648,6 +648,36 @@ struct Bus {
     bool operator==(const Bus& o) const;
 };
 
+// --- VCA masters and folders (ADR-0042, session format version 19) -------
+
+inline constexpr std::size_t kMaxVcas = 32;
+inline constexpr std::size_t kMaxFolders = 64;
+
+// A VCA master: a fader and a mute with no audio, that scale the tracks
+// `members` by the same dB. A track may be on several VCAs; their dB add.
+// The members and the name are structure, so undoable; the fader and the
+// mute are a VcaMix, saved and not undone, as every fader is.
+struct Vca {
+    Id id = 0;
+    std::string name;
+    std::vector<Id> members;   // track ids; none is allowed
+    bool operator==(const Vca& o) const {
+        return id == o.id && name == o.name && members == o.members;
+    }
+};
+
+// A folder: tracks kept together under a name, as Pro Tools' basic folder
+// track. A track is in at most one. Whether it is shown open is the
+// interface's, not the session's.
+struct Folder {
+    Id id = 0;
+    std::string name;
+    std::vector<Id> members;   // track ids, in no required order
+    bool operator==(const Folder& o) const {
+        return id == o.id && name == o.name && members == o.members;
+    }
+};
+
 // --- automation (ADR-0027) --------------------------------------------------
 
 // What a lane drives. Volume is in dB, kMinGainDb to kMaxGainDb; pan is
@@ -779,6 +809,8 @@ struct EditState {
     std::vector<std::shared_ptr<const TrackEdit>> tracks;   // display order
     std::shared_ptr<const MarkerList> markers;
     std::vector<Bus> buses;   // display order
+    std::vector<Vca> vcas;          // creation order (ADR-0042)
+    std::vector<Folder> folders;    // creation order
     // The Master's lanes: Volume only (ADR-0027 §9).
     AutomationLanes master_automation;
     bool operator==(const EditState& o) const;
@@ -906,6 +938,16 @@ struct BusMix {
     }
 };
 
+// A VCA master's fader and mute: saved and not undoable (ADR-0042).
+struct VcaMix {
+    Id vca = 0;
+    float gain_db = 0.0f;
+    bool mute = false;
+    bool operator==(const VcaMix& o) const {
+        return vca == o.vca && gain_db == o.gain_db && mute == o.mute;
+    }
+};
+
 // An insert's values: saved and not undoable, like a fader (ADR-0012 §6.1).
 struct InsertMix {
     Id insert = 0;
@@ -933,13 +975,16 @@ struct MixState {
     // Keyed by bus and by send id, outliving an undone add as a track's do.
     std::vector<BusMix> buses;
     std::vector<SendMix> sends;
+    // Keyed by VCA id; a VCA with no entry is at 0 dB, unmuted.
+    std::vector<VcaMix> vcas;
     const TrackMix* find(Id track) const;
     const InsertMix* find_insert(Id insert) const;
     const BusMix* find_bus(Id bus) const;
     const SendMix* find_send(Id send) const;
+    const VcaMix* find_vca(Id vca) const;
     bool operator==(const MixState& o) const {
         return bus == o.bus && tracks == o.tracks && inserts == o.inserts &&
-               buses == o.buses && sends == o.sends;
+               buses == o.buses && sends == o.sends && vcas == o.vcas;
     }
 };
 
