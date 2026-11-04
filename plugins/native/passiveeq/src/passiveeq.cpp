@@ -2,6 +2,7 @@
 #include "sonora/native/passiveeq.h"
 
 #include <array>
+#include <cstdint>
 #include <cmath>
 #include <vector>
 
@@ -24,7 +25,7 @@ const char* const kOffOn[] = {"off", "on"};
 constexpr ParamInfo db_knob(const char* id, const char* name, float lo, float hi, float def) {
     return {id, name, Unit::Decibel, Taper::Linear, lo, hi, def, 20.0f, true, false, false, "%.1f dB", nullptr, 0};
 }
-constexpr ParamInfo pick(const char* id, const char* name, float n, const char* const* names, int count) {
+constexpr ParamInfo pick(const char* id, const char* name, float n, const char* const* names, std::uint32_t count) {
     return {id, name, Unit::Choice, Taper::Stepped, 0.0f, n - 1.0f, 0.0f, 0.0f, false, true, false, "%.0f", names, count};
 }
 
