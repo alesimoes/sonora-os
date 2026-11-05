@@ -224,8 +224,7 @@ int test_ui() {
     // The list rebinds on the next event-loop pass, which a loaded runner can delay.
     QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 2000);
     if (text_of(list, "windowConfigSummary2") != QStringLiteral("Mix, 1 floating"))
-        std::fprintf(stderr, "windowConfigSummary2 is '%s'
-",
+        std::fprintf(stderr, "windowConfigSummary2 is '%s'\n",
                      qPrintable(text_of(list, "windowConfigSummary2")));
     CHECK(text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"));
 
