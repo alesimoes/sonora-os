@@ -193,6 +193,13 @@ for s in "${steps[@]}"; do
   else
     echo "FAIL $s ($((SECONDS - start)) s): $OUT/$s.log"
     failed+=("$s")
+    # A batch of PRs only needs to know it is red: the orchestrator splits
+    # it and reruns the halves, so the steps after the first failure would
+    # be an hour spent on a verdict already known.
+    if [[ "${SONORA_LOCAL_CI_FAIL_FAST:-0}" == 1 ]]; then
+      echo "local-ci: stopped after the first failure (batch)"
+      break
+    fi
   fi
 done
 if ((${#failed[@]})); then
