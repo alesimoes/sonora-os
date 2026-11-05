@@ -27,7 +27,14 @@ STATES = frozenset(TRANSITIONS)
 # States in which a task is waiting for an agent (no run needed otherwise).
 AGENT_STATES = ("queued", "building", "bugfix", "qa", "integrating", "ci_fix")
 OPEN_PR_STATES = ("pr_open", "ci_fix")
-NUMBER_KINDS = ("adr", "protocol", "format")
+NUMBER_KINDS = ("adr", "protocol", "format", "window")
+# Columns added after the first schema; applied to an existing database too.
+MIGRATIONS = (
+    ("tasks", "integrated", "INTEGER DEFAULT 0"),
+    ("tasks", "fix_kind", "TEXT"),
+    ("features", "fixes", "INTEGER DEFAULT 0"),
+    ("features", "job_reds", "TEXT DEFAULT '{}'"),
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS features(
@@ -73,6 +80,11 @@ class Store:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA busy_timeout=30000")
         self._db.executescript(SCHEMA)
+        for table, col, decl in MIGRATIONS:
+            have = [r["name"] for r in self._db.execute(
+                f"PRAGMA table_info({table})")]
+            if col not in have:
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
         self._depth = 0
 
     def close(self):
@@ -133,6 +145,11 @@ class Store:
                 "created,updated) VALUES(?,?,?,?,?,?,?)",
                 (id, plan_path, branch, track, int(partial), now, now))
 
+    def ensure_feature(self, id, track, branch=None):
+        now = self.clock()
+        self._x("INSERT OR IGNORE INTO features(id,branch,track,created,"
+                "updated) VALUES(?,?,?,?,?)", (id, branch, track, now, now))
+
     def get_feature(self, id):
         r = self._q("SELECT * FROM features WHERE id=?", (id,))
         return dict(r[0]) if r else None
@@ -158,6 +175,12 @@ class Store:
                  branch or f"feat/{id}", json.dumps(list(depends_on)),
                  json.dumps(list(files)), brief, priority, ",".join(wants),
                  now, now))
+        if kind == "work":
+            # Every item is a feature; a lone task is a one-task feature.
+            fid = feature_id or id
+            self.ensure_feature(fid, track)
+            if fid != feature_id:
+                self._x("UPDATE tasks SET feature_id=? WHERE id=?", (fid, id))
         self.event(id, "task_added", state)
 
     def get_task(self, id):
@@ -209,6 +232,24 @@ class Store:
             self.event(id, "state", f"{old}->{new_state}"
                        + (f" {note}" if note else ""))
         return old
+
+    # -- features as a unit -------------------------------------------
+    def feature_tasks(self, fid):
+        """Work tasks of a feature in merge order (priority, creation)."""
+        return [t for t in self.tasks() if t["feature_id"] == fid
+                and t["kind"] == "work"]
+
+    def advance_feature(self, fid, new_state, note=None, **fields):
+        """Move every live task of a feature together (PR open, CI fix,
+        merged). Blocked and merged tasks stay where they are."""
+        with self.tx():
+            for t in self.feature_tasks(fid):
+                if t["state"] in ("blocked", "merged"):
+                    continue
+                self.advance(t["id"], new_state, note=note)
+                if fields:
+                    self.set_task(t["id"], **fields)
+            self.set_feature(fid, state=new_state)
 
     def has_deps_done(self, task):
         for dep in task["depends_on"]:

@@ -19,7 +19,9 @@ TOOLS = [
      "inputSchema": {"type": "object", "required": ["to", "type"], "properties": {
          "to": {"type": "string"}, "type": {"type": "string"},
          "body": {"description": "string or object"},
-         "reply_to": {"type": "string"}}}},
+         "reply_to": {"type": "string"},
+         "feature": {"type": "string", "description": "default: your own"},
+         "task": {"type": "string", "description": "default: your own"}}}},
     {"name": "recv", "description": "Return pending messages and acknowledge them.",
      "inputSchema": {"type": "object", "properties": {
          "max": {"type": "integer"}, "wait_s": {"type": "number"}}}},
@@ -36,7 +38,8 @@ def run_tool(c, name, a):
     if name == "whoami":
         return c.whoami()
     if name == "send":
-        return c.send(a["to"], a["type"], a.get("body"), a.get("reply_to"))
+        return c.send(a["to"], a["type"], a.get("body"), a.get("reply_to"),
+                      a.get("feature"), a.get("task"))
     if name == "recv":
         return {"messages": c.recv(int(a.get("max", 20)), min(float(a.get("wait_s", 0)), 30))}
     if name == "claim":
