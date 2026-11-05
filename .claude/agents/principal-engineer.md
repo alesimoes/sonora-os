@@ -31,6 +31,12 @@ Read `CLAUDE.md` first; its real-time rules and conventions hold for you too.
 
 ## Process hygiene
 
+Work only in the worktree your brief names, or in a new one you create
+(`git worktree add`) on a new branch cut from origin/main. Never run
+`git checkout`, `switch`, `reset` or `clean` in any other worktree: the
+orchestrator runs from one of them, and switching it once replaced its
+scripts and broke a PR batch (2026-11-05).
+
 Commit to the branch at the end of every stage. Do not push a chain of
 small fixes: push once, when the fix is complete and proven. Never wait on
 CI, never leave anything running in the background, stop what you started
