@@ -14,6 +14,10 @@ inputs:
   context:
     description: Docker build context
     required: true
+  build-args:
+    description: "Extra docker build arguments, e.g. --build-arg SNAP=..."
+    required: false
+    default: ""
   rebuild:
     description: "'true' when this change touches the image's inputs"
     required: false
@@ -27,6 +31,7 @@ runs:
         DOCKERFILE: ${{ inputs.dockerfile }}
         CONTEXT: ${{ inputs.context }}
         REBUILD: ${{ inputs.rebuild }}
+        BUILD_ARGS: ${{ inputs.build-args }}
         REMOTE: ghcr.io/alesimoes/${{ inputs.name }}:trixie
         TOKEN: ${{ github.token }}
         ACTOR: ${{ github.actor }}
@@ -44,4 +49,5 @@ runs:
         else
           echo "This change edits the inputs of $NAME; building it locally."
         fi
-        docker build --label org.sonora=1 -t "$NAME:trixie" -f "$DOCKERFILE" "$CONTEXT"
+        # shellcheck disable=SC2086 # BUILD_ARGS is a word list on purpose
+        docker build --label org.sonora=1 $BUILD_ARGS -t "$NAME:trixie" -f "$DOCKERFILE" "$CONTEXT"

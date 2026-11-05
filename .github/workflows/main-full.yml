@@ -1,14 +1,19 @@
-name: Nightly
+name: Main full suite
 
-# What PR CI runs reduced, run in full once a day (ADR-0011 §3; PR #34's
-# review: keep PR CI fast). PR CI runs the tests labelled "slow" with
-# SONORA_DSP_QUICK=1: one rate, one ceiling, one release. Here they run at
-# every rate and setting, in Release and under ASan and UBSan, and the
-# §3.5 CPU figures are measured over 60 s renders.
+# What PR CI runs reduced, run in full on every merge to main (ADR-0011 §3;
+# owner, 2026-11-04: no nightly runs, the full suite runs on main). PR CI runs
+# the tests labelled "slow" with SONORA_DSP_QUICK=1: one rate, one ceiling,
+# one release. Here they run at every rate and setting, in Release and under
+# ASan and UBSan, and the §3.5 CPU figures are measured over 60 s renders.
 on:
-  schedule:
-    - cron: "17 3 * * *"
+  push:
+    branches: [main]
   workflow_dispatch:
+
+# A newer merge supersedes an older run's verdict on main's tip.
+concurrency:
+  group: main-full-suite
+  cancel-in-progress: true
 
 jobs:
   slow:
@@ -16,6 +21,7 @@ jobs:
     # In the sonora-build image, as PR CI's engine job: trixie's GCC 14, the
     # compiler the appliance ships (brain/research/ci-shipped-toolchain.md).
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -72,6 +78,7 @@ jobs:
     # Measures the code the shipped compiler emits: GCC 14 for baseline
     # x86-64 in the sonora-build image, not the runner's GCC.
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
