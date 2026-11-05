@@ -1362,7 +1362,7 @@ together. Rejected because ADR-0007 §2 puts the builder in `engine/control`,
 and moving it would put model-reading code in the module whose callees may
 be on the audio thread.
 
-## Update, 2026-11-04: ShiftRegions and Shuffle (protocol 59)
+## Update, 2026-11-04: ShiftRegions and Shuffle (protocol 66, renumbered from 59)
 
 Status: **Accepted** on the recommended default (owner delegation). It
 delivers the `ShiftRegions` the compound-operations update above reserved.

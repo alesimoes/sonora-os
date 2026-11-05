@@ -1,0 +1,62 @@
+{
+  "processor": "org.sonora.varimu",
+  "class": "A",
+  "note": "ADR-0011 §3.2, §3.3 and §3.5. Our own generic circuit values (varimu.h), held to the class of circuit, not to a product. The static gain is held to the three-halves law of the remote-cutoff cell, (1-u)^1.5, with 2 dB at the threshold, up to 12 dB of reduction (beyond it the peak detector's ripple moves the level the law is evaluated at faster than any bar is meaningful); the soft knee to a ratio rising with level; releases to the network's exponential through the cell's law at 44.1, 48 and 96 kHz; program positions to a release that lengthens after a long compression and to a fixed one that does not; attack to a multiple of tau (the rectifier charges on the peaks only). Aliasing of the gain cell per quality at 44.1, 48 and 96 kHz, 10 and 12 kHz tones at -18 dBFS. The standard and high bars are ADR-0011 §3.2's -90 dBc. Their detector runs at the oversampled rate (the key is up-sampled by the signal's own filter): rectified at 44.1 kHz, the sampled peaks of a 10 kHz tone beat against the rate (4f folds into the control band) and standard measured -89.1 dBc; at the oversampled rate it measures -106.9 (10 kHz) and -90.8 (12 kHz, the oversampler's stopband edge). The default quality is eco (no latency, the only quality held to the CPU class): standard costs about 61 us p99.9 on a 51.4 us calibrated bar, so it is offered, reported and not held, until optimised.",
+  "static": {
+    "curve_db": 0.3,
+    "checked_to_gr_db": 12.0,
+    "deep_db": 0.75,
+    "ratio_at_threshold_max": 1.6,
+    "ratio_at_6db_min": 1.7,
+    "ratio_at_12db_min": 3.5
+  },
+  "deepest_gr_db": 40.5,
+  "quality_db": 0.1,
+  "release": {
+    "model_tolerance": 0.1
+  },
+  "program": {
+    "fixed_tolerance": 0.1,
+    "long_over_short_min": 2.0,
+    "short_over_tau_max": 2.3
+  },
+  "attack": {
+    "t63_over_tau_min": 1.0,
+    "t63_over_tau_max": 6.0
+  },
+  "thd": {
+    "clean_db": -65.0,
+    "reduced_db": -45.0
+  },
+  "aliasing": {
+    "eco_dbc": -80.0,
+    "standard_dbc": -90.0,
+    "high_dbc": -90.0
+  },
+  "response_db": 0.15,
+  "iron": {
+    "rolloff_db": 0.15,
+    "lf_first_db": 20.0,
+    "at_40hz_min_db": -45.0,
+    "at_40hz_max_db": -33.0
+  },
+  "link": {
+    "linked_db": 0.2,
+    "unlinked_db": 0.2
+  },
+  "hpf": {
+    "fall_db": 4.0
+  },
+  "hot": {
+    "max_abs": 8.0
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["input", "threshold", "time_constant", "sc_hpf_on", "sc_hpf_freq", "link", "output", "iron", "mix"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0,
+    "held": ["eco"]
+  }
+}

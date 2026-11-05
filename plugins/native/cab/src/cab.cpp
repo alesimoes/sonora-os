@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "sonora/dsp/convolver.h"
+#include "sonora/dsp/ir_prepare.h"
 #include "sonora/dsp/math.h"
 
 namespace sonora::native {
@@ -19,13 +20,17 @@ namespace {
 
 using namespace cab;
 
+const char* const kOffOn[] = {"off", "on"};
+
 const ParamInfo kParams[kParamCount] = {
     kBypassParam,
     {"output", "Output", Unit::Decibel, Taper::Linear, -24.0f, 12.0f, 0.0f, 50.0f, true, false, false, "%.1f dB", nullptr, 0},
     {"mix", "Mix", Unit::Percent, Taper::Linear, 0.0f, 100.0f, 100.0f, 20.0f, true, false, false, "%.0f %%", nullptr, 0},
+    {"trim", "Trim", Unit::Toggle, Taper::Stepped, 0.0f, 1.0f, 0.0f, 0.0f, false, true, false, "%.0f", kOffOn, 2},
+    {"normalise", "Normalise", Unit::Toggle, Taper::Stepped, 0.0f, 1.0f, 0.0f, 0.0f, false, true, false, "%.0f", kOffOn, 2},
 };
 
-const Descriptor kDesc = {"org.sonora.cab", "Sonora Cabinet", "Amp", 1, kParams, kParamCount, 1, 2, false};
+const Descriptor kDesc = {"org.sonora.cab", "Sonora Cabinet", "Amp", 2, kParams, kParamCount, 1, 2, false};
 
 // P = 128: a 128-tap direct head and one 256-point transform pair a block.
 // The cost for a 0.3 s response is in quality.json's note.
@@ -179,6 +184,8 @@ protected:
     bool on_prepare() override {
         std::lock_guard<std::mutex> lock(load_mutex_);
         max_taps_ = static_cast<std::uint32_t>(std::ceil(kMaxSeconds * sample_rate()));
+        prep_.trim = value(kTrim) >= 0.5f;
+        prep_.normalise = value(kNormalise) >= 0.5f;
         for (auto& k : kernels_) {
             k = std::make_unique<dsp::ConvolutionKernel>();
             if (!k->prepare(kPartition, max_taps_)) return false;
@@ -271,6 +278,17 @@ private:
     std::uint32_t phase_len() const noexcept { return phase_ == Phase::Hold ? kPartition : fade_len_; }
 
     bool build(dsp::ConvolutionKernel& k, const float* ir, std::size_t frames, double ir_rate, bool& truncated) {
+        // The stored source stays as recorded; the options are applied to a
+        // copy, so switching them off again restores the response exactly. A
+        // silent response is left as it is (nothing to trim or scale).
+        std::vector<float> conditioned;
+        if (prep_.trim || prep_.normalise) {
+            conditioned.assign(ir, ir + frames);
+            if (dsp::prepare_ir(conditioned, prep_)) {
+                ir = conditioned.data();
+                frames = conditioned.size();
+            }
+        }
         std::vector<double> taps = resample(ir, frames, ir_rate, sample_rate());
         truncated = false;
         if (taps.size() > max_taps_) {
@@ -294,6 +312,7 @@ private:
     std::vector<float> source_;
     double source_rate_ = 0.0;
     std::uint32_t max_taps_ = 0;
+    dsp::IrPrepare prep_;  // as of the last prepare(); load_mutex_
 
     std::unique_ptr<dsp::ConvolutionKernel> kernels_[2];
     std::atomic<dsp::ConvolutionKernel*> pending_{nullptr};  // loader -> audio

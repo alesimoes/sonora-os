@@ -80,6 +80,9 @@ struct ShotScene {
     bool tempo_map = false;
     // The one scene that documents the software-rendering banner.
     bool software_banner = false;
+    // The fake engine's catalog gains the cabinet (as the plugin host
+    // describes it) and track 4 carries one, for the scene that shows its panel.
+    bool cabinet = false;
     // Before the whole session is fitted in view and the snare selected.
     std::function<void(ShotContext&)> setup;
     // After that.

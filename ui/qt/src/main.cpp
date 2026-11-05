@@ -123,6 +123,60 @@ void add_demo_sends(model::Snapshot& s) {
 // a few plugins on the drums, the bass and the vocal; one bypassed, one
 // inactive, one whose plugin is not installed. Returns the insert the demo
 // scripts a crash for, so the Mix window shows a fault.
+// The cabinet as the plugin host describes it (plugins/native/cab, state
+// version 2): Output, Mix, and the Trim and Normalise toggles. Only the
+// scene "mix-panel-cab" adds it, to show those two switches in the generic editor.
+api::PluginInfo demo_cabinet_info() {
+    api::PluginInfo c;
+    c.format = api::PluginFormat::Lv2;
+    c.id = "urn:sonora:cab";
+    c.name = "Sonora Cabinet";
+    c.vendor = "Sonora";
+    c.version = "1.0.0";
+    c.categories = {"Amp"};
+    c.inputs = c.outputs = 1;
+    const auto param = [&c](const char* key, const char* name, float lo, float hi, float def,
+                            uint32_t flags, const char* unit, uint32_t steps) {
+        api::PluginParam p;
+        p.index = static_cast<uint32_t>(c.params.size());
+        p.key = key;
+        p.name = name;
+        p.min = lo;
+        p.max = hi;
+        p.default_value = def;
+        p.flags = flags;
+        p.unit = unit;
+        p.steps = steps;
+        c.params.push_back(std::move(p));
+    };
+    param("output", "Output", -24.0f, 12.0f, 0.0f, api::kParamAutomatable, "dB", 0);
+    param("mix", "Mix", 0.0f, 100.0f, 100.0f, api::kParamAutomatable, "%", 0);
+    param("trim", "Trim", 0.0f, 1.0f, 0.0f, api::kParamToggle, "", 2);
+    param("normalise", "Normalise", 0.0f, 1.0f, 0.0f, api::kParamToggle, "", 2);
+    return c;
+}
+
+void add_demo_cabinet(model::Snapshot& s) {
+    if (s.edit->tracks.size() < 5) return;
+    const api::PluginInfo info = demo_cabinet_info();
+    model::AddInsert op;
+    op.track = s.edit->tracks[4]->id;
+    op.insert = s.next_id;
+    op.slot = 0;
+    op.plugin.format = model::PluginFormat::Lv2;
+    op.plugin.id = info.id;
+    op.plugin.name = info.name;
+    op.plugin.version = info.version;
+    op.params = {{"trim", 1.0f}};
+    model::Snapshot after;
+    std::string why;
+    if (model::apply(s, op, after, why)) {
+        s = std::move(after);
+    } else {
+        std::fprintf(stderr, "sonora-ui: the demo cabinet: %s\n", why.c_str());
+    }
+}
+
 model::Id add_demo_inserts(model::Snapshot& s) {
     const auto catalog = api::testing::fake_catalog();
     const auto ref = [&catalog](std::size_t i) {
@@ -448,6 +502,10 @@ int main(int argc, char** argv) {
         // A loopback cable, out_2 into the last input, so the Latency window
         // measures something here as on a patched interface.
         fake_config.latency_cable = {2, fake_config.tracks, 287};
+        if (a.opt.scene != nullptr && a.opt.scene->cabinet) {
+            fake_config.plugins = api::testing::fake_catalog();
+            fake_config.plugins.push_back(demo_cabinet_info());
+        }
         auto f = std::make_unique<api::testing::FakeEngine>(fake_config);
         fake = f.get();
         backend = std::move(f);
@@ -504,6 +562,7 @@ int main(int argc, char** argv) {
         add_demo_sends(demo);
         if (fake != nullptr) {
             demo_crash = add_demo_inserts(demo);
+            if (a.opt.scene != nullptr && a.opt.scene->cabinet) add_demo_cabinet(demo);
             fake->script_plugin_latency(api::testing::fake_catalog()[2].id, 64);
         }
         if (!document.reset(std::move(demo), why)) {

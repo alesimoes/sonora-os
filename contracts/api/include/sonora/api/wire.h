@@ -36,6 +36,7 @@ enum class Type : uint8_t {
     ModelUpdate = 7,
     PluginParameterChange = 8,   // protocol 3
     PluginCatalog = 9,           // protocol 3
+    PluginTelemetry = 10,        // protocol 65
 };
 
 // A message's text fields; a session snapshot gets the larger cap.
@@ -57,6 +58,13 @@ constexpr std::size_t kMaxPluginCategories = 16;
 // A parameter key: an LV2 port symbol or a VST3 ParamID in decimal (ten
 // digits). No real one comes near it.
 constexpr std::size_t kMaxParamKeyBytes = 256;
+// ADR-0057: a parameter's section, and what a plugin publishes. The meter and
+// curve counts are the telemetry region's (contracts/plugin/telemetry.h),
+// restated because this module may not include it.
+constexpr std::size_t kMaxParamSectionBytes = 64;
+constexpr std::size_t kMaxPluginMeters = 8;
+constexpr std::size_t kMaxPluginCurves = 2;
+constexpr std::size_t kMaxCurvePoints = 128;
 
 // The type byte, or false for an empty buffer.
 bool peek_type(std::string_view bytes, Type& out);
@@ -72,6 +80,8 @@ void encode(const PluginParameterChange& m, std::string& out);
 // Refuses (false, `error`) a catalog past the caps above, which no receiver
 // would take; nothing else in a catalog can fail to encode.
 bool encode(const PluginCatalog& m, std::string& out, std::string& error);
+// Refuses (false, `error`) more meters or curves than the region holds.
+bool encode(const PluginTelemetry& m, std::string& out, std::string& error);
 
 bool decode(std::string_view bytes, Hello& out, std::string& error);
 bool decode(std::string_view bytes, CommandRequest& out, std::string& error);
@@ -85,6 +95,9 @@ bool decode(std::string_view bytes, PluginParameterChange& out, std::string& err
 // of place, a non-finite or inverted range, a flag this version does not
 // define, one step, labels that are not one per step.
 bool decode(std::string_view bytes, PluginCatalog& out, std::string& error);
+// Also refuses a mask naming a meter that is not there, a value that is not
+// finite, and a curve of more than kMaxCurvePoints points.
+bool decode(std::string_view bytes, PluginTelemetry& out, std::string& error);
 
 // A client's half: whatever the engine sends to a client (a reply, an
 // event, a model update, a catalog), decoded and appended to the inbox.

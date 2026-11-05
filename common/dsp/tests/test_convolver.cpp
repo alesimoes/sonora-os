@@ -15,6 +15,7 @@
 #include "../src/convolver_kernels.h"
 #include "check.h"
 #include "sonora/dsp/convolver.h"
+#include "sonora/dsp/ir_prepare.h"
 #include "sonora/dsp/noise.h"
 
 namespace {
@@ -369,6 +370,27 @@ int test_cpu() {
 
 }  // namespace
 
+int test_ir_prepare() {
+    std::vector<float> h(1000, 0.0f);
+    h[50] = 0.0005f;  // -66 dB re the peak, under the -60 dB floor: dropped as head
+    h[100] = 1.0f;
+    h[200] = 0.5f;
+    h[900] = 1e-6f;  // under -80 dB: dropped as tail
+    IrPrepare p;
+    p.trim = true;
+    CHECK(prepare_ir(h, p));
+    CHECK(h.size() == 101 && h[0] == 1.0f && h[100] == 0.5f);
+    p.trim = false;
+    p.normalise = true;
+    CHECK(prepare_ir(h, p));
+    double e = 0.0;
+    for (float v : h) e += static_cast<double>(v) * v;
+    CHECK(std::fabs(e - 1.0) < 1e-6);
+    std::vector<float> z(10, 0.0f);
+    CHECK(!prepare_ir(z, p) && z.size() == 10);
+    return 0;
+}
+
 int main() {
     int failed = 0;
     failed += test_real_fft();
@@ -379,6 +401,7 @@ int main() {
     failed += test_non_finite();
     failed += test_refusals();
     failed += test_silence_is_exact();
+    failed += test_ir_prepare();
     failed += test_cpu();
     if (failed != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failed);

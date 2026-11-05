@@ -1,0 +1,20 @@
+{
+  "processor": "org.sonora.transient",
+  "class": "A",
+  "note": "ADR-0011 §3.2 first bars. A level-detecting gain control with no look-ahead: neutral exactness, steady-state neutrality, the attack and sustain gains on a tone burst and on its decay, and independence from level are measured; the figures are the ones the first run printed with headroom for other compilers. THD is not a bar: the gain changes over 2 ms or more and is flat on a steady tone.",
+  "neutral_abs": 1e-6,
+  "steady_db": 0.3,
+  "attack_min_db": 6.0,
+  "sustain_min_db": 3.0,
+  "level_db": 1.0,
+  "cross_db": 1.5,
+  "speed_db": 3.0,
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["attack", "sustain", "speed", "link", "gain"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}
