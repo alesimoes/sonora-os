@@ -43,7 +43,7 @@ rather than accept the delay. A number the system knows and does not show is a
 number the engineer discovers during a session.
 
 Recording is unaffected: capture is pre-fader and pre-insert by design (see
-`engine/src/session.cpp`), so what lands on disk is what came in. PDC is a
+`engine/core/src/session.cpp`), so what lands on disk is what came in. PDC is a
 playback and monitoring problem only. That separation is worth protecting.
 
 ## The conflict with out-of-process hosting

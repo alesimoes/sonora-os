@@ -176,7 +176,7 @@ int test_recovery_runs_on_entry() {
         const char zero[4] = {0, 0, 0, 0};
         std::fseek(f, 4, SEEK_SET);
         std::fwrite(zero, 1, 4, f);
-        std::fseek(f, 12 + 8 + 602 + 8 + 16 + 4, SEEK_SET);
+        std::fseek(f, 12 + (8 + 28) + 8 + 602 + 8 + 16 + 4, SEEK_SET);
         std::fwrite(zero, 1, 4, f);
         std::fclose(f);
     }

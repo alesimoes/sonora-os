@@ -22,7 +22,10 @@ with `tools/progress.sh` (`get ID`, `list --open --track T`,
 
 ## Scope
 
-`iso/`, `audio-stack/`, `tools/`. The `live-build` tree, the package list, the
+`iso/`, `audio-stack/`, `tools/` (ADR-0007 §1: unchanged by the module
+split). `tools/check-deps.sh` and `tools/contracts-lock.sh`, the CI gates for
+the module graph and the contract lock, are yours to keep working; the graph
+they enforce belongs to the ADR. The `live-build` tree, the package list, the
 systemd unit that starts the engine, RT limits, the PipeWire drop-in, udev
 rules for audio interfaces, and the USB writer.
 

@@ -49,11 +49,28 @@ struct RenderedRange {
 // ("<track>_cons_01.wav", then 02 ...) and claimed exclusively. The file is
 // synced, with its folder, before this returns, and has the session's
 // format. Frames outside any region, and under a muted one, are silence. A
-// file past the 4 GB RIFF limit fails (as a take does). On failure `error`
+// file past the 4 GB RIFF limit becomes RF64 (as a take does). On failure `error`
 // says why and no file is left behind.
 bool render_range(const model::Snapshot& snapshot, const std::string& session_dir,
                   const ConsolidateRequest& request, const ConsolidateHooks& hooks,
                   RenderedRange& out, std::string& error);
+
+// The two halves consolidate() is made of, for a caller that renders on a
+// worker and commits on the document's thread (the control server).
+//
+// consolidate_check(): resolves the request's playlist into `resolved` and
+// asks the model whether the range would be accepted, so a refusal costs no
+// render. Reads `now` only.
+bool consolidate_check(const model::Snapshot& now, const ConsolidateRequest& request,
+                       ConsolidateRequest& resolved, std::string& error);
+
+// consolidate_commit(): the rendered file becomes a source and replaces the
+// range, as one Compound labelled "Consolidate", against the document as it
+// is now. The file is removed when the track is gone or unreadable, and
+// stays out of the pool when the model refuses, as for consolidate().
+bool consolidate_commit(model::Document& document, const std::string& session_dir,
+                        const ConsolidateRequest& resolved, const RenderedRange& rendered,
+                        std::vector<model::ReplicationUpdate>& updates, std::string& error);
 
 // Refused, saying why, while a take is recording or closing. Otherwise
 // render_range(), then one Compound labelled "Consolidate" (AddSource and

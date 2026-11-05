@@ -17,6 +17,7 @@ namespace {
 
 void put_u16(std::FILE* f, uint16_t v) { std::fwrite(&v, 2, 1, f); }
 void put_u32(std::FILE* f, uint32_t v) { std::fwrite(&v, 4, 1, f); }
+void put_u64(std::FILE* f, uint64_t v) { std::fwrite(&v, 8, 1, f); }
 void put_tag(std::FILE* f, const char tag[4]) { std::fwrite(tag, 1, 4, f); }
 
 int32_t float_to_int24(float s) {
@@ -41,9 +42,18 @@ constexpr uint32_t kBextSize = 602;  // fixed-size BWF v0 bext chunk
 constexpr std::size_t kDescriptionSize = 256;
 constexpr uint32_t kFmtSize = 16;
 
-// RIFF ckSize before the first sample: "WAVE" and the bext, fmt and data
-// chunks' headers and fixed payloads.
-constexpr uint64_t kRiffOverhead = 4 + (8 + kBextSize) + (8 + kFmtSize) + 8;
+// Room for the ds64 chunk of an RF64 file (EBU Tech 3306): riffSize,
+// dataSize, sampleCount and an empty table length. It is written as JUNK
+// first, because a take cannot make room for it once audio follows, and
+// only turned into ds64 if the take outgrows a plain WAV.
+constexpr uint32_t kDs64Size = 28;
+constexpr long kDs64Offset = 12;  // right after "RIFF", its size and "WAVE"
+constexpr uint32_t kSizeUnknown = 0xFFFFFFFFu;
+
+// RIFF ckSize before the first sample: "WAVE" and the JUNK, bext, fmt and
+// data chunks' headers and fixed payloads.
+constexpr uint64_t kRiffOverhead =
+    4 + (8 + kDs64Size) + (8 + kBextSize) + (8 + kFmtSize) + 8;
 
 constexpr char kLimitReason[] = "take reached the 4 GB WAV limit";
 
@@ -154,6 +164,7 @@ bool WavWriter::open(const std::string& path, uint32_t sample_rate,
     format_ = format;
     channels_ = channels;
     frames_written_ = 0;
+    rf64_ = false;
     patch_time_reference_ = false;
     folder_synced_ = false;
     failure_.clear();
@@ -183,6 +194,12 @@ bool WavWriter::write_header(uint32_t sample_rate, uint16_t channels,
     riff_size_offset_ = std::ftell(file_);
     put_u32(file_, 0);  // patched in close()
     put_tag(file_, "WAVE");
+
+    // --- JUNK, the room for ds64 ---
+    put_tag(file_, "JUNK");
+    put_u32(file_, kDs64Size);
+    const std::vector<char> reserved(kDs64Size, 0);
+    std::fwrite(reserved.data(), 1, reserved.size(), file_);
 
     // --- bext ---
     put_tag(file_, "bext");
@@ -229,19 +246,26 @@ bool WavWriter::write(const float* interleaved, std::size_t frames) {
     if (!file_ || failed()) return false;
     if (frames == 0) return true;
 
-    // The most frames the 32-bit sizes can describe, counting the pad byte
-    // close() adds after odd-sized data. Past that the header would wrap
-    // and readers would see a short or garbled file, so the take stops at
-    // the last whole frame that fits.
     const uint64_t bpf = bytes_per_frame();
-    const uint64_t room =
-        riff_size_limit_ > kRiffOverhead ? riff_size_limit_ - kRiffOverhead : 0;
-    uint64_t max_frames = room / bpf;
-    if ((max_frames * bpf) % 2 == 1 && max_frames * bpf + 1 > room) --max_frames;
-    const uint64_t left =
-        max_frames > frames_written_ ? max_frames - frames_written_ : 0;
-    const std::size_t fit =
-        static_cast<std::size_t>(std::min<uint64_t>(frames, left));
+    std::size_t fit = frames;
+    if (!rf64_) {
+        // The most frames the 32-bit sizes can describe, counting the pad
+        // byte close() adds after odd-sized data. Past that the header would
+        // wrap and readers would see a short or garbled file, so the take
+        // becomes RF64 or, where that is not allowed, stops at the last
+        // whole frame that fits.
+        const uint64_t room =
+            riff_size_limit_ > kRiffOverhead ? riff_size_limit_ - kRiffOverhead : 0;
+        uint64_t max_frames = room / bpf;
+        if ((max_frames * bpf) % 2 == 1 && max_frames * bpf + 1 > room) --max_frames;
+        const uint64_t left =
+            max_frames > frames_written_ ? max_frames - frames_written_ : 0;
+        if (frames > left && rf64_allowed_) {
+            if (!convert_to_rf64()) return false;
+        } else {
+            fit = static_cast<std::size_t>(std::min<uint64_t>(frames, left));
+        }
+    }
 
     if (fit > 0) {
         const std::size_t bytes = put_frames(file_, format_, interleaved, fit * channels_);
@@ -259,17 +283,49 @@ bool WavWriter::write(const float* interleaved, std::size_t frames) {
     return true;
 }
 
-void WavWriter::patch_sizes(uint64_t riff_bytes, uint64_t data_bytes) {
-    // write() keeps both within riff_size_limit_, at most 2^32 - 1, so
-    // neither cast wraps. The data size first: a kill -9 between the two
-    // writes then leaves a RIFF size no larger than the data, which
-    // recover_take() takes for unfinished and corrects. The other order
-    // would leave one larger, which it takes for a chunk appended to a
-    // closed take, and leaves alone.
+bool WavWriter::convert_to_rf64() {
+    rf64_ = true;
+    // The 32-bit fields say "see ds64" first and ds64 is filled in after, so
+    // a kill in between leaves an RF64 file that recover_take() repairs.
+    std::fseek(file_, 0, SEEK_SET);
+    put_tag(file_, "RF64");
+    put_u32(file_, kSizeUnknown);
+    std::fseek(file_, kDs64Offset, SEEK_SET);
+    put_tag(file_, "ds64");
     std::fseek(file_, data_size_offset_, SEEK_SET);
-    put_u32(file_, static_cast<uint32_t>(data_bytes));
-    std::fseek(file_, riff_size_offset_, SEEK_SET);
-    put_u32(file_, static_cast<uint32_t>(riff_bytes));
+    put_u32(file_, kSizeUnknown);
+    const uint64_t data_bytes = frames_written_ * bytes_per_frame();
+    patch_sizes(kRiffOverhead + data_bytes, data_bytes);
+    std::fseek(file_, 0, SEEK_END);
+    if (std::fflush(file_) != 0 || std::ferror(file_) != 0) {
+        fail(std::strerror(errno));
+        return false;
+    }
+    return true;
+}
+
+void WavWriter::patch_sizes(uint64_t riff_bytes, uint64_t data_bytes) {
+    if (rf64_) {
+        // ds64 holds riffSize, dataSize, sampleCount in that order after its
+        // 8-byte chunk header. Data size first, as below.
+        std::fseek(file_, kDs64Offset + 8 + 8, SEEK_SET);
+        put_u64(file_, data_bytes);
+        std::fseek(file_, kDs64Offset + 8, SEEK_SET);
+        put_u64(file_, riff_bytes);
+        std::fseek(file_, kDs64Offset + 8 + 16, SEEK_SET);
+        put_u64(file_, data_bytes / bytes_per_frame());
+    } else {
+        // write() keeps both within riff_size_limit_, at most 2^32 - 1, so
+        // neither cast wraps. The data size first: a kill -9 between the two
+        // writes then leaves a RIFF size no larger than the data, which
+        // recover_take() takes for unfinished and corrects. The other order
+        // would leave one larger, which it takes for a chunk appended to a
+        // closed take, and leaves alone.
+        std::fseek(file_, data_size_offset_, SEEK_SET);
+        put_u32(file_, static_cast<uint32_t>(data_bytes));
+        std::fseek(file_, riff_size_offset_, SEEK_SET);
+        put_u32(file_, static_cast<uint32_t>(riff_bytes));
+    }
     if (patch_time_reference_) {
         std::fseek(file_, time_reference_offset_, SEEK_SET);
         put_u32(file_, static_cast<uint32_t>(time_reference_ & 0xFFFFFFFFu));

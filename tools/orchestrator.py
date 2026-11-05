@@ -19,11 +19,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import heartbeat, launcher, scheduler, status  # noqa: E402
+from harness import heartbeat, launcher, numbers, scheduler, status  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
+from harness.forge import ForgeError, GhForge  # noqa: E402
 from harness.store import Store  # noqa: E402
 
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer"}
+ATTRIBUTION = "\U0001F916 Generated with [Claude Code](https://claude.com/claude-code)"
 
 
 def make_broker(root):
@@ -33,7 +35,7 @@ def make_broker(root):
 class Orchestrator:
     def __init__(self, root, cfg=None, broker=None, dry_run=True,
                  fake_claude=None, clock=time.time, worktrees=None,
-                 seed_fn=None, log=None):
+                 seed_fn=None, log=None, forge=None):
         self.root = os.path.abspath(root)
         self.cfg = cfg or scheduler.load_config(
             os.path.join(self.root, "planning", "orchestrator",
@@ -48,9 +50,13 @@ class Orchestrator:
         self.fake_claude = fake_claude
         self.store = Store(os.path.join(self.odir, "state.db"), clock)
         self.worktrees = worktrees or launcher.GitWorktrees(self.root)
+        self.forge = forge or GhForge(self.root)
         self.seed_fn = seed_fn or self._default_seed
         self.log = log or (lambda m: None)
         self.broker = broker or NullBroker()
+        self.done_msgs = {}   # run id -> (time, body) of its `done` message
+        self.ci_polled = {}   # feature -> time of its last CI poll
+        self.pr_retry = {}    # feature -> earliest next PR-open attempt
         self.procs = {}
         self.activity = heartbeat.Activity()
         self.usage_pause_until = 0.0
@@ -104,6 +110,9 @@ class Orchestrator:
                 msg = data["msg"]
                 self.store.event(r["task_id"], "message",
                                  f"{msg.get('type')} from {name}")
+                if msg.get("type") == "done":
+                    self.done_msgs[r["id"]] = (self.clock(),
+                                               msg.get("body"))
 
     def _tell(self, to, type, body):
         if self.dry_run:
@@ -127,26 +136,8 @@ class Orchestrator:
 
     # -- numbers ------------------------------------------------------
     def _default_seed(self, kind):
-        seed = int(self.cfg.seeds.get(kind, 0))
-        if kind != "adr":
-            return seed
-        nums = [seed]
-        for ref in ("origin/main", "main"):
-            r = subprocess.run(["git", "-C", self.root, "ls-tree", "-r",
-                                "--name-only", ref, "brain/decisions"],
-                               capture_output=True, text=True)
-            if r.returncode == 0:
-                nums += [int(m) for m in re.findall(r"ADR-(\d+)", r.stdout)]
-                break
-        try:
-            r = subprocess.run(["gh", "pr", "list", "--json", "files",
-                                "--limit", "100"], cwd=self.root, timeout=30,
-                               capture_output=True, text=True)
-            if r.returncode == 0:
-                nums += [int(m) for m in re.findall(r"ADR-(\d+)", r.stdout)]
-        except (OSError, subprocess.SubprocessError):
-            pass
-        return max(nums)
+        return numbers.seed(kind, self.forge,
+                            int(self.cfg.seeds.get(kind, 0)))
 
     def _reserve_numbers(self, t):
         for kind in [w for w in t["wants"].split(",") if w]:
@@ -165,6 +156,8 @@ class Orchestrator:
         if stop_now:
             self._kill_all("STOP.NOW")
         self._poll_runs(now)
+        self._open_pending_prs(now)
+        self._watch_prs(now)
         paused = self.paused()
         runs = self._enriched_runs(now)
         plan = scheduler.plan(
@@ -236,11 +229,21 @@ class Orchestrator:
                 self.log(f"dry-run: would launch {ln.kind} for {t['id']}")
             return None
         if t["kind"] == "work":
-            self._reserve_numbers(t)
+            try:
+                self._reserve_numbers(t)
+            except ForgeError as e:  # never guess a number
+                self.store.event(t["id"], "reserve_failed", str(e))
+                self.store.set_task(t["id"], not_before=now + 60)
+                return None
             t = self.store.get_task(t["id"])
         name = self._name_for(t, ln.kind)
-        if t["kind"] == "work" and t["files"] and                 ln.kind in ("engineer", "fixer"):
-            denied = self.broker.claim_for(name, t["files"])
+        files = t["files"]
+        if ln.kind in ("fixer", "integrator") and t["kind"] == "work":
+            files = sorted({f for x in self._feature_tasks(t["feature_id"])
+                            for f in x["files"]})
+        if t["kind"] == "work" and files and \
+                ln.kind in ("engineer", "fixer", "integrator"):
+            denied = self.broker.claim_for(name, files)
             if denied:
                 self.store.event(t["id"], "claim_denied", json.dumps(denied))
                 self.store.set_task(t["id"], not_before=now + 60)
@@ -252,7 +255,13 @@ class Orchestrator:
         stream = os.path.join(run_dir, "stream.log")
         try:
             os.makedirs(run_dir, exist_ok=True)
-            if t["kind"] == "work":
+            if t["kind"] == "work" and ln.kind in ("integrator", "fixer"):
+                fb = self._feature_branch(t["feature_id"])
+                wt = self.worktrees.ensure(self._feature_key(t["feature_id"]),
+                                           fb)
+                t["branch"], t["worktree"] = fb, wt
+                self.store.set_task(t["id"], worktree=wt)
+            elif t["kind"] == "work":
                 wt = self.worktrees.ensure(t["id"], t["branch"])
                 self.store.set_task(t["id"], worktree=wt)
                 t["worktree"] = wt
@@ -286,13 +295,48 @@ class Orchestrator:
         self.store.event(t["id"], "launched", f"{run_id} {ln.kind} {name}")
         return run_id
 
+    def _feature_tasks(self, fid):
+        return self.store.feature_tasks(fid)
+
+    def _feature_branch(self, fid):
+        f = self.store.get_feature(fid) or {}
+        tasks = self._feature_tasks(fid)
+        if f.get("branch"):
+            return f["branch"]
+        return tasks[0]["branch"] if len(tasks) == 1 else f"feat/{fid}"
+
+    def _feature_key(self, fid):
+        """Worktree key: a lone task integrates in its own worktree (git
+        allows a branch in one worktree only)."""
+        tasks = self._feature_tasks(fid)
+        return tasks[0]["id"] if len(tasks) == 1 else f"feature-{fid}"
+
     def _extra(self, t, kind):
         nums = [f"{r['kind']}={r['number']}" for r in self.store.reservations()
                 if r["task_id"] == t["id"]]
         extra = ("reservations: " + " ".join(nums)) if nums else ""
+        if kind == "integrator" and t["state"] == "ci_fix":
+            extra += (
+                "\nConflict run: the PR for this branch conflicts with main. "
+                "Merge origin/main into the branch, resolve the conflicts "
+                "keeping both sides' intent, rerun the narrow tests, commit. "
+                "Do not push, open or merge a PR: the daemon does.")
+        elif kind == "integrator":
+            subs = [x["branch"] for x in self._feature_tasks(t["feature_id"])]
+            extra += (
+                "\nIntegrator run for feature %s on branch %s. Merge the "
+                "sub-branches in this order: %s (skip any already merged). "
+                "Run the full affected tests once, then tools/pre-pr.sh and "
+                "fix what it lists. Commit; do not push, open a PR or run "
+                "enqueue-pr.sh: the daemon does. In result.json put the PR "
+                "text: summary, followups (the [x] BACKLOG line and "
+                "follow-ups) and unverified (checks you did not run)." % (
+                    t["feature_id"], self._feature_branch(t["feature_id"]),
+                    ", ".join(subs)))
         if kind == "fixer":
             extra += "\nFixer brief: no scope change, no test deletion or " \
-                     "weakening."
+                     "weakening. Fix the failing checks named in the note, " \
+                     "rerun them locally, commit; the daemon pushes."
         if kind == "tester":
             extra += "\nYou are the tester: review and run accept commands; " \
                      "never edit code."
@@ -305,6 +349,12 @@ class Orchestrator:
             alive = proc.poll() is None if proc else \
                 launcher.pid_alive(r["pid"])
             data, err = heartbeat.read_result(r["result_path"])
+            done = self.done_msgs.get(r["id"])
+            if data is None and done is not None and (
+                    not alive or now - done[0] >= self.cfg.done_grace_s):
+                # `done` message without result.json: the process is gone or
+                # result.json is overdue, so the message is the result.
+                data = self._result_from_done(r, done[1])
             building = scheduler.holds_build_slot(self.root, r["worktree"])
             beat = self.activity.sample(r["id"], r["worktree"],
                                         r["stream_path"], r["last_beat"], now)
@@ -347,9 +397,27 @@ class Orchestrator:
                                      else None)
             self._count_failure(task, f"run {r['id']} {verdict}", now)
 
+    @staticmethod
+    def _result_from_done(r, body):
+        body = body if isinstance(body, dict) else {"summary": str(body or "")}
+        lists = {k: body[k] for k in ("findings", "followups", "unverified")
+                 if isinstance(body.get(k), list)}
+        status_ = body.get("status")
+        return {"role": r["role"], "task": r["task_id"],
+                "status": status_ if status_ in heartbeat.RESULT_STATUS
+                else "done",
+                "summary": str(body.get("summary") or body.get("text")
+                               or "done message"), **lists}
+
     def _end_run(self, r, outcome, code):
         self.store.set_run(r["id"], ended=self.clock(), exit=code,
                            outcome=outcome)
+        self.done_msgs.pop(r["id"], None)
+        if r["role"] in ("fixer", "integrator"):
+            try:
+                self.broker.release_for(r["name"])
+            except Exception as e:  # broker already stopped on shutdown
+                self.log(f"release {r['name']} failed: {e}")
         self.activity.forget(r["id"])
         proc = self.procs.pop(r["id"], None)
         if proc is not None:
@@ -415,6 +483,7 @@ class Orchestrator:
                 self._bounce(t)
             else:
                 self.store.advance(t["id"], "integrating")
+                self._release(t)
             return
         if st == "fail":
             self._count_failure(t, "agent reported fail", now)
@@ -423,10 +492,194 @@ class Orchestrator:
             self.store.advance(t["id"], "qa")
             self._tell("lead", "task_done", {"task": t["id"]})
         elif kind in ("integrator", "fixer"):
-            if data.get("pr"):
-                self.store.set_task(t["id"], pr=int(data["pr"]))
-            self.store.advance(t["id"], "pr_open")
-            self._release(t)
+            if t["state"] == "integrating":
+                self._integrated(t, data, now)
+            elif t["state"] == "ci_fix":
+                self._fix_done(t, now)
+
+    # -- PR lifecycle -------------------------------------------------
+    def _pr_count(self):
+        return len({t["feature_id"] for t in self.store.tasks()
+                    if t["kind"] == "work"
+                    and t["state"] in ("pr_open", "ci_fix")})
+
+    def _integrated(self, t, data, now):
+        """The integrator finished: the feature branch is ready. The daemon,
+        not the agent, pushes and opens the one PR."""
+        fid = t["feature_id"]
+        self.store.set_meta(f"ready:{fid}", json.dumps({
+            k: data.get(k) for k in ("summary", "followups", "unverified",
+                                     "commit")}))
+        for x in self._feature_tasks(fid):
+            self.store.set_task(x["id"], integrated=1)
+        self._open_pending_prs(now)
+
+    def _ready_features(self):
+        for f in self.store.features():
+            ts = self._feature_tasks(f["id"])
+            if ts and not f["pr"] and all(
+                    x["state"] == "integrating" and x["integrated"]
+                    for x in ts):
+                yield f, ts
+
+    def _open_pending_prs(self, now):
+        if self.dry_run or self._is_dry("merge"):
+            return
+        for f, ts in list(self._ready_features()):
+            if self._pr_count() >= self.cfg.max_open_prs:
+                if self.store.get_meta(f"deferred:{f['id']}") is None:
+                    self.store.set_meta(f"deferred:{f['id']}", "1")
+                    self.store.event(ts[0]["id"], "pr_deferred",
+                                     "max_open_prs reached; branch waits")
+                continue
+            if now < self.pr_retry.get(f["id"], 0):
+                continue
+            self._open_feature_pr(f, ts, now)
+
+    def _open_feature_pr(self, f, ts, now):
+        fid, rep = f["id"], ts[0]
+        branch = self._feature_branch(fid)
+        wt = self.worktrees.ensure(self._feature_key(fid), branch)
+        try:
+            ok, out = self.forge.pre_pr(wt)
+            if not ok:
+                self.store.event(rep["id"], "pre_pr_failed", out[-500:])
+                for x in ts:
+                    self.store.set_task(x["id"], integrated=0, note=(
+                        "tools/pre-pr.sh failed; fix and commit:\n"
+                        + out[-800:]))
+                self._count_failure(rep, "pre-pr failed", now)
+                return False
+            self.forge.push(wt, branch)
+            n = next((p["number"] for p in self.forge.open_prs()
+                      if p["branch"] == branch), None)
+            if n is None:
+                title, body = self._pr_text(f, ts)
+                n = self.forge.create_pr(branch, "main", title, body)
+            self.forge.enqueue(n)
+        except ForgeError as e:
+            fails = int(self.store.get_meta(f"prfail:{fid}", 0)) + 1
+            self.store.set_meta(f"prfail:{fid}", fails)
+            self.store.event(rep["id"], "pr_open_failed", f"{e} (#{fails})")
+            self.pr_retry[fid] = now + 120
+            if fails >= 4:
+                self._block_feature(f, f"PR could not be opened: {e}")
+            return False
+        self.store.set_feature(fid, pr=n, branch=branch)
+        self.store.advance_feature(fid, "pr_open", pr=n)
+        for x in ts:
+            self._release(x)
+        self.ci_polled[fid] = now
+        self.store.event(rep["id"], "pr_opened", f"#{n} {branch}")
+        return True
+
+    def _pr_text(self, f, ts):
+        try:
+            ready = json.loads(self.store.get_meta(f"ready:{f['id']}", "{}"))
+        except ValueError:
+            ready = {}
+        summary = (ready.get("summary") or "").strip() or f["id"]
+        title = f"{f['id']}: {summary.splitlines()[0]}"[:100]
+        if f["partial"]:
+            title = "[partial] " + title
+        nums = [f"{r['kind']} {r['number']}" for r in
+                self.store.reservations()
+                if r["task_id"] in {x["id"] for x in ts}]
+        lines = ["## Summary", summary, "", "## Tasks"]
+        lines += [f"- {x['id']} ({x['agent']})" for x in ts]
+        if nums:
+            lines += ["", "## Reserved numbers", ", ".join(nums)]
+        for head, key in (("Follow-ups", "followups"),
+                          ("Unverified", "unverified")):
+            items = ready.get(key) or []
+            if items:
+                lines += ["", f"## {head}"] + [f"- {i}" for i in items]
+        lines += ["", ATTRIBUTION]
+        return title, "\n".join(lines)
+
+    def _fix_done(self, t, now):
+        fid = t["feature_id"]
+        f = self.store.get_feature(fid)
+        branch = self._feature_branch(fid)
+        try:
+            self.forge.push(self.worktrees.ensure(self._feature_key(fid),
+                                                  branch), branch)
+            self.forge.enqueue(f["pr"])
+        except ForgeError as e:
+            self._count_failure(t, f"push after fix failed: {e}", now)
+            return
+        self.store.advance_feature(fid, "pr_open", fix_kind=None)
+        self.ci_polled[fid] = now
+
+    def _watch_prs(self, now):
+        for f in self.store.features():
+            ts = self._feature_tasks(f["id"])
+            if not f["pr"] or not ts or ts[0]["state"] != "pr_open":
+                continue
+            if now - self.ci_polled.get(f["id"], 0) < self.cfg.ci_poll_s:
+                continue
+            self.ci_polled[f["id"]] = now
+            try:
+                st = self.forge.pr_status(f["pr"])
+            except ForgeError as e:
+                self.store.event(ts[0]["id"], "ci_poll_failed", str(e))
+                continue
+            if st["state"] == "merged":
+                self._merged(f, ts)
+            elif st["state"] == "closed":
+                self._block_feature(f, f"PR #{f['pr']} closed without merge")
+            elif st["mergeable"] == "no":
+                self._red(f, ts, ["merge-conflict"], "conflict")
+            else:
+                failing = sorted({c["name"] for c in st["checks"]
+                                  if c["state"] == "fail"})
+                if failing:
+                    self._red(f, ts, failing, "ci")
+
+    def _red(self, f, ts, jobs, fix_kind):
+        """Red check or conflict: a fixer (the track's engineer) or the
+        integrator in the same tick; the same job still red after two fixes
+        blocks the feature instead of spending a third agent."""
+        reds = json.loads(f["job_reds"] or "{}")
+        stuck = [j for j in jobs if reds.get(j, 0) >= 2]
+        if stuck:
+            self._block_feature(
+                f, f"PR #{f['pr']}: {', '.join(stuck)} still red after two "
+                   "fixes")
+            return
+        for j in jobs:
+            reds[j] = reds.get(j, 0) + 1
+        self.store.set_feature(f["id"], job_reds=json.dumps(reds),
+                               fixes=f["fixes"] + 1)
+        what = "conflicts with main" if fix_kind == "conflict" \
+            else "red: " + ", ".join(jobs)
+        self.store.advance_feature(f["id"], "ci_fix", fix_kind=fix_kind,
+                                   note=f"PR #{f['pr']} {what}")
+        self.store.event(ts[0]["id"], "ci_red", ", ".join(jobs))
+
+    def _merged(self, f, ts):
+        self.store.advance_feature(f["id"], "merged")
+        for x in ts:
+            self._release(x)
+        n = self.store.next_counter("merges")
+        self.store.event(ts[0]["id"], "merged", f"PR #{f['pr']} (merge {n})")
+        if n % self.cfg.janitor_every == 0:
+            self._ensure_wake(
+                "janitor", "janitor", f"after-merge-{n}",
+                "Reclaim disk after merge %d: merged agent worktrees, stale "
+                "build dirs, docker images and volumes of ours only. Never "
+                "another project's." % n)
+
+    def _block_feature(self, f, why):
+        ts = [x for x in self._feature_tasks(f["id"])
+              if x["state"] != "merged"]
+        for i, x in enumerate(ts):
+            if i == 0:
+                self._block(x, why)
+            else:
+                self._release(x)
+                self.store.advance(x["id"], "blocked", note=why)
+        self.store.set_feature(f["id"], state="blocked")
 
     def _bounce(self, t):
         n = t["bounces"] + 1
@@ -439,7 +692,7 @@ class Orchestrator:
         if n == 2:
             self._ensure_wake("architect", "bug_ruling", t["id"])
 
-    def _ensure_wake(self, role, kind, detail):
+    def _ensure_wake(self, role, kind, detail, brief=None):
         prefix = f"wake-{role}-{kind}-{detail}"
         for w in self.store.tasks(kind="wake"):
             if w["id"].startswith(prefix) and w["state"] in ("queued",
@@ -447,7 +700,7 @@ class Orchestrator:
                 return
         n = self.store.next_counter("wake")
         self.store.add_task(f"{prefix}-{n}", None, role, kind="wake",
-                            brief=f"event {kind}: {detail}")
+                            brief=brief or f"event {kind}: {detail}")
         self._tell(role, kind, {"detail": detail})
 
     # -- loop ---------------------------------------------------------
