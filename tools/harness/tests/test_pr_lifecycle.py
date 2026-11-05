@@ -204,11 +204,16 @@ class Lifecycle(support.DaemonCase):
             self.assertTrue(self.pump(o, lambda: state(o, "p") == "pr_open"))
             self.poll_again()
         self.assertEqual(o.store.get_feature("p")["fixes"], 2)
-        o.tick()  # red a third time: no third agent
+        o.tick()  # red a third time: the principal engineer, not a fixer
+        self.assertEqual(state(o, "p"), "ci_fix")
+        self.assertTrue(self.pump(o, lambda: state(o, "p") == "pr_open"))
+        self.poll_again()
+        o.tick()  # still red after the principal engineer: the owner
         self.assertEqual(state(o, "p"), "blocked")
-        self.assertIn("build still red after two fixes",
+        self.assertIn("build still red after 2 fixes and the principal",
                       o.store.get_task("p")["note"])
-        self.assertEqual(len(o.store.runs_of("p")), 2)
+        self.assertEqual([r["role"] for r in o.store.runs_of("p")],
+                         ["fixer", "fixer", "principal"])
         with open(os.path.join(o.odir, "waits-on-owner.md")) as f:
             self.assertIn("still red", f.read())
 

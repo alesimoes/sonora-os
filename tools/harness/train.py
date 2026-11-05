@@ -428,6 +428,8 @@ class Train:
         fails = [c["name"] for c in checks if c["state"] == "fail"]
         cancels = [c["name"] for c in checks if c["state"] == "cancel"]
         if checks and not fails and not cancels:
+            if f.get("red_since") or f.get("principal_runs"):
+                o.store.set_feature(fid, red_since=None, principal_runs=0)
             if d["mergeable"] != "yes":
                 self._save(fid, phase="verde", next="GitHub calculando "
                            "mergeable", **upd)

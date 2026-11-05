@@ -101,7 +101,7 @@ class Train(support.DaemonCase):
         self.assertEqual(state(o, "pr-10"), "ci_fix")
         self.assertIn("CONTRACTS.lock", o.store.get_task("pr-10")["note"])
 
-    def test_the_same_cause_three_times_still_blocks(self):
+    def test_the_same_cause_three_times_escalates_then_blocks(self):
         o = self.make()
         self.red_feature(o)
         img = "[Shell]\n##[error]image abc1234def is missing (run 1)"
@@ -110,6 +110,14 @@ class Train(support.DaemonCase):
         f = o.store.get_feature("pr-10")
         o._red(f, o._feature_tasks("pr-10"), ["Shell"], "ci",
                img.replace("abc1234def", "9876543fed"))
+        self.assertEqual(state(o, "pr-10"), "ci_fix")
+        self.assertTrue(o.store.get_task("pr-10")["escalated"])
+        self.assertTrue(o.store.events("pr-10", "escalated"))
+        for t in o._feature_tasks("pr-10"):
+            o.store.advance(t["id"], "pr_open")
+        o.store.set_feature("pr-10", state="pr_open")
+        f = o.store.get_feature("pr-10")
+        o._red(f, o._feature_tasks("pr-10"), ["Shell"], "ci", img)
         self.assertEqual(state(o, "pr-10"), "blocked")
 
     def test_job_signatures_split_the_excerpt_by_job(self):

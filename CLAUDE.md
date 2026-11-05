@@ -89,7 +89,7 @@ reserves ADR numbers and the next protocol version when it launches an agent.
 Commit to the branch at the end of every stage, PR or not, so a stopped agent
 loses nothing. One PR per BACKLOG item, follow-ups included. Every agent and every review runs on Sonnet,
 never Opus (owner, 2026-11-03: it burns the weekly quota); the RT path,
-contracts, storage and recovery get a more careful brief, not a bigger model. Only a blocking finding sends a PR back; non-blocking ones become
+contracts, storage and recovery get a more careful brief, not a bigger model. The one exception is `principal-engineer`, the escalation engineer the orchestrator calls after two failed fix rounds on the same cause, hours of red, or spent relaunches (owner, 2026-11-05); it runs on Opus, one at a time. Only a blocking finding sends a PR back; non-blocking ones become
 BACKLOG lines, batched into one follow-ups PR per track. A re-review is a
 fresh Sonnet agent that checks only the fix's diff. A PR enters the merge queue the moment it is opened:
 `tools/enqueue-pr.sh PR...` (one detached merge-when-green per PR, a lock
