@@ -210,8 +210,7 @@ int test_ui() {
     QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 2000);
     CHECK(text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"));
     if (text_of(list, "windowConfigSummary2") != QStringLiteral("Mix, 1 floating"))
-        std::fprintf(stderr, "summary2 was: %s
-", qPrintable(text_of(list, "windowConfigSummary2")));
+        std::fprintf(stderr, "summary2 was: %s\n", qPrintable(text_of(list, "windowConfigSummary2")));
 
     // Recall 1: the view, the open set and the place all come back.
     click(view, named(list, QStringLiteral("windowConfigRecall1")));
