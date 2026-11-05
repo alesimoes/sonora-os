@@ -617,6 +617,74 @@ void bounce_events() {
     CHECK(states().empty());
 }
 
+// ADR-0057: a scripted plugin frame reaches the client through the codec,
+// at the engine's bounded rate, for an insert that exists and no other.
+void plugin_telemetry() {
+    uint64_t clock_ns = 1000000000ull;
+    FakeEngine::Config cfg;
+    cfg.tracks = 1;
+    cfg.clock = [&]() { return clock_ns; };
+    FakeEngine e(cfg);
+    std::string error;
+    CHECK(e.connect(error));
+    Inbox in;
+    e.poll(in);
+    CHECK(in.catalogs.size() == 1);
+    // The fake's compressor declares what it publishes.
+    const PluginInfo* comp = nullptr;
+    for (const PluginInfo& p : in.catalogs[0].plugins) {
+        if (!p.meters.empty()) comp = &p;
+    }
+    CHECK(comp != nullptr && comp->meters.size() == 3 && comp->curves.size() == 1);
+    CHECK(comp != nullptr && comp->params[1].curve_source == comp->curves[0].id);
+
+    sonora::model::Replica replica;
+    for (const ModelUpdate& m : in.model) {
+        sonora::model::ReplicationUpdate u;
+        u.kind = static_cast<sonora::model::ReplicationUpdate::Kind>(m.kind);
+        u.part_count = m.part_count;
+        u.part_bytes = m.part_bytes;
+        u.revision = m.revision;
+        u.undo_floor = m.undo_floor;
+        u.next_id = m.next_id;
+        u.bytes = m.bytes;
+        u.label = m.label;
+        std::string why;
+        CHECK(replica.receive(u, why));
+    }
+    sonora::model::AddInsert add;
+    add.track = replica.current().edit->tracks[0]->id;
+    add.insert = replica.current().next_id;
+    add.slot = 0;
+    add.plugin = {static_cast<sonora::model::PluginFormat>(comp->format), comp->id, comp->name,
+                  comp->version};
+    ModelRequest req;
+    req.action = ModelAction::Apply;
+    CHECK(sonora::model::encode_operation(add, req.op, error));
+    e.submit(req);
+    e.poll(in);
+
+    PluginTelemetry t;
+    t.sequence = 1;
+    t.meter_mask = 0b111;
+    t.meters = {3.0f, -20.0f, -23.0f};
+    t.curves = {std::vector<float>(128, -12.0f)};
+    CHECK(!e.script_plugin_telemetry(add.insert + 99, t));   // no such insert
+    CHECK(e.script_plugin_telemetry(add.insert, t));
+    in.clear();
+    e.poll(in);
+    CHECK(in.telemetry.size() == 1 && in.telemetry[0].insert == add.insert &&
+          in.telemetry[0].meters == t.meters && in.telemetry[0].curves == t.curves);
+    t.sequence = 2;
+    CHECK(!e.script_plugin_telemetry(add.insert, t));        // inside the interval
+    clock_ns += TelemetryThrottle::kMinIntervalNs;
+    CHECK(e.script_plugin_telemetry(add.insert, t));
+    CHECK(!e.script_plugin_telemetry(add.insert, t));        // the same frame again
+    in.clear();
+    e.poll(in);
+    CHECK(in.telemetry.size() == 1 && in.telemetry[0].sequence == 2);
+}
+
 // The control contract's Consolidate: Running, then Done; the last event
 // held for a client that attaches later; a cancel while it runs.
 void consolidate_events() {
@@ -738,10 +806,10 @@ int main() {
     }
     deterministic();
     scripted_plugins();
+    plugin_telemetry();
     midi_tracks();
     bus_limit();
     no_take_during_a_save_as_copy();
-    bounce_events();
     consolidate_events();
     bounce_events();
     render_events();

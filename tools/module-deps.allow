@@ -67,9 +67,16 @@ engine/plugin_client -> drivers/fake
 plugins/host -> common/base
 plugins/host -> common/platform
 plugins/host -> contracts/plugin
+plugins/analyze -> common/audiofile
+plugins/analyze -> common/dsp
+plugins/analyze -> common/json
+plugins/analyze -> common/model
+plugins/analyze -> plugins/native
 plugins/native -> common/base
 plugins/native -> common/dsp
 plugins/native -> common/json
+plugins/native -> common/model
+plugins/native -> contracts/plugin
 ui/client -> common/model
 ui/client -> common/platform
 ui/client -> contracts/api

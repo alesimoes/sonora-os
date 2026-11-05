@@ -15,6 +15,7 @@
 #include "sonora/api/bounce.h"
 #include "sonora/api/render.h"
 #include "sonora/api/state_block.h"
+#include "sonora/api/telemetry_throttle.h"
 
 using namespace sonora;
 using namespace sonora::api;
@@ -457,7 +458,9 @@ void version_check() {
     // 62: Load's template prefix (daw.model.session_mgmt, ADR-0030 amendment).
     // 63: session.consolidate, session.consolidate_cancel and
     // EventKind::Consolidate (ADR-0031 §6; main reserved it as 43).
-    CHECK(kProtocolVersion == 63);
+    // 65: plugin descriptor hints and PluginTelemetry (ADR-0057).
+    // 66: the bundle's 61 to 63 land together on top of 65.
+    CHECK(kProtocolVersion == 66);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -468,7 +471,7 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 63 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 66 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // Bounce and Consolidate are the first two kinds past Latency, which a
@@ -480,7 +483,7 @@ void version_check() {
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 63"));
+                   "speaks version 66"));
 }
 
 // Protocol 49: a Bounce event carries the fraction in `frame`, the frames in
@@ -907,11 +910,157 @@ void plugin_messages() {
     CHECK(inbox.catalogs.empty());
 }
 
+// Protocol 65 (ADR-0057): the descriptor's optional hints, the meters and
+// curves a plugin publishes, and the telemetry message that carries values.
+void plugin_telemetry_messages() {
+    std::string bytes, error;
+    // Absent hints are what a parameter was before protocol 65.
+    {
+        const PluginCatalog plain = sample_catalog();
+        CHECK(wire::encode(plain, bytes, error));
+        PluginCatalog back;
+        CHECK(wire::decode(bytes, back, error));
+        const PluginParam& q = back.plugins[0].params[0];
+        CHECK(q.section.empty() && q.widget == static_cast<uint32_t>(PluginWidget::Auto) &&
+              q.curve_source.empty());
+        CHECK(back.plugins[0].meters.empty() && back.plugins[0].curves.empty());
+    }
+    PluginCatalog c = sample_catalog();
+    PluginInfo& a = c.plugins[0];
+    a.params[0].section = "Compressor";
+    a.params[0].widget = static_cast<uint32_t>(PluginWidget::Fader);
+    a.params[0].curve_source = "response";
+    a.params[1].widget = static_cast<uint32_t>(PluginWidget::Switch);
+    a.params[2].widget = static_cast<uint32_t>(PluginWidget::Choice);
+    a.meters.push_back({0, "gr", "Gain reduction", "dB",
+                        static_cast<uint32_t>(PluginMeterKind::GainReduction), 0.0f, 24.0f});
+    a.meters.push_back({1, "in", "Input", "dB",
+                        static_cast<uint32_t>(PluginMeterKind::InputLevel), -60.0f, 6.0f});
+    a.curves.push_back({0, "response", "Response", "Hz", "dB", 128, true, 20.0f, 20000.0f,
+                        -24.0f, 24.0f});
+    {
+        CHECK(wire::encode(c, bytes, error));
+        PluginCatalog back;
+        CHECK(wire::decode(bytes, back, error));
+        const PluginInfo& b = back.plugins[0];
+        CHECK(b.params[0].section == "Compressor" &&
+              b.params[0].widget == static_cast<uint32_t>(PluginWidget::Fader) &&
+              b.params[0].curve_source == "response");
+        CHECK(b.params[1].widget == static_cast<uint32_t>(PluginWidget::Switch) &&
+              b.params[2].widget == static_cast<uint32_t>(PluginWidget::Choice));
+        CHECK(b.meters.size() == 2 && b.meters[0].id == "gr" && b.meters[0].unit == "dB" &&
+              b.meters[0].kind == static_cast<uint32_t>(PluginMeterKind::GainReduction) &&
+              b.meters[0].max == 24.0f && b.meters[1].slot == 1 && b.meters[1].min == -60.0f);
+        CHECK(b.curves.size() == 1 && b.curves[0].id == "response" && b.curves[0].points == 128 &&
+              b.curves[0].x_log && b.curves[0].x_min == 20.0f && b.curves[0].y_max == 24.0f);
+    }
+    // Each refusal names what is wrong and leaves the output alone.
+    const auto refused = [&](PluginCatalog bad, const char* says) {
+        std::string enc, err;
+        if (!wire::encode(bad, enc, err)) return mentions(err, says);
+        PluginCatalog out;
+        out.generation = 7;
+        return !wire::decode(enc, out, err) && mentions(err, says) && out.generation == 7;
+    };
+    PluginCatalog bad = c;
+    bad.plugins[0].params[0].widget = 99;
+    CHECK(refused(bad, "widget"));
+    bad = c;
+    bad.plugins[0].params[0].widget = static_cast<uint32_t>(PluginWidget::Switch);
+    CHECK(refused(bad, "switch"));
+    bad = c;
+    bad.plugins[0].params[0].curve_source = "nothing";
+    CHECK(refused(bad, "does not publish"));
+    bad = c;
+    bad.plugins[0].params[0].section.assign(wire::kMaxParamSectionBytes + 1, 's');
+    CHECK(refused(bad, "section"));
+    bad = c;
+    bad.plugins[0].meters[1].slot = 4;
+    CHECK(refused(bad, "slot 4"));
+    bad = c;
+    bad.plugins[0].meters[1].id = "gr";
+    CHECK(refused(bad, "repeats"));
+    bad = c;
+    bad.plugins[0].meters[0].kind = 77;
+    CHECK(refused(bad, "kind"));
+    bad = c;
+    bad.plugins[0].meters.assign(wire::kMaxPluginMeters + 1, a.meters[0]);
+    CHECK(refused(bad, "meters"));
+    bad = c;
+    bad.plugins[0].curves[0].points = 1;
+    CHECK(refused(bad, "points"));
+    bad = c;
+    bad.plugins[0].curves[0].points = wire::kMaxCurvePoints + 1;
+    CHECK(refused(bad, "points"));
+    bad = c;
+    bad.plugins[0].curves[0].x_min = 0.0f;
+    CHECK(refused(bad, "log axis"));
+
+    PluginTelemetry t;
+    t.insert = 0x00ABCDEF01234567ull;
+    t.sequence = 12345;
+    t.meter_mask = 0b101;
+    t.meters = {-6.0f, 0.0f, 3.5f};
+    t.curves = {std::vector<float>(128, 1.5f)};
+    t.curves[0][127] = -2.0f;
+    CHECK(wire::encode(t, bytes, error));
+    PluginTelemetry back;
+    CHECK(wire::decode(bytes, back, error));
+    CHECK(back.insert == t.insert && back.sequence == 12345 && back.meter_mask == 0b101 &&
+          back.meters == t.meters && back.curves == t.curves);
+    Inbox inbox;
+    CHECK(wire::decode_into(bytes, inbox, error));
+    CHECK(inbox.telemetry.size() == 1 && inbox.telemetry[0].curves[0][127] == -2.0f);
+    inbox.clear();
+    CHECK(inbox.telemetry.empty());
+
+    // What no engine sends is refused, and the output is left alone.
+    const auto refuses = [&](PluginTelemetry m, const char* says) {
+        std::string enc, err;
+        if (!wire::encode(m, enc, err)) return mentions(err, says);
+        PluginTelemetry out;
+        out.sequence = 5;
+        return !wire::decode(enc, out, err) && mentions(err, says) && out.sequence == 5;
+    };
+    PluginTelemetry m = t;
+    m.meter_mask = 1u << 3;
+    CHECK(refuses(m, "mask"));
+    m = t;
+    m.meters[1] = std::numeric_limits<float>::infinity();
+    CHECK(refuses(m, "not finite"));
+    m = t;
+    m.curves[0][3] = std::numeric_limits<float>::quiet_NaN();
+    CHECK(refuses(m, "not finite"));
+    m = t;
+    m.curves[0].resize(wire::kMaxCurvePoints + 1);
+    CHECK(refuses(m, "over the cap"));
+    m = t;
+    m.meters.resize(wire::kMaxPluginMeters + 1);
+    CHECK(refuses(m, "over the caps"));
+    CHECK(wire::encode(t, bytes, error));
+    CHECK(!wire::decode(bytes.substr(0, bytes.size() - 2), back, error));
+    CHECK(!wire::decode(bytes + "x", back, error) && mentions(error, "left over"));
+
+    // The throttle: a bounded rate, and nothing for a frame the client has.
+    TelemetryThrottle th;
+    const uint64_t step = TelemetryThrottle::kMinIntervalNs;
+    CHECK(th.admit(1, 1, 0));
+    CHECK(!th.admit(1, 1, step * 10));   // the same frame
+    CHECK(!th.admit(1, 2, step - 1));    // too soon
+    CHECK(th.admit(1, 2, step));
+    CHECK(th.admit(2, 1, step));         // another insert has its own clock
+    CHECK(th.admit(1, 1, step + 1));     // the sequence went back: a restart
+    th.forget(1);
+    CHECK(th.admit(1, 1, step + 2));
+    CHECK(TelemetryThrottle::kMinIntervalNs * kTelemetryMaxHz <= 1000000000ull);
+}
+
 }  // namespace
 
 int main() {
     round_trips();
     plugin_messages();
+    plugin_telemetry_messages();
     refusals();
     version_check();
     bounce_event();

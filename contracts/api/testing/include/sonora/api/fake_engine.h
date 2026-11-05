@@ -65,6 +65,7 @@
 #include "sonora/api/engine_control.h"
 #include "sonora/api/state_block.h"
 #include "sonora/api/state_view.h"
+#include "sonora/api/telemetry_throttle.h"
 #include "sonora/api/wire.h"
 
 namespace sonora::model {
@@ -223,6 +224,11 @@ public:
     void script_catalog(std::vector<PluginInfo> plugins);
     // The latency a plugin reports, by catalog id, for every insert of it.
     void script_plugin_latency(const std::string& plugin_id, uint32_t frames);
+    // The plugin of `insert` published a frame (ADR-0057): sent to the client
+    // as PluginTelemetry unless the engine's throttle would hold it back
+    // (more than kTelemetryMaxHz, or a sequence the client has). Returns
+    // whether it was sent. Refused for an insert that is not in the document.
+    bool script_plugin_telemetry(uint64_t insert, PluginTelemetry frame);
     // An insert's host goes down (`why` says how: a PluginFault event, the
     // faulted flag, a miss counted) or, with an empty `why`, comes back (the
     // fault cleared).
@@ -418,6 +424,7 @@ private:
     uint64_t last_publish_ns_ = 0;
 
     uint64_t catalog_generation_ = 1;
+    TelemetryThrottle telemetry_throttle_;
     std::map<std::string, uint32_t> plugin_latency_;   // by catalog id
     std::map<uint64_t, std::string> faults_;           // scripted, by insert id
     std::map<uint64_t, std::string> said_faults_;      // standing, as sent

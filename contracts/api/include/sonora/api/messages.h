@@ -184,7 +184,14 @@ namespace sonora::api {
 //   merged, renumbered after 62): the commands session.consolidate and
 //   session.consolidate_cancel, and EventKind::Consolidate (9), which an
 //   older decoder refuses as an unknown kind.
-constexpr uint32_t kProtocolVersion = 63;
+// 65 (ADR-0057, plugin telemetry and descriptor hints): PluginParam carries
+//   `section`, `widget` and `curve_source`, PluginInfo carries `meters` and
+//   `curves`, and PluginTelemetry (wire type 10) streams an insert's meters
+//   and curves at no more than kTelemetryMaxHz. A peer of another version is
+//   refused at Hello, as for every bump, so no half-understood catalog is read.
+// 66 (editing-ui bundle): the changes numbered 61 to 63 above landed together
+//   on top of 65; a peer of 65 or lower is refused at Hello.
+constexpr uint32_t kProtocolVersion = 66;
 
 // ModelAction::Load's file, when it starts with this and names a template's
 // session file: the engine makes a new Untitled folder in its sessions
@@ -617,6 +624,55 @@ enum PluginParamFlag : uint32_t {
 };
 constexpr uint32_t kKnownParamFlags = (1u << 5) - 1;
 
+// How an editor draws a parameter (ADR-0057). Append-only. Auto is every
+// parameter before protocol 65: the editor chooses from flags and steps.
+enum class PluginWidget : uint32_t {
+    Auto = 0,
+    Knob = 1,
+    Fader = 2,
+    Switch = 3,   // steps 2
+    Choice = 4,   // steps >= 2, labels shown
+};
+constexpr uint32_t kLastWidget = static_cast<uint32_t>(PluginWidget::Choice);
+
+// What a meter reads (ADR-0057). Append-only. The unit comes with the meter.
+enum class PluginMeterKind : uint32_t {
+    Other = 0,
+    GainReduction = 1,   // dB, 0 or positive: the amount taken off
+    InputLevel = 2,
+    OutputLevel = 3,
+};
+constexpr uint32_t kLastMeterKind = static_cast<uint32_t>(PluginMeterKind::OutputLevel);
+
+// A meter a plugin publishes through the telemetry region. `slot` is the
+// place its value has in PluginTelemetry::meters and in the region's block.
+struct PluginMeterInfo {
+    uint32_t slot = 0;
+    std::string id;      // stable, unique in the plugin: "gr", "in", "out"
+    std::string name;
+    std::string unit;    // "dB", "%"; empty when unitless
+    uint32_t kind = 0;   // PluginMeterKind
+    float min = 0.0f;    // the range an editor scales to
+    float max = 1.0f;
+};
+
+// A curve a plugin publishes: `points` samples of y over x, x spaced evenly
+// in the log (x_log) or linear domain from x_min to x_max. An EQ's magnitude
+// response is 128 points over 20 Hz .. 20 kHz in dB.
+struct PluginCurveInfo {
+    uint32_t slot = 0;   // PluginTelemetry::curves index
+    std::string id;      // what PluginParam::curve_source names
+    std::string name;
+    std::string x_unit;
+    std::string y_unit;
+    uint32_t points = 0; // 2 .. 128
+    bool x_log = true;
+    float x_min = 0.0f;
+    float x_max = 1.0f;
+    float y_min = 0.0f;
+    float y_max = 1.0f;
+};
+
 struct PluginParam {
     // Dense; equal to the entry's place in `params`. The order to show them
     // in, and nothing more: a change names its parameter by `key`.
@@ -637,6 +693,14 @@ struct PluginParam {
     uint32_t steps = 0;
     // Empty, or one label per step, in order from min ("Off", "Peak", "RMS").
     std::vector<std::string> labels;
+    // ADR-0057, all three optional; absent is what every parameter was
+    // before protocol 65.
+    // The group an editor puts it in ("Compressor", "Output"); empty: none.
+    std::string section;
+    uint32_t widget = 0;   // PluginWidget
+    // The PluginCurveInfo::id this parameter shapes (an EQ band's gain on
+    // the response curve), so an editor can highlight and drag it there.
+    std::string curve_source;
 };
 
 struct PluginInfo {
@@ -658,6 +722,26 @@ struct PluginInfo {
     bool has_editor = false;
     PluginBridge bridge = PluginBridge::None;
     std::vector<PluginParam> params;
+    // ADR-0057: what the plugin publishes through the telemetry region.
+    // Empty for a plugin that publishes nothing, a third-party one included.
+    std::vector<PluginMeterInfo> meters;
+    std::vector<PluginCurveInfo> curves;
+};
+
+// The most telemetry messages per second per insert the engine sends
+// (ADR-0057): a meter does not need the audio rate, and a response curve of
+// 128 floats at 30 Hz is about 15 KB/s.
+constexpr uint32_t kTelemetryMaxHz = 30;
+
+// An insert's live meters and curves, engine to client, read from the
+// telemetry region on the control thread. The descriptors are in the
+// catalog; this carries values only. Protocol 65.
+struct PluginTelemetry {
+    uint64_t insert = 0;     // the insert's model id
+    uint32_t sequence = 0;   // the plugin's frame count; a repeat is not sent
+    uint32_t meter_mask = 0; // bit n: meters[n] is a published value
+    std::vector<float> meters;               // by PluginMeterInfo::slot, at most 8
+    std::vector<std::vector<float>> curves;  // by PluginCurveInfo::slot, at most 2
 };
 
 // Every plugin the engine can host, as its last scan found them. Sent after
@@ -674,12 +758,14 @@ struct Inbox {
     std::vector<EngineEvent> events;
     std::vector<ModelUpdate> model;
     std::vector<PluginCatalog> catalogs;
+    std::vector<PluginTelemetry> telemetry;
 
     void clear() {
         replies.clear();
         events.clear();
         model.clear();
         catalogs.clear();
+        telemetry.clear();
     }
 };
 
