@@ -46,6 +46,41 @@ def agent_of(track, files):
     return "rt-engineer"
 
 
+def _agent_of_file(f):
+    if f.startswith(("iso/", "audio-stack/")):
+        return "distro-engineer"
+    if f.startswith("drivers/"):
+        return "driver-engineer"
+    if f.startswith(("plugins/native/", "common/dsp/")):
+        return "dsp-engineer"
+    if f.startswith("plugins/"):
+        return "plugin-engineer"
+    if f.startswith("ui/"):
+        return "ui-engineer"
+    if f.startswith(("engine/", "common/", "contracts/")):
+        return "rt-engineer"
+    return None   # tools, docs, CI: say nothing about the context
+
+
+TRACK_OF_AGENT = {"distro-engineer": "os", "driver-engineer": "os",
+                  "dsp-engineer": "plugin", "plugin-engineer": "plugin"}
+
+
+def bundle_agent(files):
+    """A bundle's engineer is the one most of its files belong to. One iso/
+    file among six session-model PRs made a distro engineer fix a session
+    model (#438): track_of's "any file" rule fits one PR, not a bundle."""
+    counts = {}
+    for f in files:
+        a = _agent_of_file(f)
+        if a:
+            counts[a] = counts.get(a, 0) + 1
+    if not counts:
+        return "daw", "rt-engineer"
+    agent = max(sorted(counts), key=lambda a: counts[a])
+    return TRACK_OF_AGENT.get(agent, "daw"), agent
+
+
 class Train:
     def __init__(self, orch):
         self.o = orch
@@ -145,10 +180,10 @@ class Train:
             members.append({"pr": n, "branch": i["branch"],
                             "title": i.get("title") or ""})
             files |= set((self.o.store.get_task(mf) or {}).get("files") or [])
-        track = track_of(files)
+        track, agent = bundle_agent(files)
         with self.o.store.tx():
             self.o.store.add_task(
-                fid, track, agent_of(track, files), state="ci_fix",
+                fid, track, agent, state="ci_fix",
                 branch=branch, files=sorted(files),
                 brief=f"Bundle {name}: " + ", ".join(
                     f"#{m['pr']}" for m in members))

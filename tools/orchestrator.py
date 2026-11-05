@@ -24,7 +24,7 @@ from harness import (heartbeat, launcher, numbers, scheduler, shadow,  # noqa: E
                      status)
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
-from harness.forge import ForgeError, GhForge  # noqa: E402
+from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
 from harness.store import Store  # noqa: E402
 from harness.train import Train  # noqa: E402
 
@@ -771,6 +771,16 @@ class Orchestrator:
         integrator in the same tick; the same job still red after two fixes
         blocks the feature instead of spending a third agent."""
         reds = json.loads(f["job_reds"] or "{}")
+        sigs = reds.pop("_sig", None)
+        sigs = sigs if isinstance(sigs, dict) else {}
+        # "Same red twice" means the same cause, not the same job name: a
+        # job red first from a missing image, then from a stale lock file is
+        # two different problems, and blocking it hid the second from its
+        # fixer (#435). The cause is the job's lines in the CI excerpt.
+        now_sigs = job_signatures(detail)
+        for j, sig in now_sigs.items():
+            if sigs.get(j) and sigs[j] != sig:
+                reds[j] = 0
         # A conflict is new each time main moves: it always gets an
         # integrator, it never counts as the same red twice.
         stuck = [j for j in jobs if reds.get(j, 0) >= 2
@@ -782,6 +792,9 @@ class Orchestrator:
             return
         for j in jobs:
             reds[j] = reds.get(j, 0) + 1
+        sigs.update(now_sigs)
+        if sigs:
+            reds["_sig"] = sigs
         self.store.set_feature(f["id"], job_reds=json.dumps(reds),
                                fixes=f["fixes"] + 1)
         what = "conflicts with main" if fix_kind == "conflict" \

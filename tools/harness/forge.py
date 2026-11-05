@@ -4,6 +4,7 @@ One interface, so the orchestrator never shells out for these itself and the
 tests swap in a fake. GhForge is the real thing; it raises ForgeError when a
 read fails, because a number seeded from a half-read repo could collide.
 """
+import hashlib
 import json
 import os
 import re
@@ -102,6 +103,29 @@ class Forge:
         """True when origin/<branch>'s head is in the worktree's HEAD (a
         bundle took that PR)."""
         raise NotImplementedError
+
+
+def job_signatures(excerpt):
+    """{job name: cause} from failure_excerpt's text. The cause is the job's
+    error lines with numbers, hashes and paths of temp dirs blurred, so the
+    same failure on a new head or at another line still compares equal."""
+    out, job, lines = {}, None, []
+
+    def close():
+        if job is not None:
+            norm = sorted({re.sub(r"[0-9a-f]{7,}|\d+", "#", ln)
+                           for ln in lines})
+            out[job] = hashlib.sha1(
+                "\n".join(norm).encode()).hexdigest()[:12]
+    for ln in (excerpt or "").splitlines():
+        m = re.fullmatch(r"\[(.+)\]", ln.strip())
+        if m:
+            close()
+            job, lines = m.group(1), []
+        elif job is not None and ln.strip():
+            lines.append(ln.strip())
+    close()
+    return out
 
 
 def run(argv, cwd=None, timeout=120):

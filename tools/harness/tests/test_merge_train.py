@@ -8,7 +8,8 @@ from unittest import mock
 import support
 from harness import launcher
 from harness.forge import RateLimited
-from harness.train import agent_of, track_of
+from harness.forge import job_signatures
+from harness.train import agent_of, bundle_agent, track_of
 
 
 def state(o, tid):
@@ -57,6 +58,67 @@ class Train(support.DaemonCase):
                          "ui-engineer")
         self.assertEqual(agent_of("daw", ["ui/qt/a.cpp", "engine/b.cpp"]),
                          "rt-engineer")
+
+    def test_bundle_agent_is_the_one_most_files_belong_to(self):
+        files = ["engine/session/a.cpp", "engine/session/b.cpp",
+                 "common/session_files/c.h", "ui/qt/d.cpp",
+                 "iso/config/package-lists/x", "tools/y.sh"]
+        self.assertEqual(bundle_agent(files), ("daw", "rt-engineer"))
+        self.assertEqual(bundle_agent(["iso/a", "iso/b", "engine/c.cpp"]),
+                         ("os", "distro-engineer"))
+        self.assertEqual(bundle_agent(["plugins/native/eq/a.cpp"]),
+                         ("plugin", "dsp-engineer"))
+        self.assertEqual(bundle_agent(["docs/a.md"]), ("daw", "rt-engineer"))
+
+    # -- the same red twice ---------------------------------------------
+    def red_feature(self, o):
+        self.forge.add_pr(10, "a", ["engine/x.cpp"], checks={"Shell": "pass"})
+        o.train.adopt()
+        return o.store.get_feature("pr-10")
+
+    def red(self, o, detail):
+        f = o.store.get_feature("pr-10")
+        o._red(f, o._feature_tasks("pr-10"), ["Shell"], "ci", detail)
+        # the fixer is done; the PR is back for the next red
+        for t in o._feature_tasks("pr-10"):
+            if t["state"] == "ci_fix":
+                o.store.advance(t["id"], "pr_open")
+        o.store.set_feature("pr-10", state="pr_open")
+        return state(o, "pr-10")
+
+    def test_a_job_red_from_a_new_cause_is_not_the_same_red(self):
+        o = self.make()
+        self.red_feature(o)
+        img = "[Shell]\n##[error]ghcr.io/x/labwc-test:trixie is missing"
+        lock = ("[Shell]\nA contract file changed and CONTRACTS.lock was "
+                "not regenerated.")
+        self.assertEqual(self.red(o, img), "pr_open")
+        self.assertEqual(self.red(o, img + " (run 123)"), "pr_open")
+        # a third red with the image cause again would block; a new cause
+        # starts the count over and gets a fixer
+        f = o.store.get_feature("pr-10")
+        o._red(f, o._feature_tasks("pr-10"), ["Shell"], "ci", lock)
+        self.assertEqual(state(o, "pr-10"), "ci_fix")
+        self.assertIn("CONTRACTS.lock", o.store.get_task("pr-10")["note"])
+
+    def test_the_same_cause_three_times_still_blocks(self):
+        o = self.make()
+        self.red_feature(o)
+        img = "[Shell]\n##[error]image abc1234def is missing (run 1)"
+        self.red(o, img)
+        self.red(o, img.replace("1)", "2)"))
+        f = o.store.get_feature("pr-10")
+        o._red(f, o._feature_tasks("pr-10"), ["Shell"], "ci",
+               img.replace("abc1234def", "9876543fed"))
+        self.assertEqual(state(o, "pr-10"), "blocked")
+
+    def test_job_signatures_split_the_excerpt_by_job(self):
+        sig = job_signatures("[A]\nerror at line 12\n[B]\nboom")
+        self.assertEqual(set(sig), {"A", "B"})
+        self.assertEqual(sig["A"],
+                         job_signatures("[A]\nerror at line 99")["A"])
+        self.assertNotEqual(sig["A"], sig["B"])
+        self.assertEqual(job_signatures(""), {})
 
     # -- green ------------------------------------------------------------
     def test_green_pr_is_merged_by_the_daemon_pinned_to_its_head(self):
