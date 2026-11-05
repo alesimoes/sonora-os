@@ -12,6 +12,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -110,6 +111,21 @@ void click(QQuickView& view, QQuickItem* item) {
                       item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint());
 }
 
+// The test clicks the list's buttons with real mouse events at scene points,
+// so a floating window placed over the list takes the click instead. Where the
+// list lands depends on the fonts the runner has (CI failed on Store 2 with
+// Latency at 50,60, local runs passed), so a window goes to the wanted spot
+// only when that spot is clear of the list.
+QPointF clear_of(QQuickItem* list, QQuickItem* window, QPointF want) {
+    const QRectF taken = list->mapRectToScene(list->boundingRect());
+    const QSizeF size(std::max<qreal>(window->width(), 1), std::max<qreal>(window->height(), 1));
+    for (const QPointF at : {want, QPointF(taken.right() + 10, want.y()),
+                             QPointF(want.x(), taken.bottom() + 10), QPointF(10, 10)}) {
+        if (!QRectF(at, size).intersects(taken)) return at;
+    }
+    return want;
+}
+
 QString text_of(QQuickItem* root, const char* name) {
     QQuickItem* item = named(root, QString::fromLatin1(name));
     return item != nullptr ? item->property("text").toString() : QStringLiteral("<none>");
@@ -187,8 +203,9 @@ int test_ui() {
     session.setWindow(QStringLiteral("edit"));
     model.invoke(QStringLiteral("window.undo_history"), -1);
     model.invoke(QStringLiteral("window.transport"), -1);
-    history->setX(300);
-    history->setY(120);
+    const QPointF history_at = clear_of(list, history, QPointF(300, 120));
+    history->setX(history_at.x());
+    history->setY(history_at.y());
     CHECK(session.undoHistoryOpen() && transport.open());
     click(view, named(list, QStringLiteral("windowConfigStore1")));
     // The list rebinds on the next event-loop pass, which a loaded runner can delay.
@@ -200,6 +217,7 @@ int test_ui() {
     model.invoke(QStringLiteral("window.transport"), -1);
     model.invoke(QStringLiteral("window.latency"), -1);
     session.setWindow(QStringLiteral("mix"));
+<<<<<<< HEAD
     latency->setX(50);
     latency->setY(60);
     // Switching to Mix loads a heavy view; on a loaded runner the first click can
@@ -210,6 +228,17 @@ int test_ui() {
         if (QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 1500))
             break;
     }
+=======
+    const QPointF latency_at = clear_of(list, latency, QPointF(50, 60));
+    latency->setX(latency_at.x());
+    latency->setY(latency_at.y());
+    click(view, named(list, QStringLiteral("windowConfigStore2")));
+    // The list rebinds on the next event-loop pass, which a loaded runner can delay.
+    QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 2000);
+    if (text_of(list, "windowConfigSummary2") != QStringLiteral("Mix, 1 floating"))
+        std::fprintf(stderr, "windowConfigSummary2 is '%s'\n",
+                     qPrintable(text_of(list, "windowConfigSummary2")));
+>>>>>>> origin/main
     CHECK(text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"));
 
     // Recall 1: the view, the open set and the place all come back.
@@ -220,7 +249,7 @@ int test_ui() {
     }
     CHECK(session.window() == QStringLiteral("edit"));
     CHECK(session.undoHistoryOpen() && transport.open() && !session.latencyOpen());
-    CHECK(history->x() == 300 && history->y() == 120);
+    CHECK(history->x() == history_at.x() && history->y() == history_at.y());
     // And 2 back again; the toggle (Ctrl+=) still flips Edit/Mix by itself.
     // The view switch re-polishes the scene; a click that lands before it is lost, and recalling is idempotent.
     for (int attempt = 0; attempt < 3 && session.window() != QStringLiteral("mix"); ++attempt) {
@@ -229,7 +258,7 @@ int test_ui() {
     }
     CHECK(session.window() == QStringLiteral("mix"));
     CHECK(!session.undoHistoryOpen() && !transport.open() && session.latencyOpen());
-    CHECK(latency->x() == 50 && latency->y() == 60);
+    CHECK(latency->x() == latency_at.x() && latency->y() == latency_at.y());
     model.invoke(QStringLiteral("window.toggle_mix_edit"), -1);
     CHECK(session.window() == QStringLiteral("edit"));
 
