@@ -49,7 +49,7 @@ struct RenderedRange {
 // ("<track>_cons_01.wav", then 02 ...) and claimed exclusively. The file is
 // synced, with its folder, before this returns, and has the session's
 // format. Frames outside any region, and under a muted one, are silence. A
-// file past the 4 GB RIFF limit fails (as a take does). On failure `error`
+// file past the 4 GB RIFF limit becomes RF64 (as a take does). On failure `error`
 // says why and no file is left behind.
 bool render_range(const model::Snapshot& snapshot, const std::string& session_dir,
                   const ConsolidateRequest& request, const ConsolidateHooks& hooks,

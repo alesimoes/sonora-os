@@ -1,0 +1,4 @@
+# Include edges that violate ADR-0007 §1 and exist on main, each with a
+# BACKLOG follow-up. tools/check-deps.sh fails when an entry here no longer
+# occurs, so delete the line in the PR that fixes the edge. Empty on the day
+# the check landed: main had no violation.

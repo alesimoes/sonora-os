@@ -28,7 +28,9 @@ uint32_t u32(const unsigned char* p) {
 
 struct Layout {
     bool ours = false;
-    uint32_t riff_bytes = 0;
+    bool rf64 = false;
+    uint64_t ds64_body = 0;  // offset of ds64's riffSize, if rf64
+    uint64_t riff_bytes = 0;
     uint32_t block_align = 0;
     uint64_t data_body = 0;  // offset of the first sample
     uint64_t data_bytes = 0;
@@ -38,12 +40,15 @@ struct Layout {
 Layout read_layout(std::FILE* f, std::string& why) {
     Layout l;
     unsigned char head[12];
-    if (std::fread(head, 1, 12, f) != 12 || std::memcmp(head, "RIFF", 4) != 0 ||
+    if (std::fread(head, 1, 12, f) != 12 ||
+        (std::memcmp(head, "RIFF", 4) != 0 && std::memcmp(head, "RF64", 4) != 0) ||
         std::memcmp(head + 8, "WAVE", 4) != 0) {
         why = "not a RIFF/WAVE file";
         return l;
     }
+    l.rf64 = std::memcmp(head, "RF64", 4) == 0;
     l.riff_bytes = u32(head + 4);
+    uint64_t ds64_data = 0;
     uint64_t at = 12;
     unsigned char ck[8];
     for (;;) {
@@ -55,8 +60,21 @@ Layout read_layout(std::FILE* f, std::string& why) {
         const uint64_t body = at + 8;
         if (std::memcmp(ck, "data", 4) == 0) {
             l.data_body = body;
-            l.data_bytes = size;
+            l.data_bytes = (l.rf64 && size == 0xFFFFFFFFu) ? ds64_data : size;
             break;
+        }
+        if (l.rf64 && std::memcmp(ck, "ds64", 4) == 0 && size >= 16) {
+            unsigned char ds64[16];
+            if (std::fread(ds64, 1, sizeof ds64, f) != sizeof ds64) {
+                why = "short ds64 chunk";
+                return l;
+            }
+            const auto u64 = [](const unsigned char* p) {
+                return u32(p) | (static_cast<uint64_t>(u32(p + 4)) << 32);
+            };
+            l.ds64_body = body;
+            l.riff_bytes = u64(ds64);
+            ds64_data = u64(ds64 + 8);
         }
         if (std::memcmp(ck, "bext", 4) == 0 && size >= 256 + 32) {
             unsigned char bext[256 + 32];
@@ -81,14 +99,17 @@ Layout read_layout(std::FILE* f, std::string& why) {
         }
     }
     if (l.block_align == 0) why = "no fmt chunk before the data";
+    else if (l.rf64 && l.ds64_body == 0) why = "an RF64 file with no ds64 chunk";
     return l;
 }
 
-bool put_u32(std::FILE* f, long at, uint64_t v) {
-    unsigned char b[4];
-    for (int i = 0; i < 4; ++i) b[i] = static_cast<unsigned char>((v >> (8 * i)) & 0xFF);
-    return std::fseek(f, at, SEEK_SET) == 0 && std::fwrite(b, 1, 4, f) == 4;
+bool put_le(std::FILE* f, long at, uint64_t v, int bytes) {
+    unsigned char b[8];
+    for (int i = 0; i < bytes; ++i) b[i] = static_cast<unsigned char>((v >> (8 * i)) & 0xFF);
+    return std::fseek(f, at, SEEK_SET) == 0 &&
+           std::fwrite(b, 1, static_cast<std::size_t>(bytes), f) == static_cast<std::size_t>(bytes);
 }
+bool put_u32(std::FILE* f, long at, uint64_t v) { return put_le(f, at, v, 4); }
 
 std::string frames_text(uint64_t n) { return std::to_string(n) + (n == 1 ? " frame" : " frames"); }
 
@@ -150,7 +171,7 @@ TakeRecovery recover_take(const std::string& path) {
     const uint64_t pad = data & 1;
     const uint64_t riff = l.data_body + data + pad - 8;
     r.outcome = TakeRecovery::Outcome::Failed;
-    if (riff > kRiffSizeLimit) {
+    if (!l.rf64 && riff > kRiffSizeLimit) {
         r.why = "the file is past the 4 GB WAV limit";
         return r;
     }
@@ -175,8 +196,17 @@ TakeRecovery recover_take(const std::string& path) {
         r.why = std::strerror(errno);
         return r;
     }
-    bool ok = (riff_only || put_u32(f, static_cast<long>(l.data_body - 4), data)) &&
-              put_u32(f, 4, riff);
+    bool ok;
+    if (l.rf64) {
+        // ds64 holds riffSize, dataSize, sampleCount. Same order as the
+        // writer: data size first.
+        const long ds64 = static_cast<long>(l.ds64_body);
+        ok = (riff_only || put_le(f, ds64 + 8, data, 8)) && put_le(f, ds64, riff, 8) &&
+             put_le(f, ds64 + 16, r.frames, 8);
+    } else {
+        ok = (riff_only || put_u32(f, static_cast<long>(l.data_body - 4), data)) &&
+             put_u32(f, 4, riff);
+    }
     // Without a sync where the platform has none (ENOSYS): the repair is no
     // less right, only not yet durable.
     ok = ok && (platform::sync_data(f) || errno == ENOSYS);

@@ -43,13 +43,16 @@ bool WavReader::open(const std::string& path, std::string& error) {
     };
 
     unsigned char head[12];
-    if (std::fread(head, 1, 12, file_) != 12 || std::memcmp(head, "RIFF", 4) != 0 ||
+    if (std::fread(head, 1, 12, file_) != 12 || (std::memcmp(head, "RIFF", 4) != 0 && std::memcmp(head, "RF64", 4) != 0) ||
         std::memcmp(head + 8, "WAVE", 4) != 0) {
         return fail("not a RIFF/WAVE file");
     }
     bool have_fmt = false;
     bool have_data = false;
     uint64_t data_bytes = 0;
+    // RF64 (EBU Tech 3306) states the data size in ds64 when its 32-bit field
+    // is all ones.
+    uint64_t ds64_data_bytes = 0;
     uint64_t at = 12;
     unsigned char ck[8];
     while (!have_data && std::fread(ck, 1, 8, file_) == 8) {
@@ -90,9 +93,15 @@ bool WavReader::open(const std::string& path, std::string& error) {
             const char* d = reinterpret_cast<const char*>(bext);
             const void* nul = std::memchr(d, 0, 256);
             description_.assign(d, nul ? static_cast<const char*>(nul) - d : 256);
+        } else if (std::memcmp(ck, "ds64", 4) == 0 && size >= 16) {
+            unsigned char ds64[16];
+            if (std::fread(ds64, 1, sizeof ds64, file_) != sizeof ds64) {
+                return fail("short ds64 chunk");
+            }
+            ds64_data_bytes = u32(ds64 + 8) | (static_cast<uint64_t>(u32(ds64 + 12)) << 32);
         } else if (std::memcmp(ck, "data", 4) == 0) {
             data_offset_ = body;
-            data_bytes = size;
+            data_bytes = (size == 0xFFFFFFFFu && ds64_data_bytes != 0) ? ds64_data_bytes : size;
             have_data = true;
             break;
         }

@@ -838,13 +838,14 @@ int test_takes_closed_while_rolling_join_the_document() {
 // until stop(), stop() reports it, and the failed file is placed up to its
 // last whole frame, as main did: the operator keeps what was recorded.
 int test_failure_in_a_take_punched_out_is_reported() {
-    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 28) + (8 + 602) + (8 + 16) + 8;
     auto session = make_session(2);
     Session& s = *session;
     s.tracks()[0]->set_rec_armed(true);
     s.tracks()[1]->set_rec_armed(true);
     // Only track 2 runs out of room: 10 mono 24-bit frames, in either slot.
     for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
+        s.tracks()[1]->writer(slot).set_rf64_allowed(false);
         s.tracks()[1]->writer(slot).set_riff_size_limit(kEmptyRiffSize + 10 * 3);
     }
     Document doc(sonora::engine_document(s));
@@ -905,12 +906,13 @@ int test_failure_in_a_take_punched_out_is_reported() {
 // stop() failed K + 1 with K's reason. K's failure was already said as a
 // Notice when its close was collected; the next clean take clears it.
 int test_failure_does_not_follow_into_the_next_take() {
-    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 28) + (8 + 602) + (8 + 16) + 8;
     auto session = make_session(2);
     Session& s = *session;
     s.tracks()[0]->set_rec_armed(true);
     s.tracks()[1]->set_rec_armed(true);
     for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
+        s.tracks()[1]->writer(slot).set_rf64_allowed(false);
         s.tracks()[1]->writer(slot).set_riff_size_limit(kEmptyRiffSize + 10 * 3);
     }
     Document doc(sonora::engine_document(s));
@@ -952,12 +954,13 @@ int test_failure_does_not_follow_into_the_next_take() {
 // second reason replaced the first, so the Notice lost the truncated
 // track, and it named no track for the one left out.
 int test_unplaceable_track_keeps_the_earlier_failure() {
-    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 28) + (8 + 602) + (8 + 16) + 8;
     auto session = make_session(2);
     Session& s = *session;
     s.tracks()[0]->set_rec_armed(true);
     s.tracks()[1]->set_rec_armed(true);
     for (int slot = 0; slot < sonora::Track::kWriterSlots; ++slot) {
+        s.tracks()[0]->writer(slot).set_rf64_allowed(false);
         s.tracks()[0]->writer(slot).set_riff_size_limit(kEmptyRiffSize + 10 * 3);
     }
     // A document with one track: the take's second file has nowhere to go.

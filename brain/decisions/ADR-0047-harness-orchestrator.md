@@ -666,6 +666,7 @@ spends quota.
   red PR gets a fixer within one tick; same job red after two fixes blocks;
   CI-budget back-pressure; no overlap launches; two features never get the
   same reserved number.
+- **PR 2 as built.** Every `gh`/`git`/script call sits behind `harness/forge.py` (`GhForge`; tests use a fake). The integrator run merges the sub-branches and runs `tools/pre-pr.sh`; the daemon re-runs it, pushes, opens ONE PR per feature and calls `tools/enqueue-pr.sh`. A feature's tasks move together through `pr_open`, `ci_fix`, `merged`; the first task stands for the feature in the scheduler. Red check -> fixer (`fix_kind=ci`), conflict -> integrator (`fix_kind=conflict`), polled every `ci_poll_s`; a job still red after two fixes blocks the feature. Numbers (`adr`, `protocol`, `format`, `window`) are seeded from origin/main and open PR diffs (`harness/numbers.py`); a failed read defers the launch. Janitor wake every `janitor_every` (3) merges. A `done` message finishes a run after `done_grace_s` without result.json (at once if the process is gone).
 - **PR 3, architect, lead, feature flow, dashboard.** The new `lead.md` and
   `tester.md` (drafted with this ADR), the `features` table, plan and
   assignments validators, event-driven architect/lead runs with channel-log
