@@ -55,7 +55,10 @@ class Batching(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def finish(self, rc, summary="ok tree\n"):
+    def finish(self, rc, summary=None):
+        if summary is None:
+            summary = ("ok   tree\nlocal-ci: all passed\n" if rc == 0
+                       else "FAIL tree\nlocal-ci: failed: tree\n")
         (key, r), = self.ci._running()
         with open(os.path.join(r["dir"], "rc"), "w") as f:
             f.write(str(rc))

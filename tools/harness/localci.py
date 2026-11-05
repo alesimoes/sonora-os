@@ -64,6 +64,16 @@ def bash_exe():
                         "Git", "bin", "bash.exe")
 
 
+def passed(rc, summary):
+    """A run passes only when the script said so. rc alone is not enough:
+    a local-ci.sh killed on Windows leaves the wrapper writing 0 (2026-11-05:
+    a batch with a red tree step was taken as green and merged)."""
+    if rc != 0 or re.search(r"^FAIL ", summary, re.M):
+        return False
+    return bool(re.search(r"^local-ci: (all passed|nothing to build)",
+                          summary, re.M))
+
+
 def _git(args, cwd, timeout=600):
     return subprocess.run(["git"] + args, cwd=cwd, capture_output=True,
                           text=True, encoding="utf-8", errors="replace",
@@ -272,7 +282,7 @@ class LocalCI:
                                encoding="utf-8", errors="replace").read()
             except (OSError, ValueError):
                 continue
-            self._finish(sha, rc == 0, summary, d)
+            self._finish(sha, passed(rc, summary), summary, d)
         self._launch_queued()
 
     def _finish(self, key, ok, summary, d):
