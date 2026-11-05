@@ -8,6 +8,10 @@
 #   tools/build-plugins.sh                 build + full ctest
 #   tools/build-plugins.sh -L plugins      build + only the plugin host tests
 #   tools/build-plugins.sh --measure       build + a longer round-trip run
+#   tools/build-plugins.sh --stage         no tests: only sonora-plugin-host, the
+#                                          offline tools and the native bundles,
+#                                          laid out under build-plugins/stage for
+#                                          tools/build-iso.sh
 #
 # Always in a container (sonora-plugins:trixie), so the plugin set is the one
 # the tests were written against. The container gets CAP_SYS_NICE and RT
@@ -34,10 +38,12 @@ if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
 fi
 
 MEASURE=0
+STAGE=0
 CTEST_ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --measure) MEASURE=1 ;;
+    --stage) STAGE=1 ;;
     *) CTEST_ARGS+=("$arg") ;;
   esac
 done
@@ -54,6 +60,37 @@ docker info >/dev/null 2>&1 || {
 if [[ "${SONORA_PLUGINS_IMAGE_BUILT:-0}" != 1 ]]; then
   docker build -q --label org.sonora=1 -t "$IMAGE" \
     -f "$(host_path "$ROOT/tools")/Dockerfile.plugins" "$(host_path "$ROOT/tools")" >/dev/null
+fi
+
+# The image build needs the host, the offline tools and the bundles, not the
+# suite (SONORA_STAGE_ONLY in tools/build-engine.sh says why). Bundles go
+# through the install rules, so an EXPERIMENTAL processor that has not met its
+# CPU class (ADR-0011 3.5) is not shipped; only the plugin directories'
+# cmake_install.cmake runs, because the root install needs every target built.
+if [[ "$STAGE" == 1 ]]; then
+  docker run --rm --label org.sonora=1 \
+    -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -c '
+    set -euo pipefail
+    cmake -S . -B build-plugins -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON >/dev/null
+    targets="sonora-plugin-host sonora_native_bundles"
+    # The offline passes (ADR-0011 4) when their targets exist.
+    for t in sonora-analyze sonora-mixplan; do
+      cmake --build build-plugins --target help | grep -q "^\.\.\. $t\$" && targets="$targets $t"
+    done
+    # shellcheck disable=SC2086
+    cmake --build build-plugins -j"$(nproc)" --target $targets
+    rm -rf build-plugins/stage
+    mkdir -p build-plugins/stage/usr/local/bin
+    for t in sonora-plugin-host sonora-analyze sonora-mixplan; do
+      [[ -f build-plugins/$t ]] && install -m 0755 build-plugins/$t build-plugins/stage/usr/local/bin/$t
+    done
+    fmt="$(find build-plugins -path "*/plugins/native/format/cmake_install.cmake" | head -n 1)"
+    [[ -n "$fmt" ]] || { echo "error: no install script for the native bundles" >&2; exit 1; }
+    cmake -DCMAKE_INSTALL_PREFIX=/src/build-plugins/stage/usr/local -DCMAKE_INSTALL_CONFIG_NAME=Release -P "$fmt" >/dev/null
+    test -d build-plugins/stage/usr/local/lib/lv2 || { echo "error: no LV2 bundle was installed" >&2; exit 1; }
+    test -d build-plugins/stage/usr/local/lib/vst3 || { echo "error: no VST3 bundle was installed" >&2; exit 1; }
+  '
+  exit 0
 fi
 
 # The build directory is container-specific and ignored by git.

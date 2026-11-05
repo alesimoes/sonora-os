@@ -32,6 +32,12 @@ compile_commands.json
 iso/config/includes.chroot/usr/local/bin/sonora-engine
 iso/config/includes.chroot/usr/local/bin/sonora-tui
 iso/config/includes.chroot/usr/local/bin/sonora-ui
+iso/config/includes.chroot/usr/local/bin/sonora-plugin-host
+iso/config/includes.chroot/usr/local/bin/sonora-analyze
+iso/config/includes.chroot/usr/local/bin/sonora-mixplan
+iso/config/includes.chroot/usr/local/lib/lv2/
+iso/config/includes.chroot/usr/local/lib/vst3/
+iso/config/includes.chroot/usr/share/sonora/keymaps/
 # Stamped per build by tools/build-iso.sh; becomes BUILD_ID in /etc/os-release.
 iso/config/includes.chroot/usr/share/sonora/build-id
 

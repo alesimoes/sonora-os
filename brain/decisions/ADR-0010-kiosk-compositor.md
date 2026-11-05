@@ -355,6 +355,40 @@ distro-engineer:
 - Add one test: start a take, `kill -9` labwc and the UI, and assert that the
   engine PID is unchanged and the take file keeps growing.
 
+> **Stage 2, display half, as built (kiosk stage 2 PR).** Still behind
+> `sonora.gui`; the default flip waits for a QEMU `--gui` boot (no `/dev/kvm`
+> where this was written).
+> - `sonora-engine.service` is a **system** unit (`User=sonora`), not a user
+>   unit: `LimitRTPRIO`/`LimitMEMLOCK` and `Nice` apply to it directly, and
+>   it can be ordered against the compositor. It runs `sonora-engine-run`
+>   (`--headless`, the control socket in `$XDG_RUNTIME_DIR/sonora`).
+> - `sonora-ui.service` has `Wants=`+`After=` the engine, never `BindsTo=`.
+>   The engine has no `BindsTo=`/`Requires=`/`PartOf=` at all, so a UI,
+>   labwc or engine crash restarts only that unit. The engine: `Restart=always`,
+>   no start limit, `OOMScoreAdjust=-900`. The UI keeps 5 starts in 60 s, then
+>   the fallback.
+> - The fallback stops the engine with the compositor and UI before it starts
+>   `sonora-session.service` (one engine per machine). No `Conflicts=` between
+>   the two: both sit in the boot transaction and systemd then dropped the
+>   session (seen in `tools/test-display-fallback.sh`).
+> - Editors: labwc's `autostart` writes its Xwayland `DISPLAY` to
+>   `$XDG_RUNTIME_DIR/sonora/display.env`; `sonora-engine-run` exports it to
+>   the engine, so the plugin host's X11 editors open on it. That labwc has
+>   `DISPLAY` set in `autostart` under lazy Xwayland is **unverified**.
+>   Rules: only `sonora-ui` is undecorated; every other window is decorated and
+>   centred. A restarted engine re-reads the file; a restarted labwc leaves it
+>   stale until the engine restarts too (unverified, usually the same number).
+> - `sonora-tui.service` on tty2 is not part of this change.
+>
+> **Amendment, 2026-11-04 (image runtime binaries).** `sonora-tui.service`
+> now exists as the table in section 4 says, with two conditions beyond it:
+> `ConditionKernelCommandLine=!sonora.install` (the installer screen owns
+> tty2 then) and `ConditionPathExists=!/run/sonora-display-failed` (after the
+> fallback, `sonora-session.service` has the engine start the terminal UI on
+> tty1 itself). It `Wants=` the engine, never `BindsTo=`. `iso/staged.list`
+> names every binary the image stages; `tools/test-image-config.sh` fails a
+> unit or launcher that runs one that is neither tracked nor listed.
+
 **Stage 3: before the Phase 4 plugin ADR.**
 
 researcher:

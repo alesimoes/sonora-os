@@ -1,0 +1,507 @@
+#!/usr/bin/env bash
+# Hardware acceptance kit: what the owner runs once on the real laptop with the
+# Behringer UMC1820 so the hardware-gated BACKLOG items get evidence in one
+# session. Every check prints PASS, FAIL or SKIP and one evidence line.
+#
+#   sonora-acceptance quick           RT kernel, limits, governor, UMC1820, PipeWire pin,
+#                                     a 60 s 18-channel record + play take
+#   sonora-acceptance soak HOURS      continuous 18-channel recording, one log line a
+#                                     minute, disk-full guard, a summary at the end
+#   sonora-acceptance powercut        start a take and tell you to pull the power
+#   sonora-acceptance recover-check   after the next boot: the session and the WAVs
+#   sonora-acceptance report          one markdown file ready for brain/research
+#
+# Run it as root from the debug shell (README "Hardware acceptance"): it stops
+# sonora-session.service so the engine does not hold the card, runs PipeWire
+# and the engine as the sonora user, and starts the service again at the end.
+# Exit status: 0 no FAIL, 1 at least one FAIL, 2 usage or setup error.
+#
+# Test hooks (tools/test-sonora-acceptance.sh): SONORA_ACC_PROC, SONORA_ACC_SYS,
+# SONORA_ACC_DIR, SONORA_ACC_USER (empty: no user switch), SONORA_ACC_POLL
+# (seconds between soak log lines), SONORA_ACC_TAKE (quick take seconds),
+# SONORA_ACC_MIN_FREE_MB, SONORA_ACC_MAX_LOSS_S, SONORA_ENGINE.
+set -uo pipefail
+
+PROC="${SONORA_ACC_PROC:-/proc}"
+SYS="${SONORA_ACC_SYS:-/sys}"
+DIR="${SONORA_ACC_DIR:-/home/sonora/Acceptance}"
+ENGINE="${SONORA_ENGINE:-sonora-engine}"
+RUN_USER="${SONORA_ACC_USER-sonora}"
+POLL="${SONORA_ACC_POLL:-60}"
+TAKE_S="${SONORA_ACC_TAKE:-60}"
+MIN_FREE_MB="${SONORA_ACC_MIN_FREE_MB:-2048}"
+# A power pull loses what the kernel and the stick had not written. The engine
+# checkpoints its takes (session-format.md, "Crash recovery"); ten seconds is
+# the loss we accept for this test, not a measured figure.
+MAX_LOSS_S="${SONORA_ACC_MAX_LOSS_S:-10}"
+RATE=48000
+WANT=18
+WANT_PLAY=20
+QUANTUM=128
+UMC_VENDOR=1397
+UMC_PRODUCT=0503
+BYTES_PER_S=$((RATE * 3))
+SERVICE=sonora-session.service
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
+RESULTS="$DIR/results.log"
+STATE="$DIR/powercut.state"
+FAILED=0
+SERVICE_STOPPED=0
+
+die() { echo "error: $*" >&2; exit 2; }
+
+res() { # STATUS NAME EVIDENCE
+  printf '%s %s: %s\n' "$1" "$2" "$3"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CMD" "$1" "$2" "$3" >>"$RESULTS"
+  [ "$1" = FAIL ] && FAILED=1
+  return 0
+}
+
+as_user() {
+  if [ -n "$RUN_USER" ] && [ "$(id -u)" = 0 ] && id "$RUN_USER" >/dev/null 2>&1; then
+    runuser -u "$RUN_USER" -- env "XDG_RUNTIME_DIR=/run/user/$(id -u "$RUN_USER")" "$@"
+  else
+    "$@"
+  fi
+}
+
+prepare_dir() {
+  mkdir -p "$DIR" || die "cannot create $DIR"
+  if [ -n "$RUN_USER" ] && [ "$(id -u)" = 0 ] && id "$RUN_USER" >/dev/null 2>&1; then
+    chown "$RUN_USER" "$DIR" 2>/dev/null || true
+  fi
+  touch "$RESULTS"
+}
+
+stop_service() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl stop "$SERVICE" 2>/dev/null; then
+    SERVICE_STOPPED=1
+  fi
+}
+start_service() {
+  if [ "$SERVICE_STOPPED" = 1 ]; then
+    systemctl start "$SERVICE" 2>/dev/null || true
+    SERVICE_STOPPED=0
+  fi
+}
+
+field() { # KEY LINE: value of key=value in an engine RESULT line
+  sed -n "s/.* $1=\\([0-9.]*\\).*/\\1/p" <<<"$2"
+}
+
+umc_card() { # prints the ALSA card number of the UMC, if any
+  local f
+  for f in "$PROC"/asound/card*/id; do
+    [ -r "$f" ] || continue
+    if grep -qi -E 'UMC|behringer|1397:' "$f" "$(dirname "$f")/usbid" 2>/dev/null; then
+      basename "$(dirname "$f")" | sed 's/^card//'
+      return 0
+    fi
+  done
+  # The id file alone may say only "USB"; the cards list names the device.
+  sed -n 's/^ *\([0-9][0-9]*\) \[.*\(UMC\|Behringer\).*/\1/Ip' "$PROC/asound/cards" 2>/dev/null | head -1
+}
+
+stream_channels() { # CARD Playback|Capture: highest "Channels:" in that section
+  awk -v sect="$2:" '
+    /^[A-Za-z]+:$/ { cur = $0 }
+    cur == sect && /Channels:/ { if ($2 + 0 > m) m = $2 + 0 }
+    END { print m + 0 }' "$PROC"/asound/card"$1"/stream* 2>/dev/null
+}
+
+wav_check() { # FILE: prints "data_bytes" on success, "ERR reason" otherwise
+  local f="$1" size riff off id sz data_at=0 data_sz=-1
+  size="$(wc -c <"$f")"
+  [ "$size" -ge 44 ] || { echo "ERR shorter than a header ($size bytes)"; return; }
+  [ "$(dd if="$f" bs=1 count=4 2>/dev/null)" = RIFF ] || { echo "ERR no RIFF tag"; return; }
+  riff="$(od -An -tu4 -j4 -N4 "$f" | tr -d ' ')"
+  [ $((riff + 8)) -eq "$size" ] || { echo "ERR RIFF size $riff does not match file size $size"; return; }
+  off=12
+  while [ $((off + 8)) -le "$size" ]; do
+    id="$(dd if="$f" bs=1 skip="$off" count=4 2>/dev/null)"
+    sz="$(od -An -tu4 -j$((off + 4)) -N4 "$f" | tr -d ' ')"
+    if [ "$id" = data ]; then data_at=$((off + 8)); data_sz="$sz"; break; fi
+    off=$((off + 8 + sz + (sz & 1)))
+  done
+  [ "$data_sz" -ge 0 ] || { echo "ERR no data chunk"; return; }
+  [ $((data_at + data_sz)) -le "$size" ] || { echo "ERR data chunk runs past the end of the file"; return; }
+  echo "$data_sz"
+}
+
+# ---- quick ----------------------------------------------------------------
+check_system() {
+  local k v gov govs bad line card cap play vend prod found="" dev
+  k="$(uname -r 2>/dev/null)"
+  v="$(cat "$PROC/version" 2>/dev/null)"
+  if grep -qi -E 'PREEMPT_RT|PREEMPT RT' <<<"$v" || grep -q -E -- '-rt' <<<"$k"; then
+    res PASS rt_kernel "$k"
+  else
+    res FAIL rt_kernel "$k is not a PREEMPT_RT kernel (/proc/version: ${v:0:80})"
+  fi
+
+  line="$(cat "$PROC/cmdline" 2>/dev/null)"
+  if grep -q -w threadirqs <<<"$line"; then
+    res PASS cmdline_threadirqs "$line"
+  else
+    res FAIL cmdline_threadirqs "threadirqs absent from: $line"
+  fi
+
+  line="$(as_user cat "$PROC/self/limits" 2>/dev/null)"
+  v="$(awk '/^Max realtime priority/ { print $4 }' <<<"$line")"
+  if [ "${v:-0}" -ge 95 ] 2>/dev/null; then res PASS limit_rtprio "soft ${v}"; else res FAIL limit_rtprio "soft ${v:-unknown}, want >= 95 (limits-audio.conf, @audio)"; fi
+  v="$(awk '/^Max locked memory/ { print $4 }' <<<"$line")"
+  if [ "$v" = unlimited ]; then res PASS limit_memlock "unlimited"; else res FAIL limit_memlock "soft ${v:-unknown}, want unlimited"; fi
+
+  govs=""; bad=""
+  for gov in "$SYS"/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
+    [ -r "$gov" ] || continue
+    v="$(cat "$gov")"
+    govs="$govs $v"
+    [ "$v" = performance ] || bad="$bad $(basename "$(dirname "$(dirname "$gov")")"):$v"
+  done
+  if [ -z "$govs" ]; then
+    res SKIP cpu_governor "no cpufreq scaling_governor files (driver without cpufreq)"
+  elif [ -z "$bad" ]; then
+    res PASS cpu_governor "$(wc -w <<<"$govs") cpus, all performance"
+  else
+    res FAIL cpu_governor "not performance:$bad"
+  fi
+
+  if grep -q -w 'boot=live' <<<"$(cat "$PROC/cmdline" 2>/dev/null)"; then
+    res PASS booted_live "boot=live on the command line"
+  else
+    res SKIP booted_live "not a live boot (installed system)"
+  fi
+  line="$(grep -E ' /home ' "$PROC/mounts" 2>/dev/null | head -1)"
+  if [ -n "$line" ]; then res PASS home_mount "$line"; else res FAIL home_mount "nothing mounted on /home"; fi
+
+  for dev in "$SYS"/bus/usb/devices/*; do
+    [ -r "$dev/idVendor" ] || continue
+    vend="$(cat "$dev/idVendor")"
+    [ "$vend" = "$UMC_VENDOR" ] || continue
+    prod="$(cat "$dev/idProduct" 2>/dev/null)"
+    found="$found $vend:$prod($(cat "$dev/product" 2>/dev/null))"
+  done
+  if [ -z "$found" ]; then
+    res FAIL umc_usb "no USB device with vendor $UMC_VENDOR (Behringer) under $SYS/bus/usb/devices"
+  elif grep -q "$UMC_VENDOR:$UMC_PRODUCT" <<<"$found"; then
+    res PASS umc_usb "$found"
+  else
+    res FAIL umc_usb "Behringer device(s)$found, but not $UMC_VENDOR:$UMC_PRODUCT (UMC1820)"
+  fi
+
+  card="$(umc_card)"
+  if [ -z "$card" ]; then
+    res FAIL umc_alsa "no UMC card in $PROC/asound"
+  else
+    cap="$(stream_channels "$card" Capture)"
+    play="$(stream_channels "$card" Playback)"
+    if [ "$cap" -ge "$WANT" ] && [ "$play" -ge "$WANT_PLAY" ]; then
+      res PASS umc_channels "card $card: $cap capture, $play playback"
+    else
+      res FAIL umc_channels "card $card: $cap capture (want $WANT), $play playback (want $WANT_PLAY)"
+    fi
+  fi
+}
+
+check_pipewire() {
+  local out q mn mx r
+  if ! command -v pw-metadata >/dev/null 2>&1; then
+    res SKIP pipewire_pin "pw-metadata not installed"
+    return
+  fi
+  out="$(as_user pw-metadata -n settings 2>/dev/null)"
+  if [ -z "$out" ]; then
+    res FAIL pipewire_pin "pw-metadata -n settings printed nothing: PipeWire is not running for $RUN_USER"
+    return
+  fi
+  get() { sed -n "s/.*key:'$1' value:'\\([^']*\\)'.*/\\1/p" <<<"$out" | tail -1; }
+  q="$(get clock.quantum)"; mn="$(get clock.min-quantum)"; mx="$(get clock.max-quantum)"; r="$(get clock.rate)"
+  if [ "$q" = "$QUANTUM" ] && [ "$mn" = "$QUANTUM" ] && [ "$mx" = "$QUANTUM" ] && [ "$r" = "$RATE" ]; then
+    res PASS pipewire_pin "quantum $q (min $mn, max $mx), rate $r"
+  else
+    res FAIL pipewire_pin "quantum ${q:-?} min ${mn:-?} max ${mx:-?} rate ${r:-?}; pinned config says $QUANTUM/$QUANTUM/$QUANTUM at $RATE"
+  fi
+}
+
+engine_cmd() { # prints the engine invocation prefix words
+  if command -v pw-jack >/dev/null 2>&1; then echo pw-jack; fi
+}
+
+device_name() {
+  local card
+  card="$(umc_card)"
+  [ -n "$card" ] && cat "$PROC/asound/card$card/id" 2>/dev/null
+}
+
+check_take() {
+  local folder="$DIR/quick-$STAMP" out rc rj files short first dev xr ov mi bf
+  command -v "$ENGINE" >/dev/null 2>&1 || [ -x "$ENGINE" ] || { res FAIL take "engine '$ENGINE' not found"; return; }
+  dev="$(device_name)"
+  # shellcheck disable=SC2046
+  out="$(as_user timeout $((TAKE_S + 90)) $(engine_cmd) "$ENGINE" --dir "$folder" --tracks "$WANT" --rate "$RATE" \
+        --arm-all ${dev:+--device "$dev"} --wait-for-inputs 15 --record "$TAKE_S" 2>"$DIR/quick-$STAMP.err")"
+  rc=$?
+  rj="$(grep '^RESULT' <<<"$out" | tail -1)"
+  if [ "$rc" != 0 ] || [ -z "$rj" ]; then
+    res FAIL take "engine exit $rc, no RESULT; $(tail -2 "$DIR/quick-$STAMP.err" 2>/dev/null | tr '\n' ' ')"
+    return
+  fi
+  files="$(field files "$rj")"; xr="$(field xruns "$rj")"; ov="$(field overruns "$rj")"
+  mi="$(field misses "$rj")"; bf="$(field buffer "$rj")"
+  short="$(find "$folder" -name '*.wav' -size -$((BYTES_PER_S * TAKE_S / 2))c 2>/dev/null | wc -l)"
+  if [ "$files" = "$WANT" ] && [ "$short" = 0 ]; then
+    res PASS take_files "$files track files, none shorter than half the ${TAKE_S} s take"
+  else
+    res FAIL take_files "$files track files (want $WANT), $short short"
+  fi
+  if [ "${bf:-0}" = "$QUANTUM" ]; then res PASS take_buffer "buffer $bf frames at $(field rate "$rj") Hz"; else res FAIL take_buffer "buffer ${bf:-?}, want $QUANTUM"; fi
+  if [ "${xr:-1}" = 0 ] && [ "${ov:-1}" = 0 ]; then
+    res PASS take_xruns "xruns=$xr overruns=$ov misses=${mi:-?} over ${TAKE_S} s"
+  else
+    res FAIL take_xruns "xruns=${xr:-?} overruns=${ov:-?} misses=${mi:-?} over ${TAKE_S} s"
+  fi
+  first="$(find "$folder" -name '*.wav' 2>/dev/null | sort | head -1)"
+  if [ -z "$first" ]; then
+    res SKIP take_play "no take file to play"
+  elif ! command -v pw-play >/dev/null 2>&1; then
+    res SKIP take_play "pw-play not installed"
+  elif as_user timeout 30 pw-play "$first" >/dev/null 2>&1; then
+    res PASS take_play "pw-play played $(basename "$first") and exited 0 (did you hear it? the exit status cannot say)"
+  else
+    res FAIL take_play "pw-play failed on $(basename "$first")"
+  fi
+}
+
+cmd_quick() {
+  check_system
+  stop_service
+  check_pipewire
+  check_take
+  start_service
+}
+
+# ---- soak -----------------------------------------------------------------
+free_mb() { df -Pk "$DIR" | awk 'NR == 2 { print int($4 / 1024) }'; }
+tree_bytes() { find "$1" -name '*.wav' -printf '%s\n' 2>/dev/null | awk '{ s += $1 } END { print s + 0 }'; }
+
+cmd_soak() {
+  local hours="${1:-}" secs folder log err dev pid start now min bytes last=0 free x stalls=0 early="" out rj
+  [ -n "$hours" ] || die "usage: sonora-acceptance soak HOURS"
+  secs="$(awk -v h="$hours" 'BEGIN { if (h !~ /^[0-9.]+$/ || h + 0 <= 0) exit 1; printf "%d", h * 3600 }')" || die "HOURS must be a positive number"
+  [ "$secs" -ge 1 ] || die "HOURS is too small"
+  command -v "$ENGINE" >/dev/null 2>&1 || [ -x "$ENGINE" ] || die "engine '$ENGINE' not found"
+  folder="$DIR/soak-$STAMP"; log="$DIR/soak-$STAMP.log"; err="$DIR/soak-$STAMP.err"
+  stop_service
+  dev="$(device_name)"
+  free="$(free_mb)"
+  echo "soak: $hours h = $secs s, $WANT tracks, needs about $((BYTES_PER_S * WANT * secs / 1048576)) MB, $free MB free, guard at $MIN_FREE_MB MB"
+  echo "log: $log"
+  : >"$log"
+  # shellcheck disable=SC2046
+  as_user $(engine_cmd) "$ENGINE" --dir "$folder" --tracks "$WANT" --rate "$RATE" --arm-all \
+    ${dev:+--device "$dev"} --wait-for-inputs 30 --record "$secs" >"$DIR/soak-$STAMP.out" 2>"$err" &
+  pid=$!
+  start="$(date +%s)"
+  min=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep "$POLL"
+    kill -0 "$pid" 2>/dev/null || break
+    min=$((min + 1))
+    now="$(date +%s)"
+    free="$(free_mb)"
+    bytes="$(tree_bytes "$folder")"
+    x="$(grep -ci xrun "$err" 2>/dev/null || true)"
+    printf 'min=%d elapsed_s=%d free_mb=%s bytes=%s delta=%s xrun_lines=%s\n' "$min" $((now - start)) "$free" "$bytes" $((bytes - last)) "${x:-0}" | tee -a "$log"
+    if [ "$bytes" -le "$last" ]; then stalls=$((stalls + 1)); else stalls=0; fi
+    last="$bytes"
+    if [ "$free" -lt "$MIN_FREE_MB" ]; then
+      early="disk-full guard: $free MB free is under $MIN_FREE_MB MB after $min log lines"
+      kill -TERM "$pid" 2>/dev/null
+      break
+    fi
+    if [ "$stalls" -ge 3 ]; then
+      early="no bytes written for 3 log lines"
+      kill -TERM "$pid" 2>/dev/null
+      break
+    fi
+  done
+  wait "$pid"
+  rc=$?
+  out="$(cat "$DIR/soak-$STAMP.out")"
+  rj="$(grep '^RESULT' <<<"$out" | tail -1)"
+  echo "---- soak summary ----"
+  echo "elapsed: $(($(date +%s) - start)) s of $secs s, log lines: $min, free now: $(free_mb) MB"
+  echo "engine: ${rj:-no RESULT line}"
+  if [ -n "$early" ]; then res FAIL soak "stopped early, $early"; fi
+  if [ -z "$rj" ]; then
+    [ -n "$early" ] || res FAIL soak "engine exit $rc, no RESULT line; $(tail -2 "$err" | tr '\n' ' ')"
+  elif [ "$(field xruns "$rj")" = 0 ] && [ "$(field overruns "$rj")" = 0 ] && [ "$(field dropped "$rj")" = 0 ] && [ "$(field misses "$rj")" = 0 ] && [ -z "$early" ] && [ "$rc" = 0 ]; then
+    res PASS soak "$hours h, xruns=0 overruns=0 dropped=0 misses=0, files=$(field files "$rj"), $(tree_bytes "$folder") bytes"
+  elif [ -z "$early" ]; then
+    res FAIL soak "engine exit $rc; $rj"
+  fi
+  start_service
+}
+
+# ---- powercut / recover-check ---------------------------------------------
+state_get() { sed -n "s/^$1=//p" "$STATE" | tail -1; }
+
+cmd_powercut() {
+  local folder="$DIR/powercut-$STAMP" dev pid ok=0 i bytes boot
+  [ ! -e "$STATE" ] || die "a power-cut test is already pending ($STATE); boot, run 'recover-check', or delete the file"
+  command -v "$ENGINE" >/dev/null 2>&1 || [ -x "$ENGINE" ] || die "engine '$ENGINE' not found"
+  stop_service
+  dev="$(device_name)"
+  boot="$(cat "$PROC/sys/kernel/random/boot_id" 2>/dev/null)"
+  {
+    echo "folder=$folder"
+    echo "tracks=$WANT"
+    echo "boot_id=$boot"
+    echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$STATE"
+  sync
+  # shellcheck disable=SC2046
+  as_user $(engine_cmd) "$ENGINE" --dir "$folder" --tracks "$WANT" --rate "$RATE" --arm-all \
+    ${dev:+--device "$dev"} --wait-for-inputs 30 --record 7200 >"$DIR/powercut-$STAMP.out" 2>&1 &
+  pid=$!
+  for ((i = 0; i < 120; i++)); do
+    kill -0 "$pid" 2>/dev/null || break
+    bytes="$(find "$folder" -name '*.wav' -printf '%s\n' 2>/dev/null | sort -n | head -1)"
+    if [ "$(find "$folder" -name '*.wav' 2>/dev/null | wc -l)" -ge "$WANT" ] && [ "${bytes:-0}" -ge $((BYTES_PER_S * 20)) ]; then ok=1; break; fi
+    sleep 1
+  done
+  if [ "$ok" != 1 ]; then
+    kill -TERM "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$STATE"
+    res FAIL powercut_start "the take did not reach 20 s on $WANT tracks in 120 s: $(tail -2 "$DIR/powercut-$STAMP.out" | tr '\n' ' ')"
+    start_service
+    return
+  fi
+  echo "smallest take file when the notice was printed: $bytes bytes"
+  echo "min_bytes=$bytes" >>"$STATE"
+  sync
+  res PASS powercut_start "recording $WANT tracks, smallest file $bytes bytes ($((bytes / BYTES_PER_S)) s)"
+  echo
+  echo "=============================================================="
+  echo " PULL THE POWER NOW (unplug the charger, take the battery out"
+  echo " or hold the power button). Do not shut down."
+  echo " Boot again, open the debug shell and run:"
+  echo "     sonora-acceptance recover-check"
+  echo "=============================================================="
+  wait "$pid"
+}
+
+cmd_recover() {
+  local folder boot_now boot_then min_bytes log pid=0 i listening=0 f name data why lost_s worst=0 n=0 bad=0
+  [ -e "$STATE" ] || { res SKIP recover_check "no pending power-cut test ($STATE); run 'powercut' first"; return; }
+  folder="$(state_get folder)"; boot_then="$(state_get boot_id)"; min_bytes="$(state_get min_bytes)"
+  boot_now="$(cat "$PROC/sys/kernel/random/boot_id" 2>/dev/null)"
+  if [ -z "$min_bytes" ]; then
+    res FAIL recover_boot "the state file has no min_bytes: the test never reached the pull notice"
+    return
+  fi
+  if [ -n "$boot_then" ] && [ "$boot_then" = "$boot_now" ]; then
+    res FAIL recover_boot "same boot as the take (boot id $boot_now): the machine did not restart"
+    return
+  fi
+  res PASS recover_boot "new boot id $boot_now (take was on ${boot_then:-unknown})"
+  [ -d "$folder" ] || { res FAIL recover_folder "$folder is gone from the stick"; return; }
+  n="$(find "$folder" -name '*.wav' | wc -l)"
+  if [ "$n" -ge "$WANT" ]; then res PASS recover_folder "$folder holds $n take files"; else res FAIL recover_folder "$folder holds $n take files, want $WANT"; fi
+
+  log="$DIR/recover-$STAMP.log"
+  as_user "$ENGINE" --dir "$folder" --backend fake --no-memlock --plugin-cache "" --autosave-seconds 0 --headless >"$log" 2>&1 &
+  pid=$!
+  for ((i = 0; i < 300; i++)); do
+    if grep -q 'engine listening on' "$log" 2>/dev/null; then listening=1; break; fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [ "$listening" = 1 ]; then
+    res PASS recover_session "engine reopened the folder and is listening"
+    kill -TERM "$pid" 2>/dev/null
+  else
+    res FAIL recover_session "engine never reached 'engine listening on': $(tail -2 "$log" | tr '\n' ' ')"
+  fi
+  wait "$pid" 2>/dev/null
+
+  while IFS= read -r f; do
+    name="$(basename "$f")"
+    data="$(wav_check "$f")"
+    case "$data" in
+      ERR*) bad=$((bad + 1)); res FAIL "recover_wav_$name" "${data#ERR }"; continue ;;
+    esac
+    why=""
+    grep -q "recovered $name" "$log" 2>/dev/null || why="the engine did not report recovering it (a clean file needs no repair; a power cut usually does)"
+    if [ "$data" -lt "$min_bytes" ]; then
+      lost_s=$(((min_bytes - data) / BYTES_PER_S))
+      [ "$lost_s" -gt "$worst" ] && worst="$lost_s"
+    fi
+    [ -z "$why" ] || echo "note: $name: $why"
+  done < <(find "$folder" -name '*.wav' | sort)
+  if [ "$bad" = 0 ] && [ "$n" -gt 0 ]; then res PASS recover_wavs "$n files, RIFF and data sizes match the file"; fi
+  if [ "$worst" -le "$MAX_LOSS_S" ]; then
+    res PASS recover_loss "worst file ends $worst s short of the $((min_bytes / BYTES_PER_S)) s seen at the pull notice (limit $MAX_LOSS_S s)"
+  else
+    res FAIL recover_loss "worst file ends $worst s short of what was on disk at the notice (limit $MAX_LOSS_S s)"
+  fi
+  mv "$STATE" "$STATE.done-$STAMP"
+}
+
+# ---- report ---------------------------------------------------------------
+cmd_report() {
+  local out="$DIR/report-$STAMP.md" dmi="$SYS/class/dmi/id"
+  d() { cat "$dmi/$1" 2>/dev/null || echo unknown; }
+  {
+    echo "# Hardware acceptance $(date -u +%Y-%m-%dT%H:%MZ)"
+    echo
+    echo "## Machine"
+    echo
+    echo "- machine: $(d sys_vendor) $(d product_name) (BIOS $(d bios_version), $(d bios_date))"
+    echo "- CPU: $(sed -n 's/^model name[^:]*: //p' "$PROC/cpuinfo" 2>/dev/null | head -1), $(grep -c '^processor' "$PROC/cpuinfo" 2>/dev/null) threads"
+    echo "- memory: $(sed -n 's/^MemTotal: *//p' "$PROC/meminfo" 2>/dev/null)"
+    echo "- kernel: \`$(uname -r)\`"
+    echo "- command line: \`$(cat "$PROC/cmdline" 2>/dev/null)\`"
+    echo "- audio: pinned quantum $QUANTUM, rate $RATE"
+    echo "- take length (quick): $TAKE_S s, $WANT tracks, 24-bit"
+    echo
+    echo "## Results"
+    echo
+    echo "| time | command | status | check | evidence |"
+    echo "|---|---|---|---|---|"
+    awk -F '\t' '{ gsub(/\|/, "/", $5); printf "| %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5 }' "$RESULTS"
+    echo
+    echo "Totals: $(awk -F '\t' '$3 == "PASS"' "$RESULTS" | wc -l) PASS, $(awk -F '\t' '$3 == "FAIL"' "$RESULTS" | wc -l) FAIL, $(awk -F '\t' '$3 == "SKIP"' "$RESULTS" | wc -l) SKIP."
+    echo
+    echo "## Which BACKLOG items this evidences"
+    echo
+    echo "- system.boot_tests.hardware: booted_live, rt_kernel, cmdline_threadirqs, limits, umc_*, take_*"
+    echo "- drivers.umc1820.*: umc_usb, umc_channels, pipewire_pin, take_* (quantum $QUANTUM only; the lower quanta are tools/umc-measure.sh)"
+    echo "- system.hardening.soak: the soak line"
+    echo "- system.hardening.crash_recovery: recover_* lines after a power pull"
+    echo "- system.usb.physical: booted_live and home_mount, from a physical stick"
+    echo
+    echo "Not covered here: a second take at a lower quantum, the plugin IPC round trip, the stick's own write-cache behaviour."
+  } >"$out"
+  echo "report: $out"
+}
+
+CMD="${1:-}"
+case "$CMD" in
+  quick | soak | powercut | recover-check | report) ;;
+  -h | --help) sed -n '2,12p' "$0"; exit 0 ;;
+  "") sed -n '2,12p' "$0" >&2; exit 2 ;;
+  *) echo "unknown command: $CMD" >&2; exit 2 ;;
+esac
+shift
+prepare_dir
+trap start_service EXIT
+case "$CMD" in
+  quick) cmd_quick ;;
+  soak) cmd_soak "$@" ;;
+  powercut) cmd_powercut; SERVICE_STOPPED=0 ;;
+  recover-check) cmd_recover ;;
+  report) cmd_report ;;
+esac
+exit "$FAILED"

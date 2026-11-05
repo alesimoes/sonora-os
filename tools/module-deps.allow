@@ -25,6 +25,9 @@ contracts/api -> common/model
 contracts/backend -> common/base
 contracts/plugin -> common/base
 contracts/surfaces -> common/base
+drivers/alsa -> common/base
+drivers/alsa -> contracts/backend
+drivers/alsa -> drivers/support
 drivers/fake -> common/base
 drivers/fake -> contracts/backend
 drivers/fake -> drivers/support
@@ -33,9 +36,12 @@ drivers/jack -> contracts/backend
 drivers/jack -> drivers/support
 drivers/support -> common/base
 drivers/support -> contracts/backend
+drivers/surfaces -> contracts/api
+drivers/surfaces -> contracts/surfaces
 engine/app -> common/platform
 engine/app -> contracts/api
 engine/app -> contracts/backend
+engine/app -> drivers/alsa
 engine/app -> drivers/fake
 engine/app -> drivers/jack
 engine/app -> engine/control
