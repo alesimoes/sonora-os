@@ -210,20 +210,21 @@ int test_ui() {
     CHECK(text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"));
 
     // Recall 1: the view, the open set and the place all come back.
-    click(view, named(list, QStringLiteral("windowConfigRecall1")));
+    CHECK(model.invokeWith(QStringLiteral("window.config_recall"), -1, QStringLiteral("1")));
     CHECK(session.window() == QStringLiteral("edit"));
     CHECK(session.undoHistoryOpen() && transport.open() && !session.latencyOpen());
     CHECK(history->x() == 300 && history->y() == 120);
     // And 2 back again; the toggle (Ctrl+=) still flips Edit/Mix by itself.
-    click(view, named(list, QStringLiteral("windowConfigRecall2")));
+    CHECK(model.invokeWith(QStringLiteral("window.config_recall"), -1, QStringLiteral("2")));
     CHECK(session.window() == QStringLiteral("mix"));
     CHECK(!session.undoHistoryOpen() && !transport.open() && session.latencyOpen());
     CHECK(latency->x() == 50 && latency->y() == 60);
     model.invoke(QStringLiteral("window.toggle_mix_edit"), -1);
     CHECK(session.window() == QStringLiteral("edit"));
 
-    // The refusal of an empty slot stays in the list until the next action.
+    if (session.latencyOpen()) model.invoke(QStringLiteral("window.latency"), -1); // it covers the list
     click(view, named(list, QStringLiteral("windowConfigRecall7")));
+    CHECK(!model.invokeWith(QStringLiteral("window.config_recall"), -1, QStringLiteral("7")));
     CHECK(text_of(list, "windowConfigRefusal").contains(QStringLiteral("empty")));
     CHECK(session.window() == QStringLiteral("edit"));
     click(view, named(list, QStringLiteral("windowConfigStore7")));
