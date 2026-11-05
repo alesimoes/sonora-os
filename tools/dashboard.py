@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -207,6 +208,16 @@ def read_orchestrator():
         return None
 
 
+def read_coordinator():
+    """What the coordinator session (Claude in the terminal) says it is doing:
+    <orchestrator root>/.harness/coordinator.json, written by the session."""
+    try:
+        with open(os.path.join(orch_root(), ".harness", "coordinator.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def refresh_loop(agents_file):
     last_pr, prs, merged = 0, [], []
     while True:
@@ -226,7 +237,7 @@ def refresh_loop(agents_file):
         containers = read_containers()
         watchers = read_watchers()
         with lock:
-            state.update(updated=int(time.time()), prs=prs, watchers=watchers, containers=containers, merged=merged, usage=read_usage(), orchestrator=read_orchestrator())
+            state.update(updated=int(time.time()), prs=prs, watchers=watchers, containers=containers, merged=merged, usage=read_usage(), orchestrator=read_orchestrator(), coordinator=read_coordinator())
         agents = read_agents(labels, containers)
         with lock:
             state.update(updated=int(time.time()), agents=agents, prs=prs, merged=merged,
@@ -237,12 +248,165 @@ def refresh_loop(agents_file):
 PAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
 
 
+# --- details for a clicked card ------------------------------------------
+def orch_root():
+    path = os.environ.get("SONORA_ORCH_STATUS") or os.path.join(ROOT, "planning", "orchestrator", "status.json")
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(path))))
+
+
+def orch_state():
+    try:
+        with open(os.path.join(orch_root(), "planning", "orchestrator", "state.json"), encoding="utf-8") as f:
+            s = json.load(f)
+    except Exception:
+        return {}
+    for k in ("tasks", "features", "runs"):
+        v = s.get(k) or []
+        s[k] = list(v.values()) if isinstance(v, dict) else v
+    return s
+
+
+def tail_lines(path, max_bytes=600000):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - max_bytes))
+            return f.read().decode("utf-8", "replace").splitlines()[1:]
+    except OSError:
+        return []
+
+
+def events_of(ids, n=20):
+    out = []
+    for ln in tail_lines(os.path.join(orch_root(), "planning", "orchestrator", "events.jsonl"), 1500000):
+        try:
+            e = json.loads(ln)
+        except ValueError:
+            continue
+        if e.get("task_id") in ids:
+            out.append({"ts": e.get("ts"), "kind": e.get("kind"), "detail": (e.get("detail") or "")[:300]})
+    return out[-n:]
+
+
+def tool_summary(name, inp):
+    inp = inp or {}
+    for k in ("description", "command", "file_path", "pattern", "path", "url", "prompt"):
+        if inp.get(k):
+            v = str(inp[k])
+            if k == "description" and inp.get("command"):
+                v += ": " + str(inp["command"])
+            return v[:240]
+    return json.dumps(inp)[:200]
+
+
+def run_activity(stream_path, n=25):
+    """What a run did last, from its claude stream-json log."""
+    items = []
+    for ln in tail_lines(stream_path):
+        try:
+            d = json.loads(ln)
+        except ValueError:
+            continue
+        t = d.get("type")
+        if t == "assistant":
+            for c in (d.get("message") or {}).get("content") or []:
+                if c.get("type") == "text" and c.get("text", "").strip():
+                    items.append({"kind": "texto", "text": c["text"].strip()[:600]})
+                elif c.get("type") == "tool_use":
+                    items.append({"kind": c.get("name") or "tool", "text": tool_summary(c.get("name"), c.get("input"))})
+        elif t == "user":
+            for c in (d.get("message") or {}).get("content") or []:
+                if isinstance(c, dict) and c.get("type") == "tool_result" and c.get("is_error"):
+                    body = c.get("content")
+                    if isinstance(body, list):
+                        body = " ".join(x.get("text", "") for x in body if isinstance(x, dict))
+                    items.append({"kind": "erro", "text": str(body)[:300]})
+        elif t == "result":
+            items.append({"kind": "fim", "text": (d.get("result") or d.get("subtype") or "")[:600]})
+    return items[-n:]
+
+
+def task_view(t):
+    if not t:
+        return None
+    files = t.get("files") or []
+    return {"id": t.get("id"), "state": t.get("state"), "agent": t.get("agent"), "track": t.get("track"),
+            "kind": t.get("kind"), "branch": t.get("branch"), "pr": t.get("pr"),
+            "brief": (t.get("brief") or "")[:1500], "note": (t.get("note") or "")[:2000],
+            "attempts": t.get("attempts"), "fix_kind": t.get("fix_kind"),
+            "files": files[:12], "nfiles": len(files)}
+
+
+def builder_log(d):
+    """The tail of the newest step log of the batch that is running."""
+    try:
+        logs = [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".log")]
+        with open(max(logs, key=os.path.getmtime), encoding="utf-8", errors="replace") as f:
+            return "".join(f.readlines()[-25:])[-3000:]
+    except (OSError, ValueError, TypeError):
+        return ""
+
+
+def heavy_lock_list():
+    """Who holds the machine-wide heavy lock and who waits (tools/build-slot.sh)."""
+    try:
+        out = subprocess.run([shutil.which("bash") or "bash", os.path.join(ROOT, "tools", "build-slot.sh"), "--list"],
+                             capture_output=True, text=True, timeout=10).stdout
+        return out.strip().splitlines()[:20]
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def detail(kind, ident):
+    s = orch_state()
+    tasks, feats, runs = s.get("tasks", []), s.get("features", []), s.get("runs", [])
+    if kind == "coord":
+        c = read_coordinator() or {}
+        return {"kind": "coord", "title": "Coordenador (Claude, sessão no terminal)", "coord": c}
+    if kind == "builder":
+        b = (read_orchestrator() or {}).get("builder") or {}
+        return {"kind": "builder", "title": "Builder (build pesado em lote)", "builder": b,
+                "log": builder_log((b.get("running") or {}).get("dir")),
+                "lock": heavy_lock_list()}
+    if kind == "run":
+        r = next((x for x in runs if x.get("id") == ident), None)
+        if not r:
+            return {"error": "run não encontrado"}
+        t = next((x for x in tasks if x.get("id") == r.get("task_id")), None)
+        return {"kind": "run", "title": "%s · %s" % (r.get("name") or r.get("id"), r.get("role") or ""),
+                "run": {k: r.get(k) for k in ("id", "name", "role", "state", "started", "last_beat", "ended", "exit")},
+                "task": task_view(t), "activity": run_activity(r.get("stream_path") or ""),
+                "events": events_of({r.get("task_id")}, 10)}
+    if kind == "pr":
+        f = next((x for x in feats if str(x.get("pr")) == str(ident)), None)
+        ident = f.get("id") if f else "pr-%s" % ident
+        kind = "feature"
+    f = next((x for x in feats if x.get("id") == ident or x.get("name") == ident), None)
+    ts = [x for x in tasks if x.get("feature_id") == ident or x.get("id") == ident]
+    train = next((x for x in ((state.get("orchestrator") or {}).get("train") or [])
+                  if f and str(x.get("pr")) == str(f.get("pr"))), None)
+    rs = [x for x in runs if x.get("task_id") in {t.get("id") for t in ts}]
+    return {"kind": "feature", "title": ident,
+            "feature": {k: (f or {}).get(k) for k in ("id", "state", "track", "pr", "branch", "fixes", "partial", "blocked_reason", "job_reds")},
+            "train": train, "tasks": [task_view(t) for t in ts][:6],
+            "runs": [{k: x.get(k) for k in ("id", "name", "role", "state", "started", "ended", "exit")} for x in rs][-6:],
+            "events": events_of({ident} | {t.get("id") for t in ts}, 20)}
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/state"):
             with lock:
                 body = json.dumps(state).encode()
             ctype = "application/json"
+        elif self.path.startswith("/api/detail"):
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                d = detail((q.get("kind") or [""])[0], (q.get("id") or [""])[0])
+            except Exception as e:
+                d = {"error": str(e)}
+            body, ctype = json.dumps(d).encode(), "application/json"
         else:
             body, ctype = open(PAGE_FILE, "rb").read(), "text/html; charset=utf-8"
         self.send_response(200)

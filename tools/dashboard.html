@@ -9,9 +9,9 @@
 <style>
 /* HUD: azul quase preto, ciano holografico, ambar para atencao, vermelho so para falha. */
 :root{
-  --bg:#03080f; --panel:rgba(8,22,36,.62); --line:rgba(70,200,230,.16); --line2:rgba(70,200,230,.34);
-  --ink:#d8f3fa; --muted:#7fa6b5; --faint:#4b6b79;
-  --cyan:#3fe0f5; --teal:#18b6a4; --amber:#ffb347; --red:#ff4d5e; --slate:#5d7c8a;
+  --bg:#03080f; --panel:rgba(6,17,29,.9); --line:rgba(70,200,230,.28); --line2:rgba(70,200,230,.5);
+  --ink:#f1fcff; --muted:#b0d0dc; --faint:#86a8b6;
+  --cyan:#3fe0f5; --teal:#18b6a4; --amber:#ffb347; --red:#ff4d5e; --slate:#8aa9b6;
   --disp:"Rajdhani","Bahnschrift","Segoe UI Semibold","Arial Narrow",sans-serif;
   --mono:"JetBrains Mono","Cascadia Mono",ui-monospace,Consolas,monospace;
   color-scheme:dark;
@@ -26,10 +26,10 @@ body{
 }
 body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
   background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
-  background-size:56px 56px;opacity:.22;
+  background-size:56px 56px;opacity:.1;
   -webkit-mask-image:radial-gradient(ellipse at 50% 30%,#000,transparent 75%);mask-image:radial-gradient(ellipse at 50% 30%,#000,transparent 75%)}
 body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:5;
-  background:repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 1px,transparent 1px 3px);opacity:.35}
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 1px,transparent 1px 3px);opacity:.12}
 main{position:relative;z-index:1;max-width:none;width:100%;box-sizing:border-box;margin:0;padding:14px 22px 40px}
 .mono,.m{font-family:var(--mono)}
 h1{margin:0;font-size:20px;font-weight:600;letter-spacing:.22em;text-transform:uppercase;text-shadow:0 0 9px rgba(63,224,245,.3)}
@@ -80,7 +80,7 @@ h1{margin:0;font-size:20px;font-weight:600;letter-spacing:.22em;text-transform:u
 .nd{width:54px;height:54px;margin:0 auto;border-radius:50%;border:1.5px solid var(--c);display:grid;place-items:center;font:600 22px var(--disp);color:var(--c);background:rgba(4,14,24,.85);position:relative;transition:box-shadow .4s,background .3s}
 .stg.on .nd{box-shadow:0 0 14px -2px var(--c),inset 0 0 10px -4px var(--c)}
 .stg.on .nd::after{content:"";position:absolute;inset:-6px;border-radius:50%;border:1px dashed var(--c);opacity:.55;animation:spin 14s linear infinite}
-.stg.idle .nd{opacity:.5}
+.stg.idle .nd{opacity:.75}
 .stg.sel .nd{background:var(--c);color:var(--bg)}
 .stg:hover .nd{border-width:2.5px}
 .sl{margin-top:7px;font-size:14px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--ink)}
@@ -112,14 +112,14 @@ h1{margin:0;font-size:20px;font-weight:600;letter-spacing:.22em;text-transform:u
 .cells i.on{background:var(--t);opacity:1;box-shadow:0 0 4px var(--t)}
 .th .rest{margin-left:auto;font:11px var(--mono);color:var(--faint)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;padding:2px 14px 14px}
-.card{--c:var(--t);position:relative;border:1px solid var(--line);background:rgba(4,14,24,.6);padding:9px 11px;transition:border-color .3s,opacity .3s;overflow:hidden}
+.card{--c:var(--t);position:relative;border:1px solid var(--line);background:rgba(4,13,22,.9);padding:9px 11px;transition:border-color .3s,opacity .3s;overflow:hidden}
 .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--t);box-shadow:0 0 6px var(--t)}
 .card:hover{border-color:var(--t)}
 .card.working{border-color:color-mix(in srgb,var(--t) 55%,transparent)}
 .card.working::after{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 30%,color-mix(in srgb,var(--t) 14%,transparent) 50%,transparent 70%);background-size:220% 100%;animation:sweep 3.2s linear infinite;pointer-events:none}
 @keyframes sweep{from{background-position:120% 0}to{background-position:-120% 0}}
-.card.waiting{--c:var(--amber);opacity:.62} .card.nowt{--c:var(--red)}
-.card.done,.card.paused{--c:var(--slate);opacity:.45}
+.card.waiting{--c:var(--amber);opacity:.85} .card.nowt{--c:var(--red)}
+.card.done,.card.paused{--c:var(--slate);opacity:.7}
 .card .top{display:flex;align-items:center;gap:9px}
 .orb{width:16px;height:16px;flex:none;position:relative;border-radius:50%;background:var(--c);box-shadow:0 0 6px var(--c);transform:scale(.55)}
 .card.working .orb::before{content:"";position:absolute;inset:-4px;border-radius:50%;border:1.5px solid var(--c);animation:ping 1.8s ease-out infinite}
@@ -232,6 +232,22 @@ footer{color:var(--faint);font:11px var(--mono);margin-top:2px}
 :focus-visible{outline:1px solid var(--cyan);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 html,body{overflow-x:hidden;max-width:100vw}
+
+/* painel de detalhes do card clicado */
+.clk{cursor:pointer}.clk:hover{outline:1px solid var(--line2);outline-offset:1px}
+#drawer{position:fixed;top:0;right:0;height:100vh;width:min(560px,96vw);background:#050f1a;border-left:1px solid var(--line2);box-shadow:-12px 0 40px rgba(0,0,0,.6);z-index:50;transform:translateX(105%);transition:transform .2s;display:flex;flex-direction:column}
+#drawer.on{transform:none}
+#drawer .dh{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+#drawer .dh h2{flex:1;margin:0;font-size:15px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#drawer .dh button{background:none;border:1px solid var(--line2);color:var(--ink);cursor:pointer;padding:3px 9px}
+#drawer .db{overflow:auto;padding:12px 16px;color:var(--ink);font-size:13px;line-height:1.45}
+#drawer h4{margin:14px 0 6px;color:var(--cyan);font-size:12px;letter-spacing:.06em;text-transform:uppercase}
+#drawer .kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px}#drawer .kv b{color:var(--muted);font-weight:500}
+#drawer pre{white-space:pre-wrap;word-break:break-word;background:rgba(255,255,255,.03);border:1px solid var(--line);padding:8px;margin:0;font-size:12px;max-height:260px;overflow:auto}
+#drawer .act{border-left:2px solid var(--line2);padding:3px 0 3px 9px;margin:4px 0}
+#drawer .act i{font-style:normal;color:var(--amber);font-size:11px;margin-right:6px}
+#drawer .act.texto i{color:var(--cyan)}#drawer .act.erro i,#drawer .act.erro{color:var(--red)}#drawer .act.fim i{color:#7dffb0}
+#drawer .ev{color:var(--muted);font-size:12px}#drawer .ev b{color:var(--ink);font-weight:500}
 </style>
 </head>
 <body>
@@ -244,6 +260,14 @@ html,body{overflow-x:hidden;max-width:100vw}
     <div class="clock"><b id="clock">--:--:--</b><span id="date"></span></div>
   </header>
   <p class="err" id="err"></p>
+
+  <section class="panel hero" aria-label="Agentes">
+    <div class="ph"><h2>Agentes</h2><i id="agcount"></i>
+      <span class="tg"><label><input type="checkbox" id="showdone"> mostrar terminados</label></span></div>
+    <div id="oruns"></div>
+    <div id="tracks"></div>
+    <div class="note">A meta conta só agentes <b>trabalhando</b>. Buildando (anel girando) não conta: o agente espera o container, não está escrevendo.</div>
+  </section>
 
   <section class="panel hero" id="orchhero" aria-label="Orquestrador" hidden>
     <div class="ph"><h2>Orquestrador</h2><span class="ob off" id="omode">-</span><i id="orchmeta"></i>
@@ -265,14 +289,6 @@ html,body{overflow-x:hidden;max-width:100vw}
     <div class="ph"><h2>Fluxo de trabalho</h2><i id="pipemeta">clique numa etapa para filtrar</i></div>
     <div class="pipe" id="pipe"></div>
     <div class="filt" id="filt"><span id="filttxt"></span><button id="filtx" type="button">limpar filtro</button></div>
-  </section>
-
-  <section class="panel hero" aria-label="Agentes">
-    <div class="ph"><h2>Agentes</h2><i id="agcount"></i>
-      <span class="tg"><label><input type="checkbox" id="showdone"> mostrar terminados</label></span></div>
-    <div id="oruns"></div>
-    <div id="tracks"></div>
-    <div class="note">A meta conta só agentes <b>trabalhando</b>. Buildando (anel girando) não conta: o agente espera o container, não está escrevendo.</div>
   </section>
 
   <div class="cols">
@@ -385,7 +401,7 @@ function renderOrchTrain(s,tr){
   const L=n=>`<a class="prn" href="${PRURL}${n}" target="_blank" rel="noopener">#${n}</a>`;
   const merged=s.merged||[],o=s.orchestrator||{};
   const C={merge:[],ci:[],ref:[],vaga:[],fix:[],stack:[],blk:[],bun:[]};
-  const row=(r,extra)=>`${L(r.pr)} ${E((r.title||'').slice(0,40))}<div class="st">${extra}</div>`;
+  const row=(r,extra)=>`<span class="clk" data-k="pr" data-id="${r.pr}">${L(r.pr)} ${E((r.title||'').slice(0,40))}<div class="st">${extra}</div></span>`;
   tr.forEach(r=>{
     const ph=r.phase||'',nx=E(r.next||''),who=r.fixer?`<b>${E(r.fixer)}</b> (${E(r.agent||'')}) trabalhando`:'';
     if(ph==='juntando'){C.bun.push(`<b>${E(r.title||'bundle')}</b><div class="st">${who||'aguarda integrator'} · ${nx}</div>`);return}
@@ -504,7 +520,11 @@ function renderAgents(s,aSt,prs,watch){
   const hidden=s.agents.filter(a=>['done','paused'].includes(a.state)).length;
   $('agcount').textContent=s.agents.filter(a=>!['done','paused'].includes(a.state)).length+' ativos de '+s.agents.length+(hidden&&!showDone?' · '+hidden+' terminados ocultos':'');
   const orchOn=!!s.orchestrator&&typeof s.orchestrator==='object';
-  $('oruns').innerHTML=orchOn?orchRuns(s.orchestrator):'';
+  $('oruns').innerHTML=coordCard(s.coordinator)+(orchOn?builderCard(s.orchestrator.builder):'')+(orchOn?orchRuns(s.orchestrator):'');
+  // With the orchestrator on, every agent is its own: the legacy tracks show
+  // only while an old coordinator subagent is still alive.
+  const liveLegacy=s.agents.some(a=>!['done','paused'].includes(a.state));
+  if(orchOn&&!liveLegacy&&!showDone){$('tracks').innerHTML='';return}
   const legacy=orchOn?'<div class="leg"><div class="lh">Coordenador (legado)</div>':'';
   $('tracks').innerHTML=legacy+(TRACKS.map(([key,name,tgt,cls])=>{
     const all=by[key];if(!all.length&&!tgt)return '';
@@ -596,7 +616,7 @@ function renderOrch(o){
   const feats=(Array.isArray(o.features)?o.features:Object.entries(o.features||{}).map(([name,v])=>({name,...v}))).filter(f=>f&&typeof f==='object');
   const fcard=f=>{const tasks=Array.isArray(f.tasks)?f.tasks:[];
     const pr=f.pr?`<a class="prn" href="${PRURL}${f.pr}" target="_blank" rel="noopener">PR #${f.pr}</a>`:'';
-    return `<div class="fc"><div class="fn" title="${E(f.name||f.id)}">${E(f.name||f.id||'?')}</div>
+    return `<div class="fc clk" data-k="feature" data-id="${E(f.id||f.name)}"><div class="fn" title="${E(f.name||f.id)}">${E(f.name||f.id||'?')}</div>
       <div class="fm">${pr}${f.track?`<span>${E(f.track)}</span>`:''}${f.adr?`<span>ADR-${E(f.adr)}</span>`:''}${f.fixes?`<span class="bad">${f.fixes} correç${f.fixes>1?'ões':'ão'}</span>`:''}${f.partial?'<span>parcial</span>':''}${tasks.length?`<span>${f.tasks_done??0}/${f.tasks_total??tasks.length}</span>`:''}</div>
       ${f.blocked_reason?`<div class="fm bad">${E(f.blocked_reason)}</div>`:''}
       ${tasks.length?`<div class="strip">${tasks.map(t=>`<i class="${tstate(t)}" title="${E(typeof t==='object'?[t.name||t.id||'',t.stage||'',t.state||''].filter(Boolean).join(' · '):t)}"></i>`).join('')}</div>`:''}</div>`};
@@ -623,7 +643,7 @@ function orchRuns(o){
   const cards=o.runs.map(r=>{const age=r.started?Math.round(now-r.started):null;
     const cls=r.suspect?'waiting':r.building?'building':r.working===false?'waiting':'working';
     const st=r.suspect?'suspeito':r.building?'buildando':r.working===false?'ocioso':'trabalhando';
-    return `<article class="card rcard ${cls}"><div class="top"><span class="orb"></span><h3 title="${E(r.id||r.name)}">${E(r.name||r.id||'?')}</h3><span class="state">${st}</span></div>
+    return `<article class="card rcard ${cls} clk" data-k="run" data-id="${E(r.id)}" title="clique para ver o que está fazendo"><div class="top"><span class="orb"></span><h3 title="${E(r.id||r.name)}">${E(r.name||r.id||'?')}</h3><span class="state">${st}</span></div>
     <div class="meta"><span class="sg">${E(r.role||'?')}</span>${r.pool?`<span class="sg">${E(r.pool)}</span>`:''}<span>${age==null?'':dur(age)}</span><span class="m">pid ${E(r.pid)}</span></div>
     <div class="tk" title="${E(r.task)}">${E(r.task||'')}</div></article>`}).join('');
   return `<div class="trk"><div class="th"><h2>Orquestrador</h2><span class="cnt">${o.runs.length} em execução</span><span class="rest">${E(o.mode||'')}</span></div><div class="grid">${cards||'<div class="empty" style="grid-column:1/-1">Nenhum agente em execução.</div>'}</div></div>`}
@@ -637,6 +657,61 @@ function pulse(){const age=(Date.now()-lastOk)/1000,stale=!lastOk||age>15;
   $('dot').classList.toggle('stale',stale);
   $('livetxt').textContent=stale?'sem sincronia':'ao vivo · '+Math.round(age)+' s'}
 clock();tick();setInterval(tick,5000);setInterval(()=>{pulse();clock()},1000);
+
+/* detalhes do card clicado: agente (o que está fazendo), feature/tarefa, PR */
+let detOpen=null,detTimer=null;
+const ago=t=>t?dur(Math.max(0,Math.round(Date.now()/1000-t)))+' atrás':'-';
+function kv(o){return '<div class="kv">'+Object.entries(o).filter(([,v])=>v!=null&&v!==''&&!(Array.isArray(v)&&!v.length)).map(([k,v])=>`<b>${E(k)}</b><span>${E(Array.isArray(v)?v.join(', '):typeof v==='object'?JSON.stringify(v):v)}</span>`).join('')+'</div>'}
+function taskHtml(t){if(!t)return '';
+  return `<h4>Tarefa ${E(t.id)}</h4>`+kv({estado:t.state,agente:t.agent,trilha:t.track,branch:t.branch,PR:t.pr,tentativas:t.attempts,correção:t.fix_kind,arquivos:t.nfiles?t.nfiles+' ('+t.files.join(', ')+(t.nfiles>t.files.length?', …':'')+')':''})
+   +(t.brief?`<h4>Resumo</h4><pre>${E(t.brief)}</pre>`:'')+(t.note?`<h4>Nota / motivo atual</h4><pre>${E(t.note)}</pre>`:'')}
+function evHtml(ev){return ev&&ev.length?'<h4>Histórico</h4>'+ev.slice().reverse().map(e=>`<div class="ev">${E(ago(e.ts))} · <b>${E(e.kind)}</b> ${E(e.detail||'')}</div>`).join(''):''}
+function detHtml(d){
+  if(d.error)return `<p class="bad">${E(d.error)}</p>`;
+  if(d.kind==='coord'){const c=d.coord||{};return kv({agora:c.doing,atualizado:ago(c.updated)})+(c.steps&&c.steps.length?'<h4>Passos (mais recente primeiro)</h4>'+c.steps.slice().reverse().map(x=>`<div class="act ${x.done?'fim':'texto'}"><i>${x.done?'feito':'em curso'}</i>${E(x.text)}</div>`).join(''):'')+(c.waits?`<h4>Espera você</h4><pre>${E(c.waits)}</pre>`:'')}
+  if(d.kind==='builder')return builderHtml(d);
+  if(d.kind==='run'){const r=d.run||{};
+    const act=(d.activity||[]).slice().reverse().map(a=>`<div class="act ${E(a.kind)}"><i>${E(a.kind)}</i>${E(a.text)}</div>`).join('')||'<div class="ev">sem atividade registrada ainda</div>';
+    return kv({papel:r.role,estado:r.state,começou:ago(r.started),'último sinal':ago(r.last_beat),fim:r.ended?ago(r.ended)+' (exit '+r.exit+')':''})
+      +'<h4>O que está fazendo (mais recente primeiro)</h4>'+act+taskHtml(d.task)+evHtml(d.events)}
+  const f=d.feature||{},tr=d.train;
+  return kv({estado:f.state,trilha:f.track,PR:f.pr,branch:f.branch,correções:f.fixes,bloqueio:f.blocked_reason})
+    +(tr?'<h4>No merge train</h4>'+kv({fase:tr.phase,próximo:tr.next,'última ação':tr.last_action,checks:(tr.passed??'?')+'/'+(tr.total??'?'),falhando:tr.failing,fixer:tr.fixer}):'')
+    +(d.runs&&d.runs.length?'<h4>Agentes</h4>'+d.runs.slice().reverse().map(r=>`<div class="act clk" data-k="run" data-id="${E(r.id)}"><i>${E(r.role)}</i>${E(r.name||r.id)} · ${r.ended?'terminou '+ago(r.ended):'rodando desde '+ago(r.started)}</div>`).join(''):'')
+    +(d.tasks||[]).map(taskHtml).join('')+evHtml(d.events)}
+async function loadDetail(){if(!detOpen)return;
+  try{const r=await fetch(`/api/detail?kind=${encodeURIComponent(detOpen.k)}&id=${encodeURIComponent(detOpen.id)}`,{cache:'no-store'});const d=await r.json();
+    $('dtitle').textContent=d.title||detOpen.id;$('dbody').innerHTML=detHtml(d)}catch(e){$('dbody').innerHTML=`<p class="bad">${E(String(e))}</p>`}}
+function openDetail(k,id){detOpen={k,id};$('dtitle').textContent=id;$('dbody').innerHTML='<div class="ev">carregando…</div>';$('drawer').classList.add('on');
+  clearInterval(detTimer);loadDetail();detTimer=setInterval(loadDetail,4000)}
+function closeDetail(){detOpen=null;clearInterval(detTimer);$('drawer').classList.remove('on')}
+document.addEventListener('click',e=>{if(e.target.closest('a,button,input,label,.kh,h3[onclick]'))return;const el=e.target.closest('[data-k]');if(el)openDetail(el.dataset.k,el.dataset.id)});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail()});
+
+/* O builder: a máquina única que faz o build pesado em lote (status.json .builder) */
+function bPrs(h){return (h.prs||[]).map((p,i)=>p?'#'+p:String((h.heads||[])[i]||'').slice(0,7)).join(' ')}
+function builderCard(b){if(!b)return '';
+  const r=b.running,bq=b.queue||{},q=((bq.batch||[]).length+(bq.pre||[]).length+(bq.bisect||[]).length),l=b.last;
+  const st=r?(r.step||'iniciando'):'livre';
+  return `<div class="trk hx"><div class="th"><h2>Builder</h2><span class="cnt">${r?1:0} / 1 trabalhando</span><span class="rest">uma máquina, um build pesado por vez, em lote</span></div><div class="grid">
+  <article class="card ${r?'building':'waiting'} clk" data-k="builder" data-id="builder" title="clique para ver o lote, a fila e os logs"><div class="top"><span class="orb"></span><h3>Builder (CI local)</h3><span class="state">${r?'buildando':'livre'}</span></div>
+  <div class="meta"><span class="sg">${E(r?(r.full?'main completo':'lote ')+bPrs(r):'sem lote')}</span>${r?`<span>etapa ${E(st)} · ${dur(r.elapsed_s)}</span>`:''}<span>fila: ${q}</span></div>
+  <div class="tk">${l?E('último: '+l.state+' '+bPrs(l)+' '+(l.summary||[''])[0]):''}</div></article></div></div>`}
+function builderHtml(d){const b=d.builder||{},r=b.running,l=b.last,q=b.queue||{};
+  const ids=h=>(h.heads||[]).map((x,i)=>(h.prs&&h.prs[i]?'#'+h.prs[i]+' ':'')+x.slice(0,10)).join('\n');
+  return (r?'<h4>Lote em execução</h4>'+kv({etapa:r.step,'tempo':dur(r.elapsed_s),prioridade:r.priority,logs:r.dir})+`<pre>${E(ids(r))}</pre>`:'<p>Livre: nenhum build pesado rodando.</p>')
+   +(d.log?`<h4>Fim do log da etapa</h4><pre>${E(d.log)}</pre>`:'')
+   +'<h4>Fila atrás dele</h4>'+kv({lote:(q.batch||[]).map(x=>x.slice(0,10)),'pré-PR':(q.pre||[]).map(x=>x.slice(0,10)),bisecção:(q.bisect||[]).map(g=>g.map(x=>x.slice(0,7)).join('+'))})
+   +(l?'<h4>Último resultado</h4>'+kv({estado:l.state,'terminou':ago(l.ended),resumo:(l.summary||[''])[0],logs:l.dir})+`<pre>${E(ids(l))}</pre>`:'')
+   +(d.lock&&d.lock.length?'<h4>Trava da máquina (tools/build-slot.sh --list)</h4><pre>'+E(d.lock.join('\n'))+'</pre>':'')}
+/* o coordenador (Claude no terminal) na trilha Harness: o que está fazendo */
+function coordCard(c){if(!c)return '';
+  const age=c.updated?Math.round(Date.now()/1000-c.updated):null,live=age!=null&&age<900;
+  return `<div class="trk hx"><div class="th"><h2>Harness</h2><span class="cnt">${live?1:0} trabalhando</span><span class="rest">o coordenador e as correções no próprio orquestrador, CI e dashboard</span></div><div class="grid">
+  <article class="card ${live?'working':'waiting'} clk" data-k="coord" data-id="coord" title="clique para ver os passos"><div class="top"><span class="orb"></span><h3>Coordenador (Claude)</h3><span class="state">${live?'trabalhando':'parado'}</span></div>
+  <div class="meta"><span class="sg">coordenador</span><span>${age==null?'':dur(age)+' atrás'}</span></div>
+  <div class="tk" title="${E(c.doing)}">${E(c.doing||'')}</div></article></div></div>`}
 </script>
+<aside id="drawer" aria-label="Detalhes"><div class="dh"><h2 id="dtitle">-</h2><button type="button" onclick="closeDetail()">fechar (Esc)</button></div><div class="db" id="dbody"></div></aside>
 </body>
 </html>
