@@ -175,9 +175,11 @@ class Orchestrator:
         self._poll_runs(now)
         if self.cfg.local_ci and not self.dry_run:
             self.localci.poll()
-            self.localci.check_main()
         self._open_pending_prs(now)
         self._watch_prs(now)
+        # After the train asked for a slot: a waiting PR goes before main.
+        if self.cfg.local_ci and not self.dry_run:
+            self.localci.check_main()
         self.flow.tick(now)
         paused = self.paused()
         runs = self._enriched_runs(now)
