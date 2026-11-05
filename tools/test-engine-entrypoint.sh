@@ -96,13 +96,42 @@ chmod 0700 "$XDG_RUNTIME_DIR"
 eval "$(dbus-launch --sh-syntax)"
 
 cleanup() {
+  local rc=$?
+  [[ -n "${WATCHDOG_PID:-}" ]] && kill "$WATCHDOG_PID" 2>/dev/null
+  # The watchdog's kill can look like an ordinary failure further down.
+  if [[ -e /tmp/watchdog-fired ]]; then
+    echo "FAIL: stopped by the watchdog (see the logs above)." >&2
+    rc=1
+  fi
   for pid in "${PLAY_PID:-}" "${ENGINE_PID:-}" "${ONBOARD_PID:-}" "${HDMI_PID:-}" "${DUP_A_PID:-}" "${DUP_B_PID:-}" "${WIREPLUMBER_PID:-}" "${PIPEWIRE_PID:-}"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
     fi
   done
+  exit "$rc"
 }
 trap cleanup EXIT
+
+# Several steps below `wait` for the engine with no bound of their own. A hung
+# engine, PipeWire or WirePlumber held the CI runner for over an hour with no
+# output (2026-11-04, three times in a row). After the watchdog's time the logs
+# are printed and every process is killed, so a hang fails with its cause.
+# A full run takes a few minutes; SONORA_RECORD_WATCHDOG_S overrides.
+WATCHDOG_S="${SONORA_RECORD_WATCHDOG_S:-900}"
+(
+  sleep "$WATCHDOG_S"
+  echo "FAIL: the record test still runs after ${WATCHDOG_S} s: hung. Logs:" >&2
+  for f in /tmp/*.log /tmp/*.out /tmp/*.err; do
+    [[ -s "$f" ]] || continue
+    echo "== $f (last 40 lines)" >&2
+    tail -n 40 "$f" >&2
+  done
+  echo "== processes" >&2
+  ps -eo pid,etimes,stat,args >&2 || true
+  touch /tmp/watchdog-fired
+  kill -KILL -1 2>/dev/null || true
+) &
+WATCHDOG_PID=$!
 
 echo "--- starting PipeWire (no hardware, dummy driver) ---"
 pipewire >/tmp/pipewire.log 2>&1 &
