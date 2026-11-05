@@ -191,6 +191,8 @@ int test_ui() {
     history->setY(120);
     CHECK(session.undoHistoryOpen() && transport.open());
     click(view, named(list, QStringLiteral("windowConfigStore1")));
+    // The list rebinds on the next event-loop pass, which a loaded runner can delay.
+    QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary1") == QStringLiteral("Edit, 2 floating"); }, 2000);
     CHECK(text_of(list, "windowConfigSummary1") == QStringLiteral("Edit, 2 floating"));
 
     // Arrange another: Mix in front, only Latency open. Store it as 2.
@@ -201,6 +203,8 @@ int test_ui() {
     latency->setX(50);
     latency->setY(60);
     click(view, named(list, QStringLiteral("windowConfigStore2")));
+    // The list rebinds on the next event-loop pass, which a loaded runner can delay.
+    QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 2000);
     CHECK(text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"));
 
     // Recall 1: the view, the open set and the place all come back.
