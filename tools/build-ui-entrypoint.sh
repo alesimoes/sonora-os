@@ -48,8 +48,23 @@ for t in ui_meter_model ui_keys ui_keymaps ui_edit ui_clipboard ui_inserts ui_sh
   grep -q " $t\$" <<<"$listed" || { echo "error: $t is not registered; is Qt too old?" >&2; exit 1; }
 done
 
-cmake --build "$BUILD" -j"$JOBS"
-QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure
+# SONORA_UI_SCOPE=ui (CI on a PR): build the UI and its tests only and run
+# the ui_* tests; the engine job already built and ran everything else.
+if [[ "${SONORA_UI_SCOPE:-all}" == ui ]]; then
+  # The targets are named test_ui_<name> (Makefiles generator: "... target").
+  mapfile -t ui_targets < <(cmake --build "$BUILD" --target help |
+    grep -oE 'test_ui_[A-Za-z0-9_]+' | sort -u)
+  if (( ${#ui_targets[@]} == 0 )); then
+    echo "no test_ui_* targets listed; building everything" >&2
+    cmake --build "$BUILD" -j"$JOBS"
+  else
+    cmake --build "$BUILD" -j"$JOBS" --target sonora-ui "${ui_targets[@]}"
+  fi
+  QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure -R '^ui_'
+else
+  cmake --build "$BUILD" -j"$JOBS"
+  QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure
+fi
 
 [[ "$MODE" == test ]] && exit 0
 

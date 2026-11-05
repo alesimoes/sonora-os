@@ -1,7 +1,7 @@
 ---
 name: rt-safety-auditor
 description: Deep audit of the real-time audio path for allocation, locking and blocking. Use before closing a phase, after any change to the callback call graph, and when xruns appear with no obvious cause. Narrower and more paranoid than code-reviewer.
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 80
 ---
