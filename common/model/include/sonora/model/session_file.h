@@ -59,7 +59,10 @@ namespace sonora::model {
 // 18: a lane may be "mute", "send_level" or "send_pan", the last two with
 //    "send"; every bus and "monitor_bus" carry "automation" (ADR-0027 §9).
 //    A version 17 file opens with none.
-constexpr std::int64_t kFormatVersion = 18;
+// 23: a playlist may carry "freeze", the record of Track Freeze (ADR-0051):
+//    the playlist it was made from and the inserts it made inactive. A
+//    version 22 file opens with none. (19 to 22 are other branches'.)
+constexpr std::int64_t kFormatVersion = 23;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

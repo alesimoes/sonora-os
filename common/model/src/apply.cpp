@@ -627,6 +627,19 @@ public:
                 auto p = std::make_shared<Playlist>();
                 p->id = op.playlist;
                 p->name = op.name;
+                if (op.freeze) {
+                    const bool from_here =
+                        std::any_of(t.playlists.begin(), t.playlists.end(),
+                                    [&](const auto& q) { return q->id == op.freeze->from; });
+                    if (!from_here) return fail("a frozen playlist is made from a playlist of its track");
+                    for (const Id i : op.freeze->inserts) {
+                        const bool on_track =
+                            std::any_of(t.inserts.begin(), t.inserts.end(),
+                                        [&](const Insert& in) { return in.id == i; });
+                        if (!on_track) return fail("a frozen playlist names an insert that is not on its track");
+                    }
+                    p->freeze = op.freeze;
+                }
                 t.playlists.push_back(std::move(p));
             } else {
                 auto p = std::make_shared<MidiPlaylist>();

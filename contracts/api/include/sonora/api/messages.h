@@ -164,7 +164,19 @@ namespace sonora::api {
 // 43 (ADR-0031 §6; follows 42): the commands session.consolidate and
 //   session.consolidate_cancel, and EventKind::Consolidate, which a
 //   version-42 decoder refuses as an unknown kind.
-constexpr uint32_t kProtocolVersion = 43;
+// 49 (ui.mixer.bounce; follows 48, the highest any open PR reserved when
+//   this was cut): the commands mix.bounce and mix.bounce_cancel, the
+//   capability "mix.bounce", and EventKind::Bounce, which a version-42
+//   decoder refuses as an unknown kind. 43 to 48 are other PRs' and are not
+//   in this tree.
+// 56 (plugins.graph.freeze, plugins.offline; ADR-0051): the commands
+//   track.freeze, track.commit, track.process_selection, track.unfreeze and
+//   track.render_cancel, the capability "track.render", EventKind::Render
+//   (a version-49 decoder refuses it as an unknown kind), and the optional
+//   "freeze" key of an AddPlaylist operation and of a playlist in the undo
+//   window, which a version-49 decoder refuses as an unknown key. 50 to 55
+//   are other PRs' and are not in this tree.
+constexpr uint32_t kProtocolVersion = 56;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -452,6 +464,20 @@ enum class EventKind : uint32_t {
     // stays on screen until the operator dismisses it and a client that
     // attaches later is sent it.
     Consolidate = 8,
+    // A Bounce Mix render (api/bounce.h, protocol 49): `frame` the fraction
+    // rendered in thousandths, `insert` the frames in the file once Done,
+    // `flags` a BounceState, `text` the file's relative path once Done or why
+    // it Failed or was Cancelled. One stands from the first progress, held
+    // after the last until the next bounce, so a failure stays on screen
+    // until dismissed and a client that attaches later is sent it.
+    Bounce = 9,
+    // A render in place (api/render.h, protocol 56): `frame` the fraction in
+    // thousandths, `insert` the track's model id, `flags` a RenderState,
+    // `text` what was done once Done or why it Failed or was Cancelled. One
+    // stands from the first progress, held until the next render, so a
+    // failure stays on screen until dismissed and a client that attaches
+    // later is sent it.
+    Render = 10,
 };
 
 // EngineEvent::flags of a Consolidate.
