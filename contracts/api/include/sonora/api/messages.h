@@ -166,6 +166,12 @@ namespace sonora::api {
 //   capability "mix.bounce", and EventKind::Bounce, which a version-42
 //   decoder refuses as an unknown kind. 43 to 48 are other PRs' and are not
 //   in this tree.
+// 56 (plugins.graph.freeze, plugins.offline; ADR-0051): the commands
+//   track.freeze, track.commit, track.process_selection, track.unfreeze and
+//   track.render_cancel, the capability "track.render", EventKind::Render
+//   (10; a version-49 decoder refuses it as an unknown kind), and the
+//   optional "freeze" key of an AddPlaylist operation and of a playlist in
+//   the undo window, which a version-49 decoder refuses as an unknown key.
 // 61 (interchange.audio.export; 50 to 60 are other PRs'): mix.bounce takes
 //   the words file=, rate= and dither= and format=int16. A version-49 engine
 //   would refuse them one by one; the bump makes it refuse the connection
@@ -481,6 +487,13 @@ enum class EventKind : uint32_t {
     // stays on screen until the operator dismisses it and a client that
     // attaches later is sent it.
     Consolidate = 9,
+    // A render in place (api/render.h, protocol 56): `frame` the fraction in
+    // thousandths, `insert` the track's model id, `flags` a RenderState,
+    // `text` what was done once Done or why it Failed or was Cancelled. One
+    // stands from the first progress, held until the next render, so a
+    // failure stays on screen until dismissed and a client that attaches
+    // later is sent it.
+    Render = 10,
 };
 
 // EngineEvent::flags of a Consolidate.

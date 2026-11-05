@@ -355,6 +355,35 @@ Rectangle {
                     font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                 }
             }
+            // Render in place (ADR-0051): progress with a Cancel while it
+            // runs, then how it ended, kept until dismissed or the next one.
+            Row {
+                objectName: "renderStatus"
+                visible: root.shell.renderRunning || root.shell.renderNotice.length > 0
+                width: footerColumn.width
+                spacing: Theme.space2
+                SButton {
+                    id: renderAction
+                    objectName: root.shell.renderRunning ? "cancelRender" : "dismissRender"
+                    text: root.shell.renderRunning ? "Cancel" : "Dismiss"
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    onClicked: root.shell.renderRunning ? root.shell.cancelRender()
+                                                        : root.shell.dismissRender()
+                }
+                Text {
+                    objectName: "renderText"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - parent.spacing - renderAction.width
+                    wrapMode: Text.Wrap
+                    text: root.shell.renderRunning
+                          ? (root.session.renderWhat.length > 0 ? root.session.renderWhat : "Rendering")
+                            + "… " + Math.round(root.shell.renderProgress * 100) + "%"
+                          : root.shell.renderNotice
+                    color: root.shell.renderRunning ? Theme.text : Theme.caution
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                }
+            }
             // An output change refused (ADR-0024), kept until dismissed or
             // until a routing change goes through.
             Row {
@@ -1353,6 +1382,8 @@ Rectangle {
                 model: {
                     const sel = root.session.selectedTrack
                     const n = root.session.trackCount
+                    const frozen = root.session.selectedTrackFrozen
+                    const render = root.shell.renderAvailable && !root.shell.renderRunning
                     return [
                         { name: "trackNew", label: "New…", command: "track.new", on: true },
                         { name: "trackDuplicate", label: "Duplicate", command: "track.duplicate", on: sel >= 0 },
@@ -1362,7 +1393,12 @@ Rectangle {
                         { name: "trackColourItem", label: "Colour…", command: "track.colour", on: sel >= 0 },
                         { name: "", label: "", command: "", on: false },
                         { name: "trackMoveUp", label: "Move Up", command: "track.move_up", on: sel > 0 },
-                        { name: "trackMoveDown", label: "Move Down", command: "track.move_down", on: sel >= 0 && sel < n - 1 }
+                        { name: "trackMoveDown", label: "Move Down", command: "track.move_down", on: sel >= 0 && sel < n - 1 },
+                        { name: "", label: "", command: "", on: false },
+                        { name: "trackFreeze", label: "Freeze", command: "track.freeze", render: "freeze", on: render && sel >= 0 && !frozen },
+                        { name: "trackCommit", label: "Commit", command: "track.commit", render: "commit", on: render && sel >= 0 && !frozen },
+                        { name: "trackUnfreeze", label: "Unfreeze", command: "track.unfreeze", render: "unfreeze", on: render && frozen },
+                        { name: "trackProcess", label: "Process Selection", command: "track.process_selection", render: "process", on: render && sel >= 0 && !frozen }
                     ]
                 }
                 Item {
@@ -1385,7 +1421,9 @@ Rectangle {
                         text: modelData.label
                         onClicked: {
                             trackMenu.visible = false
-                            root.shell.invoke(modelData.command, -1)
+                            // A render names the track and its range from the selection.
+                            if (modelData.render) root.session.renderInPlace(modelData.render)
+                            else root.shell.invoke(modelData.command, -1)
                         }
                     }
                 }

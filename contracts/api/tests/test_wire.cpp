@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "sonora/api/bounce.h"
+#include "sonora/api/render.h"
 #include "sonora/api/state_block.h"
 
 using namespace sonora;
@@ -449,6 +450,9 @@ void version_check() {
     // 2026-11-03; follows 41).
     // 49: mix.bounce, mix.bounce_cancel and EventKind::Bounce (ui.mixer.bounce;
     // follows 48, 43 to 48 being other PRs').
+    // 56: track.freeze, track.commit, track.process_selection, track.unfreeze,
+    // track.render_cancel, EventKind::Render and the playlist "freeze" key
+    // (plugins.graph.freeze, plugins.offline; ADR-0051).
     // 61: mix.bounce's file=, rate=, dither= words (interchange.audio.export).
     // 62: Load's template prefix (daw.model.session_mgmt, ADR-0030 amendment).
     // 63: session.consolidate, session.consolidate_cancel and
@@ -542,6 +546,32 @@ void consolidate_event() {
                             "track=1 start=0 end=5 junk"}) {
         error.clear();
         CHECK(!parse_consolidate_argument(bad, b, error) && !error.empty());
+    }
+}
+
+// Protocol 56: a Render event carries the fraction in `frame`, the track in
+// `insert`, the state in `flags`; a state this version does not define is
+// refused. The commands are in the catalog and are the engine's.
+void render_event() {
+    CHECK(static_cast<uint32_t>(EventKind::Render) == 10);
+    EngineEvent e;
+    e.kind = EventKind::Render;
+    e.insert = 7;
+    e.frame = 250;
+    e.flags = static_cast<uint32_t>(RenderState::Failed);
+    e.text = "Vox has no active plug-in insert";
+    std::string bytes, error;
+    wire::encode(e, bytes);
+    EngineEvent back;
+    CHECK(wire::decode(bytes, back, error));
+    CHECK(back.kind == EventKind::Render && back.insert == 7 && back.frame == 250 &&
+          back.flags == e.flags && back.text == e.text);
+    e.flags = static_cast<uint32_t>(RenderState::Cancelled) + 1;
+    wire::encode(e, bytes);
+    CHECK(!wire::decode(bytes, back, error) && mentions(error, "render"));
+    for (const char* id : {"track.freeze", "track.commit", "track.process_selection",
+                           "track.unfreeze", "track.render_cancel"}) {
+        CHECK(find_command(id) != nullptr && is_engine_command(id));
     }
 }
 
@@ -886,6 +916,7 @@ int main() {
     version_check();
     bounce_event();
     consolidate_event();
+    render_event();
     domains();
     frames_carry_large_messages();
     frames_refuse_what_is_out_of_place();

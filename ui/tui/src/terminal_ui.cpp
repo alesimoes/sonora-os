@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "sonora/api/bounce.h"
+#include "sonora/api/render.h"
 #include "sonora/tty_mode.h"
 
 namespace sonora::tui {
@@ -213,6 +214,11 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
                 // ended is worth a line.
                 if (e.flags != static_cast<uint32_t>(api::BounceState::Running)) {
                     notices_.push_back("bounce: " + e.text);
+                }
+                break;
+            case api::EventKind::Render:
+                if (e.flags != static_cast<uint32_t>(api::RenderState::Running)) {
+                    notices_.push_back("render: " + e.text);
                 }
                 break;
         }

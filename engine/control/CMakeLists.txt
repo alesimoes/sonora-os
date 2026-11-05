@@ -24,6 +24,7 @@ add_library(sonora_control STATIC
   src/consolidate.cpp
   src/bounce.cpp
   src/bounce_job.cpp
+  src/render_in_place.cpp
   src/consolidate_job.cpp
   src/mix_planner.cpp
   src/space_measure.cpp
@@ -95,6 +96,12 @@ if(UNIX)
   add_executable(test_bounce tests/test_bounce.cpp)
   target_link_libraries(test_bounce PRIVATE sonora_control Threads::Threads)
   add_test(NAME bounce COMMAND test_bounce)
+
+  # Track Freeze, Commit and Process Selection (ADR-0051): the print through
+  # a chain with a declared latency, to the sample.
+  add_executable(test_render_in_place tests/test_render_in_place.cpp)
+  target_link_libraries(test_render_in_place PRIVATE sonora_control Threads::Threads)
+  add_test(NAME render_in_place COMMAND test_render_in_place)
 endif()
 
 # A closed take as one compound; a bad file costs one track (ADR-0009

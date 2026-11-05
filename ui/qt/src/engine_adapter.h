@@ -170,6 +170,7 @@ enum class EngineEventKind {
     SessionFolder,
     Latency,
     Bounce,
+    Render,
 };
 
 // api::EngineEvent: a discrete fact, in the order the engine said it.

@@ -79,6 +79,19 @@ session's rate or another, with TPDF or shaped dither when the depth is cut
 (`mix.bounce`, protocol 61, ADR-0054). The mix is rendered once to a float
 file and converted by the worker when the loudness gain is known.
 
+## Render in place rolls the live chain
+
+Track > Freeze, Commit and Process Selection (`track.freeze`, `track.commit`,
+`track.process_selection`, protocol 56, ADR-0051) print one track through its
+own plug-in inserts. The hosts are other people's code in processes of their
+own and run only at the audio callback, so the print is made in real time: the
+audio thread pushes the chain node's output into a `TrackTap` ring (no
+allocation, only while rolling) and a worker drains it to a Float32 file,
+dropping the chain's latency so the file lands where the live track played. A
+block the chain did not play, a host miss, a full ring or an edit during the
+render fails it and removes the file. The result is one undo step; a freeze
+keeps a record of what it replaced and Unfreeze puts it back.
+
 ## Failing at start-up rather than during a take
 
 `main` refuses to start when the server sample rate differs from the session
