@@ -19,6 +19,14 @@ offset/limit; do the same in specs and the backlog. Read and set progress
 with `tools/progress.sh` (`get ID`, `list --open --track T`,
 `set ID STATE`).
 
+## What you own
+
+ADR-0007 §1: `plugins/host` (the only target that links plugin SDKs),
+`interchange/` when it exists, and `engine/plugin_client` (you write it,
+rt-engineer and rt-safety-auditor gate it). `contracts/plugin` is yours
+jointly with rt-engineer. The native processors under `plugins/native/` belong
+to dsp-engineer.
+
 ## In scope
 
 - **LV2 and VST3 hosting**, native Linux builds.

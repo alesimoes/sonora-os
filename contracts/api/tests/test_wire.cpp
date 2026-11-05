@@ -3,6 +3,7 @@
 // The wire codec: every message survives a round trip field for field, and
 // anything that is not a whole, known message is refused with a reason --
 // never read past its end, never half-applied. Plus the command domains.
+#include "sonora/api/consolidate_argument.h"
 #include "sonora/api/wire.h"
 
 #include <cstdio>
@@ -438,8 +439,9 @@ void version_check() {
     // (ADR-0027 §9; follows 40).
     // 42: meters.reset, and state layout 8's loudness (ADR-0013 amendment of
     // 2026-11-03; follows 41).
-    // 49: mix.bounce, mix.bounce_cancel and EventKind::Bounce (ui.mixer.bounce;
-    // follows 48, 43 to 48 being other PRs').
+    // 43: session.consolidate, session.consolidate_cancel and
+    // EventKind::Consolidate (ADR-0031 §6; follows 42).
+    // 49: mix.bounce, mix.bounce_cancel and EventKind::Bounce (ui.mixer.bounce).
     // 56: track.freeze, track.commit, track.process_selection, track.unfreeze,
     // track.render_cancel, EventKind::Render and the playlist "freeze" key
     // (plugins.graph.freeze, plugins.offline; ADR-0051).
@@ -457,14 +459,57 @@ void version_check() {
     CHECK(mentions(v17, "the engine speaks control protocol version 56 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
-    // A version-42 decoder knows no Bounce event: the first kind past
-    // Latency, which a decoder refuses by range.
-    CHECK(static_cast<uint32_t>(EventKind::Bounce) ==
+    // A version-42 decoder knows no Consolidate event: it is the first kind
+    // past Latency, which a decoder refuses by range.
+    CHECK(static_cast<uint32_t>(EventKind::Consolidate) ==
           static_cast<uint32_t>(EventKind::Latency) + 1);
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
                    "speaks version 56"));
+}
+
+// Protocol 43: a Consolidate event carries the track in `insert`, the
+// progress in `frame` (thousandths), the state in `flags`; a state this
+// version does not define is refused.
+void consolidate_event() {
+    EngineEvent e;
+    e.kind = EventKind::Consolidate;
+    e.insert = 7;
+    e.frame = 250;
+    e.flags = kConsolidateFailed;
+    e.text = "stop recording before consolidating";
+    std::string bytes, error;
+    wire::encode(e, bytes);
+    EngineEvent back;
+    CHECK(wire::decode(bytes, back, error));
+    CHECK(back.kind == EventKind::Consolidate && back.insert == 7 && back.frame == 250 &&
+          back.flags == kConsolidateFailed && back.text == e.text);
+    e.flags = kConsolidateCancelled + 1;
+    wire::encode(e, bytes);
+    CHECK(!wire::decode(bytes, back, error) && mentions(error, "consolidate"));
+
+    // The argument round-trips, a name with spaces and "=" included, and the
+    // forms that cannot be understood are refused with a reason.
+    ConsolidateArgument a;
+    a.track = 12;
+    a.playlist = 15;
+    a.start = 48000;
+    a.end = 96000;
+    a.name = "Verse = comp 2";
+    ConsolidateArgument b;
+    CHECK(parse_consolidate_argument(format_consolidate_argument(a), b, error));
+    CHECK(b.track == 12 && b.playlist == 15 && b.start == 48000 && b.end == 96000 &&
+          b.name == a.name);
+    CHECK(parse_consolidate_argument("end=9 start=3 track=1", b, error) && b.playlist == 0 &&
+          b.name.empty());
+    for (const char* bad : {"", "track=1 start=0", "track=1 start=0 end=0", "track=1 start=-1 end=5",
+                            "track=0 start=0 end=5", "track=x start=0 end=5",
+                            "track=1 track=2 start=0 end=5", "track=1 start=0 end=5 colour=3",
+                            "track=1 start=0 end=5 junk"}) {
+        error.clear();
+        CHECK(!parse_consolidate_argument(bad, b, error) && !error.empty());
+    }
 }
 
 // Protocol 49: a Bounce event carries the fraction in `frame`, the frames in
@@ -853,6 +898,7 @@ int main() {
     plugin_messages();
     refusals();
     version_check();
+    consolidate_event();
     bounce_event();
     render_event();
     domains();

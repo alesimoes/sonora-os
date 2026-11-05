@@ -353,7 +353,7 @@ int test_take_starts_with_its_own_samples() {
 int test_take_at_the_size_limit_fails_with_a_reason() {
     const sonora::SessionConfig cfg = config("test_takes_limit", 2);
     const std::string audio = cfg.dir + "/Audio Files/";
-    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 28) + (8 + 602) + (8 + 16) + 8;
     wipe(cfg.dir);
     {
         sonora::Session s(cfg);
@@ -361,6 +361,7 @@ int test_take_at_the_size_limit_fails_with_a_reason() {
         s.tracks()[0]->set_rec_armed(true);
         s.tracks()[1]->set_rec_armed(true);
         // Only track 2 runs out of room: 10 mono 24-bit frames.
+        s.tracks()[1]->writer().set_rf64_allowed(false);
         s.tracks()[1]->writer().set_riff_size_limit(kEmptyRiffSize + 10 * 3);
 
         sonora::CommandRegistry reg;
@@ -387,6 +388,7 @@ int test_take_at_the_size_limit_fails_with_a_reason() {
         CHECK(s.tracks()[1]->writer().frames_written() == 10);
 
         // The next take starts clean, and stop() reports nothing for it.
+        s.tracks()[1]->writer().set_rf64_allowed(false);
         s.tracks()[1]->writer().set_riff_size_limit(
             sonora::WavWriter::kRiffSizeLimit);
         CHECK(s.start_recording(2));
@@ -452,13 +454,14 @@ int test_take_refused_without_inputs() {
 // while the take still runs, which is what the screen polls.
 int test_take_failure_is_seen_while_recording() {
     const sonora::SessionConfig cfg = config("test_takes_live_failure", 2);
-    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+    constexpr uint32_t kEmptyRiffSize = 4 + (8 + 28) + (8 + 602) + (8 + 16) + 8;
     wipe(cfg.dir);
     {
         sonora::Session s(cfg);
         CHECK(s.create_dirs());
         s.tracks()[0]->set_rec_armed(true);
         s.tracks()[1]->set_rec_armed(true);
+        s.tracks()[1]->writer().set_rf64_allowed(false);
         s.tracks()[1]->writer().set_riff_size_limit(kEmptyRiffSize + 10 * 3);
         s.disk().start();
         CHECK(s.start_recording(1));
@@ -510,7 +513,7 @@ int test_unclosed_take_is_recovered_at_open() {
     // What the dead engine left: the audio, both sizes zero.
     std::string b = slurp(path);
     std::memset(&b[4], 0, 4);
-    std::memset(&b[12 + 8 + 602 + 8 + 16 + 4], 0, 4);
+    std::memset(&b[12 + (8 + 28) + 8 + 602 + 8 + 16 + 4], 0, 4);
     {
         std::FILE* f = std::fopen(path.c_str(), "wb");
         CHECK(f != nullptr);
@@ -555,7 +558,7 @@ int test_empty_unclosed_takes_are_repaired_silently() {
         // What the dead engine left: both sizes still the zeros open() wrote.
         std::string b = slurp(path);
         std::memset(&b[4], 0, 4);
-        std::memset(&b[12 + 8 + 602 + 8 + 16 + 4], 0, 4);
+        std::memset(&b[12 + (8 + 28) + 8 + 602 + 8 + 16 + 4], 0, 4);
         std::FILE* f = std::fopen(path.c_str(), "wb");
         CHECK(f != nullptr);
         CHECK(std::fwrite(b.data(), 1, b.size(), f) == b.size());
@@ -568,7 +571,7 @@ int test_empty_unclosed_takes_are_repaired_silently() {
     const std::string b = slurp(audio + "Audio 1_01.wav");
     uint32_t riff = 0;
     std::memcpy(&riff, &b[4], 4);
-    CHECK(riff == 4 + (8 + 602) + (8 + 16) + 8);
+    CHECK(riff == 4 + (8 + 28) + (8 + 602) + (8 + 16) + 8);
     CHECK(sonora::recover_unclosed_takes(dir, 48000).empty());
     wipe(dir);
     return 0;

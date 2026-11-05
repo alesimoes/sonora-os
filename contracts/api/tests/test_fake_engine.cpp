@@ -561,6 +561,65 @@ void no_take_during_a_save_as_copy() {
     CHECK(run("transport.stop", 0).result == DispatchResult::Ok);
 }
 
+// The control contract's Consolidate: Running, then Done; the last event
+// held for a client that attaches later; a cancel while it runs.
+void consolidate_events() {
+    FakeEngine::Config cfg;
+    cfg.tracks = 2;
+    FakeEngine e(cfg);
+    std::string error;
+    CHECK(e.connect(error));
+    Inbox in;
+    const auto run = [&](const char* id, const char* arg) {
+        CommandRequest r;
+        r.command = id;
+        r.argument = arg;
+        const uint64_t seq = e.send(r);
+        in.clear();
+        e.poll(in);
+        for (const CommandReply& c : in.replies) {
+            if (c.seq == seq) return c;
+        }
+        return CommandReply{seq, DispatchResult::UnknownCommand, "no reply"};
+    };
+    const auto states = [&]() {
+        std::vector<uint32_t> out;
+        for (const EngineEvent& ev : in.events) {
+            if (ev.kind == EventKind::Consolidate) out.push_back(ev.flags);
+        }
+        return out;
+    };
+    const char* range = "track=1 start=0 end=1000";
+    CHECK(run("session.consolidate_cancel", "").result == DispatchResult::Failed);
+    CHECK(run("session.consolidate", range).result == DispatchResult::Ok);
+    CHECK((states() == std::vector<uint32_t>{kConsolidateRunning}));
+    in.clear();
+    e.poll(in);
+    CHECK((states() == std::vector<uint32_t>{kConsolidateDone}));
+    for (const EngineEvent& ev : in.events) CHECK(ev.frame == 1000);
+
+    // A client attaching now is told how it ended.
+    CHECK(e.connect(error));
+    in.clear();
+    e.poll(in);
+    CHECK((states() == std::vector<uint32_t>{kConsolidateDone}));
+    CHECK(run("session.consolidate_cancel", "").result == DispatchResult::Failed);
+
+    // Cancelled mid-render: no Done follows, and a late client is told.
+    CHECK(run("session.consolidate", range).result == DispatchResult::Ok);
+    CHECK(run("session.consolidate_cancel", "").result == DispatchResult::Ok);
+    CHECK((states() == std::vector<uint32_t>{kConsolidateCancelled}));
+    in.clear();
+    e.poll(in);
+    CHECK(states().empty());
+    CHECK(run("session.consolidate_cancel", "").result == DispatchResult::Failed);
+    CHECK(e.connect(error));
+    in.clear();
+    e.poll(in);
+    CHECK((states() == std::vector<uint32_t>{kConsolidateCancelled}));
+}
+
+
 // The control contract's Bounce: Running, then Done; the last event held for
 // a client that attaches later; a cancel while it runs; a refused argument.
 void bounce_events() {
@@ -682,6 +741,7 @@ int main() {
     midi_tracks();
     bus_limit();
     no_take_during_a_save_as_copy();
+    consolidate_events();
     bounce_events();
     render_events();
     if (failures) return EXIT_FAILURE;

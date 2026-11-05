@@ -16,6 +16,8 @@ from . import protocol as P
 from .mailbox import Mailbox
 
 _WILD = "*?["
+ONESHOT = frozenset({"ping", "ack", "send", "claim", "release", "check",
+                     "peek", "inbox", "whoami"})
 
 
 def _norm(p):
@@ -98,6 +100,7 @@ class Broker:
                          self.box.load_state("channels.json", {}).items()}
         for n in self.box.names():
             self.seq[n] = self.box.max_seq(n)
+        self._load_timers()
         self._server = await asyncio.start_server(
             self._handle, self.host, self.port, limit=P.MAX_FRAME)
         self.port = self._server.sockets[0].getsockname()[1]
@@ -124,9 +127,28 @@ class Broker:
             await asyncio.sleep(self.tick_s)
             self.tick()
 
+    # Timers use the injectable monotonic clock, which means nothing after a
+    # restart, so they are stored as wall-clock deadlines.
+    def _save_timers(self):
+        now, wall = self.clock(), time.time()
+        self.box.save_state("timers.json", {
+            "ack_wait": [dict(w, due=wall + w["due"] - now)
+                         for w in self.ack_wait],
+            "asks": {k: dict(a, due=wall + a["due"] - now)
+                     for k, a in self.open_asks.items()}})
+
+    def _load_timers(self):
+        data = self.box.load_state("timers.json", {})
+        now, wall = self.clock(), time.time()
+        self.ack_wait = [dict(w, due=now + w["due"] - wall)
+                         for w in data.get("ack_wait", [])]
+        self.open_asks = {k: dict(a, due=now + a["due"] - wall)
+                          for k, a in data.get("asks", {}).items()}
+
     def tick(self):
         """Redeliver unacked needs_ack messages; answer stale asks."""
         now = self.clock()
+        before = (len(self.ack_wait), len(self.open_asks))
         for w in list(self.ack_wait):
             if self.box.get_acked(w["to"]) >= w["seq"]:
                 self.ack_wait.remove(w)
@@ -146,6 +168,8 @@ class Broker:
                 del self.open_asks[aid]
                 self.send(P.DAEMON, a["asker"], "answer", {
                     "text": a["default"], "default": True}, reply_to=aid)
+        if self.ack_wait or self.open_asks or before != (0, 0):
+            self._save_timers()
 
     def _event(self, kind, **data):
         if self.on_event:
@@ -284,6 +308,8 @@ class Broker:
                 self._event(P.EV_MESSAGE, msg=msg)
             elif r in self.conns:
                 self.conns[r].send({"op": "deliver", "msg": msg})
+        if needs_ack or type_ in ("ask", "answer"):
+            self._save_timers()
         return mid, recipients
 
     # ---- connection handling --------------------------------------------
@@ -328,47 +354,58 @@ class Broker:
         if t == "register":
             return self._register(conn, f, rid)
         if conn.name is None:
-            # Hooks run beside the agent's MCP connection, which owns the
-            # registered name, so they use token-authenticated one-shot ops.
-            if t in ("check", "peek") and self._auth(f.get("token", "")) and \
+            # Hooks and the CLI run beside the agent's MCP connection, which
+            # owns the registered name, so they never register: they use
+            # token-authenticated one-shot requests on behalf of the name.
+            if t in ONESHOT and self._auth(f.get("token", "")) and \
                     P.valid_name(str(f.get("name", ""))):
-                if t == "check":
-                    conn.send(self._check_reply(rid, f["name"], f["path"]))
-                else:
-                    conn.send(self._peek_reply(rid, f["name"]))
+                if not self._known(f["name"]):
+                    raise P.ProtocolError(P.E_UNKNOWN_NAME, f["name"])
+                conn.send(self._op(f["name"], t, f, rid))
                 return True
             raise P.ProtocolError(P.E_NOT_REGISTERED, "register first")
         name = conn.name
         self.last_seen[name] = time.monotonic()
+        conn.send(self._op(name, t, f, rid))
+        return True
+
+    def _op(self, name, t, f, rid):
         if t == "ping":
-            conn.send(P.reply_ok(rid))
-        elif t == "ack":
+            return P.reply_ok(rid)
+        if t == "ack":
             self.box.set_acked(name, f["seq"])
-            conn.send(P.reply_ok(rid))
-        elif t == "send":
+            return P.reply_ok(rid)
+        if t == "send":
             mid, rcpt = self.send(
                 name, f["to"], f["type"], f.get("body"), f.get("feature"),
                 f.get("task"), f.get("reply_to"), f.get("needs_ack", False))
-            conn.send(P.reply_ok(rid, id=mid, recipients=rcpt))
-        elif t == "claim":
+            return P.reply_ok(rid, id=mid, recipients=rcpt)
+        if t == "claim":
             paths = [_norm(p) for p in f["paths"]]
             denied = self.claim_for(name, paths)
             if denied:
                 d = denied[0]
-                conn.send(P.reply_error(
+                return P.reply_error(
                     rid, P.E_CLAIM_DENIED,
                     "%s claimed by %s" % (d["path"], d["owner"]),
-                    denied=denied))
-            else:
-                conn.send(P.reply_ok(rid, claimed=paths))
-        elif t == "release":
-            conn.send(P.reply_ok(rid, released=self.release_for(
-                name, f["paths"])))
-        elif t == "check":
-            conn.send(self._check_reply(rid, name, f["path"]))
-        elif t == "peek":
-            conn.send(self._peek_reply(rid, name))
-        return True
+                    denied=denied)
+            return P.reply_ok(rid, claimed=paths)
+        if t == "release":
+            return P.reply_ok(rid, released=self.release_for(name, f["paths"]))
+        if t == "check":
+            return self._check_reply(rid, name, f["path"])
+        if t == "peek":
+            return self._peek_reply(rid, name)
+        if t == "inbox":
+            msgs = self.box.unacked(name, self.box.get_acked(name))[
+                :int(f.get("limit", 20))]
+            if f.get("ack") and msgs:
+                self.box.set_acked(name, msgs[-1]["seq"])
+            return P.reply_ok(rid, messages=msgs)
+        if t == "whoami":
+            return P.reply_ok(rid, name=name, channels=sorted(
+                k for k, v in self.channels.items() if name in v))
+        return P.reply_error(rid, P.E_BAD_FRAME, "unsupported " + t)
 
     def _peek_reply(self, rid, name):
         """Unacked messages not yet shown to a hook; does not ack."""

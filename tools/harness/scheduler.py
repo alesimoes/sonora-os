@@ -22,6 +22,7 @@ KIND_OF_STATE = {"ci_fix": "fixer", "qa": "tester", "integrating": "integrator",
                  "bugfix": "engineer"}
 # Claims are held while a task is anywhere between first launch and the PR.
 CLAIMING_STATES = ("building", "bugfix", "qa", "integrating")
+DONE_STATES = ("integrating", "pr_open", "ci_fix", "merged")
 
 
 def default_local_builds(cpus=None):
@@ -64,6 +65,9 @@ class Config:
     max_attempts: int = 3
     backoff_s: tuple = (60.0, 300.0, 900.0)
     pause_default_s: float = 1800.0
+    ci_poll_s: float = 120.0    # between `gh pr checks` calls per PR
+    janitor_every: int = 3      # merges between janitor runs
+    done_grace_s: float = 30.0  # wait for result.json after a `done` message
     permission_mode: str = "acceptEdits"
     seeds: dict = field(default_factory=dict)  # kind -> last used number
     live_pools: object = None  # None: every pool is live when not dry-run
@@ -143,8 +147,13 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             tr = by_id.get(r["task_id"], {}).get("track")
             working_eng[tr] = working_eng.get(tr, 0) + 1
 
-    open_prs = sum(1 for t in tasks if t["state"] in ("pr_open", "ci_fix")
-                   and t["kind"] == "work")
+    work = [t for t in tasks if t["kind"] == "work"]
+    by_feature = {}
+    for t in work:
+        by_feature.setdefault(t["feature_id"] or t["id"], []).append(t)
+    # One PR per feature, however many tasks it has.
+    open_prs = len({t["feature_id"] or t["id"] for t in work
+                    if t["state"] in ("pr_open", "ci_fix")})
     ready_unpr = sum(1 for t in tasks if t["state"] == "integrating")
     claims = [t["files"] for t in tasks if t["state"] in CLAIMING_STATES
               and t["kind"] == "work" and t["files"]]
@@ -170,6 +179,15 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             else KIND_OF_STATE.get(t["state"]) if t["kind"] == "work" else None
         if kind is None or not ready(t):
             continue
+        if kind in ("fixer", "integrator"):
+            sibs = by_feature[t["feature_id"] or t["id"]]
+            if t["id"] != sibs[0]["id"]:
+                continue  # the feature's first task stands for it
+            if kind == "integrator" and (t.get("integrated") or any(
+                    s["state"] not in DONE_STATES for s in sibs)):
+                continue  # waiting for sibling tasks, or PR being opened
+            if kind == "fixer" and t.get("fix_kind") == "conflict":
+                kind = "integrator"
         if kind == "engineer":
             if not store_deps_ok(t, by_id):
                 continue
@@ -181,6 +199,8 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
                 eligible_by_track.get(t["track"], 0) + 1
         cls = {"fixer": P_FIX, "tester": P_TESTER, "integrator": P_INTEGRATOR,
                "engineer": P_ENGINEER, "planner": P_PLANNER}[kind]
+        if t["state"] == "ci_fix":
+            cls = P_FIX  # a conflict run is as urgent as a CI fix
         cands.append((cls, t["priority"], t["created"], t["id"], kind))
     cands.sort()
 
@@ -196,9 +216,9 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             return False
         if kind == "fixer" and count["fixer"] >= cfg.max_fixers:
             return False
-        if kind == "integrator" and (count["integrator"]
-                                     >= cfg.max_integrators
-                                     or open_prs >= cfg.max_open_prs):
+        if kind == "integrator" and (
+                count["integrator"] >= cfg.max_integrators
+                or (t["state"] != "ci_fix" and open_prs >= cfg.max_open_prs)):
             return False
         if kind == "engineer":
             if ready_unpr >= cfg.max_ready_unpr:

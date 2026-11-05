@@ -464,6 +464,10 @@ private:
     std::string render_event_;
     void announce_render(uint32_t state, uint32_t permille, const std::string& text);
     void check_render();
+    bool consolidate_running_ = false;
+    uint32_t consolidate_age_ = 0;
+    uint64_t consolidate_track_ = 0;
+    std::string consolidate_event_;
     bool measuring_ = false;
     bool cancel_asked_ = false;
     uint32_t measure_output_ = 0;
@@ -471,6 +475,8 @@ private:
     uint64_t measure_start_ns_ = 0;
     uint32_t pings_said_ = 0;
     void announce_latency();
+    void announce_consolidate(uint32_t state, uint32_t permille);
+    void check_consolidate();
     void check_latency();
     bool latency_command(const CommandRequest& r, std::string& why);
 };

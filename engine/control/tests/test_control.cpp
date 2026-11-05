@@ -27,6 +27,7 @@
 
 #include "sonora/active_folder.h"
 #include "sonora/api/conformance.h"
+#include "sonora/api/consolidate_argument.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/api/wire.h"
 #include "sonora/closed_take.h"
@@ -162,6 +163,7 @@ public:
     // Track 1's next take stops writing after a few frames: the WAV size
     // limit, lowered, stands in for a full disk. Called while stopped.
     void set_takes_fail(bool fail) {
+        session_.tracks()[0]->writer().set_rf64_allowed(false);
         session_.tracks()[0]->writer().set_riff_size_limit(fail ? kFailingRiffSize
                                                                 : WavWriter::kRiffSizeLimit);
     }
@@ -3532,6 +3534,172 @@ void a_folder_load_enters_only_a_session_folder() {
     CHECK(fs::is_directory(bare / "Audio Files"));
 }
 
+// Protocol 43 (ADR-0031 §6): session.consolidate renders on a worker and
+// the control thread commits it, so the replicas see one "Consolidate"
+// compound and the Consolidate events run Running ... Done; a take open
+// refuses it, a bad range or track refuses it in the reply, and a failure
+// is a standing event, not a status line.
+void consolidate_command_renders_off_the_control_thread() {
+    const fs::path dir = fresh_dir("consolidate");
+    fs::create_directories(dir / "Audio Files");
+    model::Document doc(RealEngine::start_document(dir));
+    const model::TrackEdit& t = *doc.current().edit->tracks[0];
+    const model::Id track = t.id, playlist = t.active_playlist;
+    const uint16_t channels = t.channels;
+    const uint32_t rate = doc.current().settings.sample_rate;
+    constexpr uint64_t kFrames = 96000;
+    {
+        WavWriter w;
+        CHECK(w.open((dir / "Audio Files" / "a.wav").string(), rate, channels,
+                     WavWriter::Format::Float32, 0));
+        const std::vector<float> block(kFrames * channels, 0.5f);
+        CHECK(w.write(block.data(), kFrames) && w.close());
+    }
+    std::string err;
+    model::ReplicationUpdate u;
+    model::AddSource add;
+    add.source.id = doc.current().next_id;
+    add.source.path = "Audio Files/a.wav";
+    add.source.channels = channels;
+    add.source.length = static_cast<int64_t>(kFrames);
+    add.source.format = model::AudioFormat::Float32;
+    CHECK(doc.apply(add, u, err));
+    model::PlaceRegion place;
+    place.playlist = playlist;
+    place.region.id = doc.current().next_id;
+    place.region.name = "r";
+    place.region.position = 0;
+    place.region.length = static_cast<int64_t>(kFrames);
+    for (uint16_t c = 0; c < channels; ++c) place.region.channels.push_back({add.source.id, c});
+    place.split_right_id = place.region.id + 1;
+    CHECK(doc.apply(place, u, err));
+
+    EngineControlServer::Options opts;
+    opts.initial_document = std::make_shared<model::Snapshot>(doc.current());
+    RealEngine real(dir, opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto replied = [&](uint64_t seq, DispatchResult want) {
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return r.result == want;
+            }
+            return false;
+        });
+    };
+    const auto last_state = [&]() -> int {
+        int state = -1;
+        for (const auto& e : in.events) {
+            if (e.kind == api::EventKind::Consolidate) state = static_cast<int>(e.flags);
+        }
+        return state;
+    };
+    const auto consolidate = [&](int64_t start, int64_t end) {
+        api::ConsolidateArgument a;
+        a.track = track;
+        a.start = start;
+        a.end = end;
+        api::CommandRequest r;
+        r.command = "session.consolidate";
+        r.argument = api::format_consolidate_argument(a);
+        return real.send(r);
+    };
+    const auto cancel = [&]() {
+        api::CommandRequest r;
+        r.command = "session.consolidate_cancel";
+        return real.send(r);
+    };
+
+    // Refused in the reply: nothing running to cancel, a bad argument, a range
+    // that holds no region, an unknown track.
+    CHECK(replied(cancel(), DispatchResult::Failed));
+    api::CommandRequest junk;
+    junk.command = "session.consolidate";
+    junk.argument = "track=1";
+    CHECK(replied(real.send(junk), DispatchResult::Failed));
+    CHECK(replied(consolidate(static_cast<int64_t>(kFrames) + 10, static_cast<int64_t>(kFrames) + 20),
+                  DispatchResult::Failed));
+    CHECK(last_state() == -1);
+
+    // A take open refuses it.
+    api::CommandRequest arm;
+    arm.command = "track.toggle_arm";
+    arm.target = 0;
+    CHECK(replied(real.send(arm), DispatchResult::Ok));
+    api::CommandRequest rec;
+    rec.command = "transport.record";
+    CHECK(replied(real.send(rec), DispatchResult::Ok));
+    CHECK(until(real, in, [&]() { return real.session().recording_take() != 0; }));
+    const uint64_t refused = consolidate(0, 48000);
+    CHECK(replied(refused, DispatchResult::Failed));
+    for (const auto& r : in.replies) {
+        if (r.seq == refused) CHECK(r.message.find("stop recording") != std::string::npos);
+    }
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(replied(real.send(stop), DispatchResult::Ok));
+    CHECK(until(real, in, [&]() { return !real.session().takes_closing(); }));
+    in.clear();
+
+    // The render: Running first, Done last, the file written, and one
+    // Consolidate compound reaches the replica.
+    CHECK(replied(consolidate(0, 48000), DispatchResult::Ok));
+    CHECK(until(real, in, [&]() { return last_state() == static_cast<int>(api::kConsolidateDone); }));
+    bool running_first = false;
+    for (const auto& e : in.events) {
+        if (e.kind == api::EventKind::Consolidate) {
+            running_first = e.flags == api::kConsolidateRunning && e.insert == track;
+            break;
+        }
+    }
+    CHECK(running_first);
+    for (const auto& e : in.events) {
+        if (e.kind == api::EventKind::Consolidate && e.flags == api::kConsolidateDone) {
+            CHECK(e.text.rfind("Audio Files/", 0) == 0 && fs::exists(dir / e.text));
+        }
+    }
+    CHECK(std::count_if(in.model.begin(), in.model.end(), [](const api::ModelUpdate& m) {
+              return m.kind == api::ModelUpdateKind::Op;
+          }) == 1);
+
+    // The outcome stands: a client that attaches later is sent it.
+    EngineControlServer& server = real.engine().server();
+    struct Got {
+        std::mutex mutex;
+        std::vector<std::string> frames;
+    };
+    auto got = std::make_shared<Got>();
+    const auto rider = server.attach(
+        [got](EngineControlServer::Frame frame) {
+            std::lock_guard<std::mutex> lock(got->mutex);
+            got->frames.push_back(*frame);
+        },
+        {});
+    const auto late_state = [&]() {
+        std::vector<std::string> frames;
+        {
+            std::lock_guard<std::mutex> lock(got->mutex);
+            frames = got->frames;
+        }
+        api::wire::Reassembler reassembler;
+        api::Inbox seen;
+        std::string message, e;
+        for (const std::string& f : frames) {
+            if (reassembler.add(f, message, e) == api::wire::Reassembler::Result::Complete) {
+                api::wire::decode_into(message, seen, e);
+            }
+        }
+        int state = -1;
+        for (const auto& ev : seen.events) {
+            if (ev.kind == api::EventKind::Consolidate) state = static_cast<int>(ev.flags);
+        }
+        return state;
+    };
+    CHECK(until(real, in, [&]() { return late_state() == static_cast<int>(api::kConsolidateDone); }));
+    server.detach(rider);
+}
+
 // mix.bounce on the real engine (ui.mixer.bounce): a refusal answers the
 // command and leaves no event; a bounce says Running then Done with the
 // file's path, the file is there, a client attaching later is told how it
@@ -3656,6 +3824,7 @@ int main() {
     snapshot_parts_are_paced_and_held();
     what_waits_behind_a_snapshot_is_bounded();
     resyncs_share_one_snapshot();
+    consolidate_command_renders_off_the_control_thread();
     a_sequence_over_a_part_opens_in_parts();
     a_save_during_a_take_follows_a_checkpoint();
     recovery_offer_at_start_and_after_a_take();
