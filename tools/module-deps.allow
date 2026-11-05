@@ -75,6 +75,7 @@ ui/client -> common/platform
 ui/client -> contracts/api
 ui/keymap -> common/json
 ui/keymap -> contracts/api
+ui/qt -> common/audiofile
 ui/qt -> common/base
 ui/qt -> common/model
 ui/qt -> common/platform
