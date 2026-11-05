@@ -500,6 +500,12 @@ any instant a track plays at most one region, or two inside a crossfade. The
 real-time path needs a bound like that, and an AAF `Sequence` has the same
 shape.
 
+A playlist that Track Freeze made (version 23, ADR-0051) carries one more
+key, `"freeze": {"from": 11, "inserts": [31, 32]}`: the playlist it was made
+from and the inserts it made inactive, in slot order. Every other playlist
+has no such key. A version 22 file has none; a file that declares 22 and
+carries it is refused.
+
 ### Crossfades
 
 ```json

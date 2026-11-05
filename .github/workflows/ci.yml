@@ -125,6 +125,8 @@ jobs:
                 tools/dashboard*|tools/*.ps1|tools/*.lua|planning/orchestrator/*) ;;
                 tools/build-*|tools/test-engine-docker.sh|tools/test-bwf-interop.sh) eval "$all" ;;
                 tools/test-quantum-pin.sh|tools/rtsan-*|tools/failed-take-quit.py|tools/crash-recovery-kill.py) eval "$all" ;;
+                # What runs inside the heavy jobs' containers.
+                tools/*-entrypoint.sh|tools/verify-recording.py|tools/test-bwf-interop-record.sh) eval "$all" ;;
                 tools/Dockerfile*|tools/*.cmake|tools/*.supp) eval "$all" ;;
                 tools/*) ;;
                 *) eval "$all" ;;

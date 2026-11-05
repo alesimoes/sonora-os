@@ -567,7 +567,7 @@ int test_plugin_lanes_cross_the_wire_and_the_file() {
     CHECK(plugin_lane(late.current(), 0, lim.insert, "threshold")->points.size() == 2);
 
     CHECK(serialize(doc.current(), WriteInfo{"test", 1}, bytes, error));
-    CHECK(mentions(bytes, "\"sonora_session\": 18"));
+    CHECK(mentions(bytes, ("\"sonora_session\": " + std::to_string(kFormatVersion)).c_str()));
     CHECK(mentions(bytes, "\"param\": \"plugin\""));
     Loaded l;
     LoadError le;
@@ -849,7 +849,7 @@ int test_strip_lanes_cross_the_wire_and_the_file() {
           window->step_edit(d)->buses[0].automation[1].get());
 
     CHECK(serialize(doc.current(), WriteInfo{"test", 1}, bytes, error));
-    CHECK(mentions(bytes, "\"sonora_session\": 18"));
+    CHECK(mentions(bytes, ("\"sonora_session\": " + std::to_string(kFormatVersion)).c_str()));
     CHECK(mentions(bytes, "\"param\": \"send_level\",\n          \"send\": "));
     Loaded l;
     LoadError le;

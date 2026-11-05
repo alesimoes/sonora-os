@@ -180,6 +180,9 @@ struct AddPlaylist {
     Id track = 0;
     Id playlist = 0;
     std::string name;
+    // Track Freeze's playlist (ADR-0051): the playlist it was made from and
+    // the inserts it made inactive. Unset for every other playlist.
+    std::optional<PlaylistFreeze> freeze;
 };
 
 struct SetActivePlaylist {
