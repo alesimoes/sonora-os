@@ -130,11 +130,12 @@ apt_case live-list "" "deb http://deb.debian.org/debian trixie main"
 hook_snapcheck && bad "hook: a one-line deb.debian.org source passes the snapshot check"
 
 # The test containers take the base from the same snapshot, on a pinned image.
-KIOSK="$ROOT/tools/test-labwc-kiosk.sh"
+# The kiosk test's image is built on main from tools/Dockerfile.labwc.
+KIOSK="$ROOT/tools/Dockerfile.labwc"
 digest_of() { sed -nE 's/^FROM (debian:[^ ]*@sha256:[0-9a-f]{64})$/\1/p' "$1" | head -n 1; }
 rt_from="$(digest_of "$RUNTIME")"
 [ -n "$rt_from" ] || bad "Dockerfile.runtime: base image not pinned by digest"
-[ "$(digest_of "$KIOSK")" = "$rt_from" ] || bad "test-labwc-kiosk.sh: base is not Dockerfile.runtime's '$rt_from'"
+[ "$(digest_of "$KIOSK")" = "$rt_from" ] || bad "Dockerfile.labwc: base is not Dockerfile.runtime's '$rt_from'"
 for f in "$RUNTIME" "$KIOSK"; do
   grep -q 'URIs: http://snapshot.debian.org/archive/debian/' "$f" ||
     bad "${f#"$ROOT"/}: trixie is read from the live mirror, not the snapshot"
