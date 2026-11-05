@@ -731,7 +731,13 @@ class Orchestrator:
     def _watch_prs(self, now):
         for f in self.store.features():
             ts = self._feature_tasks(f["id"])
-            if not f["pr"] or not ts or ts[0]["state"] != "pr_open":
+            if not f["pr"] or not ts:
+                continue
+            # A blocked train PR is still watched: someone may merge or close
+            # it by hand, and the board must not keep calling it blocked.
+            if ts[0]["state"] != "pr_open" and not (
+                    ts[0]["state"] == "blocked"
+                    and self.train.is_adopted(f["id"])):
                 continue
             if now - self.ci_polled.get(f["id"], 0) < self.cfg.ci_poll_s:
                 continue

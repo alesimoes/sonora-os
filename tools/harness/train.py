@@ -263,6 +263,9 @@ class Train:
         if (self.info(f["id"]) or {}).get("bundled_into"):
             return True   # the bundle carries it
         try:
+            if ts[0]["state"] == "blocked":
+                self._step_blocked(f, ts)
+                return True
             self._step(f, ts, now)
         except RateLimited as e:
             self.pause_until = now + RATE_PAUSE_S
@@ -274,6 +277,26 @@ class Train:
             self.o.store.event(ts[0]["id"], "train_error", str(e))
             self._save(f["id"], next=f"erro do gh: {str(e)[:120]}")
         return True
+
+    def _step_blocked(self, f, ts):
+        """A blocked PR waits for the owner, but a merge or close done by
+        hand ends the wait."""
+        o, fid = self.o, f["id"]
+        d = o.forge.pr_detail(f["pr"])
+        if d["state"] == "closed":
+            if (self.info(fid) or {}).get("phase") != "fechado":
+                self._save(fid, phase="fechado", next="fechado fora do trem")
+            return
+        if d["state"] != "merged":
+            return
+        for t in ts:
+            if t["state"] == "blocked":
+                o.store.advance(t["id"], "pr_open",
+                                note=f"PR {d['state']} outside the train")
+        o.store.set_feature(fid, state="pr_open")
+        self._save(fid, phase="mergeado", next=None,
+                   action="mergeado fora do trem")
+        o._merged(f, o._feature_tasks(fid))
 
     def _step(self, f, ts, now):
         o, fid, n = self.o, f["id"], f["pr"]

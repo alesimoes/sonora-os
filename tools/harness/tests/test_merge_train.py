@@ -328,6 +328,19 @@ class Train(support.DaemonCase):
         extra = o._extra(t, "fixer")
         self.assertIn(f"Merge-train PR #{n}", extra)
 
+    def test_blocked_pr_merged_by_hand_leaves_the_board(self):
+        o = self.make()
+        self.forge.add_pr(10, "a", checks={"build": "cancel"})
+        o.train.adopt()
+        for _ in range(3):
+            self.forge.checks(10, build="cancel")
+            self.poll(o)
+        self.assertEqual(state(o, "pr-10"), "blocked")
+        self.forge.prs[10]["state"] = "merged"     # the owner merged it
+        self.poll(o)
+        self.assertEqual(state(o, "pr-10"), "merged")
+        self.assertEqual(self.info(o, 10)["phase"], "mergeado")
+
     def test_bundle_refuses_a_pr_not_on_the_train(self):
         o = self.make()
         self.forge.add_pr(10, "a")
