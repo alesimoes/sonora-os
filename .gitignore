@@ -128,3 +128,6 @@ planning/orchestrator/STOP*
 planning/orchestrator/waits-on-owner.md
 planning/orchestrator/shadow.log
 planning/orchestrator/plans/
+/build-portable/
+/.local-ci/
+/.harness-lci/
