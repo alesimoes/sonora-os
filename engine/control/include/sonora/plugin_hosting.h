@@ -156,6 +156,17 @@ public:
     // range. False with `why` when it cannot be applied.
     bool set_param(model::Id insert, const std::string& key, float value, std::string& why);
 
+    // Render in place (ADR-0051). Whether the chain of `track` is running as
+    // the document describes it: a host Ready and bound, none starting or
+    // restarting, no faults standing for its inserts. Only such a chain is
+    // rendered.
+    bool chain_ready(model::Id track) const;
+    // The blocks the chain of `track` has not played from its host: misses,
+    // non-finite blocks and silent blocks, over the host's life. Only ever
+    // rises while the host runs; 0 when there is none. A render compares two
+    // readings and refuses its file when they differ.
+    uint64_t chain_misses(model::Id track) const;
+
     // Standing faults by insert id (item 5): the text names the plugin,
     // track and slot. An insert not here has none standing.
     const std::map<model::Id, std::string>& faults() const { return faults_; }

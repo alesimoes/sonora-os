@@ -123,8 +123,34 @@ endif()
 # (MSVC) job builds, so a new test target there needs no edit to ci.yml.
 sonora_define_portable_target()
 
+# ADR-0007 §7: every test carries its module's ctest label, so a squad runs
+# `ctest -L core` or `-L ui` for a quick loop. Appended, so labels a module
+# sets itself ("slow", "plugins") stay. Needs CMake 3.28 (the TESTS directory
+# property); older CMake builds the same tests without the module labels.
+# The gate is still the unlabelled, full ctest.
+function(sonora_label_module_tests dir label)
+  if(CMAKE_VERSION VERSION_LESS 3.28)
+    return()
+  endif()
+  set(_dirs "${CMAKE_CURRENT_SOURCE_DIR}/${dir}")
+  while(_dirs)
+    list(POP_FRONT _dirs _d)
+    get_property(_tests DIRECTORY "${_d}" PROPERTY TESTS)
+    foreach(_t IN LISTS _tests)
+      set_property(TEST "${_t}" DIRECTORY "${_d}" APPEND PROPERTY LABELS "${label}")
+    endforeach()
+    get_property(_subs DIRECTORY "${_d}" PROPERTY SUBDIRECTORIES)
+    list(APPEND _dirs ${_subs})
+  endwhile()
+endfunction()
+
 # Everything below is POSIX or Qt: the neutral build stops here.
 if(NOT SONORA_PLATFORM STREQUAL "linux")
+  sonora_label_module_tests(common/base base)
+  sonora_label_module_tests(common/json json)
+  sonora_label_module_tests(common/platform platform)
+  sonora_label_module_tests(common/dsp dsp)
+  sonora_label_module_tests(plugins/native native)
   return()
 endif()
 add_subdirectory(contracts/api)
@@ -160,3 +186,31 @@ add_subdirectory(ui/client)
 # Optional: skipped, with one status line, where Qt 6 is not installed (the
 # engine's build container and CI). tools/build-ui.sh builds it.
 add_subdirectory(ui/qt)
+
+# Module labels (see sonora_label_module_tests above). The neutral modules
+# are labelled here too; the early return above covers the neutral build.
+sonora_label_module_tests(common/base base)
+sonora_label_module_tests(common/json json)
+sonora_label_module_tests(common/platform platform)
+sonora_label_module_tests(common/dsp dsp)
+sonora_label_module_tests(plugins/native native)
+sonora_label_module_tests(common/audiofile audiofile)
+sonora_label_module_tests(common/midi midi)
+sonora_label_module_tests(common/model model)
+sonora_label_module_tests(common/session_files session_files)
+sonora_label_module_tests(contracts/api contracts)
+sonora_label_module_tests(contracts/backend contracts)
+sonora_label_module_tests(contracts/surfaces contracts)
+sonora_label_module_tests(contracts/plugin contracts)
+sonora_label_module_tests(plugins/host pluginhost)
+sonora_label_module_tests(engine/core core)
+sonora_label_module_tests(engine/plugin_client plugin_client)
+sonora_label_module_tests(engine/control control)
+sonora_label_module_tests(engine/app app)
+sonora_label_module_tests(drivers/support drivers)
+sonora_label_module_tests(drivers/jack drivers)
+sonora_label_module_tests(drivers/fake drivers)
+sonora_label_module_tests(ui/keymap ui)
+sonora_label_module_tests(ui/tui ui)
+sonora_label_module_tests(ui/client ui)
+sonora_label_module_tests(ui/qt ui)

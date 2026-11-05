@@ -61,6 +61,32 @@ lead to different fixes.
 a monitoring decision and must not be baked into the file — an engineer who
 rides the monitor level during a take has not asked to alter the recording.
 
+## Bounce Mix never runs on the audio thread
+
+File > Bounce Mix writes the mix to one stereo BWF in `Bounced Files/`
+(`mix.bounce`, protocol 49; `contracts/api/include/sonora/api/bounce.h`).
+Offline, a worker thread plays a private `Session` and renders as fast as the
+disk reader serves it; it hosts no plug-in inserts, so a session with an
+active insert is refused and the operator is told to bounce in real time. In
+real time the live audio thread pushes the master into a `MasterTap` ring
+(only while rolling, no allocation) and a worker drains it to disk. A full
+ring, a block the disk reader missed, or a non-finite sample under normalise
+fails the bounce and removes the file: a file with a hole is never kept. How
+it ended is a held `Bounce` event, shown as a notice until dismissed.
+
+## Render in place rolls the live chain
+
+Track > Freeze, Commit and Process Selection (`track.freeze`, `track.commit`,
+`track.process_selection`, protocol 56, ADR-0051) print one track through its
+own plug-in inserts. The hosts are other people's code in processes of their
+own and run only at the audio callback, so the print is made in real time: the
+audio thread pushes the chain node's output into a `TrackTap` ring (no
+allocation, only while rolling) and a worker drains it to a Float32 file,
+dropping the chain's latency so the file lands where the live track played. A
+block the chain did not play, a host miss, a full ring or an edit during the
+render fails it and removes the file. The result is one undo step; a freeze
+keeps a record of what it replaced and Unfreeze puts it back.
+
 ## Failing at start-up rather than during a take
 
 `main` refuses to start when the server sample rate differs from the session

@@ -1,0 +1,339 @@
+"""Everything the daemon asks of git, gh and the repo scripts (ADR-0047 4a, 5).
+
+One interface, so the orchestrator never shells out for these itself and the
+tests swap in a fake. GhForge is the real thing; it raises ForgeError when a
+read fails, because a number seeded from a half-read repo could collide.
+"""
+import json
+import os
+import re
+import subprocess
+import tempfile
+
+
+class ForgeError(Exception):
+    pass
+
+
+class RateLimited(ForgeError):
+    """GitHub refused for rate (primary, secondary or abuse limit): every gh
+    call waits, not only the one that failed."""
+
+
+RATE_PATTERNS = ("rate limit", "secondary rate", "abuse detection",
+                 "HTTP 429", "was submitted too quickly")
+
+
+class Forge:
+    """Interface. Reads first, then the writes the daemon performs."""
+
+    def open_prs(self):
+        """[{number, branch, files: [path]}] for every open PR."""
+        raise NotImplementedError
+
+    def pr_diff(self, pr):
+        raise NotImplementedError
+
+    def main_files(self, prefix):
+        """Paths under `prefix` on origin/main."""
+        raise NotImplementedError
+
+    def main_text(self, path):
+        """Contents of `path` on origin/main."""
+        raise NotImplementedError
+
+    def pr_status(self, pr):
+        """{state: open|merged|closed, mergeable: yes|no|unknown,
+        checks: [{name, state: pass|fail|pending}]}"""
+        raise NotImplementedError
+
+    def push(self, worktree, branch):
+        raise NotImplementedError
+
+    def create_pr(self, branch, base, title, body):
+        """Open the PR and return its number."""
+        raise NotImplementedError
+
+    def enqueue(self, pr):
+        raise NotImplementedError
+
+    def pre_pr(self, worktree):
+        """(ok, output). A repo without the script passes with a note."""
+        raise NotImplementedError
+
+    # -- merge train (adopted PRs) ------------------------------------
+    def list_prs(self):
+        """[{number, title, branch, base, files}] for every open PR."""
+        raise NotImplementedError
+
+    def pr_detail(self, pr):
+        """pr_status plus base, head_sha, and check states pass|fail|cancel|
+        pending (cancel kept apart: a cancelled run is rerun, not fixed)."""
+        raise NotImplementedError
+
+    def update_branch(self, pr):
+        """Merge main into the PR branch on GitHub: ok|uptodate|conflict."""
+        raise NotImplementedError
+
+    def rerun_failed(self, pr, head_sha):
+        """Rerun the failed and cancelled jobs of the head's latest CI run.
+        False when there is no run to rerun."""
+        raise NotImplementedError
+
+    def merge(self, pr, head_sha):
+        """Squash-merge, refused by GitHub if the head moved."""
+        raise NotImplementedError
+
+    def retarget(self, pr, base):
+        raise NotImplementedError
+
+    def push_head(self, worktree, branch):
+        """Push the worktree's HEAD to `branch` (adopted PRs are checked out
+        on a local train/ branch, so another worktree may hold the name)."""
+        raise NotImplementedError
+
+    def close_pr(self, pr, comment):
+        raise NotImplementedError
+
+    def failure_excerpt(self, head_sha, per_job=8):
+        return ""
+
+    def contains(self, worktree, branch):
+        """True when origin/<branch>'s head is in the worktree's HEAD (a
+        bundle took that PR)."""
+        raise NotImplementedError
+
+
+def run(argv, cwd=None, timeout=120):
+    try:
+        return subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
+                              timeout=timeout, encoding="utf-8",
+                              errors="replace")
+    except (OSError, subprocess.SubprocessError) as e:
+        raise ForgeError(f"{argv[0]}: {e}")
+
+
+class GhForge(Forge):
+    def __init__(self, root, runner=run, base_ref="origin/main"):
+        self.root, self.run, self.base_ref = root, runner, base_ref
+
+    def _ok(self, argv, cwd=None, timeout=120):
+        r = self.run(argv, cwd or self.root, timeout)
+        if r.returncode:
+            self._raise(argv, r.stderr)
+        return r.stdout
+
+    @staticmethod
+    def _raise(argv, stderr):
+        msg = f"{' '.join(argv[:3])}: {stderr.strip()[:300]}"
+        if any(p.lower() in stderr.lower() for p in RATE_PATTERNS):
+            raise RateLimited(msg)
+        raise ForgeError(msg)
+
+    def open_prs(self):
+        out = self._ok(["gh", "pr", "list", "--state", "open", "--limit",
+                        "100", "--json", "number,headRefName,files"],
+                       timeout=60)
+        try:
+            rows = json.loads(out or "[]")
+        except ValueError as e:
+            raise ForgeError(f"gh pr list: {e}")
+        return [{"number": r["number"], "branch": r.get("headRefName"),
+                 "files": [f["path"] for f in r.get("files", [])]}
+                for r in rows]
+
+    def pr_diff(self, pr):
+        return self._ok(["gh", "pr", "diff", str(pr)], timeout=60)
+
+    def main_files(self, prefix):
+        out = self._ok(["git", "ls-tree", "-r", "--name-only", self.base_ref,
+                        prefix])
+        return [x for x in out.splitlines() if x]
+
+    def main_text(self, path):
+        return self._ok(["git", "show", f"{self.base_ref}:{path}"])
+
+    def pr_status(self, pr):
+        view = json.loads(self._ok(
+            ["gh", "pr", "view", str(pr), "--json", "state,mergeable"],
+            timeout=60) or "{}")
+        # `gh pr checks` exits 8 while checks are pending and 1 when one
+        # failed; the JSON is on stdout either way.
+        r = self.run(["gh", "pr", "checks", str(pr), "--json", "name,bucket"],
+                     self.root, 60)
+        checks = []
+        if r.stdout.strip():
+            try:
+                for c in json.loads(r.stdout):
+                    checks.append({"name": c["name"], "state": {
+                        "pass": "pass", "skipping": "pass", "fail": "fail",
+                        "cancel": "fail"}.get(c.get("bucket"), "pending")})
+            except ValueError:
+                pass
+        elif r.returncode not in (0, 8) and "no checks" not in r.stderr:
+            raise ForgeError("gh pr checks: " + r.stderr.strip()[:300])
+        return {"state": view.get("state", "OPEN").lower(),
+                "mergeable": {"MERGEABLE": "yes", "CONFLICTING": "no"}.get(
+                    view.get("mergeable"), "unknown"),
+                "checks": checks}
+
+    def push(self, worktree, branch):
+        self._ok(["git", "push", "origin", f"{branch}:{branch}"], worktree,
+                 timeout=300)
+
+    def create_pr(self, branch, base, title, body):
+        fd, path = tempfile.mkstemp(prefix="orch-prbody-", suffix=".md")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(body)
+            out = self._ok(["gh", "pr", "create", "--base", base, "--head",
+                            branch, "--title", title, "--body-file", path],
+                           timeout=120)
+        finally:
+            os.remove(path)
+        m = re.search(r"/pull/(\d+)", out)
+        if not m:
+            raise ForgeError("gh pr create printed no PR url: " + out[:200])
+        return int(m.group(1))
+
+    def enqueue(self, pr):
+        self._ok(["sh", "tools/enqueue-pr.sh", str(pr)], timeout=60)
+
+    def list_prs(self):
+        out = self._ok(["gh", "pr", "list", "--state", "open", "--limit",
+                        "100", "--json",
+                        "number,title,headRefName,baseRefName,files"],
+                       timeout=60)
+        try:
+            rows = json.loads(out or "[]")
+        except ValueError as e:
+            raise ForgeError(f"gh pr list: {e}")
+        return [{"number": r["number"], "title": r.get("title", ""),
+                 "branch": r.get("headRefName"), "base": r.get("baseRefName"),
+                 "files": [f["path"] for f in r.get("files", [])]}
+                for r in rows]
+
+    def pr_detail(self, pr):
+        try:
+            v = json.loads(self._ok(
+                ["gh", "pr", "view", str(pr), "--json",
+                 "state,mergeable,baseRefName,headRefName,headRefOid,"
+                 "statusCheckRollup"], timeout=60) or "{}")
+        except ValueError as e:
+            raise ForgeError(f"gh pr view: {e}")
+        checks = []
+        for c in v.get("statusCheckRollup") or []:
+            name = c.get("name") or c.get("context") or "?"
+            if c.get("status") not in (None, "COMPLETED"):
+                st = "pending"
+            else:
+                st = {"SUCCESS": "pass", "SKIPPED": "pass", "NEUTRAL": "pass",
+                      "CANCELLED": "cancel", "STALE": "cancel"}.get(
+                          c.get("conclusion") or c.get("state"), "fail")
+                if c.get("state") == "PENDING":
+                    st = "pending"
+            checks.append({"name": name, "state": st})
+        return {"state": v.get("state", "OPEN").lower(),
+                "mergeable": {"MERGEABLE": "yes", "CONFLICTING": "no"}.get(
+                    v.get("mergeable"), "unknown"),
+                "base": v.get("baseRefName"), "branch": v.get("headRefName"),
+                "head_sha": v.get("headRefOid"), "checks": checks}
+
+    def update_branch(self, pr):
+        r = self.run(["gh", "pr", "update-branch", str(pr)], self.root, 120)
+        text = r.stdout + r.stderr
+        if r.returncode == 0:
+            return "uptodate" if "up-to-date" in text or "up to date" in text \
+                else "ok"
+        if "conflict" in text.lower():
+            return "conflict"
+        self._raise(["gh", "pr", "update-branch"], r.stderr)
+
+    def rerun_failed(self, pr, head_sha):
+        out = self._ok(["gh", "run", "list", "--commit", head_sha, "--limit",
+                        "5", "--json", "databaseId,status,workflowName"],
+                       timeout=60)
+        try:
+            runs = json.loads(out or "[]")
+        except ValueError as e:
+            raise ForgeError(f"gh run list: {e}")
+        done = [x for x in runs if x.get("status") == "completed"]
+        if not done:
+            return False
+        self._ok(["gh", "run", "rerun", str(done[0]["databaseId"]),
+                  "--failed"], timeout=60)
+        return True
+
+    def merge(self, pr, head_sha):
+        self._ok(["gh", "pr", "merge", str(pr), "--squash",
+                  "--match-head-commit", head_sha], timeout=120)
+
+    def retarget(self, pr, base):
+        self._ok(["gh", "pr", "edit", str(pr), "--base", base], timeout=60)
+
+    def push_head(self, worktree, branch):
+        self._ok(["git", "push", "origin", f"HEAD:refs/heads/{branch}"],
+                 worktree, timeout=300)
+
+    def close_pr(self, pr, comment):
+        self._ok(["gh", "pr", "close", str(pr), "--comment", comment],
+                 timeout=60)
+
+    FAIL_LINE = re.compile(
+        r"\(Failed\)|\(Subprocess aborted\)|\(Timeout\)|^(FAIL|ERROR): |"
+        r"AssertionError|error: |forbidden edge|::error|##\[error\]|"
+        r"\bSC\d{4}\b|No space left|\bE: ")
+
+    def failure_excerpt(self, head_sha, per_job=8):
+        """The lines that say why each failed job of the head's CI failed,
+        so a fixer starts from the cause instead of skimming a log head."""
+        try:
+            runs = json.loads(self._ok(
+                ["gh", "run", "list", "--commit", head_sha, "--json",
+                 "databaseId,conclusion"], timeout=60) or "[]")
+        except (ForgeError, ValueError):
+            return ""
+        out = []
+        for run_ in runs:
+            # A run cancelled by a newer push still has its failed jobs.
+            if run_.get("conclusion") == "success":
+                continue
+            try:
+                jobs = json.loads(self._ok(
+                    ["gh", "api", f"repos/{{owner}}/{{repo}}/actions/runs/"
+                     f"{run_['databaseId']}/jobs", "--jq",
+                     "[.jobs[]|select(.conclusion==\"failure\")|"
+                     "{id,name}]"], timeout=60) or "[]")
+            except (ForgeError, ValueError):
+                continue
+            for j in jobs:
+                r = self.run(["gh", "api", "--allow-escape-sequences",
+                              f"repos/{{owner}}/{{repo}}/actions/jobs/"
+                              f"{j['id']}/logs"], self.root, 120)
+                lines = []
+                for ln in (r.stdout or "").splitlines():
+                    ln = re.sub(r"\x1b\[[0-9;]*m", "", ln)
+                    ln = re.sub(r"^\S+Z ", "", ln).strip()
+                    if self.FAIL_LINE.search(ln) and \
+                            not ln.startswith(("echo ", "+ echo")) and \
+                            "Process completed with exit code" not in ln:
+                        lines.append(ln[:240])
+                out.append(f"[{j['name']}]")
+                out += lines[-per_job:] or ["(no error line found; read "
+                                            "the log)"]
+        return "\n".join(out[:60])
+
+    def contains(self, worktree, branch):
+        self._ok(["git", "fetch", "-q", "origin",
+                  f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+                 worktree, timeout=300)
+        r = self.run(["git", "merge-base", "--is-ancestor",
+                      f"origin/{branch}", "HEAD"], worktree, 60)
+        return r.returncode == 0
+
+    def pre_pr(self, worktree):
+        script = os.path.join(worktree, "tools", "pre-pr.sh")
+        if not os.path.exists(script):
+            return True, "tools/pre-pr.sh not present: not run"
+        r = self.run(["sh", "tools/pre-pr.sh"], worktree, 1800)
+        return r.returncode == 0, (r.stdout + r.stderr)[-2000:]

@@ -161,6 +161,21 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
+// 43 (ADR-0031 §6; follows 42): the commands session.consolidate and
+//   session.consolidate_cancel, and EventKind::Consolidate, which a
+//   version-42 decoder refuses as an unknown kind.
+// 49 (ui.mixer.bounce; follows 48, the highest any open PR reserved when
+//   this was cut): the commands mix.bounce and mix.bounce_cancel, the
+//   capability "mix.bounce", and EventKind::Bounce, which a version-42
+//   decoder refuses as an unknown kind. 43 to 48 are other PRs' and are not
+//   in this tree.
+// 56 (plugins.graph.freeze, plugins.offline; ADR-0051): the commands
+//   track.freeze, track.commit, track.process_selection, track.unfreeze and
+//   track.render_cancel, the capability "track.render", EventKind::Render
+//   (a version-49 decoder refuses it as an unknown kind), and the optional
+//   "freeze" key of an AddPlaylist operation and of a playlist in the undo
+//   window, which a version-49 decoder refuses as an unknown key. 50 to 55
+//   are other PRs' and are not in this tree.
 // 65 (ADR-0057, plugin telemetry and descriptor hints): PluginParam carries
 //   `section`, `widget` and `curve_source`, PluginInfo carries `meters` and
 //   `curves`, and PluginTelemetry (wire type 10) streams an insert's meters
@@ -446,7 +461,35 @@ enum class EventKind : uint32_t {
     // start, replaced at every change and at every ping while measuring; a
     // client that attaches later is sent it. Protocol 22.
     Latency = 7,
+    // A consolidate render (ADR-0031 §6, protocol 43): `insert` is the
+    // track's model id, `flags` a kConsolidate* state, `frame` the fraction
+    // rendered in thousandths while Running, `text` why it Failed or what
+    // finished it. One stands from the first request, replaced at every
+    // step and held after the last one until the next request, so a failure
+    // stays on screen until the operator dismisses it and a client that
+    // attaches later is sent it.
+    Consolidate = 8,
+    // A Bounce Mix render (api/bounce.h, protocol 49): `frame` the fraction
+    // rendered in thousandths, `insert` the frames in the file once Done,
+    // `flags` a BounceState, `text` the file's relative path once Done or why
+    // it Failed or was Cancelled. One stands from the first progress, held
+    // after the last until the next bounce, so a failure stays on screen
+    // until dismissed and a client that attaches later is sent it.
+    Bounce = 9,
+    // A render in place (api/render.h, protocol 56): `frame` the fraction in
+    // thousandths, `insert` the track's model id, `flags` a RenderState,
+    // `text` what was done once Done or why it Failed or was Cancelled. One
+    // stands from the first progress, held until the next render, so a
+    // failure stays on screen until dismissed and a client that attaches
+    // later is sent it.
+    Render = 10,
 };
+
+// EngineEvent::flags of a Consolidate.
+inline constexpr uint32_t kConsolidateRunning = 0;
+inline constexpr uint32_t kConsolidateDone = 1;       // the range is one region, one undo step
+inline constexpr uint32_t kConsolidateFailed = 2;     // `text` says why; nothing changed
+inline constexpr uint32_t kConsolidateCancelled = 3;  // nothing changed
 
 // EngineEvent::flags of a SessionFolder.
 inline constexpr uint32_t kFolderUntitled = 1u << 0;   // the engine made it ("Untitled <n>")
@@ -488,10 +531,11 @@ struct EngineEvent {
     EventKind kind = EventKind::Notice;
     int32_t track = -1;
     // TakeFailed: the take number. RecoveryOffer: how many takes.
-    // SessionFolder: free bytes. Latency: L in frames. 0 otherwise.
+    // SessionFolder: free bytes. Latency: L in frames. Consolidate: the
+    // fraction rendered, in thousandths. 0 otherwise.
     uint64_t frame = 0;
     // PluginFault: the insert's model id. Latency: the outputs the probe
-    // may use. 0 otherwise. Protocol 3.
+    // may use. Consolidate: the track's model id. 0 otherwise. Protocol 3.
     uint64_t insert = 0;
     std::string text;
     // SessionFolder: kFolder* bits. Latency: latency_flags(). 0 otherwise.

@@ -27,6 +27,7 @@
 
 #include "sonora/active_folder.h"
 #include "sonora/api/conformance.h"
+#include "sonora/api/consolidate_argument.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/api/wire.h"
 #include "sonora/closed_take.h"
@@ -34,6 +35,7 @@
 #include "sonora/fake_backend.h"
 #include "sonora/machine_latency.h"
 #include "sonora/model/op_codec.h"
+#include "sonora/model/operations.h"
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
 #include "sonora/platform/file.h"
@@ -161,6 +163,7 @@ public:
     // Track 1's next take stops writing after a few frames: the WAV size
     // limit, lowered, stands in for a full disk. Called while stopped.
     void set_takes_fail(bool fail) {
+        session_.tracks()[0]->writer().set_rf64_allowed(false);
         session_.tracks()[0]->writer().set_riff_size_limit(fail ? kFailingRiffSize
                                                                 : WavWriter::kRiffSizeLimit);
     }
@@ -349,7 +352,8 @@ void same_commands_as_the_fake() {
     // An interface sends its selection as play's range only to an engine
     // announcing it (ADR-0007 §6); the fake announces what the engine does.
     CHECK(real.hello().capabilities ==
-          std::vector<std::string>{api::kCapabilityPlayRange});
+          (std::vector<std::string>{api::kCapabilityPlayRange, api::kCapabilityBounce,
+                                      api::kCapabilityRender}));
     CHECK(real.hello().capabilities == api::testing::FakeEngine::Config{}.capabilities);
     // app.quit is installed by install_session_commands but belongs to the
     // interface (ADR-0007 §5): never announced, and refused if sent.
@@ -3530,6 +3534,273 @@ void a_folder_load_enters_only_a_session_folder() {
     CHECK(fs::is_directory(bare / "Audio Files"));
 }
 
+// Protocol 43 (ADR-0031 §6): session.consolidate renders on a worker and
+// the control thread commits it, so the replicas see one "Consolidate"
+// compound and the Consolidate events run Running ... Done; a take open
+// refuses it, a bad range or track refuses it in the reply, and a failure
+// is a standing event, not a status line.
+void consolidate_command_renders_off_the_control_thread() {
+    const fs::path dir = fresh_dir("consolidate");
+    fs::create_directories(dir / "Audio Files");
+    model::Document doc(RealEngine::start_document(dir));
+    const model::TrackEdit& t = *doc.current().edit->tracks[0];
+    const model::Id track = t.id, playlist = t.active_playlist;
+    const uint16_t channels = t.channels;
+    const uint32_t rate = doc.current().settings.sample_rate;
+    constexpr uint64_t kFrames = 96000;
+    {
+        WavWriter w;
+        CHECK(w.open((dir / "Audio Files" / "a.wav").string(), rate, channels,
+                     WavWriter::Format::Float32, 0));
+        const std::vector<float> block(kFrames * channels, 0.5f);
+        CHECK(w.write(block.data(), kFrames) && w.close());
+    }
+    std::string err;
+    model::ReplicationUpdate u;
+    model::AddSource add;
+    add.source.id = doc.current().next_id;
+    add.source.path = "Audio Files/a.wav";
+    add.source.channels = channels;
+    add.source.length = static_cast<int64_t>(kFrames);
+    add.source.format = model::AudioFormat::Float32;
+    CHECK(doc.apply(add, u, err));
+    model::PlaceRegion place;
+    place.playlist = playlist;
+    place.region.id = doc.current().next_id;
+    place.region.name = "r";
+    place.region.position = 0;
+    place.region.length = static_cast<int64_t>(kFrames);
+    for (uint16_t c = 0; c < channels; ++c) place.region.channels.push_back({add.source.id, c});
+    place.split_right_id = place.region.id + 1;
+    CHECK(doc.apply(place, u, err));
+
+    EngineControlServer::Options opts;
+    opts.initial_document = std::make_shared<model::Snapshot>(doc.current());
+    RealEngine real(dir, opts);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto replied = [&](uint64_t seq, DispatchResult want) {
+        return until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) return r.result == want;
+            }
+            return false;
+        });
+    };
+    const auto last_state = [&]() -> int {
+        int state = -1;
+        for (const auto& e : in.events) {
+            if (e.kind == api::EventKind::Consolidate) state = static_cast<int>(e.flags);
+        }
+        return state;
+    };
+    const auto consolidate = [&](int64_t start, int64_t end) {
+        api::ConsolidateArgument a;
+        a.track = track;
+        a.start = start;
+        a.end = end;
+        api::CommandRequest r;
+        r.command = "session.consolidate";
+        r.argument = api::format_consolidate_argument(a);
+        return real.send(r);
+    };
+    const auto cancel = [&]() {
+        api::CommandRequest r;
+        r.command = "session.consolidate_cancel";
+        return real.send(r);
+    };
+
+    // Refused in the reply: nothing running to cancel, a bad argument, a range
+    // that holds no region, an unknown track.
+    CHECK(replied(cancel(), DispatchResult::Failed));
+    api::CommandRequest junk;
+    junk.command = "session.consolidate";
+    junk.argument = "track=1";
+    CHECK(replied(real.send(junk), DispatchResult::Failed));
+    CHECK(replied(consolidate(static_cast<int64_t>(kFrames) + 10, static_cast<int64_t>(kFrames) + 20),
+                  DispatchResult::Failed));
+    CHECK(last_state() == -1);
+
+    // A take open refuses it.
+    api::CommandRequest arm;
+    arm.command = "track.toggle_arm";
+    arm.target = 0;
+    CHECK(replied(real.send(arm), DispatchResult::Ok));
+    api::CommandRequest rec;
+    rec.command = "transport.record";
+    CHECK(replied(real.send(rec), DispatchResult::Ok));
+    CHECK(until(real, in, [&]() { return real.session().recording_take() != 0; }));
+    const uint64_t refused = consolidate(0, 48000);
+    CHECK(replied(refused, DispatchResult::Failed));
+    for (const auto& r : in.replies) {
+        if (r.seq == refused) CHECK(r.message.find("stop recording") != std::string::npos);
+    }
+    api::CommandRequest stop;
+    stop.command = "transport.stop";
+    CHECK(replied(real.send(stop), DispatchResult::Ok));
+    CHECK(until(real, in, [&]() { return !real.session().takes_closing(); }));
+    in.clear();
+
+    // The render: Running first, Done last, the file written, and one
+    // Consolidate compound reaches the replica.
+    CHECK(replied(consolidate(0, 48000), DispatchResult::Ok));
+    CHECK(until(real, in, [&]() { return last_state() == static_cast<int>(api::kConsolidateDone); }));
+    bool running_first = false;
+    for (const auto& e : in.events) {
+        if (e.kind == api::EventKind::Consolidate) {
+            running_first = e.flags == api::kConsolidateRunning && e.insert == track;
+            break;
+        }
+    }
+    CHECK(running_first);
+    for (const auto& e : in.events) {
+        if (e.kind == api::EventKind::Consolidate && e.flags == api::kConsolidateDone) {
+            CHECK(e.text.rfind("Audio Files/", 0) == 0 && fs::exists(dir / e.text));
+        }
+    }
+    CHECK(std::count_if(in.model.begin(), in.model.end(), [](const api::ModelUpdate& m) {
+              return m.kind == api::ModelUpdateKind::Op;
+          }) == 1);
+
+    // The outcome stands: a client that attaches later is sent it.
+    EngineControlServer& server = real.engine().server();
+    struct Got {
+        std::mutex mutex;
+        std::vector<std::string> frames;
+    };
+    auto got = std::make_shared<Got>();
+    const auto rider = server.attach(
+        [got](EngineControlServer::Frame frame) {
+            std::lock_guard<std::mutex> lock(got->mutex);
+            got->frames.push_back(*frame);
+        },
+        {});
+    const auto late_state = [&]() {
+        std::vector<std::string> frames;
+        {
+            std::lock_guard<std::mutex> lock(got->mutex);
+            frames = got->frames;
+        }
+        api::wire::Reassembler reassembler;
+        api::Inbox seen;
+        std::string message, e;
+        for (const std::string& f : frames) {
+            if (reassembler.add(f, message, e) == api::wire::Reassembler::Result::Complete) {
+                api::wire::decode_into(message, seen, e);
+            }
+        }
+        int state = -1;
+        for (const auto& ev : seen.events) {
+            if (ev.kind == api::EventKind::Consolidate) state = static_cast<int>(ev.flags);
+        }
+        return state;
+    };
+    CHECK(until(real, in, [&]() { return late_state() == static_cast<int>(api::kConsolidateDone); }));
+    server.detach(rider);
+}
+
+// mix.bounce on the real engine (ui.mixer.bounce): a refusal answers the
+// command and leaves no event; a bounce says Running then Done with the
+// file's path, the file is there, a client attaching later is told how it
+// ended, and a cancel with none running is refused.
+void a_bounce_reaches_the_interface() {
+    const fs::path dir = fresh_dir("bounce");
+    fs::create_directories(dir / "Audio Files");
+    constexpr int64_t kFrames = 24000;
+    {
+        WavWriter w;
+        CHECK(w.open((dir / "Audio Files" / "s.wav").string(), 48000, 1,
+                     WavWriter::Format::Float32, 0));
+        const std::vector<float> data(kFrames, 0.25f);
+        CHECK(w.write(data.data(), data.size()) && w.close());
+    }
+    model::Document doc(RealEngine::start_document(dir));
+    std::string error;
+    model::ReplicationUpdate u;
+    model::AddSource add;
+    add.source.id = doc.current().next_id;
+    add.source.path = "Audio Files/s.wav";
+    add.source.channels = 1;
+    add.source.length = kFrames;
+    add.source.format = model::AudioFormat::Float32;
+    CHECK(doc.apply(add, u, error));
+    model::PlaceRegion place;
+    place.playlist = doc.current().edit->tracks[0]->active_playlist;
+    place.region.id = doc.current().next_id;
+    place.region.name = "r";
+    place.region.position = 0;
+    place.region.length = kFrames;
+    place.region.channels.push_back({add.source.id, 0});
+    place.split_right_id = place.region.id + 100;
+    CHECK(doc.apply(place, u, error));
+    EngineControlServer::Options opts;
+    opts.initial_document = std::make_shared<model::Snapshot>(doc.current());
+    RealEngine real(dir, opts);
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto run = [&](const char* id, const char* arg) {
+        api::CommandRequest c;
+        c.command = id;
+        c.argument = arg;
+        const uint64_t seq = real.send(c);
+        api::CommandReply out{seq, DispatchResult::UnknownCommand, "no reply"};
+        until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        return out;
+    };
+    const auto bounce_events = [&](const std::vector<api::EngineEvent>& from) {
+        std::vector<api::EngineEvent> out;
+        for (const auto& e : from) {
+            if (e.kind == api::EventKind::Bounce) out.push_back(e);
+        }
+        return out;
+    };
+    CHECK(real.hello().capabilities.back() == api::kCapabilityRender);
+    const api::CommandReply none = run("mix.bounce_cancel", "");
+    CHECK(none.result == DispatchResult::Failed && none.message == "no bounce is running");
+    CHECK(run("mix.bounce", "mode=sideways").result == DispatchResult::Failed);
+    CHECK(run("mix.bounce", "start=100 end=100").result == DispatchResult::Failed);
+    CHECK(bounce_events(in.events).empty());
+
+    CHECK(run("mix.bounce", "mode=offline format=float32 name=Take 1").result ==
+          DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        const auto ev = bounce_events(in.events);
+        return !ev.empty() && ev.back().flags == static_cast<uint32_t>(api::BounceState::Done);
+    }));
+    const auto ev = bounce_events(in.events);
+    CHECK(ev.front().flags == static_cast<uint32_t>(api::BounceState::Running));
+    CHECK(ev.back().text == "Bounced Files/Take 1_01.wav" && ev.back().insert == static_cast<uint64_t>(kFrames));
+    CHECK(fs::exists(dir / ev.back().text));
+
+    const std::vector<api::EngineEvent> late = late_greeting(real, in);
+    const auto held = bounce_events(late);
+    CHECK(held.size() == 1 && held[0].flags == static_cast<uint32_t>(api::BounceState::Done));
+
+    // Render in place (ADR-0051): each refusal says why, no render starts and
+    // no Render event is sent. The rolling render is test_render_in_place's.
+    const std::string track = "track=" + std::to_string(doc.current().edit->tracks[0]->id);
+    const api::CommandReply no_render = run("track.render_cancel", "");
+    CHECK(no_render.result == DispatchResult::Failed && no_render.message == "no render is running");
+    CHECK(run("track.freeze", "").result == DispatchResult::Failed);
+    for (const char* id : {"track.freeze", "track.commit", "track.process_selection"}) {
+        const api::CommandReply r = run(id, (track + " start=10 end=900").c_str());
+        CHECK(r.result == DispatchResult::Failed);
+        CHECK(r.message.find("no active plug-in insert") != std::string::npos);
+    }
+    const api::CommandReply thaw = run("track.unfreeze", track.c_str());
+    CHECK(thaw.result == DispatchResult::Failed && thaw.message.find("is not frozen") != std::string::npos);
+    for (const auto& e : in.events) CHECK(e.kind != api::EventKind::Render);
+}
+
 int main() {
     InProcessRig rig;
     const int failed = api::conformance::run(rig);
@@ -3553,6 +3824,7 @@ int main() {
     snapshot_parts_are_paced_and_held();
     what_waits_behind_a_snapshot_is_bounded();
     resyncs_share_one_snapshot();
+    consolidate_command_renders_off_the_control_thread();
     a_sequence_over_a_part_opens_in_parts();
     a_save_during_a_take_follows_a_checkpoint();
     recovery_offer_at_start_and_after_a_take();
@@ -3578,6 +3850,7 @@ int main() {
     a_reorder_while_latched_files_the_ride_under_its_track();
     a_touch_release_returns_to_the_static_value();
     a_removal_while_latched_drops_the_ride();
+    a_bounce_reaches_the_interface();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

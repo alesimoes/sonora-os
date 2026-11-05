@@ -48,8 +48,9 @@ class RunTests(support.DaemonCase):
                 return []
         self.pump(o, lambda: len(read()) >= 3)
         argvs = read()
-        # engineer, tester and the lead woken by the empty pool
-        # a slow runner may wake the lead once more before the pump ends
+        # engineer, tester and the lead woken by the empty pool; the next
+        # launch (the integrator) can land in the same tick, so at least 3.
+        # What this test guards is that every one of them is Sonnet.
         self.assertGreaterEqual(len(argvs), 3)
         for a in argvs:
             self.assertEqual(a[a.index("--model") + 1], "sonnet")
@@ -269,8 +270,9 @@ class RunTests(support.DaemonCase):
         o = self.make(floors={"daw": 2})
         for t in ("a", "b"):
             self.add(o, t, wants=("adr", "protocol"))
-        self.assertTrue(self.pump(o, lambda: os.path.exists(
-            os.path.join(self.fake_dir, "argv.log"))))
+        log = os.path.join(self.fake_dir, "argv.log")
+        self.assertTrue(self.pump(o, lambda: os.path.exists(log)
+                                  and len(open(log).readlines()) >= 2))
         a, b = o.store.get_task("a"), o.store.get_task("b")
         self.assertEqual({a["adr_no"], b["adr_no"]}, {11, 12})
         self.assertEqual({a["protocol_no"], b["protocol_no"]}, {11, 12})

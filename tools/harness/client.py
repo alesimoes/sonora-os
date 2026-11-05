@@ -36,6 +36,8 @@ class Client:
     def __init__(self, port, name, token, host="127.0.0.1", ping=True, timeout=10.0,
                  reconnect_window=RECONNECT_WINDOW_S):
         self.host, self.port, self.name, self.token = host, port, name, token
+        self.feature = os.environ.get("SONORA_FEATURE", "")
+        self.task = os.environ.get("SONORA_TASK", "")
         self.timeout = timeout
         self.reconnect_window = reconnect_window
         self.last_acked_seq = None   # None: let the broker use its stored ack
@@ -176,9 +178,12 @@ class Client:
         keep = ("feature", "task", "role", "channels")
         return dict({"name": self.name}, **{k: v for k, v in self.info.items() if k in keep})
 
-    def send(self, to, type, body=None, reply_to=None):
+    def send(self, to, type, body=None, reply_to=None, feature=None, task=None):
+        """feature and task default to the run's own (SONORA_FEATURE and
+        SONORA_TASK), so the log and the daemon can group a message."""
         return self.call("send", to=to, type=type, body={} if body is None else body,
-                         reply_to=reply_to)
+                         reply_to=reply_to, feature=feature or self.feature or None,
+                         task=task or self.task or None)
 
     def recv(self, limit=20, wait_s=0.0):
         """Return up to `limit` pending messages and ack them."""

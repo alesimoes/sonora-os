@@ -24,8 +24,11 @@ with `tools/progress.sh` (`get ID`, `list --open --track T`,
 
 ## What you own
 
-`audio-stack/`, the udev and WirePlumber rules in `iso/`, and the parts of the
-engine that enumerate or connect to devices.
+ADR-0007 §1: `drivers/jack` (the only target that may include `<jack/>`),
+`drivers/fake`, `drivers/support`, `drivers/surfaces` when it exists, and
+`engine/sync`; `contracts/backend` jointly with rt-engineer. Also
+`audio-stack/` and the udev and WirePlumber rules in `iso/`. Drivers never
+depend on `engine/core`.
 
 ## The rule that governs this work
 

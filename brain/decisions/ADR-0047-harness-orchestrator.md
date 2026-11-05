@@ -14,8 +14,10 @@
   processes, one worktree each. The daemon decides nothing that needs
   judgement; roles decide, the daemon enforces pools, caps, file claims,
   number reservations and retries.
-- §2: state is one SQLite file, `planning/orchestrator/state.db` (git-ignored),
-  with a state machine from `queued` to `merged`.
+- §2: state is one JSON document, `planning/orchestrator/state.json`
+  (git-ignored), held in memory by the daemon and replaced atomically, plus an
+  append-only `events.jsonl`; a state machine from `queued` to `merged`.
+  (Amended 2026-11-04: was SQLite.)
 - §3: heartbeat = process liveness plus git/worktree/result-file activity (and
   the live broker connection); relaunch from the WIP branch, 3 tries, then a
   "waits on the owner" note.
@@ -101,12 +103,49 @@ privileged docker tests (below). It reads `status.json` instead of polling.
 
 ### 2. State store
 
-One SQLite file (`sqlite3` is in the standard library; WAL mode;
-`BEGIN IMMEDIATE` per transition gives atomicity and a single-writer lock for
-free). A JSON file would need our own lock and rewrite-whole-file atomics and
-would not survive two writers (daemon plus a manual `orchestrator.py set`).
-Located in the main checkout under `planning/orchestrator/`, git-ignored;
-worktrees are under `.claude/worktrees/<task>`.
+**Amended 2026-11-04 (owner): JSON, not SQLite.** State is one document,
+`planning/orchestrator/state.json` (git-ignored, under the main checkout;
+worktrees are under `.claude/worktrees/<task>`):
+
+    {schema: 1, features: {id: {...}}, tasks: {id: {...}}, runs: {id: {...}},
+     reservations: [{kind, number, task_id}], meta: {key: string}}
+
+Why: the daemon is the only writer (the CLI `status` reads `status.json`; a
+manual change goes through the daemon's files, not a second writer), the
+volume is small (hundreds of rows), and a text file can be read, diffed and
+repaired by hand. SQLite gave transactions we do not need across processes and
+cost us an opaque binary file whose constraint failures stopped the daemon.
+The `Store` class keeps its method names and semantics; only its storage
+changed.
+
+- **Atomic save.** Write a temp file in the same directory, flush, fsync,
+  `os.replace`, fsync the directory where the platform allows. A crash leaves
+  the old or the new complete file. A failed save raises, keeps the old file
+  and leaves the in-memory document dirty so the next save retries.
+- **When it saves.** After every mutating call, or once when the outermost
+  `tx()` exits cleanly (a raising `tx()` restores the in-memory document and
+  writes nothing). The exception is a run heartbeat (`last_beat`, `suspect`),
+  which only marks the document dirty; the tick ends with `flush()`.
+  Correctness over speed: nothing that launches or ends a process is deferred.
+- **Events.** `events.jsonl`, one JSON object per line, flushed on append and
+  rotated to `events.<n>.jsonl` at about 5 MB; `events()` reads newest first
+  across files and ignores a torn last line.
+- **Validation on load.** Unknown schema version refuses to start (never
+  guess at a newer file). Rows that break an invariant are moved to
+  `state.quarantine.json` with a `quarantined` event and the daemon carries
+  on: a run whose task is missing, a work task whose feature is missing, a
+  task or run with a state outside the allowed set, a second feature claiming
+  the same PR, a malformed or duplicate reservation. A file that is not valid
+  JSON stops the daemon with a clear error; the atomic save makes that a
+  hand-edit, not a crash.
+- **Unique PR.** At most one feature holds a given PR number; `set_feature`
+  refuses a duplicate (it was a unique SQL index).
+- **Migration.** If `state.json` is absent and `state.db` exists, the daemon
+  imports it (read-only `sqlite3`), validates it like any load, writes
+  `state.json` and renames `state.db` (and its `-wal` and `-shm`) to
+  `*.migrated`.
+
+The tables below are the logical model, now documents in the same file.
 
 Tables: `tasks`, `runs`, `events`, `reservations`.
 
@@ -437,7 +476,7 @@ names.
 
 - Route: stamp `id` (ulid) and a per-recipient `seq`, append to the durable log
   and the recipient's mailbox, then push to the live connection (if any).
-- Claims: the broker holds the claim table (SQLite, §2) and is the only writer.
+- Claims: the broker holds the claim table (state store, §2) and is the only writer.
   `claim` is all-or-nothing and atomic in the broker's single event loop: a
   second claim on a path (or on a path under a claimed directory glob) is
   refused with the owner's name, and the client must `send` an `ask` to `lead`
@@ -631,6 +670,25 @@ lines into `queued` tasks on start (and on `orchestrator.py import`), and
 afterwards the database is the truth, with AGENT-QUEUE regenerated read-only
 from it so existing habits keep working.
 
+`status.json` schema as the local dashboard (`renderOrch` in
+`tools/dashboard.html`) parses it; every field it does not read is additive:
+
+- `updated`: ISO local time string (the panel prints its first 19 chars);
+  `updated_ts` the epoch seconds.
+- `pools`: object `{name: {floor, live, working, paused, reason?}}`; the
+  panel draws `working` against `floor`. Names: `fix`, `qa`, `merge`,
+  `build`, `plan` (floor 0) and `build:<track>` (the track floors).
+- `features`: array of `{name, id, track, state, pr, tasks[], tasks_done,
+  tasks_total, fixes, adr, protocol, partial, age, blocked_reason}`. The panel
+  shows `name`, `state`, the PR link and one cell per `tasks[]` entry, coloured
+  from `tasks[].state` by regex (done|ok|merged|x|feito, block|wait|fail|red,
+  doing|work|run|progress|building). Raw states such as `ci_fix` and `bugfix`
+  contain an `x`, so `tasks[].state` is one of `queued building working done
+  red blocked` and the real state is `tasks[].stage` (also `agent`,
+  `engineer`, `attempts`, `bounces`).
+- `waits_on_owner`: array of `{title, task, branch, note}`; the panel prints
+  `title`.
+
 ### 7. Implementation plan: PR 0 spike, then three end-to-end PRs, then shadow mode
 
 Each PR is complete for its layer and tested with a fake `claude`
@@ -666,6 +724,7 @@ spends quota.
   red PR gets a fixer within one tick; same job red after two fixes blocks;
   CI-budget back-pressure; no overlap launches; two features never get the
   same reserved number.
+- **PR 2 as built.** Every `gh`/`git`/script call sits behind `harness/forge.py` (`GhForge`; tests use a fake). The integrator run merges the sub-branches and runs `tools/pre-pr.sh`; the daemon re-runs it, pushes, opens ONE PR per feature and calls `tools/enqueue-pr.sh`. A feature's tasks move together through `pr_open`, `ci_fix`, `merged`; the first task stands for the feature in the scheduler. Red check -> fixer (`fix_kind=ci`), conflict -> integrator (`fix_kind=conflict`), polled every `ci_poll_s`; a job still red after two fixes blocks the feature. Numbers (`adr`, `protocol`, `format`, `window`) are seeded from origin/main and open PR diffs (`harness/numbers.py`); a failed read defers the launch. Janitor wake every `janitor_every` (3) merges. A `done` message finishes a run after `done_grace_s` without result.json (at once if the process is gone).
 - **PR 3, architect, lead, feature flow, dashboard.** The new `lead.md` and
   `tester.md` (drafted with this ADR), the `features` table, plan and
   assignments validators, event-driven architect/lead runs with channel-log
@@ -673,6 +732,54 @@ spends quota.
   `tools/dashboard.py`, a start-up snippet. PRs 1 and 2 wrap every item in a
   one-task feature so the schema does not change. Tests: lead output creates
   assignments; the invariant report; adopting runs after a daemon restart.
+- **PR 3 as built.** `harness/plans.py` (validators; the schema files
+  `planning/orchestrator/plan.schema.json` and `assignments.schema.json` are
+  read by a subset validator so the schema is the only copy of the shape),
+  `harness/flow.py` (feature flow), `harness/queueimport.py`,
+  `harness/shadow.py`. Deviations from the text of 4a, all forced by git or by
+  several features running at once:
+  - Sub-branches are `sub/<feature>/<task>`, not `feat/<feature>/<task>`: git
+    cannot hold the refs `feat/f` and `feat/f/t1` together.
+  - Plan and table live per feature: `.harness/plan/<feature>.plan.json` and
+    `<feature>.assignments.json` (one shared `assignments.json` cannot serve
+    two features). The accepted plan is copied to
+    `planning/orchestrator/plans/<feature>.plan.json` (git-ignored state).
+  - The daemon creates the tasks (`<feature>.<task>`) when the lead's table is
+    valid, names the engineers (`eng_name`, written back into the table as
+    `engineer_name`) and sends each `assign`. `start_from` becomes the base
+    of the task's worktree branch; a base that does not exist yet falls back
+    to main. A plan with `depends_on_feature` creates its tasks held
+    (`not_before` = HOLD) until that feature is `merged`.
+  - A plan may set `reserved.adr`/`protocol` to null (not needed) but never to
+    a number other than the one the daemon reserved for the feature; formats
+    must be a subset of the reserved ones. Feature requests are reserved under
+    the owner `feature:<id>` when planning opens (`wants`, default `adr`).
+  - Wake runs (kind `wake`, role architect/lead) carry `event`, the feature and
+    the replayed channel log (`.harness/log/messages.jsonl` filtered by
+    feature, last 80 messages) in their prompt. A wake whose file is invalid
+    is relaunched with the reasons as its note; after `max_attempts` the wake
+    and the feature are `blocked` and listed in `waits-on-owner.md`. Lead
+    wakes for `task_done`, `qa_fail`, `agent_dead` fire only for features that
+    have a plan; `pool_under_floor` and `bug_ruling` are unchanged. A lead's
+    `plan_request` message to the daemon (answer to `pool_under_floor`)
+    becomes a `queued` feature, out-of-v1 ids refused.
+  - `queued` features are promoted to `planning` in queue order while fewer
+    than `max_active_features` (10) are planning or being built, and not
+    before a feature named in their "Waits on" has merged. Dry-run never
+    promotes (it logs `dry_run_promote`).
+  - `orchestrator.py import-queue PATH [--wants adr,protocol]` creates one
+    feature per V1 row of `planning/AGENT-QUEUE.md` (the table `Order | Item |
+    Agent | Waits on`); rows naming MIDI, video, immersive, surround or
+    instruments are skipped; re-running it adds nothing.
+  - Adoption: on start the daemon keeps every active run whose pid is alive,
+    tells the new broker their names and lets `_poll_runs` finish them by pid
+    and `result.json`; a dead one is relaunched under the same name. Limit: a
+    client connected to the old broker cannot reconnect (the broker port and
+    token are per start), so an adopted run reports through `result.json`
+    only.
+  - Feature state is derived each tick from its tasks: `planning` (plan
+    requested), `distributing` (plan accepted, table pending), `building`,
+    `qa`, `integrating`; PR 2 owns `pr_open`, `ci_fix`, `merged`, `blocked`.
 - **Shadow-mode rollout (configuration, not a PR).** The daemon runs
   `--dry-run` beside the in-session coordinator and must log the same launch
   decisions for a day (differences are read and either fixed or accepted by
@@ -692,8 +799,9 @@ better than a model, and a program is testable for free. Keeping the judgement
 the "agents do the work, reviewers review" rule: no role reviews its own diff,
 the daemon never reads code.
 
-SQLite over JSON because the transition needs to be atomic across tasks, runs
-and reservations, and because the daemon and the CLI both write.
+JSON over SQLite (amended 2026-11-04, see section 2): one in-memory document
+with whole-file atomic replacement makes every transition atomic, and the
+daemon is the only writer.
 
 Observing activity from outside (process, git, files) over agent-written
 heartbeats because the failure we care about is an agent that has stopped
@@ -738,7 +846,9 @@ doing anything, including remembering to report it.
 - **Agent holds the connection through a Bash background process.** Violates
   the no-background rule and dies with the shell; the MCP server is the
   supported long-lived tool process.
-- **JSON file with lock.** Reimplements transactions badly; rejected for SQLite.
+- **JSON file with lock (original rejection of JSON).** Reversed 2026-11-04:
+  with a single writer there is nothing to lock; SQLite is now the rejected
+  option (opaque file, constraint failures that stopped the daemon).
 - **Resume the dead session (`--resume`) instead of a fresh context.** Cheaper
   in tokens on paper, but a session that died on a corrupt state or a loop
   resumes into the same loop. Fresh context from the branch is deterministic.

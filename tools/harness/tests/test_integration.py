@@ -23,13 +23,13 @@ class IntegrationTests(support.DaemonCase):
                 r["role"] == "tester" for r in o.store.runs_of("a"))))
             eng = o.store.runs_of("a")[0]
             self.assertEqual(eng["role"], "engineer")
+            # per-feature channel and file claim were set up by the daemon
+            self.assertIn(eng["name"], host.broker.channels["feat-a"])
+            self.assertEqual(host.broker.claims.get("a/**"), eng["name"])
             self.assertTrue(self.pump(o, lambda: state(o, "a")
                                       == "integrating"))
             msgs = [e["detail"] for e in o.store.events("a", "message")]
             self.assertIn("done from " + eng["name"], msgs)
-            # per-feature channel and file claim were set up by the daemon
-            self.assertIn(eng["name"], host.broker.channels["feat-a"])
-            self.assertEqual(host.broker.claims.get("a/**"), eng["name"])
             self.assertEqual(len(host.token), 64)
         finally:
             host.stop()

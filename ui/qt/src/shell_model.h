@@ -106,6 +106,27 @@ class ShellModel : public QObject {
     Q_PROPERTY(QString latencyResult READ latencyResult NOTIFY latencyChanged)
     Q_PROPERTY(int latencyOutputs READ latencyOutputs NOTIFY latencyChanged)
     Q_PROPERTY(QString latencyRefusal READ latencyRefusal NOTIFY latencyChanged)
+    // Bounce Mix (api::EventKind::Bounce, protocol 49), for the Bounce
+    // window. `bounceAvailable`: the engine announced "mix.bounce".
+    // `bounceState` is -1 before any bounce, else an api::BounceState;
+    // `bounceProgress` runs 0..1. How a bounce ended is a held notice (in
+    // `notices`) until dismissBounce() or the next bounce, not the status
+    // line; `bounceRefusal` holds a mix.bounce refusal until the next action.
+    Q_PROPERTY(bool bounceAvailable READ bounceAvailable NOTIFY bounceChanged)
+    Q_PROPERTY(int bounceState READ bounceState NOTIFY bounceChanged)
+    Q_PROPERTY(bool bounceRunning READ bounceRunning NOTIFY bounceChanged)
+    Q_PROPERTY(qreal bounceProgress READ bounceProgress NOTIFY bounceChanged)
+    Q_PROPERTY(QString bounceResult READ bounceResult NOTIFY bounceChanged)
+    Q_PROPERTY(QString bounceRefusal READ bounceRefusal NOTIFY bounceChanged)
+    // Render in place (api::EventKind::Render, protocol 56): Track Freeze,
+    // Commit and Process Selection. `renderAvailable`: the engine announced
+    // "track.render". `renderNotice` is how the last one ended or why one was
+    // refused, held in the footer until dismissRender() or the next render,
+    // not on the status line.
+    Q_PROPERTY(bool renderAvailable READ renderAvailable NOTIFY renderChanged)
+    Q_PROPERTY(bool renderRunning READ renderRunning NOTIFY renderChanged)
+    Q_PROPERTY(qreal renderProgress READ renderProgress NOTIFY renderChanged)
+    Q_PROPERTY(QString renderNotice READ renderNotice NOTIFY renderChanged)
     Q_PROPERTY(QStringList helpEntries READ helpEntries NOTIFY keymapChanged)
     Q_PROPERTY(QString renderPath READ renderPath NOTIFY renderPathChanged)
     Q_PROPERTY(bool softwareRendering READ softwareRendering NOTIFY renderPathChanged)
@@ -231,6 +252,29 @@ public:
     Q_INVOKABLE void measureLatency(int output, int input);
     Q_INVOKABLE void cancelLatency();
     Q_INVOKABLE void setLatency(int frames);
+    bool bounceAvailable() const;
+    int bounceState() const { return bounce_state_; }
+    bool bounceRunning() const { return bounce_state_ == 0; }
+    qreal bounceProgress() const { return bounce_progress_; }
+    QString bounceResult() const { return bounce_notice_; }
+    QString bounceRefusal() const { return bounce_refusal_; }
+    // The Bounce window's buttons: mix.bounce of the whole session (the end
+    // of the last region), mix.bounce_cancel, and the notice put away.
+    // `target_lufs` only counts when `normalise` is on.
+    Q_INVOKABLE void startBounce(bool real_time, bool float32, bool normalise, qreal target_lufs,
+                                 const QString& name);
+    Q_INVOKABLE void cancelBounce();
+    Q_INVOKABLE void dismissBounce();
+    bool renderAvailable() const;
+    bool renderRunning() const { return render_state_ == 0; }
+    qreal renderProgress() const { return render_progress_; }
+    QString renderNotice() const { return render_notice_; }
+    // track.render_cancel, and the notice put away.
+    Q_INVOKABLE void cancelRender();
+    Q_INVOKABLE void dismissRender();
+    // A refusal that came back for a render command, or one made before it
+    // left: held as the end of a render is.
+    void holdRenderNotice(const QString& text);
     QStringList helpEntries() const;
     QVariantList profiles() const;
     bool commandsFocus() const { return router_.commandsFocus(); }
@@ -301,6 +345,8 @@ signals:
     void alertChanged();
     void recoveryChanged();
     void latencyChanged();
+    void bounceChanged();
+    void renderChanged();
     void renderPathChanged();
     void keymapChanged();
 
@@ -312,6 +358,8 @@ private:
     // A latency.* command, its refusal held in the window.
     void latencyCommand(const char* command, const QString& argument);
     void holdLatencyRefusal(const QString& why);
+    void holdBounceRefusal(const QString& why);
+    void setBounceNotice(const QString& text);
     void holdRecordRefusal(const QString& why);
     static bool isRecordCommand(const std::string& c);
     static bool clearsRecordRefusal(const std::string& c);
@@ -396,6 +444,13 @@ private:
     QString latency_result_;
     int latency_outputs_ = 0;
     QString latency_refusal_;
+    int bounce_state_ = -1;
+    qreal bounce_progress_ = 0.0;
+    QString bounce_notice_;    // the held notice standing in notices_, if any
+    QString bounce_refusal_;
+    int render_state_ = -1;   // -1 before any render, else an api::RenderState
+    qreal render_progress_ = 0.0;
+    QString render_notice_;
     QString render_path_ = QStringLiteral("not yet known");
     bool software_ = false;
     bool capture_mode_ = false;
