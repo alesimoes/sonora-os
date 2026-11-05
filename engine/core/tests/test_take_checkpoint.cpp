@@ -150,7 +150,7 @@ int main() {
         s.disk().drain_once();
         const std::string take = (dir / "Audio Files" / "Audio 1_01.wav").string();
         // 24-bit mono: the header, then 3 bytes a frame. No checkpoint ran.
-        const uint64_t header = 12 + (8 + 602) + (8 + 16) + 8;
+        const uint64_t header = 12 + (8 + 28) + (8 + 602) + (8 + 16) + 8;
         CHECK(s.disk().checkpoints() == 0);
         CHECK(fs::file_size(take) == header + 3 * kBlock * 3);
         CHECK(s.stop(&error));
