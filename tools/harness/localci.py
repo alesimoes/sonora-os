@@ -16,6 +16,7 @@ nothing.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -26,6 +27,22 @@ ERROR_LINE = re.compile(
     r"error[: ]|\*\*\*Failed|FAIL|Timeout|undefined reference|"
     r"Segmentation|ThreadSanitizer|AddressSanitizer|RealtimeSanitizer",
     re.I)
+
+
+def bash_exe():
+    """Git's bash on Windows: a bare "bash" there can be WSL's
+    (System32/bash.exe), which reads none of the C:/ paths given to it."""
+    if sys.platform != "win32":
+        return "bash"
+    git = shutil.which("git")
+    if git:
+        base = os.path.dirname(os.path.dirname(git))
+        for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+            cand = os.path.join(base, *rel)
+            if os.path.exists(cand):
+                return cand
+    return os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                        "Git", "bin", "bash.exe")
 
 
 def _git(args, cwd, timeout=600):
@@ -108,7 +125,7 @@ class LocalCI:
                                    | subprocess.DETACHED_PROCESS)
         else:
             kw["start_new_session"] = True
-        subprocess.Popen(["bash", "-c", cmd], cwd=wt, env=env,
+        subprocess.Popen([bash_exe(), "-c", cmd], cwd=wt, env=env,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, **kw)
         self._set(sha, state="running", slot=slot, dir=logdir,
