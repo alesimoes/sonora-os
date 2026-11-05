@@ -644,10 +644,14 @@ bool v19_to_v20(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v22 -> v23 (ADR-0051): a playlist may carry "freeze", the record of Track
+// Freeze. Nothing is added; the reader refuses the key in an older file.
+bool v22_to_v23(Value&, std::vector<Repair>&, std::string&) { return true; }
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
      v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
-     v16_to_v17, v17_to_v18, v18_to_v19, v19_to_v20, carried, carried, carried, v23_to_v24}};
+     v16_to_v17, v17_to_v18, v18_to_v19, v19_to_v20, carried, carried, v22_to_v23, v23_to_v24}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -1521,10 +1525,34 @@ bool read_region(Reader& rd, const Value& v, const std::string& p, Region& r) {
 
 bool read_playlist(Reader& rd, const Value& v, const std::string& p,
                    const SourcePool& pool, std::uint16_t channels, Playlist& pl) {
-    if (!rd.keys(v, p, {"id", "name", "regions", "crossfades"})) return false;
+    if (!rd.keys(v, p, {"id", "name", "regions", "crossfades"}, {"freeze"})) return false;
     if (!rd.id(v, p, "id", pl.id)) return false;
     if (!rd.text(v, p, "name", pl.name)) return false;
     if (!rd.claim(pl.id, v, p)) return false;
+    if (const Value* fz = v.find("freeze")) {
+        if (rd.version() < 23) {
+            return rd.fail(*fz, key_path(p, "freeze"), "version 22 does not define a frozen playlist");
+        }
+        const std::string fp = key_path(p, "freeze");
+        const Value* ins = nullptr;
+        PlaylistFreeze f;
+        if (!rd.keys(*fz, fp, {"from", "inserts"}) || !rd.id(*fz, fp, "from", f.from) ||
+            !rd.array(*fz, fp, "inserts", ins)) {
+            return false;
+        }
+        if (ins->items().size() > kInsertSlots) {
+            return rd.fail(*ins, key_path(fp, "inserts"), "holds more inserts than a track has slots");
+        }
+        for (std::size_t i = 0; i < ins->items().size(); ++i) {
+            const Value& e = ins->items()[i];
+            std::int64_t n = 0;
+            if (!e.is_integer_lexeme() || !e.to_int64(n) || n < 0 || n > kMaxInteger) {
+                return rd.fail(e, index_path(key_path(fp, "inserts"), i), "must be an insert id");
+            }
+            f.inserts.push_back(static_cast<Id>(n));
+        }
+        pl.freeze = std::move(f);
+    }
     const Value* regions = nullptr;
     if (!rd.array(v, p, "regions", regions)) return false;
     for (std::size_t i = 0; i < regions->items().size(); ++i) {
@@ -2195,6 +2223,12 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
                 xv.set("length", integer(x.length));
                 xv.set("align", Value::string(name_of(kAligns, x.align)));
                 xv.set("shape", Value::string(name_of(kShapes, x.shape)));
+            }
+            if (pp->freeze) {
+                Value& fz = pv.set("freeze", Value::object());
+                fz.set("from", id_value(pp->freeze->from));
+                Value& ins = fz.set("inserts", Value::array());
+                for (const Id i : pp->freeze->inserts) ins.push(id_value(i));
             }
         }
     }

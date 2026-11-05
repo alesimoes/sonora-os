@@ -35,6 +35,7 @@
 #include "sonora/fake_backend.h"
 #include "sonora/machine_latency.h"
 #include "sonora/model/op_codec.h"
+#include "sonora/model/operations.h"
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
 #include "sonora/platform/file.h"
@@ -351,7 +352,8 @@ void same_commands_as_the_fake() {
     // An interface sends its selection as play's range only to an engine
     // announcing it (ADR-0007 §6); the fake announces what the engine does.
     CHECK(real.hello().capabilities ==
-          std::vector<std::string>{api::kCapabilityPlayRange});
+          (std::vector<std::string>{api::kCapabilityPlayRange, api::kCapabilityBounce,
+                                      api::kCapabilityRender}));
     CHECK(real.hello().capabilities == api::testing::FakeEngine::Config{}.capabilities);
     // app.quit is installed by install_session_commands but belongs to the
     // interface (ADR-0007 §5): never announced, and refused if sent.
@@ -3698,6 +3700,107 @@ void consolidate_command_renders_off_the_control_thread() {
     server.detach(rider);
 }
 
+// mix.bounce on the real engine (ui.mixer.bounce): a refusal answers the
+// command and leaves no event; a bounce says Running then Done with the
+// file's path, the file is there, a client attaching later is told how it
+// ended, and a cancel with none running is refused.
+void a_bounce_reaches_the_interface() {
+    const fs::path dir = fresh_dir("bounce");
+    fs::create_directories(dir / "Audio Files");
+    constexpr int64_t kFrames = 24000;
+    {
+        WavWriter w;
+        CHECK(w.open((dir / "Audio Files" / "s.wav").string(), 48000, 1,
+                     WavWriter::Format::Float32, 0));
+        const std::vector<float> data(kFrames, 0.25f);
+        CHECK(w.write(data.data(), data.size()) && w.close());
+    }
+    model::Document doc(RealEngine::start_document(dir));
+    std::string error;
+    model::ReplicationUpdate u;
+    model::AddSource add;
+    add.source.id = doc.current().next_id;
+    add.source.path = "Audio Files/s.wav";
+    add.source.channels = 1;
+    add.source.length = kFrames;
+    add.source.format = model::AudioFormat::Float32;
+    CHECK(doc.apply(add, u, error));
+    model::PlaceRegion place;
+    place.playlist = doc.current().edit->tracks[0]->active_playlist;
+    place.region.id = doc.current().next_id;
+    place.region.name = "r";
+    place.region.position = 0;
+    place.region.length = kFrames;
+    place.region.channels.push_back({add.source.id, 0});
+    place.split_right_id = place.region.id + 100;
+    CHECK(doc.apply(place, u, error));
+    EngineControlServer::Options opts;
+    opts.initial_document = std::make_shared<model::Snapshot>(doc.current());
+    RealEngine real(dir, opts);
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto run = [&](const char* id, const char* arg) {
+        api::CommandRequest c;
+        c.command = id;
+        c.argument = arg;
+        const uint64_t seq = real.send(c);
+        api::CommandReply out{seq, DispatchResult::UnknownCommand, "no reply"};
+        until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        return out;
+    };
+    const auto bounce_events = [&](const std::vector<api::EngineEvent>& from) {
+        std::vector<api::EngineEvent> out;
+        for (const auto& e : from) {
+            if (e.kind == api::EventKind::Bounce) out.push_back(e);
+        }
+        return out;
+    };
+    CHECK(real.hello().capabilities.back() == api::kCapabilityRender);
+    const api::CommandReply none = run("mix.bounce_cancel", "");
+    CHECK(none.result == DispatchResult::Failed && none.message == "no bounce is running");
+    CHECK(run("mix.bounce", "mode=sideways").result == DispatchResult::Failed);
+    CHECK(run("mix.bounce", "start=100 end=100").result == DispatchResult::Failed);
+    CHECK(bounce_events(in.events).empty());
+
+    CHECK(run("mix.bounce", "mode=offline format=float32 name=Take 1").result ==
+          DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        const auto ev = bounce_events(in.events);
+        return !ev.empty() && ev.back().flags == static_cast<uint32_t>(api::BounceState::Done);
+    }));
+    const auto ev = bounce_events(in.events);
+    CHECK(ev.front().flags == static_cast<uint32_t>(api::BounceState::Running));
+    CHECK(ev.back().text == "Bounced Files/Take 1_01.wav" && ev.back().insert == static_cast<uint64_t>(kFrames));
+    CHECK(fs::exists(dir / ev.back().text));
+
+    const std::vector<api::EngineEvent> late = late_greeting(real, in);
+    const auto held = bounce_events(late);
+    CHECK(held.size() == 1 && held[0].flags == static_cast<uint32_t>(api::BounceState::Done));
+
+    // Render in place (ADR-0051): each refusal says why, no render starts and
+    // no Render event is sent. The rolling render is test_render_in_place's.
+    const std::string track = "track=" + std::to_string(doc.current().edit->tracks[0]->id);
+    const api::CommandReply no_render = run("track.render_cancel", "");
+    CHECK(no_render.result == DispatchResult::Failed && no_render.message == "no render is running");
+    CHECK(run("track.freeze", "").result == DispatchResult::Failed);
+    for (const char* id : {"track.freeze", "track.commit", "track.process_selection"}) {
+        const api::CommandReply r = run(id, (track + " start=10 end=900").c_str());
+        CHECK(r.result == DispatchResult::Failed);
+        CHECK(r.message.find("no active plug-in insert") != std::string::npos);
+    }
+    const api::CommandReply thaw = run("track.unfreeze", track.c_str());
+    CHECK(thaw.result == DispatchResult::Failed && thaw.message.find("is not frozen") != std::string::npos);
+    for (const auto& e : in.events) CHECK(e.kind != api::EventKind::Render);
+}
+
 int main() {
     InProcessRig rig;
     const int failed = api::conformance::run(rig);
@@ -3747,6 +3850,7 @@ int main() {
     a_reorder_while_latched_files_the_ride_under_its_track();
     a_touch_release_returns_to_the_static_value();
     a_removal_while_latched_drops_the_ride();
+    a_bounce_reaches_the_interface();
     if (failures) return EXIT_FAILURE;
     std::printf("control: ok\n");
     return EXIT_SUCCESS;

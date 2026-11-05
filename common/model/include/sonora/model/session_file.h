@@ -68,6 +68,9 @@ namespace sonora::model {
 //    and every track in the punch.
 // 20 (ADR-0048): the session may hold "vcas" (each with its dB and mute) and
 //    "folders", only when it has some. A version 19 file has none.
+// 23 (ADR-0051): a playlist may carry "freeze", the record of Track Freeze
+//    (the playlist it was made from, the inserts it made inactive). A version
+//    22 file opens with none.
 // 24 (clip groups and loops, ADR-0052; 21 to 23 are other work's): a region may
 //    carry "clip_group" and "loop", only when it has them. A version 19 file
 //    opens with no groups.

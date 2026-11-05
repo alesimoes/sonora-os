@@ -11,6 +11,8 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "sonora/api/bounce.h"
+#include "sonora/api/render.h"
 #include "sonora/tty_mode.h"
 
 namespace sonora::tui {
@@ -209,6 +211,18 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
                 break;
             case api::EventKind::Consolidate:
                 // The terminal interface has no selection to consolidate.
+                break;
+            case api::EventKind::Bounce:
+                // Started from the Qt interface's window; here only how it
+                // ended is worth a line.
+                if (e.flags != static_cast<uint32_t>(api::BounceState::Running)) {
+                    notices_.push_back("bounce: " + e.text);
+                }
+                break;
+            case api::EventKind::Render:
+                if (e.flags != static_cast<uint32_t>(api::RenderState::Running)) {
+                    notices_.push_back("render: " + e.text);
+                }
                 break;
         }
     }

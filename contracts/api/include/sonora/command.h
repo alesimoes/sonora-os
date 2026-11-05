@@ -146,6 +146,23 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // callback), "master", or a track's index, decimal from 0.
         {"meters.reset", CommandTarget::None,
          "Reset the loudness, true-peak and clip readings of one meter or all", true},
+        // Protocol 49. The argument is api/bounce.h's. The reply says only
+        // whether the render started; progress and the end are Bounce events.
+        {"mix.bounce", CommandTarget::None,
+         "Bounce the mix to one stereo file in Bounced Files, offline or in real time", true},
+        {"mix.bounce_cancel", CommandTarget::None, "Stop the bounce that is running"},
+        // Protocol 56 (ADR-0051). The argument is api/render.h's: the track's
+        // model id, and for Process Selection its range. The reply says only
+        // whether the render started; progress and the end are Render events.
+        {"track.freeze", CommandTarget::None,
+         "Freeze a track: print it through its plug-in inserts and play the print", true},
+        {"track.commit", CommandTarget::None,
+         "Commit a track: print it through its plug-in inserts and keep the print", true},
+        {"track.process_selection", CommandTarget::None,
+         "Process the selected range of a track through its plug-in inserts", true},
+        {"track.unfreeze", CommandTarget::None,
+         "Unfreeze a track: play its own audio and inserts again", true},
+        {"track.render_cancel", CommandTarget::None, "Stop the render in place that is running"},
         {"track.disarm_all", CommandTarget::None, "Record-disarm every track"},
         {"track.toggle_mute", CommandTarget::Track, "Toggle mute on a track"},
         {"track.toggle_solo", CommandTarget::Track, "Toggle solo on a track"},
@@ -433,6 +450,9 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // Setup > Latency: measures and sets the round trip through the
         // latency.* commands.
         {"window.latency", CommandTarget::None, "Show or hide the Latency window",
+         false, CommandDomain::Interface},
+        // File > Bounce Mix…: the dialog that sends mix.bounce.
+        {"window.bounce", CommandTarget::None, "Show or hide the Bounce Mix window",
          false, CommandDomain::Interface},
         // Pro Tools' Window > Configuration and Logic's screensets: which
         // windows are open and where, in nine numbered slots. The argument

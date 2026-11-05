@@ -22,6 +22,9 @@ add_library(sonora_control STATIC
   src/machine_latency.cpp
   src/preset_store.cpp
   src/consolidate.cpp
+  src/bounce.cpp
+  src/bounce_job.cpp
+  src/render_in_place.cpp
   src/consolidate_job.cpp
   src/sample_edit.cpp
   src/mix_planner.cpp
@@ -94,6 +97,20 @@ if(UNIX)
   add_executable(test_sample_edit tests/test_sample_edit.cpp)
   target_link_libraries(test_sample_edit PRIVATE sonora_control)
   add_test(NAME sample_edit COMMAND test_sample_edit)
+endif()
+
+# Bounce Mix's engine half (ui.mixer.bounce): the offline file is the mix,
+# real time records the master through the tap, normalise, cancel. POSIX's.
+if(UNIX)
+  add_executable(test_bounce tests/test_bounce.cpp)
+  target_link_libraries(test_bounce PRIVATE sonora_control Threads::Threads)
+  add_test(NAME bounce COMMAND test_bounce)
+
+  # Track Freeze, Commit and Process Selection (ADR-0051): the print through
+  # a chain with a declared latency, to the sample.
+  add_executable(test_render_in_place tests/test_render_in_place.cpp)
+  target_link_libraries(test_render_in_place PRIVATE sonora_control Threads::Threads)
+  add_test(NAME render_in_place COMMAND test_render_in_place)
 endif()
 
 # A closed take as one compound; a bad file costs one track (ADR-0009

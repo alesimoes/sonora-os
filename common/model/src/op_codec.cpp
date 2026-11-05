@@ -81,6 +81,14 @@ Value name_of(const Name<E> (&table)[N], E v) {
 Value integer(std::int64_t n) { return Value::integer(n); }
 Value id_value(Id id) { return Value::integer(static_cast<std::int64_t>(id)); }
 
+Value freeze_value(const PlaylistFreeze& f) {
+    Value v = Value::object();
+    v.set("from", id_value(f.from));
+    Value& ins = v.set("inserts", Value::array());
+    for (const Id i : f.inserts) ins.push(id_value(i));
+    return v;
+}
+
 Value pair(std::int64_t a, std::int64_t b) {
     Value v = Value::array();
     v.push(integer(a));
@@ -603,6 +611,7 @@ struct Encoder {
         v.set("track", id_value(o.track));
         v.set("playlist", id_value(o.playlist));
         v.set("name", Value::string(o.name));
+        if (o.freeze) v.set("freeze", freeze_value(*o.freeze));
         return v;
     }
     Value operator()(const SetActivePlaylist& o) const {
@@ -1078,6 +1087,29 @@ bool read_colour(Reader& rd, const Value& obj, const std::string& path, bool reg
                                                           : detail::track_colour_problem());
     }
     out = c;
+    return true;
+}
+
+// A playlist's or AddPlaylist's "freeze" (ADR-0051): `obj` holds the key.
+bool read_freeze(Reader& rd, const Value& obj, const std::string& path,
+                 std::optional<PlaylistFreeze>& out) {
+    const Value& v = *obj.find("freeze");
+    const std::string p = Reader::at(path, "freeze");
+    PlaylistFreeze f;
+    const Value* ins = nullptr;
+    if (!rd.keys(v, p, {"from", "inserts"}) || !rd.id(v, p, "from", f.from) ||
+        !rd.array(v, p, "inserts", ins)) {
+        return false;
+    }
+    if (ins->items().size() > kInsertSlots) return rd.fail(Reader::at(p, "inserts"), "holds too many inserts");
+    for (const Value& e : ins->items()) {
+        std::int64_t n = 0;
+        if (!e.is_integer_lexeme() || !e.to_int64(n) || n < 0 || n > kMaxInteger) {
+            return rd.fail(Reader::at(p, "inserts"), "must hold insert ids");
+        }
+        f.inserts.push_back(static_cast<Id>(n));
+    }
+    out = std::move(f);
     return true;
 }
 
@@ -1732,9 +1764,11 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
         out = o;
     } else if (kind == "AddPlaylist") {
         AddPlaylist o;
-        if (!rd.keys(v, "", {"op", "track", "playlist", "name"}) ||
+        const bool frozen = v.is_object() && v.find("freeze") != nullptr;
+        if (!(frozen ? rd.keys(v, "", {"op", "track", "playlist", "name", "freeze"})
+                     : rd.keys(v, "", {"op", "track", "playlist", "name"})) ||
             !rd.id(v, "", "track", o.track) || !rd.id(v, "", "playlist", o.playlist) ||
-            !rd.text(v, "", "name", o.name)) {
+            !rd.text(v, "", "name", o.name) || (frozen && !read_freeze(rd, v, "", o.freeze))) {
             return false;
         }
         out = std::move(o);
@@ -2218,6 +2252,7 @@ Value playlist_value(const Playlist& p) {
     for (const Region& r : p.regions) rs.push(region_value(r));
     Value& xs = v.set("crossfades", Value::array());
     for (const Crossfade& x : p.crossfades) xs.push(crossfade_value(x));
+    if (p.freeze) v.set("freeze", freeze_value(*p.freeze));
     return v;
 }
 
@@ -2480,10 +2515,13 @@ bool read_playlists(Reader& rd, const Value& root,
         auto p = std::make_shared<Playlist>();
         const Value* rs = nullptr;
         const Value* xs = nullptr;
-        if (!rd.keys(e, "playlists", {"id", "name", "regions", "crossfades"}) ||
+        const bool frozen = e.is_object() && e.find("freeze") != nullptr;
+        if (!(frozen ? rd.keys(e, "playlists", {"id", "name", "regions", "crossfades", "freeze"})
+                     : rd.keys(e, "playlists", {"id", "name", "regions", "crossfades"})) ||
             !rd.id(e, "playlists", "id", p->id) || !rd.text(e, "playlists", "name", p->name) ||
             !rd.array(e, "playlists", "regions", rs) ||
-            !rd.array(e, "playlists", "crossfades", xs)) {
+            !rd.array(e, "playlists", "crossfades", xs) ||
+            (frozen && !read_freeze(rd, e, "playlists", p->freeze))) {
             return false;
         }
         for (const Value& r : rs->items()) {

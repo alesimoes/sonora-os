@@ -15,6 +15,7 @@ set(SONORA_MODEL_SOURCES
   src/op_codec.cpp
   src/plan.cpp
   src/sequence_file.cpp
+  src/render_in_place.cpp
   src/replication.cpp
   src/session_file.cpp
   src/session_template.cpp
@@ -84,6 +85,10 @@ add_test(NAME model_automation COMMAND test_model_automation)
 add_executable(test_model_comping tests/test_comping.cpp)
 target_link_libraries(test_model_comping PRIVATE sonora_model_audited)
 add_test(NAME model_comping COMMAND test_model_comping)
+# Track Freeze, Commit and Process Selection (ADR-0051).
+add_executable(test_model_render_in_place tests/test_render_in_place.cpp)
+target_link_libraries(test_model_render_in_place PRIVATE sonora_model_audited)
+add_test(NAME model_render_in_place COMMAND test_model_render_in_place)
 # Track structure: delete, duplicate (ADR-0023).
 add_executable(test_model_tracks tests/test_tracks.cpp)
 target_link_libraries(test_model_tracks PRIVATE sonora_model_audited)

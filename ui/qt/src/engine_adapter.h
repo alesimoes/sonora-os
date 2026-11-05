@@ -155,17 +155,21 @@ enum class EngineEventKind {
     SessionFolder,
     Latency,
     Consolidate,   // protocol 52: take = progress in thousandths, insert = the track, flags = api::kConsolidate*
+    Bounce,
+    Render,
 };
 
 // api::EngineEvent: a discrete fact, in the order the engine said it.
 struct EngineEvent {
     EngineEventKind kind = EngineEventKind::Notice;
     uint64_t take = 0;    // TakeFailed: the take it is about; RecoveryOffer: how many takes;
-                          // Latency: L in frames
-    uint64_t insert = 0;  // PluginFault: the insert's model id; Latency: the probe's outputs
+                          // Latency: L in frames; Bounce: the fraction in thousandths
+    uint64_t insert = 0;  // PluginFault: the insert's model id; Latency: the probe's outputs;
+                          // Bounce: the frames in the file once Done
     std::string text;     // InputsMissing, TakeFailed, PluginFault, RecoveryOffer: empty clears it;
                           // SessionFolder: the folder; Latency: the probe's words
-    uint32_t flags = 0;   // SessionFolder: api::kFolder* bits; Latency: api::latency_flags()
+    uint32_t flags = 0;   // SessionFolder: api::kFolder* bits; Latency: api::latency_flags();
+                          // Bounce: an api::BounceState
 };
 
 // api::CommandReply.

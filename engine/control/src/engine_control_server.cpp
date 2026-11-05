@@ -595,6 +595,88 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                           consolidate_job_.cancel();
                           return true;
                       }));
+    // Bounce Mix (ui.mixer.bounce): the render runs on a worker, or on the
+    // live audio thread's tap, never here; this thread starts it and says how
+    // it ended (follow_bounce()).
+    registry_.install("mix.bounce",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          api::BounceOptions o;
+                          if (!api::parse_bounce_argument(ctx.argument, o, why)) return false;
+                          if (bounce_job_.active()) {
+                              why = "a bounce is already running; cancel it or wait for it";
+                              return false;
+                          }
+                          if (takes_in_flight()) {
+                              why = "stop recording before bouncing";
+                              return false;
+                          }
+                          if (o.mode == api::BounceMode::RealTime &&
+                              (session_.transport().state() != TransportState::Stopped ||
+                               playback_busy())) {
+                              why = "stop the transport before bouncing in real time";
+                              return false;
+                          }
+                          const model::Snapshot now = document_->current();
+                          if (!bounce_check(now, o, why)) return false;
+                          bounce_said_ = 0;
+                          if (!bounce_job_.start(session_, *playback_, now, *session_.folder(), o,
+                                                 why)) {
+                              return false;
+                          }
+                          announce_bounce(api::BounceState::Running, 0, 0, "");
+                          return true;
+                      }));
+    registry_.install("mix.bounce_cancel",
+                      ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          if (!bounce_job_.active()) {
+                              why = "no bounce is running";
+                              return false;
+                          }
+                          bounce_job_.cancel();
+                          return true;
+                      }));
+    // Render in place (plugins.graph.freeze, plugins.offline; ADR-0051): the
+    // render rolls the live chain in real time, this thread starts it and
+    // puts the file in the document (follow_render()).
+    registry_.install("track.freeze", ExplainingHandler([this](const CommandContext& ctx,
+                                                               std::string& why) {
+                          return start_render(model::RenderKind::Freeze, ctx.argument, why);
+                      }));
+    registry_.install("track.commit", ExplainingHandler([this](const CommandContext& ctx,
+                                                               std::string& why) {
+                          return start_render(model::RenderKind::Commit, ctx.argument, why);
+                      }));
+    registry_.install("track.process_selection",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          return start_render(model::RenderKind::Process, ctx.argument, why);
+                      }));
+    registry_.install("track.render_cancel",
+                      ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          if (!render_) {
+                              why = "no render is running";
+                              return false;
+                          }
+                          render_->cancel();
+                          return true;
+                      }));
+    registry_.install("track.unfreeze",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          api::RenderOptions o;
+                          if (!api::parse_render_argument(ctx.argument, o, why)) return false;
+                          if (render_) {
+                              why = "a render is running; cancel it or wait for it";
+                              return false;
+                          }
+                          if (takes_in_flight() || playback_busy() ||
+                              session_.transport().state() != TransportState::Stopped) {
+                              why = "stop the transport before unfreezing a track";
+                              return false;
+                          }
+                          std::vector<model::ReplicationUpdate> updates;
+                          if (!unfreeze_track(*document_, o.track, updates, why)) return false;
+                          document_changed_by_engine(updates);
+                          return true;
+                      }));
     // Pro Tools' Loop Playback and Loop Record, Logic's Cycle: session
     // settings, saved and outside undo like the range (ADR-0016, updates
     // "the loop on switch", "loop record as a record mode" and "Logic's
@@ -687,6 +769,8 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
 
 EngineControlServer::~EngineControlServer() {
     stop();
+    // A render reads the hosts and rolls the playback controller: it goes first.
+    render_.reset();
     // Hosts before the plans that name their slots are freed.
     hosting_.reset();
     // Every probe child killed and reaped before its thread is joined.
@@ -703,6 +787,8 @@ void EngineControlServer::after_deactivate() {
     playback_->set_chain_resolver(ChainResolver());
     playback_->set_lane_resolver(LaneResolver());
     drop_reading_flushes();
+    // Its worker reads the hosts that go next.
+    render_.reset();
     hosting_.reset();
     // The next activation builds hosting again, for its own period.
     hosting_tried_ = false;
@@ -1299,6 +1385,8 @@ void EngineControlServer::remember(const api::EngineEvent& event, const std::str
         case api::EventKind::SessionFolder: session_folder_ = bytes; break;
         case api::EventKind::Latency: latency_ = bytes; break;
         case api::EventKind::Consolidate: consolidate_ = bytes; break;
+        case api::EventKind::Bounce: bounce_ = bytes; break;
+        case api::EventKind::Render: render_event_ = bytes; break;
     }
 }
 
@@ -1729,6 +1817,8 @@ void EngineControlServer::greet(ClientId id) {
         implemented_.end()) {
         hello.capabilities.push_back(api::kCapabilityPlayRange);
     }
+    hello.capabilities.push_back(api::kCapabilityBounce);
+    hello.capabilities.push_back(api::kCapabilityRender);
     std::string bytes;
     api::wire::encode(hello, bytes);
     send_to(client, bytes);
@@ -1751,7 +1841,7 @@ void EngineControlServer::greet(ClientId id) {
     }
     for (const std::string* e :
          {&session_folder_, &latency_, &inputs_missing_, &take_failed_, &fatal_,
-          &recovery_offer_, &consolidate_}) {
+          &recovery_offer_, &bounce_, &render_event_, &consolidate_}) {
         if (!e->empty()) send_to(client, *e);
     }
 }
@@ -2901,7 +2991,32 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
             if (hosting_) hosting_->show(document_->current(), m.action == api::ModelAction::Load);
             if (m.action == api::ModelAction::Load) {
                 open_deadline_ms_ = steady_ms_now() + opts_.plugin_open_wait_ms;
-                // The last session's offer is not this one's.
+                // The last session's offer is not this one's, nor its bounce:
+                // stopped, its file removed, its standing event dropped.
+                const bool bounce_was_running = bounce_job_.abandon();
+                bounce_.clear();
+                bounce_said_ = 0;
+                if (bounce_was_running) {
+                    announce_bounce(api::BounceState::Cancelled, 0, 0,
+                                    "the session was closed; the bounce was stopped");
+                }
+                // A render rolling the old session's chain prints nothing
+                // for the new one: stopped (its destructor removes the
+                // file), its standing event dropped.
+                const bool render_was_running = render_ != nullptr;
+                if (render_) {
+                    const model::Id track = render_->request().track;
+                    render_->cancel();
+                    render_.reset();
+                    render_event_.clear();
+                    render_said_ = 0;
+                    announce_render(api::RenderState::Cancelled, 0, track,
+                                    "the session was closed; the render was stopped");
+                }
+                if (!render_was_running) {
+                    render_event_.clear();
+                    render_said_ = 0;
+                }
                 withdraw_orphans();
                 offer_orphans();
             }
@@ -3122,6 +3237,17 @@ void EngineControlServer::announce_consolidate(uint32_t state, uint32_t permille
     post_event(e);
 }
 
+void EngineControlServer::announce_bounce(api::BounceState state, uint32_t permille,
+                                          uint64_t frames, const std::string& text) {
+    api::EngineEvent e;
+    e.kind = api::EventKind::Bounce;
+    e.frame = permille;
+    e.insert = frames;
+    e.flags = static_cast<uint32_t>(state);
+    e.text = text;
+    post_event(e);
+}
+
 void EngineControlServer::follow_consolidate() {
     if (!consolidate_job_.active()) return;
     if (!consolidate_job_.finished()) {
@@ -3162,6 +3288,154 @@ void EngineControlServer::follow_consolidate() {
     for (const auto& u : updates) send_update(u);
     show_document(false);
     announce_consolidate(api::kConsolidateDone, 1000, r.rendered.relative_path);
+}
+
+void EngineControlServer::follow_bounce() {
+    if (!bounce_job_.active()) return;
+    if (!bounce_job_.finished()) {
+        // A step in a hundred: a long bounce is not a flood of events.
+        const uint32_t p = bounce_job_.permille();
+        if (p >= bounce_said_ + 10) {
+            bounce_said_ = p;
+            announce_bounce(api::BounceState::Running, p, 0, "");
+        }
+        return;
+    }
+    BounceJob::Result r = bounce_job_.collect();
+    const std::string file = r.session_dir + "/" + r.bounced.relative_path;
+    if (r.cancelled) {
+        if (r.ok) std::remove(file.c_str());
+        announce_bounce(api::BounceState::Cancelled, 0, 0,
+                        "the bounce was cancelled; no file was kept");
+        return;
+    }
+    if (!r.ok) {
+        announce_bounce(api::BounceState::Failed, 0, 0, r.error);
+        return;
+    }
+    // The session was saved as another folder while it rendered: the file is
+    // in the old one, and the notice would name a path that is not here.
+    if (*session_.folder() != r.session_dir) {
+        std::remove(file.c_str());
+        announce_bounce(api::BounceState::Failed, 0, 0,
+                        "the session moved while bouncing; no file was kept");
+        return;
+    }
+    announce_bounce(api::BounceState::Done, 1000, r.bounced.frames, r.bounced.relative_path);
+}
+
+void EngineControlServer::announce_render(api::RenderState state, uint32_t permille,
+                                          model::Id track, const std::string& text) {
+    api::EngineEvent e;
+    e.kind = api::EventKind::Render;
+    e.frame = permille;
+    e.insert = track;
+    e.flags = static_cast<uint32_t>(state);
+    e.text = text;
+    post_event(e);
+}
+
+bool EngineControlServer::start_render(model::RenderKind kind, const std::string& argument,
+                                       std::string& why) {
+    api::RenderOptions o;
+    if (!api::parse_render_argument(argument, o, why)) return false;
+    if (render_ || bounce_job_.active()) {
+        why = "a render or a bounce is already running; cancel it or wait for it";
+        return false;
+    }
+    if (takes_in_flight()) {
+        why = "stop recording before rendering a track";
+        return false;
+    }
+    if (session_.transport().state() != TransportState::Stopped || playback_busy()) {
+        why = "stop the transport before rendering a track";
+        return false;
+    }
+    const model::Snapshot now = document_->current();
+    RenderAsk ask;
+    ask.track = o.track;
+    ask.start = o.start;
+    ask.end = o.end;
+    ask.tail_ms = o.tail_ms;
+    ask.name = o.name;
+    ask.sample_rate = now.settings.sample_rate;
+    RenderRequest request;
+    if (!plan_render(now, kind, ask, request, why)) return false;
+    if (!hosting_ || !hosting_->ok()) {
+        why = "plug-in hosting is not running, so the track's inserts cannot be printed";
+        return false;
+    }
+    if (!hosting_->chain_ready(request.track)) {
+        why = "the plug-in chain of this track is not running (it is still loading, restarting "
+              "or down), so it cannot be printed; wait for its plug-ins to load";
+        return false;
+    }
+    PluginHosting* const hosting = hosting_.get();
+    const model::Id track = request.track;
+    auto job = std::make_unique<RenderInPlace>(session_, *playback_);
+    if (!job->start(now, *session_.folder(), request,
+                    [hosting, track] { return hosting->chain_misses(track); }, why)) {
+        return false;
+    }
+    render_ = std::move(job);
+    render_said_ = 0;
+    announce_render(api::RenderState::Running, 0, track, "");
+    return true;
+}
+
+void EngineControlServer::document_changed_by_engine(
+    const std::vector<model::ReplicationUpdate>& updates) {
+    for (const model::ReplicationUpdate& u : updates) send_update(u);
+    // As for a client's edit: the chains follow the document, then the plan
+    // is built from it.
+    if (hosting_) hosting_->show(document_->current(), false);
+    show_document(false);
+    show_inserts(false);
+}
+
+void EngineControlServer::follow_render() {
+    if (!render_) return;
+    const model::Id track = render_->request().track;
+    RenderResult result;
+    std::string error;
+    bool cancelled = false;
+    if (!render_->poll(result, error, cancelled)) {
+        // A step in a hundred: a long render is not a flood of events.
+        const uint32_t p = static_cast<uint32_t>(render_->progress() * 1000.0);
+        if (p >= render_said_ + 10) {
+            render_said_ = p;
+            announce_render(api::RenderState::Running, p, track, "");
+        }
+        return;
+    }
+    const RenderRequest request = render_->request();
+    const RenderBasis basis = render_->basis();
+    render_.reset();
+    const std::string file = *session_.folder() + "/" + result.relative_path;
+    if (cancelled) {
+        std::remove(file.c_str());
+        announce_render(api::RenderState::Cancelled, 0, track,
+                        "the render was cancelled; nothing was changed");
+        return;
+    }
+    if (!error.empty()) {
+        announce_render(api::RenderState::Failed, 0, track, error);
+        return;
+    }
+    // A take that started meanwhile owns the playlists (structure_lock).
+    if (takes_in_flight()) {
+        std::remove(file.c_str());
+        announce_render(api::RenderState::Failed, 0, track,
+                        "a take started while the track rendered; nothing was changed");
+        return;
+    }
+    std::vector<model::ReplicationUpdate> updates;
+    if (!place_render(*document_, *session_.folder(), request, basis, result, updates, error)) {
+        announce_render(api::RenderState::Failed, 0, track, error);
+        return;
+    }
+    document_changed_by_engine(updates);
+    announce_render(api::RenderState::Done, 1000, track, result.label);
 }
 
 void EngineControlServer::follow_saver() {
@@ -3230,6 +3504,8 @@ void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
     follow_consolidate();
+    follow_bounce();
+    follow_render();
     autosave_when_due();
     follow_latency();
     follow_reported_latency();

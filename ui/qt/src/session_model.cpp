@@ -20,7 +20,9 @@
 #include "session_files.h"
 #include "sonora/api/consolidate_argument.h"
 #include "sonora/api/messages.h"
+#include "sonora/api/render.h"
 #include "sonora/command.h"
+#include "sonora/model/render_in_place.h"
 #include "sonora/model/session_file.h"
 #include "sonora/model/session_template.h"
 #include "transport_model.h"
@@ -626,6 +628,10 @@ void SessionModel::installCommands(CommandRegistry& local) {
         setLatencyOpen(!latency_open_);
         return true;
     });
+    local.install("window.bounce", [this](const CommandContext&) {
+        setBounceOpen(!bounce_open_);
+        return true;
+    });
     local.install("window.configurations", [this](const CommandContext&) {
         setWindowConfigsOpen(!window_configs_open_);
         return true;
@@ -948,6 +954,12 @@ void SessionModel::setLatencyOpen(bool on) {
     emit latencyOpenChanged();
 }
 
+void SessionModel::setBounceOpen(bool on) {
+    if (on == bounce_open_) return;
+    bounce_open_ = on;
+    emit bounceOpenChanged();
+}
+
 QVariantList SessionModel::windowConfigs() const {
     QVariantList list;
     for (int n = 1; n <= WindowLayouts::kSlots; ++n) {
@@ -1126,6 +1138,51 @@ bool SessionModel::setRollText(bool pre, const QString& text) {
     send_command_(pre ? QStringLiteral("transport.set_pre_roll")
                       : QStringLiteral("transport.set_post_roll"),
                   QString::number(frames));
+    return true;
+}
+
+bool SessionModel::selectedTrackFrozen() const {
+    const int i = ctl_.selection().track;
+    const auto& tracks = ctl_.snapshot().edit->tracks;
+    return i >= 0 && i < static_cast<int>(tracks.size()) &&
+           model::frozen_playlist(*tracks[static_cast<std::size_t>(i)]) != nullptr;
+}
+
+// Track > Freeze, Commit, Unfreeze and Process Selection (ADR-0051): the
+// engine prints the track through its inserts and puts the file in the
+// document, so this only names the track and, for Process, the range.
+bool SessionModel::renderInPlace(const QString& what) {
+    const int i = ctl_.selection().track;
+    const auto& tracks = ctl_.snapshot().edit->tracks;
+    if (i < 0 || i >= static_cast<int>(tracks.size())) return run(false, "select a track first");
+    if (!send_command_) return run(false, "no engine to render with");
+    const model::TrackEdit& t = *tracks[static_cast<std::size_t>(i)];
+    api::RenderOptions o;
+    o.track = t.id;
+    QString command, verb;
+    if (what == QStringLiteral("freeze")) {
+        command = QStringLiteral("track.freeze");
+        verb = QStringLiteral("Freezing ");
+    } else if (what == QStringLiteral("commit")) {
+        command = QStringLiteral("track.commit");
+        verb = QStringLiteral("Committing ");
+    } else if (what == QStringLiteral("unfreeze")) {
+        command = QStringLiteral("track.unfreeze");
+    } else if (what == QStringLiteral("process")) {
+        const Selection& sel = ctl_.selection();
+        if (!sel.has_range() || !sel.covers(i)) {
+            return run(false, "select a range on " + t.name + " to process");
+        }
+        o.start = static_cast<uint64_t>(sel.start);
+        o.end = static_cast<uint64_t>(sel.end);
+        command = QStringLiteral("track.process_selection");
+        verb = QStringLiteral("Processing ");
+    } else {
+        return run(false, "unknown render \"" + what.toStdString() + "\"");
+    }
+    render_what_ = verb.isEmpty() ? QString() : verb + q(t.name);
+    emit renderWhatChanged();
+    send_command_(command, q(api::format_render_argument(o)));
     return true;
 }
 

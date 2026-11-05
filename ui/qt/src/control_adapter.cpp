@@ -81,6 +81,8 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
             case api::EventKind::SessionFolder: o.kind = EngineEventKind::SessionFolder; break;
             case api::EventKind::Latency: o.kind = EngineEventKind::Latency; break;
             case api::EventKind::Consolidate: o.kind = EngineEventKind::Consolidate; break;
+            case api::EventKind::Bounce: o.kind = EngineEventKind::Bounce; break;
+            case api::EventKind::Render: o.kind = EngineEventKind::Render; break;
         }
         o.take = e.frame;
         o.insert = e.insert;

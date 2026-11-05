@@ -73,11 +73,14 @@
 #include <vector>
 
 #include "sonora/api/messages.h"
+#include "sonora/api/render.h"
 #include "sonora/api/state_block.h"
 #include "sonora/api/wire.h"
 #include "sonora/automation_write.h"
 #include "sonora/automation_writer.h"
+#include "sonora/bounce_job.h"
 #include "sonora/command.h"
+#include "sonora/render_in_place.h"
 #include "sonora/consolidate_job.h"
 #include "sonora/machine_latency.h"
 #include "sonora/model/operations.h"
@@ -610,6 +613,29 @@ private:
     // standing Latency event, what it says, and the measurement's cable
     // and pings said so far. The control thread's.
     std::string latency_;
+    // Bounce Mix (ui.mixer.bounce): a worker or the audio thread's tap renders,
+    // this thread starts it and says how it ended. The standing Bounce event,
+    // and the last progress said.
+    BounceJob bounce_job_;
+    std::string bounce_;
+    uint32_t bounce_said_ = 0;
+    void announce_bounce(api::BounceState state, uint32_t permille, uint64_t frames,
+                         const std::string& text);
+    void follow_bounce();
+    // Render in place (ADR-0051): Freeze, Commit and Process Selection print
+    // a track through its live chain in real time (RenderInPlace) and this
+    // thread puts the file in the document. The standing Render event and
+    // the last progress said.
+    std::unique_ptr<RenderInPlace> render_;
+    std::string render_event_;
+    uint32_t render_said_ = 0;
+    void announce_render(api::RenderState state, uint32_t permille, model::Id track,
+                         const std::string& text);
+    bool start_render(model::RenderKind kind, const std::string& argument, std::string& why);
+    void follow_render();
+    // The compound the engine itself applied: every replica is sent it, the
+    // chains follow the document and the playing plan is built again.
+    void document_changed_by_engine(const std::vector<model::ReplicationUpdate>& updates);
     // The consolidate render (ADR-0031 §6): a worker renders, this thread
     // commits. The standing Consolidate event, the session folder it
     // renders into, and the last progress said.

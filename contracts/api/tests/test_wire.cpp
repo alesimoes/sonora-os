@@ -12,6 +12,8 @@
 #include <string>
 #include <vector>
 
+#include "sonora/api/bounce.h"
+#include "sonora/api/render.h"
 #include "sonora/api/state_block.h"
 
 using namespace sonora;
@@ -445,6 +447,8 @@ void version_check() {
     // session format 24; follows 48, the session-model train: groups, clip
     // gain, record modes; window
     // format 16, session format 19).
+    // 43/49/56: consolidate; mix.bounce and EventKind::Bounce; track.freeze
+    // and the playlist "freeze" key (ADR-0051).
     CHECK(kProtocolVersion == 59);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
@@ -512,6 +516,56 @@ void consolidate_event() {
     }
 }
 
+// Protocol 49: a Bounce event carries the fraction in `frame`, the frames in
+// `insert`, the state in `flags`; a state this version does not define is
+// refused. The commands are in the catalog and are the engine's.
+void bounce_event() {
+    EngineEvent e;
+    e.kind = EventKind::Bounce;
+    e.insert = 96000;
+    e.frame = 250;
+    e.flags = static_cast<uint32_t>(BounceState::Failed);
+    e.text = "stop recording before bouncing";
+    std::string bytes, error;
+    wire::encode(e, bytes);
+    EngineEvent back;
+    CHECK(wire::decode(bytes, back, error));
+    CHECK(back.kind == EventKind::Bounce && back.insert == 96000 && back.frame == 250 &&
+          back.flags == e.flags && back.text == e.text);
+    e.flags = static_cast<uint32_t>(BounceState::Cancelled) + 1;
+    wire::encode(e, bytes);
+    CHECK(!wire::decode(bytes, back, error) && mentions(error, "bounce"));
+    CHECK(find_command("mix.bounce") != nullptr && is_engine_command("mix.bounce"));
+    CHECK(find_command("mix.bounce_cancel") != nullptr);
+}
+
+// Protocol 56: a Render event carries the fraction in `frame`, the track in
+// `insert`, the state in `flags`; a state this version does not define is
+// refused. The commands are in the catalog and are the engine's.
+void render_event() {
+    CHECK(static_cast<uint32_t>(EventKind::Render) ==
+          static_cast<uint32_t>(EventKind::Bounce) + 1);
+    EngineEvent e;
+    e.kind = EventKind::Render;
+    e.insert = 7;
+    e.frame = 250;
+    e.flags = static_cast<uint32_t>(RenderState::Failed);
+    e.text = "Vox has no active plug-in insert";
+    std::string bytes, error;
+    wire::encode(e, bytes);
+    EngineEvent back;
+    CHECK(wire::decode(bytes, back, error));
+    CHECK(back.kind == EventKind::Render && back.insert == 7 && back.frame == 250 &&
+          back.flags == e.flags && back.text == e.text);
+    e.flags = static_cast<uint32_t>(RenderState::Cancelled) + 1;
+    wire::encode(e, bytes);
+    CHECK(!wire::decode(bytes, back, error) && mentions(error, "render"));
+    for (const char* id : {"track.freeze", "track.commit", "track.process_selection",
+                           "track.unfreeze", "track.render_cancel"}) {
+        CHECK(find_command(id) != nullptr && is_engine_command(id));
+    }
+}
+
 void domains() {
     // The ids are the contract with every keymap: none may change here.
     CHECK(find_command("transport.toggle_record") != nullptr);
@@ -526,6 +580,7 @@ void domains() {
                                id == "window.transport" ||
                                id == "window.undo_history" ||
                                id == "window.memory_locations" || id == "window.latency" ||
+                               id == "window.bounce" ||
                                id == "window.configurations" || id == "window.config_store" ||
                                id == "window.config_recall" ||
                                id == "comp.toggle_lanes" || id == "comp.toggle_quick_swipe" ||
@@ -850,6 +905,8 @@ int main() {
     refusals();
     version_check();
     consolidate_event();
+    bounce_event();
+    render_event();
     domains();
     frames_carry_large_messages();
     frames_refuse_what_is_out_of_place();
