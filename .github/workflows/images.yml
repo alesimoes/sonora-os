@@ -13,6 +13,19 @@ on:
       - tools/Dockerfile.rtsan
       - tools/Dockerfile.plugins
       - audio-stack/pipewire-sonora.conf
+      - tools/Dockerfile.labwc
+      - tools/Dockerfile.labwc-input
+      - tools/Dockerfile.systemd-test
+      - tools/Dockerfile.runtime
+      - tools/Dockerfile.bwfreaders
+      - iso/auto/config
+      - iso/config/archives/sonora-backports.list.chroot
+      - iso/config/archives/sonora-backports.pref.chroot
+      - iso/config/archives/sonora-snapshot.conf.chroot
+      - tools/test-engine-entrypoint.sh
+      - tools/verify-recording.py
+      - tools/test-quantum-entrypoint.sh
+      - tools/jack-quantum-probe.py
       - .github/workflows/images.yml
   workflow_dispatch:
   # Weekly, to pick up base image security updates.
@@ -47,6 +60,23 @@ jobs:
           - name: sonora-plugins
             dockerfile: tools/Dockerfile.plugins
             context: tools
+          # The names below are the tags the test scripts use, without :trixie.
+          - name: sonora-labwc-test
+            dockerfile: tools/Dockerfile.labwc
+            context: tools
+            snapshot: true
+          - name: sonora-labwc-input
+            dockerfile: tools/Dockerfile.labwc-input
+            context: tools
+          - name: sonora-systemd-test
+            dockerfile: tools/Dockerfile.systemd-test
+            context: tools
+          - name: sonora-bwf-readers
+            dockerfile: tools/Dockerfile.bwfreaders
+            context: tools
+          - name: sonora-runtime
+            dockerfile: tools/Dockerfile.runtime
+            context: .
     steps:
       - uses: actions/checkout@v4
 
@@ -59,7 +89,14 @@ jobs:
         env:
           IMAGE: ghcr.io/alesimoes/${{ matrix.name }}
         run: |
-          docker build --label org.sonora=1 \
+          extra=()
+          if [ "${{ matrix.snapshot }}" = true ]; then
+            # The same value tools/test-labwc-kiosk.sh passes when it builds locally.
+            snap="$(sed -nE 's/^SONORA_SNAPSHOT=([0-9]{8}T[0-9]{6}Z)$/\1/p' iso/auto/config)"
+            [ -n "$snap" ] || { echo "no SONORA_SNAPSHOT in iso/auto/config" >&2; exit 1; }
+            extra=(--build-arg "SNAP=$snap")
+          fi
+          docker build --label org.sonora=1 "${extra[@]}" \
             --label org.opencontainers.image.source=https://github.com/alesimoes/sonora-os \
             -t "$IMAGE:trixie" -t "$IMAGE:${GITHUB_SHA}" \
             -f "${{ matrix.dockerfile }}" "${{ matrix.context }}"

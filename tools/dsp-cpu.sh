@@ -7,7 +7,7 @@
 # Not a ctest. A 60 s render per configuration, five times over, is minutes,
 # and a shared CI runner says nothing about the reference machine. ctest
 # keeps the quick per-block check (denormals: silence against active, side
-# by side). The nightly workflow runs this and keeps the reports; the
+# by side). The main full-suite workflow runs this and keeps the reports; the
 # figures that count are the ones from the reference machine, recorded in
 # brain/research/native-dsp-n0-measurements.md with the CPU model.
 #
@@ -18,7 +18,7 @@
 #
 # Without --calibrated the class bars are absolute: the run that counts
 # is on the reference machine. --calibrated is for a machine of unknown
-# speed (the nightly's shared runner): each bar is multiplied by this
+# speed (the main workflow's shared runner): each bar is multiplied by this
 # machine's cost of a frozen reference kernel over the reference
 # machine's (plugins/native/measure/src/calibrate.cpp), so the bar moves
 # with the runner and a red means the processor got slower, not the

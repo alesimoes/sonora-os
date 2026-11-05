@@ -1,7 +1,7 @@
 ---
 name: plugin-engineer
 description: Plugin hosting and interchange — LV2, VST3, Windows VST via yabridge, and the AAF / .ptx / MIDI import and export path. Use for anything that loads third-party code or reads another DAW's files.
-tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch
+tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 250
 ---
