@@ -91,7 +91,6 @@ add_subdirectory(common/base)
 # Strict JSON for the session file and the key maps (ADR-0009 §5), layer 0.
 add_subdirectory(common/json)
 if(SONORA_PLATFORM STREQUAL "linux")
-add_subdirectory(common/audiofile)
 add_subdirectory(common/midi)
 # The session document (ADR-0009), layer 1 beside common/audiofile. It links
 # common/midi for notes and edits (ADR-0014 §1), above it in this list.
@@ -99,6 +98,9 @@ add_subdirectory(common/model)
 endif()
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
+# The take file (BWF writer, reader, crash recovery). Standard C++ plus the
+# OS seam, so the neutral build and the MSVC job compile it (ADR-0008 P2).
+add_subdirectory(common/audiofile)
 if(SONORA_PLATFORM STREQUAL "linux")
 # A session folder on disk (ADR-0015 §3, §6), layer 2 on common/model and
 # common/platform: the engine's saver writes through it.
@@ -122,6 +124,8 @@ if(NOT SONORA_PLATFORM STREQUAL "linux")
 endif()
 add_subdirectory(contracts/api)
 add_subdirectory(contracts/backend)
+# Control surface events in, feedback out (ADR-0007 4.4, ADR-0040).
+add_subdirectory(contracts/surfaces)
 # The engine <-> plugin host shared-memory layout, accepted as layout 1
 # (ADR-0012 §5).
 add_subdirectory(contracts/plugin)
@@ -130,6 +134,8 @@ add_subdirectory(contracts/plugin)
 # whose end-to-end tests run it when it is built.
 add_subdirectory(plugins/host)
 add_subdirectory(engine/core)
+# Offline converters (ADR-0007 M10); the engine never links them.
+add_subdirectory(interchange)
 add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
 # Platform-neutral (ADR-0008): the backend engine tests run on, any OS.

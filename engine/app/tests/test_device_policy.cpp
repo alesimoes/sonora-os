@@ -6,12 +6,11 @@
 // one; after the wait, the one onboard device, said on screen; several and
 // none named, a failure that lists them; an interface that appears later is
 // noticed but not switched to.
-#include <sys/stat.h>
-#include <unistd.h>
-
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "sonora/audio_backend.h"
@@ -192,14 +191,18 @@ bool write_file(const std::string& path, const std::string& text) {
 // The operator's choice, kept across reboots in a file, so the appliance's
 // unit need not be edited. The first file that names a device wins.
 int test_device_setting_file() {
-    char dir[] = "/tmp/sonora-device-XXXXXX";
-    CHECK(::mkdtemp(dir) != nullptr);
-    const std::string home = std::string(dir) + "/home";
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path tmp = fs::temp_directory_path() / "sonora-device-test";
+    fs::remove_all(tmp, ec);
+    CHECK(fs::create_directory(tmp, ec));
+    const std::string dir = tmp.generic_string();
+    const std::string home = dir + "/home";
     const std::vector<std::string> paths =
-        sonora::device_setting_paths(home.c_str(), dir);
+        sonora::device_setting_paths(home.c_str(), dir.c_str());
     CHECK(paths.size() == 2);
     CHECK(paths[0] == home + "/.config/sonora/device");
-    CHECK(paths[1] == std::string(dir) + "/device");
+    CHECK(paths[1] == dir + "/device");
 
     std::string from;
     CHECK(sonora::read_device_setting(paths, &from).empty());
@@ -209,9 +212,7 @@ int test_device_setting_file() {
     CHECK(sonora::read_device_setting(paths, &from) == "Built-in Audio Pro");
     CHECK(from == paths[1]);
 
-    CHECK(::mkdir(home.c_str(), 0700) == 0);
-    CHECK(::mkdir((home + "/.config").c_str(), 0700) == 0);
-    CHECK(::mkdir((home + "/.config/sonora").c_str(), 0700) == 0);
+    CHECK(fs::create_directories(home + "/.config/sonora", ec));
     // Comments and blank lines only: says nothing, so the next file speaks.
     CHECK(write_file(paths[0], "\n# nothing chosen\n\n"));
     CHECK(sonora::read_device_setting(paths, &from) == "Built-in Audio Pro");
@@ -219,12 +220,7 @@ int test_device_setting_file() {
     CHECK(sonora::read_device_setting(paths, &from) == "UMC1820 Pro");
     CHECK(from == paths[0]);
 
-    std::remove(paths[0].c_str());
-    std::remove(paths[1].c_str());
-    ::rmdir((home + "/.config/sonora").c_str());
-    ::rmdir((home + "/.config").c_str());
-    ::rmdir(home.c_str());
-    ::rmdir(dir);
+    fs::remove_all(tmp, ec);
     return 0;
 }
 

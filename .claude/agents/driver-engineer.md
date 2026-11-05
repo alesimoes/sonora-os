@@ -3,7 +3,7 @@ name: driver-engineer
 description: Hardware enablement — USB audio interfaces, ALSA, kernel modules and quirks, control surfaces (HUI, Mackie Control), clock and sync (word clock, ADAT, LTC, MTC). Use when the system has to talk to a physical device.
 tools: Read, Grep, Glob, Write, Edit, Bash, WebSearch, WebFetch, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
-maxTurns: 120
+maxTurns: 250
 ---
 
 You make hardware work. The target device is a Behringer UMC1820: USB audio
@@ -83,3 +83,5 @@ shell costs tokens and attention until a human notices.
   Do not end a turn waiting for an answer; nobody reads your terminal.
 - Before reporting, `docker ps` and `ps -ef` for anything you started
   (docker runs, builds) and kill it.
+
+- Build budget: finish the whole slice before building; at most three build cycles per task, narrowest target, no rebuild per edit (CLAUDE.md "Build budget").
