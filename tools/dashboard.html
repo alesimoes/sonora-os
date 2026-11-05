@@ -397,7 +397,12 @@ function renderOrchTrain(s,tr){
     else C.ci.push(row(r,nx||ph))});
   const open=tr.filter(r=>r.state!=='merged').length,n=merged.length,tot=n+open;
   const live=(o.runs||[]).length;
-  $('trmeta').textContent=`${n} mergeados hoje · ${open} no trem · ${live} agente(s) do orquestrador · CI: ${C.ci.length+C.ref.length}/${o.train_slots||'?'} vagas`+(o.gh_paused_until?' · GitHub rate limit: pausado':'');
+  // status.json stops changing when the daemon is down: say so instead of
+  // showing the last state as current.
+  const age=o.updated_ts?Date.now()/1000-o.updated_ts:0;
+  const stale=age>120?`ORQUESTRADOR PARADO desde ${new Date(o.updated_ts*1000).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})} (painel congelado) · `:'';
+  $('trmeta').textContent=stale+`${n} mergeados hoje · ${open} no trem · ${live} agente(s) do orquestrador · CI: ${C.ci.length+C.ref.length}/${o.train_slots||'?'} vagas`+(o.gh_paused_until?' · GitHub rate limit: pausado':'');
+  $('trmeta').style.color=stale?'var(--red)':'';
   $('trbar').style.width=(tot?100*n/tot:0)+'%';
   const col=trCol;
   const last=merged.slice(0,8).map(p=>`${L(p.number)} ${E(p.title).slice(0,36)}`);
