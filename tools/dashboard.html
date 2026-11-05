@@ -208,7 +208,10 @@ a.prn:hover,a.prt:hover{text-shadow:0 0 4px var(--cyan);text-decoration:underlin
 .pl .pv small{font-size:11px;color:var(--faint)}
 .pl .bar{height:3px;background:var(--line);margin-top:4px}.pl .bar i{display:block;height:100%;background:var(--c);transition:width .8s}
 .pl .why{font:10.5px var(--mono);color:var(--faint);margin-top:3px;min-height:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.kan{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:8px;overflow:visible;padding:8px 14px 14px;align-items:start}
+.kan{display:flex;flex-wrap:wrap;gap:8px;overflow:visible;padding:8px 14px 14px;align-items:flex-start}
+.kan .kc{flex:1 1 118px}.kan .kc .kh{cursor:pointer;user-select:none}.kan .kc .kh::before{content:'▾ '}
+.kan .kc.closed{flex:0 0 34px}.kan .kc.closed>:not(.kh){display:none}.kan .kc.closed .kh{writing-mode:vertical-rl;white-space:nowrap}.kan .kc.closed .kh::before{content:'▸ '}
+#orchhero .trbtns{margin-left:auto;display:flex;gap:4px}#orchhero .trbtns button{font:11px var(--mono);background:none;color:var(--slate);border:1px solid var(--line);padding:2px 8px;cursor:pointer}#orchhero .trbtns button:hover{color:var(--cyan);border-color:var(--cyan)}
 .kc{min-width:0;--c:var(--cyan)}
 .kc.s-queued{--c:var(--slate)} .kc.s-planning{--c:#a99cff} .kc.s-distributing{--c:var(--teal)} .kc.s-qa{--c:#5ef0a8} .kc.s-integrating{--c:#ff7ad9} .kc.s-pr_open,.kc.s-ci_fix{--c:var(--amber)} .kc.s-merged{--c:#7dffb0} .kc.s-blocked{--c:var(--red)}
 .kc.sep{margin-left:10px;border-left:1px dashed var(--line2);padding-left:10px}
@@ -250,7 +253,8 @@ html,body{overflow-x:hidden;max-width:100vw}
   </section>
 
   <section class="panel hero" id="orchhero" aria-label="Orquestrador" hidden>
-    <div class="ph"><h2>Orquestrador</h2><span class="ob off" id="omode">-</span><i id="orchmeta"></i></div>
+    <div class="ph"><h2>Orquestrador</h2><span class="ob off" id="omode">-</span><i id="orchmeta"></i>
+      <span class="trbtns"><button type="button" id="okgrp" onclick="okFlag('group')">Agrupar por fase</button><button type="button" id="okemp" onclick="okFlag('hideEmpty')">Esconder vazias</button><button type="button" id="okall" onclick="okAll()">Recolher tudo</button></span></div>
     <div id="owaits"></div>
     <div class="ohead" id="ohead"></div>
     <div class="pools" id="opools"></div>
@@ -544,6 +548,22 @@ function renderPRs(s,watch,pSt){
 const KSTATES=[['queued','Na fila'],['planning','Planejando'],['distributing','Distribuindo'],['building','Construindo'],['qa','QA'],['integrating','Integrando'],['pr_open','PR aberto'],['ci_fix','Correção de CI'],['merged','Mergeado']];
 const POOLS=['plan','build:daw','build:os','build:plugin','qa','fix','merge'];
 const tstate=t=>{const v=String(typeof t==='object'?(t.state||t.status||''):t).toLowerCase();return /done|ok|merged|feito|complete/.test(v)?'done':/block|fail|red|stuck/.test(v)?'block':/doing|work|run|progress|build|review|qa/.test(v)?'doing':''};
+/* Colunas do orquestrador: recolher uma a uma, agrupar por fase, esconder
+   vazias. O estado sobrevive ao refresh (localStorage). */
+const OGROUPS=[['pre','Antes do PR',['queued','planning','distributing','building','qa','integrating']],
+  ['inpr','Em PR',['pr_open','ci_fix']],['end','Fim',['merged','blocked']]];
+const OKK='sonora.orch.closed',OKO='sonora.orch.opt';
+let okClosed=new Set(JSON.parse(localStorage.getItem(OKK)||'[]'));
+let okOpt=JSON.parse(localStorage.getItem(OKO)||'{}');
+function okSave(){localStorage.setItem(OKK,JSON.stringify([...okClosed]));localStorage.setItem(OKO,JSON.stringify(okOpt))}
+function okToggle(el){const k=[...el.classList].find(c=>c.startsWith('s-'));el.classList.toggle('closed')?okClosed.add(k):okClosed.delete(k);okSave();okLabels()}
+function okAll(){const cs=[...document.querySelectorAll('#okan .kc')],close=!cs.every(el=>el.classList.contains('closed'));
+  cs.forEach(el=>{const k=[...el.classList].find(c=>c.startsWith('s-'));el.classList.toggle('closed',close);close?okClosed.add(k):okClosed.delete(k)});okSave();okLabels()}
+function okFlag(k){okOpt[k]=!okOpt[k];okSave();if(lastState)renderOrch(lastState.orchestrator)}
+function okLabels(){const cs=[...document.querySelectorAll('#okan .kc')],b=$('okall');
+  if(b)b.textContent=cs.length&&cs.every(el=>el.classList.contains('closed'))?'Expandir tudo':'Recolher tudo';
+  if($('okgrp'))$('okgrp').textContent=okOpt.group?'Desagrupar':'Agrupar por fase';
+  if($('okemp'))$('okemp').textContent=okOpt.hideEmpty?'Mostrar vazias':'Esconder vazias'}
 function renderOrch(o){
   const hero=$('orchhero');
   hero.hidden=!o||typeof o!=='object';
@@ -577,13 +597,19 @@ function renderOrch(o){
       <div class="fm">${pr}${f.track?`<span>${E(f.track)}</span>`:''}${f.adr?`<span>ADR-${E(f.adr)}</span>`:''}${f.fixes?`<span class="bad">${f.fixes} correç${f.fixes>1?'ões':'ão'}</span>`:''}${f.partial?'<span>parcial</span>':''}${tasks.length?`<span>${f.tasks_done??0}/${f.tasks_total??tasks.length}</span>`:''}</div>
       ${f.blocked_reason?`<div class="fm bad">${E(f.blocked_reason)}</div>`:''}
       ${tasks.length?`<div class="strip">${tasks.map(t=>`<i class="${tstate(t)}" title="${E(typeof t==='object'?[t.name||t.id||'',t.stage||'',t.state||''].filter(Boolean).join(' · '):t)}"></i>`).join('')}</div>`:''}</div>`};
-  const col=(id,name,list,sep)=>`<div class="kc s-${id} ${sep?'sep':''}"><div class="kh">${name}<span>${list.length}</span></div>${list.map(fcard).join('')||'<div class="empty" style="padding:6px">-</div>'}</div>`;
+  const col=(id,name,list,sep)=>`<div class="kc s-${id} ${sep?'sep':''}"><div class="kh" onclick="okToggle(this.parentNode)" title="clique para recolher/expandir">${name}<span>${list.length}</span></div>${list.map(fcard).join('')||'<div class="empty" style="padding:6px">-</div>'}</div>`;
   const known=new Set(KSTATES.map(k=>k[0]));
   const bl=Array.isArray(o.blocked)?o.blocked:[];
   const blocked=feats.filter(f=>f.state==='blocked'||bl.includes(f.id));
   const rest=feats.filter(f=>!blocked.includes(f));
   const extra=[...new Set(rest.map(f=>f.state).filter(x=>x&&!known.has(x)))];
-  $('okan').innerHTML=KSTATES.map(([id,n])=>col(id,n,rest.filter(f=>f.state===id))).join('')+extra.map(x=>col(x,E(x),rest.filter(f=>f.state===x))).join('')+col('blocked','Bloqueado',blocked,true);
+  let cols=KSTATES.map(([id,n])=>[id,n,rest.filter(f=>f.state===id)]).concat(extra.map(x=>[x,E(x),rest.filter(f=>f.state===x)]),[['blocked','Bloqueado',blocked,true]]);
+  if(okOpt.group){const by=Object.fromEntries(cols.map(c=>[c[0],c[2]]));
+    cols=OGROUPS.map(([id,n,ids])=>[id,n,[].concat(...ids.map(k=>by[k]||[]),...(id==='pre'?extra.map(x=>by[x]||[]):[]))])}
+  if(okOpt.hideEmpty)cols=cols.filter(c=>c[2].length);
+  $('okan').innerHTML=cols.map(([id,n,list,sep])=>col(id,n,list,sep)).join('')||'<div class="empty">Nenhuma feature.</div>';
+  $('okan').querySelectorAll('.kc').forEach(el=>{const k=[...el.classList].find(c=>c.startsWith('s-'));if(okClosed.has(k))el.classList.add('closed')});
+  okLabels();
   const waits=o.waits_on_owner||o.waits||[],wl=Array.isArray(waits)?waits:[waits];
   $('owaits').innerHTML=wl.length?`<div class="owner big"><h3>Espera o dono (${wl.length})</h3><ul>${wl.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||x.question||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`:'';
 }
