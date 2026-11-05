@@ -120,7 +120,8 @@ fi
 sanitize() {  # thread | address
   local kind="$1" flags filter
   if [[ "$kind" == thread ]]; then
-    flags="-fsanitize=thread -g"; filter='-E ^(dsp|native)_'
+    # quoted: the filter is pasted into the container's bash -c script
+    flags="-fsanitize=thread -g"; filter="-E '^(dsp|native)_'"
   else
     flags="-fsanitize=address,undefined -fno-omit-frame-pointer -g"; filter=""
   fi
