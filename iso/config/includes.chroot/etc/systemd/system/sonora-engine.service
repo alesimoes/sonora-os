@@ -1,0 +1,38 @@
+[Unit]
+Description=Sonora recording engine (headless, ADR-0010 stage 2)
+# The engine owns the audio and the take files; the display stack is only a
+# client of it. It has no relation to the compositor or the UI in the stopping
+# direction, so a labwc or UI crash never touches a running take.
+# sonora-ui.service Wants= and is ordered After= this unit.
+ConditionKernelCommandLine=sonora.gui
+# The display stack gave up and sonora-session.service owns the engine and tty1.
+ConditionPathExists=!/run/sonora-display-failed
+# The PipeWire socket and the control socket live in /run/user/1000, which the
+# lingering user manager creates.
+Wants=sound.target user@1000.service sonora-rtirq.service sonora-cpu-latency.service
+After=sound.target user@1000.service systemd-user-sessions.service sonora-rtirq.service sonora-cpu-latency.service
+# Separate from the UI's budget: a crash-looping engine is retried for ever,
+# because the operator has no other way back to a working machine.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=sonora
+Group=sonora
+Environment=HOME=/home/sonora
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/sonora
+StandardInput=null
+ExecStartPre=/usr/local/bin/sonora-wait-for-audio
+ExecStart=/usr/local/bin/sonora-engine-run
+Restart=always
+RestartSec=1
+
+# Same grants as sonora-session.service: the audio threads outrank the rest.
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+Nice=-10
+# Last to be killed under memory pressure; the UI and compositor go first.
+OOMScoreAdjust=-900
+
+# No [Install]: sonora-ui.service pulls it in.

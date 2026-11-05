@@ -14,6 +14,7 @@
 #include <utility>
 #include <variant>
 
+#include "sonora/api/consolidate_argument.h"
 #include "sonora/api/wire.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/op_codec.h"
@@ -253,6 +254,22 @@ std::vector<PluginInfo> fake_catalog() {
                    param(1, "1", "Ratio", 0.0f, 1.0f, 0.25f, kParamAutomatable),
                    param(2, "7", "Mode", 0.0f, 1.0f, 0.0f, kParamAutomatable | kParamEnum, "", 3,
                          {"Peak", "RMS", "Feedback"})};
+    // ADR-0057: a compressor that groups its controls, says how to draw them,
+    // and publishes gain reduction, levels and its transfer curve.
+    c[2].params[0].section = "Compressor";
+    c[2].params[0].widget = static_cast<uint32_t>(PluginWidget::Knob);
+    c[2].params[1].section = "Compressor";
+    c[2].params[1].widget = static_cast<uint32_t>(PluginWidget::Knob);
+    c[2].params[1].curve_source = "transfer";
+    c[2].params[2].section = "Detector";
+    c[2].params[2].widget = static_cast<uint32_t>(PluginWidget::Choice);
+    c[2].meters = {
+        {0, "gr", "Gain reduction", "dB", static_cast<uint32_t>(PluginMeterKind::GainReduction),
+         0.0f, 24.0f},
+        {1, "in", "Input", "dB", static_cast<uint32_t>(PluginMeterKind::InputLevel), -60.0f, 6.0f},
+        {2, "out", "Output", "dB", static_cast<uint32_t>(PluginMeterKind::OutputLevel), -60.0f,
+         6.0f}};
+    c[2].curves = {{0, "transfer", "Transfer", "dB", "dB", 128, false, -60.0f, 0.0f, -60.0f, 0.0f}};
 
     c[3].format = PluginFormat::Lv2;
     c[3].id = "urn:sonora:fake:refused";
@@ -281,6 +298,9 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.toggle_loop_record", "transport.toggle_cycle",
         "transport.cycle_selection", "transport.punch_selection", "transport.clear_punch",
         "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready", "meters.reset",
+        "mix.bounce", "mix.bounce_cancel", "track.freeze", "track.commit", "track.process_selection",
+        "track.unfreeze", "track.render_cancel",
+        "session.consolidate", "session.consolidate_cancel",
     };
     return ids;
 }
@@ -388,6 +408,9 @@ bool FakeEngine::connect(std::string& error) {
     offer_recovered();
     if (!folder_.empty()) announce_folder();
     announce_latency();
+    if (!consolidate_event_.empty()) queue(outbound_, consolidate_event_);
+    if (!bounce_event_.empty()) queue(outbound_, bounce_event_);
+    if (!render_event_.empty()) queue(outbound_, render_event_);
     return true;
 }
 
@@ -649,6 +672,16 @@ void FakeEngine::script_catalog(std::vector<PluginInfo> plugins) {
     if (!connected_) return;
     send_catalog();
     refresh_faults(false);
+}
+
+bool FakeEngine::script_plugin_telemetry(uint64_t insert, PluginTelemetry frame) {
+    if (!connected_ || find_insert(document_->current(), insert) == nullptr) return false;
+    frame.insert = insert;
+    if (!telemetry_throttle_.admit(insert, frame.sequence, now())) return false;
+    std::string bytes, error;
+    if (!wire::encode(frame, bytes, error)) return false;
+    queue(outbound_, bytes);
+    return true;
 }
 
 void FakeEngine::script_plugin_latency(const std::string& plugin_id, uint32_t frames) {
@@ -1314,6 +1347,9 @@ void FakeEngine::poll(Inbox& inbox) {
     }
     check_take();
     check_latency();
+    check_consolidate();
+    check_bounce();
+    check_render();
     publish();
 
     // The client's half: everything back through the codec.
@@ -1610,6 +1646,112 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     };
     const std::string& id = r.command;
     if (id.compare(0, 8, "latency.") == 0) return latency_command(r, why);
+    // The words of engine/control's handler. The fake renders and edits
+    // nothing: it answers the request and says Running, then Done, so an
+    // interface can be driven; the render itself is test_consolidate's.
+    if (id == "session.consolidate") {
+        ConsolidateArgument a;
+        if (!parse_consolidate_argument(r.argument, a, why)) return false;
+        if (recording) {
+            why = "stop recording before consolidating; nothing was consolidated";
+            return false;
+        }
+        if (consolidate_running_) {
+            why = "a consolidate is already running";
+            return false;
+        }
+        // Running now and Done on the next poll, so an interface sees both
+        // and a cancel has a poll to arrive in.
+        consolidate_running_ = true;
+        consolidate_age_ = 0;
+        consolidate_track_ = a.track;
+        announce_consolidate(kConsolidateRunning, 500);
+        return true;
+    }
+    if (id == "session.consolidate_cancel") {
+        if (!consolidate_running_) {
+            why = "no consolidate is running";
+            return false;
+        }
+        consolidate_running_ = false;
+        announce_consolidate(kConsolidateCancelled, 0);
+        return true;
+    }
+    // The words of engine/control's handlers. The fake renders nothing: it
+    // says Running, then Done on the next poll, so an interface can be
+    // driven; the render is test_bounce's.
+    if (id == "mix.bounce") {
+        BounceOptions o;
+        if (!parse_bounce_argument(r.argument, o, why)) return false;
+        if (recording) {
+            why = "stop recording before bouncing";
+            return false;
+        }
+        if (bounce_running_) {
+            why = "a bounce is already running; cancel it or wait for it";
+            return false;
+        }
+        if (o.mode == BounceMode::RealTime && mode_ != TransportState::Stopped) {
+            why = "stop the transport before bouncing in real time";
+            return false;
+        }
+        bounce_running_ = true;
+        bounce_age_ = 0;
+        announce_bounce(static_cast<uint32_t>(BounceState::Running), 500, "");
+        return true;
+    }
+    if (id == "mix.bounce_cancel") {
+        if (!bounce_running_) {
+            why = "no bounce is running";
+            return false;
+        }
+        bounce_running_ = false;
+        announce_bounce(static_cast<uint32_t>(BounceState::Cancelled), 0,
+                        "the bounce was cancelled; no file was kept");
+        return true;
+    }
+    // Render in place (ADR-0051): like the bounce above, Running then Done.
+    // The real engine renders the track's chain; the fake has no document to
+    // put the file in.
+    if (id == "track.freeze" || id == "track.commit" || id == "track.process_selection") {
+        RenderOptions o;
+        if (!parse_render_argument(r.argument, o, why)) return false;
+        if (id == "track.process_selection" && o.end == 0) {
+            why = "select a range to process";
+            return false;
+        }
+        if (recording) {
+            why = "stop recording before rendering a track";
+            return false;
+        }
+        if (render_running_ || bounce_running_) {
+            why = "a render is already running; cancel it or wait for it";
+            return false;
+        }
+        if (mode_ != TransportState::Stopped) {
+            why = "stop the transport before rendering a track";
+            return false;
+        }
+        render_running_ = true;
+        render_age_ = 0;
+        render_track_ = o.track;
+        announce_render(static_cast<uint32_t>(RenderState::Running), 500, "");
+        return true;
+    }
+    if (id == "track.unfreeze") {
+        RenderOptions o;
+        return parse_render_argument(r.argument, o, why);
+    }
+    if (id == "track.render_cancel") {
+        if (!render_running_) {
+            why = "no render is running";
+            return false;
+        }
+        render_running_ = false;
+        announce_render(static_cast<uint32_t>(RenderState::Cancelled), 0,
+                        "the render was cancelled; nothing was changed");
+        return true;
+    }
     if (id == "session.place_recovered") return place_recovered(why);
     if (id == "session.leave_recovered") {
         if (offered_.empty()) {
@@ -1820,6 +1962,67 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     }
     why = "not handled";
     return false;
+}
+
+// The server holds the last Consolidate event for a client that attaches
+// later; so does the fake.
+void FakeEngine::announce_consolidate(uint32_t state, uint32_t permille) {
+    EngineEvent e;
+    e.kind = EventKind::Consolidate;
+    e.insert = consolidate_track_;
+    e.frame = permille;
+    e.flags = state;
+    if (state == kConsolidateCancelled) e.text = "consolidate was cancelled; nothing was changed";
+    consolidate_event_.clear();
+    wire::encode(e, consolidate_event_);
+    post_event(e);
+}
+
+void FakeEngine::check_consolidate() {
+    if (!consolidate_running_) return;
+    if (consolidate_age_++ < 1) return;
+    consolidate_running_ = false;
+    announce_consolidate(kConsolidateDone, 1000);
+}
+
+// The server holds the last Bounce event for a client that attaches later;
+// so does the fake.
+void FakeEngine::announce_bounce(uint32_t state, uint32_t permille, const std::string& text) {
+    EngineEvent e;
+    e.kind = EventKind::Bounce;
+    e.frame = permille;
+    e.flags = state;
+    e.text = text;
+    if (state == static_cast<uint32_t>(BounceState::Done)) e.insert = 48000;
+    bounce_event_.clear();
+    wire::encode(e, bounce_event_);
+    post_event(e);
+}
+
+void FakeEngine::check_bounce() {
+    if (!bounce_running_) return;
+    if (bounce_age_++ < 1) return;
+    bounce_running_ = false;
+    announce_bounce(static_cast<uint32_t>(BounceState::Done), 1000, "Bounced Files/Bounce_01.wav");
+}
+
+void FakeEngine::announce_render(uint32_t state, uint32_t permille, const std::string& text) {
+    EngineEvent e;
+    e.kind = EventKind::Render;
+    e.frame = permille;
+    e.insert = render_track_;
+    e.flags = state;
+    e.text = text;
+    render_event_.clear();
+    wire::encode(e, render_event_);
+    post_event(e);
+}
+
+void FakeEngine::check_render() {
+    if (!render_running_) return;
+    if (render_age_++ < 1) return;
+    render_running_ = false;
+    announce_render(static_cast<uint32_t>(RenderState::Done), 1000, "Track rendered");
 }
 
 void FakeEngine::announce_latency() {

@@ -42,9 +42,15 @@ echo "=== building the runtime image ==="
 # Run by image ID, not by tag. The tag is shared by every worktree on this
 # Docker host, and another checkout rebuilding it between our build and our
 # run would test its configuration under our name. That happened.
-IMAGE_ID="$(docker build -q --label org.sonora=1 -t "$IMAGE" \
-  -f "$(host_path "$ROOT/tools")/Dockerfile.runtime" \
-  "$(host_path "$ROOT")")"
+# CI pulls the image (built on main by images.yml) and sets
+# SONORA_RUNTIME_IMAGE_BUILT=1; the tag is then the pulled image.
+if [[ "${SONORA_RUNTIME_IMAGE_BUILT:-0}" != 1 ]]; then
+  IMAGE_ID="$(docker build -q --label org.sonora=1 -t "$IMAGE" \
+    -f "$(host_path "$ROOT/tools")/Dockerfile.runtime" \
+    "$(host_path "$ROOT")")"
+else
+  IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$IMAGE")"
+fi
 
 echo "=== trying to move the graph off 128 frames at 48000 Hz ==="
 docker run --rm --entrypoint /usr/local/bin/test-quantum-entrypoint.sh "$IMAGE_ID"

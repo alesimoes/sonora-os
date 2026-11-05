@@ -134,6 +134,28 @@ date (both places), both versions in
 `tools/Dockerfile.runtime` reads the same two files, so the container tests
 follow.
 
+Why WirePlumber is pinned to a backport: trixie ships 0.5.8 with PipeWire
+1.4.2. WirePlumber 0.5.12 travels with PipeWire 1.6.9 from trixie-backports
+(ADR-0002 takes PipeWire from backports), and `brain/research/quantum-pin.md`
+("Re-run on PipeWire 1.6.9") re-ran the quantum pin on that pair. Backports
+keeps only its newest upload, so the pin resolves only through the dated
+snapshot, and the hook fails the build on any other version.
+
+## Build robustness
+
+- `tools/build-iso.sh --check` resolves every package list entry, the
+  PipeWire/WirePlumber pins and `linux-image-rt-amd64` in a `debian:trixie`
+  container with `apt-get -s`, in about a minute, and builds nothing. A normal
+  build runs the same check first, so an unreachable snapshot or a pin the
+  snapshot no longer has stops the build in a minute with a named cause, not
+  after the bootstrap. Fetches retry with backoff (5, 15, 45 s;
+  `SONORA_RETRY_DELAY` changes the first step).
+- When snapshot.debian.org is down for hours, a development build can use
+  another timestamp: `SONORA_DEV_SNAPSHOT=20261025T000000Z tools/build-iso.sh`.
+  The pins must still resolve there (the check says if not). The result is
+  `iso/sonora-dev.iso`, its BUILD_ID ends in `-dev`, and `SONORA_RELEASE=1`
+  refuses the combination. The committed timestamp is unchanged.
+
 ## Display stack (ADR-0010, stage 1)
 
 Off by default. With `sonora.gui` on the kernel command line,
@@ -174,11 +196,41 @@ container), `tools/test-install-qemu.sh` (the exit test: install to a virtio
 disk from the ISO, restart without the stick, find the session). The last two
 have not been run in CI; see the PR that added them.
 
+## Hardware acceptance
+
+One session on the real laptop with the UMC1820 gives evidence for
+system.boot_tests.hardware, system.hardening.soak, system.hardening.crash_recovery,
+drivers.umc1820.* and system.usb.physical. Nothing here has been run on
+hardware yet; `tools/test-sonora-acceptance.sh` checks the kit's decisions
+against a fake machine only.
+
+1. Write the stick (`tools/write-usb.ps1`), plug in the UMC1820, boot the laptop
+   from the stick. At the boot menu press `e` (GRUB) or Tab (ISOLINUX) and add
+   `systemd.debug-shell=1` to the kernel line, then boot. The engine starts as
+   usual; press Ctrl+Alt+F9 for a root shell.
+2. `sonora-acceptance quick` (about 2 minutes). Prints PASS, FAIL or SKIP per
+   check with its evidence: RT kernel, `threadirqs`, rtprio and memlock, CPU
+   governor, UMC1820 USB ID and 18/20 channels, PipeWire pinned at 128/48000,
+   a 60 s 18-channel take with its xrun count, and the take played back.
+3. `sonora-acceptance soak 8` (or the hours you have). Logs a line a minute to
+   `/home/sonora/Acceptance/soak-*.log`, stops itself if free space drops under
+   2 GB, prints a summary.
+4. `sonora-acceptance powercut`, wait for the notice, pull the power (charger
+   out, battery out or hold the power button), boot again with the same
+   `systemd.debug-shell=1`, then `sonora-acceptance recover-check`.
+5. `sonora-acceptance report`. Copy
+   `/home/sonora/Acceptance/report-*.md` off the stick (it lives on the
+   persistence partition) into `brain/research/` and open the PR. The report
+   names the machine, the kernel and command line, and every result.
+
+`quick` and `soak` stop `sonora-session.service` and start it again at the end.
+For the quanta below 128 use `tools/umc-measure.sh`.
+
 ## What is not verified
 
 The image builds and boots in QEMU, both from the ISO (`tools/test-boot-qemu.sh`)
 and from a stick image written by `tools/write-usb.sh`, through both bootloaders
-(`tools/test-write-usb.sh`, nightly in CI without the boots). It has never
+(`tools/test-write-usb.sh`, on every merge to main in CI without the boots). It has never
 booted on a physical machine or from a physical stick, and
 `tools/write-usb.ps1` has written only fake disks (regular files), never a
 real stick. See `planning/STATUS.md`.

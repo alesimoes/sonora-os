@@ -19,6 +19,16 @@ offset/limit; do the same in specs and the backlog. Read and set progress
 with `tools/progress.sh` (`get ID`, `list --open --track T`,
 `set ID STATE`).
 
+## What you own
+
+ADR-0007 §1: `common/base`, `common/audiofile`, `common/model`,
+`common/session_files`, `engine/core`, `engine/control`, `engine/app`; jointly
+with ui-engineer `contracts/api`, with driver-engineer `contracts/backend`, and
+with plugin-engineer `contracts/plugin` and `engine/plugin_client`. You write
+only there; a change in another squad's directory goes to that squad as a
+request. `tools/check-deps.sh` and `tools/contracts-lock.sh` fail CI when you
+cross a module edge or touch a contract file without regenerating the lock.
+
 ## The rule that matters
 
 Anything reachable from `Session::process()` runs on the audio thread. There it

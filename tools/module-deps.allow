@@ -1,0 +1,103 @@
+# Allowed module include edges: ADR-0007 §1 as built, checked by
+# tools/check-deps.sh. "from -> to". Any edge not listed here or in
+# module-deps.known fails CI. Add a line only with the ADR's graph in hand:
+# an edge toward a higher layer, from drivers/* to engine/*, from ui/* to
+# engine/* or drivers/*, or from contracts/* beyond common/base is a design
+# change, not a list edit.
+#
+# Edges that exist only in tests/, testing/ or conformance/ (ADR §7: a
+# module is tested against the fakes of its neighbours):
+#   engine/core, engine/control, engine/plugin_client -> drivers/fake
+#   engine/core -> common/platform   (test_session_plugins)
+#   contracts/api -> common/model    (FakeEngine and conformance, not the
+#                                     contract headers)
+common/audiofile -> common/platform
+common/dsp -> common/base
+common/model -> common/base
+common/model -> common/json
+common/model -> common/midi
+common/platform -> common/base
+common/session_files -> common/base
+common/session_files -> common/model
+common/session_files -> common/platform
+contracts/api -> common/base
+contracts/api -> common/model
+contracts/backend -> common/base
+contracts/plugin -> common/base
+contracts/surfaces -> common/base
+drivers/alsa -> common/base
+drivers/alsa -> contracts/backend
+drivers/alsa -> drivers/support
+drivers/fake -> common/base
+drivers/fake -> contracts/backend
+drivers/fake -> drivers/support
+drivers/jack -> common/base
+drivers/jack -> contracts/backend
+drivers/jack -> drivers/support
+drivers/support -> common/base
+drivers/support -> contracts/backend
+drivers/surfaces -> contracts/api
+drivers/surfaces -> contracts/surfaces
+engine/app -> common/platform
+engine/app -> contracts/api
+engine/app -> contracts/backend
+engine/app -> drivers/alsa
+engine/app -> drivers/fake
+engine/app -> drivers/jack
+engine/app -> engine/control
+engine/app -> engine/core
+engine/control -> common/audiofile
+engine/control -> common/base
+engine/control -> common/dsp
+engine/control -> common/json
+engine/control -> common/model
+engine/control -> common/platform
+engine/control -> common/session_files
+engine/control -> contracts/api
+engine/control -> contracts/backend
+engine/control -> contracts/plugin
+engine/control -> drivers/fake
+engine/control -> engine/core
+engine/control -> engine/plugin_client
+engine/core -> common/audiofile
+engine/core -> common/base
+engine/core -> common/dsp
+engine/core -> common/platform
+engine/core -> contracts/backend
+engine/core -> drivers/fake
+engine/core -> engine/plugin_client
+engine/plugin_client -> common/base
+engine/plugin_client -> common/platform
+engine/plugin_client -> contracts/plugin
+engine/plugin_client -> drivers/fake
+plugins/host -> common/base
+plugins/host -> common/platform
+plugins/host -> contracts/plugin
+plugins/analyze -> common/audiofile
+plugins/analyze -> common/dsp
+plugins/analyze -> common/json
+plugins/analyze -> common/model
+plugins/analyze -> plugins/native
+plugins/native -> common/base
+plugins/native -> common/dsp
+plugins/native -> common/json
+plugins/native -> common/model
+plugins/native -> contracts/plugin
+ui/client -> common/model
+ui/client -> common/platform
+ui/client -> contracts/api
+ui/keymap -> common/json
+ui/keymap -> contracts/api
+ui/qt -> common/base
+ui/qt -> common/model
+ui/qt -> common/platform
+ui/qt -> common/session_files
+ui/qt -> contracts/api
+ui/qt -> ui/client
+ui/qt -> ui/keymap
+ui/tui -> contracts/api
+ui/tui -> ui/client
+ui/tui -> ui/keymap
+interchange -> common/midi
+interchange -> common/model
+interchange -> common/session_files

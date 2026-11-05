@@ -1,0 +1,8 @@
+# Image for tools/test-display-fallback.sh, built on main by .github/workflows/images.yml.
+FROM debian:trixie
+RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
+ for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
+ if apt-get $A update && apt-get $A install -y --no-install-recommends systemd systemd-sysv dbus kbd procps \
+ ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
+ [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
+ rm -rf /var/lib/apt/lists/*

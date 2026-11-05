@@ -60,9 +60,12 @@
 #include <string>
 #include <vector>
 
+#include "sonora/api/bounce.h"
+#include "sonora/api/render.h"
 #include "sonora/api/engine_control.h"
 #include "sonora/api/state_block.h"
 #include "sonora/api/state_view.h"
+#include "sonora/api/telemetry_throttle.h"
 #include "sonora/api/wire.h"
 
 namespace sonora::model {
@@ -107,7 +110,8 @@ public:
         std::vector<std::string> planned_commands;
         // Hello's capabilities. The fake parses a play range as the engine
         // does; clear this to stand in for an engine that predates it.
-        std::vector<std::string> capabilities = {kCapabilityPlayRange};
+        std::vector<std::string> capabilities = {kCapabilityPlayRange, kCapabilityBounce,
+                                                kCapabilityRender};
         // The engine's midi_max_entries (ADR-0015 §5), so a test can make a
         // Load the engine refuses without 2^24 notes.
         uint64_t midi_max_entries = uint64_t{1} << 24;
@@ -220,6 +224,11 @@ public:
     void script_catalog(std::vector<PluginInfo> plugins);
     // The latency a plugin reports, by catalog id, for every insert of it.
     void script_plugin_latency(const std::string& plugin_id, uint32_t frames);
+    // The plugin of `insert` published a frame (ADR-0057): sent to the client
+    // as PluginTelemetry unless the engine's throttle would hold it back
+    // (more than kTelemetryMaxHz, or a sequence the client has). Returns
+    // whether it was sent. Refused for an insert that is not in the document.
+    bool script_plugin_telemetry(uint64_t insert, PluginTelemetry frame);
     // An insert's host goes down (`why` says how: a PluginFault event, the
     // faulted flag, a miss counted) or, with an empty `why`, comes back (the
     // fault cleared).
@@ -415,6 +424,7 @@ private:
     uint64_t last_publish_ns_ = 0;
 
     uint64_t catalog_generation_ = 1;
+    TelemetryThrottle telemetry_throttle_;
     std::map<std::string, uint32_t> plugin_latency_;   // by catalog id
     std::map<uint64_t, std::string> faults_;           // scripted, by insert id
     std::map<uint64_t, std::string> said_faults_;      // standing, as sent
@@ -450,6 +460,21 @@ private:
     LatencySource latency_source_ = LatencySource::None;
     LatencyStatus latency_status_ = LatencyStatus::Idle;
     std::string latency_text_;
+    bool bounce_running_ = false;
+    uint32_t bounce_age_ = 0;
+    std::string bounce_event_;
+    void announce_bounce(uint32_t state, uint32_t permille, const std::string& text);
+    void check_bounce();
+    bool render_running_ = false;
+    uint32_t render_age_ = 0;
+    uint64_t render_track_ = 0;
+    std::string render_event_;
+    void announce_render(uint32_t state, uint32_t permille, const std::string& text);
+    void check_render();
+    bool consolidate_running_ = false;
+    uint32_t consolidate_age_ = 0;
+    uint64_t consolidate_track_ = 0;
+    std::string consolidate_event_;
     bool measuring_ = false;
     bool cancel_asked_ = false;
     uint32_t measure_output_ = 0;
@@ -457,6 +482,8 @@ private:
     uint64_t measure_start_ns_ = 0;
     uint32_t pings_said_ = 0;
     void announce_latency();
+    void announce_consolidate(uint32_t state, uint32_t permille);
+    void check_consolidate();
     void check_latency();
     bool latency_command(const CommandRequest& r, std::string& why);
 };

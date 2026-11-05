@@ -70,12 +70,19 @@ done
 [[ -n "$ENGINE" ]] || { echo "FAIL: no engine binary." >&2; exit 1; }
 
 echo "=== building the images ==="
-docker build -q -t "$RUNTIME_IMAGE" --label org.sonora=1 \
-  -f "$(host_path "$ROOT/tools")/Dockerfile.runtime" \
-  "$(host_path "$ROOT")" >"$OUT/build-images.log" 2>&1
-docker build -q -t "$READER_IMAGE" --label org.sonora=1 \
-  -f "$(host_path "$ROOT/tools")/Dockerfile.bwfreaders" \
-  "$(host_path "$ROOT/tools")" >>"$OUT/build-images.log" 2>&1
+# CI pulls both images (built on main by images.yml) and sets
+# SONORA_RUNTIME_IMAGE_BUILT=1 and SONORA_BWFREADERS_IMAGE_BUILT=1.
+: >"$OUT/build-images.log"
+if [[ "${SONORA_RUNTIME_IMAGE_BUILT:-0}" != 1 ]]; then
+  docker build -q -t "$RUNTIME_IMAGE" --label org.sonora=1 \
+    -f "$(host_path "$ROOT/tools")/Dockerfile.runtime" \
+    "$(host_path "$ROOT")" >>"$OUT/build-images.log" 2>&1
+fi
+if [[ "${SONORA_BWFREADERS_IMAGE_BUILT:-0}" != 1 ]]; then
+  docker build -q -t "$READER_IMAGE" --label org.sonora=1 \
+    -f "$(host_path "$ROOT/tools")/Dockerfile.bwfreaders" \
+    "$(host_path "$ROOT/tools")" >>"$OUT/build-images.log" 2>&1
+fi
 
 echo "=== recording two takes ==="
 # Unlimited memlock as sonora-session.service grants it: the engine refuses

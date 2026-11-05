@@ -1,0 +1,9 @@
+#!/bin/sh
+# Run by labwc once it is up (labwc-config(5) autostart), with labwc's own
+# environment: the only place that knows which DISPLAY its Xwayland answers
+# on. The engine, a sibling unit, reads it to start plugin editors there
+# (sonora-engine-run).
+[ -n "$DISPLAY" ] || exit 0
+d="${XDG_RUNTIME_DIR:-/run/user/1000}/sonora"
+mkdir -p "$d" || exit 0
+printf 'DISPLAY=%s\n' "$DISPLAY" > "$d/display.env.new" && mv "$d/display.env.new" "$d/display.env"

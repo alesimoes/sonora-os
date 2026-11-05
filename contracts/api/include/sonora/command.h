@@ -137,6 +137,23 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // callback), "master", or a track's index, decimal from 0.
         {"meters.reset", CommandTarget::None,
          "Reset the loudness, true-peak and clip readings of one meter or all", true},
+        // Protocol 49. The argument is api/bounce.h's. The reply says only
+        // whether the render started; progress and the end are Bounce events.
+        {"mix.bounce", CommandTarget::None,
+         "Bounce the mix to one stereo file in Bounced Files, offline or in real time", true},
+        {"mix.bounce_cancel", CommandTarget::None, "Stop the bounce that is running"},
+        // Protocol 56 (ADR-0051). The argument is api/render.h's: the track's
+        // model id, and for Process Selection its range. The reply says only
+        // whether the render started; progress and the end are Render events.
+        {"track.freeze", CommandTarget::None,
+         "Freeze a track: print it through its plug-in inserts and play the print", true},
+        {"track.commit", CommandTarget::None,
+         "Commit a track: print it through its plug-in inserts and keep the print", true},
+        {"track.process_selection", CommandTarget::None,
+         "Process the selected range of a track through its plug-in inserts", true},
+        {"track.unfreeze", CommandTarget::None,
+         "Unfreeze a track: play its own audio and inserts again", true},
+        {"track.render_cancel", CommandTarget::None, "Stop the render in place that is running"},
         {"track.disarm_all", CommandTarget::None, "Record-disarm every track"},
         {"track.toggle_mute", CommandTarget::Track, "Toggle mute on a track"},
         {"track.toggle_solo", CommandTarget::Track, "Toggle solo on a track"},
@@ -275,6 +292,16 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"session.leave_recovered", CommandTarget::None,
          "Leave the recovered takes in Audio Files, off the timeline"},
 
+        // --- consolidate (ADR-0031 §6, protocol 43) ---
+        // The argument is api/consolidate_argument.h's. The reply says only
+        // whether the render started; progress and the end are Consolidate
+        // events. The interface's own edit.consolidate is the key; this is
+        // what it sends.
+        {"session.consolidate", CommandTarget::None,
+         "Render a range of a track's playlist to one file and replace the range with it", true},
+        {"session.consolidate_cancel", CommandTarget::None,
+         "Stop the consolidate render that is running"},
+
         // --- the round trip (ADR-0019, update of 2026-10-26) ---
         // Argument: "OUT:IN", the output and input port numbers from 1
         // (parse_latency_ports()), which the operator has cabled together.
@@ -323,6 +350,9 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // Setup > Latency: measures and sets the round trip through the
         // latency.* commands.
         {"window.latency", CommandTarget::None, "Show or hide the Latency window",
+         false, CommandDomain::Interface},
+        // File > Bounce Mix…: the dialog that sends mix.bounce.
+        {"window.bounce", CommandTarget::None, "Show or hide the Bounce Mix window",
          false, CommandDomain::Interface},
         // Pro Tools' Window > Configuration and Logic's screensets: which
         // windows are open and where, in nine numbered slots. The argument

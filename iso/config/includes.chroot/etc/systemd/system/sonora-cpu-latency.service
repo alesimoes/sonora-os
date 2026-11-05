@@ -1,0 +1,13 @@
+[Unit]
+Description=Sonora: hold the CPU latency limit and performance governor while recording
+Before=sonora-session.service
+# Stopping the session releases the C-state limit.
+PartOf=sonora-session.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sonora-cpu-latency
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

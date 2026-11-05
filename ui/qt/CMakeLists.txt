@@ -85,7 +85,8 @@ qt_add_resources(sonora_ui_qt sonora_qml
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml qml/WindowConfigsWindow.qml
+        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml qml/BounceWindow.qml
+        qml/WindowConfigsWindow.qml
         qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
 )
 
@@ -219,6 +220,24 @@ target_compile_definitions(test_ui_latency PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_latency COMMAND test_ui_latency)
 set_tests_properties(ui_latency PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# File > Bounce Mix (ui.mixer.bounce): the window over FakeEngine's wire, the
+# argument its choices make, progress, the held notice and the held refusal.
+add_executable(test_ui_bounce_window tests/test_bounce_window.cpp)
+target_link_libraries(test_ui_bounce_window PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_bounce_window PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_bounce_window COMMAND test_ui_bounce_window)
+set_tests_properties(ui_bounce_window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Track > Freeze, Commit, Unfreeze, Process Selection (ADR-0051): the menu over
+# FakeEngine's wire, the argument it sends, progress and the held notice.
+add_executable(test_ui_render_in_place tests/test_render_in_place.cpp)
+target_link_libraries(test_ui_render_in_place PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_render_in_place PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_render_in_place COMMAND test_ui_render_in_place)
+set_tests_properties(ui_render_in_place PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Counters, ruler, grid and snap through the whole tempo map; the Transport
 # window's model on a scripted transport; then the window in the real QML,

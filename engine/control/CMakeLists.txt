@@ -22,6 +22,12 @@ add_library(sonora_control STATIC
   src/machine_latency.cpp
   src/preset_store.cpp
   src/consolidate.cpp
+  src/bounce.cpp
+  src/bounce_job.cpp
+  src/render_in_place.cpp
+  src/consolidate_job.cpp
+  src/mix_planner.cpp
+  src/space_measure.cpp
 )
 target_include_directories(sonora_control PUBLIC include)
 # common/platform for the control socket and the memfd (ADR-0008 P9): no
@@ -82,6 +88,20 @@ if(UNIX)
   add_executable(test_consolidate tests/test_consolidate.cpp)
   target_link_libraries(test_consolidate PRIVATE sonora_control)
   add_test(NAME consolidate COMMAND test_consolidate)
+endif()
+
+# Bounce Mix's engine half (ui.mixer.bounce): the offline file is the mix,
+# real time records the master through the tap, normalise, cancel. POSIX's.
+if(UNIX)
+  add_executable(test_bounce tests/test_bounce.cpp)
+  target_link_libraries(test_bounce PRIVATE sonora_control Threads::Threads)
+  add_test(NAME bounce COMMAND test_bounce)
+
+  # Track Freeze, Commit and Process Selection (ADR-0051): the print through
+  # a chain with a declared latency, to the sample.
+  add_executable(test_render_in_place tests/test_render_in_place.cpp)
+  target_link_libraries(test_render_in_place PRIVATE sonora_control Threads::Threads)
+  add_test(NAME render_in_place COMMAND test_render_in_place)
 endif()
 
 # A closed take as one compound; a bad file costs one track (ADR-0009
@@ -235,3 +255,17 @@ add_executable(test_automation_writer tests/test_automation_writer.cpp)
 target_include_directories(test_automation_writer PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
 target_link_libraries(test_automation_writer PRIVATE sonora_control)
 add_test(NAME automation_writer COMMAND test_automation_writer)
+
+# The mix assistant's rule-based planners (ADR-0045): analysis, gain staging,
+# bus structure, parallel sends; and the command line that prints a plan.
+add_executable(sonora-mixplan src/mixplan_main.cpp)
+target_link_libraries(sonora-mixplan PRIVATE sonora_control)
+add_executable(test_mix_planner tests/test_mix_planner.cpp)
+target_include_directories(test_mix_planner PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
+target_link_libraries(test_mix_planner PRIVATE sonora_control)
+add_test(NAME mix_planner COMMAND test_mix_planner)
+
+# Reverb and delay space of a reference recording (ADR-0045 8).
+add_executable(test_space_measure tests/test_space_measure.cpp)
+target_link_libraries(test_space_measure PRIVATE sonora_control)
+add_test(NAME space_measure COMMAND test_space_measure)

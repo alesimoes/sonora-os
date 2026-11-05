@@ -1,0 +1,21 @@
+{
+  "processor": "org.sonora.tremolo",
+  "class": "A",
+  "note": "ADR-0011 §3.2 first bars. A gain modulator: linear and time-varying, so no THD or aliasing bar applies (the soft-square shape is a smooth tanh(4 sin) whose sidebands fall off with the harmonic order). Measured on a DC input so the output is the gain itself: range [1 - depth, 1] for every shape (range_err), period against 1 / rate (period_err), the two channels' gains summing to 2 - depth at full spread (spread_err), the auto-pan's gains keeping gL^2 + gR^2 = 2 (pan_power_err) and reaching 0 and sqrt(2) at the extremes (pan_range_err), and depth 0 leaving the signal bit-exact (unity_err).",
+  "tremolo": {
+    "range_err": 1e-4,
+    "period_err": 0.01,
+    "spread_err": 1e-4,
+    "pan_power_err": 1e-4,
+    "pan_range_err": 1e-3,
+    "unity_err": 0.0
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["rate", "depth", "spread"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}

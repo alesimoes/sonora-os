@@ -161,7 +161,27 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
-constexpr uint32_t kProtocolVersion = 42;
+// 43 (ADR-0031 §6; follows 42): the commands session.consolidate and
+//   session.consolidate_cancel, and EventKind::Consolidate, which a
+//   version-42 decoder refuses as an unknown kind.
+// 49 (ui.mixer.bounce; follows 48, the highest any open PR reserved when
+//   this was cut): the commands mix.bounce and mix.bounce_cancel, the
+//   capability "mix.bounce", and EventKind::Bounce, which a version-42
+//   decoder refuses as an unknown kind. 43 to 48 are other PRs' and are not
+//   in this tree.
+// 56 (plugins.graph.freeze, plugins.offline; ADR-0051): the commands
+//   track.freeze, track.commit, track.process_selection, track.unfreeze and
+//   track.render_cancel, the capability "track.render", EventKind::Render
+//   (a version-49 decoder refuses it as an unknown kind), and the optional
+//   "freeze" key of an AddPlaylist operation and of a playlist in the undo
+//   window, which a version-49 decoder refuses as an unknown key. 50 to 55
+//   are other PRs' and are not in this tree.
+// 65 (ADR-0057, plugin telemetry and descriptor hints): PluginParam carries
+//   `section`, `widget` and `curve_source`, PluginInfo carries `meters` and
+//   `curves`, and PluginTelemetry (wire type 10) streams an insert's meters
+//   and curves at no more than kTelemetryMaxHz. A peer of another version is
+//   refused at Hello, as for every bump, so no half-understood catalog is read.
+constexpr uint32_t kProtocolVersion = 65;
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -441,7 +461,35 @@ enum class EventKind : uint32_t {
     // start, replaced at every change and at every ping while measuring; a
     // client that attaches later is sent it. Protocol 22.
     Latency = 7,
+    // A consolidate render (ADR-0031 §6, protocol 43): `insert` is the
+    // track's model id, `flags` a kConsolidate* state, `frame` the fraction
+    // rendered in thousandths while Running, `text` why it Failed or what
+    // finished it. One stands from the first request, replaced at every
+    // step and held after the last one until the next request, so a failure
+    // stays on screen until the operator dismisses it and a client that
+    // attaches later is sent it.
+    Consolidate = 8,
+    // A Bounce Mix render (api/bounce.h, protocol 49): `frame` the fraction
+    // rendered in thousandths, `insert` the frames in the file once Done,
+    // `flags` a BounceState, `text` the file's relative path once Done or why
+    // it Failed or was Cancelled. One stands from the first progress, held
+    // after the last until the next bounce, so a failure stays on screen
+    // until dismissed and a client that attaches later is sent it.
+    Bounce = 9,
+    // A render in place (api/render.h, protocol 56): `frame` the fraction in
+    // thousandths, `insert` the track's model id, `flags` a RenderState,
+    // `text` what was done once Done or why it Failed or was Cancelled. One
+    // stands from the first progress, held until the next render, so a
+    // failure stays on screen until dismissed and a client that attaches
+    // later is sent it.
+    Render = 10,
 };
+
+// EngineEvent::flags of a Consolidate.
+inline constexpr uint32_t kConsolidateRunning = 0;
+inline constexpr uint32_t kConsolidateDone = 1;       // the range is one region, one undo step
+inline constexpr uint32_t kConsolidateFailed = 2;     // `text` says why; nothing changed
+inline constexpr uint32_t kConsolidateCancelled = 3;  // nothing changed
 
 // EngineEvent::flags of a SessionFolder.
 inline constexpr uint32_t kFolderUntitled = 1u << 0;   // the engine made it ("Untitled <n>")
@@ -483,10 +531,11 @@ struct EngineEvent {
     EventKind kind = EventKind::Notice;
     int32_t track = -1;
     // TakeFailed: the take number. RecoveryOffer: how many takes.
-    // SessionFolder: free bytes. Latency: L in frames. 0 otherwise.
+    // SessionFolder: free bytes. Latency: L in frames. Consolidate: the
+    // fraction rendered, in thousandths. 0 otherwise.
     uint64_t frame = 0;
     // PluginFault: the insert's model id. Latency: the outputs the probe
-    // may use. 0 otherwise. Protocol 3.
+    // may use. Consolidate: the track's model id. 0 otherwise. Protocol 3.
     uint64_t insert = 0;
     std::string text;
     // SessionFolder: kFolder* bits. Latency: latency_flags(). 0 otherwise.
@@ -557,6 +606,55 @@ enum PluginParamFlag : uint32_t {
 };
 constexpr uint32_t kKnownParamFlags = (1u << 5) - 1;
 
+// How an editor draws a parameter (ADR-0057). Append-only. Auto is every
+// parameter before protocol 65: the editor chooses from flags and steps.
+enum class PluginWidget : uint32_t {
+    Auto = 0,
+    Knob = 1,
+    Fader = 2,
+    Switch = 3,   // steps 2
+    Choice = 4,   // steps >= 2, labels shown
+};
+constexpr uint32_t kLastWidget = static_cast<uint32_t>(PluginWidget::Choice);
+
+// What a meter reads (ADR-0057). Append-only. The unit comes with the meter.
+enum class PluginMeterKind : uint32_t {
+    Other = 0,
+    GainReduction = 1,   // dB, 0 or positive: the amount taken off
+    InputLevel = 2,
+    OutputLevel = 3,
+};
+constexpr uint32_t kLastMeterKind = static_cast<uint32_t>(PluginMeterKind::OutputLevel);
+
+// A meter a plugin publishes through the telemetry region. `slot` is the
+// place its value has in PluginTelemetry::meters and in the region's block.
+struct PluginMeterInfo {
+    uint32_t slot = 0;
+    std::string id;      // stable, unique in the plugin: "gr", "in", "out"
+    std::string name;
+    std::string unit;    // "dB", "%"; empty when unitless
+    uint32_t kind = 0;   // PluginMeterKind
+    float min = 0.0f;    // the range an editor scales to
+    float max = 1.0f;
+};
+
+// A curve a plugin publishes: `points` samples of y over x, x spaced evenly
+// in the log (x_log) or linear domain from x_min to x_max. An EQ's magnitude
+// response is 128 points over 20 Hz .. 20 kHz in dB.
+struct PluginCurveInfo {
+    uint32_t slot = 0;   // PluginTelemetry::curves index
+    std::string id;      // what PluginParam::curve_source names
+    std::string name;
+    std::string x_unit;
+    std::string y_unit;
+    uint32_t points = 0; // 2 .. 128
+    bool x_log = true;
+    float x_min = 0.0f;
+    float x_max = 1.0f;
+    float y_min = 0.0f;
+    float y_max = 1.0f;
+};
+
 struct PluginParam {
     // Dense; equal to the entry's place in `params`. The order to show them
     // in, and nothing more: a change names its parameter by `key`.
@@ -577,6 +675,14 @@ struct PluginParam {
     uint32_t steps = 0;
     // Empty, or one label per step, in order from min ("Off", "Peak", "RMS").
     std::vector<std::string> labels;
+    // ADR-0057, all three optional; absent is what every parameter was
+    // before protocol 65.
+    // The group an editor puts it in ("Compressor", "Output"); empty: none.
+    std::string section;
+    uint32_t widget = 0;   // PluginWidget
+    // The PluginCurveInfo::id this parameter shapes (an EQ band's gain on
+    // the response curve), so an editor can highlight and drag it there.
+    std::string curve_source;
 };
 
 struct PluginInfo {
@@ -598,6 +704,26 @@ struct PluginInfo {
     bool has_editor = false;
     PluginBridge bridge = PluginBridge::None;
     std::vector<PluginParam> params;
+    // ADR-0057: what the plugin publishes through the telemetry region.
+    // Empty for a plugin that publishes nothing, a third-party one included.
+    std::vector<PluginMeterInfo> meters;
+    std::vector<PluginCurveInfo> curves;
+};
+
+// The most telemetry messages per second per insert the engine sends
+// (ADR-0057): a meter does not need the audio rate, and a response curve of
+// 128 floats at 30 Hz is about 15 KB/s.
+constexpr uint32_t kTelemetryMaxHz = 30;
+
+// An insert's live meters and curves, engine to client, read from the
+// telemetry region on the control thread. The descriptors are in the
+// catalog; this carries values only. Protocol 65.
+struct PluginTelemetry {
+    uint64_t insert = 0;     // the insert's model id
+    uint32_t sequence = 0;   // the plugin's frame count; a repeat is not sent
+    uint32_t meter_mask = 0; // bit n: meters[n] is a published value
+    std::vector<float> meters;               // by PluginMeterInfo::slot, at most 8
+    std::vector<std::vector<float>> curves;  // by PluginCurveInfo::slot, at most 2
 };
 
 // Every plugin the engine can host, as its last scan found them. Sent after
@@ -614,12 +740,14 @@ struct Inbox {
     std::vector<EngineEvent> events;
     std::vector<ModelUpdate> model;
     std::vector<PluginCatalog> catalogs;
+    std::vector<PluginTelemetry> telemetry;
 
     void clear() {
         replies.clear();
         events.clear();
         model.clear();
         catalogs.clear();
+        telemetry.clear();
     }
 };
 

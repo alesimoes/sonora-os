@@ -149,11 +149,24 @@ void crossfade_handles(const Region& left, const Region& right, const SourcePool
 // loudly").
 bool fit_crossfade(Crossfade& x, Frames before, Frames after);
 
+// A playlist made by Track Freeze (ADR-0051, session format 23): it holds the
+// rendered audio of the playlist `from` through the inserts `inserts`, which
+// the freeze made inactive. Unfreeze reactivates them and returns to `from`;
+// Track Commit makes a playlist with no such record.
+struct PlaylistFreeze {
+    Id from = 0;
+    std::vector<Id> inserts;   // in slot order, as they were when frozen
+    bool operator==(const PlaylistFreeze& o) const {
+        return from == o.from && inserts == o.inserts;
+    }
+};
+
 struct Playlist {
     Id id = 0;
     std::string name;
     std::vector<Region> regions;         // sorted by position, never overlapping
     std::vector<Crossfade> crossfades;   // sorted by the left region's position
+    std::optional<PlaylistFreeze> freeze;   // set only on a freeze's playlist
     bool operator==(const Playlist& o) const;
 };
 

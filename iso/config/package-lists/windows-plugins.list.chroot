@@ -1,0 +1,9 @@
+# Windows VST3 through yabridge (ADR-0017 Y6, update of 2026-11-04). From the
+# image's own snapshot like everything else; the hook 0200 checks the version.
+# wine64 only: yabridge-host-32.exe and 32-bit plugins need the i386
+# multiarch, which the image does not carry.
+wine
+wine64
+# The hook downloads the yabridge tarball and checks its SHA-256.
+curl
+ca-certificates

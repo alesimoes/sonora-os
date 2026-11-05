@@ -1,0 +1,23 @@
+#!/bin/sh
+# Starts the headless engine for the display stack (ADR-0010 stage 2).
+#
+# Editors of out-of-process plugins are X11 windows on labwc's Xwayland, whose
+# display name only labwc knows. Its autostart file records it in
+# $XDG_RUNTIME_DIR/sonora/display.env; read again at every engine start, so a
+# restarted engine finds the display that is up now. Without the file (labwc
+# not up yet, no Xwayland) the engine starts anyway: editors fail with a
+# message, and audio never waits on a window.
+RT="${XDG_RUNTIME_DIR:-/run/user/1000}"
+ENVF="$RT/sonora/display.env"
+if [ -r "$ENVF" ]; then
+  # shellcheck disable=SC1090
+  . "$ENVF"
+  [ -n "$DISPLAY" ] && export DISPLAY
+fi
+set -- --headless --sessions /home/sonora/Sessions --wait-for-inputs 60
+# The plugin host is not shipped in every image; the engine must not be told
+# about a binary that is not there.
+if [ -x /usr/local/bin/sonora-plugin-host ]; then
+  set -- "$@" --plugin-host /usr/local/bin/sonora-plugin-host
+fi
+exec /usr/local/bin/sonora-engine "$@"
