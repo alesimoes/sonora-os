@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// sonora-analyze (ADR-0011 §3.4, ADR-0046): the offline analysis process.
+// A short-lived, non-real-time program that engine/control starts on a
+// bounce of the mix and reads the result of. Today one pass:
+//
+//   sonora-analyze mastering <bounce.wav> [--target-lufs N] [--ceiling N]
+//                  [--out report.json]
+//
+// It measures the bounce (mix_analysis.h), applies the mastering rules
+// (mastering_rules.h) and writes a JSON report: the measurements, the
+// console's settings, and each decision with its reason. The report is
+// settings, never audio; the session plan that applies them is built by
+// whoever holds the session (MasteringPlanner).
+//
+// SIGINT and SIGTERM cancel the analysis between blocks (exit 130). Exit
+// 0: report written. 1: the analysis failed (the message is on stderr).
+// 2: usage.
+#include <atomic>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <string>
+
+#include "sonora/analyze/mastering_rules.h"
+#include "sonora/json/json.h"
+#include "sonora/wav_reader.h"
+
+namespace {
+
+std::atomic<bool> g_cancel{false};
+extern "C" void on_signal(int) { g_cancel.store(true); }
+
+class WavSource final : public sonora::analyze::AudioSource {
+public:
+    bool open(const std::string& path, std::string& error) { return reader_.open(path, error); }
+    std::uint32_t channels() const override { return reader_.channels(); }
+    double sample_rate() const override { return reader_.sample_rate(); }
+    std::int64_t frames() const override { return reader_.frames(); }
+    std::int64_t read(std::int64_t start, std::int64_t count, float* out) override {
+        return reader_.read(start, count, out);
+    }
+
+private:
+    sonora::WavReader reader_;
+};
+
+using sonora::json::Value;
+
+Value num(double v) { return Value::number_float(static_cast<float>(v)); }
+
+Value settings_json(const std::vector<float>& values) {
+    const auto& d = sonora::native::mastering_descriptor();
+    Value o = Value::object();
+    for (std::uint32_t i = 1; i < d.param_count; ++i) o.set(d.params[i].id, Value::number_float(values[i]));
+    return o;
+}
+
+int usage() {
+    std::fputs("usage: sonora-analyze mastering <bounce.wav> [--target-lufs N] [--ceiling N] [--out report.json]\n", stderr);
+    return 2;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    using namespace sonora::analyze;
+    if (argc < 3 || std::string(argv[1]) != "mastering") return usage();
+    const std::string input = argv[2];
+    std::string out_path;
+    MasteringConfig cfg;
+    for (int i = 3; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (i + 1 >= argc) return usage();
+        char* end = nullptr;
+        if (a == "--target-lufs") {
+            cfg.target_lufs = std::strtod(argv[++i], &end);
+        } else if (a == "--ceiling") {
+            cfg.ceiling_dbtp = std::strtod(argv[++i], &end);
+        } else if (a == "--out") {
+            out_path = argv[++i];
+        } else {
+            return usage();
+        }
+    }
+    std::signal(SIGINT, on_signal);
+    std::signal(SIGTERM, on_signal);
+
+    std::string error;
+    WavSource src;
+    if (!src.open(input, error)) {
+        std::fprintf(stderr, "sonora-analyze: %s: %s\n", input.c_str(), error.c_str());
+        return 1;
+    }
+    RunOptions run;
+    run.cancel = &g_cancel;
+    MixAnalysis a;
+    if (!analyse_mix(src, run, a, error)) {
+        std::fprintf(stderr, "sonora-analyze: %s\n", error.c_str());
+        return error == "cancelled" ? 130 : 1;
+    }
+    MasteringSuggestion s;
+    if (!suggest_mastering(a, cfg, s, error)) {
+        std::fprintf(stderr, "sonora-analyze: %s\n", error.c_str());
+        return 1;
+    }
+
+    Value report = Value::object();
+    Value m = Value::object();
+    m.set("integrated_lufs", num(a.integrated_lufs));
+    m.set("max_short_term_lufs", num(a.max_short_term_lufs));
+    m.set("loudness_range_lu", num(a.loudness_range_lu));
+    m.set("true_peak_dbtp", num(a.true_peak_dbtp));
+    m.set("crest_db", num(a.crest_db));
+    m.set("plr_db", num(a.plr_db));
+    m.set("correlation", num(a.correlation));
+    m.set("side_mid_db", num(a.side_mid_db));
+    Value bands = Value::array();
+    for (int b = 0; b < kBands; ++b) bands.push(a.band_valid[b] ? num(a.band_db[b]) : Value::null());
+    m.set("band_db", std::move(bands));
+    report.set("measurements", std::move(m));
+    report.set("settings", settings_json(s.values));
+    Value findings = Value::array();
+    for (const Finding& f : s.findings) {
+        Value o = Value::object();
+        o.set("rule", Value::string(f.rule));
+        o.set("title", Value::string(f.title));
+        o.set("reason", Value::string(f.reason));
+        findings.push(std::move(o));
+    }
+    report.set("findings", std::move(findings));
+    Value obs = Value::array();
+    for (const std::string& o : s.observations) obs.push(Value::string(o));
+    report.set("observations", std::move(obs));
+    report.set("fader_trim_db", num(s.fader_trim_db));
+    report.set("aimed_lufs", num(s.aimed_lufs));
+
+    std::string text;
+    if (!sonora::json::write(report, text, error)) {
+        std::fprintf(stderr, "sonora-analyze: %s\n", error.c_str());
+        return 1;
+    }
+    if (out_path.empty()) {
+        std::cout << text;
+    } else {
+        std::ofstream f(out_path, std::ios::binary);
+        f << text;
+        if (!f) {
+            std::fprintf(stderr, "sonora-analyze: cannot write %s\n", out_path.c_str());
+            return 1;
+        }
+    }
+    return 0;
+}

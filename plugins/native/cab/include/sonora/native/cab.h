@@ -32,6 +32,14 @@
 // make_cab_plugin() (cab_file.h) installs. A cab from make_cab() has no
 // reader and so no slot: the neutral build has no WAV reader. Loading an
 // empty path puts the unit impulse back.
+//
+// "Trim" and "Normalise" (state version 2, both off by default) condition
+// the loaded response with dsp/ir_prepare.h: Trim drops the leading and
+// trailing near-silence (a fixed delay the player would hear), Normalise
+// scales to unit energy. They apply to the response as recorded, which the
+// cab keeps, so they take effect at the next prepare() (`reconfigures`: the
+// plugin bridge re-prepares) and need no file read. A version 1 state has
+// neither key: both load as off, so an old session sounds exactly as it did.
 #pragma once
 
 #include <cstddef>
@@ -47,6 +55,8 @@ enum : std::uint32_t {
     kBypass = 0,
     kOutput,
     kMix,
+    kTrim,       // state version 2
+    kNormalise,  // state version 2
     kParamCount,
 };
 constexpr double kMaxSeconds = 1.0;

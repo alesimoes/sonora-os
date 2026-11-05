@@ -38,3 +38,10 @@ target_link_libraries(sonora_plugin_probe_record PUBLIC sonora_base)
 add_executable(test_plugin_probe_record tests/test_probe_record.cpp)
 target_link_libraries(test_plugin_probe_record PRIVATE sonora_plugin_probe_record)
 add_test(NAME plugin_probe_record COMMAND test_plugin_probe_record)
+
+# The telemetry region, layout version 1 (ADR-0057): a third, read-only
+# region of per-insert meters and a response curve, written by a plugin's
+# audio thread through a seqlock. Header-only like protocol.h.
+add_executable(test_plugin_telemetry tests/test_telemetry.cpp)
+target_link_libraries(test_plugin_telemetry PRIVATE sonora_plugin_protocol Threads::Threads)
+add_test(NAME plugin_telemetry COMMAND test_plugin_telemetry)
