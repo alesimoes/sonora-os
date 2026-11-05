@@ -57,6 +57,7 @@ xwayland
 qt6-wayland
 libqt6quick6
 qml6-module-qtquick
+qml6-module-qtquick-window
 libgl1-mesa-dri
 libglx-mesa0
 libegl-mesa0
@@ -70,3 +71,10 @@ efibootmgr
 grub-efi-amd64-bin
 grub-pc-bin
 grub-common
+
+# sonora-plugin-host (ADR-0007 section 3): lilv loads LV2 bundles, libx11 opens
+# out-of-process editors on labwc's Xwayland. Named from what the binary links,
+# not from its build image's -dev packages. The native bundles in
+# /usr/local/lib/{lv2,vst3} need nothing beyond libc.
+liblilv-0-0
+libx11-6

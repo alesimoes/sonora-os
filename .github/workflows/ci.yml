@@ -758,7 +758,7 @@ jobs:
       - name: Install shellcheck and dbus-x11
         run: for d in 0 15 45; do sleep "$d"; sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y shellcheck dbus-x11 && exit 0; done; echo "apt failed after 3 attempts" >&2; exit 1
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck
+        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck iso/config/includes.chroot/usr/local/bin/sonora-acceptance iso/config/includes.chroot/usr/local/bin/sonora-windows-plugins
 
       # ADR-0007 M5: module include edges and the contract lock. Seconds,
       # no build needed.
@@ -802,11 +802,23 @@ jobs:
       - name: RT limits agree across limits.d, unit and hook
         run: tools/test-rt-limits.sh
 
+      - name: RT tuning (rtirq, cpu-latency, USB audio udev rule)
+        run: tools/test-rt-tuning.sh
+
       - name: umc-measure.sh logic, against fake arecord/pw-jack/engine
         run: tools/test-umc-measure.sh
 
+      - name: UMC1820 WirePlumber rule parses and matches fake nodes
+        run: tools/test-umc-profile.sh
+
+      - name: sonora-acceptance logic, against a fake /proc, /sys and engine
+        run: tools/test-sonora-acceptance.sh
+
       - name: Image config (backports pins, RT kernel, tty1 session, no VT gettys)
         run: tools/test-image-config.sh
+
+      - name: Image build pre-flight logic (pins, retry, dev-snapshot gate)
+        run: tools/test-iso-preflight.sh
 
       - name: Installer text screen (tty2) against a stub installer
         run: tools/test-installer-tty.sh

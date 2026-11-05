@@ -1,0 +1,25 @@
+[Unit]
+Description=Wine prefix and yabridge sync for the operator's Windows VST3 plugins
+# Once: the script writes the stamp when it finishes. Run it again by hand
+# (sonora-windows-plugins) after copying plugins in.
+ConditionPathExists=!/home/sonora/.local/state/sonora/windows-plugins.done
+# Not ordered before sonora-session.service: the engine never waits on this
+# (a slow first wineboot must not delay the recording screen). The plugin
+# scanner creates the prefix itself if it gets there first (ADR-0017 Y4).
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=sonora
+Group=sonora
+Environment=HOME=/home/sonora
+WorkingDirectory=/home/sonora
+ExecStart=/usr/local/bin/sonora-windows-plugins
+TimeoutStartSec=300
+# Wine's first run is CPU heavy; stay behind the engine, which runs at Nice=-10
+# and rtprio 95. No LimitRTPRIO here: nothing in this unit needs real time.
+Nice=15
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

@@ -12,6 +12,7 @@ RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
       cmake \
       pkg-config \
       libjack-jackd2-dev \
+      libasound2-dev \
       ca-certificates \
       locales \
       python3 \

@@ -6,6 +6,9 @@
      declaring any binding drops the defaults, including the root-menu ones. -->
 <labwc_config>
   <keyboard>
+    <!-- Held keys repeat the same on every machine (nudge, scrub). -->
+    <repeatRate>25</repeatRate>
+    <repeatDelay>400</repeatDelay>
     <keybind key="XF86LaunchB">
       <action name="None"/>
     </keybind>

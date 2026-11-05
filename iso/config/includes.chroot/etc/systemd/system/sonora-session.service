@@ -3,8 +3,9 @@ Description=Sonora recording session
 # The engine is a PipeWire client, so the server has to exist first. We wait on
 # the socket rather than the service: the unit being active does not mean the
 # socket is accepting connections yet.
-After=sound.target systemd-user-sessions.service
-Wants=sound.target
+After=sound.target systemd-user-sessions.service sonora-rtirq.service sonora-cpu-latency.service
+# Tuning is wanted, not required: a failed tuning unit must not stop the engine.
+Wants=sound.target sonora-rtirq.service sonora-cpu-latency.service
 Conflicts=getty@tty1.service
 # The default start limit (5 in 10 s) would stop a crash-looping engine for
 # good and leave tty1 blank with no way back. Never give up.

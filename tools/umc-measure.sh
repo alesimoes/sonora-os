@@ -14,6 +14,11 @@
 #    The shared-memory plugin round trip (question 2) needs the plugin host and
 #    is NOT measured here.
 #
+# The direct ALSA backend (ADR-0053) is not swept here: it needs the card to
+# itself, so PipeWire must be stopped first. Its own run, for the same
+# comparison, is `sonora-alsa-passthrough --device UMC1820 --seconds 600
+# --period 128` (one "alsa-passthrough" line: xruns, callback jitter).
+#
 # Under WSL the card sits behind USB/IP: latency and IPC are NOT bare-metal
 # evidence and the report says so. Only the channel result stands.
 # Exit status: 0 if the channel checks pass, 1 if not, 2 on setup errors.

@@ -207,5 +207,34 @@ if [[ $rc == 1 ]]; then ok "--log keeps the exit code"; else bad "--log exit $rc
 if grep -q "unknown step no-such-step" "$TMP/l/out.log"; then ok "--log has stderr"; else bad "--log content"; fi
 if LC_ALL=C grep -q -P '\x00' "$TMP/l/out.log"; then bad "--log is not UTF-8 (NUL bytes)"; else ok "--log has no UTF-16"; fi
 
+# measure: parsers of the clock and of jack_iodelay.
+top=$'S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT  NAME\nS   30      0      0  0.0ns  0.0ns  ---  ---    0        Dummy-Driver\nR   45    128  48000 10.0us  20.0us 0.00 0.01    3 S16LE 2 48000 sonora\n'
+if [[ $(clock_of <<<"$top") == 48000/128 ]]; then ok "clock_of"; else bad "clock_of: $(clock_of <<<"$top")"; fi
+if [[ $(echo "nothing" | clock_of) == '?/?' ]]; then ok "clock_of unknown"; else bad "clock_of unknown"; fi
+iod=$'  128.000 frames      2.667 ms total roundtrip latency\n  250.000 frames      5.208 ms total roundtrip latency\n'
+if [[ $(iodelay_last <<<"$iod") == "5.208 ms (250.000 frames)" ]]; then ok "iodelay_last"; else bad "iodelay_last: $(iodelay_last <<<"$iod")"; fi
+if [[ -z $(echo "no signal" | iodelay_last) ]]; then ok "iodelay_last empty"; else bad "iodelay_last empty"; fi
+# The script runs under set -e -o pipefail: no match must not end it, or the
+# report with "round-trip latency: not measured" is never written.
+reached="$(set -euo pipefail; lat="$(echo "no signal" | iodelay_last)"; echo "reached${lat}")"
+if [[ $reached == reached ]]; then ok "iodelay_last no match survives set -e"; else bad "iodelay_last no match ends a set -e script"; fi
+if printf '48000/128\n48000/128\n' | clock_stable; then ok "stable clock"; else bad "stable clock"; fi
+if printf '48000/128\n48000/256\n' | clock_stable; then bad "moving quantum called stable"; else ok "moving quantum"; fi
+if printf '?/?\n' | clock_stable; then bad "unknown called stable"; else ok "unknown clock"; fi
+if : | clock_stable; then bad "no samples called stable"; else ok "no samples"; fi
+if printf '?/?\n48000/128\n48000/128\n' | clock_stable; then ok "idle sample ignored"; else bad "idle sample ignored"; fi
+if printf '?/?\n48000/128\n48000/64\n' | clock_stable; then bad "idle hid a moving quantum"; else ok "idle plus moving"; fi
+
+# The idle graph exactly as pw-top printed it in WSL (every node at 0).
+idle=$'S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME \nC   33      0      0    ---     ---   ---   ---     0                  Dummy-Driver\nC   39      0      0    ---     ---   ---   ---     0                  wslg-speakers\nI   33      0      0   0.0us   0.0us  ???   ???     0                  Dummy-Driver\nS   56      0      0    ---     ---   ---   ---     0                  sonora-tone\n'
+if [[ $(clock_of <<<"$idle") == '?/?' ]]; then ok "clock_of idle graph"; else bad "clock_of idle: $(clock_of <<<"$idle")"; fi
+run=$'S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME \nR   39    128  48000  20.0us  30.0us 0.02  0.03    0                  wslg-speakers\nR   57    128  48000  10.0us  20.0us 0.01  0.02    0   F32P 2 48000   sonora\nS   56      0      0    ---     ---   ---   ---     0                  sonora-tone\n'
+if [[ $(clock_of <<<"$run") == 48000/128 ]]; then ok "clock_of running graph"; else bad "clock_of running: $(clock_of <<<"$run")"; fi
+meta=$'Found "settings" metadata 32\nupdate: id:0 key:\'log.level\' value:\'2\' type:\'\'\nupdate: id:0 key:\'clock.rate\' value:\'48000\' type:\'\'\nupdate: id:0 key:\'clock.quantum\' value:\'128\' type:\'\'\nupdate: id:0 key:\'clock.force-quantum\' value:\'0\' type:\'\'\n'
+if [[ $(clock_conf <<<"$meta") == 48000/128 ]]; then ok "clock_conf"; else bad "clock_conf: $(clock_conf <<<"$meta")"; fi
+meta=${meta}$'update: id:0 key:\'clock.force-quantum\' value:\'256\' type:\'\'\n'
+if [[ $(clock_conf <<<"$meta") == 48000/256 ]]; then ok "clock_conf forced"; else bad "clock_conf forced: $(clock_conf <<<"$meta")"; fi
+if [[ $(echo none | clock_conf) == '?/?' ]]; then ok "clock_conf unknown"; else bad "clock_conf unknown"; fi
+
 echo "RESULT failed=$fail"
 exit "$fail"
