@@ -17,7 +17,8 @@ HOLD = 1e18   # not_before of a task held back until another feature merges
 # (below its track floor) > lead/architect > burst engineer.
 P_FIX, P_TESTER, P_INTEGRATOR, P_ENGINEER, P_PLANNER, P_BURST = range(6)
 POOL_OF_KIND = {"fixer": "fix", "tester": "qa", "integrator": "merge",
-                "engineer": "build", "planner": "plan"}
+                "engineer": "build", "planner": "plan",
+                "principal": "principal"}
 KIND_OF_STATE = {"ci_fix": "fixer", "qa": "tester", "integrating": "integrator",
                  "queued": "engineer", "building": "engineer",
                  "bugfix": "engineer"}
@@ -51,6 +52,12 @@ class Config:
     max_testers: int = 4
     max_fixers: int = 4
     max_integrators: int = 1
+    # Escalation to the principal engineer (the only Opus agent): after this
+    # many fix rounds on the same cause, after this many hours red, or when
+    # max_attempts is spent. One run at a time machine-wide.
+    principal_after_fixes: int = 2
+    principal_after_hours: float = 3.0
+    max_principals: int = 1
     max_open_prs: int = 10
     max_ready_unpr: int = 6
     max_active_features: int = 10   # features planned or built at once
@@ -74,6 +81,9 @@ class Config:
     seeds: dict = field(default_factory=dict)  # kind -> last used number
     live_pools: object = None  # None: every pool is live when not dry-run
     train_slots: int = 6        # adopted PRs with CI in flight at once
+    local_ci: bool = False      # tools/local-ci.sh gates PR opening and
+    #                             merging (harness/localci.py)
+    local_ci_slots: int = 1     # local CI runs at once (each takes -j all)
     daemon_merge: bool = True   # the daemon merges green PRs itself; no
     #                             detached merge-when-green watcher per PR
 
@@ -182,6 +192,8 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
     for t in tasks:
         kind = "planner" if t["kind"] == "wake" and t["state"] == "queued" \
             else KIND_OF_STATE.get(t["state"]) if t["kind"] == "work" else None
+        if kind in ("engineer", "fixer", "integrator") and t["kind"] == "work"                 and t.get("escalated") and t["state"] != "queued":
+            kind = "principal"
         if kind == "engineer" and t["not_before"] >= HOLD:
             # Waits for another feature: not launchable, but not a gap that
             # should wake the lead either.
@@ -190,11 +202,11 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             continue
         if kind is None or not ready(t):
             continue
-        if kind in ("fixer", "integrator"):
+        if kind in ("fixer", "integrator", "principal") and                 t["state"] in ("ci_fix", "integrating"):
             sibs = by_feature[t["feature_id"] or t["id"]]
             if t["id"] != sibs[0]["id"]:
                 continue  # the feature's first task stands for it
-            if kind == "integrator" and (t.get("integrated") or any(
+            if t["state"] == "integrating" and (t.get("integrated") or any(
                     s["state"] not in DONE_STATES for s in sibs)):
                 continue  # waiting for sibling tasks, or PR being opened
             if kind == "fixer" and t.get("fix_kind") in ("conflict",
@@ -209,7 +221,7 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
                 continue
             eligible_by_track[t["track"]] = \
                 eligible_by_track.get(t["track"], 0) + 1
-        cls = {"fixer": P_FIX, "tester": P_TESTER, "integrator": P_INTEGRATOR,
+        cls = {"principal": P_FIX, "fixer": P_FIX, "tester": P_TESTER, "integrator": P_INTEGRATOR,
                "engineer": P_ENGINEER, "planner": P_PLANNER}[kind]
         if t["state"] == "ci_fix":
             cls = P_FIX  # a conflict run is as urgent as a CI fix
@@ -226,6 +238,8 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
         if kind == "tester" and (count["tester"] >= cfg.max_testers
                                  or building >= cfg.local_builds):
             return False
+        if kind == "principal" and count["principal"] >= cfg.max_principals:
+            return False  # waits for the slot; never blocks for it
         if kind == "fixer" and count["fixer"] >= cfg.max_fixers:
             return False
         if kind == "integrator" and (

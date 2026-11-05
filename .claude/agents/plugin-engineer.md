@@ -119,4 +119,4 @@ shell costs tokens and attention until a human notices.
 - Before reporting, `docker ps` and `ps -ef` for anything you started
   (docker runs, builds) and kill it.
 
-- Build budget: finish the whole slice before building; at most three build cycles per task, narrowest target, no rebuild per edit (CLAUDE.md "Build budget").
+- Build budget: finish the whole slice before building; at most three build cycles per task, narrowest target, no rebuild per edit (CLAUDE.md "Build budget"). Only the narrowest target, through `tools/build-slot.sh` (one heavy job at a time on the machine); the whole tree is built and tested by the orchestrator's local CI gate, never by you.

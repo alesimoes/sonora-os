@@ -2,7 +2,8 @@
 
 The model flag lives in model_args() and nowhere else. build_command() has no
 model parameter, so no caller, config file or environment variable can ask
-for anything but Sonnet.
+for anything but Sonnet; the one exception is the escalation engineer, named
+in MODEL_OF_AGENT (owner, 2026-11-05).
 """
 import json
 import os
@@ -14,6 +15,8 @@ import sys
 import threading
 
 MODEL = "sonnet"
+# agent -> model. Everything absent from this map runs on Sonnet.
+MODEL_OF_AGENT = {"principal-engineer": "opus"}
 FORBIDDEN_ENV = ("CLAUDE_MODEL", "ANTHROPIC_MODEL")
 DEFAULT_TOOLS = ("Bash", "Read", "Edit", "Write", "MultiEdit", "Grep", "Glob",
                  "mcp__harness__whoami", "mcp__harness__send",
@@ -26,8 +29,12 @@ class ModelError(Exception):
     pass
 
 
-def model_args():
-    return ["--model", MODEL]
+def model_for(agent):
+    return MODEL_OF_AGENT.get(agent, MODEL)
+
+
+def model_args(agent=None):
+    return ["--model", model_for(agent)]
 
 
 def check_models(root, env=None):
@@ -48,11 +55,12 @@ def check_models(root, env=None):
         with open(os.path.join(agents, fn), encoding="utf-8") as f:
             head = f.read(2000)
         m = re.match(r"---\r?\n(.*?)\r?\n---", head, re.S)
+        allowed = model_for(fn[:-3])
         for line in (m.group(1).splitlines() if m else ()):
             if line.startswith("model:") and \
-                    line.split(":", 1)[1].strip().strip("'\"") != MODEL:
+                    line.split(":", 1)[1].strip().strip("'\"") != allowed:
                 raise ModelError(f"{fn} says {line.strip()}; "
-                                 f"only {MODEL} is allowed")
+                                 f"only {allowed} is allowed")
 
 
 def _check_settings_model(path):
@@ -78,7 +86,7 @@ def build_command(claude, agent, prompt, mcp_path, settings_path,
                   max_turns=80, permission_mode="acceptEdits",
                   tools=DEFAULT_TOOLS):
     argv = list(claude) if isinstance(claude, (list, tuple)) else [claude]
-    argv += ["-p"] + model_args()
+    argv += ["-p"] + model_args(agent)
     argv += ["--agent", agent,
              "--mcp-config", str(mcp_path), "--strict-mcp-config",
              "--settings", str(settings_path),

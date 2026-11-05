@@ -8,7 +8,8 @@ from unittest import mock
 import support
 from harness import launcher
 from harness.forge import RateLimited
-from harness.train import agent_of, track_of
+from harness.forge import job_signatures
+from harness.train import agent_of, bundle_agent, track_of
 
 
 def state(o, tid):
@@ -57,6 +58,75 @@ class Train(support.DaemonCase):
                          "ui-engineer")
         self.assertEqual(agent_of("daw", ["ui/qt/a.cpp", "engine/b.cpp"]),
                          "rt-engineer")
+
+    def test_bundle_agent_is_the_one_most_files_belong_to(self):
+        files = ["engine/session/a.cpp", "engine/session/b.cpp",
+                 "common/session_files/c.h", "ui/qt/d.cpp",
+                 "iso/config/package-lists/x", "tools/y.sh"]
+        self.assertEqual(bundle_agent(files), ("daw", "rt-engineer"))
+        self.assertEqual(bundle_agent(["iso/a", "iso/b", "engine/c.cpp"]),
+                         ("os", "distro-engineer"))
+        self.assertEqual(bundle_agent(["plugins/native/eq/a.cpp"]),
+                         ("plugin", "dsp-engineer"))
+        self.assertEqual(bundle_agent(["docs/a.md"]), ("daw", "rt-engineer"))
+
+    # -- the same red twice ---------------------------------------------
+    def red_feature(self, o):
+        self.forge.add_pr(10, "a", ["engine/x.cpp"], checks={"Shell": "pass"})
+        o.train.adopt()
+        return o.store.get_feature("pr-10")
+
+    def red(self, o, detail):
+        f = o.store.get_feature("pr-10")
+        o._red(f, o._feature_tasks("pr-10"), ["Shell"], "ci", detail)
+        # the fixer is done; the PR is back for the next red
+        for t in o._feature_tasks("pr-10"):
+            if t["state"] == "ci_fix":
+                o.store.advance(t["id"], "pr_open")
+        o.store.set_feature("pr-10", state="pr_open")
+        return state(o, "pr-10")
+
+    def test_a_job_red_from_a_new_cause_is_not_the_same_red(self):
+        o = self.make()
+        self.red_feature(o)
+        img = "[Shell]\n##[error]ghcr.io/x/labwc-test:trixie is missing"
+        lock = ("[Shell]\nA contract file changed and CONTRACTS.lock was "
+                "not regenerated.")
+        self.assertEqual(self.red(o, img), "pr_open")
+        self.assertEqual(self.red(o, img + " (run 123)"), "pr_open")
+        # a third red with the image cause again would block; a new cause
+        # starts the count over and gets a fixer
+        f = o.store.get_feature("pr-10")
+        o._red(f, o._feature_tasks("pr-10"), ["Shell"], "ci", lock)
+        self.assertEqual(state(o, "pr-10"), "ci_fix")
+        self.assertIn("CONTRACTS.lock", o.store.get_task("pr-10")["note"])
+
+    def test_the_same_cause_three_times_escalates_then_blocks(self):
+        o = self.make()
+        self.red_feature(o)
+        img = "[Shell]\n##[error]image abc1234def is missing (run 1)"
+        self.red(o, img)
+        self.red(o, img.replace("1)", "2)"))
+        f = o.store.get_feature("pr-10")
+        o._red(f, o._feature_tasks("pr-10"), ["Shell"], "ci",
+               img.replace("abc1234def", "9876543fed"))
+        self.assertEqual(state(o, "pr-10"), "ci_fix")
+        self.assertTrue(o.store.get_task("pr-10")["escalated"])
+        self.assertTrue(o.store.events("pr-10", "escalated"))
+        for t in o._feature_tasks("pr-10"):
+            o.store.advance(t["id"], "pr_open")
+        o.store.set_feature("pr-10", state="pr_open")
+        f = o.store.get_feature("pr-10")
+        o._red(f, o._feature_tasks("pr-10"), ["Shell"], "ci", img)
+        self.assertEqual(state(o, "pr-10"), "blocked")
+
+    def test_job_signatures_split_the_excerpt_by_job(self):
+        sig = job_signatures("[A]\nerror at line 12\n[B]\nboom")
+        self.assertEqual(set(sig), {"A", "B"})
+        self.assertEqual(sig["A"],
+                         job_signatures("[A]\nerror at line 99")["A"])
+        self.assertNotEqual(sig["A"], sig["B"])
+        self.assertEqual(job_signatures(""), {})
 
     # -- green ------------------------------------------------------------
     def test_green_pr_is_merged_by_the_daemon_pinned_to_its_head(self):
@@ -150,6 +220,15 @@ class Train(support.DaemonCase):
         t = o.store.get_task("pr-10")
         self.assertEqual((t["state"], t["fix_kind"]), ("ci_fix", "conflict"))
 
+    def test_a_third_conflict_still_gets_an_integrator(self):
+        o = self.make()
+        self.forge.add_pr(10, "a", checks={"build": "pass"}, mergeable="no")
+        o.train.adopt()
+        o.store.set_feature("pr-10", job_reds='{"merge-conflict": 2}')
+        o.tick()
+        t = o.store.get_task("pr-10")
+        self.assertEqual((t["state"], t["fix_kind"]), ("ci_fix", "conflict"))
+
     def test_conflicting_pr_goes_to_a_fixer_with_the_train_brief(self):
         o = self.make()
         self.forge.add_pr(10, "a", checks={"build": "pass"}, mergeable="no")
@@ -200,6 +279,27 @@ class Train(support.DaemonCase):
                 o, lambda: state(o, "pr-10") == "pr_open"))
         self.assertEqual(len(self.forge.reruns), 2)
         self.assertEqual(self.info(o, 10)["phase"], "rerodando")
+
+    def test_a_rerun_not_started_yet_sends_no_second_fixer(self):
+        o = self.make()
+        self.forge.add_pr(10, "a", checks={"build": "fail"})
+        self.forge.prs[10]["update"] = "uptodate"
+        self.forge.fix_commits = False
+        o.train.adopt()
+        o.tick()                                 # rerun
+        self.forge.checks(10, build="fail")
+        with mock.patch.object(launcher, "git_head", return_value="h0"):
+            self.poll(o)                         # fixer, finds nothing
+            self.assertTrue(self.pump(
+                o, lambda: state(o, "pr-10") == "pr_open"))
+        # GitHub still shows the old failure: the train waits for the rerun
+        self.forge.checks(10, build="fail")
+        self.clock.offset += 30
+        o.ci_polled.clear()
+        o.tick()
+        self.assertEqual(state(o, "pr-10"), "pr_open")
+        self.assertEqual(len(o.store.runs_of("pr-10")), 1)
+        self.assertEqual(self.info(o, 10)["next"], "aguardando o rerun começar")
 
     # -- capacity, stacking, rate limits ---------------------------------
     def test_refreshes_wait_for_a_ci_slot(self):
@@ -307,6 +407,19 @@ class Train(support.DaemonCase):
         extra = o._extra(t, "fixer")
         self.assertIn(f"Merge-train PR #{n}", extra)
 
+    def test_blocked_pr_merged_by_hand_leaves_the_board(self):
+        o = self.make()
+        self.forge.add_pr(10, "a", checks={"build": "cancel"})
+        o.train.adopt()
+        for _ in range(3):
+            self.forge.checks(10, build="cancel")
+            self.poll(o)
+        self.assertEqual(state(o, "pr-10"), "blocked")
+        self.forge.prs[10]["state"] = "merged"     # the owner merged it
+        self.poll(o)
+        self.assertEqual(state(o, "pr-10"), "merged")
+        self.assertEqual(self.info(o, 10)["phase"], "mergeado")
+
     def test_bundle_refuses_a_pr_not_on_the_train(self):
         o = self.make()
         self.forge.add_pr(10, "a")
@@ -326,6 +439,110 @@ class Train(support.DaemonCase):
                           row["total"]), (10, "CI rodando", 1, 2))
         self.assertEqual(st["train_slots"], 6)
 
+
+
+class FakeLocalCI:
+    """harness/localci.py without git or bash: results set by the test."""
+    def __init__(self):
+        self.results, self.started, self.free = {}, [], True
+
+    def result(self, sha):
+        return self.results.get(sha)
+
+    def start(self, sha, full=False, pre=False):
+        if not self.free:
+            return False
+        self.started.append(sha)
+        self.results[sha] = {"state": "running"}
+        return True
+
+    def poll(self):
+        pass
+
+    def check_main(self):
+        pass
+
+    def builder_status(self, now=None):
+        return {"running": None, "last": None,
+                "queue": {"batch": [], "pre": [], "bisect": []}}
+
+
+class LocalGate(support.DaemonCase):
+    def make(self, **kw):
+        kw.setdefault("floors", {"daw": 0})
+        o = super().make(local_ci=True, **kw)
+        o.localci = FakeLocalCI()
+        return o
+
+    def green(self, o):
+        self.forge.add_pr(10, "a", ["engine/x.cpp"], checks={"lint": "pass"})
+        o.train.adopt()
+        head = self.forge.pr_detail(10)["head_sha"]
+        return head
+
+    def test_green_pr_waits_for_the_local_run_then_merges(self):
+        o = self.make()
+        head = self.green(o)
+        o.tick()
+        self.assertEqual(o.localci.started, [head])
+        self.assertEqual(getattr(self.forge, "merged", []), [])
+        self.assertEqual(o.train.info("pr-10")["phase"], "CI local rodando")
+        o.localci.results[head] = {"state": "pass"}
+        self.clock.offset += 200
+        o.tick()
+        self.assertEqual(self.forge.merged, [(10, head)])
+
+    def test_queued_pr_says_it_waits_for_the_batch(self):
+        o = self.make()
+        head = self.green(o)
+        o.localci.results[head] = {"state": "running", "queued": True}
+        o.tick()
+        self.assertIn("lote", o.train.info("pr-10")["next"])
+        self.assertEqual(getattr(self.forge, "merged", []), [])
+
+    def test_no_free_slot_waits(self):
+        o = self.make()
+        self.green(o)
+        o.localci.free = False
+        o.tick()
+        self.assertEqual(o.train.info("pr-10")["phase"], "aguardando CI local")
+        self.assertEqual(getattr(self.forge, "merged", []), [])
+
+    def test_local_failure_sends_a_fixer_with_the_log(self):
+        o = self.make()
+        head = self.green(o)
+        o.localci.results[head] = {
+            "state": "fail", "summary": "FAIL tree",
+            "excerpt": "[tree]\nFAIL ui_window_layouts"}
+        o.tick()
+        t = o.store.get_task("pr-10")
+        self.assertEqual((t["state"], t["fix_kind"]), ("ci_fix", "ci"))
+        self.assertIn("ui_window_layouts", t["note"])
+        self.assertEqual(getattr(self.forge, "merged", []), [])
+
+    def test_conflict_with_main_goes_to_an_integrator(self):
+        o = self.make()
+        head = self.green(o)
+        o.localci.results[head] = {"state": "fail",
+                                   "summary": "conflicts with main"}
+        o.tick()
+        self.assertEqual(o.store.get_task("pr-10")["fix_kind"], "conflict")
+
+    def test_heavy_github_jobs_are_ignored_when_the_gate_is_on(self):
+        o = self.make()
+        self.forge.add_pr(10, "a", ["engine/x.cpp"], checks={
+            "lint": "pass", "Qt interface build and headless tests": "fail"})
+        o.train.adopt()
+        head = self.forge.pr_detail(10)["head_sha"]
+        o.localci.results[head] = {"state": "pass"}
+        o.tick()
+        self.assertEqual(self.forge.merged, [(10, head)])
+
+    def test_gate_off_merges_on_github_checks_alone(self):
+        o = super().make(floors={"daw": 0})
+        self.green(o)
+        o.tick()
+        self.assertEqual(len(self.forge.merged), 1)
 
 if __name__ == "__main__":
     unittest.main()
