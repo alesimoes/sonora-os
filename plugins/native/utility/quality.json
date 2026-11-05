@@ -1,0 +1,19 @@
+{
+  "processor": "org.sonora.utility",
+  "class": "A",
+  "note": "ADR-0011 §3.2 first bars. A linear, memoryless matrix with one first-order high-pass: gain, routing and the DC corner are measured against their exact values; no THD or aliasing bar applies. The zipper sweeps run with the right channel inverted so width and balance are audible; the toggles are smoothed weights (10 ms) and are swept too.",
+  "unity_abs": 1e-7,
+  "exact_abs": 2e-6,
+  "gain_abs_mono": 2e-6,
+  "gain_db": 0.01,
+  "dc_corner_db": 0.05,
+  "dc_residue": 1e-6,
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["gain", "polarity_l", "polarity_r", "swap", "balance", "width", "mono", "dc_block"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 20.0,
+    "max_us": 50.0
+  }
+}
