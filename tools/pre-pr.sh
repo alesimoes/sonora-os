@@ -39,12 +39,19 @@ done | grep -q . && fail=1
 # 3. shellcheck on the shell scripts you changed, as CI runs it.
 scripts=$(echo "$changed" | grep -E '^tools/.*\.sh$|/usr/local/bin/|\.hook\.chroot$|^iso/auto/config$' || true)
 if [ -n "$scripts" ]; then
+  # CI checks every tools/*.sh at once, so a sourced helper is an input there;
+  # checking only the changed file reports SC1091. Use CI's file list.
+  b=iso/config/includes.chroot/usr/local/bin
+  ci_scripts=$(ls tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot \
+    "$b/sonora-smoketest" "$b/sonora-display-gave-up" "$b/sonora-install" \
+    "$b/sonora-install-tty" "$b/sonora-update" "$b/sonora-policycheck" \
+    iso/config/includes.chroot/usr/local/lib/sonora/slots.sh 2>/dev/null)
   if command -v shellcheck >/dev/null 2>&1; then
     # shellcheck disable=SC2086
-    shellcheck $scripts || bad "shellcheck"
+    shellcheck $ci_scripts || bad "shellcheck"
   elif command -v docker >/dev/null 2>&1; then
     # shellcheck disable=SC2086
-    MSYS_NO_PATHCONV=1 docker run --rm -v "$root:/mnt" -w /mnt koalaman/shellcheck:stable $scripts || bad "shellcheck (docker)"
+    MSYS_NO_PATHCONV=1 docker run --rm -v "$root:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 $ci_scripts || bad "shellcheck (docker)"
   else
     echo "pre-pr: warning: no shellcheck or docker; shellcheck NOT run" >&2
   fi

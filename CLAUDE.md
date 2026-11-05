@@ -131,10 +131,14 @@ something below is a PR that waits an hour.
   command ran and what it printed. A check you did not run is listed as
   unverified, never as passing.
 - Plugins and DSP: run the suite the way CI runs it, `SONORA_DSP_QUICK=1`,
-  and time it. A new suite must stay under about 60 s in Release; one new
-  test target must also be added to the explicit `--target` list of the
-  Portable (MSVC) job in `.github/workflows/ci.yml`. A processor over its CPU
-  class ships only with an eco mode that meets the class (ADR-0011 §3.5);
+  and time it. A new suite must stay under about 60 s in Release; a new
+  test target must be reachable from `sonora_portable` (defined in
+  `plugins/native/CMakeLists.txt`; it collects every executable and static
+  library under common/json, common/dsp, common/platform, common/audiofile
+  and plugins/native) and be named `dsp_*` or `native_*`, because the local
+  gate `tools/local-ci.sh` runs `tools/build-portable.ps1`, which builds
+  `sonora_portable` with MSVC and runs `ctest -R 'dsp_|native_'`. A processor over its
+  CPU class ships only with an eco mode that meets the class (ADR-0011 §3.5);
   until then gate it off so it is not installed.
 - New or changed scripts: mode 100755 in the index (`git update-index
   --chmod=+x`) for `tools/*.sh`, hooks and `usr/local/bin`; the CI "Executable
