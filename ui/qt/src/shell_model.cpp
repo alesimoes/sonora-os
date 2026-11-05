@@ -466,6 +466,31 @@ void ShellModel::dismissBounce() {
     emit bounceChanged();
 }
 
+bool ShellModel::renderAvailable() const {
+    const auto& caps = engine_.info().capabilities;
+    return std::find(caps.begin(), caps.end(), api::kCapabilityRender) != caps.end();
+}
+
+void ShellModel::holdRenderNotice(const QString& text) {
+    if (text == render_notice_) return;
+    render_notice_ = text;
+    emit renderChanged();
+}
+
+void ShellModel::cancelRender() {
+    CommandContext ctx;
+    report(router_.invoke("track.render_cancel", ctx));
+}
+
+void ShellModel::dismissRender() {
+    render_notice_.clear();
+    if (render_state_ != 0) {
+        render_state_ = -1;
+        render_progress_ = 0.0;
+    }
+    emit renderChanged();
+}
+
 qreal ShellModel::scaleY(qreal db, qreal h) const {
     const float top = meter_over_band(static_cast<float>(h)) + 1.0f;
     const float span = static_cast<float>(h) - top;
