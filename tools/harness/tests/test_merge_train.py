@@ -150,6 +150,15 @@ class Train(support.DaemonCase):
         t = o.store.get_task("pr-10")
         self.assertEqual((t["state"], t["fix_kind"]), ("ci_fix", "conflict"))
 
+    def test_a_third_conflict_still_gets_an_integrator(self):
+        o = self.make()
+        self.forge.add_pr(10, "a", checks={"build": "pass"}, mergeable="no")
+        o.train.adopt()
+        o.store.set_feature("pr-10", job_reds='{"merge-conflict": 2}')
+        o.tick()
+        t = o.store.get_task("pr-10")
+        self.assertEqual((t["state"], t["fix_kind"]), ("ci_fix", "conflict"))
+
     def test_conflicting_pr_goes_to_a_fixer_with_the_train_brief(self):
         o = self.make()
         self.forge.add_pr(10, "a", checks={"build": "pass"}, mergeable="no")

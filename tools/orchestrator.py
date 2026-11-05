@@ -771,7 +771,10 @@ class Orchestrator:
         integrator in the same tick; the same job still red after two fixes
         blocks the feature instead of spending a third agent."""
         reds = json.loads(f["job_reds"] or "{}")
-        stuck = [j for j in jobs if reds.get(j, 0) >= 2]
+        # A conflict is new each time main moves: it always gets an
+        # integrator, it never counts as the same red twice.
+        stuck = [j for j in jobs if reds.get(j, 0) >= 2
+                 and j != "merge-conflict"]
         if stuck:
             self._block_feature(
                 f, f"PR #{f['pr']}: {', '.join(stuck)} still red after two "
