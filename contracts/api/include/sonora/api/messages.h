@@ -174,7 +174,11 @@ namespace sonora::api {
 //   this bundle): a Load whose file starts with kLoadTemplatePrefix opens
 //   a template as a new session in a fresh Untitled folder, never in the
 //   template's own. A version-42 engine refuses the path as not absolute.
-constexpr uint32_t kProtocolVersion = 62;
+// 63 (ADR-0031 §6, session.consolidate; main reserved 43 before this bundle
+//   merged, renumbered after 62): the commands session.consolidate and
+//   session.consolidate_cancel, and EventKind::Consolidate (9), which an
+//   older decoder refuses as an unknown kind.
+constexpr uint32_t kProtocolVersion = 63;
 
 // ModelAction::Load's file, when it starts with this and names a template's
 // session file: the engine makes a new Untitled folder in its sessions
@@ -469,7 +473,21 @@ enum class EventKind : uint32_t {
     // after the last until the next bounce, so a failure stays on screen
     // until dismissed and a client that attaches later is sent it.
     Bounce = 8,
+    // A consolidate render (ADR-0031 §6, protocol 63): `insert` is the
+    // track's model id, `flags` a kConsolidate* state, `frame` the fraction
+    // rendered in thousandths while Running, `text` why it Failed or what
+    // finished it. One stands from the first request, replaced at every
+    // step and held after the last one until the next request, so a failure
+    // stays on screen until the operator dismisses it and a client that
+    // attaches later is sent it.
+    Consolidate = 9,
 };
+
+// EngineEvent::flags of a Consolidate.
+inline constexpr uint32_t kConsolidateRunning = 0;
+inline constexpr uint32_t kConsolidateDone = 1;       // the range is one region, one undo step
+inline constexpr uint32_t kConsolidateFailed = 2;     // `text` says why; nothing changed
+inline constexpr uint32_t kConsolidateCancelled = 3;  // nothing changed
 
 // EngineEvent::flags of a SessionFolder.
 inline constexpr uint32_t kFolderUntitled = 1u << 0;   // the engine made it ("Untitled <n>")
@@ -511,10 +529,11 @@ struct EngineEvent {
     EventKind kind = EventKind::Notice;
     int32_t track = -1;
     // TakeFailed: the take number. RecoveryOffer: how many takes.
-    // SessionFolder: free bytes. Latency: L in frames. 0 otherwise.
+    // SessionFolder: free bytes. Latency: L in frames. Consolidate: the
+    // fraction rendered, in thousandths. 0 otherwise.
     uint64_t frame = 0;
     // PluginFault: the insert's model id. Latency: the outputs the probe
-    // may use. 0 otherwise. Protocol 3.
+    // may use. Consolidate: the track's model id. 0 otherwise. Protocol 3.
     uint64_t insert = 0;
     std::string text;
     // SessionFolder: kFolder* bits. Latency: latency_flags(). 0 otherwise.

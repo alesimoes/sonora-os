@@ -167,7 +167,7 @@ constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::F
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::VolumeTrim);
 constexpr uint32_t kLastGesture = static_cast<uint32_t>(Gesture::Release);
 constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::SaveAs);
-constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::Bounce);
+constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::Consolidate);
 constexpr uint32_t kEventFlags = kFolderUntitled | kFolderReadOnly;
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::SnapshotPart);
 constexpr uint32_t kLastFormat = static_cast<uint32_t>(PluginFormat::Vst3);
@@ -408,6 +408,12 @@ bool decode(std::string_view bytes, EngineEvent& out, std::string& error) {
     } else if (m.kind == EventKind::Bounce) {
         if (m.flags > static_cast<uint32_t>(BounceState::Cancelled)) {
             error = "a bounce event in state " + std::to_string(m.flags) +
+                    " this version does not define";
+            return false;
+        }
+    } else if (m.kind == EventKind::Consolidate) {
+        if (m.flags > kConsolidateCancelled) {
+            error = "a consolidate event in state " + std::to_string(m.flags) +
                     " this version does not define";
             return false;
         }
