@@ -220,6 +220,16 @@ class Orchestrator:
             self.store.runs_started_since(now - 3600))
         data["train"] = self.train.rows()
         data["train_slots"] = self.cfg.train_slots
+        if self.cfg.local_ci:
+            # One dedicated "builder" for the dashboard; PR numbers by head.
+            b = self.localci.builder_status(now)
+            prs = {r.get("head"): r.get("pr") for r in data["train"]}
+            for h in [b["running"]] if b["running"] else []:
+                h["prs"] = [prs.get(x) for x in h["heads"]]
+            if b["last"]:
+                b["last"]["prs"] = [prs.get(x) for x in b["last"]["heads"]]
+            b["queue"]["prs"] = [prs.get(x) for x in b["queue"]["batch"]]
+            data["builder"] = b
         data["gh_paused_until"] = self.train.pause_until or None
         status.write_atomic(self._p("status.json"), data)
 
@@ -697,7 +707,7 @@ class Orchestrator:
         head = launcher.git_head(wt)
         r = self.localci.result(head)
         if r is None:
-            self.localci.start(head)
+            self.localci.start(head, pre=True)
             self.pr_retry[f["id"]] = now + 60
             return False
         if r.get("state") == "running":

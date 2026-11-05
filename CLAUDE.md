@@ -108,7 +108,12 @@ saturate the machine and every build slows down. Write the whole slice first
 build cycles per task. No rebuild per edit; read the code instead. Use the
 narrowest target, keep the build directory so it stays incremental, never
 start a second container for the same worktree, and never wait on a build.
-The heavy docker runs go through `tools/build-slot.sh` once it lands.
+The machine runs ONE heavy build or test at a time, with every CPU, the rest
+queued (`tools/build-slot.sh`, one lock for the whole host, owner 2026-11-05).
+Implementers do not run the full builds or the whole test suite: they build
+the narrowest target, through `tools/build-slot.sh`, only when the slice needs
+it. The orchestrator's local CI gate (`tools/local-ci.sh`, run in batches by
+`tools/harness/localci.py`) is what builds and tests the whole tree.
 
 ## Before opening a PR (every agent)
 

@@ -14,6 +14,8 @@
 # hardware may have its own opinion about period sizes. The container has only
 # PipeWire's dummy driver.
 set -euo pipefail
+# One heavy job at a time on this machine (tools/build-slot.sh).
+[[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE=sonora-runtime:trixie

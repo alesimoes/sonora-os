@@ -16,16 +16,19 @@ set -uo pipefail
 
 # The orchestrator runs its own copy of this script on another checkout
 # (tools/harness/localci.py): SONORA_LOCAL_CI_ROOT names that checkout.
-ROOT="${SONORA_LOCAL_CI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${SONORA_LOCAL_CI_ROOT:-$(dirname "$SELF_DIR")}"
 cd "$ROOT" || exit 2
 BASE=origin/main
 FULL=0
 DRY=0
+STEP=""
 while (($#)); do
   case "$1" in
     --full) FULL=1 ;;
     --base) BASE="$2"; shift ;;
     --dry-run) DRY=1 ;;
+    --step) STEP="$2"; FULL=1; shift ;;   # internal: one step, lock held
     *) echo "usage: $0 [--full] [--base REF] [--dry-run]" >&2; exit 2 ;;
   esac
   shift
@@ -101,12 +104,13 @@ if ((${#steps[@]} == 0)); then
   echo "local-ci: nothing to build or test (documentation or tooling only)"
   exit 0
 fi
-echo "local-ci: ${steps[*]}"
+[[ -n "$STEP" ]] || echo "local-ci: ${steps[*]}"
 ((DRY)) && exit 0
 
-# The machine is ours: one build at a time with every CPU, unless the caller
-# shares it (SONORA_BUILD_SLOTS).
-export SONORA_BUILD_SLOTS="${SONORA_BUILD_SLOTS:-1}"
+# One heavy job at a time on the machine, each with every CPU: each step
+# takes the machine-wide lock (tools/build-slot.sh) for itself, so another
+# run's steps can go between ours, and the scripts a step calls see
+# SONORA_HEAVY_HELD and do not take it again.
 # PRs run the slow DSP tests reduced (one rate, one setting); main runs them
 # in full, in Release and under ASan (what main-full.yml ran on GitHub).
 ((FULL)) || export SONORA_DSP_QUICK=1
@@ -158,6 +162,11 @@ run_step() {
   esac
 }
 
+if [[ -n "$STEP" ]]; then
+  run_step "$STEP"
+  exit $?
+fi
+
 # A build killed while linking leaves an empty binary newer than its
 # objects; make then never relinks it and the tests fail on "file too short".
 find "$ROOT"/build-* -type f -size 0 \( -name '*.so' -o -name '*.a' -o -perm -u+x \)   -delete 2>/dev/null || true
@@ -179,7 +188,7 @@ for s in "${steps[@]}"; do
     continue
   fi
   start=$SECONDS
-  if run_step "$s" >"$OUT/$s.log" 2>&1; then
+  if "$SELF_DIR/build-slot.sh" bash "$SELF_DIR/local-ci.sh" --step "$s" >"$OUT/$s.log" 2>&1; then
     echo "ok   $s ($((SECONDS - start)) s)"
   else
     echo "FAIL $s ($((SECONDS - start)) s): $OUT/$s.log"

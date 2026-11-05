@@ -15,6 +15,8 @@
 # host can run at SCHED_FIFO. Every timing it prints is a CONTAINER figure: a
 # shared host kernel without PREEMPT_RT. It is not an appliance figure.
 set -euo pipefail
+# One heavy job at a time on this machine (tools/build-slot.sh).
+[[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE=sonora-plugins:trixie

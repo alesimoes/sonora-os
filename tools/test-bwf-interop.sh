@@ -18,6 +18,8 @@
 # Exit 0 only if every check passed; known defects print "xfail" and do not
 # fail the run. See brain/research/bwf-interop.md.
 set -euo pipefail
+# One heavy job at a time on this machine (tools/build-slot.sh).
+[[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/build-interop"

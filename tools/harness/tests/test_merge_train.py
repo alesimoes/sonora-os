@@ -441,7 +441,7 @@ class FakeLocalCI:
     def result(self, sha):
         return self.results.get(sha)
 
-    def start(self, sha, full=False):
+    def start(self, sha, full=False, pre=False):
         if not self.free:
             return False
         self.started.append(sha)
@@ -453,6 +453,10 @@ class FakeLocalCI:
 
     def check_main(self):
         pass
+
+    def builder_status(self, now=None):
+        return {"running": None, "last": None,
+                "queue": {"batch": [], "pre": [], "bisect": []}}
 
 
 class LocalGate(support.DaemonCase):
@@ -479,6 +483,14 @@ class LocalGate(support.DaemonCase):
         self.clock.offset += 200
         o.tick()
         self.assertEqual(self.forge.merged, [(10, head)])
+
+    def test_queued_pr_says_it_waits_for_the_batch(self):
+        o = self.make()
+        head = self.green(o)
+        o.localci.results[head] = {"state": "running", "queued": True}
+        o.tick()
+        self.assertIn("lote", o.train.info("pr-10")["next"])
+        self.assertEqual(getattr(self.forge, "merged", []), [])
 
     def test_no_free_slot_waits(self):
         o = self.make()

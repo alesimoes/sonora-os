@@ -129,7 +129,8 @@ class Train:
             run = next((r for r in self.o.store.active_runs()
                         if r["task_id"] == t.get("id")), None)
             out.append({
-                "pr": i.get("pr"), "title": i.get("title"),
+                "pr": i.get("pr"), "head": i.get("head"),
+                "title": i.get("title"),
                 "branch": i.get("branch"), "base": i.get("base"),
                 "track": f.get("track"), "agent": t.get("agent"),
                 "state": f.get("state"), "phase": i.get("phase"),
@@ -497,8 +498,11 @@ class Train:
                 return False
             r = o.localci.result(head) or {}
         if r.get("state") == "running":
+            # Every ready PR joins one batch: one build, one test pass.
             self._save(fid, phase="CI local rodando",
-                       next="build e testes nesta máquina", **upd)
+                       next="na fila do lote (um build para todos os PRs "
+                       "prontos)" if r.get("queued") else
+                       "build e testes do lote nesta máquina", **upd)
             return False
         if r.get("state") == "fail":
             self._save(fid, phase="fixer", action="fixer (CI local)",

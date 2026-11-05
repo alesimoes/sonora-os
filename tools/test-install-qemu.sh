@@ -25,6 +25,8 @@
 #   INSTALL_TIMEOUT=2400         seconds for run 1 (TCG needs far more than KVM)
 #   BOOT_TIMEOUT=420             seconds for run 2
 set -euo pipefail
+# One heavy job at a time on this machine (tools/build-slot.sh).
+[[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ISO="$ROOT/iso/sonora.iso"
