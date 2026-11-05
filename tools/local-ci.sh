@@ -128,6 +128,14 @@ sanitize() {  # thread | address
   id="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
   docker build -q -t sonora-build:trixie --label org.sonora=1 \
     -f "$(host_path "$ROOT/tools")/Dockerfile.build" "$(host_path "$ROOT/tools")" >/dev/null || return 1
+  # TSan aborts with "unexpected memory mapping" under the 32-bit mmap
+  # randomisation of Docker Desktop's kernel (GitHub's runners use 28). The
+  # setting belongs to Docker's VM, not to this container, so a privileged
+  # one lowers it; it resets when Docker restarts.
+  if [[ "$kind" == thread ]]; then
+    docker run --rm --privileged --entrypoint sysctl sonora-build:trixie \
+      -qw vm.mmap_rnd_bits=28 || return 1
+  fi
   docker run --rm --ulimit memlock=-1:-1 \
     ${SONORA_DSP_QUICK:+-e SONORA_DSP_QUICK=1} -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=10G \
     -v "sonora-$kind-$id:/build" -v sonora-ccache:/root/.ccache \
