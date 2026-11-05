@@ -1,7 +1,7 @@
 ---
 name: ui-engineer
 description: The operator-facing interface — the editing window, mixer, meters, key maps and the Pro Tools / Logic workflow layer. Use for anything the engineer in the room sees or touches.
-tools: Read, Grep, Glob, Write, Edit, Bash
+tools: Read, Grep, Glob, Write, Edit, Bash, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 250
 ---
