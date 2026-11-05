@@ -99,6 +99,9 @@ class Forge:
     def failure_excerpt(self, head_sha, per_job=8):
         return ""
 
+    def set_status(self, sha, state, context, description):
+        """A commit status on GitHub (the local-ci result on the PR)."""
+
     def contains(self, worktree, branch):
         """True when origin/<branch>'s head is in the worktree's HEAD (a
         bundle took that PR)."""
@@ -307,6 +310,12 @@ class GhForge(Forge):
         r"\(Failed\)|\(Subprocess aborted\)|\(Timeout\)|^(FAIL|ERROR): |"
         r"AssertionError|error: |forbidden edge|::error|##\[error\]|"
         r"\bSC\d{4}\b|No space left|\bE: ")
+
+    def set_status(self, sha, state, context, description):
+        self._ok(["gh", "api", "-X", "POST",
+                  f"repos/{{owner}}/{{repo}}/statuses/{sha}",
+                  "-f", f"state={state}", "-f", f"context={context}",
+                  "-f", f"description={description}"], timeout=60)
 
     def failure_excerpt(self, head_sha, per_job=8):
         """The lines that say why each failed job of the head's CI failed,

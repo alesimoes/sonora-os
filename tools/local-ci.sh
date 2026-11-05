@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# The build and test gate, run on this machine instead of GitHub's runners
+# (owner, 2026-11-05: a 4-vCPU runner cannot build and test this tree in a
+# useful time; the orchestrator runs this before it opens a PR and before
+# the merge train merges one).
+#
+#   tools/local-ci.sh                  the steps the change since main needs
+#   tools/local-ci.sh --full           every step (main after a merge)
+#   tools/local-ci.sh --base REF       compare with REF (default origin/main)
+#   tools/local-ci.sh --dry-run        print the steps, run none
+#
+# Each step's output goes to $SONORA_LOCAL_CI_DIR/<step>.log (default
+# .local-ci/ in the checkout); the summary on stdout is one line per step.
+# Exit 0 only when every step passed.
+set -uo pipefail
+
+# The orchestrator runs its own copy of this script on another checkout
+# (tools/harness/localci.py): SONORA_LOCAL_CI_ROOT names that checkout.
+ROOT="${SONORA_LOCAL_CI_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+cd "$ROOT" || exit 2
+BASE=origin/main
+FULL=0
+DRY=0
+while (($#)); do
+  case "$1" in
+    --full) FULL=1 ;;
+    --base) BASE="$2"; shift ;;
+    --dry-run) DRY=1 ;;
+    *) echo "usage: $0 [--full] [--base REF] [--dry-run]" >&2; exit 2 ;;
+  esac
+  shift
+done
+OUT="${SONORA_LOCAL_CI_DIR:-$ROOT/.local-ci}"
+# Docker on Windows wants a Windows-shaped host path (tools/build-engine.sh).
+host_path() {
+  if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+    (cd "$1" && pwd -W)
+  else
+    printf '%s' "$1"
+  fi
+}
+export MSYS2_ARG_CONV_EXCL='*'
+mkdir -p "$OUT"
+
+# --- which areas the change touches (the classifier .github/workflows/ci.yml
+# used for its heavy jobs) ----------------------------------------------------
+core=0 ui=0 plugins=0 audio=0 rt=0 bwf=0 sanitizers=0 portable=0
+all() { core=1 ui=1 plugins=1 audio=1 rt=1 bwf=1 portable=1; }
+if ((FULL)); then
+  all; sanitizers=1
+else
+  mb="$(git merge-base "$BASE" HEAD)" || { echo "error: no merge base with $BASE" >&2; exit 2; }
+  files="$(git diff --no-renames --name-only "$mb" HEAD)"
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    case "$f" in
+      planning/*|brain/*|docs/*|*.md) ;;
+      engine/core/*|common/audiofile/*) core=1 rt=1 bwf=1 ;;
+      engine/*|drivers/*) core=1 rt=1 ;;
+      contracts/*) core=1 ;;
+      common/*) core=1 rt=1 portable=1 ;;
+      ui/*|keymaps/*) ui=1 ;;
+      plugins/native/*|plugins/client/*|plugins/sdk/*) plugins=1 rt=1 portable=1 ;;
+      tools/*.ps1) portable=1 ;;
+      plugins/*) plugins=1 ;;
+      audio-stack/*) audio=1 ;;
+      iso/*|.claude/*|tools/harness/*|tools/harness*.py|tools/orchestrator.py) ;;
+      tools/dashboard*|tools/*.lua) ;;
+      tools/build-*|tools/test-engine-docker.sh|tools/test-bwf-interop*.sh) all ;;
+      tools/test-quantum-pin.sh|tools/rtsan-*|tools/failed-take-quit.py|tools/crash-recovery-kill.py) all ;;
+      tools/*-entrypoint.sh|tools/verify-recording.py|tools/local-ci.sh) all ;;
+      tools/Dockerfile*|tools/*.cmake|tools/*.supp) all ;;
+      tools/*|.github/*) ;;
+      *) all ;;
+    esac
+  done <<<"$files"
+  # Engine code runs on the audio thread and in the UI's process: TSan on
+  # every PR that touches it, as CI did.
+  ((core)) && sanitizers=1
+fi
+
+# --- the steps -----------------------------------------------------------------
+steps=()
+if ((core || ui)); then
+  # The whole tree with Qt: every ctest test, engine and plugins included.
+  # A UI-only change builds the UI and its tests only.
+  if ((core)); then steps+=(tree); else steps+=(ui); fi
+fi
+((core)) && steps+=(engine-scripts)
+((plugins)) && steps+=(plugins)
+((sanitizers)) && steps+=(tsan)
+((FULL)) && steps+=(asan)
+((rt)) && steps+=(rtsan)
+((core || audio)) && steps+=(record)
+((audio)) && steps+=(quantum)
+((bwf)) && steps+=(bwf)
+# Windows last: the target is Linux, and a red Linux step skips it.
+((portable)) && steps+=(windows)
+
+if ((${#steps[@]} == 0)); then
+  echo "local-ci: nothing to build or test (documentation or tooling only)"
+  exit 0
+fi
+echo "local-ci: ${steps[*]}"
+((DRY)) && exit 0
+
+# The machine is ours: one build at a time with every CPU, unless the caller
+# shares it (SONORA_BUILD_SLOTS).
+export SONORA_BUILD_SLOTS="${SONORA_BUILD_SLOTS:-1}"
+# PRs run the slow DSP tests reduced (one rate, one setting); main runs them
+# in full, in Release and under ASan (what main-full.yml ran on GitHub).
+((FULL)) || export SONORA_DSP_QUICK=1
+
+# A sanitizer tree in the build image (tools/Dockerfile.build), on its own
+# volume so it never touches the Release tree.
+sanitize() {  # thread | address
+  local kind="$1" flags filter
+  if [[ "$kind" == thread ]]; then
+    flags="-fsanitize=thread -g"; filter='-E ^(dsp|native)_'
+  else
+    flags="-fsanitize=address,undefined -fno-omit-frame-pointer -g"; filter=""
+  fi
+  local id
+  id="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
+  docker build -q -t sonora-build:trixie --label org.sonora=1 \
+    -f "$(host_path "$ROOT/tools")/Dockerfile.build" "$(host_path "$ROOT/tools")" >/dev/null || return 1
+  docker run --rm --ulimit memlock=-1:-1 \
+    ${SONORA_DSP_QUICK:+-e SONORA_DSP_QUICK=1} -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=10G \
+    -v "sonora-$kind-$id:/build" -v sonora-ccache:/root/.ccache \
+    -v "$(host_path "$ROOT"):/src" -w /src \
+    sonora-build:trixie bash -ec "
+      cmake -S . -B /build/t -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_FLAGS='$flags'
+      cmake --build /build/t -j\$(nproc)
+      ctest --test-dir /build/t --output-on-failure -j\$(nproc) $filter
+      $([[ "$kind" == thread ]] && echo "ctest --test-dir /build/t --output-on-failure -j\$(nproc) -R ^native_format")"
+}
+
+run_step() {
+  case "$1" in
+    tree) tools/build-ui.sh ;;
+    ui) SONORA_UI_SCOPE=ui tools/build-ui.sh ;;
+    engine-scripts)
+      # The two engine-process tests the engine job ran after ctest, against
+      # the engine the tree step just built.
+      docker run --rm --ulimit memlock=-1:-1 \
+        -v "$(host_path "$ROOT"):/src" -w /src sonora-ui:trixie bash -ec '
+          python3 tools/failed-take-quit.py --engine build-ui-container/sonora-engine
+          python3 tools/crash-recovery-kill.py --engine build-ui-container/sonora-engine' ;;
+    plugins) tools/build-plugins.sh ;;
+    tsan) sanitize thread ;;
+    asan) sanitize address ;;
+    rtsan) tools/build-rtsan.sh ;;
+    record) tools/test-engine-docker.sh ;;
+    quantum) tools/test-quantum-pin.sh ;;
+    bwf) tools/test-bwf-interop.sh ;;
+    windows) powershell -NoProfile -ExecutionPolicy Bypass -File "$(host_path "$ROOT")/tools/build-portable.ps1" ;;
+  esac
+}
+
+# A build killed while linking leaves an empty binary newer than its
+# objects; make then never relinks it and the tests fail on "file too short".
+find "$ROOT"/build-* -type f -size 0 \( -name '*.so' -o -name '*.a' -o -perm -u+x \)   -delete 2>/dev/null || true
+
+# Off Linux, tools/build-ui.sh keeps the tree on a named volume that a fresh
+# checkout creates root-owned; the image's user (uid 1000) cannot write it.
+# tools/Dockerfile.ui now makes /build itself, but a branch from before that
+# does not, so the volume is handed over here.
+if [[ "$(uname -s)" != Linux ]] && docker image inspect sonora-ui:trixie >/dev/null 2>&1; then
+  vol="sonora-build-$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
+  docker run --rm --user 0 -v "$vol:/build" --entrypoint chown sonora-ui:trixie 1000:1000 /build \
+    >/dev/null 2>&1 || true
+fi
+
+failed=()
+for s in "${steps[@]}"; do
+  if [[ "$s" == windows ]] && ((${#failed[@]})); then
+    echo "skip windows (a Linux step failed)"
+    continue
+  fi
+  start=$SECONDS
+  if run_step "$s" >"$OUT/$s.log" 2>&1; then
+    echo "ok   $s ($((SECONDS - start)) s)"
+  else
+    echo "FAIL $s ($((SECONDS - start)) s): $OUT/$s.log"
+    failed+=("$s")
+  fi
+done
+if ((${#failed[@]})); then
+  echo "local-ci: failed: ${failed[*]}"
+  exit 1
+fi
+echo "local-ci: all passed"

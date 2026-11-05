@@ -26,6 +26,7 @@ from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
 from harness.store import Store  # noqa: E402
+from harness.localci import LocalCI  # noqa: E402
 from harness.train import Train  # noqa: E402
 
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer",
@@ -69,6 +70,7 @@ class Orchestrator:
         self.last_gaps = {}
         self.flow = Flow(self)
         self.train = Train(self)
+        self.localci = LocalCI(self, clock)
         self.attribution = ATTRIBUTION
         self.shadow = None
         if shadow_agents:   # shadow rollout: never launches, only compares
@@ -171,6 +173,9 @@ class Orchestrator:
         if stop_now:
             self._kill_all("STOP.NOW")
         self._poll_runs(now)
+        if self.cfg.local_ci and not self.dry_run:
+            self.localci.poll()
+            self.localci.check_main()
         self._open_pending_prs(now)
         self._watch_prs(now)
         self.flow.tick(now)
@@ -657,6 +662,8 @@ class Orchestrator:
                         + out[-800:]))
                 self._count_failure(rep, "pre-pr failed", now)
                 return False
+            if not self._local_ci_before_pr(f, ts, wt, now):
+                return False
             self.forge.push(wt, branch)
             n = next((p["number"] for p in self.forge.open_prs()
                       if p["branch"] == branch), None)
@@ -678,6 +685,33 @@ class Orchestrator:
             self._release(x)
         self.ci_polled[fid] = now
         self.store.event(rep["id"], "pr_opened", f"#{n} {branch}")
+        return True
+
+    def _local_ci_before_pr(self, f, ts, wt, now):
+        """No PR before the build and the tests pass on this machine (owner,
+        2026-11-05): GitHub's runners only run the light checks."""
+        if not self.cfg.local_ci:
+            return True
+        head = launcher.git_head(wt)
+        r = self.localci.result(head)
+        if r is None:
+            self.localci.start(head)
+            self.pr_retry[f["id"]] = now + 60
+            return False
+        if r.get("state") == "running":
+            self.pr_retry[f["id"]] = now + 60
+            return False
+        if r.get("state") == "fail":
+            rep = ts[0]
+            self.store.event(rep["id"], "local_ci_failed",
+                             (r.get("summary") or "")[-500:])
+            for x in ts:
+                self.store.set_task(x["id"], integrated=0, note=(
+                    "tools/local-ci.sh failed on this branch merged with "
+                    "main; fix and commit. From the logs:\n"
+                    + (r.get("excerpt") or "")[-1500:]))
+            self._count_failure(rep, "local-ci failed", now)
+            return False
         return True
 
     def _pr_text(self, f, ts):

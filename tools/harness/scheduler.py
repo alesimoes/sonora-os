@@ -74,6 +74,9 @@ class Config:
     seeds: dict = field(default_factory=dict)  # kind -> last used number
     live_pools: object = None  # None: every pool is live when not dry-run
     train_slots: int = 6        # adopted PRs with CI in flight at once
+    local_ci: bool = False      # tools/local-ci.sh gates PR opening and
+    #                             merging (harness/localci.py)
+    local_ci_slots: int = 1     # local CI runs at once (each takes -j all)
     daemon_merge: bool = True   # the daemon merges green PRs itself; no
     #                             detached merge-when-green watcher per PR
 

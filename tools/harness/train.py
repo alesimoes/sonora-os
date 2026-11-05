@@ -33,6 +33,16 @@ def track_of(files):
     return "daw"
 
 
+# GitHub jobs that tools/local-ci.sh replaces (owner, 2026-11-05).
+LOCAL_CI_JOBS = {
+    "Engine build and tests", "Portable modules under MSVC",
+    "Qt interface build and headless tests", "Thread and address sanitizers",
+    "RealtimeSanitizer over the SONORA_RT call graph",
+    "Records audio against PipeWire", "BWF files read back by third-party tools",
+    "Quantum and rate stay pinned",
+    "Plugin host against real LV2 and VST3 plugins",
+}
+
 def agent_of(track, files):
     if track == "os":
         return "distro-engineer"
@@ -354,6 +364,10 @@ class Train:
             upd.update(refreshed=head, refresh_from=None)
             i["refreshed"] = head
         checks = d["checks"]
+        if o.cfg.local_ci:
+            # Built and tested here instead (harness/localci.py); a PR from
+            # before the lean ci.yml still runs them on GitHub's runners.
+            checks = [c for c in checks if c["name"] not in LOCAL_CI_JOBS]
         passed = sum(1 for c in checks if c["state"] == "pass")
         upd.update(passed=passed, total=len(checks), waits_on=None,
                    failing=[c["name"] for c in checks
@@ -416,6 +430,8 @@ class Train:
                 self._save(fid, phase="verde", next="merge (pool merge em "
                            "dry-run)", **upd)
                 return
+            if not self._local_ci_passed(f, ts, head, upd):
+                return
             o.forge.merge(n, head)
             self._save(fid, phase="mergeado", action=f"merge {head[:8]}",
                        next=None, **upd)
@@ -466,6 +482,33 @@ class Train:
         self._save(fid, phase=phase, action=how,
                    next="novo CI; vermelho de novo → fixer", **upd)
         o.store.event(ts[0]["id"], "train_refresh", f"#{n} {how}")
+
+    def _local_ci_passed(self, f, ts, head, upd):
+        """GitHub runs the light checks only; the build and the tests run
+        here (harness/localci.py) on the head merged with main."""
+        o, fid = self.o, f["id"]
+        if not o.cfg.local_ci:
+            return True
+        r = o.localci.result(head)
+        if r is None:
+            if not o.localci.start(head):
+                self._save(fid, phase="aguardando CI local",
+                           next="vaga no CI local", **upd)
+                return False
+            r = o.localci.result(head) or {}
+        if r.get("state") == "running":
+            self._save(fid, phase="CI local rodando",
+                       next="build e testes nesta máquina", **upd)
+            return False
+        if r.get("state") == "fail":
+            self._save(fid, phase="fixer", action="fixer (CI local)",
+                       next="fixer corrige: local-ci", **upd)
+            kind = "conflict" if "conflicts with main" in (
+                r.get("summary") or "") else "ci"
+            jobs = ["merge-conflict"] if kind == "conflict" else ["local-ci"]
+            o._red(f, ts, jobs, kind, r.get("excerpt") or "")
+            return False
+        return True
 
     def _why(self, head):
         try:
