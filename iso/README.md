@@ -178,7 +178,7 @@ have not been run in CI; see the PR that added them.
 
 The image builds and boots in QEMU, both from the ISO (`tools/test-boot-qemu.sh`)
 and from a stick image written by `tools/write-usb.sh`, through both bootloaders
-(`tools/test-write-usb.sh`, nightly in CI without the boots). It has never
+(`tools/test-write-usb.sh`, on every merge to main in CI without the boots). It has never
 booted on a physical machine or from a physical stick, and
 `tools/write-usb.ps1` has written only fake disks (regular files), never a
 real stick. See `planning/STATUS.md`.
