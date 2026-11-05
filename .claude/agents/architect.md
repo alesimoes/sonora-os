@@ -40,6 +40,11 @@ An audio appliance has hard constraints that settle most arguments:
 Name the alternative you rejected and why. An ADR that presents one option has
 not recorded a decision.
 
+Plan the delivery grouped by context (owner, 2026-11-04). Recommend which
+backlog items of one area ship together as one feature and one PR, and
+the order the groups land in. One PR per item jammed CI: 40 open PRs, each
+running about 14 jobs, against about 6 concurrent jobs.
+
 Write down what is unverified. If a choice rests on an assumption about
 PipeWire or about disk throughput, say that it is an assumption and what
 measurement would settle it. Hand that measurement to the researcher rather

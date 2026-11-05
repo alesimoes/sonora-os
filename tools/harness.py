@@ -76,6 +76,13 @@ def run_hook(a, hook_inbox):
         if not path:
             print("harness: no file path in hook input", file=sys.stderr)
             return 2
+        # The run's own result.json is never anyone else's file, and a
+        # merge-train run works alone in a worktree of its own: no claim.
+        res = os.environ.get("SONORA_RESULT_PATH")
+        if res and os.path.normcase(os.path.abspath(path)) ==                 os.path.normcase(os.path.abspath(res)):
+            return 0
+        if os.environ.get("SONORA_UNCLAIMED_OK") == "1":
+            return 0
         r = oneshot(cfg["port"], cfg["name"], cfg["token"], "check", path=path)
         if r.get("ok") and r.get("allowed"):
             return 0
