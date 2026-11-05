@@ -217,28 +217,20 @@ int test_ui() {
     model.invoke(QStringLiteral("window.transport"), -1);
     model.invoke(QStringLiteral("window.latency"), -1);
     session.setWindow(QStringLiteral("mix"));
-<<<<<<< HEAD
-    latency->setX(50);
-    latency->setY(60);
+    const QPointF latency_at = clear_of(list, latency, QPointF(50, 60));
+    latency->setX(latency_at.x());
+    latency->setY(latency_at.y());
     // Switching to Mix loads a heavy view; on a loaded runner the first click can
     // land before the scene has polished. Storing is idempotent, so click again.
     QTest::qWait(100);
     for (int attempt = 0; attempt < 3; ++attempt) {
         click(view, named(list, QStringLiteral("windowConfigStore2")));
-        if (QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 1500))
+        if (QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 2000))
             break;
     }
-=======
-    const QPointF latency_at = clear_of(list, latency, QPointF(50, 60));
-    latency->setX(latency_at.x());
-    latency->setY(latency_at.y());
-    click(view, named(list, QStringLiteral("windowConfigStore2")));
-    // The list rebinds on the next event-loop pass, which a loaded runner can delay.
-    QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 2000);
     if (text_of(list, "windowConfigSummary2") != QStringLiteral("Mix, 1 floating"))
         std::fprintf(stderr, "windowConfigSummary2 is '%s'\n",
                      qPrintable(text_of(list, "windowConfigSummary2")));
->>>>>>> origin/main
     CHECK(text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"));
 
     // Recall 1: the view, the open set and the place all come back.
