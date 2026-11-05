@@ -202,7 +202,9 @@ int test_ui() {
     session.setWindow(QStringLiteral("mix"));
     latency->setX(50);
     latency->setY(60);
-    click(view, named(list, QStringLiteral("windowConfigStore2")));
+    // By command: the Latency window now sits at (50, 60), over the list,
+    // and would take a click meant for the Store button.
+    CHECK(model.invokeWith(QStringLiteral("window.config_store"), -1, QStringLiteral("2")));
     // The list rebinds on the next event-loop pass, which a loaded runner can delay.
     QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 2000);
     CHECK(text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"));
