@@ -320,8 +320,8 @@ void an_interface_killed_mid_take(const char* self) {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     CHECK(until(watcher, in, [&]() {
         return v.transport().state == api::TransportState::Recording &&
-               v.transport().playhead > at + 48000 / 5;
-    }));
+               v.transport().playhead > at + 48000 / 2;
+    }, 20000));
     CHECK(v.engine_alive(steady_ns()));
     CHECK(engine.running());
 
