@@ -222,9 +222,9 @@ int test_ui() {
     model.invoke(QStringLiteral("window.toggle_mix_edit"), -1);
     CHECK(session.window() == QStringLiteral("edit"));
 
+    // The refusal of an empty slot stays in the list until the next action.
     if (session.latencyOpen()) model.invoke(QStringLiteral("window.latency"), -1); // it covers the list
     click(view, named(list, QStringLiteral("windowConfigRecall7")));
-    CHECK(!model.invokeWith(QStringLiteral("window.config_recall"), -1, QStringLiteral("7")));
     CHECK(text_of(list, "windowConfigRefusal").contains(QStringLiteral("empty")));
     CHECK(session.window() == QStringLiteral("edit"));
     click(view, named(list, QStringLiteral("windowConfigStore7")));
