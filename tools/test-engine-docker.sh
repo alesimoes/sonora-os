@@ -65,9 +65,15 @@ echo "=== building the runtime image ==="
 # Run by image ID, not by tag: the tag is shared by every worktree on this
 # Docker host, and a rebuild from another checkout in between would put its
 # audio-stack/ under our name.
-IMAGE_ID="$(docker build -q -t "$IMAGE" --label org.sonora=1 \
-  -f "$(host_path "$ROOT/tools")/Dockerfile.runtime" \
-  "$(host_path "$ROOT")")"
+# CI pulls the image (built on main by images.yml) and sets
+# SONORA_RUNTIME_IMAGE_BUILT=1; the tag is then the pulled image.
+if [[ "${SONORA_RUNTIME_IMAGE_BUILT:-0}" != 1 ]]; then
+  IMAGE_ID="$(docker build -q -t "$IMAGE" --label org.sonora=1 \
+    -f "$(host_path "$ROOT/tools")/Dockerfile.runtime" \
+    "$(host_path "$ROOT")")"
+else
+  IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$IMAGE")"
+fi
 
 echo "=== running the engine against PipeWire ==="
 # The binary is mounted rather than baked in, so a rebuild does not rebuild the

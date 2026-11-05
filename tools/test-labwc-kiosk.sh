@@ -30,25 +30,14 @@ command -v cygpath >/dev/null 2>&1 && src="$(cygpath -w "$ROOT")"
 # from whatever trixie had that day. So the base is pinned by digest (the
 # same one as tools/Dockerfile.runtime) and apt reads the image's snapshot
 # timestamp, which also keeps these versions installable after trixie moves.
-snap="$(sed -nE 's/^SONORA_SNAPSHOT=([0-9]{8}T[0-9]{6}Z)$/\1/p' "$ROOT/iso/auto/config")"
-[ -n "$snap" ] || { echo "FAIL: no SONORA_SNAPSHOT in iso/auto/config" >&2; exit 1; }
-docker build -q --label org.sonora=1 --build-arg "SNAP=$snap" -t "$IMAGE" - >/dev/null <<'EOF'
-FROM debian:trixie-20261027@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d7d34a0e7f1
-ARG SNAP
-RUN sed -i -E \
-      -e "s#^URIs: http://deb\.debian\.org/debian-security/?\$#URIs: http://snapshot.debian.org/archive/debian-security/$SNAP/#" \
-      -e "s#^URIs: http://deb\.debian\.org/debian/?\$#URIs: http://snapshot.debian.org/archive/debian/$SNAP/#" \
-      /etc/apt/sources.list.d/debian.sources \
- && ! grep -E '^URIs:' /etc/apt/sources.list.d/debian.sources | grep -v "snapshot\.debian\.org/archive/debian\(-security\)\?/$SNAP/\$" \
- && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99sonora-snapshot.conf
-RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
- for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
- if apt-get $A update && apt-get $A install -y --no-install-recommends \
-      labwc=0.8.3-1 libwlroots-0.18=0.18.2-3 wev=1.0.0-3 wtype=0.4-3 wlrctl=0.2.2-2 \
- ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
- [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
- rm -rf /var/lib/apt/lists/*
-EOF
+# CI pulls the image (built on main by images.yml with the same build arg) and
+# sets SONORA_LABWC_IMAGE_BUILT=1; the Dockerfile is tools/Dockerfile.labwc.
+if [[ "${SONORA_LABWC_IMAGE_BUILT:-0}" != 1 ]]; then
+  snap="$(sed -nE 's/^SONORA_SNAPSHOT=([0-9]{8}T[0-9]{6}Z)$/\1/p' "$ROOT/iso/auto/config")"
+  [ -n "$snap" ] || { echo "FAIL: no SONORA_SNAPSHOT in iso/auto/config" >&2; exit 1; }
+  (cd "$ROOT/tools" && docker build -q --label org.sonora=1 --build-arg "SNAP=$snap" \
+    -t "$IMAGE" -f Dockerfile.labwc . >/dev/null)
+fi
 
 # Runs inside the container. $1 is the run: shipped or defaults.
 # shellcheck disable=SC2016 # expanded by the container's bash, not here
