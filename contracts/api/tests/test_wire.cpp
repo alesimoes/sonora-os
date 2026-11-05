@@ -175,7 +175,8 @@ void round_trips() {
         // which still ends at the first NUL, and no real path starts with it.
         {
             const std::string tpath = std::string(kLoadTemplatePrefix) + "/t/Vocals/Vocals.sonora";
-            CHECK(wire::decode_load(wire::encode_load(tpath, "{}"), file, load, error));
+            const std::string tload = wire::encode_load(tpath, "{}");
+            CHECK(wire::decode_load(tload, file, load, error));
             CHECK(file == tpath && load == "{}");
             CHECK(file.rfind(kLoadTemplatePrefix, 0) == 0);
             CHECK(kLoadTemplatePrefix[0] == '@');
