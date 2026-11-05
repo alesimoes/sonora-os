@@ -394,7 +394,6 @@ bool FakeEngine::connect(std::string& error) {
     announce_latency();
     if (!bounce_event_.empty()) queue(outbound_, bounce_event_);
     if (!consolidate_event_.empty()) queue(outbound_, consolidate_event_);
-    if (!bounce_event_.empty()) queue(outbound_, bounce_event_);
     if (!render_event_.empty()) queue(outbound_, render_event_);
     return true;
 }
