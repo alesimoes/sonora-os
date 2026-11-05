@@ -3,7 +3,7 @@
 The broker is single-loop by design (no locks), so every call into it is
 marshalled onto that loop. Broker events fire on the loop thread; they are
 queued here and the daemon drains them on its own thread, so the daemon's
-sqlite store is never touched from two threads.
+state store is never touched from two threads.
 """
 import asyncio
 import queue

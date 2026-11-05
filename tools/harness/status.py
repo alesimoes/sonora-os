@@ -2,10 +2,20 @@
 read-only for everyone else."""
 import json
 import os
+import time
 
 from .scheduler import POOL_OF_KIND
 
 DONE_STATES = ("integrating", "pr_open", "ci_fix", "merged")
+# The dashboard colours a task by matching its `state` text against
+# /done|ok|merged|x|feito/ (green), /block|wait|fail|red/ (red) and
+# /doing|work|run|progress|building/ (blue). Raw states such as ci_fix or
+# bugfix contain an `x` and would read as done, so tasks carry one of these
+# words in `state` and the real state in `stage`.
+DASH_STATE = {"queued": "queued", "building": "building",
+              "bugfix": "working", "qa": "working", "integrating": "done",
+              "pr_open": "done", "merged": "done", "ci_fix": "red",
+              "blocked": "blocked"}
 
 
 def write_atomic(path, data):
@@ -32,7 +42,7 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
     pools = {}
     for kind, pool in POOL_OF_KIND.items():
         mine = [r for r in runs if r["role"] == kind]
-        pools[pool] = {"live": len(mine),
+        pools[pool] = {"floor": 0, "live": len(mine),
                        "working": sum(1 for r in mine if r["working"]),
                        "paused": pool in paused}
     for track, floor in sorted(cfg.floors.items()):
@@ -46,15 +56,30 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
                for t in tasks if t["state"] == "blocked"]
     feats = []
     for f in store.features():
-        mine = [t for t in tasks if t["feature_id"] == f["id"]]
+        mine = [t for t in tasks if t["feature_id"] == f["id"]
+                and t["kind"] == "work"]
+        why = next((t["note"] for t in mine
+                    if t["state"] == "blocked" and t["note"]), None)
         feats.append({
-            "id": f["id"], "track": f["track"], "state": f["state"],
-            "pr": f["pr"], "fixes": f["fixes"], "tasks_done": sum(
+            # dashboard fields: name, state, pr, tasks[].{name,state}
+            "name": f["id"], "id": f["id"], "track": f["track"],
+            "state": f["state"], "pr": f["pr"],
+            "tasks": [{"name": t["id"], "state": DASH_STATE[t["state"]],
+                       "stage": t["state"], "agent": t["agent"],
+                       "engineer": t["eng_name"], "attempts": t["attempts"],
+                       "bounces": t["bounces"]} for t in mine],
+            "fixes": f["fixes"], "tasks_done": sum(
                 1 for t in mine if t["state"] in DONE_STATES),
             "tasks_total": len(mine),
-            "strip": [[t["id"], t["state"][:1], t["eng_name"]] for t in mine]})
+            "adr": f["adr_no"], "protocol": f["protocol_no"],
+            "partial": bool(f["partial"]), "age": now - f["created"],
+            "blocked_reason": why if f["state"] == "blocked" else None})
+    owner = [{"title": f"{t['id']}: {t['note'] or 'blocked'}",
+              "task": t["id"], "branch": t["branch"], "note": t["note"]}
+             for t in tasks if t["state"] == "blocked"]
     return {
-        "updated": now, "mode": mode,
+        "updated": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),
+        "updated_ts": now, "mode": mode,
         "kill_switch": "STOP.NOW" if stop_now else "STOP" if stop else None,
         "usage_pause_until": usage_pause_until or None,
         "cap": cfg.cap, "live": len(runs), "paused": sorted(paused),
@@ -76,7 +101,7 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
                    - t["created"]} for t in tasks],
         "features": feats,
         "blocked": blocked,
-        "waits_on_owner": blocked,
+        "waits_on_owner": owner,
         "privileged_pending": [t["id"] for t in tasks
                                if "needs_privileged" in (t["brief"] or "")
                                and t["state"] == "qa"],

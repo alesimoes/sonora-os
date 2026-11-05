@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Assignment table written by the lead (ADR-0047 section 4a)",
+  "type": "object",
+  "required": ["version", "feature", "rows"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"const": 1},
+    "feature": {"type": "string"},
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["task", "engineer", "tester", "sub_branch", "order",
+                     "start_from"],
+        "additionalProperties": false,
+        "properties": {
+          "task": {"type": "string"},
+          "engineer": {"type": "string"},
+          "tester": {"const": "tester"},
+          "sub_branch": {"type": "string"},
+          "order": {"type": "integer"},
+          "start_from": {"type": "string"},
+          "engineer_name": {"type": "string"},
+          "tester_name": {"type": "string"}
+        }
+      }
+    }
+  }
+}

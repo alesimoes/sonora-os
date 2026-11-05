@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Feature plan written by the architect (ADR-0047 section 4a)",
+  "type": "object",
+  "required": ["version", "feature", "backlog_ids", "track", "feature_branch",
+               "reserved", "adr", "tasks", "merge_order", "pr"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"const": 1},
+    "feature": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$"},
+    "backlog_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "track": {"enum": ["daw", "os", "plugin"]},
+    "feature_branch": {"type": "string"},
+    "depends_on_feature": {"type": ["string", "null"]},
+    "reserved": {
+      "type": "object",
+      "required": ["adr", "protocol", "formats"],
+      "additionalProperties": false,
+      "properties": {
+        "adr": {"type": ["integer", "null"]},
+        "protocol": {"type": ["integer", "null"]},
+        "formats": {"type": "array", "items": {"type": "integer"}}
+      }
+    },
+    "adr": {"type": ["string", "null"]},
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "title", "brief", "files", "depends_on",
+                     "agent", "accept"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$"},
+          "kind": {"enum": ["contract", "engine", "ui", "tests", "docs"]},
+          "title": {"type": "string"},
+          "brief": {"type": "string"},
+          "files": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+          "depends_on": {"type": "array", "items": {"type": "string"}},
+          "agent": {"enum": ["rt-engineer", "ui-engineer", "dsp-engineer",
+                             "plugin-engineer", "distro-engineer",
+                             "driver-engineer"]},
+          "needs_privileged": {"type": "boolean"},
+          "accept": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "merge_order": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "pr": {
+      "type": "object",
+      "required": ["title", "partial", "partial_reason"],
+      "additionalProperties": false,
+      "properties": {
+        "title": {"type": "string"},
+        "partial": {"type": "boolean"},
+        "partial_reason": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

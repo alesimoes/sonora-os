@@ -68,6 +68,9 @@ fi
 # product stands. Offline and fast; a failure just prints nothing.
 [[ -x tools/progress.sh ]] && tools/progress.sh --summary 2>/dev/null
 
+# The owner keeps the local dashboard open: start it when it is not running.
+[[ -f tools/dashboard-up.sh ]] && bash tools/dashboard-up.sh 2>/dev/null
+
 echo
 echo "This is a starting summary. Before relying on it, run the branch handoff's"
 echo "Verify command. Read more only as the task needs it: the handoff's Pointers,"

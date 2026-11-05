@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 WORKING_SECONDS = 180
-state = {"usage": {"sessions": [], "week": None, "five_hour": None}, "updated": 0, "agents": [], "prs": [], "watchers": [], "containers": [], "errors": []}
+state = {"usage": {"sessions": [], "week": None, "five_hour": None}, "updated": 0, "agents": [], "prs": [], "watchers": [], "containers": [], "errors": [], "orchestrator": None, "merged": []}
 lock = threading.Lock()
 
 
@@ -39,24 +39,55 @@ def norm(path):
     return path.replace("\\", "/").rstrip("/").lower()
 
 
+STEP_CACHE = {}
+
+
+def failing_step(job):
+    # A finished job never changes, so one lookup per job id is enough.
+    if job not in STEP_CACHE:
+        try:
+            j = json.loads(run(["gh", "api", "repos/{owner}/{repo}/actions/jobs/%s" % job]) or "{}")
+        except Exception:
+            j = {}
+        if not j:
+            return None
+        STEP_CACHE[job] = next((st.get("name") for st in j.get("steps", []) if st.get("conclusion") == "failure"), "") or ""
+    return STEP_CACHE[job]
+
+
 def read_prs():
     out = run(["gh", "pr", "list", "--state", "open", "--limit", "60", "--json",
-               "number,title,headRefName,mergeStateStatus,createdAt,isDraft,statusCheckRollup"])
+               "number,title,headRefName,baseRefName,mergeStateStatus,mergeable,createdAt,isDraft,statusCheckRollup"])
     prs = []
     for p in json.loads(out or "[]"):
-        failed, pending, passed = [], [], 0
+        failed, pending, passed, cancelled, details = [], [], 0, [], []
         for c in p.get("statusCheckRollup") or []:
             name = c.get("name") or c.get("context") or "?"
             if c.get("status") not in (None, "COMPLETED"):
                 pending.append(name)
             elif c.get("conclusion") in ("FAILURE", "CANCELLED", "TIMED_OUT", "STARTUP_FAILURE"):
                 failed.append(name)
+                if c.get("conclusion") == "CANCELLED":
+                    cancelled.append(name)
+                m = re.search(r"/job/(\d+)", c.get("detailsUrl") or "")
+                details.append({"name": name, "conclusion": c.get("conclusion"),
+                                "step": failing_step(m.group(1)) if m and c.get("conclusion") != "CANCELLED" else None})
             elif c.get("conclusion") in ("SUCCESS", "SKIPPED", "NEUTRAL"):
                 passed += 1
         prs.append({"number": p["number"], "title": p["title"], "branch": p["headRefName"],
                     "merge": p.get("mergeStateStatus"), "created": p["createdAt"],
-                    "failed": failed, "pending": pending, "passed": passed})
+                    "failed": failed, "pending": pending, "passed": passed,
+                    "base": p.get("baseRefName"), "mergeable": p.get("mergeable"),
+                    "cancelled": cancelled, "failed_details": details,
+                    "total": passed + len(failed) + len(pending)})
     return sorted(prs, key=lambda p: p["number"])
+
+
+def read_merged():
+    day = time.strftime("%Y-%m-%d", time.gmtime())
+    out = run(["gh", "pr", "list", "--state", "merged", "--limit", "100", "--search", "merged:>=" + day,
+               "--json", "number,title,mergedAt"])
+    return sorted(json.loads(out or "[]"), key=lambda p: p["mergedAt"], reverse=True)
 
 
 def read_watchers():
@@ -166,13 +197,24 @@ def read_usage():
     return {"sessions": rows, "week": pick("seven_day"), "five_hour": pick("five_hour")}
 
 
+def read_orchestrator():
+    """planning/orchestrator/status.json when the coordinator writes it; None otherwise."""
+    try:
+        path = os.environ.get("SONORA_ORCH_STATUS") or os.path.join(ROOT, "planning", "orchestrator", "status.json")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
 def refresh_loop(agents_file):
-    last_pr, prs = 0, []
+    last_pr, prs, merged = 0, [], []
     while True:
         errors = []
         try:
             if time.time() - last_pr > 20:
                 prs = read_prs()
+                merged = read_merged()
                 last_pr = time.time()
         except Exception as e:
             errors.append("gh: %s" % e)
@@ -184,10 +226,10 @@ def refresh_loop(agents_file):
         containers = read_containers()
         watchers = read_watchers()
         with lock:
-            state.update(updated=int(time.time()), prs=prs, watchers=watchers, containers=containers, usage=read_usage())
+            state.update(updated=int(time.time()), prs=prs, watchers=watchers, containers=containers, merged=merged, usage=read_usage(), orchestrator=read_orchestrator())
         agents = read_agents(labels, containers)
         with lock:
-            state.update(updated=int(time.time()), agents=agents, prs=prs,
+            state.update(updated=int(time.time()), agents=agents, prs=prs, merged=merged,
                          watchers=watchers, containers=containers, errors=errors)
         time.sleep(4)
 
