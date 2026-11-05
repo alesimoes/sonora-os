@@ -14,7 +14,7 @@ bad() { echo "FAIL: $*" >&2; fail=1; }
 
 job() {  # name [priority]: log start and end, holding the lock in between
   # shellcheck disable=SC2016  # expanded by the inner shell
-  SONORA_HEAVY_PRIORITY="${2:-2}" "$SLOT" bash -c 'echo "start $1" >>"$2"; sleep 1; echo "end $1" >>"$2"' _ "$1" "$T/log"
+  SONORA_HEAVY_PRIORITY="${2:-2}" "$SLOT" bash -c 'echo "start $1" >>"$2"; sleep "${HOLD:-1}"; echo "end $1" >>"$2"' _ "$1" "$T/log"
 }
 
 # Capacity one: the second run waits for the first.
@@ -29,7 +29,7 @@ grep -q 'waiting for the heavy lock' "$T/err-b" || bad "second run did not queue
 # Priority: while a holds it, c (2) arrives before d (1) and e (0); the order
 # is a, e, d, c; two of equal priority keep their arrival order.
 : >"$T/log"
-job a 2>/dev/null & pa=$!
+HOLD=2 job a 2>/dev/null & pa=$!
 sleep 0.5
 job c 2 2>/dev/null & pc=$!
 sleep 0.3
