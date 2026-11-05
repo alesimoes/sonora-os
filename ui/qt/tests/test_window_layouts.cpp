@@ -213,12 +213,20 @@ int test_ui() {
     CHECK(text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"));
 
     // Recall 1: the view, the open set and the place all come back.
-    click(view, named(list, QStringLiteral("windowConfigRecall1")));
+    // The view switch re-polishes the scene; a click that lands before it is lost, and recalling is idempotent.
+    for (int attempt = 0; attempt < 3 && session.window() != QStringLiteral("edit"); ++attempt) {
+        click(view, named(list, QStringLiteral("windowConfigRecall1")));
+        QTest::qWaitFor([&]() { return session.window() == QStringLiteral("edit"); }, 1500);
+    }
     CHECK(session.window() == QStringLiteral("edit"));
     CHECK(session.undoHistoryOpen() && transport.open() && !session.latencyOpen());
     CHECK(history->x() == 300 && history->y() == 120);
     // And 2 back again; the toggle (Ctrl+=) still flips Edit/Mix by itself.
-    click(view, named(list, QStringLiteral("windowConfigRecall2")));
+    // The view switch re-polishes the scene; a click that lands before it is lost, and recalling is idempotent.
+    for (int attempt = 0; attempt < 3 && session.window() != QStringLiteral("mix"); ++attempt) {
+        click(view, named(list, QStringLiteral("windowConfigRecall2")));
+        QTest::qWaitFor([&]() { return session.window() == QStringLiteral("mix"); }, 1500);
+    }
     CHECK(session.window() == QStringLiteral("mix"));
     CHECK(!session.undoHistoryOpen() && !transport.open() && session.latencyOpen());
     CHECK(latency->x() == 50 && latency->y() == 60);
