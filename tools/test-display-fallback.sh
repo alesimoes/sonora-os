@@ -19,15 +19,12 @@ export MSYS_NO_PATHCONV=1
 src="$ROOT"
 command -v cygpath >/dev/null 2>&1 && src="$(cygpath -w "$ROOT")"
 
-docker build -q --label org.sonora=1 -t "$IMAGE" - >/dev/null <<'EOF'
-FROM debian:trixie
-RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
- for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
- if apt-get $A update && apt-get $A install -y --no-install-recommends systemd systemd-sysv dbus kbd procps \
- ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
- [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
- rm -rf /var/lib/apt/lists/*
-EOF
+# CI pulls the image (built on main by images.yml) and sets
+# SONORA_SYSTEMD_IMAGE_BUILT=1; the Dockerfile is tools/Dockerfile.systemd-test.
+if [[ "${SONORA_SYSTEMD_IMAGE_BUILT:-0}" != 1 ]]; then
+  (cd "$ROOT/tools" && docker build -q --label org.sonora=1 -t "$IMAGE" \
+    -f Dockerfile.systemd-test . >/dev/null)
+fi
 
 # Runs inside the container before systemd. $1 is the UI stub's behaviour.
 # shellcheck disable=SC2016 # expanded by the container's sh, not here
