@@ -15,6 +15,7 @@
 
 #include "sonora/closed_take.h"
 #include "sonora/consolidate.h"
+#include "sonora/consolidate_job.h"
 #include "sonora/model/operations.h"
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
@@ -268,9 +269,62 @@ int test_refused_while_recording() {
 
 }  // namespace
 
+// The worker's halves (the control server's path): render on a thread,
+// commit later against the document as it is then. A cancel that arrives
+// after the last block still discards; a track removed meanwhile removes the
+// file and changes nothing.
+int test_job_renders_then_commits() {
+    Rig r;
+    CHECK(make_rig(r, "test_consolidate_job"));
+    ConsolidateRequest rq;
+    rq.track = r.track;
+    rq.start = 0;
+    rq.end = 400;
+    ConsolidateRequest resolved;
+    std::string err;
+    CHECK(consolidate_check(r.doc->current(), rq, resolved, err));
+    CHECK(resolved.playlist == r.playlist);
+
+    const auto run = [&](ConsolidateJob& job) {
+        job.start(r.doc->current(), r.cfg.dir, resolved);
+        while (!job.finished()) usleep(1000);
+    };
+    ConsolidateJob job;
+    run(job);
+    CHECK(job.permille() == 1000);
+    job.cancel();
+    ConsolidateJob::Result lost = job.collect();
+    CHECK(lost.ok && lost.cancelled);
+    std::remove((r.cfg.dir + "/" + lost.rendered.relative_path).c_str());
+
+    run(job);
+    ConsolidateJob::Result done = job.collect();
+    CHECK(done.ok && !done.cancelled && !job.active());
+    const std::uint64_t rev = r.doc->current().revision;
+    std::vector<model::ReplicationUpdate> updates;
+    CHECK(consolidate_commit(*r.doc, r.cfg.dir, done.request, done.rendered, updates, err));
+    CHECK(updates.size() == 1 && r.doc->current().revision > rev);
+    const model::Playlist* p = playlist_of(r.doc->current(), r.playlist);
+    CHECK(p->regions.size() == 1 && p->regions[0].length == 400);
+
+    // The track is gone by the time the commit runs.
+    run(job);
+    ConsolidateJob::Result orphan = job.collect();
+    CHECK(orphan.ok);
+    model::ReplicationUpdate u;
+    CHECK(r.doc->apply(model::RemoveTrack{r.track}, u, err));
+    const std::uint64_t after = r.doc->current().revision;
+    updates.clear();
+    CHECK(!consolidate_commit(*r.doc, r.cfg.dir, orphan.request, orphan.rendered, updates, err));
+    CHECK(updates.empty() && r.doc->current().revision == after);
+    CHECK(!fs::exists(r.cfg.dir + "/" + orphan.rendered.relative_path));
+    return 0;
+}
+
 int main() {
     if (int rc = test_two_takes_with_a_crossfade()) return rc;
     if (int rc = test_never_overwrites_and_cancel()) return rc;
+    if (int rc = test_job_renders_then_commits()) return rc;
     if (int rc = test_refused_while_recording()) return rc;
     std::printf("consolidate: ok\n");
     return 0;

@@ -409,8 +409,10 @@ def check(args):
                     f"{name}: chunks tile the file exactly",
                     f"walk ended at {riff.get('walked_to')} of {riff['size']}")
             order = [t for t, _ in riff["chunks"]]
-            v.check(order[:3] == ["bext", "fmt ", "data"],
-                    f"{name}: chunk order bext, fmt, data (Tech 3285 2.1)",
+            # JUNK first reserves the room for ds64, which Tech 3306 wants
+            # as the first chunk of an RF64 file; ignored by a plain WAV reader.
+            v.check(order[:4] == ["JUNK", "bext", "fmt ", "data"],
+                    f"{name}: chunk order JUNK, bext, fmt, data (Tech 3285 2.1, 3306)",
                     str(order))
             frames = riff.get("data_size", 0) // max(riff.get("block_align", 1), 1)
 
