@@ -368,7 +368,12 @@ class Train:
         if o.cfg.local_ci:
             # Built and tested here instead (harness/localci.py); a PR from
             # before the lean ci.yml still runs them on GitHub's runners.
-            checks = [c for c in checks if c["name"] not in LOCAL_CI_JOBS]
+            # Our own `local-ci` status is judged from the store, never from
+            # GitHub: a run killed before it posted its verdict leaves it
+            # pending there, and the PR would wait for it forever (#439,
+            # 2026-11-05).
+            checks = [c for c in checks
+                      if c["name"] not in LOCAL_CI_JOBS and c["name"] != "local-ci"]
         passed = sum(1 for c in checks if c["state"] == "pass")
         upd.update(passed=passed, total=len(checks), waits_on=None,
                    failing=[c["name"] for c in checks
