@@ -1,0 +1,41 @@
+[Unit]
+Description=Sonora terminal interface (tty2, ADR-0010 stage 2)
+# A client of the headless engine, like the Qt UI: it owns the keyboard on tty2
+# so that the machine still has an interface when the display stack is down.
+# Only with the display stack: without sonora.gui, or after the fallback,
+# sonora-session.service has the engine start the terminal UI on tty1 itself.
+# The installer screen owns tty2 when it is asked for.
+ConditionKernelCommandLine=sonora.gui
+ConditionKernelCommandLine=!sonora.install
+ConditionPathExists=!/run/sonora-display-failed
+# Wants=, never BindsTo=: the terminal UI stopping must not stop the engine,
+# nor the engine restarting stop the terminal UI.
+Wants=sonora-engine.service
+After=sonora-engine.service systemd-user-sessions.service
+Conflicts=getty@tty2.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=sonora
+Group=sonora
+PAMName=login
+TTYPath=/dev/tty2
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty
+StandardOutput=tty
+Environment=HOME=/home/sonora
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/sonora
+# Default socket: $XDG_RUNTIME_DIR/sonora/engine.sock, the headless engine's.
+ExecStart=/usr/local/bin/sonora-tui
+# The operator must never land on a shell: whatever ends it, bring it back.
+Restart=always
+RestartSec=1
+LimitRTPRIO=0
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

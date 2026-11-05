@@ -1,0 +1,56 @@
+#!/bin/sh
+# Give the interrupt threads of the USB host controller a real-time priority
+# above every other IRQ thread and below PipeWire's data thread. With
+# threadirqs (kernel command line) every IRQ handler is a kernel thread named
+# irq/<n>-<name>, all at SCHED_FIFO 50. The UMC1820's isochronous URBs complete
+# in the xHCI interrupt, so a network or disk IRQ thread at the same priority
+# can delay it past the quantum. brain/research/rt-tuning.md has the reasoning.
+#
+# Idempotent: running it twice sets the same priorities. Always exits 0 so a
+# box without threadirqs or without xHCI still boots; the log says why.
+#
+# Test hooks: SONORA_PROC (default /proc), SONORA_CHRT (default chrt).
+PROC=${SONORA_PROC:-/proc}
+CHRT=${SONORA_CHRT:-chrt}
+# PipeWire's data thread is rt.prio 88 (audio-stack/pipewire-sonora.conf).
+PRIO=${SONORA_RTIRQ_PRIO:-85}
+NAMES=${SONORA_RTIRQ_NAMES:-xhci_hcd}
+
+log() { echo "sonora-rtirq: $*"; }
+
+irqs=""
+for name in $NAMES; do
+  # Field 1 is "<n>:"; rows like NMI or LOC are not numeric and name no driver.
+  found="$(awk -v n="$name" '$1 ~ /^[0-9]+:$/ { for (i = NF; i > 1; i--) if ($i == n || $i == n ",") { sub(":", "", $1); print $1; break } }' "$PROC/interrupts" 2>/dev/null)"
+  irqs="$irqs $found"
+done
+irqs="$(echo "$irqs" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -un | tr '\n' ' ')"
+if [ -z "$irqs" ]; then
+  log "no IRQ for [$NAMES] in $PROC/interrupts; nothing to do"
+  exit 0
+fi
+
+set_any=0
+for irq in $irqs; do
+  hit=0
+  for comm in "$PROC"/[0-9]*/comm; do
+    [ -r "$comm" ] || continue
+    read -r c <"$comm" || continue
+    case "$c" in
+      irq/"$irq"-*)
+        pid="${comm#"$PROC"/}"
+        pid="${pid%/comm}"
+        if "$CHRT" -f -p "$PRIO" "$pid" 2>/dev/null; then
+          log "irq $irq thread pid $pid ($c) -> SCHED_FIFO $PRIO"
+          hit=1
+          set_any=1
+        else
+          log "irq $irq thread pid $pid ($c): chrt failed"
+        fi
+        ;;
+    esac
+  done
+  [ "$hit" = 1 ] || log "irq $irq has no thread (is threadirqs on the command line?)"
+done
+[ "$set_any" = 1 ] || log "no priority changed"
+exit 0

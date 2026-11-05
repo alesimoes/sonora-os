@@ -9,4 +9,8 @@ add_executable(test_select_device tests/test_select_device.cpp)
 target_link_libraries(test_select_device PRIVATE sonora_backend_api)
 add_test(NAME select_device COMMAND test_select_device)
 
+add_executable(test_device_profile tests/test_device_profile.cpp)
+target_link_libraries(test_device_profile PRIVATE sonora_backend_api)
+add_test(NAME device_profile COMMAND test_device_profile)
+
 add_subdirectory(conformance)

@@ -7,7 +7,7 @@ machine that records and a machine that drops samples.
 |---|---|---|
 | `limits-audio.conf` | `/etc/security/limits.d/95-audio.conf` | RT priority and locked memory for the `audio` group |
 | `pipewire-sonora.conf` | `/etc/pipewire/pipewire.conf.d/99-sonora.conf` | Pins the rate and the quantum |
-| `wireplumber-sonora.conf` | `/etc/wireplumber/wireplumber.conf.d/99-sonora.conf` | Pro Audio profile, and no remembered state |
+| `wireplumber-sonora.conf` | `/etc/wireplumber/wireplumber.conf.d/99-sonora.conf` | Pro Audio profile, no remembered state, and the UMC1820 rule (no suspend-on-idle, period 128); `brain/research/umc1820-profile.md`, `tools/test-umc-profile.sh` |
 | `sysctl-sonora.conf` | `/etc/sysctl.d/99-sonora.conf` | Kernel knobs that affect latency |
 
 The PipeWire these files configure is 1.6.9 with WirePlumber 0.5.12, from
@@ -41,9 +41,16 @@ offers two channels and the other sixteen are not visible to the engine at all:
 not silent, not an error, absent. Pro Audio exposes every channel as its own
 port with nothing in the signal path.
 
+## Runtime tuning (installed system)
+
+`sonora-rtirq` (xHCI IRQ threads to SCHED_FIFO 85), `sonora-cpu-latency`
+(performance governor, PM QoS latency held while the engine runs) and the udev
+rule that keeps USB audio devices out of autosuspend live in
+`iso/config/includes.chroot`, with the reasoning and sources in
+`brain/research/rt-tuning.md`. Test: `tools/test-rt-tuning.sh`.
+
 ## Not configured here, and deliberately
 
-CPU frequency scaling and `nohz_full` both change latency measurably, and both
-depend on the machine. They belong in a tuning profile applied after we have
-measured a given box, not in a default that ships blind. First measurements go
-in `brain/research/`.
+`isolcpus` / `nohz_full` depend on the core count of the machine; they are
+documented as optional boot options in `brain/research/rt-tuning.md`, never
+default.

@@ -168,7 +168,7 @@ else
   fail "engine pid changed: $PID_BEFORE then $PID_AFTER"
 fi
 else
-  echo "SMOKETEST info  sonora.gui without fallback: stage 1 runs no engine"
+  echo "SMOKETEST info  sonora.gui without fallback: the engine runs as sonora-engine.service (checked with the display stack)"
 fi
 
 # --- 3. the kernel is the real-time one ---
@@ -309,8 +309,22 @@ gui_checks() {
     grep -i -E 'render|gles|llvmpipe|swrast|opengl' | head -n 4 |
     sed 's/^/SMOKETEST info  ui: /'
 
+  # Stage 2: the display stack's failures must not reach the engine. Its PID
+  # is the proof a take in progress would have survived.
+  ENG_PID="$(unit_pid sonora-engine.service)"
+  check "sonora-engine.service has a main process" test -n "$ENG_PID" -a "$ENG_PID" != 0
   kill_and_recover sonora-ui.service "kill -9 of the UI"
   kill_and_recover sonora-compositor.service "kill -9 of labwc"
+  check "engine PID unchanged by the UI and labwc kills" test "$(unit_pid sonora-engine.service)" = "$ENG_PID"
+  # And the engine's own restart, with the UI left running.
+  UI_PID="$(unit_pid sonora-ui.service)"
+  kill -9 "$ENG_PID"
+  if ms="$(wait_new_pid sonora-engine.service "$ENG_PID" "$RECOVER_MS")"; then
+    echo "SMOKETEST ok    kill -9 of the engine recovered in ${ms} ms"
+  else
+    fail "engine did not recover within ${RECOVER_MS} ms"
+  fi
+  check "UI PID unchanged by the engine kill" test "$(unit_pid sonora-ui.service)" = "$UI_PID"
   check "display fallback did not run after the kills" test ! -e "$FLAG"
 }
 
@@ -323,7 +337,7 @@ check "os-release carries a BUILD_ID" test -n "$BUILD_ID_SEEN"
 
 # LoadState first: on a missing unit is-active says "inactive", so every
 # "skipped" check below would pass on an image that lost the unit.
-for u in sonora-compositor sonora-ui sonora-display-fallback sonora-session; do
+for u in sonora-compositor sonora-ui sonora-engine sonora-display-fallback sonora-session; do
   check "$u.service is installed" sh -c "[ \"\$(systemctl show -p LoadState --value $u.service)\" = loaded ]"
 done
 if [ "$GUI" = 1 ] && [ "$EXPECT_FALLBACK" = 1 ]; then
@@ -341,6 +355,7 @@ elif [ "$GUI" = 1 ]; then
   echo "SMOKETEST info  sonora.gui set; display stack expected to run"
   check "sonora-compositor.service active" systemctl is-active --quiet sonora-compositor.service
   check "sonora-ui.service active" systemctl is-active --quiet sonora-ui.service
+  check "sonora-engine.service active (started before the UI)" systemctl is-active --quiet sonora-engine.service
   check "display fallback did not run" test ! -e "$FLAG"
   check "sonora-session.service not running under sonora.gui" sh -c '! systemctl is-active --quiet sonora-session.service'
   check "sonora-ui is executable" test -x /usr/local/bin/sonora-ui

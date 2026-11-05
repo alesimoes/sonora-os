@@ -56,6 +56,19 @@ after); `docker-desktop` stayed Running.
   and an acoustic loopback through the laptop's speaker and mic would need
   the mic working and someone in the room.
 
+### The remaining measurement: `tools/dev-wsl.sh measure`
+
+`measure [SECONDS] [--loop-out PORT --loop-in PORT]` (default 600 s) runs the
+engine with a take for the whole time, samples the graph's rate/quantum from
+`pw-top` every 30 s ("quantum: stable" only when every sample is equal),
+prints the engine's xrun and overrun counters and the `pw-top` ERR column,
+and measures the round trip with `jack_iodelay` (package
+`jack-example-tools`, added to `deps`). The loop is speakers -> microphone by
+default, which needs a working mic; with the UMC1820 attached
+(`tools/umc-wsl.ps1`) a cable from an output to an input and
+`--loop-out`/`--loop-in` give a real electrical loop, still through USB/IP.
+Not yet run: the numbers go here when the owner has run it on the laptop.
+
 ## Failures found
 
 1. **systemd's pipewire.socket (fixed).** With `systemd=true` and a non-root
