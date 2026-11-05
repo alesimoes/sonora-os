@@ -54,7 +54,7 @@ uint32_t read_u32(const std::vector<uint8_t>& b, long off) {
 }
 
 // Same value as test_wav_writer: the RIFF size of a file with no audio.
-constexpr uint32_t kEmptyRiffSize = 4 + (8 + 602) + (8 + 16) + 8;
+constexpr uint32_t kEmptyRiffSize = 4 + (8 + 28) + (8 + 602) + (8 + 16) + 8;
 
 }  // namespace
 
