@@ -61,7 +61,7 @@ MSG_TYPES = frozenset({
 })
 # Frame types a client may send.
 REQUESTS = frozenset({"register", "ping", "ack", "send", "claim", "release",
-                      "check", "peek"})
+                      "check", "peek", "inbox", "whoami"})
 
 # Error codes
 E_BAD_FRAME = "bad_frame"
