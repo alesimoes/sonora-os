@@ -656,6 +656,16 @@ int test_record_with_a_punch_range_punches() {
         set.settings = replica.current().settings;
         set.settings.transport.punch = {{kA, kB}};
         set.settings.transport.punch_crossfade = kX;
+        // The default post-roll, a second, puts B + post-roll at B + H: the
+        // roll then stops at the first block after the punch-out
+        // (timeline-model.md, "Pre-roll and post-roll"), and whether the
+        // control thread drops the take to Rolling before the test's next
+        // block or after it is timing. Under TSan on a loaded host it came
+        // first, the roll stopped short of B + H + a block, and the loop
+        // below waited for a playhead that no longer moved. This test checks
+        // the drop to Rolling; test_playback_control checks the stop at
+        // B + post-roll.
+        set.settings.transport.post_roll = 10 * model::Frames{kRate};
         sonora::api::ModelRequest m;
         m.action = sonora::api::ModelAction::Apply;
         CHECK(model::encode_operation(model::Operation{set}, m.op, error));
@@ -675,10 +685,21 @@ int test_record_with_a_punch_range_punches() {
         CHECK(r.result == DispatchResult::Ok);
         CHECK(s.transport().state() == TransportState::Recording);
         uint32_t blocks = 0;
-        while (s.transport().playhead() < static_cast<uint64_t>(kB + kH + kQuantum)) {
-            if (blocks++ % 8 == 0) CHECK(reader_turn(s));
-            CHECK(audio.run_blocks(1) == 1);
-        }
+        // Past B + H and a block, the reader kept up as in test 1. Bounded: a
+        // roll that stops short fails here, with where, instead of hanging.
+        const auto roll_past_the_handle = [&]() {
+            const auto to = static_cast<uint64_t>(kB + kH + kQuantum);
+            for (uint64_t i = 0; i <= 2 * to / kQuantum; ++i) {
+                if (s.transport().playhead() >= to) return true;
+                if (blocks++ % 8 == 0 && !reader_turn(s)) return false;
+                if (audio.run_blocks(1) != 1) return false;
+            }
+            std::fprintf(stderr, "  the playhead stopped at %llu, short of %llu\n",
+                         static_cast<unsigned long long>(s.transport().playhead()),
+                         static_cast<unsigned long long>(to));
+            return false;
+        };
+        CHECK(roll_past_the_handle());
         // Past B + H the take's files are closed: the transport drops out of
         // record and rolls on, as Pro Tools' does at the punch-out, rather
         // than showing Recording while nothing records.
@@ -723,10 +744,7 @@ int test_record_with_a_punch_range_punches() {
         if (r.result != DispatchResult::Ok) std::fprintf(stderr, "  %s\n", r.message.c_str());
         CHECK(r.result == DispatchResult::Ok);
         CHECK(s.transport().state() == TransportState::Recording);
-        while (s.transport().playhead() < static_cast<uint64_t>(kB + kH + kQuantum)) {
-            if (blocks++ % 8 == 0) CHECK(reader_turn(s));
-            CHECK(audio.run_blocks(1) == 1);
-        }
+        CHECK(roll_past_the_handle());
         CHECK(await_rolling());
         CHECK(c.run("transport.stop"));
 
