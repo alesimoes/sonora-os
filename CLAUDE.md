@@ -89,7 +89,7 @@ reserves ADR numbers and the next protocol version when it launches an agent.
 Commit to the branch at the end of every stage, PR or not, so a stopped agent
 loses nothing. One PR per BACKLOG item, follow-ups included. Every agent and every review runs on Sonnet,
 never Opus (owner, 2026-11-03: it burns the weekly quota); the RT path,
-contracts, storage and recovery get a more careful brief, not a bigger model. Only a blocking finding sends a PR back; non-blocking ones become
+contracts, storage and recovery get a more careful brief, not a bigger model. The one exception is `principal-engineer`, the escalation engineer the orchestrator calls after two failed fix rounds on the same cause, hours of red, or spent relaunches (owner, 2026-11-05); it runs on Opus, one at a time. Only a blocking finding sends a PR back; non-blocking ones become
 BACKLOG lines, batched into one follow-ups PR per track. A re-review is a
 fresh Sonnet agent that checks only the fix's diff. A PR enters the merge queue the moment it is opened:
 `tools/enqueue-pr.sh PR...` (one detached merge-when-green per PR, a lock
@@ -108,7 +108,12 @@ saturate the machine and every build slows down. Write the whole slice first
 build cycles per task. No rebuild per edit; read the code instead. Use the
 narrowest target, keep the build directory so it stays incremental, never
 start a second container for the same worktree, and never wait on a build.
-The heavy docker runs go through `tools/build-slot.sh` once it lands.
+The machine runs ONE heavy build or test at a time, with every CPU, the rest
+queued (`tools/build-slot.sh`, one lock for the whole host, owner 2026-11-05).
+Implementers do not run the full builds or the whole test suite: they build
+the narrowest target, through `tools/build-slot.sh`, only when the slice needs
+it. The orchestrator's local CI gate (`tools/local-ci.sh`, run in batches by
+`tools/harness/localci.py`) is what builds and tests the whole tree.
 
 ## Before opening a PR (every agent)
 
@@ -126,10 +131,14 @@ something below is a PR that waits an hour.
   command ran and what it printed. A check you did not run is listed as
   unverified, never as passing.
 - Plugins and DSP: run the suite the way CI runs it, `SONORA_DSP_QUICK=1`,
-  and time it. A new suite must stay under about 60 s in Release; one new
-  test target must also be added to the explicit `--target` list of the
-  Portable (MSVC) job in `.github/workflows/ci.yml`. A processor over its CPU
-  class ships only with an eco mode that meets the class (ADR-0011 §3.5);
+  and time it. A new suite must stay under about 60 s in Release; a new
+  test target must be reachable from `sonora_portable` (defined in
+  `plugins/native/CMakeLists.txt`; it collects every executable and static
+  library under common/json, common/dsp, common/platform, common/audiofile
+  and plugins/native) and be named `dsp_*` or `native_*`, because the local
+  gate `tools/local-ci.sh` runs `tools/build-portable.ps1`, which builds
+  `sonora_portable` with MSVC and runs `ctest -R 'dsp_|native_'`. A processor over its
+  CPU class ships only with an eco mode that meets the class (ADR-0011 §3.5);
   until then gate it off so it is not installed.
 - New or changed scripts: mode 100755 in the index (`git update-index
   --chmod=+x`) for `tools/*.sh`, hooks and `usr/local/bin`; the CI "Executable

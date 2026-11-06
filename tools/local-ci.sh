@@ -145,8 +145,8 @@ sanitize() {  # thread | address
       cmake -S . -B /build/t -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_FLAGS='$flags'
       cmake --build /build/t -j\$(nproc)
-      ctest --test-dir /build/t --output-on-failure -j\$(nproc) $filter
-      $([[ "$kind" == thread ]] && echo "ctest --test-dir /build/t --output-on-failure -j\$(nproc) -R ^native_format")"
+      ctest --test-dir /build/t --output-on-failure --timeout 900 -j\$(nproc) $filter
+      $([[ "$kind" == thread ]] && echo "ctest --test-dir /build/t --output-on-failure --timeout 900 -j\$(nproc) -R ^native_format")"
 }
 
 run_step() {
@@ -197,7 +197,10 @@ for s in "${steps[@]}"; do
     continue
   fi
   start=$SECONDS
-  if "$SELF_DIR/build-slot.sh" bash "$SELF_DIR/local-ci.sh" --step "$s" >"$OUT/$s.log" 2>&1; then
+  # A hung test or image build must not hold the machine's lock for good
+  # (2026-11-05: playback_fake hung 68 min under TSan, a runtime image build
+  # 70 min on apt): each step gets SONORA_STEP_TIMEOUT seconds, 3 h by default.
+  if timeout "${SONORA_STEP_TIMEOUT:-10800}" "$SELF_DIR/build-slot.sh" bash "$SELF_DIR/local-ci.sh" --step "$s" >"$OUT/$s.log" 2>&1; then
     echo "ok   $s ($((SECONDS - start)) s)"
   else
     echo "FAIL $s ($((SECONDS - start)) s): $OUT/$s.log"

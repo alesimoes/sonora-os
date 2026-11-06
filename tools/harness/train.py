@@ -21,6 +21,7 @@ from .forge import ForgeError, RateLimited
 
 META = "train"
 RATE_PAUSE_S = 600
+RERUN_GRACE_S = 150   # GitHub marks a requested rerun queued within seconds
 LIST_TTL_S = 300
 
 
@@ -31,6 +32,16 @@ def track_of(files):
         return "plugin"
     return "daw"
 
+
+# GitHub jobs that tools/local-ci.sh replaces (owner, 2026-11-05).
+LOCAL_CI_JOBS = {
+    "Engine build and tests", "Portable modules under MSVC",
+    "Qt interface build and headless tests", "Thread and address sanitizers",
+    "RealtimeSanitizer over the SONORA_RT call graph",
+    "Records audio against PipeWire", "BWF files read back by third-party tools",
+    "Quantum and rate stay pinned",
+    "Plugin host against real LV2 and VST3 plugins",
+}
 
 def agent_of(track, files):
     if track == "os":
@@ -43,6 +54,41 @@ def agent_of(track, files):
     if code and all(f.startswith("ui/") for f in code):
         return "ui-engineer"
     return "rt-engineer"
+
+
+def _agent_of_file(f):
+    if f.startswith(("iso/", "audio-stack/")):
+        return "distro-engineer"
+    if f.startswith("drivers/"):
+        return "driver-engineer"
+    if f.startswith(("plugins/native/", "common/dsp/")):
+        return "dsp-engineer"
+    if f.startswith("plugins/"):
+        return "plugin-engineer"
+    if f.startswith("ui/"):
+        return "ui-engineer"
+    if f.startswith(("engine/", "common/", "contracts/")):
+        return "rt-engineer"
+    return None   # tools, docs, CI: say nothing about the context
+
+
+TRACK_OF_AGENT = {"distro-engineer": "os", "driver-engineer": "os",
+                  "dsp-engineer": "plugin", "plugin-engineer": "plugin"}
+
+
+def bundle_agent(files):
+    """A bundle's engineer is the one most of its files belong to. One iso/
+    file among six session-model PRs made a distro engineer fix a session
+    model (#438): track_of's "any file" rule fits one PR, not a bundle."""
+    counts = {}
+    for f in files:
+        a = _agent_of_file(f)
+        if a:
+            counts[a] = counts.get(a, 0) + 1
+    if not counts:
+        return "daw", "rt-engineer"
+    agent = max(sorted(counts), key=lambda a: counts[a])
+    return TRACK_OF_AGENT.get(agent, "daw"), agent
 
 
 class Train:
@@ -83,7 +129,8 @@ class Train:
             run = next((r for r in self.o.store.active_runs()
                         if r["task_id"] == t.get("id")), None)
             out.append({
-                "pr": i.get("pr"), "title": i.get("title"),
+                "pr": i.get("pr"), "head": i.get("head"),
+                "title": i.get("title"),
                 "branch": i.get("branch"), "base": i.get("base"),
                 "track": f.get("track"), "agent": t.get("agent"),
                 "state": f.get("state"), "phase": i.get("phase"),
@@ -144,10 +191,10 @@ class Train:
             members.append({"pr": n, "branch": i["branch"],
                             "title": i.get("title") or ""})
             files |= set((self.o.store.get_task(mf) or {}).get("files") or [])
-        track = track_of(files)
+        track, agent = bundle_agent(files)
         with self.o.store.tx():
             self.o.store.add_task(
-                fid, track, agent_of(track, files), state="ci_fix",
+                fid, track, agent, state="ci_fix",
                 branch=branch, files=sorted(files),
                 brief=f"Bundle {name}: " + ", ".join(
                     f"#{m['pr']}" for m in members))
@@ -262,6 +309,9 @@ class Train:
         if (self.info(f["id"]) or {}).get("bundled_into"):
             return True   # the bundle carries it
         try:
+            if ts[0]["state"] == "blocked":
+                self._step_blocked(f, ts)
+                return True
             self._step(f, ts, now)
         except RateLimited as e:
             self.pause_until = now + RATE_PAUSE_S
@@ -273,6 +323,26 @@ class Train:
             self.o.store.event(ts[0]["id"], "train_error", str(e))
             self._save(f["id"], next=f"erro do gh: {str(e)[:120]}")
         return True
+
+    def _step_blocked(self, f, ts):
+        """A blocked PR waits for the owner, but a merge or close done by
+        hand ends the wait."""
+        o, fid = self.o, f["id"]
+        d = o.forge.pr_detail(f["pr"])
+        if d["state"] == "closed":
+            if (self.info(fid) or {}).get("phase") != "fechado":
+                self._save(fid, phase="fechado", next="fechado fora do trem")
+            return
+        if d["state"] != "merged":
+            return
+        for t in ts:
+            if t["state"] == "blocked":
+                o.store.advance(t["id"], "pr_open",
+                                note=f"PR {d['state']} outside the train")
+        o.store.set_feature(fid, state="pr_open")
+        self._save(fid, phase="mergeado", next=None,
+                   action="mergeado fora do trem")
+        o._merged(f, o._feature_tasks(fid))
 
     def _step(self, f, ts, now):
         o, fid, n = self.o, f["id"], f["pr"]
@@ -295,6 +365,15 @@ class Train:
             upd.update(refreshed=head, refresh_from=None)
             i["refreshed"] = head
         checks = d["checks"]
+        if o.cfg.local_ci:
+            # Built and tested here instead (harness/localci.py); a PR from
+            # before the lean ci.yml still runs them on GitHub's runners.
+            # Our own `local-ci` status is judged from the store, never from
+            # GitHub: a run killed before it posted its verdict leaves it
+            # pending there, and the PR would wait for it forever (#439,
+            # 2026-11-05).
+            checks = [c for c in checks
+                      if c["name"] not in LOCAL_CI_JOBS and c["name"] != "local-ci"]
         passed = sum(1 for c in checks if c["state"] == "pass")
         upd.update(passed=passed, total=len(checks), waits_on=None,
                    failing=[c["name"] for c in checks
@@ -323,6 +402,14 @@ class Train:
         # A bundle starts from main, so there is nothing to refresh: its
         # first red goes to a fixer like a refreshed head's.
         refreshed = i.get("refreshed") == head or bool(i.get("bundle"))
+        # A rerun shows the old failures until GitHub starts it; judging
+        # those would send a fixer for a run that is about to happen.
+        if any(c["state"] == "pending" for c in checks):
+            upd["rerun_at"] = None
+        elif i.get("rerun_at") and now - i["rerun_at"] < RERUN_GRACE_S:
+            self._save(fid, phase="rerodando",
+                       next="aguardando o rerun começar", **upd)
+            return
         early = [c["name"] for c in checks if c["state"] == "fail"]
         if early and refreshed:
             # A failed job on a head that will not be refreshed decides it:
@@ -341,6 +428,8 @@ class Train:
         fails = [c["name"] for c in checks if c["state"] == "fail"]
         cancels = [c["name"] for c in checks if c["state"] == "cancel"]
         if checks and not fails and not cancels:
+            if f.get("red_since") or f.get("principal_runs"):
+                o.store.set_feature(fid, red_since=None, principal_runs=0)
             if d["mergeable"] != "yes":
                 self._save(fid, phase="verde", next="GitHub calculando "
                            "mergeable", **upd)
@@ -348,6 +437,8 @@ class Train:
             if o._is_dry("merge"):
                 self._save(fid, phase="verde", next="merge (pool merge em "
                            "dry-run)", **upd)
+                return
+            if not self._local_ci_passed(f, ts, head, upd):
                 return
             o.forge.merge(n, head)
             self._save(fid, phase="mergeado", action=f"merge {head[:8]}",
@@ -391,6 +482,7 @@ class Train:
             upd["reruns"] = (i.get("reruns", 0) + 1
                              if i.get("reruns_head") == head else 1)
             upd["reruns_head"] = head
+            upd["rerun_at"] = now
             phase = "rerodando"
         else:
             upd["refresh_from"] = head
@@ -398,6 +490,36 @@ class Train:
         self._save(fid, phase=phase, action=how,
                    next="novo CI; vermelho de novo → fixer", **upd)
         o.store.event(ts[0]["id"], "train_refresh", f"#{n} {how}")
+
+    def _local_ci_passed(self, f, ts, head, upd):
+        """GitHub runs the light checks only; the build and the tests run
+        here (harness/localci.py) on the head merged with main."""
+        o, fid = self.o, f["id"]
+        if not o.cfg.local_ci:
+            return True
+        r = o.localci.result(head)
+        if r is None:
+            if not o.localci.start(head):
+                self._save(fid, phase="aguardando CI local",
+                           next="vaga no CI local", **upd)
+                return False
+            r = o.localci.result(head) or {}
+        if r.get("state") == "running":
+            # Every ready PR joins one batch: one build, one test pass.
+            self._save(fid, phase="CI local rodando",
+                       next="na fila do lote (um build para todos os PRs "
+                       "prontos)" if r.get("queued") else
+                       "build e testes do lote nesta máquina", **upd)
+            return False
+        if r.get("state") == "fail":
+            self._save(fid, phase="fixer", action="fixer (CI local)",
+                       next="fixer corrige: local-ci", **upd)
+            kind = "conflict" if "conflicts with main" in (
+                r.get("summary") or "") else "ci"
+            jobs = ["merge-conflict"] if kind == "conflict" else ["local-ci"]
+            o._red(f, ts, jobs, kind, r.get("excerpt") or "")
+            return False
+        return True
 
     def _why(self, head):
         try:
@@ -416,6 +538,7 @@ class Train:
             self.o.forge.rerun_failed(i.get("pr"), head_before)
             self._save(fid, phase="rerodando", action="fixer: causa externa,"
                        " rerun", refreshed=head_before,
+                       rerun_at=self.o.clock(),
                        next="rerun; vermelho de novo → fixer")
             return
         self._save(fid, phase="CI rodando", action="push do fixer",
