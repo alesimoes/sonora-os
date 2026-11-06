@@ -188,7 +188,7 @@ fi
 if [[ -z "$STEP" ]]; then
   echo "local-ci: context: ${contexts[*]:-windows-build}"
   echo "local-ci: ${steps[*]}"
-  echo "local-ci: ctest filter: $filter"
+  [[ " ${steps[*]} " == *" tree "* || " ${steps[*]} " == *" ui "* ]] && echo "local-ci: ctest filter: $filter"
 fi
 ((DRY)) && exit 0
 
