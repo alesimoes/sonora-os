@@ -41,4 +41,14 @@ Two levels cap the depth of every variant at the family's size: the code a visit
 
 ## Measurements
 
-Per translation unit, the ASan step's flags (`-fsanitize=address,undefined -fno-omit-frame-pointer -g`, RelWithDebInfo, GCC 14, sonora-build:trixie), each alone with `timeout 900`: see the table in the PR that lands this ADR.
+Per translation unit, the ASan step's flags (`-fsanitize=address,undefined -fno-omit-frame-pointer -g`, RelWithDebInfo, GCC 14, sonora-build:trixie), two at a time under the machine lock, every check on:
+
+| unit | before (flat variant) | after |
+|---|---|---|
+| `op_codec.cpp` (now 15 files) | over 40 min | 22 s, every piece 7 to 41 s |
+| `apply.cpp` (now 12 files) | over 40 min | 59 s, every piece 9 to 59 s |
+| `tests/test_compound.cpp` | over 39 min | 84 s |
+| `tests/test_replication.cpp` | not measured | 88 s |
+| `contracts/api/conformance/src/conformance.cpp` | over 10 min | 155 s |
+| `contracts/api/testing/src/fake_engine.cpp` | 166 s | 107 s |
+| `engine/control/src/engine_control_server.cpp` | 206 s | 119 s |
