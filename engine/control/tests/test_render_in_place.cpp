@@ -224,15 +224,36 @@ bool render(Rig& r, model::RenderKind kind, uint64_t sel_start, uint64_t sel_end
             std::this_thread::sleep_for(std::chrono::milliseconds(60));
             rt.cancel();
         }
-        bool ended = false;
-        for (int i = 0; i < 30000 && !ended; ++i) {
+        // Bounded by the render's progress, not by a count of turns: under a
+        // sanitizer on a loaded machine the roll is as slow as the load makes
+        // it. It gives up only once neither the playhead nor the file moved
+        // for longer than the worker's own longest wait (10 s for a roll to
+        // start), so a render the engine lost ends with the worker's reason.
+        constexpr double kStalled = 20.0;
+        uint64_t head = r.session->transport().playhead();
+        double done = rt.progress();
+        auto moved = std::chrono::steady_clock::now();
+        for (;;) {
             r.ctl->pump();
-            ended = rt.poll(res, err, was_cancelled);
-            if (!ended) std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        }
-        if (!ended) {
-            err = "the render never ended";
-            return false;
+            if (rt.poll(res, err, was_cancelled)) break;
+            const uint64_t h = r.session->transport().playhead();
+            const double p = rt.progress();
+            const auto now = std::chrono::steady_clock::now();
+            if (h != head || p != done) {
+                head = h;
+                done = p;
+                moved = now;
+            } else if (std::chrono::duration<double>(now - moved).count() > kStalled) {
+                err = "the render never ended: stalled at playhead " + std::to_string(h) +
+                      ", progress " + std::to_string(p) + ", transport " +
+                      (r.session->transport().state() == TransportState::Stopped ? "stopped"
+                                                                                 : "rolling") +
+                      ", locates applied " +
+                      std::to_string(r.session->transport().locates_applied()) +
+                      ", resident " + std::to_string(r.session->reader().resident());
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
     }
     basis = rt.basis();
