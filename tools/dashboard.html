@@ -213,9 +213,9 @@ footer{color:var(--faint);font-size:11px;margin-top:2px}
 :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 
 /* visão simples */
-.sit{font-size:22px;line-height:1.4;font-weight:500;padding:14px 18px;margin-bottom:8px;background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--accent);border-radius:4px}
+.sit{font-size:14px;line-height:1.5;font-weight:500;padding:8px 12px;margin-bottom:8px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:4px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
 .sit b{font-weight:700;color:var(--accent)}
-.sit .sitw{color:var(--warn);font-size:16px;display:block;margin-top:2px}.sit .sitb{color:var(--bad);font-size:16px;display:block}
+.sit .sitw{color:var(--warn)}.sit .sitb{color:var(--muted)}.sit span{white-space:nowrap}
 h2.h2{font-size:17px;font-weight:600;margin:22px 0 10px;display:flex;align-items:baseline;gap:12px}
 h2.h2 .hint,summary .hint{font-size:12px;font-weight:400;color:var(--faint)}
 .people{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px}
@@ -223,8 +223,8 @@ h2.h2 .hint,summary .hint{font-size:12px;font-weight:400;color:var(--faint)}
 .ag:hover,.ag:focus-visible{background:var(--raised);border-color:var(--line2)}
 .ag.working{--c:var(--ok)} .ag.wait{--c:var(--warn)} .ag.idle{--c:var(--faint)} .ag.done{--c:#6b9bf2}
 .ag.done{opacity:.8}
-.av{flex:none;width:48px;height:48px;border-radius:50%;display:grid;place-items:center;font:700 16px var(--disp);color:var(--window);background:var(--accent);box-shadow:0 0 0 3px var(--panel),0 0 0 5px var(--accent)}
-.ag.opus .av{background:var(--opus);box-shadow:0 0 0 3px var(--panel),0 0 0 5px var(--opus)}
+.av{flex:none;width:52px;height:52px;border-radius:8px;display:grid;place-items:center;background:#0d0f12;border:2px solid var(--accent)}
+.ag.opus .av{border-color:var(--opus)}
 .ab{min-width:0;flex:1}
 .an{font-size:17px;font-weight:700;line-height:1.25}
 .as{font-size:12px;color:var(--muted);margin-top:1px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -500,12 +500,26 @@ const ROLE_PT={'principal-engineer':'Engenheiro principal','rt-engineer':'Engenh
 const roleName=r=>ROLE_PT[r]||(r?String(r).replace(/-/g,' ').replace(/^./,c=>c.toUpperCase()):'Agente');
 const AVT=[['principal','P'],['coord','C'],['ui-','UI'],['rt-','RT'],['fix','FX'],['integr','IN'],['plugin','PL'],['dsp','DS'],['distro','OS'],['general','AG'],['arch','AR'],['plan','PL'],['review','RV'],['qa','QA']];
 const avatarOf=r=>{r=String(r||'').toLowerCase();const m=AVT.find(x=>r.includes(x[0]));return m?m[1]:(r.slice(0,2).toUpperCase()||'?')};
+/* 12x12 pixel faces: one look per role, Opus shirts purple */
+const PXF=['....hhhh....','..hhhhhhhh..','.hhhhhhhhhh.','.hssssssssh.','.sseessees s.'.replace(' ',''),'.ssssssssss.','.ssssnnssss.','.sssmmmmsss.','..ssssssss..','...cccccc...','.cccccccccc.','cccccccccccc'];
+const PXROLE={P:['#e8b04b','g'],C:['#3fc1b0','crown'],UI:['#ff8fb1',''],RT:['#ff5a5f',''],FX:['#8a93a0','tool'],IN:['#4cc38a',''],PL:['#7fe0d2','phones'],DS:['#b38bff','phones'],OS:['#5b9cff',''],AG:['#c9d1d9',''],AR:['#e8b04b',''],RV:['#9fb3c8','g'],QA:['#4cc38a','g']};
+function pixelAvatar(code,opus){
+  const [hair,acc]=PXROLE[code]||['#c9d1d9',''];
+  const col={h:hair,s:'#f2c9a0',e:'#121417',n:'#d9a77f',m:'#a8584e',c:opus?'#a78bfa':'#3fc1b0'};
+  const g=PXF.map(r=>r.split(''));
+  if(acc==='g'){g[4][2]=g[4][5]=g[4][6]=g[4][9]='g'} // glasses
+  if(acc==='crown'){g[0]='.y.y.yy.y.y.'.split('')}
+  if(acc==='phones'){for(const y of [3,4,5]){g[y][0]='p';g[y][11]='p'}}
+  if(acc==='tool'){g[10][11]='t';g[9][11]='t'}
+  const ex={g:'#121417',y:'#e8b04b',p:'#e8ebef',t:'#e8b04b'};
+  let px='';g.forEach((row,y)=>row.forEach((ch,x)=>{const c=col[ch]||ex[ch];if(c)px+=`<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`}));
+  return `<svg viewBox="0 0 12 12" width="44" height="44" shape-rendering="crispEdges" style="image-rendering:pixelated">${px}</svg>`}
 const MODEL_PT=m=>m?String(m).replace(/^./,c=>c.toUpperCase()):'';
 function personCard(x){
   const model=String(x.model||'').toLowerCase();
   const chips=(x.pr?`<a class="chip" href="${PRURL}${x.pr}" target="_blank" rel="noopener">PR #${x.pr}</a>`:'')+(x.branch?`<span class="chip">${E(x.branch)}</span>`:'');
   return `<article class="ag ${x.state} ${model==='opus'?'opus':''} clk" tabindex="0" role="button" data-k="${E(x.k)}" data-id="${E(x.id)}" title="clique para ver o detalhe">
-    <div class="av">${E(x.avatar)}</div>
+    <div class="av">${pixelAvatar(x.avatar,model==='opus')}</div>
     <div class="ab"><div class="an">${E(x.title)}</div>
       <div class="as">${model?`<span class="mdl ${model}">${E(MODEL_PT(model))}</span> `:''}${E(x.sub)}</div>
       <div class="sts"><i class="sd"></i>${E(x.stateText)}</div>
@@ -566,8 +580,10 @@ function renderSit(s){
   const next=bad.length?'corrigir '+nums(bad)+' (falhou)':ready.length?'fazer o merge de '+nums(ready):test.length?'terminar o teste de '+nums(test)+(stk.length?', depois '+nums(stk):''):stk.length?'esperar '+nums(stk):'nada pendente';
   const owner=(o.waits_on_owner||[]).length;
   const age=o.updated_ts?Date.now()/1000-o.updated_ts:0;
-  $('sit').innerHTML=`<b>Main:</b> ${(s.merged||[]).length} merges hoje. <b>Agora:</b> ${holder?'1 build rodando ('+E(holder.who)+')':'nenhum build rodando'}${nw?', '+nw+' esperando a máquina':''}. <b>Próximo passo:</b> ${E(next)}.`
-    +(owner?` <span class="sitw">Espera o dono: ${owner} decisão(ões).</span>`:'')+(age>120?' <span class="sitb">Orquestrador parado desde '+clk(o.updated_ts)+'.</span>':'')}
+  const coordNext=(s.coordinator&&s.coordinator.next)||'';
+  const run=holder?E(String(holder.who||'').replace(/\s*\(.*\)$/,'').slice(0,40)):'nada';
+  $('sit').innerHTML=`<span><b>${(s.merged||[]).length}</b> merges hoje</span><span>Máquina: <b>${run}</b>${nw?' · '+nw+' na fila':''}</span><span>Próximo: <b>${E(coordNext||next)}</b></span>`
+    +(owner?`<span class="sitw">${owner} decisão(ões) do dono</span>`:'')+(age>120?'<span class="sitb">orquestrador pausado</span>':'')}
 function render(s){
   lastState=s;
   renderSit(s);renderPeople(s);renderMachine(s);
