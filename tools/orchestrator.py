@@ -178,6 +178,7 @@ class Orchestrator:
             self._kill_all("STOP.NOW")
         self._poll_runs(now)
         if self.cfg.local_ci and not self.dry_run:
+            self.localci.prune(self.train.head_is_gone)
             self.localci.poll()
         self._open_pending_prs(now)
         autoadopt.tick(self, now)
@@ -236,7 +237,10 @@ class Orchestrator:
             b["queue"]["prs"] = [prs.get(x) for x in b["queue"]["batch"]]
             data["builder"] = b
         data["gh_paused_until"] = self.train.pause_until or None
-        status.write_atomic(self._p("status.json"), data)
+        try:
+            status.write_atomic(self._p("status.json"), data)
+        except OSError as e:   # the dashboard is reading it; next tick retries
+            self.store.event("daemon", "status_write_failed", str(e)[:200])
 
     # -- launching ----------------------------------------------------
     def _is_dry(self, pool):

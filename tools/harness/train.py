@@ -305,6 +305,19 @@ class Train:
             self._list = (now, rows)
         return rows
 
+    def head_is_gone(self, head):
+        """True when an adopted PR with this head is no longer open (merged
+        or closed). A head with no PR, or a failed listing, is not gone."""
+        prs = {i.get("pr") for i in self._all().values()
+               if i.get("head") == head and i.get("pr")}
+        if not prs:
+            return False
+        try:
+            open_nums = {r["number"] for r in self._open_list(self.o.clock())}
+        except Exception:
+            return False
+        return not (prs & open_nums)
+
     def busy(self):
         """PRs whose CI the train set running and which have not finished."""
         return sum(1 for i in self._all().values()

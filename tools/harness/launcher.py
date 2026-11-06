@@ -171,8 +171,12 @@ def hook_settings(harness_py):
     return {"hooks": {
         "PostToolUse": [{"matcher": "*", "hooks": [recv]}],
         "UserPromptSubmit": [{"hooks": [recv]}],
-        "PreToolUse": [{"matcher": "Edit|Write|MultiEdit", "hooks": [
-            {"type": "command", "command": cmd("check", "--hook")}]}]}}
+        "PreToolUse": [
+            {"matcher": "Edit|Write|MultiEdit", "hooks": [
+                {"type": "command", "command": cmd("check", "--hook")}]},
+            # the same entry point refuses git moves in the daemon's checkout
+            {"matcher": "Bash", "hooks": [
+                {"type": "command", "command": cmd("check", "--hook")}]}]}}
 
 
 SECRET_KEYS = ("SONORA_HARNESS_TOKEN", "SONORA_TOKEN")
