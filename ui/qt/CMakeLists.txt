@@ -60,7 +60,9 @@ add_library(sonora_ui_qt STATIC
   src/timeline_scene.h src/timeline_scene.cpp
   src/scene_item.h src/scene_item.cpp
   src/session_files.h src/session_files.cpp
-  src/session_model.h src/session_model.cpp
+  src/session_model.h src/session_model.cpp src/session_new.cpp
+  src/io_names.h src/io_names.cpp
+  src/io_setup_model.h src/io_setup_model.cpp
   src/insert_controller.h src/insert_controller.cpp
   src/insert_model.h src/insert_model.cpp
   src/mix_model.h src/mix_model.cpp
@@ -83,6 +85,7 @@ qt_add_resources(sonora_ui_qt sonora_qml
         qml/InsertPanel.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
         qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml
         qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/AutomationModeButton.qml qml/RecordButton.qml
+        qml/IoSetupWindow.qml qml/NewSessionDialog.qml
 )
 
 # The screenshot scenes register themselves (scenes/screenshot_scene.h): in
@@ -242,6 +245,14 @@ add_executable(test_ui_session_open tests/test_session_open.cpp)
 target_link_libraries(test_ui_session_open PRIVATE sonora_ui_qt sonora_session_files)
 add_test(NAME ui_session_open COMMAND test_ui_session_open)
 set_tests_properties(ui_session_open PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Setup > I/O Setup (the ports' names, a track's input picked by them, the
+# refusals held) and File > New Session on FakeEngine (written only once
+# the engine has its Load; this system's rate and depth only).
+add_executable(test_ui_io_setup tests/test_io_setup.cpp)
+target_link_libraries(test_ui_io_setup PRIVATE sonora_ui_qt)
+add_test(NAME ui_io_setup COMMAND test_ui_io_setup)
+set_tests_properties(ui_io_setup PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The Mix window on the monitor bus, on FakeEngine: typed gain and pan,
 # strips by display order, fader rides (ParameterChange per step, one SetMix

@@ -674,9 +674,13 @@ void SessionModel::documentUpdated() {
         for (SceneItem* item : items_) item->markOverlayDirty();
     }
     sync();
+    if (new_session_save_) saveNewSession();
 }
 
 void SessionModel::onTransport(const TransportSnapshot& t, bool alive) {
+    // The Load's answer may change nothing shown, and so not come through
+    // documentUpdated().
+    if (new_session_save_) saveNewSession();
     // A stale read is a seqlock miss, not a stop (ADR-0007 §3): keep what is
     // shown, as TransportModel does, or the bar counter drops to the
     // insertion point while the Transport window keeps the playhead.
@@ -1434,6 +1438,7 @@ bool SessionModel::openSessionFile(const QString& file, bool discard, std::strin
     }
     ctl_.document_replaced();
     live_.clear();
+    new_session_save_ = false;
     before_open_.valid = true;
     before_open_.opened = file;
     before_open_.file = file_;
@@ -1519,6 +1524,8 @@ void SessionModel::dismissRepair(int index) {
 }
 
 void SessionModel::openWasRefused(const QString& why, bool later_load) {
+    // A New Session the engine did not take is not written anywhere.
+    new_session_save_ = false;
     if (later_load) {
         // What is shown is the later Open's session, and the window names
         // it. What that Open remembered is the refused session, so its own
@@ -1556,6 +1563,7 @@ void SessionModel::openWasRefused(const QString& why, bool later_load) {
 }
 
 void SessionModel::openWasLost() {
+    new_session_save_ = false;
     before_open_ = BeforeOpen{};
     const QString lost = file_;
     file_.clear();
@@ -1636,6 +1644,7 @@ bool SessionModel::openRecordingFolder(const QString& folder, bool discard, std:
     }
     ctl_.document_replaced();
     live_.clear();
+    new_session_save_ = false;
     before_open_.valid = true;
     before_open_.opened = folder;
     before_open_.file = file_;

@@ -78,6 +78,9 @@ public:
     // with no file yet.
     virtual bool reset(model::Snapshot s, const std::string& file, std::string& why) = 0;
     bool reset(model::Snapshot s, std::string& why) { return reset(std::move(s), {}, why); }
+    // A reset() the owner has not answered yet: what is shown may still be
+    // refused, and the session before it given back.
+    virtual bool opening() const { return false; }
     uint64_t revision() const { return snapshot().revision; }
     // Changes whenever the document may have become another session (an
     // Open here, or a whole document from the engine), whose ids mean other

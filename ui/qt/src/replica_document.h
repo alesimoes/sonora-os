@@ -85,6 +85,8 @@ public:
     // or one chunk alone is over a part. The Load names `file` (protocol 16).
     using TimelineDocument::reset;
     bool reset(model::Snapshot s, const std::string& file, std::string& why) override;
+    // Its Load, or a part of it, is not answered yet.
+    bool opening() const override;
     // This interface's cap on a Snapshot's chunk table and a Load's
     // sequence files (ADR-0015 §4: the replica's own, an interface setting).
     void set_max_snapshot_bytes(uint64_t bytes) { replica_.set_max_snapshot_bytes(bytes); }

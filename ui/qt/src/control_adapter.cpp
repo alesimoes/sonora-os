@@ -140,6 +140,7 @@ void ControlAdapter::frame(EngineFrame& out) const {
                      ((s.health_flags & api::kHealthNoInputs) ? kHealthNoInputs : 0u) |
                      ((s.health_flags & api::kHealthTakeFailed) ? kHealthTakeFailed : 0u) |
                      ((s.health_flags & api::kHealthPluginsDisabled) ? kHealthPluginsDisabled : 0u);
+    t.inputs_connected = s.inputs_connected;
     t.compensation_frames = s.compensation_frames;
     t.compensation_shortfall_frames = s.compensation_shortfall_frames;
     t.click = (s.transport_flags & api::kTransportClick) != 0;
