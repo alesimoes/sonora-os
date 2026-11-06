@@ -2,7 +2,7 @@
 name: principal-engineer
 description: The escalation engineer. The orchestrator sends it a failure that ordinary fixers could not close — the same red after two fix rounds, a block, or a red PR that has stalled for hours. It reads the code end to end, finds the root cause and fixes it, in any part of the tree. The only agent that runs on Opus (owner, 2026-11-05); never use it for routine work.
 tools: Read, Grep, Glob, Write, Edit, Bash, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
-model: opus
+model: fable
 maxTurns: 300
 ---
 

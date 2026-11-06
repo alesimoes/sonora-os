@@ -45,6 +45,24 @@ Both builds need Linux. From Windows, use the container wrappers:
     tools/build-engine.sh      # cmake + ctest
     tools/build-iso.sh         # produces iso/sonora.iso
 
+## Rules, context and process (`.claude/`)
+
+Short imperative rules with their reason; they win over older prose below.
+Read the rule files your task touches and your area's context file.
+
+| File | Covers |
+|---|---|
+| `.claude/rules/planning.md` | no task without an approved plan (`planning/plans/`) |
+| `.claude/rules/gates-and-checks.md` | never disable a check to get green |
+| `.claude/rules/code-structure.md` | files ~500 lines, domains, DI, small functions |
+| `.claude/rules/build-lock-and-machine.md` | `tools/build-slot.sh`, never touch other checkouts |
+| `.claude/rules/branches-and-prs.md` | fresh branch, one PR per feature, orchestrator merges |
+| `.claude/rules/testing-and-flakes.md` | tests by context, no wall-clock waits |
+| `.claude/rules/agents-and-models.md` | model tier by grade (haiku/sonnet/opus/fable), specialists only |
+| `.claude/rules/design-faceplates.md` | hardware-like editors, own names, no brands |
+| `.claude/context/<area>.md` | paths, ADRs, test commands, traps per area |
+| `.claude/PROCESS.md`, `.claude/routing.toml` | lifecycle, failure routing, agent maps |
+
 ## Working in sessions
 
 Context is the main cost: short sessions, one agent per task and review round.
@@ -87,11 +105,9 @@ work on one task, each pushes to a sub-branch, a named integrator merges them
 into one feature branch, and that branch is the single PR. The coordinator
 reserves ADR numbers and the next protocol version when it launches an agent.
 Commit to the branch at the end of every stage, PR or not, so a stopped agent
-loses nothing. One PR per BACKLOG item, follow-ups included. Every agent and every review runs on Sonnet,
-never Opus (owner, 2026-11-03: it burns the weekly quota); the RT path,
-contracts, storage and recovery get a more careful brief, not a bigger model. The one exception is `principal-engineer`, the escalation engineer the orchestrator calls after two failed fix rounds on the same cause, hours of red, or spent relaunches (owner, 2026-11-05); it runs on Opus, one at a time. Only a blocking finding sends a PR back; non-blocking ones become
+loses nothing. One PR per BACKLOG item, follow-ups included. Model per task by grade, not per agent (owner, 2026-11-06, supersedes the Sonnet-only rule): junior haiku, pleno sonnet, senior opus, principal fable as last resort; the table is in `.claude/rules/agents-and-models.md`. Only a blocking finding sends a PR back; non-blocking ones become
 BACKLOG lines, batched into one follow-ups PR per track. A re-review is a
-fresh Sonnet agent that checks only the fix's diff. A PR enters the merge queue the moment it is opened:
+fresh agent that checks only the fix's diff. A PR enters the merge queue the moment it is opened:
 `tools/enqueue-pr.sh PR...` (one detached merge-when-green per PR, a lock
 refuses duplicates, it gives up after 4 h); a blocking finding runs
 `tools/enqueue-pr.sh --cancel PR`. The `integrator` is for conflicts.
