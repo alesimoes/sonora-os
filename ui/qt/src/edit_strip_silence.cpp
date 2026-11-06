@@ -46,6 +46,18 @@ bool EditController::strip_silence(const PeakSource& peaks, const StripParams& p
         return false;
     }
 
+    // A source whose overview is still being read would answer silence for
+    // everything, and every region would look quiet.
+    for (const auto& [playlist, r] : targets) {
+        for (const SourceRef& c : r->channels) {
+            if (!peaks.ready(c.source)) {
+                why = "the waveform overview of " + r->name +
+                      " is still being read; try again in a moment. Nothing was stripped.";
+                return false;
+            }
+        }
+    }
+
     const uint32_t rate = snapshot().settings.sample_rate;
     std::vector<Member> members;
     int whole_quiet = 0;
