@@ -12,6 +12,19 @@
 #                                      Windows zip) in dist/
 #   tools/local-ci.sh --base REF       compare with REF (default origin/main)
 #   tools/local-ci.sh --dry-run        print contexts, steps and ctest filter, run none
+#   tools/local-ci.sh --list           print the steps this run would take, one per line
+#   tools/local-ci.sh --only A[,B...]  run just those steps of the computed set (the
+#                                      context still decides the set; a name outside it
+#                                      is an error). Combine with --full, --base, ...
+#   tools/local-ci.sh --resume         skip the steps already green for this same HEAD
+#
+# Per-step results (2026-11-06: one 1 h serial pass that restarts from zero
+# when a step fails or the machine dies): after each step the script writes
+# $SONORA_LOCAL_CI_DIR/<step>.status, one line `state=pass|fail|running
+# seconds=N sha=HEAD`. --resume trusts a `pass` only when its sha is the
+# current HEAD, so a rerun after a crash or a fix pays for what is not green.
+# The orchestrator (tools/harness/localci.py) posts each as the commit status
+# `local-ci/<step>`; the aggregate `local-ci` stays the one required check.
 #
 # The owner's rule (2026-11-05): tests are separated by CONTEXT, like separate
 # pipelines, and a PR pays only for its own context, so a small PR integrates
@@ -62,6 +75,9 @@ DRY=0
 OS_ONLY=0
 WITH_OS=0
 STEP=""
+ONLY=""
+LIST=0
+RESUME=0
 while (($#)); do
   case "$1" in
     --full) FULL=1 ;;
@@ -69,8 +85,11 @@ while (($#)); do
     --release) FULL=1 WITH_OS=1; export SONORA_LOCAL_CI_RELEASE=1 ;;
     --base) BASE="$2"; shift ;;
     --dry-run) DRY=1 ;;
+    --list) LIST=1 ;;
+    --only) ONLY="${2:?--only needs STEP[,STEP...]}"; shift ;;
+    --resume) RESUME=1 ;;
     --step) STEP="$2"; FULL=1; shift ;;   # internal: one step, lock held
-    *) echo "usage: $0 [--full|--os|--release] [--base REF] [--dry-run]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--full|--os|--release] [--base REF] [--dry-run|--list] [--only STEPS] [--resume]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -166,6 +185,24 @@ fi
 ((c_os)) && steps+=(os)
 # Windows last: the target is Linux, and a red Linux step skips it.
 ((c_plugins || portable)) && steps+=(windows)
+
+if [[ -n "$ONLY" ]]; then
+  # shellcheck disable=SC2206
+  want=(${ONLY//,/ })
+  picked=()
+  for w in "${want[@]}"; do
+    [[ " ${steps[*]} " == *" $w "* ]] || {
+      echo "error: step '$w' is not in this run (${steps[*]:-none})" >&2; exit 2; }
+  done
+  for s in "${steps[@]}"; do
+    [[ " ${want[*]} " == *" $s "* ]] && picked+=("$s")
+  done
+  steps=("${picked[@]}")
+fi
+if ((LIST)); then
+  ((${#steps[@]})) && printf '%s\n' "${steps[@]}"
+  exit 0
+fi
 
 contexts=()
 ((c_ui)) && contexts+=(sonora-ui)
@@ -297,19 +334,37 @@ if [[ "$(uname -s)" != Linux ]] && docker image inspect sonora-ui:trixie >/dev/n
     >/dev/null 2>&1 || true
 fi
 
+# <step>.status: see the header. Written through a temp file so the daemon
+# never reads half a line.
+HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+write_status() {  # step state seconds
+  printf 'state=%s seconds=%s sha=%s\n' "$2" "$3" "$HEAD_SHA" >"$OUT/$1.status.tmp" &&
+    mv -f "$OUT/$1.status.tmp" "$OUT/$1.status"
+}
+step_green() {  # step: passed before for this very HEAD
+  [[ -f "$OUT/$1.status" ]] && grep -q "^state=pass .*sha=$HEAD_SHA\$" "$OUT/$1.status"
+}
+
 failed=()
 for s in "${steps[@]}"; do
   if [[ "$s" == windows ]] && ((${#failed[@]})); then
     echo "skip windows (a Linux step failed)"
     continue
   fi
+  if ((RESUME)) && step_green "$s"; then
+    echo "ok   $s (resumed, green for $HEAD_SHA)"
+    continue
+  fi
   start=$SECONDS
+  write_status "$s" running 0
   # A hung test or image build must not hold the machine's lock for good
   # (2026-11-05: playback_fake hung 68 min under TSan, a runtime image build
   # 70 min on apt): each step gets SONORA_STEP_TIMEOUT seconds, 3 h by default.
   if timeout "${SONORA_STEP_TIMEOUT:-10800}" "$SELF_DIR/build-slot.sh" bash "$SELF_DIR/local-ci.sh" --step "$s" >"$OUT/$s.log" 2>&1; then
+    write_status "$s" pass $((SECONDS - start))
     echo "ok   $s ($((SECONDS - start)) s)"
   else
+    write_status "$s" fail $((SECONDS - start))
     echo "FAIL $s ($((SECONDS - start)) s): $OUT/$s.log"
     failed+=("$s")
     # A batch of PRs only needs to know it is red: the orchestrator splits

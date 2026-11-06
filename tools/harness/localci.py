@@ -39,6 +39,8 @@ import subprocess
 import sys
 import time
 
+from .localci_steps import StepPoster, clear_steps
+
 TIMEOUT_S = 3 * 3600
 BATCH_SETTLE_S = 60   # PRs ready within a minute share one build
 EXCERPT_LINES = 30
@@ -85,6 +87,23 @@ class LocalCI:
         self.o = orch
         self.clock = clock
         self.base = os.path.join(orch.root, ".harness", "ci")
+        self._steps = None
+
+    def _step_poster(self):
+        # the forge is attached to the orchestrator after construction
+        if self._steps is None:
+            self._steps = StepPoster(self.o.store, self.o.forge)
+        return self._steps
+
+    def _sync_steps(self, key, r):
+        """local-ci/<step> statuses of a run, from its <step>.status files."""
+        if r.get("dir"):
+            try:
+                self._step_poster().sync(key, r.get("heads") or [key],
+                                         r["dir"])
+            except Exception as e:   # never stop the gate for a badge
+                self.o.store.event("local-ci", "step_status_failed",
+                                   str(e)[:200])
 
     # -- state ------------------------------------------------------------
     def result(self, sha):
@@ -194,6 +213,8 @@ class LocalCI:
                 os.remove(os.path.join(logdir, f))
             except OSError:
                 pass
+        clear_steps(logdir)
+        self.o.store.set_meta("localci-steps:" + key, "{}")
         # The daemon's own copy of the script judges every head the same
         # way, including heads from before the script existed.
         script = os.path.join(self.o.root, "tools", "local-ci.sh")
@@ -271,6 +292,7 @@ class LocalCI:
         the free checkouts from the queues."""
         for sha, r in self._running():
             d = r.get("dir") or ""
+            self._sync_steps(sha, r)
             rc_path = os.path.join(d, "rc")
             if not os.path.exists(rc_path):
                 if self.clock() - r.get("started", 0) > TIMEOUT_S:
