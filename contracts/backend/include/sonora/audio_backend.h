@@ -20,7 +20,10 @@ namespace sonora::backend {
 // and the interface both offer capture ports, and one list across them
 // would shift every channel after the first card's.
 struct PortInfo {
-    std::string device;  // the card, as the server names it
+    // The card, as the server names it; "<name> #k" when several hardware
+    // units share that name, numbered in an order that holds across boots
+    // where the backend can identify the units (drivers::describe_ports()).
+    std::string device;
     std::string name;    // the full port name, unique across devices
     // Position within `device` once its ports are sorted with natural_less,
     // so capture_AUX2 is before capture_AUX10: registration order and id

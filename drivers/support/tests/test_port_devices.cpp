@@ -96,6 +96,104 @@ int test_usb_is_carried_per_port() {
     return 0;
 }
 
+// Two UMC1820s share the description "UMC1820 Pro", so pw-jack 1.4.2 gives
+// both one client name and the second node's ports "-<global id>"
+// (measured, brain/research/multichannel-usb-interfaces.md). The ids come
+// in creation order, so which unit is second can change between boots.
+std::vector<std::string> two_umcs(const char* suffix) {
+    std::vector<std::string> names;
+    for (int i = 17; i >= 0; --i) {
+        names.push_back("UMC1820 Pro:capture_AUX" + std::to_string(i));
+        names.push_back("UMC1820 Pro:capture_AUX" + std::to_string(i) + suffix);
+    }
+    return names;
+}
+
+// The key alsa_card_unit() gives: serial, then bus path. `a_first` says
+// whether unit A, serial "A", got the bare names this boot.
+std::string unit_of(const std::string& name, bool a_first) {
+    const bool suffixed = name.find('-') != std::string::npos;
+    const bool is_a = suffixed != a_first;
+    return is_a ? std::string("A\x01" "1-4:1.0") : std::string("B\x01" "1-3:1.0");
+}
+
+// Each unit is its own device, numbered from channel 0, and the unit keeps
+// its device name and channel order whichever of them enumerated first.
+int test_two_units_of_one_model_are_two_devices_on_every_boot() {
+    for (const bool a_first : {true, false}) {
+        const char* suffix = a_first ? "-48" : "-112";
+        const std::vector<PortInfo> ports = describe_ports(
+            two_umcs(suffix), nullptr,
+            [a_first](const std::string& n) { return unit_of(n, a_first); });
+        CHECK(ports.size() == 36);
+        for (uint32_t k = 0; k < 18; ++k) {
+            const PortInfo& a = ports[k];
+            const PortInfo& b = ports[18 + k];
+            CHECK(a.device == "UMC1820 Pro #1");
+            CHECK(b.device == "UMC1820 Pro #2");
+            CHECK(a.channel == k && b.channel == k);
+            CHECK(unit_of(a.name, a_first)[0] == 'A');
+            CHECK(unit_of(b.name, a_first)[0] == 'B');
+            const std::string aux = "UMC1820 Pro:capture_AUX" + std::to_string(k);
+            CHECK(a.name == (a_first ? aux : aux + suffix));
+            CHECK(b.name == (a_first ? aux + suffix : aux));
+        }
+    }
+    return 0;
+}
+
+// With two interfaces and no --device, the default policy names both and
+// records from neither, rather than taking one unit's ports, or both.
+int test_two_units_and_no_name_is_refused() {
+    const std::vector<PortInfo> ports = describe_ports(
+        two_umcs("-48"), [](const std::string&) { return true; },
+        [](const std::string& n) { return unit_of(n, true); });
+    std::vector<PortInfo> chosen;
+    std::string error;
+    CHECK(!sonora::backend::select_device(ports, "", chosen, error));
+    CHECK(error.find("\"UMC1820 Pro #1\"") != std::string::npos);
+    CHECK(error.find("\"UMC1820 Pro #2\"") != std::string::npos);
+    CHECK(sonora::backend::select_device(ports, "UMC1820 Pro #2", chosen, error));
+    CHECK(chosen.size() == 18);
+    for (const PortInfo& p : chosen) CHECK(unit_of(p.name, true)[0] == 'B');
+    return 0;
+}
+
+// Without a key (jackd2, or aliases off) the suffix still keeps the units
+// apart: the bare names are one, the suffixed ones the other, and a
+// channel never comes from the wrong unit.
+int test_without_a_key_the_suffix_splits_the_units() {
+    const std::vector<PortInfo> ports = describe_ports(two_umcs("-48"));
+    CHECK(ports.size() == 36);
+    for (uint32_t k = 0; k < 18; ++k) {
+        const std::string aux = "UMC1820 Pro:capture_AUX" + std::to_string(k);
+        CHECK(ports[k].device == "UMC1820 Pro #1");
+        CHECK(ports[k].name == aux);
+        CHECK(ports[k].channel == k);
+        CHECK(ports[18 + k].device == "UMC1820 Pro #2");
+        CHECK(ports[18 + k].name == aux + "-48");
+        CHECK(ports[18 + k].channel == k);
+    }
+    return 0;
+}
+
+// A name that ends in "-<digits>" of its own accord, with no bare twin, is
+// not a second unit; and a client with one unit keeps its bare name.
+int test_a_lone_dash_number_is_not_a_unit() {
+    const std::vector<PortInfo> ports =
+        describe_ports({"Synth:out-2", "Synth:out-1"}, nullptr,
+                       [](const std::string&) { return std::string(); });
+    CHECK(ports.size() == 2);
+    CHECK(ports[0].device == "Synth" && ports[1].device == "Synth");
+    CHECK(ports[0].name == "Synth:out-1" && ports[0].channel == 0);
+    CHECK(ports[1].name == "Synth:out-2" && ports[1].channel == 1);
+    const std::vector<PortInfo> one = describe_ports(
+        {"UMC1820 Pro:capture_AUX1", "UMC1820 Pro:capture_AUX0"}, nullptr,
+        [](const std::string&) { return std::string("A\x01" "1-4:1.0"); });
+    CHECK(one[0].device == "UMC1820 Pro" && one[1].device == "UMC1820 Pro");
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -103,6 +201,10 @@ int main() {
     if (test_a_device_is_contiguous() != 0) return 1;
     if (test_device_is_before_the_first_colon() != 0) return 1;
     if (test_usb_is_carried_per_port() != 0) return 1;
+    if (test_without_a_key_the_suffix_splits_the_units() != 0) return 1;
+    if (test_a_lone_dash_number_is_not_a_unit() != 0) return 1;
+    if (test_two_units_of_one_model_are_two_devices_on_every_boot() != 0) return 1;
+    if (test_two_units_and_no_name_is_refused() != 0) return 1;
     std::printf("test_port_devices: ok\n");
     return 0;
 }
