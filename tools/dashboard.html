@@ -42,7 +42,6 @@ h1{margin:0;font-size:18px;font-weight:700;letter-spacing:.02em}
 .gauges .g .gt{display:flex;flex-direction:column;line-height:1.2}
 .gauges .g .gl{font-size:11px;font-weight:600;color:var(--muted)}
 .gauges .g small{color:var(--faint);font-size:10px;white-space:nowrap}
-.pill{display:none}
 .clock{text-align:right}
 .clock b{display:block;font-size:20px;font-weight:500;font-variant-numeric:tabular-nums}
 .clock span{font-size:11px;color:var(--faint)}
@@ -50,168 +49,39 @@ h1{margin:0;font-size:18px;font-weight:700;letter-spacing:.02em}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);animation:blink 2s ease-in-out infinite}
 .dot.stale{background:var(--bad)}
 
-/* resumo de uma linha */
-.sumline{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin-bottom:16px}
-.sumline>div{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:10px 14px;border-top:3px solid var(--line2)}
-.sumline .k{font-size:11px;font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:.06em}
-.sumline .v{font-size:26px;font-weight:600;line-height:1.15;font-variant-numeric:tabular-nums}
-.sumline .v.t{font-size:16px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sumline .d{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sumline .a{border-top-color:var(--accent)} .sumline .o{border-top-color:var(--ok)} .sumline .w{border-top-color:var(--warn)} .sumline .r{border-top-color:var(--bad)}
-.sumline .r .v{color:var(--bad)}
-
-/* painéis */
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:4px}
-.ph{display:flex;align-items:baseline;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)}
-.ph h2{margin:0;font-size:15px;font-weight:600}
-.ph i{font:normal 12px var(--disp);color:var(--muted);margin-left:auto}
-.pb{padding:12px 14px}
-.hero{margin-bottom:16px}
-.hero .ph i{margin-left:0}
-
-/* fluxo */
-.pipe{display:flex;flex-wrap:wrap;row-gap:12px;align-items:flex-start;padding:16px 14px 12px}
-.stg{--c:var(--accent);flex:1 1 0;min-width:96px;text-align:center;cursor:pointer;background:none;border:0;color:inherit;font:inherit;padding:0 4px}
-.stg.idle{--c:var(--faint)} .stg.fix{--c:var(--bad)} .stg.q{--c:var(--ok)} .stg.ci{--c:var(--warn)} .stg.mg{--c:var(--ok)}
-.nd{width:44px;height:44px;margin:0 auto;border-radius:50%;border:2px solid var(--c);display:grid;place-items:center;font:600 18px var(--disp);color:var(--c);background:var(--sunken)}
-.stg.sel .nd{background:var(--c);color:var(--window)}
-.sl{margin-top:6px;font-size:13px;font-weight:600}
-.stg small{display:block;color:var(--faint);font-size:11px}
-.who{margin-top:5px;display:flex;flex-direction:column;gap:2px;align-items:center}
-.who span{font-size:11px;color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.who span.more{color:var(--faint)}
-.con{flex:0 0 28px;height:44px;position:relative}
-.con::before{content:"";position:absolute;left:0;right:0;top:21px;height:2px;background:var(--line2)}
-.con.off::before{opacity:.4}
-.filt{display:none;align-items:center;gap:10px;padding:0 14px 10px;font-size:12px;color:var(--warn)}
-.filt.show{display:flex}
-.filt button{font:inherit;background:none;border:1px solid var(--warn);color:var(--warn);cursor:pointer;padding:0 8px;border-radius:4px}
-
-/* seções do painel de agentes */
-.sec{border-top:1px solid var(--line);padding:10px 14px 12px}
-.sec>h4{margin:0 0 8px;font:600 13px var(--disp);color:var(--muted)}
-.sec .grid{padding:0}
-.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:8px}
-.tg{margin-left:auto;font-size:12px;color:var(--muted)}
-.note{padding:8px 14px;font-size:12px;color:var(--faint);border-top:1px solid var(--line)}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;padding:2px 14px 14px}
-.trk{--t:var(--accent);border-top:1px solid var(--line)}
-.th{display:flex;align-items:center;gap:12px;padding:8px 14px}
-.th h2{margin:0;font-size:14px;font-weight:600}
-.cnt{font-size:12px;color:var(--ink)} .rest{margin-left:auto;font-size:12px;color:var(--faint)}
-
-/* cards */
-.card{--c:var(--accent);position:relative;border:1px solid var(--line);border-left:4px solid var(--c);border-radius:4px;background:var(--raised);padding:10px 12px;min-width:0}
-.card:hover{background:var(--hover)}
-.card.working{--c:var(--accent)} .card.building{--c:var(--ok)} .card.waiting_lock,.card.waiting{--c:var(--warn)}
-.card.nowt{--c:var(--bad)} .card.done,.card.paused{--c:var(--line2);opacity:.8}
-.card .top{display:flex;flex-direction:column;align-items:flex-start;gap:1px}
-.card .state{order:2}
-.orb{display:none}
-.card h3{margin:0;font-size:14px;font-weight:600;line-height:1.3;width:100%;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
-.state{font-size:12px;font-weight:600;color:var(--c);white-space:nowrap}
-.meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:5px;color:var(--muted);font-size:12px}
-.meta .m{color:var(--faint)}
-.sg{padding:0 6px;border:1px solid var(--line2);border-radius:3px;color:var(--muted);font-size:11px}
-.idle{display:none}
+/* painéis pequenos da área técnica: mesmo idioma do topo */
+.err{color:var(--bad);margin:0 0 10px;font-size:13px}.err:empty{display:none}
 .chip{display:inline-block;padding:0 6px;font-size:11px;border:1px solid var(--line2);border-radius:3px;color:var(--accent);text-decoration:none}
-.chip.red{color:var(--bad);border-color:var(--bad)} .chip.wait{color:var(--warn);border-color:var(--warn)} .chip.ok{color:var(--ok);border-color:var(--ok)}
 a.chip:hover{background:var(--hover)}
 .mdl{font-size:11px;font-weight:600;padding:0 6px;border:1px solid var(--line2);border-radius:3px;color:var(--muted)}
 .mdl.opus{color:var(--opus);border-color:var(--opus)} .mdl.sonnet{color:var(--accent);border-color:var(--accent)}
-.card .doing{margin-top:6px;font-size:13px;line-height:1.35;color:var(--ink);display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
-.card .since{margin-top:4px;font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.rcard .tk,.tk{font-size:12px;color:var(--muted);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-
-/* fila da máquina */
-.lk{display:grid;grid-template-columns:84px minmax(0,1.4fr) 56px 70px minmax(0,2fr);gap:4px 12px;align-items:baseline;padding:6px 10px;border:1px solid var(--line);border-left:4px solid var(--warn);border-radius:4px;margin-bottom:4px;font-size:12px;background:var(--raised)}
-.lk.holds{border-left-color:var(--ok)}
-.lk .rl{font-weight:600;color:var(--warn)} .lk.holds .rl{color:var(--ok)}
-.lk .who{display:block;font:13px var(--disp);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0;color:var(--ink);max-width:none}
-.lk .cm{color:var(--faint);font-family:var(--mono);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lk.head{border:0;background:none;color:var(--faint);padding-top:0;padding-bottom:0;font-size:11px}
-details.sec>summary{cursor:pointer;font:600 13px var(--disp);color:var(--muted);padding:2px 0}
-details.done .card{padding:6px 10px;opacity:.75}
-details.done .grid{grid-template-columns:repeat(auto-fill,minmax(260px,1fr));margin-top:8px}
-
-/* secundário */
-.cols{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px}
-@media (max-width:1050px){.cols{grid-template-columns:1fr}}
-.col{display:flex;flex-direction:column;gap:16px;min-width:0}
-.row{padding:9px 14px;border-bottom:1px solid var(--line)}
-.row:last-child{border-bottom:0}
-.prh{display:flex;gap:8px;align-items:baseline}
-.train .tbar{height:6px;background:var(--raised);margin:0;border-radius:0}.train .tbar i{display:block;height:100%;background:var(--ok);transition:width .8s}
-.train .tcols{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;padding:12px 14px}
-.train .tc{border:1px solid var(--line);border-top:3px solid var(--line2);border-radius:4px;padding:8px 10px;min-width:0;background:var(--raised)}
-.train .tc h3{margin:0 0 6px;font:600 12px var(--disp);color:var(--muted);cursor:pointer;user-select:none}
-.train .tc h3::before{content:'▾ '}.train .tc.closed h3::before{content:'▸ '}.train .tc.closed .tr{display:none}
-.train .trbtns,#orchhero .trbtns{margin-left:auto;display:flex;gap:4px}
-.train .trbtns button,#orchhero .trbtns button{font:12px var(--disp);background:var(--raised);color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:2px 10px;cursor:pointer}
-.train .trbtns button:hover,#orchhero .trbtns button:hover{background:var(--hover);color:var(--ink)}
-.train.hidden .tcols,.train.hidden .tbar{display:none}
-.train .tc.g{border-top-color:var(--ok)}.train .tc.r{border-top-color:var(--bad)}.train .tc.y,.train .tc.q{border-top-color:var(--warn)}.train .tc.m{border-top-color:var(--accent)}
-.train .tr{font-size:13px;color:var(--ink);padding:3px 0;overflow-wrap:anywhere}.train .tr .st{color:var(--muted);font-size:12px}
-.prn{color:var(--accent);text-decoration:none;font-weight:600}
-a.prn:hover,a.prt:hover{text-decoration:underline}
-.prt{font-weight:500;font-size:14px;flex:1;min-width:0;color:var(--ink);text-decoration:none}
-.br{font-size:11px;color:var(--faint);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.br .conf{color:var(--bad)}
-.seg{display:flex;height:4px;gap:2px;margin:8px 0 5px;background:var(--raised)}
-.seg i{display:block;height:100%}
-.seg .p{background:var(--ok)} .seg .r{background:var(--warn)} .seg .f{background:var(--bad)}
-.det{font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:3px 14px}
-.det .bad{color:var(--bad)} .det .wait{color:var(--warn)} .det .good{color:var(--ok)}
-.tag{font-size:11px;font-weight:600;padding:0 6px;border:1px solid;border-radius:3px;white-space:nowrap}
-.tag.q{color:var(--ok)} .tag.n{color:var(--warn)} .tag.d{color:var(--bad)}
-.crow{display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;align-items:center}
-.crow .id{font:11.5px var(--mono);color:var(--faint)}
-.empty{padding:12px;color:var(--faint);text-align:center;font-size:12px}
-.err{color:var(--bad);margin:0 0 10px;font-size:12px}
-.err:empty{display:none}
-.log{font:12px/1.7 var(--mono);max-height:230px;overflow:hidden;padding:8px 14px}
+.prn{color:var(--accent);text-decoration:none;font-weight:600}a.prn:hover{text-decoration:underline}
+.empty{padding:10px;color:var(--faint);font-size:13px}
+.tgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:12px}
+.tp{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px 14px;min-width:0}
+.tp.wide{grid-column:1/-1}
+.tp h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:10px}
+.tp h3 small{font-size:12px;font-weight:400;color:var(--faint);margin-left:auto}
+.stats{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}
+.stat{background:var(--raised);border:1px solid var(--line);border-radius:4px;padding:6px 12px;min-width:140px}
+.stat b{display:block;font-size:20px;font-weight:600}.stat span{font-size:12px;color:var(--muted)}
+.banner{border:1px solid var(--warn);color:var(--warn);border-radius:4px;padding:6px 10px;font-size:13px;margin-bottom:10px}
+.banner.bad{border-color:var(--bad);color:var(--bad);background:var(--badbg)}
+.pools{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+.pool{display:flex;gap:10px;align-items:center;background:var(--raised);border:1px solid var(--line);border-left:4px solid var(--ok);border-radius:4px;padding:8px 10px}
+.pool.paused{border-left-color:var(--line2);opacity:.7}.pool.low{border-left-color:var(--warn)}
+.pool .pa{flex:none}.pool b{display:block;font-size:13px}.pool span{font-size:12px;color:var(--muted)}
+.trow{display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--line);font-size:13px}
+.trow:first-child{border-top:0}.trow .tt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trow small{color:var(--faint);font-size:12px}
+.log{font:12px/1.7 var(--mono);max-height:260px;overflow:auto}
 .log div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
 .log time{color:var(--faint);margin-right:8px}
 .log .ok{color:var(--ok)} .log .warn{color:var(--warn)} .log .bad{color:var(--bad)} .log .info{color:var(--accent)}
-.owner{margin-top:8px;border:1px solid var(--warn);border-radius:4px;padding:6px 10px;color:var(--warn);font-size:13px}
-.owner li{margin-left:14px}.owner ul{margin:4px 0 0;padding:0}
-
-/* orquestrador */
-.ob{font:600 12px var(--disp);padding:1px 10px;border:1px solid var(--c,var(--accent));border-radius:3px;color:var(--c,var(--accent))}
-.ob.live{--c:var(--ok)} .ob.shadow{--c:var(--warn)} .ob.off{--c:var(--faint)}
-.ohead{display:flex;flex-wrap:wrap;align-items:center;gap:6px 22px;padding:10px 14px;font-size:13px;color:var(--muted)}
-.ohead b{color:var(--ink);font-weight:600;font-size:15px}
-.ohead .ks{color:var(--bad);border:1px solid var(--bad);border-radius:3px;padding:0 8px;font-size:12px}
-.capbar{display:flex;gap:2px;width:150px}.capbar i{flex:1;height:8px;border:1px solid var(--line2)}.capbar i.on{background:var(--accent);border-color:var(--accent)}
-.pools{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:0 14px 10px}
-.pl{border:1px solid var(--line);border-radius:4px;background:var(--raised);padding:7px 10px;--c:var(--accent)}
-.pl.low{--c:var(--warn)} .pl.zero{--c:var(--bad)} .pl.paused{--c:var(--faint);opacity:.65} .pl.nofloor{--c:var(--faint)}
-.pl .pn{font-size:12px;font-weight:600;color:var(--muted)}
-.pl .pv{font-size:18px;font-weight:600;color:var(--c)}
-.pl .pv small{font-size:11px;color:var(--faint);font-weight:400}
-.pl .bar{height:3px;background:var(--line);margin-top:4px}.pl .bar i{display:block;height:100%;background:var(--c)}
-.pl .why{font-size:11px;color:var(--faint);margin-top:3px;min-height:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.kan{display:flex;flex-wrap:wrap;gap:8px;padding:8px 0 4px;align-items:flex-start}
-.kan .kc{flex:1 1 118px}.kan .kc .kh{cursor:pointer;user-select:none}.kan .kc .kh::before{content:'▾ '}
-.kan .kc.closed{flex:0 0 34px}.kan .kc.closed>:not(.kh){display:none}.kan .kc.closed .kh{writing-mode:vertical-rl;white-space:nowrap}.kan .kc.closed .kh::before{content:'▸ '}
-.kc{min-width:0;--c:var(--accent)}
-.kc.s-queued{--c:var(--faint)} .kc.s-planning{--c:var(--opus)} .kc.s-pr_open,.kc.s-ci_fix{--c:var(--warn)} .kc.s-merged{--c:var(--ok)} .kc.s-blocked{--c:var(--bad)}
-.kc.sep{margin-left:10px;border-left:1px dashed var(--line2);padding-left:10px}
-.kh{display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid var(--c);padding-bottom:3px;margin-bottom:6px;font-size:12px;font-weight:600;color:var(--c)}
-.fc{border:1px solid var(--line);border-left:3px solid var(--c);border-radius:4px;background:var(--raised);padding:6px 8px;margin-bottom:6px}
-.fc .fn{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fc .fm{font-size:11px;color:var(--faint);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.fc .fm.bad,.fc .fm .bad{color:var(--bad)}
-.strip{display:flex;gap:2px;margin-top:5px}
-.strip i{flex:1;height:5px;background:var(--line2);max-width:26px}
-.strip i.done{background:var(--ok)} .strip i.doing{background:var(--accent)} .strip i.block{background:var(--warn)}
-.owner.big{margin:10px 14px 0;padding:10px 14px;font-size:14px;border-width:2px;background:var(--badbg);border-color:var(--bad);color:var(--ink)}
-.owner.big h3{margin:0 0 4px;font-size:14px;color:var(--bad)}
-.feat{padding:8px 0;border-top:1px solid var(--line)}
-.leg{border-top:1px solid var(--line)}
-footer{color:var(--faint);font-size:11px;margin-top:2px}
-:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-
+.owner li{margin:4px 0 4px 16px}.owner ul{margin:0;padding:0;font-size:14px}
+body.gal main>*:not(#gal){display:none}#gal{display:none}body.gal #gal{display:block}
+.gal-row{display:flex;gap:10px;align-items:center;margin-bottom:10px}.gal-row b{width:120px}
+.gal-row .pa{padding:2px}
 /* visão simples */
 .sit{font-size:14px;line-height:1.5;font-weight:500;padding:8px 12px;margin-bottom:8px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:4px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
 .sit b{font-weight:700;color:var(--accent)}
@@ -316,10 +186,10 @@ details.tech[open]>summary{margin-bottom:12px}
   <header class="topbar">
     <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4Ij48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMWYyMzI5Ii8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMTIxNDE3Ii8+PC9saW5lYXJHcmFkaWVudD4NCjxsaW5lYXJHcmFkaWVudCBpZD0icyIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzdmZTBkMiIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzNmYzFiMCIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPg0KPHJlY3QgeD0iNCIgeT0iNCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMjAiIHJ4PSIyNiIgZmlsbD0idXJsKCNiZykiIHN0cm9rZT0iIzJhMmYzNiIgc3Ryb2tlLXdpZHRoPSIyIi8+PHBhdGggZD0iTTg4LjAwLDIyLjAwIEw4Ny45NiwyMi4zNCBMODcuODMsMjIuNjcgTDg3LjYzLDIzLjAxIEw4Ny4zNCwyMy4zNSBMODYuOTcsMjMuNjkgTDg2LjUyLDI0LjAyIEw4NS45OSwyNC4zNiBMODUuMzgsMjQuNzAgTDg0LjcxLDI1LjA0IEw4My45NiwyNS4zOCBMODMuMTQsMjUuNzEgTDgyLjI1LDI2LjA1IEw4MS4zMCwyNi4zOSBMODAuMjksMjYuNzMgTDc5LjIzLDI3LjA2IEw3OC4xMSwyNy40MCBMNzYuOTQsMjcuNzQgTDc1LjczLDI4LjA3IEw3NC40NywyOC40MSBMNzMuMTgsMjguNzUgTDcxLjg2LDI5LjA5IEw3MC41MSwyOS40MyBMNjkuMTQsMjkuNzYgTDY3Ljc1LDMwLjEwIEw2Ni4zNSwzMC40NCBMNjQuOTQsMzAuNzcgTDYzLjUzLDMxLjExIEw2Mi4xMiwzMS40NSBMNjAuNzEsMzEuNzkgTDU5LjMyLDMyLjEyIEw1Ny45NCwzMi40NiBMNTYuNTgsMzIuODAgTDU1LjI1LDMzLjE0IEw1My45NSwzMy40OCBMNTIuNjksMzMuODEgTDUxLjQ2LDM0LjE1IEw1MC4yOCwzNC40OSBMNDkuMTQsMzQuODMgTDQ4LjA2LDM1LjE2IEw0Ny4wMywzNS41MCBMNDYuMDYsMzUuODQgTDQ1LjE1LDM2LjE3IEw0NC4zMSwzNi41MSBMNDMuNTQsMzYuODUgTDQyLjgzLDM3LjE5IEw0Mi4yMCwzNy41MiBMNDEuNjUsMzcuODYgTDQxLjE3LDM4LjIwIEw0MC43OCwzOC41NCBMNDAuNDYsMzguODggTDQwLjIzLDM5LjIxIEw0MC4wNywzOS41NSBMNDAuMDAsMzkuODkgTDQwLjAyLDQwLjIzIEw0MC4xMiw0MC41NiBMNDAuMzAsNDAuOTAgTDQwLjU2LDQxLjI0IEw0MC45MCw0MS41OCBMNDEuMzIsNDEuOTEgTDQxLjgzLDQyLjI1IEw0Mi40MSw0Mi41OSBMNDMuMDYsNDIuOTIgTDQzLjc5LDQzLjI2IEw0NC41OCw0My42MCBMNDUuNDUsNDMuOTQgTDQ2LjM4LDQ0LjI3IEw0Ny4zNyw0NC42MSBMNDguNDEsNDQuOTUgTDQ5LjUxLDQ1LjI5IEw1MC42Nyw0NS42MiBMNTEuODYsNDUuOTYgTDUzLjEwLDQ2LjMwIEw1NC4zOCw0Ni42NCBMNTUuNjksNDYuOTggTDU3LjAzLDQ3LjMxIEw1OC40MCw0Ny42NSBMNTkuNzgsNDcuOTkgTDYxLjE4LDQ4LjMzIEw2Mi41OSw0OC42NiBMNjQuMDAsNDkuMDAgTDY1LjQxLDQ5LjM0IEw2Ni44Miw0OS42NyBMNjguMjIsNTAuMDEgTDY5LjYwLDUwLjM1IEw3MC45Nyw1MC42OSBMNzIuMzEsNTEuMDMgTDczLjYyLDUxLjM2IEw3NC45MCw1MS43MCBMNzYuMTQsNTIuMDQgTDc3LjMzLDUyLjM4IEw3OC40OSw1Mi43MSBMNzkuNTksNTMuMDUgTDgwLjYzLDUzLjM5IEw4MS42Miw1My43MiBMODIuNTUsNTQuMDYgTDgzLjQyLDU0LjQwIEw4NC4yMSw1NC43NCBMODQuOTQsNTUuMDggTDg1LjU5LDU1LjQxIEw4Ni4xNyw1NS43NSBMODYuNjgsNTYuMDkgTDg3LjEwLDU2LjQyIEw4Ny40NCw1Ni43NiBMODcuNzAsNTcuMTAgTDg3Ljg4LDU3LjQ0IEw4Ny45OCw1Ny43OCBMODguMDAsNTguMTEgTDg3LjkzLDU4LjQ1IEw4Ny43Nyw1OC43OSBMODcuNTQsNTkuMTIgTDg3LjIyLDU5LjQ2IEw4Ni44Myw1OS44MCBMODYuMzUsNjAuMTQgTDg1LjgwLDYwLjQ4IEw4NS4xNyw2MC44MSBMODQuNDYsNjEuMTUgTDgzLjY5LDYxLjQ5IEw4Mi44NSw2MS44MyBMODEuOTQsNjIuMTYgTDgwLjk3LDYyLjUwIEw3OS45NCw2Mi44NCBMNzguODYsNjMuMTggTDc3LjcyLDYzLjUxIEw3Ni41NCw2My44NSBMNzUuMzEsNjQuMTkgTDc0LjA1LDY0LjUzIEw3Mi43NSw2NC44NiBMNzEuNDIsNjUuMjAgTDcwLjA2LDY1LjU0IEw2OC42OCw2NS44OCBMNjcuMjksNjYuMjEgTDY1Ljg4LDY2LjU1IEw2NC40Nyw2Ni44OSBMNjMuMDYsNjcuMjIgTDYxLjY1LDY3LjU2IEw2MC4yNSw2Ny45MCBMNTguODYsNjguMjQgTDU3LjQ5LDY4LjU3IEw1Ni4xNCw2OC45MSBMNTQuODIsNjkuMjUgTDUzLjUzLDY5LjU5IEw1Mi4yNyw2OS45MyBMNTEuMDYsNzAuMjYgTDQ5Ljg5LDcwLjYwIEw0OC43Nyw3MC45NCBMNDcuNzEsNzEuMjggTDQ2LjcwLDcxLjYxIEw0NS43NSw3MS45NSBMNDQuODYsNzIuMjkgTDQ0LjA0LDcyLjYyIEw0My4yOSw3Mi45NiBMNDIuNjIsNzMuMzAgTDQyLjAxLDczLjY0IEw0MS40OCw3My45NyBMNDEuMDMsNzQuMzEgTDQwLjY2LDc0LjY1IEw0MC4zNyw3NC45OSBMNDAuMTcsNzUuMzIgTDQwLjA0LDc1LjY2IEw0MC4wMCw3Ni4wMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ1cmwoI3MpIiBzdHJva2Utd2lkdGg9IjE0IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48cmVjdCB4PSIxMi4xMCIgeT0iOTcuNTgiIHdpZHRoPSIzIiBoZWlnaHQ9IjIuODUiIHJ4PSIxLjUiIGZpbGw9IiM0Y2MzOGEiLz48cmVjdCB4PSIxNi45MCIgeT0iOTYuNjIiIHdpZHRoPSIzIiBoZWlnaHQ9IjQuNzUiIHJ4PSIxLjUiIGZpbGw9IiM0Y2MzOGEiLz48cmVjdCB4PSIyMS43MCIgeT0iOTUuMjAiIHdpZHRoPSIzIiBoZWlnaHQ9IjcuNjAiIHJ4PSIxLjUiIGZpbGw9IiM0Y2MzOGEiLz48cmVjdCB4PSIyNi41MCIgeT0iOTYuNjIiIHdpZHRoPSIzIiBoZWlnaHQ9IjQuNzUiIHJ4PSIxLjUiIGZpbGw9IiM0Y2MzOGEiLz48cmVjdCB4PSIzMS4zMCIgeT0iOTMuNzgiIHdpZHRoPSIzIiBoZWlnaHQ9IjEwLjQ1IiByeD0iMS41IiBmaWxsPSIjNGNjMzhhIi8+PHJlY3QgeD0iMzYuMTAiIHk9IjkxLjQwIiB3aWR0aD0iMyIgaGVpZ2h0PSIxNS4yMCIgcng9IjEuNSIgZmlsbD0iIzNmYzFiMCIvPjxyZWN0IHg9IjQwLjkwIiB5PSI5NC43MiIgd2lkdGg9IjMiIGhlaWdodD0iOC41NSIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9IjQ1LjcwIiB5PSI5Ni4xNSIgd2lkdGg9IjMiIGhlaWdodD0iNS43MCIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9IjUwLjUwIiB5PSI5Mi44MyIgd2lkdGg9IjMiIGhlaWdodD0iMTIuMzUiIHJ4PSIxLjUiIGZpbGw9IiMzZmMxYjAiLz48cmVjdCB4PSI1NS4zMCIgeT0iODkuOTciIHdpZHRoPSIzIiBoZWlnaHQ9IjE4LjA1IiByeD0iMS41IiBmaWxsPSIjM2ZjMWIwIi8+PHJlY3QgeD0iNjAuMTAiIHk9IjkzLjMwIiB3aWR0aD0iMyIgaGVpZ2h0PSIxMS40MCIgcng9IjEuNSIgZmlsbD0iIzNmYzFiMCIvPjxyZWN0IHg9IjY0LjkwIiB5PSI5NS42NyIgd2lkdGg9IjMiIGhlaWdodD0iNi42NSIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9IjY5LjcwIiB5PSI5NC43MiIgd2lkdGg9IjMiIGhlaWdodD0iOC41NSIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9Ijc0LjUwIiB5PSI5MS44OCIgd2lkdGg9IjMiIGhlaWdodD0iMTQuMjUiIHJ4PSIxLjUiIGZpbGw9IiMzZmMxYjAiLz48cmVjdCB4PSI3OS4zMCIgeT0iODkuMDMiIHdpZHRoPSIzIiBoZWlnaHQ9IjE5Ljk1IiByeD0iMS41IiBmaWxsPSIjM2ZjMWIwIi8+PHJlY3QgeD0iODQuMTAiIHk9IjkyLjM1IiB3aWR0aD0iMyIgaGVpZ2h0PSIxMy4zMCIgcng9IjEuNSIgZmlsbD0iIzNmYzFiMCIvPjxyZWN0IHg9Ijg4LjkwIiB5PSI5NC43MiIgd2lkdGg9IjMiIGhlaWdodD0iOC41NSIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9IjkzLjcwIiB5PSI5Ni4xNSIgd2lkdGg9IjMiIGhlaWdodD0iNS43MCIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9Ijk4LjUwIiB5PSI5NC4yNSIgd2lkdGg9IjMiIGhlaWdodD0iOS41MCIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9IjEwMy4zMCIgeT0iOTUuMjAiIHdpZHRoPSIzIiBoZWlnaHQ9IjcuNjAiIHJ4PSIxLjUiIGZpbGw9IiM0Y2MzOGEiLz48cmVjdCB4PSIxMDguMTAiIHk9Ijk2LjYyIiB3aWR0aD0iMyIgaGVpZ2h0PSI0Ljc1IiByeD0iMS41IiBmaWxsPSIjNGNjMzhhIi8+PHJlY3QgeD0iMTEyLjkwIiB5PSI5Ny41OCIgd2lkdGg9IjMiIGhlaWdodD0iMi44NSIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjwvc3ZnPg==" alt="Sonora" width="44" height="44" style="margin-right:10px;vertical-align:middle"><div><h1>Sonora · painel de trabalho</h1><div class="sub" id="sub">conectando</div></div>
     <div class="gauges" id="usage"></div>
-    <div class="pill" id="pill"></div>
     <div class="live" style="margin-left:auto"><span class="dot" id="dot"></span><span id="livetxt">sincronizando</span></div>
     <div class="clock"><b id="clock">--:--:--</b><span id="date"></span></div>
   </header>
+  <p class="err" id="err"></p>
   <div class="sit" id="sit">Carregando...</div>
   <h2 class="h2">Agentes</h2>
   <div class="people sm" id="people"></div>
@@ -328,58 +198,27 @@ details.tech[open]>summary{margin-bottom:12px}
   <div class="mach" id="mach"></div>
   <h2 class="h2">Fluxo de construção <span class="hint" id="prhint"></span></h2>
   <div class="flow" id="flow"></div>
-  <details class="tech" id="tech"><summary>Detalhes técnicos <span class="hint">pools do orquestrador, backlog, colunas do merge, eventos, containers</span></summary>
-  <p class="err" id="err"></p>
-
-  <section class="panel hero" aria-label="Agentes">
-    <div class="ph"><h2>Agentes (visão técnica)</h2><i id="agcount"></i></div>
-    <div class="ohead" id="agsum"></div>
-    <div class="sec"><h4>Agentes desta sessão</h4><div id="sesag"></div></div>
-    <div class="sec"><h4>Máquina de build: quem usa e quem espera (um de cada vez)</h4><div id="lockbox"></div></div>
-    <div class="sec"><h4>Orquestrador automático</h4><div id="oruns"></div></div>
-    <details class="sec done" id="doneag"><summary></summary><div class="grid" id="donegrid"></div></details>
-  </section>
-
-  <section class="panel hero" id="orchhero" aria-label="Orquestrador" hidden>
-    <div class="ph"><h2>Orquestrador</h2><span class="ob off" id="omode">-</span><i id="orchmeta"></i>
-      <span class="trbtns"><button type="button" id="okgrp" onclick="okFlag('group')">Agrupar por fase</button><button type="button" id="okemp" onclick="okFlag('hideEmpty')">Esconder vazias</button><button type="button" id="okall" onclick="okAll()">Recolher tudo</button></span></div>
-    <div id="owaits"></div>
-    <div class="ohead" id="ohead"></div>
-    <div class="pools" id="opools"></div>
-    <details class="sec" id="okdet"><summary id="oksum">Backlog de features</summary><div class="kan" id="okan"></div></details>
-  </section>
-
-  <section class="panel hero train" aria-label="Fila de merge">
-    <div class="ph"><h2>Fila de merge: PRs abertos</h2><i id="trmeta"></i>
-      <span class="trbtns"><button type="button" id="trall" onclick="trAll()">Recolher tudo</button><button type="button" id="trpanel" onclick="trPanel()">Ocultar painel</button></span></div>
-    <div class="tbar"><i id="trbar" style="width:0"></i></div>
-    <div class="tcols" id="trcols"></div>
-  </section>
-
-  <section class="panel hero" id="pipehero" aria-label="Fluxo de trabalho">
-    <div class="ph"><h2>Fluxo de trabalho</h2><i id="pipemeta">clique numa etapa para filtrar</i></div>
-    <div class="pipe" id="pipe"></div>
-    <div class="filt" id="filt"><span id="filttxt"></span><button id="filtx" type="button">limpar filtro</button></div>
-  </section>
-
-  <div class="cols">
-    <section class="col">
-      <div class="panel"><div class="ph"><h2>O que mudou</h2><i>eventos recentes</i></div><div class="log" id="log"><div class="info">aguardando eventos</div></div></div>
-      <div class="panel"><div class="ph"><h2>PRs abertos</h2><i id="prcount"></i></div><div id="prs"></div></div>
-    </section>
-    <aside class="col">
-      <div class="panel"><div class="ph"><h2>Merges automáticos armados</h2><i id="wcount"></i></div><div id="ws"></div></div>
-      <div class="panel"><div class="ph"><h2>Containers</h2><i id="ccount"></i></div><div id="cs"></div></div>
-      <footer>O estado de cada agente vem do JSON do coordenador e da fila da máquina (build-slot.sh --list). Clique num card para ver o detalhe.</footer>
-    </aside>
+  <details class="tech" id="tech"><summary>Detalhes técnicos <span class="hint">limites do orquestrador, espera do dono, eventos, merges armados, containers</span></summary>
+  <div class="tgrid">
+    <section class="tp wide"><h3>Orquestrador: limites e filas <small id="tmeta"></small></h3><div id="tlimits"></div><div class="pools" id="tpools"></div></section>
+    <section class="tp" id="townerp"><h3>Espera o dono</h3><div id="towner"></div></section>
+    <section class="tp"><h3>O que mudou <small>eventos recentes</small></h3><div class="log" id="log"><div class="info">aguardando eventos</div></div></section>
+    <section class="tp"><h3>Merges automáticos armados <small id="wcount"></small></h3><div id="ws"></div></section>
+    <section class="tp"><h3>Containers <small id="ccount"></small></h3><div id="cs"></div></section>
   </div>
-</details>
+  </details>
+  <div id="gal"></div>
 </main>
 <script>
-/* não reescreve o DOM quando o HTML é idêntico: um clique cujo alvo foi trocado entre o botão
-   descer e subir se perde, e a lista é redesenhada a cada poucos segundos */
+/* não reescreve o DOM quando o HTML é idêntico, e guarda o aberto/fechado de cada <details>
+   (data-key ou id) entre redesenhos: a lista é refeita a cada poucos segundos */
 if(typeof Element!=='undefined'){const d=Object.getOwnPropertyDescriptor(Element.prototype,'innerHTML');
-  Object.defineProperty(Element.prototype,'innerHTML',{get(){return d.get.call(this)},set(v){if(this._h===v)return;this._h=v;d.set.call(this,v)}})}
+  const key=(el,i)=>el.id||el.dataset.key||('i'+i);
+  Object.defineProperty(Element.prototype,'innerHTML',{get(){return d.get.call(this)},set(v){
+    if(this._h===v)return;this._h=v;
+    const open={};this.querySelectorAll('details').forEach((x,i)=>{open[key(x,i)]=x.open});
+    d.set.call(this,v);
+    this.querySelectorAll('details').forEach((x,i)=>{const k=key(x,i);if(k in open)x.open=open[k]})}})}
 const $=id=>document.getElementById(id);
 const E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dur=s=>s==null?'sem sinal':s<90?s+' s':s<5400?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h';
@@ -387,14 +226,7 @@ const NAME={building:'usando a máquina',waiting_lock:'esperando a máquina',wor
 const CLS=s=>s==='no worktree'?'nowt':s;
 const ORDER={working:0,building:1,waiting_lock:2,waiting:2,'no worktree':2,paused:3,done:4,unknown:5};
 const PRURL='https://github.com/alesimoes/sonora-os/pull/';
-/* trilhas: chave, nome, meta, classe, regex */
-const TRACKS=[['daw','DAW',8,'',/daw/i],['os','OS',4,'os',/(^|[^a-z])os([^a-z]|$)|packag|iso|distro/i],['pl','Plugins',2,'pl',/plugin/i],['hx','Harness',0,'hx',/./]];
-const trackOf=a=>TRACKS.find(t=>t[4].test(a.track||''))||TRACKS[3];
-/* etapas do processo */
-const STAGES=[['plan','Planejar','arquiteto / líder',''],['code','Codificar','agente trabalhando',''],['build','Build/Testes','container montado',''],
-  ['pr','PR aberto','sem CI rodando',''],['ci','CI','checks rodando','ci'],['fix','Correção','check vermelho','fix'],
-  ['queue','Fila de merge','watcher, verde','q'],['merge','Merge','saiu da lista','mg']];
-let lastOk=0,lastState=null,selStage=null;
+let lastOk=0,lastState=null;
 const until=t=>{if(!t)return '';const s=Math.max(0,Math.round(t-Date.now()/1000));const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+'d '+h+'h':h?h+'h '+m+'min':m+' min'};
 
 function clock(){const d=new Date();$('clock').textContent=d.toLocaleTimeString('pt-BR');$('date').textContent=d.toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'short',year:'numeric'})}
@@ -432,132 +264,70 @@ function diff(s){
   gone=gone.filter(g=>Date.now()-g.t<15*60e3);
   prev=cur}
 
-/* etapa vinda do orquestrador (status.json): tasks[].stage com pr, quando existir */
-function orchStages(o){const m={};if(!o||typeof o!=='object')return m;
-  const feats=Array.isArray(o.features)?o.features:Object.values(o.features||{});
-  const map=v=>{v=String(v||'').toLowerCase();
-    return /plan|design|arquit/.test(v)?'plan':/fix|corre|repair/.test(v)?'fix':/queue|fila|watch/.test(v)?'queue':/merg/.test(v)?'merge':/\bci\b|check/.test(v)?'ci':/build|test/.test(v)?'build':/open|\bpr\b/.test(v)?'pr':/cod|impl|work|doing|progress/.test(v)?'code':null};
-  feats.forEach(f=>{const pr0=f&&f.pr;(Array.isArray(f&&f.tasks)?f.tasks:[]).forEach(t=>{
-    if(!t||typeof t!=='object')return;const st=map(t.stage),pr=t.pr||pr0;if(st&&pr)m[pr]=st})});
-  return m}
-
-/* etapa de cada PR e de cada agente */
-function prStage(p,watch,orch){
-  if(p.failed.length)return 'fix';
-  if(p.pending.length)return 'ci';
-  if(watch[p.number])return 'queue';
-  return orch[p.number]||'pr'}
-function agentStage(a,prs,watch,orch){
-  if(['done','paused'].includes(a.state))return null;
-  const p=a.pr&&prs[a.pr];
-  if(p)return orch[a.pr]&&!p.failed.length&&!p.pending.length&&!watch[a.pr]?orch[a.pr]:prStage(p,watch,orch);
-  if(a.pr&&orch[a.pr])return orch[a.pr];
-  if(a.state==='building')return 'build';
-  if(a.state==='working')return /fix|corre/i.test(a.label)?'fix':/architect|arquit|planej|plan\b|lead|l[ií]der/i.test(a.label)?'plan':'code';
-  return null}
-
-/* Colunas do merge train recolhíveis; o estado sobrevive ao refresh. */
-const TRK='sonora.train.closed';
-let trClosed=new Set(JSON.parse(localStorage.getItem(TRK)||'[]'));
-const trSave=()=>localStorage.setItem(TRK,JSON.stringify([...trClosed]));
-function trCol(c,h,a,empty){
-  return `<div class="tc ${c}${trClosed.has(h)?' closed':''}" data-h="${E(h)}"><h3 onclick="trToggle(this.parentNode)">${h} · ${a.length}</h3>${a.map(x=>`<div class="tr">${x}</div>`).join('')||`<div class="tr">${empty||'-'}</div>`}</div>`}
-function trToggle(el){const h=el.dataset.h;el.classList.toggle('closed')?trClosed.add(h):trClosed.delete(h);trSave();trAllLabel()}
-/* Um botão só: recolhe tudo se alguma coluna está aberta, senão expande. */
-function trAllLabel(){const cs=[...document.querySelectorAll('#trcols .tc')],b=$('trall');
-  if(b)b.textContent=cs.length&&cs.every(el=>el.classList.contains('closed'))?'Expandir tudo':'Recolher tudo'}
-function trAll(){const cs=[...document.querySelectorAll('#trcols .tc')],close=!cs.every(el=>el.classList.contains('closed'));
-  cs.forEach(el=>{el.classList.toggle('closed',close);close?trClosed.add(el.dataset.h):trClosed.delete(el.dataset.h)});trSave();trAllLabel()}
-function trPanel(){const p=document.querySelector('section.train'),hid=p.classList.toggle('hidden');$('trpanel').textContent=hid?'Mostrar painel':'Ocultar painel';localStorage.setItem(TRK+'.panel',hid?'1':'')}
-addEventListener('DOMContentLoaded',()=>{if(localStorage.getItem(TRK+'.panel'))trPanel();const t=$('tech');if(localStorage.getItem('sonora.tech'))t.open=true;t.addEventListener('toggle',()=>localStorage.setItem('sonora.tech',t.open?'1':''))});
-
-/* Merge train do orquestrador (status.json .train): quem cuida de cada PR e
-   qual o próximo passo. Sem orquestrador, cai no cálculo local abaixo. */
-function renderOrchTrain(s,tr){
-  const L=n=>`<a class="prn" href="${PRURL}${n}" target="_blank" rel="noopener">#${n}</a>`;
-  const merged=s.merged||[],o=s.orchestrator||{};
-  const C={merge:[],ci:[],ref:[],vaga:[],fix:[],stack:[],blk:[],bun:[]};
-  const row=(r,extra)=>`<span class="clk" data-k="pr" data-id="${r.pr}">${L(r.pr)} ${E((r.title||'').slice(0,40))}<div class="st">${extra}</div></span>`;
-  tr.forEach(r=>{
-    const ph=r.phase||'',nx=E(r.next||''),who=r.fixer?`<b>${E(r.fixer)}</b> (${E(r.agent||'')}) trabalhando`:'';
-    if(ph==='juntando'){C.bun.push(`<b>${E(r.title||'bundle')}</b><div class="st">${who||'aguarda integrator'} · ${nx}</div>`);return}
-    if(ph==='no bundle')return;
-    if(r.state==='ci_fix'||ph==='fixer'||ph==='conflito')C.fix.push(row(r,(who||'aguarda agente livre ('+E(r.agent||'')+')')+' · '+(ph==='conflito'?'conflito com a main':'vermelho: '+E((r.failing||[]).slice(0,2).join(', ')))));
-    else if(ph==='empilhado'||ph==='retarget')C.stack.push(row(r,nx));
-    else if(ph==='aguardando vaga')C.vaga.push(row(r,'vermelho/cancelado: '+E((r.failing||[]).slice(0,2).join(', '))));
-    else if(ph==='atualizado'||ph==='rerodando')C.ref.push(row(r,E(r.last_action||'')+' · '+nx));
-    else if(ph==='CI rodando')C.ci.push(row(r,`CI ${r.passed??'?'}/${r.total??'?'}`));
-    else if(ph==='mergeado'||r.state==='merged')return;
-    else if(ph==='verde')C.merge.push(row(r,nx||'merge'));
-    else if(ph==='bloqueado'||ph==='fechado'||r.state==='blocked')C.blk.push(row(r,nx||'decisão do owner'));
-    else C.ci.push(row(r,nx||ph))});
-  const open=tr.filter(r=>r.state!=='merged').length,n=merged.length,tot=n+open;
-  const live=(o.runs||[]).length;
-  // status.json stops changing when the daemon is down: say so instead of
-  // showing the last state as current.
-  const age=o.updated_ts?Date.now()/1000-o.updated_ts:0;
-  const stale=age>120?`ORQUESTRADOR PARADO desde ${new Date(o.updated_ts*1000).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})} (painel congelado) · `:'';
-  $('trmeta').textContent=stale+`${n} mergeados hoje · ${open} no trem · ${live} agente(s) do orquestrador · CI: ${C.ci.length+C.ref.length}/${o.train_slots||'?'} vagas`+(o.gh_paused_until?' · GitHub rate limit: pausado':'');
-  $('trmeta').style.color=stale?'var(--red)':'';
-  $('trbar').style.width=(tot?100*n/tot:0)+'%';
-  const col=trCol;
-  const last=merged.slice(0,8).map(p=>`${L(p.number)} ${E(p.title).slice(0,36)}`);
-  if(merged.length>8)last.push(`+${merged.length-8} antes`);
-  $('trcols').innerHTML=col('m','Mergeados hoje',last)+col('q','Bundles juntando PRs',C.bun)+col('g','Verde → merge',C.merge)
-    +col('y','CI rodando',C.ci)+col('y','Refresh sem agente',C.ref)+col('x','Aguardando vaga no CI',C.vaga)
-    +col('r','Agente corrigindo',C.fix)+col('q','Empilhado',C.stack)+col('r','Bloqueado (owner)',C.blk);trAllLabel()}
-
-function renderTrain(s){
-  const tr=s.orchestrator&&Array.isArray(s.orchestrator.train)?s.orchestrator.train:null;
-  if(tr&&tr.length)return renderOrchTrain(s,tr);
-  const L=n=>`<a class="prn" href="${PRURL}${n}" target="_blank" rel="noopener">#${n}</a>`;
-  const open=s.prs,merged=s.merged||[];
-  const byBranch=Object.fromEntries(open.map(p=>[p.branch,p]));
-  const B={g:[],y:[],r:[],x:[],q:[],m:[]};
-  open.forEach(p=>{
-    const t=E(p.title).slice(0,48);
-    if(p.base&&p.base!=='main'){const w=byBranch[p.base];B.q.push(`${L(p.number)} ${w?'aguarda '+L(w.number):'base '+E(p.base)}`);return}
-    if(p.mergeable==='CONFLICTING'||p.merge==='DIRTY'){B.m.push(`${L(p.number)} ${t}`);return}
-    if(p.failed.length){
-      const det=(p.failed_details||[]).filter(d=>d.conclusion!=='CANCELLED');
-      if(p.cancelled&&p.cancelled.length===p.failed.length){B.x.push(`${L(p.number)} ${t} <span class="st">(${p.cancelled.length} cancelados)</span>`);return}
-      B.r.push(`${L(p.number)} ${det.map(d=>E(d.name)+(d.step?` <span class="st">› ${E(d.step)}</span>`:'')).join('; ')||E(p.failed.join(', '))}`);return}
-    if(p.pending.length){B.y.push(`${L(p.number)} ${p.passed}/${p.total||p.passed+p.pending.length} ${t}`);return}
-    if(!p.total){B.x.push(`${L(p.number)} sem run`);return}
-    B.g.push(`${L(p.number)} ${t}`)});
-  const n=merged.length,tot=n+open.length;
-  $('trmeta').textContent=n+' mergeados hoje de '+tot+' ('+(tot?Math.round(100*n/tot):0)+'%)';
-  $('trbar').style.width=(tot?100*n/tot:0)+'%';
-  const col=trCol;
-  $('trcols').innerHTML=col('m','Mergeados hoje',merged.map(p=>`${L(p.number)} ${E(p.title).slice(0,44)}`))
-    +col('g','Verde (pronto p/ merge)',B.g)+col('y','Rodando',B.y)+col('r','Vermelho',B.r)
-    +col('x','Cancelado / sem run',B.x)+col('r','Conflito',B.m)+col('q','Empilhado',B.q);trAllLabel()}
-
 /* ---- visão simples: frase da situação, agentes como pessoas, máquina, PRs ---- */
 const ROLE_PT={'principal-engineer':'Engenheiro principal','rt-engineer':'Engenheiro de tempo real','ui-engineer':'Engenheiro de interface','distro-engineer':'Engenheiro de distribuição','plugin-engineer':'Engenheiro de plugins','dsp-engineer':'Engenheiro de DSP','general-purpose':'Agente geral','fixer':'Corretor','integrator':'Integrador','coordenador':'Coordenador','architect':'Arquiteto','planner':'Planejador','reviewer':'Revisor','qa':'Testador'};
 const roleName=r=>ROLE_PT[r]||(r?String(r).replace(/-/g,' ').replace(/^./,c=>c.toUpperCase()):'Agente');
 const AVT=[['principal','P'],['coord','C'],['ui-','UI'],['rt-','RT'],['fix','FX'],['integr','IN'],['plugin','PL'],['dsp','DS'],['distro','OS'],['general','AG'],['orch','OR'],['build','BD'],['arch','AR'],['plan','PL'],['review','RV'],['qa','QA']];
 const avatarOf=r=>{r=String(r||'').toLowerCase();const m=AVT.find(x=>r.includes(x[0]));return m?m[1]:(r.slice(0,2).toUpperCase()||'?')};
-/* 12x12 pixel faces: one look per role, Opus shirts purple */
-const PXF=['....hhhh....','..hhhhhhhh..','.hhhhhhhhhh.','.hssssssssh.','.sseessees s.'.replace(' ',''),'.ssssssssss.','.ssssnnssss.','.sssmmmmsss.','..ssssssss..','...cccccc...','.cccccccccc.','cccccccccccc'];
-const PXROLE={P:['#e8b04b','g'],C:['#3fc1b0','crown'],UI:['#ff8fb1',''],RT:['#ff5a5f',''],FX:['#8a93a0','tool'],IN:['#4cc38a',''],PL:['#7fe0d2','phones'],DS:['#b38bff','phones'],OS:['#5b9cff',''],AG:['#c9d1d9',''],AR:['#e8b04b',''],RV:['#9fb3c8','g'],QA:['#4cc38a','g'],OR:['#e8ebef','crown'],BD:['#5b9cff','phones']};
-function pixelAvatar(code,opus,size){
-  const [hair,acc]=PXROLE[code]||['#c9d1d9',''];
-  const col={h:hair,s:'#f2c9a0',e:'#121417',n:'#d9a77f',m:'#a8584e',c:opus?'#a78bfa':'#3fc1b0'};
-  const g=PXF.map(r=>r.split(''));
-  if(acc==='g'){g[4][2]=g[4][5]=g[4][6]=g[4][9]='g'} // glasses
-  if(acc==='crown'){g[0]='.y.y.yy.y.y.'.split('')}
-  if(acc==='phones'){for(const y of [3,4,5]){g[y][0]='p';g[y][11]='p'}}
-  if(acc==='tool'){g[10][11]='t';g[9][11]='t'}
-  const ex={g:'#121417',y:'#e8b04b',p:'#e8ebef',t:'#e8b04b'};
-  let px='';g.forEach((row,y)=>row.forEach((ch,x)=>{const c=col[ch]||ex[ch];if(c)px+=`<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`}));
-  return `<svg viewBox="0 0 12 12" width="${size||44}" height="${size||44}" shape-rendering="crispEdges" style="image-rendering:pixelated">${px}</svg>`}
+/* rostos em pixel 14x14: o cargo define o acessório, o hash do id/nome varia pele, cabelo, olhos e boca;
+   a camisa mostra o modelo (roxo = Opus, verde-azulado = Sonnet) */
+const SKINS=['#f2c9a0','#e0ac84','#c68642','#8d5524','#f7d7c4','#a0673c'];
+const HAIRS=['#2b2118','#5a3825','#a0522d','#e8b04b','#c9d1d9','#1f1f2e','#ff8fb1','#7a5cff'];
+const hash=str=>{let h=2166136261;for(const ch of String(str)){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)}h^=h>>>15;h=Math.imul(h,2246822519);h^=h>>>13;return h>>>0};
+function pixelAvatar(code,opus,size,seed){
+  const h=hash(seed||code),pk=(a,sh)=>a[(h>>>sh)%a.length];
+  const skin=pk(SKINS,0),hair=pk(HAIRS,4),style=pk(['short','long','bald','curly','bun','side'],8),eyes=pk(['dot','tall','wink','wide'],12),mouth=pk(['smile','flat','open'],16);
+  const N=14,g=Array.from({length:N},()=>Array(N).fill(null));
+  const set=(x,y,c)=>{if(x>=0&&x<N&&y>=0&&y<N)g[y][x]=c};
+  const rect=(x,y,w,hh,c)=>{for(let j=0;j<hh;j++)for(let i=0;i<w;i++)set(x+i,y+j,c)};
+  const shirt=opus?'#a78bfa':'#3fc1b0',dark='#121417',gold='#e8b04b',white='#e8ebef';
+  if(style==='long')rect(2,3,10,8,hair);
+  rect(2,11,10,3,shirt);rect(6,10,2,1,skin);rect(5,11,4,1,white);
+  rect(3,2,8,8,skin);for(const [x,y] of [[3,2],[10,2],[3,9],[10,9]])set(x,y,null);
+  rect(2,5,1,2,skin);rect(11,5,1,2,skin);
+  if(style==='short'){rect(3,1,8,2,hair);set(3,3,hair);set(10,3,hair)}
+  if(style==='long'){rect(3,1,8,2,hair);rect(3,3,1,6,hair);rect(10,3,1,6,hair)}
+  if(style==='curly'){rect(2,1,10,2,hair);for(const x of [2,4,6,8,10])set(x,0,hair);rect(2,3,1,2,hair);rect(11,3,1,2,hair)}
+  if(style==='bun'){rect(3,1,8,2,hair);rect(6,0,2,1,hair);set(3,3,hair);set(10,3,hair)}
+  if(style==='side'){rect(3,1,8,2,hair);rect(3,3,3,1,hair);set(10,3,hair)}
+  if(eyes==='dot'){set(5,5,dark);set(8,5,dark)}
+  if(eyes==='tall'){rect(5,5,1,2,dark);rect(8,5,1,2,dark)}
+  if(eyes==='wink'){set(5,5,dark);rect(8,6,2,1,dark)}
+  if(eyes==='wide'){rect(4,5,2,1,white);rect(8,5,2,1,white);set(5,5,dark);set(8,5,dark)}
+  const mc='#a8584e';
+  if(mouth==='smile'){set(5,7,mc);set(8,7,mc);rect(6,8,2,1,mc)}
+  if(mouth==='flat')rect(5,8,4,1,mc);
+  if(mouth==='open')rect(6,8,2,2,'#5a1f1f');
+  const A={
+    C:()=>{rect(4,1,6,1,gold);for(const x of [4,6,9])set(x,0,gold)},
+    BD:()=>{rect(3,0,8,2,'#f2c14e');rect(2,2,10,1,'#f2c14e');rect(6,0,2,1,'#fff3b0')},
+    P:()=>{for(const x0 of [4,7]){rect(x0,4,3,1,'#cfd6dd');rect(x0,6,3,1,'#cfd6dd');set(x0,5,'#cfd6dd');set(x0+2,5,'#cfd6dd')}},
+    UI:()=>{rect(3,0,8,2,'#ff8fb1');set(7,-1,'#ff8fb1');rect(2,1,2,1,'#ff8fb1')},
+    RT:()=>{rect(3,0,8,2,'#ff5a5f');rect(1,2,6,1,'#ff5a5f')},
+    FX:()=>{rect(12,8,2,1,'#8a93a0');rect(12,9,1,5,'#8a93a0');set(13,10,'#8a93a0')},
+    IN:()=>{rect(4,11,1,3,gold);rect(9,11,1,3,gold);rect(7,12,3,2,white);set(8,12,gold)},
+    PL:()=>{rect(3,1,8,1,white);rect(2,4,1,3,white);rect(11,4,1,3,white);set(10,8,white);set(9,9,white)},
+    DS:()=>{rect(3,1,8,1,'#b38bff');rect(2,4,1,3,'#b38bff');rect(11,4,1,3,'#b38bff')},
+    OS:()=>{set(7,0,white);set(7,1,'#5b9cff');set(6,0,'#5b9cff')},
+    OR:()=>{rect(6,12,3,2,white);set(7,12,shirt);set(5,12,white);set(9,12,white);set(7,13,shirt)},
+    AR:()=>{set(11,4,gold);set(11,3,'#ff8fb1')},
+    RV:()=>{rect(11,10,3,4,'#c9a36b');rect(12,11,1,2,white)},
+    QA:()=>{rect(11,10,3,4,'#c9a36b');rect(12,11,1,2,white)},
+    AG:()=>{}};
+  (A[code]||A.AG)();
+  let px='';g.forEach((row,y)=>row.forEach((c,x)=>{if(c)px+=`<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`}));
+  return `<svg viewBox="0 0 14 14" width="${size||44}" height="${size||44}" shape-rendering="crispEdges" style="image-rendering:pixelated">${px}</svg>`}
+function showGallery(){
+  document.body.classList.add('gal');
+  const codes=[['C','Coordenador'],['OR','Orquestrador'],['BD','Builder'],['P','Principal'],['IN','Integrador'],['FX','Corretor'],['PL','Plugins'],['DS','DSP'],['UI','Interface'],['RT','Tempo real'],['OS','Distribuição'],['AR','Arquiteto'],['QA','Testador'],['AG','Geral']];
+  $('gal').innerHTML='<h2 class="h2">Todos os rostos: cada cargo com 6 agentes diferentes, Sonnet (verde-azulado) e Opus (roxo)</h2>'+['sonnet','opus'].map(m=>codes.map(([c,n])=>`<div class="gal-row"><b>${n}</b>${[1,2,3,4,5,6].map(i=>`<span class="pa">${pixelAvatar(c,m==='opus',56,'integrator-'+i+c+m[0])}</span>`).join('')}<small>${m}</small></div>`).join('')).join('')}
+if(location.search.includes('avatars'))showGallery();
 const MODEL_PT=m=>m?String(m).replace(/^./,c=>c.toUpperCase()):'';
 function personCard(x){
   const model=String(x.model||'').toLowerCase();
   const chips=(x.pr?`<a class="chip" href="${PRURL}${x.pr}" target="_blank" rel="noopener">PR #${x.pr}</a>`:'')+(x.branch?`<span class="chip">${E(x.branch)}</span>`:'');
   return `<article class="ag ${x.state} ${model==='opus'?'opus':''} clk" tabindex="0" role="button" data-k="${E(x.k)}" data-id="${E(x.id)}" title="clique para ver o detalhe">
-    <div class="av">${pixelAvatar(x.avatar,model==='opus')}</div>
+    <div class="av">${pixelAvatar(x.avatar,model==='opus',44,x.seed||x.id)}</div>
     <div class="ab"><div class="an">${E(x.title)}</div>
       <div class="as">${model?`<span class="mdl ${model}">${E(MODEL_PT(model))}</span> `:''}${E(x.sub)}</div>
       <div class="sts"><i class="sd"></i>${E(x.stateText)}</div>
@@ -613,9 +383,9 @@ function renderPrs(s){
 /* ---- quadro de fluxo: uma linha por item de trabalho, colunas = fases ---- */
 const PH=[['Planejado','ainda sem agente'],['Construindo','agente escreve o código'],['PR aberto','esperando a vez'],['Testando','builder / CI local'],['Corrigindo','conserto de falha ou conflito'],['Pronto p/ merge','tudo verde'],['Na main','já entrou']];
 const shortTitle=t=>{t=String(t||'');const m=t.match(/^Bundle ([\w-]+):\s*(.*)$/);if(m)return 'Pacote '+m[1]+' ('+(m[2].match(/#\d+/g)||[]).length+' PRs)';return t.length>78?t.slice(0,76)+'…':t};
-function who(role,sub,t0,opts){opts=opts||{};return {role,sub,t0,code:opts.code||avatarOf(role),opus:!!opts.opus,k:opts.k,id:opts.id,dim:!!opts.dim}}
+function who(role,sub,t0,opts){opts=opts||{};return {role,sub,t0,seed:opts.seed||(role+'|'+sub),code:opts.code||avatarOf(role),opus:!!opts.opus,k:opts.k,id:opts.id,dim:!!opts.dim}}
 function whoHtml(w){const now=Date.now()/1000;
-  return `<div class="pp ${w.dim?'dim':''}" ${w.k?`data-k="${w.k}" data-id="${E(w.id)}"`:''}><span class="pa">${pixelAvatar(w.code,w.opus,30)}</span><span class="pn"><b>${E(w.role)}</b><small>${E(w.sub||'')}${w.t0?(w.sub?' · ':'')+'há '+dur(Math.round(now-w.t0)):''}</small></span></div>`}
+  return `<div class="pp ${w.dim?'dim':''}" ${w.k?`data-k="${w.k}" data-id="${E(w.id)}"`:''}><span class="pa">${pixelAvatar(w.code,w.opus,30,w.seed)}</span><span class="pn"><b>${E(w.role)}</b><small>${E(w.sub||'')}${w.t0?(w.sub?' · ':'')+'há '+dur(Math.round(now-w.t0)):''}</small></span></div>`}
 function flowRows(s){
   const now=Date.now()/1000,o=s.orchestrator||{},b=o.builder||{},run=b.running,lock=s.lock||[];
   const trn=Object.fromEntries((o.train||[]).map(r=>[r.pr,r]));
@@ -623,7 +393,7 @@ function flowRows(s){
   const sess=s.agents.filter(a=>!['done','paused'].includes(a.state));
   const used=new Set(),rows=[];
   const roleOf=r=>String(r||'').replace(/^(.*?)(-\d+)?$/,'$1');
-  const mkSess=a=>{used.add(a.id);return who(roleName(a.agent),'sessão · '+(a.model||''),a.lock?a.lock.start:a.since_src==='worktree'?0:a.since,{opus:String(a.model).toLowerCase()==='opus',k:'agent',id:a.id,code:avatarOf(a.agent)})};
+  const mkSess=a=>{used.add(a.id);return who(roleName(a.agent),'sessão · '+(a.model||''),a.lock?a.lock.start:a.since_src==='worktree'?0:a.since,{opus:String(a.model).toLowerCase()==='opus',k:'agent',id:a.id,code:avatarOf(a.agent),seed:a.id})};
   s.prs.forEach(p=>{
     const t=trn[p.number],ph=t?(t.phase||''):'',ts=t?t.updated:null;
     let col=2,pend=null,w=[];
@@ -662,7 +432,7 @@ function flowRows(s){
     const planning=['planning','queued'].includes(f.state),col=planning?0:1;
     const ag=(f.tasks||[]).map(t=>t.agent).filter(Boolean)[0];
     rows.push({k:'feature',id:f.id,num:'',title:f.name||f.id,sub:(f.track||'')+(f.adr?' · ADR-'+f.adr:''),col,planned:planning,pend:planning&&(paused.includes('plan')||paused.includes('build'))?'parado: filas pausadas':null,
-      w:planning?[who('Arquiteto','orquestrador · aguardando vaga',null,{dim:true,code:'AR'})]:[who(roleName(ag),'orquestrador',f.age?now-f.age:null,{k:'feature',id:f.id})]})});
+      w:planning?[who('Arquiteto','orquestrador · aguardando vaga',null,{dim:true,code:'AR',seed:f.id})]:[who(roleName(ag),'orquestrador',f.age?now-f.age:null,{k:'feature',id:f.id,seed:f.id})]})});
   return rows}
 function renderFlow(s){
   const rows=flowRows(s),act=rows.filter(r=>!r.planned),plan=rows.filter(r=>r.planned);
@@ -672,7 +442,7 @@ function renderFlow(s){
   const mg=(s.merged||[]).slice(0,5).map(m=>`<div class="fr done clk" tabindex="0" data-k="pr" data-id="${m.number}"><div class="ft"><a class="prn" href="${PRURL}${m.number}" target="_blank" rel="noopener">#${m.number}</a> <span class="ftt">${E(shortTitle(m.title))}</span></div>${PH.map((x,i)=>i===6?`<div class="fc2 cur ok">entrou às ${clk(Date.parse(m.mergedAt)/1000)}</div>`:'<div class="fc2 past">'+(i<6?'✓':'')+'</div>').join('')}</div>`).join('');
   $('prhint').textContent=`${act.length} em andamento · ${act.filter(r=>r.pend).length} parados esperando · ${(s.merged||[]).length} entraram hoje`;
   $('flow').innerHTML=head+(act.map(row).join('')||'<div class="empty">Nada em andamento.</div>')+(mg?'<div class="fsep">Entraram na main hoje</div>'+mg:'')
-    +(plan.length?`<details class="fplan"><summary>Planejado, ainda sem agente: ${plan.length} (${(s.orchestrator&&(s.orchestrator.paused||[]).length)?'orquestrador pausado nessas filas':'esperando vaga'})</summary>${plan.map(row).join('')}</details>`:'')}
+    +(plan.length?`<details class="fplan" data-key="fplan"><summary>Planejado, ainda sem agente: ${plan.length} (${(s.orchestrator&&(s.orchestrator.paused||[]).length)?'orquestrador pausado nessas filas':'esperando vaga'})</summary>${plan.map(row).join('')}</details>`:'')}
 function renderSit(s){
   const lock=s.lock||[],holder=lock.find(r=>r.role==='holds'),nw=lock.filter(r=>r.role==='waits').length;
   const o=s.orchestrator||{},rows=renderPrs(s);
@@ -685,64 +455,45 @@ function renderSit(s){
   const run=holder?E(String(holder.who||'').replace(/\s*\(.*\)$/,'').slice(0,40)):'nada';
   $('sit').innerHTML=`<span><b>${(s.merged||[]).length}</b> merges hoje</span><span>Máquina: <b>${run}</b>${nw?' · '+nw+' na fila':''}</span><span>Próximo: <b>${E(coordNext||next)}</b></span>`
     +(owner?`<span class="sitw">${owner} decisão(ões) do dono</span>`:'')+(age>120?'<span class="sitb">orquestrador pausado</span>':'')}
+
 function render(s){
   lastState=s;
-  renderSit(s);renderPeople(s);renderMachine(s);renderFlow(s);
-  renderTrain(s);
+  renderSit(s);renderPeople(s);renderMachine(s);renderFlow(s);renderTech(s);
   diff(s);
   renderUsage(s.usage||{});
-  const act=s.agents.filter(a=>!['done','paused'].includes(a.state));
-  const working=s.agents.filter(a=>a.state==='working');
-  const waiting=act.filter(a=>a.state==='waiting'||a.state==='waiting_lock'||a.state==='no worktree').length;
-  // Cancelled checks are a superseded or stopped run, not a failure.
-  const red=s.prs.filter(p=>p.failed.length>(p.cancelled||[]).length).length;
-  const dups=Object.values(s.watchers.reduce((m,w)=>(m[w.pr]=(m[w.pr]||0)+1,m),{})).filter(n=>n>1).length;
-  const pill=$('pill');pill.className='pill'+(red?' bad':waiting?' warn':'');
-  pill.innerHTML=`<span><b>${working.length}</b> trabalhando</span><span><b>${act.length}</b> ativos</span><span><b>${waiting}</b> esperando</span><span><b>${red}</b> vermelho${red===1?'':'s'}</span>`+(dups?`<span>${dups} watcher duplicado</span>`:'');
-  const watch={};s.watchers.forEach(x=>{watch[x.pr]=(watch[x.pr]||0)+1});
-  const prs=Object.fromEntries(s.prs.map(p=>[p.number,p]));
-  const orch=orchStages(s.orchestrator);
-  const aSt=Object.fromEntries(s.agents.map(a=>[a.id,agentStage(a,prs,watch,orch)]));
-  const pSt=Object.fromEntries(s.prs.map(p=>[p.number,prStage(p,watch,orch)]));
-  renderPipe(s,aSt,pSt);
-  renderAgents(s,aSt,prs,watch);
-  renderPRs(s,watch,pSt);
-  /* containers */
-  const owner=c=>{const a=s.agents.find(a=>a.containers.includes(c.id));return a?E(a.label):'<span style="color:var(--faint)">sem dono conhecido</span>'};
-  const now=Date.now()/1000;
-  $('ccount').textContent=s.containers.length+' rodando';
-  $('cs').innerHTML=s.containers.map(c=>`<div class="row crow"><span class="id">${c.id}</span><span>${owner(c)}<div class="br">${E(c.image)}</div></span><span class="sub">${dur(Math.round(now-Date.parse(c.started)/1000))}</span></div>`).join('')||'<div class="empty">Nenhum container.</div>';
-  $('wcount').textContent=s.watchers.length+' ativos';
-  $('ws').innerHTML=s.watchers.map(x=>`<div class="row crow"><span class="id">pid ${E(x.pid)}</span><span><a class="prn" href="${PRURL}${x.pr}" target="_blank" rel="noopener">PR #${x.pr}</a></span><span class="sub">${E(x.since)}</span></div>`).join('')||'<div class="empty">Nenhum watcher.</div>';
-  renderOrch(s.orchestrator);
   $('err').textContent=(s.errors||[]).join(' | ');
 }
+const POOL_PT={'plan':['Planejamento','AR'],'build':['Construção (geral)','IN'],'build:daw':['Construção · DAW','UI'],'build:os':['Construção · OS','OS'],'build:plugin':['Construção · plugins','PL'],'qa':['Testes (QA)','QA'],'fix':['Correção','FX'],'merge':['Merge','IN'],'principal':['Engenheiro principal','P']};
+function renderTech(s){
+  const o=s.orchestrator,now=Date.now()/1000;
+  if(!o){$('tlimits').innerHTML='<div class="empty">Orquestrador desligado.</div>';$('tpools').innerHTML='';$('tmeta').textContent=''}
+  else{
+    const age=o.updated_ts?Math.round(now-o.updated_ts):null,paused=o.paused||[];
+    $('tmeta').textContent=(String(o.mode||'')==='live'?'ligado':'modo '+o.mode)+(age!=null?' · atualizou há '+dur(age):'');
+    const runs=(o.runs||[]).length,cap=Number(o.cap)||0;
+    const st=(n,l)=>`<div class="stat"><b>${E(n)}</b><span>${E(l)}</span></div>`;
+    let h=(age>120?`<div class="banner bad">Orquestrador parado desde ${clk(o.updated_ts)}: o painel mostra o último estado conhecido.</div>`:'')
+      +(paused.length?`<div class="banner">Filas pausadas: ${E(paused.join(', '))}</div>`:'')
+      +(o.kill_switch?`<div class="banner bad">Chave de emergência ligada: ${E(typeof o.kill_switch==='object'?JSON.stringify(o.kill_switch):o.kill_switch)}</div>`:'')
+      +(o.usage_pause_until?`<div class="banner">Pausa por consumo até ${clk(Number(o.usage_pause_until)||Date.parse(o.usage_pause_until)/1000)}</div>`:'')
+      +'<div class="stats">'+st(runs+' de '+(cap||'?'),'agentes rodando / limite')+st((o.open_prs??0)+' de '+(o.max_open_prs||'?'),'PRs abertos / limite')
+      +st(o.ready_unpr??0,'prontos esperando PR')+st(o.runs_last_hour??0,'execuções na última hora')+st((o.reservations||[]).length,'reservas de ADR e protocolo')+'</div>';
+    $('tlimits').innerHTML=h;
+    const P=o.pools||{};
+    $('tpools').innerHTML=Object.keys(P).filter(n=>(P[n].floor||0)>0||(P[n].live||0)>0||paused.includes(n)).map(n=>{const p=P[n],pp=POOL_PT[n]||[n,'AG'];
+      const isP=p.paused||p.reason==='paused'||paused.includes(n),fl=p.floor||0,lv=p.live||0;
+      return `<div class="pool ${isP?'paused':lv<fl?'low':''}"><span class="pa">${pixelAvatar(pp[1],false,30,'pool-'+n)}</span><div><b>${E(pp[0])}</b><span>${isP?'pausado':lv+' ativos'+(fl?' · mínimo '+fl:'')}</span></div></div>`}).join('')}
+  const w=(o&&o.waits_on_owner)||[];
+  $('townerp').hidden=!w.length;
+  $('towner').innerHTML=w.length?`<div class="owner"><ul>${w.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||x.question||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`:'';
+  $('wcount').textContent=s.watchers.length+' ativos';
+  $('ws').innerHTML=s.watchers.map(x=>`<div class="trow"><a class="prn" href="${PRURL}${x.pr}" target="_blank" rel="noopener">PR #${x.pr}</a><span class="tt">espera ficar verde e faz o merge</span><small>pid ${E(x.pid)}</small></div>`).join('')||'<div class="empty">Nenhum merge automático armado.</div>';
+  $('ccount').textContent=s.containers.length+' rodando';
+  const own=c=>s.agents.find(a=>a.containers.includes(c.id));
+  $('cs').innerHTML=s.containers.map(c=>{const a=own(c);
+    return `<div class="trow"><span class="pa">${pixelAvatar(a?avatarOf(a.agent):'BD',false,26,a?a.id:'c'+c.id)}</span><span class="tt">${a?E(a.label):'sem dono conhecido'}<br><small>${E(c.image)}</small></span><small>${dur(Math.round(now-Date.parse(c.started)/1000))}</small></div>`}).join('')||'<div class="empty">Nenhum container.</div>'}
 
-/* pipeline: nos brilhantes ligados por linhas animadas; clique filtra */
-function renderPipe(s,aSt,pSt){
-  if(s.orchestrator&&typeof s.orchestrator==='object'){selStage=null;return}
-  const items={};STAGES.forEach(x=>items[x[0]]=[]);
-  s.agents.forEach(a=>{const st=aSt[a.id];if(st)items[st].push({k:'a',t:a.label,pr:a.pr})});
-  const owned=new Set(s.agents.filter(a=>aSt[a.id]&&a.pr).map(a=>a.pr));
-  s.prs.forEach(p=>{if(!owned.has(p.number))items[pSt[p.number]].push({k:'p',t:'#'+p.number+' '+p.title,pr:p.number})});
-  gone.forEach(g=>items.merge.push({k:'p',t:'#'+g.n+' '+g.title,pr:g.n}));
-  const parts=[];
-  STAGES.forEach(([id,name,hint,cls],i)=>{
-    const n=items[id].length,list=items[id];
-    parts.push(`<button type="button" class="stg ${cls} ${n?'on':'idle'} ${selStage===id?'sel':''}" data-st="${id}" aria-pressed="${selStage===id}" title="${E(hint)}">
-      <div class="nd">${n}</div><div class="sl">${name}</div><small>${E(hint)}</small>
-      <div class="who">${list.slice(0,3).map(x=>`<span>${E(x.t)}</span>`).join('')}${list.length>3?`<span class="more">+${list.length-3}</span>`:''}</div></button>`);
-    if(i<STAGES.length-1)parts.push(`<div class="con ${n?'':'off'}" aria-hidden="true"></div>`)});
-  $('pipe').innerHTML=parts.join('');
-  $('pipemeta').textContent=orchStagesActive(s)?'etapas do orquestrador quando disponíveis; clique para filtrar':'etapas inferidas do estado; clique para filtrar';
-  const f=$('filt');f.classList.toggle('show',!!selStage);
-  if(selStage)$('filttxt').textContent='filtro: '+STAGES.find(x=>x[0]===selStage)[1]+' (agentes e PRs)'}
-const orchStagesActive=s=>Object.keys(orchStages(s.orchestrator)).length>0;
-$('pipe').addEventListener('click',e=>{const b=e.target.closest('.stg');if(!b)return;selStage=selStage===b.dataset.st?null:b.dataset.st;if(lastState)render(lastState)});
-$('filtx').addEventListener('click',()=>{selStage=null;if(lastState)render(lastState)});
-
-/* agentes: os da sessão do coordenador (JSON do coordenador), o lock da máquina,
-   o orquestrador, e os terminados recolhidos */
+const techEl=$('tech');if(localStorage.getItem('sonora.tech'))techEl.open=true;techEl.addEventListener('toggle',()=>localStorage.setItem('sonora.tech',techEl.open?'1':''));
 const clk=t=>t?new Date(t*1000).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
 const isToday=t=>t&&new Date(t*1000).toDateString()===new Date().toDateString();
 function lockRows(lock){
@@ -750,137 +501,6 @@ function lockRows(lock){
   const now=Date.now()/1000;
   return '<div class="lk head"><span>papel</span><span>quem</span><span>prio</span><span>desde</span><span>comando</span></div>'+lock.map(r=>
     `<div class="lk ${r.role}" title="${E(r.cwd)}&#10;${E(r.cmd)}"><span class="rl">${r.role==='holds'?'usando':'espera'}</span><span class="who" title="${E(r.who)}">${E(r.who)}</span><span>prio ${r.prio}</span><span>${dur(Math.round(now-r.start))}</span><span class="cm">${E(r.cmd)}</span></div>`).join('')}
-function renderAgents(s,aSt,prs,watch){
-  const live=s.agents.filter(a=>!['done','paused'].includes(a.state)).sort((x,y)=>ORDER[x.state]-ORDER[y.state]||(x.since||0)-(y.since||0));
-  const done=s.agents.filter(a=>['done','paused'].includes(a.state));
-  const today=done.filter(a=>isToday(a.done_at)),older=done.length-today.length;
-  const cnt=st=>live.filter(a=>a.state===st).length;
-  const o=s.orchestrator,orchOn=!!o&&typeof o==='object';
-  const oruns=orchOn?(o.runs||[]).length:0;
-  const holder=(s.lock||[]).find(r=>r.role==='holds'),nwait=(s.lock||[]).filter(r=>r.role==='waits').length;
-  $('agcount').textContent=(live.length+oruns)+' ativos';
-  $('agsum').innerHTML=`<span><b>${cnt('working')}</b> trabalhando</span><span><b>${cnt('building')}</b> usando a máquina</span><span><b>${cnt('waiting_lock')}</b> esperando a máquina</span><span><b>${oruns}</b> agentes do orquestrador</span>`
-    +`<span>máquina: <b>${holder?E(holder.who):'livre'}</b>${nwait?' · '+nwait+' na fila':''}</span>`;
-  $('sesag').innerHTML=`<div class="agrid">${coordCard(s.coordinator)}${live.map(a=>card(a,aSt[a.id],prs,watch)).join('')}</div>`;
-  $('lockbox').innerHTML=lockRows(s.lock);
-  $('oruns').innerHTML=orchOn?`<div class="agrid">${builderCard(o.builder,s.lock)}${orchRuns(o)}</div>`:'<div class="empty">Orquestrador desligado.</div>';
-  $('doneag').hidden=!done.length;
-  $('doneag').querySelector('summary').textContent=`Terminados hoje · ${today.length}`+(older?` (mais ${older} de dias anteriores, só no JSON)`:'');
-  $('donegrid').innerHTML=today.sort((x,y)=>y.done_at-x.done_at).map(a=>card(a,null,prs,watch)).join('')||'<div class="empty" style="grid-column:1/-1">Nenhum terminado hoje.</div>'}
-function card(a,st,prs,watch){
-  const isLive=!['done','paused'].includes(a.state);
-  const p=a.pr&&prs[a.pr];
-  const pc=p?(p.failed.length?'red':p.pending.length?'wait':'ok'):'';
-  const mdl=a.model?`<span class="mdl ${E(String(a.model).toLowerCase())}">${E(a.model)}</span>`:'';
-  const lk=a.lock?`${a.lock.role==='holds'?'usa a máquina':'espera a máquina'} desde ${clk(a.lock.start)} (${dur(Math.round(Date.now()/1000-a.lock.start))})`:'';
-  const since=isLive?(a.since?`${a.since_src==='worktree'?'worktree criado':'trabalhando desde'} ${clk(a.since)} (${dur(Math.round(Date.now()/1000-a.since))})`:''):(a.done_at?`terminou às ${clk(a.done_at)}`:'');
-  return `<article class="card ${CLS(a.state)} clk" data-k="agent" data-id="${E(a.id)}" title="clique para ver o detalhe"><div class="top"><span class="orb"></span><h3 title="${E(a.label)}">${E(a.label)}</h3><span class="state">${E(NAME[a.state]||a.state)}</span></div>
-  <div class="meta">${mdl}${a.agent?`<span class="sg">${E(a.agent)}</span>`:''}${a.pr?`<a class="chip ${pc}" href="${PRURL}${a.pr}" target="_blank" rel="noopener">PR #${a.pr}</a>`:''}${a.branch?`<span title="branch">${E(a.branch)}</span>`:''}</div>
-  ${a.doing?`<div class="doing" title="${E(a.doing)}">${E(a.doing)}</div>`:''}
-  <div class="since">${E([since,lk].filter(Boolean).join(' · '))}</div></article>`}
-
-function renderPRs(s,watch,pSt){
-  const list=selStage?s.prs.filter(p=>pSt[p.number]===selStage):s.prs;
-  $('prcount').textContent=list.length+(selStage?' de '+s.prs.length:' abertos');
-  $('prs').innerHTML=list.map(p=>{
-    const tot=Math.max(1,p.passed+p.pending.length+p.failed.length);
-    const q=watch[p.number]>1?`<span class="tag d">${watch[p.number]} watchers</span>`:watch[p.number]?'<span class="tag q">na fila</span>':'<span class="tag n">sem watcher</span>';
-    const det=[];
-    if(p.failed.length)det.push(`<span class="bad">falhou: ${p.failed.map(E).join(', ')}</span>`);
-    if(p.pending.length)det.push(`<span class="wait">rodando: ${p.pending.map(E).join(', ')}</span>`);
-    if(!p.failed.length&&!p.pending.length)det.push(`<span class="good">todos os ${p.passed} checks verdes</span>`);
-    const conflict=p.merge==='DIRTY';
-    return `<div class="row"><div class="prh"><a class="prn" href="${PRURL}${p.number}" target="_blank" rel="noopener">#${p.number}</a><a class="prt" href="${PRURL}${p.number}" target="_blank" rel="noopener">${E(p.title)}</a>${q}</div>
-    <div class="br">${E(p.branch)} · <span class="${conflict?'conf':''}">${E(conflict?'DIRTY (conflito)':p.merge||'')}</span></div>
-    <div class="seg"><i class="p" style="width:${p.passed/tot*100}%"></i><i class="r" style="width:${p.pending.length/tot*100}%"></i><i class="f" style="width:${p.failed.length/tot*100}%"></i></div>
-    <div class="det">${det.join('')}</div></div>`}).join('')||`<div class="empty">${selStage?'Nenhum PR nesta etapa.':'Nenhum PR aberto.'}</div>`}
-
-/* orquestrador: substitui o pipeline quando o status.json existe */
-// PRs (aberto, correção de CI, mergeado) estão no Merge train logo abaixo:
-// aqui só o trabalho que ainda não virou PR.
-const KSTATES=[['queued','Na fila'],['planning','Planejando'],['distributing','Distribuindo'],['building','Construindo'],['qa','QA'],['integrating','Integrando']];
-const PR_STATES=new Set(['pr_open','ci_fix','merged']);
-const POOLS=['plan','build:daw','build:os','build:plugin','qa','fix','merge'];
-const tstate=t=>{const v=String(typeof t==='object'?(t.state||t.status||''):t).toLowerCase();return /done|ok|merged|feito|complete/.test(v)?'done':/block|fail|red|stuck/.test(v)?'block':/doing|work|run|progress|build|review|qa/.test(v)?'doing':''};
-/* Colunas do orquestrador: recolher uma a uma, agrupar por fase, esconder
-   vazias. O estado sobrevive ao refresh (localStorage). */
-const OGROUPS=[['plan','Planejamento',['queued','planning','distributing']],
-  ['build','Construção',['building','qa','integrating']],['blk','Bloqueado',['blocked']]];
-const OKK='sonora.orch.closed',OKO='sonora.orch.opt';
-let okClosed=new Set(JSON.parse(localStorage.getItem(OKK)||'[]'));
-let okOpt=JSON.parse(localStorage.getItem(OKO)||'{}');
-function okSave(){localStorage.setItem(OKK,JSON.stringify([...okClosed]));localStorage.setItem(OKO,JSON.stringify(okOpt))}
-function okToggle(el){const k=[...el.classList].find(c=>c.startsWith('s-'));el.classList.toggle('closed')?okClosed.add(k):okClosed.delete(k);okSave();okLabels()}
-function okAll(){const cs=[...document.querySelectorAll('#okan .kc')],close=!cs.every(el=>el.classList.contains('closed'));
-  cs.forEach(el=>{const k=[...el.classList].find(c=>c.startsWith('s-'));el.classList.toggle('closed',close);close?okClosed.add(k):okClosed.delete(k)});okSave();okLabels()}
-function okFlag(k){okOpt[k]=!okOpt[k];okSave();if(lastState)renderOrch(lastState.orchestrator)}
-function okLabels(){const cs=[...document.querySelectorAll('#okan .kc')],b=$('okall');
-  if(b)b.textContent=cs.length&&cs.every(el=>el.classList.contains('closed'))?'Expandir tudo':'Recolher tudo';
-  if($('okgrp'))$('okgrp').textContent=okOpt.group?'Desagrupar':'Agrupar por fase';
-  if($('okemp'))$('okemp').textContent=okOpt.hideEmpty?'Mostrar vazias':'Esconder vazias'}
-function renderOrch(o){
-  const hero=$('orchhero');
-  hero.hidden=!o||typeof o!=='object';
-  $('pipehero').hidden=!hero.hidden;
-  if(hero.hidden){$('oruns').innerHTML='';return}
-  const mode=String(o.mode||'').toLowerCase();
-  const mb=$('omode');
-  mb.className='ob '+(mode==='live'?'live':/shadow|dry|sombra/.test(mode)?'shadow':'off');
-  mb.textContent=mode==='live'?'LIVE':/shadow|dry|sombra/.test(mode)?'sombra':'parado';
-  $('orchmeta').textContent=o.updated?'atualizado '+String(o.updated).slice(0,19).replace('T',' '):'';
-  const runs=Array.isArray(o.runs)?o.runs:[];
-  const cap=Number(o.cap)||0,used=Number.isFinite(+o.live)?+o.live:runs.length;
-  let hd=`<span>agentes <b>${used} / ${cap||'?'}</b></span>`;
-  if(cap)hd+=`<span class="capbar">${Array.from({length:Math.min(cap,40)},(_,i)=>`<i class="${i<used?'on':''}"></i>`).join('')}</span>`;
-  hd+=`<span>PRs abertos <b>${o.open_prs??0}</b>${o.max_open_prs?' / '+o.max_open_prs:''}</span>`;
-  if(o.ready_unpr!=null)hd+=`<span>prontos sem PR <b>${o.ready_unpr}</b></span>`;
-  if(o.runs_last_hour!=null)hd+=`<span>execuções na última hora <b>${o.runs_last_hour}</b></span>`;
-  if((o.paused||[]).length)hd+=`<span class="ks" style="color:var(--amber);border-color:var(--amber)">PAUSADO: ${E(o.paused.join(', '))}</span>`;
-  const rs=Array.isArray(o.reservations)?o.reservations.length:0;if(rs)hd+=`<span>reservas <b>${rs}</b></span>`;
-  if(o.kill_switch)hd+=`<span class="ks">KILL SWITCH: ${E(typeof o.kill_switch==='object'?JSON.stringify(o.kill_switch):o.kill_switch)}</span>`;
-  if(o.usage_pause_until){const t=Number(o.usage_pause_until)||Date.parse(o.usage_pause_until)/1000;hd+=`<span class="ks">pausa por consumo${t?' · volta em '+until(t):''}</span>`}
-  $('ohead').innerHTML=hd;
-  const P=o.pools||{};
-  const names=POOLS.filter(n=>P[n]).concat(Object.keys(P).filter(n=>!POOLS.includes(n)&&((P[n].floor||0)>0||(P[n].live||0)>0)));
-  $('opools').innerHTML=names.map(n=>{const p=P[n]||{},fl=p.floor||0,lv=p.live||0,wk=p.working||0,mx=Math.max(fl,lv,1);
-    const isP=p.paused||p.reason==='paused'||(o.paused||[]).includes(n);const cls=isP?'paused':!fl?'nofloor':lv===0?'zero':lv<fl?'low':'';
-    return `<div class="pl ${cls}"><div class="pn">${E(n)}${isP?' · pausado':''}</div><div class="pv">${lv}<small> ativos · ${wk} trab. · mín. ${fl}</small></div><div class="bar"><i style="width:${lv/mx*100}%"></i></div><div class="why" title="${E(p.reason||'')}">${E(isP?'pausado: não conta como falta':(p.reason||(lv<fl?'abaixo do piso':'')))}</div></div>`}).join('')||'<div class="empty">status.json sem pools.</div>';
-  const feats=(Array.isArray(o.features)?o.features:Object.entries(o.features||{}).map(([name,v])=>({name,...v}))).filter(f=>f&&typeof f==='object');
-  const fcard=f=>{const tasks=Array.isArray(f.tasks)?f.tasks:[];
-    const pr=f.pr?`<a class="prn" href="${PRURL}${f.pr}" target="_blank" rel="noopener">PR #${f.pr}</a>`:'';
-    return `<div class="fc clk" data-k="feature" data-id="${E(f.id||f.name)}"><div class="fn" title="${E(f.name||f.id)}">${E(f.name||f.id||'?')}</div>
-      <div class="fm">${pr}${f.track?`<span>${E(f.track)}</span>`:''}${f.adr?`<span>ADR-${E(f.adr)}</span>`:''}${f.fixes?`<span class="bad">${f.fixes} correç${f.fixes>1?'ões':'ão'}</span>`:''}${f.partial?'<span>parcial</span>':''}${tasks.length?`<span>${f.tasks_done??0}/${f.tasks_total??tasks.length}</span>`:''}</div>
-      ${f.blocked_reason?`<div class="fm bad">${E(f.blocked_reason)}</div>`:''}
-      ${tasks.length?`<div class="strip">${tasks.map(t=>`<i class="${tstate(t)}" title="${E(typeof t==='object'?[t.name||t.id||'',t.stage||'',t.state||''].filter(Boolean).join(' · '):t)}"></i>`).join('')}</div>`:''}</div>`};
-  const col=(id,name,list,sep)=>`<div class="kc s-${id} ${sep?'sep':''}"><div class="kh" onclick="okToggle(this.parentNode)" title="clique para recolher/expandir">${name}<span>${list.length}</span></div>${list.map(fcard).join('')||'<div class="empty" style="padding:6px">-</div>'}</div>`;
-  const known=new Set(KSTATES.map(k=>k[0]));
-  const bl=Array.isArray(o.blocked)?o.blocked:[];
-  // A blocked feature that already has a PR is the train's (Bloqueado there).
-  const blocked=feats.filter(f=>(f.state==='blocked'||bl.includes(f.id))&&!f.pr);
-  const rest=feats.filter(f=>!blocked.includes(f)&&!PR_STATES.has(f.state)&&f.state!=='blocked'&&!bl.includes(f.id));
-  const extra=[...new Set(rest.map(f=>f.state).filter(x=>x&&!known.has(x)))];
-  let cols=KSTATES.map(([id,n])=>[id,n,rest.filter(f=>f.state===id)]).concat(extra.map(x=>[x,E(x),rest.filter(f=>f.state===x)]),[['blocked','Bloqueado',blocked,true]]);
-  if(okOpt.group){const by=Object.fromEntries(cols.map(c=>[c[0],c[2]]));
-    cols=OGROUPS.map(([id,n,ids])=>[id,n,[].concat(...ids.map(k=>by[k]||[]),...(id==='plan'?extra.map(x=>by[x]||[]):[]))])}
-  if(okOpt.hideEmpty)cols=cols.filter(c=>c[2].length);
-  const nf=cols.reduce((n,c)=>n+c[2].length,0);$('oksum').textContent=`Backlog de features · ${nf}`+((o.paused||[]).length?' (parado: nenhum agente trabalha nelas agora)':'');
-  $('okan').innerHTML=cols.map(([id,n,list,sep])=>col(id,n,list,sep)).join('')||'<div class="empty">Nenhuma feature.</div>';
-  $('okan').querySelectorAll('.kc').forEach(el=>{const k=[...el.classList].find(c=>c.startsWith('s-'));if(okClosed.has(k))el.classList.add('closed')});
-  okLabels();
-  const waits=o.waits_on_owner||o.waits||[],wl=Array.isArray(waits)?waits:[waits];
-  $('owaits').innerHTML=wl.length?`<div class="owner big"><h3>Espera o dono (${wl.length})</h3><ul>${wl.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||x.question||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`:'';
-}
-function orchRuns(o){
-  if(!o||!Array.isArray(o.runs))return '';
-  const now=Date.now()/1000;
-  const cards=o.runs.map(r=>{const age=r.started?Math.round(now-r.started):null;
-    const cls=r.suspect?'waiting':r.building?'building':r.working===false?'waiting':'working';
-    const st=r.suspect?'suspeito':r.building?'buildando':r.working===false?'ocioso':'trabalhando';
-    return `<article class="card rcard ${cls} clk" data-k="run" data-id="${E(r.id)}" title="clique para ver o que está fazendo"><div class="top"><span class="orb"></span><h3 title="${E(r.id||r.name)}">${E(r.name||r.id||'?')}</h3><span class="state">${st}</span></div>
-    <div class="meta"><span class="sg">${E(r.role||'?')}</span>${r.pool?`<span class="sg">${E(r.pool)}</span>`:''}<span>${age==null?'':dur(age)}</span><span class="m">pid ${E(r.pid)}</span></div>
-    <div class="tk" title="${E(r.task)}">${E(r.task||'')}</div></article>`}).join('');
-  return cards||`<article class="card done"><div class="top"><span class="orb"></span><h3>Agentes do orquestrador</h3><span class="state">nenhum em execução</span></div><div class="meta"><span>${E(o.mode||'')}${(o.paused||[]).length?' · pausado: '+E(o.paused.join(', ')):''}</span></div></article>`}
-
 async function tick(){
   try{const r=await fetch('/api/state',{cache:'no-store'});const s=await r.json();lastOk=Date.now();render(s);
     $('sub').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR');}
@@ -925,18 +545,7 @@ function closeDetail(){detOpen=null;clearInterval(detTimer);$('drawer').classLis
 document.addEventListener('click',e=>{if(e.target.closest('a,button,input,label,.kh,h3[onclick]'))return;const el=e.target.closest('[data-k]');if(el)openDetail(el.dataset.k,el.dataset.id)});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail();if(e.key==='Enter'){const el=e.target.closest&&e.target.closest('[data-k]');if(el&&el.tagName!=='A')openDetail(el.dataset.k,el.dataset.id)}});
 
-/* O builder: a máquina única que faz o build pesado em lote (status.json .builder) */
 function bPrs(h){return (h.prs||[]).map((p,i)=>p?'#'+p:'commit '+String((h.heads||[])[i]||'').slice(0,7)).join(' ')}
-function builderCard(b,lock){if(!b)return '';
-  const lw=(lock||[]).map((x,i)=>({...x,pos:i})).find(x=>x.builder);
-  const r=b.running,bq=b.queue||{},qp=bq.open_prs||(bq.prs||[]).filter(Boolean),l=b.last;
-  const q=qp.length?'PRs '+qp.map(n=>'#'+n).join(' '):((bq.batch||[]).length?(bq.batch||[]).length+' commits':'vazia');
-  const st=r?(r.step||'iniciando'):'livre';
-  const wait=r&&lw&&lw.role==='waits',state=!r?'livre':wait?'esperando a máquina':'buildando';
-  return `<div>
-  <article class="card ${!r?'waiting':wait?'waiting_lock':'building'} clk" data-k="builder" data-id="builder" title="clique para ver o lote, a fila e os logs"><div class="top"><span class="orb"></span><h3>Builder (CI local)</h3><span class="state">${state}</span></div>
-  <div class="meta"><span class="sg">${E(r?(r.full?'main completo':'lote ')+bPrs(r):'sem lote')}</span>${r?`<span>etapa ${E(st)} · ${dur(r.elapsed_s)}</span>`:''}${wait?`<span>na fila da máquina desde ${clk(lw.start)} (${lw.pos}º a esperar)</span>`:''}<span>fila: ${E(q)}</span></div>
-  <div class="tk">${l?E('último: '+l.state+' '+bPrs(l)+' '+(l.summary||[''])[0]):''}</div></article></div>`}
 function builderHtml(d){const b=d.builder||{},r=b.running,l=b.last,q=b.queue||{};
   const ids=h=>(h.heads||[]).map((x,i)=>(h.prs&&h.prs[i]?'#'+h.prs[i]+' ':'')+x.slice(0,10)).join('\n');
   return (r?'<h4>Lote em execução</h4>'+kv({etapa:r.step,'tempo':dur(r.elapsed_s),prioridade:r.priority,logs:r.dir})+`<pre>${E(ids(r))}</pre>`:'<p>Livre: nenhum build pesado rodando.</p>')
@@ -944,12 +553,7 @@ function builderHtml(d){const b=d.builder||{},r=b.running,l=b.last,q=b.queue||{}
    +'<h4>Fila atrás dele</h4>'+kv({'PRs na fila':(q.open_prs||[]).map(n=>'#'+n),lote:(q.batch||[]).map(x=>x.slice(0,10)),'pré-PR':(q.pre||[]).map(x=>x.slice(0,10)),bisecção:(q.bisect||[]).map(g=>g.map(x=>x.slice(0,7)).join('+'))})
    +(l?'<h4>Último resultado</h4>'+kv({estado:l.state,'terminou':ago(l.ended),resumo:(l.summary||[''])[0],logs:l.dir})+`<pre>${E(ids(l))}</pre>`:'')
    +(d.lock&&d.lock.length?'<h4>Fila da máquina (tools/build-slot.sh --list)</h4><pre>'+E(d.lock.join('\n'))+'</pre>':'')}
-/* o coordenador (Claude no terminal) na trilha Harness: o que está fazendo */
-function coordCard(c){if(!c)return '';
-  const age=c.updated?Math.round(Date.now()/1000-c.updated):null,live=age!=null&&age<900;
-  return `<article class="card ${live?'working':'waiting'} clk" data-k="coord" data-id="coord" title="clique para ver os passos"><div class="top"><span class="orb"></span><h3>Coordenador (Claude)</h3><span class="state">${live?'trabalhando':'sem sinal'}</span></div>
-  <div class="meta"><span class="mdl opus">coordenador</span><span>atualizou ${age==null?'?':dur(age)+' atrás'}</span></div>
-  <div class="doing" title="${E(c.doing)}">${E(c.doing||'')}</div></article>`}
+
 </script>
 <aside id="drawer" aria-label="Detalhes"><div class="dh"><h2 id="dtitle">-</h2><button type="button" onclick="closeDetail()">fechar (Esc)</button></div><div class="db" id="dbody"></div></aside>
 </body>
