@@ -25,6 +25,8 @@
 #   INSTALL_TIMEOUT=2400         seconds for run 1 (TCG needs far more than KVM)
 #   BOOT_TIMEOUT=420             seconds for run 2
 set -euo pipefail
+# One heavy job at a time on this machine (tools/build-slot.sh).
+[[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ISO="$ROOT/iso/sonora.iso"
@@ -166,7 +168,10 @@ qemu_run() {
     w="$(host_path "$WORK")"; [[ -z "$OVMF" ]] || fw="$(host_path "$(dirname "$OVMF")")/$(basename "$OVMF")"
     runner=("$QEMU")
   fi
-  args=(-m "$MEMORY" -smp 2 "${ACCEL[@]}" -device intel-hda -device hda-duplex
+  # q35, not the default i440fx: under OVMF with -kernel the firmware never
+  # enables the PIIX IDE channels, so the CD-ROM is invisible to the kernel and
+  # live-boot reports "Unable to find a medium". AHCI needs no firmware help.
+  args=(-machine q35 -m "$MEMORY" -smp 2 "${ACCEL[@]}" -device intel-hda -device hda-duplex
         -drive "if=none,id=target,format=qcow2,file=$w/target.qcow2" -device "virtio-blk-pci,drive=target"
         -serial "file:$w/$name.serial.log" -display none -monitor none -no-reboot)
   if [[ "$FIRMWARE" == uefi ]]; then
@@ -199,7 +204,7 @@ serial() { tr -d '\r' < "$WORK/$1.serial.log" 2>/dev/null | grep -a -- "$2" || t
 # === run 1: install from the stick ===
 qemu_run install "$INSTALL_TIMEOUT" 1
 RC="$(serial install '^INSTALLTEST-RC' | tail -n 1 | awk '{print $2}')"
-SHA_BEFORE="$(serial install '^INSTALLTEST-SHA' | tail -n 1 | awk '{print $2}')"
+SHA_BEFORE="$(serial install 'INSTALLTEST-SHA' | tail -n 1 | awk '{print $2}')"
 FW_SEEN="$(serial install '^INSTALLTEST-FW' | tail -n 1 | awk '{print $2}')"
 serial install '^STEP \|^INFO \|^sonora-install' | sed 's/^/INSTALL-TEST info    /'
 if [[ "$RC" == 0 ]]; then ok "sonora-install exited 0 in the guest"; else bad "sonora-install exit code '${RC:-none}'"; fi

@@ -65,10 +65,22 @@ pc "tmp.mount active, nosuid,nodev, size 512M" tmp_capped
 # --- journald: volatile, 64M ---
 journald_volatile_capped() {
   [ -d /run/log/journal ] || return 1
-  [ ! -d /var/log/journal ] || return 1
-  # journald states the limit it applied when it opens the runtime journal.
-  journalctl -b -u systemd-journald --no-pager 2>/dev/null |
-    grep -Eq 'Runtime Journal .*Maximum allowed usage is 64\.0M'
+  # /var/log/journal exists as an empty directory in the image; what matters
+  # is that nothing is written there.
+  ls /var/log/journal/*/*.journal >/dev/null 2>&1 && return 1
+  grep -Eqx 'RuntimeMaxUse=64M' /etc/systemd/journald.conf.d/sonora.conf || return 1
+  # journald logs "Runtime Journal (...) is 8M, max 8M, 0B free." when it opens
+  # the runtime journal. The max it enforces is the lower of RuntimeMaxUse and
+  # what RuntimeKeepFree leaves in /run, so on a small machine it is under 64M;
+  # the check is that the journal is bounded at no more than 64M.
+  cap="$(journalctl -b -u systemd-journald --no-pager 2>/dev/null |
+    sed -n 's/.*Runtime Journal ([^)]*) is [^,]*, max \([0-9.]*\)\([BKMGT]\).*/\1 \2/p' | tail -n 1)"
+  [ -n "$cap" ] || return 1
+  case "${cap#* }" in
+    B|K) return 0 ;;
+    M) awk -v n="${cap% *}" 'BEGIN { exit !(n <= 64) }' ;;
+    *) return 1 ;;
+  esac
 }
 pc "journald volatile, runtime cap 64M" journald_volatile_capped
 
@@ -150,6 +162,10 @@ unit_allowed() {
     wireplumber.service|pipewire-session-manager.service|filter-chain.service) ;;
     e2scrub_*|fstrim.timer|logrotate.timer|dpkg-db-backup.timer|man-db.timer) ;;
     apt-daily.timer|apt-daily-upgrade.timer) ;;
+    # The stick can install itself (ADR-0044): the installer and its confirm
+    # unit, grub for the target, and what live-config's task pulls in.
+    sonora-installer.service|sonora-confirm.service|grub-common.service) ;;
+    networking.service|cron.service) ;;
     *) return 1 ;;
   esac
 }

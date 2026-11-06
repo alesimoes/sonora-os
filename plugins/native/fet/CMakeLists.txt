@@ -9,12 +9,12 @@ target_link_libraries(sonora_native_fet PUBLIC sonora_native_sdk PRIVATE sonora_
 add_library(sonora_native_fet_suite STATIC tests/suite.cpp)
 target_link_libraries(sonora_native_fet_suite PUBLIC sonora_native_fet sonora_dsp_measure)
 
-sonora_native_quality_test(fet)
+sonora_native_quality_test(fet TIMING)
 # The static curves (five positions, settled over seconds for C9), the
 # release protocol and the SPICE comparison at several rates: one rate and
 # fewer points under SONORA_DSP_QUICK=1 (PR CI, sanitizers), everything in
 # the nightly run.
-set_tests_properties(native_fet PROPERTIES LABELS slow)
+set_property(TEST native_fet APPEND PROPERTY LABELS slow)  # appended: TIMING above adds "timing"
 
 # The SPICE references re-derived from their netlists, where ngspice is
 # installed (the sonora-plugins image), one ctest per case. tests/spice/ is

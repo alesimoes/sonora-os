@@ -1349,6 +1349,12 @@ int scenario_latency_change(const Args& a) {
     return 0;
 }
 
+bool wait_exit(Host& host, uint64_t timeout_ns) {
+    const uint64_t end = monotonic_ns() + timeout_ns;
+    while (host.alive() && monotonic_ns() < end) usleep(5000);
+    return host.reaped();
+}
+
 // A plugin that segfaults takes its host with it and nothing else: every
 // callback still returns inside the period, the death is reported, and the
 // culprit is named.
@@ -1511,6 +1517,18 @@ int scenario_deadline(const Args& a) {
         if (++streak >= kMaxConsecutiveMisses) removed_at = i;
         return true;
     });
+    // plugin_host_rtsan_block (SONORA_TEST_RTSAN_SLEEP): RTSan halts the host
+    // on the sleep, but only after llvm-symbolizer has written the stack that
+    // names run_block, and that report is the test's pass condition. On a
+    // loaded machine symbolizing takes longer than the 200 blocks left after
+    // the trigger; killed then, the host loses the stack and the symbolizer
+    // dies on a broken pipe. So the host is left to finish its report.
+    if (std::getenv("SONORA_TEST_RTSAN_SLEEP")) {
+        const bool exited = wait_exit(host, 120'000'000'000ull);
+        std::printf("  host under RTSan: %s\n", host.death().c_str());
+        check(exited && WIFEXITED(host.status()) && WEXITSTATUS(host.status()) != 0,
+              "RTSan halted the host on its own, report finished");
+    }
     host.kill_now();
     report_loop(st);
     std::printf("  removed at block %llu after %d consecutive misses; it was in instance %d (%s); "
@@ -1652,12 +1670,6 @@ int scenario_worker(const Args& a) {
     check(h.unity_after_half == 0, "and stayed there");
     check(h.unity >= step / 2, "before the change, the input passed at unity");
     return 0;
-}
-
-bool wait_exit(Host& host, uint64_t timeout_ns) {
-    const uint64_t end = monotonic_ns() + timeout_ns;
-    while (host.alive() && monotonic_ns() < end) usleep(5000);
-    return host.reaped();
 }
 
 // What a plugin declares is checked against what it does before the engine
