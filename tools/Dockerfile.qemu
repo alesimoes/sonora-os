@@ -11,6 +11,7 @@ RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
  for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
  if apt-get $A update && apt-get $A install -y --no-install-recommends \
       qemu-system-x86 \
+      qemu-utils \
       ovmf \
     ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
     [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \

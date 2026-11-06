@@ -529,6 +529,9 @@ private:
     std::deque<uint64_t> restart_times_;
     uint64_t streak_samples_[plugin::kMaxInstances] = {};
     int32_t culprit_ = -1;
+    // When poll() first saw the slot removed with the host still alive.
+    uint64_t removed_seen_ms_ = 0;
+    bool removed_seen_ = false;
     uint32_t restarts_total_ = 0;
     bool down_ = false;
     bool refused_ = false;

@@ -38,10 +38,19 @@ file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/dsp-reports)
 # One ctest per processor: its suite against its quality.json and golden
 # files, writing build/dsp-reports/<name>.json. CPU is not measured here:
 # shared CI runners say nothing about the reference machine (§3.5).
+# TIMING: the suite holds a wall-clock bar timed sequentially (a worst block
+# against a period, or against a quiet run measured before it), so it runs
+# alone under `ctest -j` (RUN_SERIAL) and carries the "timing" label. The
+# interleaved ratio every suite holds (check_denormals) needs neither.
 function(sonora_native_quality_test name)
+  cmake_parse_arguments(_q "TIMING" "" "" ${ARGN})
   add_test(NAME native_${name}
     COMMAND sonora-dsp-measure --processor ${name}
             --quality ${CMAKE_CURRENT_SOURCE_DIR}/quality.json
             --golden ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden
             --report ${CMAKE_BINARY_DIR}/dsp-reports)
+  if(_q_TIMING)
+    set_property(TEST native_${name} PROPERTY RUN_SERIAL TRUE)
+    set_property(TEST native_${name} APPEND PROPERTY LABELS timing)
+  endif()
 endfunction()

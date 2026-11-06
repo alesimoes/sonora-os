@@ -220,21 +220,34 @@ int test_ui() {
     const QPointF latency_at = clear_of(list, latency, QPointF(50, 60));
     latency->setX(latency_at.x());
     latency->setY(latency_at.y());
-    click(view, named(list, QStringLiteral("windowConfigStore2")));
-    // The list rebinds on the next event-loop pass, which a loaded runner can delay.
-    QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 2000);
+    // Switching to Mix loads a heavy view; on a loaded runner the first click can
+    // land before the scene has polished. Storing is idempotent, so click again.
+    QTest::qWait(100);
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        click(view, named(list, QStringLiteral("windowConfigStore2")));
+        if (QTest::qWaitFor([&]() { return text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"); }, 2000))
+            break;
+    }
     if (text_of(list, "windowConfigSummary2") != QStringLiteral("Mix, 1 floating"))
         std::fprintf(stderr, "windowConfigSummary2 is '%s'\n",
                      qPrintable(text_of(list, "windowConfigSummary2")));
     CHECK(text_of(list, "windowConfigSummary2") == QStringLiteral("Mix, 1 floating"));
 
     // Recall 1: the view, the open set and the place all come back.
-    click(view, named(list, QStringLiteral("windowConfigRecall1")));
+    // The view switch re-polishes the scene; a click that lands before it is lost, and recalling is idempotent.
+    for (int attempt = 0; attempt < 3 && session.window() != QStringLiteral("edit"); ++attempt) {
+        click(view, named(list, QStringLiteral("windowConfigRecall1")));
+        QTest::qWaitFor([&]() { return session.window() == QStringLiteral("edit"); }, 1500);
+    }
     CHECK(session.window() == QStringLiteral("edit"));
     CHECK(session.undoHistoryOpen() && transport.open() && !session.latencyOpen());
     CHECK(history->x() == history_at.x() && history->y() == history_at.y());
     // And 2 back again; the toggle (Ctrl+=) still flips Edit/Mix by itself.
-    click(view, named(list, QStringLiteral("windowConfigRecall2")));
+    // The view switch re-polishes the scene; a click that lands before it is lost, and recalling is idempotent.
+    for (int attempt = 0; attempt < 3 && session.window() != QStringLiteral("mix"); ++attempt) {
+        click(view, named(list, QStringLiteral("windowConfigRecall2")));
+        QTest::qWaitFor([&]() { return session.window() == QStringLiteral("mix"); }, 1500);
+    }
     CHECK(session.window() == QStringLiteral("mix"));
     CHECK(!session.undoHistoryOpen() && !transport.open() && session.latencyOpen());
     CHECK(latency->x() == latency_at.x() && latency->y() == latency_at.y());

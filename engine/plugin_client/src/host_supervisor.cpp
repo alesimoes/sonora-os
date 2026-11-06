@@ -1162,8 +1162,23 @@ SupervisedChain::Event SupervisedChain::poll(uint64_t now_ms) {
     } else {
         for (uint64_t& n : streak_samples_) n = 0;
     }
+    // A host that crashed may still be dying when the audio side has counted
+    // its 8 misses (~21 ms; a sanitizer's SEGV handler takes far longer).
+    // Judged at once, the user would read "removed" for a crash. So a removed
+    // host that is still alive gets a grace, measured in now_ms across polls:
+    // nothing here waits, and a host that only hung is killed by replace()
+    // after it.
+    constexpr uint64_t kExitGraceMs = 500;
+    const bool alive = current_->running();
+    if (removed && alive) {
+        if (!removed_seen_) {
+            removed_seen_ = true;
+            removed_seen_ms_ = now_ms;
+        }
+        if (now_ms - removed_seen_ms_ < kExitGraceMs) return Event::None;
+    }
     std::string reason;
-    if (!current_->running()) {
+    if (!alive) {
         reason = "the host " + current_->exit_text();
     } else if (removed) {
         reason = "removed after " + std::to_string(kMaxConsecutiveMisses) + " missed blocks";
@@ -1187,6 +1202,7 @@ SupervisedChain::Event SupervisedChain::replace(uint64_t now_ms, const std::stri
     // until the plan naming its slot is retired. Signalled, not waited for:
     // a host stuck in D state would hold the control thread in waitpid.
     // running() reaps it later, or let_go() once its slot is retired.
+    removed_seen_ = false;
     current_->signal_kill();
     while (!restart_times_.empty() && now_ms - restart_times_.front() > sup_.config().restart_window_ms)
         restart_times_.pop_front();

@@ -142,7 +142,7 @@ if [[ "$(uname -s)" != Linux ]]; then
 fi
 "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" \
   -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" -e SONORA_UI_SCOPE="${SONORA_UI_SCOPE:-all}" \
-  -e SONORA_SKIP_SLOW="${SONORA_SKIP_SLOW:-0}" -e SONORA_CTEST_LABELS="${SONORA_CTEST_LABELS:-}" \
+  ${SONORA_DSP_QUICK:+-e SONORA_DSP_QUICK="$SONORA_DSP_QUICK"} -e SONORA_SKIP_SLOW="${SONORA_SKIP_SLOW:-0}" -e SONORA_CTEST_LABELS="${SONORA_CTEST_LABELS:-}" \
   -e CCACHE_DIR=/ccache -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=10G "${BUILD_VOL[@]}" \
   -v sonora-ccache:/ccache \
   -v "$(host_path "$ROOT"):/src" "${OUT_MOUNT[@]}" -w /src "$IMAGE" \

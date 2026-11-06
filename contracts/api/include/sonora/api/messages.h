@@ -161,9 +161,6 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
-// 43 (ADR-0031 §6; follows 42): the commands session.consolidate and
-//   session.consolidate_cancel, and EventKind::Consolidate, which a
-//   version-42 decoder refuses as an unknown kind.
 // 49 (ui.mixer.bounce; follows 48, the highest any open PR reserved when
 //   this was cut): the commands mix.bounce and mix.bounce_cancel, the
 //   capability "mix.bounce", and EventKind::Bounce, which a version-42
@@ -172,16 +169,37 @@ namespace sonora::api {
 // 56 (plugins.graph.freeze, plugins.offline; ADR-0051): the commands
 //   track.freeze, track.commit, track.process_selection, track.unfreeze and
 //   track.render_cancel, the capability "track.render", EventKind::Render
-//   (a version-49 decoder refuses it as an unknown kind), and the optional
-//   "freeze" key of an AddPlaylist operation and of a playlist in the undo
-//   window, which a version-49 decoder refuses as an unknown key. 50 to 55
-//   are other PRs' and are not in this tree.
+//   (10; a version-49 decoder refuses it as an unknown kind), and the
+//   optional "freeze" key of an AddPlaylist operation and of a playlist in
+//   the undo window, which a version-49 decoder refuses as an unknown key.
+// 61 (interchange.audio.export; 50 to 60 are other PRs'): mix.bounce takes
+//   the words file=, rate= and dither= and format=int16. A version-49 engine
+//   would refuse them one by one; the bump makes it refuse the connection
+//   instead of writing a 24-bit BWF for a request that asked for a FLAC.
+// 62 (daw.model.session_mgmt, ADR-0030 amendment; follows 61, the highest taken in
+//   this bundle): a Load whose file starts with kLoadTemplatePrefix opens
+//   a template as a new session in a fresh Untitled folder, never in the
+//   template's own. A version-42 engine refuses the path as not absolute.
+// 63 (ADR-0031 §6, session.consolidate; main reserved 43 before this bundle
+//   merged, renumbered after 62): the commands session.consolidate and
+//   session.consolidate_cancel, and EventKind::Consolidate (9), which an
+//   older decoder refuses as an unknown kind.
 // 65 (ADR-0057, plugin telemetry and descriptor hints): PluginParam carries
 //   `section`, `widget` and `curve_source`, PluginInfo carries `meters` and
 //   `curves`, and PluginTelemetry (wire type 10) streams an insert's meters
 //   and curves at no more than kTelemetryMaxHz. A peer of another version is
 //   refused at Hello, as for every bump, so no half-understood catalog is read.
-constexpr uint32_t kProtocolVersion = 65;
+// 66 (editing-ui bundle): the changes numbered 61 to 63 above landed together
+//   on top of 65; a peer of 65 or lower is refused at Hello.
+constexpr uint32_t kProtocolVersion = 66;
+
+// ModelAction::Load's file, when it starts with this and names a template's
+// session file: the engine makes a new Untitled folder in its sessions
+// folder, copies the template's "Plugin State" and "Plugin Files" into it,
+// and enters that folder with the document the Load carries. The template's
+// folder is only read, so a take, an autosave or a failed Save As cannot
+// write into it (ADR-0030 section 3). A path never starts with '@'.
+inline constexpr const char* kLoadTemplatePrefix = "@template:";
 
 // Hello::capabilities: transport.play and transport.toggle_play take an
 // "A-B" frame range as their argument and play it with pre- and post-roll.
@@ -461,21 +479,21 @@ enum class EventKind : uint32_t {
     // start, replaced at every change and at every ping while measuring; a
     // client that attaches later is sent it. Protocol 22.
     Latency = 7,
-    // A consolidate render (ADR-0031 §6, protocol 43): `insert` is the
-    // track's model id, `flags` a kConsolidate* state, `frame` the fraction
-    // rendered in thousandths while Running, `text` why it Failed or what
-    // finished it. One stands from the first request, replaced at every
-    // step and held after the last one until the next request, so a failure
-    // stays on screen until the operator dismisses it and a client that
-    // attaches later is sent it.
-    Consolidate = 8,
     // A Bounce Mix render (api/bounce.h, protocol 49): `frame` the fraction
     // rendered in thousandths, `insert` the frames in the file once Done,
     // `flags` a BounceState, `text` the file's relative path once Done or why
     // it Failed or was Cancelled. One stands from the first progress, held
     // after the last until the next bounce, so a failure stays on screen
     // until dismissed and a client that attaches later is sent it.
-    Bounce = 9,
+    Bounce = 8,
+    // A consolidate render (ADR-0031 §6, protocol 63): `insert` is the
+    // track's model id, `flags` a kConsolidate* state, `frame` the fraction
+    // rendered in thousandths while Running, `text` why it Failed or what
+    // finished it. One stands from the first request, replaced at every
+    // step and held after the last one until the next request, so a failure
+    // stays on screen until the operator dismisses it and a client that
+    // attaches later is sent it.
+    Consolidate = 9,
     // A render in place (api/render.h, protocol 56): `frame` the fraction in
     // thousandths, `insert` the track's model id, `flags` a RenderState,
     // `text` what was done once Done or why it Failed or was Cancelled. One

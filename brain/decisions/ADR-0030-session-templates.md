@@ -255,4 +255,39 @@ loading it, for a browser that wants to grey out a newer one.
 - **New from Template as an empty-path Load**: the plugin states would be
   lost (§3).
 - **A `NewFromTemplate` engine action now**: the clean form, deferred only
-  because of who holds the files this round (§3).
+  because of who held the files; the 2026-11-04 amendment reaches the same
+  end with a prefix on `Load`'s path.
+
+## Amendment, 2026-11-04: the engine never enters a template's folder (protocol 54)
+
+Closes the hazard of section 3 ("No take in a template's folder") at the
+engine, which is where it can be closed. A `Load` whose file starts with
+`kLoadTemplatePrefix` (`@template:`, then the template's absolute session
+file) is a New from Template:
+
+1. the engine checks the file is a regular `.sonora` file and that it has a
+   sessions folder (`--dir`'s parent); otherwise the Load is refused with the
+   reason and the session is untouched;
+2. it validates the carried document before any folder is made, as every
+   Load does;
+3. it makes a fresh Untitled folder under the sessions folder, copies the
+   template's `Plugin State/` and `Plugin Files/` into it (regular files
+   only, never through a link; the template is only read), and enters that
+   folder. A failure at the copy or the entry removes the new folder, so a
+   refused Load leaves nothing behind;
+4. the window then Saves As to `<sessions>/<Name>/<Name>.sonora` as before.
+   If that Save As fails, the session is open unsaved in an Untitled folder
+   that the engine's own untitled handling (autosave, cleanup, first Save
+   names it) already covers. No take, autosave or backup can reach the
+   template.
+
+The window sends the prefixed path from `newSessionFromTemplate`; the
+Load, the Save As that waits for its answer and the held notice are as in
+section 3. `SessionModel::inTemplateFolder()` stays, now comparing canonical
+paths, for an engine that was pointed at a template's folder by Open; it is
+no longer reachable through New from Template. A version-42 engine refuses
+the prefixed path as not absolute, loudly. No new `ModelAction` was needed,
+which keeps the wire change to one constant; the copy is synchronous on the
+control thread because a template holds states, not audio (a template with
+large plugin files, ADR-0029, would block control for the copy: the saver
+thread is the follow-up if that is measured).
