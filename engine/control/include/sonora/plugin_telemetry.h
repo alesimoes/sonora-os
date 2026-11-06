@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 
 #include "sonora/api/messages.h"
 #include "sonora/plugin/telemetry.h"
@@ -30,7 +31,7 @@ inline bool telemetry_frame(const api::PluginInfo& info, uint64_t insert,
     out.sequence = s.sequence;
     out.meter_mask = meters >= 32 ? s.meter_mask : (s.meter_mask & ((1u << meters) - 1u));
     out.meters.assign(s.meters, s.meters + meters);
-    out.curves.assign(curves, {});
+    out.curves.assign(curves, std::vector<float>());
     for (uint32_t c = 0; c < curves; ++c) {
         const uint32_t n = std::min(s.curve_points[c], info.curves[c].points);
         out.curves[c].assign(s.curves[c], s.curves[c] + n);
