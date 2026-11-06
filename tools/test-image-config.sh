@@ -405,7 +405,9 @@ if [ -f "$SMOKE_SCRIPT" ]; then
   grep -q 'first frame after' "$SMOKE_SCRIPT" || bad "smoketest does not look for the UI's first-frame line"
   grep -q 'kill_and_recover sonora-ui.service' "$SMOKE_SCRIPT" || bad "smoketest does not SIGKILL the UI"
   grep -q 'kill_and_recover sonora-compositor.service' "$SMOKE_SCRIPT" || bad "smoketest does not SIGKILL labwc"
-  grep -qx 'RECOVER_MS=3000' "$SMOKE_SCRIPT" || bad "smoketest recovery limit is not ADR-0010's 3 s"
+  # shellcheck disable=SC2016 # literal text of the script
+  grep -qx 'RECOVER_MS=\$((3000 \* SLOW))' "$SMOKE_SCRIPT" || bad "smoketest recovery limit is not ADR-0010's 3 s (times sonora.slow, 1 by default)"
+  grep -q '^SLOW=1$' "$SMOKE_SCRIPT" || bad "smoketest slow multiplier does not default to 1"
   grep -q 'sonora\.break_ui' "$SMOKE_SCRIPT" || bad "smoketest cannot inject a repeated UI failure"
   grep -q 'fgconsole' "$SMOKE_SCRIPT" || bad "smoketest does not check the foreground VT after the fallback"
   grep -q 'find /dev/dri' "$SMOKE_SCRIPT" || bad "smoketest does not record the render node situation"
@@ -414,6 +416,17 @@ grep -q -- '--gui)' "$BOOT_QEMU" || bad "test-boot-qemu.sh has no --gui mode"
 grep -q -- '--gui-broken)' "$BOOT_QEMU" || bad "test-boot-qemu.sh has no --gui-broken mode"
 grep -q 'sonora.gui sonora.break_ui' "$BOOT_QEMU" || bad "--gui-broken does not pass sonora.break_ui"
 grep -q 'iso size' "$BOOT_QEMU" || bad "test-boot-qemu.sh does not record the ISO size"
+
+# TCG fallback for hosts without /dev/kvm: one shared policy, every QEMU test
+# uses it, and exit codes tell skip (77) and inconclusive (3) from fail (1).
+QEMU_ACCEL="$ROOT/tools/lib/qemu-accel.sh"
+[ -f "$QEMU_ACCEL" ] || bad "missing tools/lib/qemu-accel.sh"
+grep -q 'tcg,thread=multi' "$QEMU_ACCEL" || bad "qemu-accel.sh has no multi-thread TCG fallback"
+grep -q 'QEMU_EXIT_SKIP=77' "$QEMU_ACCEL" || bad "qemu-accel.sh does not define the skip exit code"
+for t in test-boot-qemu.sh test-install-qemu.sh test-write-usb.sh; do
+  grep -q 'lib/qemu-accel.sh' "$ROOT/tools/$t" || bad "$t does not use tools/lib/qemu-accel.sh"
+  grep -q 'qemu_scale' "$ROOT/tools/$t" || bad "$t does not scale its timeouts for TCG"
+done
 
 # --- Windows plugins: Wine and yabridge in the image (ADR-0017 Y6) ---
 YB_HOOK="$ROOT/iso/config/hooks/normal/0200-sonora-yabridge.hook.chroot"
