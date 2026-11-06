@@ -154,6 +154,19 @@ details.tech[open]>summary{margin-bottom:12px}
 .fr.done .fc2.past{background:none;color:transparent}
 .fr:not(.fh) .ft .ftt{display:inline}
 .fr.done .ft .ftt{display:inline-block;max-width:calc(100% - 50px);vertical-align:bottom;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* tempo do build */
+.tcard{background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--ok);border-radius:4px;padding:12px 14px;margin-bottom:6px}
+.thead{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;font-size:14px}.thead b{font-size:16px}.thead .eta{font-weight:700;color:var(--ok);font-size:16px}.thead small{color:var(--warn);flex-basis:100%}
+.pbar{height:10px;background:var(--raised);border-radius:5px;margin:8px 0 4px;overflow:hidden}.pbar i{display:block;height:100%;background:var(--ok)}
+.pl{font-size:12px;color:var(--muted);margin-bottom:8px}
+.stps{display:flex;flex-wrap:wrap;gap:6px}
+.stp{min-width:120px;background:var(--raised);border:1px solid var(--line);border-top:3px solid var(--line2);border-radius:4px;padding:5px 10px}
+.stp b{display:block;font-size:13px}.stp span{font-size:12px;font-weight:600}.stp small{display:block;font-size:11px;color:var(--faint)}
+.stp.feito{border-top-color:var(--ok)}.stp.feito span{color:var(--ok)}
+.stp.rodando{border-top-color:var(--accent);background:rgba(63,193,176,.12)}.stp.rodando span{color:var(--accent)}
+.stp.falhou{border-top-color:var(--bad)}.stp.falhou span{color:var(--bad)}
+.stp.afazer span{color:var(--faint);font-weight:400}
+.tnext{margin-top:8px;font-size:13px;color:var(--muted)}
 /* tira de agentes pequena */
 .people.sm{grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px}
 .people.sm .ag{padding:8px 10px;gap:10px}
@@ -358,11 +371,26 @@ function renderPeople(s){
   $('people').innerHTML=list.map(personCard).join('')||'<div class="empty">Nenhum agente.</div>';
   const o=s.orchestrator,runs=((o&&o.runs)||[]).length;
   $('pnote').textContent=o?(runs?'':'Orquestrador automático: nenhum agente em execução'+((o.paused||[]).length?' (as filas de planejamento e construção estão pausadas)':'')+'.'):'Orquestrador automático desligado.'}
+const hhmm=t=>new Date(t*1000).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+const mins=sec=>sec==null?'?':sec<90?Math.round(sec)+' s':Math.round(sec/60)+' min';
+function timeCard(s){
+  const bt=s.buildtime,l=bt&&bt.lot;
+  if(!l)return '<div class="mrow free"><b>Sem build rodando.</b> Quando um lote começar, as etapas, o tempo e a previsão aparecem aqui.</div>';
+  const now=Date.now()/1000,pct=l.progress==null?null:Math.round(l.progress*100);
+  const chips=l.steps.map(x=>{const el=x.status==='rodando'?Math.max(0,now-(now-(x.dur||0))):x.dur;
+    const detail=x.status==='feito'||x.status==='falhou'?mins(x.dur)+(x.avg?' (média '+mins(x.avg)+')':''):x.status==='rodando'?mins(x.dur)+(x.avg?' de ~'+mins(x.avg):' (sem histórico)'):(x.avg?'~'+mins(x.avg):'sem histórico');
+    return `<div class="stp ${x.status.replace(' ','')}"><b>${E(x.name)}</b><span>${x.status==='rodando'?'rodando agora':x.status}</span><small>${E(detail)}</small></div>`}).join('');
+  const nx=bt.next;
+  return `<div class="tcard"><div class="thead"><b>Lote em andamento${l.prs.length?': '+l.prs.map(n=>'#'+n).join(' '):''}</b><span>decorrido ${mins(l.elapsed)}</span><span class="eta">${l.eta?'termina ~'+hhmm(l.eta):'previsão: sem histórico'}</span>${l.missing.length?`<small>sem histórico para: ${E(l.missing.join(', '))} (a previsão não conta essas etapas)</small>`:''}</div>
+    <div class="pbar"><i style="width:${pct==null?Math.round(100*l.steps.filter(x=>x.status==='feito').length/l.steps.length):pct}%"></i></div><div class="pl">${pct==null?'barra pelas etapas feitas':pct+'% estimado'} · ${l.steps.filter(x=>x.status==='feito').length} de ${l.steps.length} etapas feitas</div>
+    <div class="stps">${chips}</div>
+    ${nx?`<div class="tnext">Próximo lote${nx.prs.length?' ('+nx.prs.map(n=>'#'+n).join(' ')+')':''}: ${nx.start?'começa ~'+hhmm(nx.start):'começa quando este terminar (sem previsão por falta de histórico)'}${nx.start?(nx.end?', termina ~'+hhmm(nx.end):' (sem histórico da duração de um lote)'):''}</div>`:''}</div>`}
 function renderMachine(s){
   const lock=s.lock||[],now=Date.now()/1000;
-  if(!lock.length){$('mach').innerHTML='<div class="mrow free"><b>Máquina livre.</b> Nenhum build rodando.</div>';return}
+  const tc=timeCard(s);
+  if(!lock.length){$('mach').innerHTML=tc+'<div class="mrow free"><b>Máquina livre.</b> Nenhum build rodando.</div>';return}
   const idOf=r=>{const a=s.agents.find(a=>a.label===r.who);return r.builder?['builder','builder']:a?['agent',a.id]:['',''] };
-  $('mach').innerHTML=lock.map((r,i)=>{const [k,id]=idOf(r);
+  $('mach').innerHTML=tc+lock.map((r,i)=>{const [k,id]=idOf(r);
     return `<div class="mrow ${r.role} ${k?'clk':''}" ${k?`data-k="${k}" data-id="${E(id)}"`:''}><span class="mn">${r.role==='holds'?'Rodando agora':i+'º na fila'}</span><span class="mw">${E(r.who)}</span><span class="mt">${r.role==='holds'?'há ':'espera há '}${dur(Math.round(now-r.start))}</span><span class="mc">${E(r.cmd.replace(/^bash\s+\S*\//,'').slice(0,70))}</span></div>`}).join('')}
 function prStatus(p,t){
   if(t){const ph=t.phase||'';
@@ -410,8 +438,8 @@ function flowRows(s){
     }else{
       if(p.failed.length>(p.cancelled||[]).length)col=4;else if(p.pending.length)col=3;else if(p.base&&p.base!=='main'){col=2;pend='espera o PR da base '+p.base}else col=5}
     if(col===3){
-      if(bq)w.push(who('Builder','máquina · etapa '+(run.step||'iniciando'),run.started,{code:'BD',k:'builder',id:'builder'}));
-      else if(queued||ph==='aguardando vaga')w.push(who('Builder','na fila do lote',ts,{code:'BD',k:'builder',id:'builder',dim:true}));
+      if(bq){const l=s.buildtime&&s.buildtime.lot,cur=l&&l.steps.find(x=>x.status==='rodando');const tm=cur?cur.name+' · '+mins(cur.dur)+(cur.avg?' de ~'+mins(cur.avg):' (sem histórico)')+(l.eta?' · termina ~'+hhmm(l.eta):' · previsão: sem histórico'):'etapa '+(run.step||'iniciando');w.push(who('Builder',tm,null,{code:'BD',k:'builder',id:'builder'}))}
+      else if(queued||ph==='aguardando vaga'){const nx=s.buildtime&&s.buildtime.next;w.push(who('Builder','na fila'+(nx&&nx.start?' · começa ~'+hhmm(nx.start):''),nx&&nx.start?null:ts,{code:'BD',k:'builder',id:'builder',dim:true}))}
       else w.push(who('CI do GitHub',t?String(t.next||''):'checks rodando',ts,{code:'BD',dim:true}));
     }
     if(col===4){const f=t&&t.fixer&&runByName[t.fixer];
