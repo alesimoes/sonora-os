@@ -139,6 +139,12 @@ struct Fixture {
         c.scratch_dir = root;
         c.max_probes = 2;
         c.probe_timeout_ms = 20000;
+        // At normal priority here: the scanner's nice 10 and idle I/O class
+        // put it behind every other test of a loaded `ctest -j`, and the
+        // waits below are timed for a scanner that gets the CPU (under TSan
+        // the worker freed nothing for 5 s). test_priority keeps both.
+        c.nice = 0;
+        c.idle_io = false;
         return c;
     }
 };
@@ -155,11 +161,10 @@ bool until(PluginScanner& s, const std::function<bool()>& pred, uint64_t ms, boo
     return pred();
 }
 
-// Waits for a scan to end. Its children run at nice 10 and the idle I/O
-// class, by design (they must not take the CPU from the audio), so on a
-// loaded machine they are served last: under ThreadSanitizer and ctest -j a
-// cold scan of three probes outlasted a fixed 10 s, every probe started and
-// none answered yet. So the wait is bounded by the scan's progress, not by
+// Waits for a scan to end. Each child is a process of its own, slow to
+// start under a sanitizer on a loaded machine: under ThreadSanitizer and
+// ctest -j a cold scan of three probes outlasted a fixed 10 s, every probe
+// started and none answered yet. So the wait is bounded by the scan's progress, not by
 // the clock: it gives up once nothing has moved (no child started, no bundle
 // walked, no catalog published) for `idle_ms`. The default outlasts the
 // fixture's probe timeout, past which the scanner kills a child itself: a
@@ -680,7 +685,10 @@ void test_priority() {
     std::printf("priority\n");
     Fixture fx("priority");
     three(fx);
-    PluginScanner s(fx.config(false));
+    PluginScannerConfig c = fx.config(false);
+    c.nice = PluginScannerConfig{}.nice;
+    c.idle_io = PluginScannerConfig{}.idle_io;
+    PluginScanner s(c);
     check(scanned(s), "scanned");
     bool all = true;
     std::size_t n = 0;
