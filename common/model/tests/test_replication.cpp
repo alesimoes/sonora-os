@@ -234,8 +234,14 @@ std::vector<Operation> by_index() {
     return ops;
 }
 
+// The T among `ops`, which by_index() ordered.
+template <typename T>
+const T& of(const std::vector<Operation>& ops) {
+    return get<T>(ops[variant_index<T>()]);
+}
+
 const EditMidi& em_of(const std::vector<Operation>& ops) {
-    return get<EditMidi>(ops[variant_index<EditMidi>()]);
+    return of<EditMidi>(ops);
 }
 
 bool same_op(const Operation& a, const Operation& b) {
@@ -265,15 +271,15 @@ int test_every_operation_round_trips() {
     Operation back;
     CHECK(decode_operation(bytes, back, error));
     const auto& rt = get<RecordTake>(back);
-    CHECK(rt.region == get<RecordTake>(ops[variant_index<RecordTake>()]).region);
-    CHECK(rt.crossfades.size() == 1 && rt.crossfades[0] == get<RecordTake>(ops[variant_index<RecordTake>()]).crossfades[0]);
+    CHECK(rt.region == of<RecordTake>(ops).region);
+    CHECK(rt.crossfades.size() == 1 && rt.crossfades[0] == of<RecordTake>(ops).crossfades[0]);
     CHECK(encode_operation(ops[variant_index<SetSettings>()], bytes, error));
     CHECK(decode_operation(bytes, back, error));
-    CHECK(get<SetSettings>(back).settings == get<SetSettings>(ops[variant_index<SetSettings>()]).settings);
+    CHECK(get<SetSettings>(back).settings == of<SetSettings>(ops).settings);
     CHECK(encode_operation(ops[variant_index<SetMix>()], bytes, error));
     CHECK(decode_operation(bytes, back, error));
     CHECK(get<SetMix>(back).mix.solo_safe);
-    CHECK(get<SetMix>(back).mix.midi == get<SetMix>(ops[variant_index<SetMix>()]).mix.midi);
+    CHECK(get<SetMix>(back).mix.midi == of<SetMix>(ops).mix.midi);
     CHECK(encode_operation(ops[variant_index<AddTrack>()], bytes, error));
     CHECK(decode_operation(bytes, back, error));
     CHECK(get<AddTrack>(back).kind == TrackKind::Instrument);
