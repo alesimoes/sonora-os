@@ -74,6 +74,17 @@ else()
 endif()
 message(STATUS "Sanitizer build (time bars reported, not held): ${SONORA_SANITIZED}")
 
+# GCC's UBSan alignment check is quadratic on the session model's 62-way
+# Operation and Member variants (common/model/CMakeLists.txt says why); the
+# directories that work on them drop that one check when this is ON.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+   "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${SONORA_BUILD_TYPE_UPPER}}" MATCHES
+   "(^| )-fsanitize=([^ ]*,)?(undefined|alignment)")
+  set(SONORA_GCC_UBSAN_ALIGNMENT ON)
+else()
+  set(SONORA_GCC_UBSAN_ALIGNMENT OFF)
+endif()
+
 # Every executable lands in the build root, so build/sonora-engine stays where
 # tools/build-iso.sh and tools/test-engine-docker.sh look for it.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
