@@ -85,6 +85,8 @@ body.gal main>*:not(#gal){display:none}#gal{display:none}body.gal #gal{display:b
 /* visão simples */
 .sit{font-size:14px;line-height:1.5;font-weight:500;padding:8px 12px;margin-bottom:8px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:4px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
 .sit b{font-weight:700;color:var(--accent)}
+.sit .pgbar{display:inline-block;width:90px;height:8px;background:var(--line);border-radius:4px;overflow:hidden;vertical-align:middle;margin-left:4px}
+.sit .pgbar i{display:block;height:100%;background:var(--accent)}
 .sit .sitw{color:var(--warn)}.sit .sitb{color:var(--muted)}.sit span{white-space:nowrap}
 h2.h2{font-size:17px;font-weight:600;margin:22px 0 10px;display:flex;align-items:baseline;gap:12px}
 h2.h2 .hint,summary .hint{font-size:12px;font-weight:400;color:var(--faint)}
@@ -528,7 +530,9 @@ function renderSit(s){
   const age=o.updated_ts?Date.now()/1000-o.updated_ts:0;
   const coordNext=(s.coordinator&&s.coordinator.next)||'';
   const run=holder?E(String(holder.who||'').replace(/\s*\(.*\)$/,'').slice(0,40)):'nada';
-  $('sit').innerHTML=`<span><b>${(s.merged||[]).length}</b> merges hoje</span><span>Máquina: <b>${run}</b>${nw?' · '+nw+' na fila':''}</span><span>Próximo: <b>${E(coordNext||next)}</b></span>`
+  const pg=s.progress,pgBar=p=>`<span class="pgbar"><i style="width:${p}%"></i></span>`;
+  const prog=pg?`<span title="Só conta o que está na main e verificado (planning/progress.json): ${pg.done}/${pg.total} pontos, +${pg.doing} em andamento">Projeto: <b>${pg.pct}%</b> ${pgBar(pg.pct)}${(pg.fronts||[]).map(f=>` · ${E(f.title)} <b>${f.pct}%</b>`).join('')}</span>`:'';
+  $('sit').innerHTML=prog+`<span><b>${(s.merged||[]).length}</b> merges hoje</span><span>Máquina: <b>${run}</b>${nw?' · '+nw+' na fila':''}</span><span>Próximo: <b>${E(coordNext||next)}</b></span>`
     +(owner?`<span class="sitw">${owner} decisão(ões) do dono</span>`:'')+(age>120?'<span class="sitb">orquestrador pausado</span>':'')}
 
 function render(s){

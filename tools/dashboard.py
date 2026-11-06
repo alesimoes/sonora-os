@@ -294,8 +294,26 @@ def read_coordinator():
         return None
 
 
+def read_progress():
+    """How much of the project is done, from main's catalogue
+    (planning/progress.json on origin/main, tallied by tools/progress.py):
+    only merged and verified work counts, as in planning/PROGRESS.md."""
+    import importlib.util
+    root = orch_root()
+    run(["git", "-C", root, "fetch", "-q", "origin", "main"], timeout=60)
+    raw = run(["git", "-C", root, "show", "origin/main:planning/progress.json"])
+    spec = importlib.util.spec_from_file_location(
+        "sonora_progress", os.path.join(os.path.dirname(os.path.abspath(__file__)), "progress.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    overall, fronts, _ = mod.tally(json.loads(raw))
+    one = lambda t: {"pct": t.pct(), "done": t.done, "total": t.total, "doing": t.doing}
+    return dict(one(overall), fronts=[dict(one(t), title=f["title"]) for f, t, _ in fronts])
+
+
 def refresh_loop(agents_file):
     last_pr, prs, merged, gh_ok = 0, [], [], False
+    last_prog, progress = 0, None
     while True:
         errors = []
         try:
@@ -320,9 +338,15 @@ def refresh_loop(agents_file):
         except Exception as e:
             bt = None
             errors.append("build time: %s" % e)
+        if time.time() - last_prog > 300:
+            try:
+                progress = read_progress()
+            except Exception as e:
+                errors.append("progress: %s" % e)
+            last_prog = time.time()
         orch = clean_orch(read_orchestrator(), {p["number"] for p in prs} if gh_ok else None)
         with lock:
-            state.update(updated=int(time.time()), prs=prs, watchers=watchers, containers=containers, merged=merged, usage=read_usage(), orchestrator=orch, coordinator=read_coordinator(), lock=lk, buildtime=bt)
+            state.update(updated=int(time.time()), progress=progress, prs=prs, watchers=watchers, containers=containers, merged=merged, usage=read_usage(), orchestrator=orch, coordinator=read_coordinator(), lock=lk, buildtime=bt)
         agents = read_agents(labels, containers, lk)
         with lock:
             state.update(updated=int(time.time()), agents=agents, prs=prs, merged=merged,
