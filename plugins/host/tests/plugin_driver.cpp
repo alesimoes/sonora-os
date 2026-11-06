@@ -1557,42 +1557,65 @@ int scenario_nonfinite(const Args& a) {
     check(host.h->host_flags.load() & plugin::kHostFlushDenormals,
           "the host set FTZ/DAZ on its processing thread");
 #endif
-    const uint64_t total = 300, on = 100, off = 200;
+    // After `off`, the run goes on until kCompareAfter blocks were collected,
+    // not for a fixed count: a host starved under a loaded sanitizer run
+    // (RTSan, ctest -j) misses blocks, and a fixed 100 callbacks then left
+    // too few to compare (local CI, 2026-11-06). Bounded by `limit`.
+    const uint64_t on = 100, off = 200, kCompareAfter = 80, limit = 1200;
     uint64_t nonfinite_out = 0, zeroed = 0, bad_blocks = 0, clean_after = 0, compared_after = 0;
-    std::vector<std::vector<float>> inputs(total, std::vector<float>(kBlock));
+    uint64_t missed = 0, missed_after = 0, first_unequal = 0;
+    float unequal_got = 0.f, unequal_want = 0.f;
+    std::vector<std::vector<float>> inputs(limit, std::vector<float>(kBlock));
     Signal sig(1);
-    const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
+    const LoopStats st = run_periodic(clock, limit, [&](uint64_t i) {
         if (i == on) host.send(0, 0, 0, 1.f);
         if (i == off) host.send(0, 0, 0, 0.f);
         sig.sine(i, 440.0, 0.1f);
         std::copy(sig.buf[0].begin(), sig.buf[0].begin() + kBlock, inputs[i].begin());
         const int64_t from = host.run(sig.in.data(), sig.out.data(), kBlock, i);
-        if (from < 0) return true;
+        if (from < 0) {
+            ++missed;
+            if (i > off + 2) ++missed_after;
+            return true;
+        }
         const float* o = sig.obuf[0].data();
         bool had_zero = false, equal = true;
         for (uint32_t s = 0; s < kBlock; ++s) {
             if (!std::isfinite(o[s])) ++nonfinite_out;
             if (s % 4 == 0 && o[s] == 0.f && inputs[size_t(from)][s] != 0.f) had_zero = true;
-            if (o[s] != inputs[size_t(from)][s]) equal = false;
+            if (o[s] != inputs[size_t(from)][s] && equal) {
+                equal = false;
+                if (first_unequal == 0) {
+                    first_unequal = uint64_t(from);
+                    unequal_got = o[s];
+                    unequal_want = inputs[size_t(from)][s];
+                }
+            }
         }
         if (had_zero) ++bad_blocks, zeroed += kBlock / 4;
         if (uint64_t(from) > off + 2) {
             ++compared_after;
             if (equal) ++clean_after;
         }
-        return true;
+        return compared_after < kCompareAfter;
     });
     report_loop(st);
     const uint64_t counted0 = host.h->instances[0].nonfinite_samples.load();
     const uint64_t counted1 = host.h->instances[1].nonfinite_samples.load();
     std::printf("  %llu blocks carried replaced samples; host counted %llu against [0], %llu against [1]\n",
                 (unsigned long long)bad_blocks, (unsigned long long)counted0, (unsigned long long)counted1);
+    std::printf("  %llu block(s) missed, %llu after block %llu; %llu of %llu compared after it equal the input\n",
+                (unsigned long long)missed, (unsigned long long)missed_after, (unsigned long long)(off + 2),
+                (unsigned long long)clean_after, (unsigned long long)compared_after);
+    if (first_unequal != 0)
+        std::printf("  first block unlike its input: %llu (%.9g, input %.9g)\n", (unsigned long long)first_unequal,
+                    double(unequal_got), double(unequal_want));
     check(nonfinite_out == 0, "no NaN or Inf reached the engine");
     check(host.nonfinite_collected() == 0, "the engine's own check of what it collected found none (M4)");
     check(bad_blocks >= 50 && counted0 >= zeroed && counted0 % (kBlock / 4) == 0,
           "every NaN/Inf was replaced by 0 and counted against the plugin that wrote it");
     check(counted1 == 0, "the plugin after it saw only finite input and is not blamed");
-    check(compared_after > 50 && clean_after == compared_after,
+    check(compared_after >= kCompareAfter && clean_after == compared_after,
           "once the plugin stops, the chain passes the input unchanged");
     return 0;
 }
