@@ -140,16 +140,17 @@ class FakeForge(Forge):
 
     # -- merge train --------------------------------------------------
     def add_pr(self, n, branch, files=(), base="main", checks=None,
-               mergeable="yes", title=""):
+               mergeable="yes", title="", draft=False):
         self.prs[n] = {"branch": branch, "files": list(files), "base": base,
                        "state": "open", "mergeable": mergeable,
-                       "checks": dict(checks or {}), "head": "h0",
+                       "checks": dict(checks or {}), "head": "h0", "draft": draft,
                        "title": title or branch}
 
     def list_prs(self):
         self._chk("list_prs")
         return [{"number": n, "title": p.get("title", ""),
                  "branch": p["branch"], "base": p.get("base", "main"),
+                 "draft": p.get("draft", False),
                  "files": p["files"]}
                 for n, p in sorted(self.prs.items()) if p["state"] == "open"]
 

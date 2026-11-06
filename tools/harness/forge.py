@@ -229,7 +229,7 @@ class GhForge(Forge):
     def list_prs(self):
         out = self._ok(["gh", "pr", "list", "--state", "open", "--limit",
                         "100", "--json",
-                        "number,title,headRefName,baseRefName,files"],
+                        "number,title,headRefName,baseRefName,files,isDraft"],
                        timeout=60)
         try:
             rows = json.loads(out or "[]")
@@ -237,6 +237,7 @@ class GhForge(Forge):
             raise ForgeError(f"gh pr list: {e}")
         return [{"number": r["number"], "title": r.get("title", ""),
                  "branch": r.get("headRefName"), "base": r.get("baseRefName"),
+                 "draft": bool(r.get("isDraft")),
                  "files": [f["path"] for f in r.get("files", [])]}
                 for r in rows]
 

@@ -211,7 +211,7 @@ def sub_branch(feature, task):
     return f"sub/{feature}/{task}"
 
 
-def validate_assignments(table, plan):
+def validate_assignments(table, plan, track_engineers=None):
     errs = check_schema(load_schema("assignments.schema.json"), table)
     if errs:
         return errs
@@ -235,7 +235,7 @@ def validate_assignments(table, plan):
     orders = [r["order"] for r in rows.values()]
     if len(set(orders)) != len(orders) or min(orders) < 1:
         errs.append("order must be unique and start at 1 or more")
-    ok_agents = set(TRACK_ENGINEERS[plan["track"]])
+    ok_agents = set((track_engineers or TRACK_ENGINEERS)[plan["track"]])
     for tid, r in sorted(rows.items()):
         t = by[tid]
         if r["engineer"] not in ok_agents | {t["agent"]}:

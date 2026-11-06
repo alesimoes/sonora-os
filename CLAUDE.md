@@ -179,6 +179,12 @@ something below is a PR that waits an hour.
 - C++17, 4-space indent, `snake_case` members with a trailing underscore.
 - Comments explain *why*, never *what* the line already says. No comment that
   restates the code.
+- Modular code (owner, 2026-11-06): small single-purpose functions, one
+  domain per module, dependencies injected through interfaces, no god files
+  or giant switch functions. Source files stay under about 500 lines (a
+  guideline, not a blocker; `tools/pre-pr.sh` warns); a change that grows a
+  file already over it splits the file first, in the same PR. Tests too: one
+  test file per behaviour area, not one per library.
 - Every bug fixed in the real-time path gets a regression test first.
 - Decisions that shape the architecture go in `brain/decisions/` as an ADR
   before the code lands.

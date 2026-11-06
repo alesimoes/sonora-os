@@ -693,6 +693,16 @@ int check_latency_probe(Rig& rig) {
             }
             return false;
         }
+        // A take is answered when its gate opens: the window resident and
+        // the audio thread past the locate. Under a sanitizer on a loaded
+        // machine that outlasts one await, so it is awaited the way
+        // settled() waits for the probe; a reply that never comes still fails.
+        bool await_take(Session& s, uint64_t seq, CommandReply& out) {
+            for (int round = 0; round < 4; ++round) {
+                if (s.await(rig_, seq, out)) return true;
+            }
+            return false;
+        }
         int go() {
             Session s;
             EXPECT(s.open(rig_), "connect failed: " + s.error);
@@ -804,7 +814,7 @@ int check_latency_probe(Rig& rig) {
             EXPECT(s.await(rig_, s.command("track.toggle_arm", 0), r) &&
                        r.result == DispatchResult::Ok,
                    "arming failed: " + r.message);
-            EXPECT(s.await(rig_, s.command("transport.record"), r) &&
+            EXPECT(await_take(s, s.command("transport.record"), r) &&
                        r.result == DispatchResult::Ok,
                    "record failed: " + r.message);
             EXPECT(s.await(rig_, s.command("latency.set", -1, "500"), r) &&

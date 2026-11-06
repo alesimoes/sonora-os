@@ -449,6 +449,9 @@ class FakeLocalCI:
     def result(self, sha):
         return self.results.get(sha)
 
+    def prune(self, gone):
+        pass
+
     def start(self, sha, full=False, pre=False):
         if not self.free:
             return False

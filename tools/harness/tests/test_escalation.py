@@ -26,12 +26,15 @@ class ModelMap(unittest.TestCase):
         self.assertEqual(argv.count("--model"), 1)
         return argv[argv.index("--model") + 1]
 
-    def test_principal_engineer_is_the_only_opus(self):
-        self.assertEqual(self.model("principal-engineer"), "opus")
+    def test_principal_engineer_is_always_fable(self):
+        self.assertEqual(self.model("principal-engineer"), "fable")
         self.assertEqual(launcher.MODEL_OF_AGENT,
-                         {"principal-engineer": "opus"})
+                         {"principal-engineer": "fable"})
+        argv = launcher.build_command(["claude"], "principal-engineer", "p",
+                                      "m.json", "s.json", model="haiku")
+        self.assertEqual(argv[argv.index("--model") + 1], "fable")
 
-    def test_every_other_agent_launches_with_sonnet(self):
+    def test_every_other_agent_defaults_to_sonnet(self):
         names = {os.path.basename(p)[:-3] for p in glob.glob(
             os.path.join(REPO, ".claude", "agents", "*.md"))}
         names |= {"rt-engineer", "tester", "integrator", "lead", "architect",
@@ -52,13 +55,11 @@ class ModelMap(unittest.TestCase):
             def write(fn, model):
                 with open(os.path.join(ad, fn), "w") as f:
                     f.write(f"---\nname: x\nmodel: {model}\n---\n")
-            write("principal-engineer.md", "opus")
-            launcher.check_models(d, env={})
-            write("principal-engineer.md", "sonnet")
-            with self.assertRaises(launcher.ModelError):
+            for m in ("haiku", "sonnet", "opus", "fable"):
+                write("principal-engineer.md", m)
+                write("rt-engineer.md", m)
                 launcher.check_models(d, env={})
-            write("principal-engineer.md", "opus")
-            write("rt-engineer.md", "opus")
+            write("rt-engineer.md", "gpt-4")
             with self.assertRaises(launcher.ModelError):
                 launcher.check_models(d, env={})
         finally:
@@ -142,7 +143,7 @@ class Escalation(support.DaemonCase):
         o.tick()
         self.assertFalse(o.store.get_feature("p")["red_since"])
 
-    def test_trigger_attempts_spent_then_principal_runs_on_opus(self):
+    def test_trigger_attempts_spent_then_principal_runs_on_fable(self):
         o = self.make(floors={"daw": 1})
         self.script("eng-1", "die")
         o.store.add_task("a", "daw", "rt-engineer", files=["a/**"])
@@ -160,7 +161,7 @@ class Escalation(support.DaemonCase):
             argvs = [json.loads(x) for x in f if x.strip()]
         by_agent = {a[a.index("--agent") + 1]: a[a.index("--model") + 1]
                     for a in argvs}
-        self.assertEqual(by_agent["principal-engineer"], "opus")
+        self.assertEqual(by_agent["principal-engineer"], "fable")
         for agent, model in by_agent.items():
             if agent != "principal-engineer":
                 self.assertEqual(model, "sonnet", agent)
@@ -272,17 +273,16 @@ class AgentDefsFromDaemon(unittest.TestCase):
         self.assertEqual(d["description"], "Does lead.")
         self.assertEqual(d["tools"], ["Read", "Bash"])
 
-    def test_principal_gets_opus_others_sonnet(self):
+    def test_principal_gets_fable_others_sonnet(self):
         d, argv = self.defs("principal-engineer")
         self.assertEqual((d["model"], argv[argv.index("--model") + 1]),
-                         ("opus", "opus"))
+                         ("fable", "fable"))
         d, argv = self.defs("lead")
         self.assertEqual((d["model"], argv[argv.index("--model") + 1]),
                          ("sonnet", "sonnet"))
 
-    def test_other_opus_file_is_refused_and_never_forwarded(self):
-        with self.assertRaises(launcher.ModelError):
-            launcher.check_models(self.root, env={})
+    def test_file_model_is_never_forwarded(self):
+        launcher.check_models(self.root, env={})   # opus is a tier model
         d, _ = self.defs("tester")
         self.assertEqual(d["model"], "sonnet")
 
