@@ -84,7 +84,7 @@ int ViewState::track_at(double y) const {
 int ViewState::autolane_at(int index, double y) const {
     if (!autolanes_open(index)) return -1;
     const double rel = y - y_of_track(index) - track_height;
-    if (rel < 0) return -1;
+    if (rel < 0 || rel >= kLaneCount * autolane_height) return -1;
     return std::min(kLaneCount - 1, static_cast<int>(rel / autolane_height));
 }
 
@@ -291,8 +291,12 @@ EditController::EditController(TimelineDocument& doc) : doc_(doc) {
 void EditController::document_replaced() {
     drag_ = Drag{};
     follow_notice_.clear();
+    tempo_undo_.clear();
+    tempo_redo_.clear();
     sel_ = Selection{};
     autolanes_open_.clear();
+    comp_lanes_open_.clear();
+    lane_sel_ = LaneSelection{};
     if (!snapshot().edit->tracks.empty()) sel_.track = 0;
     has_saved_view_ = false;
     view_.scroll = 0;
@@ -428,6 +432,8 @@ void EditController::vertical_zoom(bool in) {
     // Lanes grow with the waveforms so a curve can be edited as finely as a
     // clip is read; the clamp keeps a lane usable at both ends.
     view_.autolane_height = std::clamp(ViewState::kAutolaneBaseHeight * view_.wave_scale, 32.0, 224.0);
+    view_.comp_lane_height =
+        std::clamp(ViewState::kCompLaneBaseHeight * view_.wave_scale, 32.0, 160.0);
     if (anchored) {
         refresh_rows();
         view_.scroll_y += anchor_y() - before;
@@ -474,9 +480,9 @@ Frames EditController::snapped(Frames f) const {
 }
 
 bool EditController::refuse_in_mode(const char* what, std::string& why) const {
-    if (mode_ == EditMode::Slip || mode_ == EditMode::Grid) return false;
-    why = std::string(what) + " in " + edit_mode_name(mode_) +
-          " mode is not built yet; use Slip or Grid";
+    // Spot trims and nudges as Slip does: only its mouse move asks for a time.
+    if (mode_ != EditMode::Shuffle) return false;
+    why = std::string(what) + " in Shuffle mode is not built yet; use Slip, Spot or Grid";
     return true;
 }
 
@@ -583,6 +589,20 @@ Hit EditController::hit(double x, double y) const {
         h.zone = HitZone::Automation;
         return h;
     }
+    if (const int cl = view_.complane_at(i, y); cl >= 0) {
+        h.lane = cl;
+        h.zone = HitZone::TakeLane;
+        const std::vector<Id> lanes = take_lane_ids(i);
+        if (static_cast<std::size_t>(cl) < lanes.size()) {
+            if (const Playlist* p = audio_playlist(*track(i), lanes[static_cast<std::size_t>(cl)])) {
+                const Frames f = view_.frame_at(x);
+                for (const Region& r : p->regions) {
+                    if (f >= r.position && f < r.end()) h.region = r.id;
+                }
+            }
+        }
+        return h;
+    }
     h.zone = HitZone::Lane;
     const Region* r = region_at(i, view_.frame_at(x));
     if (r == nullptr) return h;
@@ -602,11 +622,13 @@ Hit EditController::hit(double x, double y) const {
 
 bool EditController::press(double x, double y, std::string& why) {
     drag_ = Drag{};
+    lane_sel_ = LaneSelection{};
     const Hit h = hit(x, y);
     if (h.track < 0) return true;
     select_track(h.track);
     sel_.autolane = sel_.point = -1;
     if (h.zone == HitZone::Automation) return press_autolane(h, x, y, why);
+    if (h.zone == HitZone::TakeLane) return press_takelane(h, x, why);
 
     Drag::Kind kind = Drag::Kind::Range;
     const bool in_region = h.region != kNoId;
@@ -662,6 +684,18 @@ bool EditController::press(double x, double y, std::string& why) {
         sel_.start = r->position;
         sel_.end = r->end();
         sel_.insertion = r->position;
+        return true;
+    }
+    if (kind == Drag::Kind::Move && mode_ == EditMode::Spot) {
+        // Pro Tools' Spot mode: a click on a region asks where it starts,
+        // rather than dragging it.
+        const Region* r = find_region(snapshot(), h.region);
+        sel_.region = r->id;
+        sel_.start = r->position;
+        sel_.end = r->end();
+        sel_.insertion = r->position;
+        spot_request_ = r->id;
+        drag_ = Drag{};
         return true;
     }
     if (refuse_in_mode(kind == Drag::Kind::Move ? "Moving a region" : "Trimming a region", why)) {
@@ -754,6 +788,12 @@ void EditController::move(double x, double y) {
             }
             break;
         }
+        case Drag::Kind::Swipe: {
+            const Frames f = snapped(view_.frame_at(x));
+            drag_.start = std::min(drag_.press_frame, f);
+            drag_.end = std::max(drag_.press_frame, f);
+            break;
+        }
         case Drag::Kind::Point:
         case Drag::Kind::Stroke:
         case Drag::Kind::None: break;
@@ -765,6 +805,7 @@ bool EditController::release(double x, double y, std::string& why) {
     const Drag d = drag_;
     drag_ = Drag{};
     if (d.kind == Drag::Kind::Point || d.kind == Drag::Kind::Stroke) return release_autolane(d, why);
+    if (d.kind == Drag::Kind::Swipe) return release_swipe(d, why);
     if (d.kind == Drag::Kind::None || !d.moved) return true;
     switch (d.kind) {
         case Drag::Kind::Range:
@@ -797,6 +838,7 @@ bool EditController::release(double x, double y, std::string& why) {
                 return false;
             }
             break;
+        case Drag::Kind::Swipe:
         case Drag::Kind::Point:
         case Drag::Kind::Stroke:
         case Drag::Kind::None: break;
@@ -1010,13 +1052,22 @@ bool EditController::clear(std::string& why) {
     bool fade = false;
     if (!clear_fade_at_selection(fade, why)) return false;
     if (fade) return true;
-    if (refuse_shuffle("Clear", "cleared", why)) return false;
+    const bool shuffle = mode_ == EditMode::Shuffle;
     if (sel_.region != kNoId) {
         const TrackEdit* t = nullptr;
         const Region* r = find_region(snapshot(), sel_.region, &t);
         if (r == nullptr) {
             why = "the selected region is gone";
             return false;
+        }
+        if (shuffle) {
+            // The gap closes: every later region moves up by the region's length.
+            std::vector<Member> members{RemoveRegion{t->active_playlist, sel_.region}};
+            shuffle_shift(*active(t), r->end(), -r->length, members);
+            const int at = track_index(snapshot(), t->id);
+            if (!submit_compound(std::move(members), "Clear", "cleared", why)) return false;
+            note_shuffle_automation("Clear", at, 1);
+            return true;
         }
         std::vector<EditAutomation> follow;
         std::vector<const AutomationLane*> left;
@@ -1039,11 +1090,12 @@ bool EditController::clear(std::string& why) {
     for (int i = 0; i < e.count; ++i) {
         clear_range(*active(track(e.first + i)), e.a, e.b, [this]() { return doc_.reserve_id(); },
                     members);
+        if (shuffle) shuffle_shift(*active(track(e.first + i)), e.b, -(e.b - e.a), members);
     }
     // After the regions' members, which reserve ids in order; a lane edit
     // reserves none.
     std::vector<std::string> left_names;
-    if (automation_follows_edit_) {
+    if (automation_follows_edit_ && !shuffle) {
         for (int i = 0; i < e.count; ++i) {
             std::vector<const AutomationLane*> left;
             for (EditAutomation& f : follow_clear_ops(*track(e.first + i), e.a, e.b, &left)) {
@@ -1062,7 +1114,41 @@ bool EditController::clear(std::string& why) {
         return false;
     }
     if (!submit_compound(std::move(members), "Clear", "cleared", why)) return false;
-    note_left_behind("Clear", left_names);
+    if (shuffle) {
+        note_shuffle_automation("Clear", e.first, e.count);
+    } else {
+        note_left_behind("Clear", left_names);
+    }
+    return true;
+}
+
+bool EditController::spot_region(Frames to, std::string& why) {
+    if (mode_ == EditMode::Shuffle) {
+        why = "Spotting a region in Shuffle mode is not built yet; use Slip, Spot or Grid";
+        return false;
+    }
+    const Region* r = sel_.region != kNoId ? find_region(snapshot(), sel_.region) : nullptr;
+    if (r == nullptr) {
+        why = "select a region to spot";
+        return false;
+    }
+    if (to < 0) {
+        why = "a region cannot start before the session start";
+        return false;
+    }
+    const Id id = r->id;
+    if (to == r->position) return true;
+    MoveRegion op;
+    if (!resolve_move(snapshot(), id, to, doc_.reserve_id(), op)) {
+        why = "the region cannot be placed there";
+        return false;
+    }
+    if (!submit_move(op, why)) return false;
+    if (const Region* moved = find_region(snapshot(), id)) {
+        sel_.start = moved->position;
+        sel_.end = moved->end();
+        sel_.insertion = moved->position;
+    }
     return true;
 }
 
@@ -1098,14 +1184,47 @@ bool EditController::nudge(int direction, std::string& why) {
 // the selection) and "Repeat Command" (Duplicate a number of times, the
 // number asked in a dialog). The workflow only (ADR-0004).
 
+namespace {
+
+// "Gtr", "Gtr and Bass", "Gtr, Bass and Keys".
+std::string spoken_list(const std::vector<std::string>& names) {
+    std::string out;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (i > 0) out += i + 1 == names.size() ? " and " : ", ";
+        out += names[i];
+    }
+    return out;
+}
+
+}  // namespace
+
 bool EditController::refuse_shuffle(const char* gesture, const char* nothing_was,
                                     std::string& why) const {
     if (mode_ != EditMode::Shuffle) return false;
     why = std::string(gesture) +
-          " in Shuffle mode would move every later region to close or open the gap, and that "
-          "ripple is not built yet (it waits for ShiftRegions); use Slip, Spot or Grid. "
-          "Nothing was " + nothing_was + ".";
+          " in Shuffle mode would close the gaps it leaves, and that is not built for it yet; "
+          "use Slip, Spot or Grid. Nothing was " + nothing_was + ".";
     return true;
+}
+
+void EditController::note_shuffle_automation(const char* gesture, int first, int count) {
+    // Pro Tools' Automation Follows Edit would carry the lanes along with the
+    // ripple; ours stay put, and an edit that leaves a lane out of step with
+    // its audio says so.
+    std::vector<std::string> names;
+    for (int i = 0; i < count; ++i) {
+        const TrackEdit* t = track(first + i);
+        if (t == nullptr) continue;
+        const bool any = std::any_of(t->automation.begin(), t->automation.end(), [](const auto& l) {
+            return l != nullptr && !l->points.empty();
+        });
+        if (any) names.push_back(t->name);
+    }
+    follow_notice_.clear();
+    if (names.empty()) return;
+    follow_notice_ = std::string("Automation did not follow the Shuffle ") + gesture + ": " +
+                     spoken_list(names) + (names.size() == 1 ? " keeps" : " keep") +
+                     " its automation where it was";
 }
 
 int EditController::span() const {
@@ -1192,6 +1311,10 @@ bool EditController::submit_following(Member op, std::vector<EditAutomation> fol
 }
 
 bool EditController::submit_move(const MoveRegion& op, std::string& why) {
+    // A clip in a group takes its group along (ADR-0052). Automation does not
+    // follow a group's move yet: Automation Follows Edit acts on one clip.
+    std::vector<Member> group;
+    if (group_move_ops(op, group)) return submit_compound(std::move(group), "Move Group", "moved", why);
     std::vector<EditAutomation> follow;
     std::vector<std::string> left_names;
     const TrackEdit* t = nullptr;
@@ -1230,7 +1353,6 @@ bool EditController::copy(std::string& why) {
 
 bool EditController::cut(std::string& why) {
     if (autolane_selected()) return automation_copy(true, why);
-    if (refuse_shuffle("Cut", "cut", why)) return false;
     Span e;
     Clipboard clip;
     if (!edit_range(e, "cut", why) || !copy_lanes(e, clip, "cut", why)) return false;
@@ -1238,32 +1360,21 @@ bool EditController::cut(std::string& why) {
     for (int i = 0; i < e.count; ++i) {
         clear_range(*active(track(e.first + i)), e.a, e.b, [this]() { return doc_.reserve_id(); },
                     members);
+        if (mode_ == EditMode::Shuffle) {
+            shuffle_shift(*active(track(e.first + i)), e.b, -(e.b - e.a), members);
+        }
     }
     // The clipboard changes only with the edit: a refused Cut leaves both.
     if (!submit_compound(std::move(members), "Cut", "cut", why)) return false;
+    if (mode_ == EditMode::Shuffle) note_shuffle_automation("Cut", e.first, e.count);
     clipboard_ = std::move(clip);
     ++clipboard_serial_;
     select_span(e.first, e.count, e.a, e.b);
     return true;
 }
 
-namespace {
-
-// "Gtr", "Gtr and Bass", "Gtr, Bass and Keys".
-std::string spoken_list(const std::vector<std::string>& names) {
-    std::string out;
-    for (std::size_t i = 0; i < names.size(); ++i) {
-        if (i > 0) out += i + 1 == names.size() ? " and " : ", ";
-        out += names[i];
-    }
-    return out;
-}
-
-}  // namespace
-
 bool EditController::paste(std::string& why) {
     if (autolane_selected()) return automation_paste(why);
-    if (refuse_shuffle("Paste", "pasted", why)) return false;
     if (track(sel_.track) == nullptr) {
         why = "select a track first; nothing was pasted";
         return false;
@@ -1312,12 +1423,23 @@ bool EditController::paste(std::string& why) {
         return false;
     }
     const Frames at = sel_.has_range() ? sel_.start : sel_.insertion;
+    const bool shuffle = mode_ == EditMode::Shuffle;
     std::vector<Member> members;
     for (int i = 0; i < fit; ++i) {
-        paste_clip(*active(track(sel_.track + i)), at, lane_for(i),
-                   [this]() { return doc_.reserve_id(); }, members);
+        const Playlist& p = *active(track(sel_.track + i));
+        const auto next = [this]() { return doc_.reserve_id(); };
+        if (shuffle && sel_.has_range()) {
+            // The selection is replaced: it goes, and what follows moves by
+            // the difference between the clipboard's length and its own.
+            clear_range(p, sel_.start, sel_.end, next, members);
+            shuffle_shift(p, sel_.end, clipboard_.length() - (sel_.end - sel_.start), members);
+        } else if (shuffle) {
+            shuffle_open(p, at, clipboard_.length(), next, members);
+        }
+        paste_clip(p, at, lane_for(i), next, members, !shuffle);
     }
     if (!submit_compound(std::move(members), "Paste", "pasted", why)) return false;
+    if (shuffle) note_shuffle_automation("Paste", sel_.track, fit);
     select_span(sel_.track, fit, at, at + clipboard_.length());
     why.clear();
     if (!left_out.empty()) {
@@ -1329,24 +1451,26 @@ bool EditController::paste(std::string& why) {
 }
 
 bool EditController::duplicate(std::string& why) {
-    if (refuse_shuffle("Duplicate", "duplicated", why)) return false;
     Span e;
     Clipboard clip;
     if (!edit_range(e, "duplicated", why) || !copy_lanes(e, clip, "duplicated", why)) {
         return false;
     }
     std::vector<Member> members;
+    const bool shuffle = mode_ == EditMode::Shuffle;
     for (int i = 0; i < e.count; ++i) {
-        paste_clip(*active(track(e.first + i)), e.b, clip.lanes[static_cast<std::size_t>(i)],
-                   [this]() { return doc_.reserve_id(); }, members);
+        const Playlist& p = *active(track(e.first + i));
+        const auto next = [this]() { return doc_.reserve_id(); };
+        if (shuffle) shuffle_open(p, e.b, clip.length(), next, members);
+        paste_clip(p, e.b, clip.lanes[static_cast<std::size_t>(i)], next, members, !shuffle);
     }
     if (!submit_compound(std::move(members), "Duplicate", "duplicated", why)) return false;
+    if (shuffle) note_shuffle_automation("Duplicate", e.first, e.count);
     select_span(e.first, e.count, e.b, e.b + clip.length());
     return true;
 }
 
 bool EditController::can_repeat(std::string& why, std::string* track_out, Frames* length) const {
-    if (refuse_shuffle("Repeat", "repeated", why)) return false;
     Span e;
     Clipboard clip;
     if (!edit_range(e, "repeated", why) || !copy_lanes(e, clip, "repeated", why)) return false;
@@ -1378,6 +1502,8 @@ bool EditController::repeat(int count, std::string& why) {
         total += repeat_members(*active(track(e.first + i)), e.b,
                                 clip.lanes[static_cast<std::size_t>(i)],
                                 static_cast<std::size_t>(count));
+        // A split and a shift a track, which Shuffle adds in place of the clear.
+        if (mode_ == EditMode::Shuffle) total += 2;
     }
     const std::string too_many = over_limit("Repeat", "repeated", total);
     if (!too_many.empty()) {
@@ -1385,11 +1511,16 @@ bool EditController::repeat(int count, std::string& why) {
         return false;
     }
     std::vector<Member> members;
+    const bool shuffle = mode_ == EditMode::Shuffle;
     for (int i = 0; i < e.count; ++i) {
-        repeat_clip(*active(track(e.first + i)), e.b, clip.lanes[static_cast<std::size_t>(i)],
-                    count, [this]() { return doc_.reserve_id(); }, members);
+        const Playlist& p = *active(track(e.first + i));
+        const auto next = [this]() { return doc_.reserve_id(); };
+        if (shuffle) shuffle_open(p, e.b, clip.length() * count, next, members);
+        repeat_clip(p, e.b, clip.lanes[static_cast<std::size_t>(i)], count, next, members,
+                    !shuffle);
     }
     if (!submit_compound(std::move(members), "Repeat", "repeated", why)) return false;
+    if (shuffle) note_shuffle_automation("Repeat", e.first, e.count);
     repeat_count_ = count;
     select_span(e.first, e.count, e.b, e.b + clip.length() * count);
     return true;
@@ -1712,7 +1843,7 @@ bool fader_gain(float db, float& gain, std::string& why) {
 bool EditController::set_gain(int index, float db, std::string& why) {
     TrackMix m;
     if (!mix_target(snapshot(), index, m, why) || !fader_gain(db, m.gain_db, why)) return false;
-    return submit(SetMix{m}, why);
+    return submit_mix(m, why);
 }
 
 bool EditController::set_pan(int index, float pan, std::string& why) {
@@ -1730,14 +1861,14 @@ bool EditController::toggle_mute(int index, std::string& why) {
     TrackMix m;
     if (!mix_target(snapshot(), index, m, why)) return false;
     m.mute = !m.mute;
-    return submit(SetMix{m}, why);
+    return submit_mix(m, why);
 }
 
 bool EditController::toggle_solo(int index, std::string& why) {
     TrackMix m;
     if (!mix_target(snapshot(), index, m, why)) return false;
     m.solo = !m.solo;
-    return submit(SetMix{m}, why);
+    return submit_mix(m, why);
 }
 
 bool EditController::toggle_solo_safe(int index, std::string& why) {
@@ -1780,6 +1911,19 @@ bool EditController::toggle_input_monitor(int index, std::string& why) {
         return false;
     }
     m.monitor = m.monitor == MonitorMode::Input ? MonitorMode::Auto : MonitorMode::Input;
+    return submit(SetMix{m}, why);
+}
+
+bool EditController::toggle_track_punch(int index, std::string& why) {
+    TrackMix m;
+    if (!mix_target(snapshot(), index, m, why)) return false;
+    const TrackEdit& t = *snapshot().edit->tracks[static_cast<std::size_t>(index)];
+    if (t.kind != TrackKind::Audio) {
+        why = t.name + (t.kind == TrackKind::Midi ? " is a MIDI track" : " is an instrument track") +
+              ": it records no audio to punch";
+        return false;
+    }
+    m.track_punch = !m.track_punch;
     return submit(SetMix{m}, why);
 }
 

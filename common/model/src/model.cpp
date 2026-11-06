@@ -116,8 +116,10 @@ bool fit_crossfade(Crossfade& x, Frames before, Frames after) {
 bool Region::operator==(const Region& o) const {
     return id == o.id && name == o.name && colour == o.colour && position == o.position &&
            length == o.length && source_offset == o.source_offset &&
-           channels == o.channels && gain_db == o.gain_db && mute == o.mute &&
-           fade_in == o.fade_in && fade_out == o.fade_out;
+           channels == o.channels && gain_db == o.gain_db && gain_line == o.gain_line &&
+           mute == o.mute &&
+           fade_in == o.fade_in && fade_out == o.fade_out && clip_group == o.clip_group &&
+           loop == o.loop;
 }
 
 bool Playlist::operator==(const Playlist& o) const {
@@ -201,7 +203,8 @@ const AutomationLane* find_lane(const AutomationLanes& lanes, const AutomationLa
 }
 
 bool EditState::operator==(const EditState& o) const {
-    if (tracks.size() != o.tracks.size() || buses != o.buses ||
+    if (tracks.size() != o.tracks.size() || buses != o.buses || groups != o.groups || vcas != o.vcas ||
+        folders != o.folders ||
         !same_lanes(master_automation, o.master_automation)) {
         return false;
     }
@@ -233,7 +236,7 @@ bool TrackMix::operator==(const TrackMix& o) const {
     return track == o.track && input == o.input && monitor == o.monitor &&
            gain_db == o.gain_db && pan == o.pan && mute == o.mute &&
            solo == o.solo && solo_safe == o.solo_safe && midi == o.midi &&
-           automation == o.automation;
+           automation == o.automation && track_punch == o.track_punch;
 }
 
 const Source* SourcePool::find(Id id) const {
@@ -269,6 +272,13 @@ const InsertMix* MixState::find_insert(Id insert) const {
 const BusMix* MixState::find_bus(Id bus) const {
     for (const BusMix& m : buses) {
         if (m.bus == bus) return &m;
+    }
+    return nullptr;
+}
+
+const VcaMix* MixState::find_vca(Id vca) const {
+    for (const VcaMix& m : vcas) {
+        if (m.vca == vca) return &m;
     }
     return nullptr;
 }
@@ -927,6 +937,20 @@ std::string track_shape_problem(const TrackEdit& t) {
     return {};
 }
 
+std::string line_problem(const std::vector<GainPoint>& line) {
+    if (line.size() > kMaxGainPoints) {
+        return "gain_line holds more than " + str(static_cast<std::int64_t>(kMaxGainPoints)) +
+               " points";
+    }
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const GainPoint& p = line[i];
+        if (p.at < 0 || p.at > kMaxInteger) return "a gain_line point is at a negative frame";
+        if (!gain_in_range(p.db)) return "a gain_line point's db " + gain_range();
+        if (i > 0 && p.at <= line[i - 1].at) return "gain_line points must be in increasing order";
+    }
+    return {};
+}
+
 std::string region_problem(const Region& r, const SourcePool& pool,
                            std::uint16_t track_channels) {
     if (r.id == 0) return "id must be at least 1";
@@ -965,7 +989,9 @@ std::string region_problem(const Region& r, const SourcePool& pool,
         return "fade_in.length + fade_out.length is longer than the region";
     }
     if (!gain_in_range(r.gain_db)) return "gain_db " + gain_range();
-    return {};
+    if (r.clip_group > static_cast<Id>(kMaxInteger)) return "clip_group is out of range";
+    if (r.loop > 0 && r.clip_group == 0) return "a loop repeat must belong to a clip group";
+    return line_problem(r.gain_line);
 }
 
 const Region* find_region(const Playlist& p, Id id) {
@@ -1648,6 +1674,98 @@ std::string send_mix_problem(const SendMix& m, std::string& where) {
     return {};
 }
 
+std::string group_problem(const EditState& e, std::string& where) {
+    where.clear();
+    if (e.groups.size() > kMaxGroups) {
+        return "a session holds at most " + std::to_string(kMaxGroups) + " groups";
+    }
+    std::unordered_set<Id> tracks;
+    for (const auto& t : e.tracks) tracks.insert(t->id);
+    std::unordered_set<Id> taken;
+    for (std::size_t g = 0; g < e.groups.size(); ++g) {
+        const Group& grp = e.groups[g];
+        where = "[" + std::to_string(g) + "]";
+        if (!valid_text(grp.name)) return "the name is not valid UTF-8";
+        if (grp.members.size() < 2) return "a group needs at least two tracks";
+        if (grp.attrs == 0 || (grp.attrs & ~kGroupAllAttributes) != 0) {
+            return "attrs must be a non-empty set of the six group attributes";
+        }
+        for (const Id m : grp.members) {
+            if (tracks.count(m) == 0) return "track " + std::to_string(m) + " does not exist";
+            if (!taken.insert(m).second) {
+                return "track " + std::to_string(m) + " is in two groups";
+            }
+        }
+    }
+    where.clear();
+    return {};
+}
+
+std::string vca_mix_problem(const VcaMix& m, std::string& where) {
+    where.clear();
+    if (!gain_in_range(m.gain_db)) {
+        where = "gain_db";
+        return gain_range();
+    }
+    return {};
+}
+
+namespace {
+
+std::string members_problem(const std::vector<Id>& members, const std::unordered_set<Id>& tracks,
+                            std::unordered_set<Id>& seen) {
+    seen.clear();
+    for (const Id m : members) {
+        if (tracks.count(m) == 0) return "track " + std::to_string(m) + " does not exist";
+        if (!seen.insert(m).second) return "track " + std::to_string(m) + " is listed twice";
+    }
+    return {};
+}
+
+}  // namespace
+
+std::string vca_problem(const EditState& e, std::string& where) {
+    where.clear();
+    if (e.vcas.size() > kMaxVcas) {
+        return "a session holds at most " + std::to_string(kMaxVcas) + " VCA masters";
+    }
+    std::unordered_set<Id> tracks;
+    for (const auto& t : e.tracks) tracks.insert(t->id);
+    std::unordered_set<Id> seen;
+    for (std::size_t i = 0; i < e.vcas.size(); ++i) {
+        where = "[" + std::to_string(i) + "]";
+        if (!valid_text(e.vcas[i].name)) return "the name is not valid UTF-8";
+        const std::string why = members_problem(e.vcas[i].members, tracks, seen);
+        if (!why.empty()) return why;
+    }
+    where.clear();
+    return {};
+}
+
+std::string folder_problem(const EditState& e, std::string& where) {
+    where.clear();
+    if (e.folders.size() > kMaxFolders) {
+        return "a session holds at most " + std::to_string(kMaxFolders) + " folders";
+    }
+    std::unordered_set<Id> tracks;
+    for (const auto& t : e.tracks) tracks.insert(t->id);
+    std::unordered_set<Id> seen;
+    std::unordered_set<Id> taken;
+    for (std::size_t i = 0; i < e.folders.size(); ++i) {
+        where = "[" + std::to_string(i) + "]";
+        if (!valid_text(e.folders[i].name)) return "the name is not valid UTF-8";
+        const std::string why = members_problem(e.folders[i].members, tracks, seen);
+        if (!why.empty()) return why;
+        for (const Id m : e.folders[i].members) {
+            if (!taken.insert(m).second) {
+                return "track " + std::to_string(m) + " is in two folders";
+            }
+        }
+    }
+    where.clear();
+    return {};
+}
+
 std::string bus_mix_problem(const BusMix& m, std::string& where) {
     where.clear();
     if (!gain_in_range(m.gain_db)) {
@@ -2013,6 +2131,39 @@ bool check_invariants(const Snapshot& s, std::string& error) {
             return false;
         }
     }
+    {
+        const std::string group_why = detail::group_problem(*s.edit, where);
+        if (!group_why.empty()) {
+            error = "groups" + where + ": " + group_why;
+            return false;
+        }
+        for (std::size_t i = 0; i < s.edit->groups.size(); ++i) {
+            if (!claim(s.edit->groups[i].id, "groups[" + std::to_string(i) + "]")) return false;
+        }
+        why = vca_problem(*s.edit, where);
+        if (!why.empty()) {
+            error = "vcas" + where + ": " + why;
+            return false;
+        }
+        why = folder_problem(*s.edit, where);
+        if (!why.empty()) {
+            error = "folders" + where + ": " + why;
+            return false;
+        }
+        for (std::size_t i = 0; i < s.edit->vcas.size(); ++i) {
+            if (!claim(s.edit->vcas[i].id, "vcas[" + std::to_string(i) + "]")) return false;
+        }
+        for (std::size_t i = 0; i < s.edit->folders.size(); ++i) {
+            if (!claim(s.edit->folders[i].id, "folders[" + std::to_string(i) + "]")) return false;
+        }
+        for (std::size_t i = 0; i < s.mix.vcas.size(); ++i) {
+            why = vca_mix_problem(s.mix.vcas[i], where);
+            if (!why.empty()) {
+                error = "mix.vcas[" + std::to_string(i) + "]." + where + ": " + why;
+                return false;
+            }
+        }
+    }
     why = bus_loop_problem(*s.edit, where);
     if (!why.empty()) {
         error = (where.empty() ? std::string("buses") : where) + ": " + why;
@@ -2042,5 +2193,7 @@ bool check_invariants(const Snapshot& s, std::string& error) {
     }
     return true;
 }
+
+std::string gain_line_problem(const std::vector<GainPoint>& line) { return detail::line_problem(line); }
 
 }  // namespace sonora::model

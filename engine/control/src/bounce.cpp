@@ -11,6 +11,7 @@
 #include <thread>
 #include <vector>
 
+#include "sonora/audio_export.h"
 #include "sonora/dsp/loudness.h"
 #include "sonora/master_tap.h"
 #include "sonora/playback_controller.h"
@@ -53,9 +54,15 @@ bool any_active_insert(const model::Snapshot& s) {
 // The file being written: stereo, measured as it goes.
 class Sink {
 public:
+    // The mix is rendered to a float32 file next to the one that is kept
+    // (`<name>.render`), then converted to the chosen file in finish(): the
+    // loudness is known only at the end, and so is the gain it needs.
     bool open(const std::string& session_dir, const std::string& stem, uint32_t rate,
-              api::BounceFormat format, uint64_t start, const std::string& description,
+              const api::BounceOptions& opts, uint64_t start, const std::string& description,
               std::string& error) {
+        spec_ = export_spec_of(opts);
+        error = export_spec_problem(spec_);
+        if (!error.empty()) return false;
         dir_ = session_dir + "/" + kBouncedDir;
         std::error_code ec;
         std::filesystem::create_directories(dir_, ec);
@@ -63,26 +70,35 @@ public:
             error = "cannot create " + dir_ + ": " + std::strerror(errno);
             return false;
         }
-        format_ = format == api::BounceFormat::Float32 ? WavWriter::Format::Float32
-                                                       : WavWriter::Format::Int24;
-        rate_ = rate;
         start_ = start;
+        rate_ = rate;
         description_ = description;
         writer_.set_description(description);
-        // open() refuses an existing name with EEXIST and leaves it alone.
+        // The kept name is reserved exclusively, so a bounce never takes
+        // another's, whatever its extension.
         for (int n = 1; n <= 9999; ++n) {
             char digits[16];
             std::snprintf(digits, sizeof digits, "%02d", n);
-            file_ = file_safe(stem) + "_" + digits + ".wav";
-            if (writer_.open(dir_ + "/" + file_, rate, 2, format_, start)) {
-                meter_.prepare(rate, 2);
-                buf_.resize(kCopyFrames * 2);
-                return true;
-            }
-            if (errno != EEXIST) {
-                error = "cannot create " + file_ + ": " + std::strerror(errno);
+            const std::string name =
+                file_safe(stem) + "_" + digits + export_extension(spec_.container);
+            std::FILE* f = std::fopen((dir_ + "/" + name).c_str(), "wbx");
+            if (f == nullptr) {
+                if (errno == EEXIST) continue;
+                error = "cannot create " + name + ": " + std::strerror(errno);
                 return false;
             }
+            std::fclose(f);
+            file_ = name;
+            std::remove(render_path().c_str());   // a stale one of a crashed bounce
+            if (!writer_.open(render_path(), rate, 2, WavWriter::Format::Float32, start)) {
+                error = "cannot create " + file_ + ".render: " + std::strerror(errno);
+                std::remove(path().c_str());
+                file_.clear();
+                return false;
+            }
+            meter_.prepare(rate, 2);
+            buf_.resize(kCopyFrames * 2);
+            return true;
         }
         error = "no free bounce file name for " + stem;
         return false;
@@ -115,7 +131,10 @@ public:
 
     void abandon() {
         if (writer_.is_open()) writer_.close();
-        if (!file_.empty()) std::remove(path().c_str());
+        if (!file_.empty()) {
+            std::remove(path().c_str());
+            std::remove(render_path().c_str());
+        }
     }
 
     // Synced and closed; normalised when asked. Fills `out`.
@@ -141,13 +160,23 @@ public:
             // One gain for the whole file, never into the ceiling.
             const double room = kPeakCeilingDb - 20.0 * std::log10(static_cast<double>(peak_));
             gain_db = std::min(gain_db, room);
-            if (!apply_gain(gain_db, error)) {
-                abandon();
-                return false;
-            }
         }
+        // Every file is converted from the float render, so a bounce with no
+        // gain, rate or depth change takes the same road as the rest.
+        ExportMeta meta;
+        meta.description = description_;
+        meta.time_reference = start_;
+        meta.loudness_lufs = lufs > -70.0 ? lufs + gain_db : lufs;
+        if (!export_audio(render_path(), path(), spec_, meta, gain_db, error)) {
+            abandon();
+            return false;
+        }
+        std::remove(render_path().c_str());
         out.relative_path = std::string(kBouncedDir) + "/" + file_;
-        out.frames = frames_;
+        out.frames = spec_.sample_rate == 0 || spec_.sample_rate == rate_
+                         ? frames_
+                         : static_cast<uint64_t>(std::llround(static_cast<double>(frames_) *
+                                                              spec_.sample_rate / rate_));
         out.integrated_lufs = lufs > -70.0 ? lufs + gain_db : lufs;
         out.peak_dbfs = peak_ > 0.0f ? 20.0 * std::log10(static_cast<double>(peak_)) + gain_db
                                      : -200.0;
@@ -159,59 +188,31 @@ public:
     std::string path() const { return dir_ + "/" + file_; }
 
 private:
-    bool apply_gain(double gain_db, std::string& error) {
-        const float g = static_cast<float>(std::pow(10.0, gain_db / 20.0));
-        WavReader in;
-        std::string why;
-        if (!in.open(path(), why)) {
-            error = file_ + ": " + why;
-            return false;
+    std::string render_path() const { return path() + ".render"; }
+
+    static ExportSpec export_spec_of(const api::BounceOptions& o) {
+        ExportSpec s;
+        switch (o.file) {
+            case api::BounceFile::Wav: s.container = ExportContainer::Wav; break;
+            case api::BounceFile::Aiff: s.container = ExportContainer::Aiff; break;
+            case api::BounceFile::Flac: s.container = ExportContainer::Flac; break;
+            default: s.container = ExportContainer::Bwf; break;
         }
-        const std::string tmp = path() + ".tmp";
-        std::remove(tmp.c_str());
-        WavWriter out;
-        out.set_description(description_);
-        if (!out.open(tmp, rate_, 2, format_, start_)) {
-            error = "cannot create " + tmp + ": " + std::strerror(errno);
-            return false;
+        s.bits = o.format == api::BounceFormat::Float32 ? 32
+                 : o.format == api::BounceFormat::Int16 ? 16 : 24;
+        s.sample_rate = o.sample_rate;
+        // Auto dithers where the cut is audible: 16-bit.
+        switch (o.dither) {
+            case api::BounceDither::Tpdf: s.dither = ExportDither::Tpdf; break;
+            case api::BounceDither::Shaped: s.dither = ExportDither::Shaped; break;
+            case api::BounceDither::None: s.dither = ExportDither::None; break;
+            default: s.dither = s.bits == 16 ? ExportDither::Tpdf : ExportDither::None; break;
         }
-        std::vector<float> chunk(kCopyFrames * 2);
-        for (int64_t at = 0; at < in.frames();) {
-            const int64_t k = std::min<int64_t>(kCopyFrames, in.frames() - at);
-            if (in.read(at, k, chunk.data()) != k) {
-                out.close();
-                std::remove(tmp.c_str());
-                error = file_ + " cannot be read back to normalise it";
-                return false;
-            }
-            for (int64_t i = 0; i < 2 * k; ++i) chunk[static_cast<std::size_t>(i)] *= g;
-            if (!out.write(chunk.data(), static_cast<std::size_t>(k))) {
-                const std::string f = out.failure();
-                out.close();
-                std::remove(tmp.c_str());
-                error = "cannot write " + tmp + ": " + f;
-                return false;
-            }
-            at += k;
-        }
-        in.close();
-        if (!out.checkpoint() || !out.close()) {
-            std::remove(tmp.c_str());
-            error = "cannot write " + tmp;
-            return false;
-        }
-        std::error_code ec;
-        std::filesystem::rename(tmp, path(), ec);
-        if (ec) {
-            std::remove(tmp.c_str());
-            error = "cannot replace " + file_ + ": " + ec.message();
-            return false;
-        }
-        return true;
+        return s;
     }
 
     WavWriter writer_;
-    WavWriter::Format format_ = WavWriter::Format::Int24;
+    ExportSpec spec_;
     dsp::LoudnessMeter meter_;
     std::vector<float> buf_;
     std::string dir_, file_, description_;
@@ -255,6 +256,12 @@ bool bounce_check(const model::Snapshot& snapshot, const api::BounceOptions& opt
                   std::string& error) {
     uint64_t start = 0, end = 0;
     if (!range_of(snapshot, opts, start, end, error)) return false;
+    if (opts.format == api::BounceFormat::Float32 &&
+        (opts.file == api::BounceFile::Flac || opts.file == api::BounceFile::Aiff)) {
+        error = std::string(opts.file == api::BounceFile::Flac ? "FLAC" : "AIFF") +
+                " holds 16 or 24 bits, not 32-bit float";
+        return false;
+    }
     if (opts.mode == api::BounceMode::Offline && any_active_insert(snapshot)) {
         error = "offline bounce does not run plug-in inserts; bounce in real time instead";
         return false;
@@ -300,7 +307,7 @@ bool bounce_offline(const model::Snapshot& snapshot, const std::string& session_
     ctl.apply_mix(snapshot);
 
     Sink sink;
-    if (!sink.open(session_dir, stem_of(snapshot, opts), cfg.sample_rate, opts.format, start,
+    if (!sink.open(session_dir, stem_of(snapshot, opts), cfg.sample_rate, opts, start,
                    "Bounce of " + snapshot.settings.name, error)) {
         return false;
     }
@@ -436,7 +443,7 @@ bool RealTimeBounce::start(const model::Snapshot& snapshot, const std::string& s
     run->start = start;
     run->total = end - start;
     const uint32_t rate = session_.config().sample_rate;
-    if (!run->sink.open(session_dir, stem_of(snapshot, opts), rate, opts.format, start,
+    if (!run->sink.open(session_dir, stem_of(snapshot, opts), rate, opts, start,
                         "Bounce of " + snapshot.settings.name, error)) {
         return false;
     }
@@ -458,6 +465,12 @@ bool RealTimeBounce::start(const model::Snapshot& snapshot, const std::string& s
     worker_ = std::thread([this] { work(); });
     return true;
 }
+
+namespace {
+std::string lost_text(uint64_t frames) {
+    return "the bounce lost " + std::to_string(frames) + " frames to a full ring; nothing was kept";
+}
+}  // namespace
 
 void RealTimeBounce::work() {
     Run& r = *run_;
@@ -483,8 +496,11 @@ void RealTimeBounce::work() {
             const auto idle = std::chrono::duration<double>(now - last).count();
             const bool stopped = session_.transport().state() == TransportState::Stopped;
             if ((seen && stopped && idle > 0.3) || (!seen && idle > 10.0)) {
-                fail(seen ? "the transport stopped before the end of the range"
-                          : "the transport never started to roll");
+                // Frames the full ring dropped never arrive, so a roll that
+                // overran it ends here short of the range, not below.
+                fail(tap_->lost_frames() != 0 ? lost_text(tap_->lost_frames())
+                     : seen                   ? "the transport stopped before the end of the range"
+                                              : "the transport never started to roll");
                 finished_.store(true, std::memory_order_release);
                 return;
             }
@@ -509,8 +525,7 @@ void RealTimeBounce::work() {
     }
     const uint64_t missed = session_.playback_misses() - r.misses_before;
     if (tap_->lost_frames() != 0) {
-        fail("the bounce lost " + std::to_string(tap_->lost_frames()) +
-             " frames to a full ring; nothing was kept");
+        fail(lost_text(tap_->lost_frames()));
     } else if (missed != 0) {
         fail("the disk did not keep up for " + std::to_string(missed) +
              " block(s) of the roll, so the file has gaps; nothing was kept. Bounce offline "

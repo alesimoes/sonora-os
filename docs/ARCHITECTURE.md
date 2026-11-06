@@ -74,6 +74,11 @@ ring, a block the disk reader missed, or a non-finite sample under normalise
 fails the bounce and removes the file: a file with a hole is never kept. How
 it ended is a held `Bounce` event, shown as a notice until dismissed.
 
+The file is a BWF, WAV, AIFF or FLAC at 16, 24 or 32-bit float, at the
+session's rate or another, with TPDF or shaped dither when the depth is cut
+(`mix.bounce`, protocol 61, ADR-0054). The mix is rendered once to a float
+file and converted by the worker when the loudness gain is known.
+
 ## Render in place rolls the live chain
 
 Track > Freeze, Commit and Process Selection (`track.freeze`, `track.commit`,

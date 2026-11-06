@@ -65,12 +65,18 @@ std::string insert_param_count_problem(std::size_t count);
 // unique, one send per destination; not whether the destination exists.
 std::string send_mix_problem(const SendMix& m, std::string& where);
 std::string bus_mix_problem(const BusMix& m, std::string& where);
+// VCA masters and folders (ADR-0048); `where` is "[i]" for the entry at fault.
+std::string vca_mix_problem(const VcaMix& m, std::string& where);
+std::string vca_problem(const EditState& e, std::string& where);
+std::string folder_problem(const EditState& e, std::string& where);
 std::string sends_problem(const std::vector<Send>& sends, std::string& where);
 const Bus* find_bus(const EditState& e, Id bus);
 // The buses from `from` to `to` along sends, both included; empty when
 // `to` cannot be reached.
 std::vector<Id> bus_path(const EditState& e, Id from, Id to);
 // Empty when the buses' sends form no loop; else `where` names a bus on one.
+// Group `where` is "[i]", the group's index.
+std::string group_problem(const EditState& e, std::string& where);
 std::string bus_loop_problem(const EditState& e, std::string& where);
 
 // Automation (ADR-0027). Points: each `at` from 0 to kMaxInteger, sorted, at

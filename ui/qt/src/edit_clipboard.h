@@ -70,14 +70,27 @@ void clear_range(const model::Playlist& p, model::Frames a, model::Frames b, con
 
 // The members that put `clip` at `at` on `p`: what lies under its whole
 // length is cleared first, gaps included, as a paste of a range does.
+//
+// `clear` false leaves the range alone: Shuffle has opened a gap there
+// (shuffle_open) and clearing the playlist as it was would name regions the
+// ripple has moved.
 void paste_clip(const model::Playlist& p, model::Frames at, const Clip& clip, const NextId& id,
-                std::vector<model::Member>& out);
+                std::vector<model::Member>& out, bool clear = true);
+
+// Shuffle's ripple (ADR-0009 update of 2026-11-04). shuffle_shift moves
+// every region that starts at or after `from` by `delta`, when there is one;
+// shuffle_open first splits the region `at` falls inside, so a gap of
+// `length` opens there.
+void shuffle_shift(const model::Playlist& p, model::Frames from, model::Frames delta,
+                   std::vector<model::Member>& out);
+void shuffle_open(const model::Playlist& p, model::Frames at, model::Frames length,
+                  const NextId& id, std::vector<model::Member>& out);
 
 // `count` copies of `clip` end to end from `at`: what lies under all of them
 // is cleared once, so a repeat costs one clear and a placement a region a
 // copy, not a paste's clear per copy.
 void repeat_clip(const model::Playlist& p, model::Frames at, const Clip& clip, int count,
-                 const NextId& id, std::vector<model::Member>& out);
+                 const NextId& id, std::vector<model::Member>& out, bool clear = true);
 
 // How many members repeat_clip would append for `count` copies, without
 // building them, so an absurd count is refused before it is allocated.

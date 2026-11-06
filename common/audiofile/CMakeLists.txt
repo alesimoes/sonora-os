@@ -1,5 +1,5 @@
 add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp src/wav_recovery.cpp
-  src/wrap_sidecar.cpp)
+  src/wrap_sidecar.cpp src/audio_export.cpp src/audio_import.cpp)
 target_include_directories(sonora_audiofile PUBLIC include)
 # common/platform for the take file's exclusive, close-on-exec create and its
 # periodic sync (ADR-0008 Â§3; ADR-0009 Consequences).
@@ -40,3 +40,15 @@ add_test(NAME wav_recovery COMMAND test_wav_recovery)
 add_executable(test_wrap_sidecar tests/test_wrap_sidecar.cpp)
 target_link_libraries(test_wrap_sidecar PRIVATE sonora_audiofile)
 add_test(NAME wrap_sidecar COMMAND test_wrap_sidecar)
+
+# Delivery files (interchange.audio.export): BWF, WAV, AIFF and FLAC at 16,
+# 24 and 32-bit float read back by parsers that share no code with the
+# writers, bext fields, dither statistics, rate conversion. Portable.
+add_executable(test_audio_export tests/test_audio_export.cpp)
+target_link_libraries(test_audio_export PRIVATE sonora_audiofile)
+add_test(NAME audio_export COMMAND test_audio_export)
+
+# Import: any WAV to the session rate, as a BWF copy (ui.editing.import).
+add_executable(test_audio_import tests/test_audio_import.cpp)
+target_link_libraries(test_audio_import PRIVATE sonora_audiofile)
+add_test(NAME audio_import COMMAND test_audio_import)

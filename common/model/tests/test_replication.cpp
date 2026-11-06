@@ -197,6 +197,17 @@ std::vector<Operation> one_of_each() {
             SetTrackColour{2, 13},
             SetRegionName{3, 11, "Verse \xC3\xA9"},
             SetRegionColour{3, 11, kTrackColour},
+            SetGroup{40, "Drums \xC3\xA9", {2, 5}, 0x0F, false, true},
+            RemoveGroup{40},
+            SetRegionGain{3, 11, -3.5f, {{0, -6.0f}, {48000, 0.0f}}},
+            SetClipGroup{3, 11, {{11, 0}, {12, 2}}},
+            SetRegionSources{3, 11, {{7, 0}, {7, 1}}, 4800, {{0, -6.0f}}},
+            SetVca{70, "Drums Ã©", {2, 3}},
+            RemoveVca{70},
+            SetVcaMix{VcaMix{70, -4.5f, true}},
+            SetFolder{71, "Kit", {2}},
+            RemoveFolder{71},
+            ShiftRegions{2, 96000, -48000},
             Compound{{AddMarker{m}, take, SetMix{mix}}, "Paste \xC3\xA9"}};
 }
 
@@ -442,7 +453,7 @@ bool same_history(const Replica& r, const Document& d) {
 // the first Undo after a resync found nothing to undo on the replica and
 // every Undo and Redo after that desynced it.
 int test_resync_keeps_the_undo_window() {
-    Document doc(new_session(settings()), 64 * 1024);
+    Document doc(new_session(settings()), 80 * 1024);
     std::string error;
     ReplicationUpdate u;
     Ids ids(doc.current());
@@ -585,8 +596,8 @@ int test_window_refuses_what_does_not_fit() {
         return !decode_window(WindowParts{u.parts, bytes}, out, err) && !out.has_value() &&
                mentions(err, why);
     };
-    CHECK(refused("\"window_format\": 15", "\"window_format\": 14", "window_format"));
-    CHECK(refused("\"window_format\": 15", "\"window_format\": 16", "window_format"));
+    CHECK(refused("\"window_format\": 20", "\"window_format\": 19", "window_format"));
+    CHECK(refused("\"window_format\": 20", "\"window_format\": 21", "window_format"));
     CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
     CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
     CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));

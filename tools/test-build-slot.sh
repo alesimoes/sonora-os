@@ -29,8 +29,8 @@ grep -q 'waiting for the heavy lock' "$T/err-b" || bad "second run did not queue
 # Priority: while a holds it, c (2) arrives before d (1) and e (0); the order
 # is a, e, d, c; two of equal priority keep their arrival order.
 : >"$T/log"
-HOLD=2 job a 2>/dev/null & pa=$!
-sleep 0.5
+HOLD=3 job a 2>/dev/null & pa=$!
+until grep -q "^start a" "$T/log"; do sleep 0.1; done
 job c 2 2>/dev/null & pc=$!
 sleep 0.3
 job d 1 2>/dev/null & pd=$!

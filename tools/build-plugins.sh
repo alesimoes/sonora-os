@@ -5,7 +5,7 @@
 # through the host against the N0 references, lv2lint, the VST3 validator),
 # and every other module's tests.
 #
-#   tools/build-plugins.sh                 build + full ctest
+#   tools/build-plugins.sh                 build + full ctest, -j$(nproc)
 #   tools/build-plugins.sh -L plugins      build + only the plugin host tests
 #   tools/build-plugins.sh --measure       build + a longer round-trip run
 #   tools/build-plugins.sh --plugins-only  the plugin package's build (owner,
@@ -133,10 +133,12 @@ docker run --rm --label org.sonora=1 \
   -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -c '
   set -euo pipefail
   # shellcheck disable=SC2086
-  cmake -S . -B "$BDIR" -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON \
-    -DSONORA_REQUIRE_PLUGIN_VALIDATORS=ON -DSONORA_REQUIRE_PLUGIN_EDITORS=ON $ROOT_ARGS >/dev/null
+  cmake -S . -B "$BDIR" -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON     -DSONORA_REQUIRE_PLUGIN_VALIDATORS=ON -DSONORA_REQUIRE_PLUGIN_EDITORS=ON $ROOT_ARGS >/dev/null
   cmake --build "$BDIR" -j"$(nproc)"
-  ctest --test-dir "$BDIR" --output-on-failure "$@"
+  # In parallel: the tests that pace a host by the wall clock, or hold a
+  # timing bar, are RUN_SERIAL (label "timing") and run alone. The arguments
+  # given to this script come last, so a -j1 or an -L among them wins.
+  ctest --test-dir "$BDIR" --output-on-failure -j"$(nproc)" "$@"
   if [[ "$MEASURE" == 1 ]]; then
     d="$BDIR"
     for chain in http://lv2plug.in/plugins/eg-amp \

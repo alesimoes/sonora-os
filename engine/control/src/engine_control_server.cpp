@@ -16,6 +16,7 @@
 #include "sonora/closed_take.h"
 #include "sonora/consolidate.h"
 #include "sonora/frame_text.h"
+#include "sonora/model/groups.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
 #include "sonora/model/session_file.h"
@@ -23,6 +24,7 @@
 #include "sonora/plugin_block_list.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/plugin_scanner.h"
+#include "sonora/sample_edit.h"
 #include "sonora/session.h"
 #include "sonora/session_files/session_folder.h"
 #include "sonora/session_saver.h"
@@ -180,6 +182,21 @@ bool edit_transport_field(const std::string& id, model::Transport& tr, uint32_t 
         tr.punch = {{0, 0}};
         return true;
     }
+    // ADR-0043: three record switches, flipped one each. Input Only is a
+    // monitor decision and may change under a take; the other two change how
+    // the next take starts (take_punch_refusal()).
+    if (id == "transport.toggle_input_only") {
+        tr.input_only = !tr.input_only;
+        return true;
+    }
+    if (id == "transport.toggle_pre_post_roll") {
+        tr.rolls_on = !tr.rolls_on;
+        return true;
+    }
+    if (id == "transport.toggle_quick_punch") {
+        tr.quick_punch = !tr.quick_punch;
+        return true;
+    }
     const bool pre = id == "transport.set_pre_roll";
     if (argument.empty()) {
         why = pre ? "no pre-roll given" : "no post-roll given";
@@ -203,6 +220,9 @@ bool edit_transport_field(const std::string& id, model::Transport& tr, uint32_t 
 // change saved under it would leave the session saying a range the take did
 // not use. The rolls are in no file, so a change waits for the next roll.
 std::string take_punch_refusal(const model::Transport& was, const model::Transport& now) {
+    if (now.quick_punch != was.quick_punch || now.rolls_on != was.rolls_on) {
+        return "a take is recording; the record mode changes after Stop";
+    }
     if (now.punch == was.punch) return {};
     return "a take is recording; the punch range changes after Stop";
 }
@@ -420,7 +440,23 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                  }
                                  return false;
                              },
-                             &record_ready_);
+                             &record_ready_,
+                             [this](std::size_t engine_track) {
+                                 // Positional: engine track i plays the
+                                 // document's display track i.
+                                 std::vector<std::size_t> peers;
+                                 const model::Snapshot doc = document_->current();
+                                 const auto& tracks = doc.edit->tracks;
+                                 if (engine_track >= tracks.size()) return peers;
+                                 for (const model::Id id : model::group_peers(
+                                          *doc.edit, tracks[engine_track]->id, model::kGroupArm)) {
+                                     for (std::size_t i = 0; i < tracks.size(); ++i) {
+                                         if (tracks[i]->id == id) peers.push_back(i);
+                                     }
+                                 }
+                                 return peers;
+                             },
+                             [this]() { return document_->current().settings.transport.quick_punch; });
     if (!opts_.plugin_host.empty()) {
         // For the engine process's life (amendment of 2026-10-19, item 3):
         // its catalog outlives a backend activation.
@@ -520,45 +556,6 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                           withdraw_orphans();
                           return true;
                       }));
-    // Consolidate (ADR-0031 §6): the render runs on a worker, never the
-    // audio thread; the edit is committed here, in tick().
-    registry_.install("session.consolidate",
-                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
-                          api::ConsolidateArgument a;
-                          if (!api::parse_consolidate_argument(ctx.argument, a, why)) return false;
-                          if (consolidate_job_.active()) {
-                              why = "a consolidate is already running; cancel it or wait for it";
-                              return false;
-                          }
-                          if (takes_in_flight()) {
-                              why = "stop recording before consolidating; nothing was consolidated";
-                              return false;
-                          }
-                          ConsolidateRequest rq;
-                          rq.track = a.track;
-                          rq.playlist = a.playlist;
-                          rq.start = a.start;
-                          rq.end = a.end;
-                          rq.name = a.name;
-                          const model::Snapshot now = document_->current();
-                          ConsolidateRequest resolved;
-                          if (!consolidate_check(now, rq, resolved, why)) return false;
-                          consolidate_dir_ = *session_.folder();
-                          consolidate_track_ = a.track;
-                          consolidate_said_ = 0;
-                          consolidate_job_.start(now, consolidate_dir_, std::move(resolved));
-                          announce_consolidate(api::kConsolidateRunning, 0, "");
-                          return true;
-                      }));
-    registry_.install("session.consolidate_cancel",
-                      ExplainingHandler([this](const CommandContext&, std::string& why) {
-                          if (!consolidate_job_.active()) {
-                              why = "no consolidate is running";
-                              return false;
-                          }
-                          consolidate_job_.cancel();
-                          return true;
-                      }));
     // Bounce Mix (ui.mixer.bounce): the render runs on a worker, or on the
     // live audio thread's tap, never here; this thread starts it and says how
     // it ended (follow_bounce()).
@@ -597,6 +594,45 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                               return false;
                           }
                           bounce_job_.cancel();
+                          return true;
+                      }));
+    // Consolidate (ADR-0031 §6): the render runs on a worker, never the
+    // audio thread; the edit is committed here, in tick().
+    registry_.install("session.consolidate",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          api::ConsolidateArgument a;
+                          if (!api::parse_consolidate_argument(ctx.argument, a, why)) return false;
+                          if (consolidate_job_.active()) {
+                              why = "a consolidate is already running; cancel it or wait for it";
+                              return false;
+                          }
+                          if (takes_in_flight()) {
+                              why = "stop recording before consolidating; nothing was consolidated";
+                              return false;
+                          }
+                          ConsolidateRequest rq;
+                          rq.track = a.track;
+                          rq.playlist = a.playlist;
+                          rq.start = a.start;
+                          rq.end = a.end;
+                          rq.name = a.name;
+                          const model::Snapshot now = document_->current();
+                          ConsolidateRequest resolved;
+                          if (!consolidate_check(now, rq, resolved, why)) return false;
+                          consolidate_dir_ = *session_.folder();
+                          consolidate_track_ = a.track;
+                          consolidate_said_ = 0;
+                          consolidate_job_.start(now, consolidate_dir_, std::move(resolved));
+                          announce_consolidate(api::kConsolidateRunning, 0, "");
+                          return true;
+                      }));
+    registry_.install("session.consolidate_cancel",
+                      ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          if (!consolidate_job_.active()) {
+                              why = "no consolidate is running";
+                              return false;
+                          }
+                          consolidate_job_.cancel();
                           return true;
                       }));
     // Render in place (plugins.graph.freeze, plugins.offline; ADR-0051): the
@@ -665,7 +701,9 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
             }));
     }
     for (const char* id : {"transport.punch_selection", "transport.clear_punch",
-                           "transport.set_pre_roll", "transport.set_post_roll"}) {
+                           "transport.set_pre_roll", "transport.set_post_roll",
+                           "transport.toggle_input_only", "transport.toggle_pre_post_roll",
+                           "transport.toggle_quick_punch"}) {
         registry_.install(
             id, ExplainingHandler([this, id = std::string(id)](const CommandContext& ctx,
                                                                std::string& why) {
@@ -686,6 +724,27 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                 return true;
             }));
     }
+    // Sample-level editing (ADR-0052): a copy of the region's span with the
+    // stretch processed, written beside the take, never over it. On the
+    // control thread: it reads and writes files, and the audio thread never
+    // waits for it.
+    registry_.install("sample.edit",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          if (take_open_or_requested()) {
+                              why = "stop recording before editing samples; nothing was edited";
+                              return false;
+                          }
+                          SampleEditRequest request;
+                          if (!parse_sample_edit(ctx.argument, request, why)) return false;
+                          std::vector<model::ReplicationUpdate> updates;
+                          if (!sample_edit(*document_, session_, *session_.folder(), request,
+                                           updates, why)) {
+                              return false;
+                          }
+                          for (const auto& u : updates) send_update(u);
+                          show_document(false);
+                          return true;
+                      }));
     install_latency_commands();
     for (const auto& spec : command_catalog()) {
         if (spec.domain == CommandDomain::Engine && registry_.implemented(spec.id)) {
@@ -1200,6 +1259,9 @@ void EngineControlServer::finish_pass() {
         }
     }
     if (changed || mix_changed) show_document(mix_changed);
+    // Latch and Write ride over the document's static (apply_mix keeps it
+    // out of the audio while rolling): the pass's end puts it back.
+    apply_mix();
 }
 
 bool EngineControlServer::apply_pass(std::vector<model::EditAutomation>& edits) {
@@ -1325,8 +1387,8 @@ void EngineControlServer::remember(const api::EngineEvent& event, const std::str
             break;
         case api::EventKind::SessionFolder: session_folder_ = bytes; break;
         case api::EventKind::Latency: latency_ = bytes; break;
-        case api::EventKind::Consolidate: consolidate_ = bytes; break;
         case api::EventKind::Bounce: bounce_ = bytes; break;
+        case api::EventKind::Consolidate: consolidate_ = bytes; break;
         case api::EventKind::Render: render_event_ = bytes; break;
     }
 }
@@ -1496,12 +1558,64 @@ void EngineControlServer::follow_latency() {
     if (keep) keep_latency(r.frames, latency_source_);
 }
 
+namespace {
+// A template's plugin states and files, copied into the new session's folder
+// so each insert starts from them. Regular files only, never through a link;
+// the template is only read.
+bool copy_template_state(const std::string& from, const std::string& to, std::string& why) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const char* sub : {session_files::kPluginStateDir, session_files::kPluginFilesDir}) {
+        const fs::path base = fs::path(from) / sub;
+        if (!fs::is_directory(fs::symlink_status(base, ec))) continue;
+        for (fs::recursive_directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec)) {
+            std::error_code type;
+            if (!fs::is_regular_file(it->symlink_status(type)) || it->path().extension() == ".tmp") continue;
+            const fs::path rel = it->path().lexically_relative(from);
+            const fs::path dest = fs::path(to) / rel;
+            fs::create_directories(dest.parent_path(), type);
+            if (!type) fs::copy_file(it->path(), dest, fs::copy_options::skip_existing, type);
+            if (type) {
+                why = it->path().string() + ": " + type.message();
+                return false;
+            }
+        }
+        if (ec) {
+            why = base.string() + ": " + ec.message();
+            return false;
+        }
+    }
+    return true;
+}
+}  // namespace
+
 bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::string& why,
                                std::vector<std::string>& notices, bool& entered) {
     entered = false;
     std::string file;
     std::string_view bytes;
     if (!api::wire::decode_load(m.op, file, bytes, why)) return false;
+    // A template (protocol 54, ADR-0030): its folder is only read; the
+    // session lives in a fresh Untitled folder, so nothing recorded, autosaved
+    // or half-saved can land beside the template.
+    std::string template_folder;
+    const std::string_view template_prefix = api::kLoadTemplatePrefix;
+    if (file.compare(0, template_prefix.size(), template_prefix) == 0) {
+        file.erase(0, template_prefix.size());
+        namespace fs = std::filesystem;
+        const fs::path t(file);
+        std::error_code ec;
+        if (opts_.sessions_root.empty()) {
+            why = "this engine has no sessions folder to make a session from a template in";
+            return false;
+        }
+        if (!t.is_absolute() || t.extension() != ".sonora" || !fs::is_regular_file(t, ec)) {
+            why = "there is no template session file at " + file;
+            return false;
+        }
+        template_folder = fs::path(session_files::session_folder_of(file)).lexically_normal().string();
+        file.clear();
+    }
     const auto l = loads_.find(from);
     model::LoadParts* parts = l != loads_.end() ? l->second.parts.get() : nullptr;
     if (session_.loop_take_running()) {
@@ -1531,7 +1645,8 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
     ActiveFolder::Kind kind = ActiveFolder::Kind::Named;
     // A new session in a fresh Untitled folder; one with nothing in it yet
     // is as good as a new one, and is kept.
-    const bool new_folder = file.empty() && !opts_.sessions_root.empty() && !folder_->fresh();
+    const bool new_folder = file.empty() && !opts_.sessions_root.empty() &&
+                            (!folder_->fresh() || !template_folder.empty());
     if (!file.empty()) {
         const fs::path p(file);
         std::error_code ec;
@@ -1588,13 +1703,23 @@ bool EngineControlServer::load(ClientId from, const api::ModelRequest& m, std::s
             return false;
         }
         kind = ActiveFolder::Kind::Untitled;
+        if (!template_folder.empty() && !copy_template_state(template_folder, folder, why)) {
+            std::error_code ec;
+            fs::remove_all(folder, ec);
+            why = "the template's plugin states could not be copied: " + why;
+            return false;
+        }
     }
     if (!folder.empty()) {
         if (!folder_->enter(session_, folder, kind, why, notices)) {
             if (new_folder) {
                 std::error_code ec;
-                fs::remove(fs::path(folder) / "Audio Files", ec);
-                fs::remove(folder, ec);
+                if (!template_folder.empty()) {
+                    fs::remove_all(folder, ec);
+                } else {
+                    fs::remove(fs::path(folder) / "Audio Files", ec);
+                    fs::remove(folder, ec);
+                }
             }
             why = (new_folder ? "the new session's folder could not be opened: "
                               : "the session's folder could not be opened: ") +
@@ -2796,6 +2921,7 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
         const std::vector<model::Id> order_before = track_order(document_->current());
         const std::vector<model::Id> sends_before = send_layout(document_->current());
         const model::MixState mix_before = document_->current().mix;
+        const std::vector<model::Vca> vcas_before = document_->current().edit->vcas;
         switch (m.action) {
             case api::ModelAction::Apply: {
                 model::Operation op;
@@ -2923,6 +3049,8 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                           track_order(document_->current()) != order_before ||
                           !(mix_after.buses == mix_before.buses) ||
                           !(mix_after.sends == mix_before.sends) ||
+                          !(mix_after.vcas == mix_before.vcas) ||
+                          document_->current().edit->vcas != vcas_before ||
                           send_layout(document_->current()) != sends_before;
             // Chains from the document diff (undo, redo, active, values
             // included), before the plan is built from it.
@@ -3164,6 +3292,17 @@ void EngineControlServer::drop_untitled_autosave() {
 
 uint64_t EngineControlServer::autosaves() const { return saver_->autosaves(); }
 
+void EngineControlServer::announce_bounce(api::BounceState state, uint32_t permille,
+                                          uint64_t frames, const std::string& text) {
+    api::EngineEvent e;
+    e.kind = api::EventKind::Bounce;
+    e.frame = permille;
+    e.insert = frames;
+    e.flags = static_cast<uint32_t>(state);
+    e.text = text;
+    post_event(e);
+}
+
 void EngineControlServer::announce_consolidate(uint32_t state, uint32_t permille,
                                                const std::string& text) {
     api::EngineEvent e;
@@ -3175,15 +3314,38 @@ void EngineControlServer::announce_consolidate(uint32_t state, uint32_t permille
     post_event(e);
 }
 
-void EngineControlServer::announce_bounce(api::BounceState state, uint32_t permille,
-                                          uint64_t frames, const std::string& text) {
-    api::EngineEvent e;
-    e.kind = api::EventKind::Bounce;
-    e.frame = permille;
-    e.insert = frames;
-    e.flags = static_cast<uint32_t>(state);
-    e.text = text;
-    post_event(e);
+void EngineControlServer::follow_bounce() {
+    if (!bounce_job_.active()) return;
+    if (!bounce_job_.finished()) {
+        // A step in a hundred: a long bounce is not a flood of events.
+        const uint32_t p = bounce_job_.permille();
+        if (p >= bounce_said_ + 10) {
+            bounce_said_ = p;
+            announce_bounce(api::BounceState::Running, p, 0, "");
+        }
+        return;
+    }
+    BounceJob::Result r = bounce_job_.collect();
+    const std::string file = r.session_dir + "/" + r.bounced.relative_path;
+    if (r.cancelled) {
+        if (r.ok) std::remove(file.c_str());
+        announce_bounce(api::BounceState::Cancelled, 0, 0,
+                        "the bounce was cancelled; no file was kept");
+        return;
+    }
+    if (!r.ok) {
+        announce_bounce(api::BounceState::Failed, 0, 0, r.error);
+        return;
+    }
+    // The session was saved as another folder while it rendered: the file is
+    // in the old one, and the notice would name a path that is not here.
+    if (*session_.folder() != r.session_dir) {
+        std::remove(file.c_str());
+        announce_bounce(api::BounceState::Failed, 0, 0,
+                        "the session moved while bouncing; no file was kept");
+        return;
+    }
+    announce_bounce(api::BounceState::Done, 1000, r.bounced.frames, r.bounced.relative_path);
 }
 
 void EngineControlServer::follow_consolidate() {
@@ -3226,40 +3388,6 @@ void EngineControlServer::follow_consolidate() {
     for (const auto& u : updates) send_update(u);
     show_document(false);
     announce_consolidate(api::kConsolidateDone, 1000, r.rendered.relative_path);
-}
-
-void EngineControlServer::follow_bounce() {
-    if (!bounce_job_.active()) return;
-    if (!bounce_job_.finished()) {
-        // A step in a hundred: a long bounce is not a flood of events.
-        const uint32_t p = bounce_job_.permille();
-        if (p >= bounce_said_ + 10) {
-            bounce_said_ = p;
-            announce_bounce(api::BounceState::Running, p, 0, "");
-        }
-        return;
-    }
-    BounceJob::Result r = bounce_job_.collect();
-    const std::string file = r.session_dir + "/" + r.bounced.relative_path;
-    if (r.cancelled) {
-        if (r.ok) std::remove(file.c_str());
-        announce_bounce(api::BounceState::Cancelled, 0, 0,
-                        "the bounce was cancelled; no file was kept");
-        return;
-    }
-    if (!r.ok) {
-        announce_bounce(api::BounceState::Failed, 0, 0, r.error);
-        return;
-    }
-    // The session was saved as another folder while it rendered: the file is
-    // in the old one, and the notice would name a path that is not here.
-    if (*session_.folder() != r.session_dir) {
-        std::remove(file.c_str());
-        announce_bounce(api::BounceState::Failed, 0, 0,
-                        "the session moved while bouncing; no file was kept");
-        return;
-    }
-    announce_bounce(api::BounceState::Done, 1000, r.bounced.frames, r.bounced.relative_path);
 }
 
 void EngineControlServer::announce_render(api::RenderState state, uint32_t permille,
@@ -3441,8 +3569,8 @@ void EngineControlServer::follow_saver() {
 void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
-    follow_consolidate();
     follow_bounce();
+    follow_consolidate();
     follow_render();
     autosave_when_due();
     follow_latency();

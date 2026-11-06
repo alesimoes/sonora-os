@@ -74,10 +74,12 @@ if [[ "${SONORA_UI_SCOPE:-all}" == ui ]]; then
   else
     cmake --build "$BUILD" -j"$JOBS" --target sonora-ui "${ui_targets[@]}"
   fi
-  QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure -R '^ui_'
+  QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure -j"$(nproc)" -R '^ui_'
 else
   cmake --build "$BUILD" -j"$JOBS"
-  QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure
+  # In parallel: the tests that hold a wall-clock bar are RUN_SERIAL (label
+  # "timing"), so ctest runs them alone.
+  QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure -j"$(nproc)"
 fi
 
 [[ "$MODE" == test ]] && exit 0

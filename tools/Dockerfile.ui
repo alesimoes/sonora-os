@@ -83,5 +83,10 @@ RUN mkdir /ccache && chown sonora:sonora /ccache
 # as the caller on Linux (CI's uid 1001), so the directory is made here.
 RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 
+# Off a Linux host tools/build-ui.sh keeps the tree on a fresh named volume
+# at /build; Docker gives a new volume the owner of the image's directory,
+# and without one it is root's, which this user cannot write.
+RUN mkdir -p /build && chown sonora:sonora /build
+
 USER sonora
 WORKDIR /home/sonora

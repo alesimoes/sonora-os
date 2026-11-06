@@ -234,7 +234,9 @@ int save_as_template_and_new_from_it() {
 }
 
 struct Rig {
-    api::testing::FakeEngine fake{config()};
+    // First: the fake's sessions folder is where a template's session is made.
+    QTemporaryDir sessions, templates;
+    api::testing::FakeEngine fake{config(sessions.path().toStdString())};
     ControlAdapter engine{fake};
     ReplicaDocument doc{[this](const api::ModelRequest& r) { return engine.submitModel(r); },
                         make_empty_session(4, 48000)};
@@ -245,11 +247,11 @@ struct Rig {
                          return engine.send(c, ctx);
                      }};
     ShellModel shell{engine, router};
-    QTemporaryDir sessions, templates;
 
-    static api::testing::FakeEngine::Config config() {
+    static api::testing::FakeEngine::Config config(const std::string& sessions_root) {
         api::testing::FakeEngine::Config c;
         c.tracks = 4;
+        c.sessions_root = sessions_root;
         return c;
     }
 
@@ -337,11 +339,11 @@ bool no_take_in(const Rig& r, const QString& folder) {
     return true;
 }
 
-// #272 review B1: the Save As after New from Template fails, so the engine
-// stays in the template's folder. Record and Record Ready are refused,
-// held, from a key's command as from the button, and the template's folder
-// gains nothing: no take, no "Audio Files/" growth.
-int record_is_refused_in_a_template_folder() {
+// #272 review B1, closed at the engine (protocol 54): the Save As after New
+// from Template fails, and the engine is in a new Untitled folder of the
+// sessions folder, never in the template's. A take goes there, the
+// template's folder gains nothing, and Record is not refused for a template.
+int a_failed_save_as_leaves_the_engine_outside_the_template() {
     Rig r;
     CHECK(r.connect());
     std::string why;
@@ -357,43 +359,26 @@ int record_is_refused_in_a_template_folder() {
     CHECK(r.session.newSessionFromTemplate(tfile, QStringLiteral("Gig"), true, why));
     r.settle();
     r.fake.script_save_failure("");
-    // Held, and it says where the engine still is and why Record is refused.
     CHECK(!held.isEmpty() && held.back().contains(QStringLiteral("the medium is full")));
-    CHECK(held.back().contains(QStringLiteral("still in the template's folder")));
-    CHECK(held.back().contains(r.sessions.path()));
-    CHECK(QDir::cleanPath(QString::fromStdString(r.fake.folder())) == QDir::cleanPath(tdir));
+    const QString engine = QDir::cleanPath(QString::fromStdString(r.fake.folder()));
+    CHECK(engine.startsWith(QDir::cleanPath(r.sessions.path()) + QLatin1Char('/')));
+    CHECK(engine != QDir::cleanPath(tdir));
     CHECK(r.session.sessionFile().isEmpty());
     const auto before = tree(tdir);
 
+    // Nothing in the window refuses Record for a template, and the take is
+    // not written beside the template.
+    CHECK(r.session.commandRefusal("transport.record").empty());
     r.shell.invoke(QStringLiteral("transport.record"), -1);
     r.settle();
-    CHECK(r.shell.recordRefusal().contains(QStringLiteral("template")));
-    // #272 re-review: every command that starts or sets up a take, through
-    // the one shared list, so a command added to it is covered here.
-    for (const std::string& id : take_commands()) {
-        r.shell.invoke(QString::fromStdString(id), -1);
-        CHECK(r.shell.recordRefusal().contains(QStringLiteral("template")));
-        r.shell.invoke(QStringLiteral("transport.stop"), -1);
-        r.settle();
-        const RouteResult refused = r.router.invoke(id, CommandContext{});
-        if (refused.kind == RouteResult::Kind::Sent || refused.message.find("template") == std::string::npos) {
-            std::fprintf(stderr, "  %s was not refused\n", id.c_str());
-            return 1;
-        }
-    }
-    // Space under the default profile the window starts on.
-    const RouteResult space = r.router.route(KeyChord{"space", kModNone});
-    CHECK(space.command == "transport.toggle_record");
-    CHECK(space.kind != RouteResult::Kind::Sent && space.message.find("template") != std::string::npos);
+    r.shell.invoke(QStringLiteral("transport.stop"), -1);
     r.settle();
     CHECK(no_take_in(r, tdir));
     CHECK(tree(tdir) == before);
 
-    // Saved out of the template's folder: Record goes to the engine again.
     CHECK(r.session.saveSession(why));
     r.settle();
     CHECK(!r.session.sessionFile().isEmpty());
-    CHECK(r.session.commandRefusal("transport.record").empty());
     CHECK(tree(tdir) == before);
     return 0;
 }
@@ -601,12 +586,13 @@ int the_commands_ask_then_save() {
 
 // The shared list holds every catalog command that records or punches, so
 // one added to the catalog cannot start a take in a template's folder
-// unseen. transport.clear_punch only removes the range.
+// unseen. transport.clear_punch only removes the range and
+// track.toggle_track_punch only flips a track's flag.
 int every_record_or_punch_command_is_a_take_command() {
     for (const CommandSpec& spec : command_catalog()) {
         const std::string id = spec.id;
         const bool records = id.find("record") != std::string::npos || id.find("punch") != std::string::npos;
-        if (!records || id == "transport.clear_punch") continue;
+        if (!records || id == "transport.clear_punch" || id == "track.toggle_track_punch") continue;
         if (!is_take_command(id)) {
             std::fprintf(stderr, "  %s records or punches and is not in take_commands()\n", id.c_str());
             return 1;
@@ -622,7 +608,7 @@ int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (save_as_template_and_new_from_it() != 0) return 1;
     if (the_save_as_waits_for_the_load() != 0) return 1;
-    if (record_is_refused_in_a_template_folder() != 0) return 1;
+    if (a_failed_save_as_leaves_the_engine_outside_the_template() != 0) return 1;
     if (record_is_refused_during_the_round_trip() != 0) return 1;
     if (every_record_or_punch_command_is_a_take_command() != 0) return 1;
     if (the_browser_lists_renames_and_deletes() != 0) return 1;

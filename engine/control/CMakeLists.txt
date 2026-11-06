@@ -26,6 +26,7 @@ add_library(sonora_control STATIC
   src/bounce_job.cpp
   src/render_in_place.cpp
   src/consolidate_job.cpp
+  src/sample_edit.cpp
   src/mix_planner.cpp
   src/space_measure.cpp
 )
@@ -90,12 +91,24 @@ if(UNIX)
   add_test(NAME consolidate COMMAND test_consolidate)
 endif()
 
+# Sample editing (ADR-0052): the processes, the copy that leaves the take alone,
+# one compound, one undo step.
+if(UNIX)
+  add_executable(test_sample_edit tests/test_sample_edit.cpp)
+  target_link_libraries(test_sample_edit PRIVATE sonora_control)
+  add_test(NAME sample_edit COMMAND test_sample_edit)
+endif()
+
 # Bounce Mix's engine half (ui.mixer.bounce): the offline file is the mix,
 # real time records the master through the tap, normalise, cancel. POSIX's.
 if(UNIX)
   add_executable(test_bounce tests/test_bounce.cpp)
   target_link_libraries(test_bounce PRIVATE sonora_control Threads::Threads)
   add_test(NAME bounce COMMAND test_bounce)
+  # Alone under `ctest -j`: its 10 s roll is driven at about 3.5 times real
+  # time into a tap that holds 2 s, so a worker starved for ~0.6 s by the
+  # other tests overruns it (2 of 25 runs beside the native renders).
+  set_tests_properties(bounce PROPERTIES RUN_SERIAL TRUE LABELS timing)
 
   # Track Freeze, Commit and Process Selection (ADR-0051): the print through
   # a chain with a declared latency, to the sample.
@@ -218,7 +231,7 @@ if(TARGET sonora-plugin-host)
     add_test(NAME plugin_hosting_${scenario} COMMAND ${_ph} --scenario ${scenario})
     list(APPEND _ph_tests plugin_hosting_${scenario})
   endforeach()
-  set_tests_properties(${_ph_tests} PROPERTIES LABELS plugins RUN_SERIAL TRUE)
+  set_tests_properties(${_ph_tests} PROPERTIES LABELS "plugins;timing" RUN_SERIAL TRUE)
   if(SONORA_PLUGIN_TESTS_ALLOW_SKIP)
     set_tests_properties(${_ph_tests} PROPERTIES SKIP_RETURN_CODE 77)
   endif()

@@ -126,6 +126,16 @@
       "comment": "Not listed in Avid's Shortcuts Guide; macOS convention."
     },
     "ctrl+b": "edit.clear",
+    "ctrl+alt+w": {
+      "command": "automation.write_selection",
+      "origin": "sonora",
+      "comment": "Ours. Pro Tools has Write to Selection among its automation commands, but no default key for it could be confirmed from Avid's published guides. Holds the track's fader or pan flat across the selected lane range."
+    },
+    "ctrl+alt+k": {
+      "command": "automation.snapshot",
+      "origin": "sonora",
+      "comment": "Ours. One breakpoint at the insertion point holding the fader or pan as it stands, on the Event List's lane."
+    },
     "ctrl+alt+t": {
       "command": "automation.thin",
       "origin": "sonora",
@@ -224,6 +234,11 @@
       "command": "track.toggle_arm",
       "comment": "Record enable the tracks holding the edit cursor or selection. This build has no selection yet, so until it does this key reports that it failed; the numbered arms below work today."
     },
+    "ctrl+g": {
+      "command": "group.new",
+      "verified": false,
+      "comment": "Group the selected tracks, Control+G. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
     "shift+s": "track.toggle_solo",
     "shift+m": "track.toggle_mute",
     "shift+i": "track.toggle_input_monitor",
@@ -285,10 +300,75 @@
       "verified": false,
       "comment": "Duplicate Playlist on the selected track, Control+Option+Backslash on a Mac. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md (ADR-0026)."
     },
+    "ctrl+alt+c": {
+      "command": "comp.copy_to_main",
+      "origin": "sonora",
+      "comment": "Copy Selection to Main Playlist (ADR-0031, ADR-0049). Pro Tools has it as a button on the playlist lane and no documented key; the range selected on a take lane goes to the active playlist."
+    },
+    "ctrl+alt+shift+t": {
+      "command": "comp.toggle_lanes",
+      "origin": "sonora",
+      "comment": "Show or hide the selected track's playlists as lanes under it (Pro Tools' Playlists track view). No documented key."
+    },
+    "ctrl+alt+n": {
+      "command": "comp.new",
+      "origin": "sonora",
+      "comment": "New comp: an empty playlist to swipe into, the takes on the lanes under the track. Pro Tools does it as New Playlist then Playlists view; no single key."
+    },
+    "ctrl+alt+q": {
+      "command": "comp.toggle_quick_swipe",
+      "origin": "sonora",
+      "comment": "Quick Swipe on or off: a swipe copies at once, with short crossfades. Pro Tools has none; it is off here and on under Logic."
+    },
+    "ctrl+shift+i": {
+      "command": "session.import_audio",
+      "verified": false,
+      "comment": "File > Import > Audio, Command+Shift+I: the browser for WAV files, each becoming a new track. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md."
+    },
     "ctrl+shift+n": {
       "command": "track.new",
       "verified": false,
       "comment": "Track > New, Command+Shift+N: opens New Tracks, which asks how many. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md."
+    },
+    "ctrl+alt+up": {
+      "command": "clip.gain_up",
+      "origin": "sonora",
+      "comment": "Nudge the selected clip's gain up 1 dB (Clip Gain). Pro Tools has no single key for it."
+    },
+    "ctrl+alt+down": {
+      "command": "clip.gain_down",
+      "origin": "sonora",
+      "comment": "Nudge the selected clip's gain down 1 dB (Clip Gain)."
+    },
+    "ctrl+alt+g": {
+      "command": "clip.gain",
+      "origin": "sonora",
+      "comment": "Clip Gain: opens the dialog to type the selected clip's gain in dB."
+    },
+    "ctrl+alt+j": {
+      "command": "clip.group",
+      "origin": "sonora",
+      "comment": "Group the clips in the selected range (ADR-0052). Pro Tools' Group Clips is Command+Option+G, which Clip Gain holds here, so this chord is ours."
+    },
+    "ctrl+alt+shift+g": {
+      "command": "clip.ungroup",
+      "verified": false,
+      "comment": "Ungroup the selected clip's group (Pro Tools: Ungroup Clip, Command+Option+Shift+G). Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
+    "ctrl+alt+l": {
+      "command": "clip.loop",
+      "verified": false,
+      "comment": "Loop the selected clip or group (Pro Tools: Loop Clip, Command+Option+L), asking nothing: the last count, 3 repeats at first. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
+    },
+    "ctrl+alt+shift+l": {
+      "command": "clip.unloop",
+      "origin": "sonora",
+      "comment": "Remove the repeats of the selected loop (Pro Tools has no key for Unloop)."
+    },
+    "ctrl+alt+r": {
+      "command": "sample.repair",
+      "origin": "sonora",
+      "comment": "Repair a click: redraw the samples the Selector holds from their neighbours, into a new file (ADR-0052). The other sample edits are in the Sample Edit panel."
     },
     "ctrl+shift+r": {
       "command": "region.rename",

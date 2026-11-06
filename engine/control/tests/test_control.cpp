@@ -2441,6 +2441,7 @@ void live_send_and_aux_rides() {
     const model::Id verb = next++;
     const model::Id room = next++;
     api::CommandReply r;
+    const uint64_t revision_before_edits = replica.current().revision;
     CHECK(apply(model::AddBus{verb, "Verb", model::BusMix{}}, r));
     CHECK(apply(model::AddBus{room, "Room", model::BusMix{}}, r));
     model::AddSend send;
@@ -2461,6 +2462,14 @@ void live_send_and_aux_rides() {
     const auto tracks = static_cast<uint32_t>(session.tracks().size());
     CHECK(until(real, in, [&]() {
         return session.send_level(0, 2) == 1.0f && session.send_level(tracks, 0) == 1.0f;
+    }));
+    // The session's atomics follow the apply before its model update has been
+    // broadcast, so the four edits' updates can still be in flight here. Wait
+    // for the replica to hold all four (one revision each) before taking the
+    // baseline, or a late one is counted as the ride's.
+    CHECK(until(real, in, [&]() {
+        feed();
+        return replica.current().revision >= revision_before_edits + 4;
     }));
     const uint64_t revision = replica.current().revision;
     const std::size_t updates = in.model.size();
@@ -3184,6 +3193,77 @@ void a_new_session_gets_its_own_untitled_folder() {
     CHECK(fs::exists(first / "Audio Files" / "notes.txt"));
 }
 
+// ADR-0030 section 3, protocol 54: a Load whose path carries the template
+// prefix opens the template as a new session in a fresh Untitled folder with
+// the template's plugin states copied in. The template's folder is only
+// read: an autosave, a take or a Save As that fails cannot write into it.
+void a_template_opens_in_a_new_untitled_folder() {
+    const fs::path root = fresh_dir("template_load_root");
+    struct Gone {
+        fs::path p;
+        ~Gone() {
+            std::error_code ec;
+            fs::remove_all(p, ec);
+        }
+    } gone{root};
+    const fs::path first = root / "Untitled";
+    fs::create_directories(first);
+    const fs::path tdir = root / "Templates" / "Band";
+    fs::create_directories(tdir / "Plugin State");
+    CHECK(touch(tdir / "Plugin State" / "abc.state"));
+    CHECK(touch(tdir / "Band.sonora"));
+    EngineControlServer::Options opts;
+    opts.sessions_root = (root / "Sessions").string();
+    fs::create_directories(opts.sessions_root);
+    const model::Snapshot start = RealEngine::start_document(first);
+    opts.initial_document = std::make_shared<model::Snapshot>(start);
+    RealEngine real(first, opts, false, true);
+    std::string error;
+    CHECK(real.connect(error));
+    api::Inbox in;
+    std::string bytes;
+    CHECK(model::serialize(start, model::WriteInfo{"test", 1}, bytes, error));
+    const auto answer = [&](uint64_t seq) {
+        api::CommandReply got;
+        until(real, in, [&]() {
+            for (const api::CommandReply& r : in.replies)
+                if (r.seq == seq) got = r;
+            return got.seq == seq;
+        });
+        return got;
+    };
+    const auto before = [&]() {
+        std::vector<std::string> out;
+        for (const auto& e : fs::recursive_directory_iterator(tdir)) out.push_back(e.path().string());
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    const std::vector<std::string> kept = before();
+
+    api::ModelRequest load;
+    load.action = api::ModelAction::Load;
+    load.op = api::wire::encode_load(std::string(api::kLoadTemplatePrefix) + (tdir / "Band.sonora").string(), bytes);
+    const api::CommandReply ok = answer(real.submit(load));
+    CHECK(ok.result == DispatchResult::Ok);
+    const fs::path in_folder(*real.session().folder());
+    CHECK(in_folder != tdir);
+    CHECK(in_folder.parent_path() == fs::path(opts.sessions_root));
+    CHECK(fs::exists(in_folder / "Plugin State" / "abc.state"));
+    CHECK(until(real, in, [&]() { return last_folder(in) != nullptr && last_folder(in)->text == in_folder.string(); }));
+    CHECK(last_folder(in) != nullptr && (last_folder(in)->flags & api::kFolderUntitled) != 0);
+    CHECK(before() == kept);
+
+    // A path that is no template file is refused and leaves the session.
+    api::ModelRequest bad;
+    bad.action = api::ModelAction::Load;
+    bad.op = api::wire::encode_load(std::string(api::kLoadTemplatePrefix) + (tdir / "Gone.sonora").string(), bytes);
+    const api::CommandReply refused = answer(real.submit(bad));
+    CHECK(refused.result == DispatchResult::Failed);
+    CHECK(refused.message.find("no template session file") != std::string::npos);
+    CHECK(fs::path(*real.session().folder()) == in_folder);
+    CHECK(before() == kept);
+}
+
 // ADR-0018 §3 and PR #142 review N2: the first Save of an untitled session
 // renames its folder to the one the interface names, so the takes stay
 // beside the session file and a session called "Bass" is saved as Bass,
@@ -3534,7 +3614,107 @@ void a_folder_load_enters_only_a_session_folder() {
     CHECK(fs::is_directory(bare / "Audio Files"));
 }
 
-// Protocol 43 (ADR-0031 §6): session.consolidate renders on a worker and
+// mix.bounce on the real engine (ui.mixer.bounce): a refusal answers the
+// command and leaves no event; a bounce says Running then Done with the
+// file's path, the file is there, a client attaching later is told how it
+// ended, and a cancel with none running is refused.
+void a_bounce_reaches_the_interface() {
+    const fs::path dir = fresh_dir("bounce");
+    fs::create_directories(dir / "Audio Files");
+    constexpr int64_t kFrames = 24000;
+    {
+        WavWriter w;
+        CHECK(w.open((dir / "Audio Files" / "s.wav").string(), 48000, 1,
+                     WavWriter::Format::Float32, 0));
+        const std::vector<float> data(kFrames, 0.25f);
+        CHECK(w.write(data.data(), data.size()) && w.close());
+    }
+    model::Document doc(RealEngine::start_document(dir));
+    std::string error;
+    model::ReplicationUpdate u;
+    model::AddSource add;
+    add.source.id = doc.current().next_id;
+    add.source.path = "Audio Files/s.wav";
+    add.source.channels = 1;
+    add.source.length = kFrames;
+    add.source.format = model::AudioFormat::Float32;
+    CHECK(doc.apply(add, u, error));
+    model::PlaceRegion place;
+    place.playlist = doc.current().edit->tracks[0]->active_playlist;
+    place.region.id = doc.current().next_id;
+    place.region.name = "r";
+    place.region.position = 0;
+    place.region.length = kFrames;
+    place.region.channels.push_back({add.source.id, 0});
+    place.split_right_id = place.region.id + 100;
+    CHECK(doc.apply(place, u, error));
+    EngineControlServer::Options opts;
+    opts.initial_document = std::make_shared<model::Snapshot>(doc.current());
+    RealEngine real(dir, opts);
+    CHECK(real.connect(error));
+    api::Inbox in;
+    const auto run = [&](const char* id, const char* arg) {
+        api::CommandRequest c;
+        c.command = id;
+        c.argument = arg;
+        const uint64_t seq = real.send(c);
+        api::CommandReply out{seq, DispatchResult::UnknownCommand, "no reply"};
+        until(real, in, [&]() {
+            for (const auto& r : in.replies) {
+                if (r.seq == seq) {
+                    out = r;
+                    return true;
+                }
+            }
+            return false;
+        });
+        return out;
+    };
+    const auto bounce_events = [&](const std::vector<api::EngineEvent>& from) {
+        std::vector<api::EngineEvent> out;
+        for (const auto& e : from) {
+            if (e.kind == api::EventKind::Bounce) out.push_back(e);
+        }
+        return out;
+    };
+    CHECK(real.hello().capabilities[1] == api::kCapabilityBounce);
+    const api::CommandReply none = run("mix.bounce_cancel", "");
+    CHECK(none.result == DispatchResult::Failed && none.message == "no bounce is running");
+    CHECK(run("mix.bounce", "mode=sideways").result == DispatchResult::Failed);
+    CHECK(run("mix.bounce", "start=100 end=100").result == DispatchResult::Failed);
+    CHECK(bounce_events(in.events).empty());
+
+    CHECK(run("mix.bounce", "mode=offline format=float32 name=Take 1").result ==
+          DispatchResult::Ok);
+    CHECK(until(real, in, [&]() {
+        const auto ev = bounce_events(in.events);
+        return !ev.empty() && ev.back().flags == static_cast<uint32_t>(api::BounceState::Done);
+    }));
+    const auto ev = bounce_events(in.events);
+    CHECK(ev.front().flags == static_cast<uint32_t>(api::BounceState::Running));
+    CHECK(ev.back().text == "Bounced Files/Take 1_01.wav" && ev.back().insert == static_cast<uint64_t>(kFrames));
+    CHECK(fs::exists(dir / ev.back().text));
+
+    const std::vector<api::EngineEvent> late = late_greeting(real, in);
+    const auto held = bounce_events(late);
+    CHECK(held.size() == 1 && held[0].flags == static_cast<uint32_t>(api::BounceState::Done));
+    // Render in place (ADR-0051): each refusal says why, no render starts and
+    // no Render event is sent. The rolling render is test_render_in_place's.
+    const std::string track = "track=" + std::to_string(doc.current().edit->tracks[0]->id);
+    const api::CommandReply no_render = run("track.render_cancel", "");
+    CHECK(no_render.result == DispatchResult::Failed && no_render.message == "no render is running");
+    CHECK(run("track.freeze", "").result == DispatchResult::Failed);
+    for (const char* id : {"track.freeze", "track.commit", "track.process_selection"}) {
+        const api::CommandReply r = run(id, (track + " start=10 end=900").c_str());
+        CHECK(r.result == DispatchResult::Failed);
+        CHECK(r.message.find("no active plug-in insert") != std::string::npos);
+    }
+    const api::CommandReply thaw = run("track.unfreeze", track.c_str());
+    CHECK(thaw.result == DispatchResult::Failed && thaw.message.find("is not frozen") != std::string::npos);
+    for (const auto& e : in.events) CHECK(e.kind != api::EventKind::Render);
+}
+
+// Protocol 63 (ADR-0031 §6): session.consolidate renders on a worker and
 // the control thread commits it, so the replicas see one "Consolidate"
 // compound and the Consolidate events run Running ... Done; a take open
 // refuses it, a bad range or track refuses it in the reply, and a failure
@@ -3700,107 +3880,6 @@ void consolidate_command_renders_off_the_control_thread() {
     server.detach(rider);
 }
 
-// mix.bounce on the real engine (ui.mixer.bounce): a refusal answers the
-// command and leaves no event; a bounce says Running then Done with the
-// file's path, the file is there, a client attaching later is told how it
-// ended, and a cancel with none running is refused.
-void a_bounce_reaches_the_interface() {
-    const fs::path dir = fresh_dir("bounce");
-    fs::create_directories(dir / "Audio Files");
-    constexpr int64_t kFrames = 24000;
-    {
-        WavWriter w;
-        CHECK(w.open((dir / "Audio Files" / "s.wav").string(), 48000, 1,
-                     WavWriter::Format::Float32, 0));
-        const std::vector<float> data(kFrames, 0.25f);
-        CHECK(w.write(data.data(), data.size()) && w.close());
-    }
-    model::Document doc(RealEngine::start_document(dir));
-    std::string error;
-    model::ReplicationUpdate u;
-    model::AddSource add;
-    add.source.id = doc.current().next_id;
-    add.source.path = "Audio Files/s.wav";
-    add.source.channels = 1;
-    add.source.length = kFrames;
-    add.source.format = model::AudioFormat::Float32;
-    CHECK(doc.apply(add, u, error));
-    model::PlaceRegion place;
-    place.playlist = doc.current().edit->tracks[0]->active_playlist;
-    place.region.id = doc.current().next_id;
-    place.region.name = "r";
-    place.region.position = 0;
-    place.region.length = kFrames;
-    place.region.channels.push_back({add.source.id, 0});
-    place.split_right_id = place.region.id + 100;
-    CHECK(doc.apply(place, u, error));
-    EngineControlServer::Options opts;
-    opts.initial_document = std::make_shared<model::Snapshot>(doc.current());
-    RealEngine real(dir, opts);
-    CHECK(real.connect(error));
-    api::Inbox in;
-    const auto run = [&](const char* id, const char* arg) {
-        api::CommandRequest c;
-        c.command = id;
-        c.argument = arg;
-        const uint64_t seq = real.send(c);
-        api::CommandReply out{seq, DispatchResult::UnknownCommand, "no reply"};
-        until(real, in, [&]() {
-            for (const auto& r : in.replies) {
-                if (r.seq == seq) {
-                    out = r;
-                    return true;
-                }
-            }
-            return false;
-        });
-        return out;
-    };
-    const auto bounce_events = [&](const std::vector<api::EngineEvent>& from) {
-        std::vector<api::EngineEvent> out;
-        for (const auto& e : from) {
-            if (e.kind == api::EventKind::Bounce) out.push_back(e);
-        }
-        return out;
-    };
-    CHECK(real.hello().capabilities.back() == api::kCapabilityRender);
-    const api::CommandReply none = run("mix.bounce_cancel", "");
-    CHECK(none.result == DispatchResult::Failed && none.message == "no bounce is running");
-    CHECK(run("mix.bounce", "mode=sideways").result == DispatchResult::Failed);
-    CHECK(run("mix.bounce", "start=100 end=100").result == DispatchResult::Failed);
-    CHECK(bounce_events(in.events).empty());
-
-    CHECK(run("mix.bounce", "mode=offline format=float32 name=Take 1").result ==
-          DispatchResult::Ok);
-    CHECK(until(real, in, [&]() {
-        const auto ev = bounce_events(in.events);
-        return !ev.empty() && ev.back().flags == static_cast<uint32_t>(api::BounceState::Done);
-    }));
-    const auto ev = bounce_events(in.events);
-    CHECK(ev.front().flags == static_cast<uint32_t>(api::BounceState::Running));
-    CHECK(ev.back().text == "Bounced Files/Take 1_01.wav" && ev.back().insert == static_cast<uint64_t>(kFrames));
-    CHECK(fs::exists(dir / ev.back().text));
-
-    const std::vector<api::EngineEvent> late = late_greeting(real, in);
-    const auto held = bounce_events(late);
-    CHECK(held.size() == 1 && held[0].flags == static_cast<uint32_t>(api::BounceState::Done));
-
-    // Render in place (ADR-0051): each refusal says why, no render starts and
-    // no Render event is sent. The rolling render is test_render_in_place's.
-    const std::string track = "track=" + std::to_string(doc.current().edit->tracks[0]->id);
-    const api::CommandReply no_render = run("track.render_cancel", "");
-    CHECK(no_render.result == DispatchResult::Failed && no_render.message == "no render is running");
-    CHECK(run("track.freeze", "").result == DispatchResult::Failed);
-    for (const char* id : {"track.freeze", "track.commit", "track.process_selection"}) {
-        const api::CommandReply r = run(id, (track + " start=10 end=900").c_str());
-        CHECK(r.result == DispatchResult::Failed);
-        CHECK(r.message.find("no active plug-in insert") != std::string::npos);
-    }
-    const api::CommandReply thaw = run("track.unfreeze", track.c_str());
-    CHECK(thaw.result == DispatchResult::Failed && thaw.message.find("is not frozen") != std::string::npos);
-    for (const auto& e : in.events) CHECK(e.kind != api::EventKind::Render);
-}
-
 int main() {
     InProcessRig rig;
     const int failed = api::conformance::run(rig);
@@ -3832,6 +3911,7 @@ int main() {
     the_session_folder_follows_the_load();
     a_load_waits_for_the_save_before_it();
     a_new_session_gets_its_own_untitled_folder();
+    a_template_opens_in_a_new_untitled_folder();
     the_first_save_names_the_untitled_folder();
     an_untitled_session_is_autosaved();
     the_round_trip_is_kept_for_the_machine();

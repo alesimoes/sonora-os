@@ -157,9 +157,15 @@ fi
 # A file of only characters the filter strips leaves nothing; an empty
 # BUILD_ID= would key every cache to the same value.
 [ -n "${BUILD_ID:-}" ] || BUILD_ID=unstamped
+# live-build can leave /etc/os-release a regular file (it carries IMAGE_ID=live),
+# and the installer's target ends up with the symlink to /usr/lib/os-release
+# again. Stamp both, or an installed system has no BUILD_ID.
 OSREL="$(readlink -f /etc/os-release)"
-sed -i '/^BUILD_ID=/d' "$OSREL"
-printf 'BUILD_ID=%s\n' "$BUILD_ID" >>"$OSREL"
+for f in "$OSREL" /usr/lib/os-release; do
+  [ -f "$f" ] || continue
+  sed -i '/^BUILD_ID=/d' "$f"
+  printf 'BUILD_ID=%s\n' "$BUILD_ID" >>"$f"
+done
 if ! grep -qx "BUILD_ID=$BUILD_ID" /etc/os-release; then
   echo "E: BUILD_ID did not land in /etc/os-release." >&2
   exit 1
@@ -169,6 +175,8 @@ fi
 # Same Windows-host modes in the other direction: the units arrive 0755 and
 # systemctl warns "marked executable" for each. A unit is configuration.
 chmod 0644 /etc/systemd/system/sonora-*.service
+# journald says "marked executable" for its drop-in, too.
+chmod 0644 /etc/systemd/journald.conf.d/*.conf
 systemctl enable sonora-session.service
 # RT tuning (brain/research/rt-tuning.md). The session unit Wants= both, so a
 # failure here never keeps the engine down.

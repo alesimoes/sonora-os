@@ -20,6 +20,8 @@ Rectangle {
     property SendModel sends: null
     // Fader rides, typed values and modifier clicks; null where not wired.
     property MixModel mixer: null
+    // The master's loudness readout and its panel; null where not wired.
+    property LoudnessModel loudness: null
 
     width: 1280
     height: 720
@@ -109,6 +111,7 @@ Rectangle {
             inserts: root.inserts
             sends: root.sends
             mixer: root.mixer
+            loudness: root.loudness
         }
 
         // Over the windows, not instead of them: says why the meters are empty.
@@ -216,6 +219,21 @@ Rectangle {
         }
     }
 
+    // --- the automation Event List, floating over either window ---
+    Loader {
+        id: eventListLoader
+        objectName: "eventListLoader"
+        x: root.width - width - Theme.space6 - 40
+        y: body.y + 120
+        z: 8
+        sourceComponent: EventListWindow {
+            objectName: "eventListWindow"
+            shell: root.shell
+            session: root.session
+            mover: eventListLoader
+        }
+    }
+
     // --- the Latency window (Setup > Latency…), floating over either window ---
     Loader {
         id: latencyLoader
@@ -245,6 +263,21 @@ Rectangle {
             shell: root.shell
             session: root.session
             mover: bounceLoader
+        }
+    }
+
+    // --- the Preferences window (Setup > Preferences…) ---
+    Loader {
+        id: preferencesLoader
+        objectName: "preferencesLoader"
+        x: Theme.space6
+        y: body.y + Theme.space6
+        z: 8
+        sourceComponent: PreferencesWindow {
+            objectName: "preferencesWindow"
+            shell: root.shell
+            session: root.session
+            mover: preferencesLoader
         }
     }
 
@@ -319,6 +352,40 @@ Rectangle {
                     wrapMode: Text.Wrap
                     text: "! " + root.session.trackRefusal
                     color: Theme.caution
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                }
+            }
+            // Consolidate (ADR-0031 §6.1): the render's progress while it runs,
+            // and a failure or refusal kept until dismissed, not the status
+            // line that clears in 2.5 s.
+            Row {
+                objectName: "consolidateNotice"
+                visible: root.shell.consolidateText.length > 0
+                width: footerColumn.width
+                spacing: Theme.space2
+                SButton {
+                    id: dismissConsolidate
+                    objectName: "dismissConsolidate"
+                    visible: !root.shell.consolidateRunning
+                    text: "Dismiss"
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    onClicked: root.shell.dismissConsolidate()
+                }
+                SButton {
+                    objectName: "cancelConsolidate"
+                    visible: root.shell.consolidateRunning
+                    text: "Cancel"
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    onClicked: root.shell.invoke("session.consolidate_cancel", -1)
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - parent.spacing - dismissConsolidate.width
+                    wrapMode: Text.Wrap
+                    text: (root.shell.consolidateFailed ? "! " : "") + root.shell.consolidateText
+                    color: root.shell.consolidateFailed ? Theme.caution : Theme.textSecondary
                     font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                 }
             }
@@ -698,6 +765,7 @@ Rectangle {
                     { name: "fileBounceMix", label: "Bounce Mix…", command: "window.bounce" },
                     { name: "", label: "", command: "" },
                     { name: "fileOpen", label: "Open…", command: "open" },
+                    { name: "fileImportAudio", label: "Import Audio…", command: "session.import_audio" },
                     { name: "fileNewFromTemplate", label: "New from Template…", command: "app.new_from_template" }
                 ]
                 Item {
@@ -1277,11 +1345,31 @@ Rectangle {
                     { name: "", label: "", command: "", on: false },
                     { name: "editRenameRegion", label: "Rename Region…", command: "region.rename", on: true },
                     { name: "editRegionColour", label: "Region Colour…", command: "region.colour", on: true },
+                    { name: "editClipGain", label: "Clip Gain…", command: "clip.gain", on: true },
+                    { name: "editTempo", label: "Tempo…", command: "tempo.edit", on: true },
+                    { name: "editTempoUndo", label: "Undo Tempo", command: "tempo.undo", on: true },
+                    { name: "editTempoRedo", label: "Redo Tempo", command: "tempo.redo", on: true },
+                    { name: "editTempoTrack", label: "Tempo Track", command: "tempo.track", on: true },
+                    { name: "", label: "", command: "", on: false },
+                    { name: "editGroupClips", label: "Group Clips", command: "clip.group", on: true },
+                    { name: "editUngroupClips", label: "Ungroup Clips", command: "clip.ungroup", on: true },
+                    { name: "editLoopClip", label: "Loop Clip", command: "clip.loop", on: true },
+                    { name: "editUnloopClip", label: "Unloop Clip", command: "clip.unloop", on: true },
+                    { name: "", label: "", command: "", on: false },
+                    { name: "editSampleRepair", label: "Repair Selected Samples", command: "sample.repair", on: true },
+                    { name: "editSampleSilence", label: "Silence Selected Samples", command: "sample.silence", on: true },
+                    { name: "editSampleReverse", label: "Reverse Selected Samples", command: "sample.reverse", on: true },
+                    { name: "editSampleInvert", label: "Invert Selected Samples", command: "sample.invert", on: true },
+                    { name: "editSampleFadeIn", label: "Fade In Selected Samples", command: "sample.fade_in", on: true },
+                    { name: "editSampleFadeOut", label: "Fade Out Selected Samples", command: "sample.fade_out", on: true },
                     { name: "", label: "", command: "", on: false },
                     { name: "editSelectAll", label: "Select All", command: "edit.select_all", on: true },
                     { name: "", label: "", command: "", on: false },
                     { name: "editNewMarker", label: "New Marker…", command: "marker.add", on: true },
-                    { name: "editMemoryLocations", label: "Memory Locations", command: "window.memory_locations", on: true }
+                    { name: "editMemoryLocations", label: "Memory Locations", command: "window.memory_locations",on: true },
+                    { name: "editEventList", label: "Automation Event List", command: "window.event_list", on: true },
+                    { name: "editWriteSelection", label: "Write Automation to Selection", command: "automation.write_selection", on: true },
+                    { name: "editSnapshotAutomation", label: "Snapshot Automation", command: "automation.snapshot", on: true }
                 ]
                 Item {
                     required property var modelData
@@ -1672,6 +1760,9 @@ Rectangle {
         }
     }
 
+    ClipGainPanel { id: clipGainPanel; shell: root.shell }
+    TempoPanel { id: tempoPanel; shell: root.shell }
+
     // --- Rename Track, Rename Region -----------------------------------------------
     // Asked for by track.rename or region.rename with no name (a double-click
     // on a track name or on a region with the Grabber does the same): the
@@ -1789,7 +1880,7 @@ Rectangle {
         anchors.fill: parent
         visible: colourPalette.visible
         z: 9
-        onClicked: colourPalette.visible = false
+        onClicked: colourPalette.close()
     }
     Rectangle {
         id: colourPalette
@@ -1812,12 +1903,22 @@ Rectangle {
             current = c
             problem = ""
             visible = true
+            forceActiveFocus()
+            root.shell.setTextEntry(true)
+        }
+        function close() {
+            visible = false
+            focus = false
+            root.shell.setTextEntry(false)
         }
         function choose(argument) {
             if (root.shell.invokeWith(track >= 0 ? "track.colour" : "region.colour", track, argument))
-                visible = false
+                close()
             else problem = root.shell.statusText
         }
+        // Escape closes it as it does every other dialog; with no text field
+        // of its own, the palette takes the keyboard while it is open.
+        Keys.onEscapePressed: colourPalette.close()
 
         Column {
             id: paletteColumn
@@ -1895,7 +1996,7 @@ Rectangle {
                     objectName: "paletteClose"
                     text: "Close"
                     implicitHeight: 24
-                    onClicked: colourPalette.visible = false
+                    onClicked: colourPalette.close()
                 }
             }
         }
@@ -1939,6 +2040,18 @@ Rectangle {
                 onClicked: {
                     setupMenu.visible = false
                     root.shell.invoke("window.latency", -1)
+                }
+            }
+            SButton {
+                objectName: "setupPreferences"
+                width: setupColumn.width
+                implicitHeight: 26
+                bold: false
+                fontPx: Theme.textBody
+                text: "Preferences…"
+                onClicked: {
+                    setupMenu.visible = false
+                    root.shell.invoke("window.preferences", -1)
                 }
             }
             SButton {
@@ -2063,6 +2176,117 @@ Rectangle {
                     implicitHeight: 24
                     active: true
                     onClicked: repeatPanel.accept()
+                }
+            }
+        }
+    }
+
+    // --- Spot: where a region starts ---------------------------------------------
+    // Pro Tools' Spot mode: a click on a region, or edit.spot with no time,
+    // asks for its start in the main counter's format. OK and Return send
+    // edit.spot with the text through the same router; a refused time leaves
+    // the dialog open with the reason on the status line.
+    MouseArea {
+        anchors.fill: parent
+        visible: spotPanel.visible
+        z: 9
+        onClicked: spotPanel.close()
+    }
+    Rectangle {
+        id: spotPanel
+        objectName: "spotPanel"
+        property string regionName
+        visible: false
+        z: 10
+        anchors.centerIn: parent
+        width: 340
+        height: spotColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        function show(name, start) {
+            spotPanel.regionName = name
+            spotInput.text = start
+            visible = true
+            spotInput.forceActiveFocus()
+            spotInput.selectAll()
+        }
+        function close() {
+            visible = false
+            spotInput.focus = false
+            root.shell.setTextEntry(false)
+        }
+        function accept() {
+            if (root.shell.invokeWith("edit.spot", -1, spotInput.text)) close()
+        }
+
+        Column {
+            id: spotColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: "Spot"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                objectName: "spotWhat"
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Where " + spotPanel.regionName + " starts. What it lands on is replaced."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                spacing: Theme.space2
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Start"
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                }
+                Rectangle {
+                    width: 150
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.window
+                    border.color: spotInput.activeFocus ? Theme.accent : Theme.borderStrong
+                    TextInput {
+                        id: spotInput
+                        objectName: "spotInput"
+                        anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                        horizontalAlignment: TextInput.AlignRight
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.selectionFill
+                        selectedTextColor: Theme.text
+                        font { family: Theme.fontFamily; pixelSize: Theme.textBody; features: { "tnum": 1 } }
+                        onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                        Keys.onEscapePressed: spotPanel.close()
+                        Keys.onReturnPressed: spotPanel.accept()
+                        Keys.onEnterPressed: spotPanel.accept()
+                    }
+                }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "spotCancel"
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: spotPanel.close()
+                }
+                SButton {
+                    objectName: "spotOk"
+                    text: "OK"
+                    implicitHeight: 24
+                    active: true
+                    onClicked: spotPanel.accept()
                 }
             }
         }
@@ -2263,6 +2487,12 @@ Rectangle {
         }
     }
 
+    ImportPanel {
+        id: importPanel
+        shell: root.shell
+        session: root.session
+    }
+
     // A refused gesture speaks on the status line, like a refused key; so
     // does a save or an open that worked.
     Connections {
@@ -2270,13 +2500,17 @@ Rectangle {
         function onRefused(why) { root.shell.say(why) }
         function onNotice(text) { root.shell.say(text) }
         function onRepeatRequested(count, what) { repeatPanel.show(count, what) }
+        function onSpotRequested(name, start) { spotPanel.show(name, start) }
         function onNewTracksRequested() { newTracksPanel.show() }
         function onSaveAsRequested(copy, name, where) { saveAsPanel.show(copy, name, where) }
         function onSaveAsTemplateRequested(name, where) { saveAsPanel.showTemplate(name, where) }
         function onTemplateBrowserRequested() { templatePanel.show() }
+        function onImportBrowserRequested() { importPanel.show() }
         function onPlaylistRenameRequested(track, current) { playlistRenamePanel.show(track, current) }
         function onNameRequested(track, current) { namePanel.show(track, current) }
         function onColourRequested(track, current) { colourPalette.show(track, current) }
+        function onClipGainRequested(current) { clipGainPanel.show(current) }
+        function onTempoRequested(current) { tempoPanel.show(current) }
         function onMarkerRequested(name, what, range) { markerPanel.show(name, what, range) }
     }
 }

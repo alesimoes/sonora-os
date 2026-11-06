@@ -574,6 +574,7 @@ int main(int argc, char** argv) {
     SyntheticPeakSource peaks(rate, 120.0);
     SessionModel session(document, peaks, true);
     if (!a.opt.sessions_dir.isEmpty()) session.setSessionsDir(a.opt.sessions_dir);
+    session.setPreferencesFile(default_preferences_file());
     document.on_refused = [&session](const std::string& why) {
         emit session.notice(QString::fromStdString(why));
     };
@@ -666,6 +667,16 @@ int main(int argc, char** argv) {
     link_transport(model, session, transport);
     link_marker_locate(model, session);
     session.setLayoutsFile(default_layouts_file());
+    // Quick Swipe follows the key map the operator comes from (ADR-0031 §3):
+    // on under Logic's, off under Pro Tools'; a toggle holds until the profile changes.
+    QObject::connect(&model, &ShellModel::keymapChanged, &session,
+                     [&model, &session, last = QString()]() mutable {
+                         const QString now = model.profileName();
+                         if (now == last) return;
+                         last = now;
+                         session.controller().set_quick_swipe(
+                             now.contains(QStringLiteral("Logic"), Qt::CaseInsensitive));
+                     });
     ShellModel::PluginSinks plugin_sinks;
     plugin_sinks.catalog = [&inserts](const api::PluginCatalog& c) { inserts.onCatalog(c); };
     plugin_sinks.fault = [&inserts](uint64_t insert, const std::string& text) {
@@ -673,6 +684,16 @@ int main(int argc, char** argv) {
     };
     plugin_sinks.frame = [&inserts](const EngineFrame& f, bool alive) { inserts.onFrame(f, alive); };
     model.setPluginSinks(std::move(plugin_sinks));
+    LoudnessModel loudness(
+        // A sent command answers later, on the status line; invokeWith
+        // returns true only for the interface's own, so it says nothing here.
+        [&model](const QString& argument) {
+            model.invokeWith(QStringLiteral("meters.reset"), -1, argument);
+            return true;
+        },
+        [&model]() { return model.implemented(QStringLiteral("meters.reset")); });
+    model.setLoudnessSink([&loudness](const EngineFrame& f, bool alive) { loudness.onFrame(f, alive); });
+    QObject::connect(&session, &SessionModel::sessionOpened, &loudness, &LoudnessModel::sessionOpened);
     session.setWindow(a.opt.window);
     if (!engine_notice.empty()) model.addNotice(QString::fromStdString(engine_notice));
     if (!keymap_dir_notice.empty()) model.addNotice(QString::fromStdString(keymap_dir_notice));
@@ -708,6 +729,7 @@ int main(int argc, char** argv) {
                                {QStringLiteral("session"), QVariant::fromValue(&session)},
                                {QStringLiteral("inserts"), QVariant::fromValue(&inserts)},
                                {QStringLiteral("sends"), QVariant::fromValue(&sends)},
+                               {QStringLiteral("loudness"), QVariant::fromValue(&loudness)},
                                {QStringLiteral("mixer"), QVariant::fromValue(&mixer)}});
     QObject::connect(view.engine(), &QQmlEngine::quit, &app, &QCoreApplication::quit);
     probe_render_path(&view, &model, on_render_path, &a);

@@ -563,6 +563,54 @@ public:
         });
     }
 
+    bool operator()(const ShiftRegions& op) {
+        if (!not_midi(op.playlist, "a MIDI playlist has no Shuffle ripple")) return false;
+        if (op.delta == 0) return fail("shifting by 0 frames");
+        return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
+            // Regions are sorted by position, so those that move are a tail.
+            std::size_t first = p.regions.size();
+            Frames stay_end = 0;
+            for (std::size_t i = 0; i < p.regions.size(); ++i) {
+                if (p.regions[i].position >= op.from) {
+                    first = i;
+                    break;
+                }
+                stay_end = std::max(stay_end, p.regions[i].end());
+            }
+            if (first == p.regions.size()) return fail("no region starts at or after " + str(op.from));
+            const Frames lowest = p.regions[first].position;
+            Frames highest_end = 0;
+            for (std::size_t i = first; i < p.regions.size(); ++i) {
+                highest_end = std::max(highest_end, p.regions[i].end());
+            }
+            if (op.delta < 0) {
+                if (lowest + op.delta < 0) {
+                    return fail("shifting before timeline frame 0");
+                }
+                if (lowest + op.delta < stay_end) {
+                    return fail("shifting by " + str(op.delta) +
+                                " would land on a region that stays");
+                }
+            } else if (op.delta > kMaxInteger - highest_end) {
+                return fail("shifting past the end of the timeline");
+            }
+            std::vector<Id> ids;
+            for (std::size_t i = first; i < p.regions.size(); ++i) ids.push_back(p.regions[i].id);
+            // Later regions first when moving later, so none is moved onto one
+            // not yet moved.
+            if (op.delta > 0) std::reverse(ids.begin(), ids.end());
+            for (const Id id : ids) {
+                const std::size_t i = region_index(p, id);
+                Region r = p.regions[i];
+                erase_region(p, i);
+                r.position += op.delta;
+                insert_region(p, std::move(r));
+            }
+            drop_broken_crossfades(p);
+            return true;
+        });
+    }
+
     bool operator()(const SetFade& op) {
         if (!not_midi(op.playlist, "a MIDI region has no fades")) return false;
         return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
@@ -758,10 +806,131 @@ public:
                            [&](auto& r) { r.name = op.name; });
     }
 
+    bool operator()(const SetGroup& op) {
+        const auto& groups = before_.edit->groups;
+        const auto at = std::find_if(groups.begin(), groups.end(),
+                                     [&](const Group& g) { return g.id == op.group; });
+        if (at == groups.end() && !fresh(op.group)) return false;
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        Group g;
+        g.id = op.group;
+        g.name = op.name;
+        g.members = op.members;
+        g.attrs = op.attrs;
+        g.relative = op.relative;
+        g.active = op.active;
+        if (at == groups.end()) {
+            edit->groups.push_back(std::move(g));
+        } else {
+            edit->groups[static_cast<std::size_t>(at - groups.begin())] = std::move(g);
+        }
+        std::string where;
+        const std::string why = detail::group_problem(*edit, where);
+        if (!why.empty()) return fail("group" + where + ": " + why);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        if (at == groups.end()) after_.next_id = op.group + 1;
+        return true;
+    }
+
+    bool operator()(const RemoveGroup& op) {
+        const auto& groups = before_.edit->groups;
+        const auto at = std::find_if(groups.begin(), groups.end(),
+                                     [&](const Group& g) { return g.id == op.group; });
+        if (at == groups.end()) return fail("group " + str(op.group) + " does not exist");
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        edit->groups.erase(edit->groups.begin() + (at - groups.begin()));
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
     bool operator()(const SetRegionColour& op) {
         if (!detail::region_colour_ok(op.colour)) return fail(detail::region_colour_problem());
         return edit_region(op.playlist, op.region,
                            [&](auto& r) { r.colour = op.colour; });
+    }
+
+    bool operator()(const SetRegionGain& op) {
+        if (!(op.gain_db >= kMinGainDb && op.gain_db <= kMaxGainDb)) {
+            return fail("gain_db must be from -144 to 24 dB");
+        }
+        const std::string bad = gain_line_problem(op.gain_line);
+        if (!bad.empty()) return fail(bad);
+        return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
+            const std::size_t i = region_index(p, op.region);
+            if (i == kNone) return no_region(op.region, op.playlist);
+            p.regions[i].gain_db = op.gain_db;
+            p.regions[i].gain_line = op.gain_line;
+            mark(i, i);
+            return true;
+        });
+    }
+
+    bool operator()(const SetClipGroup& op) {
+        if (op.members.empty()) return fail("a clip group needs at least one region");
+        if (op.members.size() > kMaxCompoundMembers) {
+            return fail("a clip group holds at most " +
+                        str(static_cast<std::uint64_t>(kMaxCompoundMembers)) + " regions");
+        }
+        return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t) {
+            std::vector<std::size_t> at;
+            bool names_group = op.group == 0;
+            for (const ClipGroupMember& m : op.members) {
+                const std::size_t i = region_index(p, m.region);
+                if (i == kNone) return no_region(m.region, op.playlist);
+                if (std::find(at.begin(), at.end(), i) != at.end()) {
+                    return fail("region " + str(m.region) + " is named twice");
+                }
+                if (op.group == 0 && m.loop != 0) {
+                    return fail("an ungrouped region has no loop number");
+                }
+                if (op.group != 0 && m.loop != 0 && m.region == op.group) {
+                    return fail("the region that names a group is not a repeat");
+                }
+                if (m.region == op.group) names_group = true;
+                at.push_back(i);
+            }
+            if (!names_group) {
+                return fail("a clip group is named by one of its regions; " + str(op.group) +
+                            " is not among them");
+            }
+            if (op.group != 0) {
+                for (std::size_t i = 0; i < p.regions.size(); ++i) {
+                    if (p.regions[i].clip_group == op.group &&
+                        std::find(at.begin(), at.end(), i) == at.end()) {
+                        return fail("clip group " + str(op.group) +
+                                    " already holds a region the operation does not name");
+                    }
+                }
+            }
+            for (std::size_t k = 0; k < at.size(); ++k) {
+                Region& r = p.regions[at[k]];
+                r.clip_group = op.group;
+                r.loop = op.group == 0 ? std::uint16_t{0} : op.members[k].loop;
+                mark(at[k], at[k]);
+            }
+            return true;
+        });
+    }
+
+    bool operator()(const SetRegionSources& op) {
+        const std::string bad = gain_line_problem(op.gain_line);
+        if (!bad.empty()) return fail(bad);
+        return edit_playlist(op.playlist, [&](Playlist& p, std::uint16_t track_channels) {
+            const std::size_t i = region_index(p, op.region);
+            if (i == kNone) return no_region(op.region, op.playlist);
+            Region r = p.regions[i];
+            r.channels = op.channels;
+            r.source_offset = op.source_offset;
+            r.gain_line = op.gain_line;
+            const std::string why = detail::region_problem(r, *before_.sources, track_channels);
+            if (!why.empty()) return fail("region " + str(op.region) + ": " + why);
+            p.regions[i] = std::move(r);
+            mark(i, i);
+            drop_broken_crossfades(p);
+            return true;
+        });
     }
 
     bool operator()(const ReorderTracks& op) {
@@ -790,6 +959,109 @@ public:
         if (t == kNone) return fail("track " + str(op.track) + " does not exist");
         auto edit = std::make_shared<EditState>(*before_.edit);
         edit->tracks.erase(edit->tracks.begin() + static_cast<std::ptrdiff_t>(t));
+        // A VCA or a folder does not keep a track that is gone; undo brings
+        // both back with the track (ADR-0048 §1).
+        const auto drop = [&](std::vector<Id>& members) {
+            members.erase(std::remove(members.begin(), members.end(), op.track), members.end());
+        };
+        for (Vca& v : edit->vcas) drop(v.members);
+        for (Folder& f : edit->folders) drop(f.members);
+        // A group of fewer than two tracks links nothing: it goes, and undo
+        // brings it back with the track.
+        for (Group& g : edit->groups) {
+            g.members.erase(std::remove(g.members.begin(), g.members.end(), op.track),
+                            g.members.end());
+        }
+        edit->groups.erase(
+            std::remove_if(edit->groups.begin(), edit->groups.end(),
+                           [](const Group& g) { return g.members.size() < 2; }),
+            edit->groups.end());
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
+    template <typename T, typename Op>
+    bool set_members(std::vector<T>& list, Id id, const Op& op) {
+        const auto at = std::find_if(list.begin(), list.end(), [&](const T& x) { return x.id == id; });
+        if (at == list.end() && !fresh(id)) return false;
+        T item;
+        item.id = id;
+        item.name = op.name;
+        item.members = op.members;
+        if (at == list.end()) {
+            list.push_back(std::move(item));
+        } else {
+            *at = std::move(item);
+        }
+        return true;
+    }
+
+    bool operator()(const SetVca& op) {
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        const bool is_new = std::none_of(edit->vcas.begin(), edit->vcas.end(),
+                                         [&](const Vca& v) { return v.id == op.vca; });
+        if (!set_members(edit->vcas, op.vca, op)) return false;
+        std::string where;
+        const std::string why = detail::vca_problem(*edit, where);
+        if (!why.empty()) return fail("VCA" + where + ": " + why);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        if (is_new) after_.next_id = op.vca + 1;
+        return true;
+    }
+
+    bool operator()(const RemoveVca& op) {
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        const auto at = std::find_if(edit->vcas.begin(), edit->vcas.end(),
+                                     [&](const Vca& v) { return v.id == op.vca; });
+        if (at == edit->vcas.end()) return fail("VCA " + str(op.vca) + " does not exist");
+        edit->vcas.erase(at);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
+    bool operator()(const SetVcaMix& op) {
+        const auto& vcas = before_.edit->vcas;
+        if (std::none_of(vcas.begin(), vcas.end(), [&](const Vca& v) { return v.id == op.mix.vca; })) {
+            return fail("VCA " + str(op.mix.vca) + " does not exist");
+        }
+        std::string where;
+        const std::string why = detail::vca_mix_problem(op.mix, where);
+        if (!why.empty()) return fail("VCA " + str(op.mix.vca) + "." + where + ": " + why);
+        after_ = before_;
+        auto& list = after_.mix.vcas;
+        const auto at = std::find_if(list.begin(), list.end(),
+                                     [&](const VcaMix& m) { return m.vca == op.mix.vca; });
+        if (at == list.end()) {
+            list.push_back(op.mix);
+        } else {
+            *at = op.mix;
+        }
+        return true;
+    }
+
+    bool operator()(const SetFolder& op) {
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        const bool is_new = std::none_of(edit->folders.begin(), edit->folders.end(),
+                                         [&](const Folder& f) { return f.id == op.folder; });
+        if (!set_members(edit->folders, op.folder, op)) return false;
+        std::string where;
+        const std::string why = detail::folder_problem(*edit, where);
+        if (!why.empty()) return fail("folder" + where + ": " + why);
+        after_ = before_;
+        after_.edit = std::move(edit);
+        if (is_new) after_.next_id = op.folder + 1;
+        return true;
+    }
+
+    bool operator()(const RemoveFolder& op) {
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        const auto at = std::find_if(edit->folders.begin(), edit->folders.end(),
+                                     [&](const Folder& f) { return f.id == op.folder; });
+        if (at == edit->folders.end()) return fail("folder " + str(op.folder) + " does not exist");
+        edit->folders.erase(at);
         after_ = before_;
         after_.edit = std::move(edit);
         return true;
@@ -2420,7 +2692,7 @@ bool leaf_is_undoable(MemberRef m) {
              m.holds<SetSettings>() || m.holds<SetInsertBypass>() ||
              m.holds<SetInsertParams>() || m.holds<SetInsertState>() ||
              m.holds<AddMidiSource>() || m.holds<SetMidiRouting>() ||
-             m.holds<SetSendMix>() || m.holds<SetBusMix>());
+             m.holds<SetSendMix>() || m.holds<SetBusMix>() || m.holds<SetVcaMix>());
 }
 
 }  // namespace

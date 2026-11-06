@@ -54,6 +54,14 @@
 // the engine does not have has no trim atomic: its trim ride is refused,
 // since there is no SetMix to fall back on.
 //
+// Groups (ADR-0041). A ride on a member whose group links Volume moves the
+// other members too: each gets a ParameterChange per step, relative to
+// where it was when the hand landed (or all to one value, in an Absolute
+// group), and its own Touch and Release. The release is still one SetMix of
+// the ridden track, which the controller expands to a Compound of the
+// group's members, so the document is changed once for the whole group. A
+// trim ride is never linked.
+//
 // Modifier clicks, as the Pro Tools Reference Guide documents them for
 // Windows:
 //   Alt-click solo or mute    every track to the clicked track's new state
@@ -68,10 +76,14 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
+#include <QVariantList>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
+#include <vector>
 
 #include "sonora/api/messages.h"
 #include "sonora/model/model.h"
@@ -102,10 +114,33 @@ class MixModel : public QObject {
     // file (session-format.md, ADR-0007 5); it goes back to the defaults
     // when another session opens. Inserts F-J are hidden by default; the
     // sends' F-J is SendModel::bank.
+    // The groups, for the strips' tags and the group buttons. trackGroups is
+    // per track: an index into the lists below, -1 for none.
+    Q_PROPERTY(QList<int> trackGroups READ trackGroups NOTIFY groupsChanged)
+    Q_PROPERTY(QStringList groupNames READ groupNames NOTIFY groupsChanged)
+    Q_PROPERTY(QList<bool> groupSuspended READ groupSuspended NOTIFY groupsChanged)
+    // "Relative" or "Absolute", then what it links: "Volume, Mute, Solo, Arm".
+    Q_PROPERTY(QStringList groupSummaries READ groupSummaries NOTIFY groupsChanged)
     Q_PROPERTY(bool showIO READ showIO WRITE setShowIO NOTIFY viewsChanged)
     Q_PROPERTY(bool showInsertsAE READ showInsertsAE WRITE setShowInsertsAE NOTIFY viewsChanged)
     Q_PROPERTY(bool showInsertsFJ READ showInsertsFJ WRITE setShowInsertsFJ NOTIFY viewsChanged)
     Q_PROPERTY(bool showSends READ showSends WRITE setShowSends NOTIFY viewsChanged)
+    // VCA masters and folders (ADR-0048). vcas: one map each, {name, gainDb,
+    // gainText, mute, count}. trackVcas: per track, the names of the VCAs it
+    // is on, joined, "" for none. trackFolders: per track, the index in
+    // folders or -1. folders: {name, count, open, mute, solo}. A folder
+    // closed in the window (interface state, back to open when a session
+    // opens) shows as one card at its first track's place and its other
+    // tracks have no slot: trackSlots gives each track's place among the
+    // slotCount, -1 for a hidden one; folderCards: {slot, folder, name,
+    // count, mute, solo} for each closed folder.
+    Q_PROPERTY(QVariantList vcas READ vcas NOTIFY structureChanged)
+    Q_PROPERTY(QStringList trackVcas READ trackVcas NOTIFY structureChanged)
+    Q_PROPERTY(QList<int> trackFolders READ trackFolders NOTIFY structureChanged)
+    Q_PROPERTY(QVariantList folders READ folders NOTIFY structureChanged)
+    Q_PROPERTY(QList<int> trackSlots READ trackSlots NOTIFY structureChanged)
+    Q_PROPERTY(int slotCount READ slotCount NOTIFY structureChanged)
+    Q_PROPERTY(QVariantList folderCards READ folderCards NOTIFY structureChanged)
 
 public:
     static constexpr int kNoRide = -2;
@@ -143,8 +178,47 @@ public:
     void setShowInsertsAE(bool on) { setView(show_inserts_ae_, on); }
     void setShowInsertsFJ(bool on) { setView(show_inserts_fj_, on); }
     void setShowSends(bool on) { setView(show_sends_, on); }
+    QVariantList vcas() const;
+    QStringList trackVcas() const;
+    QList<int> trackFolders() const;
+    QVariantList folders() const;
+    QList<int> trackSlots() const;
+    int slotCount() const;
+    QVariantList folderCards() const;
+
+    // --- VCA masters (ADR-0048) ---
+    // Both take the selected tracks. A refusal is a held notice.
+    Q_INVOKABLE bool newVca(const QString& name);
+    Q_INVOKABLE bool assignVca(int vca);
+    Q_INVOKABLE bool removeVca(int vca);
+    // One step of the VCA fader's drag; each is a SetVcaMix, which the
+    // engine applies as it goes (a VCA has no live parameter of its own).
+    Q_INVOKABLE void vcaDrag(int vca, qreal dy, qreal travel, bool fine);
+    Q_INVOKABLE void resetVca(int vca);
+    Q_INVOKABLE bool setVcaGainText(int vca, const QString& text);
+    Q_INVOKABLE bool toggleVcaMute(int vca);
+    // --- folders ---
+    Q_INVOKABLE bool newFolder(const QString& name);
+    Q_INVOKABLE bool dissolveFolder(int folder);
+    Q_INVOKABLE void toggleFolderOpen(int folder);
+    Q_INVOKABLE bool toggleFolderMute(int folder);
+    Q_INVOKABLE bool toggleFolderSolo(int folder);
+
     // ParameterChanges sent by rides, for the tests.
     uint64_t liveSteps() const { return live_steps_; }
+
+    QList<int> trackGroups() const;
+    QStringList groupNames() const;
+    QList<bool> groupSuspended() const;
+    QStringList groupSummaries() const;
+    // --- groups: each one operation, one undo step (EditController) ---
+    // The selected tracks become a group named `name` ("Group N" if empty).
+    Q_INVOKABLE bool groupSelected(const QString& name);
+    Q_INVOKABLE bool dissolveGroup(int track);
+    Q_INVOKABLE bool suspendGroup(int track);
+    Q_INVOKABLE bool setGroupRelative(int track, bool relative);
+    // `attribute`: "volume", "mute", "solo" or "arm".
+    Q_INVOKABLE bool toggleGroupAttribute(int track, const QString& attribute);
 
     // --- a fader ride: press, moves, release ---
     Q_INVOKABLE void beginRide(int track);
@@ -180,8 +254,10 @@ public:
 
 signals:
     void rideChanged();
+    void groupsChanged();
     void viewsChanged();
     void trimsChanged();
+    void structureChanged();
 
 private:
     void setView(bool& field, bool on) {
@@ -190,6 +266,17 @@ private:
         emit viewsChanged();
     }
     void resetViews();
+    // The first member of folder `folder` in display order, -1 for none.
+    int folderFirst(int folder) const;
+    bool folderOpen(int folder) const;
+    // A refusal the operator must see: held, not the status line.
+    bool vcaResult(bool ok, const std::string& why);
+    // The other members of `track`'s Volume group, set up as a ride begins.
+    void beginPeers(int track);
+    void movePeers(float db);
+    // Each peer's Release: at its last ridden value, or (`to_document`) at
+    // what the document holds, for a ride that was dropped.
+    void releasePeers(bool to_document);
     void sessionOpened();
     bool live(int track) const;
     // Where a trim ride on `track` starts, so nothing jumps: the trim fader
@@ -236,6 +323,15 @@ private:
     // pass's lane holds it, so the static is not set (ADR-0027 §8).
     bool ride_wrote_ = false;
     bool ride_trim_ = false;      // the ride is the trim fader's (VolumeTrim)
+    struct RidePeer {
+        int index;
+        model::Id id;
+        float from_db;
+        float last_db;
+        bool touched;
+    };
+    std::vector<RidePeer> ride_peers_;
+    model::Group ride_group_;
     // What each track's engine trim atomic holds, as this interface last
     // sent it; a track not here is at 0 dB. Cleared when a session opens.
     std::map<model::Id, float> held_trim_db_;
@@ -248,6 +344,8 @@ private:
     bool show_inserts_ae_ = true;
     bool show_inserts_fj_ = false;
     bool show_sends_ = true;
+    // Folders shown closed; the interface's, cleared when a session opens.
+    std::set<model::Id> closed_folders_;
 };
 
 }  // namespace sonora::ui

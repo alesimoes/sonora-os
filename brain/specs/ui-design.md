@@ -376,6 +376,21 @@ because of principle 1.
   context menu, labelled "Remove bus and its sends", and it is one undo
   step.
 
+**Update, 2026-11-04 (ADR-0048).** Two more kinds, again with no new colour.
+
+| Kind | Kind band | Controls | Surface and place |
+|---|---|---|---|
+| VCA master | "VCA", then how many tracks it holds | M, Set (hold the selected tracks), a fader and its readout, `×` on the name plate; no meter, no inserts, no sends | `panel`, after the aux returns, a `caution` cap |
+| Folder card | "Folder", then how many tracks it hides | M and S for all of them, Open, Ungroup | `panel` with a `borderStrong` outline, where the closed folder's first track was |
+
+- A track a VCA holds wears its name in a `caution` tag under the colour
+  cap (two VCAs: both names, joined); a track in a folder wears the
+  folder's name in a `sunken` tag with a down-pointing triangle, and a click
+  on it closes the folder. A tag takes no height on a strip that has none, so
+  an unassigned mix keeps its fader.
+- A closed folder is the window's state, not the session's: it goes back to
+  open when a session opens, and closing it is not an undo step.
+
 ## Names: abbreviation and truncation
 
 **Update, 2026-10-31.** One Qt-free function, with tests, abbreviates track,

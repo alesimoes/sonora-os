@@ -197,6 +197,10 @@ reader) is exact in 128-bit integers; outside them it could not be. The
 loader and `SetSettings` refuse a value outside by key path; a version 3
 file is brought inside them instead ("Versioning").
 
+A tempo ramp is not a field: the interface writes it as a staircase of
+ordinary entries, two to a beat, so every reader counts it as any other map
+(ADR-0050).
+
 How the map is counted. The interface's counters, ruler and grid read it
 this way, and the click must put its downbeats in the same places:
 
@@ -224,7 +228,10 @@ this way, and the click must put its downbeats in the same places:
   "punch_crossfade": 240,
   "count_off_bars": 2,
   "loop_playback": false,
-  "loop_record": false
+  "loop_record": false,
+  "input_only": false,
+  "rolls_on": true,
+  "quick_punch": false
 }
 ```
 
@@ -251,6 +258,13 @@ timeline selection makes the selection `loop`. `transport.punch_selection`
 rolls; each changes its one field at the engine, and `punch` does not change
 while a take is open (ADR-0016, update "transport settings at the
 authority").
+`input_only`, `rolls_on` and `quick_punch` (version 20, ADR-0043) are the
+record modes. `input_only` is Pro Tools' Input Only Monitoring against Auto
+Input (`false`): on, an armed track is heard from its input whatever the
+transport does. `rolls_on` is the Pre/Post-Roll switch: off, a take starts at
+the record point and a punch stops at B, `pre_roll` and `post_roll` kept for
+the next time it is on. `quick_punch` is Pro Tools' QuickPunch: the record key
+punches in and out on the fly and the punch range is not used.
 Transport settings are saved but are not undoable.
 
 ### `monitor_bus`: Phase 2's fixed stereo bus
@@ -1066,6 +1080,39 @@ after `pan_law_db`. A lane's `param` may be `"mute"`, `"send_level"` or
 `"send_pan"`, the last two with `send`. A version 17 file cannot carry any
 of them. The frozen v17 fixture loads through it and saves as
 `v18-strip-lanes.sonora`, byte for byte.
+
+**v18→v19 (groups, clip gain and record modes; ADR-0041, ADR-0042,
+ADR-0043; one version for the three):** the session may hold `"groups"`
+(ADR-0041), written only when there is a group. A region may carry
+`"gain_line"`, written only when it has points: an array of `{"at", "db"}`
+objects, `at` a frame of the region's *source* (so a move, trim or split
+never rewrites it), strictly increasing, at most 256, `db` from -144 to +24
+on top of the region's `gain_db`. The gain between two points is linear in
+amplitude, held before the first and after the last. `transport` gains
+`"input_only": false`, `"rolls_on": true` and `"quick_punch": false`, after
+`loop_record`, and every audio track `"track_punch": true`, after
+`solo_safe`; a MIDI or instrument track has none. A version 18 file cannot
+carry any of these. The frozen v18 fixture loads through the migration and
+saves as `v24-current.sonora`, byte for byte (the current fixture was
+`v19-current.sonora` until version 24; versions 20 to 23 change nothing in it).
+
+**v23→v24 (clip groups and loops, ADR-0052):** a region may carry
+`"clip_group"`, the id of a region of the same playlist (the group's name),
+and `"loop"`, a repeat number from 1; each is written only when non-zero, after
+`fade_out`. A repeat (`loop` above 0) must have a `clip_group`. Nothing is
+filled in. A version 23 file cannot carry either key, and a file at 23 or
+lower that does is refused by the migration, as a reader of that version
+would. Versions 20 to 23 are other work's (reserved when this landed); each
+adds its own step to the migration table.
+
+**v19→v20 (VCA masters and folders; ADR-0048):** the session may hold
+`"vcas"`, written only when there is one: objects with `id`, `name`,
+`members` (track ids, none allowed), `gain_db` and `mute`; and `"folders"`,
+likewise written only when there is one: `id`, `name`, `members`. A track is
+in at most one folder and on any number of VCAs; ids share the one id space
+and a member must be a track. Absent means none. A version 19 file cannot
+carry either key, so one that does is refused. The frozen v19 fixture loads
+through the migration and saves as `v20-current.sonora`, byte for byte.
 
 Worked example, the Phase 3 mixer's migration, at the next free version: `monitor_bus` becomes
 `mixer.buses[0]` named "Main" with the same `outputs`, `gain_db` and

@@ -60,6 +60,12 @@ Rectangle {
         anchors { left: parent.left; right: parent.right; top: parent.top; topMargin: Theme.space2 }
         spacing: Theme.space2
 
+        // The height of ChannelStrip's tag row, when the session has a VCA or a folder.
+        Item {
+            visible: aux.mixer !== null && (aux.mixer.vcas.length > 0 || aux.mixer.folders.length > 0)
+            width: 1
+            height: 12
+        }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             width: parent.width - 2 * Theme.space1

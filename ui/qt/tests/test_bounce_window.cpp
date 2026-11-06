@@ -109,6 +109,13 @@ int bounce_window_over_the_fake_engine() {
     // -14 LUFS, a name.
     click(view, named(win, QStringLiteral("bounceRealTime")));
     click(view, named(win, QStringLiteral("bounceFloat32")));
+    CHECK(win->property("bits").toInt() == 32);
+    click(view, named(win, QStringLiteral("bounceFile_aiff")));
+    // AIFF holds no float: the depth falls back to 24 and the button is off.
+    CHECK(win->property("bits").toInt() == 24);
+    click(view, named(win, QStringLiteral("bounceInt16")));
+    click(view, named(win, QStringLiteral("bounceRate_44100")));
+    click(view, named(win, QStringLiteral("bounceDither_shaped")));
     click(view, named(win, QStringLiteral("bounceNormalise")));
     click(view, named(win, QStringLiteral("bounceTargetUp")));
     click(view, named(win, QStringLiteral("bounceTargetUp")));
@@ -118,7 +125,9 @@ int bounce_window_over_the_fake_engine() {
     api::BounceOptions sent;
     std::string why;
     CHECK(api::parse_bounce_argument(sent_argument, sent, why));
-    CHECK(sent.mode == api::BounceMode::RealTime && sent.format == api::BounceFormat::Float32);
+    CHECK(sent.mode == api::BounceMode::RealTime && sent.format == api::BounceFormat::Int16);
+    CHECK(sent.file == api::BounceFile::Aiff && sent.sample_rate == 44100);
+    CHECK(sent.dither == api::BounceDither::Shaped);
     CHECK(sent.normalise && sent.target_lufs == -14.0 && sent.name == "Take 2");
     CHECK(sent.start == 0 && sent.end == 0);
 
@@ -143,8 +152,8 @@ int bounce_window_over_the_fake_engine() {
 
     // A second request while one runs is refused, and the reason is held in
     // the window.
-    model.startBounce(false, false, false, -16.0, QString());
-    model.startBounce(false, false, false, -16.0, QString());
+    model.startBounce(false, QStringLiteral("bwf"), 24, 0, QStringLiteral("auto"), false, -16.0, QString());
+    model.startBounce(false, QStringLiteral("bwf"), 24, 0, QStringLiteral("auto"), false, -16.0, QString());
     model.tick();
     CHECK(model.bounceRefusal().contains(QStringLiteral("already running")));
     QQuickItem* refusal = named(win, QStringLiteral("bounceRefusal"));

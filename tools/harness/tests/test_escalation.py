@@ -239,3 +239,54 @@ class Escalation(support.DaemonCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AgentDefsFromDaemon(unittest.TestCase):
+    """A task worktree cut before an agent file existed must still launch."""
+
+    def setUp(self):
+        import tempfile
+        self.root = tempfile.mkdtemp()
+        d = os.path.join(self.root, ".claude", "agents")
+        os.makedirs(d)
+        for name, model in (("principal-engineer", "opus"),
+                            ("tester", "opus"), ("lead", None)):
+            with open(os.path.join(d, name + ".md"), "w",
+                      encoding="utf-8") as f:
+                f.write(f"---\nname: {name}\ndescription: Does {name}.\n"
+                        "tools: Read, Bash\n"
+                        + (f"model: {model}\n" if model else "")
+                        + f"---\n\nBody of {name}.\n")
+
+    def defs(self, agent):
+        import json
+        argv = launcher.build_command(["claude"], agent, "p", "m.json",
+                                      "s.json", agents_root=self.root)
+        i = argv.index("--agents")
+        self.assertEqual(argv[argv.index("--agent") + 1], agent)
+        return json.loads(argv[i + 1])[agent], argv
+
+    def test_definition_comes_from_the_daemon_checkout(self):
+        d, _ = self.defs("lead")
+        self.assertEqual(d["prompt"], "Body of lead.")
+        self.assertEqual(d["description"], "Does lead.")
+        self.assertEqual(d["tools"], ["Read", "Bash"])
+
+    def test_principal_gets_opus_others_sonnet(self):
+        d, argv = self.defs("principal-engineer")
+        self.assertEqual((d["model"], argv[argv.index("--model") + 1]),
+                         ("opus", "opus"))
+        d, argv = self.defs("lead")
+        self.assertEqual((d["model"], argv[argv.index("--model") + 1]),
+                         ("sonnet", "sonnet"))
+
+    def test_other_opus_file_is_refused_and_never_forwarded(self):
+        with self.assertRaises(launcher.ModelError):
+            launcher.check_models(self.root, env={})
+        d, _ = self.defs("tester")
+        self.assertEqual(d["model"], "sonnet")
+
+    def test_agent_absent_from_daemon_adds_no_agents_flag(self):
+        argv = launcher.build_command(["claude"], "ghost", "p", "m.json",
+                                      "s.json", agents_root=self.root)
+        self.assertNotIn("--agents", argv)

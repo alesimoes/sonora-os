@@ -380,6 +380,16 @@ void ShellModel::holdLatencyRefusal(const QString& why) {
     emit latencyChanged();
 }
 
+void ShellModel::holdConsolidate(const QString& text, bool failed, bool running) {
+    if (text == consolidate_text_ && failed == consolidate_failed_ && running == consolidate_running_) {
+        return;
+    }
+    consolidate_text_ = text;
+    consolidate_failed_ = failed;
+    consolidate_running_ = running;
+    emit consolidateChanged();
+}
+
 void ShellModel::latencyCommand(const char* command, const QString& argument) {
     holdLatencyRefusal(QString());
     CommandContext ctx;
@@ -422,12 +432,22 @@ void ShellModel::setBounceNotice(const QString& text) {
     emit noticesChanged();
 }
 
-void ShellModel::startBounce(bool real_time, bool float32, bool normalise, qreal target_lufs,
+void ShellModel::startBounce(bool real_time, const QString& file, int bits, int rate,
+                             const QString& dither, bool normalise, qreal target_lufs,
                              const QString& name) {
     holdBounceRefusal(QString());
     api::BounceOptions o;
     o.mode = real_time ? api::BounceMode::RealTime : api::BounceMode::Offline;
-    o.format = float32 ? api::BounceFormat::Float32 : api::BounceFormat::Int24;
+    o.format = bits == 32 ? api::BounceFormat::Float32
+               : bits == 16 ? api::BounceFormat::Int16 : api::BounceFormat::Int24;
+    o.file = file == QStringLiteral("wav") ? api::BounceFile::Wav
+             : file == QStringLiteral("aiff") ? api::BounceFile::Aiff
+             : file == QStringLiteral("flac") ? api::BounceFile::Flac : api::BounceFile::Bwf;
+    o.sample_rate = rate > 0 ? static_cast<uint32_t>(rate) : 0;
+    o.dither = dither == QStringLiteral("none") ? api::BounceDither::None
+               : dither == QStringLiteral("tpdf") ? api::BounceDither::Tpdf
+               : dither == QStringLiteral("shaped") ? api::BounceDither::Shaped
+                                                    : api::BounceDither::Auto;
     o.normalise = normalise;
     o.target_lufs = static_cast<double>(target_lufs);
     o.name = name.trimmed().toStdString();
@@ -571,6 +591,17 @@ void ShellModel::tick() {
             emit recoveryChanged();
         }
         if (latency) holdLatencyRefusal(QString::fromStdString(why));
+        // The cheap refusals come back in the reply, before any render (a take
+        // recording, a range the model refuses): held, the status line clears.
+        if (r.command == "session.consolidate") {
+            holdConsolidate(QString::fromStdString(why), true, false);
+        }
+        // A destructive edit the engine would not make (a take is recording, a
+        // file will not read): held until dismissed, not on the status line
+        // that clears, so the operator does not believe the samples changed.
+        if (r.command == "sample.edit") {
+            addNotice(QStringLiteral("Sample edit refused: ") + QString::fromStdString(why));
+        }
         if (r.command.compare(0, 10, "mix.bounce") == 0) {
             holdBounceRefusal(QString::fromStdString(why));
         }
@@ -648,6 +679,7 @@ void ShellModel::tick() {
     }
     if (refresh) refreshState(false);
     if (refresh && plugin_sinks_.frame) plugin_sinks_.frame(frame_, alive);
+    if (refresh && loudness_sink_) loudness_sink_(frame_, alive);
     if (!status_.isEmpty() && t0 > status_until_ns_) {
         status_.clear();
         emit statusChanged();
@@ -691,6 +723,21 @@ void ShellModel::takeEvents() {
                 latency_result_ = text;
                 latency_outputs_ = static_cast<int>(e.insert);
                 emit latencyChanged();
+                break;
+            case EngineEventKind::Consolidate:
+                switch (e.flags) {
+                    case api::kConsolidateRunning:
+                        holdConsolidate(QStringLiteral("Consolidating… %1 %")
+                                            .arg(static_cast<int>(e.take / 10)),
+                                        false, true);
+                        break;
+                    case api::kConsolidateFailed:
+                        holdConsolidate(QStringLiteral("Consolidate failed: ") + text, true, false);
+                        break;
+                    default:   // Done: the region is in the document; Cancelled: nothing changed
+                        holdConsolidate(QString(), false, false);
+                        break;
+                }
                 break;
             case EngineEventKind::Bounce: {
                 const auto state = static_cast<api::BounceState>(e.flags);

@@ -53,23 +53,40 @@ fi
 # stop it so this run is the one recording.
 systemctl stop sonora-session.service 2>/dev/null
 
-# Native order of the JACK ports, as the JACK API returns them, must contain
-# AUX0..AUX(n-1) once each; the numeric order is the engine's job and is
-# verified by the file check below (track N carries channel N).
+# The image has no jack_lsp (ADR-0003: no jackd), so ask the engine which
+# capture devices it sees. pipewire-jack names a JACK client after
+# node.description, so the card is "Built-in Audio Pro", and a second node with
+# the same description is "Built-in Audio Pro (2)" (port_devices.h); which unit
+# is the card follows PipeWire's enumeration order, so try each in turn.
 # shellcheck disable=SC2086
-JACK_PORTS="$($RUNUSER "$PWENV pw-jack jack_lsp 2>/dev/null" 2>/dev/null | grep ":capture_AUX" | grep -F "$NODE")"
-UNIQUE="$(printf '%s\n' "$JACK_PORTS" | sort -u | wc -l)"
-if [ "$UNIQUE" -ge "$WANT" ] 2>/dev/null; then
-  echo "SMOKETEST ok    JACK lists $UNIQUE distinct capture ports for the card"
+$RUNUSER "$PWENV pw-jack /usr/local/bin/sonora-engine --dir /tmp/virtualcard-probe --tracks $WANT --rate 48000 --arm-all --device __probe__ --record 1 >/dev/null 2>/tmp/virtualcard-probe.err"
+PRESENT="$(sed -n 's/.*; present: //p' /tmp/virtualcard-probe.err | head -1 | sed 's/[.]$//')"
+echo "SMOKETEST info  engine capture devices: ${PRESENT:-none}"
+if [ -n "$PRESENT" ]; then
+  echo "SMOKETEST ok    engine lists capture devices through JACK"
 else
-  fail "JACK lists $UNIQUE capture ports for the card, want $WANT"
+  fail "engine lists no capture device through JACK: $(tail -1 /tmp/virtualcard-probe.err)"
 fi
 
 DIR=/home/sonora/Sessions/virtual-card
-rm -rf "$DIR"
-# shellcheck disable=SC2086
-if $RUNUSER "$PWENV pw-jack /usr/local/bin/sonora-engine --dir $DIR --tracks $WANT --rate 48000 --arm-all --device snd_dummy --wait-for-inputs 10 --record $SECONDS_TO_RECORD >/tmp/virtualcard-engine.out 2>/tmp/virtualcard-engine.err"; then
-  echo "SMOKETEST ok    engine recorded from the virtual card"
+RECORDED=0
+DEVICE=""
+OLDIFS="$IFS"
+IFS=','
+for DEVICE in $PRESENT; do
+  IFS="$OLDIFS"
+  DEVICE="$(printf '%s' "$DEVICE" | sed 's/^ *//')"
+  rm -rf "$DIR"
+  # shellcheck disable=SC2086
+  if $RUNUSER "$PWENV pw-jack /usr/local/bin/sonora-engine --dir $DIR --tracks $WANT --rate 48000 --arm-all --device '$DEVICE' --wait-for-inputs 10 --record $SECONDS_TO_RECORD >/tmp/virtualcard-engine.out 2>/tmp/virtualcard-engine.err"; then
+    RECORDED=1
+    break
+  fi
+  IFS=','
+done
+IFS="$OLDIFS"
+if [ "$RECORDED" = 1 ]; then
+  echo "SMOKETEST ok    engine recorded from the virtual card ($DEVICE)"
 else
   fail "engine exited non-zero recording from the virtual card"
   sed 's/^/SMOKETEST info    engine: /' /tmp/virtualcard-engine.err | tail -5

@@ -172,4 +172,9 @@ float pan_exponent_for(float pan_law_db);
 // auto_gain_of_db(), so a fader and a volume lane at one dB play the same.
 float gain_of_db(float db);
 
+// A region's clip gain line as the plan plays it: source frames and linear
+// gains, appended to `out`; nothing for a flat clip. Also what consolidate
+// renders, so the file sounds like the range it replaces.
+void plan_gain_line(const model::Region& r, std::vector<PlanAutoPoint>& out);
+
 }  // namespace sonora

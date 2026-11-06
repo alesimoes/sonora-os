@@ -14,6 +14,11 @@
       "verified": false,
       "comment": "Set Locators by Selection and Enable Cycle, Command-U: the Edit selection becomes the cycle area and Cycle turns on. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md."
     },
+    "ctrl+alt+p": {
+      "command": "transport.punch_selection",
+      "verified": false,
+      "comment": "Logic's Autopunch is on while punch locators are set. Its Set Punch Locators by Selection key command is not in the 12.3 guide's default list, so this chord is unconfirmed (ADR-0043):the Edit selection becomes the punch range and PUNCH lights; transport.clear_punch turns it off."
+    },
     "k": {
       "command": "transport.toggle_click",
       "verified": false,
@@ -60,6 +65,21 @@
     "cmd+t": "edit.separate_at_selection",
     "cmd+j": "edit.heal_separation",
     "cmd+r": "edit.repeat",
+    "ctrl+alt+w": {
+      "command": "automation.write_selection",
+      "origin": "sonora",
+      "comment": "Ours. Logic writes automation by mode; no key for a flat write is documented. Holds the track's fader or pan flat across the selected lane range."
+    },
+    "ctrl+alt+k": {
+      "command": "automation.snapshot",
+      "origin": "sonora",
+      "comment": "Ours. One breakpoint at the insertion point holding the fader or pan as it stands, on the Event List's lane."
+    },
+    "e": {
+      "command": "window.event_list",
+      "verified": false,
+      "comment": "Logic's Show Event List key is E; not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md. The Sonora window lists a lane's automation points, not Logic's MIDI events."
+    },
     "ctrl+alt+t": {
       "command": "automation.thin",
       "origin": "sonora",
@@ -181,6 +201,11 @@
       "origin": "sonora",
       "comment": "Ours. Not in Logic's key-command tables, but the guide's event-editor prose gives Option-Shift-D for Deselect All there, so it is close quarters."
     },
+    "cmd+shift+i": {
+      "command": "session.import_audio",
+      "verified": false,
+      "comment": "Import Audio File, Shift-Command-I: the browser for WAV files, each becoming a new track. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md."
+    },
     "alt+cmd+n": {
       "command": "track.new",
       "verified": false,
@@ -199,6 +224,26 @@
     "numpad_enter": {
       "command": "transport.play",
       "comment": "Play, Enter on the numeric keypad (Global Commands; brain/research/protools-logic-key-bindings.md section 2.1)."
+    },
+    "ctrl+alt+c": {
+      "command": "comp.copy_to_main",
+      "origin": "sonora",
+      "comment": "Copy the range selected on a take lane to the main playlist (the comp). Logic comps by swiping and has no key for it; this is for a lane range selected with the Marquee."
+    },
+    "ctrl+alt+l": {
+      "command": "comp.toggle_lanes",
+      "origin": "sonora",
+      "comment": "Open or close the selected track's take folder (its other playlists as lanes). Logic opens it with the disclosure arrow and has no key."
+    },
+    "ctrl+alt+n": {
+      "command": "comp.new",
+      "origin": "sonora",
+      "comment": "New comp: an empty playlist to swipe the best takes into; the takes show as lanes."
+    },
+    "ctrl+alt+q": {
+      "command": "comp.toggle_quick_swipe",
+      "origin": "sonora",
+      "comment": "Quick Swipe Comping on or off. Logic switches it with the Quick Swipe Comping mode in the take folder; no key."
     },
     "shift+n": {
       "command": "region.rename",

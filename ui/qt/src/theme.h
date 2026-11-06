@@ -62,11 +62,21 @@ constexpr uint32_t kAutomationGuide = 0xff262b32;   // the unity or centre line 
 constexpr uint32_t kGridBar = 0xff2b3038;
 constexpr uint32_t kGridBeat = 0xff1d2127;
 constexpr uint32_t kRulerTick = 0xff4a525b;
+// The loop and punch ranges as bands on the time rulers: accent for the loop,
+// the record colour for the punch, as each is lit on the transport bar.
+constexpr uint32_t kLoopBand = 0xb33fc1b0;
+constexpr uint32_t kPunchBand = 0xb3f0524f;
 constexpr uint32_t kSelectionFill = 0x333fc1b0;  // accent at 20 %, over regions
 constexpr uint32_t kRegionSelectedOutline = kAccent;
 // Fades: the gain curve as a `text` line, the part of the region the fade
 // takes away darkened beneath it, a crossfade as a faint box over the cut.
 constexpr uint32_t kFadeLine = 0xffe8ebef;
+// Clip gain: the line and its breakpoints, on top of the waveform.
+constexpr uint32_t kGainLine = 0xffffc247;
+// Clip groups and loops: a bar along the foot of every member, so grouped
+// clips read as one; a loop's repeats wear the second colour.
+constexpr uint32_t kClipGroup = 0xff4fb3bf;
+constexpr uint32_t kClipLoop = 0xff8f7cf0;
 constexpr uint32_t kFadeShade = 0x8c000000;       // black at 55 %
 constexpr uint32_t kCrossfadeFill = 0x1fe8ebef;   // text at 12 %
 constexpr uint32_t kCrossfadeEdge = 0x80e8ebef;   // text at 50 %

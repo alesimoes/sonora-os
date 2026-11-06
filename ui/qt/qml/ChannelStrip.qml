@@ -70,6 +70,20 @@ Rectangle {
     readonly property bool muted: !isBus && session.mutes[track] === true
     readonly property bool soloSafe: !isBus && session.soloSafes[track] === true
     readonly property bool inputMonitor: !isBus && session.inputMonitors[track] === true
+    // The folder this strip is in, an index or -1, and the VCAs that hold it
+    // (MixModel, ADR-0048).
+    readonly property int folderIndex: isBus || mixer === null || track >= mixer.trackFolders.length
+                                       ? -1 : mixer.trackFolders[track]
+    // Some VCA or folder exists: the tag row is there on every strip.
+    readonly property bool tagsShown: mixer !== null && (mixer.vcas.length > 0 || mixer.folders.length > 0)
+    readonly property alias faderZone: faderArea
+    readonly property string vcaNames: isBus || mixer === null || track >= mixer.trackVcas.length
+                                       ? "" : mixer.trackVcas[track]
+    // The group this strip is in (MixModel, ADR-0041): an index, -1 for none.
+    readonly property int groupIndex: isBus || mixer === null || track >= mixer.trackGroups.length
+                                      ? -1 : mixer.trackGroups[track]
+    readonly property bool groupSuspended: groupIndex >= 0 && mixer.groupSuspended[groupIndex] === true
+    readonly property color groupColour: Theme.paletteColour((groupIndex * 5 + 3) % 16)
     // Another track's solo silences this one; a console shows that, so does
     // this. SessionModel applies the engine's rule, solo safe included.
     readonly property bool implicitlyMuted: !isBus && session.implicitMutes[track] === true
@@ -150,11 +164,94 @@ Rectangle {
         anchors { left: parent.left; right: parent.right; top: parent.top; topMargin: Theme.space2 }
         spacing: Theme.space2
 
+        // The folder tag (its name; a click closes the folder into one card)
+        // and the VCA tag (the names of the VCAs that hold the track), side
+        // by side. Every strip, the Master's included, has the row once the
+        // session has a VCA or a folder, so every fader starts at one height.
+        Item {
+            id: tagRow
+            visible: strip.tagsShown
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: parent.width - 2 * Theme.space2
+            height: 12
+            Rectangle {
+                visible: strip.folderIndex >= 0
+                objectName: strip.isBus ? "" : "folderTag" + strip.track
+                x: 0
+                width: strip.vcaNames !== "" ? tagRow.width / 2 - 1 : tagRow.width
+                height: 12
+                radius: Theme.radiusSmall
+                color: Theme.sunken
+                border.color: Theme.borderStrong
+                Text {
+                    anchors { fill: parent; leftMargin: 2; rightMargin: 2 }
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    text: strip.folderIndex < 0 ? "" : "\u25BE " + strip.mixer.folders[strip.folderIndex].name
+                    color: Theme.textSecondary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: strip.folderIndex >= 0
+                    onClicked: strip.mixer.toggleFolderOpen(strip.folderIndex)
+                }
+            }
+            Rectangle {
+                visible: strip.vcaNames !== ""
+                objectName: strip.isBus ? "" : "vcaTag" + strip.track
+                x: strip.folderIndex >= 0 ? tagRow.width / 2 + 1 : 0
+                width: strip.folderIndex >= 0 ? tagRow.width / 2 - 1 : tagRow.width
+                height: 12
+                radius: Theme.radiusSmall
+                color: Theme.caution
+                Text {
+                    anchors { fill: parent; leftMargin: 2; rightMargin: 2 }
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                    text: strip.vcaNames
+                    color: Theme.textOnAccent
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+                }
+            }
+        }
+
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             text: strip.isBus ? "Out 1-2" : "In " + (strip.track + 1)
             color: strip.selected ? Theme.textSecondary : Theme.textTertiary
             font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
+        }
+
+        // The group tag: the group's colour and name; a click selects the
+        // track, whose group the buttons above the strips then act on.
+        Rectangle {
+            // Takes no height on a strip in no group, so an ungrouped mix keeps its fader.
+            visible: !strip.isBus && strip.groupIndex >= 0
+            objectName: strip.isBus ? "" : "groupTag" + strip.track
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: parent.width - 2 * Theme.space2
+            height: 12
+            radius: Theme.radiusSmall
+            color: strip.groupIndex >= 0 ? strip.groupColour : "transparent"
+            opacity: strip.groupSuspended ? 0.4 : 1.0
+            Text {
+                anchors.fill: parent
+                anchors.leftMargin: 2; anchors.rightMargin: 2
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+                text: strip.groupIndex < 0 ? "" : mixer.groupNames[strip.groupIndex]
+                color: Theme.textOnAccent
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+            }
+            MouseArea {
+                anchors.fill: parent
+                enabled: strip.groupIndex >= 0
+                onClicked: strip.session.selectTrack(strip.track)
+            }
         }
 
         // Pan: a bar filled from the centre toward the side it leans.

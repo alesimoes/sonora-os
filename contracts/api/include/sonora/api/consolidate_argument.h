@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The argument of session.consolidate (ADR-0031 §6, protocol 43), written by
+// The argument of session.consolidate (ADR-0031 §6, protocol 63), written by
 // the interface and read by the engine and the fake from this one place.
 //
 //   "track=<id> start=<frame> end=<frame> [playlist=<id>] [name=<text>]"

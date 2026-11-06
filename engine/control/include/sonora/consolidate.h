@@ -84,4 +84,13 @@ bool consolidate(model::Document& document, const Session& session,
                  const ConsolidateHooks& hooks,
                  std::vector<model::ReplicationUpdate>& updates, std::string& error);
 
+// Render clip gain (Pro Tools' Render Clip Gain): bakes the level, gain line,
+// fades and crossfades of `region` on the track's active playlist into a new
+// file and swaps the region for one of it with the same name and a flat gain,
+// as consolidate() does for the range the region covers.
+bool render_clip_gain(model::Document& document, const Session& session,
+                      const std::string& session_dir, model::Id track, model::Id region,
+                      const ConsolidateHooks& hooks,
+                      std::vector<model::ReplicationUpdate>& updates, std::string& error);
+
 }  // namespace sonora

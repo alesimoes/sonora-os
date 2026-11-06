@@ -2,9 +2,12 @@
 #include "timeline_scene.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 
+#include "sonora/model/comping.h"
 #include "theme.h"
 
 namespace sonora::ui {
@@ -62,12 +65,62 @@ void draw_fade_curve(double fx0, double fx1, bool rising, FadeShape shape, doubl
     }
 }
 
+// A clip's level in dB where its source plays frame `src`: its own gain and
+// the line on top, linear in amplitude between points as the engine plays it.
+double clip_db_at(const Region& r, Frames src) {
+    const auto& line = r.gain_line;
+    if (line.empty()) return r.gain_db;
+    if (src <= line.front().at) return r.gain_db + line.front().db;
+    if (src >= line.back().at) return r.gain_db + line.back().db;
+    std::size_t hi = 1;
+    while (line[hi].at <= src) ++hi;
+    const GainPoint& a = line[hi - 1];
+    const GainPoint& b = line[hi];
+    const double ga = std::pow(10.0, a.db / 20.0), gb = std::pow(10.0, b.db / 20.0);
+    const double x = static_cast<double>(src - a.at) / static_cast<double>(b.at - a.at);
+    return r.gain_db + 20.0 * std::log10(ga + x * (gb - ga));
+}
+
+// The clip gain scale: +12 dB at the top of the waveform area, -36 dB at the
+// bottom.
+constexpr double kGainTopDb = 12.0, kGainBottomDb = -36.0;
+double gain_y(double db, double wy, double wh) {
+    const double c = std::clamp(db, kGainBottomDb, kGainTopDb);
+    return wy + (kGainTopDb - c) / (kGainTopDb - kGainBottomDb) * wh;
+}
+
+// The gain line over pixels [cx0, cx1) of a region drawn from x0, one column a
+// pixel as the fades are, with a handle square on each point. The region's
+// frame `src` plays at x0 + (src - offset) / fpp.
+void draw_gain_line(const Region& r, Frames offset, double x0, double cx0, double cx1, double wy,
+                    double wh, const ViewState& v, uint32_t colour, std::vector<SceneRect>& out) {
+    if (wh <= 8) return;
+    const int first = static_cast<int>(std::floor(cx0));
+    const int last = static_cast<int>(std::ceil(cx1));
+    double prev = -1;
+    for (int px = first; px < last; ++px) {
+        const Frames src = offset + static_cast<Frames>(std::llround((px + 0.5 - x0) * v.fpp));
+        const double yc = gain_y(clip_db_at(r, src), wy, wh);
+        const double from = prev < 0 ? yc : prev;
+        add(out, px, std::min(from, yc) - 0.5, 1.0, std::max(1.0, std::abs(yc - from) + 1.0),
+            colour);
+        prev = yc;
+    }
+    for (const GainPoint& p : r.gain_line) {
+        const double hx = x0 + static_cast<double>(p.at - offset) / v.fpp;
+        if (hx < cx0 || hx > cx1) continue;
+        const double hy = gain_y(r.gain_db + p.db, wy, wh);
+        add(out, hx - 3, hy - 3, 6, 6, colour);
+        add(out, hx - 2, hy - 2, 4, 4, theme::kFadeShade | 0xff000000u);
+    }
+}
+
 // One region at [pos, pos + len) reading its source from `offset`, drawn on
 // lane `lane_y`, with the fades `fades` says are heard. `ghost` draws it
 // translucent (a drag's origin).
 void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const RegionFades& fades,
                  double lane_y, const ViewState& v, uint32_t palette, bool selected, bool ghost,
-                 const PeakSource& peaks, Scene& out) {
+                 const PeakSource& peaks, Scene& out, const std::string* origin = nullptr) {
     const double x0 = v.x_of(pos), x1 = v.x_of(pos + len);
     if (x1 < 0 || x0 > v.width) return;
     const double cx0 = std::max(0.0, x0), cx1 = std::min(v.width, x1);
@@ -98,8 +151,14 @@ void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const R
         for (int i = 0; i < count; ++i) {
             const double px = first_px + i;
             if (px < cx0 - 0.5 || px >= cx1) continue;
-            const double top = std::max(wy, mid - std::min(1.0, static_cast<double>(buf[i].max) * v.wave_scale) * half);
-            const double bot = std::min(wy + wh, mid - std::max(-1.0, static_cast<double>(buf[i].min) * v.wave_scale) * half);
+            // The waveform is drawn at the clip's level, so a boost shows.
+            double lin = 1.0;
+            if (r.gain_db != 0.0f || !r.gain_line.empty()) {
+                const Frames src = offset + static_cast<Frames>(std::llround((px + 0.5 - x0) * v.fpp));
+                lin = std::pow(10.0, clip_db_at(r, src) / 20.0);
+            }
+            const double top = std::max(wy, mid - std::min(1.0, static_cast<double>(buf[i].max) * v.wave_scale * lin) * half);
+            const double bot = std::min(wy + wh, mid - std::max(-1.0, static_cast<double>(buf[i].min) * v.wave_scale * lin) * half);
             add(out.rects, px, top, 1.0, std::max(1.0, bot - top), wave);
         }
     }
@@ -119,10 +178,31 @@ void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const R
                             wh, line, shade, out.rects);
         }
     }
+    // The clip gain line, on a region that has one or a level of its own.
+    if (!r.mute && !ghost && (r.gain_db != 0.0f || !r.gain_line.empty())) {
+        draw_gain_line(r, offset, x0, cx0, cx1, wy, wh, v, theme::kGainLine, out.rects);
+    }
+    if (r.clip_group != 0) {
+        add(out.rects, cx0, y + h - 3, cx1 - cx0, 3,
+            with_alpha(r.loop != 0 ? theme::kClipLoop : theme::kClipGroup, alpha));
+    }
     if (selected && !ghost) outline(out.rects, cx0, y, cx1 - cx0, h, 1.5, theme::kRegionSelectedOutline);
+    if (origin != nullptr && x0 >= 0) add(out.rects, x0, y, 3, h, theme::kAccent);
     if (!ghost && x1 - x0 > 24) {
+        // A level of its own is part of the name, as Pro Tools' clip name shows it.
+        // A piece of the comp says which take lane it was swiped from, and a
+        // piece still named for its take says that once.
+        const bool named_for_take = origin != nullptr && r.name == *origin;
+        std::string label = named_for_take ? std::string() : r.name;
+        if (r.loop != 0) label += "  loop " + std::to_string(r.loop);
+        if (r.gain_db != 0.0f) {
+            char gain[24];
+            std::snprintf(gain, sizeof gain, "  %+.1f dB", static_cast<double>(r.gain_db));
+            label += gain;
+        }
+        if (origin != nullptr) label += std::string(label.empty() ? "" : "  ") + "← " + *origin;
         out.labels.push_back({static_cast<float>(cx0 + 4), static_cast<float>(y),
-                              static_cast<float>(cx1 - cx0 - 8), r.name, theme::kText,
+                              static_cast<float>(cx1 - cx0 - 8), label, theme::kText,
                               theme::kTextCaption});
     }
 }
@@ -314,11 +394,72 @@ void draw_live_take(const LiveTake& live, const ViewState& v, std::vector<SceneR
     }
 }
 
+// The pieces of the comp that came from a take lane are tinted on that lane,
+// so the lanes show what is kept.
+constexpr uint32_t kCompInUse = 0x3d3fc1b0;
+constexpr uint32_t kLaneSwipe = 0x553fc1b0;
+
+// Track `i`'s take lanes under its row (ADR-0031 §1): each playlist but the
+// active one, its regions as the comp's are drawn, a lane at a time. The
+// comp's own pieces are matched to their lane with comp_origin (§4), so a
+// trim that keeps the audio where it was keeps the tint.
+void draw_take_lanes(const TrackEdit& t, int i, const ViewState& v, const Drag& drag,
+                     const EditController::LaneSelection& lane_sel, const PeakSource& peaks,
+                     Scene& out) {
+    const Playlist* main = audio_playlist(t, t.active_playlist);
+    const std::vector<Id> lanes = take_lanes_of(t);
+    ViewState lv = v;
+    lv.track_height = v.comp_lane_height;
+    std::vector<Id> origins;
+    if (main != nullptr) {
+        for (const Region& m : main->regions) origins.push_back(comp_origin(t, m, t.active_playlist));
+    }
+    for (std::size_t k = 0; k < lanes.size(); ++k) {
+        const Playlist* lane = audio_playlist(t, lanes[k]);
+        const double y = v.y_of_complane(i, static_cast<int>(k));
+        if (lane == nullptr || y + v.comp_lane_height < 0 || y > v.height) continue;
+        add(out.rects, 0, y, v.width, v.comp_lane_height, theme::kSunken);
+        add(out.rects, 0, y + v.comp_lane_height - 1, v.width, 1, theme::kBorderSubtle);
+        const uint32_t palette =
+            theme::region_colour(t.colour);
+        for (const Region& r : lane->regions) {
+            draw_region(r, r.position, r.length, r.source_offset, region_fades(*lane, r), y, lv,
+                        r.colour == model::kTrackColour ? palette : theme::region_colour(r.colour),
+                        false, false, peaks, out);
+        }
+        draw_crossfades(*lane, y, lv, out);
+        if (main != nullptr) {
+            for (std::size_t m = 0; m < main->regions.size(); ++m) {
+                if (origins[m] != lane->id) continue;
+                const Region& r = main->regions[m];
+                const double x0 = std::max(0.0, v.x_of(r.position));
+                const double x1 = std::min(v.width, v.x_of(r.end()));
+                add(out.rects, x0, y, x1 - x0, v.comp_lane_height, kCompInUse);
+                add(out.rects, x0, y, x1 - x0, 2, theme::kAccent);
+            }
+        }
+        const bool mine = lane_sel.valid() && lane_sel.track == i && lane_sel.lane == lane->id;
+        Frames a = lane_sel.start, b = lane_sel.end;
+        bool shown = mine;
+        if (drag.kind == Drag::Kind::Swipe && drag.moved && drag.track == i && drag.lane == lane->id) {
+            a = drag.start;
+            b = drag.end;
+            shown = b > a;
+        }
+        if (shown) {
+            const double x0 = std::max(0.0, v.x_of(a)), x1 = std::min(v.width, v.x_of(b));
+            add(out.rects, x0, y, x1 - x0, v.comp_lane_height, kLaneSwipe);
+            outline(out.rects, x0, y, x1 - x0, v.comp_lane_height, 1.5, theme::kAccent);
+        }
+    }
+}
+
 }  // namespace
 
 void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection& sel,
                           const Drag& drag, bool grid_lines, GridValue grid,
-                          const PeakSource& peaks, Scene& out) {
+                          const PeakSource& peaks, Scene& out,
+                          const EditController::LaneSelection& lane_sel) {
     out.clear();
     if (v.width <= 0 || v.height <= 0) return;
     const auto& tracks = s.edit->tracks;
@@ -399,8 +540,16 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
             const bool selected = sel.region == r.id;
             RegionFades fades = region_fades(*p, r);
             if (!dragged) {
+                // With the lanes shown, a piece swiped in says from which.
+                std::string tag;
+                if (v.lanes_shown(static_cast<int>(i)) > 0) {
+                    const Id from = comp_origin(owner, r, owner.active_playlist);
+                    if (const Playlist* lane = from != 0 ? audio_playlist(owner, from) : nullptr) {
+                        tag = lane->name;
+                    }
+                }
                 draw_region(r, r.position, r.length, r.source_offset, fades, y, v, colour_of(r),
-                            selected, false, peaks, out);
+                            selected, false, peaks, out, tag.empty() ? nullptr : &tag);
                 continue;
             }
             switch (drag.kind) {
@@ -425,6 +574,12 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
             }
         }
         draw_crossfades(*p, y, v, out);
+    }
+
+    // Take lanes, under each track that shows them.
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (v.lanes_shown(static_cast<int>(i)) == 0) continue;
+        draw_take_lanes(*tracks[i], static_cast<int>(i), v, drag, lane_sel, peaks, out);
     }
 
     // Automation lanes, over the grid and under the range.
@@ -492,6 +647,16 @@ void build_ruler_scene(TimeFormat fmt, const model::SessionSettings& s, const Vi
             add(out.rects, x, height * 0.7, 1, height * 0.3, theme::kRulerTick);
         }
     }
+    // The loop and the punch ranges, so a take that will loop or punch is
+    // never armed invisibly. Punch is drawn last, over the loop.
+    const auto band = [&](const std::array<model::Frames, 2>& r, uint32_t argb) {
+        if (r[1] <= r[0]) return;
+        const double x0 = std::max(0.0, std::floor(v.x_of(r[0])));
+        const double x1 = std::min(v.width, std::ceil(v.x_of(r[1])));
+        if (x1 > x0) add(out.rects, x0, height - 5, std::max(1.0, x1 - x0), 4, argb);
+    };
+    band(s.transport.loop, theme::kLoopBand);
+    band(s.transport.punch, theme::kPunchBand);
 }
 
 void build_marker_ruler_scene(const model::MarkerList& markers, const ViewState& v, double height,
@@ -528,12 +693,80 @@ void build_marker_ruler_scene(const model::MarkerList& markers, const ViewState&
     }
 }
 
+namespace {
+
+// The tempo track: the map as a stepped line, level by bpm. A ramp is the
+// staircase of entries it was written as, so it reads as a slope. Every
+// change has a handle on its line and the bpm beside it when there is room.
+void build_tempo_track_scene(const model::SessionSettings& s, const ViewState& v, double height,
+                             Scene& out) {
+    const std::vector<TempoEntry> fallback{TempoEntry{}};
+    const std::vector<TempoEntry>& map = s.tempo.empty() ? fallback : s.tempo;
+    float lo = map.front().bpm, hi = lo;
+    for (const TempoEntry& e : map) {
+        lo = std::min(lo, e.bpm);
+        hi = std::max(hi, e.bpm);
+    }
+    // At least 20 bpm tall, so a map with one tempo is a line mid-track and
+    // a small change does not fill the track.
+    const float span = std::max(hi - lo, 20.0f);
+    const float mid = 0.5f * (hi + lo);
+    lo = mid - 0.5f * span;
+    hi = mid + 0.5f * span;
+    // A margin each side for the range labels, so no line runs under them.
+    const double top = 14, room_y = height - 28;
+    const auto y_of = [&](float bpm) {
+        return std::floor(top + (hi - bpm) / span * room_y);
+    };
+    for (double g : {0.0, 0.5, 1.0}) {
+        add(out.rects, 0, std::floor(top + g * room_y), v.width, 1, theme::kBorderSubtle);
+    }
+    const float pin_x = 6;
+    out.labels.push_back({pin_x, 1.0f, 60.0f, format_bpm(hi), theme::kTextSecondary,
+                          theme::kTextCaption});
+    out.labels.push_back({pin_x, static_cast<float>(height - theme::kTextCaption - 1), 60.0f,
+                          format_bpm(lo), theme::kTextSecondary, theme::kTextCaption});
+
+    double last_label_end = -1e9;
+    for (std::size_t i = 0; i < map.size(); ++i) {
+        const TempoEntry& e = map[i];
+        const double x0 = i == 0 ? 0 : std::floor(v.x_of(e.at));
+        const double x1 = i + 1 < map.size() ? std::floor(v.x_of(map[i + 1].at)) : v.width;
+        if (x1 < 0) continue;
+        if (x0 > v.width) break;
+        const double y = y_of(e.bpm);
+        const double a = std::max(0.0, x0), b = std::min<double>(v.width, std::max(x1, x0 + 1));
+        add(out.rects, a, y, std::max(1.0, b - a), 2, theme::kConductor);
+        if (i + 1 < map.size() && x1 >= 0 && x1 <= v.width) {
+            const double y2 = y_of(map[i + 1].bpm);
+            add(out.rects, x1, std::min(y, y2), 1, std::abs(y2 - y) + 2, theme::kConductor);
+        }
+        if (i > 0 && x0 >= 0) {
+            add(out.rects, x0 - 2, y - 2, 6, 6, theme::kConductor);
+            const double lx = x0 + 6;
+            // A ramp's steps are close: label one only where the last label
+            // has ended and the text fits before the next change.
+            if (lx > last_label_end + 6 && x1 - lx >= 34) {
+                out.labels.push_back({static_cast<float>(lx), static_cast<float>(y + 3), 34.0f,
+                                      format_bpm(e.bpm), theme::kText, theme::kTextCaption});
+                last_label_end = lx + 34;
+            }
+        }
+    }
+}
+
+}  // namespace
+
 void build_conductor_ruler_scene(ConductorRuler kind, const model::SessionSettings& s,
                                  const ViewState& v, double height, Scene& out) {
     out.clear();
     if (v.width <= 0 || height <= 0) return;
     add(out.rects, 0, 0, v.width, height, theme::kPanel);
     add(out.rects, 0, height - 1, v.width, 1, theme::kBorderSubtle);
+    if (kind == ConductorRuler::Track) {
+        build_tempo_track_scene(s, v, height, out);
+        return;
+    }
 
     struct Change {
         Frames at;

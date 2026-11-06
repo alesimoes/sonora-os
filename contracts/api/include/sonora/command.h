@@ -37,7 +37,7 @@ enum class CommandTarget {
 enum class CommandDomain {
     Engine,     // transport.*, track.*, edit operations, nudge.*, app.save
     Interface,  // tool.*, zoom.*, edit.mode.*, focus.*, window.transport,
-                // window.undo_history, window.memory_locations, app.quit,
+                // window.undo_history, window.memory_locations, window.event_list, app.quit,
                 // app.save_as_template, app.new_from_template
 };
 
@@ -121,6 +121,15 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // takes a frame.
         {"transport.set_pre_roll", CommandTarget::None, "Set the pre-roll", true},
         {"transport.set_post_roll", CommandTarget::None, "Set the post-roll", true},
+        // ADR-0043, protocol 48. Pro Tools' Input Only Monitoring against
+        // Auto Input, its Pre/Post-Roll switch and its QuickPunch record
+        // mode: session settings at the engine, flipped one each.
+        {"transport.toggle_input_only", CommandTarget::None,
+         "Switch between Auto Input and Input Only monitoring"},
+        {"transport.toggle_pre_post_roll", CommandTarget::None,
+         "Turn the pre-roll and post-roll on or off"},
+        {"transport.toggle_quick_punch", CommandTarget::None,
+         "Turn the QuickPunch record mode on or off"},
         // ADR-0020: Pro Tools' Click and Count Off, Logic's Metronome and
         // Count-in.
         {"transport.toggle_click", CommandTarget::None, "Turn the click on or off"},
@@ -159,6 +168,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"track.toggle_solo", CommandTarget::Track, "Toggle solo on a track"},
         {"track.toggle_input_monitor", CommandTarget::Track,
          "Toggle input monitoring on a track"},
+        // Protocol 48 (ADR-0043): TrackMix::track_punch, whether the armed
+        // track takes part in punch takes.
+        {"track.toggle_track_punch", CommandTarget::Track,
+         "Toggle whether a track records in punches (TrackPunch)"},
         {"track.step_automation_mode", CommandTarget::Track,
          "Step a track's automation mode: Off, Read, Touch, Latch, Write"},
         {"track.select", CommandTarget::Track, "Make a track the selected track"},
@@ -177,10 +190,80 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // argument the window asks: the name dialog, the colour palette.
         {"track.rename", CommandTarget::Track, "Rename a track", true},
         {"track.colour", CommandTarget::Track, "Colour a track from the palette", true},
+        // VCA masters and folders (ADR-0048, protocol 46). New makes one of the
+        // selected tracks, the argument its name; Delete takes the VCA's name.
+        // Dissolve acts on the folder of the track given or the selected one.
+        {"vca.new", CommandTarget::None, "Make a VCA master of the selected tracks", true},
+        {"vca.delete", CommandTarget::None, "Delete a VCA master by name", true},
+        {"folder.new", CommandTarget::None, "Put the selected tracks in a folder", true},
+        {"folder.dissolve", CommandTarget::Track, "Dissolve a track's folder"},
+        // Mix and edit groups (ADR-0041, protocol 48). New groups the
+        // selected tracks, with the optional argument as its name; Dissolve
+        // and Suspend act on the group of the track given or the selected
+        // one. Suspend toggles: the group stays and links nothing.
+        {"group.new", CommandTarget::None, "Group the selected tracks", true},
+        {"group.dissolve", CommandTarget::Track, "Dissolve a track's group"},
+        {"group.toggle_suspend", CommandTarget::Track, "Suspend or resume a track's group"},
         // On the selected region. Colour "track" wears the track's again.
         {"region.rename", CommandTarget::None, "Rename the selected region", true},
         {"region.colour", CommandTarget::None, "Colour the selected region from the palette",
          true},
+        // Clip gain, on the selected region. Gain takes the level in dB and
+        // asks for it without one; Up and Down nudge by the argument in dB
+        // (1 without); Point sets a gain point at the insertion point, its
+        // argument the level in dB on top of the clip's.
+        {"clip.gain", CommandTarget::None, "Set the selected clip's gain in dB", true},
+        {"clip.gain_up", CommandTarget::None, "Nudge the selected clip's gain up", true},
+        {"clip.gain_down", CommandTarget::None, "Nudge the selected clip's gain down", true},
+        {"clip.gain_point", CommandTarget::None,
+         "Set a gain point on the selected clip at the insertion point", true},
+        {"clip.gain_point_remove", CommandTarget::None,
+         "Remove the gain point nearest the insertion point"},
+        {"clip.gain_line_clear", CommandTarget::None, "Remove the selected clip's gain line"},
+        // Tempo editing (ADR-0050), in the interface: the tempo map is session
+        // settings sent as a SetSettings. Edit takes "96", "120>90", "x2",
+        // "3/4" or "remove" (EditController::edit_tempo) and asks without one;
+        // Track shows or hides the tempo track on the Edit window.
+        {"tempo.edit", CommandTarget::None, "Edit the tempo map: set, ramp, scale, meter",
+         true, CommandDomain::Interface},
+        {"tempo.undo", CommandTarget::None, "Undo the last tempo edit", false,
+         CommandDomain::Interface},
+        {"tempo.redo", CommandTarget::None, "Redo the last undone tempo edit", false,
+         CommandDomain::Interface},
+        {"tempo.track", CommandTarget::None, "Show or hide the tempo track", false,
+         CommandDomain::Interface},
+        {"clip.gain_render", CommandTarget::None,
+         "Render the selected clip's gain into a new file"},
+        // Clip groups and loops (ADR-0052). Group joins the clips the range
+        // selection touches on the selected track, so they move together;
+        // Ungroup frees the selected clip's group. Loop repeats the selected
+        // clip or group the number of times in the argument (the last count
+        // without one); Unloop removes the repeats.
+        {"clip.group", CommandTarget::None, "Group the clips in the selected range"},
+        {"clip.ungroup", CommandTarget::None, "Ungroup the selected clip's group"},
+        {"clip.loop", CommandTarget::None,
+         "Loop the selected clip or group (argument: the number of repeats)", true},
+        {"clip.unloop", CommandTarget::None, "Remove the repeats of the selected loop"},
+        // Sample-level editing (ADR-0052), on the selected range inside the
+        // selected clip. Each writes a new file and points the clip at it; the
+        // original take is never changed, and undo puts it back. Repair redraws
+        // a click from its neighbours; Draw takes "FRAME:LEVEL,..." (the Pencil
+        // at sample zoom); Gain and Normalize take dB.
+        {"sample.repair", CommandTarget::None, "Repair a click: redraw the selected samples"},
+        {"sample.draw", CommandTarget::None,
+         "Redraw the selected samples through points (argument: FRAME:LEVEL,...)", true},
+        {"sample.silence", CommandTarget::None, "Silence the selected samples"},
+        {"sample.reverse", CommandTarget::None, "Reverse the selected samples"},
+        {"sample.invert", CommandTarget::None, "Invert the phase of the selected samples"},
+        {"sample.gain", CommandTarget::None, "Change the level of the selected samples in dB", true},
+        {"sample.normalize", CommandTarget::None,
+         "Raise the selected samples to a peak level in dB (0 without an argument)", true},
+        {"sample.fade_in", CommandTarget::None, "Fade the selected samples in"},
+        {"sample.fade_out", CommandTarget::None, "Fade the selected samples out"},
+        // The engine's half: "VERB REGION FROM TO CHANNEL [PARAM]" (see
+        // sample_edit.h). The interface builds it from the selection.
+        {"sample.edit", CommandTarget::None,
+         "Apply a sample edit to a region's range (VERB REGION FROM TO CHANNEL [PARAM])", true},
         // The track's playlist selector (ADR-0026), on the track given or the
         // selected one. Choose takes the playlist's name; Rename the new name,
         // and asks for it without one.
@@ -250,6 +333,12 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"edit.copy", CommandTarget::None, "Copy"},
         {"edit.paste", CommandTarget::None, "Paste"},
         {"edit.clear", CommandTarget::None, "Clear the selection"},
+        {"automation.write_selection", CommandTarget::None,
+         "Write the track's current fader or pan flat across the selected automation range",
+         false, CommandDomain::Interface},
+        {"automation.snapshot", CommandTarget::None,
+         "Add a breakpoint at the insertion point holding the track's current fader or pan",
+         false, CommandDomain::Interface},
         {"automation.thin", CommandTarget::None,
          "Thin the selected automation range to the fewest breakpoints that keep its shape",
          false, CommandDomain::Interface},
@@ -258,6 +347,8 @@ inline const std::vector<CommandSpec>& command_catalog() {
          false, CommandDomain::Interface},
         {"edit.duplicate", CommandTarget::None, "Duplicate the selection"},
         {"edit.repeat", CommandTarget::None, "Repeat the selection"},
+        {"edit.spot", CommandTarget::None,
+         "Spot the selected region to a start time typed in the main counter's format", true},
         {"edit.select_all", CommandTarget::None, "Select all"},
         {"edit.trim_start_to_insertion", CommandTarget::None,
          "Trim the region start to the insertion point"},
@@ -284,6 +375,21 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // once, so the take is not interrupted by a dialog.
         {"marker.add", CommandTarget::None, "Add a marker, or a selection marker over a range"},
 
+        // --- take lanes and comping (ADR-0031, ADR-0049) ---
+        // Showing the lanes is how the operator looks at a track, so it is the
+        // interface's own; the others are edits of the session (compounds of
+        // the operations the model has), run by the window as Cut is.
+        {"comp.toggle_lanes", CommandTarget::Track,
+         "Show or hide the track's take lanes (its other playlists)", false,
+         CommandDomain::Interface},
+        {"comp.toggle_quick_swipe", CommandTarget::None,
+         "Quick Swipe: a swipe on a take lane copies at once, with short crossfades", false,
+         CommandDomain::Interface},
+        {"comp.copy_to_main", CommandTarget::None,
+         "Copy the range selected on a take lane to the main playlist"},
+        {"comp.new", CommandTarget::Track,
+         "New comp: an empty playlist to swipe the best takes into; the takes show as lanes"},
+
         // --- recovered takes (session-format.md, "Crash recovery") ---
         // The answers to a RecoveryOffer: what the engine found on disk and
         // the open session does not name is placed, or left where it is.
@@ -292,7 +398,7 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"session.leave_recovered", CommandTarget::None,
          "Leave the recovered takes in Audio Files, off the timeline"},
 
-        // --- consolidate (ADR-0031 §6, protocol 43) ---
+        // --- consolidate (ADR-0031 §6, protocol 63) ---
         // The argument is api/consolidate_argument.h's. The reply says only
         // whether the render started; progress and the end are Consolidate
         // events. The interface's own edit.consolidate is the key; this is
@@ -347,12 +453,20 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // it changes goes through marker operations, undoable like any edit.
         {"window.memory_locations", CommandTarget::None,
          "Show or hide the Memory Locations window", false, CommandDomain::Interface},
+        // Logic's Event List, for the automation points of one lane of the
+        // selected track. What it changes goes through EditAutomation, undoable.
+        {"window.event_list", CommandTarget::None,
+         "Show or hide the automation Event List window", false, CommandDomain::Interface},
         // Setup > Latency: measures and sets the round trip through the
         // latency.* commands.
         {"window.latency", CommandTarget::None, "Show or hide the Latency window",
          false, CommandDomain::Interface},
         // File > Bounce Mix…: the dialog that sends mix.bounce.
         {"window.bounce", CommandTarget::None, "Show or hide the Bounce Mix window",
+         false, CommandDomain::Interface},
+        // Setup > Preferences: the operator's own defaults, kept per machine
+        // by the interface; the engine is not asked.
+        {"window.preferences", CommandTarget::None, "Show or hide the Preferences window",
          false, CommandDomain::Interface},
         // Pro Tools' Window > Configuration and Logic's screensets: which
         // windows are open and where, in nine numbered slots. The argument
@@ -380,6 +494,12 @@ inline const std::vector<CommandSpec>& command_catalog() {
          CommandDomain::Interface},
         {"app.new_from_template", CommandTarget::None,
          "Show the templates to start a new session from one", false, CommandDomain::Interface},
+        // Pro Tools' File > Import > Audio (ui.editing.import): the window
+        // shows the file browser; the copy and the placement go through
+        // operations the engine already runs (AddSource, AddTrack, PlaceRegion).
+        {"session.import_audio", CommandTarget::None,
+         "Show the browser to import audio files into the session as new tracks", false,
+         CommandDomain::Interface},
         {"app.quit", CommandTarget::None, "Leave the engine",
          false, CommandDomain::Interface},
     };
@@ -411,6 +531,7 @@ inline const std::vector<std::string>& take_commands() {
     static const std::vector<std::string> ids = {
         "transport.record",          "transport.toggle_record",   "transport.punch",
         "transport.record_ready",    "transport.punch_selection", "transport.toggle_loop_record",
+        "transport.toggle_quick_punch", "transport.toggle_pre_post_roll",
     };
     return ids;
 }

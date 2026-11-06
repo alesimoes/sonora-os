@@ -155,6 +155,21 @@ struct RemoveRegion {
     Id region = 0;
 };
 
+// Shuffle's ripple (ADR-0009, update of 2026-11-04): every region of the
+// playlist that starts at or after `from` moves by `delta` frames, later or
+// earlier, keeping its order and the gaps between them. A region that
+// straddles `from` stays (split it first). Refused when `delta` is 0, when
+// a moved region would start before 0 or pass the timeline, or, going
+// earlier, when the first moved region would land on one that stays. A
+// crossfade between a region that stays and one that moves is dropped,
+// as every edit drops one whose regions no longer butt. Audio playlists
+// only; a MIDI playlist is refused.
+struct ShiftRegions {
+    Id playlist = 0;
+    Frames from = 0;
+    Frames delta = 0;
+};
+
 enum class FadeEnd : std::uint8_t { In, Out };
 
 struct SetFade {
@@ -270,6 +285,45 @@ struct SetRegionColour {
     Id playlist = 0;
     Id region = 0;
     std::uint8_t colour = kTrackColour;
+};
+
+// A clip's gain (Pro Tools' Clip Gain): the region's own gain_db and its gain
+// line, replaced whole so one undo step restores both. The UI nudges by
+// sending the new level; an empty line is a flat clip. Audio regions only.
+struct SetRegionGain {
+    Id playlist = 0;
+    Id region = 0;
+    float gain_db = 0.0f;
+    std::vector<GainPoint> gain_line;
+};
+
+// Clip groups and loops (ADR-0052): sets `clip_group` and `loop` of each named
+// region of an audio playlist, one undo step. `group` 0 ungroups them and
+// clears their loop number; otherwise it must be the id of one of the named
+// regions, and no region outside the list may already carry it. Each member's
+// `loop` is 0 or the repeat number Loop Clip gave it.
+struct ClipGroupMember {
+    Id region = 0;
+    std::uint16_t loop = 0;
+    bool operator==(const ClipGroupMember& o) const { return region == o.region && loop == o.loop; }
+};
+struct SetClipGroup {
+    Id playlist = 0;
+    Id group = 0;
+    std::vector<ClipGroupMember> members;   // 1 to kMaxCompoundMembers
+};
+
+// Points a region at other files (ADR-0052, the destructive sample edits): its
+// channels, `source_offset` and gain line replaced whole, so one undo step
+// returns to the original take. The new sources must already be in the pool
+// and hold the region's span; crossfades that lose their handle are dropped
+// as after any edit. Audio regions only.
+struct SetRegionSources {
+    Id playlist = 0;
+    Id region = 0;
+    std::vector<SourceRef> channels;
+    Frames source_offset = 0;
+    std::vector<GainPoint> gain_line;
 };
 
 // A permutation of every track id, in the new display order.
@@ -538,6 +592,60 @@ struct EditAutomation {
     Id send = 0;
 };
 
+// VCA masters and folders (ADR-0048). SetVca makes the VCA `vca` when no
+// VCA has that id (the id is then new, as a bus's is) and replaces its name
+// and members when one does; SetFolder likewise. Undoable, as structures.
+// Refused: a member that is not a track or is listed twice, a folder member
+// that is in another folder, a name that is not UTF-8, more than kMaxVcas
+// VCAs or kMaxFolders folders.
+struct SetVca {
+    Id vca = 0;
+    std::string name;
+    std::vector<Id> members;
+};
+
+// The members go back to unscaled; their own faders are untouched.
+struct RemoveVca {
+    Id vca = 0;
+};
+
+// Not undoable: a VCA's fader and mute, like every fader. Refused for an id
+// that is not a VCA.
+struct SetVcaMix {
+    VcaMix mix;   // replaces the values of mix.vca
+};
+
+struct SetFolder {
+    Id folder = 0;
+    std::string name;
+    std::vector<Id> members;
+};
+
+// The tracks are left where they are, ungrouped.
+struct RemoveFolder {
+    Id folder = 0;
+};
+
+// Mix and edit groups (ADR-0041). SetGroup makes the group `group` when no
+// group has that id (the id is then new, as a bus's is) and replaces its
+// name, members and settings when one does. Undoable, as a structure.
+// Refused: fewer than two members, a member that is not a track or is in
+// another group, no attribute, a name that is not UTF-8, more than
+// kMaxGroups groups.
+struct SetGroup {
+    Id group = 0;
+    std::string name;
+    std::vector<Id> members;
+    std::uint8_t attrs = 0;
+    bool relative = true;
+    bool active = true;
+};
+
+// The members go back to being ungrouped; their mix stays as it is.
+struct RemoveGroup {
+    Id group = 0;
+};
+
 // Every operation but Compound: what a compound holds. The type, not a
 // runtime check, keeps a compound out of a compound.
 using Member =
@@ -551,7 +659,9 @@ using Member =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetGroup,
+                 RemoveGroup, SetRegionGain, SetClipGroup, SetRegionSources, SetVca, RemoveVca,
+                 SetVcaMix, SetFolder, RemoveFolder, ShiftRegions>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -586,7 +696,9 @@ using Operation =
                  PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
                  RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, Compound>;
+                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetGroup,
+                 RemoveGroup, SetRegionGain, SetClipGroup, SetRegionSources, SetVca, RemoveVca,
+                 SetVcaMix, SetFolder, RemoveFolder, ShiftRegions, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

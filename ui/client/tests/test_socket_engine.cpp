@@ -317,11 +317,13 @@ void an_interface_killed_mid_take(const char* self) {
     CHECK(ui->wait(5000) && !ui->exited_normally());
     audit_child((dir / "child.err").string(), "the interface child", false);
     const uint64_t at = v.transport().playhead;
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // Wait for the audio the file check below needs, not for wall-clock time:
+    // the fake backend falls behind real time when a period costs more than
+    // its length (ThreadSanitizer under load). Half a second, plus a margin.
     CHECK(until(watcher, in, [&]() {
         return v.transport().state == api::TransportState::Recording &&
-               v.transport().playhead > at + 48000 / 5;
-    }));
+               v.transport().playhead >= at + 48000 / 2 + 48000 / 10;
+    }, 30000));
     CHECK(v.engine_alive(steady_ns()));
     CHECK(engine.running());
 

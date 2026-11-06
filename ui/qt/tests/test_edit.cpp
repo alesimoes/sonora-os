@@ -459,8 +459,27 @@ int test_controller() {
     OK(!c.press(a_mid, lower, why));
     OK(why.find("Shuffle") != std::string::npos);
     OK(c.drag().kind == Drag::Kind::None);
+    OK(!c.spot_region(30 * kBar, why) && why.find("Shuffle") != std::string::npos);
+    OK(!c.nudge(1, why) && why.find("Shuffle") != std::string::npos);
+    // Spot: a click on a region asks where it starts instead of dragging it,
+    // and the time typed places it exactly, on no grid.
     c.set_mode(EditMode::Spot);
-    OK(!c.trim_start_to_insertion(why));
+    c.set_grid(GridValue::Bar);
+    OK(c.take_spot_request() == kNoId);
+    OK(c.press(a_mid, lower, why));
+    OK(c.take_spot_request() == 10 && c.selection().region == 10);
+    OK(c.drag().kind == Drag::Kind::None);
+    OK(c.take_spot_request() == kNoId);
+    OK(c.release(a_mid, lower, why));
+    OK(c.spot_region(30 * kBar + 123, why));
+    OK(region(doc.snapshot(), 10)->position == 30 * kBar + 123);
+    OK(c.selection().region == 10 && c.selection().start == 30 * kBar + 123);
+    OK(c.undo(why));
+    OK(!c.spot_region(-5, why) && !why.empty());
+    // Trims and nudges are free in Spot, as in Slip.
+    c.set_insertion(kBar + kBar / 2);
+    OK(c.trim_start_to_insertion(why));
+    OK(c.undo(why));
     c.set_mode(EditMode::Slip);
     c.next_mode();
     OK(c.mode() == EditMode::Spot);
@@ -1450,6 +1469,21 @@ int test_scene() {
     build_ruler_scene(TimeFormat::BarsBeats, doc.snapshot().settings, c.view(), 20, scene);
     OK(rect_at(scene.rects, 500, 2)->argb == theme::kPanel);
     OK(!scene.labels.empty() && scene.labels[0].text == "1");
+
+    // The loop and punch ranges are bands on the ruler, in their own colours.
+    model::SessionSettings ranged = doc.snapshot().settings;
+    ranged.transport.loop = {kBar, 2 * kBar};
+    ranged.transport.punch = {3 * kBar, 4 * kBar};
+    build_ruler_scene(TimeFormat::BarsBeats, ranged, c.view(), 20, scene);
+    const float lx = static_cast<float>(c.view().x_of(kBar) + 2);
+    const float px = static_cast<float>(c.view().x_of(3 * kBar) + 2);
+    r = rect_at(scene.rects, lx, 16);
+    OK(r && r->argb == theme::kLoopBand);
+    r = rect_at(scene.rects, px, 16);
+    OK(r && r->argb == theme::kPunchBand);
+    build_ruler_scene(TimeFormat::BarsBeats, doc.snapshot().settings, c.view(), 20, scene);
+    r = rect_at(scene.rects, px, 16);
+    OK(!r || r->argb != theme::kPunchBand);
     return 0;
 }
 
@@ -2266,6 +2300,27 @@ int test_midi_sequence_cleanup_follow_ups() {
     return 0;
 }
 
+// TrackPunch (track.toggle_track_punch): the track's flag in the document,
+// on by default, kept with the rest of its mix and never an undo step.
+int test_track_punch() {
+    FlatPeaks peaks;
+    std::string why;
+    Id playlist = 0, region = 0;
+    ModelDocument doc(midi_session(1, playlist, region));
+    SessionModel session(doc, peaks, false);
+    EditController& c = session.controller();
+    const Id audio = doc.snapshot().edit->tracks[0]->id;
+    const auto on = [&]() { return doc.snapshot().mix.find(audio)->track_punch; };
+    const bool could_undo = doc.can_undo();
+    OK(on());
+    OK(c.toggle_track_punch(0, why) && !on());
+    OK(c.toggle_track_punch(0, why) && on());
+    OK(doc.can_undo() == could_undo);
+    OK(!c.toggle_track_punch(1, why) && contains(why, "Synth is a MIDI track"));
+    OK(!c.toggle_track_punch(-1, why) && why == "no track is selected");
+    return 0;
+}
+
 // Pro Tools' TrackInput (track.toggle_input_monitor): the track's monitor
 // mode in the document, Input or Auto, kept with the rest of its mix and
 // never an undo step. A MIDI track has no audio input to monitor.
@@ -2651,7 +2706,7 @@ int main(int argc, char** argv) {
         test_first_save_keeps_the_sessions_name() ||
         test_save_failures() || test_autosave_names_agree() ||
         test_midi_sequence_files() ||
-        test_midi_sequence_cleanup_follow_ups() || test_input_monitor() ||
+        test_midi_sequence_cleanup_follow_ups() || test_input_monitor() || test_track_punch() ||
         test_step_automation_mode() || test_save_as_and_copy() ||
         test_automation_follows_edit() || test_follow_edit_thins_a_full_lane()) {
         return 1;

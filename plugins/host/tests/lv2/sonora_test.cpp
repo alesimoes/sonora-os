@@ -4,7 +4,9 @@
 // on purpose what real plugins do by accident. Never installed; the test
 // driver loads the bundle from the build tree.
 //
-//   urn:sonora:test#crash  mono pass-through; segfaults when `crash` > 0.5
+//   urn:sonora:test#crash  mono pass-through; segfaults when `crash` > 0.5,
+//                          after SONORA_TEST_CRASH_DELAY_MS ms if that is set (a
+//                          host that dies slowly, as under a sanitizer)
 //   urn:sonora:test#sleep  mono pass-through; sleeps `sleep_ms` per block
 //   urn:sonora:test#liar   declares stereo, writes 8 channels into output 0
 //   urn:sonora:test#nan    mono pass-through; writes NaN and Inf when `nan` > 0.5
@@ -90,6 +92,7 @@ struct Plugin {
     Kind kind;
     // SONORA_TEST_RTSAN_SLEEP set: the sleep is left to RTSan (see run()).
     bool rtsan_checks_sleep = false;
+    long crash_delay_ms = 0;
     const float* control = nullptr;
     const float* in[2] = {nullptr, nullptr};
     float* out[2] = {nullptr, nullptr};
@@ -220,6 +223,7 @@ LV2_Handle instantiate(const LV2_Descriptor*, double, const char*, const LV2_Fea
         }
     }
     p->rtsan_checks_sleep = std::getenv("SONORA_TEST_RTSAN_SLEEP") != nullptr;
+    if (const char* d = std::getenv("SONORA_TEST_CRASH_DELAY_MS")) p->crash_delay_ms = std::atol(d);
     return p;
 }
 
@@ -466,8 +470,18 @@ void run(LV2_Handle h, uint32_t n) {
     auto* p = static_cast<Plugin*>(h);
     switch (p->kind) {
     case kCrash:
-        if (p->control && *p->control > 0.5f)
+        if (p->control && *p->control > 0.5f) {
+            if (p->crash_delay_ms > 0) {
+                timespec ts{p->crash_delay_ms / 1000, (p->crash_delay_ms % 1000) * 1000000L};
+#ifdef SONORA_TEST_RTSAN
+                // The slow death is the test; RTSan would halt the host on
+                // the sleep instead of letting it crash.
+                const __rtsan::ScopedDisabler the_delay_is_the_test;
+#endif
+                nanosleep(&ts, nullptr);
+            }
             *reinterpret_cast<volatile int*>(g_nowhere) = 1;
+        }
         std::memcpy(p->out[0], p->in[0], n * sizeof(float));
         break;
     case kSleep:

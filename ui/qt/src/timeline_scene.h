@@ -45,10 +45,13 @@ struct Scene {
 };
 
 // The track lanes and everything on them, for a timeline of view.width x
-// view.height. `drag` previews a gesture in progress.
+// view.height. `drag` previews a gesture in progress. The take lanes of the
+// tracks that show them (ADR-0049) are drawn under their rows, `lane_sel` the
+// range selected on one.
 void build_timeline_scene(const model::Snapshot& s, const ViewState& view, const Selection& sel,
                           const Drag& drag, bool grid_lines, GridValue grid,
-                          const PeakSource& peaks, Scene& out);
+                          const PeakSource& peaks, Scene& out,
+                          const EditController::LaneSelection& lane_sel = {});
 
 struct TransportOverlay {
     model::Frames playhead = 0;
@@ -83,7 +86,8 @@ void build_marker_ruler_scene(const model::MarkerList& markers, const ViewState&
 // at the view's left edge is pinned there, so a view between changes still
 // says what it is in. Read as tempo_index_at() reads the map: an entry out
 // of order is not a change, and one that repeats the value is not drawn.
-enum class ConductorRuler { Tempo, Meter };
+// Track: the tempo track under both, the map as a stepped line (ADR-0050).
+enum class ConductorRuler { Tempo, Meter, Track };
 void build_conductor_ruler_scene(ConductorRuler kind, const model::SessionSettings& s,
                                  const ViewState& view, double height, Scene& out);
 
