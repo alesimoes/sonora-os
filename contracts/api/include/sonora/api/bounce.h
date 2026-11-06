@@ -20,8 +20,12 @@
 // The argument is "key=value" words split on spaces, the name last and the
 // rest of the field (a name may hold spaces, ';' and '='), the style of
 // session.consolidate's:
-//   "mode=offline|realtime start=<frame> end=<frame> format=int24|float32
+//   "mode=offline|realtime start=<frame> end=<frame> file=bwf|wav|aiff|flac
+//    format=int16|int24|float32 [rate=<Hz>] dither=auto|none|tpdf|shaped
 //    [normalise=<LUFS>] [name=<text>]"
+// Protocol 61 added file, rate, dither and int16. Each is optional on the
+// way in (the defaults are a BWF at the session's rate, dithered when 16-bit).
+// FLAC and AIFF hold no 32-bit float: the pair is refused when parsed.
 #pragma once
 
 #include <cstdint>
@@ -31,7 +35,14 @@
 namespace sonora::api {
 
 enum class BounceMode : uint32_t { Offline = 0, RealTime = 1 };
-enum class BounceFormat : uint32_t { Int24 = 0, Float32 = 1 };
+enum class BounceFormat : uint32_t { Int24 = 0, Float32 = 1, Int16 = 2 };
+// What the file is: a BWF (a WAV with a bext chunk, the default: it opens as
+// a WAV everywhere and carries the start on the timeline), a plain WAV, AIFF
+// or FLAC.
+enum class BounceFile : uint32_t { Bwf = 0, Wav = 1, Aiff = 2, Flac = 3 };
+// Auto is TPDF when the file is 16-bit and none otherwise. The others apply
+// to any integer depth; 32-bit float is never dithered.
+enum class BounceDither : uint32_t { Auto = 0, None = 1, Tpdf = 2, Shaped = 3 };
 enum class BounceState : uint32_t { Running = 0, Done = 1, Failed = 2, Cancelled = 3 };
 
 inline constexpr const char* kCapabilityBounce = "mix.bounce";
@@ -42,8 +53,10 @@ struct BounceOptions {
     uint64_t start = 0;
     uint64_t end = 0;
     BounceFormat format = BounceFormat::Int24;
-    // The file is always a BWF: the writer's bext carries the start as its
-    // TimeReference, and a BWF opens as a WAV everywhere.
+    BounceFile file = BounceFile::Bwf;
+    // 0: the session's rate; else the file is converted to it.
+    uint32_t sample_rate = 0;
+    BounceDither dither = BounceDither::Auto;
     // Off by default. On, the integrated loudness is brought to
     // `target_lufs` by one gain, never past a -1 dBFS sample peak.
     bool normalise = false;
@@ -54,7 +67,13 @@ struct BounceOptions {
 inline std::string format_bounce_argument(const BounceOptions& o) {
     std::string s = std::string("mode=") + (o.mode == BounceMode::RealTime ? "realtime" : "offline");
     s += " start=" + std::to_string(o.start) + " end=" + std::to_string(o.end);
-    s += std::string(" format=") + (o.format == BounceFormat::Float32 ? "float32" : "int24");
+    static const char* const files[] = {"bwf", "wav", "aiff", "flac"};
+    static const char* const dithers[] = {"auto", "none", "tpdf", "shaped"};
+    s += std::string(" file=") + files[static_cast<uint32_t>(o.file) & 3];
+    s += std::string(" format=") + (o.format == BounceFormat::Float32 ? "float32"
+                                    : o.format == BounceFormat::Int16 ? "int16" : "int24");
+    if (o.sample_rate != 0) s += " rate=" + std::to_string(o.sample_rate);
+    s += std::string(" dither=") + dithers[static_cast<uint32_t>(o.dither) & 3];
     if (o.normalise) s += " normalise=" + std::to_string(o.target_lufs);
     if (!o.name.empty()) s += " name=" + o.name;
     return s;
@@ -99,7 +118,27 @@ inline bool parse_bounce_argument(const std::string& arg, BounceOptions& out, st
         } else if (key == "format") {
             if (v == "int24") o.format = BounceFormat::Int24;
             else if (v == "float32") o.format = BounceFormat::Float32;
-            else { why = "bounce format is int24 or float32, not \"" + v + "\""; return false; }
+            else if (v == "int16") o.format = BounceFormat::Int16;
+            else { why = "bounce format is int16, int24 or float32, not \"" + v + "\""; return false; }
+        } else if (key == "file") {
+            if (v == "bwf") o.file = BounceFile::Bwf;
+            else if (v == "wav") o.file = BounceFile::Wav;
+            else if (v == "aiff") o.file = BounceFile::Aiff;
+            else if (v == "flac") o.file = BounceFile::Flac;
+            else { why = "bounce file is bwf, wav, aiff or flac, not \"" + v + "\""; return false; }
+        } else if (key == "rate") {
+            const unsigned long n = std::strtoul(v.c_str(), &endp, 10);
+            if (v.empty() || v.size() > 7 || *endp != '\0' || n < 8000 || n > 384000) {
+                why = "bounce rate is between 8000 and 384000 Hz, not \"" + v + "\"";
+                return false;
+            }
+            o.sample_rate = static_cast<uint32_t>(n);
+        } else if (key == "dither") {
+            if (v == "auto") o.dither = BounceDither::Auto;
+            else if (v == "none") o.dither = BounceDither::None;
+            else if (v == "tpdf") o.dither = BounceDither::Tpdf;
+            else if (v == "shaped") o.dither = BounceDither::Shaped;
+            else { why = "bounce dither is auto, none, tpdf or shaped, not \"" + v + "\""; return false; }
         } else if (key == "normalise") {
             const double d = std::strtod(v.c_str(), &endp);
             // !(in range) also refuses NaN.
@@ -116,6 +155,12 @@ inline bool parse_bounce_argument(const std::string& arg, BounceOptions& out, st
     }
     if (o.end != 0 && o.end <= o.start) {
         why = "the range to bounce is empty";
+        return false;
+    }
+    if (o.format == BounceFormat::Float32 &&
+        (o.file == BounceFile::Flac || o.file == BounceFile::Aiff)) {
+        why = std::string(o.file == BounceFile::Flac ? "FLAC" : "AIFF") +
+              " holds 16 or 24 bits, not 32-bit float";
         return false;
     }
     out = o;

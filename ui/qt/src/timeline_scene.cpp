@@ -2,6 +2,7 @@
 #include "timeline_scene.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 
@@ -492,6 +493,16 @@ void build_ruler_scene(TimeFormat fmt, const model::SessionSettings& s, const Vi
             add(out.rects, x, height * 0.7, 1, height * 0.3, theme::kRulerTick);
         }
     }
+    // The loop and the punch ranges, so a take that will loop or punch is
+    // never armed invisibly. Punch is drawn last, over the loop.
+    const auto band = [&](const std::array<model::Frames, 2>& r, uint32_t argb) {
+        if (r[1] <= r[0]) return;
+        const double x0 = std::max(0.0, std::floor(v.x_of(r[0])));
+        const double x1 = std::min(v.width, std::ceil(v.x_of(r[1])));
+        if (x1 > x0) add(out.rects, x0, height - 5, std::max(1.0, x1 - x0), 4, argb);
+    };
+    band(s.transport.loop, theme::kLoopBand);
+    band(s.transport.punch, theme::kPunchBand);
 }
 
 void build_marker_ruler_scene(const model::MarkerList& markers, const ViewState& v, double height,
