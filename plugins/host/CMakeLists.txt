@@ -390,7 +390,13 @@ if(VST3SDK_INCLUDE_DIR)
     set_tests_properties(plugin_host_editor_hang PROPERTIES ENVIRONMENT SONORA_TEST_VST3_EDITOR=hang)
     set_tests_properties(plugin_host_editor plugin_host_editor_crash plugin_host_editor_hang PROPERTIES
       LABELS plugins)
+    # Timed like the scenarios above (blocks played against the period
+    # while the editor opens, crashes or hangs), and xvfb-run -a picks its
+    # display by looking for a free lock file, which two at once can both
+    # find free.
+    list(APPEND _plugin_tests plugin_host_editor plugin_host_editor_crash plugin_host_editor_hang)
   endif()
+  list(APPEND _plugin_tests plugin_host_editor_no_display)
 
   # --- yabridge (ADR-0017), without Wine. Two bundles laid out as
   # yabridgectl lays them out: Contents/x86_64-linux/<name>.so, a Windows
@@ -555,7 +561,10 @@ if(VST3SDK_INCLUDE_DIR)
     plugin_host_vst3_crash plugin_host_vst3_crash_futex)
 endif()
 
-set_tests_properties(${_plugin_tests} PROPERTIES LABELS plugins RUN_SERIAL TRUE)
+# Alone under `ctest -j`: each paces a host by the wall clock (run_periodic
+# in tests/plugin_driver.cpp) and counts the blocks back within a deadline,
+# or times a fault, so a loaded machine fails them.
+set_tests_properties(${_plugin_tests} PROPERTIES LABELS "plugins;timing" RUN_SERIAL TRUE)
 
 # Factory presets (ADR-0029 slice 3): listed in the probe record, read by
 # --read-preset, every refusal and a crash. eg-amp is Debian's; the rest
@@ -677,5 +686,14 @@ if(_native)
       endif()
     endif()
   endforeach()
+  # The renders wait for every block (scenario_render) and the state round
+  # trips check bytes, not time: parallel. The reconfigure plays periodic
+  # blocks and wants 70 of 100 back after the re-activation: alone.
   set_tests_properties(${_native_tests} PROPERTIES LABELS plugins)
+  if(TEST native_lv2_limiter_control_reconfigure)
+    set_tests_properties(native_lv2_limiter_control_reconfigure PROPERTIES LABELS "plugins;timing" RUN_SERIAL TRUE)
+  endif()
+  if(TEST native_vst3_limiter_control_reconfigure)
+    set_tests_properties(native_vst3_limiter_control_reconfigure PROPERTIES LABELS "plugins;timing" RUN_SERIAL TRUE)
+  endif()
 endif()
