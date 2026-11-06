@@ -240,9 +240,9 @@ bool colour_chosen(const EditState& edit, const TrackEdit& t) {
 Id next_free_id(const Snapshot& at, const Plan& plan) {
     Id next = at.next_id;
     for (const PlanStep& s : plan.steps) {
-        if (const auto* b = std::get_if<AddBus>(&s.op)) next = std::max(next, b->bus + 1);
-        if (const auto* a = std::get_if<AddSend>(&s.op)) next = std::max(next, a->send + 1);
-        if (const auto* i = std::get_if<AddInsert>(&s.op)) next = std::max(next, i->insert + 1);
+        if (const auto* b = model::get_if<AddBus>(&s.op)) next = std::max(next, b->bus + 1);
+        if (const auto* a = model::get_if<AddSend>(&s.op)) next = std::max(next, a->send + 1);
+        if (const auto* i = model::get_if<AddInsert>(&s.op)) next = std::max(next, i->insert + 1);
     }
     return next;
 }
@@ -260,7 +260,7 @@ bool has_send_slot(const TrackEdit& t, const Plan& plan, std::uint8_t& slot) {
         bool taken = std::any_of(t.sends.begin(), t.sends.end(),
                                  [&](const Send& x) { return x.slot == s; });
         for (const PlanStep& st : plan.steps) {
-            const auto* a = std::get_if<AddSend>(&st.op);
+            const auto* a = model::get_if<AddSend>(&st.op);
             if (a != nullptr && a->strip == t.id && a->slot == s) taken = true;
         }
         if (!taken) {
