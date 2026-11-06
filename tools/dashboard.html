@@ -93,7 +93,7 @@ h2.h2 .hint,summary .hint{font-size:12px;font-weight:400;color:var(--faint)}
 .ag:hover,.ag:focus-visible{background:var(--raised);border-color:var(--line2)}
 .ag.working{--c:var(--ok)} .ag.wait{--c:var(--warn)} .ag.idle{--c:var(--faint)} .ag.done{--c:#6b9bf2}
 .ag.done{opacity:.8}
-.av{flex:none;width:52px;height:52px;border-radius:8px;display:grid;place-items:center;background:#0d0f12;border:2px solid var(--accent)}
+.av{flex:none;width:84px;height:84px;border-radius:8px;display:grid;place-items:center;background:#0d0f12;border:2px solid var(--accent)}
 .ag.opus .av{border-color:var(--opus)}
 .ab{min-width:0;flex:1}
 .an{font-size:17px;font-weight:700;line-height:1.25}
@@ -170,7 +170,7 @@ details.tech[open]>summary{margin-bottom:12px}
 /* tira de agentes pequena */
 .people.sm{grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px}
 .people.sm .ag{padding:8px 10px;gap:10px}
-.people.sm .av{width:40px;height:40px}.people.sm .av svg{width:36px;height:36px}
+.people.sm .av{width:72px;height:72px}.people.sm .av svg{width:64px;height:64px}
 .people.sm .an{font-size:14px}.people.sm .as,.people.sm .more{display:none}
 .people.sm .sts{margin-top:3px;font-size:12px}.people.sm .ad{font-size:12px;-webkit-line-clamp:2;margin-top:2px}.people.sm .ac{margin-top:4px}
 @media (max-width:1100px){.fr{grid-template-columns:200px repeat(7,minmax(90px,1fr));overflow-x:auto}}
@@ -340,7 +340,7 @@ function personCard(x){
   const model=String(x.model||'').toLowerCase();
   const chips=(x.pr?`<a class="chip" href="${PRURL}${x.pr}" target="_blank" rel="noopener">PR #${x.pr}</a>`:'')+(x.branch?`<span class="chip">${E(x.branch)}</span>`:'');
   return `<article class="ag ${x.state} ${model==='opus'?'opus':''} clk" tabindex="0" role="button" data-k="${E(x.k)}" data-id="${E(x.id)}" title="clique para ver o detalhe">
-    <div class="av">${pixelAvatar(x.avatar,model==='opus',44,x.seed||x.id)}</div>
+    <div class="av">${pixelAvatar(x.avatar,model==='opus',76,x.seed||x.id)}</div>
     <div class="ab"><div class="an">${E(x.title)}</div>
       <div class="as">${model?`<span class="mdl ${model}">${E(MODEL_PT(model))}</span> `:''}${E(x.sub)}</div>
       <div class="sts"><i class="sd"></i>${E(x.stateText)}</div>
@@ -413,7 +413,7 @@ const PH=[['Planejado','ainda sem agente'],['Construindo','agente escreve o cód
 const shortTitle=t=>{t=String(t||'');const m=t.match(/^Bundle ([\w-]+):\s*(.*)$/);if(m)return 'Pacote '+m[1]+' ('+(m[2].match(/#\d+/g)||[]).length+' PRs)';return t.length>78?t.slice(0,76)+'…':t};
 function who(role,sub,t0,opts){opts=opts||{};return {role,sub,t0,seed:opts.seed||(role+'|'+sub),code:opts.code||avatarOf(role),opus:!!opts.opus,k:opts.k,id:opts.id,dim:!!opts.dim}}
 function whoHtml(w){const now=Date.now()/1000;
-  return `<div class="pp ${w.dim?'dim':''}" ${w.k?`data-k="${w.k}" data-id="${E(w.id)}"`:''}><span class="pa">${pixelAvatar(w.code,w.opus,30,w.seed)}</span><span class="pn"><b>${E(w.role)}</b><small>${E(w.sub||'')}${w.t0?(w.sub?' · ':'')+'há '+dur(Math.round(now-w.t0)):''}</small></span></div>`}
+  return `<div class="pp ${w.dim?'dim':''}" ${w.k?`data-k="${w.k}" data-id="${E(w.id)}"`:''}><span class="pa">${pixelAvatar(w.code,w.opus,48,w.seed)}</span><span class="pn"><b>${E(w.role)}</b><small>${E(w.sub||'')}${w.t0?(w.sub?' · ':'')+'há '+dur(Math.round(now-w.t0)):''}</small></span></div>`}
 function flowRows(s){
   const now=Date.now()/1000,o=s.orchestrator||{},b=o.builder||{},run=b.running,lock=s.lock||[];
   const trn=Object.fromEntries((o.train||[]).map(r=>[r.pr,r]));
@@ -510,7 +510,7 @@ function renderTech(s){
     const P=o.pools||{};
     $('tpools').innerHTML=Object.keys(P).filter(n=>(P[n].floor||0)>0||(P[n].live||0)>0||paused.includes(n)).map(n=>{const p=P[n],pp=POOL_PT[n]||[n,'AG'];
       const isP=p.paused||p.reason==='paused'||paused.includes(n),fl=p.floor||0,lv=p.live||0;
-      return `<div class="pool ${isP?'paused':lv<fl?'low':''}"><span class="pa">${pixelAvatar(pp[1],false,30,'pool-'+n)}</span><div><b>${E(pp[0])}</b><span>${isP?'pausado':lv+' ativos'+(fl?' · mínimo '+fl:'')}</span></div></div>`}).join('')}
+      return `<div class="pool ${isP?'paused':lv<fl?'low':''}"><span class="pa">${pixelAvatar(pp[1],false,40,'pool-'+n)}</span><div><b>${E(pp[0])}</b><span>${isP?'pausado':lv+' ativos'+(fl?' · mínimo '+fl:'')}</span></div></div>`}).join('')}
   const w=(o&&o.waits_on_owner)||[];
   $('townerp').hidden=!w.length;
   $('towner').innerHTML=w.length?`<div class="owner"><ul>${w.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||x.question||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`:'';
