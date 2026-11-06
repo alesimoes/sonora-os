@@ -233,6 +233,29 @@ footer{color:var(--faint);font:11px var(--mono);margin-top:2px}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 html,body{overflow-x:hidden;max-width:100vw}
 
+/* agentes: seções e lock */
+.sec{border-top:1px solid var(--line);padding:6px 14px 10px}
+.sec>h4{margin:4px 0 8px;font:600 12px var(--disp);letter-spacing:.2em;text-transform:uppercase;color:var(--cyan)}
+.sec .grid{padding:0}
+.sec .trk{border-top:0}
+.sec .th{padding:0 0 6px}
+.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:8px}
+.mdl{font:600 11px var(--mono);padding:0 6px;border:1px solid var(--line2);color:var(--muted);text-transform:uppercase}
+.mdl.opus{color:#ffb347;border-color:#ffb347}.mdl.sonnet{color:var(--cyan);border-color:var(--cyan)}
+.card.waiting_lock{--c:var(--amber)}
+.card .doing{margin-top:6px;font:12px/1.35 var(--mono);color:var(--ink);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card .since{margin-top:5px;font:11px var(--mono);color:var(--faint)}
+.lk{display:grid;grid-template-columns:78px minmax(0,1.3fr) 54px 74px minmax(0,2fr);gap:4px 12px;align-items:baseline;padding:5px 8px;border:1px solid var(--line);border-left:3px solid var(--amber);margin-bottom:4px;font:12px var(--mono);background:rgba(4,13,22,.9)}
+.lk.holds{border-left-color:#7dffb0}
+.lk .rl{font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--amber)}.lk.holds .rl{color:#7dffb0}
+.lk .who{font:13px var(--disp);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0;color:var(--ink)}
+.lk .cm{color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lk.head{border:0;background:none;color:var(--faint);padding-top:0;padding-bottom:0;text-transform:uppercase;font-size:10.5px}
+details.sec>summary{cursor:pointer;font:600 12px var(--disp);letter-spacing:.2em;text-transform:uppercase;color:var(--muted);padding:4px 0}
+details.done>summary{cursor:pointer;font:600 12px var(--disp);letter-spacing:.2em;text-transform:uppercase;color:var(--muted);padding:4px 0}
+details.done .card{padding:6px 9px;opacity:.75}details.done .card h3{font-size:13px}
+details.done .grid{grid-template-columns:repeat(auto-fill,minmax(260px,1fr));margin-top:8px}
+
 /* painel de detalhes do card clicado */
 .clk{cursor:pointer}.clk:hover{outline:1px solid var(--line2);outline-offset:1px}
 #drawer{position:fixed;top:0;right:0;height:100vh;width:min(560px,96vw);background:#050f1a;border-left:1px solid var(--line2);box-shadow:-12px 0 40px rgba(0,0,0,.6);z-index:50;transform:translateX(105%);transition:transform .2s;display:flex;flex-direction:column}
@@ -262,11 +285,12 @@ html,body{overflow-x:hidden;max-width:100vw}
   <p class="err" id="err"></p>
 
   <section class="panel hero" aria-label="Agentes">
-    <div class="ph"><h2>Agentes</h2><i id="agcount"></i>
-      <span class="tg"><label><input type="checkbox" id="showdone"> mostrar terminados</label></span></div>
-    <div id="oruns"></div>
-    <div id="tracks"></div>
-    <div class="note">A meta conta só agentes <b>trabalhando</b>. Buildando (anel girando) não conta: o agente espera o container, não está escrevendo.</div>
+    <div class="ph"><h2>Agentes</h2><i id="agcount"></i></div>
+    <div class="ohead" id="agsum"></div>
+    <div class="sec"><h4>Esta sessão: coordenador e agentes dele</h4><div id="sesag"></div></div>
+    <div class="sec"><h4>Máquina: quem usa o build pesado e quem espera (lock)</h4><div id="lockbox"></div></div>
+    <div class="sec"><h4>Orquestrador: builder e agentes dele</h4><div id="oruns"></div></div>
+    <details class="sec done" id="doneag"><summary></summary><div class="grid" id="donegrid"></div></details>
   </section>
 
   <section class="panel hero" id="orchhero" aria-label="Orquestrador" hidden>
@@ -275,7 +299,7 @@ html,body{overflow-x:hidden;max-width:100vw}
     <div id="owaits"></div>
     <div class="ohead" id="ohead"></div>
     <div class="pools" id="opools"></div>
-    <div class="kan" id="okan"></div>
+    <details class="sec" id="okdet"><summary id="oksum">Backlog de features</summary><div class="kan" id="okan"></div></details>
   </section>
 
   <section class="panel hero train" aria-label="Fila de merge">
@@ -307,9 +331,9 @@ html,body{overflow-x:hidden;max-width:100vw}
 const $=id=>document.getElementById(id);
 const E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dur=s=>s==null?'sem sinal':s<90?s+' s':s<5400?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h';
-const NAME={building:'buildando',working:'trabalhando',waiting:'aguardando',done:'terminou',paused:'pausado',unknown:'?','no worktree':'sem worktree'};
+const NAME={building:'usando a máquina',waiting_lock:'esperando o lock',working:'trabalhando',waiting:'parado',done:'terminou',paused:'pausado',unknown:'?','no worktree':'sem worktree'};
 const CLS=s=>s==='no worktree'?'nowt':s;
-const ORDER={working:0,building:1,waiting:2,'no worktree':2,paused:3,done:4,unknown:5};
+const ORDER={working:0,building:1,waiting_lock:2,waiting:2,'no worktree':2,paused:3,done:4,unknown:5};
 const PRURL='https://github.com/alesimoes/sonora-os/pull/';
 /* trilhas: chave, nome, meta, classe, regex */
 const TRACKS=[['daw','DAW',8,'',/daw/i],['os','OS',4,'os',/(^|[^a-z])os([^a-z]|$)|packag|iso|distro/i],['pl','Plugins',2,'pl',/plugin/i],['hx','Harness',0,'hx',/./]];
@@ -345,7 +369,7 @@ function diff(s){
       if(!o)ev('info','agente novo: '+a.label);
       else if(o.state!==a.state){
         if(a.state==='done')ev('ok','agente terminou: '+a.label);
-        else if(a.state==='waiting')ev('warn','agente aguardando: '+a.label);
+        else if(a.state==='waiting'||a.state==='waiting_lock')ev('warn',(a.state==='waiting_lock'?'espera o lock: ':'agente parado: ')+a.label);
         else ev('info',a.label+' → '+(NAME[a.state]||a.state))}}
     for(const n in cur.pr){const p=cur.pr[n],o=prev.pr[n];
       if(!o)ev('info','PR #'+n+' aberto: '+p.title);
@@ -464,12 +488,12 @@ function render(s){
   renderUsage(s.usage||{});
   const act=s.agents.filter(a=>!['done','paused'].includes(a.state));
   const working=s.agents.filter(a=>a.state==='working');
-  const waiting=act.filter(a=>a.state==='waiting'||a.state==='no worktree').length;
+  const waiting=act.filter(a=>a.state==='waiting'||a.state==='waiting_lock'||a.state==='no worktree').length;
   // Cancelled checks are a superseded or stopped run, not a failure.
   const red=s.prs.filter(p=>p.failed.length>(p.cancelled||[]).length).length;
   const dups=Object.values(s.watchers.reduce((m,w)=>(m[w.pr]=(m[w.pr]||0)+1,m),{})).filter(n=>n>1).length;
   const pill=$('pill');pill.className='pill'+(red?' bad':waiting?' warn':'');
-  pill.innerHTML=`<span><b>${working.length}</b> trabalhando</span><span><b>${act.length}</b> ativos</span><span><b>${waiting}</b> aguardando</span><span><b>${red}</b> vermelho${red===1?'':'s'}</span>`+(dups?`<span>${dups} watcher duplicado</span>`:'');
+  pill.innerHTML=`<span><b>${working.length}</b> trabalhando</span><span><b>${act.length}</b> ativos</span><span><b>${waiting}</b> esperando</span><span><b>${red}</b> vermelho${red===1?'':'s'}</span>`+(dups?`<span>${dups} watcher duplicado</span>`:'');
   const watch={};s.watchers.forEach(x=>{watch[x.pr]=(watch[x.pr]||0)+1});
   const prs=Object.fromEntries(s.prs.map(p=>[p.number,p]));
   const orch=orchStages(s.orchestrator);
@@ -511,42 +535,44 @@ function renderPipe(s,aSt,pSt){
 const orchStagesActive=s=>Object.keys(orchStages(s.orchestrator)).length>0;
 $('pipe').addEventListener('click',e=>{const b=e.target.closest('.stg');if(!b)return;selStage=selStage===b.dataset.st?null:b.dataset.st;if(lastState)render(lastState)});
 $('filtx').addEventListener('click',()=>{selStage=null;if(lastState)render(lastState)});
-$('showdone').addEventListener('change',()=>{if(lastState)render(lastState)});
 
-/* agentes agrupados por trilha */
+/* agentes: os da sessão do coordenador (JSON do coordenador), o lock da máquina,
+   o orquestrador, e os terminados recolhidos */
+const clk=t=>t?new Date(t*1000).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
+const isToday=t=>t&&new Date(t*1000).toDateString()===new Date().toDateString();
+function lockRows(lock){
+  if(!lock||!lock.length)return '<div class="empty">Ninguém usa a máquina agora.</div>';
+  const now=Date.now()/1000;
+  return '<div class="lk head"><span>papel</span><span>quem</span><span>prio</span><span>desde</span><span>comando</span></div>'+lock.map(r=>
+    `<div class="lk ${r.role}" title="${E(r.cwd)}&#10;${E(r.cmd)}"><span class="rl">${r.role==='holds'?'usando':'espera'}</span><span class="who" title="${E(r.who)}">${E(r.who)}</span><span>prio ${r.prio}</span><span>${dur(Math.round(now-r.start))}</span><span class="cm">${E(r.cmd)}</span></div>`).join('')}
 function renderAgents(s,aSt,prs,watch){
-  const showDone=$('showdone').checked;
-  const by={};TRACKS.forEach(t=>by[t[0]]=[]);s.agents.forEach(a=>by[trackOf(a)[0]].push(a));
-  const hidden=s.agents.filter(a=>['done','paused'].includes(a.state)).length;
-  $('agcount').textContent=s.agents.filter(a=>!['done','paused'].includes(a.state)).length+' ativos de '+s.agents.length+(hidden&&!showDone?' · '+hidden+' terminados ocultos':'');
-  const orchOn=!!s.orchestrator&&typeof s.orchestrator==='object';
-  $('oruns').innerHTML=coordCard(s.coordinator)+(orchOn?builderCard(s.orchestrator.builder):'')+(orchOn?orchRuns(s.orchestrator):'');
-  // With the orchestrator on, every agent is its own: the legacy tracks show
-  // only while an old coordinator subagent is still alive.
-  const liveLegacy=s.agents.some(a=>!['done','paused'].includes(a.state));
-  if(orchOn&&!liveLegacy&&!showDone){$('tracks').innerHTML='';return}
-  const legacy=orchOn?'<div class="leg"><div class="lh">Coordenador (legado)</div>':'';
-  $('tracks').innerHTML=legacy+(TRACKS.map(([key,name,tgt,cls])=>{
-    const all=by[key];if(!all.length&&!tgt)return '';
-    const w=all.filter(a=>a.state==='working').length,b=all.filter(a=>a.state==='building').length;
-    let list=all.filter(a=>showDone||!['done','paused'].includes(a.state));
-    if(selStage)list=list.filter(a=>aSt[a.id]===selStage);
-    list.sort((x,y)=>ORDER[x.state]-ORDER[y.state]);
-    const cells=tgt?`<div class="cells">${Array.from({length:Math.max(tgt,w)},(_,i)=>`<i class="${i<w?'on':''}"></i>`).join('')}</div>`:'';
-    const cc=tgt?`<span class="cnt ${w===0?'zero':w<tgt?'low':''}">${w} / ${tgt} trabalhando</span>`:`<span class="cnt">${w} trabalhando</span>`;
-    return `<div class="trk ${cls}"><div class="th"><h2>${name}</h2>${cc}${cells}<span class="rest">${b?b+' buildando (não conta) · ':''}${all.filter(a=>a.state==='waiting'||a.state==='no worktree').length} aguardando</span></div>
-    <div class="grid">${list.map(a=>card(a,aSt[a.id],prs,watch)).join('')||`<div class="empty" style="grid-column:1/-1">${selStage?'Nenhum agente desta trilha nesta etapa.':'Nenhum agente nesta trilha.'}</div>`}</div></div>`}).join('')||(orchOn?'<div class="empty">Nenhum subagente do coordenador.</div>':'<div class="empty">Nenhum agente no arquivo de rótulos.</div>'))+(orchOn?'</div>':'')}
+  const live=s.agents.filter(a=>!['done','paused'].includes(a.state)).sort((x,y)=>ORDER[x.state]-ORDER[y.state]||(x.since||0)-(y.since||0));
+  const done=s.agents.filter(a=>['done','paused'].includes(a.state));
+  const today=done.filter(a=>isToday(a.done_at)),older=done.length-today.length;
+  const cnt=st=>live.filter(a=>a.state===st).length;
+  const o=s.orchestrator,orchOn=!!o&&typeof o==='object';
+  const oruns=orchOn?(o.runs||[]).length:0;
+  const holder=(s.lock||[]).find(r=>r.role==='holds'),nwait=(s.lock||[]).filter(r=>r.role==='waits').length;
+  $('agcount').textContent=(live.length+oruns)+' ativos';
+  $('agsum').innerHTML=`<span><b>${cnt('working')}</b> trabalhando</span><span><b>${cnt('building')}</b> usando a máquina</span><span><b>${cnt('waiting_lock')}</b> esperando o lock</span><span><b>${oruns}</b> do orquestrador</span>`
+    +`<span>máquina: <b>${holder?E(holder.who):'livre'}</b>${nwait?' · '+nwait+' na fila':''}</span>`;
+  $('sesag').innerHTML=`<div class="agrid">${coordCard(s.coordinator)}${live.map(a=>card(a,aSt[a.id],prs,watch)).join('')}</div>`;
+  $('lockbox').innerHTML=lockRows(s.lock);
+  $('oruns').innerHTML=orchOn?`<div class="agrid">${builderCard(o.builder,s.lock)}${orchRuns(o)}</div>`:'<div class="empty">Orquestrador desligado.</div>';
+  $('doneag').hidden=!done.length;
+  $('doneag').querySelector('summary').textContent=`Terminados hoje · ${today.length}`+(older?` (mais ${older} de dias anteriores, só no JSON)`:'');
+  $('donegrid').innerHTML=today.sort((x,y)=>y.done_at-x.done_at).map(a=>card(a,null,prs,watch)).join('')||'<div class="empty" style="grid-column:1/-1">Nenhum terminado hoje.</div>'}
 function card(a,st,prs,watch){
-  const live=!['done','paused'].includes(a.state);
-  const wi=a.idle_seconds==null?0:Math.min(100,Math.round(a.idle_seconds/600*100));
+  const isLive=!['done','paused'].includes(a.state);
   const p=a.pr&&prs[a.pr];
   const pc=p?(p.failed.length?'red':p.pending.length?'wait':'ok'):'';
-  const sn=st&&STAGES.find(x=>x[0]===st);
-  return `<article class="card ${CLS(a.state)}"><div class="top"><span class="orb"></span><h3 title="${E(a.label)}">${E(a.label)}</h3><span class="state">${E(NAME[a.state]||a.state)}</span></div>
-  <div class="meta"><span class="m">${E(a.id.slice(0,7))}</span>${a.pr?`<a class="chip ${pc}" href="${PRURL}${a.pr}" target="_blank" rel="noopener">PR #${a.pr}</a>`:''}${sn?`<span class="sg">${sn[1]}</span>`:''}
-  ${a.state==='building'&&a.containers.length?`<span style="color:var(--cyan)">${E(a.containers.join(' '))}</span>`:''}
-  ${live?`<span>parado há ${dur(a.idle_seconds)}</span>`:''}${a.dirty?`<span>${a.dirty} arquivo${a.dirty>1?'s':''}</span>`:''}</div>
-  ${live?`<div class="idle" style="--w:${wi}%"><i></i></div>`:''}</article>`}
+  const mdl=a.model?`<span class="mdl ${E(String(a.model).toLowerCase())}">${E(a.model)}</span>`:'';
+  const lk=a.lock?`${a.lock.role==='holds'?'usa o lock':'espera o lock'} desde ${clk(a.lock.start)} (${dur(Math.round(Date.now()/1000-a.lock.start))})`:'';
+  const since=isLive?(a.since?`${a.since_src==='worktree'?'worktree criado':'trabalhando desde'} ${clk(a.since)} (${dur(Math.round(Date.now()/1000-a.since))})`:''):(a.done_at?`terminou às ${clk(a.done_at)}`:'');
+  return `<article class="card ${CLS(a.state)} clk" data-k="agent" data-id="${E(a.id)}" title="clique para ver o detalhe"><div class="top"><span class="orb"></span><h3 title="${E(a.label)}">${E(a.label)}</h3><span class="state">${E(NAME[a.state]||a.state)}</span></div>
+  <div class="meta">${mdl}${a.agent?`<span class="sg">${E(a.agent)}</span>`:''}${a.pr?`<a class="chip ${pc}" href="${PRURL}${a.pr}" target="_blank" rel="noopener">PR #${a.pr}</a>`:''}${a.branch?`<span title="branch">${E(a.branch)}</span>`:''}</div>
+  ${a.doing?`<div class="doing" title="${E(a.doing)}">${E(a.doing)}</div>`:''}
+  <div class="since">${E([since,lk].filter(Boolean).join(' · '))}</div></article>`}
 
 function renderPRs(s,watch,pSt){
   const list=selStage?s.prs.filter(p=>pSt[p.number]===selStage):s.prs;
@@ -604,6 +630,7 @@ function renderOrch(o){
   hd+=`<span>PRs abertos <b>${o.open_prs??0}</b>${o.max_open_prs?' / '+o.max_open_prs:''}</span>`;
   if(o.ready_unpr!=null)hd+=`<span>prontos sem PR <b>${o.ready_unpr}</b></span>`;
   if(o.runs_last_hour!=null)hd+=`<span>execuções na última hora <b>${o.runs_last_hour}</b></span>`;
+  if((o.paused||[]).length)hd+=`<span class="ks" style="color:var(--amber);border-color:var(--amber)">PAUSADO: ${E(o.paused.join(', '))}</span>`;
   const rs=Array.isArray(o.reservations)?o.reservations.length:0;if(rs)hd+=`<span>reservas <b>${rs}</b></span>`;
   if(o.kill_switch)hd+=`<span class="ks">KILL SWITCH: ${E(typeof o.kill_switch==='object'?JSON.stringify(o.kill_switch):o.kill_switch)}</span>`;
   if(o.usage_pause_until){const t=Number(o.usage_pause_until)||Date.parse(o.usage_pause_until)/1000;hd+=`<span class="ks">pausa por consumo${t?' · volta em '+until(t):''}</span>`}
@@ -611,8 +638,8 @@ function renderOrch(o){
   const P=o.pools||{};
   const names=POOLS.filter(n=>P[n]).concat(Object.keys(P).filter(n=>!POOLS.includes(n)&&((P[n].floor||0)>0||(P[n].live||0)>0)));
   $('opools').innerHTML=names.map(n=>{const p=P[n]||{},fl=p.floor||0,lv=p.live||0,wk=p.working||0,mx=Math.max(fl,lv,1);
-    const cls=p.paused?'paused':!fl?'nofloor':lv===0?'zero':lv<fl?'low':'';
-    return `<div class="pl ${cls}"><div class="pn">${E(n)}${p.paused?' · pausado':''}</div><div class="pv">${lv}<small> vivos / ${wk} trab. / piso ${fl}</small></div><div class="bar"><i style="width:${lv/mx*100}%"></i></div><div class="why" title="${E(p.reason||'')}">${E(p.reason||(lv<fl?'abaixo do piso':''))}</div></div>`}).join('')||'<div class="empty">status.json sem pools.</div>';
+    const isP=p.paused||p.reason==='paused'||(o.paused||[]).includes(n);const cls=isP?'paused':!fl?'nofloor':lv===0?'zero':lv<fl?'low':'';
+    return `<div class="pl ${cls}"><div class="pn">${E(n)}${isP?' · pausado':''}</div><div class="pv">${lv}<small> vivos / ${wk} trab. / piso ${fl}</small></div><div class="bar"><i style="width:${lv/mx*100}%"></i></div><div class="why" title="${E(p.reason||'')}">${E(isP?'pausado: não conta como falta':(p.reason||(lv<fl?'abaixo do piso':'')))}</div></div>`}).join('')||'<div class="empty">status.json sem pools.</div>';
   const feats=(Array.isArray(o.features)?o.features:Object.entries(o.features||{}).map(([name,v])=>({name,...v}))).filter(f=>f&&typeof f==='object');
   const fcard=f=>{const tasks=Array.isArray(f.tasks)?f.tasks:[];
     const pr=f.pr?`<a class="prn" href="${PRURL}${f.pr}" target="_blank" rel="noopener">PR #${f.pr}</a>`:'';
@@ -631,6 +658,7 @@ function renderOrch(o){
   if(okOpt.group){const by=Object.fromEntries(cols.map(c=>[c[0],c[2]]));
     cols=OGROUPS.map(([id,n,ids])=>[id,n,[].concat(...ids.map(k=>by[k]||[]),...(id==='plan'?extra.map(x=>by[x]||[]):[]))])}
   if(okOpt.hideEmpty)cols=cols.filter(c=>c[2].length);
+  const nf=cols.reduce((n,c)=>n+c[2].length,0);$('oksum').textContent=`Backlog de features · ${nf}`+((o.paused||[]).length?' (parado: nenhum agente trabalha nelas agora)':'');
   $('okan').innerHTML=cols.map(([id,n,list,sep])=>col(id,n,list,sep)).join('')||'<div class="empty">Nenhuma feature.</div>';
   $('okan').querySelectorAll('.kc').forEach(el=>{const k=[...el.classList].find(c=>c.startsWith('s-'));if(okClosed.has(k))el.classList.add('closed')});
   okLabels();
@@ -646,7 +674,7 @@ function orchRuns(o){
     return `<article class="card rcard ${cls} clk" data-k="run" data-id="${E(r.id)}" title="clique para ver o que está fazendo"><div class="top"><span class="orb"></span><h3 title="${E(r.id||r.name)}">${E(r.name||r.id||'?')}</h3><span class="state">${st}</span></div>
     <div class="meta"><span class="sg">${E(r.role||'?')}</span>${r.pool?`<span class="sg">${E(r.pool)}</span>`:''}<span>${age==null?'':dur(age)}</span><span class="m">pid ${E(r.pid)}</span></div>
     <div class="tk" title="${E(r.task)}">${E(r.task||'')}</div></article>`}).join('');
-  return `<div class="trk"><div class="th"><h2>Orquestrador</h2><span class="cnt">${o.runs.length} em execução</span><span class="rest">${E(o.mode||'')}</span></div><div class="grid">${cards||'<div class="empty" style="grid-column:1/-1">Nenhum agente em execução.</div>'}</div></div>`}
+  return cards||`<article class="card done"><div class="top"><span class="orb"></span><h3>Agentes do orquestrador</h3><span class="state">nenhum em execução</span></div><div class="meta"><span>${E(o.mode||'')}${(o.paused||[]).length?' · pausado: '+E(o.paused.join(', ')):''}</span></div></article>`}
 
 async function tick(){
   try{const r=await fetch('/api/state',{cache:'no-store'});const s=await r.json();lastOk=Date.now();render(s);
@@ -669,6 +697,10 @@ function evHtml(ev){return ev&&ev.length?'<h4>Histórico</h4>'+ev.slice().revers
 function detHtml(d){
   if(d.error)return `<p class="bad">${E(d.error)}</p>`;
   if(d.kind==='coord'){const c=d.coord||{};return kv({agora:c.doing,atualizado:ago(c.updated)})+(c.steps&&c.steps.length?'<h4>Passos (mais recente primeiro)</h4>'+c.steps.slice().reverse().map(x=>`<div class="act ${x.done?'fim':'texto'}"><i>${x.done?'feito':'em curso'}</i>${E(x.text)}</div>`).join(''):'')+(c.waits?`<h4>Espera você</h4><pre>${E(c.waits)}</pre>`:'')}
+  if(d.kind==='agent'){const a=d.agent||{};
+    return kv({estado:NAME[a.state]||a.state,modelo:a.model,agente:a.agent,trabalho:a.doing,PR:a.pr,branch:a.branch,'desde':a.since?clk(a.since)+' ('+ago(a.since)+')':'',trilha:a.track,'arquivos modificados':a.dirty,containers:a.containers,id:a.id})
+      +(a.lock?'<h4>Lock da máquina</h4>'+kv({papel:a.lock.role==='holds'?'usando':'esperando',prioridade:a.lock.prio,'desde':ago(a.lock.start),comando:a.lock.cmd}):'')
+      +'<h4>Quem usa a máquina</h4>'+lockRows(d.lock)}
   if(d.kind==='builder')return builderHtml(d);
   if(d.kind==='run'){const r=d.run||{};
     const act=(d.activity||[]).slice().reverse().map(a=>`<div class="act ${E(a.kind)}"><i>${E(a.kind)}</i>${E(a.text)}</div>`).join('')||'<div class="ev">sem atividade registrada ainda</div>';
@@ -689,28 +721,30 @@ document.addEventListener('click',e=>{if(e.target.closest('a,button,input,label,
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail()});
 
 /* O builder: a máquina única que faz o build pesado em lote (status.json .builder) */
-function bPrs(h){return (h.prs||[]).map((p,i)=>p?'#'+p:String((h.heads||[])[i]||'').slice(0,7)).join(' ')}
-function builderCard(b){if(!b)return '';
-  const r=b.running,bq=b.queue||{},q=((bq.batch||[]).length+(bq.pre||[]).length+(bq.bisect||[]).length),l=b.last;
+function bPrs(h){return (h.prs||[]).map((p,i)=>p?'#'+p:'commit '+String((h.heads||[])[i]||'').slice(0,7)).join(' ')}
+function builderCard(b,lock){if(!b)return '';
+  const lw=(lock||[]).map((x,i)=>({...x,pos:i})).find(x=>x.builder);
+  const r=b.running,bq=b.queue||{},qp=bq.open_prs||(bq.prs||[]).filter(Boolean),l=b.last;
+  const q=qp.length?'PRs '+qp.map(n=>'#'+n).join(' '):((bq.batch||[]).length?(bq.batch||[]).length+' commits':'vazia');
   const st=r?(r.step||'iniciando'):'livre';
-  return `<div class="trk hx"><div class="th"><h2>Builder</h2><span class="cnt">${r?1:0} / 1 trabalhando</span><span class="rest">uma máquina, um build pesado por vez, em lote</span></div><div class="grid">
-  <article class="card ${r?'building':'waiting'} clk" data-k="builder" data-id="builder" title="clique para ver o lote, a fila e os logs"><div class="top"><span class="orb"></span><h3>Builder (CI local)</h3><span class="state">${r?'buildando':'livre'}</span></div>
-  <div class="meta"><span class="sg">${E(r?(r.full?'main completo':'lote ')+bPrs(r):'sem lote')}</span>${r?`<span>etapa ${E(st)} · ${dur(r.elapsed_s)}</span>`:''}<span>fila: ${q}</span></div>
-  <div class="tk">${l?E('último: '+l.state+' '+bPrs(l)+' '+(l.summary||[''])[0]):''}</div></article></div></div>`}
+  const wait=r&&lw&&lw.role==='waits',state=!r?'livre':wait?'esperando o lock':'buildando';
+  return `<div>
+  <article class="card ${!r?'waiting':wait?'waiting_lock':'building'} clk" data-k="builder" data-id="builder" title="clique para ver o lote, a fila e os logs"><div class="top"><span class="orb"></span><h3>Builder (CI local)</h3><span class="state">${state}</span></div>
+  <div class="meta"><span class="sg">${E(r?(r.full?'main completo':'lote ')+bPrs(r):'sem lote')}</span>${r?`<span>etapa ${E(st)} · ${dur(r.elapsed_s)}</span>`:''}${wait?`<span>na fila do lock desde ${clk(lw.start)} (${lw.pos}º a esperar)</span>`:''}<span>fila: ${E(q)}</span></div>
+  <div class="tk">${l?E('último: '+l.state+' '+bPrs(l)+' '+(l.summary||[''])[0]):''}</div></article></div>`}
 function builderHtml(d){const b=d.builder||{},r=b.running,l=b.last,q=b.queue||{};
   const ids=h=>(h.heads||[]).map((x,i)=>(h.prs&&h.prs[i]?'#'+h.prs[i]+' ':'')+x.slice(0,10)).join('\n');
   return (r?'<h4>Lote em execução</h4>'+kv({etapa:r.step,'tempo':dur(r.elapsed_s),prioridade:r.priority,logs:r.dir})+`<pre>${E(ids(r))}</pre>`:'<p>Livre: nenhum build pesado rodando.</p>')
    +(d.log?`<h4>Fim do log da etapa</h4><pre>${E(d.log)}</pre>`:'')
-   +'<h4>Fila atrás dele</h4>'+kv({lote:(q.batch||[]).map(x=>x.slice(0,10)),'pré-PR':(q.pre||[]).map(x=>x.slice(0,10)),bisecção:(q.bisect||[]).map(g=>g.map(x=>x.slice(0,7)).join('+'))})
+   +'<h4>Fila atrás dele</h4>'+kv({'PRs na fila':(q.open_prs||[]).map(n=>'#'+n),lote:(q.batch||[]).map(x=>x.slice(0,10)),'pré-PR':(q.pre||[]).map(x=>x.slice(0,10)),bisecção:(q.bisect||[]).map(g=>g.map(x=>x.slice(0,7)).join('+'))})
    +(l?'<h4>Último resultado</h4>'+kv({estado:l.state,'terminou':ago(l.ended),resumo:(l.summary||[''])[0],logs:l.dir})+`<pre>${E(ids(l))}</pre>`:'')
    +(d.lock&&d.lock.length?'<h4>Trava da máquina (tools/build-slot.sh --list)</h4><pre>'+E(d.lock.join('\n'))+'</pre>':'')}
 /* o coordenador (Claude no terminal) na trilha Harness: o que está fazendo */
 function coordCard(c){if(!c)return '';
   const age=c.updated?Math.round(Date.now()/1000-c.updated):null,live=age!=null&&age<900;
-  return `<div class="trk hx"><div class="th"><h2>Harness</h2><span class="cnt">${live?1:0} trabalhando</span><span class="rest">o coordenador e as correções no próprio orquestrador, CI e dashboard</span></div><div class="grid">
-  <article class="card ${live?'working':'waiting'} clk" data-k="coord" data-id="coord" title="clique para ver os passos"><div class="top"><span class="orb"></span><h3>Coordenador (Claude)</h3><span class="state">${live?'trabalhando':'parado'}</span></div>
-  <div class="meta"><span class="sg">coordenador</span><span>${age==null?'':dur(age)+' atrás'}</span></div>
-  <div class="tk" title="${E(c.doing)}">${E(c.doing||'')}</div></article></div></div>`}
+  return `<article class="card ${live?'working':'waiting'} clk" data-k="coord" data-id="coord" title="clique para ver os passos"><div class="top"><span class="orb"></span><h3>Coordenador (Claude)</h3><span class="state">${live?'trabalhando':'sem sinal'}</span></div>
+  <div class="meta"><span class="mdl opus">coordenador</span><span>atualizou ${age==null?'?':dur(age)+' atrás'}</span></div>
+  <div class="doing" title="${E(c.doing)}">${E(c.doing||'')}</div></article>`}
 </script>
 <aside id="drawer" aria-label="Detalhes"><div class="dh"><h2 id="dtitle">-</h2><button type="button" onclick="closeDetail()">fechar (Esc)</button></div><div class="db" id="dbody"></div></aside>
 </body>

@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 WORKING_SECONDS = 180
-state = {"usage": {"sessions": [], "week": None, "five_hour": None}, "updated": 0, "agents": [], "prs": [], "watchers": [], "containers": [], "errors": [], "orchestrator": None, "merged": []}
+state = {"usage": {"sessions": [], "week": None, "five_hour": None}, "updated": 0, "agents": [], "prs": [], "watchers": [], "containers": [], "errors": [], "orchestrator": None, "merged": [], "lock": []}
 lock = threading.Lock()
 
 
@@ -85,10 +85,14 @@ def read_prs():
 
 
 def read_merged():
-    day = time.strftime("%Y-%m-%d", time.gmtime())
-    out = run(["gh", "pr", "list", "--state", "merged", "--limit", "100", "--search", "merged:>=" + day,
+    # "Today" is the local day: the UTC date rolls over in the evening.
+    t = time.localtime()
+    start = time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1))
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(start))
+    out = run(["gh", "pr", "list", "--state", "merged", "--limit", "100", "--search", "merged:>=" + since,
                "--json", "number,title,mergedAt"])
-    return sorted(json.loads(out or "[]"), key=lambda p: p["mergedAt"], reverse=True)
+    rows = [p for p in json.loads(out or "[]") if p["mergedAt"] >= since]
+    return sorted(rows, key=lambda p: p["mergedAt"], reverse=True)
 
 
 def read_watchers():
@@ -144,38 +148,75 @@ def worktree_activity(path):
     return newest, dirty
 
 
-def read_agents(labels, containers):
+def stamp_done(labels, agents_file):
+    """When an agent first shows as done, remember the time next to the agents
+    file. The first run seeds every already-done agent with 0 (earlier days),
+    so only real transitions count as "done today"."""
+    if not agents_file:
+        return labels
+    side = agents_file + ".done.json"
+    try:
+        seen = json.load(open(side, encoding="utf-8"))
+    except (OSError, ValueError):
+        seen = {k: 0 for k, m in labels.items() if m.get("status") == "done"}
+        json.dump(seen, open(side, "w", encoding="utf-8"))
+    changed = False
+    for k, m in labels.items():
+        if m.get("status") == "done" and k not in seen:
+            seen[k] = int(time.time())
+            changed = True
+        if k in seen and not m.get("done_at") and seen[k]:
+            m["done_at"] = seen[k]
+    if changed:
+        json.dump(seen, open(side, "w", encoding="utf-8"))
+    return labels
+
+
+def read_agents(labels, containers, lock):
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=8) as ex:
-        return list(ex.map(lambda kv: one_agent(kv[0], kv[1], containers), labels.items()))
+        return list(ex.map(lambda kv: one_agent(kv[0], kv[1], containers, lock), labels.items()))
 
 
-def one_agent(aid, meta, containers):
-    if True:
-        path = os.path.join(ROOT, ".claude", "worktrees", "agent-" + meta.get("worktree", aid))
-        row = {"id": aid, "label": meta.get("label", aid), "track": meta.get("track", ""),
-               "declared": meta.get("status", "running"), "pr": meta.get("pr"),
-               "containers": [], "dirty": 0, "idle_seconds": None, "state": "unknown"}
-        mine = [c for c in containers if any(norm(path) in m or m.startswith(norm(path)) for m in c["mounts"])]
-        row["containers"] = [c["id"] for c in mine]
-        newest = 0.0
-        if os.path.isdir(path) and row["declared"] != "done":
-            newest, row["dirty"] = worktree_activity(path)
+def one_agent(aid, meta, containers, lock):
+    """One coordinator-session agent. The JSON file is the truth for what it
+    does and whether it is finished; the machine lock (build-slot.sh --list)
+    says whether it is using the machine or queued for it, which no file
+    activity can tell."""
+    d = meta.get("dir") or ("agent-" + meta.get("worktree", aid))
+    path = os.path.join(ROOT, ".claude", "worktrees", d)
+    frag = "/worktrees/" + d.lower()
+    row = {"id": aid, "label": meta.get("label", aid), "track": meta.get("track", ""),
+           "declared": meta.get("status", "running"), "pr": meta.get("pr"),
+           "model": meta.get("model"), "agent": meta.get("agent"), "doing": meta.get("doing"),
+           "branch": meta.get("branch"), "since": meta.get("since"), "done_at": meta.get("done_at"),
+           "containers": [], "dirty": 0, "idle_seconds": None, "state": "unknown", "lock": None}
+    mine = [c for c in containers if any(norm(path) in m or m.startswith(norm(path)) for m in c["mounts"])]
+    row["containers"] = [c["id"] for c in mine]
+    if row["declared"] in ("done", "paused"):
+        row["state"] = row["declared"]
+        return row
+    held = next((r for r in lock if frag in r["cwd"].lower()), None)
+    if held:
+        row["lock"] = {"role": held["role"], "prio": held["prio"], "start": held["start"], "cmd": held["cmd"][:120]}
+    if os.path.isdir(path):
+        if not row["since"]:
+            row["since"] = int(os.path.getctime(path))
+            row["since_src"] = "worktree"
+        newest, row["dirty"] = worktree_activity(path)
         if newest:
             row["idle_seconds"] = int(time.time() - newest)
-        if row["declared"] == "done":
-            row["state"] = "done"
-        elif row["declared"] == "paused":
-            row["state"] = "paused"
-        elif mine:
-            row["state"] = "building"
-        elif row["idle_seconds"] is not None and row["idle_seconds"] < WORKING_SECONDS:
-            row["state"] = "working"
-        elif not os.path.isdir(path):
-            row["state"] = "no worktree"
-        else:
-            row["state"] = "waiting"
-        return row
+    if held and held["role"] == "holds":
+        row["state"] = "building"
+    elif held:
+        row["state"] = "waiting_lock"
+    elif mine:
+        row["state"] = "building"
+    elif row["declared"] in ("working", "running"):
+        row["state"] = "working"
+    else:
+        row["state"] = "waiting"
+    return row
 
 
 def read_usage():
@@ -208,6 +249,41 @@ def read_orchestrator():
         return None
 
 
+def pr_of(task):
+    m = re.match(r"pr-(\d+)$", str(task or ""))
+    return int(m.group(1)) if m else None
+
+
+def clean_orch(o, open_prs):
+    """Drop what is no longer current: closed PRs, PR-less queue entries and
+    runs that stopped giving signs of life. open_prs is None when GitHub
+    could not be read, and then no PR is judged closed."""
+    if not isinstance(o, dict):
+        return o
+    o = dict(o)
+    now = time.time()
+    if open_prs is not None:
+        def gone(item):
+            n = pr_of(item.get("task")) if isinstance(item, dict) else None
+            return n is not None and n not in open_prs
+        o["train"] = [r for r in o.get("train") or [] if r.get("state") == "merged" or r.get("pr") in open_prs]
+        o["blocked"] = [b for b in o.get("blocked") or [] if not gone(b)]
+        o["waits_on_owner"] = [b for b in o.get("waits_on_owner") or [] if not gone(b)]
+        o["features"] = [f for f in o.get("features") or []
+                         if not (f.get("pr") and f["pr"] not in open_prs and f.get("state") != "merged")]
+        b = dict(o.get("builder") or {})
+        q = dict(b.get("queue") or {})
+        seen = []
+        for n in q.get("prs") or []:
+            if n in open_prs and n not in seen:
+                seen.append(n)
+        q["open_prs"] = seen
+        b["queue"] = q
+        o["builder"] = b
+    o["runs"] = [r for r in o.get("runs") or [] if now - (r.get("last_beat") or r.get("started") or now) < 1800]
+    return o
+
+
 def read_coordinator():
     """What the coordinator session (Claude in the terminal) says it is doing:
     <orchestrator root>/.harness/coordinator.json, written by the session."""
@@ -219,7 +295,7 @@ def read_coordinator():
 
 
 def refresh_loop(agents_file):
-    last_pr, prs, merged = 0, [], []
+    last_pr, prs, merged, gh_ok = 0, [], [], False
     while True:
         errors = []
         try:
@@ -227,6 +303,7 @@ def refresh_loop(agents_file):
                 prs = read_prs()
                 merged = read_merged()
                 last_pr = time.time()
+                gh_ok = True
         except Exception as e:
             errors.append("gh: %s" % e)
         try:
@@ -234,11 +311,14 @@ def refresh_loop(agents_file):
         except Exception as e:
             labels = {}
             errors.append("agents file: %s" % e)
+        stamp_done(labels, agents_file)
         containers = read_containers()
         watchers = read_watchers()
+        lk = read_lock(labels)
+        orch = clean_orch(read_orchestrator(), {p["number"] for p in prs} if gh_ok else None)
         with lock:
-            state.update(updated=int(time.time()), prs=prs, watchers=watchers, containers=containers, merged=merged, usage=read_usage(), orchestrator=read_orchestrator(), coordinator=read_coordinator())
-        agents = read_agents(labels, containers)
+            state.update(updated=int(time.time()), prs=prs, watchers=watchers, containers=containers, merged=merged, usage=read_usage(), orchestrator=orch, coordinator=read_coordinator(), lock=lk)
+        agents = read_agents(labels, containers, lk)
         with lock:
             state.update(updated=int(time.time()), agents=agents, prs=prs, merged=merged,
                          watchers=watchers, containers=containers, errors=errors)
@@ -347,11 +427,57 @@ def builder_log(d):
         return ""
 
 
+LOCK_RE = re.compile(r"^(holds|waits)\s+pid=(\d+)\s+kind=(\S+)\s+user=(\S+)\s+prio=(\d+)\s+start=(\d+)\s+cwd=(\S*)\s+cmd=(.*)$")
+_lock_cache = {"t": 0.0, "rows": []}
+
+
+def read_lock(labels):
+    """Parsed `build-slot.sh --list`, cached a few seconds: the holder first,
+    then the waiters in queue order, each with who owns it."""
+    if time.time() - _lock_cache["t"] > 6:
+        rows = []
+        for ln in heavy_lock_list():
+            m = LOCK_RE.match(ln.strip())
+            if m:
+                rows.append({"role": m.group(1), "pid": m.group(2), "prio": int(m.group(5)), "start": int(m.group(6)),
+                             "cwd": m.group(7), "cmd": m.group(8).strip()})
+        _lock_cache.update(t=time.time(), rows=rows)
+    rows = _lock_cache["rows"]
+    for r in rows:
+        low = r["cwd"].lower()
+        who = None
+        for aid, meta in labels.items():
+            d = (meta.get("dir") or ("agent-" + meta.get("worktree", aid))).lower()
+            if meta.get("status") not in ("done", "paused") and "/worktrees/" + d in low:
+                who = meta.get("label", aid)
+        if not who and "/.harness/ci" in low:
+            who = "Builder do orquestrador (CI local)"
+        if not who:
+            who = os.path.basename(r["cwd"].rstrip("/")) or "?"
+        r["who"] = who
+        r["builder"] = "/.harness/ci" in low
+    return rows
+
+
+def _find_slot_script():
+    # The lock script lives with the harness branch, which may not be the one
+    # this checkout is on: use the first worktree that has it.
+    for base in (ROOT, os.path.join(ROOT, ".claude", "worktrees", "harness-pr"), orch_root()):
+        f = os.path.join(base, "tools", "build-slot.sh")
+        if os.path.exists(f):
+            return f
+    return os.path.join(ROOT, "tools", "build-slot.sh")
+
+
+GIT_BASH = next((b for b in (r"C:\Program Files\Gitinash.exe", shutil.which("bash")) if b and os.path.exists(b)), None)
+SLOT_SCRIPT = _find_slot_script()
+
+
 def heavy_lock_list():
     """Who holds the machine-wide heavy lock and who waits (tools/build-slot.sh)."""
     try:
-        out = subprocess.run([shutil.which("bash") or "bash", os.path.join(ROOT, "tools", "build-slot.sh"), "--list"],
-                             capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run([GIT_BASH or "bash", SLOT_SCRIPT, "--list"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10).stdout
         return out.strip().splitlines()[:20]
     except (OSError, subprocess.SubprocessError):
         return []
@@ -363,8 +489,13 @@ def detail(kind, ident):
     if kind == "coord":
         c = read_coordinator() or {}
         return {"kind": "coord", "title": "Coordenador (Claude, sessão no terminal)", "coord": c}
+    if kind == "agent":
+        with lock:
+            a = next((x for x in state["agents"] if x["id"] == ident), None)
+            lk = list(state.get("lock") or [])
+        return {"kind": "agent", "title": (a or {}).get("label", ident), "agent": a, "lock": lk}
     if kind == "builder":
-        b = (read_orchestrator() or {}).get("builder") or {}
+        b = (state.get("orchestrator") or {}).get("builder") or {}
         return {"kind": "builder", "title": "Builder (build pesado em lote)", "builder": b,
                 "log": builder_log((b.get("running") or {}).get("dir")),
                 "lock": heavy_lock_list()}
