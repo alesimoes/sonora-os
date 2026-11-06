@@ -271,6 +271,9 @@ void RenderInPlace::work() {
         return "the plug-in chain did not play " + std::to_string(tap_->unplayed_frames()) +
                " frames of the range (it was starting, restarting or silent); nothing was kept";
     };
+    const auto lost_text = [](uint64_t frames) {
+        return "the render lost " + std::to_string(frames) + " frames to a full ring; nothing was kept";
+    };
     const auto fail = [&](const std::string& why) {
         r.error = why;
         r.writer.close();
@@ -290,6 +293,9 @@ void RenderInPlace::work() {
             const auto idle = std::chrono::duration<double>(std::chrono::steady_clock::now() - last).count();
             const bool stopped = session_.transport().state() == TransportState::Stopped;
             if ((seen && stopped && idle > 0.3) || (!seen && idle > 10.0)) {
+                // Frames the full ring dropped never arrive, so a roll that
+                // overran it ends here short of the length, not below.
+                if (tap_->lost_frames() != 0) return fail(lost_text(tap_->lost_frames()));
                 return fail(seen ? "the transport stopped before the end of the range"
                                  : "the transport never started to roll");
             }
@@ -328,8 +334,7 @@ void RenderInPlace::work() {
     // Any of these is a stretch of the file that is not the chain's output.
     if (tap_->unplayed_frames() != 0) return fail(unplayed_text());
     if (tap_->lost_frames() != 0) {
-        return fail("the render lost " + std::to_string(tap_->lost_frames()) +
-                    " frames to a full ring; nothing was kept");
+        return fail(lost_text(tap_->lost_frames()));
     }
     if (tap_->latency() != latency) {
         return fail("the chain's latency changed while it rendered; nothing was kept");

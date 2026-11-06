@@ -96,6 +96,10 @@ if(UNIX)
   add_executable(test_bounce tests/test_bounce.cpp)
   target_link_libraries(test_bounce PRIVATE sonora_control Threads::Threads)
   add_test(NAME bounce COMMAND test_bounce)
+  # Alone under `ctest -j`: its 10 s roll is driven at about 3.5 times real
+  # time into a tap that holds 2 s, so a worker starved for ~0.6 s by the
+  # other tests overruns it (2 of 25 runs beside the native renders).
+  set_tests_properties(bounce PROPERTIES RUN_SERIAL TRUE LABELS timing)
 
   # Track Freeze, Commit and Process Selection (ADR-0051): the print through
   # a chain with a declared latency, to the sample.
