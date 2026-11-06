@@ -55,6 +55,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <array>
 #include <atomic>
 #include <csignal>
 #include <chrono>
@@ -154,8 +155,44 @@ bool until(PluginScanner& s, const std::function<bool()>& pred, uint64_t ms, boo
     return pred();
 }
 
-bool scanned(PluginScanner& s, uint64_t ms = 10000) {
-    return until(s, [&] { return s.catalog()->scanned && s.idle(); }, ms);
+// Waits for a scan to end. Its children run at nice 10 and the idle I/O
+// class, by design (they must not take the CPU from the audio), so on a
+// loaded machine they are served last: under ThreadSanitizer and ctest -j a
+// cold scan of three probes outlasted a fixed 10 s, every probe started and
+// none answered yet. So the wait is bounded by the scan's progress, not by
+// the clock: it gives up once nothing has moved (no child started, no bundle
+// walked, no catalog published) for `idle_ms`. The default outlasts the
+// fixture's probe timeout, past which the scanner kills a child itself: a
+// scan still idle then is stuck, not slow. The cap only stops a scan that
+// moves for ever.
+bool scanned(PluginScanner& s, uint64_t idle_ms = 25000) {
+    const auto done = [&] { return s.catalog()->scanned && s.idle(); };
+    const auto mark = [&] {
+        return std::array<uint64_t, 4>{s.catalog()->serial, s.probes_started(), s.lists_started(),
+                                       s.fingerprints()};
+    };
+    const uint64_t cap = now_ms() + 300000;
+    s.exchange(false);
+    std::array<uint64_t, 4> seen = mark();
+    uint64_t moved = now_ms();
+    while (!done()) {
+        const uint64_t now = now_ms();
+        if (now - moved > idle_ms || now > cap) {
+            std::printf("  (scan stalled: serial %llu, probes %llu, lists %llu, fingerprints %llu, idle %d)\n",
+                        static_cast<unsigned long long>(seen[0]), static_cast<unsigned long long>(seen[1]),
+                        static_cast<unsigned long long>(seen[2]), static_cast<unsigned long long>(seen[3]),
+                        s.idle() ? 1 : 0);
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        s.exchange(false);
+        const std::array<uint64_t, 4> m = mark();
+        if (m != seen) {
+            seen = m;
+            moved = now_ms();
+        }
+    }
+    return true;
 }
 
 const api::PluginInfo* entry(PluginScanner& s, const std::string& id) {
