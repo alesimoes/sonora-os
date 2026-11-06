@@ -7,11 +7,11 @@ target_link_libraries(sonora_native_tube PUBLIC sonora_native_sdk PRIVATE sonora
 add_library(sonora_native_tube_suite STATIC tests/suite.cpp)
 target_link_libraries(sonora_native_tube_suite PUBLIC sonora_native_tube sonora_dsp_measure)
 
-sonora_native_quality_test(tube)
+sonora_native_quality_test(tube TIMING)
 # The SPICE comparison at three oversampled rates and the aliasing tones at
 # three rates and three qualities: one rate and the 1 kHz cases under
 # SONORA_DSP_QUICK=1 (PR CI, sanitizers), everything in the nightly run.
-set_tests_properties(native_tube PROPERTIES LABELS slow)
+set_property(TEST native_tube APPEND PROPERTY LABELS slow)  # appended: TIMING above adds "timing"
 
 # The SPICE references re-derived from their netlists, where ngspice is
 # installed (the sonora-plugins image): one ctest per case, so they run in

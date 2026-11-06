@@ -45,7 +45,7 @@ native_build() {
     return
   fi
   cmake --build "$ROOT/build" -j"$(nproc)"
-  ctest --test-dir "$ROOT/build" --output-on-failure
+  ctest --test-dir "$ROOT/build" --output-on-failure -j"$(nproc)"
 }
 
 if [[ "$(uname -s)" == "Linux" ]] && command -v cmake >/dev/null && \
@@ -91,6 +91,7 @@ fi
 # shellcheck disable=SC2016  # the script is expanded inside the container
 "$ROOT/tools/build-slot.sh" docker run --rm --ulimit memlock=-1:-1 \
   -e SONORA_STAGE_ONLY="$STAGE_ONLY" -e SONORA_JOBS="$JOBS" \
+  ${SONORA_DSP_QUICK:+-e SONORA_DSP_QUICK="$SONORA_DSP_QUICK"} \
   -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=10G "${BUILD_VOL[@]}" \
   -v sonora-ccache:/root/.ccache -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -lc '
   set -euo pipefail
@@ -115,5 +116,5 @@ fi
     exit 0
   fi
   cmake --build "$B" -j"$SONORA_JOBS"
-  ctest --test-dir "$B" --output-on-failure
+  ctest --test-dir "$B" --output-on-failure -j"$(nproc)"
 '
