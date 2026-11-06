@@ -32,6 +32,13 @@ Rectangle {
     // The master's loudness (LoudnessModel); null where it is not wired.
     property LoudnessModel loudness: null
     readonly property int auxCount: sends !== null ? sends.auxes.length : 0
+    // VCA masters and folders (ADR-0048): the strips' places along the
+    // window, a closed folder being one card and its tracks none.
+    readonly property var vcaList: mixer !== null ? mixer.vcas : []
+    readonly property int slotCount: mixer !== null ? mixer.slotCount : session.trackCount
+    function slotOf(i) {
+        return mixer !== null && i < mixer.trackSlots.length ? mixer.trackSlots[i] : i
+    }
     // Clicking the bank in use collapses the sends; the other one, or the
     // collapsed sends' switch, shows that bank.
     function pickSends(first) {
@@ -48,7 +55,7 @@ Rectangle {
     Text {
         id: note
         objectName: "mixNote"
-        anchors { left: parent.left; right: viewControls.left; top: parent.top; margins: Theme.space3; leftMargin: Theme.space4 }
+        anchors { left: parent.left; right: groupControls.left; top: parent.top; margins: Theme.space3; leftMargin: Theme.space4 }
         elide: Text.ElideRight
         text: (mix.inserts !== null && mix.inserts.pluginsDisabled
                ? "This engine hosts no plugins yet: inserts are kept with the session and do not run. "
@@ -56,6 +63,42 @@ Rectangle {
               + (mix.mixer !== null ? mix.mixer.note : "Mix state is kept with the session.")
         color: Theme.caution
         font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+    }
+    // Groups (ADR-0041): Group makes one of the selected tracks; the others
+    // act on the group of the selected track and say so when it is in none.
+    Row {
+        id: groupControls
+        objectName: "groupControls"
+        anchors { right: viewControls.left; rightMargin: Theme.space3; top: parent.top; topMargin: Theme.space1 }
+        spacing: 2
+        visible: mix.mixer !== null
+        width: visible ? implicitWidth : 0
+        readonly property int sel: mix.session.selectedTrack
+        readonly property int group: mix.mixer !== null && sel >= 0 && sel < mix.mixer.trackGroups.length
+                                     ? mix.mixer.trackGroups[sel] : -1
+        SButton {
+            objectName: "groupNew"
+            text: "Group"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.shell.invoke("group.new", -1)
+        }
+        SButton {
+            objectName: "groupSuspend"
+            text: "Suspend"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            active: groupControls.group >= 0 && mix.mixer.groupSuspended[groupControls.group] === true
+            onClicked: mix.shell.invoke("group.toggle_suspend", groupControls.sel)
+        }
+        SButton {
+            objectName: "groupMode"
+            text: groupControls.group >= 0 && mix.mixer.groupSummaries[groupControls.group].indexOf("Absolute") >= 0
+                  ? "Absolute" : "Relative"
+            implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.mixer.setGroupRelative(groupControls.sel, text === "Absolute")
+        }
+        SButton {
+            objectName: "groupDissolve"
+            text: "Ungroup"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.shell.invoke("group.dissolve", groupControls.sel)
+        }
     }
     // The views: which sections of a strip are drawn (MixModel, ui-design.md
     // "Mixer strip anatomy"). A collapsed section gives its height to the fader.
@@ -83,6 +126,18 @@ Rectangle {
             text: "Ins F-J"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
             active: mix.mixer !== null && mix.mixer.showInsertsFJ
             onClicked: mix.mixer.showInsertsFJ = !mix.mixer.showInsertsFJ
+        }
+        Item { width: Theme.space2; height: 1 }
+        // Of the selected tracks (ADR-0048); a refusal is held.
+        SButton {
+            objectName: "newVca"
+            text: "+ VCA"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.mixer.newVca("")
+        }
+        SButton {
+            objectName: "newFolder"
+            text: "Folder"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            onClicked: mix.mixer.newFolder("")
         }
         SButton {
             objectName: "viewLoudness"
@@ -148,7 +203,7 @@ Rectangle {
             leftMargin: Theme.space3; rightMargin: Theme.space3; topMargin: Theme.space2; bottomMargin: Theme.space3
         }
         clip: true
-        contentWidth: (mix.session.trackCount + mix.auxCount) * mix.stripWidth
+        contentWidth: (mix.slotCount + mix.auxCount + mix.vcaList.length) * mix.stripWidth
         contentHeight: height
         flickableDirection: Flickable.HorizontalFlick
         boundsBehavior: Flickable.StopAtBounds
@@ -180,7 +235,9 @@ Rectangle {
             ChannelStrip {
                 required property int index
                 required property string modelData
-                x: index * strips.stripWidth
+                readonly property int slot: mix.slotOf(index)
+                visible: slot >= 0
+                x: Math.max(slot, 0) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height
                 shell: mix.shell
@@ -201,7 +258,7 @@ Rectangle {
             AuxStrip {
                 required property int index
                 required property var modelData
-                x: (mix.session.trackCount + index) * strips.stripWidth
+                x: (mix.slotCount + index) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height
                 shell: mix.shell
@@ -209,6 +266,33 @@ Rectangle {
                 sends: mix.sends
                 mixer: mix.mixer
                 bus: index
+                info: modelData
+            }
+        }
+        Repeater {
+            model: mix.mixer !== null ? mix.mixer.folderCards : []
+            FolderCard {
+                required property var modelData
+                x: modelData.slot * strips.stripWidth
+                width: strips.stripWidth - 2
+                height: strips.height
+                mixer: mix.mixer
+                info: modelData
+            }
+        }
+        Repeater {
+            model: mix.vcaList
+            VcaStrip {
+                required property int index
+                required property var modelData
+                vcaIndex: index
+                faderTop: bus.faderZone.y
+                x: (mix.slotCount + mix.auxCount + index) * strips.stripWidth
+                width: strips.stripWidth - 2
+                height: strips.height
+                shell: mix.shell
+                session: mix.session
+                mixer: mix.mixer
                 info: modelData
             }
         }
@@ -271,7 +355,7 @@ Rectangle {
                 return { track: -1, slot: -1 }
             for (let i = 0; i < stripRepeater.count; ++i) {
                 const st = stripRepeater.itemAt(i)
-                if (st === null) continue
+                if (st === null || !st.visible) continue
                 const f = dragLayer.mapToItem(st.insertFrame, x, y)
                 if (f.x < 0 || f.y < 0 || f.x >= st.insertFrame.width || f.y >= st.insertFrame.height) continue
                 const col = st.insertColumn

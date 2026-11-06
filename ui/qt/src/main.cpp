@@ -667,6 +667,16 @@ int main(int argc, char** argv) {
     link_transport(model, session, transport);
     link_marker_locate(model, session);
     session.setLayoutsFile(default_layouts_file());
+    // Quick Swipe follows the key map the operator comes from (ADR-0031 §3):
+    // on under Logic's, off under Pro Tools'; a toggle holds until the profile changes.
+    QObject::connect(&model, &ShellModel::keymapChanged, &session,
+                     [&model, &session, last = QString()]() mutable {
+                         const QString now = model.profileName();
+                         if (now == last) return;
+                         last = now;
+                         session.controller().set_quick_swipe(
+                             now.contains(QStringLiteral("Logic"), Qt::CaseInsensitive));
+                     });
     ShellModel::PluginSinks plugin_sinks;
     plugin_sinks.catalog = [&inserts](const api::PluginCatalog& c) { inserts.onCatalog(c); };
     plugin_sinks.fault = [&inserts](uint64_t insert, const std::string& text) {

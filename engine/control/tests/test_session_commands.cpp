@@ -191,6 +191,50 @@ int test_arm_all_with_nothing_to_arm_is_refused() {
     return 0;
 }
 
+// ADR-0041: arming a track arms and disarms its group with it; a peer that
+// may not record is left alone, and a track outside the group is untouched.
+int test_arm_follows_the_group() {
+    Dir dir("sonora_test_session_commands_arm_group");
+    sonora::SessionConfig cfg;
+    cfg.dir = dir.path.string();
+    cfg.track_count = 4;
+    cfg.ring_seconds = 0.25;
+    sonora::Session s(cfg);
+    CHECK(s.create_dirs());
+    CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    sonora::install_session_commands(
+        reg, s, take, quit, nullptr, nullptr, nullptr,
+        [](std::size_t engine_track, std::string& why) {
+            if (engine_track != 2) return true;
+            why = "\"Keys\" is a MIDI track; this version records audio only";
+            return false;
+        },
+        nullptr, nullptr,
+        [](std::size_t engine_track) {
+            // Tracks 0, 1 and 2 are one group; 3 is alone.
+            if (engine_track > 2) return std::vector<std::size_t>{};
+            std::vector<std::size_t> peers;
+            for (std::size_t i = 0; i < 3; ++i) {
+                if (i != engine_track) peers.push_back(i);
+            }
+            return peers;
+        });
+    CommandContext first;
+    first.target = 0;
+    CHECK(reg.dispatch("track.toggle_arm", first) == DispatchResult::Ok);
+    CHECK(s.tracks()[0]->rec_armed() && s.tracks()[1]->rec_armed());
+    CHECK(!s.tracks()[2]->rec_armed() && !s.tracks()[3]->rec_armed());
+    CHECK(reg.dispatch("track.toggle_arm", first) == DispatchResult::Ok);
+    for (const auto& t : s.tracks()) CHECK(!t->rec_armed());
+    CommandContext alone;
+    alone.target = 3;
+    CHECK(reg.dispatch("track.toggle_arm", alone) == DispatchResult::Ok);
+    CHECK(s.tracks()[3]->rec_armed() && !s.tracks()[0]->rec_armed());
+    return 0;
+}
+
 // --- with a punch range (PunchFor) ------------------------------------------
 
 constexpr uint64_t kA = 3000, kB = 5000, kH = 1000;
@@ -519,12 +563,60 @@ int test_meters_reset_argument() {
     return 0;
 }
 
+// QuickPunch (ADR-0043): with the mode on, the record key punches in on the fly
+// and the next press punches out with the transport rolling, each pass a take
+// of its own; with it off a press during a take leaves the take alone.
+int test_quick_punch_record_key() {
+    Dir dir("sonora_test_session_commands_quick_punch");
+    const sonora::SessionConfig cfg = punch_config(dir);
+    sonora::Session s(cfg);
+    CHECK(s.create_dirs());
+    CommandRegistry reg;
+    int take = 1;
+    bool quit = false;
+    bool quick = false;
+    sonora::install_session_commands(reg, s, take, quit, nullptr, nullptr,
+                                     [](sonora::PunchRange&) { return false; }, nullptr,
+                                     nullptr, nullptr, nullptr, [&quick]() { return quick; });
+    s.disk().start();
+    s.tracks()[0]->set_rec_armed(true);
+    s.play();
+    roll_to(s, 640);
+
+    // Off: the second press leaves the take running.
+    CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+    CHECK(s.transport().state() == sonora::TransportState::Recording);
+    roll_to(s, s.transport().playhead() + 640);
+    CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+    CHECK(s.transport().state() == sonora::TransportState::Recording && take == 1);
+    CHECK(reg.dispatch("transport.punch") == DispatchResult::Ok);   // out, to start clean
+    CHECK(take == 2);
+
+    // On: in, out, in, out, rolling throughout.
+    quick = true;
+    roll_to(s, s.transport().playhead() + 128);
+    for (int pass = 0; pass < 2; ++pass) {
+        CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Recording);
+        roll_to(s, s.transport().playhead() + 640);
+        CHECK(reg.dispatch("transport.record") == DispatchResult::Ok);
+        CHECK(s.transport().state() == sonora::TransportState::Rolling);
+        roll_to(s, s.transport().playhead() + 128);
+    }
+    CHECK(take == 4);
+    CHECK(fs::exists(dir.path / "Audio Files" / "Audio 1_02.wav"));
+    CHECK(fs::exists(dir.path / "Audio Files" / "Audio 1_03.wav"));
+    return 0;
+}
+
 int main() {
     int failures = 0;
+    failures += test_quick_punch_record_key();
     failures += test_meters_reset_argument();
     failures += test_session_commands();
     failures += test_arming_locked_during_take();
     failures += test_arm_all_with_nothing_to_arm_is_refused();
+    failures += test_arm_follows_the_group();
     failures += test_record_rolling_past_the_punch_out_is_refused();
     failures += test_toggle_record_with_a_punch_range_punches();
     failures += test_punch_on_the_fly();

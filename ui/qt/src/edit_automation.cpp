@@ -23,20 +23,26 @@ std::string lane_label(const TrackEdit& t, AutomationParam p) {
 }  // namespace
 
 void EditController::refresh_rows() const {
-    if (autolanes_open_.empty()) {
+    if (autolanes_open_.empty() && comp_lanes_open_.empty()) {
         view_.tops.clear();
         view_.open.clear();
+        view_.lanes.clear();
         return;
     }
     const auto& ts = doc_.snapshot().edit->tracks;
     view_.tops.assign(ts.size() + 1, 0.0);
     view_.open.assign(ts.size(), 0);
+    view_.lanes.assign(ts.size(), 0);
     double y = 0;
     for (std::size_t i = 0; i < ts.size(); ++i) {
         view_.tops[i] = y;
         const bool open = autolanes_open_.count(ts[i]->id) != 0 && ts[i]->kind != TrackKind::Midi;
         view_.open[i] = open ? 1 : 0;
-        y += view_.track_height + (open ? kLaneCount * view_.autolane_height : 0.0);
+        view_.lanes[i] = comp_lanes_open_.count(ts[i]->id) != 0
+                             ? static_cast<std::uint8_t>(take_lane_ids(static_cast<int>(i)).size())
+                             : 0;
+        y += view_.track_height + (open ? kLaneCount * view_.autolane_height : 0.0) +
+             view_.lanes[i] * view_.comp_lane_height;
     }
     view_.tops[ts.size()] = y;
 }

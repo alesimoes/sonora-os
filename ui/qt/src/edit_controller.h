@@ -64,6 +64,30 @@ struct ViewState {
     double autolane_height = kAutolaneBaseHeight;
     std::vector<double> tops;
     std::vector<std::uint8_t> open;
+    // Take lanes (ADR-0031 §1, ADR-0049): a track's other playlists shown
+    // under its row, below its automation lanes, each `comp_lane_height`
+    // tall. `lanes[i]` is how many track i shows; empty when none does.
+    static constexpr double kCompLaneBaseHeight = 46.0;  // at wave_scale 1
+    double comp_lane_height = kCompLaneBaseHeight;
+    std::vector<std::uint8_t> lanes;
+    int lanes_shown(int index) const {
+        return index >= 0 && static_cast<std::size_t>(index) < lanes.size() ? lanes[index] : 0;
+    }
+    // The top of take lane `lane` (0 first) under track `index`.
+    double y_of_complane(int index, int lane) const {
+        return y_of_track(index) + track_height +
+               (autolanes_open(index) ? kLaneCount * autolane_height : 0.0) +
+               lane * comp_lane_height;
+    }
+    // The take lane under pixel `y`, -1 over the track's own row or its
+    // automation lanes.
+    int complane_at(int index, double y) const {
+        const int n = lanes_shown(index);
+        if (n == 0) return -1;
+        const double rel = y - y_of_complane(index, 0);
+        if (rel < 0) return -1;
+        return std::min(n - 1, static_cast<int>(rel / comp_lane_height));
+    }
 
     double x_of(model::Frames f) const { return (static_cast<double>(f) - scroll) / fpp; }
     model::Frames frame_at(double x) const;
@@ -115,11 +139,15 @@ struct Selection {
 };
 
 // FadeIn / FadeOut: the Smart Tool's top corners, as in Pro Tools.
-enum class HitZone { None, Lane, Body, Select, TrimStart, TrimEnd, FadeIn, FadeOut, Automation };
+enum class HitZone {
+    None, Lane, Body, Select, TrimStart, TrimEnd, FadeIn, FadeOut, Automation,
+    TakeLane   // a take lane under the track: Hit::lane, and its region if one is there
+};
 
 struct Hit {
     int track = -1;
     int autolane = -1;   // with HitZone::Automation
+    int lane = -1;       // with HitZone::TakeLane: an index into take_lane_ids()
     model::Id region = kNoId;
     HitZone zone = HitZone::None;
 };
@@ -128,8 +156,10 @@ struct Hit {
 // release turns it into one operation (timeline-model.md).
 struct Drag {
     // Point: a breakpoint added or moved; Stroke: the Pencil's line.
-    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut, Point, Stroke };
+    // Swipe: a range dragged across a take lane (`lane` its playlist).
+    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut, Point, Stroke, Swipe };
     Kind kind = Kind::None;
+    model::Id lane = 0;
     // An automation gesture: its lane (-1 for the others); the point it
     // holds (-1 for a new one) and where it would be left; or the stroke
     // drawn so far.
@@ -283,15 +313,23 @@ public:
     // Point `row` removed, one undo step.
     bool event_delete(std::size_t row, std::string& why);
     bool nudge(int direction, std::string& why);
+    // Spot mode: the selected region placed so that it starts exactly at
+    // `to`, typed, never snapped (Pro Tools' Spot dialog, start time). What
+    // it lands on is overwritten, as a drag in Slip does. Refused in Shuffle.
+    bool spot_region(model::Frames to, std::string& why);
+    // A click on a region in Spot mode leaves the region here for the
+    // window to ask where it starts; kNoId once taken, and when no click
+    // asked.
+    model::Id take_spot_request() { return std::exchange(spot_request_, kNoId); }
 
     // --- the clipboard (edit_clipboard.h) ---
     // On a selected region, or a time range on the selected tracks, every
     // track of it in the same compound. Each
     // edit is one compound, so one undo step labelled with its name; one
     // that needs more than model::kMaxCompoundMembers members is refused
-    // before anything is sent. Shuffle would ripple every later region,
-    // which waits for ShiftRegions, so Cut, Paste, Duplicate and Repeat
-    // refuse it.
+    // before anything is sent. In Shuffle, Clear and Cut close the gap, and
+    // Paste, Duplicate and Repeat open one, by moving every later region
+    // (ShiftRegions) inside the same compound.
     //
     // Copy changes no document and is no undo step, as in Pro Tools.
     bool copy(std::string& why);
@@ -448,6 +486,62 @@ public:
     bool rename_region(const std::string& name, std::string& why);
     // A palette index, or model::kTrackColour for the track's.
     bool set_region_colour(int colour, std::string& why);
+    // --- clip gain (edit_clip_gain.cpp) ---
+    // On the selected region, each one undo step. set_clip_gain is the
+    // region's own level in dB (-144 to +24); a nudge adds to it and is
+    // refused at the limit. A gain point sits at a timeline frame inside
+    // the region, `db` its level on top of the clip's; the first one also
+    // holds both ends at 0 dB. The line is stored in source frames.
+    bool set_clip_gain(float db, std::string& why);
+    bool nudge_clip_gain(float delta_db, std::string& why);
+    bool set_gain_point(model::Frames at, float db, std::string& why);
+    bool remove_gain_point(model::Frames at, std::string& why);
+    bool clear_gain_line(std::string& why);
+    // --- tempo (edit_tempo.cpp, ADR-0050) ---
+    // Tempo edits are session settings, outside the edit undo: each one is
+    // a SetSettings with the tempo map replaced, and tempo_undo / tempo_redo
+    // step through them on a stack of their own, emptied when the session is
+    // replaced or the map is changed by anyone else.
+    bool set_tempo(model::Frames at, float bpm, std::string& why);
+    // bpm_from <= 0 starts the ramp at the tempo in force at `from`.
+    bool ramp_tempo(model::Frames from, model::Frames to, float bpm_from, float bpm_to,
+                    std::string& why);
+    bool scale_tempo(model::Frames from, model::Frames to, double factor, std::string& why);
+    // The tempo change nearest `at`, the first excepted.
+    bool remove_tempo(model::Frames at, std::string& why);
+    // On the bar line nearest `near`.
+    bool set_meter(model::Frames near, std::uint32_t beats, std::uint32_t note, std::string& why);
+    bool tempo_undo(std::string& why);
+    bool tempo_redo(std::string& why);
+    // What the Tempo dialog and the tempo.edit command take, at the start of
+    // the range or else the insertion point:
+    //   "96"      the tempo becomes 96 bpm there
+    //   "120>90"  ramp from 120 to 90 over the range (">90": from the
+    //             tempo in force)
+    //   "x2"      the range at double the tempo ("x0.5": half)
+    //   "3/4"     a 3/4 bar starts on the nearest bar line
+    //   "remove"  the tempo change nearest the insertion point goes
+    bool edit_tempo(const std::string& text, std::string& why);
+    bool can_tempo_undo() const { return !tempo_undo_.empty(); }
+    bool can_tempo_redo() const { return !tempo_redo_.empty(); }
+    // The line's level (dB, 0 with none) at a timeline frame of `r`.
+    static float clip_line_db_at(const model::Region& r, model::Frames timeline_frame);
+    // --- clip groups, loops and sample edits (edit_clip_groups.cpp; ADR-0052) ---
+    // Group joins the clips the range selection touches on the selected track
+    // (two or more, none already grouped); Ungroup frees the selected clip's
+    // group. Loop lays `count` repeats after the selected clip, or after its
+    // group, taking out the repeats an earlier Loop laid; Unloop takes them
+    // out. A group moves as one (Move, Nudge): the same distance for every
+    // member, stopping at the session start. Each is one undo step.
+    bool group_clips(std::string& why);
+    bool ungroup_clip(std::string& why);
+    bool loop_clip(int count, std::string& why);
+    bool unloop_clip(std::string& why);
+    int loop_count() const { return loop_count_; }
+    // The engine's sample.edit argument for `verb` on the range selection,
+    // which must lie inside one clip; otherwise why not.
+    bool sample_edit_argument(const std::string& verb, const std::string& param,
+                              std::string& argument, std::string& why) const;
     // The palette index a region is drawn in: its own, else its track's.
     static int region_colour(const model::TrackEdit& t, const model::Region& r) {
         return r.colour == model::kTrackColour ? t.colour : r.colour;
@@ -469,6 +563,99 @@ public:
     // the pool, and undo brings them back.
     bool delete_unused_playlists(int track, std::string& why);
 
+    // --- take lanes and comping (edit_comping.cpp, ADR-0031, ADR-0049) ---
+    //
+    // A track's lanes are its playlists other than the active one (the
+    // comp). Showing them is how the operator looks at the session, so it
+    // is interface state, dropped when a session opens, like automation
+    // lanes. A range selected on a lane is the lane selection, apart from
+    // the selection every other edit acts on, so Cut or Clear never reach
+    // the comp through it. Copy to Main Playlist (a button on the lane, a
+    // key) swipes it onto the active playlist as one compound, one undo
+    // step; with Quick Swipe on, the gesture does it as the button comes
+    // up and the joins get a short crossfade, as Logic's does.
+    bool comp_lanes_shown(int track) const;
+    bool toggle_comp_lanes(int track, std::string& why);
+    // The track's lane playlists in their order (ids), and their names.
+    std::vector<model::Id> take_lane_ids(int track) const;
+    std::vector<std::string> take_lane_names(int track) const;
+    // Which lane of the active playlist's regions each was swiped from:
+    // the lane's index in take_lane_ids(), -1 for none (model::comp_origin).
+    int comp_origin_lane(int track, const model::Region& r) const;
+    struct LaneSelection {
+        int track = -1;          // display index
+        model::Id lane = 0;      // the playlist
+        model::Frames start = 0, end = 0;
+        bool valid() const { return lane != 0 && end > start; }
+    };
+    // The lane range selected, or one with valid() false: it also lapses
+    // when its playlist is the active one now or is gone.
+    LaneSelection lane_selection() const;
+    bool select_lane_range(int track, model::Id lane, model::Frames a, model::Frames b,
+                           std::string& why);
+    // A lane's region selected whole: the swipe a click makes.
+    bool select_lane_region(int track, model::Id lane, model::Id region, std::string& why);
+    bool quick_swipe() const { return quick_swipe_; }
+    void set_quick_swipe(bool on) { quick_swipe_ = on; }
+    // Copy Selection to Main Playlist. True with `why` set when the swipe went
+    // ahead but not all of it as asked: the joins that stayed hard cuts.
+    bool comp_copy_to_main(std::string& why);
+    // Pro Tools' Duplicate Playlist for comping, or Logic's new comp: a new
+    // empty playlist named "<active> comp" (numbered when taken) becomes the
+    // active one, so what was active is a take lane, and the lanes open.
+    // One undo step.
+    bool comp_new(int track, std::string& why);
+    // Consolidate's request: the track and the range of the selection (the
+    // selected region's span, or the range on the selected track), for
+    // `session.consolidate`; refused with a reason when there is none.
+    struct ConsolidateRequest {
+        model::Id track = 0;
+        model::Id playlist = 0;
+        model::Frames start = 0, end = 0;
+        std::string name;
+    };
+    bool consolidate_request(ConsolidateRequest& out, std::string& why) const;
+
+    // --- VCA masters and folders (ADR-0048) ---
+    // A VCA of `count` tracks from `first` down (the selected tracks): one
+    // SetVca, one undo step. `name` empty takes "VCA N". A track may be on
+    // several VCAs.
+    bool vca_new(int first, int count, const std::string& name, std::string& why);
+    // The VCA at `vca` (an index into snapshot().edit->vcas) holds the
+    // selected tracks instead of what it held.
+    bool vca_assign(int vca, int first, int count, std::string& why);
+    bool vca_remove(int vca, std::string& why);
+    // Not undoable: the VCA's fader and mute.
+    bool set_vca_gain(int vca, float db, std::string& why);
+    bool toggle_vca_mute(int vca, std::string& why);
+    // A folder of the selected tracks. A track already in one is refused by
+    // name, since a track is in one folder at most.
+    bool folder_new(int first, int count, const std::string& name, std::string& why);
+    // The folder `track` is in goes; the tracks stay where they are.
+    bool folder_dissolve(int track, std::string& why);
+    // Mute (or solo) every member of `track`'s folder, or release them when
+    // all were already: one Compound of SetMix.
+    bool folder_toggle(int track, bool solo, std::string& why);
+    // The index in snapshot().edit->folders of the folder `track` is in, or -1.
+    int folder_index(int track) const;
+    // --- mix and edit groups (ADR-0041) ---
+    // Group `count` tracks from `first` down (the selected tracks): one
+    // SetGroup, one undo step. `name` empty takes "Group N". `attrs` is
+    // model::kGroup* bits; a track already in a group is refused by name,
+    // since a track is in one group at most.
+    bool group_tracks(int first, int count, const std::string& name, std::uint8_t attrs,
+                      std::string& why);
+    // The group `track` is in goes; the tracks and their mix stay.
+    bool dissolve_group(int track, std::string& why);
+    // Pro Tools' suspend: the group stays and links nothing, or links again.
+    bool toggle_group_suspend(int track, std::string& why);
+    // Relative or Absolute volume for `track`'s group.
+    bool set_group_relative(int track, bool relative, std::string& why);
+    // Link or unlink one attribute (model::kGroup*) on `track`'s group.
+    bool toggle_group_attribute(int track, std::uint8_t attr, std::string& why);
+    // The index in snapshot().edit->groups of the group `track` is in, or -1.
+    int group_index(int track) const;
+
     // --- mix: not undoable, but still operations ---
     bool set_gain(int track, float db, std::string& why);
     bool set_pan(int track, float pan, std::string& why);
@@ -485,6 +672,9 @@ public:
     // not Input, so it goes to Input. Refused on a MIDI or instrument
     // track, whose engine track carries no audio of its own (ADR-0014 M-1).
     bool toggle_input_monitor(int track, std::string& why);
+    // TrackPunch (TrackMix::track_punch, ADR-0043): whether the armed track
+    // records in punch takes. Refused on a MIDI or instrument track.
+    bool toggle_track_punch(int track, std::string& why);
     // Off, Read, Touch, Latch, Write, Trim (Touch/Trim), Write/Trim and
     // round to Off: the selector's order. Pro Tools' own order is unverified
     // (brain/research/protools-logic-key-bindings.md has no automation modes).
@@ -498,6 +688,8 @@ public:
 
 private:
     bool submit(const model::Operation& op, std::string& why);
+    // The ids of `count` tracks from `first` down.
+    bool selected_ids(int first, int count, std::vector<model::Id>& out, std::string& why) const;
     bool refuse_in_mode(const char* what, std::string& why) const;
     model::Frames snapped(model::Frames f) const;
     void clamp_scroll();
@@ -505,6 +697,9 @@ private:
     // is off screen (as follow() pages).
     void reveal(model::Frames frame);
     const model::TrackEdit* track(int index) const;
+    // `m` as one SetMix, or with the members `m`'s group links as one
+    // Compound of SetMix: one revision, so the group moves together.
+    bool submit_mix(const model::TrackMix& m, std::string& why);
     // The region a command acts on: the selected one, else the one under
     // the insertion point on the selected track.
     const model::Region* target_region(int& track_index) const;
@@ -533,7 +728,12 @@ private:
                     std::string& why) const;
     // `span` becomes the selection: a range on its tracks, no region.
     void select_span(int first, int count, model::Frames a, model::Frames b);
+    // Refuses, by name, a gesture whose Shuffle form is not built (Strip
+    // Silence); the ones that are build their ripple (shuffle_shift).
     bool refuse_shuffle(const char* gesture, const char* nothing_was, std::string& why) const;
+    // Shuffle moves regions, not the automation under them: names the tracks
+    // whose lanes now sit out of step, as a held notice.
+    void note_shuffle_automation(const char* gesture, int first, int count);
     // One gesture's members as one Compound labelled `gesture`, refused
     // unsent past the member limit.
     bool submit_compound(std::vector<model::Member> members, const char* gesture,
@@ -546,6 +746,9 @@ private:
     void note_left_behind(const char* gesture, const std::vector<std::string>& lanes);
     // A region move, its lanes following when Automation Follows Edit is on.
     bool submit_move(const model::MoveRegion& op, std::string& why);
+    // The moves that carry a clip group with the clip `op` moves; false when
+    // the clip is in no group.
+    bool group_move_ops(const model::MoveRegion& op, std::vector<model::Member>& out) const;
 
     TimelineDocument& doc_;
     void refresh_rows() const;
@@ -565,6 +768,8 @@ private:
     bool automation_copy(bool cut, std::string& why);
     bool automation_paste(std::string& why);
     bool automation_clear(std::string& why);
+    bool press_takelane(const Hit& h, double x, std::string& why);
+    bool release_swipe(const Drag& d, std::string& why);
     bool press_autolane(const Hit& h, double x, double y, std::string& why);
     bool release_autolane(const Drag& d, std::string& why);
     void move_autolane(double x, double y);
@@ -580,17 +785,35 @@ private:
     Tool tool_ = Tool::Smart;
     GridValue grid_ = GridValue::Beat;
     Selection sel_;
+    struct TempoStep {
+        std::vector<model::TempoEntry> before, after;
+    };
+    bool submit_tempo(std::vector<model::TempoEntry> next, std::string& why);
+    bool tempo_step(bool undo, std::string& why);
+    std::vector<TempoStep> tempo_undo_, tempo_redo_;
     Drag drag_;
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
     Clipboard clipboard_;
     std::vector<AutomationClip> auto_clips_;
     std::set<model::Id> autolanes_open_;
+    std::set<model::Id> comp_lanes_open_;
+    LaneSelection lane_sel_;
+    bool quick_swipe_ = false;
     int event_lane_ = 0;
     int repeat_count_ = 1;
+    int loop_count_ = 3;
     Locator locate_;
     uint64_t clipboard_serial_ = 0;
+    model::Id spot_request_ = kNoId;
 };
+
+// The audio playlist `id` of `t`, or null.
+const model::Playlist* audio_playlist(const model::TrackEdit& t, model::Id id);
+// A track's take lanes: its playlists other than the active one, in their
+// order, at most kMaxTakeLanes; none on a MIDI track.
+constexpr std::size_t kMaxTakeLanes = 32;
+std::vector<model::Id> take_lanes_of(const model::TrackEdit& t);
 
 // --- fades, as the engine plays them ---
 //

@@ -169,6 +169,7 @@ enum class EngineEventKind {
     RecoveryOffer,
     SessionFolder,
     Latency,
+    Consolidate,   // protocol 52: take = progress in thousandths, insert = the track, flags = api::kConsolidate*
     Bounce,
     Render,
 };

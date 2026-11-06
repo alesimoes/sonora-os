@@ -26,6 +26,7 @@ add_library(sonora_control STATIC
   src/bounce_job.cpp
   src/render_in_place.cpp
   src/consolidate_job.cpp
+  src/sample_edit.cpp
   src/mix_planner.cpp
   src/space_measure.cpp
 )
@@ -88,6 +89,14 @@ if(UNIX)
   add_executable(test_consolidate tests/test_consolidate.cpp)
   target_link_libraries(test_consolidate PRIVATE sonora_control)
   add_test(NAME consolidate COMMAND test_consolidate)
+endif()
+
+# Sample editing (ADR-0052): the processes, the copy that leaves the take alone,
+# one compound, one undo step.
+if(UNIX)
+  add_executable(test_sample_edit tests/test_sample_edit.cpp)
+  target_link_libraries(test_sample_edit PRIVATE sonora_control)
+  add_test(NAME sample_edit COMMAND test_sample_edit)
 endif()
 
 # Bounce Mix's engine half (ui.mixer.bounce): the offline file is the mix,

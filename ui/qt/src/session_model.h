@@ -101,6 +101,8 @@ class SessionModel : public QObject {
     // the list that shows them (window.configurations).
     Q_PROPERTY(QVariantList windowConfigs READ windowConfigs NOTIFY windowConfigsChanged)
     Q_PROPERTY(bool windowConfigsOpen READ windowConfigsOpen NOTIFY windowConfigsOpenChanged)
+    // The tempo track under the Tempo and Meter rulers (tempo.track).
+    Q_PROPERTY(bool tempoTrackShown READ tempoTrackShown NOTIFY tempoTrackChanged)
     Q_PROPERTY(bool canPaste READ canPaste NOTIFY editStateChanged)
     Q_PROPERTY(QString editMode READ editMode NOTIFY editStateChanged)
     Q_PROPERTY(bool automationFollowsEdit READ automationFollowsEdit NOTIFY editStateChanged)
@@ -129,6 +131,9 @@ class SessionModel : public QObject {
     // once a lane is open, so the headers place themselves by `top`.
     Q_PROPERTY(QVariantList trackRows READ trackRows NOTIFY rowsChanged)
     Q_PROPERTY(qreal autolaneHeight READ autolaneHeight NOTIFY viewChanged)
+    Q_PROPERTY(qreal compLaneHeight READ compLaneHeight NOTIFY viewChanged)
+    Q_PROPERTY(bool quickSwipe READ quickSwipe NOTIFY editStateChanged)
+    Q_PROPERTY(QVariantMap laneSelection READ laneSelection NOTIFY selectionChanged)
     // The lanes a disclosed track shows, top to bottom (kLaneCount names).
     Q_PROPERTY(QStringList autolaneNames READ autolaneNames CONSTANT)
     Q_PROPERTY(QList<bool> mutes READ mutes NOTIFY mixChanged)
@@ -355,6 +360,11 @@ public:
     QStringList playlistNames() const;
     QVariantList trackRows() const;
     qreal autolaneHeight() const { return ctl_.view().autolane_height; }
+    qreal compLaneHeight() const { return ctl_.view().comp_lane_height; }
+    bool quickSwipe() const { return ctl_.quick_swipe(); }
+    // The range selected on a take lane: {track, lane (its index in the
+    // track's laneNames), ready}, for the lane's Copy to Main button.
+    QVariantMap laneSelection() const;
     QStringList autolaneNames() const;
     // The track's playlists in their order, for its selector's menu.
     Q_INVOKABLE QStringList trackPlaylists(int track) const;
@@ -389,6 +399,7 @@ public:
     Q_INVOKABLE bool eventEdit(int row, const QString& time, const QString& value);
     Q_INVOKABLE bool eventDelete(int row);
     bool latencyOpen() const { return latency_open_; }
+    bool tempoTrackShown() const { return tempo_track_; }
     bool bounceOpen() const { return bounce_open_; }
     Q_INVOKABLE void setBounceOpen(bool on);
     bool preferencesOpen() const { return prefs_open_; }
@@ -629,6 +640,10 @@ signals:
     // A recalled configuration moved the floating windows: read
     // windowPlace() again for each.
     void windowPlacesRecalled();
+    void tempoTrackChanged();
+    // tempo.edit without a text: the dialog opens offering the tempo in
+    // force at the range start or the insertion point.
+    void tempoRequested(const QString& current);
     // marker.add with no name, stopped: the window asks for one, offering
     // `name`, and sends marker.add again with it. `what` says where the
     // marker goes ("at 5|1|000", "from 5|1|000 to 9|1|000").
@@ -645,6 +660,10 @@ signals:
     // edit.repeat again with it. `what` says what one copy is ("2.000 s of
     // Gtr"), so the number is asked about something the operator can see.
     void repeatRequested(int count, const QString& what);
+    // A click on a region in Spot mode, or edit.spot with no time: the window
+    // asks where `name` starts, offering `start` in the main counter's
+    // format, and sends edit.spot again with the time typed.
+    void spotRequested(const QString& name, const QString& start);
     // track.new without a count: the window asks how many, offering 1.
     void newTracksRequested();
     // track.playlist_rename without a name: the window asks, offering the
@@ -657,6 +676,9 @@ signals:
     // the track (or, -1, the selected region), its colour marked; `current`
     // is a palette index, or -1 for a region wearing its track's.
     void colourRequested(int track, int current);
+    // clip.gain without a level: the dialog opens on the selected clip's
+    // current gain in dB.
+    void clipGainRequested(double current);
     void trackRefusalChanged();
     // app.save_as or app.save_copy_in without a name: the window asks for
     // one, offering `name` (the first free one), and says where it goes.
@@ -693,6 +715,9 @@ private:
     // Re-publishes what changed since the last call and marks the items.
     void sync();
     bool run(bool ok, const std::string& why);
+    // Asks where the selected region starts (spotRequested); refused when
+    // none is selected.
+    bool askSpot();
     bool setRollText(bool pre, const QString& text);
     void updateCounters(bool force);
     // The save itself, once the document holds what the file must;
@@ -789,6 +814,7 @@ private:
     WindowLayouts layouts_;
     QString layouts_file_;
     std::function<void(bool)> transport_open_hook_;
+    bool tempo_track_ = false;
 
     QVariantList repairs_;
     void setRepairs(QVariantList r);
@@ -833,6 +859,7 @@ private:
     ViewState seen_view_;
     bool seen_view_valid_ = false;
     Drag seen_drag_;
+    EditController::LaneSelection seen_lane_;
 };
 
 }  // namespace sonora::ui

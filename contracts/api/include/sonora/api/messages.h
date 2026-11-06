@@ -161,6 +161,34 @@ namespace sonora::api {
 // 42 (ADR-0013 amendment of 2026-11-03, loudness; follows 41): the command
 //   meters.reset, and state block layout 8 carries the meters' loudness.
 //   A version-41 engine answers the command NotImplemented.
+// 48 (the session-model train: ADR-0041 groups, ADR-0042 clip gain, ADR-0043
+//   record modes, one bump for the three; follows 42, 43 to 47 are other
+//   work's): new operation kinds SetGroup, RemoveGroup and SetRegionGain; an
+//   edit state in the undo window carries "groups" and a region "gain_line";
+//   SetSettings carries transport.input_only, rolls_on and quick_punch and an
+//   audio track's mix track_punch (undo window format 16, session format 19);
+//   the commands group.new, group.dissolve, group.toggle_suspend, clip.gain,
+//   transport.toggle_input_only, transport.toggle_pre_post_roll,
+//   transport.toggle_quick_punch (engine) and track.toggle_track_punch
+//   (interface). A version-42 peer refuses the operations, the keys and the
+//   window, and answers the commands NotImplemented.
+// 51 (ADR-0048, VCA masters and folders): new operation kinds SetVca, RemoveVca,
+//   SetVcaMix, SetFolder and RemoveFolder, the undo window carries "vcas",
+//   "folders" and "vca_mix" (window format 17, session format 20), and the
+//   commands vca.new, vca.delete, folder.new and folder.dissolve.
+// 52 (the comping interface; follows 48): the interface commands comp.*
+//   (swipe, copy to main, lane view), which a version-48 peer does not know.
+//   Consolidate itself landed on main as 63.
+// 57 (ADR-0052 clip groups, loops and sample edits, on top of 52's consolidate and comping; follows 48, 49 to 56 are
+//   other work's): new operation kinds SetClipGroup and SetRegionSources; a
+//   region in an operation and in the undo window carries "clip_group" and
+//   "loop" (window format 20, session format 24); the commands clip.group,
+//   clip.ungroup, clip.loop, clip.unloop and sample.* (interface) and
+//   sample.edit (engine). A version-48 peer refuses the operations and the
+//   keys, and answers sample.edit NotImplemented.
+// 59 (ADR-0009 update of 2026-11-04, Shuffle): the operation kind ShiftRegions, the
+//   ripple Shuffle's Clear, Cut, Paste, Duplicate and Repeat end with. A
+//   version-42 peer's op decoder refuses the kind.
 // 49 (ui.mixer.bounce; follows 48, the highest any open PR reserved when
 //   this was cut): the commands mix.bounce and mix.bounce_cancel, the
 //   capability "mix.bounce", and EventKind::Bounce, which a version-42
@@ -191,7 +219,10 @@ namespace sonora::api {
 //   refused at Hello, as for every bump, so no half-understood catalog is read.
 // 66 (editing-ui bundle): the changes numbered 61 to 63 above landed together
 //   on top of 65; a peer of 65 or lower is refused at Hello.
-constexpr uint32_t kProtocolVersion = 66;
+// 67 (session-model bundle union; 48, 51, 52, 57 and 59 above were numbered on
+//   its branch, renumbered after main took 66): ShiftRegions, Shuffle ripple,
+//   groups, clip gain, record modes, VCAs, folders, clip groups and loops.
+constexpr uint32_t kProtocolVersion = 67;
 
 // ModelAction::Load's file, when it starts with this and names a template's
 // session file: the engine makes a new Untitled folder in its sessions

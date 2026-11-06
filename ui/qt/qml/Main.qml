@@ -355,6 +355,40 @@ Rectangle {
                     font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                 }
             }
+            // Consolidate (ADR-0031 §6.1): the render's progress while it runs,
+            // and a failure or refusal kept until dismissed, not the status
+            // line that clears in 2.5 s.
+            Row {
+                objectName: "consolidateNotice"
+                visible: root.shell.consolidateText.length > 0
+                width: footerColumn.width
+                spacing: Theme.space2
+                SButton {
+                    id: dismissConsolidate
+                    objectName: "dismissConsolidate"
+                    visible: !root.shell.consolidateRunning
+                    text: "Dismiss"
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    onClicked: root.shell.dismissConsolidate()
+                }
+                SButton {
+                    objectName: "cancelConsolidate"
+                    visible: root.shell.consolidateRunning
+                    text: "Cancel"
+                    implicitHeight: 18
+                    fontPx: Theme.textCaption
+                    onClicked: root.shell.invoke("session.consolidate_cancel", -1)
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width - parent.spacing - dismissConsolidate.width
+                    wrapMode: Text.Wrap
+                    text: (root.shell.consolidateFailed ? "! " : "") + root.shell.consolidateText
+                    color: root.shell.consolidateFailed ? Theme.caution : Theme.textSecondary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+                }
+            }
             // Render in place (ADR-0051): progress with a Cancel while it
             // runs, then how it ended, kept until dismissed or the next one.
             Row {
@@ -1311,6 +1345,23 @@ Rectangle {
                     { name: "", label: "", command: "", on: false },
                     { name: "editRenameRegion", label: "Rename Region…", command: "region.rename", on: true },
                     { name: "editRegionColour", label: "Region Colour…", command: "region.colour", on: true },
+                    { name: "editClipGain", label: "Clip Gain…", command: "clip.gain", on: true },
+                    { name: "editTempo", label: "Tempo…", command: "tempo.edit", on: true },
+                    { name: "editTempoUndo", label: "Undo Tempo", command: "tempo.undo", on: true },
+                    { name: "editTempoRedo", label: "Redo Tempo", command: "tempo.redo", on: true },
+                    { name: "editTempoTrack", label: "Tempo Track", command: "tempo.track", on: true },
+                    { name: "", label: "", command: "", on: false },
+                    { name: "editGroupClips", label: "Group Clips", command: "clip.group", on: true },
+                    { name: "editUngroupClips", label: "Ungroup Clips", command: "clip.ungroup", on: true },
+                    { name: "editLoopClip", label: "Loop Clip", command: "clip.loop", on: true },
+                    { name: "editUnloopClip", label: "Unloop Clip", command: "clip.unloop", on: true },
+                    { name: "", label: "", command: "", on: false },
+                    { name: "editSampleRepair", label: "Repair Selected Samples", command: "sample.repair", on: true },
+                    { name: "editSampleSilence", label: "Silence Selected Samples", command: "sample.silence", on: true },
+                    { name: "editSampleReverse", label: "Reverse Selected Samples", command: "sample.reverse", on: true },
+                    { name: "editSampleInvert", label: "Invert Selected Samples", command: "sample.invert", on: true },
+                    { name: "editSampleFadeIn", label: "Fade In Selected Samples", command: "sample.fade_in", on: true },
+                    { name: "editSampleFadeOut", label: "Fade Out Selected Samples", command: "sample.fade_out", on: true },
                     { name: "", label: "", command: "", on: false },
                     { name: "editSelectAll", label: "Select All", command: "edit.select_all", on: true },
                     { name: "", label: "", command: "", on: false },
@@ -1709,6 +1760,9 @@ Rectangle {
         }
     }
 
+    ClipGainPanel { id: clipGainPanel; shell: root.shell }
+    TempoPanel { id: tempoPanel; shell: root.shell }
+
     // --- Rename Track, Rename Region -----------------------------------------------
     // Asked for by track.rename or region.rename with no name (a double-click
     // on a track name or on a region with the Grabber does the same): the
@@ -1826,7 +1880,7 @@ Rectangle {
         anchors.fill: parent
         visible: colourPalette.visible
         z: 9
-        onClicked: colourPalette.visible = false
+        onClicked: colourPalette.close()
     }
     Rectangle {
         id: colourPalette
@@ -1849,12 +1903,22 @@ Rectangle {
             current = c
             problem = ""
             visible = true
+            forceActiveFocus()
+            root.shell.setTextEntry(true)
+        }
+        function close() {
+            visible = false
+            focus = false
+            root.shell.setTextEntry(false)
         }
         function choose(argument) {
             if (root.shell.invokeWith(track >= 0 ? "track.colour" : "region.colour", track, argument))
-                visible = false
+                close()
             else problem = root.shell.statusText
         }
+        // Escape closes it as it does every other dialog; with no text field
+        // of its own, the palette takes the keyboard while it is open.
+        Keys.onEscapePressed: colourPalette.close()
 
         Column {
             id: paletteColumn
@@ -1932,7 +1996,7 @@ Rectangle {
                     objectName: "paletteClose"
                     text: "Close"
                     implicitHeight: 24
-                    onClicked: colourPalette.visible = false
+                    onClicked: colourPalette.close()
                 }
             }
         }
@@ -2112,6 +2176,117 @@ Rectangle {
                     implicitHeight: 24
                     active: true
                     onClicked: repeatPanel.accept()
+                }
+            }
+        }
+    }
+
+    // --- Spot: where a region starts ---------------------------------------------
+    // Pro Tools' Spot mode: a click on a region, or edit.spot with no time,
+    // asks for its start in the main counter's format. OK and Return send
+    // edit.spot with the text through the same router; a refused time leaves
+    // the dialog open with the reason on the status line.
+    MouseArea {
+        anchors.fill: parent
+        visible: spotPanel.visible
+        z: 9
+        onClicked: spotPanel.close()
+    }
+    Rectangle {
+        id: spotPanel
+        objectName: "spotPanel"
+        property string regionName
+        visible: false
+        z: 10
+        anchors.centerIn: parent
+        width: 340
+        height: spotColumn.implicitHeight + 2 * Theme.space4
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        MouseArea { anchors.fill: parent }
+
+        function show(name, start) {
+            spotPanel.regionName = name
+            spotInput.text = start
+            visible = true
+            spotInput.forceActiveFocus()
+            spotInput.selectAll()
+        }
+        function close() {
+            visible = false
+            spotInput.focus = false
+            root.shell.setTextEntry(false)
+        }
+        function accept() {
+            if (root.shell.invokeWith("edit.spot", -1, spotInput.text)) close()
+        }
+
+        Column {
+            id: spotColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space4 }
+            spacing: Theme.space2
+
+            Text {
+                text: "Spot"
+                color: Theme.text
+                font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
+            }
+            Text {
+                objectName: "spotWhat"
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Where " + spotPanel.regionName + " starts. What it lands on is replaced."
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            Row {
+                spacing: Theme.space2
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Start"
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                }
+                Rectangle {
+                    width: 150
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.window
+                    border.color: spotInput.activeFocus ? Theme.accent : Theme.borderStrong
+                    TextInput {
+                        id: spotInput
+                        objectName: "spotInput"
+                        anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                        horizontalAlignment: TextInput.AlignRight
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.selectionFill
+                        selectedTextColor: Theme.text
+                        font { family: Theme.fontFamily; pixelSize: Theme.textBody; features: { "tnum": 1 } }
+                        onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                        Keys.onEscapePressed: spotPanel.close()
+                        Keys.onReturnPressed: spotPanel.accept()
+                        Keys.onEnterPressed: spotPanel.accept()
+                    }
+                }
+            }
+            Row {
+                anchors.right: parent.right
+                spacing: Theme.space2
+                SButton {
+                    objectName: "spotCancel"
+                    text: "Cancel"
+                    implicitHeight: 24
+                    onClicked: spotPanel.close()
+                }
+                SButton {
+                    objectName: "spotOk"
+                    text: "OK"
+                    implicitHeight: 24
+                    active: true
+                    onClicked: spotPanel.accept()
                 }
             }
         }
@@ -2325,6 +2500,7 @@ Rectangle {
         function onRefused(why) { root.shell.say(why) }
         function onNotice(text) { root.shell.say(text) }
         function onRepeatRequested(count, what) { repeatPanel.show(count, what) }
+        function onSpotRequested(name, start) { spotPanel.show(name, start) }
         function onNewTracksRequested() { newTracksPanel.show() }
         function onSaveAsRequested(copy, name, where) { saveAsPanel.show(copy, name, where) }
         function onSaveAsTemplateRequested(name, where) { saveAsPanel.showTemplate(name, where) }
@@ -2333,6 +2509,8 @@ Rectangle {
         function onPlaylistRenameRequested(track, current) { playlistRenamePanel.show(track, current) }
         function onNameRequested(track, current) { namePanel.show(track, current) }
         function onColourRequested(track, current) { colourPalette.show(track, current) }
+        function onClipGainRequested(current) { clipGainPanel.show(current) }
+        function onTempoRequested(current) { tempoPanel.show(current) }
         function onMarkerRequested(name, what, range) { markerPanel.show(name, what, range) }
     }
 }

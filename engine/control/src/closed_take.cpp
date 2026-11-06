@@ -785,7 +785,8 @@ bool document_loop(const model::Snapshot& document, uint32_t latency, LoopRange&
     // as a record mode").
     if (!t.loop_record || a < 0 || b <= a) return false;
     // ADR-0016 C3: Pro Tools keeps loop record and QuickPunch apart.
-    if (t.punch[0] >= 0 && t.punch[1] > t.punch[0]) {
+    // QuickPunch uses no range, so a stale one is no conflict (ADR-0043).
+    if (!t.quick_punch && t.punch[0] >= 0 && t.punch[1] > t.punch[0]) {
         refusal = "loop record and punch cannot run together: the loop is from " +
                   frame_text(static_cast<uint64_t>(a)) + " to " +
                   frame_text(static_cast<uint64_t>(b)) + " and the punch from " +
@@ -797,7 +798,9 @@ bool document_loop(const model::Snapshot& document, uint32_t latency, LoopRange&
     const model::Frames x = std::clamp<model::Frames>(t.punch_crossfade, 0, UINT32_MAX);
     const model::Frames h =
         std::max<model::Frames>(x, static_cast<model::Frames>(document.settings.sample_rate));
-    const model::Frames pre = std::max<model::Frames>(t.pre_roll, 0);
+    // Pre/Post-Roll off (ADR-0043): the rolls are kept in the document and
+    // not used.
+    const model::Frames pre = t.rolls_on ? std::max<model::Frames>(t.pre_roll, 0) : 0;
     out = LoopRange{};
     out.from = static_cast<uint64_t>(a);
     out.to = static_cast<uint64_t>(b);
@@ -811,7 +814,8 @@ bool document_punch(const model::Snapshot& document, PunchRange& out) {
     const auto& t = document.settings.transport;
     const model::Frames a = t.punch[0];
     const model::Frames b = t.punch[1];
-    if (a < 0 || b <= a) return false;
+    // QuickPunch (ADR-0043) punches on the fly and uses no range.
+    if (t.quick_punch || a < 0 || b <= a) return false;
     // H = max(punch_crossfade, 1 s): timeline-model.md, "Punch in".
     const model::Frames x = std::clamp<model::Frames>(t.punch_crossfade, 0, UINT32_MAX);
     const model::Frames h =
@@ -824,8 +828,8 @@ bool document_punch(const model::Snapshot& document, PunchRange& out) {
     out.crossfade = static_cast<uint32_t>(x);
     // The shape session-format.md gives the punch crossfade.
     out.shape = FadeCurve::EqualPower;
-    const model::Frames pre = std::max<model::Frames>(t.pre_roll, 0);
-    const model::Frames post = std::max<model::Frames>(t.post_roll, 0);
+    const model::Frames pre = t.rolls_on ? std::max<model::Frames>(t.pre_roll, 0) : 0;
+    const model::Frames post = t.rolls_on ? std::max<model::Frames>(t.post_roll, 0) : 0;
     out.start = static_cast<uint64_t>(a > pre ? a - pre : 0);
     out.roll_end = static_cast<uint64_t>(b) + static_cast<uint64_t>(post);
     return true;

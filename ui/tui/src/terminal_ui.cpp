@@ -209,6 +209,9 @@ void TerminalView::tick(uint64_t /*now_ns*/) {
                 // Measured and set from the Qt interface's Latency window or
                 // --measure-latency; the engine says L at start on stderr.
                 break;
+            case api::EventKind::Consolidate:
+                // The terminal interface has no selection to consolidate.
+                break;
             case api::EventKind::Bounce:
                 // Started from the Qt interface's window; here only how it
                 // ended is worth a line.

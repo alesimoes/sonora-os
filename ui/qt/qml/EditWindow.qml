@@ -206,8 +206,8 @@ Item {
         }
         // Tempo and Meter, from the session's tempo map: what the bars and
         // the grid above and below are read through. A click puts the
-        // insertion point there, as on the time rulers; editing a change is
-        // still to come (BACKLOG Track 3 item 3).
+        // insertion point there, as on the time rulers; a change is edited
+        // with Tempo… in the Edit menu.
         Repeater {
             model: ["Tempo", "Meter"]
             Item {
@@ -236,6 +236,36 @@ Item {
                     kind: index
                     MouseArea { anchors.fill: parent; onClicked: (m) => edit.session.rulerClick(m.x) }
                 }
+            }
+        }
+        // The tempo track (tempo.track): the map as a line, a ramp a slope.
+        // Edited with Tempo… (tempo.edit) at the insertion point or on the
+        // selected range; a click puts the insertion point there.
+        Item {
+            objectName: "tempoTrack"
+            visible: edit.session.tempoTrackShown
+            width: rulers.width
+            height: visible ? 56 : 0
+            Rectangle {
+                width: Theme.trackHeaderWidth; height: parent.height
+                color: Theme.panel
+                Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom } width: 1; color: Theme.borderSubtle }
+                Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: Theme.borderSubtle }
+                Text {
+                    anchors { right: parent.right; rightMargin: Theme.space2; verticalCenter: parent.verticalCenter }
+                    text: "Tempo Track"
+                    color: Theme.textSecondary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+                }
+            }
+            ConductorRuler {
+                objectName: "tempoTrackLine"
+                x: Theme.trackHeaderWidth
+                width: parent.width - Theme.trackHeaderWidth
+                height: parent.height
+                session: edit.session
+                kind: 2
+                MouseArea { anchors.fill: parent; onClicked: (m) => edit.session.rulerClick(m.x) }
             }
         }
         // Markers: a click on one recalls it, Alt-click clears it, as
@@ -349,7 +379,8 @@ Item {
                     Text {
                         id: headerName
                         x: Theme.space3; y: Theme.space2
-                        width: (parent.width - 2 * Theme.space3 - 14) * 0.45
+                        // Narrower where the takes button needs the room.
+                        width: (parent.width - 2 * Theme.space3 - 14) * ((header.row.takes || 0) > 0 ? 0.34 : 0.45)
                         elide: Text.ElideRight
                         text: header.modelData
                         color: header.selected ? Theme.text : Theme.textSecondary
@@ -372,10 +403,12 @@ Item {
                     // Pro Tools' playlist selector: the active playlist's
                     // name; a click opens the playlist menu on this track.
                     SButton {
+                        id: playlistSelector
                         objectName: "playlistSelector" + header.index
                         x: headerName.x + headerName.width + Theme.space1
                         y: Theme.space2 - 2
-                        width: parent.width - x - Theme.space3 - 14 - 24
+                        width: parent.width - x - Theme.space3 - 14 - 24 -
+                               ((header.row.takes || 0) > 0 ? 32 : 0)
                         implicitHeight: 20
                         bold: false
                         fontPx: Theme.textCaption
@@ -386,6 +419,21 @@ Item {
                             const p = mapToItem(null, 0, height)
                             edit.playlistMenuRequested(header.index, p.x, p.y)
                         }
+                    }
+                    // The track's other playlists, the takes of a comp: a click
+                    // shows them as lanes under the track (ADR-0031, ADR-0049).
+                    // Only where there are takes, so a track without any keeps
+                    // its header as it was.
+                    SButton {
+                        objectName: "takes" + header.index
+                        visible: (header.row.takes || 0) > 0
+                        x: playlistSelector.x + playlistSelector.width + Theme.space1
+                        y: Theme.space2 - 2
+                        implicitWidth: 28; implicitHeight: 20
+                        fontPx: Theme.textCaption
+                        active: header.row.lanesShown === true
+                        text: "\u2261 " + (header.row.takes || 0)
+                        onClicked: edit.shell.invoke("comp.toggle_lanes", header.index)
                     }
                     Row {
                         x: Theme.space3
@@ -505,6 +553,80 @@ Item {
                                 text: (laneBlock.modelData.captions || [])[laneHeader.index] || ""
                                 color: Theme.textTertiary
                                 font { family: Theme.fontFamily; pixelSize: Theme.textCaption; features: { "tnum": 1 } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // The take lanes under a track (ADR-0031 §1): one row for each of its
+        // other playlists, the name and the button that copies the range
+        // selected on the lane to the main playlist. The lane itself is
+        // drawn by the timeline, level with this name.
+        Item {
+            id: takeHeaders
+            width: Theme.trackHeaderWidth
+            height: parent.height
+            clip: true
+            Repeater {
+                model: edit.session.trackRows
+                Item {
+                    id: takeBlock
+                    required property int index
+                    required property var modelData
+                    visible: modelData.lanesShown === true
+                    y: modelData.top + edit.session.trackHeight + modelData.lanesTop - edit.session.scrollY
+                    width: takeHeaders.width
+                    height: (modelData.laneNames || []).length * edit.session.compLaneHeight
+                    Repeater {
+                        model: takeBlock.modelData.laneNames || []
+                        Rectangle {
+                            id: takeHeader
+                            required property int index
+                            required property string modelData
+                            readonly property bool ready: edit.session.laneSelection.ready === true &&
+                                edit.session.laneSelection.track === takeBlock.index &&
+                                edit.session.laneSelection.lane === index
+                            objectName: "takeHeader" + takeBlock.index + "_" + index
+                            y: index * edit.session.compLaneHeight
+                            width: takeBlock.width
+                            height: edit.session.compLaneHeight
+                            color: Theme.sunken
+                            Rectangle { width: 3; height: parent.height - 2; color: Theme.accent }
+                            Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: Theme.borderSubtle }
+                            Rectangle { anchors { right: parent.right; top: parent.top; bottom: parent.bottom } width: 1; color: Theme.borderSubtle }
+                            Text {
+                                x: Theme.space3; y: Theme.space2
+                                width: parent.width - 2 * Theme.space3 - toMain.width - Theme.space1
+                                elide: Text.ElideRight
+                                text: takeHeader.modelData
+                                color: Theme.text
+                                font { family: Theme.fontFamily; pixelSize: Theme.textSmall; weight: Font.DemiBold }
+                            }
+                            // Pro Tools' Copy Selection to Main Playlist. Dimmed
+                            // until a range is selected here; a click then
+                            // says what to select.
+                            SButton {
+                                id: toMain
+                                objectName: "toMain" + takeBlock.index + "_" + takeHeader.index
+                                x: parent.width - width - Theme.space3 - 8
+                                y: Theme.space2 - 2
+                                implicitWidth: 52; implicitHeight: 18
+                                fontPx: Theme.textCaption
+                                text: "To Main"
+                                active: takeHeader.ready
+                                available: takeHeader.ready
+                                onClicked: edit.shell.invoke("comp.copy_to_main", -1)
+                            }
+                            Text {
+                                x: Theme.space3; y: parent.height - height - Theme.space2
+                                width: parent.width - 2 * Theme.space3 - 8
+                                elide: Text.ElideRight
+                                text: edit.session.quickSwipe ? "Quick Swipe: drag to comp"
+                                                              : "Drag a range, then To Main"
+                                color: Theme.textTertiary
+                                font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
                             }
                         }
                     }

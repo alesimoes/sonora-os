@@ -11,12 +11,14 @@
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 
 #include "fader_taper.h"
 #include "scene_item.h"
 #include "edit_clipboard.h"
 #include "session_files.h"
+#include "sonora/api/consolidate_argument.h"
 #include "sonora/api/messages.h"
 #include "sonora/api/render.h"
 #include "sonora/command.h"
@@ -47,12 +49,13 @@ bool same(const Selection& a, const Selection& b) {
 bool same(const ViewState& a, const ViewState& b) {
     return a.fpp == b.fpp && a.scroll == b.scroll && a.scroll_y == b.scroll_y &&
            a.width == b.width && a.height == b.height && a.track_height == b.track_height &&
-           a.wave_scale == b.wave_scale && a.open == b.open && a.tops == b.tops;
+           a.wave_scale == b.wave_scale && a.open == b.open && a.tops == b.tops &&
+           a.lanes == b.lanes && a.comp_lane_height == b.comp_lane_height;
 }
 
 bool same(const Drag& a, const Drag& b) {
     return a.kind == b.kind && a.moved == b.moved && a.start == b.start && a.end == b.end &&
-           a.region == b.region && a.track_end == b.track_end;
+           a.region == b.region && a.track_end == b.track_end && a.lane == b.lane;
 }
 
 }  // namespace
@@ -271,6 +274,34 @@ void SessionModel::installCommands(CommandRegistry& local) {
         }
         return ctl_.rename_track(i, ctx.argument, why);
     });
+    // --- VCA masters and folders (ADR-0048). A refusal is held: it says what
+    // was not done and why, and the status line would drop it in seconds.
+    const auto held = [this](bool ok, Why& why) {
+        if (!ok && !why.empty()) emit heldNotice(q(why));
+        return ok;
+    };
+    simple("vca.new", [this, held](const CommandContext& ctx, Why& why) {
+        const auto& sel = ctl_.selection();
+        return held(ctl_.vca_new(sel.track, sel.tracks, ctx.argument, why), why);
+    });
+    simple("vca.delete", [this, held](const CommandContext& ctx, Why& why) {
+        const auto& vcas = ctl_.snapshot().edit->vcas;
+        for (std::size_t i = 0; i < vcas.size(); ++i) {
+            if (vcas[i].name == ctx.argument) {
+                return held(ctl_.vca_remove(static_cast<int>(i), why), why);
+            }
+        }
+        why = ctx.argument.empty() ? "give the name of the VCA to delete"
+                                   : "there is no VCA named \"" + ctx.argument + "\"";
+        return held(false, why);
+    });
+    simple("folder.new", [this, held](const CommandContext& ctx, Why& why) {
+        const auto& sel = ctl_.selection();
+        return held(ctl_.folder_new(sel.track, sel.tracks, ctx.argument, why), why);
+    });
+    simple("folder.dissolve", [this, row, held](const CommandContext& ctx, Why& why) {
+        return held(ctl_.folder_dissolve(row(ctx), why), why);
+    });
     simple("region.rename", [this](const CommandContext& ctx, Why& why) {
         if (ctx.argument.empty()) {
             const Region* r = ctl_.selected_region(why);
@@ -328,10 +359,214 @@ void SessionModel::installCommands(CommandRegistry& local) {
         }
         return ctl_.set_region_colour(colour, why);
     });
+    // Clip gain. A level is a number of dB, with or without a trailing "dB".
+    const auto db_of = [](const std::string& text, float& out) {
+        char* end = nullptr;
+        const double v = std::strtod(text.c_str(), &end);
+        if (end == text.c_str() || !std::isfinite(v)) return false;
+        while (*end == ' ') ++end;
+        const std::string rest(end);
+        if (!rest.empty() && rest != "dB" && rest != "db") return false;
+        out = static_cast<float>(v);
+        return true;
+    };
+    const auto bad_db = [](const std::string& arg) {
+        return "\"" + arg + "\" is not a level in dB; type a number such as -3.5";
+    };
+    simple("clip.gain", [this, db_of, bad_db](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) {
+            const Region* r = ctl_.selected_region(why);
+            if (r == nullptr) return false;
+            emit clipGainRequested(static_cast<double>(r->gain_db));
+            return true;
+        }
+        float db = 0.0f;
+        if (!db_of(ctx.argument, db)) {
+            why = bad_db(ctx.argument);
+            return false;
+        }
+        return ctl_.set_clip_gain(db, why);
+    });
+    const auto nudge = [this, db_of, bad_db](float sign) {
+        return [this, db_of, bad_db, sign](const CommandContext& ctx, Why& why) {
+            float step = 1.0f;
+            if (!ctx.argument.empty() && (!db_of(ctx.argument, step) || step <= 0.0f)) {
+                why = bad_db(ctx.argument);
+                return false;
+            }
+            return ctl_.nudge_clip_gain(sign * step, why);
+        };
+    };
+    simple("clip.gain_up", nudge(1.0f));
+    simple("clip.gain_down", nudge(-1.0f));
+    const auto gain_place = [this](const Region& r) {
+        const model::Frames i = ctl_.selection().insertion;
+        return i > r.position && i < r.end() ? i : r.position + r.length / 2;
+    };
+    simple("clip.gain_point", [this, db_of, bad_db, gain_place](const CommandContext& ctx, Why& why) {
+        const Region* r = ctl_.selected_region(why);
+        if (r == nullptr) return false;
+        // "DB" or "DB@SECONDS" into the clip. Without a place: the insertion
+        // point when it is inside the clip past its start, else the middle
+        // (selecting a clip puts the insertion point at its start).
+        model::Frames at = gain_place(*r);
+        std::string level = ctx.argument;
+        const std::size_t atsign = level.find('@');
+        if (atsign != std::string::npos) {
+            char* end = nullptr;
+            const std::string secs = level.substr(atsign + 1);
+            const double s = std::strtod(secs.c_str(), &end);
+            if (end == secs.c_str() || *end != '\0' || !(s >= 0.0)) {
+                why = "\"" + secs + "\" is not a time in seconds into the clip";
+                return false;
+            }
+            at = r->position + static_cast<model::Frames>(s * ctl_.snapshot().settings.sample_rate);
+            level = level.substr(0, atsign);
+        }
+        float db = EditController::clip_line_db_at(*r, at);
+        if (!level.empty() && !db_of(level, db)) {
+            why = bad_db(level);
+            return false;
+        }
+        return ctl_.set_gain_point(at, db, why);
+    });
+    simple("clip.gain_point_remove", [this, gain_place](const CommandContext&, Why& why) {
+        const Region* r = ctl_.selected_region(why);
+        if (r == nullptr) return false;
+        return ctl_.remove_gain_point(gain_place(*r), why);
+    });
+    simple("clip.gain_line_clear",
+           [this](const CommandContext&, Why& why) { return ctl_.clear_gain_line(why); });
+    simple("clip.gain_render", [this](const CommandContext&, Why& why) {
+        if (ctl_.selected_region(why) == nullptr) return false;
+        why = "Render Clip Gain bakes the clip through Consolidate, which this interface does "
+              "not drive yet; the engine renders it";
+        return false;
+    });
+    simple("tempo.edit", [this](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) {
+            const model::Frames at = ctl_.selection().has_range() ? ctl_.selection().start
+                                                                  : ctl_.selection().insertion;
+            emit tempoRequested(q(format_bpm(tempo_at(at, ctl_.snapshot().settings).bpm)));
+            return true;
+        }
+        return ctl_.edit_tempo(ctx.argument, why);
+    });
+    simple("tempo.undo", [this](const CommandContext&, Why& why) { return ctl_.tempo_undo(why); });
+    simple("tempo.redo", [this](const CommandContext&, Why& why) { return ctl_.tempo_redo(why); });
+    simple("tempo.track", [this](const CommandContext&, Why&) {
+        tempo_track_ = !tempo_track_;
+        emit tempoTrackChanged();
+        return true;
+    });
+    // --- clip groups and loops (ADR-0052) ---
+    simple("clip.group", [this](const CommandContext&, Why& why) { return ctl_.group_clips(why); });
+    simple("clip.ungroup", [this](const CommandContext&, Why& why) { return ctl_.ungroup_clip(why); });
+    simple("clip.unloop", [this](const CommandContext&, Why& why) { return ctl_.unloop_clip(why); });
+    simple("clip.loop", [this](const CommandContext& ctx, Why& why) {
+        int count = ctl_.loop_count();
+        if (!ctx.argument.empty() && !parse_repeat_count(ctx.argument, count)) {
+            why = "\"" + ctx.argument +
+                  "\" is not a number of repeats; type a whole number, 1 or more. Nothing was "
+                  "looped.";
+            return false;
+        }
+        return ctl_.loop_clip(count, why);
+    });
+    // --- sample-level editing (ADR-0052): the engine writes the new file ---
+    const auto sample = [this, db_of, &simple](const char* command, const char* verb, bool takes_db,
+                                      bool needs_arg) {
+        simple(command, [this, db_of, command, verb, takes_db, needs_arg](const CommandContext& ctx,
+                                                                 Why& why) {
+            std::string param = ctx.argument;
+            if (takes_db && !param.empty()) {
+                float db = 0.0f;
+                if (!db_of(param, db)) {
+                    why = "\"" + param + "\" is not a level in dB; type a number such as -3.5";
+                    return false;
+                }
+                char buf[32];
+                std::snprintf(buf, sizeof buf, "%g", static_cast<double>(db));
+                param = buf;
+            }
+            if (needs_arg && param.empty()) {
+                why = takes_db ? "give the change in dB, such as -3"
+                               : "give the points as FRAME:LEVEL,FRAME:LEVEL";
+                return false;
+            }
+            if (!takes_db && !needs_arg && !param.empty()) {
+                why = std::string(command) + " takes no argument";
+                return false;
+            }
+            std::string argument;
+            if (!ctl_.sample_edit_argument(verb, param, argument, why)) return false;
+            if (!send_command_) {
+                why = "no engine to edit the samples; nothing was edited";
+                return false;
+            }
+            send_command_(QStringLiteral("sample.edit"), q(argument));
+            return true;
+        });
+    };
+    sample("sample.repair", "repair", false, false);
+    sample("sample.draw", "draw", false, true);
+    sample("sample.silence", "silence", false, false);
+    sample("sample.reverse", "reverse", false, false);
+    sample("sample.invert", "invert", false, false);
+    sample("sample.gain", "gain", true, true);
+    sample("sample.normalize", "normalize", true, false);
+    sample("sample.fade_in", "fade_in", false, false);
+    sample("sample.fade_out", "fade_out", false, false);
     simple("track.playlist_delete_unused", [this, row](const CommandContext& ctx, Why& why) {
         const int i = row(ctx);
         return playlistCommand(i, false,
                                [&](Why& w) { return ctl_.delete_unused_playlists(i, w); }, why);
+    });
+    // --- take lanes and comping (ADR-0031, ADR-0049) ---
+    // A refusal is held where the operator is looking (the track refusal line,
+    // with its Dismiss), not on the status line that clears in 2.5 s; so is
+    // the note that Quick Swipe left a join as a cut.
+    const auto comping = [this](bool ok, Why& why) {
+        setTrackRefusal(q(why));
+        if (ok) why.clear();
+        return ok;
+    };
+    simple("comp.toggle_lanes", [this, row, comping](const CommandContext& ctx, Why& why) {
+        const bool ok = ctl_.toggle_comp_lanes(row(ctx), why);
+        return comping(ok, why);
+    });
+    simple("comp.copy_to_main", [this, comping](const CommandContext&, Why& why) {
+        const bool ok = ctl_.comp_copy_to_main(why);
+        return comping(ok, why);
+    });
+    simple("comp.new", [this, row, comping](const CommandContext& ctx, Why& why) {
+        const int i = row(ctx);
+        const bool ok = playlistCommand(i, true, [&](Why& w) { return ctl_.comp_new(i, w); }, why);
+        return comping(ok, why);
+    });
+    simple("comp.toggle_quick_swipe", [this](const CommandContext&, Why&) {
+        ctl_.set_quick_swipe(!ctl_.quick_swipe());
+        return true;
+    });
+    // Consolidate renders on the engine (api/consolidate_argument.h): the
+    // request is the selection, the answer arrives as Consolidate events, so a
+    // failure is a held notice and the new region arrives as an ordinary edit.
+    simple("edit.consolidate", [this](const CommandContext&, Why& why) {
+        EditController::ConsolidateRequest req;
+        if (!ctl_.consolidate_request(req, why)) return false;
+        if (!send_command_) {
+            why = "no engine to render the consolidated file";
+            return false;
+        }
+        api::ConsolidateArgument arg;
+        arg.track = req.track;
+        arg.playlist = req.playlist;
+        arg.start = req.start;
+        arg.end = req.end;
+        arg.name = req.name;
+        send_command_(QStringLiteral("session.consolidate"),
+                      q(api::format_consolidate_argument(arg)));
+        return true;
     });
     simple("edit.duplicate",
            [this](const CommandContext&, Why& why) { return ctl_.duplicate(why); });
@@ -356,6 +591,13 @@ void SessionModel::installCommands(CommandRegistry& local) {
             return false;
         }
         return ctl_.repeat(count, why);
+    });
+    // Pro Tools' Spot dialog: the start time typed in the counter's format.
+    simple("edit.spot", [this](const CommandContext& ctx, Why& why) {
+        if (ctx.argument.empty()) return askSpot();
+        Frames at = 0;
+        if (!parse_time(main_fmt_, ctx.argument, ctl_.snapshot().settings, at, why)) return false;
+        return ctl_.spot_region(at, why);
     });
     // Pro Tools' New Memory Location: stopped, the window asks for the name
     // and sends it back as the argument; rolling, the marker is named and
@@ -473,12 +715,33 @@ void SessionModel::installCommands(CommandRegistry& local) {
     simple("track.toggle_solo", [this](const CommandContext& ctx, Why& why) {
         return ctl_.toggle_solo(ctx.has_target() ? ctx.target : ctl_.selection().track, why);
     });
+    // Mix and edit groups (ADR-0041). New groups the selected tracks; the
+    // others act on the track given or the selected one.
+    simple("group.new", [this](const CommandContext& ctx, Why& why) {
+        const Selection& s = ctl_.selection();
+        return ctl_.group_tracks(s.track, s.tracks, ctx.argument,
+                                 model::kGroupVolume | model::kGroupMute | model::kGroupSolo |
+                                     model::kGroupArm,
+                                 why);
+    });
+    simple("group.dissolve", [this](const CommandContext& ctx, Why& why) {
+        return ctl_.dissolve_group(ctx.has_target() ? ctx.target : ctl_.selection().track, why);
+    });
+    simple("group.toggle_suspend", [this](const CommandContext& ctx, Why& why) {
+        return ctl_.toggle_group_suspend(ctx.has_target() ? ctx.target : ctl_.selection().track,
+                                         why);
+    });
     // The interface's, as mute and solo are: Input mode is the document's
     // (TrackMix::monitor), saved with the session, and the engine follows
     // it through the mix it applies (PlaybackController::apply_monitoring).
     simple("track.toggle_input_monitor", [this](const CommandContext& ctx, Why& why) {
         return ctl_.toggle_input_monitor(ctx.has_target() ? ctx.target : ctl_.selection().track,
                                          why);
+    });
+
+    // TrackMix::track_punch, saved with the session and no undo step.
+    simple("track.toggle_track_punch", [this](const CommandContext& ctx, Why& why) {
+        return ctl_.toggle_track_punch(ctx.has_target() ? ctx.target : ctl_.selection().track, why);
     });
 
     simple("track.step_automation_mode", [this](const CommandContext& ctx, Why& why) {
@@ -592,7 +855,7 @@ void SessionModel::sync() {
     const int fades = static_cast<int>(ctl_.fade_shape()) * 16 +
                       static_cast<int>(ctl_.crossfade_shape());
     const uint64_t clip = ctl_.clipboard_serial();
-    const int follows = ctl_.automation_follows_edit() ? 1 : 0;
+    const int follows = (ctl_.automation_follows_edit() ? 1 : 0) | (ctl_.quick_swipe() ? 2 : 0);
     if (m != seen_mode_ || t != seen_tool_ || g != seen_grid_ || fades != seen_fades_ ||
         clip != seen_clip_ || follows != seen_follows_) {
         seen_clip_ = clip;
@@ -623,6 +886,15 @@ void SessionModel::sync() {
         content = overlay = true;
         emit viewChanged();
         emit rowsChanged();
+    }
+    {
+        const auto lane = ctl_.lane_selection();
+        if (lane.lane != seen_lane_.lane || lane.track != seen_lane_.track ||
+            lane.start != seen_lane_.start || lane.end != seen_lane_.end) {
+            seen_lane_ = lane;
+            content = true;
+            emit selectionChanged();
+        }
     }
     if (!same(seen_drag_, ctl_.drag())) {
         seen_drag_ = ctl_.drag();
@@ -1150,6 +1422,15 @@ QVariantList SessionModel::trackRows() const {
         row[QStringLiteral("top")] = v.tops.size() > i ? v.tops[i] : static_cast<qreal>(i) * v.track_height;
         row[QStringLiteral("shown")] = v.autolanes_open(static_cast<int>(i));
         row[QStringLiteral("canShow")] = t.kind != TrackKind::Midi;
+        // Take lanes (ADR-0031 §1): the other playlists, shown under the
+        // track (and under its automation lanes) when lanesShown.
+        QStringList lane_names;
+        for (const std::string& n : ctl_.take_lane_names(static_cast<int>(i))) lane_names << q(n);
+        row[QStringLiteral("takes")] = static_cast<int>(lane_names.size());
+        row[QStringLiteral("laneNames")] = lane_names;
+        row[QStringLiteral("lanesShown")] = ctl_.comp_lanes_shown(static_cast<int>(i));
+        row[QStringLiteral("lanesTop")] =
+            v.autolanes_open(static_cast<int>(i)) ? kLaneCount * v.autolane_height : 0.0;
         // What each lane is, said in the words of what the engine does with
         // it: a lane the mode leaves unplayed is not "automation" to the ear.
         const TrackMix* mix = s.mix.find(t.id);
@@ -1178,6 +1459,21 @@ QVariantList SessionModel::trackRows() const {
         rows.push_back(row);
     }
     return rows;
+}
+
+QVariantMap SessionModel::laneSelection() const {
+    QVariantMap m;
+    const auto sel = ctl_.lane_selection();
+    int index = -1;
+    if (sel.valid()) {
+        const auto ids = ctl_.take_lane_ids(sel.track);
+        const auto it = std::find(ids.begin(), ids.end(), sel.lane);
+        if (it != ids.end()) index = static_cast<int>(it - ids.begin());
+    }
+    m[QStringLiteral("track")] = sel.valid() ? sel.track : -1;
+    m[QStringLiteral("lane")] = index;
+    m[QStringLiteral("ready")] = index >= 0;
+    return m;
 }
 
 QStringList SessionModel::playlistNames() const {
@@ -1330,7 +1626,18 @@ void SessionModel::setViewport(qreal width, qreal height) {
 
 void SessionModel::press(qreal x, qreal y) {
     std::string why;
-    run(ctl_.press(x, y, why), why);
+    const bool ok = ctl_.press(x, y, why);
+    if (ctl_.drag().kind == Drag::Kind::Swipe) setTrackRefusal(QString());
+    run(ok, why);
+    if (ctl_.take_spot_request() != kNoId) askSpot();
+}
+
+bool SessionModel::askSpot() {
+    std::string why;
+    const Region* r = ctl_.selected_region(why);
+    if (r == nullptr) return run(false, "select a region to spot");
+    emit spotRequested(q(r->name), q(format_time(main_fmt_, r->position, ctl_.snapshot().settings)));
+    return true;
 }
 
 void SessionModel::drag(qreal x, qreal y) {
@@ -1340,7 +1647,16 @@ void SessionModel::drag(qreal x, qreal y) {
 
 void SessionModel::release(qreal x, qreal y) {
     std::string why;
-    run(ctl_.release(x, y, why), why);
+    const bool swipe = ctl_.drag().kind == Drag::Kind::Swipe;
+    const bool ok = ctl_.release(x, y, why);
+    // A swipe's refusal, and the note that a join stayed a cut, are held with
+    // the other track refusals; the gesture is over, so the status line would
+    // be gone before it could be read.
+    if (swipe) {
+        setTrackRefusal(q(why));
+        if (ok) why.clear();
+    }
+    run(ok, why);
 }
 
 void SessionModel::doubleClick(qreal x, qreal y) {
@@ -2633,7 +2949,7 @@ void SessionModel::resetPan(int track) {
 
 void SessionModel::buildTimeline(Scene& out) const {
     build_timeline_scene(ctl_.snapshot(), ctl_.view(), ctl_.selection(), ctl_.drag(),
-                         ctl_.grid_lines(), ctl_.grid(), peaks_, out);
+                         ctl_.grid_lines(), ctl_.grid(), peaks_, out, ctl_.lane_selection());
 }
 
 void SessionModel::buildOverlay(std::vector<SceneRect>& out) const {

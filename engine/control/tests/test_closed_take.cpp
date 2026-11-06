@@ -1147,6 +1147,28 @@ int test_the_document_punch() {
     CHECK(r.capture_from == 0);
     CHECK(r.capture_to == static_cast<uint64_t>(kB + 2400));
 
+    // ADR-0043: Pre/Post-Roll off starts the take at A and stops the roll at B,
+    // the rolls kept; QuickPunch uses no range at all.
+    doc.settings.transport.punch = {{kA, kB}};
+    doc.settings.transport.punch_crossfade = kX;
+    doc.settings.transport.pre_roll = 1000;
+    doc.settings.transport.post_roll = 500;
+    CHECK(document_punch(doc, r));
+    CHECK(r.start == static_cast<uint64_t>(kA - 1000));
+    CHECK(r.roll_end == static_cast<uint64_t>(kB + 500));
+    doc.settings.transport.rolls_on = false;
+    CHECK(document_punch(doc, r));
+    CHECK(r.start == static_cast<uint64_t>(kA));
+    CHECK(r.roll_end == static_cast<uint64_t>(kB));
+    CHECK(doc.settings.transport.pre_roll == 1000 && doc.settings.transport.post_roll == 500);
+    doc.settings.transport.rolls_on = true;
+    doc.settings.transport.quick_punch = true;
+    CHECK(!document_punch(doc, r));
+    doc.settings.transport.quick_punch = false;
+    CHECK(document_punch(doc, r));
+    doc.settings.transport.punch = {{500, kB}};
+    doc.settings.transport.punch_crossfade = 2400;
+
     // [B, A) and [A, A) are no range, as the interface shows them.
     doc.settings.transport.punch = {{kB, kA}};
     CHECK(!document_punch(doc, r));

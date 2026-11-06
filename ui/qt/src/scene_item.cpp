@@ -246,7 +246,9 @@ void ConductorRulerItem::setKind(int k) {
 }
 
 void ConductorRulerItem::buildContent(Scene& out) {
-    session_->buildConductorRuler(kind_ == 1 ? ConductorRuler::Meter : ConductorRuler::Tempo,
+    session_->buildConductorRuler(kind_ == 2   ? ConductorRuler::Track
+                                  : kind_ == 1 ? ConductorRuler::Meter
+                                               : ConductorRuler::Tempo,
                                   height(), out);
 }
 

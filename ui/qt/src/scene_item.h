@@ -104,7 +104,7 @@ private:
 // The Tempo or the Meter ruler, from the session's tempo map.
 class ConductorRulerItem : public SceneItem {
     Q_OBJECT
-    // 0 tempo, 1 meter (ConductorRuler's order).
+    // 0 tempo, 1 meter, 2 tempo track (ConductorRuler's order).
     Q_PROPERTY(int kind READ kind WRITE setKind NOTIFY kindChanged)
 public:
     using SceneItem::SceneItem;

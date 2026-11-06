@@ -14,6 +14,11 @@
       "verified": false,
       "comment": "Set Locators by Selection and Enable Cycle, Command-U: the Edit selection becomes the cycle area and Cycle turns on. Not yet checked against Apple's guide in brain/research/protools-logic-key-bindings.md."
     },
+    "ctrl+alt+p": {
+      "command": "transport.punch_selection",
+      "verified": false,
+      "comment": "Logic's Autopunch is on while punch locators are set. Its Set Punch Locators by Selection key command is not in the 12.3 guide's default list, so this chord is unconfirmed (ADR-0043):the Edit selection becomes the punch range and PUNCH lights; transport.clear_punch turns it off."
+    },
     "k": {
       "command": "transport.toggle_click",
       "verified": false,
@@ -219,6 +224,26 @@
     "numpad_enter": {
       "command": "transport.play",
       "comment": "Play, Enter on the numeric keypad (Global Commands; brain/research/protools-logic-key-bindings.md section 2.1)."
+    },
+    "ctrl+alt+c": {
+      "command": "comp.copy_to_main",
+      "origin": "sonora",
+      "comment": "Copy the range selected on a take lane to the main playlist (the comp). Logic comps by swiping and has no key for it; this is for a lane range selected with the Marquee."
+    },
+    "ctrl+alt+l": {
+      "command": "comp.toggle_lanes",
+      "origin": "sonora",
+      "comment": "Open or close the selected track's take folder (its other playlists as lanes). Logic opens it with the disclosure arrow and has no key."
+    },
+    "ctrl+alt+n": {
+      "command": "comp.new",
+      "origin": "sonora",
+      "comment": "New comp: an empty playlist to swipe the best takes into; the takes show as lanes."
+    },
+    "ctrl+alt+q": {
+      "command": "comp.toggle_quick_swipe",
+      "origin": "sonora",
+      "comment": "Quick Swipe Comping on or off. Logic switches it with the Quick Swipe Comping mode in the take folder; no key."
     },
     "shift+n": {
       "command": "region.rename",

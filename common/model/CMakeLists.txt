@@ -6,6 +6,7 @@
 set(SONORA_MODEL_SOURCES
   src/apply.cpp
   src/comping.cpp
+  src/groups.cpp
   src/history.cpp
   src/local_edit.cpp
   src/midi_json.cpp
@@ -18,6 +19,7 @@ set(SONORA_MODEL_SOURCES
   src/replication.cpp
   src/session_file.cpp
   src/session_template.cpp
+  src/tempo_edit.cpp
 )
 add_library(sonora_model STATIC ${SONORA_MODEL_SOURCES})
 target_include_directories(sonora_model PUBLIC include)
@@ -91,6 +93,23 @@ add_test(NAME model_render_in_place COMMAND test_model_render_in_place)
 add_executable(test_model_tracks tests/test_tracks.cpp)
 target_link_libraries(test_model_tracks PRIVATE sonora_model_audited)
 add_test(NAME model_tracks COMMAND test_model_tracks)
+# VCA masters and folders (ADR-0048).
+add_executable(test_model_vcas_folders tests/test_vcas_folders.cpp)
+target_link_libraries(test_model_vcas_folders PRIVATE sonora_model_audited)
+add_test(NAME model_vcas_folders COMMAND test_model_vcas_folders)
+# Mix and edit groups (ADR-0041).
+add_executable(test_model_groups tests/test_groups.cpp)
+target_link_libraries(test_model_groups PRIVATE sonora_model_audited)
+add_test(NAME model_groups COMMAND test_model_groups)
+
+# Clip gain: SetRegionGain, the source-frame gain line, codec and undo window.
+add_executable(test_model_clip_gain tests/test_clip_gain.cpp)
+target_link_libraries(test_model_clip_gain PRIVATE sonora_model_audited)
+add_test(NAME model_clip_gain COMMAND test_model_clip_gain)
+# Clip groups, loops and the sample edits' SetRegionSources (ADR-0052).
+add_executable(test_model_clip_groups tests/test_clip_groups.cpp)
+target_link_libraries(test_model_clip_groups PRIVATE sonora_model_audited)
+add_test(NAME model_clip_groups COMMAND test_model_clip_groups)
 # Playlists per track: new, duplicate, choose, rename, delete unused (ADR-0026).
 add_executable(test_model_playlists tests/test_playlists.cpp)
 target_link_libraries(test_model_playlists PRIVATE sonora_model_audited)
@@ -158,3 +177,8 @@ target_link_libraries(measure_midi_session PRIVATE sonora_model sonora_json sono
 add_executable(test_model_sequence_file tests/test_sequence_file.cpp)
 target_link_libraries(test_model_sequence_file PRIVATE sonora_model_audited)
 add_test(NAME model_sequence_file COMMAND test_model_sequence_file)
+
+# Tempo operations (ADR-0050): set, ramp, scale, remove, meter.
+add_executable(test_model_tempo_edit tests/test_tempo_edit.cpp)
+target_link_libraries(test_model_tempo_edit PRIVATE sonora_model_audited)
+add_test(NAME model_tempo_edit COMMAND test_model_tempo_edit)

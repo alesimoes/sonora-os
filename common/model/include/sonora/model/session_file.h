@@ -59,10 +59,22 @@ namespace sonora::model {
 // 18: a lane may be "mute", "send_level" or "send_pan", the last two with
 //    "send"; every bus and "monitor_bus" carry "automation" (ADR-0027 §9).
 //    A version 17 file opens with none.
-// 23: a playlist may carry "freeze", the record of Track Freeze (ADR-0051):
-//    the playlist it was made from and the inserts it made inactive. A
-//    version 22 file opens with none. (19 to 22 are other branches'.)
-constexpr std::int64_t kFormatVersion = 23;
+// 19: the session-model train, one version for three features. The session may
+//    hold "groups" (ADR-0041), only when it has some; a region may carry
+//    "gain_line", the points of its clip gain (source frame, dB; ADR-0042);
+//    "transport.input_only", "transport.rolls_on", "transport.quick_punch" and
+//    "track_punch" on every audio track (ADR-0043). A version 18 file opens
+//    with no groups, no gain lines, Auto Input, the rolls on, no QuickPunch
+//    and every track in the punch.
+// 20 (ADR-0048): the session may hold "vcas" (each with its dB and mute) and
+//    "folders", only when it has some. A version 19 file has none.
+// 23 (ADR-0051): a playlist may carry "freeze", the record of Track Freeze
+//    (the playlist it was made from, the inserts it made inactive). A version
+//    22 file opens with none.
+// 24 (clip groups and loops, ADR-0052; 21 to 23 are other work's): a region may
+//    carry "clip_group" and "loop", only when it has them. A version 19 file
+//    opens with no groups.
+constexpr std::int64_t kFormatVersion = 24;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

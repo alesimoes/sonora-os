@@ -450,6 +450,9 @@ void version_check() {
     // (ADR-0027 §9; follows 40).
     // 42: meters.reset, and state layout 8's loudness (ADR-0013 amendment of
     // 2026-11-03; follows 41).
+    // 48: the session-model train; 52: the comping commands; 51: ADR-0048 VCAs and
+    // folders; 59: ShiftRegions; 57: ADR-0052 clip groups, loops, sample edits.
+    // 67: the session-model train union, renumbered after main took 66.
     // 49: mix.bounce, mix.bounce_cancel and EventKind::Bounce (ui.mixer.bounce;
     // follows 48, 43 to 48 being other PRs').
     // 56: track.freeze, track.commit, track.process_selection, track.unfreeze,
@@ -461,7 +464,7 @@ void version_check() {
     // EventKind::Consolidate (ADR-0031 §6; main reserved it as 43).
     // 65: plugin descriptor hints and PluginTelemetry (ADR-0057).
     // 66: the bundle's 61 to 63 land together on top of 65.
-    CHECK(kProtocolVersion == 66);
+    CHECK(kProtocolVersion == 67);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -472,7 +475,7 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 66 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 67 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // Bounce and Consolidate are the first two kinds past Latency, which a
@@ -484,7 +487,7 @@ void version_check() {
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 66"));
+                   "speaks version 67"));
 }
 
 // Protocol 49: a Bounce event carries the fraction in `frame`, the frames in
@@ -587,6 +590,7 @@ void domains() {
         const std::string id = spec.id;
         const bool interface = id.rfind("tool.", 0) == 0 || id.rfind("zoom.", 0) == 0 ||
                                id.rfind("edit.mode.", 0) == 0 || id.rfind("focus.", 0) == 0 ||
+                               id.rfind("tempo.", 0) == 0 ||
                                id == "app.quit" || id == "automation.thin" ||
                                id == "automation.write_selection" || id == "automation.snapshot" ||
                                id == "window.event_list" ||
@@ -597,6 +601,7 @@ void domains() {
                                id == "window.bounce" ||
                                id == "window.configurations" || id == "window.config_store" ||
                                id == "window.config_recall" ||
+                               id == "comp.toggle_lanes" || id == "comp.toggle_quick_swipe" ||
                                id == "app.save_as_template" || id == "app.new_from_template" ||
                                id == "session.import_audio";
         if (interface != (spec.domain == CommandDomain::Interface)) {

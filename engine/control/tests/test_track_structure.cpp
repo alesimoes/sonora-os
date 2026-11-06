@@ -417,6 +417,53 @@ int test_arm_and_input_follow_the_track() {
     return 0;
 }
 
+// ADR-0048: the control thread writes each engine track's VCA factor (the
+// dB of its VCAs added, 0 for a muted one) and it goes with the document
+// track when a reorder moves it, as the fader does.
+int test_vca_factor_follows_the_document_track() {
+    auto session = make_session(3);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, "A", 0.0f, 0));
+    CHECK_APPLY(h, track_op(102, "B", 0.0f, 1));
+    CHECK_APPLY(h, track_op(104, "C", 0.0f, 2));
+    PlaybackController ctl(s);
+    CHECK(show(ctl, h.current()));
+    CHECK(ctl.settle(2.0));
+    CHECK(s.tracks()[0]->vca_gain() == 1.0f && s.tracks()[1]->vca_gain() == 1.0f);
+
+    const Id vca = h.current().next_id;
+    CHECK_APPLY(h, (SetVca{vca, "Drums", {100, 102}}));
+    CHECK_APPLY(h, (SetVcaMix{VcaMix{vca, -6.0f, false}}));
+    CHECK(show(ctl, h.current()));
+    const float half = std::pow(10.0f, -6.0f / 20.0f);
+    CHECK(std::fabs(s.tracks()[0]->vca_gain() - half) < 1e-5f);
+    CHECK(std::fabs(s.tracks()[1]->vca_gain() - half) < 1e-5f);
+    CHECK(s.tracks()[2]->vca_gain() == 1.0f);
+    // The fader itself is not touched.
+    CHECK(s.tracks()[0]->gain() == 1.0f);
+
+    // A second VCA on A adds its dB; a muted one silences.
+    const Id second = h.current().next_id;
+    CHECK_APPLY(h, (SetVca{second, "Bus", {100}}));
+    CHECK_APPLY(h, (SetVcaMix{VcaMix{second, -6.0f, false}}));
+    CHECK(show(ctl, h.current()));
+    CHECK(std::fabs(s.tracks()[0]->vca_gain() - half * half) < 1e-5f);
+    CHECK(std::fabs(s.tracks()[1]->vca_gain() - half) < 1e-5f);
+    CHECK_APPLY(h, (SetVcaMix{VcaMix{second, 0.0f, true}}));
+    CHECK(show(ctl, h.current()));
+    CHECK(s.tracks()[0]->vca_gain() == 0.0f);
+
+    // A reorder: the factor is the track's, not the position's.
+    CHECK_APPLY(h, (ReorderTracks{{104, 102, 100}}));
+    CHECK(show(ctl, h.current()));
+    CHECK(settle_moved(ctl, s));
+    CHECK(s.tracks()[0]->vca_gain() == 1.0f);
+    CHECK(std::fabs(s.tracks()[1]->vca_gain() - half) < 1e-5f);
+    CHECK(s.tracks()[2]->vca_gain() == 0.0f);
+    return 0;
+}
+
 // ADR-0027 §3: a touch holds its document track off its lanes, so it moves
 // with that track when a reorder puts it on another engine track; the
 // engine track left behind, now another track's, is not held.
@@ -657,6 +704,7 @@ int test_latch_and_write_keep_the_static_under_the_ride() {
 int main() {
     if (test_moves_are_heard_exactly_and_allocate_nothing() != 0) return 1;
     if (test_arm_and_input_follow_the_track() != 0) return 1;
+    if (test_vca_factor_follows_the_document_track() != 0) return 1;
     if (test_atomics_wait_for_the_old_plans_last_block() != 0) return 1;
     if (test_sends_move_with_their_tracks() != 0) return 1;
     if (test_a_touch_follows_its_track() != 0) return 1;
