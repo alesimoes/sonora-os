@@ -287,53 +287,81 @@ const avatarOf=r=>{r=String(r||'').toLowerCase();const m=AVT.find(x=>r.includes(
 const SKINS=['#f2c9a0','#e0ac84','#c68642','#8d5524','#f7d7c4','#a0673c'];
 const HAIRS=['#2b2118','#5a3825','#a0522d','#e8b04b','#c9d1d9','#1f1f2e','#ff8fb1','#7a5cff'];
 const hash=str=>{let h=2166136261;for(const ch of String(str)){h^=ch.charCodeAt(0);h=Math.imul(h,16777619)}h^=h>>>15;h=Math.imul(h,2246822519);h^=h>>>13;return h>>>0};
+let FORCE=null;
+const hexRgb=c=>[1,3,5].map(i=>parseInt(c.slice(i,i+2),16));
+const rgbHex=a=>'#'+a.map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('');
+const shade=(c,f)=>rgbHex(hexRgb(c).map(v=>v*f));
+const light=(c,f)=>rgbHex(hexRgb(c).map(v=>v+(255-v)*f));
+const mix=(a,b,f)=>{const x=hexRgb(a),y=hexRgb(b);return rgbHex(x.map((v,i)=>v+(y[i]-v)*f))};
 function pixelAvatar(code,opus,size,seed){
   const h=hash(seed||code),pk=(a,sh)=>a[(h>>>sh)%a.length];
-  const skin=pk(SKINS,0),hair=pk(HAIRS,4),style=pk(['short','long','bald','curly','bun','side'],8),eyes=pk(['dot','tall','wink','wide'],12),mouth=pk(['smile','flat','open'],16);
-  const N=14,g=Array.from({length:N},()=>Array(N).fill(null));
+  const F=FORCE||{},skin=F.skin||pk(SKINS,0),H=F.hair||pk(HAIRS,4),style=F.style||pk(['short','long','bald','curly','bun','side'],8),eyes=pk(['big','tall','wink','sleepy'],12),mouth=pk(['smile','small','open'],16);
+  const N=16,g=Array.from({length:N},()=>Array(N).fill(null));
   const set=(x,y,c)=>{if(x>=0&&x<N&&y>=0&&y<N)g[y][x]=c};
   const rect=(x,y,w,hh,c)=>{for(let j=0;j<hh;j++)for(let i=0;i<w;i++)set(x+i,y+j,c)};
-  const shirt=opus?'#a78bfa':'#3fc1b0',dark='#121417',gold='#e8b04b',white='#e8ebef';
-  if(style==='long')rect(2,3,10,8,hair);
-  rect(2,11,10,3,shirt);rect(6,10,2,1,skin);rect(5,11,4,1,white);
-  rect(3,2,8,8,skin);for(const [x,y] of [[3,2],[10,2],[3,9],[10,9]])set(x,y,null);
-  rect(2,5,1,2,skin);rect(11,5,1,2,skin);
-  if(style==='short'){rect(3,1,8,2,hair);set(3,3,hair);set(10,3,hair)}
-  if(style==='long'){rect(3,1,8,2,hair);rect(3,3,1,6,hair);rect(10,3,1,6,hair)}
-  if(style==='curly'){rect(2,1,10,2,hair);for(const x of [2,4,6,8,10])set(x,0,hair);rect(2,3,1,2,hair);rect(11,3,1,2,hair)}
-  if(style==='bun'){rect(3,1,8,2,hair);rect(6,0,2,1,hair);set(3,3,hair);set(10,3,hair)}
-  if(style==='side'){rect(3,1,8,2,hair);rect(3,3,3,1,hair);set(10,3,hair)}
-  if(eyes==='dot'){set(5,5,dark);set(8,5,dark)}
-  if(eyes==='tall'){rect(5,5,1,2,dark);rect(8,5,1,2,dark)}
-  if(eyes==='wink'){set(5,5,dark);rect(8,6,2,1,dark)}
-  if(eyes==='wide'){rect(4,5,2,1,white);rect(8,5,2,1,white);set(5,5,dark);set(8,5,dark)}
-  const mc='#a8584e';
-  if(mouth==='smile'){set(5,7,mc);set(8,7,mc);rect(6,8,2,1,mc)}
-  if(mouth==='flat')rect(5,8,4,1,mc);
-  if(mouth==='open')rect(6,8,2,2,'#5a1f1f');
+  const row=(y,x0,x1,c)=>rect(x0,y,x1-x0+1,1,c);
+  const mir=(x,y,c)=>{set(x,y,c);set(15-x,y,c)};
+  const SK2=shade(skin,.84),HL=light(H,.4),HS=shade(H,.72),OUT='#14161b',DK='#1b1d24',WH='#ffffff';
+  const shirt=opus?'#a78bfa':'#3fc1b0',SH2=shade(shirt,.78),GOLD='#f2c14e',GOLD2='#c9922c';
+  // cabelo comprido atrás dos ombros
+  if(style==='long'){rect(3,4,10,10,H);rect(3,12,2,2,HS);rect(11,12,2,2,HS)}
+  // camisa, pescoço e gola
+  row(12,5,10,shirt);rect(3,13,10,3,shirt);rect(11,13,2,3,SH2);
+  row(12,6,9,SK2);row(13,7,8,SK2);set(6,13,WH);set(9,13,WH);
+  // cabeça: 2 tons de pele, sombra à direita
+  row(3,5,10,skin);for(let y=4;y<=10;y++)row(y,4,11,skin);row(11,5,10,skin);
+  for(let y=4;y<=10;y++)set(11,y,SK2);row(11,8,10,SK2);
+  set(3,7,skin);set(3,8,skin);set(12,7,SK2);set(12,8,SK2);
+  // cabelo
+  if(style==='short'){row(2,5,10,H);row(3,4,11,H);set(4,4,H);set(11,4,H);set(6,2,HL);set(7,2,HL);set(9,3,HS);set(10,3,HS)}
+  if(style==='side'){row(2,5,10,H);row(3,4,11,H);row(4,4,8,H);set(11,4,H);set(6,2,HL);set(5,3,HL);set(10,3,HS);set(8,4,HS)}
+  if(style==='long'){row(2,5,10,H);row(3,4,11,H);for(let y=4;y<=9;y++){set(4,y,H);set(11,y,HS)}set(6,2,HL);set(7,2,HL);set(4,5,HL)}
+  if(style==='bald'){set(6,3,light(skin,.55));set(7,3,light(skin,.55));set(5,4,light(skin,.3))}
+  if(style==='curly'){row(1,5,10,H);row(2,3,12,H);row(3,3,12,H);for(const y of [4,5]){set(3,y,H);set(4,y,H);set(11,y,HS);set(12,y,H)}
+    for(const x of [4,6,8,10])set(x,2,HS);for(const x of [5,9])set(x,3,HS);set(6,1,HL);set(9,1,HL);set(4,3,HL)}
+  if(style==='bun'){row(2,4,11,H);row(3,4,11,H);set(4,4,H);set(11,4,H);row(0,7,8,H);row(1,6,9,H);set(7,0,HL);set(7,2,'#ff8fb1');set(8,2,'#ff8fb1');set(6,3,HL);set(9,3,HS)}
+  // olhos (1x2 ou 2x2 com brilho), bochechas e boca
+  if(eyes==='big'){rect(5,7,2,2,DK);rect(9,7,2,2,DK);set(5,7,WH);set(9,7,WH)}
+  if(eyes==='tall'){rect(6,7,1,2,DK);rect(9,7,1,2,DK);set(6,7,'#6b7a94');set(9,7,'#6b7a94')}
+  if(eyes==='wink'){rect(5,7,2,2,DK);set(5,7,WH);row(8,9,10,DK)}
+  if(eyes==='sleepy'){row(8,5,6,DK);row(8,9,10,DK);set(5,7,SK2);set(10,7,SK2)}
+  const bl=mix(skin,'#ff6f81',.4);set(5,9,bl);set(10,9,bl);
+  const mc='#9b4a4a';
+  if(mouth==='small')row(10,7,8,mc);
+  if(mouth==='smile'){set(6,10,mc);set(9,10,mc);row(11,7,8,mc)}
+  if(mouth==='open')rect(7,10,2,2,'#6e2530');
+  // acessórios do cargo
   const A={
-    C:()=>{rect(4,1,6,1,gold);for(const x of [4,6,9])set(x,0,gold)},
-    BD:()=>{rect(3,0,8,2,'#f2c14e');rect(2,2,10,1,'#f2c14e');rect(6,0,2,1,'#fff3b0')},
-    P:()=>{for(const x0 of [4,7]){rect(x0,4,3,1,'#cfd6dd');rect(x0,6,3,1,'#cfd6dd');set(x0,5,'#cfd6dd');set(x0+2,5,'#cfd6dd')}},
-    UI:()=>{rect(3,0,8,2,'#ff8fb1');set(7,-1,'#ff8fb1');rect(2,1,2,1,'#ff8fb1')},
-    RT:()=>{rect(3,0,8,2,'#ff5a5f');rect(1,2,6,1,'#ff5a5f')},
-    FX:()=>{rect(12,8,2,1,'#8a93a0');rect(12,9,1,5,'#8a93a0');set(13,10,'#8a93a0')},
-    IN:()=>{rect(4,11,1,3,gold);rect(9,11,1,3,gold);rect(7,12,3,2,white);set(8,12,gold)},
-    PL:()=>{rect(3,1,8,1,white);rect(2,4,1,3,white);rect(11,4,1,3,white);set(10,8,white);set(9,9,white)},
-    DS:()=>{rect(3,1,8,1,'#b38bff');rect(2,4,1,3,'#b38bff');rect(11,4,1,3,'#b38bff')},
-    OS:()=>{set(7,0,white);set(7,1,'#5b9cff');set(6,0,'#5b9cff')},
-    OR:()=>{rect(6,12,3,2,white);set(7,12,shirt);set(5,12,white);set(9,12,white);set(7,13,shirt)},
-    AR:()=>{set(11,4,gold);set(11,3,'#ff8fb1')},
-    RV:()=>{rect(11,10,3,4,'#c9a36b');rect(12,11,1,2,white)},
-    QA:()=>{rect(11,10,3,4,'#c9a36b');rect(12,11,1,2,white)},
+    C:()=>{row(2,5,10,GOLD);for(const x of [5,7,8,10])set(x,1,GOLD);set(7,2,'#ff5a5f');set(8,2,'#ff5a5f');row(3,5,10,GOLD2);set(5,1,light(GOLD,.4))},
+    BD:()=>{row(1,5,10,GOLD);row(2,4,11,GOLD);row(3,3,12,GOLD2);rect(7,1,2,2,'#f7d56a');set(5,1,'#fff3b0');set(4,2,'#fff3b0')},
+    P:()=>{const F='#7e8fae',L='#f1fbff';for(const x0 of [4,8]){rect(x0+1,7,2,2,L);row(6,x0,x0+3,F);row(9,x0,x0+3,F);set(x0,7,F);set(x0,8,F);set(x0+3,7,F);set(x0+3,8,F)}
+      rect(6,7,1,2,DK);rect(9,7,1,2,DK)},
+    UI:()=>{row(1,6,10,'#ff8fb1');row(2,4,12,'#ff8fb1');row(3,4,11,'#d9688c');set(11,3,null);set(8,0,'#d9688c');set(6,2,'#ffc2d4');set(5,2,'#ffc2d4')},
+    RT:()=>{row(1,5,10,'#ff5a5f');row(2,4,11,'#ff5a5f');row(3,4,11,'#ff5a5f');row(4,2,7,'#d8393f');set(6,1,'#ff9aa0');set(5,2,'#ff9aa0')},
+    FX:()=>{const G='#aab3bd',G2='#6d7580';for(let y=11;y<=15;y++)set(14,y,G);set(14,15,G2);set(13,9,G);set(13,10,G);set(15,9,G);set(15,10,G);set(14,10,G2)},
+    IN:()=>{set(5,12,GOLD);set(6,13,GOLD);set(7,14,GOLD);set(10,12,GOLD);set(9,13,GOLD);set(8,14,GOLD);row(15,7,8,WH);set(7,15,'#9aa4af')},
+    PL:()=>{const W='#e8ebef',W2='#aab3bd';row(2,5,10,W);set(4,3,W);set(11,3,W);set(3,4,W);set(12,4,W);set(3,5,W);set(12,5,W);rect(2,6,2,3,W2);rect(12,6,2,3,W2);set(2,6,W);set(12,6,W);set(13,9,W);set(12,10,W);set(11,10,DK)},
+    DS:()=>{const W='#b38bff',W2='#7d52d6';row(2,5,10,W);set(4,3,W);set(11,3,W);set(3,4,W);set(12,4,W);set(3,5,W);set(12,5,W);rect(2,6,2,3,W2);rect(12,6,2,3,W2);set(2,6,W);set(12,6,W)},
+    OS:()=>{set(8,1,'#aab3bd');set(8,0,'#5b9cff');set(7,0,'#9fc4ff')},
+    OR:()=>{set(4,13,WH);set(3,14,WH);set(5,14,WH);set(4,15,WH);set(4,14,GOLD);for(const [x,y] of [[3,13],[5,13],[3,15],[5,15]])set(x,y,'#9aa4af')},
+    AR:()=>{set(12,6,GOLD);set(13,5,GOLD);set(14,4,'#ff8fb1');set(12,5,'#6d7580')},
+    RV:()=>{rect(11,12,4,4,'#c9a36b');rect(12,13,2,3,WH);row(12,12,13,'#aab3bd');set(12,14,'#9aa4af')},
+    QA:()=>{rect(11,12,4,4,'#c9a36b');rect(12,13,2,3,WH);row(12,12,13,'#aab3bd');set(12,14,'#4cc38a')},
     AG:()=>{}};
   (A[code]||A.AG)();
-  let px='';g.forEach((row,y)=>row.forEach((c,x)=>{if(c)px+=`<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`}));
-  return `<svg viewBox="0 0 14 14" width="${size||44}" height="${size||44}" shape-rendering="crispEdges" style="image-rendering:pixelated">${px}</svg>`}
+  // contorno de 1 px ao redor de tudo
+  const out=g.map(r=>r.slice());
+  for(let y=0;y<N;y++)for(let x=0;x<N;x++)if(!g[y][x]&&[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>g[y+dy]&&g[y+dy][x+dx]))out[y][x]=OUT;
+  let px='';out.forEach((r,y)=>r.forEach((c,x)=>{if(c)px+=`<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`}));
+  return `<svg viewBox="0 0 16 16" width="${size||44}" height="${size||44}" shape-rendering="crispEdges" style="image-rendering:pixelated">${px}</svg>`}
 function showGallery(){
   document.body.classList.add('gal');
   const codes=[['C','Coordenador'],['OR','Orquestrador'],['BD','Builder'],['P','Principal'],['IN','Integrador'],['FX','Corretor'],['PL','Plugins'],['DS','DSP'],['UI','Interface'],['RT','Tempo real'],['OS','Distribuição'],['AR','Arquiteto'],['QA','Testador'],['AG','Geral']];
-  $('gal').innerHTML='<h2 class="h2">Todos os rostos: cada cargo com 6 agentes diferentes, Sonnet (verde-azulado) e Opus (roxo)</h2>'+['sonnet','opus'].map(m=>codes.map(([c,n])=>`<div class="gal-row"><b>${n}</b>${[1,2,3,4,5,6].map(i=>`<span class="pa">${pixelAvatar(c,m==='opus',56,'integrator-'+i+c+m[0])}</span>`).join('')}<small>${m}</small></div>`).join('')).join('')}
+  const Z=location.search.includes('big')?96:48;
+  const styles=['short','long','bald','curly','bun','side'];
+  let html='<h2 class="h2">Cabelo × pele: cada estilo com os 6 tons de pele</h2>'+styles.map(st=>`<div class="gal-row"><b>${st}</b>${SKINS.map((sk,i)=>{FORCE={style:st,skin:sk,hair:HAIRS[(i*3+styles.indexOf(st))%HAIRS.length]};const r=`<span class="pa">${pixelAvatar('AG',i%2===1,Z,'x'+st+i)}</span>`;FORCE=null;return r}).join('')}</div>`).join('');
+  html+='<h2 class="h2">Cargos: 6 agentes diferentes de cada, Sonnet (verde-azulado) e Opus (roxo)</h2>'+['sonnet','opus'].map(m=>codes.map(([c,n])=>`<div class="gal-row"><b>${n}</b>${[1,2,3,4,5,6].map(i=>`<span class="pa">${pixelAvatar(c,m==='opus',Z,'integrator-'+i+c+m[0])}</span>`).join('')}<small>${m}</small></div>`).join('')).join('');
+  $('gal').innerHTML=html}
 if(location.search.includes('avatars'))showGallery();
 const MODEL_PT=m=>m?String(m).replace(/^./,c=>c.toUpperCase()):'';
 function personCard(x){
