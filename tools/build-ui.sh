@@ -122,10 +122,12 @@ if [[ "$(uname -s)" == Linux ]]; then
 fi
 
 # One of a few global build slots (tools/build-slot.sh), -j its share of the
-# CPUs, and the ccache every worktree shares (/src is the same path in all).
-# On a Linux host the container runs as the caller, who cannot write the
-# volume's root-owned /root/.ccache: ccache then finds no usable cache and
-# compiles normally.
+# CPUs, and the ccache every worktree shares (/src is the same path in all),
+# so a new checkout or a bisect half compiles from cache, not for 30 minutes.
+# On a Linux host the container runs as the caller, who may not be able to
+# write the volume: ccache then finds no usable cache and compiles normally.
+# Off Linux the container runs as the image user (uid 1000), but the volume
+# may hold files tools/build-engine.sh wrote as root, so they are handed over.
 JOBS="$("$ROOT/tools/build-slot.sh" --jobs)"
 # Off a Linux host the tree is on a volume per checkout, not in the NTFS bind
 # mount (see tools/build-engine.sh).
@@ -134,8 +136,14 @@ if [[ "$(uname -s)" != Linux ]]; then
   ID="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
   BUILD_VOL=(-v "sonora-build-$ID:/build" -e SONORA_BUILD_DIR=/build/ui)
 fi
+if [[ "$(uname -s)" != Linux ]]; then
+  docker run --rm --user 0 -v sonora-ccache:/ccache --entrypoint find "$IMAGE" \
+    /ccache ! -user 1000 -exec chown 1000:1000 {} + >/dev/null 2>&1 || true
+fi
 "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" \
-  -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" -e SONORA_UI_SCOPE="${SONORA_UI_SCOPE:-all}" -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=10G "${BUILD_VOL[@]}" \
-  -v sonora-ccache:/root/.ccache \
+  -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" -e SONORA_UI_SCOPE="${SONORA_UI_SCOPE:-all}" \
+  -e SONORA_SKIP_SLOW="${SONORA_SKIP_SLOW:-0}" -e SONORA_CTEST_LABELS="${SONORA_CTEST_LABELS:-}" \
+  -e CCACHE_DIR=/ccache -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=10G "${BUILD_VOL[@]}" \
+  -v sonora-ccache:/ccache \
   -v "$(host_path "$ROOT"):/src" "${OUT_MOUNT[@]}" -w /src "$IMAGE" \
   tools/build-ui-entrypoint.sh "$MODE" "$SHOT_NAME" "$SECONDS_EACH"
