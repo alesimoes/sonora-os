@@ -21,6 +21,22 @@ set(SONORA_MODEL_SOURCES
   src/session_template.cpp
   src/tempo_edit.cpp
 )
+# GCC's UBSan alignment check made these two files take 40+ min each under
+# -fsanitize=address,undefined -O2 (2026-11-06), against about 2 min without
+# it. They visit and assign the 62-alternative Operation and Member variants
+# in a hundred places; each access to alternative N recurses through N levels
+# of libstdc++'s _Variadic_union, and every level gets its own null and
+# alignment check on `this` (2,000 checks in each of 130 functions, 8.6 MB of
+# code in op_codec.o under UBSan alone). Only the alignment check is dropped,
+# and only here: the null check and the rest of UBSan stay, and the model
+# does no casts or packed reads an alignment check could catch.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+   "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${SONORA_BUILD_TYPE_UPPER}}" MATCHES
+   "(^| )-fsanitize=([^ ]*,)?(undefined|alignment)")
+  set_source_files_properties(src/apply.cpp src/op_codec.cpp
+    PROPERTIES COMPILE_OPTIONS -fno-sanitize=alignment)
+endif()
+
 add_library(sonora_model STATIC ${SONORA_MODEL_SOURCES})
 target_include_directories(sonora_model PUBLIC include)
 target_link_libraries(sonora_model PUBLIC sonora_midi PRIVATE sonora_json sonora_sha256)
