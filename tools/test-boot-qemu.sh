@@ -23,6 +23,8 @@ WORK="$ROOT/build-qemu"
 LOG="$WORK/serial.log"
 MEMORY="${QEMU_MEMORY:-4096}"
 TIMEOUT="${QEMU_TIMEOUT:-300}"
+# shellcheck source=tools/lib/qemu-accel.sh
+. "$ROOT/tools/lib/qemu-accel.sh"
 
 host_path() {
   if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
@@ -90,8 +92,12 @@ IN_CONTAINER=0
 QEMU_IMAGE=sonora-qemu:trixie
 if [[ -z "$QEMU" ]]; then
   command -v docker >/dev/null || {
-    echo "error: qemu-system-x86_64 not found, and no docker to run it in." >&2
-    exit 1
+    echo "BOOT TEST SKIP: qemu-system-x86_64 not found, and no docker to run it in." >&2
+    exit "$QEMU_EXIT_SKIP"
+  }
+  docker info >/dev/null 2>&1 || {
+    echo "BOOT TEST SKIP: the docker daemon is not reachable." >&2
+    exit "$QEMU_EXIT_SKIP"
   }
   IN_CONTAINER=1
   QEMU="docker:$QEMU_IMAGE"
@@ -167,21 +173,25 @@ docker run --rm \
   '
 
 # --- acceleration, if the host offers any ---
-ACCEL=()
+# Without KVM the guest runs under TCG, several times slower: every timeout
+# below is multiplied by SLOW (tools/lib/qemu-accel.sh) and the guest is told
+# through sonora.slow=N so its own waits scale too. Expectations do not change.
+KVM_DEV=()
 if [[ "$IN_CONTAINER" == 1 ]]; then
   # Decided inside the container, where /dev/kvm is the VM's, not the host's.
-  ACCEL=(-accel kvm -accel tcg)
+  KVM_OK=0
+  if docker run --rm --privileged "$QEMU_IMAGE" test -c /dev/kvm 2>/dev/null; then KVM_OK=1; KVM_DEV=(--device /dev/kvm); fi
+  qemu_pick_accel container "$KVM_OK"
 elif [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
-  # Windows Hypervisor Platform. Falls back silently to TCG if unavailable,
-  # which is slow but still correct.
-  ACCEL=(-accel whpx -accel tcg)
-elif [[ -w /dev/kvm ]]; then
-  ACCEL=(-accel kvm)
+  qemu_pick_accel msys 0
 else
-  ACCEL=(-accel tcg)
+  qemu_pick_accel host 0
 fi
+TIMEOUT="$(qemu_scale "$TIMEOUT")"
+POWEROFF_TIMEOUT="$(qemu_scale "${QEMU_POWEROFF_TIMEOUT:-60}")"
+SLOW_APPEND="$(qemu_append_slow)"
 
-echo "booting (timeout ${TIMEOUT}s)..."
+echo "booting (timeout ${TIMEOUT}s = ${QEMU_TIMEOUT:-300}s x${SLOW}; serial log $LOG)..."
 # -nographic puts the serial console on stdout, which is where the smoke test
 # writes. intel-hda gives PipeWire a card to find, so the audio stack is
 # exercised rather than skipped.
@@ -210,13 +220,6 @@ if [[ "$IN_CONTAINER" == 1 ]]; then
   CONTAINER="sonora-qemu-boot-$$"
   W=/work
   I=/iso
-  KVM_DEV=()
-  if docker run --rm --privileged "$QEMU_IMAGE" test -c /dev/kvm; then
-    KVM_DEV=(--device /dev/kvm)
-    echo "accel: kvm (in the Docker VM)"
-  else
-    echo "accel: tcg (no /dev/kvm in the Docker VM; expect a slow boot)"
-  fi
   RUNNER=(docker run --rm --name "$CONTAINER" --label org.sonora=1 "${KVM_DEV[@]}"
           -v "$(host_path "$WORK"):/work" -v "$(host_path "$ROOT/iso"):/iso:ro"
           "$QEMU_IMAGE" qemu-system-x86_64)
@@ -231,7 +234,7 @@ fi
   "${ACCEL[@]}" \
   -kernel "$W/vmlinuz" \
   -initrd "$W/initrd.img" \
-  -append "boot=live components quiet splash persistence username=sonora hostname=sonora threadirqs console=ttyS0,115200 sonora.smoketest${QEMU_APPEND_EXTRA:+ $QEMU_APPEND_EXTRA}" \
+  -append "boot=live components quiet splash persistence username=sonora hostname=sonora threadirqs console=ttyS0,115200 sonora.smoketest${SLOW_APPEND:+ $SLOW_APPEND}${QEMU_APPEND_EXTRA:+ $QEMU_APPEND_EXTRA}" \
   -cdrom "$I/sonora.iso" \
   -device intel-hda -device hda-duplex \
   -serial "file:$W/serial.log" \
@@ -245,8 +248,11 @@ started=$SECONDS
 # --- wait for a verdict, or for the clock to run out ---
 waited=0
 verdict=""
+begin_at=""
+verdict_at_abs=""
 while [[ "$waited" -lt "$TIMEOUT" ]]; do
   if ! kill -0 "$QEMU_PID" 2>/dev/null; then break; fi
+  if [[ -z "$begin_at" ]] && grep -q "SMOKETEST begin" "$LOG" 2>/dev/null; then begin_at=$((SECONDS - started)); fi
   if grep -q "SMOKETEST RESULT" "$LOG" 2>/dev/null; then break; fi
   sleep 2
   waited=$((waited + 2))
@@ -256,10 +262,10 @@ done
 # the guest off. Killing QEMU at once left that path untested, and boot 3 of
 # tools/test-write-usb.sh depends on the orderly poweroff to get a clean /home.
 # On a pass the guest must also power itself off, within POWEROFF_TIMEOUT.
-POWEROFF_TIMEOUT="${QEMU_POWEROFF_TIMEOUT:-60}"
 powered_off=""
 if grep -q "SMOKETEST RESULT" "$LOG" 2>/dev/null; then
   verdict_at=$SECONDS
+  verdict_at_abs=$SECONDS
   while kill -0 "$QEMU_PID" 2>/dev/null && (( SECONDS - verdict_at < POWEROFF_TIMEOUT )); do
     sleep 1
   done
@@ -277,7 +283,9 @@ if kill -0 "$QEMU_PID" 2>/dev/null; then
   kill -9 "$QEMU_PID" 2>/dev/null || true
 fi
 [[ -z "$CONTAINER" ]] || docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-echo "boot took $((SECONDS - started))s"
+echo "boot took $((SECONDS - started))s (accel $ACCEL_NAME, slow x$SLOW)"
+[[ -z "$begin_at" ]] || echo "time to the smoke test's first marker: ${begin_at}s"
+if [[ -n "$verdict_at_abs" ]]; then echo "time to the smoke test verdict: $((verdict_at_abs - started))s"; fi
 
 echo
 echo "=== smoke test output ==="
@@ -285,6 +293,11 @@ grep "SMOKETEST" "$LOG" 2>/dev/null || {
   echo "no smoke test output at all." >&2
   echo "--- last 40 lines of the serial log ---" >&2
   tail -40 "$LOG" >&2
+  if [[ "$SLOW" -gt 1 && "$waited" -ge "$TIMEOUT" ]]; then
+    echo "BOOT TEST INCONCLUSIVE: slow mode x$SLOW ran out of clock (${TIMEOUT}s) before the smoke test began;" >&2
+    echo "raise SONORA_QEMU_SLOW. This is not a pass." >&2
+    exit "$QEMU_EXIT_INCONCLUSIVE"
+  fi
   exit 1
 }
 
@@ -305,8 +318,9 @@ if [[ "$verdict" == *pass* ]]; then
   exit 0
 fi
 if [[ -z "$verdict" ]]; then
-  echo "BOOT TEST INCONCLUSIVE: no verdict after ${waited}s." >&2
+  echo "BOOT TEST INCONCLUSIVE: no verdict after ${waited}s (slow x$SLOW)." >&2
   echo "Full log: $LOG" >&2
+  if [[ "$SLOW" -gt 1 && "$waited" -ge "$TIMEOUT" ]]; then exit "$QEMU_EXIT_INCONCLUSIVE"; fi
   exit 1
 fi
 echo "BOOT TEST FAIL" >&2

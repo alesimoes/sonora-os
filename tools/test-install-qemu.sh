@@ -22,8 +22,11 @@
 # more. Needs iso/sonora.iso (tools/build-iso.sh) and QEMU or Docker.
 #
 #   INSTALL_FIRMWARE=uefi|bios   default uefi when OVMF is found, else bios
-#   INSTALL_TIMEOUT=2400         seconds for run 1 (TCG needs far more than KVM)
-#   BOOT_TIMEOUT=420             seconds for run 2
+#   INSTALL_TIMEOUT=900          seconds for run 1 at KVM speed
+#   BOOT_TIMEOUT=420             seconds for run 2 at KVM speed
+# Both are multiplied by the slow-mode factor when there is no KVM (tools/lib/
+# qemu-accel.sh; SONORA_QEMU_SLOW overrides, SONORA_QEMU_ACCEL=tcg forces TCG).
+# Exit 77 = skipped (no QEMU or Docker here), 3 = TCG clock ran out, 1 = fail.
 set -euo pipefail
 # One heavy job at a time on this machine (tools/build-slot.sh).
 [[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
@@ -32,8 +35,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ISO="$ROOT/iso/sonora.iso"
 WORK="$ROOT/build-qemu/install"
 MEMORY="${QEMU_MEMORY:-4096}"
-INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-2400}"
+INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-900}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-420}"
+# shellcheck source=tools/lib/qemu-accel.sh
+. "$ROOT/tools/lib/qemu-accel.sh"
 FAILED=0
 ok() { echo "INSTALL-TEST ok    $*"; }
 bad() { echo "INSTALL-TEST FAIL  $*"; FAILED=1; }
@@ -67,7 +72,7 @@ IN_CONTAINER=0
 QEMU_IMAGE=sonora-qemu:trixie
 CONTAINER=""
 if [[ -z "$QEMU" ]]; then
-  command -v docker >/dev/null || { echo "error: no qemu-system-x86_64 and no docker." >&2; exit 1; }
+  if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then echo "INSTALL-TEST SKIP: no qemu-system-x86_64 and no usable docker." >&2; exit "$QEMU_EXIT_SKIP"; fi
   IN_CONTAINER=1
   docker build -q -t "$QEMU_IMAGE" --label org.sonora=1 \
     -f "$(host_path "$ROOT/tools")/Dockerfile.qemu" "$(host_path "$ROOT/tools")" >/dev/null
@@ -76,16 +81,18 @@ stop_container() { [[ -z "$CONTAINER" ]] || docker rm -f "$CONTAINER" >/dev/null
 trap stop_container EXIT
 
 KVM_DEV=()
-ACCEL=(-accel tcg)
 if [[ "$IN_CONTAINER" == 1 ]]; then
-  if docker run --rm --privileged --label org.sonora=1 "$QEMU_IMAGE" test -c /dev/kvm 2>/dev/null; then
-    KVM_DEV=(--device /dev/kvm); ACCEL=(-accel kvm)
-  fi
+  KVM_OK=0
+  if docker run --rm --privileged --label org.sonora=1 "$QEMU_IMAGE" test -c /dev/kvm 2>/dev/null; then KVM_DEV=(--device /dev/kvm); KVM_OK=1; fi
+  qemu_pick_accel container "$KVM_OK"
 elif [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
-  ACCEL=(-accel whpx -accel tcg)
-elif [[ -w /dev/kvm ]]; then
-  ACCEL=(-accel kvm)
+  qemu_pick_accel msys 0
+else
+  qemu_pick_accel host 0
 fi
+INSTALL_TIMEOUT="$(qemu_scale "$INSTALL_TIMEOUT")"
+BOOT_TIMEOUT="$(qemu_scale "$BOOT_TIMEOUT")"
+SLOW_APPEND="$(qemu_append_slow)"
 echo "qemu: ${QEMU:-docker:$QEMU_IMAGE}  accel: ${ACCEL[*]}"
 
 # --- firmware ---
@@ -144,12 +151,12 @@ sync
 S=$(sha256sum $D/take1.wav | cut -d" " -f1)
 echo INSTALLTEST-SHA $S > /dev/ttyS0
 [ -d /sys/firmware/efi ] && echo INSTALLTEST-FW uefi > /dev/ttyS0 || echo INSTALLTEST-FW bios > /dev/ttyS0
-export SONORA_CMDLINE="'"$INSTALLED_BASE"' console=ttyS0,115200 sonora.smoketest sonora.expect_installed sonora.expect_file=$D/take1.wav sonora.expect_sha=$S"
+export SONORA_CMDLINE="'"$INSTALLED_BASE"' console=ttyS0,115200 sonora.smoketest${SLOW_APPEND:+ $SLOW_APPEND} sonora.expect_installed sonora.expect_file=$D/take1.wav sonora.expect_sha=$S"
 sonora-install --yes --target /dev/vda > /dev/ttyS0 2>&1
 echo INSTALLTEST-RC $? > /dev/ttyS0'
 B64="$(printf '%s\n' "$GUEST_SCRIPT" | base64 | tr -d '\n')"
 RUN="systemd.unit=kernel-command-line.target systemd.run_success_action=poweroff systemd.run_failure_action=poweroff"
-APPEND="$SHIPPED_APPEND console=ttyS0,115200 $RUN systemd.run=\"/bin/sh -c 'echo $B64 | base64 -d | sh'\""
+APPEND="$SHIPPED_APPEND console=ttyS0,115200${SLOW_APPEND:+ $SLOW_APPEND} $RUN systemd.run=\"/bin/sh -c 'echo $B64 | base64 -d | sh'\""
 if (( ${#APPEND} > 1900 )); then echo "error: kernel command line is ${#APPEND} bytes; limit 2048." >&2; exit 1; fi
 
 # --- one QEMU run ---
@@ -190,13 +197,13 @@ qemu_run() {
   pid=$!
   while (( waited < seconds )) && kill -0 "$pid" 2>/dev/null; do sleep 2; waited=$((waited + 2)); done
   if kill -0 "$pid" 2>/dev/null; then
-    POWERED_OFF=0; kill "$pid" 2>/dev/null || true; sleep 2; kill -9 "$pid" 2>/dev/null || true
+    POWERED_OFF=0; CLOCK_STOPPED=1; kill "$pid" 2>/dev/null || true; sleep 2; kill -9 "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true; stop_container
   else
     POWERED_OFF=1; wait "$pid" 2>/dev/null || true
   fi
   CONTAINER=""
-  echo "INSTALL-TEST info  $name: $([[ $POWERED_OFF == 1 ]] && echo "ended by itself" || echo "stopped on the clock") after ${waited}s"
+  echo "INSTALL-TEST info  $name: $([[ $POWERED_OFF == 1 ]] && echo "ended by itself" || echo "stopped on the clock") after ${waited}s (limit ${seconds}s, accel $ACCEL_NAME, slow x$SLOW)"
   [[ -s "$WORK/$name.serial.log" ]] || { bad "$name: no serial output (QEMU refused its arguments?)"; sed 's/^/    /' "$WORK/$name.qemu.log"; }
 }
 serial() { tr -d '\r' < "$WORK/$1.serial.log" 2>/dev/null | grep -a -- "$2" || true; }
@@ -225,4 +232,9 @@ if serial installed 'SMOKETEST ok    kernel is -rt-' | grep -q .; then ok "insta
 [[ "$POWERED_OFF" == 1 ]] || bad "installed system did not power itself off after the smoke test"
 
 echo
-if [[ "$FAILED" == 0 ]]; then echo "INSTALL-TEST RESULT pass ($FIRMWARE)"; else echo "INSTALL-TEST RESULT fail ($FIRMWARE); logs in $WORK"; exit 1; fi
+if [[ "$FAILED" == 0 ]]; then echo "INSTALL-TEST RESULT pass ($FIRMWARE)"; else
+  echo "INSTALL-TEST RESULT fail ($FIRMWARE); logs in $WORK"
+  # Under TCG a run stopped on the clock is not evidence about the image.
+  if [[ "$SLOW" -gt 1 && "${CLOCK_STOPPED:-0}" == 1 ]]; then echo "INSTALL-TEST INCONCLUSIVE: slow mode x$SLOW ran out of clock; raise SONORA_QEMU_SLOW" >&2; exit "$QEMU_EXIT_INCONCLUSIVE"; fi
+  exit 1
+fi

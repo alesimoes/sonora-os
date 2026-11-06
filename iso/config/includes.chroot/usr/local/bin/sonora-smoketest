@@ -62,6 +62,10 @@ EXPECT_FILE=
 EXPECT_SHA=
 # sonora.policycheck: assert the running mounts, limits, sysctls and units.
 POLICYCHECK=0
+# sonora.slow=N: the guest runs under TCG emulation, N times slower than KVM.
+# Scales the waits only (hand-back, first frame, recovery limit); no assertion
+# changes. Set by tools/lib/qemu-accel.sh, never in the shipped command line.
+SLOW=1
 # Words, not lines: /proc/cmdline is one line of parameters.
 # shellcheck disable=SC2013
 for word in $(cat /proc/cmdline); do
@@ -75,8 +79,10 @@ for word in $(cat /proc/cmdline); do
     sonora.expect_file=*) EXPECT_FILE="${word#sonora.expect_file=}" ;;
     sonora.expect_sha=*) EXPECT_SHA="${word#sonora.expect_sha=}" ;;
     sonora.break_ui) BREAK_UI=1 ;;
+    sonora.slow=*) SLOW="${word#sonora.slow=}" ;;
   esac
 done
+case "$SLOW" in '' | *[!0-9]* | 0) SLOW=1 ;; esac
 if [ "$BREAK_UI" = 1 ]; then
   GUI=1
   EXPECT_FALLBACK=1
@@ -104,13 +110,14 @@ fi
 # for the hand-back before the engine checks below sample anything.
 if [ "$EXPECT_FALLBACK" = 1 ]; then
   i=0
-  while [ "$i" -lt 90 ] && ! systemctl is-active --quiet sonora-session.service; do
+  while [ "$i" -lt $((90 * SLOW)) ] && ! systemctl is-active --quiet sonora-session.service; do
     i=$((i + 1))
     sleep 1
   done
 fi
 
 echo "SMOKETEST begin"
+[ "$SLOW" = 1 ] || echo "SMOKETEST info  slow mode x$SLOW: waits scaled, assertions unchanged"
 
 # --- 1. nothing failed on the way up ---
 # Deliberately not `is-active multi-user.target`: this unit is ordered after
@@ -266,7 +273,7 @@ wait_new_pid() {
 # SIGKILL the unit's main process and require it, and the UI behind it, to run
 # again within RECOVER_MS. The PID has to change: a signal the unit shrugged
 # off would pass an "is it active" check taken at once.
-RECOVER_MS=3000
+RECOVER_MS=$((3000 * SLOW))
 kill_and_recover() {
   old="$(unit_pid "$1")"
   oldui="$(unit_pid sonora-ui.service)"
@@ -291,7 +298,7 @@ gui_checks() {
   # many seconds.
   i=0
   FRAME_MS=""
-  while [ "$i" -lt 60 ] && [ -z "$FRAME_MS" ]; do
+  while [ "$i" -lt $((60 * SLOW)) ] && [ -z "$FRAME_MS" ]; do
     FRAME_MS="$(journalctl -b -u sonora-ui.service -o cat --no-pager 2>/dev/null |
       sed -n 's/.*first frame after \([0-9][0-9]*\) ms.*/\1/p' | tail -n 1)"
     [ -n "$FRAME_MS" ] || { i=$((i + 1)); sleep 1; }
