@@ -407,6 +407,20 @@ bool thin_range_op(Id track, const AutomationLane& lane, Frames a, Frames b,
     return true;
 }
 
+bool write_range_op(Id track, const AutomationLane& lane, Frames a, Frames b, float value,
+                    EditAutomation& out) {
+    if (b <= a || a < 0 || !std::isfinite(value)) return false;
+    const float v = clamp_lane_value(lane.param, value);
+    out = EditAutomation{};
+    out.track = track;
+    aim(out, lane);
+    out.from = a;
+    out.to = b;
+    out.points.push_back({a, v});
+    if (b - 1 > a) out.points.push_back({b - 1, v});
+    return true;
+}
+
 bool paste_op(Id track, const AutomationClip& clip, Frames at, EditAutomation& out) {
     if (clip.empty() || clip.length <= 0 || at < 0 || at + clip.length > kMaxInteger) return false;
     out = EditAutomation{};

@@ -473,6 +473,12 @@ bool decode(std::string_view bytes, EngineEvent& out, std::string& error) {
                     " this version does not define";
             return false;
         }
+    } else if (m.kind == EventKind::Bounce) {
+        if (m.flags > static_cast<uint32_t>(BounceState::Cancelled)) {
+            error = "a bounce event in state " + std::to_string(m.flags) +
+                    " this version does not define";
+            return false;
+        }
     } else if (m.kind == EventKind::Consolidate) {
         if (m.flags > kConsolidateCancelled) {
             error = "a consolidate event in state " + std::to_string(m.flags) +

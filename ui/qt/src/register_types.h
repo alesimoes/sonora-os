@@ -4,6 +4,7 @@
 #include <QtQml>
 
 #include "insert_model.h"
+#include "loudness_model.h"
 #include "meter_item.h"
 #include "mix_model.h"
 #include "scene_item.h"
@@ -34,6 +35,8 @@ inline void register_types() {
                                             QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<MixModel>("Sonora", 1, 0, "MixModel",
                                          QStringLiteral("made once, in main()"));
+    qmlRegisterUncreatableType<LoudnessModel>("Sonora", 1, 0, "LoudnessModel",
+                                              QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<SendModel>("Sonora", 1, 0, "SendModel",
                                           QStringLiteral("made once, in main()"));
     qmlRegisterSingletonType<ThemeObject>("Sonora", 1, 0, "Theme",
