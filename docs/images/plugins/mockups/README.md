@@ -1,4 +1,4 @@
-# Plugin editor mockups (style proposal, round 2)
+# Plugin editor mockups (style proposal, round 3)
 
 Images only, for the owner to approve the look before any editor code is
 written. Each picture is the editor window itself: a front view of a classic
@@ -9,9 +9,9 @@ original brand, model name, logo or badge text anywhere).
 
 | File | Plugin | Window | Inspiration |
 |---|---|---|---|
-| `sn-lume.svg` / `.png` | `plugins/native/opto` (`org.sonora.opto`) | 900 x 249 (3U) | 1960s tube optical leveler: greige hammertone steel, ivory VU between two big knurled bakelite knobs, bat toggles, red jewel pilot |
-| `sn-talon.svg` / `.png` | `plugins/native/fet` (`org.sonora.fet`) | 900 x 166 (2U) | 1970s FET limiter, black face: satin black anodised, brushed-silver strips, silver-skirt knobs, ratio and meter push buttons, white VU |
-| `sn-aurea.svg` / `.png` | `plugins/native/passiveeq` (`org.sonora.passiveeq`) | 900 x 249 (3U) | 1950s/60s passive tube program equalizer: slate hammertone, chrome-skirt 0-10 knobs, pointer selectors with printed steps, jewel pilot |
+| `sn-lume.svg` / `.png` | `plugins/native/opto` (`org.sonora.opto`) | 900 x 249 (3U) | 1960s tube optical leveler: smooth cool light-silver panel, small black pointer knobs with a tight 0-100 ring, centred cream VU, red italic wordmark, sparse layout |
+| `sn-talon.svg` / `.png` | `plugins/native/fet` (`org.sonora.fet`) | 900 x 166 (2U) | 1970s FET limiter, silver-face/blue-band edition: brushed aluminium, blue band with the VU, 2 x 2 knurled knobs, black ratio and meter push-button columns |
+| `sn-aurea.svg` / `.png` | `plugins/native/passiveeq` (`org.sonora.passiveeq`) | 900 x 249 (3U) | 1950s/60s passive tube program equalizer: light powder-blue panel, silver nameplate strip, two rows of black pointer knobs with 0-10 scales |
 
 There are no digital readouts on any panel. The value of a control shows as a
 small tooltip while the pointer hovers over it or drags it (one is drawn on
@@ -20,8 +20,7 @@ The slotted rack screws sit in the oval slots of the panel ears.
 
 Where the original's scale and the parameter range differ, the printing
 follows the original and the control maps onto the parameter range linearly
-(or logarithmically where the taper says so). Lume's scale is printed in
-black because white would not show on the light panel.
+(or logarithmically where the taper says so). All lettering is small black caps (white on Talon's blue band).
 
 ## Control to parameter mapping
 
@@ -35,40 +34,41 @@ in a small menu in the window's title strip.
 
 | Control | Parameter id | Range / steps | Notes |
 |---|---|---|---|
-| GAIN knob (left, scale 0-100) | `gain` | -12 to +40 dB | tooltip `%+.1f dB` |
-| PEAK REDUCTION knob (right, 0-100) | `peak_reduction` | 0 to 100 % | |
-| LIMIT / COMPRESS bat toggle | `mode` | compress (down), limit (up) | |
-| STEREO / DUAL bat toggle | `link` | on = stereo (up) | |
-| EXT KEY / INT bat toggle | `external_sc` | off / on | host-routed; hidden when the chain has no side-chain input |
-| ON / BYPASS bat toggle | `bypass` | up = processing, down = bypassed | |
+| GAIN knob (centre-left, scale 0-100) | `gain` | -12 to +40 dB | tooltip `%+.1f dB` |
+| PEAK REDUCTION knob (centre-right, 0-100) | `peak_reduction` | 0 to 100 % | |
+| LIMIT / COMPRESS bat toggle (bottom-left) | `mode` | compress (down), limit (up) | |
+| STEREO / DUAL bat toggle (beside it) | `link` | on = stereo (up) | |
+| EXT KEY / INT tiny toggle (bottom edge) | `external_sc` | off / on | host-routed; hidden when the chain has no side-chain input |
+| POWER bat toggle (bottom-right) | `bypass` | up = processing, down = bypassed | |
 | Red jewel pilot lamp | none (indicator) | lit when not bypassed | |
-| EMPHASIS chicken-head knob | `emphasis` | 0 to 100 % | small, beside the right knob |
-| MIX chicken-head knob | `mix` | 0 to 100 % | small, beside the right knob |
-| METER selector (+4 / +10 / GR) | none (view state) | what the needle shows | not a parameter |
+| EMPHASIS tiny knob (bottom edge) | `emphasis` | 0 to 100 % | discreet, under the meter |
+| MIX tiny knob (bottom edge) | `mix` | 0 to 100 % | discreet, under the meter |
+| METER selector (top-right: GAIN RED. / +10 / +4) | none (view state) | what the needle shows | not a parameter |
+| "SN" emblem above the meter | none | decoration | neutral, not a brand |
 | VU meter | none (live meter) | gain reduction | |
 
 ### SN-TALON (fet)
 
 | Control | Parameter id | Range / steps | Notes |
 |---|---|---|---|
-| INPUT knob (-24 to +24 printed) | `input` | -24 to +24 dB | |
-| OUTPUT knob (-24 to +24 printed) | `output` | -24 to +24 dB | |
-| ATTACK knob (1-7) | `attack` | log, `kAttackMinMs` to `kAttackMaxMs` | 1 = slow (max ms), 7 = fast (min ms): the control inverts the parameter, as on the original |
-| RELEASE knob (1-7) | `release` | log, 59.4 to 1159.4 ms | 1 = slow (max ms), 7 = fast (min ms), inverted likewise |
-| RATIO push buttons 4, 8, 12, 20 | `ratio` | steps 0 to 3: 4:1, 8:1, 12:1, 20:1 | radio group, one pressed |
+| INPUT knob (top-left of the 2 x 2 grid, large) | `input` | -24 to +24 dB | |
+| OUTPUT knob (top-right of the grid, large) | `output` | -24 to +24 dB | |
+| ATTACK knob (bottom-left of the grid, small, 1-7) | `attack` | log, `kAttackMinMs` to `kAttackMaxMs` | 1 = slow (max ms), 7 = fast (min ms): the control inverts the parameter, as on the original |
+| RELEASE knob (bottom-right of the grid, small, 1-7) | `release` | log, 59.4 to 1159.4 ms | 1 = slow (max ms), 7 = fast (min ms), inverted likewise |
+| RATIO push buttons (one column, 20 / 12 / 8 / 4 top to bottom) | `ratio` | steps 0 to 3: 4:1, 8:1, 12:1, 20:1 | radio group, one pressed |
 | All four ratio buttons pressed | `ratio` | step 4: "all buttons" | entered with shift-click on any ratio button; all four then show pressed |
-| METER buttons GR, +8, +4, OFF | none (view state) | what the needle shows | not a parameter |
-| MIX small knob | `mix` | 0 to 100 % | parallel mix |
-| LINK black toggle | `link` | off / on | |
-| KEY black toggle | `external_sc` | off / on | host-routed, as above |
-| BYPASS black toggle + red lamp | `bypass` | up = processing | |
+| METER buttons (second black column: GR, +8, +4, OFF) | none (view state) | what the needle shows | not a parameter |
+| MIX tiny knob (blue band, right edge) | `mix` | 0 to 100 % | parallel mix |
+| LINK tiny toggle (blue band) | `link` | off / on | |
+| KEY tiny toggle (blue band) | `external_sc` | off / on | host-routed, as above |
+| BYPASS tiny toggle (blue band; red jewel lamp top-right) | `bypass` | up = processing | |
 | VU meter | none (live meter) | gain reduction | |
 
 ### SN-AUREA (passiveeq)
 
 | Control | Parameter id | Range / steps | Notes |
 |---|---|---|---|
-| LOW BOOST knob (0-10 on the skirt) | `lf_boost` | 0 to 14 dB | |
+| LOW BOOST knob (top row, 0-10 printed on the panel) | `lf_boost` | 0 to 14 dB | |
 | LOW ATTEN knob | `lf_atten` | 0 to 16 dB | |
 | LOW FREQUENCY selector (CPS) | `lf_freq` | 4 steps: 20, 30, 60, 100 Hz | snaps |
 | HIGH BOOST knob | `hf_boost` | 0 to 16 dB | |
@@ -76,11 +76,11 @@ in a small menu in the window's title strip.
 | HIGH FREQUENCY selector (KCS) | `hf_freq` | 7 steps: 3, 4, 5, 8, 10, 12, 16 kHz | |
 | ATTEN SEL selector (KCS) | `hf_atten_freq` | 3 steps: 5, 10, 20 kHz | |
 | HIGH ATTEN knob | `hf_atten` | 0 to 20 dB | |
-| DRIVE small knob | `drive` | 0 to 24 dB (default 6) | tube make-up stage drive |
-| OUTPUT small knob | `output` | -12 to +12 dB | |
-| IRON toggle | `iron` | off / on | |
-| IN / OUT bat toggle + red lamp | `bypass` | IN (up) = processing | |
-| Small VU | none (live meter) | output peak | |
+| DRIVE small knob (bottom row) | `drive` | 0 to 24 dB (default 6) | tube make-up stage drive |
+| OUTPUT small knob (bottom row) | `output` | -12 to +12 dB | |
+| IRON toggle (bottom row) | `iron` | off / on | |
+| IN / OUT bat toggle, red lamp to its left (bottom row) | `bypass` | IN (up) = processing | |
+| Tiny VU (bottom row) | none (live meter) | output peak | |
 
 ## How a faceplate would plug into the DAW
 
