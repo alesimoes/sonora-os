@@ -212,6 +212,48 @@ a.prn:hover,a.prt:hover{text-decoration:underline}
 footer{color:var(--faint);font-size:11px;margin-top:2px}
 :focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 
+/* visão simples */
+.sit{font-size:22px;line-height:1.4;font-weight:500;padding:14px 18px;margin-bottom:8px;background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--accent);border-radius:4px}
+.sit b{font-weight:700;color:var(--accent)}
+.sit .sitw{color:var(--warn);font-size:16px;display:block;margin-top:2px}.sit .sitb{color:var(--bad);font-size:16px;display:block}
+h2.h2{font-size:17px;font-weight:600;margin:22px 0 10px;display:flex;align-items:baseline;gap:12px}
+h2.h2 .hint,summary .hint{font-size:12px;font-weight:400;color:var(--faint)}
+.people{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px}
+.ag{--c:var(--faint);display:flex;gap:12px;padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:6px;cursor:pointer;min-width:0}
+.ag:hover,.ag:focus-visible{background:var(--raised);border-color:var(--line2)}
+.ag.working{--c:var(--ok)} .ag.wait{--c:var(--warn)} .ag.idle{--c:var(--faint)} .ag.done{--c:#6b9bf2}
+.ag.done{opacity:.8}
+.av{flex:none;width:48px;height:48px;border-radius:50%;display:grid;place-items:center;font:700 16px var(--disp);color:var(--window);background:var(--accent);box-shadow:0 0 0 3px var(--panel),0 0 0 5px var(--accent)}
+.ag.opus .av{background:var(--opus);box-shadow:0 0 0 3px var(--panel),0 0 0 5px var(--opus)}
+.ab{min-width:0;flex:1}
+.an{font-size:17px;font-weight:700;line-height:1.25}
+.as{font-size:12px;color:var(--muted);margin-top:1px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sts{display:flex;align-items:center;gap:7px;margin-top:8px;font-size:13px;font-weight:600;color:var(--c)}
+.sd{width:10px;height:10px;border-radius:50%;background:var(--c);flex:none}
+.ag.working .sd{animation:blink 1.6s ease-in-out infinite}
+.ad{margin-top:5px;font-size:14px;line-height:1.4;color:var(--ink);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.ac{display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap}
+.ac .more{margin-left:auto;font-size:12px;color:var(--faint)} .ag:hover .more{color:var(--accent)}
+.pnote{font-size:12px;color:var(--faint);margin-top:8px}
+.mach{display:flex;flex-direction:column;gap:4px}
+.mrow{display:grid;grid-template-columns:130px minmax(0,1.5fr) 120px minmax(0,2fr);gap:12px;align-items:baseline;padding:8px 12px;background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--warn);border-radius:4px;font-size:14px}
+.mrow.holds{border-left-color:var(--ok)} .mrow.free{display:block;border-left-color:var(--ok)}
+.mrow .mn{font-weight:700;color:var(--warn)} .mrow.holds .mn{color:var(--ok)}
+.mrow .mw{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow .mt{color:var(--muted);font-size:13px} .mrow .mc{color:var(--faint);font:11px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow.clk:hover{background:var(--raised)}
+.prl{display:flex;flex-direction:column;gap:4px}
+.pr{display:grid;grid-template-columns:56px minmax(0,3fr) 230px minmax(0,2fr);gap:12px;align-items:center;padding:9px 12px;background:var(--panel);border:1px solid var(--line);border-radius:4px;font-size:14px}
+.pr:hover,.pr:focus-visible{background:var(--raised)}
+.pr .pt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pst{font-weight:700;font-size:13px;padding:2px 10px;border-radius:12px;border:1px solid;justify-self:start;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.pst.ok{color:var(--ok)} .pst.test{color:var(--accent)} .pst.wait{color:var(--warn)} .pst.bad{color:var(--bad);background:var(--badbg)}
+.pnx{font-size:12px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+details.tech{margin-top:28px;border-top:1px solid var(--line);padding-top:12px}
+details.tech>summary{cursor:pointer;font:600 15px var(--disp);color:var(--muted);padding:6px 0}
+details.tech[open]>summary{margin-bottom:12px}
+@media (max-width:900px){.pr{grid-template-columns:50px 1fr}.pr .pst,.pr .pnx{grid-column:2}.mrow{grid-template-columns:1fr}}
+
 /* painel de detalhes do card clicado */
 .clk{cursor:pointer}
 #drawer{position:fixed;top:0;right:0;height:100vh;width:min(560px,96vw);background:var(--panel);border-left:1px solid var(--line2);box-shadow:-12px 0 40px rgba(0,0,0,.5);z-index:50;transform:translateX(105%);transition:transform .2s;display:flex;flex-direction:column}
@@ -240,11 +282,19 @@ footer{color:var(--faint);font-size:11px;margin-top:2px}
     <div class="live" style="margin-left:auto"><span class="dot" id="dot"></span><span id="livetxt">sincronizando</span></div>
     <div class="clock"><b id="clock">--:--:--</b><span id="date"></span></div>
   </header>
-  <div class="sumline" id="sumline"></div>
+  <div class="sit" id="sit">Carregando...</div>
+  <h2 class="h2">Agentes</h2>
+  <div class="people" id="people"></div>
+  <div class="pnote" id="pnote"></div>
+  <h2 class="h2">Máquina de build <span class="hint">só um build pesado roda por vez; os outros esperam na fila</span></h2>
+  <div class="mach" id="mach"></div>
+  <h2 class="h2">PRs abertos <span class="hint" id="prhint"></span></h2>
+  <div class="prl" id="prl"></div>
+  <details class="tech" id="tech"><summary>Detalhes técnicos <span class="hint">pools do orquestrador, backlog, colunas do merge, eventos, containers</span></summary>
   <p class="err" id="err"></p>
 
   <section class="panel hero" aria-label="Agentes">
-    <div class="ph"><h2>Agentes</h2><i id="agcount"></i></div>
+    <div class="ph"><h2>Agentes (visão técnica)</h2><i id="agcount"></i></div>
     <div class="ohead" id="agsum"></div>
     <div class="sec"><h4>Agentes desta sessão</h4><div id="sesag"></div></div>
     <div class="sec"><h4>Máquina de build: quem usa e quem espera (um de cada vez)</h4><div id="lockbox"></div></div>
@@ -285,8 +335,13 @@ footer{color:var(--faint);font-size:11px;margin-top:2px}
       <footer>O estado de cada agente vem do JSON do coordenador e da fila da máquina (build-slot.sh --list). Clique num card para ver o detalhe.</footer>
     </aside>
   </div>
+</details>
 </main>
 <script>
+/* não reescreve o DOM quando o HTML é idêntico: um clique cujo alvo foi trocado entre o botão
+   descer e subir se perde, e a lista é redesenhada a cada poucos segundos */
+if(typeof Element!=='undefined'){const d=Object.getOwnPropertyDescriptor(Element.prototype,'innerHTML');
+  Object.defineProperty(Element.prototype,'innerHTML',{get(){return d.get.call(this)},set(v){if(this._h===v)return;this._h=v;d.set.call(this,v)}})}
 const $=id=>document.getElementById(id);
 const E=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const dur=s=>s==null?'sem sinal':s<90?s+' s':s<5400?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h';
@@ -376,7 +431,7 @@ function trAllLabel(){const cs=[...document.querySelectorAll('#trcols .tc')],b=$
 function trAll(){const cs=[...document.querySelectorAll('#trcols .tc')],close=!cs.every(el=>el.classList.contains('closed'));
   cs.forEach(el=>{el.classList.toggle('closed',close);close?trClosed.add(el.dataset.h):trClosed.delete(el.dataset.h)});trSave();trAllLabel()}
 function trPanel(){const p=document.querySelector('section.train'),hid=p.classList.toggle('hidden');$('trpanel').textContent=hid?'Mostrar painel':'Ocultar painel';localStorage.setItem(TRK+'.panel',hid?'1':'')}
-addEventListener('DOMContentLoaded',()=>{if(localStorage.getItem(TRK+'.panel'))trPanel()});
+addEventListener('DOMContentLoaded',()=>{if(localStorage.getItem(TRK+'.panel'))trPanel();const t=$('tech');if(localStorage.getItem('sonora.tech'))t.open=true;t.addEventListener('toggle',()=>localStorage.setItem('sonora.tech',t.open?'1':''))});
 
 /* Merge train do orquestrador (status.json .train): quem cuida de cada PR e
    qual o próximo passo. Sem orquestrador, cai no cálculo local abaixo. */
@@ -440,22 +495,82 @@ function renderTrain(s){
     +col('g','Verde (pronto p/ merge)',B.g)+col('y','Rodando',B.y)+col('r','Vermelho',B.r)
     +col('x','Cancelado / sem run',B.x)+col('r','Conflito',B.m)+col('q','Empilhado',B.q);trAllLabel()}
 
-function renderSummary(s){
+/* ---- visão simples: frase da situação, agentes como pessoas, máquina, PRs ---- */
+const ROLE_PT={'principal-engineer':'Engenheiro principal','rt-engineer':'Engenheiro de tempo real','ui-engineer':'Engenheiro de interface','distro-engineer':'Engenheiro de distribuição','plugin-engineer':'Engenheiro de plugins','dsp-engineer':'Engenheiro de DSP','general-purpose':'Agente geral','fixer':'Corretor','integrator':'Integrador','coordenador':'Coordenador','architect':'Arquiteto','planner':'Planejador','reviewer':'Revisor','qa':'Testador'};
+const roleName=r=>ROLE_PT[r]||(r?String(r).replace(/-/g,' ').replace(/^./,c=>c.toUpperCase()):'Agente');
+const AVT=[['principal','P'],['coord','C'],['ui-','UI'],['rt-','RT'],['fix','FX'],['integr','IN'],['plugin','PL'],['dsp','DS'],['distro','OS'],['general','AG'],['arch','AR'],['plan','PL'],['review','RV'],['qa','QA']];
+const avatarOf=r=>{r=String(r||'').toLowerCase();const m=AVT.find(x=>r.includes(x[0]));return m?m[1]:(r.slice(0,2).toUpperCase()||'?')};
+const MODEL_PT=m=>m?String(m).replace(/^./,c=>c.toUpperCase()):'';
+function personCard(x){
+  const model=String(x.model||'').toLowerCase();
+  const chips=(x.pr?`<a class="chip" href="${PRURL}${x.pr}" target="_blank" rel="noopener">PR #${x.pr}</a>`:'')+(x.branch?`<span class="chip">${E(x.branch)}</span>`:'');
+  return `<article class="ag ${x.state} ${model==='opus'?'opus':''} clk" tabindex="0" role="button" data-k="${E(x.k)}" data-id="${E(x.id)}" title="clique para ver o detalhe">
+    <div class="av">${E(x.avatar)}</div>
+    <div class="ab"><div class="an">${E(x.title)}</div>
+      <div class="as">${model?`<span class="mdl ${model}">${E(MODEL_PT(model))}</span> `:''}${E(x.sub)}</div>
+      <div class="sts"><i class="sd"></i>${E(x.stateText)}</div>
+      <div class="ad">${E(x.doing||'sem tarefa registrada')}</div>
+      <div class="ac">${chips}<span class="more">detalhes ›</span></div></div></article>`}
+function people(s){
+  const now=Date.now()/1000,out=[];
+  const c=s.coordinator;
+  if(c){const age=c.updated?Math.round(now-c.updated):null,live=age!=null&&age<900;
+    out.push({k:'coord',id:'coord',title:'Coordenador',sub:'Claude · lidera a sessão',model:'opus',avatar:'C',state:live?'working':'idle',
+      stateText:live?'Trabalhando · atualizou há '+dur(age):'Sem atualização há '+dur(age),doing:c.doing})}
+  s.agents.filter(a=>!['done','paused'].includes(a.state)).sort((x,y)=>ORDER[x.state]-ORDER[y.state]).forEach(a=>{
+    const lk=a.lock,since=lk?dur(Math.round(now-lk.start)):'';
+    const st=a.state==='building'?['working','Usando a máquina · há '+since]:a.state==='waiting_lock'?['wait','Esperando a máquina · há '+since]
+      :a.state==='working'?['working','Trabalhando'+(a.since&&a.since_src!=='worktree'?' · há '+dur(Math.round(now-a.since)):'')]:['idle','Parado'];
+    out.push({k:'agent',id:a.id,title:roleName(a.agent),sub:a.label,model:a.model,avatar:avatarOf(a.agent),state:st[0],stateText:st[1],doing:a.doing,pr:a.pr,branch:a.pr?'':a.branch})});
+  const o=s.orchestrator;
+  ((o&&o.runs)||[]).forEach(r=>{out.push({k:'run',id:r.id,title:roleName(r.role),sub:'orquestrador · '+(r.name||r.id),model:r.model||'sonnet',avatar:avatarOf(r.role),
+    state:r.suspect||r.working===false?'wait':'working',stateText:(r.suspect?'Sem sinal':r.building?'Buildando':'Trabalhando')+(r.started?' · há '+dur(Math.round(now-r.started)):''),doing:r.task})});
+  s.agents.filter(a=>a.state==='done'&&isToday(a.done_at)).forEach(a=>out.push({k:'agent',id:a.id,title:roleName(a.agent),sub:a.label,model:a.model,avatar:avatarOf(a.agent),
+    state:'done',stateText:'Terminou · há '+dur(Math.round(now-a.done_at)),doing:a.doing,pr:a.pr}));
+  return out}
+function renderPeople(s){
+  const list=people(s);
+  $('people').innerHTML=list.map(personCard).join('')||'<div class="empty">Nenhum agente.</div>';
+  const o=s.orchestrator,runs=((o&&o.runs)||[]).length;
+  $('pnote').textContent=o?(runs?'':'Orquestrador automático: nenhum agente em execução'+((o.paused||[]).length?' (as filas de planejamento e construção estão pausadas)':'')+'.'):'Orquestrador automático desligado.'}
+function renderMachine(s){
+  const lock=s.lock||[],now=Date.now()/1000;
+  if(!lock.length){$('mach').innerHTML='<div class="mrow free"><b>Máquina livre.</b> Nenhum build rodando.</div>';return}
+  const idOf=r=>{const a=s.agents.find(a=>a.label===r.who);return r.builder?['builder','builder']:a?['agent',a.id]:['',''] };
+  $('mach').innerHTML=lock.map((r,i)=>{const [k,id]=idOf(r);
+    return `<div class="mrow ${r.role} ${k?'clk':''}" ${k?`data-k="${k}" data-id="${E(id)}"`:''}><span class="mn">${r.role==='holds'?'Rodando agora':i+'º na fila'}</span><span class="mw">${E(r.who)}</span><span class="mt">${r.role==='holds'?'há ':'espera há '}${dur(Math.round(now-r.start))}</span><span class="mc">${E(r.cmd.replace(/^bash\s+\S*\//,'').slice(0,70))}</span></div>`}).join('')}
+function prStatus(p,t){
+  if(t){const ph=t.phase||'';
+    if(ph==='conflito')return ['bad','conflito com a main'];
+    if(t.state==='ci_fix'||ph==='fixer')return ['bad','falhou: '+((t.failing||[]).slice(0,2).join(', ')||'testes')];
+    if(ph==='empilhado'||ph==='retarget')return ['wait','esperando outro PR'+(t.waits_on?' (#'+t.waits_on+')':'')];
+    if(ph==='verde')return ['ok','pronto'];
+    if(ph==='juntando')return ['wait','juntando PRs'];
+    if(ph==='bloqueado'||ph==='fechado')return ['bad','bloqueado'];
+    return ['test','testando']}
+  if(p.failed.length>(p.cancelled||[]).length)return ['bad','falhou: '+p.failed.slice(0,2).join(', ')];
+  if(p.base&&p.base!=='main')return ['wait','esperando outro PR'];
+  if(p.pending.length)return ['test','testando'];
+  return ['ok','pronto']}
+function renderPrs(s){
+  const tr=Object.fromEntries(((s.orchestrator||{}).train||[]).map(r=>[r.pr,r]));
+  const rows=s.prs.map(p=>({p,t:tr[p.number],st:prStatus(p,tr[p.number])}));
+  $('prhint').textContent=(s.merged||[]).length+' já entraram hoje';
+  $('prl').innerHTML=rows.map(({p,t,st})=>`<div class="pr clk" tabindex="0" data-k="pr" data-id="${p.number}"><a class="prn" href="${PRURL}${p.number}" target="_blank" rel="noopener">#${p.number}</a><span class="pt">${E(p.title)}</span><span class="pst ${st[0]}">${E(st[1])}</span><span class="pnx">${E((t&&t.next)||'')}</span></div>`).join('')||'<div class="empty">Nenhum PR aberto.</div>';
+  return rows}
+function renderSit(s){
   const lock=s.lock||[],holder=lock.find(r=>r.role==='holds'),nw=lock.filter(r=>r.role==='waits').length;
-  const o=s.orchestrator||{},tr=(o.train||[]).filter(r=>r.state!=='merged');
-  const red=s.prs.filter(p=>p.failed.length>(p.cancelled||[]).length).length;
-  const live=s.agents.filter(a=>!['done','paused'].includes(a.state)),ag=live.length+((o.runs||[]).length),aw=live.filter(a=>a.state==='waiting_lock').length;
-  const stacked=tr.filter(r=>r.phase==='empilhado').length;
-  const card=(c,k,v,d,t)=>`<div class="${c}"><div class="k">${k}</div><div class="v${t?' t':''}" title="${E(v)}">${E(v)}</div><div class="d" title="${E(d)}">${E(d)}</div></div>`;
-  $('sumline').innerHTML=card('a','Mergeados hoje',(s.merged||[]).length,'PRs que entraram na main')
-    +card('o','Rodando na máquina agora',holder?holder.who:'nada',holder?holder.cmd.slice(0,60):'máquina livre',true)
-    +card('w','Esperando a máquina',nw,nw?'na fila, um de cada vez':'ninguém na fila')
-    +card('a','PRs abertos',s.prs.length,stacked?`${stacked} empilhado(s) esperando outro PR`:'todos podem seguir')
-    +card('a','Agentes ativos',ag,aw?`${aw} esperando a máquina`:'nesta sessão e no orquestrador')
-    +(red?card('r','PRs com falha',red,'precisam de correção'):'')}
+  const o=s.orchestrator||{},rows=renderPrs(s);
+  const bad=rows.filter(r=>r.st[0]==='bad'),ready=rows.filter(r=>r.st[1]==='pronto'),test=rows.filter(r=>r.st[0]==='test'),stk=rows.filter(r=>r.st[1].startsWith('esperando'));
+  const nums=a=>a.map(r=>'#'+r.p.number).join(' ');
+  const next=bad.length?'corrigir '+nums(bad)+' (falhou)':ready.length?'fazer o merge de '+nums(ready):test.length?'terminar o teste de '+nums(test)+(stk.length?', depois '+nums(stk):''):stk.length?'esperar '+nums(stk):'nada pendente';
+  const owner=(o.waits_on_owner||[]).length;
+  const age=o.updated_ts?Date.now()/1000-o.updated_ts:0;
+  $('sit').innerHTML=`<b>Main:</b> ${(s.merged||[]).length} merges hoje. <b>Agora:</b> ${holder?'1 build rodando ('+E(holder.who)+')':'nenhum build rodando'}${nw?', '+nw+' esperando a máquina':''}. <b>Próximo passo:</b> ${E(next)}.`
+    +(owner?` <span class="sitw">Espera o dono: ${owner} decisão(ões).</span>`:'')+(age>120?' <span class="sitb">Orquestrador parado desde '+clk(o.updated_ts)+'.</span>':'')}
 function render(s){
   lastState=s;
-  renderSummary(s);
+  renderSit(s);renderPeople(s);renderMachine(s);
   renderTrain(s);
   diff(s);
   renderUsage(s.usage||{});
@@ -691,7 +806,7 @@ function openDetail(k,id){detOpen={k,id};$('dtitle').textContent=id;$('dbody').i
   clearInterval(detTimer);loadDetail();detTimer=setInterval(loadDetail,4000)}
 function closeDetail(){detOpen=null;clearInterval(detTimer);$('drawer').classList.remove('on')}
 document.addEventListener('click',e=>{if(e.target.closest('a,button,input,label,.kh,h3[onclick]'))return;const el=e.target.closest('[data-k]');if(el)openDetail(el.dataset.k,el.dataset.id)});
-document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail();if(e.key==='Enter'){const el=e.target.closest&&e.target.closest('[data-k]');if(el&&el.tagName!=='A')openDetail(el.dataset.k,el.dataset.id)}});
 
 /* O builder: a máquina única que faz o build pesado em lote (status.json .builder) */
 function bPrs(h){return (h.prs||[]).map((p,i)=>p?'#'+p:'commit '+String((h.heads||[])[i]||'').slice(0,7)).join(' ')}
