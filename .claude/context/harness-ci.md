@@ -11,7 +11,7 @@ Local CI context: `harness/docs` (nothing heavy). Agent: harness-engineer.
 
 ## Bound by
 - ADR-0047: harness orchestrator (Python daemon, SQLite state machine,
-  headless Sonnet roles).
+  headless roles).
 - `.claude/PROCESS.md`; rules `gates-and-checks`, `build-lock-and-machine`,
   `branches-and-prs`.
 

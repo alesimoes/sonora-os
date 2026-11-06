@@ -1,11 +1,11 @@
 # Plan: <item-id> - <title>
 
 Status: draft | approved   (approved only by architect sign-off, below)
-Planner: planner   Architect sign-off: <name/date or pending>
+Written by: architect   Dispatched by: lead   Architect sign-off: <name/date or pending>
 Every section is filled or says `N/A - <reason>`. Each names its owner agent,
 deliverables, paths and acceptance criteria a command can check.
 
-## 1. Goal and user experience  (planner)
+## 1. Goal and user experience  (architect)
 What the user does and sees; the flows, step by step. Out of scope.
 Acceptance:
 
@@ -57,8 +57,11 @@ Links: `.claude/rules/code-structure.md`, `testing-and-flakes.md`,
 
 ## 11. Dependencies and order
 contract PR -> parallel slices -> integrator -> one PR.
-| Slice | Agent | Sub-branch | Starts from | Files |
-|---|---|---|---|---|
+| Slice | Agent | Difficulty (S/M/L) | Risk (low/med/high) | Tier (haiku/sonnet/opus) | Sub-branch | Starts from | Files |
+|---|---|---|---|---|---|---|---|
+
+Tier from the table in `.claude/rules/agents-and-models.md`; RT, contracts,
+storage, recovery and concurrency are high risk; no XL slice.
 Integrator:
 Single PR title:
 

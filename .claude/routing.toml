@@ -2,8 +2,9 @@
 # First match wins within [paths]. Globs are repo-relative.
 
 [planning]
-planner = "planner"
-approver = "architect"
+plan_author = "architect"        # writes and approves the plan
+dispatcher = "lead"            # assigns slices; engineers start only when assigned
+bug_assigner = "lead"
 plan_dir = "planning/plans"
 template = "planning/plans/TEMPLATE.md"
 approved_marker = "Status: approved"
@@ -37,7 +38,7 @@ integrator = "integrator"
 ".claude/**" = "harness-engineer"
 "brain/decisions/**" = "architect"
 "brain/research/**" = "researcher"
-"planning/plans/**" = "planner"
+"planning/plans/**" = "architect"
 "planning/**" = "lead"
 
 [failures]
@@ -52,12 +53,28 @@ stalled = "coordinator-relaunch"
 stalled_after_hours = 2
 packaging = "release-engineer"
 image = "distro-engineer"
-missing_plan = "planner"
-escalate = "principal-engineer"          # after the escalation conditions in PROCESS.md
+missing_plan = "architect"
+escalate = "principal-engineer"          # fable tier, after the escalation conditions in PROCESS.md
 
 [tracks]
-daw = ["planner", "visual-designer", "rt-engineer", "ui-engineer", "tester"]
-plugin = ["planner", "visual-designer", "dsp-engineer", "plugin-engineer", "ui-engineer", "tester"]
-os = ["planner", "distro-engineer", "driver-engineer", "tester"]
+daw = ["visual-designer", "rt-engineer", "ui-engineer", "tester"]
+plugin = ["visual-designer", "dsp-engineer", "plugin-engineer", "ui-engineer", "tester"]
+os = ["distro-engineer", "driver-engineer", "tester"]
 review = ["code-reviewer", "rt-safety-auditor", "tester"]
 cleanup = ["janitor"]
+
+[tiers]
+# grade "<difficulty>/<risk>" -> model. Difficulty S|M|L (XL is split before
+# planning), risk low|med|high. Table: .claude/rules/agents-and-models.md.
+"S/low" = "haiku"
+"S/med" = "sonnet"
+"S/high" = "opus"
+"M/low" = "sonnet"
+"M/med" = "sonnet"
+"M/high" = "opus"
+"L/low" = "sonnet"
+"L/med" = "opus"
+"L/high" = "opus"
+escalation = "fable"        # principal-engineer only
+review_min = "sonnet"       # reviews at least the author's tier, never below this
+tester = "sonnet"
