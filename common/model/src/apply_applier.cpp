@@ -418,5 +418,4 @@ void Applier::audit_against_reference(const Audit& a, bool ok, const Playlist& p
 }
 #endif
 
-
 }  // namespace sonora::model::apply_detail

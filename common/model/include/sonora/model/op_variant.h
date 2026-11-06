@@ -134,9 +134,6 @@ public:
     const Families& families() const& { return v_; }
     Families&& families() && { return std::move(v_); }
 
-    friend bool operator==(const OpVariant& a, const OpVariant& b) { return a.v_ == b.v_; }
-    friend bool operator!=(const OpVariant& a, const OpVariant& b) { return !(a == b); }
-
 private:
     Families v_;
 };

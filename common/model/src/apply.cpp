@@ -52,7 +52,6 @@ bool fold(const Snapshot& before, const Compound& c, Snapshot& after, std::strin
 
 }  // namespace
 
-
 // Both at family level: a whole family crosses at once, never leaf by leaf.
 Operation to_operation(const Member& m) {
     return std::visit([](const auto& f) { return Operation(f); }, m.families());

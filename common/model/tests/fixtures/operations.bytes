@@ -15,7 +15,6 @@
     "latency_compensation": 64
   }
 }
-
 === SetMix 402
 {
   "op": "SetMix",
@@ -40,7 +39,6 @@
     "track_punch": true
   }
 }
-
 === SetMonitorBus 111
 {
   "op": "SetMonitorBus",
@@ -50,7 +48,6 @@
     "pan_law_db": -4.5
   }
 }
-
 === SetSettings 850
 {
   "op": "SetSettings",
@@ -91,7 +88,6 @@
     "left_takes": ["Audio Files/Audio 1_02.wav", "Audio Files/Audio 3_01.wav"]
   }
 }
-
 === AddTrack 524
 {
   "op": "AddTrack",
@@ -122,7 +118,6 @@
   },
   "kind": "instrument"
 }
-
 === PlaceRegion 574
 {
   "op": "PlaceRegion",
@@ -160,7 +155,6 @@
   },
   "split_right_id": 14
 }
-
 === RecordTake 726
 {
   "op": "RecordTake",
@@ -208,7 +202,6 @@
     }
   ]
 }
-
 === MoveRegion 125
 {
   "op": "MoveRegion",
@@ -218,7 +211,6 @@
   "split_right_id": 15,
   "timebase": "ticks"
 }
-
 === TrimRegion 114
 {
   "op": "TrimRegion",
@@ -228,7 +220,6 @@
   "to": 1200,
   "timebase": "ticks"
 }
-
 === SplitRegion 118
 {
   "op": "SplitRegion",
@@ -238,14 +229,12 @@
   "new_right_id": 16,
   "timebase": "ticks"
 }
-
 === RemoveRegion 60
 {
   "op": "RemoveRegion",
   "playlist": 3,
   "region": 11
 }
-
 === SetFade 128
 {
   "op": "SetFade",
@@ -257,7 +246,6 @@
     "shape": "linear"
   }
 }
-
 === SetCrossfade 160
 {
   "op": "SetCrossfade",
@@ -270,7 +258,6 @@
     "shape": "linear"
   }
 }
-
 === RemoveCrossfade 76
 {
   "op": "RemoveCrossfade",
@@ -278,7 +265,6 @@
   "left": 11,
   "right": 12
 }
-
 === AddPlaylist 79
 {
   "op": "AddPlaylist",
@@ -286,14 +272,12 @@
   "playlist": 17,
   "name": "Kick.02"
 }
-
 === SetActivePlaylist 64
 {
   "op": "SetActivePlaylist",
   "track": 2,
   "playlist": 17
 }
-
 === AddMarker 121
 {
   "op": "AddMarker",
@@ -304,33 +288,28 @@
     "length": 9600
   }
 }
-
 === MoveMarker 62
 {
   "op": "MoveMarker",
   "marker": 20,
   "position": 96000
 }
-
 === RemoveMarker 43
 {
   "op": "RemoveMarker",
   "marker": 20
 }
-
 === SetTrackName 62
 {
   "op": "SetTrackName",
   "track": 2,
   "name": "Kick In"
 }
-
 === ReorderTracks 50
 {
   "op": "ReorderTracks",
   "order": [2, 5, 9]
 }
-
 === AddInsert 489
 {
   "op": "AddInsert",
@@ -356,13 +335,11 @@
     "files": []
   }
 }
-
 === RemoveInsert 43
 {
   "op": "RemoveInsert",
   "insert": 30
 }
-
 === MoveInsert 74
 {
   "op": "MoveInsert",
@@ -370,14 +347,12 @@
   "to_track": 5,
   "to_slot": 9
 }
-
 === SetInsertActive 65
 {
   "op": "SetInsertActive",
   "insert": 30,
   "active": false
 }
-
 === ReplaceInsert 276
 {
   "op": "ReplaceInsert",
@@ -397,14 +372,12 @@
   ],
   "state": null
 }
-
 === SetInsertBypass 64
 {
   "op": "SetInsertBypass",
   "insert": 30,
   "bypass": true
 }
-
 === SetInsertParams 170
 {
   "op": "SetInsertParams",
@@ -420,7 +393,6 @@
     }
   ]
 }
-
 === SetInsertState 277
 {
   "op": "SetInsertState",
@@ -432,7 +404,6 @@
     "files": []
   }
 }
-
 === AddMidiSource 269
 {
   "op": "AddMidiSource",
@@ -448,7 +419,6 @@
     "latency_compensation": 32
   }
 }
-
 === PlaceMidiRegion 530
 {
   "op": "PlaceMidiRegion",
@@ -480,7 +450,6 @@
     "region": 9
   }
 }
-
 === EditMidi 382
 {
   "op": "EditMidi",
@@ -506,7 +475,6 @@
     [40, "f0f7"]
   ]
 }
-
 === SetMidiRouting 164
 {
   "op": "SetMidiRouting",
@@ -520,7 +488,6 @@
     "channel": 16
   }
 }
-
 === RecordLoopTake 1675
 {
   "op": "RecordLoopTake",
@@ -611,7 +578,6 @@
     }
   ]
 }
-
 === AddBus 159
 {
   "op": "AddBus",
@@ -625,13 +591,11 @@
     "solo": false
   }
 }
-
 === RemoveBus 37
 {
   "op": "RemoveBus",
   "bus": 60
 }
-
 === AddSend 206
 {
   "op": "AddSend",
@@ -648,13 +612,11 @@
     "pre": true
   }
 }
-
 === RemoveSend 39
 {
   "op": "RemoveSend",
   "send": 61
 }
-
 === SetSendMix 156
 {
   "op": "SetSendMix",
@@ -667,7 +629,6 @@
     "pre": false
   }
 }
-
 === SetBusMix 128
 {
   "op": "SetBusMix",
@@ -679,13 +640,11 @@
     "solo": true
   }
 }
-
 === RemoveTrack 40
 {
   "op": "RemoveTrack",
   "track": 9
 }
-
 === DuplicateTrack 166
 {
   "op": "DuplicateTrack",
@@ -697,14 +656,12 @@
   "sends": true,
   "automation": true
 }
-
 === SetOutput 54
 {
   "op": "SetOutput",
   "strip": 2,
   "output": 60
 }
-
 === DuplicatePlaylist 100
 {
   "op": "DuplicatePlaylist",
@@ -713,7 +670,6 @@
   "playlist": 70,
   "name": "Kick.02"
 }
-
 === SetPlaylistName 84
 {
   "op": "SetPlaylistName",
@@ -721,14 +677,12 @@
   "playlist": 3,
   "name": "Kick lead"
 }
-
 === RemovePlaylist 60
 {
   "op": "RemovePlaylist",
   "track": 2,
   "playlist": 3
 }
-
 === EditAutomation 138
 {
   "op": "EditAutomation",
@@ -740,14 +694,12 @@
     [48000, 0.0]
   ]
 }
-
 === SetTrackColour 59
 {
   "op": "SetTrackColour",
   "track": 2,
   "colour": 13
 }
-
 === SetRegionName 83
 {
   "op": "SetRegionName",
@@ -755,7 +707,6 @@
   "region": 11,
   "name": "Verse é"
 }
-
 === SetRegionColour 80
 {
   "op": "SetRegionColour",
@@ -763,7 +714,6 @@
   "region": 11,
   "colour": 255
 }
-
 === SetGroup 132
 {
   "id": 40,
@@ -774,13 +724,11 @@
   "active": true,
   "op": "SetGroup"
 }
-
 === RemoveGroup 41
 {
   "op": "RemoveGroup",
   "group": 40
 }
-
 === SetRegionGain 194
 {
   "op": "SetRegionGain",
@@ -798,7 +746,6 @@
     }
   ]
 }
-
 === SetClipGroup 176
 {
   "op": "SetClipGroup",
@@ -815,7 +762,6 @@
     }
   ]
 }
-
 === SetRegionSources 267
 {
   "op": "SetRegionSources",
@@ -839,7 +785,6 @@
     }
   ]
 }
-
 === SetVca 78
 {
   "id": 70,
@@ -847,13 +792,11 @@
   "members": [2, 3],
   "op": "SetVca"
 }
-
 === RemoveVca 37
 {
   "op": "RemoveVca",
   "vca": 70
 }
-
 === SetVcaMix 93
 {
   "op": "SetVcaMix",
@@ -863,7 +806,6 @@
     "mute": true
   }
 }
-
 === SetFolder 71
 {
   "id": 71,
@@ -871,13 +813,11 @@
   "members": [2],
   "op": "SetFolder"
 }
-
 === RemoveFolder 43
 {
   "op": "RemoveFolder",
   "folder": 71
 }
-
 === ShiftRegions 80
 {
   "op": "ShiftRegions",
@@ -885,7 +825,6 @@
   "from": 96000,
   "delta": -48000
 }
-
 === Compound 1625
 {
   "op": "Compound",
@@ -971,4 +910,3 @@
   ],
   "label": "Paste é"
 }
-

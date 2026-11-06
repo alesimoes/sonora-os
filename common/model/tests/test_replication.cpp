@@ -312,9 +312,9 @@ std::map<std::string, std::string> frozen_operations() {
         std::istringstream head(text.substr(at + 4, eol - at - 4));
         std::string name;
         std::size_t length = 0;
-        if (!(head >> name >> length) || eol + 1 + length + 1 > text.size()) return {};
+        if (!(head >> name >> length) || eol + 1 + length > text.size()) return {};
         out[name] = text.substr(eol + 1, length);
-        at = eol + 1 + length + 1;
+        at = eol + 1 + length;
     }
     return out;
 }
@@ -354,7 +354,7 @@ int test_operation_families() {
         if (!leaf) continue;
         CHECK(m.index() == i);
         CHECK(std::string(member_name(m)) == operation_name(ops[i]));
-        CHECK(to_operation(m) == ops[i]);
+        CHECK(same_op(to_operation(m), ops[i]));
     }
     const Operation& place = ops[variant_index<PlaceRegion>()];
     CHECK(get_if<PlaceRegion>(&place) != nullptr && get_if<RegionOp>(&place) != nullptr);
