@@ -8,6 +8,8 @@
 #   tools/local-ci.sh --full           every step (main after a merge)
 #   tools/local-ci.sh --base REF       compare with REF (default origin/main)
 #   tools/local-ci.sh --dry-run        print the steps, run none
+#   tools/local-ci.sh --release        also keep the plugin packages (Linux
+#                                      tar.gz, Windows zip) in dist/
 #
 # Two tiers (owner, 2026-11-05: integrate a small PR in minutes, run the whole
 # suite once on main after the merge):
@@ -39,14 +41,16 @@ cd "$ROOT" || exit 2
 BASE=origin/main
 FULL=0
 DRY=0
+RELEASE=0
 STEP=""
 while (($#)); do
   case "$1" in
     --full) FULL=1 ;;
     --base) BASE="$2"; shift ;;
     --dry-run) DRY=1 ;;
+    --release) RELEASE=1 ;;
     --step) STEP="$2"; FULL=1; shift ;;   # internal: one step, lock held
-    *) echo "usage: $0 [--full] [--base REF] [--dry-run]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--full] [--base REF] [--dry-run] [--release]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -64,12 +68,12 @@ mkdir -p "$OUT"
 
 # --- which areas the change touches (the classifier .github/workflows/ci.yml
 # used for its heavy jobs) ----------------------------------------------------
-core=0 ui=0 plugins=0 audio=0 rt=0 bwf=0 rec=0 sanitizers=0 portable=0
+core=0 ui=0 plugins=0 pluginhost=0 audio=0 rt=0 bwf=0 rec=0 sanitizers=0 portable=0
 # ctest labels of the changed areas (module labels, CMakeLists.txt), or the
 # whole non-slow suite when a path has no label of its own.
 LABELS=" " fullsuite=0
 lab() { local l; for l; do [[ "$LABELS" == *" $l "* ]] || LABELS+="$l "; done; }
-all() { core=1 ui=1 plugins=1 audio=1 rt=1 bwf=1 rec=1 portable=1 fullsuite=1; }
+all() { core=1 ui=1 plugins=1 pluginhost=1 audio=1 rt=1 bwf=1 rec=1 portable=1 fullsuite=1; }
 if ((FULL)); then
   all; sanitizers=1
 else
@@ -91,10 +95,10 @@ else
       common/*) core=1 rt=1 rec=1 portable=1 fullsuite=1 ;;
       ui/*|keymaps/*) ui=1; lab ui ;;
       plugins/native/*) plugins=1 rt=1 portable=1; lab native ;;
-      plugins/host/*) plugins=1; lab pluginhost plugin_client ;;
-      plugins/client/*|plugins/sdk/*) plugins=1 rt=1 portable=1 fullsuite=1 ;;
+      plugins/host/*) plugins=1 pluginhost=1; lab pluginhost plugin_client ;;
+      plugins/client/*|plugins/sdk/*) plugins=1 pluginhost=1 rt=1 portable=1 fullsuite=1 ;;
       tools/*.ps1) portable=1 ;;
-      plugins/*) plugins=1 fullsuite=1 ;;
+      plugins/*) plugins=1 pluginhost=1 fullsuite=1 ;;
       audio-stack/*) audio=1 ;;
       iso/*|.claude/*|tools/harness/*|tools/harness*.py|tools/orchestrator.py) ;;
       tools/dashboard*|tools/*.lua) ;;
@@ -111,6 +115,9 @@ else
   ((rt)) && sanitizers=1
 fi
 
+# A release run proves and keeps both packages, whatever changed.
+if ((RELEASE)); then plugins=1 portable=1; export SONORA_LOCAL_CI_RELEASE=1; fi
+
 # --- the steps -----------------------------------------------------------------
 steps=()
 if ((core || ui)); then
@@ -119,7 +126,11 @@ if ((core || ui)); then
   if ((core)); then steps+=(tree); else steps+=(ui); fi
 fi
 ((core)) && steps+=(engine-scripts)
+# plugins: the package's own build, tests and archive (common/* and
+# plugins/native only); pluginhost: the whole tree with lilv, for the host and
+# its tests.
 ((plugins)) && steps+=(plugins)
+((pluginhost)) && steps+=(pluginhost)
 ((sanitizers)) && steps+=(tsan)
 ((FULL)) && steps+=(asan)
 ((rt)) && steps+=(rtsan)
@@ -205,14 +216,22 @@ run_step() {
         -v "$(host_path "$ROOT"):/src" -w /src sonora-ui:trixie bash -ec '
           python3 tools/failed-take-quit.py --engine build-ui-container/sonora-engine
           python3 tools/crash-recovery-kill.py --engine build-ui-container/sonora-engine' ;;
-    plugins) tools/build-plugins.sh ;;
+    plugins)
+      # The archive is made after the tests pass; --release keeps it in dist/.
+      pkg_out="$OUT/pkg"
+      [[ -z "${SONORA_LOCAL_CI_RELEASE:-}" ]] || pkg_out="$ROOT/dist"
+      tools/build-plugins.sh --plugins-only && tools/package-plugins.sh --out "$pkg_out" ;;
+    pluginhost) tools/build-plugins.sh ;;
     tsan) sanitize thread ;;
     asan) sanitize address ;;
     rtsan) tools/build-rtsan.sh ;;
     record) tools/test-engine-docker.sh ;;
     quantum) tools/test-quantum-pin.sh ;;
     bwf) tools/test-bwf-interop.sh ;;
-    windows) powershell -NoProfile -ExecutionPolicy Bypass -File "$(host_path "$ROOT")/tools/build-portable.ps1" ;;
+    windows)
+      pkg_arg=()
+      [[ -z "${SONORA_LOCAL_CI_RELEASE:-}" ]] || pkg_arg=(-Package -OutDir "$(host_path "$ROOT")/dist")
+      powershell -NoProfile -ExecutionPolicy Bypass -File "$(host_path "$ROOT")/tools/build-portable.ps1" ${pkg_arg[@]+"${pkg_arg[@]}"} ;;
   esac
 }
 

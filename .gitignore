@@ -134,3 +134,7 @@ planning/orchestrator/STOP*
 planning/orchestrator/waits-on-owner.md
 planning/orchestrator/shadow.log
 planning/orchestrator/plans/
+build-plugins-only/
+# The packages tools/package-plugins.* and local-ci --release keep.
+dist/
+build-plugins-win/
