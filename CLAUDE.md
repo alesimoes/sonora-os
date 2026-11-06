@@ -45,6 +45,24 @@ Both builds need Linux. From Windows, use the container wrappers:
     tools/build-engine.sh      # cmake + ctest
     tools/build-iso.sh         # produces iso/sonora.iso
 
+## Rules, context and process (`.claude/`)
+
+Short imperative rules with their reason; they win over older prose below.
+Read the rule files your task touches and your area's context file.
+
+| File | Covers |
+|---|---|
+| `.claude/rules/planning.md` | no task without an approved plan (`planning/plans/`) |
+| `.claude/rules/gates-and-checks.md` | never disable a check to get green |
+| `.claude/rules/code-structure.md` | files ~500 lines, domains, DI, small functions |
+| `.claude/rules/build-lock-and-machine.md` | `tools/build-slot.sh`, never touch other checkouts |
+| `.claude/rules/branches-and-prs.md` | fresh branch, one PR per feature, orchestrator merges |
+| `.claude/rules/testing-and-flakes.md` | tests by context, no wall-clock waits |
+| `.claude/rules/agents-and-models.md` | Sonnet only (principal-engineer excepted), specialists only |
+| `.claude/rules/design-faceplates.md` | hardware-like editors, own names, no brands |
+| `.claude/context/<area>.md` | paths, ADRs, test commands, traps per area |
+| `.claude/PROCESS.md`, `.claude/routing.toml` | lifecycle, failure routing, agent maps |
+
 ## Working in sessions
 
 Context is the main cost: short sessions, one agent per task and review round.

@@ -1,0 +1,63 @@
+# Routing data for the orchestrator (consumed by a harness-engineer follow-up).
+# First match wins within [paths]. Globs are repo-relative.
+
+[planning]
+planner = "planner"
+approver = "architect"
+plan_dir = "planning/plans"
+template = "planning/plans/TEMPLATE.md"
+approved_marker = "Status: approved"
+integrator = "integrator"
+
+[paths]
+"common/model/**" = "rt-engineer"
+"common/session_files/**" = "rt-engineer"
+"common/audiofile/**" = "rt-engineer"
+"common/dsp/**" = "dsp-engineer"
+"common/**" = "rt-engineer"
+"contracts/plugin/**" = "plugin-engineer"
+"contracts/**" = "rt-engineer"
+"engine/plugin_client/**" = "plugin-engineer"
+"engine/**" = "rt-engineer"
+"drivers/**" = "driver-engineer"
+"plugins/host/**" = "plugin-engineer"
+"plugins/native/**" = "dsp-engineer"
+"plugins/analyze/**" = "dsp-engineer"
+"plugins/**" = "plugin-engineer"
+"interchange/**" = "plugin-engineer"
+"ui/**" = "ui-engineer"
+"keymaps/**" = "ui-engineer"
+"docs/images/**" = "visual-designer"
+"iso/**" = "distro-engineer"
+"audio-stack/**" = "distro-engineer"
+"tools/build-portable.ps1" = "release-engineer"
+"tools/harness/**" = "harness-engineer"
+"tools/*" = "harness-engineer"
+".github/**" = "harness-engineer"
+".claude/**" = "harness-engineer"
+"brain/decisions/**" = "architect"
+"brain/research/**" = "researcher"
+"planning/plans/**" = "planner"
+"planning/**" = "lead"
+
+[failures]
+product_test_red = "owner-of-path"      # resolved through [paths]
+flaky_timing_test = "flake-fixer"
+sanitizer_blowup = "refactor-engineer"
+sanitizer_finding = "owner-of-path"
+sanitizer_rt_review = "rt-safety-auditor"
+harness_infra = "harness-engineer"
+merge_conflict = "integrator"
+stalled = "coordinator-relaunch"
+stalled_after_hours = 2
+packaging = "release-engineer"
+image = "distro-engineer"
+missing_plan = "planner"
+escalate = "principal-engineer"          # after the escalation conditions in PROCESS.md
+
+[tracks]
+daw = ["planner", "visual-designer", "rt-engineer", "ui-engineer", "tester"]
+plugin = ["planner", "visual-designer", "dsp-engineer", "plugin-engineer", "ui-engineer", "tester"]
+os = ["planner", "distro-engineer", "driver-engineer", "tester"]
+review = ["code-reviewer", "rt-safety-auditor", "tester"]
+cleanup = ["janitor"]
