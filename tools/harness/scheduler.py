@@ -4,6 +4,8 @@ plan() takes a snapshot and returns which tasks get an agent this tick. The
 daemon executes the answer; nothing here launches, kills or writes.
 """
 import os
+import re
+import subprocess
 from dataclasses import dataclass, field
 
 try:
@@ -347,9 +349,39 @@ def store_deps_ok(t, by_id):
 
 
 def holds_build_slot(root, worktree):
-    """True when tools/build-slot.sh (or its fallback) holds a lock for this
-    worktree: a lock directory named after it under .harness/build-slots."""
+    """True when tools/build-slot.sh --list shows a holder whose cwd is this
+    worktree (the machine-wide lock lives under %LOCALAPPDATA%/sonora)."""
     if not worktree:
         return False
-    return os.path.exists(os.path.join(root, ".harness", "build-slots",
-                                       os.path.basename(worktree)))
+    script = os.path.join(root, "tools", "build-slot.sh")
+    try:
+        out = subprocess.run([_bash(), script, "--list"], capture_output=True,
+                             text=True, timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return holder_in_list(out, worktree)
+
+
+def _bash():
+    from .localci import bash_exe   # the Git shell on Windows, not WSL's
+    return bash_exe()
+
+
+def _posix(path):
+    """Both C:/x/y and /c/x/y (the shell's $PWD) become c:/x/y."""
+    p = os.path.normcase(path).replace("\\", "/")
+    m = re.match(r"^/([a-z])/(.*)$", p)
+    return f"{m.group(1)}:/{m.group(2)}" if m else p
+
+
+def holder_in_list(listing, worktree):
+    want = _posix(os.path.abspath(worktree))
+    for line in listing.splitlines():
+        if not line.startswith("holds "):
+            continue
+        m = re.search(r"cwd=(.*?)\s+cmd=", line)
+        cwd = m.group(1) if m else ""
+        cwd = _posix(cwd)
+        if cwd and (cwd == want or cwd.startswith(want + "/")):
+            return True
+    return False
