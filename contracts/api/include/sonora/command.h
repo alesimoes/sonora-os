@@ -241,6 +241,12 @@ inline const std::vector<CommandSpec>& command_catalog() {
          false, CommandDomain::Interface},
         {"edit.duplicate", CommandTarget::None, "Duplicate the selection"},
         {"edit.repeat", CommandTarget::None, "Repeat the selection"},
+        {"edit.insert_time", CommandTarget::None,
+         "Insert time: open the selected range at its start on the selected tracks, moving "
+         "later regions, automation and markers"},
+        {"edit.delete_time", CommandTarget::None,
+         "Delete time: take the selected range out on the selected tracks, closing up regions, "
+         "automation and markers"},
         {"edit.spot", CommandTarget::None,
          "Spot the selected region to a start time typed in the main counter's format", true},
         {"edit.select_all", CommandTarget::None, "Select all"},

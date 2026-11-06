@@ -1092,6 +1092,61 @@ bool EditController::clear(std::string& why) {
     return true;
 }
 
+bool EditController::insert_time(std::string& why) { return shift_time(true, why); }
+bool EditController::delete_time(std::string& why) { return shift_time(false, why); }
+
+bool EditController::shift_time(bool insert, std::string& why) {
+    const char* gesture = insert ? "Insert Time" : "Delete Time";
+    const char* done = insert ? "inserted" : "deleted";
+    if (autolane_selected()) {
+        why = std::string(gesture) + " acts on tracks, not on an automation lane; select a track "
+              "range. Nothing was " + done + ".";
+        return false;
+    }
+    Span e;
+    if (!edit_range(e, done, why)) return false;
+    if (e.b <= e.a) {
+        why = std::string("select a time range first; nothing was ") + done;
+        return false;
+    }
+    const Frames length = e.b - e.a;
+    const Frames delta = insert ? length : -length;
+    std::vector<Member> members;
+    std::vector<std::string> left_names;
+    const auto next = [this]() { return doc_.reserve_id(); };
+    for (int i = 0; i < e.count; ++i) {
+        const Playlist& p = *active(track(e.first + i));
+        if (insert) {
+            shuffle_open(p, e.a, length, next, members);
+        } else {
+            clear_range(p, e.a, e.b, next, members);
+            shuffle_shift(p, e.b, delta, members);
+        }
+    }
+    for (int i = 0; i < e.count; ++i) {
+        std::vector<const AutomationLane*> left;
+        for (EditAutomation& f : follow_time_ops(*track(e.first + i), e.a, delta, &left)) {
+            members.push_back(std::move(f));
+        }
+        for (std::string& n : lane_labels(*track(e.first + i), left)) {
+            left_names.push_back(std::move(n));
+        }
+    }
+    for (const Marker& m : markers().markers) {
+        if (m.position < e.a) continue;
+        const Frames to = insert ? m.position + delta : std::max(e.a, m.position + delta);
+        if (to != m.position) members.push_back(MoveMarker{m.id, to});
+    }
+    if (members.empty()) {
+        why = std::string("there is nothing after the range to move; nothing was ") + done;
+        return false;
+    }
+    if (!submit_compound(std::move(members), gesture, done, why)) return false;
+    select_span(e.first, e.count, e.a, insert ? e.b : e.a);
+    note_left_behind(gesture, left_names);
+    return true;
+}
+
 bool EditController::spot_region(Frames to, std::string& why) {
     if (mode_ == EditMode::Shuffle) {
         why = "Spotting a region in Shuffle mode is not built yet; use Slip, Spot or Grid";
@@ -1131,7 +1186,7 @@ bool EditController::nudge(int direction, std::string& why) {
     }
     MoveRegion op;
     const Id id = r->id;
-    const Frames to = nudge_target(r->position, direction, grid_, snapshot().settings);
+    const Frames to = nudge_target(r->position, direction, nudge_, snapshot().settings);
     if (to == r->position || !resolve_move(snapshot(), id, to, doc_.reserve_id(), op)) {
         why = "the region is already at the session start";
         return false;

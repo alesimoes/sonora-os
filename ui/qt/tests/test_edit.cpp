@@ -842,12 +842,13 @@ int test_nudge_tempo_map() {
     ModelDocument doc(snap);
     EditController c(doc);
     std::string why;
-    c.set_grid(GridValue::Beat);
+    c.set_grid(GridValue::Sixteenth);   // the grid is not the nudge value
+    c.set_nudge_value(GridValue::Beat);
     OK(c.select_region(11));   // B at 4 bars, inside the 60 bpm stretch
     OK(c.nudge(1, why));
     OK(region(doc.snapshot(), 11)->position == 4 * kBar + kSlowBeat);
     OK(c.selection().start == 4 * kBar + kSlowBeat);
-    c.set_grid(GridValue::Bar);
+    c.set_nudge_value(GridValue::Bar);
     OK(c.nudge(-1, why));
     OK(region(doc.snapshot(), 11)->position == 4 * kBar + kSlowBeat - kSlowBar);
     OK(c.select_region(10));   // A at 1 bar
@@ -2393,7 +2394,7 @@ int test_automation_follows_edit() {
     OK(c.automation_follows_edit() && session.automationFollowsEdit());
     // Nudge A one bar later, onto [2 bars, 4 bars): one edit.
     OK(c.select_region(10));
-    c.set_grid(GridValue::Bar);
+    c.set_nudge_value(GridValue::Bar);
     uint64_t r = doc.snapshot().revision;
     OK(c.nudge(1, why));
     OK(doc.snapshot().revision == r + 1);

@@ -11,6 +11,7 @@
 #include "sonora/frame_text.h"
 #include "sonora/loop_take.h"
 #include "sonora/model/operations.h"
+#include "sonora/peak_file.h"
 #include "sonora/session.h"
 #include "sonora/wav_reader.h"
 #include "sonora/wav_recovery.h"
@@ -529,6 +530,14 @@ TakeAdded add_closed_take(model::Document& document, const Session& session,
                                         std::to_string(f.track + 1) + ", " + f.path + ": " +
                                         why);
             continue;
+        }
+        // The overview the Edit window draws, beside the take. This runs on
+        // the control thread as the take closes, never on the audio thread.
+        // A failure costs nothing the operator must hear about: the window
+        // builds the file itself for a source that has none.
+        {
+            std::string peak_why;
+            build_peak_file(f.path, peak_file_path(dir, relative), peak_why);
         }
         src.source.kind = model::SourceKind::Recorded;
         src.source.take = take.take;

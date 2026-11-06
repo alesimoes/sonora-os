@@ -1,5 +1,5 @@
 add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp src/wav_recovery.cpp
-  src/wrap_sidecar.cpp)
+  src/wrap_sidecar.cpp src/peak_file.cpp)
 target_include_directories(sonora_audiofile PUBLIC include)
 # common/platform for the take file's exclusive, close-on-exec create and its
 # periodic sync (ADR-0008 Â§3; ADR-0009 Consequences).
@@ -32,3 +32,9 @@ add_test(NAME wav_recovery COMMAND test_wav_recovery)
 add_executable(test_wrap_sidecar tests/test_wrap_sidecar.cpp)
 target_link_libraries(test_wrap_sidecar PRIVATE sonora_audiofile)
 add_test(NAME wrap_sidecar COMMAND test_wrap_sidecar)
+
+# The overview file beside a take: multi-resolution min/max, built off the
+# audio thread (ui.editing.waveform).
+add_executable(test_peak_file tests/test_peak_file.cpp)
+target_link_libraries(test_peak_file PRIVATE sonora_audiofile)
+add_test(NAME peak_file COMMAND test_peak_file)

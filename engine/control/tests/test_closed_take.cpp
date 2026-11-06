@@ -20,6 +20,7 @@
 
 #include "sonora/closed_take.h"
 #include "sonora/model/replication.h"
+#include "sonora/peak_file.h"
 #include "sonora/session.h"
 #include "sonora/wav_writer.h"
 
@@ -131,6 +132,14 @@ int test_a_take_is_one_compound() {
         CHECK(doc.history().undo_depth() == 1);
         for (std::size_t t = 0; t < 3; ++t) CHECK(regions_on(doc.current(), t) == 1);
         CHECK(doc.current().sources->sources.size() == 3);
+        // Each source has its overview beside it, written as the take closed
+        // (ui.editing.waveform), and it describes the source's own frames.
+        for (const model::Source& src : doc.current().sources->sources) {
+            PeakFile pf;
+            std::string peak_why;
+            CHECK(pf.open(peak_file_path(*s.folder(), src.path), peak_why));
+            CHECK(pf.frames() == src.length);
+        }
         // One undo removes the take from every track; its audio stays.
         model::ReplicationUpdate u;
         std::string why;

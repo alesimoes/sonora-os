@@ -143,4 +143,13 @@ std::vector<model::EditAutomation> follow_clear_ops(
     const model::TrackEdit& track, model::Frames from, model::Frames to,
     std::vector<const model::AutomationLane*>* left_behind = nullptr);
 
+// Insert Time (`delta` > 0) or Delete Time (`delta` < 0) at `at`: each lane
+// with a point at or after `at` has what follows moved by `delta`; an insert
+// holds the lane's value across the new stretch, a delete drops the points
+// in [at, at - delta) and joins the two sides with a step at `at`. A lane
+// the point cap leaves no room in goes to `left_behind`, as follow_clear_ops'.
+std::vector<model::EditAutomation> follow_time_ops(
+    const model::TrackEdit& track, model::Frames at, model::Frames delta,
+    std::vector<const model::AutomationLane*>* left_behind = nullptr);
+
 }  // namespace sonora::ui

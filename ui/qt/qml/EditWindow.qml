@@ -84,6 +84,22 @@ Item {
                     onClicked: edit.session.cycleGrid()
                 }
             }
+            Row {
+                spacing: Theme.space1
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "NUDGE"
+                    color: Theme.textTertiary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption; letterSpacing: 0.6 }
+                }
+                SButton {
+                    objectName: "nudgeValue"
+                    text: edit.session.nudgeValue
+                    implicitWidth: 52
+                    bold: false
+                    onClicked: edit.session.cycleNudge()
+                }
+            }
             // The shapes the no-dialog fade keys make, shown because a key
             // that makes an unseen shape would be guessing on the operator's
             // behalf. Laid out as the selection fields are, a caption over

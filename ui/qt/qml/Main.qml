@@ -1184,6 +1184,8 @@ Rectangle {
                     { name: "editClear", label: "Clear", command: "edit.clear", on: true },
                     { name: "editDuplicate", label: "Duplicate", command: "edit.duplicate", on: true },
                     { name: "editRepeat", label: "Repeat…", command: "edit.repeat", on: true },
+                    { name: "editInsertTime", label: "Insert Time", command: "edit.insert_time", on: true },
+                    { name: "editDeleteTime", label: "Delete Time", command: "edit.delete_time", on: true },
                     { name: "", label: "", command: "", on: false },
                     { name: "editRenameRegion", label: "Rename Region…", command: "region.rename", on: true },
                     { name: "editRegionColour", label: "Region Colour…", command: "region.colour", on: true },

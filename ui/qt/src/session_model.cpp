@@ -346,6 +346,10 @@ void SessionModel::installCommands(CommandRegistry& local) {
         }
         return ctl_.repeat(count, why);
     });
+    simple("edit.insert_time",
+           [this](const CommandContext&, Why& why) { return ctl_.insert_time(why); });
+    simple("edit.delete_time",
+           [this](const CommandContext&, Why& why) { return ctl_.delete_time(why); });
     // Pro Tools' Spot dialog: the start time typed in the counter's format.
     simple("edit.spot", [this](const CommandContext& ctx, Why& why) {
         if (ctx.argument.empty()) return askSpot();
@@ -529,7 +533,7 @@ void SessionModel::sync() {
         }
     }
     const int m = static_cast<int>(ctl_.mode()), t = static_cast<int>(ctl_.tool()),
-              g = static_cast<int>(ctl_.grid());
+              g = static_cast<int>(ctl_.grid()) * 8 + static_cast<int>(ctl_.nudge_value());
     const int fades = static_cast<int>(ctl_.fade_shape()) * 16 +
                       static_cast<int>(ctl_.crossfade_shape());
     const uint64_t clip = ctl_.clipboard_serial();
@@ -538,7 +542,7 @@ void SessionModel::sync() {
         clip != seen_clip_ || follows != seen_follows_) {
         seen_clip_ = clip;
         seen_follows_ = follows;
-        content = content || m != seen_mode_ || g != seen_grid_;  // grid lines follow them
+        content = content || m != seen_mode_ || (g >> 3) != (seen_grid_ >> 3);  // grid lines follow them
         seen_mode_ = m;
         seen_tool_ = t;
         seen_grid_ = g;
@@ -1175,6 +1179,15 @@ void SessionModel::toggleAutolanes(int track) {
 
 void SessionModel::cycleGrid() {
     ctl_.set_grid(next_grid_value(ctl_.grid()));
+    sync();
+}
+
+void SessionModel::peaksReady() {
+    for (SceneItem* item : items_) item->markContentDirty();
+}
+
+void SessionModel::cycleNudge() {
+    ctl_.set_nudge_value(next_grid_value(ctl_.nudge_value()));
     sync();
 }
 

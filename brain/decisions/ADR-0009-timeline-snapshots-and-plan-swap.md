@@ -1394,3 +1394,42 @@ difference. Moves, trims, nudges and Strip Silence in Shuffle stay refused
 by name. Automation does not follow the ripple: the Edit window holds a
 notice naming the tracks whose lanes are now out of step (Pro Tools'
 Automation Follows Edit for Shuffle is open).
+
+**Insert Time and Delete Time** (`ui.editing.commands`; no wire change, the
+catalog gains `edit.insert_time` and `edit.delete_time`, both in the Edit
+menu and unbound by default). On the selected range of the selected tracks
+(a selected region counts as its bounds), in every edit mode: Insert splits
+the regions the range's start falls inside and shifts everything from there
+by the range's length; Delete clears the range and shifts the rest back by
+it. Markers at or after the start move with it (a marker inside a deleted
+range lands on its start), and so do the automation points after it on those
+tracks: an insert holds the lane's value across the new stretch, a delete
+joins the two sides with a step. One compound, one undo step, labelled
+"Insert Time" or "Delete Time".
+
+## Update, 2026-11-04: peak files (`ui.editing.waveform`)
+
+Status: **Accepted** on the recommended default. The Edit window draws
+waveforms from an overview file beside each source,
+`<session>/Peaks/<source path>.spk` (`common/audiofile/peak_file.h`): per
+channel the min and max of every 256 frames and five folds of 4 over that
+(256 ... 262144 frames a bucket), 16-bit, little endian, read whole into
+memory by the interface. A zoom picks the coarsest level not wider than the
+pixel, so a redraw costs a few reads a pixel at any zoom.
+
+- **Written off the audio thread.** The control thread writes it as a take
+  closes (`add_closed_take`, from the closed WAV); the interface's own worker
+  thread (`FilePeakSource`) reads it, or builds it from the WAV when it is
+  missing, unreadable or its frame count differs from the source's (imports,
+  files from before this, a repaired take). Nothing in `Session::process()`
+  touches it. A file is written beside and renamed over.
+- **Not growing while recording.** A take being recorded still draws from the
+  live meter peaks (`live_take`); its overview file appears when it closes.
+  Writing it incrementally from the disk thread is open.
+- **No file is not a flat line.** A source not loaded yet draws silence and
+  the window redraws when it is; one that cannot be read stays silent and
+  `PeakSource::ready()` is false, which Strip Silence uses to refuse rather
+  than read silence as quiet. The fake engine and `--demo` keep the
+  synthetic source, and the window keeps saying so.
+- Strip Silence reads the 256-frame level, so it resolves quiet stretches to
+  about 5 ms at 48 kHz.

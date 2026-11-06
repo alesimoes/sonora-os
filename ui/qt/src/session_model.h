@@ -82,6 +82,7 @@ class SessionModel : public QObject {
     Q_PROPERTY(bool automationFollowsEdit READ automationFollowsEdit NOTIFY editStateChanged)
     Q_PROPERTY(QString tool READ tool NOTIFY editStateChanged)
     Q_PROPERTY(QString gridValue READ gridValue NOTIFY editStateChanged)
+    Q_PROPERTY(QString nudgeValue READ nudgeValue NOTIFY editStateChanged)
     Q_PROPERTY(QString fadeShape READ fadeShape NOTIFY editStateChanged)
     Q_PROPERTY(QString crossfadeShape READ crossfadeShape NOTIFY editStateChanged)
     Q_PROPERTY(int selectedTrack READ selectedTrack NOTIFY selectionChanged)
@@ -363,6 +364,9 @@ public:
     bool automationFollowsEdit() const { return ctl_.automation_follows_edit(); }
     QString tool() const { return QString::fromLatin1(tool_name(ctl_.tool())); }
     QString gridValue() const { return QString::fromLatin1(grid_value_name(ctl_.grid())); }
+    QString nudgeValue() const {
+        return QString::fromLatin1(grid_value_name(ctl_.nudge_value()));
+    }
     QString fadeShape() const { return QString::fromLatin1(fade_shape_name(ctl_.fade_shape())); }
     QString crossfadeShape() const {
         return QString::fromLatin1(fade_shape_name(ctl_.crossfade_shape()));
@@ -427,6 +431,9 @@ public:
     // automation lanes. A refusal (a MIDI track) is a notice.
     Q_INVOKABLE void toggleAutolanes(int track);
     Q_INVOKABLE void cycleGrid();
+    Q_INVOKABLE void cycleNudge();
+    // A file peak source finished a source: redraw the lanes (GUI thread).
+    void peaksReady();
     // The shape the next fade, or crossfade, is made with: the no-dialog
     // fades use the last shape chosen, as Pro Tools' do.
     Q_INVOKABLE void cycleFadeShape();
