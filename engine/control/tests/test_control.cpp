@@ -2441,6 +2441,7 @@ void live_send_and_aux_rides() {
     const model::Id verb = next++;
     const model::Id room = next++;
     api::CommandReply r;
+    const uint64_t revision_before_edits = replica.current().revision;
     CHECK(apply(model::AddBus{verb, "Verb", model::BusMix{}}, r));
     CHECK(apply(model::AddBus{room, "Room", model::BusMix{}}, r));
     model::AddSend send;
@@ -2461,6 +2462,14 @@ void live_send_and_aux_rides() {
     const auto tracks = static_cast<uint32_t>(session.tracks().size());
     CHECK(until(real, in, [&]() {
         return session.send_level(0, 2) == 1.0f && session.send_level(tracks, 0) == 1.0f;
+    }));
+    // The session's atomics follow the apply before its model update has been
+    // broadcast, so the four edits' updates can still be in flight here. Wait
+    // for the replica to hold all four (one revision each) before taking the
+    // baseline, or a late one is counted as the ride's.
+    CHECK(until(real, in, [&]() {
+        feed();
+        return replica.current().revision >= revision_before_edits + 4;
     }));
     const uint64_t revision = replica.current().revision;
     const std::size_t updates = in.model.size();

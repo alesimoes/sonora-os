@@ -14,6 +14,8 @@
 # configs point at an RT kernel -- cheap, and it covers the regression that
 # actually happened.
 set -euo pipefail
+# One heavy job at a time on this machine (tools/build-slot.sh).
+[[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ISO="$ROOT/iso/sonora.iso"

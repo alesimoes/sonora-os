@@ -30,6 +30,8 @@
 # WRITE_USB_BOOT=0 skips the QEMU half, leaving the container half, which
 # needs only Docker and runs in about a minute.
 set -euo pipefail
+# One heavy job at a time on this machine (tools/build-slot.sh).
+[[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ISO="$ROOT/iso/sonora.iso"
