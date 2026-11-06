@@ -4,6 +4,7 @@ checkout|switch|reset|clean|worktree remove aimed at the daemon root, by cwd,
 by `cd`, or by `git -C`. Worktrees live under <root>/.claude/worktrees, so
 only the root and its ordinary subdirectories count, not those."""
 import os
+import posixpath
 import re
 import shlex
 
@@ -19,14 +20,25 @@ def _drive(path):
     return f"{m.group(1)}:/{m.group(2) or ''}" if m else path
 
 
+def _isabs(p):
+    """Windows drive paths count as absolute on every host, so the guard
+    behaves the same under Git bash and on a Linux runner."""
+    return bool(re.match(r"^[a-zA-Z]:/", p)) or p.startswith("/")
+
+
 def _norm(path):
-    p = os.path.normcase(os.path.abspath(_drive(path)))
-    return p.replace("\\", "/").rstrip("/")
+    p = _drive(path).replace("\\", "/")
+    if not _isabs(p):
+        p = os.path.abspath(p).replace("\\", "/")
+    p = posixpath.normpath(p)
+    if re.match(r"^[a-zA-Z]:/", p):
+        p = p.lower()
+    return p.rstrip("/")
 
 
 def _join(here, path):
-    path = _drive(os.path.expanduser(path))
-    return path if os.path.isabs(path) else os.path.join(here, path)
+    path = _drive(os.path.expanduser(path)).replace("\\", "/")
+    return path if _isabs(path) else here.replace("\\", "/") + "/" + path
 
 
 def is_daemon_dir(path, root):

@@ -369,13 +369,15 @@ def _bash():
 
 def _posix(path):
     """Both C:/x/y and /c/x/y (the shell's $PWD) become c:/x/y."""
-    p = os.path.normcase(path).replace("\\", "/")
-    m = re.match(r"^/([a-z])/(.*)$", p)
-    return f"{m.group(1)}:/{m.group(2)}" if m else p
+    p = path.replace("\\", "/")
+    m = re.match(r"^/([a-zA-Z])/(.*)$", p)
+    p = f"{m.group(1)}:/{m.group(2)}" if m else p
+    return p.lower() if re.match(r"^[a-zA-Z]:/", p) else p
 
 
 def holder_in_list(listing, worktree):
-    want = _posix(os.path.abspath(worktree))
+    want = _posix(worktree if re.match(r"^([a-zA-Z]:)?[\\/]", worktree)
+                  else os.path.abspath(worktree))
     for line in listing.splitlines():
         if not line.startswith("holds "):
             continue
