@@ -466,6 +466,12 @@ bool RealTimeBounce::start(const model::Snapshot& snapshot, const std::string& s
     return true;
 }
 
+namespace {
+std::string lost_text(uint64_t frames) {
+    return "the bounce lost " + std::to_string(frames) + " frames to a full ring; nothing was kept";
+}
+}  // namespace
+
 void RealTimeBounce::work() {
     Run& r = *run_;
     constexpr std::size_t kChunk = 4096;
@@ -490,8 +496,11 @@ void RealTimeBounce::work() {
             const auto idle = std::chrono::duration<double>(now - last).count();
             const bool stopped = session_.transport().state() == TransportState::Stopped;
             if ((seen && stopped && idle > 0.3) || (!seen && idle > 10.0)) {
-                fail(seen ? "the transport stopped before the end of the range"
-                          : "the transport never started to roll");
+                // Frames the full ring dropped never arrive, so a roll that
+                // overran it ends here short of the range, not below.
+                fail(tap_->lost_frames() != 0 ? lost_text(tap_->lost_frames())
+                     : seen                   ? "the transport stopped before the end of the range"
+                                              : "the transport never started to roll");
                 finished_.store(true, std::memory_order_release);
                 return;
             }
@@ -516,8 +525,7 @@ void RealTimeBounce::work() {
     }
     const uint64_t missed = session_.playback_misses() - r.misses_before;
     if (tap_->lost_frames() != 0) {
-        fail("the bounce lost " + std::to_string(tap_->lost_frames()) +
-             " frames to a full ring; nothing was kept");
+        fail(lost_text(tap_->lost_frames()));
     } else if (missed != 0) {
         fail("the disk did not keep up for " + std::to_string(missed) +
              " block(s) of the roll, so the file has gaps; nothing was kept. Bounce offline "
