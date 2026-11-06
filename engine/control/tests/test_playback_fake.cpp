@@ -395,13 +395,28 @@ int test_mix_follows_the_document() {
             }
             return true;
         };
+        // The server replies to a request before it sends the request's
+        // update and writes the Track atomics, on its own thread, so a client
+        // can read the reply first: under TSan on a loaded host it did, and
+        // the replica and the atomics were checked one request behind. Both
+        // are waited for, five seconds at most.
+        const auto settled = [&](const auto& done) {
+            for (int i = 0; i < 2500; ++i) {
+                if (!feed()) return false;
+                if (done()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            return false;
+        };
         const auto submit = [&](sonora::api::ModelAction action, const model::Operation* op) {
             sonora::api::ModelRequest m;
             m.action = action;
             std::string why;
             if (op != nullptr && !model::encode_operation(*op, m.op, why)) return false;
             sonora::api::CommandReply r;
-            return c.await(engine.submit(m), r) && r.result == DispatchResult::Ok && feed();
+            const std::size_t updates = c.inbox.model.size();
+            return c.await(engine.submit(m), r) && r.result == DispatchResult::Ok &&
+                   settled([&]() { return c.inbox.model.size() > updates; });
         };
         for (int i = 0; i < 500 && !replica.synced(); ++i) {
             CHECK(feed());
@@ -429,23 +444,23 @@ int test_mix_follows_the_document() {
         mute.mix.gain_db = -6.0f;
         op = mute;
         CHECK(submit(sonora::api::ModelAction::Apply, &op));
-        CHECK(s.tracks()[0]->muted());
-        CHECK(same_mix());
+        CHECK(settled([&]() { return s.tracks()[0]->muted(); }));
+        CHECK(settled(same_mix));
 
         CHECK(submit(sonora::api::ModelAction::Undo, nullptr));
         CHECK(replica.current().edit->markers->markers.empty());
         CHECK(replica.current().mix.find(t1)->mute);
-        CHECK(same_mix());
+        CHECK(settled(same_mix));
         CHECK(submit(sonora::api::ModelAction::Redo, nullptr));
         CHECK(replica.current().edit->markers->markers.size() == 1);
-        CHECK(same_mix());
+        CHECK(settled(same_mix));
 
         mute.mix.mute = false;
         op = mute;
         CHECK(submit(sonora::api::ModelAction::Apply, &op));
-        CHECK(!s.tracks()[0]->muted());
+        CHECK(settled([&]() { return !s.tracks()[0]->muted(); }));
         CHECK(submit(sonora::api::ModelAction::Undo, nullptr));
-        CHECK(same_mix());
+        CHECK(settled(same_mix));
 
         engine.shutdown();
         audio.deactivate();
