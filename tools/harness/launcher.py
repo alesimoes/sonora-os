@@ -82,11 +82,50 @@ def _check_settings_model(path):
                              f"only {MODEL} is allowed")
 
 
+def agent_definition(root, agent):
+    """The --agents entry for `agent`, from the daemon's own checkout. The
+    task worktree may predate the file (a PR branch cut earlier), and then
+    `--agent` alone dies with "not found". None when the daemon has no file.
+    The model is forced to model_for(agent), whatever the file says."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", agent or ""):
+        return None
+    try:
+        with open(os.path.join(root, ".claude", "agents", agent + ".md"),
+                  encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = re.match(r"---\r?\n(.*?)\r?\n---[ \t]*\r?\n?(.*)\Z", text, re.S)
+    if not m:
+        return None
+    fields = {}
+    key = None
+    for line in m.group(1).splitlines():
+        km = re.match(r"([A-Za-z][\w-]*):\s*(.*)$", line)
+        if km and not line[:1].isspace():
+            key = km.group(1)
+            fields[key] = km.group(2).strip()
+        elif key and line.strip():
+            fields[key] += " " + line.strip()
+    d = {"description": fields.get("description", "").strip("'\""),
+         "prompt": m.group(2).strip(),
+         "model": model_for(agent)}
+    if fields.get("tools"):
+        d["tools"] = [t.strip() for t in fields["tools"].split(",")
+                      if t.strip()]
+    if fields.get("maxTurns", "").isdigit():
+        d["maxTurns"] = int(fields["maxTurns"])
+    return {agent: d}
+
+
 def build_command(claude, agent, prompt, mcp_path, settings_path,
                   max_turns=80, permission_mode="acceptEdits",
-                  tools=DEFAULT_TOOLS):
+                  tools=DEFAULT_TOOLS, agents_root=None):
     argv = list(claude) if isinstance(claude, (list, tuple)) else [claude]
     argv += ["-p"] + model_args(agent)
+    defs = agent_definition(agents_root, agent) if agents_root else None
+    if defs:
+        argv += ["--agents", json.dumps(defs)]
     argv += ["--agent", agent,
              "--mcp-config", str(mcp_path), "--strict-mcp-config",
              "--settings", str(settings_path),

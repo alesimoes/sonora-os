@@ -354,7 +354,8 @@ class Orchestrator:
             argv = launcher.build_command(
                 launcher.claude_argv(self.fake_claude),
                 self._agent_for(t, ln.kind), prompt, mcp, settings,
-                self.cfg.max_turns, self.cfg.permission_mode)
+                self.cfg.max_turns, self.cfg.permission_mode,
+                agents_root=self.root)
             proc = launcher.spawn(argv, env, wt, stream)
         except Exception as e:  # launch failure counts like a dead run
             self.store.event(t["id"], "launch_failed", str(e))
