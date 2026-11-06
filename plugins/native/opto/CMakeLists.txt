@@ -8,11 +8,11 @@ target_link_libraries(sonora_native_opto PUBLIC sonora_native_sdk PRIVATE sonora
 add_library(sonora_native_opto_suite STATIC tests/suite.cpp)
 target_link_libraries(sonora_native_opto_suite PUBLIC sonora_native_opto sonora_dsp_measure)
 
-sonora_native_quality_test(opto)
+sonora_native_quality_test(opto TIMING)
 # The static curves, the release protocol (holds up to 20 s) and the SPICE
 # comparison at three rates: one rate and fewer points under
 # SONORA_DSP_QUICK=1 (PR CI, sanitizers), everything in the nightly run.
-set_tests_properties(native_opto PROPERTIES LABELS slow)
+set_property(TEST native_opto APPEND PROPERTY LABELS slow)  # appended: TIMING above adds "timing"
 
 # The SPICE references re-derived from their netlists, where ngspice is
 # installed (the sonora-plugins image), one ctest per case. tests/spice/ is

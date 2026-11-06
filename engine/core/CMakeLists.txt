@@ -214,6 +214,9 @@ endif()
 add_executable(test_take_checkpoint tests/test_take_checkpoint.cpp)
 target_link_libraries(test_take_checkpoint PRIVATE sonora_core Threads::Threads)
 add_test(NAME take_checkpoint COMMAND test_take_checkpoint)
+# Its first case holds a real fdatasync to the ring's depth: alone, so the
+# other tests' writes under `ctest -j` do not queue in front of it.
+set_tests_properties(take_checkpoint PROPERTIES RUN_SERIAL TRUE LABELS timing)
 if(UNIX)
   add_executable(test_take_kill tests/posix/test_take_kill.cpp)
   target_link_libraries(test_take_kill PRIVATE sonora_core sonora_audiofile Threads::Threads)

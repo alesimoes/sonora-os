@@ -128,3 +128,12 @@ endif()
 # the "slow" label: PR CI runs them with SONORA_DSP_QUICK=1 (one rate, one
 # setting), the nightly workflow runs `ctest -L slow` in full.
 set_tests_properties(dsp_limiter dsp_loudness dsp_meter PROPERTIES LABELS slow)
+# The tests that hold a wall-clock bar (a block's cost against another's, or
+# against a period) run alone: under `ctest -j` the neighbours' load lands
+# on one side of a ratio and not the other. The "timing" label lists them.
+set(_dsp_timing_tests dsp_meter dsp_triode)
+if(TEST dsp_triode_generic)
+  list(APPEND _dsp_timing_tests dsp_triode_generic)
+endif()
+set_property(TEST ${_dsp_timing_tests} PROPERTY RUN_SERIAL TRUE)
+set_property(TEST ${_dsp_timing_tests} APPEND PROPERTY LABELS timing)

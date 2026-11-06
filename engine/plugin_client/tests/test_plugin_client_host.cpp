@@ -1428,7 +1428,9 @@ int scenario_params(const Args& a) {
 
 int scenario_miss(const Args& a) {
     std::printf("miss: %s, the host stops returning blocks\n", kSleep);
-    Rig rig(a, mono_spec(a, kSleep), 200);
+    // The input outlasts the supervisor's exit grace (500 ms of paced blocks)
+    // before the swap.
+    Rig rig(a, mono_spec(a, kSleep), 600);
     if (!rig.ready) return 1;
     fill_noise(rig.session, 3);
     rig.run_waited(10);
@@ -1500,6 +1502,28 @@ int scenario_crash(const Args& a) {
     rig.run_waited(30);
     check(plays_previous_block(rig.session, back, back + 30, true),
           "the restarted host plays again, bit-exact, with the store's crash=0");
+    return 0;
+}
+
+// A host that takes longer to die than the audio side takes to remove it
+// (8 missed blocks, about 21 ms): a sanitizer's SEGV handler does this. The
+// user still has to be told it crashed, not that it was "removed".
+int scenario_crash_late(const Args& a) {
+    std::printf("crash_late: %s segfaults 100 ms after the block that kills it\n", kCrash);
+    setenv("SONORA_TEST_CRASH_DELAY_MS", "100", 1);
+    Rig rig(a, mono_spec(a, kCrash), 400);
+    if (!rig.ready) return 1;
+    fill_noise(rig.session, 5);
+    rig.run_waited(10);
+    rig.session.send(0, 1.f);
+    rig.run_paced(1);
+    rig.session.send(0, 0.f);
+    rig.run_paced(1);
+    check(rig.until_event(10000) == SupervisedChain::Event::Swapped, "restarted after the late crash");
+    std::printf("  why: %s\n", rig.chain->why().c_str());
+    check(rig.chain->why().find("signal 11") != std::string::npos,
+          "the late crash is named: killed by SIGSEGV, not removed after missed blocks");
+    check(rig.slowest_poll_ms < kPollBudgetMs, "waiting for the host's exit never blocked a poll");
     return 0;
 }
 
@@ -1706,6 +1730,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "keyed") r = scenario_keyed(a);
     else if (a.scenario == "miss") r = scenario_miss(a);
     else if (a.scenario == "crash") r = scenario_crash(a);
+    else if (a.scenario == "crash_late") r = scenario_crash_late(a);
     else if (a.scenario == "restarts") r = scenario_restarts(a);
     else if (a.scenario == "nan") r = scenario_nan(a);
     else if (a.scenario == "native") r = scenario_native(a);

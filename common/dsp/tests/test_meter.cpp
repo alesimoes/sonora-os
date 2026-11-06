@@ -596,9 +596,14 @@ int test_denormals() {
         feed(m, c);
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     };
-    const double a = time_of(tone);
-    const double s = time_of(silence);
-    std::printf("  5 s active %.1f ms, 5 s decaying silence %.1f ms\n", a * 1e3, s * 1e3);
+    // The best of three tone-then-silence pairs: a single pair read a
+    // neighbour's burst as a stall. A real denormal stall is in all three.
+    double a = 1e9, s = 1e9;
+    for (int rep = 0; rep < 3; ++rep) {
+        a = std::min(a, time_of(tone));
+        s = std::min(s, time_of(silence));
+    }
+    std::printf("  5 s active %.1f ms, 5 s decaying silence %.1f ms (best of 3)\n", a * 1e3, s * 1e3);
     CHECK_LE(s, 2.0 * a + 0.005, "silence time, s");
     return 0;
 }
@@ -625,6 +630,44 @@ std::vector<double> code_path(std::size_t blocks, int renders, Make&& make,
     return best;
 }
 
+// Two code paths timed side by side: block b of A and block b of B back to
+// back, the order alternating, so a load that comes and goes over the run
+// lands on both and their ratio measures the code. Timed one after the
+// other, a neighbour busy during only one of them moved the true-peak ratio
+// from 1.8 to 0.8 (local CI, 2026-11-05). Per block, the minimum over the
+// renders, as code_path().
+template <typename MakeA, typename MakeB>
+void code_path_pair(std::size_t blocks, int renders, MakeA&& make_a, MakeB&& make_b,
+                    std::vector<double>& best_a, std::vector<double>& best_b,
+                    std::vector<double>& first_a) {
+    best_a.assign(blocks, 1e9);
+    best_b.assign(blocks, 1e9);
+    first_a.assign(blocks, 0.0);
+    const auto timed = [](auto& block, std::size_t b) {
+        const auto t0 = std::chrono::steady_clock::now();
+        block(b);
+        return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0)
+            .count();
+    };
+    for (int r = 0; r < renders; ++r) {
+        auto a = make_a();  // fresh instances per render
+        auto bl = make_b();
+        for (std::size_t b = 0; b < blocks; ++b) {
+            double ua, ub;
+            if ((b + static_cast<std::size_t>(r)) % 2 == 0) {
+                ua = timed(a, b);
+                ub = timed(bl, b);
+            } else {
+                ub = timed(bl, b);
+                ua = timed(a, b);
+            }
+            best_a[b] = std::min(best_a[b], ua);
+            best_b[b] = std::min(best_b[b], ub);
+            if (r == 0) first_a[b] = ua;
+        }
+    }
+}
+
 double percentile(std::vector<double> v, double p) {
     std::sort(v.begin(), v.end());
     return v[static_cast<std::size_t>(p * (v.size() - 1))];
@@ -648,49 +691,61 @@ int report_cpu() {
                           {"peak + loudness", true, false},
                           {"peak + true-peak", false, true},
                           {"all readings", true, true}};
-    std::vector<double> all;
+    const auto make_meter = [&](const TrackMeter::Options& o,
+                                std::vector<std::unique_ptr<TrackMeter>>& keep) {
+        keep.emplace_back(new TrackMeter);
+        TrackMeter* m = keep.back().get();
+        m->prepare(fs, 128, 2, o);
+        return [m, &x](std::size_t b) {
+            const float* p[2] = {&x[0][b * 128], &x[1][b * 128]};
+            m->process(p, 128);
+        };
+    };
+    const auto report = [&](const char* name, const std::vector<double>& best,
+                            const std::vector<double>& first) {
+        std::printf("  CPU q128 48k stereo, %-16s %g s x %d: code path p99.9 %6.2f us max %6.2f "
+                    "us; single run p99.9 %6.2f us max %6.2f us\n",
+                    name, seconds, renders, percentile(best, 0.999),
+                    *std::max_element(best.begin(), best.end()), percentile(first, 0.999),
+                    *std::max_element(first.begin(), first.end()));
+    };
+    std::vector<std::unique_ptr<TrackMeter>> keep;
     for (const Mode& md : modes) {
+        if (md.loudness && md.true_peak) continue;  // "all readings": below, beside the interpolator
         TrackMeter::Options o;
         o.loudness = md.loudness;
         o.true_peak = md.true_peak;
-        std::vector<std::unique_ptr<TrackMeter>> keep;
         std::vector<double> first;
-        const std::vector<double> best = code_path(
-            blocks, renders,
-            [&] {
-                keep.emplace_back(new TrackMeter);
-                TrackMeter* m = keep.back().get();
-                m->prepare(fs, 128, 2, o);
-                return [m, &x](std::size_t b) {
-                    const float* p[2] = {&x[0][b * 128], &x[1][b * 128]};
-                    m->process(p, 128);
-                };
-            },
-            &first);
-        std::printf("  CPU q128 48k stereo, %-16s %g s x %d: code path p99.9 %6.2f us max %6.2f "
-                    "us; single run p99.9 %6.2f us max %6.2f us\n",
-                    md.name, seconds, renders, percentile(best, 0.999),
-                    *std::max_element(best.begin(), best.end()), percentile(first, 0.999),
-                    *std::max_element(first.begin(), first.end()));
-        all = best;
+        const std::vector<double> best =
+            code_path(blocks, renders, [&] { return make_meter(o, keep); }, &first);
+        report(md.name, best, first);
+        keep.clear();
     }
-    // The per-sample interpolator over the same blocks, for the block mode's
-    // saving.
-    std::vector<std::unique_ptr<TruePeakDetector>> keep;
-    const std::vector<double> per_sample = code_path(blocks, renders, [&] {
-        keep.emplace_back(new TruePeakDetector);
-        TruePeakDetector* d = keep.back().get();
-        d->prepare(2);
-        return [d, &x](std::size_t b) {
-            double m = 0.0;
-            for (std::uint32_t c = 0; c < 2; ++c) {
-                for (std::size_t k = b * 128; k < b * 128 + 128; ++k) {
-                    m = std::max(m, d->process(c, x[c][k]));
+    // The whole meter and the per-sample interpolator over the same blocks,
+    // timed side by side, for the block mode's saving.
+    TrackMeter::Options o_all;
+    o_all.loudness = true;
+    o_all.true_peak = true;
+    std::vector<std::unique_ptr<TruePeakDetector>> keep_tp;
+    std::vector<double> all, per_sample, first_all;
+    code_path_pair(
+        blocks, renders, [&] { return make_meter(o_all, keep); },
+        [&] {
+            keep_tp.emplace_back(new TruePeakDetector);
+            TruePeakDetector* d = keep_tp.back().get();
+            d->prepare(2);
+            return [d, &x](std::size_t b) {
+                double m = 0.0;
+                for (std::uint32_t c = 0; c < 2; ++c) {
+                    for (std::size_t k = b * 128; k < b * 128 + 128; ++k) {
+                        m = std::max(m, d->process(c, x[c][k]));
+                    }
                 }
-            }
-            g_sink = g_sink + m;
-        };
-    });
+                g_sink = g_sink + m;
+            };
+        },
+        all, per_sample, first_all);
+    report(modes[3].name, all, first_all);
     const double med_all = percentile(all, 0.5);
     const double ratio_spike = percentile(all, 0.999) / med_all;
     const double ratio_tp = percentile(per_sample, 0.5) / med_all;
