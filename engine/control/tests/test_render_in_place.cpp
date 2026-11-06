@@ -225,7 +225,7 @@ bool render(Rig& r, model::RenderKind kind, uint64_t sel_start, uint64_t sel_end
             rt.cancel();
         }
         bool ended = false;
-        for (int i = 0; i < 4000 && !ended; ++i) {
+        for (int i = 0; i < 30000 && !ended; ++i) {
             r.ctl->pump();
             ended = rt.poll(res, err, was_cancelled);
             if (!ended) std::this_thread::sleep_for(std::chrono::milliseconds(2));
