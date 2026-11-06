@@ -93,8 +93,7 @@ h2.h2 .hint,summary .hint{font-size:12px;font-weight:400;color:var(--faint)}
 .ag:hover,.ag:focus-visible{background:var(--raised);border-color:var(--line2)}
 .ag.working{--c:var(--ok)} .ag.wait{--c:var(--warn)} .ag.idle{--c:var(--faint)} .ag.done{--c:#6b9bf2}
 .ag.done{opacity:.8}
-.av{flex:none;width:52px;height:52px;border-radius:8px;display:grid;place-items:center;background:#0d0f12;border:2px solid var(--accent)}
-.ag.opus .av{border-color:var(--opus)}
+.av{flex:none;line-height:0}
 .ab{min-width:0;flex:1}
 .an{font-size:17px;font-weight:700;line-height:1.25}
 .as{font-size:12px;color:var(--muted);margin-top:1px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -143,7 +142,7 @@ details.tech[open]>summary{margin-bottom:12px}
 .fr.done .ft{opacity:.75}
 .fr.clk:hover .ft,.fr.clk:focus-visible .ft{background:var(--raised)}
 .pp{display:flex;align-items:center;gap:6px;min-width:0}.pp.dim{opacity:.7}.pp[data-k]:hover{background:rgba(255,255,255,.06);border-radius:4px}
-.pa{flex:none;border:1px solid var(--line2);border-radius:4px;background:#0d0f12;line-height:0}
+.pa{flex:none;line-height:0}
 .pn{min-width:0;line-height:1.2}.pn b{display:block;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pn small{display:block;font-size:10.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .none{font-size:11px;color:var(--faint)}
 .fsep{margin:12px 0 2px;font-size:12px;font-weight:600;color:var(--faint)}
@@ -170,7 +169,7 @@ details.tech[open]>summary{margin-bottom:12px}
 /* tira de agentes pequena */
 .people.sm{grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px}
 .people.sm .ag{padding:8px 10px;gap:10px}
-.people.sm .av{width:40px;height:40px}.people.sm .av svg{width:32px;height:32px}
+.people.sm .av svg{width:32px;height:32px}
 .people.sm .an{font-size:14px}.people.sm .as,.people.sm .more{display:none}
 .people.sm .sts{margin-top:3px;font-size:12px}.people.sm .ad{font-size:12px;-webkit-line-clamp:2;margin-top:2px}.people.sm .ac{margin-top:4px}
 @media (max-width:1100px){.fr{grid-template-columns:200px repeat(7,minmax(90px,1fr));overflow-x:auto}}
@@ -295,7 +294,7 @@ const light=(c,f)=>rgbHex(hexRgb(c).map(v=>v+(255-v)*f));
 const mix=(a,b,f)=>{const x=hexRgb(a),y=hexRgb(b);return rgbHex(x.map((v,i)=>v+(y[i]-v)*f))};
 function pixelAvatar(code,opus,size,seed){
   const h=hash(seed||code),pk=(a,sh)=>a[(h>>>sh)%a.length];
-  const F=FORCE||{},skin=F.skin||pk(SKINS,0),H=F.hair||pk(HAIRS,4),style=F.style||pk(['short','long','bald','curly','bun','side'],8),eyes=pk(['big','tall','wink','sleepy'],12),mouth=pk(['smile','small','open'],16);
+  const F=FORCE||{},skin=F.skin||pk(SKINS,0),H=F.hair||pk(HAIRS,4),style=F.style||pk(['short','long','bald','curly','bun','side'],8),eyec=pk(['#3b2a20','#2d5fa8','#2f7d4f','#1b1d24'],12);
   const N=16,g=Array.from({length:N},()=>Array(N).fill(null));
   const set=(x,y,c)=>{if(x>=0&&x<N&&y>=0&&y<N)g[y][x]=c};
   const rect=(x,y,w,hh,c)=>{for(let j=0;j<hh;j++)for(let i=0;i<w;i++)set(x+i,y+j,c)};
@@ -321,21 +320,17 @@ function pixelAvatar(code,opus,size,seed){
     for(const x of [4,6,8,10])set(x,2,HS);for(const x of [5,9])set(x,3,HS);set(6,1,HL);set(9,1,HL);set(4,3,HL)}
   if(style==='bun'){row(2,4,11,H);row(3,4,11,H);set(4,4,H);set(11,4,H);row(0,7,8,H);row(1,6,9,H);set(7,0,HL);set(7,2,'#ff8fb1');set(8,2,'#ff8fb1');set(6,3,HL);set(9,3,HS)}
   // olhos (1x2 ou 2x2 com brilho), bochechas e boca
-  if(eyes==='big'){rect(5,7,2,2,DK);rect(9,7,2,2,DK);set(5,7,WH);set(9,7,WH)}
-  if(eyes==='tall'){rect(6,7,1,2,DK);rect(9,7,1,2,DK);set(6,7,'#6b7a94');set(9,7,'#6b7a94')}
-  if(eyes==='wink'){rect(5,7,2,2,DK);set(5,7,WH);row(8,9,10,DK)}
-  if(eyes==='sleepy'){row(8,5,6,DK);row(8,9,10,DK);set(5,7,SK2);set(10,7,SK2)}
+  // olhos abertos, no mesmo nível, 2x2 com brilho branco no mesmo canto; sobrancelha de 1 px
+  rect(5,7,2,2,eyec);rect(9,7,2,2,eyec);set(5,7,WH);set(9,7,WH);
+  for(const x of [5,6,9,10])set(x,6,HS);
   const bl=mix(skin,'#ff6f81',.4);set(5,9,bl);set(10,9,bl);
-  const mc='#9b4a4a';
-  if(mouth==='small')row(10,7,8,mc);
-  if(mouth==='smile'){set(6,10,mc);set(9,10,mc);row(11,7,8,mc)}
-  if(mouth==='open')rect(7,10,2,2,'#6e2530');
+  const mc='#a24f55';set(6,10,mc);set(9,10,mc);row(11,7,8,mc);
   // acessórios do cargo
   const A={
     C:()=>{row(2,5,10,GOLD);for(const x of [5,7,8,10])set(x,1,GOLD);set(7,2,'#ff5a5f');set(8,2,'#ff5a5f');row(3,5,10,GOLD2);set(5,1,light(GOLD,.4))},
     BD:()=>{row(1,5,10,GOLD);row(2,4,11,GOLD);row(3,3,12,GOLD2);rect(7,1,2,2,'#f7d56a');set(5,1,'#fff3b0');set(4,2,'#fff3b0')},
     P:()=>{const F='#7e8fae',L='#f1fbff';for(const x0 of [4,8]){rect(x0+1,7,2,2,L);row(6,x0,x0+3,F);row(9,x0,x0+3,F);set(x0,7,F);set(x0,8,F);set(x0+3,7,F);set(x0+3,8,F)}
-      rect(6,7,1,2,DK);rect(9,7,1,2,DK)},
+      set(5,7,WH);set(9,7,WH)},
     UI:()=>{row(1,6,10,'#ff8fb1');row(2,4,12,'#ff8fb1');row(3,4,11,'#d9688c');set(11,3,null);set(8,0,'#d9688c');set(6,2,'#ffc2d4');set(5,2,'#ffc2d4')},
     RT:()=>{row(1,5,10,'#ff5a5f');row(2,4,11,'#ff5a5f');row(3,4,11,'#ff5a5f');row(4,2,7,'#d8393f');set(6,1,'#ff9aa0');set(5,2,'#ff9aa0')},
     FX:()=>{const G='#aab3bd',G2='#6d7580';for(let y=11;y<=15;y++)set(14,y,G);set(14,15,G2);set(13,9,G);set(13,10,G);set(15,9,G);set(15,10,G);set(14,10,G2)},
@@ -352,8 +347,10 @@ function pixelAvatar(code,opus,size,seed){
   // contorno de 1 px ao redor de tudo
   const out=g.map(r=>r.slice());
   for(let y=0;y<N;y++)for(let x=0;x<N;x++)if(!g[y][x]&&[[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>g[y+dy]&&g[y+dy][x+dx]))out[y][x]=OUT;
-  let px='';out.forEach((r,y)=>r.forEach((c,x)=>{if(c)px+=`<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`}));
-  return `<svg viewBox="0 0 16 16" width="${size||44}" height="${size||44}" shape-rendering="crispEdges" style="image-rendering:pixelated">${px}</svg>`}
+  const TINT={C:'#f5e0a3',OR:'#cfd6df',BD:'#f9d9a0',P:'#cdbdf5',IN:'#bfe9d3',FX:'#d3d8de',PL:'#b9ece4',DS:'#dccbf8',UI:'#f9c9da',RT:'#f9c3c3',OS:'#bcd7f8',AR:'#f6dcb0',QA:'#c9e8c9',RV:'#c9e8c9',AG:'#dfe3e8'};
+  const bg=TINT[code]||TINT.AG;
+  let px=`<rect width="16" height="16" rx="3" fill="${bg}"/><rect y="11" width="16" height="5" fill="${shade(bg,.93)}"/>`;out.forEach((r,y)=>r.forEach((c,x)=>{if(c)px+=`<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`}));
+  return `<svg viewBox="0 0 16 16" width="${size||44}" height="${size||44}" shape-rendering="crispEdges" style="image-rendering:pixelated;border-radius:6px">${px}</svg>`}
 function showGallery(){
   document.body.classList.add('gal');
   const codes=[['C','Coordenador'],['OR','Orquestrador'],['BD','Builder'],['P','Principal'],['IN','Integrador'],['FX','Corretor'],['PL','Plugins'],['DS','DSP'],['UI','Interface'],['RT','Tempo real'],['OS','Distribuição'],['AR','Arquiteto'],['QA','Testador'],['AG','Geral']];
