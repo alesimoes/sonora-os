@@ -22,6 +22,7 @@ RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
  for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
  if apt-get $A update && apt-get $A install -y --no-install-recommends \
       build-essential \
+      ccache \
       cmake \
       pkg-config \
       qt6-base-dev \
@@ -70,6 +71,12 @@ RUN install -D -m 0644 \
 COPY audio-stack/pipewire-sonora.conf /etc/pipewire/pipewire.conf.d/99-sonora.conf
 
 RUN useradd --create-home --uid 1000 sonora && usermod -aG audio,video sonora
+
+# The compiler cache every checkout shares (the sonora-ccache volume, which
+# tools/build-ui.sh mounts here): owned by the image user, which a new volume
+# copies from this directory. tools/build-engine.sh mounts the same volume at
+# /root/.ccache as root.
+RUN mkdir /ccache && chown sonora:sonora /ccache
 
 # Xvfb, run as anyone but root, cannot create its socket directory, and
 # refuses one a non-root user created. tools/build-ui.sh runs the container

@@ -15,7 +15,21 @@ BUILD="${SONORA_BUILD_DIR:-build-ui-container}"
 UI="$BUILD/sonora-ui"
 
 JOBS="${SONORA_JOBS:-$(nproc)}"
-# ccache is shared through a named volume by every worktree (tools/build-ui.sh).
+# tools/local-ci.sh narrows the tests a PR runs. SONORA_SKIP_SLOW=1 leaves out
+# the tests labelled `slow` (the long DSP suites, about 20 min of the tree
+# step; main runs them) and SONORA_CTEST_LABELS is a ctest -L regex of the
+# areas the change touches. A function, so every ctest call below takes the
+# filter; a listing (-N) stays whole, it checks that the ui_* tests exist.
+ctest_filter=()
+[[ -z "${SONORA_CTEST_LABELS:-}" ]] || ctest_filter+=(-L "$SONORA_CTEST_LABELS")
+[[ "${SONORA_SKIP_SLOW:-0}" != 1 ]] || ctest_filter+=(-LE slow)
+if ((${#ctest_filter[@]})); then
+  ctest() {
+    if [[ " $* " == *" -N "* ]]; then command ctest "$@"; else command ctest "${ctest_filter[@]}" "$@"; fi
+  }
+fi
+# ccache is shared through a named volume by every worktree (tools/build-ui.sh,
+# CCACHE_DIR=/ccache).
 if command -v ccache >/dev/null; then
   export CMAKE_CXX_COMPILER_LAUNCHER=ccache CMAKE_C_COMPILER_LAUNCHER=ccache
   ccache -z >/dev/null

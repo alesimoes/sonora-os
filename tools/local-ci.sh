@@ -4,10 +4,45 @@
 # useful time; the orchestrator runs this before it opens a PR and before
 # the merge train merges one).
 #
-#   tools/local-ci.sh                  the steps the change since main needs
-#   tools/local-ci.sh --full           every step (main after a merge)
+#   tools/local-ci.sh                  the contexts the change since main touches
+#   tools/local-ci.sh --full           the whole Sonora software (main after a merge)
+#   tools/local-ci.sh --os             the os-image context alone
+#   tools/local-ci.sh --release        --full and --os (an image for the owner)
 #   tools/local-ci.sh --base REF       compare with REF (default origin/main)
-#   tools/local-ci.sh --dry-run        print the steps, run none
+#   tools/local-ci.sh --dry-run        print contexts, steps and ctest filter, run none
+#
+# The owner's rule (2026-11-05): tests are separated by CONTEXT, like separate
+# pipelines, and a PR pays only for its own context, so a small PR integrates
+# in minutes; the whole suite runs once on main after the merge. A PR touching
+# several contexts runs the union. The table in "which context" below is the
+# one place that maps a path to a context.
+#
+#   context        paths                         steps
+#   sonora-ui      ui/, keymaps/                 ui (or tree when another context
+#                                                builds it) + the ui tests
+#   sonora-plugins plugins/native|client|sdk|    tree (dsp/native tests), plugins,
+#                  host, common/dsp              rtsan, windows. No TSan on a PR.
+#   sonora-engine  engine/, drivers/, common/    tree, engine-scripts, tsan, rtsan,
+#                  (not dsp), contracts/         record, bwf (engine/core,
+#                                                common/audiofile), windows (common/)
+#   os-image       iso/, audio-stack/            os (tools/build-iso.sh, then the
+#                                                QEMU tests), quantum (audio-stack/)
+#   harness/docs   tools/harness, .claude,       nothing heavy
+#                  planning, brain, docs, *.md, .github
+# A build script, Dockerfile or this script runs the three Sonora contexts.
+#
+# --full is the whole Sonora software: all three Sonora contexts, every test
+# (slow ones included), ASan, and TSan including the plugins. The os-image
+# context is not in --full (an image takes the machine for an hour or more);
+# --os runs it alone and --release adds it to --full.
+#
+# In a PR run the tree builds incrementally (ccache, see tools/build-ui.sh) but
+# ctest runs only the tests of the touched areas, by the module labels
+# CMakeLists.txt gives every test (a ctest -L regex, SONORA_CTEST_LABELS), and
+# never the tests labelled `slow` (the 12 long DSP suites, about 20 of the 26
+# minutes the tree step spent testing; SONORA_SKIP_SLOW=1). A path with no
+# label of its own, or one everything depends on (contracts/, common/ but
+# dsp), runs the whole non-slow suite.
 #
 # Each step's output goes to $SONORA_LOCAL_CI_DIR/<step>.log (default
 # .local-ci/ in the checkout); the summary on stdout is one line per step.
@@ -22,14 +57,18 @@ cd "$ROOT" || exit 2
 BASE=origin/main
 FULL=0
 DRY=0
+OS_ONLY=0
+WITH_OS=0
 STEP=""
 while (($#)); do
   case "$1" in
     --full) FULL=1 ;;
+    --os) OS_ONLY=1 ;;
+    --release) FULL=1 WITH_OS=1 ;;
     --base) BASE="$2"; shift ;;
     --dry-run) DRY=1 ;;
     --step) STEP="$2"; FULL=1; shift ;;   # internal: one step, lock held
-    *) echo "usage: $0 [--full] [--base REF] [--dry-run]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--full|--os|--release] [--base REF] [--dry-run]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -45,66 +84,112 @@ host_path() {
 export MSYS2_ARG_CONV_EXCL='*'
 mkdir -p "$OUT"
 
-# --- which areas the change touches (the classifier .github/workflows/ci.yml
-# used for its heavy jobs) ----------------------------------------------------
-core=0 ui=0 plugins=0 audio=0 rt=0 bwf=0 sanitizers=0 portable=0
-all() { core=1 ui=1 plugins=1 audio=1 rt=1 bwf=1 portable=1; }
-if ((FULL)); then
-  all; sanitizers=1
+# --- which context the change touches ------------------------------------------
+# Context flags, then per-path extras: bwf and portable (the Windows build)
+# and ctest labels (module labels, CMakeLists.txt), or fullsuite when a path
+# has no label of its own.
+c_ui=0 c_plugins=0 c_engine=0 c_os=0 c_quantum=0 bwf=0 portable=0
+LABELS=" " fullsuite=0
+lab() { local l; for l; do [[ "$LABELS" == *" $l "* ]] || LABELS+="$l "; done; }
+sonora() { c_ui=1 c_plugins=1 c_engine=1 portable=1 bwf=1 fullsuite=1; }
+if ((OS_ONLY)); then
+  c_os=1 FULL=0
+elif ((FULL)); then
+  sonora; c_quantum=1
+  ((WITH_OS)) && c_os=1
 else
   mb="$(git merge-base "$BASE" HEAD)" || { echo "error: no merge base with $BASE" >&2; exit 2; }
   files="$(git diff --no-renames --name-only "$mb" HEAD)"
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
+    # path -> context. First match wins.
     case "$f" in
-      planning/*|brain/*|docs/*|*.md) ;;
-      engine/core/*|common/audiofile/*) core=1 rt=1 bwf=1 ;;
-      engine/*|drivers/*) core=1 rt=1 ;;
-      contracts/*) core=1 ;;
-      common/*) core=1 rt=1 portable=1 ;;
-      ui/*|keymaps/*) ui=1 ;;
-      plugins/native/*|plugins/client/*|plugins/sdk/*) plugins=1 rt=1 portable=1 ;;
-      tools/*.ps1) portable=1 ;;
-      plugins/*) plugins=1 ;;
-      audio-stack/*) audio=1 ;;
-      iso/*|.claude/*|tools/harness/*|tools/harness*.py|tools/orchestrator.py) ;;
+      # harness/docs: nothing heavy
+      planning/*|brain/*|docs/*|*.md|.github/*|.claude/*|tools/harness/*|tools/harness*.py|tools/orchestrator.py) ;;
       tools/dashboard*|tools/*.lua) ;;
-      tools/build-*|tools/test-engine-docker.sh|tools/test-bwf-interop*.sh) all ;;
-      tools/test-quantum-pin.sh|tools/rtsan-*|tools/failed-take-quit.py|tools/crash-recovery-kill.py) all ;;
-      tools/*-entrypoint.sh|tools/verify-recording.py|tools/local-ci.sh) all ;;
-      tools/Dockerfile*|tools/*.cmake|tools/*.supp) all ;;
-      tools/*|.github/*) ;;
-      *) all ;;
+      # os-image
+      iso/*|tools/build-iso.sh|tools/test-*-qemu.sh|tools/make-stick-image.sh) c_os=1 ;;
+      audio-stack/*) c_os=1 c_quantum=1 ;;
+      # sonora-ui
+      ui/*|keymaps/*) c_ui=1; lab ui ;;
+      # sonora-plugins
+      common/dsp/*) c_plugins=1 portable=1; lab dsp native ;;
+      plugins/native/*) c_plugins=1 portable=1; lab native ;;
+      plugins/client/*|plugins/sdk/*) c_plugins=1 portable=1; lab dsp native plugin_client ;;
+      plugins/host/*) c_plugins=1; lab pluginhost plugin_client ;;
+      plugins/*) c_plugins=1 fullsuite=1 ;;
+      # sonora-engine
+      engine/core/*) c_engine=1 bwf=1; lab core control app plugin_client drivers ui ;;
+      common/audiofile/*) c_engine=1 bwf=1; lab audiofile core ;;
+      engine/control/*) c_engine=1; lab control app ui ;;
+      engine/app/*) c_engine=1; lab app ui ;;
+      engine/plugin_client/*) c_engine=1; lab plugin_client core app ;;
+      drivers/*) c_engine=1; lab drivers core app ;;
+      engine/*|contracts/*) c_engine=1 fullsuite=1 ;;
+      common/*) c_engine=1 portable=1 fullsuite=1 ;;
+      # the Windows build alone
+      tools/*.ps1) portable=1 ;;
+      # build scripts, images and this script touch every Sonora context
+      tools/build-*|tools/test-engine-docker.sh|tools/test-bwf-interop*.sh) sonora ;;
+      tools/test-quantum-pin.sh|tools/rtsan-*|tools/failed-take-quit.py|tools/crash-recovery-kill.py) sonora ;;
+      tools/*-entrypoint.sh|tools/verify-recording.py|tools/local-ci.sh) sonora ;;
+      tools/Dockerfile*|tools/*.cmake|tools/*.supp) sonora ;;
+      tools/*) ;;
+      *) sonora ;;
     esac
   done <<<"$files"
-  # Engine code runs on the audio thread and in the UI's process: TSan on
-  # every PR that touches it, as CI did.
-  ((core)) && sanitizers=1
 fi
 
 # --- the steps -----------------------------------------------------------------
 steps=()
-if ((core || ui)); then
+if ((c_engine || c_plugins)); then
   # The whole tree with Qt: every ctest test, engine and plugins included.
+  steps+=(tree)
+elif ((c_ui)); then
   # A UI-only change builds the UI and its tests only.
-  if ((core)); then steps+=(tree); else steps+=(ui); fi
+  steps+=(ui)
 fi
-((core)) && steps+=(engine-scripts)
-((plugins)) && steps+=(plugins)
-((sanitizers)) && steps+=(tsan)
+((c_engine)) && steps+=(engine-scripts)
+((c_plugins)) && steps+=(plugins)
+# TSan: the engine's threads. The plugins' TSan runs on main (--full) only.
+((c_engine || FULL)) && steps+=(tsan)
 ((FULL)) && steps+=(asan)
-((rt)) && steps+=(rtsan)
-((core || audio)) && steps+=(record)
-((audio)) && steps+=(quantum)
-((bwf)) && steps+=(bwf)
+((c_engine || c_plugins)) && steps+=(rtsan)
+((c_engine)) && steps+=(record)
+((c_quantum)) && steps+=(quantum)
+((c_engine && bwf)) && steps+=(bwf)
+((c_os)) && steps+=(os)
 # Windows last: the target is Linux, and a red Linux step skips it.
-((portable)) && steps+=(windows)
+((c_plugins || portable)) && steps+=(windows)
 
+contexts=()
+((c_ui)) && contexts+=(sonora-ui)
+((c_plugins)) && contexts+=(sonora-plugins)
+((c_engine)) && contexts+=(sonora-engine)
+((c_os)) && contexts+=(os-image)
 if ((${#steps[@]} == 0)); then
+  echo "local-ci: context: harness/docs"
   echo "local-ci: nothing to build or test (documentation or tooling only)"
   exit 0
 fi
-[[ -n "$STEP" ]] || echo "local-ci: ${steps[*]}"
+# What the tree step's ctest runs; the child steps inherit it from here.
+filter="all tests"
+if ((FULL)); then
+  filter="all tests, slow ones included"
+elif ((fullsuite)) || [[ "$LABELS" == " " ]]; then
+  filter="all tests except label slow"
+  export SONORA_SKIP_SLOW=1
+else
+  read -r -a lab_list <<<"$LABELS"
+  SONORA_CTEST_LABELS="^($(IFS='|'; echo "${lab_list[*]}"))\$"
+  export SONORA_CTEST_LABELS SONORA_SKIP_SLOW=1
+  filter="-L '$SONORA_CTEST_LABELS' -LE slow"
+fi
+if [[ -z "$STEP" ]]; then
+  echo "local-ci: context: ${contexts[*]:-windows-build}"
+  echo "local-ci: ${steps[*]}"
+  [[ " ${steps[*]} " == *" tree "* || " ${steps[*]} " == *" ui "* ]] && echo "local-ci: ctest filter: $filter"
+fi
 ((DRY)) && exit 0
 
 # One heavy job at a time on the machine, each with every CPU: each step
@@ -167,6 +252,15 @@ run_step() {
     record) tools/test-engine-docker.sh ;;
     quantum) tools/test-quantum-pin.sh ;;
     bwf) tools/test-bwf-interop.sh ;;
+    os)
+      # The image, then the QEMU tests against it: all of them run, the step
+      # fails if any did. Each script takes the lock itself unless held.
+      rc=0
+      tools/build-iso.sh || return 1
+      for t in test-boot-qemu test-install-qemu test-policycheck-qemu test-virtualcard-qemu; do
+        timeout 3600 bash "tools/$t.sh" || { echo "FAIL $t"; rc=1; }
+      done
+      return $rc ;;
     windows) powershell -NoProfile -ExecutionPolicy Bypass -File "$(host_path "$ROOT")/tools/build-portable.ps1" ;;
   esac
 }
