@@ -40,7 +40,9 @@
           "depends_on": {"type": "array", "items": {"type": "string"}},
           "agent": {"enum": ["rt-engineer", "ui-engineer", "dsp-engineer",
                              "plugin-engineer", "distro-engineer",
-                             "driver-engineer"]},
+                             "driver-engineer", "visual-designer"]},
+          "tier": {"enum": ["junior", "pleno", "senior"]},
+          "grade": {"type": "string", "pattern": "^(S|M|L)/(low|med|high)$"},
           "needs_privileged": {"type": "boolean"},
           "accept": {"type": "array", "items": {"type": "string"}}
         }

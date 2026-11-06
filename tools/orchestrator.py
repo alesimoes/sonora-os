@@ -20,8 +20,8 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import (heartbeat, launcher, numbers, scheduler, shadow,  # noqa: E402
-                     status)
+from harness import (autoadopt, dispatch, heartbeat, launcher, numbers,  # noqa: E402
+                     routing, scheduler, shadow, status)
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
@@ -53,6 +53,7 @@ class Orchestrator:
         os.makedirs(self.odir, exist_ok=True)
         os.makedirs(os.path.join(self.hdir, "runs"), exist_ok=True)
         launcher.check_models(self.root)
+        self.routing = routing.load(self.root)   # None: old behaviour
         self.clock = clock
         self.dry_run = dry_run
         self.fake_claude = fake_claude
@@ -64,6 +65,7 @@ class Orchestrator:
         self.broker = broker or NullBroker()
         self.done_msgs = {}   # run id -> (time, body) of its `done` message
         self.ci_polled = {}   # feature -> time of its last CI poll
+        self.auto_adopt_at = 0.0   # last automatic adoption sweep
         self.pr_retry = {}    # feature -> earliest next PR-open attempt
         self.procs = {}
         self.activity = heartbeat.Activity()
@@ -176,8 +178,10 @@ class Orchestrator:
             self._kill_all("STOP.NOW")
         self._poll_runs(now)
         if self.cfg.local_ci and not self.dry_run:
+            self.localci.prune(self.train.head_is_gone)
             self.localci.poll()
         self._open_pending_prs(now)
+        autoadopt.tick(self, now)
         self._watch_prs(now)
         # After the train asked for a slot: a waiting PR goes before main.
         if self.cfg.local_ci and not self.dry_run:
@@ -233,7 +237,10 @@ class Orchestrator:
             b["queue"]["prs"] = [prs.get(x) for x in b["queue"]["batch"]]
             data["builder"] = b
         data["gh_paused_until"] = self.train.pause_until or None
-        status.write_atomic(self._p("status.json"), data)
+        try:
+            status.write_atomic(self._p("status.json"), data)
+        except OSError as e:   # the dashboard is reading it; next tick retries
+            self.store.event("daemon", "status_write_failed", str(e)[:200])
 
     # -- launching ----------------------------------------------------
     def _is_dry(self, pool):
@@ -268,10 +275,7 @@ class Orchestrator:
         return scheduler.KIND_OF_STATE.get(t["state"], "fixer")
 
     def _agent_for(self, t, kind):
-        if kind == "principal":
-            return PRINCIPAL_AGENT
-        return {"tester": "tester", "integrator": "integrator"}.get(
-            kind, t["agent"])
+        return dispatch.agent_for(self, t, kind)
 
     def _launch(self, ln, now):
         t = self.store.get_task(ln.task_id)
@@ -355,7 +359,8 @@ class Orchestrator:
                 launcher.claude_argv(self.fake_claude),
                 self._agent_for(t, ln.kind), prompt, mcp, settings,
                 self.cfg.max_turns, self.cfg.permission_mode,
-                agents_root=self.root)
+                agents_root=self.root,
+                model=dispatch.model_for(self, t, ln.kind))
             proc = launcher.spawn(argv, env, wt, stream)
         except Exception as e:  # launch failure counts like a dead run
             self.store.event(t["id"], "launch_failed", str(e))
@@ -893,6 +898,7 @@ class Orchestrator:
                 elif f.get("red_since") or f.get("principal_runs"):
                     self.store.set_feature(f["id"], red_since=None,
                                            principal_runs=0)
+                    dispatch.clear_senior_round(self, f["id"])
 
     def _red(self, f, ts, jobs, fix_kind, detail=""):
         """Red check or conflict: a fixer (the track's engineer) or the
@@ -926,8 +932,14 @@ class Orchestrator:
                    "principal engineer")
             return
         trigger = None
+        # The senior tier of the area agent gets the first extra round; the
+        # principal comes only when that is spent too (.claude/PROCESS.md).
+        senior = bool(stuck) and not f.get("principal_runs", 0) and \
+            dispatch.take_senior_round(self, f["id"])
         if f.get("principal_runs", 0) < 1:
-            if stuck:
+            if stuck and senior:
+                pass
+            elif stuck:
                 trigger = (f"same cause still red after "
                            f"{self.cfg.principal_after_fixes} fix rounds: "
                            f"{', '.join(stuck)}")
@@ -1103,7 +1115,7 @@ def main(argv=None):
     b.add_argument("name")
     b.add_argument("prs", nargs="+", type=int)
     t = sub.add_parser("adopt", help="put open PRs on the merge train "
-                       "(stop the daemon first: one writer of state.json)")
+                       "(a running daemon takes the request on its tick)")
     t.add_argument("prs", nargs="*", type=int,
                    help="PR numbers; none means every open PR")
     args = ap.parse_args(argv)
@@ -1143,6 +1155,12 @@ def main(argv=None):
         cur = cur - {args.pool} if args.resume else cur | {args.pool}
         status.write_atomic(path, sorted(cur))
     elif args.cmd == "adopt":
+        if autoadopt.daemon_alive(odir):
+            # The running daemon is the only writer of state.json: it picks
+            # the request up on its next tick.
+            autoadopt.write_request(os.path.join(root, ".harness"), args.prs)
+            print("adopt: daemon is running; queued for its next tick")
+            return 0
         o = Orchestrator(root)
         try:
             got = o.train.adopt(set(args.prs) or None)

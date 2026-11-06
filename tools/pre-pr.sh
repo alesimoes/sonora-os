@@ -87,6 +87,19 @@ fi
 # 7. Unfinished markers.
 git diff "$base"...HEAD -U0 | grep -qE '^\+(<{7}|>{7})( |$)' && bad "conflict markers in the diff"
 
+# 8. Big source files (owner, 2026-11-06): a guideline, not a failure. A file
+# over 500 lines that this branch grows should be split in the same PR
+# (2026-11-06: two 3k-line model files stalled the ASan build for 40 min).
+echo "$changed" | grep -E '\.(cpp|cc|h|hpp|py|qml|sh)$' | grep -v '/third_party/' |
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    n=$(wc -l <"$f")
+    added=$(git diff --numstat "$base"...HEAD -- "$f" | cut -f1)
+    if [ "$n" -gt 500 ] && [ "${added:-0}" -gt 0 ]; then
+      echo "pre-pr: warning: $f has $n lines (+$added here); split it by domain (guideline: under 500)" >&2
+    fi
+  done
+
 if [ "$fail" = 0 ]; then
   echo "pre-pr: ok ($(echo "$changed" | wc -l | tr -d ' ') files). Tests you touched are still yours to run."
 fi
