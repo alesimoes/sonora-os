@@ -254,6 +254,44 @@ details.tech>summary{cursor:pointer;font:600 15px var(--disp);color:var(--muted)
 details.tech[open]>summary{margin-bottom:12px}
 @media (max-width:900px){.pr{grid-template-columns:50px 1fr}.pr .pst,.pr .pnx{grid-column:2}.mrow{grid-template-columns:1fr}}
 
+/* quadro de fluxo */
+.flow{display:flex;flex-direction:column;gap:5px}
+.fr{display:grid;grid-template-columns:minmax(230px,1.7fr) repeat(7,minmax(0,1fr));gap:5px;align-items:stretch}
+.fr.fh{position:sticky;top:0;z-index:3;background:var(--window);padding:4px 0}
+.fp{font-size:13px;text-align:center;border-bottom:3px solid var(--line2);padding-bottom:3px}.fp b{display:block;font-weight:700}.fp small{display:block;font-size:10.5px;color:var(--faint)}
+.fr.fh .ft{font:700 13px var(--disp);color:var(--muted);align-self:end;border-bottom:3px solid var(--line2);padding-bottom:6px}
+.fr:not(.fh) .ft{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px 10px;min-width:0}
+.ftt{font-size:14px;font-weight:600}
+.fs{font-size:11px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.fw{display:inline-block;margin-top:4px;font-size:12px;font-weight:600;color:var(--warn);border:1px dashed var(--warn);border-radius:10px;padding:0 8px}
+.fc2{border-radius:4px;display:flex;flex-direction:column;justify-content:center;gap:5px;min-width:0;padding:4px;font-size:12px;color:var(--faint)}
+.fc2.past{align-items:center;justify-content:center;color:var(--ok);opacity:.55;font-size:15px;background:rgba(76,195,138,.04)}
+.fc2.next{background:repeating-linear-gradient(90deg,var(--line) 0 4px,transparent 4px 8px) center/100% 1px no-repeat}
+.fc2.cur{background:rgba(63,193,176,.12);border:2px solid var(--accent);color:var(--ink);padding:6px}
+.fc2.cur.hold{background:rgba(232,176,75,.10);border:2px dashed var(--warn)}
+.fc2.cur.ok{border-color:var(--ok);background:rgba(76,195,138,.12);font-weight:600;color:var(--ok);align-items:center}
+.fr.done .ft{opacity:.75}
+.fr.clk:hover .ft,.fr.clk:focus-visible .ft{background:var(--raised)}
+.pp{display:flex;align-items:center;gap:6px;min-width:0}.pp.dim{opacity:.7}.pp[data-k]:hover{background:rgba(255,255,255,.06);border-radius:4px}
+.pa{flex:none;border:1px solid var(--line2);border-radius:4px;background:#0d0f12;line-height:0}
+.pn{min-width:0;line-height:1.2}.pn b{display:block;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pn small{display:block;font-size:10.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.none{font-size:11px;color:var(--faint)}
+.fsep{margin:12px 0 2px;font-size:12px;font-weight:600;color:var(--faint)}
+.fplan{margin-top:12px}.fplan>summary{cursor:pointer;font:600 13px var(--disp);color:var(--muted);margin-bottom:6px}.fplan .fr{margin-top:5px}
+.pn b,.pn small{white-space:normal;overflow:visible}.pn small{font-size:11px}
+.ftt{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.fr.done .ftt{-webkit-line-clamp:1}
+.fr.done .fc2.past{background:none;color:transparent}
+.fr:not(.fh) .ft .ftt{display:inline}
+.fr.done .ft .ftt{display:inline-block;max-width:calc(100% - 50px);vertical-align:bottom;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* tira de agentes pequena */
+.people.sm{grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px}
+.people.sm .ag{padding:8px 10px;gap:10px}
+.people.sm .av{width:40px;height:40px}.people.sm .av svg{width:36px;height:36px}
+.people.sm .an{font-size:14px}.people.sm .as,.people.sm .more{display:none}
+.people.sm .sts{margin-top:3px;font-size:12px}.people.sm .ad{font-size:12px;-webkit-line-clamp:2;margin-top:2px}.people.sm .ac{margin-top:4px}
+@media (max-width:1100px){.fr{grid-template-columns:200px repeat(7,minmax(90px,1fr));overflow-x:auto}}
+
 /* painel de detalhes do card clicado */
 .clk{cursor:pointer}
 #drawer{position:fixed;top:0;right:0;height:100vh;width:min(560px,96vw);background:var(--panel);border-left:1px solid var(--line2);box-shadow:-12px 0 40px rgba(0,0,0,.5);z-index:50;transform:translateX(105%);transition:transform .2s;display:flex;flex-direction:column}
@@ -284,12 +322,12 @@ details.tech[open]>summary{margin-bottom:12px}
   </header>
   <div class="sit" id="sit">Carregando...</div>
   <h2 class="h2">Agentes</h2>
-  <div class="people" id="people"></div>
+  <div class="people sm" id="people"></div>
   <div class="pnote" id="pnote"></div>
   <h2 class="h2">Máquina de build <span class="hint">só um build pesado roda por vez; os outros esperam na fila</span></h2>
   <div class="mach" id="mach"></div>
-  <h2 class="h2">PRs abertos <span class="hint" id="prhint"></span></h2>
-  <div class="prl" id="prl"></div>
+  <h2 class="h2">Fluxo de construção <span class="hint" id="prhint"></span></h2>
+  <div class="flow" id="flow"></div>
   <details class="tech" id="tech"><summary>Detalhes técnicos <span class="hint">pools do orquestrador, backlog, colunas do merge, eventos, containers</span></summary>
   <p class="err" id="err"></p>
 
@@ -498,12 +536,12 @@ function renderTrain(s){
 /* ---- visão simples: frase da situação, agentes como pessoas, máquina, PRs ---- */
 const ROLE_PT={'principal-engineer':'Engenheiro principal','rt-engineer':'Engenheiro de tempo real','ui-engineer':'Engenheiro de interface','distro-engineer':'Engenheiro de distribuição','plugin-engineer':'Engenheiro de plugins','dsp-engineer':'Engenheiro de DSP','general-purpose':'Agente geral','fixer':'Corretor','integrator':'Integrador','coordenador':'Coordenador','architect':'Arquiteto','planner':'Planejador','reviewer':'Revisor','qa':'Testador'};
 const roleName=r=>ROLE_PT[r]||(r?String(r).replace(/-/g,' ').replace(/^./,c=>c.toUpperCase()):'Agente');
-const AVT=[['principal','P'],['coord','C'],['ui-','UI'],['rt-','RT'],['fix','FX'],['integr','IN'],['plugin','PL'],['dsp','DS'],['distro','OS'],['general','AG'],['arch','AR'],['plan','PL'],['review','RV'],['qa','QA']];
+const AVT=[['principal','P'],['coord','C'],['ui-','UI'],['rt-','RT'],['fix','FX'],['integr','IN'],['plugin','PL'],['dsp','DS'],['distro','OS'],['general','AG'],['orch','OR'],['build','BD'],['arch','AR'],['plan','PL'],['review','RV'],['qa','QA']];
 const avatarOf=r=>{r=String(r||'').toLowerCase();const m=AVT.find(x=>r.includes(x[0]));return m?m[1]:(r.slice(0,2).toUpperCase()||'?')};
 /* 12x12 pixel faces: one look per role, Opus shirts purple */
 const PXF=['....hhhh....','..hhhhhhhh..','.hhhhhhhhhh.','.hssssssssh.','.sseessees s.'.replace(' ',''),'.ssssssssss.','.ssssnnssss.','.sssmmmmsss.','..ssssssss..','...cccccc...','.cccccccccc.','cccccccccccc'];
-const PXROLE={P:['#e8b04b','g'],C:['#3fc1b0','crown'],UI:['#ff8fb1',''],RT:['#ff5a5f',''],FX:['#8a93a0','tool'],IN:['#4cc38a',''],PL:['#7fe0d2','phones'],DS:['#b38bff','phones'],OS:['#5b9cff',''],AG:['#c9d1d9',''],AR:['#e8b04b',''],RV:['#9fb3c8','g'],QA:['#4cc38a','g']};
-function pixelAvatar(code,opus){
+const PXROLE={P:['#e8b04b','g'],C:['#3fc1b0','crown'],UI:['#ff8fb1',''],RT:['#ff5a5f',''],FX:['#8a93a0','tool'],IN:['#4cc38a',''],PL:['#7fe0d2','phones'],DS:['#b38bff','phones'],OS:['#5b9cff',''],AG:['#c9d1d9',''],AR:['#e8b04b',''],RV:['#9fb3c8','g'],QA:['#4cc38a','g'],OR:['#e8ebef','crown'],BD:['#5b9cff','phones']};
+function pixelAvatar(code,opus,size){
   const [hair,acc]=PXROLE[code]||['#c9d1d9',''];
   const col={h:hair,s:'#f2c9a0',e:'#121417',n:'#d9a77f',m:'#a8584e',c:opus?'#a78bfa':'#3fc1b0'};
   const g=PXF.map(r=>r.split(''));
@@ -513,7 +551,7 @@ function pixelAvatar(code,opus){
   if(acc==='tool'){g[10][11]='t';g[9][11]='t'}
   const ex={g:'#121417',y:'#e8b04b',p:'#e8ebef',t:'#e8b04b'};
   let px='';g.forEach((row,y)=>row.forEach((ch,x)=>{const c=col[ch]||ex[ch];if(c)px+=`<rect x="${x}" y="${y}" width="1" height="1" fill="${c}"/>`}));
-  return `<svg viewBox="0 0 12 12" width="44" height="44" shape-rendering="crispEdges" style="image-rendering:pixelated">${px}</svg>`}
+  return `<svg viewBox="0 0 12 12" width="${size||44}" height="${size||44}" shape-rendering="crispEdges" style="image-rendering:pixelated">${px}</svg>`}
 const MODEL_PT=m=>m?String(m).replace(/^./,c=>c.toUpperCase()):'';
 function personCard(x){
   const model=String(x.model||'').toLowerCase();
@@ -530,17 +568,20 @@ function people(s){
   const c=s.coordinator;
   if(c){const age=c.updated?Math.round(now-c.updated):null,live=age!=null&&age<900;
     out.push({k:'coord',id:'coord',title:'Coordenador',sub:'Claude · lidera a sessão',model:'opus',avatar:'C',state:live?'working':'idle',
-      stateText:live?'Trabalhando · atualizou há '+dur(age):'Sem atualização há '+dur(age),doing:c.doing})}
+      stateText:live?'Trabalhando · atualizou há '+dur(age):'Sem atualização há '+dur(age),doing:(c.doing||'')+(c.next?' Próximo: '+c.next:'')})}
   s.agents.filter(a=>!['done','paused'].includes(a.state)).sort((x,y)=>ORDER[x.state]-ORDER[y.state]).forEach(a=>{
     const lk=a.lock,since=lk?dur(Math.round(now-lk.start)):'';
     const st=a.state==='building'?['working','Usando a máquina · há '+since]:a.state==='waiting_lock'?['wait','Esperando a máquina · há '+since]
       :a.state==='working'?['working','Trabalhando'+(a.since&&a.since_src!=='worktree'?' · há '+dur(Math.round(now-a.since)):'')]:['idle','Parado'];
     out.push({k:'agent',id:a.id,title:roleName(a.agent),sub:a.label,model:a.model,avatar:avatarOf(a.agent),state:st[0],stateText:st[1],doing:a.doing,pr:a.pr,branch:a.pr?'':a.branch})});
   const o=s.orchestrator;
+  if(o){const age=o.updated_ts?Math.round(now-o.updated_ts):null,live=age!=null&&age<120,b=o.builder||{},br=b.running,runs=(o.runs||[]).length;
+    const prs=a=>(a||[]).filter(Boolean).map(n=>'#'+n).join(' ');
+    const doing=(runs?runs+' agente(s) rodando. ':'Nenhum agente rodando. ')+(br?'Builder: '+(br.step||'build')+' de '+(prs(br.prs)||'lote')+'.':'Builder parado.')+((b.queue&&prs(b.queue.prs))?' Fila: '+prs(b.queue.prs)+'.':'')+((o.paused||[]).length?' Pausado: '+o.paused.join(', ')+'.':'');
+    out.push({k:'builder',id:'orch',title:'Orquestrador',sub:'daemon · distribui o trabalho, testa e faz o merge',model:'',avatar:'OR',state:live?'working':'idle',
+      stateText:live?'Rodando · atualizou há '+dur(age):'Parado há '+dur(age),doing})}
   ((o&&o.runs)||[]).forEach(r=>{out.push({k:'run',id:r.id,title:roleName(r.role),sub:'orquestrador · '+(r.name||r.id),model:r.model||'sonnet',avatar:avatarOf(r.role),
     state:r.suspect||r.working===false?'wait':'working',stateText:(r.suspect?'Sem sinal':r.building?'Buildando':'Trabalhando')+(r.started?' · há '+dur(Math.round(now-r.started)):''),doing:r.task})});
-  s.agents.filter(a=>a.state==='done'&&isToday(a.done_at)).forEach(a=>out.push({k:'agent',id:a.id,title:roleName(a.agent),sub:a.label,model:a.model,avatar:avatarOf(a.agent),
-    state:'done',stateText:'Terminou · há '+dur(Math.round(now-a.done_at)),doing:a.doing,pr:a.pr}));
   return out}
 function renderPeople(s){
   const list=people(s);
@@ -568,10 +609,70 @@ function prStatus(p,t){
   return ['ok','pronto']}
 function renderPrs(s){
   const tr=Object.fromEntries(((s.orchestrator||{}).train||[]).map(r=>[r.pr,r]));
-  const rows=s.prs.map(p=>({p,t:tr[p.number],st:prStatus(p,tr[p.number])}));
-  $('prhint').textContent=(s.merged||[]).length+' já entraram hoje';
-  $('prl').innerHTML=rows.map(({p,t,st})=>`<div class="pr clk" tabindex="0" data-k="pr" data-id="${p.number}"><a class="prn" href="${PRURL}${p.number}" target="_blank" rel="noopener">#${p.number}</a><span class="pt">${E(p.title)}</span><span class="pst ${st[0]}">${E(st[1])}</span><span class="pnx">${E((t&&t.next)||'')}</span></div>`).join('')||'<div class="empty">Nenhum PR aberto.</div>';
+  return s.prs.map(p=>({p,t:tr[p.number],st:prStatus(p,tr[p.number])}))}
+/* ---- quadro de fluxo: uma linha por item de trabalho, colunas = fases ---- */
+const PH=[['Planejado','ainda sem agente'],['Construindo','agente escreve o código'],['PR aberto','esperando a vez'],['Testando','builder / CI local'],['Corrigindo','conserto de falha ou conflito'],['Pronto p/ merge','tudo verde'],['Na main','já entrou']];
+const shortTitle=t=>{t=String(t||'');const m=t.match(/^Bundle ([\w-]+):\s*(.*)$/);if(m)return 'Pacote '+m[1]+' ('+(m[2].match(/#\d+/g)||[]).length+' PRs)';return t.length>78?t.slice(0,76)+'…':t};
+function who(role,sub,t0,opts){opts=opts||{};return {role,sub,t0,code:opts.code||avatarOf(role),opus:!!opts.opus,k:opts.k,id:opts.id,dim:!!opts.dim}}
+function whoHtml(w){const now=Date.now()/1000;
+  return `<div class="pp ${w.dim?'dim':''}" ${w.k?`data-k="${w.k}" data-id="${E(w.id)}"`:''}><span class="pa">${pixelAvatar(w.code,w.opus,30)}</span><span class="pn"><b>${E(w.role)}</b><small>${E(w.sub||'')}${w.t0?(w.sub?' · ':'')+'há '+dur(Math.round(now-w.t0)):''}</small></span></div>`}
+function flowRows(s){
+  const now=Date.now()/1000,o=s.orchestrator||{},b=o.builder||{},run=b.running,lock=s.lock||[];
+  const trn=Object.fromEntries((o.train||[]).map(r=>[r.pr,r]));
+  const runs=o.runs||[],runByName=Object.fromEntries(runs.map(r=>[r.name,r]));
+  const sess=s.agents.filter(a=>!['done','paused'].includes(a.state));
+  const used=new Set(),rows=[];
+  const roleOf=r=>String(r||'').replace(/^(.*?)(-\d+)?$/,'$1');
+  const mkSess=a=>{used.add(a.id);return who(roleName(a.agent),'sessão · '+(a.model||''),a.lock?a.lock.start:a.since_src==='worktree'?0:a.since,{opus:String(a.model).toLowerCase()==='opus',k:'agent',id:a.id,code:avatarOf(a.agent)})};
+  s.prs.forEach(p=>{
+    const t=trn[p.number],ph=t?(t.phase||''):'',ts=t?t.updated:null;
+    let col=2,pend=null,w=[];
+    const bq=run&&(run.prs||[]).includes(p.number);
+    const queued=(t&&String(t.next||'').startsWith('na fila do lote'));
+    if(t){
+      if(ph==='conflito'||ph==='fixer'||t.state==='ci_fix')col=4;
+      else if(ph==='verde')col=5;
+      else if(['CI rodando','CI local rodando','rerodando','atualizado','aguardando vaga'].includes(ph))col=3;
+      else if(ph==='juntando')col=1;
+      else col=2;
+      if(ph==='empilhado'||ph==='retarget')pend='espera o PR #'+t.waits_on;
+      if(ph==='bloqueado'||ph==='fechado'||t.state==='blocked')pend='bloqueado: decisão do dono';
+    }else{
+      if(p.failed.length>(p.cancelled||[]).length)col=4;else if(p.pending.length)col=3;else if(p.base&&p.base!=='main'){col=2;pend='espera o PR da base '+p.base}else col=5}
+    if(col===3){
+      if(bq)w.push(who('Builder','máquina · etapa '+(run.step||'iniciando'),run.started,{code:'BD',k:'builder',id:'builder'}));
+      else if(queued||ph==='aguardando vaga')w.push(who('Builder','na fila do lote',ts,{code:'BD',k:'builder',id:'builder',dim:true}));
+      else w.push(who('CI do GitHub',t?String(t.next||''):'checks rodando',ts,{code:'BD',dim:true}));
+    }
+    if(col===4){const f=t&&t.fixer&&runByName[t.fixer];
+      if(t&&t.fixer)w.push(who(roleName(roleOf(t.fixer)),'orquestrador · '+t.fixer,f?f.started:ts,{k:f?'run':'pr',id:f?f.id:p.number}));
+      else w.push(who(roleName(t&&t.agent),'aguardando agente livre',ts,{dim:true,k:'pr',id:p.number}))}
+    if(col===5)w.push(who('Orquestrador','faz o merge quando o dono liberar',ts,{code:'OR',k:'builder',id:'orch',dim:true}));
+    if(col===2&&t&&t.agent)w.push(who(roleName(t.agent),'responsável · orquestrador',null,{dim:true,k:'pr',id:p.number}));
+    if(col===1)w.push(who('Integrador','juntando os PRs',ts,{code:'IN',k:'pr',id:p.number}));
+    sess.filter(a=>a.pr===p.number||(a.branch&&a.branch===p.branch)).forEach(a=>w.push(mkSess(a)));
+    rows.push({k:'pr',id:p.number,num:p.number,title:shortTitle(p.title),sub:(t&&t.track?t.track+' · ':'')+p.branch,col,w,pend,t0:ts})});
+  // trabalho da sessão sem PR: validação, empacotamento etc.
+  sess.filter(a=>!used.has(a.id)).forEach(a=>{
+    const col=a.lock?3:1,pend=a.state==='waiting_lock'?'espera a máquina':null;
+    rows.push({k:'agent',id:a.id,num:'',title:a.label,sub:'sessão do coordenador',col,w:[mkSess(a)],pend,t0:a.lock?a.lock.start:null})});
+  // features do orquestrador sem PR
+  const paused=(o.paused||[]);
+  (o.features||[]).filter(f=>!f.pr&&!['merged','blocked'].includes(f.state)).forEach(f=>{
+    const planning=['planning','queued'].includes(f.state),col=planning?0:1;
+    const ag=(f.tasks||[]).map(t=>t.agent).filter(Boolean)[0];
+    rows.push({k:'feature',id:f.id,num:'',title:f.name||f.id,sub:(f.track||'')+(f.adr?' · ADR-'+f.adr:''),col,planned:planning,pend:planning&&(paused.includes('plan')||paused.includes('build'))?'parado: filas pausadas':null,
+      w:planning?[who('Arquiteto','orquestrador · aguardando vaga',null,{dim:true,code:'AR'})]:[who(roleName(ag),'orquestrador',f.age?now-f.age:null,{k:'feature',id:f.id})]})});
   return rows}
+function renderFlow(s){
+  const rows=flowRows(s),act=rows.filter(r=>!r.planned),plan=rows.filter(r=>r.planned);
+  const head=`<div class="fr fh"><div class="ft">O que estamos construindo</div>${PH.map((x,i)=>`<div class="fp"><b>${x[0]}</b><small>${x[1]}</small></div>`).join('')}</div>`;
+  const row=r=>`<div class="fr ${r.pend?'hold':''} clk" tabindex="0" data-k="${r.k}" data-id="${E(r.id)}"><div class="ft">${r.num?`<a class="prn" href="${PRURL}${r.num}" target="_blank" rel="noopener">#${r.num}</a> `:''}<span class="ftt">${E(r.title)}</span><div class="fs">${E(r.sub||'')}</div>${r.pend?`<div class="fw">${E(r.pend)}</div>`:''}</div>`
+    +PH.map((x,i)=>i===r.col?`<div class="fc2 cur ${r.pend?'hold':''}">${r.w.map(whoHtml).join('')||'<span class="none">sem agente</span>'}</div>`:`<div class="fc2 ${i<r.col?'past':'next'}">${i<r.col?'✓':''}</div>`).join('')+'</div>';
+  const mg=(s.merged||[]).slice(0,5).map(m=>`<div class="fr done clk" tabindex="0" data-k="pr" data-id="${m.number}"><div class="ft"><a class="prn" href="${PRURL}${m.number}" target="_blank" rel="noopener">#${m.number}</a> <span class="ftt">${E(shortTitle(m.title))}</span></div>${PH.map((x,i)=>i===6?`<div class="fc2 cur ok">entrou às ${clk(Date.parse(m.mergedAt)/1000)}</div>`:'<div class="fc2 past">'+(i<6?'✓':'')+'</div>').join('')}</div>`).join('');
+  $('prhint').textContent=`${act.length} em andamento · ${act.filter(r=>r.pend).length} parados esperando · ${(s.merged||[]).length} entraram hoje`;
+  $('flow').innerHTML=head+(act.map(row).join('')||'<div class="empty">Nada em andamento.</div>')+(mg?'<div class="fsep">Entraram na main hoje</div>'+mg:'')
+    +(plan.length?`<details class="fplan"><summary>Planejado, ainda sem agente: ${plan.length} (${(s.orchestrator&&(s.orchestrator.paused||[]).length)?'orquestrador pausado nessas filas':'esperando vaga'})</summary>${plan.map(row).join('')}</details>`:'')}
 function renderSit(s){
   const lock=s.lock||[],holder=lock.find(r=>r.role==='holds'),nw=lock.filter(r=>r.role==='waits').length;
   const o=s.orchestrator||{},rows=renderPrs(s);
@@ -586,7 +687,7 @@ function renderSit(s){
     +(owner?`<span class="sitw">${owner} decisão(ões) do dono</span>`:'')+(age>120?'<span class="sitb">orquestrador pausado</span>':'')}
 function render(s){
   lastState=s;
-  renderSit(s);renderPeople(s);renderMachine(s);
+  renderSit(s);renderPeople(s);renderMachine(s);renderFlow(s);
   renderTrain(s);
   diff(s);
   renderUsage(s.usage||{});
