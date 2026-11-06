@@ -205,7 +205,10 @@ class LocalCI:
                    SONORA_LOCAL_CI_DIR=logdir.replace("\\", "/"),
                    SONORA_HEAVY_PRIORITY=str(prio),
                    # a batch that fails is split anyway; stop at its first red
-                   SONORA_LOCAL_CI_FAIL_FAST="1" if len(merged) > 1 else "0")
+                   SONORA_LOCAL_CI_FAIL_FAST="1" if len(merged) > 1 else "0",
+                   # a batch keeps the machine from its first step to its
+                   # last (tools/local-ci.sh)
+                   SONORA_LOCAL_CI_HOLD_LOCK="1" if prio == 0 else "0")
         kw = {}
         if sys.platform == "win32":
             kw["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP

@@ -60,6 +60,7 @@ DRY=0
 OS_ONLY=0
 WITH_OS=0
 STEP=""
+ARGS=("$@")
 while (($#)); do
   case "$1" in
     --full) FULL=1 ;;
@@ -192,9 +193,18 @@ if [[ -z "$STEP" ]]; then
 fi
 ((DRY)) && exit 0
 
+# A batch of PRs (SONORA_LOCAL_CI_HOLD_LOCK=1, set by tools/harness/localci.py)
+# takes the machine-wide lock once for all its steps: released between steps,
+# a lower-priority job slipped in and the batch's next step waited behind it
+# (2026-11-06: a 20-min wait before a 6-min record step). The steps below see
+# SONORA_HEAVY_HELD and do not take it again; each keeps its own timeout.
+if [[ "${SONORA_LOCAL_CI_HOLD_LOCK:-0}" == 1 && -z "${SONORA_HEAVY_HELD:-}" && -z "$STEP" ]]; then
+  exec "$SELF_DIR/build-slot.sh" bash "$SELF_DIR/local-ci.sh" "${ARGS[@]}"
+fi
+
 # One heavy job at a time on the machine, each with every CPU: each step
-# takes the machine-wide lock (tools/build-slot.sh) for itself, so another
-# run's steps can go between ours, and the scripts a step calls see
+# takes the machine-wide lock (tools/build-slot.sh) for itself, unless the
+# whole run already holds it (a batch, above), and the scripts a step calls see
 # SONORA_HEAVY_HELD and do not take it again.
 # PRs run the slow DSP tests reduced (one rate, one setting); main runs them
 # in full, in Release and under ASan (what main-full.yml ran on GitHub).
