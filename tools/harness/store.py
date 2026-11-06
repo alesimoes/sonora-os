@@ -58,7 +58,7 @@ FEATURE_COLS = {
     "id": None, "plan_path": None, "branch": None, "track": None,
     "state": "planning", "pr": None, "adr_no": None, "protocol_no": None,
     "partial": 0, "created": None, "updated": None, "fixes": 0,
-    "job_reds": "{}",
+    "job_reds": "{}", "red_since": None, "principal_runs": 0,
 }
 TASK_COLS = {
     "id": None, "kind": "work", "backlog_id": None, "feature_id": None,
@@ -67,7 +67,7 @@ TASK_COLS = {
     "attempts": 0, "bounces": 0, "depends_on": [], "files": [], "brief": "",
     "eng_name": None, "cur_name": None, "wants": "", "not_before": 0,
     "priority": 0, "created": None, "updated": None, "note": "",
-    "integrated": 0, "fix_kind": None, "event": None, "start_from": None,
+    "integrated": 0, "fix_kind": None, "escalated": None, "event": None, "start_from": None,
 }
 RUN_COLS = {
     "id": None, "task_id": None, "role": None, "name": None, "state": None,

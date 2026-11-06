@@ -4,6 +4,7 @@ One interface, so the orchestrator never shells out for these itself and the
 tests swap in a fake. GhForge is the real thing; it raises ForgeError when a
 read fails, because a number seeded from a half-read repo could collide.
 """
+import hashlib
 import json
 import os
 import re
@@ -98,10 +99,36 @@ class Forge:
     def failure_excerpt(self, head_sha, per_job=8):
         return ""
 
+    def set_status(self, sha, state, context, description):
+        """A commit status on GitHub (the local-ci result on the PR)."""
+
     def contains(self, worktree, branch):
         """True when origin/<branch>'s head is in the worktree's HEAD (a
         bundle took that PR)."""
         raise NotImplementedError
+
+
+def job_signatures(excerpt):
+    """{job name: cause} from failure_excerpt's text. The cause is the job's
+    error lines with numbers, hashes and paths of temp dirs blurred, so the
+    same failure on a new head or at another line still compares equal."""
+    out, job, lines = {}, None, []
+
+    def close():
+        if job is not None:
+            norm = sorted({re.sub(r"[0-9a-f]{7,}|\d+", "#", ln)
+                           for ln in lines})
+            out[job] = hashlib.sha1(
+                "\n".join(norm).encode()).hexdigest()[:12]
+    for ln in (excerpt or "").splitlines():
+        m = re.fullmatch(r"\[(.+)\]", ln.strip())
+        if m:
+            close()
+            job, lines = m.group(1), []
+        elif job is not None and ln.strip():
+            lines.append(ln.strip())
+    close()
+    return out
 
 
 def run(argv, cwd=None, timeout=120):
@@ -284,6 +311,12 @@ class GhForge(Forge):
         r"AssertionError|error: |forbidden edge|::error|##\[error\]|"
         r"\bSC\d{4}\b|No space left|\bE: ")
 
+    def set_status(self, sha, state, context, description):
+        self._ok(["gh", "api", "-X", "POST",
+                  f"repos/{{owner}}/{{repo}}/statuses/{sha}",
+                  "-f", f"state={state}", "-f", f"context={context}",
+                  "-f", f"description={description}"], timeout=60)
+
     def failure_excerpt(self, head_sha, per_job=8):
         """The lines that say why each failed job of the head's CI failed,
         so a fixer starts from the cause instead of skimming a log head."""
@@ -310,17 +343,21 @@ class GhForge(Forge):
                 r = self.run(["gh", "api", "--allow-escape-sequences",
                               f"repos/{{owner}}/{{repo}}/actions/jobs/"
                               f"{j['id']}/logs"], self.root, 120)
-                lines = []
+                lines, recent, tail = [], [], []
                 for ln in (r.stdout or "").splitlines():
                     ln = re.sub(r"\x1b\[[0-9;]*m", "", ln)
                     ln = re.sub(r"^\S+Z ", "", ln).strip()
+                    if ln.startswith("##[error]"):
+                        tail = recent[-10:]   # what the failing step printed
+                    if ln and not ln.startswith("##["):
+                        recent.append(ln[:240])
                     if self.FAIL_LINE.search(ln) and \
                             not ln.startswith(("echo ", "+ echo")) and \
                             "Process completed with exit code" not in ln:
                         lines.append(ln[:240])
                 out.append(f"[{j['name']}]")
-                out += lines[-per_job:] or ["(no error line found; read "
-                                            "the log)"]
+                out += lines[-per_job:] or tail or [
+                    "(no error line found; read the log)"]
         return "\n".join(out[:60])
 
     def contains(self, worktree, branch):

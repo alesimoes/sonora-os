@@ -24,12 +24,15 @@ from harness import (heartbeat, launcher, numbers, scheduler, shadow,  # noqa: E
                      status)
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
-from harness.forge import ForgeError, GhForge  # noqa: E402
+from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
 from harness.store import Store  # noqa: E402
+from harness.localci import LocalCI  # noqa: E402
 from harness.train import Train  # noqa: E402
 
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer",
-               "integrator": "integrator"}
+               "integrator": "integrator", "principal": "principal"}
+PRINCIPAL_AGENT = "principal-engineer"
+FIX_LIKE = ("fixer", "integrator", "principal")
 ATTRIBUTION = "\U0001F916 Generated with [Claude Code](https://claude.com/claude-code)"
 
 
@@ -69,6 +72,7 @@ class Orchestrator:
         self.last_gaps = {}
         self.flow = Flow(self)
         self.train = Train(self)
+        self.localci = LocalCI(self, clock)
         self.attribution = ATTRIBUTION
         self.shadow = None
         if shadow_agents:   # shadow rollout: never launches, only compares
@@ -171,8 +175,13 @@ class Orchestrator:
         if stop_now:
             self._kill_all("STOP.NOW")
         self._poll_runs(now)
+        if self.cfg.local_ci and not self.dry_run:
+            self.localci.poll()
         self._open_pending_prs(now)
         self._watch_prs(now)
+        # After the train asked for a slot: a waiting PR goes before main.
+        if self.cfg.local_ci and not self.dry_run:
+            self.localci.check_main()
         self.flow.tick(now)
         paused = self.paused()
         runs = self._enriched_runs(now)
@@ -213,6 +222,16 @@ class Orchestrator:
             self.store.runs_started_since(now - 3600))
         data["train"] = self.train.rows()
         data["train_slots"] = self.cfg.train_slots
+        if self.cfg.local_ci:
+            # One dedicated "builder" for the dashboard; PR numbers by head.
+            b = self.localci.builder_status(now)
+            prs = {r.get("head"): r.get("pr") for r in data["train"]}
+            for h in [b["running"]] if b["running"] else []:
+                h["prs"] = [prs.get(x) for x in h["heads"]]
+            if b["last"]:
+                b["last"]["prs"] = [prs.get(x) for x in b["last"]["heads"]]
+            b["queue"]["prs"] = [prs.get(x) for x in b["queue"]["batch"]]
+            data["builder"] = b
         data["gh_paused_until"] = self.train.pause_until or None
         status.write_atomic(self._p("status.json"), data)
 
@@ -228,6 +247,10 @@ class Orchestrator:
             return t["agent"]
         if kind == "integrator" and self.cfg.max_integrators <= 1:
             return "integrator"
+        if kind == "principal":
+            name = f"principal-{self.store.next_counter('name_principal')}"
+            self.store.set_task(t["id"], cur_name=name)
+            return name
         # Several integrators at once (merge-train conflict runs) need their
         # own broker names: messages, claims and done are matched by name.
         col = "eng_name" if kind == "engineer" else "cur_name"
@@ -238,7 +261,15 @@ class Orchestrator:
             self.store.set_task(t["id"], **{col: name})
         return name
 
+    def _eff_kind(self, t, kind):
+        """What a principal run stands in for, from the task's state."""
+        if kind != "principal":
+            return kind
+        return scheduler.KIND_OF_STATE.get(t["state"], "fixer")
+
     def _agent_for(self, t, kind):
+        if kind == "principal":
+            return PRINCIPAL_AGENT
         return {"tester": "tester", "integrator": "integrator"}.get(
             kind, t["agent"])
 
@@ -261,15 +292,16 @@ class Orchestrator:
                 return None
             t = self.store.get_task(t["id"])
         name = self._name_for(t, ln.kind)
+        eff = self._eff_kind(t, ln.kind)
         files = t["files"]
-        if ln.kind in ("fixer", "integrator") and t["kind"] == "work":
+        if eff in ("fixer", "integrator") and t["kind"] == "work":
             files = sorted({f for x in self._feature_tasks(t["feature_id"])
                             for f in x["files"]})
         # An adopted PR is fixed on its own branch in its own worktree: two
         # train runs touching the same file never meet, so no claim.
         adopted = self.train.info(t.get("feature_id") or "") is not None
         if t["kind"] == "work" and files and not adopted and \
-                ln.kind in ("engineer", "fixer", "integrator"):
+                eff in ("engineer", "fixer", "integrator"):
             denied = self.broker.claim_for(name, files)
             if denied:
                 self.store.event(t["id"], "claim_denied", json.dumps(denied))
@@ -284,7 +316,7 @@ class Orchestrator:
             os.makedirs(run_dir, exist_ok=True)
             # A conflict run is the integrator's, a red check the fixer's;
             # on the train both work at the PR's head on origin.
-            if t["kind"] == "work" and ln.kind in ("fixer", "integrator") \
+            if t["kind"] == "work" and eff in ("fixer", "integrator") \
                     and self.train.is_adopted(t["feature_id"]):
                 fb = self._feature_branch(t["feature_id"])
                 wt = self.worktrees.ensure_pr(
@@ -293,7 +325,7 @@ class Orchestrator:
                        if self.train.is_bundle(t["feature_id"]) else {}))
                 t["branch"], t["worktree"] = fb, wt
                 self.store.set_task(t["id"], worktree=wt)
-            elif t["kind"] == "work" and ln.kind in ("integrator", "fixer"):
+            elif t["kind"] == "work" and eff in ("integrator", "fixer"):
                 fb = self._feature_branch(t["feature_id"])
                 wt = self.worktrees.ensure(self._feature_key(t["feature_id"]),
                                            fb)
@@ -365,6 +397,32 @@ class Orchestrator:
             return tasks[0]["id"]
         return f"feature-{fid}"
 
+    def _principal_brief(self, t):
+        lines = ["", "ESCALATION: you are the principal engineer, called "
+                 "because ordinary fixers did not close this. Trigger: "
+                 f"{t.get('escalated') or 'unknown'}.",
+                 f"Branch {t['branch']}, worktree {t.get('worktree') or '-'}."]
+        if t.get("note"):
+            lines += ["Failure excerpt (note):", t["note"]]
+        prior = [f"- {e.get('kind')}: {e.get('detail')}"
+                 for e in reversed(self.store.events(t["id"], limit=40))
+                 if e.get("kind") in ("result", "run_failed", "ci_red",
+                                      "launched")][-12:]
+        if prior:
+            lines += ["Previous rounds on this task, oldest first:"] + prior
+        wt = t.get("worktree")
+        if wt and os.path.isdir(wt):
+            try:
+                out = subprocess.run(
+                    ["git", "-C", wt, "log", "--oneline", "-n", "30",
+                     "origin/main..HEAD"], capture_output=True, text=True,
+                    timeout=10).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                out = ""
+            if out:
+                lines += ["Commits since main (previous fixers' work):", out]
+        return "\n".join(lines)
+
     def _extra(self, t, kind):
         if t["kind"] == "wake":
             return self.flow.wake_context(t)
@@ -401,6 +459,9 @@ class Orchestrator:
                 "follow-ups) and unverified (checks you did not run)." % (
                     t["feature_id"], self._feature_branch(t["feature_id"]),
                     ", ".join(subs)))
+        if kind == "principal":
+            return self._extra(t, self._eff_kind(t, kind)) + \
+                self._principal_brief(t)
         if kind == "fixer":
             extra += "\nFixer brief: no scope change, no test deletion or " \
                      "weakening. Fix the failing checks named in the note, " \
@@ -416,7 +477,13 @@ class Orchestrator:
                     "the merge if it brings anything: many reds are already "
                     "fixed on main. If the cause is outside this PR (runner "
                     "lost, apt or network failure), say so in result.json "
-                    "and commit nothing more. A conflict: `git merge "
+                    "and commit nothing more. A test that fails on main too "
+                    "is still yours: this PR cannot merge while it is red, "
+                    "and merging it carries the fix to main. Fix it here; "
+                    "never report blocked for that. A job log still running "
+                    "is readable with `gh api --allow-escape-sequences "
+                    "repos/{owner}/{repo}/actions/jobs/<id>/logs`. "
+                    "A conflict: `git merge "
                     "origin/main`, resolve keeping both sides' intent, run "
                     "the narrow tests. Commit on the current branch; never "
                     "push, never merge, never edit planning/BACKLOG.md." % (
@@ -499,7 +566,7 @@ class Orchestrator:
         self.store.set_run(r["id"], ended=self.clock(), exit=code,
                            outcome=outcome)
         self.done_msgs.pop(r["id"], None)
-        if r["role"] in ("fixer", "integrator"):
+        if r["role"] in FIX_LIKE:
             try:
                 self.broker.release_for(r["name"])
             except Exception as e:  # broker already stopped on shutdown
@@ -529,6 +596,9 @@ class Orchestrator:
         backoff, or block after max_attempts relaunches."""
         n = t["attempts"] + 1
         self.store.event(t["id"], "run_failed", f"{why} (#{n})")
+        if n > self.cfg.max_attempts and self._can_escalate(t):
+            self._escalate(t, "attempts", now)
+            return
         if n > self.cfg.max_attempts:
             self._block(t, f"{why}; {self.cfg.max_attempts} relaunches spent")
             self._tell("lead", "agent_dead", {"task": t["id"], "why": why},
@@ -538,6 +608,28 @@ class Orchestrator:
             return
         back = self.cfg.backoff_s[min(n - 1, len(self.cfg.backoff_s) - 1)]
         self.store.set_task(t["id"], attempts=n, not_before=now + back)
+
+    def _can_escalate(self, t):
+        """Once per task: a failure of the escalation run itself blocks."""
+        return (t["kind"] == "work" and not t.get("escalated")
+                and t["state"] in ("building", "bugfix", "integrating",
+                                   "ci_fix"))
+
+    def _escalate(self, t, trigger, now, note=None):
+        """Hand the task (the whole feature's tasks) to the principal
+        engineer. attempts is left at the limit so that its own failure
+        blocks at once."""
+        for x in (self._feature_tasks(t["feature_id"]) if t["feature_id"]
+                  else [t]):
+            if x["state"] in ("blocked", "merged"):
+                continue
+            fields = {"escalated": trigger, "not_before": now,
+                      "attempts": self.cfg.max_attempts}
+            if note and x["id"] == t["id"]:
+                fields["note"] = note
+            self.store.set_task(x["id"], **fields)
+        self.store.event(t["id"], "escalated", trigger)
+        self.log(f"escalated {t['id']} to {PRINCIPAL_AGENT}: {trigger}")
 
     def _block(self, t, why):
         self._release(t)
@@ -555,6 +647,10 @@ class Orchestrator:
         t = self.store.get_task(r["task_id"])
         st, kind = data["status"], r["role"]
         self.store.event(t["id"], "result", f"{kind} {st}")
+        if kind == "principal":
+            kind = self._eff_kind(t, kind)
+            if st != "fail":
+                self._clear_escalation(t)
         for line in data.get("followups", []):
             self.store.event(t["id"], "followup", str(line))
         if st == "blocked":
@@ -604,6 +700,11 @@ class Orchestrator:
                     if t["kind"] == "work"
                     and t["state"] in ("pr_open", "ci_fix")})
 
+    def _clear_escalation(self, t):
+        for x in (self._feature_tasks(t["feature_id"]) if t["feature_id"]
+                  else [t]):
+            self.store.set_task(x["id"], escalated=None, attempts=0)
+
     def _integrated(self, t, data, now):
         """The integrator finished: the feature branch is ready. The daemon,
         not the agent, pushes and opens the one PR."""
@@ -651,6 +752,8 @@ class Orchestrator:
                         + out[-800:]))
                 self._count_failure(rep, "pre-pr failed", now)
                 return False
+            if not self._local_ci_before_pr(f, ts, wt, now):
+                return False
             self.forge.push(wt, branch)
             n = next((p["number"] for p in self.forge.open_prs()
                       if p["branch"] == branch), None)
@@ -672,6 +775,33 @@ class Orchestrator:
             self._release(x)
         self.ci_polled[fid] = now
         self.store.event(rep["id"], "pr_opened", f"#{n} {branch}")
+        return True
+
+    def _local_ci_before_pr(self, f, ts, wt, now):
+        """No PR before the build and the tests pass on this machine (owner,
+        2026-11-05): GitHub's runners only run the light checks."""
+        if not self.cfg.local_ci:
+            return True
+        head = launcher.git_head(wt)
+        r = self.localci.result(head)
+        if r is None:
+            self.localci.start(head, pre=True)
+            self.pr_retry[f["id"]] = now + 60
+            return False
+        if r.get("state") == "running":
+            self.pr_retry[f["id"]] = now + 60
+            return False
+        if r.get("state") == "fail":
+            rep = ts[0]
+            self.store.event(rep["id"], "local_ci_failed",
+                             (r.get("summary") or "")[-500:])
+            for x in ts:
+                self.store.set_task(x["id"], integrated=0, note=(
+                    "tools/local-ci.sh failed on this branch merged with "
+                    "main; fix and commit. From the logs:\n"
+                    + (r.get("excerpt") or "")[-1500:]))
+            self._count_failure(rep, "local-ci failed", now)
+            return False
         return True
 
     def _pr_text(self, f, ts):
@@ -725,7 +855,13 @@ class Orchestrator:
     def _watch_prs(self, now):
         for f in self.store.features():
             ts = self._feature_tasks(f["id"])
-            if not f["pr"] or not ts or ts[0]["state"] != "pr_open":
+            if not f["pr"] or not ts:
+                continue
+            # A blocked train PR is still watched: someone may merge or close
+            # it by hand, and the board must not keep calling it blocked.
+            if ts[0]["state"] != "pr_open" and not (
+                    ts[0]["state"] == "blocked"
+                    and self.train.is_adopted(f["id"])):
                 continue
             if now - self.ci_polled.get(f["id"], 0) < self.cfg.ci_poll_s:
                 continue
@@ -753,29 +889,69 @@ class Orchestrator:
                                   if c["state"] == "fail"})
                 if failing:
                     self._red(f, ts, failing, "ci")
+                elif f.get("red_since") or f.get("principal_runs"):
+                    self.store.set_feature(f["id"], red_since=None,
+                                           principal_runs=0)
 
     def _red(self, f, ts, jobs, fix_kind, detail=""):
         """Red check or conflict: a fixer (the track's engineer) or the
         integrator in the same tick; the same job still red after two fixes
         blocks the feature instead of spending a third agent."""
         reds = json.loads(f["job_reds"] or "{}")
-        stuck = [j for j in jobs if reds.get(j, 0) >= 2]
-        if stuck:
+        sigs = reds.pop("_sig", None)
+        sigs = sigs if isinstance(sigs, dict) else {}
+        # "Same red twice" means the same cause, not the same job name: a
+        # job red first from a missing image, then from a stale lock file is
+        # two different problems, and blocking it hid the second from its
+        # fixer (#435). The cause is the job's lines in the CI excerpt.
+        now_sigs = job_signatures(detail)
+        for j, sig in now_sigs.items():
+            if sigs.get(j) and sigs[j] != sig:
+                reds[j] = 0
+        # A conflict is new each time main moves: it always gets an
+        # integrator, it never counts as the same red twice.
+        stuck = [j for j in jobs
+                 if reds.get(j, 0) >= self.cfg.principal_after_fixes
+                 and j != "merge-conflict"]
+        now = self.clock()
+        red_since = f.get("red_since") or now
+        long_red = now - red_since > self.cfg.principal_after_hours * 3600
+        # The principal engineer gets one round per red spell; if the same
+        # cause is still red after it, the owner decides.
+        if stuck and f.get("principal_runs", 0) >= 1:
             self._block_feature(
-                f, f"PR #{f['pr']}: {', '.join(stuck)} still red after two "
-                   "fixes")
+                f, f"PR #{f['pr']}: {', '.join(stuck)} still red after "
+                   f"{self.cfg.principal_after_fixes} fixes and the "
+                   "principal engineer")
             return
-        for j in jobs:
-            reds[j] = reds.get(j, 0) + 1
-        self.store.set_feature(f["id"], job_reds=json.dumps(reds),
-                               fixes=f["fixes"] + 1)
+        trigger = None
+        if f.get("principal_runs", 0) < 1:
+            if stuck:
+                trigger = (f"same cause still red after "
+                           f"{self.cfg.principal_after_fixes} fix rounds: "
+                           f"{', '.join(stuck)}")
+            elif long_red:
+                trigger = (f"PR red for more than "
+                           f"{self.cfg.principal_after_hours:g} h")
+        if not trigger:
+            for j in jobs:
+                reds[j] = reds.get(j, 0) + 1
+        sigs.update(now_sigs)
+        if sigs:
+            reds["_sig"] = sigs
+        self.store.set_feature(
+            f["id"], job_reds=json.dumps(reds), fixes=f["fixes"] + 1,
+            red_since=red_since,
+            principal_runs=f.get("principal_runs", 0) + (1 if trigger else 0))
         what = "conflicts with main" if fix_kind == "conflict" \
             else "red: " + ", ".join(jobs)
         note = f"PR #{f['pr']} {what}"
         if detail:
             note += "\nWhy, from the CI logs (start here):\n" + detail
         self.store.advance_feature(f["id"], "ci_fix", fix_kind=fix_kind,
-                                   note=note)
+                                   note=note, escalated=None)
+        if trigger:
+            self._escalate(ts[0], trigger, now)
         self.store.event(ts[0]["id"], "ci_red", ", ".join(jobs))
 
     def _merged(self, f, ts):

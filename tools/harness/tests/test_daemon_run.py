@@ -99,11 +99,14 @@ class RunTests(support.DaemonCase):
     def test_dead_run_relaunched_with_same_name_then_blocked(self):
         o = self.make(floors={"daw": 1})
         self.script("eng-1", "die")
+        self.script("principal-1", "die")  # the escalation run dies too
         self.add(o, "a")
         self.assertTrue(self.pump(o, lambda: state(o, "a") == "blocked"))
         runs = o.store.runs_of("a")
-        self.assertEqual(len(runs), 4)  # first launch + 3 relaunches
-        self.assertEqual({r["name"] for r in runs}, {"eng-1"})
+        # first launch + 3 relaunches, then one principal-engineer run
+        self.assertEqual([r["role"] for r in runs],
+                         ["engineer"] * 4 + ["principal"])
+        self.assertEqual({r["name"] for r in runs[:4]}, {"eng-1"})
         self.assertIn("relaunches spent", o.store.get_task("a")["note"])
         with open(os.path.join(o.odir, "waits-on-owner.md")) as f:
             self.assertIn("## a (blocked)", f.read())

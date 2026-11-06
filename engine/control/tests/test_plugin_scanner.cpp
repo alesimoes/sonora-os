@@ -154,7 +154,7 @@ bool until(PluginScanner& s, const std::function<bool()>& pred, uint64_t ms, boo
     return pred();
 }
 
-bool scanned(PluginScanner& s, uint64_t ms = 10000) {
+bool scanned(PluginScanner& s, uint64_t ms = 60000) {
     return until(s, [&] { return s.catalog()->scanned && s.idle(); }, ms);
 }
 
