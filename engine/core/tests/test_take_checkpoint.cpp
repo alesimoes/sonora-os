@@ -91,7 +91,15 @@ int main() {
     cfg.playback.max_block_frames = 256;
     int64_t seen_mid_take = 0;
     {
-        sonora::Session s(cfg);
+        // The ring the engine ships with (SessionConfig): the disk thread
+        // is allowed to stop draining for one sync, and the ring's depth is
+        // what absorbs it (DiskThread::checkpoint_all()). A 1 s ring here
+        // overran when one fdatasync on Docker Desktop's disk took 2.9 s
+        // (local CI, PR #442): the engine counted it as designed, and the
+        // test had held the medium to a second the product does not.
+        sonora::SessionConfig live = cfg;
+        live.ring_seconds = sonora::SessionConfig{}.ring_seconds;
+        sonora::Session s(live);
         CHECK(s.create_dirs());
         for (auto& t : s.tracks()) t->set_rec_armed(true);
         s.disk().start();
@@ -124,6 +132,10 @@ int main() {
                     static_cast<double>(s.disk().longest_checkpoint_ns()) / 1e6,
                     static_cast<unsigned>(s.disk().checkpoints()));
         CHECK(s.stop(&error));
+        if (s.tracks()[1]->overruns() != 0) {
+            std::fprintf(stderr, "a sync stalled the disk thread past the %.1f s ring\n",
+                         live.ring_seconds);
+        }
         CHECK(s.tracks()[1]->overruns() == 0);
         CHECK(frames_on_disk(take) >= seen_mid_take);
     }
