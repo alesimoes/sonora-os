@@ -144,6 +144,7 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
     }
     const auto& tracks = snapshot.edit->tracks;
     // A take's file never changes input part way (ADR-0023 §4).
+    const bool rolling = session_.transport().state() != TransportState::Stopped;
     const bool take = session_.transport().state() == TransportState::Recording ||
                       record_requested() || !session_.folder_change_refusal().empty();
     for (std::size_t i = 0; i < tracks.size() && i < session_.tracks().size(); ++i) {
@@ -151,8 +152,18 @@ void PlaybackController::apply_mix(const model::Snapshot& snapshot) {
         if (!m) continue;
         Track& t = *session_.tracks()[i];
         t.set_vca_gain(vca_factor(snapshot, tracks[i]->id));
-        t.set_mix_gain(gain_of_db(m->gain_db));
-        t.set_mix_pan(pan_of(m->pan));
+        // A Latch or Write ride keeps playing after its release until the
+        // pass ends, over a document that still holds the old static: a mix
+        // edit mid-pass moves the static only, and the pass's end (the next
+        // apply once stopped) puts it under the audio again.
+        if (rolling && (m->automation == model::AutomationMode::Latch ||
+                        m->automation == model::AutomationMode::Write)) {
+            t.set_static_gain(gain_of_db(m->gain_db));
+            t.set_static_pan(pan_of(m->pan));
+        } else {
+            t.set_mix_gain(gain_of_db(m->gain_db));
+            t.set_mix_pan(pan_of(m->pan));
+        }
         t.set_muted(m->mute);
         t.set_soloed(m->solo);
         t.set_solo_safe(m->solo_safe);

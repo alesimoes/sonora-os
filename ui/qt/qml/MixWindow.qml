@@ -29,6 +29,8 @@ Rectangle {
     property InsertModel inserts: null
     property SendModel sends: null
     property MixModel mixer: null
+    // The master's loudness (LoudnessModel); null where it is not wired.
+    property LoudnessModel loudness: null
     readonly property int auxCount: sends !== null ? sends.auxes.length : 0
     // VCA masters and folders (ADR-0048): the strips' places along the
     // window, a closed folder being one card and its tracks none.
@@ -137,6 +139,13 @@ Rectangle {
             text: "Folder"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
             onClicked: mix.mixer.newFolder("")
         }
+        SButton {
+            objectName: "viewLoudness"
+            visible: mix.loudness !== null
+            text: "Loudness"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            active: mix.loudness !== null && mix.loudness.panelOpen
+            onClicked: mix.loudness.togglePanel()
+        }
     }
     Row {
         id: sendControls
@@ -190,7 +199,7 @@ Rectangle {
         id: strips
         objectName: "mixStrips"
         anchors {
-            left: parent.left; right: bus.left; top: note.bottom; bottom: parent.bottom
+            left: parent.left; right: loudnessPanel.visible ? loudnessPanel.left : bus.left; top: note.bottom; bottom: parent.bottom
             leftMargin: Theme.space3; rightMargin: Theme.space3; topMargin: Theme.space2; bottomMargin: Theme.space3
         }
         clip: true
@@ -287,6 +296,17 @@ Rectangle {
                 info: modelData
             }
         }
+    }
+
+    // Beside the master: its loudness against a target.
+    LoudnessPanel {
+        id: loudnessPanel
+        objectName: "loudnessPanel"
+        anchors { right: bus.left; top: note.bottom; bottom: parent.bottom
+                  rightMargin: Theme.space2; topMargin: Theme.space2; bottomMargin: Theme.space3 }
+        visible: mix.loudness !== null && mix.loudness.panelOpen
+        shell: mix.shell
+        loudness: mix.loudness
     }
 
     ChannelStrip {

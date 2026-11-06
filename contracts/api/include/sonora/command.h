@@ -37,7 +37,7 @@ enum class CommandTarget {
 enum class CommandDomain {
     Engine,     // transport.*, track.*, edit operations, nudge.*, app.save
     Interface,  // tool.*, zoom.*, edit.mode.*, focus.*, window.transport,
-                // window.undo_history, window.memory_locations, app.quit,
+                // window.undo_history, window.memory_locations, window.event_list, app.quit,
                 // app.save_as_template, app.new_from_template
 };
 
@@ -333,6 +333,12 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"edit.copy", CommandTarget::None, "Copy"},
         {"edit.paste", CommandTarget::None, "Paste"},
         {"edit.clear", CommandTarget::None, "Clear the selection"},
+        {"automation.write_selection", CommandTarget::None,
+         "Write the track's current fader or pan flat across the selected automation range",
+         false, CommandDomain::Interface},
+        {"automation.snapshot", CommandTarget::None,
+         "Add a breakpoint at the insertion point holding the track's current fader or pan",
+         false, CommandDomain::Interface},
         {"automation.thin", CommandTarget::None,
          "Thin the selected automation range to the fewest breakpoints that keep its shape",
          false, CommandDomain::Interface},
@@ -392,7 +398,7 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"session.leave_recovered", CommandTarget::None,
          "Leave the recovered takes in Audio Files, off the timeline"},
 
-        // --- consolidate (ADR-0031 §6, protocol 52) ---
+        // --- consolidate (ADR-0031 §6, protocol 63) ---
         // The argument is api/consolidate_argument.h's. The reply says only
         // whether the render started; progress and the end are Consolidate
         // events. The interface's own edit.consolidate is the key; this is
@@ -447,12 +453,20 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // it changes goes through marker operations, undoable like any edit.
         {"window.memory_locations", CommandTarget::None,
          "Show or hide the Memory Locations window", false, CommandDomain::Interface},
+        // Logic's Event List, for the automation points of one lane of the
+        // selected track. What it changes goes through EditAutomation, undoable.
+        {"window.event_list", CommandTarget::None,
+         "Show or hide the automation Event List window", false, CommandDomain::Interface},
         // Setup > Latency: measures and sets the round trip through the
         // latency.* commands.
         {"window.latency", CommandTarget::None, "Show or hide the Latency window",
          false, CommandDomain::Interface},
         // File > Bounce Mix…: the dialog that sends mix.bounce.
         {"window.bounce", CommandTarget::None, "Show or hide the Bounce Mix window",
+         false, CommandDomain::Interface},
+        // Setup > Preferences: the operator's own defaults, kept per machine
+        // by the interface; the engine is not asked.
+        {"window.preferences", CommandTarget::None, "Show or hide the Preferences window",
          false, CommandDomain::Interface},
         // Pro Tools' Window > Configuration and Logic's screensets: which
         // windows are open and where, in nine numbered slots. The argument
@@ -480,6 +494,12 @@ inline const std::vector<CommandSpec>& command_catalog() {
          CommandDomain::Interface},
         {"app.new_from_template", CommandTarget::None,
          "Show the templates to start a new session from one", false, CommandDomain::Interface},
+        // Pro Tools' File > Import > Audio (ui.editing.import): the window
+        // shows the file browser; the copy and the placement go through
+        // operations the engine already runs (AddSource, AddTrack, PlaceRegion).
+        {"session.import_audio", CommandTarget::None,
+         "Show the browser to import audio files into the session as new tracks", false,
+         CommandDomain::Interface},
         {"app.quit", CommandTarget::None, "Leave the engine",
          false, CommandDomain::Interface},
     };

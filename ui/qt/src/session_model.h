@@ -26,8 +26,10 @@
 #include "edit_controller.h"
 #include "engine_adapter.h"
 #include "peak_source.h"
+#include "preferences.h"
 #include "session_files.h"
 #include "sonora/model/sequence_file.h"
+#include "import_model.h"
 #include "time_format.h"
 #include "window_layouts.h"
 #include "timeline_document.h"
@@ -77,9 +79,24 @@ class SessionModel : public QObject {
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
     Q_PROPERTY(bool memoryLocationsOpen READ memoryLocationsOpen NOTIFY memoryLocationsOpenChanged)
     // Setup > Latency (ADR-0019, update of 2026-10-26): window.latency.
+    // The Event List window: the points of one automation lane of the
+    // selected track, in time order (Logic's Event List, Pro Tools' lane
+    // breakpoints), each editable by value and time.
+    Q_PROPERTY(bool eventListOpen READ eventListOpen NOTIFY eventListOpenChanged)
+    Q_PROPERTY(QVariantList eventList READ eventList NOTIFY eventListChanged)
+    Q_PROPERTY(QString eventListTitle READ eventListTitle NOTIFY eventListChanged)
+    Q_PROPERTY(int eventLane READ eventLane NOTIFY eventListChanged)
     Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
     // File > Bounce Mix: the Bounce window (ui.mixer.bounce).
     Q_PROPERTY(bool bounceOpen READ bounceOpen NOTIFY bounceOpenChanged)
+    // Setup > Preferences: window.preferences, what the operator starts with
+    // (counter format, grid, edit mode) and why a save or a read was refused.
+    Q_PROPERTY(bool preferencesOpen READ preferencesOpen NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefCounter READ prefCounter NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefGrid READ prefGrid NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefMode READ prefMode NOTIFY preferencesChanged)
+    Q_PROPERTY(QString prefRefusal READ prefRefusal NOTIFY preferencesChanged)
+    Q_PROPERTY(QString preferencesFile READ preferencesFile NOTIFY preferencesChanged)
     // Window configurations: the nine slots, {slot, stored, summary}, and
     // the list that shows them (window.configurations).
     Q_PROPERTY(QVariantList windowConfigs READ windowConfigs NOTIFY windowConfigsChanged)
@@ -369,10 +386,36 @@ public:
     QVariantList markers() const;
     bool memoryLocationsOpen() const { return memory_locations_open_; }
     void setMemoryLocationsOpen(bool on);
+    bool eventListOpen() const { return event_list_open_; }
+    void setEventListOpen(bool on);
+    QVariantList eventList() const;
+    QString eventListTitle() const;
+    int eventLane() const { return ctl_.event_lane(); }
+    // The lane the list shows: 0 Volume, 1 Pan, 2 Volume Trim.
+    Q_INVOKABLE void setEventLane(int lane);
+    // Row `row` given the value and time typed in the window: the value as the
+    // lane says it ("-6.0", "<30" for a pan), the time in the main counter's
+    // format. Either may be empty to keep what the row has. One undo step.
+    Q_INVOKABLE bool eventEdit(int row, const QString& time, const QString& value);
+    Q_INVOKABLE bool eventDelete(int row);
     bool latencyOpen() const { return latency_open_; }
     bool tempoTrackShown() const { return tempo_track_; }
     bool bounceOpen() const { return bounce_open_; }
     Q_INVOKABLE void setBounceOpen(bool on);
+    bool preferencesOpen() const { return prefs_open_; }
+    QString prefCounter() const { return QString::fromLatin1(time_format_name(prefs_.counter)); }
+    QString prefGrid() const { return QString::fromLatin1(grid_value_name(prefs_.grid)); }
+    QString prefMode() const { return QString::fromLatin1(edit_mode_name(prefs_.mode)); }
+    QString prefRefusal() const { return prefs_refusal_; }
+    QString preferencesFile() const { return prefs_file_; }
+    Q_INVOKABLE void setPreferencesOpen(bool on);
+    // The file the preferences live in; read now and applied. A file that
+    // cannot be read leaves the defaults and holds the reason in the window.
+    void setPreferencesFile(const QString& file);
+    // One choice: `what` is "counter", "grid" or "mode", `value` a name from
+    // the window's lists. It applies at once and is saved; a name that is not
+    // in the list, or a save that fails, is held in the window.
+    Q_INVOKABLE bool setPreference(const QString& what, const QString& value);
     Q_INVOKABLE void setLatencyOpen(bool on);
 
     // --- window configurations (window.config_store, window.config_recall) ---
@@ -535,6 +578,8 @@ public:
     Q_INVOKABLE bool deleteTemplate(const QString& name);
     Q_INVOKABLE bool saveAsTemplate(const QString& name, bool markers);
     Q_INVOKABLE bool newFromTemplate(const QString& file, const QString& name, bool discard);
+    // The Import Audio browser's model (import_model.h), made on first use.
+    Q_INVOKABLE QObject* importer();
     bool openRecordingFolder(const QString& folder, bool discard, std::string& why);
 
     // --- Mix window ---
@@ -584,9 +629,12 @@ signals:
     void repairsChanged();
     void undoHistoryOpenChanged();
     void markersChanged();
+    void eventListOpenChanged();
+    void eventListChanged();
     void memoryLocationsOpenChanged();
     void latencyOpenChanged();
     void bounceOpenChanged();
+    void preferencesChanged();
     void windowConfigsChanged();
     void windowConfigsOpenChanged();
     // A recalled configuration moved the floating windows: read
@@ -640,6 +688,8 @@ signals:
     void saveAsTemplateRequested(const QString& name, const QString& where);
     // app.new_from_template: the window shows the template browser.
     void templateBrowserRequested();
+    // session.import_audio: the window shows the Import Audio browser.
+    void importBrowserRequested();
     void templateMarkersChanged();
     // What the operator must see and may not be looking at when it happens:
     // a Save As the engine refused after the dialog closed. Held in the
@@ -745,12 +795,20 @@ private:
     // refused (commandRefusal), so no take starts in the template's folder.
     bool making_from_template_ = false;
     EditController ctl_;
+    ImportModel* import_ = nullptr;
     std::vector<SceneItem*> items_;
     QString window_ = QStringLiteral("edit");
     bool undo_history_open_ = false;
     bool memory_locations_open_ = false;
+    bool event_list_open_ = false;
+    int seen_event_lane_ = 0;
     bool latency_open_ = false;
     bool bounce_open_ = false;
+    bool prefs_open_ = false;
+    Preferences prefs_;
+    QString prefs_file_, prefs_refusal_;
+    void applyPreferences();
+    void setCounterFormat(TimeFormat main);
     QString render_what_;
     bool window_configs_open_ = false;
     WindowLayouts layouts_;

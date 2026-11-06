@@ -288,6 +288,30 @@ public:
     // Thin the selected lane's range (`automation.thin`); refused with a
     // reason when no lane range is selected or nothing would go.
     bool thin_automation(std::string& why);
+    // Write to Selection (`automation.write_selection`): the selected lane
+    // range held flat at the track's fader or pan as it stands now (Volume
+    // Trim: 0 dB). Refused with a reason when no lane range is selected.
+    bool write_automation_to_selection(std::string& why);
+    // Snapshot (`automation.snapshot`): one breakpoint at the insertion point
+    // on the event list's lane of each selected track, holding the fader or
+    // pan as it stands now (Volume Trim: 0 dB). One undo step.
+    bool snapshot_automation(std::string& why);
+
+    // --- the Event List (`window.event_list`) ---
+    // The lane it lists, 0..kLaneCount-1, on the selected track: the lane
+    // last touched on the timeline, or the one its picker chose.
+    int event_lane() const { return event_lane_; }
+    void set_event_lane(int lane) {
+        if (lane >= 0 && lane < kLaneCount) event_lane_ = lane;
+    }
+    // The listed lane's points, null when the track has none there.
+    const model::AutomationLane* event_points() const;
+    // Point `row` moved to `at` and given `value`, as one undo step; it keeps
+    // its place between its neighbours (moved_point). A step's two points
+    // keep their frame.
+    bool event_edit(std::size_t row, model::Frames at, float value, std::string& why);
+    // Point `row` removed, one undo step.
+    bool event_delete(std::size_t row, std::string& why);
     bool nudge(int direction, std::string& why);
     // Spot mode: the selected region placed so that it starts exactly at
     // `to`, typed, never snapped (Pro Tools' Spot dialog, start time). What
@@ -776,6 +800,7 @@ private:
     std::set<model::Id> comp_lanes_open_;
     LaneSelection lane_sel_;
     bool quick_swipe_ = false;
+    int event_lane_ = 0;
     int repeat_count_ = 1;
     int loop_count_ = 3;
     Locator locate_;

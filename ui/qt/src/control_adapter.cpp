@@ -158,6 +158,18 @@ void ControlAdapter::frame(EngineFrame& out) const {
     t.record_ready = (s.transport_flags & api::kTransportRecordReady) != 0;
     t.playback_misses = s.playback_misses;
     t.stale = s.stale;
+    {
+        const api::MeterFields m = engine_.state().master_meter();
+        LoudnessReading& l = out.master_loudness;
+        l.momentary = m.momentary;
+        l.short_term = m.short_term;
+        l.max_momentary = m.max_momentary;
+        l.max_short_term = m.max_short_term;
+        l.integrated = m.integrated;
+        l.range_lu = m.range_lu;
+        l.true_peak_max_db = m.true_peak_max_db;
+        l.nonfinite = m.nonfinite;
+    }
     out.tracks.resize(state_.tracks.size());
     for (std::size_t i = 0; i < state_.tracks.size(); ++i) {
         const api::TrackSnapshot& a = state_.tracks[i];

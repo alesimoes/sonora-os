@@ -20,6 +20,8 @@ Rectangle {
     property SendModel sends: null
     // Fader rides, typed values and modifier clicks; null where not wired.
     property MixModel mixer: null
+    // The master's loudness readout and its panel; null where not wired.
+    property LoudnessModel loudness: null
 
     width: 1280
     height: 720
@@ -109,6 +111,7 @@ Rectangle {
             inserts: root.inserts
             sends: root.sends
             mixer: root.mixer
+            loudness: root.loudness
         }
 
         // Over the windows, not instead of them: says why the meters are empty.
@@ -216,6 +219,21 @@ Rectangle {
         }
     }
 
+    // --- the automation Event List, floating over either window ---
+    Loader {
+        id: eventListLoader
+        objectName: "eventListLoader"
+        x: root.width - width - Theme.space6 - 40
+        y: body.y + 120
+        z: 8
+        sourceComponent: EventListWindow {
+            objectName: "eventListWindow"
+            shell: root.shell
+            session: root.session
+            mover: eventListLoader
+        }
+    }
+
     // --- the Latency window (Setup > Latency…), floating over either window ---
     Loader {
         id: latencyLoader
@@ -245,6 +263,21 @@ Rectangle {
             shell: root.shell
             session: root.session
             mover: bounceLoader
+        }
+    }
+
+    // --- the Preferences window (Setup > Preferences…) ---
+    Loader {
+        id: preferencesLoader
+        objectName: "preferencesLoader"
+        x: Theme.space6
+        y: body.y + Theme.space6
+        z: 8
+        sourceComponent: PreferencesWindow {
+            objectName: "preferencesWindow"
+            shell: root.shell
+            session: root.session
+            mover: preferencesLoader
         }
     }
 
@@ -732,6 +765,7 @@ Rectangle {
                     { name: "fileBounceMix", label: "Bounce Mix…", command: "window.bounce" },
                     { name: "", label: "", command: "" },
                     { name: "fileOpen", label: "Open…", command: "open" },
+                    { name: "fileImportAudio", label: "Import Audio…", command: "session.import_audio" },
                     { name: "fileNewFromTemplate", label: "New from Template…", command: "app.new_from_template" }
                 ]
                 Item {
@@ -1332,7 +1366,10 @@ Rectangle {
                     { name: "editSelectAll", label: "Select All", command: "edit.select_all", on: true },
                     { name: "", label: "", command: "", on: false },
                     { name: "editNewMarker", label: "New Marker…", command: "marker.add", on: true },
-                    { name: "editMemoryLocations", label: "Memory Locations", command: "window.memory_locations", on: true }
+                    { name: "editMemoryLocations", label: "Memory Locations", command: "window.memory_locations",on: true },
+                    { name: "editEventList", label: "Automation Event List", command: "window.event_list", on: true },
+                    { name: "editWriteSelection", label: "Write Automation to Selection", command: "automation.write_selection", on: true },
+                    { name: "editSnapshotAutomation", label: "Snapshot Automation", command: "automation.snapshot", on: true }
                 ]
                 Item {
                     required property var modelData
@@ -2006,6 +2043,18 @@ Rectangle {
                 }
             }
             SButton {
+                objectName: "setupPreferences"
+                width: setupColumn.width
+                implicitHeight: 26
+                bold: false
+                fontPx: Theme.textBody
+                text: "Preferences…"
+                onClicked: {
+                    setupMenu.visible = false
+                    root.shell.invoke("window.preferences", -1)
+                }
+            }
+            SButton {
                 objectName: "setupWindowConfigs"
                 width: setupColumn.width
                 implicitHeight: 26
@@ -2438,6 +2487,12 @@ Rectangle {
         }
     }
 
+    ImportPanel {
+        id: importPanel
+        shell: root.shell
+        session: root.session
+    }
+
     // A refused gesture speaks on the status line, like a refused key; so
     // does a save or an open that worked.
     Connections {
@@ -2450,6 +2505,7 @@ Rectangle {
         function onSaveAsRequested(copy, name, where) { saveAsPanel.show(copy, name, where) }
         function onSaveAsTemplateRequested(name, where) { saveAsPanel.showTemplate(name, where) }
         function onTemplateBrowserRequested() { templatePanel.show() }
+        function onImportBrowserRequested() { importPanel.show() }
         function onPlaylistRenameRequested(track, current) { playlistRenamePanel.show(track, current) }
         function onNameRequested(track, current) { namePanel.show(track, current) }
         function onColourRequested(track, current) { colourPalette.show(track, current) }

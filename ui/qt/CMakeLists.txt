@@ -64,6 +64,8 @@ add_library(sonora_ui_qt STATIC
   src/edit_clip_groups.cpp
   src/strip_silence.h src/strip_silence.cpp
   src/edit_strip_silence.cpp
+  src/edit_preferences.cpp
+  src/preferences.h src/preferences.cpp
   src/automation_edit.h src/automation_edit.cpp
   src/edit_automation.cpp
   src/edit_comping.cpp
@@ -77,15 +79,18 @@ add_library(sonora_ui_qt STATIC
   src/insert_controller.h src/insert_controller.cpp
   src/insert_model.h src/insert_model.cpp
   src/mix_model.h src/mix_model.cpp
+  src/loudness_model.h src/loudness_model.cpp
   src/send_controller.h src/send_controller.cpp
   src/send_model.h src/send_model.cpp
   src/refusal_page.h src/refusal_page.cpp
+  src/audio_importer.h src/audio_importer.cpp
+  src/import_model.h src/import_model.cpp
 )
 set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
 target_include_directories(sonora_ui_qt PUBLIC src)
 # FakeEngine: the engine behind the adapter when no real one is running,
 # and in the tests (control_adapter.h).
-target_link_libraries(sonora_ui_qt PUBLIC sonora_base sonora_keymap sonora_model sonora_api sonora_api_fake
+target_link_libraries(sonora_ui_qt PUBLIC sonora_base sonora_keymap sonora_model sonora_api sonora_api_fake sonora_audiofile
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
 # Only measure.cpp uses it, for per-thread CPU time (ADR-0008 V5).
 target_link_libraries(sonora_ui_qt PRIVATE sonora_platform)
@@ -94,8 +99,8 @@ qt_add_resources(sonora_ui_qt sonora_qml
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
         qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
         qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml
-        qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml
+        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml
+        qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
 )
 
 # The screenshot scenes register themselves (scenes/screenshot_scene.h): in
@@ -181,6 +186,16 @@ target_compile_definitions(test_ui_markers PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_markers COMMAND test_ui_markers)
 set_tests_properties(ui_markers PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The automation Event List and Snapshot: the lane's points listed, edited and
+# deleted, the strip's value written at the insertion point, then the window
+# in the real QML.
+add_executable(test_ui_event_list tests/test_event_list.cpp)
+target_link_libraries(test_ui_event_list PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_event_list PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_event_list COMMAND test_ui_event_list)
+set_tests_properties(ui_event_list PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The Track menu (ADR-0023): new, duplicate, delete, move, their refusals
 # before sending, then the menu, a header's right-click and the New Tracks
@@ -272,6 +287,13 @@ target_compile_definitions(test_ui_bounce_window PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_bounce_window COMMAND test_ui_bounce_window)
 set_tests_properties(ui_bounce_window PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# Setup > Preferences: the window, the file it keeps, a bad file refused.
+add_executable(test_ui_preferences tests/test_preferences.cpp)
+target_link_libraries(test_ui_preferences PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_preferences PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_preferences COMMAND test_ui_preferences)
+set_tests_properties(ui_preferences PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Track > Freeze, Commit, Unfreeze, Process Selection (ADR-0051): the menu over
 # FakeEngine's wire, the argument it sends, progress and the held notice.
@@ -348,6 +370,13 @@ target_link_libraries(test_ui_mix PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_mix COMMAND test_ui_mix)
 set_tests_properties(ui_mix PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The master's loudness: the readings as the engine publishes them, the
+# target presets, the reset and its refusals, the panel in QML.
+add_executable(test_ui_loudness tests/test_loudness.cpp)
+target_link_libraries(test_ui_loudness PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_loudness COMMAND test_ui_loudness)
+set_tests_properties(ui_loudness PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # Key maps on the control API: commands routed by domain, the Commands
 # Keyboard Focus toggle, the profile switch and what it remembers, on
 # FakeEngine; then the Keys menu and the a-z button in the real QML.
@@ -410,3 +439,10 @@ target_compile_definitions(test_ui_comping PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_comping COMMAND test_ui_comping)
 set_tests_properties(ui_comping PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Import Audio (ui.editing.import): the copy at the session rate, the one-step
+# placement, the refusals, the browser, on FakeEngine.
+add_executable(test_ui_import tests/test_import.cpp)
+target_link_libraries(test_ui_import PRIVATE sonora_ui_qt)
+add_test(NAME ui_import COMMAND test_ui_import)
+set_tests_properties(ui_import PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

@@ -62,6 +62,10 @@ constexpr uint32_t kAutomationGuide = 0xff262b32;   // the unity or centre line 
 constexpr uint32_t kGridBar = 0xff2b3038;
 constexpr uint32_t kGridBeat = 0xff1d2127;
 constexpr uint32_t kRulerTick = 0xff4a525b;
+// The loop and punch ranges as bands on the time rulers: accent for the loop,
+// the record colour for the punch, as each is lit on the transport bar.
+constexpr uint32_t kLoopBand = 0xb33fc1b0;
+constexpr uint32_t kPunchBand = 0xb3f0524f;
 constexpr uint32_t kSelectionFill = 0x333fc1b0;  // accent at 20 %, over regions
 constexpr uint32_t kRegionSelectedOutline = kAccent;
 // Fades: the gain curve as a `text` line, the part of the region the fade

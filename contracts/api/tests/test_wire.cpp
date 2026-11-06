@@ -171,6 +171,16 @@ void round_trips() {
         CHECK(mentions(error, "names no session file"));
         CHECK(!wire::decode_load(std::string(wire::kMaxSavePath + 1, 'a') + std::string(1, '\0'),
                                  file, load, error));
+        // A template's Load (protocol 54): the prefix is part of the path,
+        // which still ends at the first NUL, and no real path starts with it.
+        {
+            const std::string tpath = std::string(kLoadTemplatePrefix) + "/t/Vocals/Vocals.sonora";
+            const std::string tload = wire::encode_load(tpath, "{}");
+            CHECK(wire::decode_load(tload, file, load, error));
+            CHECK(file == tpath && load == "{}");
+            CHECK(file.rfind(kLoadTemplatePrefix, 0) == 0);
+            CHECK(kLoadTemplatePrefix[0] == '@');
+        }
         // SaveAs (protocol 29): the path, the flags in decimal, the bytes;
         // a flag this protocol does not know is refused, never ignored.
         m.action = ModelAction::SaveAs;
@@ -440,19 +450,21 @@ void version_check() {
     // (ADR-0027 §9; follows 40).
     // 42: meters.reset, and state layout 8's loudness (ADR-0013 amendment of
     // 2026-11-03; follows 41).
-    // 48: the session-model train; 52: session.consolidate, EventKind::Consolidate
-    // (ADR-0031 §6) and the comping commands.
-    // 51: ADR-0048 SetVca ... and the vca.* and folder.* commands.
-    // 59: ShiftRegions, Shuffle's ripple (ADR-0009 update of 2026-11-04).
-    // 57: ADR-0052 clip groups, loops and sample edits (window format 20,
-    // session format 24; follows 48, the session-model train: groups, clip
-    // gain, record modes; window
-    // format 16, session format 19).
-    // 43/49/56: consolidate; mix.bounce and EventKind::Bounce; track.freeze
-    // and the playlist "freeze" key (ADR-0051).
+    // 48: the session-model train; 52: the comping commands; 51: ADR-0048 VCAs and
+    // folders; 59: ShiftRegions; 57: ADR-0052 clip groups, loops, sample edits.
+    // 67: the session-model train union, renumbered after main took 66.
+    // 49: mix.bounce, mix.bounce_cancel and EventKind::Bounce (ui.mixer.bounce;
+    // follows 48, 43 to 48 being other PRs').
+    // 56: track.freeze, track.commit, track.process_selection, track.unfreeze,
+    // track.render_cancel, EventKind::Render and the playlist "freeze" key
+    // (plugins.graph.freeze, plugins.offline; ADR-0051).
+    // 61: mix.bounce's file=, rate=, dither= words (interchange.audio.export).
+    // 62: Load's template prefix (daw.model.session_mgmt, ADR-0030 amendment).
+    // 63: session.consolidate, session.consolidate_cancel and
+    // EventKind::Consolidate (ADR-0031 §6; main reserved it as 43).
     // 65: plugin descriptor hints and PluginTelemetry (ADR-0057).
-    // 66: session-model train union, renumbered from 59 after main took 65.
-    CHECK(kProtocolVersion == 66);
+    // 66: the bundle's 61 to 63 land together on top of 65.
+    CHECK(kProtocolVersion == 67);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -463,20 +475,45 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 66 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 67 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
-    // A version-48 decoder knows no Consolidate event: it is the first kind
-    // past Latency, which a decoder refuses by range.
+    // Bounce and Consolidate are the first two kinds past Latency, which a
+    // version-42 decoder refuses by range.
     CHECK(static_cast<uint32_t>(EventKind::Consolidate) ==
+          static_cast<uint32_t>(EventKind::Bounce) + 1);
+    CHECK(static_cast<uint32_t>(EventKind::Bounce) ==
           static_cast<uint32_t>(EventKind::Latency) + 1);
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 66"));
+                   "speaks version 67"));
 }
 
-// Protocol 52: a Consolidate event carries the track in `insert`, the
+// Protocol 49: a Bounce event carries the fraction in `frame`, the frames in
+// `insert`, the state in `flags`; a state this version does not define is
+// refused. The commands are in the catalog and are the engine's.
+void bounce_event() {
+    EngineEvent e;
+    e.kind = EventKind::Bounce;
+    e.insert = 96000;
+    e.frame = 250;
+    e.flags = static_cast<uint32_t>(BounceState::Failed);
+    e.text = "stop recording before bouncing";
+    std::string bytes, error;
+    wire::encode(e, bytes);
+    EngineEvent back;
+    CHECK(wire::decode(bytes, back, error));
+    CHECK(back.kind == EventKind::Bounce && back.insert == 96000 && back.frame == 250 &&
+          back.flags == e.flags && back.text == e.text);
+    e.flags = static_cast<uint32_t>(BounceState::Cancelled) + 1;
+    wire::encode(e, bytes);
+    CHECK(!wire::decode(bytes, back, error) && mentions(error, "bounce"));
+    CHECK(find_command("mix.bounce") != nullptr && is_engine_command("mix.bounce"));
+    CHECK(find_command("mix.bounce_cancel") != nullptr);
+}
+
+// Protocol 63: a Consolidate event carries the track in `insert`, the
 // progress in `frame` (thousandths), the state in `flags`; a state this
 // version does not define is refused.
 void consolidate_event() {
@@ -519,35 +556,11 @@ void consolidate_event() {
     }
 }
 
-// Protocol 49: a Bounce event carries the fraction in `frame`, the frames in
-// `insert`, the state in `flags`; a state this version does not define is
-// refused. The commands are in the catalog and are the engine's.
-void bounce_event() {
-    EngineEvent e;
-    e.kind = EventKind::Bounce;
-    e.insert = 96000;
-    e.frame = 250;
-    e.flags = static_cast<uint32_t>(BounceState::Failed);
-    e.text = "stop recording before bouncing";
-    std::string bytes, error;
-    wire::encode(e, bytes);
-    EngineEvent back;
-    CHECK(wire::decode(bytes, back, error));
-    CHECK(back.kind == EventKind::Bounce && back.insert == 96000 && back.frame == 250 &&
-          back.flags == e.flags && back.text == e.text);
-    e.flags = static_cast<uint32_t>(BounceState::Cancelled) + 1;
-    wire::encode(e, bytes);
-    CHECK(!wire::decode(bytes, back, error) && mentions(error, "bounce"));
-    CHECK(find_command("mix.bounce") != nullptr && is_engine_command("mix.bounce"));
-    CHECK(find_command("mix.bounce_cancel") != nullptr);
-}
-
 // Protocol 56: a Render event carries the fraction in `frame`, the track in
 // `insert`, the state in `flags`; a state this version does not define is
 // refused. The commands are in the catalog and are the engine's.
 void render_event() {
-    CHECK(static_cast<uint32_t>(EventKind::Render) ==
-          static_cast<uint32_t>(EventKind::Bounce) + 1);
+    CHECK(static_cast<uint32_t>(EventKind::Render) == 10);
     EngineEvent e;
     e.kind = EventKind::Render;
     e.insert = 7;
@@ -579,15 +592,18 @@ void domains() {
                                id.rfind("edit.mode.", 0) == 0 || id.rfind("focus.", 0) == 0 ||
                                id.rfind("tempo.", 0) == 0 ||
                                id == "app.quit" || id == "automation.thin" ||
+                               id == "automation.write_selection" || id == "automation.snapshot" ||
+                               id == "window.event_list" ||
                                id == "automation.toggle_follows_edit" ||
                                id == "window.transport" ||
                                id == "window.undo_history" ||
-                               id == "window.memory_locations" || id == "window.latency" ||
+                               id == "window.memory_locations" || id == "window.latency" || id == "window.preferences" ||
                                id == "window.bounce" ||
                                id == "window.configurations" || id == "window.config_store" ||
                                id == "window.config_recall" ||
                                id == "comp.toggle_lanes" || id == "comp.toggle_quick_swipe" ||
-                               id == "app.save_as_template" || id == "app.new_from_template";
+                               id == "app.save_as_template" || id == "app.new_from_template" ||
+                               id == "session.import_audio";
         if (interface != (spec.domain == CommandDomain::Interface)) {
             std::fprintf(stderr, "FAIL %s is in the wrong domain\n", spec.id);
             ++failures;
@@ -1053,8 +1069,8 @@ int main() {
     plugin_telemetry_messages();
     refusals();
     version_check();
-    consolidate_event();
     bounce_event();
+    consolidate_event();
     render_event();
     domains();
     frames_carry_large_messages();

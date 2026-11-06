@@ -126,6 +126,16 @@
       "comment": "Not listed in Avid's Shortcuts Guide; macOS convention."
     },
     "ctrl+b": "edit.clear",
+    "ctrl+alt+w": {
+      "command": "automation.write_selection",
+      "origin": "sonora",
+      "comment": "Ours. Pro Tools has Write to Selection among its automation commands, but no default key for it could be confirmed from Avid's published guides. Holds the track's fader or pan flat across the selected lane range."
+    },
+    "ctrl+alt+k": {
+      "command": "automation.snapshot",
+      "origin": "sonora",
+      "comment": "Ours. One breakpoint at the insertion point holding the fader or pan as it stands, on the Event List's lane."
+    },
     "ctrl+alt+t": {
       "command": "automation.thin",
       "origin": "sonora",
@@ -309,6 +319,11 @@
       "command": "comp.toggle_quick_swipe",
       "origin": "sonora",
       "comment": "Quick Swipe on or off: a swipe copies at once, with short crossfades. Pro Tools has none; it is off here and on under Logic."
+    },
+    "ctrl+shift+i": {
+      "command": "session.import_audio",
+      "verified": false,
+      "comment": "File > Import > Audio, Command+Shift+I: the browser for WAV files, each becoming a new track. Not yet checked against Avid's guides in brain/research/protools-logic-key-bindings.md."
     },
     "ctrl+shift+n": {
       "command": "track.new",

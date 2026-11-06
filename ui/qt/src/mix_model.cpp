@@ -208,11 +208,11 @@ bool MixModel::writes(int track) const {
     if (!live(track) || !session_.transportOverlay().rolling) return false;
     const QStringList modes = session_.automationModes();
     if (track >= modes.size()) return false;
-    // Touch only: the engine puts the static back at its release. Latch and
-    // Write keep playing the ride until the stop, so it is saved as the
-    // static, or a mix edit mid-pass (apply_mix) or a second grab would
-    // step back to the old one (#282 review B1).
-    return modes[track] == QLatin1String("Touch");
+    // The engine keeps the document's static under a ride in these modes:
+    // Touch glides back to it at the release, Latch and Write play the ride
+    // until the pass ends and then restore it (PlaybackController::apply_mix).
+    return modes[track] == QLatin1String("Touch") || modes[track] == QLatin1String("Latch") ||
+           modes[track] == QLatin1String("Write");
 }
 
 void MixModel::sendLive(int track, float db, api::Gesture gesture) {

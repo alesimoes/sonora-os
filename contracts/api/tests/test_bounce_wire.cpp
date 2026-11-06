@@ -32,6 +32,26 @@ int main() {
     CHECK(back.format == BounceFormat::Float32 && back.normalise);
     CHECK(back.target_lufs == -14.0 && back.name == "Mix; v=2 final");
 
+    // Protocol 61: the file, depth, rate and dither.
+    BounceOptions e;
+    e.file = BounceFile::Flac;
+    e.format = BounceFormat::Int16;
+    e.sample_rate = 44100;
+    e.dither = BounceDither::Shaped;
+    e.name = "For CD rate=1";
+    CHECK(parse_bounce_argument(format_bounce_argument(e), back, why));
+    CHECK(back.file == BounceFile::Flac && back.format == BounceFormat::Int16);
+    CHECK(back.sample_rate == 44100 && back.dither == BounceDither::Shaped);
+    CHECK(back.name == "For CD rate=1");
+    CHECK(parse_bounce_argument("", back, why));
+    CHECK(back.file == BounceFile::Bwf && back.sample_rate == 0 && back.dither == BounceDither::Auto);
+    for (const char* bad : {"file=mp3", "rate=100", "rate=500000", "rate=x", "dither=loud",
+                            "file=flac format=float32", "format=float32 file=aiff"}) {
+        why.clear();
+        CHECK(!parse_bounce_argument(bad, back, why) && !why.empty());
+    }
+    CHECK(parse_bounce_argument("file=wav format=float32 rate=96000", back, why));
+
     CHECK(parse_bounce_argument("", back, why));
     CHECK(!back.normalise && back.mode == BounceMode::Offline);  // off by default
     CHECK(parse_bounce_argument("end=9 start=3", back, why) && back.start == 3 && back.end == 9);

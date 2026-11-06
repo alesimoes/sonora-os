@@ -1469,6 +1469,21 @@ int test_scene() {
     build_ruler_scene(TimeFormat::BarsBeats, doc.snapshot().settings, c.view(), 20, scene);
     OK(rect_at(scene.rects, 500, 2)->argb == theme::kPanel);
     OK(!scene.labels.empty() && scene.labels[0].text == "1");
+
+    // The loop and punch ranges are bands on the ruler, in their own colours.
+    model::SessionSettings ranged = doc.snapshot().settings;
+    ranged.transport.loop = {kBar, 2 * kBar};
+    ranged.transport.punch = {3 * kBar, 4 * kBar};
+    build_ruler_scene(TimeFormat::BarsBeats, ranged, c.view(), 20, scene);
+    const float lx = static_cast<float>(c.view().x_of(kBar) + 2);
+    const float px = static_cast<float>(c.view().x_of(3 * kBar) + 2);
+    r = rect_at(scene.rects, lx, 16);
+    OK(r && r->argb == theme::kLoopBand);
+    r = rect_at(scene.rects, px, 16);
+    OK(r && r->argb == theme::kPunchBand);
+    build_ruler_scene(TimeFormat::BarsBeats, doc.snapshot().settings, c.view(), 20, scene);
+    r = rect_at(scene.rects, px, 16);
+    OK(!r || r->argb != theme::kPunchBand);
     return 0;
 }
 

@@ -664,6 +664,41 @@ int test_a_pan_release_in_trim_puts_the_static_back() {
     return 0;
 }
 
+// ADR-0027 §3 (automation.write): Latch and Write keep the document's static
+// under the ride. A mix applied while rolling (a mute click) leaves the
+// ridden gain playing and moves only the static; the next apply once
+// stopped puts the static back, which is what the pass's end does.
+int test_latch_and_write_keep_the_static_under_the_ride() {
+    for (const AutomationMode mode : {AutomationMode::Latch, AutomationMode::Write}) {
+        auto session = make_session(1);
+        Session& s = *session;
+        History h(new_session(SessionSettings{}));
+        AddTrack a = track_op(100, "A", 0.0f, 0);
+        a.mix.automation = mode;
+        CHECK_APPLY(h, a);
+        PlaybackController ctl(s);
+        CHECK(show(ctl, h.current()));
+        CHECK(ctl.settle(2.0));
+        ctl.play();
+        CHECK(ctl.settle(2.0));
+        CHECK(s.transport().state() == TransportState::Rolling);
+        Out o;
+        block(s, o);
+        ctl.touch(h.current(), 0, sonora::kAutoVolume, true);
+        s.tracks()[0]->set_gain(0.25f);   // the ParameterChange moves
+        block(s, o);
+        ctl.touch(h.current(), 0, sonora::kAutoVolume, false);
+        ctl.apply_mix(h.current());
+        CHECK(s.tracks()[0]->gain() == 0.25f);
+        CHECK(s.tracks()[0]->static_gain() == 1.0f);
+        ctl.stop();
+        CHECK(ctl.settle(2.0));
+        ctl.apply_mix(h.current());
+        CHECK(s.tracks()[0]->gain() == 1.0f);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -678,6 +713,7 @@ int main() {
     if (test_a_pan_release_in_trim_puts_the_static_back() != 0) return 1;
     if (test_a_moving_plan_writes_only_the_held_track() != 0) return 1;
     if (test_a_plan_back_while_adopting_keeps_each_mix() != 0) return 1;
+    if (test_latch_and_write_keep_the_static_under_the_ride() != 0) return 1;
     std::printf("test_track_structure: ok\n");
     return 0;
 }

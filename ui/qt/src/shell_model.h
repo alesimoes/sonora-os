@@ -213,6 +213,10 @@ public:
         std::function<void(const EngineFrame&, bool alive)> frame;
     };
     void setPluginSinks(PluginSinks s) { plugin_sinks_ = std::move(s); }
+    // The master's loudness (LoudnessModel), at the state rate, alive or
+    // not: a dead engine's reading is "no data", not the last one.
+    using LoudnessSink = std::function<void(const EngineFrame&, bool alive)>;
+    void setLoudnessSink(LoudnessSink s) { loudness_sink_ = std::move(s); }
 
     // Measurement hooks; null when not measuring.
     void setTickStats(TickStats* s) { stats_ = s; }
@@ -275,7 +279,10 @@ public:
     // The Bounce window's buttons: mix.bounce of the whole session (the end
     // of the last region), mix.bounce_cancel, and the notice put away.
     // `target_lufs` only counts when `normalise` is on.
-    Q_INVOKABLE void startBounce(bool real_time, bool float32, bool normalise, qreal target_lufs,
+    // `file` is bwf, wav, aiff or flac; `bits` 16, 24 or 32 (float); `rate`
+    // 0 for the session's; `dither` auto, none, tpdf or shaped.
+    Q_INVOKABLE void startBounce(bool real_time, const QString& file, int bits, int rate,
+                                 const QString& dither, bool normalise, qreal target_lufs,
                                  const QString& name);
     Q_INVOKABLE void cancelBounce();
     Q_INVOKABLE void dismissBounce();
@@ -410,6 +417,7 @@ private:
     TransportSink transport_sink_;
     LiveTakeSink live_take_sink_;
     PluginSinks plugin_sinks_;
+    LoudnessSink loudness_sink_;
     api::PluginCatalog catalog_;   // kept, so taking one reuses its storage
     std::vector<CommandOutcome> replies_;
     std::vector<EngineEvent> events_;

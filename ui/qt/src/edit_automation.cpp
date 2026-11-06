@@ -88,6 +88,7 @@ bool EditController::press_autolane(const Hit& h, double x, double y, std::strin
     const AutomationLane* lane = t->lane(p);
     const Frames f = std::max<Frames>(0, view_.frame_at(x));
     const float value = lane_value(p, view_.autolane_position(h.track, h.autolane, y));
+    event_lane_ = h.autolane;   // the Event List follows the lane being worked
     drag_.track = drag_.track_end = h.track;
     drag_.autolane = h.autolane;
     drag_.press_x = x;
@@ -447,6 +448,100 @@ bool EditController::thin_automation(std::string& why) {
     if (!submit_lane_ops(std::move(ops), "Thin Automation", "thinned", why)) return false;
     note_lanes_hidden("Thin", hidden);
     return true;
+}
+
+bool EditController::write_automation_to_selection(std::string& why) {
+    const TrackEdit* t = track(sel_.track);
+    if (!autolane_selected() || t == nullptr || !sel_.has_range()) {
+        why = "select a range of an automation lane first; nothing was written";
+        return false;
+    }
+    const AutomationParam p = lane_param(sel_.autolane);
+    std::vector<std::string> hidden;
+    std::vector<EditAutomation> ops;
+    for (int i : lane_range_tracks(hidden)) {
+        const TrackEdit* ti = track(i);
+        const TrackMix* m = snapshot().mix.find(ti->id);
+        float v = 0.0f;
+        if (m != nullptr && p == AutomationParam::Volume) v = m->gain_db;
+        if (m != nullptr && p == AutomationParam::Pan) v = m->pan;
+        AutomationLane none;
+        none.param = p;
+        const AutomationLane* l = ti->lane(p);
+        EditAutomation op;
+        if (write_range_op(ti->id, l != nullptr ? *l : none, sel_.start, sel_.end, v, op)) {
+            ops.push_back(std::move(op));
+        }
+    }
+    if (ops.empty()) {
+        why = "the selection on " + lane_range_label() + " cannot be written; nothing was written";
+        return false;
+    }
+    if (!submit_lane_ops(std::move(ops), "Write Automation to Selection", "written", why)) {
+        return false;
+    }
+    note_lanes_hidden("Write", hidden);
+    return true;
+}
+
+bool EditController::snapshot_automation(std::string& why) {
+    const TrackEdit* t = track(sel_.track);
+    if (t == nullptr) {
+        why = "select a track first; no snapshot was taken";
+        return false;
+    }
+    const AutomationParam p = lane_param(event_lane_);
+    std::vector<EditAutomation> ops;
+    for (int i = sel_.track; i < sel_.track + span(); ++i) {
+        const TrackEdit* ti = track(i);
+        if (ti == nullptr) continue;
+        const TrackMix* m = snapshot().mix.find(ti->id);
+        float v = 0.0f;
+        if (m != nullptr && p == AutomationParam::Volume) v = m->gain_db;
+        if (m != nullptr && p == AutomationParam::Pan) v = m->pan;
+        const AutomationLane* l = ti->lane(p);
+        if (l != nullptr && l->points.size() >= kMaxAutomationPoints) continue;
+        ops.push_back(add_point_op(ti->id, p, sel_.insertion, v));
+    }
+    if (ops.empty()) {
+        why = "the lane is full; no snapshot was taken";
+        return false;
+    }
+    return submit_lane_ops(std::move(ops), "Snapshot Automation", "taken", why);
+}
+
+const AutomationLane* EditController::event_points() const {
+    const TrackEdit* t = track(sel_.track);
+    return t == nullptr ? nullptr : t->lane(lane_param(event_lane_));
+}
+
+bool EditController::event_edit(std::size_t row, Frames at, float value, std::string& why) {
+    const TrackEdit* t = track(sel_.track);
+    const AutomationLane* l = event_points();
+    EditAutomation op;
+    if (!std::isfinite(value)) {
+        why = "the value must be a finite number; the event was not changed";
+        return false;
+    }
+    if (t == nullptr || l == nullptr || !move_point_op(t->id, *l, row, at, value, op)) {
+        why = "that event is no longer in the lane";
+        return false;
+    }
+    // Typing back what is there is no edit, so no undo step.
+    if (moved_point(*l, row, at, value) == l->points[row]) return true;
+    return submit(op, why);
+}
+
+bool EditController::event_delete(std::size_t row, std::string& why) {
+    const TrackEdit* t = track(sel_.track);
+    const AutomationLane* l = event_points();
+    EditAutomation op;
+    if (t == nullptr || l == nullptr || !delete_point_op(t->id, *l, row, op)) {
+        why = "that event is no longer in the lane";
+        return false;
+    }
+    sel_.point = -1;
+    return submit(op, why);
 }
 
 }  // namespace sonora::ui
