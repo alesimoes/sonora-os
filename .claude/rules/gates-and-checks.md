@@ -8,7 +8,8 @@
   better wait), never skipped. If you cannot, report it as unfixed.
 - A check you did not run is "unverified" in the report, never "passing". Say
   the command and what it printed.
-- The gate is the orchestrator's local CI (`tools/local-ci.sh`); CI-like
-  claims by an agent are not the gate. Why: green by assertion cost days.
+- The gate is GitHub CI's micro build on the PR (`tools/micro-build.sh`,
+  ADR-0061); CI-like claims by an agent are not the gate. Why: green by
+  assertion cost days. Full builds are the nightly, never a PR's wait.
 - A red check on a PR you did not touch is routed (see `.claude/PROCESS.md`
   failure table), not "fixed" in your PR.

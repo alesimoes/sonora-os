@@ -5,7 +5,6 @@
     orchestrator.py pause --pool NAME [--resume]
     orchestrator.py add --id ID --track daw --agent rt-engineer ...
     orchestrator.py adopt [PR...] | bundle NAME PR... | import-queue PATH
-    orchestrator.py flakes          BACKLOG lines for the flaky tests seen
 
 state.json has one writer (harness/daemonlock.py, 2026-11-07): a command
 that changes the store goes to the running daemon's mailbox; with no
@@ -16,7 +15,7 @@ import json
 import os
 import sys
 
-from . import autoadopt, cli_mailbox, daemonlock, launcher, localci_flakes
+from . import autoadopt, cli_mailbox, daemonlock, launcher
 from . import status
 from .brokerhost import NullBroker
 
@@ -41,7 +40,7 @@ def _parser(root_default):
     q = sub.add_parser("import-queue")
     q.add_argument("path")
     q.add_argument("--wants", default="adr")
-    for c in ("status", "drain", "stop", "resume", "flakes"):
+    for c in ("status", "drain", "stop", "resume"):
         sub.add_parser(c)
     p = sub.add_parser("pause")
     p.add_argument("--pool", required=True)
@@ -202,11 +201,6 @@ def main(argv, orch_cls, make_broker, root_default):
         except FileNotFoundError:
             print("no status.json yet; is the daemon running?")
             return 1
-        return 0
-    if args.cmd == "flakes":
-        rows = localci_flakes.from_state_file(os.path.join(odir, "state.json"))
-        print("\n".join(localci_flakes.backlog_lines(rows))
-              or "no flaky test recorded")
         return 0
     if args.cmd == "run":
         return _run(ap, args, root, orch_cls, make_broker)

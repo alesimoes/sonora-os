@@ -8,7 +8,7 @@
   same worktree; never wait on a build.
 - The full local CI (all tests, sanitizers) is the orchestrator's, not an
   agent's. An agent runs its module's tests (`ctest -L <label>`) and no more.
-- Never touch the live daemon's checkout, its `.local-ci` output, its
+- Never touch the live daemon's checkout, its `.micro-build` output, its
   database or its lock directory. Never `git switch`, `reset` or `checkout`
   in a checkout you were not given. Why: an agent switched branches in the
   orchestrator's checkout (2026-11-06) and broke a run.

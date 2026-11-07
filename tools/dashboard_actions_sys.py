@@ -17,7 +17,7 @@ from dashboard_actions import ActionError, register
 from dashboard_actions_util import need_str, only, orch_cli, orch_script, result, status_json
 from dashboard_machine import GIT_BASH
 from dashboard_util import main_root, orch_root
-from harness import launcher, localci_cancel
+from harness import launcher, proctree
 
 
 # -- pools -------------------------------------------------------------------
@@ -42,7 +42,7 @@ def daemon_pids():
 
 def stop_pids(pids):
     for pid in pids:
-        localci_cancel.kill_tree(pid)
+        proctree.kill_tree(pid)
     end = time.time() + 20
     while time.time() < end and any(launcher.pid_alive(p) for p in pids):
         time.sleep(0.5)

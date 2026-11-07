@@ -29,7 +29,7 @@
 # warning: a stuck queue must not stop work for good.
 #
 # SONORA_HEAVY_WAIT_FILE=PATH: the seconds spent waiting for the lock are
-# written there once it is ours (tools/local-ci.sh logs lock waits apart from
+# written there once it is ours (tools/micro-build.sh logs lock waits apart from
 # step times). The variable is not passed on to the command, so a nested call
 # does not overwrite it with its own zero.
 set -euo pipefail
