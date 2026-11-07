@@ -5,15 +5,18 @@ it. It posts to the CLI mailbox (harness/cli_mailbox.py, .harness/cli-requests/)
 and the daemon's next tick applies it on its own store (cli_mailbox.apply
 calls dash_door.apply for these kinds):
 
-  regate     rerun the failed GitHub jobs of the PR's current head (the local
-             gate was retired, so GitHub is the gate)
+  regate     rerun the failed jobs of the PR head's GitHub run
+             (forge.rerun_failed); the GitHub checks stay the whole gate
+  rerun-step rerun only the named failed job (forge.rerun_job)
   assign     give the PR to a fixer (red checks) or an integrator (conflict)
 
 Each applied request is a `cli_request` event, a refused one
 `cli_request_failed`, in planning/orchestrator/events.jsonl.
 """
 
-KINDS = ("regate", "assign")
+from .forge import ForgeError
+
+KINDS = ("regate", "rerun-step", "assign")
 ASSIGN_AS = {"fixer": "ci", "integrator": "conflict"}
 
 
@@ -29,6 +32,12 @@ def validate(kind, args):
     if isinstance(pr, bool) or not isinstance(pr, int) or pr <= 0:
         raise ValueError("pr must be a positive number")
     out = {"pr": pr}
+    if kind == "rerun-step":
+        step = args.get("step")
+        if (not isinstance(step, str) or not 0 < len(step) <= 120
+                or not step.isprintable()):
+            raise ValueError("step must be a job name")
+        out["step"] = step
     if kind == "assign":
         who = args.get("as")
         if who not in ASSIGN_AS:
@@ -50,14 +59,23 @@ def _train_row(orch, pr):
     return f"pr-{pr}", info
 
 
-def _regate(orch, pr):
+def _regate(orch, pr, step=None):
     _, info = _train_row(orch, pr)
     head = info.get("head")
     if not head:
         raise Refused(f"#{pr} has no head the train knows")
-    if not orch.forge.rerun_failed(pr, head):
-        raise Refused(f"#{pr} has no CI run to rerun for {head[:8]}")
-    return f"CI rerun for #{pr} {head[:8]}"
+    try:
+        if step:
+            if step not in (info.get("failing") or []):
+                raise Refused(f"{step} did not fail on {head[:8]}")
+            ok = orch.forge.rerun_job(pr, head, step)
+        else:
+            ok = orch.forge.rerun_failed(pr, head)
+    except ForgeError as e:
+        raise Refused(f"GitHub refused the rerun: {e}")
+    if not ok:
+        raise Refused(f"no finished run with a failed job for {head[:8]}")
+    return f"rerun on GitHub for #{pr} {head[:8]}" + (f", {step} only" if step else "")
 
 
 def _assign(orch, pr, who):
@@ -78,4 +96,6 @@ def apply(orch, kind, args):
     a = validate(kind, args)
     if kind == "regate":
         return _regate(orch, a["pr"])
+    if kind == "rerun-step":
+        return _regate(orch, a["pr"], a["step"])
     return _assign(orch, a["pr"], a["as"])

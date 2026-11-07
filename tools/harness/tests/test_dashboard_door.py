@@ -44,38 +44,39 @@ class Door(Base):
     def setUp(self):
         super().setUp()
         self.write("status.json", {"train": [
-            {"pr": 7, "head": HEAD, "phase": "fixer"},
+            {"pr": 7, "head": HEAD, "phase": "fixer", "failing": ["Micro build / tsan"]},
             {"pr": 8, "head": "d", "phase": "CI", "fixer": "fixer-1"}]})
-        self.write("state.json", {"meta": {"localci:" + HEAD: json.dumps(
-            {"state": "fail", "summary": "ok   tree (1 s)\nFAIL tsan (2 s): x"})}})
+        self.write("state.json", {})
         os.makedirs(os.path.join(self.tmp, ".harness"))
 
     def requests(self):
         return cli_mailbox.take(os.path.join(self.tmp, ".harness"))
 
-    def test_both_need_confirmation_and_a_daemon(self):
-        for name, p in (("pr.regate", {"pr": 7}),
+    def test_all_three_need_confirmation_and_a_daemon(self):
+        for name, p in (("pr.regate", {"pr": 7}), ("pr.rerun_step", {"pr": 7, "step": "Micro build / tsan"}),
                         ("pr.assign", {"pr": 7, "as": "fixer"})):
             with mock.patch("dashboard_actions_door.daemon_alive", lambda: False):
                 self.assertEqual(A.submit(name, p)[0], 400, "no daemon running")
         with mock.patch("dashboard_actions_door.daemon_alive", lambda: True):
-            for name, p in (("pr.regate", {"pr": 7}),
+            for name, p in (("pr.regate", {"pr": 7}), ("pr.rerun_step", {"pr": 7, "step": "Micro build / tsan"}),
                             ("pr.assign", {"pr": 7, "as": "fixer"})):
                 self.assertEqual(A.submit(name, p)[0], 409, name)
         self.assertEqual(self.requests(), [])
 
     def test_requests_reach_the_mailbox_and_are_audited(self):
         with mock.patch("dashboard_actions_door.daemon_alive", lambda: True):
-            code, _, job = self.go("pr.regate", {"pr": 7}, True)
+            self.go("pr.regate", {"pr": 7}, True)
+            code, _, job = self.go("pr.rerun_step", {"pr": 7, "step": "Micro build / tsan"}, True)
             self.go("pr.assign", {"pr": 7, "as": "integrator"}, True)
         self.assertEqual(job["state"], "done")
-        self.assertEqual(sorted(k for k, _ in self.requests()), ["assign", "regate"])
+        self.assertEqual(sorted(k for k, _ in self.requests()), ["assign", "regate", "rerun-step"])
         with open(os.path.join(self.tmp, "audit.log"), encoding="utf-8") as f:
-            self.assertEqual(len(f.read().strip().splitlines()), 2)
+            self.assertEqual(len(f.read().strip().splitlines()), 3)
 
     def test_validation(self):
         with mock.patch("dashboard_actions_door.daemon_alive", lambda: True):
             self.assertEqual(A.submit("pr.regate", {"pr": 99}, True)[0], 400)
+            self.assertEqual(A.submit("pr.rerun_step", {"pr": 7, "step": "asan"}, True)[0], 400)
             self.assertEqual(A.submit("pr.assign", {"pr": 7, "as": "root"}, True)[0], 400)
             self.assertEqual(A.submit("pr.assign", {"pr": 8, "as": "fixer"}, True)[0], 400)
 
@@ -86,8 +87,8 @@ class Door(Base):
         self.assertEqual(open(os.path.join(self.odir, "state.json"), "rb").read(), before)
 
     def test_train_rows_carry_their_failed_steps(self):
-        o = dashboard_orch.clean_orch({"train": [{"pr": 7, "head": HEAD}, {"pr": 8, "head": "d"}]}, {7, 8})
-        self.assertEqual([r["failed_steps"] for r in o["train"]], [["tsan"], []])
+        o = dashboard_orch.clean_orch({"train": [{"pr": 7, "head": HEAD, "failing": ["Micro build / tsan"]}, {"pr": 8, "head": "d"}]}, {7, 8})
+        self.assertEqual([r["failed_steps"] for r in o["train"]], [["Micro build / tsan"], []])
 
 
 if __name__ == "__main__":

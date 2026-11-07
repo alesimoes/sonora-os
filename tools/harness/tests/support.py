@@ -190,6 +190,15 @@ class FakeForge(Forge):
                        for k, v in p["checks"].items()}
         return True
 
+    def rerun_job(self, pr, head_sha, job_name):
+        self._chk("rerun_job")
+        p = self.prs[pr]
+        if p["checks"].get(job_name) not in ("fail", "cancel"):
+            return False
+        self.rerun_jobs = getattr(self, "rerun_jobs", []) + [(pr, job_name)]
+        p["checks"][job_name] = "pending"
+        return True
+
     def retarget(self, pr, base):
         self._chk("retarget")
         self.prs[pr]["base"] = base

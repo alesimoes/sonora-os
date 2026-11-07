@@ -22,17 +22,9 @@ def pr_of(task):
     return int(m.group(1)) if m else None
 
 
-def failed_steps(head, state=None):
-    """Steps the local gate reported as FAIL for this head, from the daemon's state."""
-    if not head:
-        return []
-    meta = (state if state is not None else orch_state()).get("meta") or {}
-    try:
-        r = json.loads(meta.get("localci:" + head) or "{}")
-    except ValueError:
-        return []
-    return [ln.split()[1] for ln in (r.get("summary") or "").splitlines()
-            if ln.startswith("FAIL ") and len(ln.split()) > 1]
+def failed_steps(row):
+    """Names of the PR's failed GitHub jobs, as the merge train reports them."""
+    return [n for n in (row or {}).get("failing") or [] if isinstance(n, str)]
 
 
 def clean_orch(o, open_prs):
@@ -62,8 +54,7 @@ def clean_orch(o, open_prs):
         b["queue"] = q
         o["builder"] = b
     if o.get("train"):
-        st = orch_state()
-        o["train"] = [dict(r, failed_steps=failed_steps(r.get("head"), st)) for r in o["train"]]
+        o["train"] = [dict(r, failed_steps=failed_steps(r)) for r in o["train"]]
     o["runs"] = [r for r in o.get("runs") or [] if now - (r.get("last_beat") or r.get("started") or now) < 1800]
     return o
 
