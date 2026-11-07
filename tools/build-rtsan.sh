@@ -29,6 +29,20 @@ if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
   export MSYS2_ARG_CONV_EXCL='*'
 fi
 
+# Prints the targets that exist in the configured build tree.
+filter_existing_targets() {
+  local build="$1" t known
+  shift
+  known="$(cmake --build "$build" --target help | sed -n 's/^\.\.\. \([^ ]*\).*/\1/p')"
+  for t in "$@"; do
+    if grep -qxF -- "$t" <<<"$known"; then
+      echo "$t"
+    else
+      echo "build-rtsan: target $t not in this configuration, skipped" >&2
+    fi
+  done
+}
+
 # Inside the container or on a host that has the toolchain.
 native_build() {
   local build="$1"
@@ -41,7 +55,10 @@ native_build() {
   # whole tree, as main's daily full run wants it.
   if [[ -n "${SONORA_RTSAN_TARGETS:-}" ]]; then
     read -r -a rtsan_targets <<<"$SONORA_RTSAN_TARGETS"
-    cmake --build "$build" -j"$(nproc)" --target "${rtsan_targets[@]}"
+    # This configuration has no Qt, so the plan's UI targets do not exist
+    # here; the Qt build stage of the micro build covers them.
+    mapfile -t rtsan_targets < <(filter_existing_targets "$build" "${rtsan_targets[@]}")
+    ((${#rtsan_targets[@]})) && cmake --build "$build" -j"$(nproc)" --target "${rtsan_targets[@]}"
   else
     cmake --build "$build" -j"$(nproc)"
   fi

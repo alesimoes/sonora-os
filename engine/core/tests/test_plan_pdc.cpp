@@ -622,8 +622,8 @@ int test_out_of_bounds_plan_is_silence() {
     sonora::PlanSizes sizes;
     sizes.tracks = 1;
     // The session sizes its buffers for every track with a chain and every
-    // aux bus (ADR-0022 §5).
-    sizes.nodes = sonora::graph_nodes(1, 1) + 2 * rig.session->max_buses() + 2;
+    // aux bus (ADR-0022 §5) and a path sink after each bus (ADR-0060).
+    sizes.nodes = sonora::graph_nodes(1, 1) + 3 * rig.session->max_buses() + 2;
     PlaybackPlan* shared = sonora::create_plan(sizes);
     shared->epoch = rig.session->plans().next_epoch();
     shared->chunk_frames = 256;

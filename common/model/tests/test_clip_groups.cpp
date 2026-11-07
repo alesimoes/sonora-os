@@ -189,7 +189,7 @@ int test_codec_window_and_file() {
     Loaded loaded;
     LoadError le;
     CHECK(deserialize(file, loaded, le));
-    CHECK(loaded.file_version == kFormatVersion && kFormatVersion == 24);
+    CHECK(loaded.file_version == kFormatVersion && kFormatVersion == 25);
     CHECK(loaded.snapshot.edit->tracks[0]->playlists[0]->regions ==
           r.h.current().edit->tracks[0]->playlists[0]->regions);
     std::string again;
@@ -203,7 +203,7 @@ int test_codec_window_and_file() {
 
     // A version 23 file may not hold a group.
     std::string old = file;
-    const std::size_t v = old.find("\"sonora_session\": 24");
+    const std::size_t v = old.find("\"sonora_session\": 25");
     CHECK(v != std::string::npos);
     old.replace(v, 20, "\"sonora_session\": 23");
     CHECK(!deserialize(old, loaded, le));

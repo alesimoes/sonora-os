@@ -424,6 +424,13 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     mix.send_count = static_cast<uint32_t>(sends.size());
     mix.track_outputs = track_outputs.data();
     mix.bus_outputs = bus_outputs.data();
+    // Output paths (ADR-0060): the pair a bus plays on, past the device's
+    // outputs or not (the session writes a missing output nowhere).
+    std::vector<uint16_t> bus_hardware(bus_count, kNoHardware);
+    for (uint32_t b = 0; b < bus_count; ++b) {
+        if (buses[b].hardware != model::kNoHardwareOut) bus_hardware[b] = buses[b].hardware;
+    }
+    mix.bus_hardware = bus_hardware.data();
     const GraphSize graph = mix_graph_size(limits.engine_tracks, bindings.data(), mix);
 
     PlanSizes sizes;

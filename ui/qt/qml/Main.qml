@@ -29,6 +29,9 @@ Rectangle {
     // The Transport window's model; null where it is not wired, and then
     // there is no Transport window.
     property TransportModel transport: null
+    // Setup > I/O Setup's model; null where it is not wired, and then the
+    // menu item says so.
+    property IoSetupModel io: null
 
     TransportBar {
         id: transport
@@ -278,6 +281,22 @@ Rectangle {
             shell: root.shell
             session: root.session
             mover: preferencesLoader
+        }
+    }
+
+    // --- the I/O Setup window (Setup > I/O Setup…) ---------------------------
+    Loader {
+        id: ioSetupLoader
+        objectName: "ioSetupLoader"
+        active: root.io !== null
+        x: Math.max(0, (root.width - width) / 2)
+        y: body.y + Theme.space4
+        z: 8
+        sourceComponent: IoSetupWindow {
+            objectName: "ioSetupWindow"
+            shell: root.shell
+            io: root.io
+            mover: ioSetupLoader
         }
     }
 
@@ -757,6 +776,8 @@ Rectangle {
             spacing: 2
             Repeater {
                 model: [
+                    { name: "fileNewSession", label: "New Session…", command: "new" },
+                    { name: "", label: "", command: "" },
                     { name: "fileSave", label: "Save", command: "app.save" },
                     { name: "fileSaveAs", label: "Save As…", command: "app.save_as" },
                     { name: "fileSaveCopyIn", label: "Save Copy In…", command: "app.save_copy_in" },
@@ -788,12 +809,29 @@ Rectangle {
                         onClicked: {
                             fileMenu.visible = false
                             if (modelData.command === "open") openPanel.show()
+                            else if (modelData.command === "new") newSessionPanel.show()
                             else root.shell.invoke(modelData.command, -1)
                         }
                     }
                 }
             }
         }
+    }
+
+    // --- File > New Session ---------------------------------------------------
+    MouseArea {
+        anchors.fill: parent
+        visible: newSessionPanel.visible
+        z: 9
+        onClicked: newSessionPanel.close()
+    }
+    NewSessionDialog {
+        id: newSessionPanel
+        objectName: "newSessionPanel"
+        z: 10
+        anchors.centerIn: parent
+        shell: root.shell
+        session: root.session
     }
 
     // --- Save As / Save Copy In: the new session's name ------------------------
@@ -2066,6 +2104,20 @@ Rectangle {
                 onClicked: {
                     setupMenu.visible = false
                     root.shell.invoke("window.configurations", -1)
+                }
+            }
+            SButton {
+                objectName: "setupIo"
+                width: setupColumn.width
+                implicitHeight: 26
+                bold: false
+                fontPx: Theme.textBody
+                text: "I/O Setup…"
+                available: root.io !== null
+                onClicked: {
+                    setupMenu.visible = false
+                    if (root.io !== null) root.io.open = true
+                    else root.shell.say("I/O Setup is not wired in this window")
                 }
             }
         }

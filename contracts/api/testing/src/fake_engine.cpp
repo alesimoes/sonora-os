@@ -354,6 +354,8 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
     }
     hello_.implemented_commands = engine_commands();
     hello_.capabilities = cfg_.capabilities;
+    hello_.input_count = cfg_.tracks;
+    hello_.output_count = cfg_.outputs;
     for (const std::string& id : cfg_.planned_commands) {
         const auto& have = hello_.implemented_commands;
         if (!is_engine_command(id) || std::find(have.begin(), have.end(), id) != have.end()) {

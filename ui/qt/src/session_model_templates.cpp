@@ -185,10 +185,14 @@ void SessionModel::saveAfterOpen() {
     const SaveAsTarget target = *after_open_;
     after_open_.reset();
     std::string why;
+    // Read before the write: the engine's answer to the Save As clears the flag.
+    const bool from_template = making_from_template_;
     if (!writeSessionAs(target, why, std::string())) {
         making_from_template_ = false;
         emit heldNotice(QStringLiteral("The session ") + target.name +
-                        QStringLiteral(" was not made from the template: ") + q(why) +
+                        (from_template ? QStringLiteral(" was not made from the template: ")
+                                       : QStringLiteral(" was not written: ")) +
+                        q(why) +
                         QStringLiteral(". It is open unsaved; its first save puts it in ") + sessions_dir_);
     }
 }

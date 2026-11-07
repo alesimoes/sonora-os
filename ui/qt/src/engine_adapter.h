@@ -53,6 +53,10 @@ struct EngineInfo {
     uint32_t sample_rate = 0;
     uint32_t buffer_frames = 0;
     uint32_t track_count = 0;
+    // The device channels the engine opened, in and out (Hello, protocol 68):
+    // what I/O Setup lists and an output path may name. 0: not said.
+    uint32_t input_count = 0;
+    uint32_t output_count = 0;
     // What the engine has handlers for. Feeds KeyMap::ensure_essentials()
     // together with the interface's own registry, as §5 says.
     //
@@ -107,6 +111,9 @@ struct TransportSnapshot {
     int32_t take = 0;          // the take that is open, or the next one
     uint32_t xruns = 0;
     uint32_t health_flags = 0;
+    // How many capture inputs are connected, in order from input 1: the
+    // inputs I/O Setup lists (§4.1's inputs_connected).
+    uint32_t inputs_connected = 0;
     // Layout 2: the delay compensation the playing plan applies, and how far
     // short of what the inserts need it falls when clamped at its maximum.
     uint32_t compensation_frames = 0;

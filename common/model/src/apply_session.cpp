@@ -27,6 +27,14 @@ bool Applier::operator()(const SetMonitorBus& op) {
     std::string where;
     const std::string why = detail::bus_problem(op.bus, where);
     if (!why.empty()) return fail("monitor_bus." + where + ": " + why);
+    for (const Bus& path : before_.edit->buses) {
+        if (path.hardware != kNoHardwareOut &&
+            (in_pair(path.hardware, op.bus.outputs[0]) ||
+             in_pair(path.hardware, op.bus.outputs[1]))) {
+            return fail("outputs " + std::to_string(path.hardware + 1u) + " and " +
+                        std::to_string(path.hardware + 2u) + " carry the path \"" + path.name + "\"");
+        }
+    }
     after_ = before_;
     after_.mix.bus = op.bus;
     return true;

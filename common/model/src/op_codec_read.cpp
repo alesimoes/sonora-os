@@ -476,7 +476,7 @@ bool read_named_set(Reader& rd, const Value& v, const std::string& p, bool with_
 bool read_aux_bus_value(Reader& rd, const Value& v, const std::string& p, Bus& b) {
     const Value* sends = nullptr;
     // Its "automation" is table indices, which read_edits resolves.
-    if (!rd.keys(v, p, {"id", "name", "sends", "output", "automation"}) ||
+    if (!rd.keys(v, p, {"id", "name", "sends", "output", "automation", "hardware"}) ||
         !rd.id(v, p, "id", b.id) ||
         !rd.text(v, p, "name", b.name) || !rd.array(v, p, "sends", sends) ||
         !rd.id(v, p, "output", b.output)) {
@@ -487,6 +487,12 @@ bool read_aux_bus_value(Reader& rd, const Value& v, const std::string& p, Bus& b
         if (!read_send_value(rd, e, Reader::at(p, "sends"), sd)) return false;
         b.sends.push_back(sd);
     }
+    std::uint16_t first = kNoHardwareOut;
+    if (!rd.small(v, p, "hardware", first)) return false;
+    if (first != kNoHardwareOut && (first % 2 != 0 || first + 1 >= kMaxOutputChannels)) {
+        return rd.fail(Reader::at(p, "hardware"), "is not the first of a pair of outputs");
+    }
+    b.hardware = first;
     return true;
 }
 

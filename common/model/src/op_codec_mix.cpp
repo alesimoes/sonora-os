@@ -56,6 +56,13 @@ struct Encoder {
         v.set("output", id_value(o.output));
         return v;
     }
+    Value operator()(const SetBusPath& o) const {
+        Value v = with_kind("SetBusPath");
+        v.set("bus", id_value(o.bus));
+        v.set("name", Value::string(o.name));
+        v.set("first", integer(o.first));
+        return v;
+    }
     Value operator()(const EditAutomation& o) const {
         Value v = with_kind("EditAutomation");
         v.set("track", id_value(o.track));
@@ -123,6 +130,13 @@ bool decode(Reader& rd, const Value& v, const std::string& kind, MixOp& out,
             return false;
         }
         out = o;
+    } else if (kind == "SetBusPath") {
+        SetBusPath o;
+        if (!rd.keys(v, "", {"op", "bus", "name", "first"}) || !rd.id(v, "", "bus", o.bus) ||
+            !rd.text(v, "", "name", o.name) || !rd.small(v, "", "first", o.first)) {
+            return false;
+        }
+        out = std::move(o);
     } else if (kind == "EditAutomation") {
         EditAutomation o;
         std::array<std::int64_t, 2> range{};

@@ -62,6 +62,12 @@ if(CMAKE_NM AND NOT MSVC)
   # libstdc++'s extern template keeps the allocation out of the object.
   add_library(plugin_client_rt_canary_string OBJECT tests/canary_string.cpp)
   target_compile_options(plugin_client_rt_canary_string PRIVATE -O2)
+  # The canary tests read these objects but no test executable links them, so
+  # a build of only the targets a change reaches (tools/micro-build.sh) would
+  # run the tests without the objects. Hanging them on the object the checks
+  # inspect builds them whenever that one is built.
+  add_dependencies(sonora_plugin_client_rt plugin_client_rt_canary_platform
+                   plugin_client_rt_canary_alloc plugin_client_rt_canary_string)
   sonora_rt_reachability(plugin_client_rt_canary_platform "$<TARGET_OBJECTS:plugin_client_rt_canary_platform>")
   set_tests_properties(plugin_client_rt_canary_platform PROPERTIES PASS_REGULAR_EXPRESSION
     "beyond wake_all:[ \n]+sonora::platform::current_process_id")

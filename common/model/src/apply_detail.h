@@ -200,6 +200,10 @@ public:
 
     bool operator()(const SetOutput& op);
 
+    // --- hardware output paths (ADR-0060): undoable ---
+
+    bool operator()(const SetBusPath& op);
+
     // --- automation (ADR-0027 §1): undoable ---
 
     // `op.track` names the strip (ADR-0027 §9): a track, an aux bus, or the
@@ -361,6 +365,9 @@ private:
     bool no_insert(Id insert);
 
     std::size_t bus_index(Id bus) const;
+
+    // Whether output channel `ch` is one of the pair starting at `first`.
+    static bool in_pair(std::uint32_t first, std::uint32_t ch) { return ch == first || ch == first + 1; }
 
     std::string bus_name(Id bus) const;
 

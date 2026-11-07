@@ -222,7 +222,11 @@ namespace sonora::api {
 // 67 (session-model bundle union; 48, 51, 52, 57 and 59 above were numbered on
 //   its branch, renumbered after main took 66): ShiftRegions, Shuffle ripple,
 //   groups, clip gain, record modes, VCAs, folders, clip groups and loops.
-constexpr uint32_t kProtocolVersion = 67;
+// 68 (ADR-0060, hardware output paths): Hello carries `input_count` and
+//   `output_count`, the device channels the engine opened, and the operation
+//   codec has SetBusPath; the undo window's aux bus carries `hardware`
+//   (65535: none). A peer of 67 or lower is refused at Hello.
+constexpr uint32_t kProtocolVersion = 68;
 
 // ModelAction::Load's file, when it starts with this and names a template's
 // session file: the engine makes a new Untitled folder in its sessions
@@ -445,6 +449,10 @@ struct Hello {
     // What the engine does beyond the command ids, named by the kCapability
     // constants above; an id this build does not know is ignored.
     std::vector<std::string> capabilities;
+    // The device channels the engine opened, in and out (ADR-0060): what I/O
+    // Setup lists and an output path may name. 0: the engine did not say.
+    uint32_t input_count = 0;
+    uint32_t output_count = 0;
 };
 
 // The answer to one CommandRequest, ParameterChange or ModelRequest.

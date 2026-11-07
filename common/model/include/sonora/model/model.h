@@ -669,6 +669,14 @@ struct Send {
 // of an aux bus.
 inline constexpr Id kMasterOutput = 0;
 
+// A hardware output path (ADR-0060, session format 25): an aux bus whose
+// return plays on the device's output pair `hardware`, `hardware` + 1
+// (counted from 0, always even), instead of feeding the Master. The model
+// does not know how many outputs the device has; the engine says so in Hello
+// and plays a pair past them nowhere.
+inline constexpr std::uint16_t kNoHardwareOut = 0xFFFF;
+inline constexpr std::uint16_t kMaxOutputChannels = 64;
+
 struct AutomationLane;
 
 // An aux bus and its return strip, one object (ADR-0022 §1): stereo, fed by
@@ -679,6 +687,9 @@ struct Bus {
     std::string name;
     std::vector<Send> sends;   // sorted by slot
     Id output = kMasterOutput;
+    // kNoHardwareOut, or the first channel of the pair this bus plays on;
+    // `output` is then the Master and not followed (ADR-0060).
+    std::uint16_t hardware = kNoHardwareOut;
     // The return's lanes, as a track's AutomationLanes: Volume, Pan, Mute
     // and its sends' (ADR-0027 §9).
     std::vector<std::shared_ptr<const AutomationLane>> automation;

@@ -346,6 +346,9 @@ Value aux_bus_value(const Bus& b) {
     Value& sends = v.set("sends", Value::array());
     for (const Send& sd : b.sends) sends.push(send_value(sd));
     v.set("output", id_value(b.output));
+    // Always present, as every key of the window is; kNoHardwareOut for an
+    // ordinary bus (ADR-0060).
+    v.set("hardware", integer(b.hardware));
     return v;
 }
 

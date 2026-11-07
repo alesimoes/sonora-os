@@ -91,6 +91,7 @@ public:
 
     struct Config {
         uint32_t tracks = 18;   // the UMC1820's inputs, as the engine defaults to
+        uint32_t outputs = 10;  // and its outputs (Hello::output_count)
         uint32_t sample_rate = 48000;
         uint32_t buffer_frames = 128;
         uint64_t publish_period_ns = 10'000'000;

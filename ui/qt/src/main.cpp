@@ -692,6 +692,20 @@ int main(int argc, char** argv) {
         [&model]() { return model.engineAlive() ? model.trackCount() : 0; });
     QObject::connect(&session, &SessionModel::heldNotice, &model, &ShellModel::addNotice);
     QObject::connect(&model, &ShellModel::sessionFolder, &session, &SessionModel::setEngineFolder);
+    // Setup > I/O Setup: the inputs the engine says are connected, the
+    // outputs it opened, and this machine's names for them.
+    IoSetupModel io(document, session);
+    io.setEngine(
+        [&model]() {
+            TransportSnapshot t;
+            return model.readTransport(t) ? static_cast<int>(t.inputs_connected) : -1;
+        },
+        [&model]() { return model.deviceOutputs(); }, [&model]() { return model.recording(); },
+        [&model](int index) {
+            const QList<bool> armed = model.armed();
+            return index >= 0 && index < armed.size() && armed[index];
+        });
+    io.setNamesFile(io_names_path());
     link_transport(model, session, transport);
     link_marker_locate(model, session);
     session.setLayoutsFile(default_layouts_file());
@@ -769,6 +783,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     view.rootObject()->setProperty("transport", QVariant::fromValue(&transport));
+    view.rootObject()->setProperty("io", QVariant::fromValue(&io));
     if (a.opt.no_meters) model.hideMeters();
     model.routeKeysFrom(&view);
     // One line, for the boot-time check (ADR-0010 migration, stage 1).
