@@ -163,7 +163,7 @@ int test_empty_lane() {
     CHECK(comp.members.empty());
     CHECK(comp_range(s.h.current(), swipe(s, 0, 96000), std::ref(ids), comp, why));
     CHECK(comp.members.size() == 1);
-    CHECK(std::holds_alternative<RemoveRegion>(comp.members[0]));
+    CHECK(holds_alternative<RemoveRegion>(comp.members[0]));
     return 0;
 }
 
