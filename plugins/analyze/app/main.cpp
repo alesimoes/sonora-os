@@ -2,12 +2,14 @@
 //
 // sonora-analyze (ADR-0011 §3.4, ADR-0046): the offline analysis process.
 // A short-lived, non-real-time program that engine/control starts on a
-// bounce of the mix and reads the result of. Today one pass:
+// bounce of the mix and reads the result of. Subcommands (ADR-0066 §5):
 //
 //   sonora-analyze mastering <bounce.wav> [--target-lufs N] [--ceiling N]
 //                  [--out report.json]
+//   sonora-analyze key ...       (app/cmd_key.cpp, or a stub: exit 1)
+//   sonora-analyze timbre ...    (app/cmd_timbre.cpp, or a stub: exit 1)
 //
-// It measures the bounce (mix_analysis.h), applies the mastering rules
+// The mastering pass measures the bounce (mix_analysis.h), applies the mastering rules
 // (mastering_rules.h) and writes a JSON report: the measurements, the
 // console's settings, and each decision with its reason. The report is
 // settings, never audio; the session plan that applies them is built by
@@ -23,7 +25,9 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
+#include "commands.h"
 #include "sonora/analyze/mastering_rules.h"
 #include "sonora/json/json.h"
 #include "sonora/wav_reader.h"
@@ -59,34 +63,35 @@ Value settings_json(const std::vector<float>& values) {
 }
 
 int usage() {
-    std::fputs("usage: sonora-analyze mastering <bounce.wav> [--target-lufs N] [--ceiling N] [--out report.json]\n", stderr);
+    std::fputs("usage: sonora-analyze mastering <bounce.wav> [--target-lufs N] [--ceiling N] [--out report.json]\n"
+               "       sonora-analyze key ...\n"
+               "       sonora-analyze timbre ...\n",
+               stderr);
     return 2;
 }
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    using namespace sonora::analyze;
-    if (argc < 3 || std::string(argv[1]) != "mastering") return usage();
-    const std::string input = argv[2];
+namespace sonora::analyze::app {
+
+int run_mastering_command(const std::vector<std::string>& args, const std::atomic<bool>& cancel) {
+    if (args.empty()) return usage();
+    const std::string& input = args[0];
     std::string out_path;
     MasteringConfig cfg;
-    for (int i = 3; i < argc; ++i) {
-        const std::string a = argv[i];
-        if (i + 1 >= argc) return usage();
-        char* end = nullptr;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        const std::string& a = args[i];
+        if (i + 1 >= args.size()) return usage();
         if (a == "--target-lufs") {
-            cfg.target_lufs = std::strtod(argv[++i], &end);
+            cfg.target_lufs = std::strtod(args[++i].c_str(), nullptr);
         } else if (a == "--ceiling") {
-            cfg.ceiling_dbtp = std::strtod(argv[++i], &end);
+            cfg.ceiling_dbtp = std::strtod(args[++i].c_str(), nullptr);
         } else if (a == "--out") {
-            out_path = argv[++i];
+            out_path = args[++i];
         } else {
             return usage();
         }
     }
-    std::signal(SIGINT, on_signal);
-    std::signal(SIGTERM, on_signal);
 
     std::string error;
     WavSource src;
@@ -95,7 +100,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     RunOptions run;
-    run.cancel = &g_cancel;
+    run.cancel = &cancel;
     MixAnalysis a;
     if (!analyse_mix(src, run, a, error)) {
         std::fprintf(stderr, "sonora-analyze: %s\n", error.c_str());
@@ -153,4 +158,34 @@ int main(int argc, char** argv) {
         }
     }
     return 0;
+}
+
+}  // namespace sonora::analyze::app
+
+namespace {
+
+struct Command {
+    const char* name;
+    sonora::analyze::app::CommandFn run;
+};
+
+// The one list of subcommands; a pass brings its own app/cmd_<pass>.cpp.
+const Command kCommands[] = {
+    {"mastering", sonora::analyze::app::run_mastering_command},
+    {"key", sonora::analyze::app::run_key_command},
+    {"timbre", sonora::analyze::app::run_timbre_command},
+};
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    if (argc < 2) return usage();
+    const std::string name = argv[1];
+    for (const Command& c : kCommands) {
+        if (name != c.name) continue;
+        std::signal(SIGINT, on_signal);
+        std::signal(SIGTERM, on_signal);
+        return c.run(std::vector<std::string>(argv + 2, argv + argc), g_cancel);
+    }
+    return usage();
 }
