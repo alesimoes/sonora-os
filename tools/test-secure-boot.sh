@@ -26,7 +26,18 @@ grep -Eq -- '--linux-flavours rt-amd64' "$AUTO" || bad "auto/config: --linux-fla
 installer_state="installer absent (checked when it lands)"
 if [ -f "$INSTALLER" ]; then
   # Join backslash continuations: a call's flags sit on several lines.
-  calls="$(awk '{ if (sub(/\\$/, "")) { printf "%s ", $0 } else print }' "$INSTALLER" | grep -E 'grub-install' | grep -Ev '^[[:space:]]*#' || true)"
+  # Plain bash rather than awk/sed: their handling of a trailing backslash
+  # differs between mawk, gawk and BSD sed, and a miss makes the check fail.
+  joined=""
+  bs="\\"
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" == *"$bs" ]]; then
+      joined+="${line%\\} "
+    else
+      joined+="$line"$'\n'
+    fi
+  done <"$INSTALLER"
+  calls="$(grep -E 'grub-install' <<<"$joined" | grep -Ev '^[[:space:]]*#' || true)"
   efi="$(grep -E -- 'x86_64-efi|--removable|--efi-directory|--uefi' <<<"$calls" || true)"
   [ -n "$efi" ] || bad "sonora-install: no UEFI grub-install call"
   if grep -Eq -- '--no-uefi-secure-boot' <<<"$calls"; then
