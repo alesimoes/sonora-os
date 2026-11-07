@@ -77,7 +77,7 @@ class QueueCli(support.DaemonCase):
 
 
 class StatusJson(support.DaemonCase):
-    """tools/dashboard.html (renderOrch) reads: pools with name/working/floor
+    """tools/dashboard.html (renderFlow, renderSit, renderTech) reads: pools with name/working/floor
     (object or list), features with name|title|id, pr, state, tasks|strip
     whose state text is matched by regex, waits_on_owner items with
     title|text, and a string `updated`."""
