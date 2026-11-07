@@ -117,6 +117,12 @@ if [[ -n "${SONORA_CCACHE_DIR:-}" ]]; then
   CCACHE=(-v "$(host_path "$SONORA_CCACHE_DIR"):/ccache")
 else
   CCACHE=(-v sonora-ccache:/ccache)
+  # A fresh named volume is root-owned; the caller-uid container (Linux) gets
+  # "ccache: Permission denied" at the first compiler check without this.
+  if ((${#AS_CALLER[@]})); then
+    docker run --rm --user 0 -v sonora-ccache:/ccache --entrypoint chown \
+      "sonora-$IMAGE:trixie" "$(id -u):$(id -g)" /ccache >/dev/null 2>&1 || true
+  fi
 fi
 start=$SECONDS
 if ! "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" \
