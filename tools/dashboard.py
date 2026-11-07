@@ -19,6 +19,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from dashboard_chat import NOT_REACHABLE, chat_view, handle_post
+from dashboard_links import MOCKUPS_ROUTE, mockup_file, read_links
 from dashboard_orch import (build_time, builder_log, clean_orch, events_of, orch_state, read_coordinator,
                             read_orchestrator, read_progress, run_activity, task_view)
 from dashboard_sources import (heavy_lock_list, read_agents, read_containers, read_lock, read_merged, read_prs,
@@ -85,7 +87,7 @@ def detail(kind, ident):
         with lock:
             a = next((x for x in state["agents"] if x["id"] == ident), None)
             lk = list(state.get("lock") or [])
-        return {"kind": "agent", "title": (a or {}).get("label", ident), "agent": a, "lock": lk}
+        return {"kind": "agent", "title": (a or {}).get("label", ident), "agent": a, "lock": lk, "not_reachable": NOT_REACHABLE}
     if kind == "builder":
         b = (state.get("orchestrator") or {}).get("builder") or {}
         return {"kind": "builder", "title": "Builder (build pesado em lote)", "builder": b,
@@ -99,7 +101,7 @@ def detail(kind, ident):
         return {"kind": "run", "title": "%s · %s" % (r.get("name") or r.get("id"), r.get("role") or ""),
                 "run": {k: r.get(k) for k in ("id", "name", "role", "state", "started", "last_beat", "ended", "exit")},
                 "task": task_view(t), "activity": run_activity(r.get("stream_path") or ""),
-                "events": events_of({r.get("task_id")}, 10)}
+                "events": events_of({r.get("task_id")}, 10), "chat": chat_view(r)}
     prnum = ident if kind == "pr" else None
     if kind == "pr":
         f = next((x for x in feats if str(x.get("pr")) == str(ident)), None)
@@ -123,7 +125,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/state"):
             with lock:
-                body = json.dumps(state).encode()
+                body = json.dumps(dict(state, links=read_links())).encode()
             ctype = "application/json"
         elif self.path.startswith("/api/detail"):
             from urllib.parse import parse_qs, urlparse
@@ -133,6 +135,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 d = {"error": str(e)}
             body, ctype = json.dumps(d).encode(), "application/json"
+        elif self.path.startswith(MOCKUPS_ROUTE):
+            got = mockup_file(self.path)
+            if got is None:
+                return self.reply(404, {"error": "not found"})
+            body, ctype = got
         else:
             body, ctype = open(PAGE_FILE, "rb").read(), "text/html; charset=utf-8"
         self.send_response(200)
@@ -141,6 +148,30 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def reply(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        """Owner actions. A JSON content type forces a CORS preflight, which
+        this server never answers, so another web page cannot post here."""
+        host = (self.headers.get("Host") or "").split(":")[0]
+        if host not in ("127.0.0.1", "localhost"):
+            return self.reply(403, {"error": "forbidden host"})
+        if "application/json" not in (self.headers.get("Content-Type") or ""):
+            return self.reply(415, {"error": "send application/json"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(min(n, 20000)) or b"{}")
+        except ValueError:
+            return self.reply(400, {"error": "bad JSON"})
+        code, obj = handle_post(self.path.split("?", 1)[0], payload)
+        self.reply(code, obj)
 
     def log_message(self, *a):
         pass

@@ -21,7 +21,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import (autoadopt, dispatch, heartbeat, launcher, numbers,  # noqa: E402
-                     routing, scheduler, shadow, status)
+                     ownerchat, routing, scheduler, shadow, status)
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
@@ -182,6 +182,8 @@ class Orchestrator:
             self.localci.poll()
         self._open_pending_prs(now)
         autoadopt.tick(self, now)
+        if not self.dry_run:
+            ownerchat.tick(self)
         self._watch_prs(now)
         # After the train asked for a slot: a waiting PR goes before main.
         if self.cfg.local_ci and not self.dry_run:

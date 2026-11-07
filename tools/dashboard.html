@@ -192,6 +192,10 @@ details.tech[open]>summary{margin-bottom:12px}
 #drawer .act.texto i{color:var(--accent)}#drawer .act.erro i,#drawer .act.erro{color:var(--bad)}#drawer .act.fim i{color:var(--ok)}
 #drawer .ev{color:var(--muted);font-size:12px}#drawer .ev b{color:var(--ink);font-weight:500}
 #drawer .bad{color:var(--bad)}
+.links{display:flex;gap:8px;flex-wrap:wrap}.links a{color:var(--accent);border:1px solid var(--line2);border-radius:6px;padding:3px 9px;font-size:12px;text-decoration:none}
+#drawer .msg{border-left:2px solid var(--line2);padding:3px 0 3px 9px;margin:5px 0;white-space:pre-wrap}#drawer .msg.owner{border-color:var(--accent)}#drawer .msg small{color:var(--muted);display:block}
+#drawer textarea{width:100%;box-sizing:border-box;min-height:56px;background:var(--bg);color:var(--ink);border:1px solid var(--line2);border-radius:6px;padding:6px}
+#drawer .chatbtns{display:flex;gap:8px;margin-top:6px}#drawer .chatbtns .st{color:var(--muted);font-size:12px;align-self:center}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -200,6 +204,7 @@ details.tech[open]>summary{margin-bottom:12px}
   <header class="topbar">
     <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMjggMTI4Ij48ZGVmcz48bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCIgeTE9IjAiIHgyPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjMWYyMzI5Ii8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMTIxNDE3Ii8+PC9saW5lYXJHcmFkaWVudD4NCjxsaW5lYXJHcmFkaWVudCBpZD0icyIgeDE9IjAiIHkxPSIwIiB4Mj0iMSIgeTI9IjEiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzdmZTBkMiIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzNmYzFiMCIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPg0KPHJlY3QgeD0iNCIgeT0iNCIgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMjAiIHJ4PSIyNiIgZmlsbD0idXJsKCNiZykiIHN0cm9rZT0iIzJhMmYzNiIgc3Ryb2tlLXdpZHRoPSIyIi8+PHBhdGggZD0iTTg4LjAwLDIyLjAwIEw4Ny45NiwyMi4zNCBMODcuODMsMjIuNjcgTDg3LjYzLDIzLjAxIEw4Ny4zNCwyMy4zNSBMODYuOTcsMjMuNjkgTDg2LjUyLDI0LjAyIEw4NS45OSwyNC4zNiBMODUuMzgsMjQuNzAgTDg0LjcxLDI1LjA0IEw4My45NiwyNS4zOCBMODMuMTQsMjUuNzEgTDgyLjI1LDI2LjA1IEw4MS4zMCwyNi4zOSBMODAuMjksMjYuNzMgTDc5LjIzLDI3LjA2IEw3OC4xMSwyNy40MCBMNzYuOTQsMjcuNzQgTDc1LjczLDI4LjA3IEw3NC40NywyOC40MSBMNzMuMTgsMjguNzUgTDcxLjg2LDI5LjA5IEw3MC41MSwyOS40MyBMNjkuMTQsMjkuNzYgTDY3Ljc1LDMwLjEwIEw2Ni4zNSwzMC40NCBMNjQuOTQsMzAuNzcgTDYzLjUzLDMxLjExIEw2Mi4xMiwzMS40NSBMNjAuNzEsMzEuNzkgTDU5LjMyLDMyLjEyIEw1Ny45NCwzMi40NiBMNTYuNTgsMzIuODAgTDU1LjI1LDMzLjE0IEw1My45NSwzMy40OCBMNTIuNjksMzMuODEgTDUxLjQ2LDM0LjE1IEw1MC4yOCwzNC40OSBMNDkuMTQsMzQuODMgTDQ4LjA2LDM1LjE2IEw0Ny4wMywzNS41MCBMNDYuMDYsMzUuODQgTDQ1LjE1LDM2LjE3IEw0NC4zMSwzNi41MSBMNDMuNTQsMzYuODUgTDQyLjgzLDM3LjE5IEw0Mi4yMCwzNy41MiBMNDEuNjUsMzcuODYgTDQxLjE3LDM4LjIwIEw0MC43OCwzOC41NCBMNDAuNDYsMzguODggTDQwLjIzLDM5LjIxIEw0MC4wNywzOS41NSBMNDAuMDAsMzkuODkgTDQwLjAyLDQwLjIzIEw0MC4xMiw0MC41NiBMNDAuMzAsNDAuOTAgTDQwLjU2LDQxLjI0IEw0MC45MCw0MS41OCBMNDEuMzIsNDEuOTEgTDQxLjgzLDQyLjI1IEw0Mi40MSw0Mi41OSBMNDMuMDYsNDIuOTIgTDQzLjc5LDQzLjI2IEw0NC41OCw0My42MCBMNDUuNDUsNDMuOTQgTDQ2LjM4LDQ0LjI3IEw0Ny4zNyw0NC42MSBMNDguNDEsNDQuOTUgTDQ5LjUxLDQ1LjI5IEw1MC42Nyw0NS42MiBMNTEuODYsNDUuOTYgTDUzLjEwLDQ2LjMwIEw1NC4zOCw0Ni42NCBMNTUuNjksNDYuOTggTDU3LjAzLDQ3LjMxIEw1OC40MCw0Ny42NSBMNTkuNzgsNDcuOTkgTDYxLjE4LDQ4LjMzIEw2Mi41OSw0OC42NiBMNjQuMDAsNDkuMDAgTDY1LjQxLDQ5LjM0IEw2Ni44Miw0OS42NyBMNjguMjIsNTAuMDEgTDY5LjYwLDUwLjM1IEw3MC45Nyw1MC42OSBMNzIuMzEsNTEuMDMgTDczLjYyLDUxLjM2IEw3NC45MCw1MS43MCBMNzYuMTQsNTIuMDQgTDc3LjMzLDUyLjM4IEw3OC40OSw1Mi43MSBMNzkuNTksNTMuMDUgTDgwLjYzLDUzLjM5IEw4MS42Miw1My43MiBMODIuNTUsNTQuMDYgTDgzLjQyLDU0LjQwIEw4NC4yMSw1NC43NCBMODQuOTQsNTUuMDggTDg1LjU5LDU1LjQxIEw4Ni4xNyw1NS43NSBMODYuNjgsNTYuMDkgTDg3LjEwLDU2LjQyIEw4Ny40NCw1Ni43NiBMODcuNzAsNTcuMTAgTDg3Ljg4LDU3LjQ0IEw4Ny45OCw1Ny43OCBMODguMDAsNTguMTEgTDg3LjkzLDU4LjQ1IEw4Ny43Nyw1OC43OSBMODcuNTQsNTkuMTIgTDg3LjIyLDU5LjQ2IEw4Ni44Myw1OS44MCBMODYuMzUsNjAuMTQgTDg1LjgwLDYwLjQ4IEw4NS4xNyw2MC44MSBMODQuNDYsNjEuMTUgTDgzLjY5LDYxLjQ5IEw4Mi44NSw2MS44MyBMODEuOTQsNjIuMTYgTDgwLjk3LDYyLjUwIEw3OS45NCw2Mi44NCBMNzguODYsNjMuMTggTDc3LjcyLDYzLjUxIEw3Ni41NCw2My44NSBMNzUuMzEsNjQuMTkgTDc0LjA1LDY0LjUzIEw3Mi43NSw2NC44NiBMNzEuNDIsNjUuMjAgTDcwLjA2LDY1LjU0IEw2OC42OCw2NS44OCBMNjcuMjksNjYuMjEgTDY1Ljg4LDY2LjU1IEw2NC40Nyw2Ni44OSBMNjMuMDYsNjcuMjIgTDYxLjY1LDY3LjU2IEw2MC4yNSw2Ny45MCBMNTguODYsNjguMjQgTDU3LjQ5LDY4LjU3IEw1Ni4xNCw2OC45MSBMNTQuODIsNjkuMjUgTDUzLjUzLDY5LjU5IEw1Mi4yNyw2OS45MyBMNTEuMDYsNzAuMjYgTDQ5Ljg5LDcwLjYwIEw0OC43Nyw3MC45NCBMNDcuNzEsNzEuMjggTDQ2LjcwLDcxLjYxIEw0NS43NSw3MS45NSBMNDQuODYsNzIuMjkgTDQ0LjA0LDcyLjYyIEw0My4yOSw3Mi45NiBMNDIuNjIsNzMuMzAgTDQyLjAxLDczLjY0IEw0MS40OCw3My45NyBMNDEuMDMsNzQuMzEgTDQwLjY2LDc0LjY1IEw0MC4zNyw3NC45OSBMNDAuMTcsNzUuMzIgTDQwLjA0LDc1LjY2IEw0MC4wMCw3Ni4wMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ1cmwoI3MpIiBzdHJva2Utd2lkdGg9IjE0IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48cmVjdCB4PSIxMi4xMCIgeT0iOTcuNTgiIHdpZHRoPSIzIiBoZWlnaHQ9IjIuODUiIHJ4PSIxLjUiIGZpbGw9IiM0Y2MzOGEiLz48cmVjdCB4PSIxNi45MCIgeT0iOTYuNjIiIHdpZHRoPSIzIiBoZWlnaHQ9IjQuNzUiIHJ4PSIxLjUiIGZpbGw9IiM0Y2MzOGEiLz48cmVjdCB4PSIyMS43MCIgeT0iOTUuMjAiIHdpZHRoPSIzIiBoZWlnaHQ9IjcuNjAiIHJ4PSIxLjUiIGZpbGw9IiM0Y2MzOGEiLz48cmVjdCB4PSIyNi41MCIgeT0iOTYuNjIiIHdpZHRoPSIzIiBoZWlnaHQ9IjQuNzUiIHJ4PSIxLjUiIGZpbGw9IiM0Y2MzOGEiLz48cmVjdCB4PSIzMS4zMCIgeT0iOTMuNzgiIHdpZHRoPSIzIiBoZWlnaHQ9IjEwLjQ1IiByeD0iMS41IiBmaWxsPSIjNGNjMzhhIi8+PHJlY3QgeD0iMzYuMTAiIHk9IjkxLjQwIiB3aWR0aD0iMyIgaGVpZ2h0PSIxNS4yMCIgcng9IjEuNSIgZmlsbD0iIzNmYzFiMCIvPjxyZWN0IHg9IjQwLjkwIiB5PSI5NC43MiIgd2lkdGg9IjMiIGhlaWdodD0iOC41NSIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9IjQ1LjcwIiB5PSI5Ni4xNSIgd2lkdGg9IjMiIGhlaWdodD0iNS43MCIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9IjUwLjUwIiB5PSI5Mi44MyIgd2lkdGg9IjMiIGhlaWdodD0iMTIuMzUiIHJ4PSIxLjUiIGZpbGw9IiMzZmMxYjAiLz48cmVjdCB4PSI1NS4zMCIgeT0iODkuOTciIHdpZHRoPSIzIiBoZWlnaHQ9IjE4LjA1IiByeD0iMS41IiBmaWxsPSIjM2ZjMWIwIi8+PHJlY3QgeD0iNjAuMTAiIHk9IjkzLjMwIiB3aWR0aD0iMyIgaGVpZ2h0PSIxMS40MCIgcng9IjEuNSIgZmlsbD0iIzNmYzFiMCIvPjxyZWN0IHg9IjY0LjkwIiB5PSI5NS42NyIgd2lkdGg9IjMiIGhlaWdodD0iNi42NSIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9IjY5LjcwIiB5PSI5NC43MiIgd2lkdGg9IjMiIGhlaWdodD0iOC41NSIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9Ijc0LjUwIiB5PSI5MS44OCIgd2lkdGg9IjMiIGhlaWdodD0iMTQuMjUiIHJ4PSIxLjUiIGZpbGw9IiMzZmMxYjAiLz48cmVjdCB4PSI3OS4zMCIgeT0iODkuMDMiIHdpZHRoPSIzIiBoZWlnaHQ9IjE5Ljk1IiByeD0iMS41IiBmaWxsPSIjM2ZjMWIwIi8+PHJlY3QgeD0iODQuMTAiIHk9IjkyLjM1IiB3aWR0aD0iMyIgaGVpZ2h0PSIxMy4zMCIgcng9IjEuNSIgZmlsbD0iIzNmYzFiMCIvPjxyZWN0IHg9Ijg4LjkwIiB5PSI5NC43MiIgd2lkdGg9IjMiIGhlaWdodD0iOC41NSIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9IjkzLjcwIiB5PSI5Ni4xNSIgd2lkdGg9IjMiIGhlaWdodD0iNS43MCIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9Ijk4LjUwIiB5PSI5NC4yNSIgd2lkdGg9IjMiIGhlaWdodD0iOS41MCIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjxyZWN0IHg9IjEwMy4zMCIgeT0iOTUuMjAiIHdpZHRoPSIzIiBoZWlnaHQ9IjcuNjAiIHJ4PSIxLjUiIGZpbGw9IiM0Y2MzOGEiLz48cmVjdCB4PSIxMDguMTAiIHk9Ijk2LjYyIiB3aWR0aD0iMyIgaGVpZ2h0PSI0Ljc1IiByeD0iMS41IiBmaWxsPSIjNGNjMzhhIi8+PHJlY3QgeD0iMTEyLjkwIiB5PSI5Ny41OCIgd2lkdGg9IjMiIGhlaWdodD0iMi44NSIgcng9IjEuNSIgZmlsbD0iIzRjYzM4YSIvPjwvc3ZnPg==" alt="Sonora" width="44" height="44" style="margin-right:10px;vertical-align:middle"><div><h1>Sonora · painel de trabalho</h1><div class="sub" id="sub">conectando</div></div>
     <div class="gauges" id="usage"></div>
+    <nav class="links" id="links" aria-label="Revisões"></nav>
     <div class="live" style="margin-left:auto"><span class="dot" id="dot"></span><span id="livetxt">sincronizando</span></div>
     <div class="clock"><b id="clock">--:--:--</b><span id="date"></span></div>
   </header>
@@ -540,6 +545,7 @@ function render(s){
   renderSit(s);renderPeople(s);renderMachine(s);renderFlow(s);renderTech(s);
   diff(s);
   renderUsage(s.usage||{});
+  $('links').innerHTML=(s.links||[]).map(l=>`<a href="${E(l.url)}" target="_blank" rel="noopener">${E(l.title)}</a>`).join('');
   $('err').textContent=(s.errors||[]).join(' | ');
 }
 const POOL_PT={'plan':['Planejamento','AR'],'build':['Construção (geral)','IN'],'build:daw':['Construção · DAW','UI'],'build:os':['Construção · OS','OS'],'build:plugin':['Construção · plugins','PL'],'qa':['Testes (QA)','QA'],'fix':['Correção','FX'],'merge':['Merge','IN'],'principal':['Engenheiro principal','P']};
@@ -604,20 +610,34 @@ function detHtml(d){
   if(d.kind==='agent'){const a=d.agent||{};
     return kv({estado:NAME[a.state]||a.state,modelo:a.model,agente:a.agent,trabalho:a.doing,PR:a.pr,branch:a.branch,'desde':a.since?clk(a.since)+' ('+ago(a.since)+')':'',trilha:a.track,'arquivos modificados':a.dirty,containers:a.containers,id:a.id})
       +(a.lock?'<h4>Fila da máquina</h4>'+kv({papel:a.lock.role==='holds'?'usando':'esperando',prioridade:a.lock.prio,'desde':ago(a.lock.start),comando:a.lock.cmd}):'')
-      +'<h4>Quem usa a máquina</h4>'+lockRows(d.lock)}
+      +'<h4>Quem usa a máquina</h4>'+lockRows(d.lock)
+      +(d.not_reachable?`<h4>Conversa</h4><div class="ev">${E(d.not_reachable)}</div>`:'')}
   if(d.kind==='builder')return builderHtml(d);
   if(d.kind==='run'){const r=d.run||{};
     const act=(d.activity||[]).slice().reverse().map(a=>`<div class="act ${E(a.kind)}"><i>${E(a.kind)}</i>${E(a.text)}</div>`).join('')||'<div class="ev">sem atividade registrada ainda</div>';
     return kv({papel:r.role,estado:r.state,começou:ago(r.started),'último sinal':ago(r.last_beat),fim:r.ended?ago(r.ended)+' (exit '+r.exit+')':''})
-      +'<h4>O que está fazendo (mais recente primeiro)</h4>'+act+taskHtml(d.task)+evHtml(d.events)}
+      +'<h4>O que está fazendo (mais recente primeiro)</h4>'+act+taskHtml(d.task)+evHtml(d.events)+chatHtml(d.chat)}
   const f=d.feature||{},tr=d.train;
   return kv({estado:f.state,trilha:f.track,PR:f.pr,branch:f.branch,correções:f.fixes,bloqueio:f.blocked_reason})
     +(tr?'<h4>No merge train</h4>'+kv({fase:tr.phase,próximo:tr.next,'última ação':tr.last_action,checks:(tr.passed??'?')+'/'+(tr.total??'?'),falhando:tr.failing,fixer:tr.fixer}):'')
     +(d.runs&&d.runs.length?'<h4>Agentes</h4>'+d.runs.slice().reverse().map(r=>`<div class="act clk" data-k="run" data-id="${E(r.id)}"><i>${E(r.role)}</i>${E(r.name||r.id)} · ${r.ended?'terminou '+ago(r.ended):'rodando desde '+ago(r.started)}</div>`).join(''):'')
     +(d.tasks||[]).map(taskHtml).join('')+evHtml(d.events)}
+function chatHtml(c){if(!c)return '';
+  const th=(c.thread||[]).map(m=>`<div class="msg ${m.who==='owner'?'owner':''}"><small>${E(m.who==='owner'?'você':m.who)} · ${E(m.type)} · ${E(m.ts)}</small>${E(m.text)}</div>`).join('')||'<div class="ev">nenhuma mensagem ainda</div>';
+  const note=!c.daemon_alive?'o daemon não está rodando: nada será entregue':c.running?'o agente lê o correio entre uma ferramenta e outra':'sem execução ativa: acorde para relançar';
+  return `<h4>Conversa com ${E(c.name)}</h4>${th}${c.pending?`<div class="ev">${c.pending} pedido(s) esperando o daemon</div>`:''}
+    <textarea id="chatbox" placeholder="O que você está fazendo?" maxlength="2000"></textarea>
+    <div class="chatbtns"><button type="button" onclick="chatSend('ask')">perguntar</button><button type="button" onclick="chatSend('wake')">acordar</button><span class="st" id="chatst">${E(note)}</span></div>`}
+async function chatSend(kind){const box=$('chatbox'),name=detOpen&&detOpen.id,st=$('chatst');
+  const r=await fetch('/api/agent/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:lastChatName,text:box?box.value:''})});
+  const j=await r.json();if(r.ok&&kind==='ask'&&box)box.value='';st.textContent=r.ok?'pedido enviado ao daemon':(j.error||r.status);loadDetail()}
+let lastChatName='';
 async function loadDetail(){if(!detOpen)return;
   try{const r=await fetch(`/api/detail?kind=${encodeURIComponent(detOpen.k)}&id=${encodeURIComponent(detOpen.id)}`,{cache:'no-store'});const d=await r.json();
-    $('dtitle').textContent=d.title||detOpen.id;$('dbody').innerHTML=detHtml(d)}catch(e){$('dbody').innerHTML=`<p class="bad">${E(String(e))}</p>`}}
+    const box=$('chatbox'),keep=box?box.value:'',had=box&&document.activeElement===box,st=$('chatst')?$('chatst').textContent:'';
+    lastChatName=d.chat?d.chat.name:'';
+    $('dtitle').textContent=d.title||detOpen.id;$('dbody').innerHTML=detHtml(d);
+    const nb=$('chatbox');if(nb){nb.value=keep;if(had)nb.focus();if(st&&box)$('chatst').textContent=st}}catch(e){$('dbody').innerHTML=`<p class="bad">${E(String(e))}</p>`}}
 function openDetail(k,id){detOpen={k,id};$('dtitle').textContent=id;$('dbody').innerHTML='<div class="ev">carregando…</div>';$('drawer').classList.add('on');
   clearInterval(detTimer);loadDetail();detTimer=setInterval(loadDetail,4000)}
 function closeDetail(){detOpen=null;clearInterval(detTimer);$('drawer').classList.remove('on')}
