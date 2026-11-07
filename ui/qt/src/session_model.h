@@ -518,6 +518,8 @@ public:
     // automation lanes. A refusal (a MIDI track) is a notice.
     Q_INVOKABLE void toggleAutolanes(int track);
     Q_INVOKABLE void cycleGrid();
+    // A file peak source finished a source: redraw the lanes (GUI thread).
+    void peaksReady();
     // The shape the next fade, or crossfade, is made with: the no-dialog
     // fades use the last shape chosen, as Pro Tools' do.
     Q_INVOKABLE void cycleFadeShape();
