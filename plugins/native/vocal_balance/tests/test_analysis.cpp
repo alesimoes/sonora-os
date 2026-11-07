@@ -121,7 +121,7 @@ std::vector<float> process(const std::vector<float>& x, const VocalAnalysis& a) 
 
 const sonora::model::AddInsert* find_insert(const sonora::model::Plan& plan, const char* name) {
     for (const auto& st : plan.steps) {
-        if (const auto* ai = std::get_if<sonora::model::AddInsert>(&st.op)) {
+        if (const auto* ai = sonora::model::get_if<sonora::model::AddInsert>(&st.op)) {
             if (ai->plugin.name == name) return ai;
         }
     }
@@ -273,7 +273,7 @@ int test_plan() {
     Selection only_vb;
     only_vb.accepted.assign(plan.steps.size(), false);
     for (std::size_t i = 0; i < plan.steps.size(); ++i) {
-        if (const auto* ai = std::get_if<AddInsert>(&plan.steps[i].op)) only_vb.accepted[i] = ai->plugin.name == "Sonora Vocal Balance";
+        if (const auto* ai = sonora::model::get_if<sonora::model::AddInsert>(&plan.steps[i].op)) only_vb.accepted[i] = ai->plugin.name == "Sonora Vocal Balance";
     }
     PlanPreview pv;
     CHECK(preview(base, plan, only_vb, pv, err));

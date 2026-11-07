@@ -516,7 +516,7 @@ void plan_flow() {
     CHECK(plan.label == "Mastering Plan");
     CHECK(plan.base_revision == h.current().revision);
     CHECK(!plan.steps.empty());
-    const auto* add = std::get_if<AddInsert>(&plan.steps[0].op);
+    const auto* add = model::get_if<AddInsert>(&plan.steps[0].op);
     CHECK(add != nullptr);
     if (add != nullptr) {
         CHECK(add->track == strip && add->slot == 0);
@@ -573,13 +573,13 @@ void plan_inserts_and_fader() {
     MasteringPlanner planner(loud, cfg);
     Plan plan;
     CHECK(planner.propose(h.current(), plan, err));
-    const auto* add = std::get_if<AddInsert>(&plan.steps[0].op);
+    const auto* add = model::get_if<AddInsert>(&plan.steps[0].op);
     CHECK(add != nullptr && add->slot == 1);  // after the other insert
     bool noted = false;
     for (const PlanNote& n : plan.notes) noted = noted || (n.text.find("third-party") != std::string::npos && n.subject.find("Some EQ") != std::string::npos);
     CHECK(noted);
     CHECK(plan.steps.size() == 2);
-    const auto* mix = std::get_if<SetMix>(&plan.steps[1].op);
+    const auto* mix = model::get_if<SetMix>(&plan.steps[1].op);
     CHECK(mix != nullptr);
     if (mix != nullptr) CHECK_NEAR(mix->mix.gain_db, -1.5, 1e-5);
     CHECK(plan.steps[1].title.find("fader") != std::string::npos);
@@ -599,7 +599,7 @@ void plan_inserts_and_fader() {
     MasteringPlanner again(neutral_analysis(), cfg);
     Plan p2;
     CHECK(again.propose(h.current(), p2, err));
-    CHECK(std::get_if<ReplaceInsert>(&p2.steps[0].op) != nullptr);
+    CHECK(model::get_if<ReplaceInsert>(&p2.steps[0].op) != nullptr);
     CHECK(p2.steps[0].title.find("Update") == 0);
 
     // A stale plan is refused.

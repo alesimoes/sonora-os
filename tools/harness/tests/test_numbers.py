@@ -9,7 +9,7 @@ from harness.forge import ForgeError, GhForge
 
 HDR = "contracts/api/include/sonora/api/messages.h"
 FMT = "common/model/include/sonora/model/session_file.h"
-WIN = "common/model/src/op_codec.cpp"
+WIN = "common/model/src/op_codec_detail.h"
 
 
 def forge_with_state():

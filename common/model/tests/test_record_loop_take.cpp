@@ -159,7 +159,7 @@ int test_codec_round_trip() {
     CHECK(encode_operation(Operation{op}, bytes, err));
     Operation back;
     CHECK(decode_operation(bytes, back, err));
-    const auto* got = std::get_if<RecordLoopTake>(&back);
+    const auto* got = get_if<RecordLoopTake>(&back);
     CHECK(got != nullptr);
     CHECK(got->track == op.track && got->active_playlist == op.active_playlist);
     CHECK(got->passes.size() == 3);
