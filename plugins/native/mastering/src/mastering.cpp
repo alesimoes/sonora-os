@@ -110,6 +110,12 @@ public:
         stage_[kComp] = make_compressor();
         stage_[kSat] = make_saturator();
         stage_[kLim] = make_limiter();
+        // The stages that publish levels offered themselves to the host's
+        // telemetry hand-over; inside this chain they are not the insert, so
+        // they keep to their private blocks.
+        for (auto& s : stage_) {
+            if (auto* b = dynamic_cast<ProcessorBase*>(s.get())) b->telemetry().withhold();
+        }
         // Fixed settings of the stages. The reconfiguring ones (the EQ's
         // mode, the saturator's quality) are read at their prepare().
         stage_[kEq]->set_param(eq::kMode, 0.0f);

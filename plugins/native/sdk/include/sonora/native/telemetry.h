@@ -66,6 +66,9 @@ public:
         withdraw(this);
         enrol(this);
     }
+    // The opposite, for an instance embedded in another processor (a stage of
+    // a chain): it is not the insert, so the host must not bind it.
+    void withhold() noexcept { withdraw(this); }
 
     // Not real-time. nullptr goes back to the private block.
     void bind(plugin::TelemetryBlock* shared) noexcept { block_ = shared != nullptr ? shared : &local_; }
