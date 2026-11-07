@@ -26,6 +26,7 @@ import dashboard_selfupdate
 from dashboard_chat import handle_post
 from dashboard_detail import detail
 from dashboard_links import MOCKUPS_ROUTE, mockup_file, read_links
+from dashboard_runview import with_live_paused
 from dashboard_state import lock, refresh_loop, state
 from dashboard_static import STATIC_ROUTE, page, static_file
 
@@ -37,7 +38,9 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path
         if path.startswith("/api/state"):
             with lock:
-                body = json.dumps(dict(state, links=read_links())).encode()
+                snap = dict(state, links=read_links())
+                snap["orchestrator"] = with_live_paused(snap.get("orchestrator"))
+                body = json.dumps(snap).encode()
             ctype = "application/json"
         elif path.startswith("/api/actions"):
             body, ctype = json.dumps(actions.actions_view()).encode(), "application/json"

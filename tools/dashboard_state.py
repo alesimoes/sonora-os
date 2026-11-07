@@ -9,6 +9,7 @@ from dashboard_agents import read_agents, stamp_done
 from dashboard_disk import disk_view
 from dashboard_github import read_merged, read_prs
 from dashboard_machine import read_containers, read_lock, read_watchers
+from dashboard_runview import add_last_steps
 from dashboard_orch import clean_orch, read_coordinator, read_orchestrator, read_progress
 from dashboard_usage import read_usage
 
@@ -60,7 +61,7 @@ def refresh_once(agents_file, gh, progress):
         except Exception as e:
             errors.append("progress: %s" % e)
         progress["at"] = time.time()
-    orch = clean_orch(status, {p["number"] for p in gh.prs} if gh.ok else None)
+    orch = add_last_steps(clean_orch(status, {p["number"] for p in gh.prs} if gh.ok else None))
     with lock:
         state.update(updated=int(time.time()), progress=progress["value"], prs=gh.prs, watchers=watchers,
                      containers=containers, merged=gh.merged, usage=read_usage(), orchestrator=orch,

@@ -23,7 +23,7 @@ async function actRun(action,params){
     await new Promise(r=>setTimeout(r,1000));
     const r=await fetch('/api/action?id='+j.job,{cache:'no-store'}),v=await r.json();
     actToast('<b>'+E(label)+'</b> '+E(v.state)+(v.output?`<pre>${E(v.output)}</pre>`:''));
-    if(v.state!=='running'){loadActions();return}}}
+    if(v.state!=='running'){loadActions();if(typeof tick==='function')tick();return}}}
 document.addEventListener('click',e=>{const b=e.target.closest('button[data-act]');if(!b)return;
   e.stopPropagation();actRun(b.dataset.act,JSON.parse(b.dataset.params||'{}'))});
 

@@ -51,6 +51,9 @@ h1{margin:0;font-size:18px;font-weight:700;letter-spacing:.02em}
 .sc.ok b{color:var(--ok)}.sc.warn b{color:var(--warn)}.sc.crit b,.sc.bad b{color:var(--bad)}
 .sc[data-pausetoggle]{cursor:pointer}.sc[data-pausetoggle]:hover{background:var(--hover)}
 .pausebox{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:8px 14px;margin:-4px 0 10px;background:var(--panel);border:1px solid var(--warn);border-radius:4px;font-size:13px}
+.pausebox .pbulk{display:inline-flex;gap:6px}
+.pausebox .pz small{color:var(--muted,#888)}
+.ast{font-size:12px;opacity:.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pausebox .pz{display:inline-flex;align-items:center;gap:6px}
 .sit .sflow .sbad{color:var(--bad)}.sit .pgm .pgbar{width:70px}
 .sit{font-size:16px;border-left-width:4px;padding:12px 14px}

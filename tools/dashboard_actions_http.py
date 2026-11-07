@@ -17,6 +17,7 @@ import dashboard_actions_ci        # noqa: F401
 import dashboard_actions_door      # noqa: F401
 import dashboard_actions_prs       # noqa: F401
 import dashboard_actions_sys       # noqa: F401
+import dashboard_actions_pools     # noqa: F401
 import dashboard_audit
 
 TOKEN = secrets.token_urlsafe(24)
