@@ -27,7 +27,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch, 
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
-from harness import blockinfo  # noqa: E402
+from harness import blockinfo, findings  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
@@ -708,8 +708,7 @@ class Orchestrator:
             self._count_failure(t, f"invalid file: {errs[0]}", now)
             return
         if kind == "tester":
-            blocking = [f for f in data.get("findings", [])
-                        if f.get("severity") == "blocking"]
+            blocking = findings.blocking(data.get("findings"))
             if st == "fail" or blocking:
                 self._bounce(t)
             else:
