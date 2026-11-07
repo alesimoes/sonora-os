@@ -1,0 +1,63 @@
+/* ---- quadro de fluxo: uma linha por item de trabalho, colunas = fases ---- */
+const PH=[['Planejado','ainda sem agente'],['Construindo','agente escreve o código'],['PR aberto','esperando a vez'],['Testando','builder / CI local'],['Corrigindo','conserto de falha ou conflito'],['Pronto p/ merge','tudo verde'],['Na main','já entrou']];
+const shortTitle=t=>{t=String(t||'');const m=t.match(/^Bundle ([\w-]+):\s*(.*)$/);if(m)return 'Pacote '+m[1]+' ('+(m[2].match(/#\d+/g)||[]).length+' PRs)';return t.length>78?t.slice(0,76)+'…':t};
+function who(role,sub,t0,opts){opts=opts||{};return {role,sub,t0,seed:opts.seed||(role+'|'+sub),code:opts.code||avatarOf(role),opus:!!opts.opus,k:opts.k,id:opts.id,dim:!!opts.dim}}
+function whoHtml(w){const now=Date.now()/1000;
+  return `<div class="pp ${w.dim?'dim':''}" ${w.k?`data-k="${w.k}" data-id="${E(w.id)}"`:''}><span class="pa">${pixelAvatar(w.code,w.opus,48,w.seed)}</span><span class="pn"><b>${E(w.role)}</b><small>${E(w.sub||'')}${w.t0?(w.sub?' · ':'')+'há '+dur(Math.round(now-w.t0)):''}</small></span></div>`}
+function flowRows(s){
+  const now=Date.now()/1000,o=s.orchestrator||{},b=o.builder||{},run=b.running,lock=s.lock||[];
+  const trn=Object.fromEntries((o.train||[]).map(r=>[r.pr,r]));
+  const runs=o.runs||[],runByName=Object.fromEntries(runs.map(r=>[r.name,r]));
+  const sess=s.agents.filter(a=>!['done','paused'].includes(a.state));
+  const used=new Set(),rows=[];
+  const roleOf=r=>String(r||'').replace(/^(.*?)(-\d+)?$/,'$1');
+  const mkSess=a=>{used.add(a.id);return who(roleName(a.agent),'sessão · '+(a.model||''),a.lock?a.lock.start:a.since_src==='worktree'?0:a.since,{opus:String(a.model).toLowerCase()==='opus',k:'agent',id:a.id,code:avatarOf(a.agent),seed:a.id})};
+  s.prs.forEach(p=>{
+    const t=trn[p.number],ph=t?(t.phase||''):'',ts=t?t.updated:null;
+    let col=2,pend=null,w=[];
+    const bq=run&&(run.prs||[]).includes(p.number);
+    const queued=(t&&String(t.next||'').startsWith('na fila do lote'));
+    if(t){
+      if(ph==='conflito'||ph==='fixer'||t.state==='ci_fix')col=4;
+      else if(ph==='verde')col=5;
+      else if(['CI rodando','CI local rodando','rerodando','atualizado','aguardando vaga'].includes(ph))col=3;
+      else if(ph==='juntando')col=1;
+      else col=2;
+      if(ph==='empilhado'||ph==='retarget')pend='espera o PR #'+t.waits_on;
+      if(ph==='bloqueado'||ph==='fechado'||t.state==='blocked')pend='bloqueado: decisão do dono';
+    }else{
+      if(p.failed.length>(p.cancelled||[]).length)col=4;else if(p.pending.length)col=3;else if(p.base&&p.base!=='main'){col=2;pend='espera o PR da base '+p.base}else col=5}
+    if(col===3){
+      if(bq){const l=s.buildtime&&s.buildtime.lot,cur=l&&l.steps.find(x=>x.status==='rodando');const tm=cur?cur.name+' · '+mins(cur.dur)+(cur.avg?' de ~'+mins(cur.avg):' (sem histórico)')+(l.eta?' · termina ~'+hhmm(l.eta):' · previsão: sem histórico'):'etapa '+(run.step||'iniciando');w.push(who('Builder',tm,null,{code:'BD',k:'builder',id:'builder'}))}
+      else if(queued||ph==='aguardando vaga'){const nx=s.buildtime&&s.buildtime.next;w.push(who('Builder','na fila'+(nx&&nx.start?' · começa ~'+hhmm(nx.start):''),nx&&nx.start?null:ts,{code:'BD',k:'builder',id:'builder',dim:true}))}
+      else w.push(who('CI do GitHub',t?String(t.next||''):'checks rodando',ts,{code:'BD',dim:true}));
+    }
+    if(col===4){const f=t&&t.fixer&&runByName[t.fixer];
+      if(t&&t.fixer)w.push(who(roleName(roleOf(t.fixer)),'orquestrador · '+t.fixer,f?f.started:ts,{k:f?'run':'pr',id:f?f.id:p.number}));
+      else w.push(who(roleName(t&&t.agent),'aguardando agente livre',ts,{dim:true,k:'pr',id:p.number}))}
+    if(col===5)w.push(who('Orquestrador','faz o merge quando o dono liberar',ts,{code:'OR',k:'builder',id:'orch',dim:true}));
+    if(col===2&&t&&t.agent)w.push(who(roleName(t.agent),'responsável · orquestrador',null,{dim:true,k:'pr',id:p.number}));
+    if(col===1)w.push(who('Integrador','juntando os PRs',ts,{code:'IN',k:'pr',id:p.number}));
+    sess.filter(a=>a.pr===p.number||(a.branch&&a.branch===p.branch)).forEach(a=>w.push(mkSess(a)));
+    rows.push({k:'pr',id:p.number,num:p.number,title:shortTitle(p.title),sub:(t&&t.track?t.track+' · ':'')+p.branch,col,w,pend,t0:ts})});
+  // trabalho da sessão sem PR: validação, empacotamento etc.
+  sess.filter(a=>!used.has(a.id)).forEach(a=>{
+    const col=a.lock?3:1,pend=a.state==='waiting_lock'?'espera a máquina':null;
+    rows.push({k:'agent',id:a.id,num:'',title:a.label,sub:'sessão do coordenador',col,w:[mkSess(a)],pend,t0:a.lock?a.lock.start:null})});
+  // features do orquestrador sem PR
+  const paused=(o.paused||[]);
+  (o.features||[]).filter(f=>!f.pr&&!['merged','blocked'].includes(f.state)).forEach(f=>{
+    const planning=['planning','queued'].includes(f.state),col=planning?0:1;
+    const ag=(f.tasks||[]).map(t=>t.agent).filter(Boolean)[0];
+    rows.push({k:'feature',id:f.id,num:'',title:f.name||f.id,sub:(f.track||'')+(f.adr?' · ADR-'+f.adr:''),col,planned:planning,pend:planning&&(paused.includes('plan')||paused.includes('build'))?'parado: filas pausadas':null,
+      w:planning?[who('Arquiteto','orquestrador · aguardando vaga',null,{dim:true,code:'AR',seed:f.id})]:[who(roleName(ag),'orquestrador',f.age?now-f.age:null,{k:'feature',id:f.id,seed:f.id})]})});
+  return rows}
+function renderFlow(s){
+  const rows=flowRows(s),act=rows.filter(r=>!r.planned),plan=rows.filter(r=>r.planned);
+  const head=`<div class="fr fh"><div class="ft">O que estamos construindo</div>${PH.map((x,i)=>`<div class="fp"><b>${x[0]}</b><small>${x[1]}</small></div>`).join('')}</div>`;
+  const row=r=>`<div class="fr ${r.pend?'hold':''} clk" tabindex="0" data-k="${r.k}" data-id="${E(r.id)}"><div class="ft">${r.num?`<a class="prn" href="${PRURL}${r.num}" target="_blank" rel="noopener">#${r.num}</a> `:''}<span class="ftt">${E(r.title)}</span><div class="fs">${E(r.sub||'')}</div>${r.pend?`<div class="fw">${E(r.pend)}</div>`:''}</div>`
+    +PH.map((x,i)=>i===r.col?`<div class="fc2 cur ${r.pend?'hold':''}">${r.w.map(whoHtml).join('')||'<span class="none">sem agente</span>'}</div>`:`<div class="fc2 ${i<r.col?'past':'next'}">${i<r.col?'✓':''}</div>`).join('')+'</div>';
+  const mg=(s.merged||[]).slice(0,5).map(m=>`<div class="fr done clk" tabindex="0" data-k="pr" data-id="${m.number}"><div class="ft"><a class="prn" href="${PRURL}${m.number}" target="_blank" rel="noopener">#${m.number}</a> <span class="ftt">${E(shortTitle(m.title))}</span></div>${PH.map((x,i)=>i===6?`<div class="fc2 cur ok">entrou às ${clk(Date.parse(m.mergedAt)/1000)}</div>`:'<div class="fc2 past">'+(i<6?'✓':'')+'</div>').join('')}</div>`).join('');
+  $('prhint').textContent=`${act.length} em andamento · ${act.filter(r=>r.pend).length} parados esperando · ${(s.merged||[]).length} entraram hoje`;
+  $('flow').innerHTML=head+(act.map(row).join('')||'<div class="empty">Nada em andamento.</div>')+(mg?'<div class="fsep">Entraram na main hoje</div>'+mg:'')
+    +(plan.length?`<details class="fplan" data-key="fplan"><summary>Planejado, ainda sem agente: ${plan.length} (${(s.orchestrator&&(s.orchestrator.paused||[]).length)?'orquestrador pausado nessas filas':'esperando vaga'})</summary>${plan.map(row).join('')}</details>`:'')}

@@ -6,10 +6,10 @@ review page is one more entry, no code change. The repo's own gallery
 fallback and listed only when that folder exists.
 """
 import json
-import mimetypes
 import os
 
-from dashboard_sources import ROOT
+from dashboard_static import safe_read
+from dashboard_util import ROOT
 
 LINKS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard-links.json")
 MOCKUPS_ROUTE = "/mockups/"
@@ -34,15 +34,5 @@ def read_links(path=None, mockups=None):
 
 def mockup_file(route, base=None):
     """(bytes, content type) for a /mockups/... path, or None. Never leaves the folder."""
-    base = os.path.realpath(base or mockups_dir())
     rel = route[len(MOCKUPS_ROUTE):].split("?", 1)[0] or "index.html"
-    path = os.path.realpath(os.path.join(base, rel))
-    try:
-        inside = os.path.commonpath([base, path]) == base
-    except ValueError:
-        inside = False
-    if not inside or not os.path.isfile(path):
-        return None
-    ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
-    with open(path, "rb") as f:
-        return f.read(), ctype + ("; charset=utf-8" if ctype.startswith("text/") else "")
+    return safe_read(base or mockups_dir(), rel)

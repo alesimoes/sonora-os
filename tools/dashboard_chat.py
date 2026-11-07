@@ -9,7 +9,8 @@ registered with the broker and cannot be reached; the panel says so.
 import os
 import time
 
-from dashboard_orch import orch_root, orch_state
+from dashboard_orch import orch_state
+from dashboard_util import orch_root
 from harness import ownerchat
 
 FRESH_S = 120.0     # status.json younger than this: a daemon is running
