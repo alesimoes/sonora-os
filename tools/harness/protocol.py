@@ -55,6 +55,9 @@ ROLE_PREFIX = "role:"
 MSG_TYPES = frozenset({
     "assign", "ask", "answer", "blocked", "handoff", "done", "qa_report",
     "bug", "note",
+    # the owner, from the dashboard (harness/ownerchat.py); additive, so the
+    # wire version stays 1
+    "owner_ask",
     # wake events, sent by the daemon
     "plan_request", "plan_ready", "task_done", "qa_fail", "agent_dead",
     "pool_under_floor",

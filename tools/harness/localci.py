@@ -44,7 +44,7 @@ import subprocess
 import sys
 import time
 
-from . import localci_cancel, localci_flakes, localci_steps
+from . import cleanwt, localci_cancel, localci_flakes, localci_steps
 
 TIMEOUT_S = 3 * 3600
 BATCH_SETTLE_S = 60   # PRs ready within a minute share one build
@@ -255,12 +255,14 @@ class LocalCI:
                 return f"git worktree add: {r.stderr.strip()[:200]}", [], []
         for args in (["merge", "--abort"], ["reset", "-q", "--hard"],
                      ["checkout", "-q", "-f", "--detach", main],
-                     # build trees stay, so the next build is incremental:
-                     # build-plugins was rebuilt from nothing every gate
-                     ["clean", "-fdxq", "-e", "build-ui-container",
-                      "-e", "build-container", "-e", "build-plugins",
-                      "-e", "build-plugins-only", "-e", "build-rtsan"]):
-            r = _git(args, wt)
+                     ["clean"]):
+            if args[0] == "clean":
+                # build trees stay, so the next build is incremental
+                r = cleanwt.clean(_git, wt, (
+                    "build-ui-container", "build-container", "build-plugins",
+                    "build-plugins-only", "build-rtsan"))
+            else:
+                r = _git(args, wt)
             if r.returncode and args[0] in ("checkout", "clean"):
                 return f"git {args[0]}: {r.stderr.strip()[:200]}", [], []
         dropped, merged = [], []

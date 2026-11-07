@@ -1,0 +1,19 @@
+#drawer{position:fixed;top:0;right:0;height:100vh;width:min(560px,96vw);background:var(--panel);border-left:1px solid var(--line2);box-shadow:-12px 0 40px rgba(0,0,0,.5);z-index:50;transform:translateX(105%);transition:transform .2s;display:flex;flex-direction:column}
+#drawer.on{transform:none}
+#drawer .dh{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+#drawer .dh h2{flex:1;margin:0;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#drawer .dh button{background:var(--raised);border:1px solid var(--line2);border-radius:4px;color:var(--ink);cursor:pointer;padding:3px 10px}
+#drawer .db{overflow:auto;padding:12px 16px;font-size:13px;line-height:1.45}
+#drawer h4{margin:14px 0 6px;color:var(--accent);font-size:12px;font-weight:600}
+#drawer .kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px}#drawer .kv b{color:var(--muted);font-weight:500}
+#drawer pre{white-space:pre-wrap;word-break:break-word;background:var(--sunken);border:1px solid var(--line);border-radius:4px;padding:8px;margin:0;font-size:12px;max-height:260px;overflow:auto}
+#drawer .act{border-left:2px solid var(--line2);padding:3px 0 3px 9px;margin:4px 0}
+#drawer .act i{font-style:normal;color:var(--warn);font-size:11px;margin-right:6px}
+#drawer .act.texto i{color:var(--accent)}#drawer .act.erro i,#drawer .act.erro{color:var(--bad)}#drawer .act.fim i{color:var(--ok)}
+#drawer .ev{color:var(--muted);font-size:12px}#drawer .ev b{color:var(--ink);font-weight:500}
+#drawer .bad{color:var(--bad)}
+.links{display:flex;gap:8px;flex-wrap:wrap}.links a{color:var(--accent);border:1px solid var(--line2);border-radius:6px;padding:3px 9px;font-size:12px;text-decoration:none}
+#drawer .msg{border-left:2px solid var(--line2);padding:3px 0 3px 9px;margin:5px 0;white-space:pre-wrap}#drawer .msg.owner{border-color:var(--accent)}#drawer .msg small{color:var(--muted);display:block}
+#drawer textarea{width:100%;box-sizing:border-box;min-height:56px;background:var(--bg);color:var(--ink);border:1px solid var(--line2);border-radius:6px;padding:6px}
+#drawer .chatbtns{display:flex;gap:8px;margin-top:6px}#drawer .chatbtns .st{color:var(--muted);font-size:12px;align-self:center}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}

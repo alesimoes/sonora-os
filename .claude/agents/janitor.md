@@ -68,3 +68,4 @@ still large. The steps, with no agent session running:
    `select vdisk file="C:\Users\Alexandre\AppData\Local\Docker\wsl\data\ext4.vhdx"`,
    `attach vdisk readonly`, `compact vdisk`, `detach vdisk`, `exit`.
 4. Start Docker Desktop again.
+- Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.

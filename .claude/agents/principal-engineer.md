@@ -46,3 +46,4 @@ before you report.
 
 Root cause (with evidence), what you changed (files), what you ran and what
 it printed, what is still unverified, and any follow-up for the BACKLOG.
+- Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.
