@@ -33,6 +33,11 @@ namespace sonora::native {
 class Telemetry {
 public:
     Telemetry() noexcept : block_(&local_) { enrol(this); }
+    // For an instance that offers itself to the host only if it publishes
+    // (ProcessorBase::publish_levels calls offer()): a bundle whose processor
+    // never publishes must answer "nothing to bind" to the host's hand-over.
+    struct Deferred {};
+    explicit Telemetry(Deferred) noexcept : block_(&local_) {}
     ~Telemetry() { withdraw(this); }
     Telemetry(const Telemetry&) = delete;
     Telemetry& operator=(const Telemetry&) = delete;
@@ -54,6 +59,12 @@ public:
         if (first == nullptr || shared_block == nullptr) return false;
         first->bind(static_cast<plugin::TelemetryBlock*>(shared_block));
         return true;
+    }
+
+    // Makes this instance a candidate for bind_pending(). Idempotent.
+    void offer() noexcept {
+        withdraw(this);
+        enrol(this);
     }
 
     // Not real-time. nullptr goes back to the private block.

@@ -340,7 +340,7 @@ void scripted_plugins() {
     e.script_catalog(fewer);
     poll();
     CHECK(in.catalogs.size() == 2 && in.catalogs[1].generation == 2 &&
-          in.catalogs[1].plugins.size() == 3);
+          in.catalogs[1].plugins.size() == catalog.size() - 1);
     CHECK((e.state().track(0).inserts[0].flags & kInsertMissing) != 0);
     CHECK(in.events.back().insert == gain && mentions(in.events.back().text, "is not installed"));
 
@@ -630,13 +630,15 @@ void plugin_telemetry() {
     Inbox in;
     e.poll(in);
     CHECK(in.catalogs.size() == 1);
-    // The fake's compressor declares what it publishes.
+    // The fake's compressor declares what it publishes (the EQ, cabinet and
+    // reverb publish too, so it is found by name, not by "has meters").
     const PluginInfo* comp = nullptr;
     for (const PluginInfo& p : in.catalogs[0].plugins) {
-        if (!p.meters.empty()) comp = &p;
+        if (p.name == "Fake Compressor") comp = &p;
     }
     CHECK(comp != nullptr && comp->meters.size() == 3 && comp->curves.size() == 1);
-    CHECK(comp != nullptr && comp->params[1].curve_source == comp->curves[0].id);
+    if (comp == nullptr) return;
+    CHECK(comp->params[1].curve_source == comp->curves[0].id);
 
     sonora::model::Replica replica;
     for (const ModelUpdate& m : in.model) {

@@ -21,13 +21,13 @@ Item {
     implicitWidth: 32
     implicitHeight: travel + 20
 
-    readonly property real top: 10
-    function yAt(p) { return top + (1 - Math.max(0, Math.min(1, p))) * travel }
+    readonly property real topPad: 10
+    function yAt(p) { return topPad + (1 - Math.max(0, Math.min(1, p))) * travel }
 
     Rectangle {
         id: slot
         x: parent.width / 2 - 2
-        y: fader.top
+        y: fader.topPad
         width: 4
         height: fader.travel
         radius: 2

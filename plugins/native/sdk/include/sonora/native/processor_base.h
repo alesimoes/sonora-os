@@ -109,6 +109,7 @@ protected:
         in_slot_ = in_slot;
         out_slot_ = out_slot;
         publishing_ = true;
+        telemetry_.offer();
     }
     // Inside the frame, after the levels: the processor's own meters (gain
     // reduction) and curves. Audio thread: telemetry.meter() and curve()
@@ -151,7 +152,7 @@ private:
     std::uint64_t bounded_blocks_ = 0;
     bool bounded_ = false;
 
-    Telemetry telemetry_;
+    Telemetry telemetry_{Telemetry::Deferred{}};
     bool publishing_ = false;
     std::uint32_t in_slot_ = kNoSlot, out_slot_ = kNoSlot;
     float peak_in_ = 0.0f, peak_out_ = 0.0f;
