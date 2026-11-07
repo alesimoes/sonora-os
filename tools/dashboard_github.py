@@ -44,7 +44,7 @@ def read_prs():
         prs.append({"number": p["number"], "title": p["title"], "branch": p["headRefName"],
                     "merge": p.get("mergeStateStatus"), "created": p["createdAt"],
                     "failed": failed, "pending": pending, "passed": passed,
-                    "base": p.get("baseRefName"), "mergeable": p.get("mergeable"),
+                    "base": p.get("baseRefName"), "draft": bool(p.get("isDraft")), "mergeable": p.get("mergeable"),
                     "cancelled": cancelled, "failed_details": details,
                     "total": passed + len(failed) + len(pending)})
     return sorted(prs, key=lambda p: p["number"])

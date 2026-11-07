@@ -1,6 +1,6 @@
 /* quadro de fluxo */
 .flow{display:flex;flex-direction:column;gap:5px}
-.fr{display:grid;grid-template-columns:minmax(230px,1.7fr) repeat(7,minmax(0,1fr));gap:5px;align-items:stretch}
+.fr{display:grid;grid-template-columns:minmax(230px,1.7fr) repeat(6,minmax(0,1fr));gap:5px;align-items:stretch}
 .fr.fh{position:sticky;top:0;z-index:3;background:var(--window);padding:4px 0}
 .fp{font-size:13px;text-align:center;border-bottom:3px solid var(--line2);padding-bottom:3px}.fp b{display:block;font-weight:700}.fp small{display:block;font-size:10.5px;color:var(--faint)}
 .fr.fh .ft{font:700 13px var(--disp);color:var(--muted);align-self:end;border-bottom:3px solid var(--line2);padding-bottom:6px}
@@ -28,4 +28,4 @@
 .fr.done .fc2.past{background:none;color:transparent}
 .fr:not(.fh) .ft .ftt{display:inline}
 .fr.done .ft .ftt{display:inline-block;max-width:calc(100% - 50px);vertical-align:bottom;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-@media (max-width:1100px){.fr{grid-template-columns:200px repeat(7,minmax(90px,1fr));overflow-x:auto}}
+@media (max-width:1100px){.fr{grid-template-columns:200px repeat(6,minmax(90px,1fr));overflow-x:auto}}
