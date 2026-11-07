@@ -131,12 +131,15 @@ elif [[ "$(uname -s)" == Linux ]]; then
   CCACHE=(-v "$SONORA_CCACHE_DIR:/ccache")
 else
   CCACHE=(-v sonora-ccache:/ccache)
-  # A fresh named volume is root-owned; the caller-uid container (Linux) gets
-  # "ccache: Permission denied" at the first compiler check without this.
-  if ((${#AS_CALLER[@]})); then
-    docker run --rm --user 0 -v sonora-ccache:/ccache --entrypoint chown \
-      "sonora-$IMAGE:trixie" "$(id -u):$(id -g)" /ccache >/dev/null 2>&1 || true
-  fi
+  # The shared volume is root-owned when another script (build-engine.sh,
+  # as root) created it; the container's user (the caller on Linux, uid 1000
+  # off Linux) then gets "ccache: Permission denied" on every compile, which
+  # CMake's Threads try_compile reports as "Could NOT find Threads"
+  # (sonora-ui, 2026-11-07). Hand it to that user, whichever way it was made.
+  owner="1000:1000"
+  if ((${#AS_CALLER[@]})); then owner="$(id -u):$(id -g)"; fi
+  docker run --rm --user 0 -v sonora-ccache:/ccache --entrypoint chown \
+    "sonora-$IMAGE:trixie" -R "$owner" /ccache >/dev/null 2>&1 || true
 fi
 # The table in the job's summary page (changed files, targets, tests, times),
 # also when a stage fails.

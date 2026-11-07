@@ -39,9 +39,26 @@ JUNIT="$(dirname "$PLAN")/ctest.xml"
 
 python3 tools/micro_targets.py query "$BUILD"
 echo "micro-build: configuring ($BUILD, ${gen[*]:-existing generator}, linker $([[ ${#link[@]} -gt 0 ]] && echo mold || echo default))"
-cmake -S . -B "$BUILD" "${gen[@]}" "${link[@]}" -DCMAKE_BUILD_TYPE=Release >"$BUILD.configure.log" 2>&1 || {
-  cat "$BUILD.configure.log"; exit 1
+configure() {
+  cmake -S . -B "$BUILD" "${gen[@]}" "${link[@]}" -DCMAKE_BUILD_TYPE=Release >"$BUILD.configure.log" 2>&1
 }
+# A failed try_compile (the compiler launcher could not write its cache, a
+# missing header for one run) is stored in CMakeCache.txt and fails every
+# later configure the same way, e.g. "Could NOT find Threads". A tree that
+# existed before this run is reconfigured from scratch once; a second
+# failure is real and is printed.
+had_cache=0; [[ ! -f "$BUILD/CMakeCache.txt" ]] || had_cache=1
+if ! configure; then
+  if ((had_cache)); then
+    echo "micro-build: configure failed on an existing tree; retrying from a clean cache"
+    cat "$BUILD.configure.log"
+    rm -rf "$BUILD/CMakeCache.txt" "$BUILD/CMakeFiles"
+    gen=(); command -v ninja >/dev/null && gen=(-G Ninja)
+    configure || { cat "$BUILD.configure.log"; exit 1; }
+  else
+    cat "$BUILD.configure.log"; exit 1
+  fi
+fi
 grep -E "^-- SONORA_PLATFORM|^-- (ui/qt|plugins/host)" "$BUILD.configure.log" || true
 
 direct=()
