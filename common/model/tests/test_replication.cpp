@@ -4,13 +4,22 @@
 // unchanged, the codec refuses what is not an operation, and a replica fed
 // a Document's updates stays equal to it through edits, undo, redo and
 // eviction, and says so when it falls out of step.
+#include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <limits>
+#include <map>
 #include <optional>
+#include <sstream>
+#include <type_traits>
 
 #include "model_test.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
+
+#ifndef SONORA_MODEL_FIXTURES
+#define SONORA_MODEL_FIXTURES "fixtures"
+#endif
 
 using namespace model_test;
 namespace midi = sonora::midi;
@@ -216,8 +225,23 @@ std::size_t variant_index() {
     return Operation(T{}).index();
 }
 
+// one_of_each() at its flat indices: ops[variant_index<T>()] is the T.
+std::vector<Operation> by_index() {
+    std::vector<Operation> ops = one_of_each();
+    std::stable_sort(ops.begin(), ops.end(), [](const Operation& a, const Operation& b) {
+        return a.index() < b.index();
+    });
+    return ops;
+}
+
+// The T among `ops`, which by_index() ordered.
+template <typename T>
+const T& of(const std::vector<Operation>& ops) {
+    return get<T>(ops[variant_index<T>()]);
+}
+
 const EditMidi& em_of(const std::vector<Operation>& ops) {
-    return std::get<EditMidi>(ops[variant_index<EditMidi>()]);
+    return of<EditMidi>(ops);
 }
 
 bool same_op(const Operation& a, const Operation& b) {
@@ -228,8 +252,8 @@ bool same_op(const Operation& a, const Operation& b) {
 }
 
 int test_every_operation_round_trips() {
-    const std::vector<Operation> ops = one_of_each();
-    CHECK(ops.size() == std::variant_size_v<Operation>);
+    const std::vector<Operation> ops = by_index();
+    CHECK(ops.size() == Operation::kinds);
     for (std::size_t i = 0; i < ops.size(); ++i) {
         CHECK(ops[i].index() == i);   // one of each, in order
         std::string bytes, error;
@@ -243,36 +267,114 @@ int test_every_operation_round_trips() {
     }
     // Spot checks that the comparison above would see a dropped field.
     std::string bytes, error;
-    CHECK(encode_operation(ops[6], bytes, error));
+    CHECK(encode_operation(ops[variant_index<RecordTake>()], bytes, error));
     Operation back;
     CHECK(decode_operation(bytes, back, error));
-    const auto& rt = std::get<RecordTake>(back);
-    CHECK(rt.region == std::get<RecordTake>(ops[6]).region);
-    CHECK(rt.crossfades.size() == 1 && rt.crossfades[0] == std::get<RecordTake>(ops[6]).crossfades[0]);
-    CHECK(encode_operation(ops[3], bytes, error));
+    const auto& rt = get<RecordTake>(back);
+    CHECK(rt.region == of<RecordTake>(ops).region);
+    CHECK(rt.crossfades.size() == 1 && rt.crossfades[0] == of<RecordTake>(ops).crossfades[0]);
+    CHECK(encode_operation(ops[variant_index<SetSettings>()], bytes, error));
     CHECK(decode_operation(bytes, back, error));
-    CHECK(std::get<SetSettings>(back).settings == std::get<SetSettings>(ops[3]).settings);
-    CHECK(encode_operation(ops[1], bytes, error));
+    CHECK(get<SetSettings>(back).settings == of<SetSettings>(ops).settings);
+    CHECK(encode_operation(ops[variant_index<SetMix>()], bytes, error));
     CHECK(decode_operation(bytes, back, error));
-    CHECK(std::get<SetMix>(back).mix.solo_safe);
-    CHECK(std::get<SetMix>(back).mix.midi == std::get<SetMix>(ops[1]).mix.midi);
-    CHECK(encode_operation(ops[4], bytes, error));
+    CHECK(get<SetMix>(back).mix.solo_safe);
+    CHECK(get<SetMix>(back).mix.midi == of<SetMix>(ops).mix.midi);
+    CHECK(encode_operation(ops[variant_index<AddTrack>()], bytes, error));
     CHECK(decode_operation(bytes, back, error));
-    CHECK(std::get<AddTrack>(back).kind == TrackKind::Instrument);
-    CHECK(encode_operation(ops[7], bytes, error));
+    CHECK(get<AddTrack>(back).kind == TrackKind::Instrument);
+    CHECK(encode_operation(ops[variant_index<MoveRegion>()], bytes, error));
     CHECK(decode_operation(bytes, back, error));
-    CHECK(std::get<MoveRegion>(back).timebase == Timebase::Ticks);
+    CHECK(get<MoveRegion>(back).timebase == Timebase::Ticks);
     const std::size_t place_midi = variant_index<PlaceMidiRegion>();
     CHECK(encode_operation(ops[place_midi], bytes, error));
     CHECK(decode_operation(bytes, back, error));
-    CHECK(std::get<PlaceMidiRegion>(back).region == std::get<PlaceMidiRegion>(ops[place_midi]).region);
+    CHECK(get<PlaceMidiRegion>(back).region == get<PlaceMidiRegion>(ops[place_midi]).region);
     CHECK(mentions(bytes, "[7, \"f043107ff7\"]"));
     const std::size_t edit_midi = variant_index<EditMidi>();
     CHECK(encode_operation(ops[edit_midi], bytes, error));
     CHECK(decode_operation(bytes, back, error));
-    const EditMidi& e2 = std::get<EditMidi>(back);
+    const EditMidi& e2 = get<EditMidi>(back);
     CHECK(e2.remove_notes == em_of(ops).remove_notes && e2.add_notes == em_of(ops).add_notes);
     CHECK(e2.add_events == em_of(ops).add_events && e2.add_sysex == em_of(ops).add_sysex);
+    return 0;
+}
+
+// The bytes of every operation as the flat variant wrote them before the
+// families (ADR-0059): fixtures/operations.bytes was written by origin/main
+// at that change, "=== <name> <length>" then the bytes, for each of
+// one_of_each(). The encoding is the wire's: it moves only with a protocol
+// version, and this test is what says it did not.
+std::map<std::string, std::string> frozen_operations() {
+    std::ifstream in(std::string(SONORA_MODEL_FIXTURES) + "/operations.bytes", std::ios::binary);
+    std::stringstream all;
+    all << in.rdbuf();
+    const std::string text = all.str();
+    std::map<std::string, std::string> out;
+    std::size_t at = 0;
+    while (at < text.size()) {
+        const std::size_t eol = text.find('\n', at);
+        if (eol == std::string::npos || text.compare(at, 4, "=== ") != 0) return {};
+        std::istringstream head(text.substr(at + 4, eol - at - 4));
+        std::string name;
+        std::size_t length = 0;
+        if (!(head >> name >> length) || eol + 1 + length > text.size()) return {};
+        out[name] = text.substr(eol + 1, length);
+        at = eol + 1 + length;
+    }
+    return out;
+}
+
+int test_encoding_is_the_frozen_one() {
+    const std::map<std::string, std::string> frozen = frozen_operations();
+    CHECK(frozen.size() == Operation::kinds);
+    for (const Operation& op : by_index()) {
+        const auto it = frozen.find(operation_name(op));
+        CHECK(it != frozen.end());
+        std::string bytes, error;
+        CHECK(encode_operation(op, bytes, error));
+        if (bytes != it->second) {
+            std::fprintf(stderr, "  %s: not the frozen bytes\n", operation_name(op));
+            return 1;
+        }
+        // And the frozen bytes read back to the same operation.
+        Operation back;
+        CHECK(decode_operation(it->second, back, error));
+        CHECK(back.index() == op.index());
+        std::string again;
+        CHECK(encode_operation(back, again, error) && again == it->second);
+    }
+    return 0;
+}
+
+// The two-level variant reaches the same leaf every way it is asked, and a
+// member crosses to an operation and back whole.
+int test_operation_families() {
+    const std::vector<Operation> ops = by_index();
+    CHECK(std::string(member_name(Member())) == "AddSource");
+    for (std::size_t i = 0; i < ops.size(); ++i) {
+        CHECK(ops[i].index() == i);
+        Member m;
+        const bool leaf = to_member(ops[i], m);
+        CHECK(leaf == !holds_alternative<Compound>(ops[i]));
+        if (!leaf) continue;
+        CHECK(m.index() == i);
+        CHECK(std::string(member_name(m)) == operation_name(ops[i]));
+        CHECK(same_op(to_operation(m), ops[i]));
+    }
+    const Operation& place = ops[variant_index<PlaceRegion>()];
+    CHECK(get_if<PlaceRegion>(&place) != nullptr && get_if<RegionOp>(&place) != nullptr);
+    CHECK(get_if<RecordTake>(&place) == nullptr && get_if<TrackOp>(&place) == nullptr);
+    CHECK(visit(
+        [](const auto& leaf) { return std::is_same_v<std::decay_t<decltype(leaf)>, PlaceRegion>; },
+        place));
+    bool threw = false;
+    try {
+        (void)get<AddTrack>(place);
+    } catch (const std::bad_variant_access&) {
+        threw = true;
+    }
+    CHECK(threw);
     return 0;
 }
 
@@ -341,7 +443,7 @@ int test_codec_refuses_what_is_not_an_operation() {
         CHECK(!decode_operation(b.bytes, out, error));
         CHECK(mentions(error, b.says));
         // A refused decode leaves the output alone.
-        CHECK(std::holds_alternative<AddMarker>(out));
+        CHECK(holds_alternative<AddMarker>(out));
     }
     // A value JSON cannot carry is refused at encode, not sent as garbage.
     SetMix nan_mix;
@@ -622,6 +724,8 @@ int test_window_refuses_what_does_not_fit() {
 int main() {
     int failures = 0;
     failures += test_every_operation_round_trips();
+    failures += test_encoding_is_the_frozen_one();
+    failures += test_operation_families();
     failures += test_codec_refuses_what_is_not_an_operation();
     failures += test_replica_follows_the_document();
     failures += test_replica_says_when_it_lost_track();
