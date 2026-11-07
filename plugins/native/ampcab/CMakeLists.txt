@@ -20,7 +20,8 @@ target_link_libraries(ampcab-budget PRIVATE sonora_dsp)
 # Capture cards (ADR-0069): the provenance record a shipped capture or IR
 # needs before it enters captures/manifest.json. Build-time and load-time
 # code, never reached from a `process`.
-add_library(sonora_native_ampcab_cards STATIC src/capture_card.cpp)
+add_library(sonora_native_ampcab_cards STATIC src/capture_card.cpp
+            src/capture_card_format.cpp)
 target_include_directories(sonora_native_ampcab_cards PUBLIC include)
 target_link_libraries(sonora_native_ampcab_cards PRIVATE sonora_json sonora_sha256)
 
