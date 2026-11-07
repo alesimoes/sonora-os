@@ -42,9 +42,10 @@ const char* state_name(TransportState s) {
     return "?";
 }
 
-// The reply to `seq`, polling for up to two seconds.
+// The reply to `seq`, polling for up to ten seconds: a stop closes
+// 18 files and fsyncs, which a loaded CI machine takes more than two seconds to do.
 bool await_reply(sonora::client::SocketEngine& e, uint64_t seq, sonora::api::CommandReply& out) {
-    const auto end = Clock::now() + std::chrono::seconds(2);
+    const auto end = Clock::now() + std::chrono::seconds(10);
     sonora::api::Inbox in;
     while (Clock::now() < end) {
         e.poll(in);
@@ -68,7 +69,7 @@ sonora::api::CommandReply run(sonora::client::SocketEngine& e, const std::string
     sonora::api::CommandReply reply;
     if (!await_reply(e, e.send(r), reply)) {
         reply.result = sonora::DispatchResult::Failed;
-        reply.message = "no reply within 2 s";
+        reply.message = "no reply within 10 s";
     }
     return reply;
 }

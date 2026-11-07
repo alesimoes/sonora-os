@@ -42,6 +42,15 @@ set(SONORA_BACKENDS "${SONORA_BACKENDS_DEFAULT}" CACHE STRING
     "Audio backends linked into the entry layer")
 message(STATUS "SONORA_PLATFORM=${SONORA_PLATFORM} SONORA_BACKENDS=${SONORA_BACKENDS}")
 
+# The plugin package is a product of its own (owner, 2026-11-05): with this
+# on, only what the native plugins and their tests need is configured
+# (common/*, plugins/native), not the engine, the host, the drivers or the
+# UI. tools/build-plugins.sh --package and tools/package-plugins.sh use it.
+# Windows VST3 bundles (MSVC), for the Windows package only; off in the
+# Portable job so it stays a test of the neutral modules.
+option(SONORA_WINDOWS_VST3 "Build the native plugins as Windows VST3 bundles" OFF)
+option(SONORA_PLUGINS_ONLY "Configure only the native plugin suite and what it links" OFF)
+
 # The RealtimeSanitizer build (tools/build-rtsan.sh, CI's rtsan job; ADR-0007,
 # first 2026-10-12 update). Every SONORA_RT function is [[clang::nonblocking]]
 # under this compiler, so RTSan aborts a test that allocates, locks or makes
@@ -101,7 +110,7 @@ add_subdirectory(common/platform)
 # The take file (BWF writer, reader, crash recovery). Standard C++ plus the
 # OS seam, so the neutral build and the MSVC job compile it (ADR-0008 P2).
 add_subdirectory(common/audiofile)
-if(SONORA_PLATFORM STREQUAL "linux")
+if(SONORA_PLATFORM STREQUAL "linux" AND NOT SONORA_PLUGINS_ONLY)
 # A session folder on disk (ADR-0015 §3, §6), layer 2 on common/model and
 # common/platform: the engine's saver writes through it.
 add_subdirectory(common/session_files)
@@ -113,7 +122,7 @@ add_subdirectory(common/dsp)
 # measurement harness, and every processor directory found under
 # plugins/native (see plugins/native/README.md: adding one edits no list).
 add_subdirectory(plugins/native)
-if(SONORA_PLATFORM STREQUAL "linux")
+if(SONORA_PLATFORM STREQUAL "linux" AND NOT SONORA_PLUGINS_ONLY)
 # sonora-analyze: the offline analysis passes and the mix assistant's planner
 # (ADR-0011 3.4, ADR-0046). On common/model, so Linux-only like it.
 add_subdirectory(plugins/analyze)
@@ -144,8 +153,9 @@ function(sonora_label_module_tests dir label)
   endwhile()
 endfunction()
 
-# Everything below is POSIX or Qt: the neutral build stops here.
-if(NOT SONORA_PLATFORM STREQUAL "linux")
+# Everything below is POSIX or Qt: the neutral build stops here, and so does
+# the plugins-only one.
+if(NOT SONORA_PLATFORM STREQUAL "linux" OR SONORA_PLUGINS_ONLY)
   sonora_label_module_tests(common/base base)
   sonora_label_module_tests(common/json json)
   sonora_label_module_tests(common/platform platform)

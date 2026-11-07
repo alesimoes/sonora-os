@@ -12,7 +12,7 @@ SOURCES = {
                  r"kProtocolVersion\s*=\s*(\d+)"),
     "format": ("common/model/include/sonora/model/session_file.h",
                r"kFormatVersion\s*=\s*(\d+)"),
-    "window": ("common/model/src/op_codec.cpp",
+    "window": ("common/model/src/op_codec_detail.h",
                r"kWindowFormat\s*=\s*(\d+)"),
 }
 ADR_DIR = "brain/decisions"

@@ -183,11 +183,11 @@ int test_codec_and_file() {
     CHECK(encode_operation(g, bytes, error));
     Operation back;
     CHECK(decode_operation(bytes, back, error));
-    const auto* sg = std::get_if<SetGroup>(&back);
+    const auto* sg = get_if<SetGroup>(&back);
     CHECK(sg != nullptr && sg->group == id && sg->members == g.members &&
           sg->attrs == kGroupAllAttributes && !sg->relative && !sg->active && sg->name == "Drums");
     CHECK(encode_operation(RemoveGroup{id}, bytes, error));
-    CHECK(decode_operation(bytes, back, error) && std::holds_alternative<RemoveGroup>(back));
+    CHECK(decode_operation(bytes, back, error) && holds_alternative<RemoveGroup>(back));
     CHECK(!decode_operation(R"({"op":"SetGroup","id":1})", back, error));
 
     CHECK_APPLY(r.h, g);

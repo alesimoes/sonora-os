@@ -100,9 +100,9 @@ int test_ids_across_members() {
     const Compound take = take_on(before, b.track, b.playlist, 200000, 50000);
     CHECK_APPLY(b.h, take);
     const Snapshot& s = b.h.current();
-    const Id source = std::get<AddSource>(take.ops[0]).source.id;
-    const Id region_id = std::get<RecordTake>(take.ops[1]).region.id;
-    const Id split = std::get<RecordTake>(take.ops[1]).split_right_id;
+    const Id source = get<AddSource>(take.ops[0]).source.id;
+    const Id region_id = get<RecordTake>(take.ops[1]).region.id;
+    const Id split = get<RecordTake>(take.ops[1]).split_right_id;
     CHECK(s.sources->find(source) != nullptr);
     CHECK(find(playlist_of(s, 0), region_id) != nullptr);
     CHECK(find(playlist_of(s, 0), split) != nullptr);
@@ -147,7 +147,7 @@ int test_one_revision_one_step_undo_and_redo() {
     // One undo removes the whole take; its source stays in the pool.
     CHECK(b.h.undo());
     CHECK(*b.h.current().edit == *before.edit);
-    CHECK(b.h.current().sources->find(std::get<AddSource>(take.ops[0]).source.id) != nullptr);
+    CHECK(b.h.current().sources->find(get<AddSource>(take.ops[0]).source.id) != nullptr);
     CHECK(b.h.undo_depth() == depth);
     CHECK(b.h.redo());
     CHECK(*b.h.current().edit == *after.edit);
@@ -263,7 +263,7 @@ int test_codec_round_trip_and_limits() {
     CHECK(mentions(bytes, "\"label\": \"Record\""));
     Operation back;
     CHECK(decode_operation(bytes, back, err));
-    const auto* c = std::get_if<Compound>(&back);
+    const auto* c = get_if<Compound>(&back);
     CHECK(c != nullptr && c->ops.size() == 2 && c->label == "Record");
     std::string again;
     CHECK(encode_operation(back, again, err));
@@ -276,7 +276,7 @@ int test_codec_round_trip_and_limits() {
     CHECK(encode_operation(Operation{unlabelled}, bytes, err));
     CHECK(bytes.find("label") == std::string::npos);
     CHECK(decode_operation(bytes, back, err));
-    CHECK(std::get<Compound>(back).label.empty());
+    CHECK(get<Compound>(back).label.empty());
     CHECK(display_name(back) == "RecordTake");
     CHECK(std::string(operation_name(back)) == "Compound");
 
@@ -312,7 +312,7 @@ int test_codec_round_trip_and_limits() {
         err.clear();
         CHECK(!decode_operation(x.bytes, out, err));
         CHECK(mentions(err, x.says));
-        CHECK(std::holds_alternative<AddMarker>(out));
+        CHECK(holds_alternative<AddMarker>(out));
     }
     return 0;
 }
