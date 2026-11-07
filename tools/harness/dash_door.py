@@ -5,20 +5,16 @@ it. It posts to the CLI mailbox (harness/cli_mailbox.py, .harness/cli-requests/)
 and the daemon's next tick applies it on its own store (cli_mailbox.apply
 calls dash_door.apply for these kinds):
 
-  regate     queue the local gate again for the PR's current head
-  rerun-step the same, with the named failed step run first, so a step that
-             is still red stops the run early; every step still runs, a
-             partial pass never counts
+  regate     rerun the failed GitHub jobs of the PR's current head (the local
+             gate was retired, so GitHub is the gate)
   assign     give the PR to a fixer (red checks) or an integrator (conflict)
 
 Each applied request is a `cli_request` event, a refused one
 `cli_request_failed`, in planning/orchestrator/events.jsonl.
 """
-import re
 
-KINDS = ("regate", "rerun-step", "assign")
+KINDS = ("regate", "assign")
 ASSIGN_AS = {"fixer": "ci", "integrator": "conflict"}
-STEP_RE = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
 
 
 class Refused(Exception):
@@ -33,11 +29,6 @@ def validate(kind, args):
     if isinstance(pr, bool) or not isinstance(pr, int) or pr <= 0:
         raise ValueError("pr must be a positive number")
     out = {"pr": pr}
-    if kind == "rerun-step":
-        step = args.get("step")
-        if not isinstance(step, str) or not STEP_RE.match(step):
-            raise ValueError("step must be a step name")
-        out["step"] = step
     if kind == "assign":
         who = args.get("as")
         if who not in ASSIGN_AS:
@@ -59,20 +50,14 @@ def _train_row(orch, pr):
     return f"pr-{pr}", info
 
 
-def _regate(orch, pr, step=None):
+def _regate(orch, pr):
     _, info = _train_row(orch, pr)
     head = info.get("head")
     if not head:
         raise Refused(f"#{pr} has no head the train knows")
-    r = orch.localci.result(head) or {}
-    if r.get("state") == "running":
-        raise Refused(f"the gate is already running for {head[:8]}")
-    if step and f"FAIL {step}" not in (r.get("summary") or ""):
-        raise Refused(f"{step} did not fail on {head[:8]}")
-    orch.localci.forget(head, first=step)
-    if not orch.localci.start(head):
-        raise Refused("no gate slot; try again")
-    return f"gate again for #{pr} {head[:8]}" + (f", {step} first" if step else "")
+    if not orch.forge.rerun_failed(pr, head):
+        raise Refused(f"#{pr} has no CI run to rerun for {head[:8]}")
+    return f"CI rerun for #{pr} {head[:8]}"
 
 
 def _assign(orch, pr, who):
@@ -93,6 +78,4 @@ def apply(orch, kind, args):
     a = validate(kind, args)
     if kind == "regate":
         return _regate(orch, a["pr"])
-    if kind == "rerun-step":
-        return _regate(orch, a["pr"], a["step"])
     return _assign(orch, a["pr"], a["as"])

@@ -39,7 +39,6 @@ function renderCmds(){
 /* t = a linha do trem: os pedidos ao daemon só existem para PR que ele conhece */
 const prActs=(n,phase,t)=>actBtn('adotar','pr.adopt',{pr:n})+(phase==='verde'?actBtn('merge agora','pr.merge',{pr:n},'dng'):'')
   +(t?actBtn('porta de novo','pr.regate',{pr:n})
-    +(t.failed_steps||[]).map(s=>actBtn('rerodar '+s,'pr.rerun_step',{pr:n,step:s})).join('')
     +(t.fixer?'':actBtn('fixer','pr.assign',{pr:n,as:'fixer'})+actBtn('integrador','pr.assign',{pr:n,as:'integrator'})):'');
 const runActs=name=>actBtn('parar','run.stop',{name},'dng')+actBtn('relançar','run.relaunch',{name});
 const poolActs=(n,paused)=>actBtn(paused?'retomar':'pausar',paused?'pool.resume':'pool.pause',{pool:n});

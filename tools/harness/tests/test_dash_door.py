@@ -12,13 +12,11 @@ HEAD = "a" * 40
 
 
 class Door(support.DaemonCase):
-    def adopted(self, summary=None, state="pass"):
+    def adopted(self):
         o = self.make(floors={"daw": 0})
         self.forge.add_pr(10, "a", ["engine/x.cpp"])
         o.train.adopt()
         o.train._save("pr-10", head=HEAD)
-        if summary is not None:
-            o.localci._set(HEAD, state=state, summary=summary)
         return o
 
     def events(self, o, kind):
@@ -26,8 +24,7 @@ class Door(support.DaemonCase):
 
     def test_validation_refuses_bad_params(self):
         for kind, args in (("regate", {}), ("regate", {"pr": "7"}),
-                           ("regate", {"pr": True}), ("rerun-step", {"pr": 1}),
-                           ("rerun-step", {"pr": 1, "step": "a b; rm"}),
+                           ("regate", {"pr": True}),
                            ("assign", {"pr": 1, "as": "boss"}),
                            ("nope", {"pr": 1})):
             with self.assertRaises(ValueError, msg=(kind, args)):
@@ -40,38 +37,18 @@ class Door(support.DaemonCase):
         self.assertEqual([k for k, _ in got], ["regate", "assign"])
         self.assertEqual(cli_mailbox.take(self.tmp), [])
 
-    def test_regate_requeues_the_head_and_logs(self):
-        o = self.adopted("local-ci: all passed", "pass")
+    def test_regate_reruns_the_failed_jobs_and_logs(self):
+        o = self.adopted()
         dash_door.post(o.hdir, "regate", pr=10)
         cli_mailbox.tick(o)
-        r = o.localci.result(HEAD)
-        self.assertEqual((r["state"], r["queued"]), ("running", True))
+        self.assertEqual(self.forge.reruns, [(10, HEAD)])
         ev = self.events(o, "cli_request")
         self.assertEqual(len(ev), 1)
         self.assertIn("regate", ev[0]["detail"])
 
-    def test_regate_is_refused_while_the_gate_runs(self):
-        o = self.adopted("", "running")
-        dash_door.post(o.hdir, "regate", pr=10)
-        cli_mailbox.tick(o)
-        self.assertEqual(len(self.events(o, "cli_request_failed")), 1)
-        self.assertEqual(self.events(o, "cli_request"), [])
-
-    def test_rerun_step_puts_the_step_first_and_still_gates_everything(self):
-        o = self.adopted("ok   tree (3 s)\nFAIL tsan (9 s): x\nlocal-ci: failed: tsan", "fail")
-        dash_door.post(o.hdir, "rerun-step", pr=10, step="tsan")
-        cli_mailbox.tick(o)
-        self.assertEqual(o.store.get_meta(f"localci-first:{HEAD}"), "tsan")
-        self.assertEqual(o.localci._first_step([HEAD]), "tsan")
-        self.assertEqual(o.localci._first_step([HEAD, "b" * 40]), "")
-        self.assertEqual(o.localci.result(HEAD)["state"], "running")
-
-    def test_rerun_step_refused_for_a_step_that_did_not_fail(self):
-        o = self.adopted("FAIL tsan (9 s)", "fail")
-        dash_door.post(o.hdir, "rerun-step", pr=10, step="asan")
-        cli_mailbox.tick(o)
-        self.assertEqual(len(self.events(o, "cli_request_failed")), 1)
-        self.assertEqual(o.localci.result(HEAD)["state"], "fail")
+    def test_rerun_step_is_no_longer_a_request(self):
+        with self.assertRaises(ValueError):
+            dash_door.validate("rerun-step", {"pr": 10, "step": "tsan"})
 
     def test_unknown_pr_is_refused(self):
         o = self.adopted()

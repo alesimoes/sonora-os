@@ -15,7 +15,7 @@ from . import dash_door
 from .status import write_atomic
 
 REQUEST_DIR = "cli-requests"
-KINDS = ("add", "import-queue", "bundle", "regate", "rerun-step", "assign")
+KINDS = ("add", "import-queue", "bundle", "regate", "assign")
 
 
 def request_dir(hdir):

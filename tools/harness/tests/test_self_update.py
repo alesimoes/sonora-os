@@ -63,10 +63,8 @@ class SelfUpdate(unittest.TestCase):
         self.restarted = []
         self.released = []
         self.o = types.SimpleNamespace(
-            store=self.store, cfg=types.SimpleNamespace(local_ci=True),
-            broker=types.SimpleNamespace(stop=lambda: None),
-            localci=types.SimpleNamespace(hold=None,
-                                          _running=lambda: self.running))
+            store=self.store, cfg=types.SimpleNamespace(),
+            broker=types.SimpleNamespace(stop=lambda: None))
         self.up = selfupdate.SelfUpdate(
             self.o, ["tools/orchestrator.py", "run", "--live"],
             root=self.daemon, restart=self.restarted.append,
@@ -82,7 +80,6 @@ class SelfUpdate(unittest.TestCase):
     def test_a_product_change_does_not_restart(self):
         self.push("engine/x.cpp", "v2\n")
         self.assertFalse(self.up.ready(1000))
-        self.assertIsNone(self.o.localci.hold)
 
     def test_a_harness_change_moves_the_checkout_and_restarts(self):
         new = self.push("tools/harness/train.py", "v2\n")
@@ -94,27 +91,16 @@ class SelfUpdate(unittest.TestCase):
         self.assertTrue(os.path.isabs(self.restarted[0][0]))
         self.assertIn("self_update", self.store.kinds())
 
-    def test_waits_for_the_running_gate_and_holds_new_ones(self):
-        self.push("tools/harness/train.py", "v2\n")
-        self.running.append(("b123", {}))
-        self.assertFalse(self.up.ready(1000))
-        self.assertTrue(self.o.localci.hold)    # no new run meanwhile
-        before = git(self.daemon, "rev-parse", "HEAD")
-        self.running.clear()
-        self.assertTrue(self.up.ready(1001))    # next tick, no wait for CHECK_S
-        self.assertNotEqual(git(self.daemon, "rev-parse", "HEAD"), before)
-
     def test_modified_tracked_files_block_the_update(self):
         self.push("tools/harness/train.py", "v2\n")
         write(self.daemon, "engine/x.cpp", "local edit\n")
         self.assertFalse(self.up.ready(1000))
         self.assertIn("self_update_blocked", self.store.kinds())
-        self.assertIsNone(self.o.localci.hold)
         self.assertEqual(self.restarted, [])
 
     def test_checks_at_most_every_check_s(self):
         self.assertFalse(self.up.ready(1000))
-        self.push("tools/local-ci.sh", "v2\n")
+        self.push("tools/build-slot.sh", "v2\n")
         self.assertFalse(self.up.ready(1000 + 10))
         self.assertTrue(self.up.ready(1000 + selfupdate.CHECK_S))
 

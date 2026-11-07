@@ -53,31 +53,29 @@ class Door(Base):
     def requests(self):
         return cli_mailbox.take(os.path.join(self.tmp, ".harness"))
 
-    def test_all_three_need_confirmation_and_a_daemon(self):
-        for name, p in (("pr.regate", {"pr": 7}), ("pr.rerun_step", {"pr": 7, "step": "tsan"}),
+    def test_both_need_confirmation_and_a_daemon(self):
+        for name, p in (("pr.regate", {"pr": 7}),
                         ("pr.assign", {"pr": 7, "as": "fixer"})):
             with mock.patch("dashboard_actions_door.daemon_alive", lambda: False):
                 self.assertEqual(A.submit(name, p)[0], 400, "no daemon running")
         with mock.patch("dashboard_actions_door.daemon_alive", lambda: True):
-            for name, p in (("pr.regate", {"pr": 7}), ("pr.rerun_step", {"pr": 7, "step": "tsan"}),
+            for name, p in (("pr.regate", {"pr": 7}),
                             ("pr.assign", {"pr": 7, "as": "fixer"})):
                 self.assertEqual(A.submit(name, p)[0], 409, name)
         self.assertEqual(self.requests(), [])
 
     def test_requests_reach_the_mailbox_and_are_audited(self):
         with mock.patch("dashboard_actions_door.daemon_alive", lambda: True):
-            self.go("pr.regate", {"pr": 7}, True)
-            code, _, job = self.go("pr.rerun_step", {"pr": 7, "step": "tsan"}, True)
+            code, _, job = self.go("pr.regate", {"pr": 7}, True)
             self.go("pr.assign", {"pr": 7, "as": "integrator"}, True)
         self.assertEqual(job["state"], "done")
-        self.assertEqual(sorted(k for k, _ in self.requests()), ["assign", "regate", "rerun-step"])
+        self.assertEqual(sorted(k for k, _ in self.requests()), ["assign", "regate"])
         with open(os.path.join(self.tmp, "audit.log"), encoding="utf-8") as f:
-            self.assertEqual(len(f.read().strip().splitlines()), 3)
+            self.assertEqual(len(f.read().strip().splitlines()), 2)
 
     def test_validation(self):
         with mock.patch("dashboard_actions_door.daemon_alive", lambda: True):
             self.assertEqual(A.submit("pr.regate", {"pr": 99}, True)[0], 400)
-            self.assertEqual(A.submit("pr.rerun_step", {"pr": 7, "step": "asan"}, True)[0], 400)
             self.assertEqual(A.submit("pr.assign", {"pr": 7, "as": "root"}, True)[0], 400)
             self.assertEqual(A.submit("pr.assign", {"pr": 8, "as": "fixer"}, True)[0], 400)
 

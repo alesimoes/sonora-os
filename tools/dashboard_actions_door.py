@@ -1,14 +1,12 @@
-"""Actions that ask the running daemon for something: gate a PR again, rerun
-one failed local-ci step, give a PR to a fixer or an integrator.
+"""Actions that ask the running daemon for something: rerun a PR's failed CI jobs, give a PR to a fixer or an integrator.
 
 The dashboard never writes the daemon's state: each action drops a request
 file (harness/dash_door.py) that the daemon applies on its next tick and
 logs as an event. Refused unless a daemon is running, since nobody else
 would read the request. The daemon checks the request again when it acts."""
 from dashboard_actions import ActionError, register
-from dashboard_actions_util import need_int, need_str, only, status_json
+from dashboard_actions_util import need_int, only, status_json
 from dashboard_chat import daemon_alive, harness_dir
-from dashboard_orch import failed_steps
 from harness import dash_door
 
 
@@ -25,15 +23,6 @@ def _row(p):
 def _v_regate(p):
     p = only(p, "pr")
     return {"pr": _row(p)[0]}
-
-
-def _v_rerun(p):
-    p = only(p, "pr", "step")
-    n, row = _row(p)
-    step = need_str(p, "step", 31)
-    if step not in failed_steps(row.get("head")):
-        raise ActionError("%s não falhou no head atual de #%d" % (step, n))
-    return {"pr": n, "step": step}
 
 
 def _v_assign(p):
@@ -57,5 +46,4 @@ def _post(kind):
 
 
 register("pr.regate", "prs", "rodar a porta de novo", _v_regate, _post("regate"), destructive=True, timeout=20)
-register("pr.rerun_step", "prs", "rerodar etapa", _v_rerun, _post("rerun-step"), destructive=True, timeout=20)
 register("pr.assign", "prs", "atribuir agente", _v_assign, _post("assign"), destructive=True, timeout=20)

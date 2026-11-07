@@ -21,7 +21,6 @@ Which failure of the week each check would have caught:
                 pools (the daemon died when the disk filled; a fixer
                 misattributed a red to disk space: the alert names it)
 """
-import os
 
 from . import supervisor_sys as S
 from .status import write_atomic
@@ -29,7 +28,6 @@ from .status import write_atomic
 PAUSED_META = "supervisor:paused"
 BUILD_POOLS = ("build", "qa")
 CLAIM_GRACE_S = 120.0
-GATE_TIMEOUT_S = 3 * 3600.0   # localci.TIMEOUT_S
 
 
 def _active(sv):
@@ -87,20 +85,11 @@ def _ended_worktrees(sv):
     return out
 
 
-def _gate_running(sv):
-    try:
-        return bool(sv.o.localci._running())
-    except Exception:
-        return True   # unknown: never reap a gate on a guess
-
-
 def check_lock(sv, now):
     entries = sv.sys.lock_entries()
     if not entries:
         return
     ended = _ended_worktrees(sv)
-    ci_dir = os.path.join(sv.o.root, ".harness", "ci")
-    gate_running = None
     for e in entries:
         where = f"{e['role']} pid={e['pid']} cwd={e['cwd']} cmd={e['cmd']}"
         age = now - (e["start"] or now)
@@ -122,20 +111,6 @@ def check_lock(sv, now):
                    f"left behind by ended run {owner}: {where}",
                    lambda e=e: (sv.sys.kill(e["pid"]), sv.sys.lock_remove(e)))
             continue
-        if S.under(e["cwd"], ci_dir):
-            if gate_running is None:
-                gate_running = _gate_running(sv)
-            if not gate_running and sv.th.lock_reap:
-                sv.act("lock", f"kill {e['role']}",
-                       f"gate step with no local-ci run: {where}",
-                       lambda e=e: (sv.sys.kill(e["pid"]),
-                                    sv.sys.lock_remove(e)))
-                continue
-            if age > GATE_TIMEOUT_S:
-                sv.alert(f"lock:gate:{e['pid']}",
-                         f"gate step on the lock for {_hms(age)}: {where}",
-                         check="lock")
-                continue
         limit = sv.th.lock_hold_alert_s if e["role"] == "holds" \
             else sv.th.lock_wait_alert_s
         if age > limit:
@@ -144,7 +119,7 @@ def check_lock(sv, now):
                      check="lock")
 
 
-# -- the builder's queues ---------------------------------------------------
+# -- PRs the daemon's sweep missed --------------------------------------------
 def _train_rows(sv):
     try:
         return sv.o.train._all()
@@ -153,38 +128,6 @@ def _train_rows(sv):
 
 
 def check_queues(sv, now):
-    rows = _train_rows(sv)
-    closed = {"mergeado", "fechado", "no bundle"}
-    open_heads, gone_heads, unknown = set(), set(), False
-    for i in rows.values():
-        if i.get("bundled_into") or i.get("phase") in closed:
-            gone_heads.add(i.get("head"))
-        elif i.get("head"):
-            open_heads.add(i["head"])
-        else:
-            unknown = True
-    gone_heads.discard(None)
-    lc = sv.o.localci
-    queued = [(e["head"], "pool") for e in lc._queue("pool")
-              if not e.get("pre")]
-    queued += [(h, "bisect") for g in lc._queue("groups") for h in g]
-    for key, r in lc._running():
-        if not r.get("full"):
-            queued += [(h, "running") for h in (r.get("heads") or [key])]
-    for head, where in queued:
-        if head in open_heads or (unknown and head not in gone_heads):
-            sv.forget("queues", head)
-            continue
-        first = sv.remember("queues", head, now)
-        if head in gone_heads:
-            sv.act("queues", "drop head",
-                   f"{head[:8]} ({where}): its PR is merged or closed",
-                   lambda h=head: lc.prune(lambda x: x == h))
-        elif now - first > sv.th.queue_orphan_s:
-            sv.alert(f"queue:{head[:8]}",
-                     f"head {head[:8]} in the builder's {where} queue has no "
-                     f"open PR on the train for {_hms(now - first)}",
-                     check="queues")
     _adopt_missing(sv, now)
 
 
@@ -201,7 +144,7 @@ def _adopt_missing(sv, now):
             if x["branch"] and not x["pr"]}
     missing = [p["number"] for p in prs
                if p["number"] not in owned and not p.get("draft")
-               and p.get("base") == "main" and p["branch"] not in mine]
+               and p["branch"] not in mine]
     for n in [k for k in sv.mem.get("adopt", {}) if k not in missing]:
         sv.forget("adopt", n)
     # The daemon's own sweep (autoadopt.tick) is the door; this is the check

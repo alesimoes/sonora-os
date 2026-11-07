@@ -24,14 +24,13 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import (autoadopt, cli, cli_mailbox, daemonlock, dispatch,  # noqa: E402
-                     heartbeat, launcher, numbers, ownerchat, routing,
-                     scheduler, selfupdate, shadow, status, supervisor,
-                     supervisor_sys)
+                     heartbeat, launcher, nightly, numbers, ownerchat,
+                     routing, scheduler, selfupdate, shadow, status,
+                     supervisor, supervisor_sys)
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
 from harness.store import Store  # noqa: E402
-from harness.localci import LocalCI  # noqa: E402
 from harness.train import Train  # noqa: E402
 
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer",
@@ -80,7 +79,6 @@ class Orchestrator:
         self.last_gaps = {}
         self.flow = Flow(self)
         self.train = Train(self)
-        self.localci = LocalCI(self, clock)
         # The watchdog over runs, lock, queues, PRs and disk; the tests hand
         # it a fake system (supervisor_sys.RealSys surface).
         self.supervisor = supervisor.Supervisor(
@@ -190,18 +188,14 @@ class Orchestrator:
         self._poll_runs(now)
         if not self.dry_run:
             self.supervisor.tick(now)   # every interval_s, not every tick
-        if self.cfg.local_ci and not self.dry_run:
-            self.localci.prune(self.train.head_is_gone)
-            self.localci.poll()
         self._open_pending_prs(now)
         autoadopt.tick(self, now)
         cli_mailbox.tick(self)
         if not self.dry_run:
             ownerchat.tick(self)
         self._watch_prs(now)
-        # After the train asked for a slot: a waiting PR goes before main.
-        if self.cfg.local_ci and not self.dry_run:
-            self.localci.check_main()
+        # Main's nightly full build on GitHub (ADR-0061): a red opens a task.
+        nightly.tick(self, now)
         self.flow.tick(now)
         paused = self.paused()
         runs = self._enriched_runs(now)
@@ -242,16 +236,6 @@ class Orchestrator:
             self.store.runs_started_since(now - 3600))
         data["train"] = self.train.rows()
         data["train_slots"] = self.cfg.train_slots
-        if self.cfg.local_ci:
-            # One dedicated "builder" for the dashboard; PR numbers by head.
-            b = self.localci.builder_status(now)
-            prs = {r.get("head"): r.get("pr") for r in data["train"]}
-            for h in [b["running"]] if b["running"] else []:
-                h["prs"] = [prs.get(x) for x in h["heads"]]
-            if b["last"]:
-                b["last"]["prs"] = [prs.get(x) for x in b["last"]["heads"]]
-            b["queue"]["prs"] = [prs.get(x) for x in b["queue"]["batch"]]
-            data["builder"] = b
         data["gh_paused_until"] = self.train.pause_until or None
         data["daemon_pid"] = os.getpid()   # tools/supervisor.py probes it
         data.update(self.supervisor.status())
@@ -776,8 +760,6 @@ class Orchestrator:
                         + out[-800:]))
                 self._count_failure(rep, "pre-pr failed", now)
                 return False
-            if not self._local_ci_before_pr(f, ts, wt, now):
-                return False
             self.forge.push(wt, branch)
             n = next((p["number"] for p in self.forge.open_prs()
                       if p["branch"] == branch), None)
@@ -799,33 +781,6 @@ class Orchestrator:
             self._release(x)
         self.ci_polled[fid] = now
         self.store.event(rep["id"], "pr_opened", f"#{n} {branch}")
-        return True
-
-    def _local_ci_before_pr(self, f, ts, wt, now):
-        """No PR before the build and the tests pass on this machine (owner,
-        2026-11-05): GitHub's runners only run the light checks."""
-        if not self.cfg.local_ci:
-            return True
-        head = launcher.git_head(wt)
-        r = self.localci.result(head)
-        if r is None:
-            self.localci.start(head, pre=True)
-            self.pr_retry[f["id"]] = now + 60
-            return False
-        if r.get("state") == "running":
-            self.pr_retry[f["id"]] = now + 60
-            return False
-        if r.get("state") == "fail":
-            rep = ts[0]
-            self.store.event(rep["id"], "local_ci_failed",
-                             (r.get("summary") or "")[-500:])
-            for x in ts:
-                self.store.set_task(x["id"], integrated=0, note=(
-                    "tools/local-ci.sh failed on this branch merged with "
-                    "main; fix and commit. From the logs:\n"
-                    + (r.get("excerpt") or "")[-1500:]))
-            self._count_failure(rep, "local-ci failed", now)
-            return False
         return True
 
     def _pr_text(self, f, ts):

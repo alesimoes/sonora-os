@@ -70,7 +70,7 @@ if [[ "$ONLY" == 1 ]]; then
   CMAKE_ROOT_ARGS="-DSONORA_PLUGINS_ONLY=ON"
   if [[ ${#CTEST_ARGS[@]} -eq 0 ]]; then
     CTEST_ARGS=(-L native -j 4 --timeout 900)
-    # A PR run skips the long DSP suites (tools/local-ci.sh).
+    # A PR run skips the long DSP suites (the nightly runs them).
     [[ -z "${SONORA_SKIP_SLOW:-}" ]] || CTEST_ARGS+=(-LE slow)
   fi
 else

@@ -25,7 +25,7 @@ import time
 
 from . import supervisor as sv_mod
 
-HARNESS_PATHS = ("tools/harness", "tools/orchestrator.py", "tools/local-ci.sh",
+HARNESS_PATHS = ("tools/harness", "tools/orchestrator.py",
                  "tools/build-slot.sh", "tools/supervisor.py")
 FETCH_EVERY_S = 600.0
 

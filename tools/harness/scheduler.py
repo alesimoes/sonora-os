@@ -5,7 +5,9 @@ daemon executes the answer; nothing here launches, kills or writes.
 """
 import os
 import re
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 
 try:
@@ -83,14 +85,16 @@ class Config:
     seeds: dict = field(default_factory=dict)  # kind -> last used number
     live_pools: object = None  # None: every pool is live when not dry-run
     train_slots: int = 6        # adopted PRs with CI in flight at once
-    local_ci: bool = False      # tools/local-ci.sh gates PR opening and
-    #                             merging (harness/localci.py)
-    local_ci_slots: int = 1     # local CI runs at once (each takes -j all)
     daemon_merge: bool = True   # the daemon merges green PRs itself; no
     #                             detached merge-when-green watcher per PR
     # [supervisor] table: thresholds of the watchdog (harness/supervisor.py
     # Thresholds lists the keys and defaults).
     supervisor: dict = field(default_factory=dict)
+    # ADR-0061: a PR's gate is its GitHub checks (the micro build and its
+    # tests); the full build runs nightly on main, and a red run there
+    # opens a fix task (harness/nightly.py).
+    nightly_workflow: str = "nightly.yml"
+    nightly_poll_s: float = 900.0
 
     def __post_init__(self):
         self.cap = min(int(self.cap), HARD_CAP)
@@ -369,8 +373,19 @@ def holds_build_slot(root, worktree):
 
 
 def _bash():
-    from .localci import bash_exe   # the Git shell on Windows, not WSL's
-    return bash_exe()
+    """Git's bash on Windows: a bare "bash" there can be WSL's
+    (System32/bash.exe), which reads none of the C:/ paths given to it."""
+    if sys.platform != "win32":
+        return "bash"
+    git = shutil.which("git")
+    if git:
+        base = os.path.dirname(os.path.dirname(git))
+        for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+            cand = os.path.join(base, *rel)
+            if os.path.exists(cand):
+                return cand
+    return os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                        "Git", "bin", "bash.exe")
 
 
 def _posix(path):
