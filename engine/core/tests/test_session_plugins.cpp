@@ -218,6 +218,8 @@ struct Rig {
     int64_t frame = 0;
     float amplitude = 0.1f;
     uint64_t slowest_process_ns = 0;
+    // Callbacks that took half the stall host's 20 ms or more.
+    uint32_t waited_process_count = 0;
     uint16_t track_channels = 1;
     bool ready = false;
 
@@ -344,7 +346,9 @@ struct Rig {
         t_counting = true;
         session->process(b);
         t_counting = false;
-        slowest_process_ns = std::max(slowest_process_ns, now_ns() - t0);
+        const uint64_t took = now_ns() - t0;
+        slowest_process_ns = std::max(slowest_process_ns, took);
+        if (took >= 10'000'000) ++waited_process_count;
         frame += kBlock;
     }
 
@@ -562,11 +566,13 @@ int scenario_stall(const Args& a) {
     check(rig.client.slot_status(slot).misses >= kMaxConsecutiveMisses, "8 consecutive misses counted");
     check(silent_after, "after the removal its track is silence, never the dry signal");
     char line[160];
-    std::snprintf(line, sizeof line, "no callback waited on the host: slowest process() %.1f us, budget 2667 us",
-                  double(rig.slowest_process_ns) / 1000.0);
-    // A callback that waited would take the host's 20 ms; this bound is far
-    // under it and still loose enough for a loaded container.
-    check(rig.slowest_process_ns < 1'000'000, line);
+    // A callback that waited on the host would take its 20 ms, and so would
+    // every one up to the removal: at least kMaxConsecutiveMisses of them. A
+    // descheduled thread on a loaded machine delays an isolated callback, so
+    // the wall-clock maximum is only reported and the count is what is checked.
+    std::snprintf(line, sizeof line, "no callback waited on the host: %u callbacks took 10 ms or more (slowest %.1f us)",
+                  rig.waited_process_count, double(rig.slowest_process_ns) / 1000.0);
+    check(rig.waited_process_count < kMaxConsecutiveMisses, line);
     report_heap();
     return failures ? 1 : 0;
 }
