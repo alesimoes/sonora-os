@@ -73,6 +73,7 @@ engine/plugin_client -> drivers/fake
 plugins/host -> common/base
 plugins/host -> common/platform
 plugins/host -> contracts/plugin
+plugins/analyze -> common/base
 plugins/analyze -> common/audiofile
 plugins/analyze -> common/dsp
 plugins/analyze -> common/json
