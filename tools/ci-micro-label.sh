@@ -35,7 +35,8 @@ if ((n == 0)); then
   [[ "$mode" == rtsan ]] && echo "RTSan: no real-time code changed" || echo "Nothing to build (docs/harness only)"
   exit 0
 fi
-shown=$(IFS=,; echo "${ctx[*]:0:4}" | sed 's/,/, /g')
+first=("${ctx[@]:0:4}")
+shown=$(printf '%s, ' "${first[@]}"); shown=${shown%, }
 ((${#ctx[@]} <= 4)) || shown="$shown +$((${#ctx[@]} - 4))"
 [[ "$mode" == rtsan ]] && head="RTSan" || head="Build + test"
 echo "$head: $shown ($n files)"
