@@ -117,6 +117,20 @@ class Tests(unittest.TestCase):
         tests = mt.match_tests(CTEST, TARGETS, ["sonora-engine"])
         self.assertEqual(tests, ["engine_failed_take"])
 
+    def test_an_object_library_a_test_names_is_built_with_it(self):
+        canary = T("canary_alloc", "engine/pc", ["engine/pc/tests/canary_alloc.cpp"],
+                   type_="OBJECT_LIBRARY")
+        other = T("canary_other", "engine/pc", ["engine/pc/tests/other.cpp"],
+                  type_="OBJECT_LIBRARY")
+        listing = {"tests": [{"name": "rt_canary_alloc", "command": [
+            "cmake", "-DRT_OBJECTS=/b/x/canary_alloc.cpp.o;/b/y/z.cpp.o",
+            "-P", "rt.cmake"]}]}
+        self.assertEqual(mt.object_targets_for(listing, [canary, other],
+                                               ["rt_canary_alloc"]),
+                         {"canary_alloc"})
+        self.assertEqual(mt.object_targets_for(listing, [canary, other], []),
+                         set())
+
     def test_an_app_executable_is_linked_only_when_a_test_runs_it(self):
         p = mt.plan(["common/model/src/apply.cpp"], TARGETS)
         self.assertIn("sonora-engine", p["targets"])

@@ -87,6 +87,13 @@ fi
 # --- stage 1: build and test the affected targets -------------------------------------
 command -v docker >/dev/null || { echo "error: docker is required." >&2; exit 1; }
 docker image inspect "sonora-$IMAGE:trixie" >/dev/null 2>&1 || {
+  # On GitHub the image comes from GHCR (the sonora-image action, which
+  # builds only when the change edits the image's inputs); building it here
+  # would put minutes of apt into every PR.
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    echo "error: sonora-$IMAGE:trixie is not loaded; the job must pull it with ./.github/actions/sonora-image" >&2
+    exit 1
+  fi
   if [[ "$IMAGE" == ui ]]; then
     ctx="$(mktemp -d)"; mkdir -p "$ctx/audio-stack"
     cp tools/Dockerfile.ui "$ctx/Dockerfile"; cp audio-stack/pipewire-sonora.conf "$ctx/audio-stack/"
@@ -115,14 +122,31 @@ fi
 if [[ -n "${SONORA_CCACHE_DIR:-}" ]]; then
   mkdir -p "$SONORA_CCACHE_DIR"
   CCACHE=(-v "$(host_path "$SONORA_CCACHE_DIR"):/ccache")
+elif [[ "$(uname -s)" == Linux ]]; then
+  # A host directory, not a named volume: a fresh volume is root's, and the
+  # container runs as the caller (ccache: Permission denied broke the RTSan
+  # job's configure on PRs #478 and #479, 2026-11-07).
+  SONORA_CCACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/sonora-ccache"
+  mkdir -p "$SONORA_CCACHE_DIR"
+  CCACHE=(-v "$SONORA_CCACHE_DIR:/ccache")
 else
   CCACHE=(-v sonora-ccache:/ccache)
 fi
+# The table in the job's summary page (changed files, targets, tests, times),
+# also when a stage fails.
+SUMMARY_TITLE="Build + test"
+if [[ "$RTSAN" == 1 && "$PLAN_ONLY" == 1 ]]; then SUMMARY_TITLE="RTSan"; fi
+summary() {
+  [[ -z "${GITHUB_STEP_SUMMARY:-}" ]] ||
+    python3 "$ROOT/tools/micro_summary.py" "$OUT" "$SUMMARY_TITLE" >>"$GITHUB_STEP_SUMMARY" || true
+}
+trap summary EXIT
+echo "micro-build: image sonora-$IMAGE:trixie, phases: configure, build, test"
 start=$SECONDS
 if ! "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" \
     -e SONORA_MICRO_FILES=/src/.micro-build/files -e SONORA_MICRO_PLAN=/src/.micro-build/plan.json \
-    -e SONORA_MICRO_DIRECT="${SONORA_MICRO_DIRECT:-0}" -e SONORA_MICRO_PLAN_ONLY="$PLAN_ONLY" -e SONORA_DSP_QUICK=1 \
-    -e CCACHE_DIR=/ccache -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=10G \
+    -e SONORA_MICRO_DIRECT="${SONORA_MICRO_DIRECT:-0}" -e SONORA_MICRO_BUILD_ONLY="${SONORA_MICRO_BUILD_ONLY:-0}" -e SONORA_MICRO_PLAN_ONLY="$PLAN_ONLY" -e SONORA_DSP_QUICK=1 \
+    -e CCACHE_DIR=/ccache -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-10G}" -e CCACHE_COMPRESS=1 \
     "${VOL[@]}" "${CCACHE[@]}" -v "$(host_path "$ROOT"):/src" -w /src \
     "sonora-$IMAGE:trixie" tools/micro-build-entrypoint.sh; then
   echo "micro-build: FAIL build ($((SECONDS - start)) s)"
@@ -140,6 +164,7 @@ if [[ "$RTSAN" == 1 && -f "$OUT/plan.json" ]]; then
     regex=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("ctest_regex") or "")' "$OUT/plan.json")
     args=()
     [[ "$scope" == all ]] || { export SONORA_RTSAN_TARGETS="$targets"; args=(-R "${regex:-^$}"); }
+    echo "micro-build: rtsan: building and running the tests of: $targets"
     start=$SECONDS
     if ! SONORA_RTSAN_LIVE=0 "$ROOT/tools/build-rtsan.sh" "${args[@]}"; then
       echo "micro-build: FAIL rtsan ($((SECONDS - start)) s)"
