@@ -29,8 +29,9 @@ if [ -f "$INSTALLER" ]; then
   # Plain bash rather than awk/sed: their handling of a trailing backslash
   # differs between mawk, gawk and BSD sed, and a miss makes the check fail.
   joined=""
+  bs="\\"
   while IFS= read -r line || [ -n "$line" ]; do
-    if [[ "$line" == *'\' ]]; then
+    if [[ "$line" == *"$bs" ]]; then
       joined+="${line%\\} "
     else
       joined+="$line"$'\n'
