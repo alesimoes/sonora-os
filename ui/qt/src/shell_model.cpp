@@ -53,8 +53,7 @@ ShellModel::ShellModel(EngineAdapter& engine, KeyRouter& router, QObject* parent
     sized_buffer_ = engine_.info().buffer_frames;
     sized_tracks_ = engine_.info().track_count;
     for (uint32_t i = 0; i < sized_tracks_; ++i) armed_.push_back(false);
-    peaks_.assign(sized_tracks_, 0.0f);
-    peak_read_.assign(sized_tracks_, false);
+    feed_.resize(sized_tracks_);
     replies_.reserve(16);
     events_.reserve(16);
     xkb_scan_codes_ = qt_scan_codes_are_xkb(QGuiApplication::platformName());
@@ -151,8 +150,7 @@ void ShellModel::followEngineFormat() {
     sized_tracks_ = i.track_count;
     // A meter on a channel past the old count would otherwise read nothing,
     // which looks exactly like silence.
-    peaks_.assign(sized_tracks_, 0.0f);
-    peak_read_.assign(sized_tracks_, false);
+    feed_.resize(sized_tracks_);
     emit engineFormatChanged();
 }
 
@@ -232,6 +230,24 @@ void ShellModel::attachMeter(MeterItem* m) {
 
 void ShellModel::detachMeter(MeterItem* m) {
     meters_.erase(std::remove(meters_.begin(), meters_.end(), m), meters_.end());
+}
+
+void ShellModel::feedMeter(MeterItem* m, bool alive, float dt) {
+    if (!alive) {
+        m->setNoData();
+        return;
+    }
+    if (!m->isVisible()) return;
+    float peak = 0.0f;
+    bool ok = false;
+    if (m->busSide() >= 0) {
+        ok = feed_.bus(engine_, static_cast<std::size_t>(m->busSide()), peak);
+    } else {
+        const auto ch = static_cast<std::size_t>(m->channel());
+        ok = meter_point_ == MeterPoint::Post ? feed_.post_max(engine_, ch, peak)
+                                              : feed_.input(engine_, ch, peak);
+    }
+    if (ok) m->feed(peak, dt);
 }
 
 void ShellModel::hideMeters() {
@@ -634,32 +650,8 @@ void ShellModel::tick() {
         link_error_ = link_error;
         emit engineAliveChanged();
     }
-    std::fill(peak_read_.begin(), peak_read_.end(), false);
-    bus_peak_read_ = {false, false};
-    for (MeterItem* m : meters_) {
-        if (!alive) {
-            m->setNoData();
-            continue;
-        }
-        if (!m->isVisible()) continue;
-        if (m->busSide() >= 0) {
-            const auto side = static_cast<std::size_t>(m->busSide());
-            if (side >= bus_peaks_.size()) continue;
-            if (!bus_peak_read_[side]) {
-                bus_peaks_[side] = engine_.take_bus_peak(static_cast<uint32_t>(side));
-                bus_peak_read_[side] = true;
-            }
-            m->feed(bus_peaks_[side], dt);
-            continue;
-        }
-        const auto ch = static_cast<std::size_t>(m->channel());
-        if (ch >= peaks_.size()) continue;
-        if (!peak_read_[ch]) {
-            peaks_[ch] = engine_.take_peak(static_cast<uint32_t>(ch));
-            peak_read_[ch] = true;
-        }
-        m->feed(peaks_[ch], dt);
-    }
+    feed_.begin_tick();
+    for (MeterItem* m : meters_) feedMeter(m, alive, dt);
     // One frame of the state block per tick at most, shared by the sink
     // and the refresh, so both draw the same publish.
     // A new format refreshes at once: the arm buttons and the clock are
@@ -672,14 +664,13 @@ void ShellModel::tick() {
         // the maximum since this reader's last, covers this one too.
         if (alive && !frame_.transport.stale &&
             frame_.transport.state == TransportMode::Recording) {
-            const std::size_t n = std::min(peaks_.size(), frame_.tracks.size());
+            const std::size_t n = std::min(feed_.tracks(), frame_.tracks.size());
+            float unused = 0.0f;
             for (std::size_t ch = 0; ch < n; ++ch) {
-                if (!frame_.tracks[ch].armed || peak_read_[ch]) continue;
-                peaks_[ch] = engine_.take_peak(static_cast<uint32_t>(ch));
-                peak_read_[ch] = true;
+                if (frame_.tracks[ch].armed) feed_.input(engine_, ch, unused);
             }
         }
-        live_take_sink_(frame_, peaks_, alive);
+        live_take_sink_(frame_, feed_.input_values(), alive);
     }
     if (refresh) refreshState(false);
     if (refresh && plugin_sinks_.frame) plugin_sinks_.frame(frame_, alive);

@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "engine_adapter.h"
+#include "meter_feed.h"
 #include "key_router.h"
 #include "keymap_profiles.h"
 
@@ -175,6 +176,8 @@ public:
 
     void attachMeter(MeterItem* m);
     void detachMeter(MeterItem* m);
+    void setMeterPoint(MeterPoint p) { meter_point_ = p; }
+    MeterPoint meterPoint() const { return meter_point_; }
     int attachedMeters() const { return static_cast<int>(meters_.size()); }
     // For --no-meters, the baseline a measurement subtracts.
     void hideMeters();
@@ -392,6 +395,7 @@ private:
     static bool clearsRecordRefusal(const std::string& c);
     // `read_frame` false: tick() has just read frame_.
     void refreshState(bool read_frame = true);
+    void feedMeter(MeterItem* m, bool alive, float dt);
     void takeEvents();
     // A new Hello with another command list: the router follows it.
     void followEngineCommands();
@@ -410,14 +414,10 @@ private:
     int hz_ = 60;
     unsigned tick_count_ = 0;
     std::vector<MeterItem*> meters_;
-    // One peak per channel per tick, however many meters show the channel:
-    // take_peak() moves this reader's cursor, so a second read in the same
-    // tick would see nothing and draw a meter that lies.
-    std::vector<float> peaks_;
-    std::vector<bool> peak_read_;
-    // The monitor bus's two sides, read once a tick for the same reason.
-    std::array<float, 2> bus_peaks_{};
-    std::array<bool, 2> bus_peak_read_{};
+    MeterFeed feed_;
+    // Pre until the mixer exposes the choice: the existing shell tests read
+    // input peaks through their fake, which has no post-fader data.
+    MeterPoint meter_point_ = MeterPoint::Pre;
     TransportSink transport_sink_;
     LiveTakeSink live_take_sink_;
     PluginSinks plugin_sinks_;
