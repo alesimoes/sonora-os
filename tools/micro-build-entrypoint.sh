@@ -11,6 +11,7 @@
 #   SONORA_JOBS          -j for the build (default nproc)
 #   SONORA_MICRO_DIRECT  1: direct dependents only (default: transitive)
 #   SONORA_MICRO_PLAN_ONLY  1: write the plan and stop (the RTSan job's input)
+#   SONORA_MICRO_BUILD_ONLY 1: scope all builds, runs no test (nightly's ccache seed)
 set -euo pipefail
 
 BUILD="${SONORA_BUILD_DIR:-build-micro}"
@@ -21,10 +22,24 @@ PLAN="${SONORA_MICRO_PLAN:-$BUILD/micro-plan.json}"
 if command -v ccache >/dev/null; then
   export CMAKE_CXX_COMPILER_LAUNCHER=ccache CMAKE_C_COMPILER_LAUNCHER=ccache
   ccache -z >/dev/null 2>&1 || true
+  # Also on a red run: the hit rate says whether the cache restore worked.
+  trap 'ccache -s 2>&1 || true' EXIT
 fi
 
+# Ninja and mold when the image has them (Dockerfile.build/.ui): the link
+# step of a test binary is most of what an incremental micro build costs.
+# An existing tree keeps its generator (cmake refuses to change it).
+gen=() link=()
+if [[ ! -f "$BUILD/CMakeCache.txt" ]] && command -v ninja >/dev/null; then gen=(-G Ninja); fi
+if command -v mold >/dev/null; then
+  link=(-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=mold
+        -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=mold)
+fi
+JUNIT="$(dirname "$PLAN")/ctest.xml"
+
 python3 tools/micro_targets.py query "$BUILD"
-cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release >"$BUILD.configure.log" 2>&1 || {
+echo "micro-build: configuring ($BUILD, ${gen[*]:-existing generator}, linker $([[ ${#link[@]} -gt 0 ]] && echo mold || echo default))"
+cmake -S . -B "$BUILD" "${gen[@]}" "${link[@]}" -DCMAKE_BUILD_TYPE=Release >"$BUILD.configure.log" 2>&1 || {
   cat "$BUILD.configure.log"; exit 1
 }
 grep -E "^-- SONORA_PLATFORM|^-- (ui/qt|plugins/host)" "$BUILD.configure.log" || true
@@ -56,7 +71,11 @@ case "$scope" in
   all)
     echo "micro-build: a root build file changed; building the whole tree"
     cmake --build "$BUILD" -j"$JOBS"
-    QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure -j"$(nproc)" -LE slow ;;
+    if [[ "${SONORA_MICRO_BUILD_ONLY:-0}" == 1 ]]; then   # nightly's ccache seed
+      echo "micro-build: build only (ccache seed)"; exit 0
+    fi
+    echo "micro-build: running every test (not slow)"
+    QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure -j"$(nproc)" -LE slow       --output-junit "$JUNIT" ;;
   targets)
     printf '  target %s\n' "${targets[@]}"
     cmake --build "$BUILD" -j"$JOBS" --target "${targets[@]}"
@@ -76,8 +95,5 @@ if [[ " ${targets[*]} " == *" sonora-engine "* && -x "$BUILD/sonora-engine" ]]; 
   echo "micro-build: engine-process tests"
   python3 tools/failed-take-quit.py --engine "$BUILD/sonora-engine"
   python3 tools/crash-recovery-kill.py --engine "$BUILD/sonora-engine"
-fi
-if command -v ccache >/dev/null; then
-  ccache -s 2>/dev/null | grep -iE "hit|cache size" || true
 fi
 echo "micro-build: passed"

@@ -8,6 +8,7 @@ import unittest
 
 import support  # noqa: F401  (sets sys.path)
 import micro_targets as mt
+from micro_test_needs import needed_targets
 
 
 def T(name, dir_, sources=(), deps=(), type_="STATIC_LIBRARY", artifacts=()):
@@ -128,6 +129,21 @@ class Tests(unittest.TestCase):
                                 "test_model"])
         # with the engine-process test registered, the engine is needed
         self.assertIn("sonora-engine", mt.prune_apps(TARGETS, p["targets"], CTEST))
+
+    def test_a_matched_test_also_builds_the_driver_and_objects_it_names(self):
+        targets = TARGETS + [
+            T("driver", "plugins/native/format", [], [], "EXECUTABLE"),
+            T("canary", "engine/plugin_client", [], [], "OBJECT_LIBRARY",
+              artifacts=[]),
+        ]
+        ctest = {"tests": [
+            {"name": "fmt", "command": ["/b/driver", "/b/native_eq"]},
+            {"name": "canary_t", "command": [
+                "cmake", "-DRT_OBJECTS=/b/engine/CMakeFiles/canary.dir/c.o"]},
+            {"name": "other", "command": ["/b/test_base"]},
+        ]}
+        got = needed_targets(ctest, targets, ["fmt", "canary_t"])
+        self.assertEqual(got, ["canary", "driver", "native_eq"])
 
     def test_regex_matches_exact_names_only(self):
         import re

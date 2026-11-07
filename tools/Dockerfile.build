@@ -9,6 +9,8 @@ RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
  if apt-get $A update && apt-get $A install -y --no-install-recommends \
       build-essential \
       ccache \
+      mold \
+      ninja-build \
       cmake \
       pkg-config \
       libjack-jackd2-dev \

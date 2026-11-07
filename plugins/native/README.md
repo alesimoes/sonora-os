@@ -31,6 +31,12 @@ What derives from the directory, with no edit:
 A directory with a `CMakeLists.txt` but no `tests/suite.cpp` (`ampcab`, for
 now) is built and tested but not driven by the harness.
 
+## Processors with a research note
+
+- `multiband`: 3 or 4 band compressor, Linkwitz-Riley or linear-phase
+  crossovers (`common/dsp/include/sonora/dsp/crossover.h`); design in
+  `brain/research/native-multiband-n2.md`.
+
 ## The plugin package
 
 The plugins are a product of their own (owner, 2026-11-05), so their build

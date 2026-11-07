@@ -1,35 +1,38 @@
-/* painel de disco: o drive do repositório (alerta abaixo de 30 GB livres, crítico abaixo de 10 GB),
-   o uso do Docker e os maiores consumidores do repo; o servidor mede o que é lento em segundo plano */
+/* máquina/disco compacto: uma linha de resumo sempre visível e, aberto, uma tabela do Docker e os 3 maiores
+   consumidores. Alerta só com disco abaixo de 15% livre ou mais de 30 GB recuperáveis no Docker. */
 const GIB=1024**3;
 const bytes=n=>n==null||n<0?'?':n>=1e12?(n/1e12).toFixed(2)+' TB':n>=1e9?(n/1e9).toFixed(1)+' GB':n>=1e6?Math.round(n/1e6)+' MB':Math.round(n/1e3)+' kB';
 const DOCKER_PT={'Images':'Imagens','Containers':'Containers','Local Volumes':'Volumes','Build Cache':'Cache de build'};
 
-function driveCard(d){
-  if(!d||!d.ok)return `<div class="dcard"><b>Drive</b><span class="empty">${E((d&&d.error)||'sem dado')}</span></div>`;
-  const usedPct=d.total?Math.round(d.used/d.total*100):0,warn=d.level!=='ok';
-  return `<div class="dcard ${d.level}"><b>Drive do repositório <small>${E(d.path)}</small></b>
-    <div class="dfree">${bytes(d.free)} livres <small>de ${bytes(d.total)}</small></div>
-    <div class="pbar"><i style="width:${usedPct}%"></i></div>
-    <small>${d.level==='crit'?'CRÍTICO: menos de 10 GB livres; o disco cheio já derrubou o daemon':warn?'Atenção: menos de 30 GB livres':'espaço suficiente'}</small></div>`}
+const LOW_FREE_PCT=15,HIGH_RECLAIM=30e9,TOP_N=3;
+const freePct=d=>d&&d.ok&&d.total?Math.round(d.free/d.total*100):null;
+const reclaimTotal=k=>k&&k.ok?(k.rows||[]).reduce((a,r)=>a+(r.reclaimable||0),0):null;
+function diskWarn(d,k){const p=freePct(d),r=reclaimTotal(k);return (p!=null&&p<LOW_FREE_PCT)||(r!=null&&r>HIGH_RECLAIM)||(d&&d.ok&&d.level!=='ok')}
 
-function dockerCard(k){
-  if(!k||!k.ok)return `<div class="dcard"><b>Docker</b><span class="empty">${E((k&&k.error)||'sem dado')} (o painel segue sem ele)</span></div>`;
-  const rows=(k.rows||[]).map(r=>`<div class="trow"><span class="tt">${E(DOCKER_PT[r.type]||r.type)}</span><small>${r.active} de ${r.count} em uso</small><b>${bytes(r.size)}</b><small>${bytes(r.reclaimable)} recuperáveis</small></div>`).join('');
-  return `<div class="dcard"><b>Docker <small>docker system df · lido há ${dur(Math.round(k.age||0))}</small></b>${rows}</div>`}
+function sysSummary(s){
+  const d=(s.disk||{}).drive,k=(s.disk||{}).docker,r=(s.disk||{}).repo,lock=s.lock||[],holder=lock.find(x=>x.role==='holds');
+  const p=[`Build: ${holder?'ocupado'+(lock.length>1?' (+'+(lock.length-1)+' na fila)':''):'livre'}`];
+  if(d&&d.ok)p.push(`Disco ${bytes(d.free)} livres (${freePct(d)}%)`);
+  if(k&&k.ok)p.push(`Docker ${bytes(reclaimTotal(k))} recuperáveis`);
+  if(r&&r.ok&&r.worktrees)p.push(`worktrees ${bytes(r.worktrees.size)}`);
+  return p.join(' · ')}
 
-function repoRows(title,g){
-  const top=(g.top||[]).map(x=>`<div class="trow"><span class="tt mono">${E(x.name)}</span><b>${bytes(x.size)}</b></div>`).join('');
-  return `<div class="dsub"><b>${title}</b> · ${g.count} · ${bytes(g.size)}</div>${top}`}
+function dockerTable(k){
+  if(!k||!k.ok)return `<div class="empty">Docker: ${E((k&&k.error)||'sem dado')} (o painel segue sem ele)</div>`;
+  const rows=(k.rows||[]).filter(r=>r.count>0||r.size>0).map(r=>`<tr><td>${E(DOCKER_PT[r.type]||r.type)}</td><td>${r.active}/${r.count}</td><td>${bytes(r.size)}</td><td>${r.reclaimable>0?bytes(r.reclaimable):'-'}</td></tr>`).join('');
+  return `<table class="dtab"><tr><th>Docker</th><th>em uso</th><th>tamanho</th><th>recuperável</th></tr>${rows}</table>`}
 
-function repoCard(r){
-  if(!r||!r.ok)return `<div class="dcard"><b>Maiores consumidores</b><span class="empty">${E((r&&r.error)||'sem dado')}</span></div>`;
-  return `<div class="dcard"><b>Maiores consumidores <small>medido há ${dur(Math.round(r.age||0))}${r.partial?' · parcial (tempo esgotado)':''}</small></b>
-    ${repoRows('.claude/worktrees',r.worktrees)}${repoRows('build-*/',r.builds)}</div>`}
+function topConsumers(r){
+  if(!r||!r.ok)return `<div class="empty">Consumidores: ${E((r&&r.error)||'sem dado')}</div>`;
+  const all=[...((r.worktrees||{}).top||[]).map(x=>({n:'worktrees/'+x.name,size:x.size})),...((r.builds||{}).top||[]).map(x=>({n:x.name,size:x.size}))]
+    .filter(x=>x.size>0).sort((a,b)=>b.size-a.size).slice(0,TOP_N);
+  if(!all.length)return '';
+  return `<table class="dtab"><tr><th>Maiores consumidores${r.partial?' (parcial)':''}</th><th>tamanho</th></tr>${all.map(x=>`<tr><td class="mono">${E(x.n)}</td><td>${bytes(x.size)}</td></tr>`).join('')}</table>`}
 
 function renderDisk(s){
-  const d=s.disk||{};
-  $('disk').innerHTML=driveCard(d.drive)+dockerCard(d.docker)+repoCard(d.repo)
-    +`<div class="dcard"><b>Limpeza <small>tools/clean.sh: só o que é nosso</small></b><div class="dact">${actBtn('ver o que libera','disk.preview',{})}${actBtn('limpar','disk.clean',{},'dng')}${actBtn('só worktrees','disk.clean',{mode:'worktrees'},'dng')}</div></div>`;
-  const dr=d.drive;
-  $('diskhint').textContent=dr&&dr.ok?bytes(dr.free)+' livres':'';
-  $('diskhint').className='hint '+(dr&&dr.ok?dr.level:'')}
+  const d=s.disk||{},warn=diskWarn(d.drive,d.docker),crit=d.drive&&d.drive.level==='crit';
+  const lowMsg=warn?`<div class="dwarn">${crit?'CRÍTICO: menos de 10 GB livres; o disco cheio já derrubou o daemon. ':''}Disco ${bytes((d.drive||{}).free)} livres, Docker ${bytes(reclaimTotal(d.docker))} recuperáveis.</div>`:'';
+  $('disk').innerHTML=lowMsg+dockerTable(d.docker)+topConsumers(d.repo)
+    +`<div class="dact">${actBtn('ver o que libera','disk.preview',{})}${actBtn('limpar','disk.clean',{},warn?'dng warnbtn':'dng')}${actBtn('só worktrees','disk.clean',{mode:'worktrees'},'dng')}</div>`;
+  $('disk').classList.toggle('warn',warn);$('disk').classList.toggle('crit',!!crit);
+  $('syssum').textContent=sysSummary(s);$('syssum').className='hint '+(crit?'crit':warn?'warn':'')}

@@ -100,6 +100,26 @@ echo "$changed" | grep -E '\.(cpp|cc|h|hpp|py|qml|sh)$' | grep -v '/third_party/
     fi
   done
 
+# 9. Workflows must parse (a broken ci.yml makes GitHub run zero jobs), and no
+# added line may end inside an open quote with the next one starting with it
+# (a backslash-n turned into a real line break).
+py=
+for c in python3 python py; do
+  # the Windows Store stub answers command -v but does not run
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys' >/dev/null 2>&1; then py=$c; break; fi
+done
+if [ -n "$py" ]; then
+  if ! "$py" -c 'import yaml' 2>/dev/null; then
+    echo "pre-pr: warning: PyYAML missing; workflow YAML NOT parsed (pip install pyyaml)" >&2
+  else
+    # shellcheck disable=SC2046
+    "$py" tools/check_syntax.py yaml $(ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null) || bad "workflow YAML does not parse"
+  fi
+  "$py" tools/check_syntax.py quotes --base "$base" || bad "broken string literal in an added line"
+else
+  echo "pre-pr: warning: no python; workflow YAML and quote checks NOT run" >&2
+fi
+
 if [ "$fail" = 0 ]; then
   echo "pre-pr: ok ($(echo "$changed" | wc -l | tr -d ' ') files). Tests you touched are still yours to run."
 fi

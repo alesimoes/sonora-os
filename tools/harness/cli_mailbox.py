@@ -7,14 +7,17 @@ daemon's next tick applies it, so state.json keeps one writer. `adopt` has
 had the same door since #461 (harness/autoadopt.py). The result of each
 request is an event (`cli_request` or `cli_request_failed`).
 """
+import itertools
 import json
 import os
 import time
 
+from . import dash_door
 from .status import write_atomic
 
 REQUEST_DIR = "cli-requests"
-KINDS = ("add", "import-queue", "bundle")
+_SEQ = itertools.count()   # time_ns ties on a coarse clock
+KINDS = ("add", "import-queue", "bundle", "regate", "rerun-step", "assign")
 
 
 def request_dir(hdir):
@@ -27,7 +30,7 @@ def post(hdir, kind, **args):
         raise ValueError(f"unknown request {kind}")
     d = request_dir(hdir)
     os.makedirs(d, exist_ok=True)
-    p = os.path.join(d, f"{time.time_ns()}-{os.getpid()}.json")
+    p = os.path.join(d, f"{time.time_ns()}-{os.getpid()}-{next(_SEQ):06d}.json")
     write_atomic(p, {"kind": kind, "args": args})
     return p
 
@@ -55,6 +58,8 @@ def take(hdir):
 
 def apply(orch, kind, args):
     """Runs one request on the daemon's own store; returns what it did."""
+    if kind in dash_door.KINDS:
+        return dash_door.apply(orch, kind, args)
     if kind == "add":
         orch.store.add_task(
             args["id"], args["track"], args["agent"],
