@@ -3,8 +3,10 @@
 function chip(cls,label,val,title,extra){return `<span class="sc ${cls||''}" title="${E(title||'')}" ${extra||''}><small>${E(label)}</small> <b>${E(val)}</b></span>`}
 let pauseOpen=false;
 document.addEventListener('click',e=>{if(e.target.closest('[data-pausetoggle]')){pauseOpen=!pauseOpen;const b=$('pausebox');if(b)b.hidden=!pauseOpen||!b.innerHTML}});
-function renderPauseBox(o){const paused=(o&&o.paused)||[],b=$('pausebox');
-  b.innerHTML=paused.length?'<b>Filas pausadas</b>'+paused.map(n=>`<span class="pz"><span>${E((POOL_PT[n]||[n])[0])}</span>${poolActs(n,true)}</span>`).join(''):'';
+const BUILD_POOLS=['build','build:daw','build:os','build:plugin'];
+function renderPauseBox(o){const paused=(o&&o.paused)||[],b=$('pausebox'),nb=BUILD_POOLS.filter(n=>paused.includes(n)).length;
+  const bulk=(nb?actBtn('Retomar toda a construção ('+nb+')','pool.resume_group',{group:'build'}):'')+(paused.length?actBtn('Retomar tudo ('+paused.length+')','pool.resume_group',{group:'all'}):'');
+  b.innerHTML=paused.length?'<b>Filas pausadas</b><span class="pbulk">'+bulk+'</span>'+paused.map(n=>`<span class="pz"><span>${E((POOL_PT[n]||[n])[0])}<small> · ${E(POOL_HINT[n]||'')}</small></span>${poolActs(n,true)}</span>`).join(''):'';
   b.hidden=!pauseOpen||!paused.length}
 function renderStrip(s){
   const o=s.orchestrator,now=Date.now()/1000,d=s.disk&&s.disk.drive,lock=s.lock||[],holder=lock.find(r=>r.role==='holds'),nw=lock.filter(r=>r.role==='waits').length;

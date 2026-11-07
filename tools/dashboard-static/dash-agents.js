@@ -7,7 +7,7 @@ function personCard(x){
     <div class="ab"><div class="an">${E(x.title)}</div>
       <div class="as">${model?`<span class="mdl ${model}">${E(MODEL_PT(model))}</span> `:''}${E(x.sub)}</div>
       <div class="sts"><i class="sd"></i>${E(x.stateText)}</div>
-      <div class="ad">${E(x.doing||'sem tarefa registrada')}</div>
+      <div class="ad">${E(x.doing||'sem tarefa registrada')}</div>${x.step?`<div class="ast" title="último passo do agente">↳ ${E(x.step)}</div>`:''}
       <div class="ac">${chips}<span class="more">detalhes ›</span></div></div></article>`}
 function people(s){
   const now=Date.now()/1000,out=[];
@@ -25,8 +25,9 @@ function people(s){
     const doing=(runs?runs+' agente(s) rodando.':'Nenhum agente rodando.')+((o.paused||[]).length?' Filas pausadas: '+o.paused.join(', ')+'.':'');
     out.push({k:'builder',id:'orch',title:'Orquestrador',sub:'daemon · distribui o trabalho e faz o merge',model:'',avatar:'OR',state:live?'working':'idle',
       stateText:live?'Rodando · atualizou há '+dur(age):'Parado há '+dur(age),doing})}
-  ((o&&o.runs)||[]).forEach(r=>{out.push({k:'run',id:r.id,title:roleName(r.role),sub:'orquestrador · '+(r.name||r.id),model:r.model||'sonnet',avatar:avatarOf(r.role),
-    state:r.suspect||r.working===false?'wait':'working',stateText:(r.suspect?'Sem sinal':r.building?'Buildando':'Trabalhando')+(r.started?' · há '+dur(Math.round(now-r.started)):''),doing:r.task})});
+  ((o&&o.runs)||[]).forEach(r=>{out.push({k:'run',id:r.id,title:roleName(r.role),sub:(r.agent||r.role)+' · '+(r.name||r.id),model:r.model||'sonnet',avatar:avatarOf(r.role),
+    state:r.suspect||r.working===false?'wait':'working',stateText:(r.suspect?'Sem sinal':r.building?'Buildando':'Trabalhando')+(r.started?' · há '+dur(Math.round(now-r.started)):''),
+    doing:r.title||r.task,step:r.last_step||(r.last_beat?'último sinal há '+dur(Math.round(now-r.last_beat)):''),pr:r.pr,branch:r.branch})});
   return out}
 function renderPeople(s){
   const list=people(s);
