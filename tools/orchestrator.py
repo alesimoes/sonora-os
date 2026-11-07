@@ -21,7 +21,8 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import (autoadopt, dispatch, heartbeat, launcher, numbers,  # noqa: E402
-                     routing, scheduler, shadow, status)
+                     routing, scheduler, shadow, status, supervisor,
+                     supervisor_sys)
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
@@ -43,7 +44,8 @@ def make_broker(root):
 class Orchestrator:
     def __init__(self, root, cfg=None, broker=None, dry_run=True,
                  fake_claude=None, clock=time.time, worktrees=None,
-                 seed_fn=None, log=None, forge=None, shadow_agents=None):
+                 seed_fn=None, log=None, forge=None, shadow_agents=None,
+                 sys_=None):
         self.root = os.path.abspath(root)
         self.cfg = cfg or scheduler.load_config(
             os.path.join(self.root, "planning", "orchestrator",
@@ -75,6 +77,10 @@ class Orchestrator:
         self.flow = Flow(self)
         self.train = Train(self)
         self.localci = LocalCI(self, clock)
+        # The watchdog over runs, lock, queues, PRs and disk; the tests hand
+        # it a fake system (supervisor_sys.RealSys surface).
+        self.supervisor = supervisor.Supervisor(
+            self, sys_ or supervisor_sys.RealSys(clock=clock))
         self.attribution = ATTRIBUTION
         self.shadow = None
         if shadow_agents:   # shadow rollout: never launches, only compares
@@ -177,6 +183,8 @@ class Orchestrator:
         if stop_now:
             self._kill_all("STOP.NOW")
         self._poll_runs(now)
+        if not self.dry_run:
+            self.supervisor.tick(now)   # every interval_s, not every tick
         if self.cfg.local_ci and not self.dry_run:
             self.localci.prune(self.train.head_is_gone)
             self.localci.poll()
@@ -237,6 +245,8 @@ class Orchestrator:
             b["queue"]["prs"] = [prs.get(x) for x in b["queue"]["batch"]]
             data["builder"] = b
         data["gh_paused_until"] = self.train.pause_until or None
+        data["daemon_pid"] = os.getpid()   # tools/supervisor.py probes it
+        data.update(self.supervisor.status())
         try:
             status.write_atomic(self._p("status.json"), data)
         except OSError as e:   # the dashboard is reading it; next tick retries
