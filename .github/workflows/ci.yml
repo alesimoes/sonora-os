@@ -40,6 +40,9 @@ jobs:
       image_labwc: ${{ steps.filter.outputs.image_labwc }}
       image_labwc_input: ${{ steps.filter.outputs.image_labwc_input }}
       image_systemd: ${{ steps.filter.outputs.image_systemd }}
+      micro_build: ${{ steps.filter.outputs.micro_build }}
+      micro_label: ${{ steps.filter.outputs.micro_label }}
+      rtsan_label: ${{ steps.filter.outputs.rtsan_label }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,6 +88,16 @@ jobs:
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
+          # The micro build jobs are named for what they do (owner,
+          # 2026-11-07); "Gate" below is the one stable name to require.
+          micro_label=$(printf '%s\n' "$files" | tools/ci-micro-label.sh build)
+          rtsan_label=$(printf '%s\n' "$files" | tools/ci-micro-label.sh rtsan)
+          case "$micro_label" in Nothing*) echo "micro_build=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "micro_build=true" >> "$GITHUB_OUTPUT" ;; esac
+          echo "micro_label=$micro_label" >> "$GITHUB_OUTPUT"
+          echo "rtsan_label=$rtsan_label" >> "$GITHUB_OUTPUT"
+          echo "$micro_label / $rtsan_label"
+
           # Which heavy jobs this PR can affect. With six jobs running at
           # once for the whole repository, a plugin-only or UI-only PR that
           # ran the sanitizers, PipeWire and Ardour jobs held the queue for
@@ -116,7 +129,7 @@ jobs:
           # job), tools/micro-build.sh, tools/Dockerfile*, tools/*-entrypoint.sh.
           harness_only=false
           if [ "${{ github.event_name }}" = pull_request ] && [ -n "$files" ] &&
-             ! printf '%s\n' "$files" | grep -qvE '^(planning|brain|docs|\.claude)/|\.md$|^tools/(harness/|harness[^/]*\.py$|orchestrator\.py$|supervisor\.py$|dashboard[^/]*$|build-slot\.sh$|test-build-slot\.sh$)'; then
+             ! printf '%s\n' "$files" | grep -qvE '^(planning|brain|docs|\.claude)/|\.md$|^tools/(harness/|harness[^/]*\.py$|orchestrator\.py$|supervisor\.py$|check_syntax\.py$|dashboard[^/]*$|build-slot\.sh$|test-build-slot\.sh$)'; then
             harness_only=true
           fi
           echo "harness_only=$harness_only" >> "$GITHUB_OUTPUT"
@@ -127,7 +140,7 @@ jobs:
             while IFS= read -r f; do
               case "$f" in
                 planning/*|brain/*|docs/*|*.md) ;;
-                tools/build-slot.sh|tools/test-build-slot.sh|tools/supervisor.py) ;;
+                tools/build-slot.sh|tools/test-build-slot.sh|tools/supervisor.py|tools/check_syntax.py) ;;
                 engine/core/*|common/audiofile/*) core=true rt=true bwf=true ;;
                 engine/*|drivers/*) core=true rt=true ;;
                 contracts/*) core=true ;;
@@ -431,22 +444,24 @@ jobs:
   # interop suites, the Windows build, the slow tests and the ISO run once a
   # day on main (nightly.yml), never per PR.
   micro:
-    name: Micro build
+    name: ${{ needs.changes.outputs.micro_label }}
     needs: changes
-    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true' && needs.changes.outputs.micro_build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # ccache across runs: a PR's second push and the next PR on the same
-      # module compile from cache on a 4-vCPU runner.
-      - uses: actions/cache@v4
+      # ccache seeded by nightly.yml (job "Seed ccache") from main, one per
+      # image: a PR restores the newest seed and never saves, so its
+      # entries cannot evict main's from the repository's cache quota.
+      - name: Restore the ccache seed
+        uses: actions/cache/restore@v4
         with:
           path: ~/.ccache-micro
-          key: micro-ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: micro-ccache-${{ runner.os }}-
+          key: micro-ccache-${{ needs.changes.outputs.ui == 'true' && 'ui' || 'build' }}-${{ github.sha }}
+          restore-keys: micro-ccache-${{ needs.changes.outputs.ui == 'true' && 'ui' || 'build' }}-
       - name: Get the sonora-build image (pulled from GHCR)
         uses: ./.github/actions/sonora-image
         with:
@@ -466,7 +481,7 @@ jobs:
         env:
           SONORA_HEAVY_HELD: "1"
         run: |
-          export SONORA_CCACHE_DIR="$HOME/.ccache-micro"
+          export SONORA_CCACHE_DIR="$HOME/.ccache-micro" CCACHE_MAXSIZE=4G
           tools/micro-build.sh --base origin/main --no-rtsan
       - name: The plan (what was built and tested)
         if: always()
@@ -475,7 +490,7 @@ jobs:
   # The real-time rule, per PR but on the affected targets only: a change in
   # the RT call graph runs those targets' tests under RealtimeSanitizer.
   micro-rtsan:
-    name: "Micro build: RTSan"
+    name: ${{ needs.changes.outputs.rtsan_label }}
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.rt == 'true'
     runs-on: ubuntu-latest
@@ -498,6 +513,16 @@ jobs:
           dockerfile: tools/Dockerfile.build
           context: tools
           rebuild: ${{ needs.changes.outputs.image_build }}
+      # The plan is made in the Qt image when ui/ is touched; the script
+      # never builds an image on GitHub.
+      - name: Get the sonora-ui image (pulled from GHCR, for the plan)
+        if: needs.changes.outputs.ui == 'true'
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-ui
+          dockerfile: tools/Dockerfile.ui
+          context: .
+          rebuild: ${{ needs.changes.outputs.image_ui }}
       - name: Get the sonora-rtsan image (pulled from GHCR)
         uses: ./.github/actions/sonora-image
         with:
@@ -513,6 +538,25 @@ jobs:
           export SONORA_CCACHE_DIR="$HOME/.ccache-micro-rtsan"
           tools/micro-build.sh --base origin/main --rtsan-only
 
+  # The one check to require: green when the micro build jobs above passed
+  # or were skipped (nothing to build). Its name does not change with the
+  # PR; the jobs' names do.
+  gate:
+    name: Gate
+    needs: [changes, micro, micro-rtsan]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every micro build job passed or was skipped
+        env:
+          RESULTS: ${{ needs.micro.result }} ${{ needs.micro-rtsan.result }} ${{ needs.changes.result }}
+          LABEL: ${{ needs.changes.outputs.micro_label }}
+        run: |
+          echo "### Gate" >> "$GITHUB_STEP_SUMMARY"
+          echo "$LABEL ($RESULTS)" >> "$GITHUB_STEP_SUMMARY"
+          case " $RESULTS " in *failure*|*cancelled*) exit 1 ;; esac
+
   # The orchestrator daemon, its broker and supervisor (ADR-0047), against a
   # fake claude; the heavy lock script. For a harness-only PR this is the
   # whole CI (see harness_only in `changes`).
@@ -527,8 +571,12 @@ jobs:
           python-version: "3.11"
       - name: Install shellcheck
         run: for d in 0 15 45; do sleep "$d"; sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y shellcheck && exit 0; done; echo "apt failed after 3 attempts" >&2; exit 1
+      - name: Workflows parse as YAML
+        run: |
+          python -m pip install --quiet pyyaml
+          python tools/check_syntax.py yaml .github/workflows/*.yml
       - name: Harness shell scripts
-        run: shellcheck tools/build-slot.sh tools/test-build-slot.sh tools/micro-build.sh tools/micro-build-entrypoint.sh tools/dashboard-up.sh
+        run: shellcheck tools/build-slot.sh tools/test-build-slot.sh tools/micro-build.sh tools/micro-build-entrypoint.sh tools/ci-micro-label.sh tools/dashboard-up.sh
       - name: Build slot limiter
         run: tools/test-build-slot.sh
       - name: Harness unit tests
