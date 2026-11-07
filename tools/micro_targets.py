@@ -34,6 +34,8 @@ import os
 import re
 import sys
 
+from micro_test_needs import needed_targets
+
 CLIENT = "client-sonora-micro"
 ROOT_BUILD_FILES = ("CMakeLists.txt", "CMakePresets.json")
 ROOT_BUILD_DIRS = ("cmake/",)
@@ -282,6 +284,8 @@ def main(argv=None):
         listing = ctest_listing(a.build)
         out["targets"] = prune_apps(targets, out["targets"], listing)
         out["tests"] = match_tests(listing, targets, out["targets"])
+        out["targets"] = sorted(set(out["targets"]) | set(
+            needed_targets(listing, targets, out["tests"])))
         out["ctest_regex"] = ctest_regex(out["tests"]) if out["tests"] else ""
     json.dump(out, sys.stdout, indent=1, sort_keys=True)
     print()

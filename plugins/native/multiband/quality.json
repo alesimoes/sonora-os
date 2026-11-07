@@ -1,0 +1,32 @@
+{
+  "processor": "org.sonora.multiband",
+  "class": "B",
+  "note": "ADR-0011 §3.2 first bars. Crossovers: the bands sum to the input (null), exactly delayed by the reported latency in linear phase and flat in magnitude (an all-pass) in minimum phase; each leg is -6.02 dB at its crossover in minimum phase (Linkwitz-Riley) and -6 dB in linear phase. Static curve per band against the Giannoulis et al. gain computer from a band soloed at its centre; attack and release are the 63 % times of the gain change in dB from step tests. Latency measured equals reported in every configuration (minimum phase by the impulse's first non-zero sample, since an all-pass bank's cross-correlation lag is phase delay and not buffering; linear phase by the harness's cross-correlation). Timing is held on band 1 with DC steps (the band's own step delay, 0.79 ms at its 1 kHz crossover, subtracted): a slow attack on a tone is stretched by the branching detector's duty cycle, so the other bands' tone timing is reported (18 ms for a 10 ms attack at 4 kHz). Static curves are held from each band soloed at a tone inside it, against the curve applied to the sample peak the detector sees. CPU (3.5, class B): the minimum-phase mode is held to the class, with p999_kernels its p99.9 in reference kernels (120.2 us over 83.9 us, i7-11800H, --cpu-calibrate), held to x1.15; the linear-phase mode (six partitioned convolutions) is reported, 217 us p50 and 300 us p99.9 on that machine, about 117 us on the reference machine's scale (class C), so it is not held to class B (ADR-0011 3.5, as the tape's standard and high qualities).",
+  "multiband": {
+    "null_db": -120.0,
+    "flat_db": 0.01,
+    "crossover_db": 0.2,
+    "crossover_lin_db": 0.05,
+    "stopband_db": -40.0,
+    "static_db": 0.1,
+    "time_tolerance": 0.1,
+    "lookahead_gain_db": 6.0,
+    "hpf_gain_db": 12.0,
+    "auto_makeup_db": 0.1,
+    "link_db": 0.1
+  },
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper": ["knee", "sc_hpf_on", "sc_hpf_freq", "auto_makeup", "out_gain", "link",
+             "b1_threshold", "b1_ratio", "b1_attack", "b1_release", "b1_makeup", "b1_solo", "b1_bypass",
+             "b2_threshold", "b2_ratio", "b2_attack", "b2_release", "b2_makeup", "b2_solo", "b2_bypass",
+             "b3_threshold", "b3_ratio", "b3_attack", "b3_release", "b3_makeup", "b3_solo", "b3_bypass",
+             "b4_threshold", "b4_ratio", "b4_attack", "b4_release", "b4_makeup", "b4_solo", "b4_bypass"],
+  "golden_abs": 1e-6,
+  "cpu": {
+    "p999_us": 60.0,
+    "p999_kernels": 1.43,
+    "max_us": 150.0,
+    "held": ["minimum phase"]
+  }
+}

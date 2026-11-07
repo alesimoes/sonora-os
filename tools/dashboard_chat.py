@@ -7,27 +7,18 @@ coordinator session with the Agent tool, or a plain terminal session, is not
 registered with the broker and cannot be reached; the panel says so.
 """
 import os
-import time
 
+from dashboard_daemon import daemon_alive  # noqa: F401  (re-exported)
 from dashboard_orch import orch_state
 from dashboard_util import orch_root
 from harness import ownerchat
 
-FRESH_S = 120.0     # status.json younger than this: a daemon is running
 NOT_REACHABLE = ("Sessão fora do orquestrador (subagente da ferramenta Agent ou "
                  "terminal): não está no broker, não dá para falar com ela daqui.")
 
 
 def harness_dir():
     return os.path.join(orch_root(), ".harness")
-
-
-def daemon_alive(now=None):
-    path = os.path.join(orch_root(), "planning", "orchestrator", "status.json")
-    try:
-        return (now or time.time()) - os.path.getmtime(path) < FRESH_S
-    except OSError:
-        return False
 
 
 def known_run(name):
