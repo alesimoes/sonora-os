@@ -814,8 +814,21 @@ function Invoke-Main {
     }
     if ($DryRun) { Write-Host 'DRY RUN: nothing will be written, and no confirmation is asked for.' }
     $root = Split-Path -Parent $PSScriptRoot
-    $iso = Join-Path $root 'iso\sonora.iso'
-    $stick = Join-Path $root 'iso\sonora-stick.img'
+    # Heavy artefacts: SONORA_ISO_DIR / SONORA_ARTIFACTS_DIR from the environment,
+    # else from the untracked .sonora-local.env (tools/lib/artifacts.sh).
+    $isoDir = $env:SONORA_ISO_DIR
+    $artDir = $env:SONORA_ARTIFACTS_DIR
+    $localEnv = Join-Path $root '.sonora-local.env'
+    if ((-not $isoDir) -and (-not $artDir) -and (Test-Path -LiteralPath $localEnv -PathType Leaf)) {
+        foreach ($line in Get-Content -LiteralPath $localEnv) {
+            if ($line -match '^SONORA_ISO_DIR=(.+)$') { $isoDir = $Matches[1].Trim('"') }
+            elseif ($line -match '^SONORA_ARTIFACTS_DIR=(.+)$') { $artDir = $Matches[1].Trim('"') }
+        }
+    }
+    if ((-not $isoDir) -and $artDir) { $isoDir = Join-Path $artDir 'iso' }
+    if (-not $isoDir) { $isoDir = Join-Path $root 'iso' }
+    $iso = Join-Path $isoDir 'sonora.iso'
+    $stick = Join-Path $isoDir 'sonora-stick.img'
     $persistent = $true
     if ($Image -eq '') {
         if (Test-Path -LiteralPath $stick -PathType Leaf) {
