@@ -40,13 +40,18 @@ h1{margin:0;font-size:18px;font-weight:700;letter-spacing:.02em}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);animation:blink 2s ease-in-out infinite}
 .dot.stale{background:var(--bad)}
 .clk{cursor:pointer}
-/* faixa de status compacta: medidores pequenos e chips (disco, daemon, trava) */
-.strip{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;padding:4px 10px;margin-bottom:6px;background:var(--panel);border:1px solid var(--line);border-radius:4px;font-size:11px}
-.strip .gauges{margin:0;gap:12px}.strip .gauges .g svg{width:22px;height:22px}.strip .gauges .g text{font-size:30px}
-.strip .gauges .g .gl{font-size:10px}.strip .gauges .g small{font-size:9.5px}
-.chips{display:flex;flex-wrap:wrap;gap:4px 14px;margin-left:auto}
-.sc{white-space:nowrap;color:var(--muted)}.sc small{color:var(--faint);font-size:10px}.sc b{font-weight:600;color:var(--ink)}
+/* faixa de status no topo: medidores legíveis e chips como blocos */
+.strip{display:flex;flex-wrap:wrap;align-items:center;gap:10px 24px;padding:10px 14px;margin-bottom:10px;background:var(--panel);border:1px solid var(--line);border-radius:4px;font-size:13px}
+.strip .gauges{margin:0;gap:22px}.strip .gauges .g svg{width:48px;height:48px}.strip .gauges .g text{font-size:30px}
+.strip .gauges .g .gl{font-size:13px}.strip .gauges .g small{font-size:11.5px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-left:auto}
+.sc{display:flex;flex-direction:column;white-space:nowrap;color:var(--muted);padding:5px 12px;min-width:92px;background:var(--raised);border:1px solid var(--line);border-left:4px solid var(--ok);border-radius:4px}
+.sc small{color:var(--faint);font-size:11px}.sc b{font-weight:600;color:var(--ink);font-size:14px}
+.sc.warn{border-left-color:var(--warn)}.sc.crit,.sc.bad{border-left-color:var(--bad)}
 .sc.ok b{color:var(--ok)}.sc.warn b{color:var(--warn)}.sc.crit b,.sc.bad b{color:var(--bad)}
+.sc[data-pausetoggle]{cursor:pointer}.sc[data-pausetoggle]:hover{background:var(--hover)}
+.pausebox{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:8px 14px;margin:-4px 0 10px;background:var(--panel);border:1px solid var(--warn);border-radius:4px;font-size:13px}
+.pausebox .pz{display:inline-flex;align-items:center;gap:6px}
 .sit .sflow .sbad{color:var(--bad)}.sit .pgm .pgbar{width:70px}
 .sit{font-size:16px;border-left-width:4px;padding:12px 14px}
 .people .ag .an{font-size:18px}
@@ -54,3 +59,4 @@ h1{margin:0;font-size:18px;font-weight:700;letter-spacing:.02em}
 .fr:not(.fh) .fc2.cur .pn small{font-size:12px}
 h2.h2{font-size:20px}
 details.tech h3{font-size:14px;margin:12px 0 6px}
+.pausebox[hidden]{display:none}
