@@ -90,5 +90,12 @@ rc=0
 "$SLOT" bash -c 'exit 7' || rc=$?
 [[ "$rc" -eq 7 ]] || bad "exit status $rc, want 7"
 
+# An unknown flag is refused, not queued as a command (--status once sat in
+# the queue as a job).
+rc=0
+out="$("$SLOT" --status 2>&1)" || rc=$?
+[[ "$rc" -eq 2 && "$out" == *"unknown flag --status"* ]] || bad "--status: rc $rc, $out"
+[[ -z "$(ls -A "$T/lock/wait" 2>/dev/null)" ]] || bad "--status left a ticket"
+
 [[ "$fail" -eq 0 ]] || exit 1
 echo "ok: heavy lock has capacity 1, orders by priority, reaps dead owners"

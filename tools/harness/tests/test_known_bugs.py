@@ -126,9 +126,12 @@ class BuildSlot(unittest.TestCase):
     def test_holder_is_found_by_cwd_in_git_bash_form(self):
         self.assertTrue(scheduler.holder_in_list(self.LISTING, "C:\\src\\wt\\one"))
 
-    def test_waiter_and_other_worktree_do_not_hold(self):
-        self.assertFalse(scheduler.holder_in_list(self.LISTING, "C:\\src\\wt\\two"))
+    def test_waiter_counts_as_building_other_worktree_does_not(self):
+        # 2026-11-07: a run whose build sat in the lock queue had no stream
+        # output, was classified stalled and killed; a waiter is building.
+        self.assertTrue(scheduler.holder_in_list(self.LISTING, "C:\\src\\wt\\two"))
         self.assertFalse(scheduler.holder_in_list(self.LISTING, "C:\\src\\wt\\on"))
+        self.assertFalse(scheduler.holder_in_list(self.LISTING, "C:\\src\\wt\\three"))
 
     def test_holds_build_slot_reads_the_script_list(self):
         run = types.SimpleNamespace(stdout=self.LISTING)
