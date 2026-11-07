@@ -59,6 +59,13 @@ export QEMU_APPEND_EXTRA="sonora.policycheck"
 rc=0
 "$ROOT/tools/test-boot-qemu.sh" || rc=$?
 
+# Skip (77) and inconclusive-under-TCG (3) are not verdicts about the image:
+# pass them on instead of reporting every item as missing.
+if [[ "$rc" == 77 || "$rc" == 3 ]]; then
+  echo "POLICY CHECK TEST $([[ $rc == 77 ]] && echo SKIP || echo INCONCLUSIVE) (boot test exit $rc); not a pass" >&2
+  exit "$rc"
+fi
+
 echo
 echo "=== policy check ==="
 grep "POLICY CHECK" "$LOG" 2>/dev/null || true

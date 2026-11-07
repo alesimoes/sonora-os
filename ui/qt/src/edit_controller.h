@@ -313,6 +313,15 @@ public:
     // Point `row` removed, one undo step.
     bool event_delete(std::size_t row, std::string& why);
     bool nudge(int direction, std::string& why);
+    // Pro Tools' Insert Time and Delete Time on the selected range of the
+    // selected tracks (a selected region counts as its bounds): the range's
+    // length is opened at its start, or taken out, in every edit mode.
+    // Regions of those tracks that start at or after it move by the length
+    // (a straddling one is split, or cut, first), and so do the automation
+    // points after it on those tracks and every marker, all in one compound,
+    // one undo step. Delete Time takes markers inside the range to its start.
+    bool insert_time(std::string& why);
+    bool delete_time(std::string& why);
     // Spot mode: the selected region placed so that it starts exactly at
     // `to`, typed, never snapped (Pro Tools' Spot dialog, start time). What
     // it lands on is overwritten, as a drag in Slip does. Refused in Shuffle.
@@ -730,6 +739,7 @@ private:
     void select_span(int first, int count, model::Frames a, model::Frames b);
     // Refuses, by name, a gesture whose Shuffle form is not built (Strip
     // Silence); the ones that are build their ripple (shuffle_shift).
+    bool shift_time(bool insert, std::string& why);
     bool refuse_shuffle(const char* gesture, const char* nothing_was, std::string& why) const;
     // Shuffle moves regions, not the automation under them: names the tracks
     // whose lanes now sit out of step, as a held notice.
