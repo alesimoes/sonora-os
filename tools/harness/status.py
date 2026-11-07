@@ -6,7 +6,6 @@ import time
 
 from . import blockinfo
 from .run_view import run_view
-from . import blockinfo
 from .scheduler import POOL_OF_KIND
 
 DONE_STATES = ("integrating", "pr_open", "ci_fix", "merged")
