@@ -34,7 +34,7 @@ add_executable(test_plugin_refusal tests/test_plugin_refusal.cpp)
 target_link_libraries(test_plugin_refusal PRIVATE sonora_api)
 add_test(NAME api_plugin_refusal COMMAND test_plugin_refusal)
 
-add_executable(test_api_state_viewtests/test_state_view.cpp)
+add_executable(test_api_state_view tests/test_state_view.cpp)
 target_link_libraries(test_api_state_view PRIVATE sonora_api)
 add_test(NAME api_state_view COMMAND test_api_state_view)
 
