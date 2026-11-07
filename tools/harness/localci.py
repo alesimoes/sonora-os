@@ -40,7 +40,7 @@ import sys
 import time
 
 from .localci_steps import StepPoster, clear_steps
-from . import localci_cancel
+from . import cleanwt, localci_cancel
 
 TIMEOUT_S = 3 * 3600
 BATCH_SETTLE_S = 60   # PRs ready within a minute share one build
@@ -269,9 +269,12 @@ class LocalCI:
                 return f"git worktree add: {r.stderr.strip()[:200]}", [], []
         for args in (["merge", "--abort"], ["reset", "-q", "--hard"],
                      ["checkout", "-q", "-f", "--detach", main],
-                     ["clean", "-fdxq", "-e", "build-ui-container",
-                      "-e", "build-container"]):
-            r = _git(args, wt)
+                     ["clean"]):
+            if args[0] == "clean":
+                r = cleanwt.clean(_git, wt, ("build-ui-container",
+                                             "build-container"))
+            else:
+                r = _git(args, wt)
             if r.returncode and args[0] in ("checkout", "clean"):
                 return f"git {args[0]}: {r.stderr.strip()[:200]}", [], []
         dropped, merged = [], []

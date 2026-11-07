@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "sonora/peak_file.h"
+
 namespace sonora::ui {
 
 namespace {
@@ -64,6 +66,105 @@ void SyntheticPeakSource::peaks(model::Id source, uint16_t channel, model::Frame
         }
         const float asym = 0.9f + 0.1f * hash01(source + 7, static_cast<uint64_t>(a));
         out[i] = PeakPair{-e * asym, e};
+    }
+}
+
+// --- FilePeakSource --------------------------------------------------------
+
+struct FilePeakSource::Entry {
+    Located where;
+    enum class State { Queued, Ready, Failed } state = State::Queued;
+    std::shared_ptr<const PeakFile> file;
+};
+
+FilePeakSource::FilePeakSource(Locate locate, std::function<void()> on_ready)
+    : locate_(std::move(locate)), on_ready_(std::move(on_ready)), worker_([this] { work(); }) {}
+
+FilePeakSource::~FilePeakSource() {
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        stop_ = true;
+    }
+    cv_.notify_all();
+    worker_.join();
+}
+
+std::shared_ptr<FilePeakSource::Entry> FilePeakSource::entry(model::Id source) const {
+    Located where;
+    if (!locate_ || !locate_(source, where)) return nullptr;
+    std::lock_guard<std::mutex> lock(m_);
+    auto it = entries_.find(source);
+    // Another session's source with the same id, or a take that grew.
+    if (it != entries_.end() && (it->second->where.peak != where.peak ||
+                                 it->second->where.length != where.length)) {
+        entries_.erase(it);
+        it = entries_.end();
+    }
+    if (it == entries_.end()) {
+        auto e = std::make_shared<Entry>();
+        e->where = std::move(where);
+        it = entries_.emplace(source, e).first;
+        queue_.push_back(e);
+        cv_.notify_one();
+    }
+    return it->second;
+}
+
+void FilePeakSource::peaks(model::Id source, uint16_t channel, model::Frames first,
+                           double frames_per_bucket, int count, PeakPair* out) const {
+    for (int i = 0; i < count; ++i) out[i] = PeakPair{};
+    const std::shared_ptr<Entry> e = entry(source);
+    if (e == nullptr) return;
+    std::shared_ptr<const PeakFile> file;
+    {
+        std::lock_guard<std::mutex> lock(m_);
+        if (e->state == Entry::State::Ready) file = e->file;
+    }
+    if (file == nullptr) return;
+    std::vector<float> lo(static_cast<std::size_t>(count)), hi(static_cast<std::size_t>(count));
+    file->read(channel, first, frames_per_bucket, count, lo.data(), hi.data());
+    for (int i = 0; i < count; ++i) out[i] = PeakPair{lo[static_cast<std::size_t>(i)],
+                                                      hi[static_cast<std::size_t>(i)]};
+}
+
+bool FilePeakSource::ready(model::Id source) const {
+    const std::shared_ptr<Entry> e = entry(source);
+    if (e == nullptr) return false;
+    std::lock_guard<std::mutex> lock(m_);
+    return e->state == Entry::State::Ready;
+}
+
+void FilePeakSource::wait_idle() const {
+    std::unique_lock<std::mutex> lock(m_);
+    idle_.wait(lock, [this] { return queue_.empty() && !busy_; });
+}
+
+void FilePeakSource::work() {
+    for (;;) {
+        std::shared_ptr<Entry> e;
+        {
+            std::unique_lock<std::mutex> lock(m_);
+            cv_.wait(lock, [this] { return stop_ || !queue_.empty(); });
+            if (stop_) return;
+            e = queue_.front();
+            queue_.erase(queue_.begin());
+            busy_ = true;
+        }
+        auto file = std::make_shared<PeakFile>();
+        std::string why;
+        bool ok = file->open(e->where.peak, why) && file->frames() == e->where.length;
+        // Missing, stale or unreadable: build it from the audio.
+        if (!ok && build_peak_file(e->where.wav, e->where.peak, why)) {
+            ok = file->open(e->where.peak, why) && file->frames() == e->where.length;
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            e->file = ok ? file : nullptr;
+            e->state = ok ? Entry::State::Ready : Entry::State::Failed;
+            busy_ = false;
+        }
+        idle_.notify_all();
+        if (ok && on_ready_) on_ready_();
     }
 }
 
