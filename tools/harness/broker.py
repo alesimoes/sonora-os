@@ -250,6 +250,8 @@ class Broker:
                 or (self.expected is not None and name in self.expected))
 
     def _resolve(self, sender, to):
+        if to in P.DAEMON_ALIASES:
+            to = P.DAEMON
         if to.startswith(P.CHANNEL_PREFIX):
             members = self.channels.get(to[len(P.CHANNEL_PREFIX):])
             if members is None:
@@ -271,7 +273,13 @@ class Broker:
     def send(self, sender, to, type_, body=None, feature=None, task=None,
              reply_to=None, needs_ack=False):
         """Route one message; durable on disk before this returns."""
-        recipients = self._resolve(sender, to)
+        try:
+            recipients = self._resolve(sender, to)
+        except P.ProtocolError as e:
+            if e.code == P.E_NO_RECIPIENT and type_ in P.CRITICAL_TYPES:
+                self._event(P.EV_UNDELIVERABLE, sender=sender, to=to,
+                            type=type_, body=body)
+            raise
         if type_ == "done" and sender != P.DAEMON:
             blocking = [m for m in self.box.unacked(
                 sender, self.box.get_acked(sender)) if m["type"] in ("bug", "ask")]
