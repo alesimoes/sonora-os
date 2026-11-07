@@ -59,7 +59,8 @@ mkdir -p "$OUT/ardour"
 chmod 0777 "$OUT" "$OUT/ardour"
 
 echo "=== building the engine ==="
-"$ROOT/tools/build-engine.sh" >"$OUT/build-engine.log" 2>&1 || {
+# The binary only, as tools/test-engine-docker.sh: the suite is the tree's.
+SONORA_STAGE_ONLY=1 "$ROOT/tools/build-engine.sh" >"$OUT/build-engine.log" 2>&1 || {
   echo "FAIL: engine build, see $OUT/build-engine.log" >&2
   exit 1
 }

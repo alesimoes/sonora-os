@@ -29,6 +29,8 @@ import tempfile
 import threading
 import time
 
+from . import store_guard
+
 # state -> states it may move to. "blocked" is reachable from everywhere.
 TRANSITIONS = {
     "queued": {"building", "designing"},
@@ -149,7 +151,9 @@ class Store:
             self._dir, os.path.splitext(os.path.basename(self.path))[0]
             + ".quarantine.json")
         self._d = _empty()
+        self._sig = store_guard.LOADING   # the file is the source: no merge
         self._load()
+        self._sig = store_guard.signature(self.path)
 
     def close(self):
         self.flush()
@@ -162,7 +166,10 @@ class Store:
 
     # -- persistence --------------------------------------------------
     def _save(self):
+        # another writer's additions are kept, not erased (store_guard.py)
+        store_guard.merge_external(self)
         write_json_atomic(self.path, self._d)
+        self._sig = store_guard.signature(self.path)
         self._dirty = False
 
     def _mutated(self, volatile=False):

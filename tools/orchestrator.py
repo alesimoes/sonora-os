@@ -2,14 +2,17 @@
 """SonoraOS harness orchestrator daemon (ADR-0047). Standard library only.
 
     orchestrator.py run [--live] [--once] [--fake-claude PATH]
-    orchestrator.py status | drain | stop | resume
+    orchestrator.py status | drain | stop | resume | flakes
     orchestrator.py pause --pool NAME [--resume]
     orchestrator.py add --id ID --track daw --agent rt-engineer ...
+    orchestrator.py adopt [PR...] | bundle NAME PR... | import-queue PATH
+
+The command line is harness/cli.py: a command that changes the store goes
+through the running daemon (harness/daemonlock.py, harness/cli_mailbox.py).
 
 The daemon decides nothing that needs judgement. Roles decide; this file
 enforces pools, caps, retries, kill switches and number reservations.
 """
-import argparse
 import json
 import os
 import re
@@ -20,9 +23,10 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import (autoadopt, dispatch, heartbeat, launcher, numbers,  # noqa: E402
-                     ownerchat, routing, scheduler, shadow, status,
-                     supervisor, supervisor_sys)
+from harness import (autoadopt, cli, cli_mailbox, daemonlock, dispatch,  # noqa: E402
+                     heartbeat, launcher, numbers, ownerchat, routing,
+                     scheduler, selfupdate, shadow, status, supervisor,
+                     supervisor_sys)
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
@@ -83,6 +87,7 @@ class Orchestrator:
             self, sys_ or supervisor_sys.RealSys(clock=clock))
         self.attribution = ATTRIBUTION
         self.shadow = None
+        self.updater = None   # enable_self_update(): a live daemon only
         if shadow_agents:   # shadow rollout: never launches, only compares
             self.dry_run = True
             self.shadow = shadow.Shadow(self._p("shadow.log"), shadow_agents,
@@ -190,6 +195,7 @@ class Orchestrator:
             self.localci.poll()
         self._open_pending_prs(now)
         autoadopt.tick(self, now)
+        cli_mailbox.tick(self)
         if not self.dry_run:
             ownerchat.tick(self)
         self._watch_prs(now)
@@ -1056,11 +1062,17 @@ class Orchestrator:
                 adopted.append(r["id"])
         return adopted
 
+    def enable_self_update(self, argv, **kw):
+        """Re-exec when origin/main changes the harness (harness/selfupdate)."""
+        kw.setdefault("release", lambda: daemonlock.release(self.hdir))
+        self.updater = selfupdate.SelfUpdate(self, argv, **kw)
+
     def run(self, once=False, max_ticks=None, exit_when_drained=False,
             sleep=time.sleep):
         self.broker.start()
         self.adopt_runs()
         n = 0
+        restart = False
         try:
             while True:
                 try:
@@ -1076,6 +1088,13 @@ class Orchestrator:
                 except Exception:
                     traceback.print_exc()
                 n += 1
+                try:
+                    restart = bool(self.updater
+                                   and self.updater.ready(self.clock()))
+                except Exception:   # an update check never stops the daemon
+                    traceback.print_exc()
+                if restart:
+                    break
                 stop, _ = self.kill_switch()
                 if once or (max_ticks and n >= max_ticks):
                     break
@@ -1085,141 +1104,16 @@ class Orchestrator:
                 sleep(self.cfg.tick_s)
         finally:
             self.broker.stop()
+        if restart:
+            self.updater.restart()
 
     def close(self):
         self.store.close()
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="orchestrator.py")
-    ap.add_argument("--root", default=os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))))
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("run")
-    r.add_argument("--live", action="store_true",
-                   help="launch for real (default is dry-run)")
-    r.add_argument("--fake-claude")
-    r.add_argument("--once", action="store_true")
-    r.add_argument("--exit-when-drained", action="store_true")
-    r.add_argument("--no-broker", action="store_true")
-    r.add_argument("--shadow", action="store_true",
-                   help="dry run that logs differences from the live agents")
-    r.add_argument("--shadow-agents",
-                   help="JSON file of the agents the coordinator runs")
-    q = sub.add_parser("import-queue")
-    q.add_argument("path")
-    q.add_argument("--wants", default="adr")
-    for c in ("status", "drain", "stop", "resume"):
-        sub.add_parser(c)
-    p = sub.add_parser("pause")
-    p.add_argument("--pool", required=True)
-    p.add_argument("--resume", action="store_true")
-    a = sub.add_parser("add")
-    a.add_argument("--id", required=True)
-    a.add_argument("--track", required=True)
-    a.add_argument("--agent", required=True)
-    a.add_argument("--files", default="")
-    a.add_argument("--brief", default="")
-    a.add_argument("--depends-on", default="")
-    a.add_argument("--wants", default="")
-    b = sub.add_parser("bundle", help="join open train PRs of one context "
-                       "into one PR (stop the daemon first)")
-    b.add_argument("name")
-    b.add_argument("prs", nargs="+", type=int)
-    t = sub.add_parser("adopt", help="put open PRs on the merge train "
-                       "(a running daemon takes the request on its tick)")
-    t.add_argument("prs", nargs="*", type=int,
-                   help="PR numbers; none means every open PR")
-    args = ap.parse_args(argv)
-    root = os.path.abspath(args.root)
-    odir = os.path.join(root, "planning", "orchestrator")
-    os.makedirs(odir, exist_ok=True)
-
-    def touch(name):
-        open(os.path.join(odir, name), "a").close()
-
-    if args.cmd == "drain":
-        touch("STOP")
-    elif args.cmd == "stop":
-        touch("STOP")
-        touch("STOP.NOW")
-    elif args.cmd == "resume":
-        for n in ("STOP", "STOP.NOW"):
-            try:
-                os.remove(os.path.join(odir, n))
-            except FileNotFoundError:
-                pass
-    elif args.cmd == "status":
-        try:
-            with open(os.path.join(odir, "status.json"),
-                      encoding="utf-8") as f:
-                print(f.read())
-        except FileNotFoundError:
-            print("no status.json yet; is the daemon running?")
-            return 1
-    elif args.cmd == "pause":
-        path = os.path.join(odir, "paused.json")
-        try:
-            with open(path, encoding="utf-8") as f:
-                cur = set(json.load(f))
-        except (OSError, ValueError):
-            cur = set()
-        cur = cur - {args.pool} if args.resume else cur | {args.pool}
-        status.write_atomic(path, sorted(cur))
-    elif args.cmd == "adopt":
-        if autoadopt.daemon_alive(odir):
-            # The running daemon is the only writer of state.json: it picks
-            # the request up on its next tick.
-            autoadopt.write_request(os.path.join(root, ".harness"), args.prs)
-            print("adopt: daemon is running; queued for its next tick")
-            return 0
-        o = Orchestrator(root)
-        try:
-            got = o.train.adopt(set(args.prs) or None)
-        finally:
-            o.close()
-        print("adopted: " + (" ".join(f"#{n}" for n in got) or "none"))
-    elif args.cmd == "bundle":
-        o = Orchestrator(root)
-        try:
-            print("bundle: " + o.train.bundle(args.name, args.prs))
-        finally:
-            o.close()
-    elif args.cmd == "add":
-        o = Orchestrator(root)
-        o.store.add_task(
-            args.id, args.track, args.agent,
-            files=[x for x in args.files.split(",") if x], brief=args.brief,
-            depends_on=[x for x in args.depends_on.split(",") if x],
-            wants=[x for x in args.wants.split(",") if x])
-        o.close()
-    elif args.cmd == "import-queue":
-        o = Orchestrator(root)
-        with open(args.path, encoding="utf-8") as f:
-            made = o.flow.import_queue(
-                f.read(), wants=[x for x in args.wants.split(",") if x])
-        o.close()
-        print(f"imported {len(made)} feature(s): {', '.join(made)}")
-    elif args.cmd == "run":
-        if args.shadow and not args.shadow_agents:
-            ap.error("--shadow needs --shadow-agents FILE")
-        try:
-            broker = NullBroker() if args.no_broker else make_broker(root)
-            o = Orchestrator(root, broker=broker, dry_run=not args.live,
-                             fake_claude=args.fake_claude,
-                             shadow_agents=args.shadow_agents
-                             if args.shadow else None,
-                             log=lambda m: print(m, flush=True))
-        except launcher.ModelError as e:
-            print(f"orchestrator: refusing to start: {e}", file=sys.stderr)
-            return 2
-        try:
-            o.run(once=args.once, exit_when_drained=args.exit_when_drained)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            o.close()
-    return 0
+    return cli.main(argv, Orchestrator, make_broker,
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 if __name__ == "__main__":
