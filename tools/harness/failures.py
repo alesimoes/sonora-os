@@ -18,7 +18,7 @@ _RULES = (
         r"ThreadSanitizer:|AddressSanitizer:|LeakSanitizer:|"
         r"UndefinedBehaviorSanitizer|RealtimeSanitizer", re.I)),
     ("harness_infra", re.compile(
-        r"build-slot|build-lock|local-ci\.sh|docker(?: daemon)?[^\n]*"
+        r"build-slot|build-lock|micro-build\.sh|docker(?: daemon)?[^\n]*"
         r"(error|cannot|failed)|no space left|image not found|"
         r"pre-pr\.sh|shellcheck|executable bit", re.I)),
     ("flaky_timing_test", re.compile(

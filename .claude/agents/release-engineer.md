@@ -39,3 +39,4 @@ The image (`iso/`, `audio-stack/`), product code, the local CI gate,
 
 Artefacts with size and checksum, the command, what a clean machine still
 needs, what is unverified.
+- Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.
