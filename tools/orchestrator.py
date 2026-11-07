@@ -71,6 +71,7 @@ class Orchestrator:
         self.log = log or (lambda m: None)
         self.broker = broker or NullBroker()
         self.done_msgs = {}   # run id -> (time, body) of its `done` message
+        self.undeliverable = {}   # (sender, to, type) -> (time, text)
         self.ci_polled = {}   # feature -> time of its last CI poll
         self.auto_adopt_at = 0.0   # last automatic adoption sweep
         self.pr_retry = {}    # feature -> earliest next PR-open attempt
@@ -115,6 +116,13 @@ class Orchestrator:
             self.on_broker_event(kind, **data)
 
     def on_broker_event(self, kind, **data):
+        if kind == "undeliverable":
+            text = (f"{data.get('type')} from {data.get('sender')} to "
+                    f"'{data.get('to')}' had no recipient")
+            self.undeliverable[(data.get("sender"), data.get("to"),
+                                data.get("type"))] = (self.clock(), text)
+            self.store.event(None, "undeliverable", text)
+            return
         name = data.get("name") or (data.get("msg") or {}).get("from")
         if kind == "message" and not any(
                 r["name"] == name for r in self.store.active_runs()):

@@ -51,6 +51,14 @@ ENV_DIR = "SONORA_HARNESS"
 DAEMON = "daemon"
 CHANNEL_PREFIX = "feat/"
 ROLE_PREFIX = "role:"
+# What agents call the daemon in prompts and docs; the hub knows it as
+# DAEMON only, so "orchestrator" used to answer no_recipient and a lead's
+# plan_request was lost (2026-11-07).
+DAEMON_ALIASES = frozenset({"orchestrator", "role:orchestrator",
+                            "role:daemon"})
+# A send of these types that cannot be delivered stalls the pipeline: it is
+# an alert, not just an error reply the sender may ignore.
+CRITICAL_TYPES = frozenset({"plan_request"})
 
 MSG_TYPES = frozenset({
     "assign", "ask", "answer", "blocked", "handoff", "done", "qa_report",
@@ -84,7 +92,8 @@ EV_REGISTERED = "registered"
 EV_SUSPECT = "suspect"        # connection of a registered name closed
 EV_MESSAGE = "message"        # a message addressed to "daemon"
 EV_UNKNOWN_TYPE = "unknown_type"
-EV_UNACKED = "unacked"        # a needs_ack message was redelivered twice
+EV_UNDELIVERABLE = "undeliverable"   # a CRITICAL_TYPES send had no recipient
+EV_UNACKED = "unacked"       # a needs_ack message was redelivered twice
 
 
 class ProtocolError(Exception):
