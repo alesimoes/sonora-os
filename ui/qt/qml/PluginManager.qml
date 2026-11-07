@@ -152,6 +152,20 @@ Item {
             }
         }
 
+        // Why Block, Unblock and Rescan are drawn unavailable, when they are.
+        Text {
+            objectName: "managerReadOnly"
+            anchors { left: side.left; right: side.right; bottom: parent.bottom; bottomMargin: Theme.space4 }
+            visible: manager.plugins !== null && (!manager.plugins.canBlock || !manager.plugins.canRescan)
+            wrapMode: Text.Wrap
+            text: "This engine does not run " + (manager.plugins !== null && !manager.plugins.canBlock
+                  ? "plugin.block or plugin.unblock" : "plugin.rescan")
+                  + (manager.plugins !== null && !manager.plugins.canBlock && !manager.plugins.canRescan
+                     ? ", nor plugin.rescan" : "") + ": what it lists cannot be changed from here."
+            color: Theme.textTertiary
+            font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+        }
+
         ListView {
             id: list
             objectName: "managerList"
@@ -226,7 +240,10 @@ Item {
                     anchors { left: rowName.left; right: action.left; bottom: parent.bottom
                               rightMargin: Theme.space2; bottomMargin: Theme.space1 }
                     elide: Text.ElideRight
-                    text: (row.modelData.blocked ? "Blocked: " : "Refused by its scan: ") + row.modelData.refusal
+                    // A block's words start "blocked by you" (ADR-0065), said as they are.
+                    text: row.modelData.blocked
+                          ? row.modelData.refusal.charAt(0).toUpperCase() + row.modelData.refusal.slice(1)
+                          : "Refused by its scan: " + row.modelData.refusal
                     color: Theme.caution
                     font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
                 }

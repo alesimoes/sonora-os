@@ -413,6 +413,9 @@ int qml() {
     CHECK(list != nullptr && list->property("count").toInt() == 7);
     QQuickItem* rescan = named(root, QStringLiteral("managerRescan"));
     CHECK(rescan != nullptr && rescan->property("available").toBool());
+    // An engine that runs the commands: no read-only line.
+    QQuickItem* readOnly = named(root, QStringLiteral("managerReadOnly"));
+    CHECK(readOnly != nullptr && !readOnly->isVisible());
     // Closing the chooser closes the manager with it.
     r.inserts.closeBrowser();
     QCoreApplication::processEvents();
