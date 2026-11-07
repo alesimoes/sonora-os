@@ -52,3 +52,4 @@ Run the harness tests and `tools/pre-pr.sh`; say which commands ran and
 what they printed; list anything unverified as unverified. Open one PR to
 main with that evidence; do not merge it. Report in Portuguese, short: PR
 number, what changed, what was verified.
+- Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.

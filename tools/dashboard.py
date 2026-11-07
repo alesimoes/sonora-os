@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Local live board: agents, open PRs, merge watchers, containers.
+"""Local live board: agents, merge train, local CI, disk, PRs, containers.
 
     python tools/dashboard.py [--port 8765] [--agents FILE]
 
-Listens on 127.0.0.1 only. Open http://127.0.0.1:8765/ . Read-only: it runs
-gh, docker, git and ps, and never changes anything.
+Listens on 127.0.0.1 only. Open http://127.0.0.1:8765/ . It reads with gh,
+docker, git and ps; it changes things only through the allowlisted actions of
+dashboard_actions*.py (a per-start token on every POST, confirmation for the
+destructive ones, an audit log in .harness/dashboard-actions.log).
 
 Agent state is inferred, not reported by the agent: a container that mounts the
 agent's worktree means "building/testing"; a file or git change in the last
@@ -16,131 +18,79 @@ import argparse
 import json
 import os
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
-from dashboard_orch import (build_time, builder_log, clean_orch, events_of, orch_state, read_coordinator,
-                            read_orchestrator, read_progress, run_activity, task_view)
-from dashboard_sources import (heavy_lock_list, read_agents, read_containers, read_lock, read_merged, read_prs,
-                               read_usage, read_watchers, stamp_done)
+import dashboard_actions_http as actions
+from dashboard_chat import handle_post
+from dashboard_detail import detail
+from dashboard_links import MOCKUPS_ROUTE, mockup_file, read_links
+from dashboard_state import lock, refresh_loop, state
+from dashboard_static import STATIC_ROUTE, page, static_file
 
-state = {"usage": {"sessions": [], "week": None, "five_hour": None}, "updated": 0, "agents": [], "prs": [], "watchers": [], "containers": [], "errors": [], "orchestrator": None, "merged": [], "lock": []}
-lock = threading.Lock()
-
-
-def refresh_loop(agents_file):
-    last_pr, prs, merged, gh_ok = 0, [], [], False
-    last_prog, progress = 0, None
-    while True:
-        errors = []
-        try:
-            if time.time() - last_pr > 20:
-                prs = read_prs()
-                merged = read_merged()
-                last_pr = time.time()
-                gh_ok = True
-        except Exception as e:
-            errors.append("gh: %s" % e)
-        try:
-            labels = json.load(open(agents_file, encoding="utf-8")) if agents_file and os.path.exists(agents_file) else {}
-        except Exception as e:
-            labels = {}
-            errors.append("agents file: %s" % e)
-        stamp_done(labels, agents_file)
-        containers = read_containers()
-        watchers = read_watchers()
-        lk = read_lock(labels)
-        try:
-            bt = build_time(read_orchestrator())
-        except Exception as e:
-            bt = None
-            errors.append("build time: %s" % e)
-        if time.time() - last_prog > 300:
-            try:
-                progress = read_progress()
-            except Exception as e:
-                errors.append("progress: %s" % e)
-            last_prog = time.time()
-        orch = clean_orch(read_orchestrator(), {p["number"] for p in prs} if gh_ok else None)
-        with lock:
-            state.update(updated=int(time.time()), progress=progress, prs=prs, watchers=watchers, containers=containers, merged=merged, usage=read_usage(), orchestrator=orch, coordinator=read_coordinator(), lock=lk, buildtime=bt)
-        agents = read_agents(labels, containers, lk)
-        with lock:
-            state.update(updated=int(time.time()), agents=agents, prs=prs, merged=merged,
-                         watchers=watchers, containers=containers, errors=errors)
-        time.sleep(4)
-
-
-PAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
-
-
-# --- details for a clicked card ------------------------------------------
-def detail(kind, ident):
-    s = orch_state()
-    tasks, feats, runs = s.get("tasks", []), s.get("features", []), s.get("runs", [])
-    if kind == "coord":
-        c = read_coordinator() or {}
-        return {"kind": "coord", "title": "Coordenador (Claude, sessão no terminal)", "coord": c}
-    if kind == "agent":
-        with lock:
-            a = next((x for x in state["agents"] if x["id"] == ident), None)
-            lk = list(state.get("lock") or [])
-        return {"kind": "agent", "title": (a or {}).get("label", ident), "agent": a, "lock": lk}
-    if kind == "builder":
-        b = (state.get("orchestrator") or {}).get("builder") or {}
-        return {"kind": "builder", "title": "Builder (build pesado em lote)", "builder": b,
-                "log": builder_log((b.get("running") or {}).get("dir")),
-                "lock": heavy_lock_list()}
-    if kind == "run":
-        r = next((x for x in runs if x.get("id") == ident), None)
-        if not r:
-            return {"error": "run não encontrado"}
-        t = next((x for x in tasks if x.get("id") == r.get("task_id")), None)
-        return {"kind": "run", "title": "%s · %s" % (r.get("name") or r.get("id"), r.get("role") or ""),
-                "run": {k: r.get(k) for k in ("id", "name", "role", "state", "started", "last_beat", "ended", "exit")},
-                "task": task_view(t), "activity": run_activity(r.get("stream_path") or ""),
-                "events": events_of({r.get("task_id")}, 10)}
-    prnum = ident if kind == "pr" else None
-    if kind == "pr":
-        f = next((x for x in feats if str(x.get("pr")) == str(ident)), None)
-        ident = f.get("id") if f else "pr-%s" % ident
-        kind = "feature"
-    f = next((x for x in feats if x.get("id") == ident or x.get("name") == ident), None)
-    ts = [x for x in tasks if x.get("feature_id") == ident or x.get("id") == ident]
-    train = next((x for x in ((state.get("orchestrator") or {}).get("train") or [])
-                  if (f and str(x.get("pr")) == str(f.get("pr"))) or (prnum and str(x.get("pr")) == str(prnum))), None)
-    pr_row = next((p for p in state.get("prs") or [] if str(p["number"]) == str(prnum)), None) if prnum else None
-    rs = [x for x in runs if x.get("task_id") in {t.get("id") for t in ts}]
-    return {"kind": "feature", "title": ("PR #%s: %s" % (prnum, (train or pr_row or {}).get("title", ""))) if prnum else ident,
-            "gh": pr_row,
-            "feature": {k: (f or {}).get(k) for k in ("id", "state", "track", "pr", "branch", "fixes", "partial", "blocked_reason", "job_reds")},
-            "train": train, "tasks": [task_view(t) for t in ts][:6],
-            "runs": [{k: x.get(k) for k in ("id", "name", "role", "state", "started", "ended", "exit")} for x in rs][-6:],
-            "events": events_of({ident} | {t.get("id") for t in ts}, 20)}
+MAX_POST = 20000
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.startswith("/api/state"):
+        path = self.path
+        if path.startswith("/api/state"):
             with lock:
-                body = json.dumps(state).encode()
+                body = json.dumps(dict(state, links=read_links())).encode()
             ctype = "application/json"
-        elif self.path.startswith("/api/detail"):
-            from urllib.parse import parse_qs, urlparse
-            q = parse_qs(urlparse(self.path).query)
+        elif path.startswith("/api/actions"):
+            body, ctype = json.dumps(actions.actions_view()).encode(), "application/json"
+        elif path.startswith("/api/action"):
+            code, obj = actions.job_view((parse_qs(urlparse(path).query).get("id") or [""])[0])
+            return self.reply(code, obj)
+        elif path.startswith("/api/detail"):
+            q = parse_qs(urlparse(path).query)
             try:
                 d = detail((q.get("kind") or [""])[0], (q.get("id") or [""])[0])
             except Exception as e:
                 d = {"error": str(e)}
             body, ctype = json.dumps(d).encode(), "application/json"
+        elif path.startswith(MOCKUPS_ROUTE) or path.startswith(STATIC_ROUTE):
+            got = (mockup_file if path.startswith(MOCKUPS_ROUTE) else static_file)(path)
+            if got is None:
+                return self.reply(404, {"error": "not found"})
+            body, ctype = got
         else:
-            body, ctype = open(PAGE_FILE, "rb").read(), "text/html; charset=utf-8"
+            body, ctype = page()
+            body = actions.inject_token(body)
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def reply(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        """Owner actions. A JSON content type forces a CORS preflight, which
+        this server never answers, so another web page cannot post here."""
+        host = (self.headers.get("Host") or "").split(":")[0]
+        if host not in ("127.0.0.1", "localhost"):
+            return self.reply(403, {"error": "forbidden host"})
+        if "application/json" not in (self.headers.get("Content-Type") or ""):
+            return self.reply(415, {"error": "send application/json"})
+        if not actions.token_ok(self.headers.get(actions.TOKEN_HEADER)):
+            return self.reply(403, {"error": "missing or wrong token: reload the page"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(min(n, MAX_POST)) or b"{}")
+        except ValueError:
+            return self.reply(400, {"error": "bad JSON"})
+        route = self.path.split("?", 1)[0]
+        code, obj = actions.handle_action(payload) if route == "/api/action" else handle_post(route, payload)
+        self.reply(code, obj)
 
     def log_message(self, *a):
         pass

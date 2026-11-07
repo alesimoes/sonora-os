@@ -1,0 +1,14 @@
+/* tempo do build */
+.tcard{background:var(--panel);border:1px solid var(--line);border-left:5px solid var(--ok);border-radius:4px;padding:12px 14px;margin-bottom:6px}
+.thead{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;font-size:14px}.thead b{font-size:16px}.thead .eta{font-weight:700;color:var(--ok);font-size:16px}.thead small{color:var(--warn);flex-basis:100%}
+.pbar{height:10px;background:var(--raised);border-radius:5px;margin:8px 0 4px;overflow:hidden}.pbar i{display:block;height:100%;background:var(--ok)}
+.pl{font-size:12px;color:var(--muted);margin-bottom:8px}
+.stps{display:flex;flex-wrap:wrap;gap:6px}
+.stp{min-width:120px;background:var(--raised);border:1px solid var(--line);border-top:3px solid var(--line2);border-radius:4px;padding:5px 10px}
+.stp b{display:block;font-size:13px}.stp span{font-size:12px;font-weight:600}.stp small{display:block;font-size:11px;color:var(--faint)}
+.stp.feito{border-top-color:var(--ok)}.stp.feito span{color:var(--ok)}
+.stp.rodando{border-top-color:var(--accent);background:rgba(63,193,176,.12)}.stp.rodando span{color:var(--accent)}
+.stp.falhou{border-top-color:var(--bad)}.stp.falhou span{color:var(--bad)}
+.stp.afazer span{color:var(--faint);font-weight:400}
+.tnext{margin-top:8px;font-size:13px;color:var(--muted)}
+@media (max-width:900px){.mrow{grid-template-columns:1fr}}
