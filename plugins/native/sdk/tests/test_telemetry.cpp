@@ -73,6 +73,26 @@ int main() {
         t.end();
         CHECK(shared.read(s) && s.meters[0] == 0.0f);   // the host's block was not touched
     }
+    // The host's hand-over: the oldest instance made since the last call is
+    // bound, its replicas stay private, and the next call starts afresh.
+    {
+        plugin::TelemetryBlock a{}, b{};
+        plugin::TelemetrySnapshot s;
+        native::Telemetry first, replica;
+        CHECK(native::Telemetry::bind_pending(&a));
+        CHECK(first.bound() && !replica.bound());
+        CHECK(!native::Telemetry::bind_pending(&b));   // nothing new was made
+        native::Telemetry second;
+        CHECK(native::Telemetry::bind_pending(&b) && second.bound());
+        second.begin();
+        second.meter(0, 2.0f);
+        second.end();
+        CHECK(b.read(s) && s.meters[0] == 2.0f && !a.read(s));
+        {
+            native::Telemetry gone;   // destroyed before the host asked
+        }
+        CHECK(!native::Telemetry::bind_pending(&a));
+    }
     // The publish path: no allocation.
     {
         native::Telemetry t;

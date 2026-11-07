@@ -120,6 +120,7 @@
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/plugin_scanner.h"
+#include "sonora/plugin_telemetry.h"
 #include "sonora/session.h"
 #include "sonora/session_files/session_folder.h"
 
@@ -157,6 +158,8 @@ uint64_t now_ms() { return now_ns() / 1'000'000; }
 struct Args {
     std::string host, scenario;
     std::vector<std::string> bundles;
+    // --eq-uri and --eq-descriptor: the native EQ bundle the telemetry scenario hosts.
+    std::string eq_uri, eq_descriptor;
 };
 
 AddTrack track_op(Id track, Id playlist, const std::string& name) {
@@ -2315,6 +2318,85 @@ int scenario_play_wait_cancel(const Args& a) {
 }  // namespace
 
 
+// native.editors (ADR-0057), the engine's loop: a Sonora EQ hosted on a track
+// publishes from its audio thread into the region the host bound; the control
+// thread reads it per insert, the catalog built from the bundle's own
+// descriptor.json says what the slots mean, and the frame that goes to a
+// client is what the codec accepts.
+int scenario_telemetry(const Args& a) {
+    std::printf("telemetry: a Sonora EQ on track A, read from the host's telemetry region\n");
+    if (a.eq_uri.empty() || a.eq_descriptor.empty()) {
+        std::printf("SKIP: no native EQ bundle was given\n");
+        return kSkip;
+    }
+    Rig rig(a);
+    check(rig.hosting->ok(), "hosting is up");
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 200, 0, a.eq_uri.c_str()));
+    rig.show(true);
+    std::vector<PluginHosting::TelemetryRead> reads;
+    const bool got = rig.until(
+        [&] {
+            reads.clear();
+            rig.hosting->read_telemetry(reads);
+            return !reads.empty() && reads[0].snapshot.sequence > 2;
+        },
+        15000);
+    check(got, "the EQ's frames reach the control thread");
+    if (!got) return 1;
+    const plugin::TelemetrySnapshot& s = reads[0].snapshot;
+    check(reads.size() == 1 && reads[0].insert == 200, "the frame is the insert's, by its model id");
+    check((s.meter_mask & 3u) == 3u && s.curve_points[0] == plugin::kMaxCurvePoints,
+          "input and output level and the 128-point response");
+
+    // The catalog entry as the scanner builds it from the bundle.
+    api::PluginInfo info;
+    info.id = a.eq_uri;
+    info.name = "Sonora EQ";
+    info.version = "1";
+    info.inputs = info.outputs = 1;
+    api::PluginParam bell;
+    bell.key = "bell2_gain";
+    bell.name = "Bell 2 gain";
+    bell.min = -24.0f;
+    bell.max = 24.0f;
+    api::PluginParam hpf;
+    hpf.key = "hpf_on";
+    hpf.name = "High-pass";
+    hpf.steps = 2;
+    hpf.max = 1.0f;
+    info.params = {bell, hpf};
+    for (uint32_t i = 0; i < info.params.size(); ++i) info.params[i].index = i;
+    std::ifstream f(a.eq_descriptor, std::ios::binary);
+    std::ostringstream text;
+    text << f.rdbuf();
+    check(apply_descriptor_hints(info, text.str()), "the bundle's descriptor.json is taken whole");
+    check(info.meters.size() == 2 && info.curves.size() == 1 && info.curves[0].points == 128,
+          "two meters and a curve declared");
+    check(info.params[0].section == "Bell 2" && info.params[0].curve_source == "response" &&
+              info.params[0].widget == static_cast<uint32_t>(api::PluginWidget::Knob) &&
+              info.params[1].widget == static_cast<uint32_t>(api::PluginWidget::Switch),
+          "sections, widgets and the curve a parameter shapes");
+    api::PluginCatalog catalog;
+    catalog.generation = 1;
+    catalog.plugins = {info};
+    std::string bytes, err;
+    api::PluginCatalog back;
+    check(api::wire::encode(catalog, bytes, err) && api::wire::decode(bytes, back, err),
+          "a client accepts that catalog");
+    api::PluginTelemetry frame, got_frame;
+    check(telemetry_frame(info, reads[0].insert, s, frame), "a frame is built for it");
+    check(frame.meters.size() == 2 && frame.curves.size() == 1 && frame.curves[0].size() == 128 &&
+              api::wire::encode(frame, bytes, err) && api::wire::decode(bytes, got_frame, err) &&
+              got_frame.insert == 200,
+          "and a client accepts the frame");
+
+    // A track with nothing to publish is a different insert: none.
+    api::PluginInfo plain;
+    check(!telemetry_frame(plain, 1, s, frame), "no frame for a plugin that declares nothing");
+    return 0;
+}
+
 int scenario_rescan_drops_stale(const Args& a) {
     std::printf("rescan_drops_stale: eg-amp's record changes under a running chain\n");
     Rig rig(a);
@@ -2422,6 +2504,8 @@ int main(int argc, char** argv) {
         if (k == "--host") a.host = argv[i + 1];
         else if (k == "--scenario") a.scenario = argv[i + 1];
         else if (k == "--bundle") a.bundles.push_back(argv[i + 1]);
+        else if (k == "--eq-uri") a.eq_uri = argv[i + 1];
+        else if (k == "--eq-descriptor") a.eq_descriptor = argv[i + 1];
     }
     if (a.host.empty() || a.scenario.empty()) {
         std::fprintf(stderr, "usage: %s --host PATH --scenario NAME [--bundle DIR]...\n", argv[0]);
@@ -2459,6 +2543,7 @@ int main(int argc, char** argv) {
     else if (a.scenario == "play_wait_bounded") rc = scenario_play_wait_bounded(a);
     else if (a.scenario == "play_no_hosting") rc = scenario_play_no_hosting(a);
     else if (a.scenario == "play_wait_cancel") rc = scenario_play_wait_cancel(a);
+    else if (a.scenario == "telemetry") rc = scenario_telemetry(a);
     else if (a.scenario == "rescan_drops_stale") rc = scenario_rescan_drops_stale(a);
     else if (a.scenario == "rescan_loses_running") rc = scenario_rescan_loses_running(a);
     else if (a.scenario == "rescan_blocks_running") rc = scenario_rescan_blocks_running(a);

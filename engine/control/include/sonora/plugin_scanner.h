@@ -263,4 +263,15 @@ uint16_t catalog_channels(uint32_t audio_in, uint32_t audio_out);
 // (a VST3 class id without "vst3:"), its words, usable or why not.
 api::PluginInfo catalog_entry(const plugin::probe::Record& r);
 
+// Reads a Sonora native bundle's descriptor.json (plugins/native/sdk,
+// descriptor_json) into `info`: the meters and curves it publishes and, per
+// parameter, section, widget and curve_source (ADR-0057). All or nothing: a
+// descriptor that does not parse, repeats an id, names a curve it does not
+// have, or is out of the catalog's bounds changes nothing and returns false,
+// so a client never receives a catalog it would refuse. A widget the
+// parameter's shape cannot take (a switch on a continuous one) is dropped
+// to Auto. Parameters are matched by the table's id (an LV2 port symbol),
+// else by name.
+bool apply_descriptor_hints(api::PluginInfo& info, const std::string& descriptor_json);
+
 }  // namespace sonora

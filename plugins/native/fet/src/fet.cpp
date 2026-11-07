@@ -55,11 +55,36 @@ constexpr std::uint32_t kMaxCh = 2;
 // millisecond.
 constexpr double kLinkSiemens = 1.0;
 
+// What an editor draws (ui_hints.h): sections and the gain-reduction and
+// level meters. The gain reduction is the gate's own state (FetChannel),
+// not an estimate from the signal.
+constexpr std::uint32_t kMeterGr = 0, kMeterIn = 1, kMeterOut = 2;
+const MeterDecl kMeters[] = {kGainReductionMeter, kInputMeter, kOutputMeter};
+const ParamHint kHints[] = {
+    {"input", "Level", Widget::Knob, nullptr},
+    {"output", "Level", Widget::Knob, nullptr},
+    {"attack", "Timing", Widget::Knob, nullptr},
+    {"release", "Timing", Widget::Knob, nullptr},
+    {"ratio", "Ratio", Widget::Choice, nullptr},
+    {"link", "Stereo", Widget::Switch, nullptr},
+    {"mix", "Stereo", Widget::Knob, nullptr},
+    {"external_sc", "Side-chain", Widget::Switch, nullptr},
+    {"quality", "Quality", Widget::Choice, nullptr},
+};
+const UiHints kUi = {kHints, sizeof kHints / sizeof kHints[0], kMeters, 3, nullptr, 0};
+
 class Fet final : public ProcessorBase {
 public:
-    Fet() : ProcessorBase(kDesc) {}
+    Fet() : ProcessorBase(kDesc) { publish_levels(kMeterIn, kMeterOut); }
+    const UiHints* ui_hints() const noexcept override { return &kUi; }
 
 protected:
+    void on_publish(Telemetry& t) noexcept override {
+        double gr = ch_[0].gain_reduction_db();
+        if (channels() == 2) gr = std::fmax(gr, ch_[1].gain_reduction_db());
+        t.meter(kMeterGr, static_cast<float>(gr > 0.0 ? gr : 0.0));
+    }
+
     bool on_prepare() override {
         long q = std::lround(value(kQuality));
         q = q < 0 ? 0 : (q > 2 ? 2 : q);

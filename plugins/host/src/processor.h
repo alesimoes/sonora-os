@@ -93,6 +93,10 @@ struct ChainConfig {
     // The instance's plugin-file folders (LV2 makePath, mapPath, freePath;
     // ADR-0029 §6), or null. Per instance: Chain::add sets it.
     StatePaths* state_paths = nullptr;
+    // This instance's block of the telemetry region (contracts/plugin
+    // telemetry.h), or null: the engine mapped none, or this is a probe or a
+    // scan. A native plugin's library is handed it after instantiation.
+    void* telemetry = nullptr;
 };
 
 struct ChainError {

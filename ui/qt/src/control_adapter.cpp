@@ -92,6 +92,11 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         o.flags = e.flags;
         events_.push_back(std::move(o));
     }
+    for (api::PluginTelemetry& t : inbox_.telemetry) {
+        constexpr std::size_t kMaxHeldTelemetry = 256;
+        if (telemetry_.size() >= kMaxHeldTelemetry) telemetry_.erase(telemetry_.begin());
+        telemetry_.push_back(std::move(t));
+    }
     if (!inbox_.catalogs.empty()) {
         catalog_ = std::move(inbox_.catalogs.back());
         catalog_new_ = true;
@@ -242,6 +247,13 @@ uint64_t ControlAdapter::send_plugin_parameter(uint64_t insert, const std::strin
     // Named for the status line, as a command is, so a refusal says what.
     await(seq, "plugin parameter " + key, true);
     return seq;
+}
+
+bool ControlAdapter::take_telemetry(std::vector<api::PluginTelemetry>& out) {
+    if (telemetry_.empty()) return false;
+    for (api::PluginTelemetry& t : telemetry_) out.push_back(std::move(t));
+    telemetry_.clear();
+    return true;
 }
 
 bool ControlAdapter::take_catalog(api::PluginCatalog& out) {

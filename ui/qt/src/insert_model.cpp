@@ -3,6 +3,9 @@
 
 #include <QLocale>
 
+#include <algorithm>
+#include <chrono>
+
 #include "session_model.h"
 
 namespace sonora::ui {
@@ -87,6 +90,9 @@ void InsertModel::onFault(uint64_t insert, const std::string& text) {
 }
 
 void InsertModel::onFrame(const EngineFrame& f, bool alive) {
+    // A frame stream that stopped is noticed here, on the state block's
+    // beat: no telemetry arriving is the very thing that cannot call in.
+    refreshTelemetry();
     if (!ctl_.set_frame(f, alive)) return;
     refresh();
     refreshPanel();
@@ -94,11 +100,17 @@ void InsertModel::onFrame(const EngineFrame& f, bool alive) {
 
 void InsertModel::onLinkReplaced() {
     ctl_.clear_faults();
+    // The new connection's engine is another run: its frames start afresh.
+    ctl_.clear_telemetry();
+    ctl_.compare_reset();
+    refreshTelemetry();
+    emit compareChanged();
     refresh();
     refreshPanel();
 }
 
 void InsertModel::refresh() {
+    ctl_.prune_inserts();
     QVariantList strips;
     const int n = ctl_.track_count();
     for (int t = 0; t < n; ++t) {
@@ -268,8 +280,10 @@ bool InsertModel::choose(int index) {
 void InsertModel::openPanel(int track, int slot) {
     const SlotView v = ctl_.slot(track, slot);
     if (!v.present) return;
+    if (panel_insert_ != v.insert) ctl_.compare_reset();
     panel_insert_ = v.insert;
     refreshPanel();
+    emit compareChanged();
     emit panelChanged();
 }
 
@@ -279,6 +293,11 @@ void InsertModel::closePanel() {
     if (ctl_.gesture_running()) report(ctl_.param_end(why), why);
     panel_insert_ = kNoId;
     panel_track_ = panel_slot_ = -1;
+    // A/B belongs to the panel being open: the two sets are not kept
+    // across a close, so they cannot outlive the session they were taken in.
+    ctl_.compare_reset();
+    refreshTelemetry();
+    emit compareChanged();
     emit panelChanged();
 }
 
@@ -310,10 +329,43 @@ void InsertModel::refreshPanel() {
     }
     if (v.latency_frames > 0) subtitle += QStringLiteral(" · %1 samples").arg(v.latency_frames);
 
-    QVariantList params;
+    QVariantList params, sections, meters, curves;
     QVariantMap values;
     QString note;
     int past_cap = 0;
+    if (p != nullptr) {
+        for (const api::PluginMeterInfo& each : p->meters) {
+            QVariantMap m;
+            m.insert(QStringLiteral("id"), q(each.id));
+            m.insert(QStringLiteral("name"), q(each.name));
+            m.insert(QStringLiteral("unit"), q(each.unit));
+            const char* kind = "other";
+            switch (static_cast<api::PluginMeterKind>(each.kind)) {
+                case api::PluginMeterKind::GainReduction: kind = "gain_reduction"; break;
+                case api::PluginMeterKind::InputLevel: kind = "input"; break;
+                case api::PluginMeterKind::OutputLevel: kind = "output"; break;
+                case api::PluginMeterKind::Other: break;
+            }
+            m.insert(QStringLiteral("kind"), QLatin1String(kind));
+            m.insert(QStringLiteral("min"), static_cast<qreal>(each.min));
+            m.insert(QStringLiteral("max"), static_cast<qreal>(each.max));
+            meters << m;
+        }
+        for (const api::PluginCurveInfo& each : p->curves) {
+            QVariantMap m;
+            m.insert(QStringLiteral("id"), q(each.id));
+            m.insert(QStringLiteral("name"), q(each.name));
+            m.insert(QStringLiteral("xUnit"), q(each.x_unit));
+            m.insert(QStringLiteral("yUnit"), q(each.y_unit));
+            m.insert(QStringLiteral("xLog"), each.x_log);
+            m.insert(QStringLiteral("xMin"), static_cast<qreal>(each.x_min));
+            m.insert(QStringLiteral("xMax"), static_cast<qreal>(each.x_max));
+            m.insert(QStringLiteral("yMin"), static_cast<qreal>(each.y_min));
+            m.insert(QStringLiteral("yMax"), static_cast<qreal>(each.y_max));
+            m.insert(QStringLiteral("points"), static_cast<int>(each.points));
+            curves << m;
+        }
+    }
     if (p == nullptr) {
         note = q(v.name) + QStringLiteral(" is not in this engine's catalog, so its parameters are "
                                           "unknown here. Its saved values are kept as they are.");
@@ -325,26 +377,61 @@ void InsertModel::refreshPanel() {
             }
             const float value = ctl_.value(panel_insert_, each);
             const int step = param_step(each, value);
-            const ParamControl control = param_control(each);
+            // The plugin's own say (ADR-0057) over the generic rule, where
+            // the parameter can take it: a switch needs two steps and a
+            // choice at least two, which the catalog already guarantees.
+            ParamControl control = param_control(each);
+            QString control_text = control_name(control);
+            switch (static_cast<api::PluginWidget>(each.widget)) {
+                case api::PluginWidget::Knob: control_text = QStringLiteral("knob"); break;
+                case api::PluginWidget::Fader: control_text = QStringLiteral("fader"); break;
+                case api::PluginWidget::Switch: control_text = QStringLiteral("toggle"); break;
+                case api::PluginWidget::Choice: control_text = QStringLiteral("choices"); break;
+                case api::PluginWidget::Auto: break;
+            }
             int steps = 0;
             QStringList labels;
             if (step >= 0) {
                 steps = static_cast<int>(each.steps >= 2 ? each.steps : 2);
                 // A knob shows its step's text as its value; only a row
                 // of choices draws every label.
-                for (int i = 0; control != ParamControl::Knob && i < steps; ++i) {
+                for (int i = 0; (control_text == QLatin1String("toggle") || control_text == QLatin1String("choices")) &&
+                                i < steps;
+                     ++i) {
                     labels << q(param_text(*p, each, param_step_value(each, i)));
                 }
             }
             QVariantMap m;
             m.insert(QStringLiteral("key"), q(each.key));
             m.insert(QStringLiteral("name"), q(each.name));
-            m.insert(QStringLiteral("control"), control_name(control));
+            m.insert(QStringLiteral("control"), control_text);
             m.insert(QStringLiteral("steps"), steps);
             m.insert(QStringLiteral("labels"), labels);
             m.insert(QStringLiteral("origin"), param_origin(each));
             m.insert(QStringLiteral("defaultPosition"), param_position(each, each.default_value));
+            m.insert(QStringLiteral("section"), q(each.section));
+            m.insert(QStringLiteral("unit"), q(each.unit));
+            m.insert(QStringLiteral("curveSource"), q(each.curve_source));
             params << m;
+            bool placed = false;
+            for (QVariant& s : sections) {
+                QVariantMap sm = s.toMap();
+                if (sm.value(QStringLiteral("name")).toString() != m.value(QStringLiteral("section")).toString()) {
+                    continue;
+                }
+                QVariantList in = sm.value(QStringLiteral("params")).toList();
+                in << m;
+                sm.insert(QStringLiteral("params"), in);
+                s = sm;
+                placed = true;
+                break;
+            }
+            if (!placed) {
+                QVariantMap sm;
+                sm.insert(QStringLiteral("name"), m.value(QStringLiteral("section")));
+                sm.insert(QStringLiteral("params"), QVariantList{m});
+                sections << sm;
+            }
 
             QVariantMap now;
             now.insert(QStringLiteral("text"), q(param_text(*p, each, value)));
@@ -364,16 +451,85 @@ void InsertModel::refreshPanel() {
         panel_values_ = values;
         emit panelValuesChanged();
     }
+    refreshTelemetry();
     if (title == panel_title_ && subtitle == panel_subtitle_ && params == panel_params_ &&
-        note == panel_note_ && info == panel_slot_info_ && was_open) {
+        note == panel_note_ && info == panel_slot_info_ && meters == panel_meters_ &&
+        curves == panel_curves_ && was_open) {
         return;
     }
     panel_title_ = title;
     panel_subtitle_ = subtitle;
     panel_params_ = params;
+    panel_sections_ = sections;
+    panel_meters_ = meters;
+    panel_curves_ = curves;
     panel_note_ = note;
     panel_slot_info_ = info;
     emit panelChanged();
+}
+
+void InsertModel::onTelemetry(const api::PluginTelemetry& t) {
+    const uint64_t now = now_ns_ ? now_ns_()
+                                 : static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                             std::chrono::steady_clock::now().time_since_epoch())
+                                                             .count());
+    if (!ctl_.set_telemetry(t, now)) return;
+    if (t.insert == panel_insert_) refreshTelemetry();
+}
+
+void InsertModel::refreshTelemetry() {
+    QVariantMap meter_values, curve_data;
+    QString state = QStringLiteral("none");
+    const api::PluginInfo* p = panel_insert_ == kNoId ? nullptr : ctl_.plugin_of(panel_insert_);
+    if (p != nullptr && (!p->meters.empty() || !p->curves.empty())) {
+        const uint64_t now = now_ns_ ? now_ns_()
+                                     : static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                                 std::chrono::steady_clock::now().time_since_epoch())
+                                                                 .count());
+        bool ever = false;
+        const api::PluginTelemetry* f = ctl_.telemetry(panel_insert_, now, &ever);
+        state = f != nullptr ? QStringLiteral("live") : ever ? QStringLiteral("stopped") : QStringLiteral("waiting");
+        for (std::size_t i = 0; i < p->meters.size(); ++i) {
+            const api::PluginMeterInfo& info = p->meters[i];
+            QVariantMap v;
+            const bool valid = f != nullptr && i < f->meters.size() && (f->meter_mask & (1u << i)) != 0;
+            v.insert(QStringLiteral("valid"), valid);
+            if (valid) {
+                const float value = f->meters[i];
+                const float span = info.max - info.min;
+                const float fraction = span > 0.0f ? std::clamp((value - info.min) / span, 0.0f, 1.0f) : 0.0f;
+                v.insert(QStringLiteral("value"), static_cast<qreal>(value));
+                v.insert(QStringLiteral("fraction"), static_cast<qreal>(fraction));
+                v.insert(QStringLiteral("text"),
+                         QStringLiteral("%1 %2").arg(QLocale::c().toString(static_cast<double>(value), 'f', 1), q(info.unit)).trimmed());
+            }
+            meter_values.insert(q(info.id), v);
+        }
+        for (std::size_t i = 0; i < p->curves.size(); ++i) {
+            QVariantList points;
+            if (f != nullptr && i < f->curves.size()) {
+                for (float y : f->curves[i]) points << static_cast<qreal>(y);
+            }
+            curve_data.insert(q(p->curves[i].id), points);
+        }
+    }
+    if (meter_values == meter_values_ && curve_data == curve_data_ && state == telemetry_state_) return;
+    meter_values_ = meter_values;
+    curve_data_ = curve_data;
+    telemetry_state_ = state;
+    emit telemetryChanged();
+}
+
+QString InsertModel::compareSlot() const {
+    return panel_insert_ == kNoId ? QStringLiteral("A") : QString(QChar::fromLatin1(ctl_.compare_slot(panel_insert_)));
+}
+
+void InsertModel::toggleCompare() {
+    if (panel_insert_ == kNoId) return;
+    std::string why;
+    const bool ok = ctl_.compare_toggle(panel_insert_, why);
+    report(ok, why);
+    emit compareChanged();
 }
 
 void InsertModel::paramBegin() {

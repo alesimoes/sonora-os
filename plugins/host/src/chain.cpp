@@ -2,6 +2,7 @@
 #include "chain.h"
 
 #include "ipc.h"
+#include "sonora/plugin/telemetry.h"
 
 #include <algorithm>
 #include <cmath>
@@ -78,6 +79,7 @@ bool Chain::add(const std::string& id, ChainError& error, StatePaths* paths) {
     for (uint32_t c = 0; c < key_channels_; ++c) key.push_back(key_.data() + std::size_t(c) * stride_);
     ChainConfig config = config_;
     config.state_paths = paths;
+    if (telemetry_base_ != nullptr) config.telemetry = plugin::telemetry_block(telemetry_base_, uint32_t(index));
     std::unique_ptr<Processor> p = source_.instantiate(id, config, in, out, key, error);
     if (!p) {
         error.instance = index;

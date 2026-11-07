@@ -11,4 +11,4 @@ sonora_native_quality_test(eq)
 
 # The LV2 and VST3 bundles (ADR-0011 N1).
 sonora_native_plugin(eq FACTORY make_eq DISPLAY "Sonora EQ" UID SNeq MONO_UID SMeq
-  LV2_CATEGORY "lv2:EQPlugin" VST3_CATEGORIES "Fx|EQ")
+  LV2_CATEGORY "lv2:EQPlugin" VST3_CATEGORIES "Fx|EQ" TELEMETRY)

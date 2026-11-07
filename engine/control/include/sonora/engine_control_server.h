@@ -75,6 +75,7 @@
 #include "sonora/api/messages.h"
 #include "sonora/api/render.h"
 #include "sonora/api/state_block.h"
+#include "sonora/api/telemetry_throttle.h"
 #include "sonora/api/wire.h"
 #include "sonora/automation_write.h"
 #include "sonora/automation_writer.h"
@@ -503,6 +504,12 @@ private:
     uint64_t catalog_sent_ = 0;
     // The catalog to clients, the scanner's notices said, once per turn.
     void follow_scanner();
+    // ADR-0057: every running insert's latest telemetry, read from the
+    // hosts' regions and sent to the clients at most kTelemetryMaxHz each.
+    void forward_telemetry();
+    api::TelemetryThrottle telemetry_throttle_;
+    std::vector<PluginHosting::TelemetryRead> telemetry_reads_;
+    std::set<uint64_t> telemetry_live_;
     // The catalog a client is sent after the Snapshot.
     void send_catalog(Client& client);
     // Item 6: AddInsert and ReplaceInsert against the catalog. Empty when

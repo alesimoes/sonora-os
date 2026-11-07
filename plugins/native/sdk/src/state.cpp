@@ -38,6 +38,27 @@ const char* taper_name(Taper t) {
     return "linear";
 }
 
+const char* widget_name(Widget w) {
+    switch (w) {
+        case Widget::Auto: return "auto";
+        case Widget::Knob: return "knob";
+        case Widget::Fader: return "fader";
+        case Widget::Switch: return "switch";
+        case Widget::Choice: return "choice";
+    }
+    return "auto";
+}
+
+const char* meter_kind_name(MeterKind k) {
+    switch (k) {
+        case MeterKind::Other: return "other";
+        case MeterKind::GainReduction: return "gain_reduction";
+        case MeterKind::InputLevel: return "input";
+        case MeterKind::OutputLevel: return "output";
+    }
+    return "other";
+}
+
 std::string written(const Value& v) {
     std::string out, err;
     json::write(v, out, err);
@@ -47,7 +68,7 @@ std::string written(const Value& v) {
 }  // namespace
 
 std::string descriptor_json(const Descriptor& d, const FormatSymbol* symbols,
-                            std::uint32_t symbol_count, const FileSlots* files) {
+                            std::uint32_t symbol_count, const FileSlots* files, const UiHints* ui) {
     Value root = Value::object();
     root.set("id", Value::string(d.id));
     root.set("name", Value::string(d.name));
@@ -88,9 +109,52 @@ std::string descriptor_json(const Descriptor& d, const FormatSymbol* symbols,
             any = true;
         }
         if (any) o.set("formats", std::move(formats));
+        if (ui != nullptr) {
+            for (std::uint32_t k = 0; k < ui->param_count; ++k) {
+                const ParamHint& h = ui->params[k];
+                if (std::string(h.id) != p.id) continue;
+                if (h.section != nullptr) o.set("section", Value::string(h.section));
+                if (h.widget != Widget::Auto) o.set("widget", Value::string(widget_name(h.widget)));
+                if (h.curve_source != nullptr) o.set("curve_source", Value::string(h.curve_source));
+            }
+        }
         params.push(std::move(o));
     }
     root.set("params", std::move(params));
+    if (ui != nullptr && ui->meter_count > 0) {
+        Value meters = Value::array();
+        for (std::uint32_t i = 0; i < ui->meter_count; ++i) {
+            const MeterDecl& m = ui->meters[i];
+            Value o = Value::object();
+            o.set("id", Value::string(m.id));
+            o.set("name", Value::string(m.name));
+            o.set("unit", Value::string(m.unit));
+            o.set("kind", Value::string(meter_kind_name(m.kind)));
+            o.set("min", Value::number_float(m.min));
+            o.set("max", Value::number_float(m.max));
+            meters.push(std::move(o));
+        }
+        root.set("meters", std::move(meters));
+    }
+    if (ui != nullptr && ui->curve_count > 0) {
+        Value curves = Value::array();
+        for (std::uint32_t i = 0; i < ui->curve_count; ++i) {
+            const CurveDecl& c = ui->curves[i];
+            Value o = Value::object();
+            o.set("id", Value::string(c.id));
+            o.set("name", Value::string(c.name));
+            o.set("x_unit", Value::string(c.x_unit));
+            o.set("y_unit", Value::string(c.y_unit));
+            o.set("points", Value::integer(c.points));
+            o.set("x_log", Value::boolean(c.x_log));
+            o.set("x_min", Value::number_float(c.x_min));
+            o.set("x_max", Value::number_float(c.x_max));
+            o.set("y_min", Value::number_float(c.y_min));
+            o.set("y_max", Value::number_float(c.y_max));
+            curves.push(std::move(o));
+        }
+        root.set("curves", std::move(curves));
+    }
     if (files != nullptr && files->slot_count() > 0) {
         Value slots = Value::array();
         for (std::uint32_t i = 0; i < files->slot_count(); ++i) {

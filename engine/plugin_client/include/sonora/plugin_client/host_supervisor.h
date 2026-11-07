@@ -32,6 +32,7 @@
 
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin/protocol.h"
+#include "sonora/plugin/telemetry.h"
 #include "sonora/plugin_client/plugin_client.h"
 
 #include <cstdint>
@@ -123,6 +124,15 @@ public:
 
     plugin::ChannelHeader& header() { return *header_; }
     void* region() { return base_; }
+    // The telemetry region of this host (contracts/plugin telemetry.h,
+    // ADR-0057): one block per chain instance, written by the plugin's audio
+    // thread and read here, on the control thread, never waiting. False when
+    // the host has no region (it could not be made: no meters then, which the
+    // interface says), the instance is out of range, the instance never
+    // published, or the read overlapped writes every time; `out` is then
+    // untouched and the caller keeps its last frame.
+    bool read_telemetry(uint32_t instance, plugin::TelemetrySnapshot& out) const;
+    bool has_telemetry() const { return telemetry_region_ != nullptr; }
     const plugin::Layout& layout() const { return layout_; }
     const plugin::ParamMap& map() const { return map_; }
     // chain + IPC block, through checked_latency, read after Ready. What the
@@ -298,6 +308,8 @@ private:
     uint64_t stop_requested_ms_ = 0;
 
     std::unique_ptr<platform::SharedRegion> region_;
+    std::unique_ptr<platform::SharedRegion> telemetry_region_;
+    uint32_t telemetry_instances_ = 0;
     std::unique_ptr<platform::ChildProcess> child_;
     void* base_ = nullptr;
     plugin::ChannelHeader* header_ = nullptr;

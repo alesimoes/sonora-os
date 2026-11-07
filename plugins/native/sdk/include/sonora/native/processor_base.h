@@ -22,6 +22,7 @@
 
 #include "sonora/dsp/smoothing.h"
 #include "sonora/native/processor.h"
+#include "sonora/native/telemetry.h"
 
 namespace sonora::native {
 
@@ -65,6 +66,10 @@ public:
     // Never a silent clamp: the M9 telemetry region publishes this to the
     // editor, and the measurement harness asserts it.
     std::uint64_t bounded_blocks() const noexcept { return bounded_blocks_; }
+    // The block this instance publishes to (telemetry.h): private until a
+    // host binds the engine's. The tests and the measurement harness read it.
+    Telemetry& telemetry() noexcept { return telemetry_; }
+    const Telemetry& telemetry() const noexcept { return telemetry_; }
 
 protected:
     // Allocate and configure; read `reconfigures` parameters with value().
@@ -92,6 +97,24 @@ protected:
     // Call from render() when an input had to be bounded; counted once per
     // block in bounded_blocks().
     void note_bounded() noexcept { bounded_ = true; }
+
+    // Publishes a telemetry frame after every process() call (ADR-0057;
+    // native.editors). Call from the constructor, once: `in_slot` and
+    // `out_slot` are the meter slots the block's input and output peak (dBFS,
+    // floored at -120) go to, kNoSlot for none. A processor that never calls
+    // it publishes nothing and pays nothing. Slots are the places in
+    // UiHints::meters.
+    static constexpr std::uint32_t kNoSlot = 0xFFFFFFFFu;
+    void publish_levels(std::uint32_t in_slot, std::uint32_t out_slot) noexcept {
+        in_slot_ = in_slot;
+        out_slot_ = out_slot;
+        publishing_ = true;
+        telemetry_.offer();
+    }
+    // Inside the frame, after the levels: the processor's own meters (gain
+    // reduction) and curves. Audio thread: telemetry.meter() and curve()
+    // only. Once per process() call, not per chunk.
+    virtual void on_publish(Telemetry& telemetry) noexcept SONORA_RT { (void)telemetry; }
 
 private:
     void apply_event(const ParamEvent& e) noexcept;
@@ -128,6 +151,11 @@ private:
     std::uint64_t nonfinite_blocks_ = 0;
     std::uint64_t bounded_blocks_ = 0;
     bool bounded_ = false;
+
+    Telemetry telemetry_{Telemetry::Deferred{}};
+    bool publishing_ = false;
+    std::uint32_t in_slot_ = kNoSlot, out_slot_ = kNoSlot;
+    float peak_in_ = 0.0f, peak_out_ = 0.0f;
 };
 
 }  // namespace sonora::native

@@ -34,6 +34,25 @@ void close_library(void* library) {
     if (library) dlclose(library);
 }
 
+bool bind_native_telemetry(void* library, void* block) {
+    if (library == nullptr || block == nullptr) return false;
+    using Bind = int (*)(void*);
+    // dlsym returns an object pointer; the cast is the loader's own idiom.
+    const Bind bind = reinterpret_cast<Bind>(dlsym(library, "sonora_native_telemetry_bind"));
+    return bind != nullptr && bind(block) != 0;
+}
+
+bool bind_native_telemetry_at(const std::string& path, void* block) {
+    if (path.empty() || block == nullptr) return false;
+    // RTLD_NOLOAD: only a library that is already mapped, so a path that is
+    // not the plugin's is never loaded for this.
+    void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
+    if (h == nullptr) return false;
+    const bool bound = bind_native_telemetry(h, block);
+    dlclose(h);
+    return bound;
+}
+
 std::vector<std::string> vst3_default_roots() {
     std::vector<std::string> roots;
     const char* home = std::getenv("HOME");

@@ -17,6 +17,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <algorithm>
+#include <cstdint>
+#include <functional>
 
 #include "insert_controller.h"
 
@@ -56,6 +58,25 @@ class InsertModel : public QObject {
     // {key: {text, position, step}}: where they stand.
     Q_PROPERTY(QVariantMap panelValues READ panelValues NOTIFY panelValuesChanged)
     Q_PROPERTY(QString panelNote READ panelNote NOTIFY panelChanged)
+    // The same controls grouped as the plugin declares (ADR-0057):
+    // [{name, params: [panelParams entries]}], in the order each section
+    // first appears; a plugin that declares none has one section, unnamed.
+    Q_PROPERTY(QVariantList panelSections READ panelSections NOTIFY panelChanged)
+    // What the plugin publishes: [{id, name, unit, kind ("gain_reduction",
+    // "input", "output", "other"), min, max}] and [{id, name, xUnit, yUnit,
+    // xLog, xMin, xMax, yMin, yMax, points}], apart from their values.
+    Q_PROPERTY(QVariantList panelMeters READ panelMeters NOTIFY panelChanged)
+    Q_PROPERTY(QVariantList panelCurves READ panelCurves NOTIFY panelChanged)
+    // {id: {valid, value, fraction, text}}: only what the last frame
+    // published; "valid" false draws no bar (a meter at zero would read as
+    // silence). And {id: [y...]} per curve, empty until one arrives.
+    Q_PROPERTY(QVariantMap panelMeterValues READ panelMeterValues NOTIFY telemetryChanged)
+    Q_PROPERTY(QVariantMap panelCurveData READ panelCurveData NOTIFY telemetryChanged)
+    // "none" (nothing declared), "waiting" (nothing yet), "live", "stopped"
+    // (the last frame is over a second old).
+    Q_PROPERTY(QString telemetryState READ telemetryState NOTIFY telemetryChanged)
+    // A/B compare: "A" or "B".
+    Q_PROPERTY(QString compareSlot READ compareSlot NOTIFY compareChanged)
 
 public:
     InsertModel(TimelineDocument& doc, SessionModel& session, QObject* parent = nullptr);
@@ -89,6 +110,22 @@ public:
     QVariantList panelParams() const { return panel_params_; }
     QVariantMap panelValues() const { return panel_values_; }
     QString panelNote() const { return panel_note_; }
+    QVariantList panelSections() const { return panel_sections_; }
+    QVariantList panelMeters() const { return panel_meters_; }
+    QVariantList panelCurves() const { return panel_curves_; }
+    QVariantMap panelMeterValues() const { return meter_values_; }
+    QVariantMap panelCurveData() const { return curve_data_; }
+    QString telemetryState() const { return telemetry_state_; }
+    QString compareSlot() const;
+
+    // From ShellModel's tick, one PluginTelemetry frame of the engine.
+    void onTelemetry(const api::PluginTelemetry& t);
+    // For tests: the clock the staleness of a frame is judged by, in ns.
+    void setClock(std::function<uint64_t()> now) { now_ns_ = std::move(now); }
+    // The panel's A/B button: plays the other parameter set (see
+    // InsertController::compare_toggle). The insert's own bypass is the
+    // header's other button (toggleBypass).
+    Q_INVOKABLE void toggleCompare();
 
     // A click on a slot, with the mouse's modifiers: an empty slot opens the
     // chooser; Ctrl-click bypasses, Ctrl+Start-click makes it inactive or
@@ -134,10 +171,14 @@ signals:
     void browserChanged();
     void panelChanged();
     void panelValuesChanged();
+    void telemetryChanged();
+    void compareChanged();
 
 private:
     void refresh();
     void refreshPanel();
+    // Meters and curves of the panel's insert from its latest frame.
+    void refreshTelemetry();
     bool report(bool ok, const std::string& why);
     // Finds the panel's insert again after the document changed; closes the
     // panel if it is gone.
@@ -157,6 +198,10 @@ private:
     QVariantMap panel_slot_info_;
     QVariantList panel_params_;
     QVariantMap panel_values_;
+    QVariantList panel_sections_, panel_meters_, panel_curves_;
+    QVariantMap meter_values_, curve_data_;
+    QString telemetry_state_ = QStringLiteral("none");
+    std::function<uint64_t()> now_ns_;
 };
 
 }  // namespace sonora::ui

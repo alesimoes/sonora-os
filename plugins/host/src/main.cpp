@@ -106,6 +106,7 @@
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin/probe_record.h"
 #include "sonora/plugin/protocol.h"
+#include "sonora/plugin/telemetry.h"
 #include "sonora/rt.h"
 #ifdef SONORA_HAVE_VST3
 #include "vst3_host.h"
@@ -172,7 +173,7 @@ struct Options {
     // --read-preset BUNDLE PRESET-ID --plugin ID
     std::string preset_bundle, preset_id, preset_plugin;
     bool read_preset = false;
-    int shm_fd = -1, clock_fd = -1, control_fd = -1;
+    int shm_fd = -1, clock_fd = -1, control_fd = -1, telemetry_fd = -1;
     int64_t engine_pid = 0;
     std::vector<std::string> chain, bundles;
     struct Set {
@@ -198,10 +199,10 @@ struct Options {
                  "       sonora-plugin-host --read-preset BUNDLE PRESET-ID --plugin ID [--bundle DIR]...\n"
                  "                          [--engine-pid PID]\n"
                  "       sonora-plugin-host --version\n"
-                 "       sonora-plugin-host --shm-fd FD --clock-fd FD --chain ID[,ID...] [--bundle DIR]...\n"
+                 "       sonora-plugin-host --shm-fd FD --clock-fd FD [--telemetry-fd FD] --chain ID[,ID...] [--bundle DIR]...\n"
                  "                          [--engine-pid PID] [--set INDEX:SYMBOL=VALUE]...\n"
                  "                          [--sidechain N] [--reactivate]\n"
-                 "       sonora-plugin-host --control-fd FD --shm-fd FD --clock-fd FD [--bundle DIR]...\n"
+                 "       sonora-plugin-host --control-fd FD --shm-fd FD --clock-fd FD [--telemetry-fd FD] [--bundle DIR]...\n"
                  "                          [--engine-pid PID]\n",
                  why);
     std::exit(plugin::kHostExitUsage);
@@ -231,6 +232,7 @@ Options parse(int argc, char** argv) {
         if (a == "--list") o.list = true;
         else if (a == "--version") o.version = true;
         else if (a == "--clock-fd") o.clock_fd = std::atoi(next().c_str());
+        else if (a == "--telemetry-fd") o.telemetry_fd = std::atoi(next().c_str());
         else if (a == "--json") o.json = true;
         else if (a == "--bundles-only") o.bundles_only = true;
         else if (a == "--only-given") o.only_given = true;
@@ -1168,6 +1170,23 @@ int serve(const Options& o) {
         std::fprintf(stderr, "sonora-plugin-host: %s\n", err.c_str());
         return plugin::kHostExitUsage;
     }
+    // The telemetry region (ADR-0057) is optional: an engine that passes none
+    // gets no meters, which its interface says, and nothing else changes. A
+    // region that is not ours is said here and left unused, never half-used.
+    SharedRegion telemetry_region;
+    if (o.telemetry_fd >= 0) {
+        std::string terr;
+        uint32_t instances = 0;
+        if (!map_region(o.telemetry_fd, telemetry_region, terr)) {
+            std::fprintf(stderr, "sonora-plugin-host: telemetry unavailable: %s\n", terr.c_str());
+            telemetry_region = SharedRegion{};
+        } else if (telemetry_region.size < plugin::telemetry_region_size() ||
+                   !plugin::telemetry_header_valid(telemetry_region.base, instances)) {
+            std::fprintf(stderr, "sonora-plugin-host: telemetry unavailable: --telemetry-fd is not a region of "
+                                 "layout %u\n", plugin::kTelemetryVersion);
+            release_region(telemetry_region);
+        }
+    }
     if (region.size < sizeof(plugin::VersionWords) || clock_region.size < sizeof(plugin::VersionWords)) {
         std::fprintf(stderr, "sonora-plugin-host: a region is too small to hold a header\n");
         return plugin::kHostExitUsage;
@@ -1250,6 +1269,7 @@ int serve(const Options& o) {
         paths.push_back(std::make_unique<StatePaths>(i < spec.scratch_dirs.size() ? spec.scratch_dirs[i] : "",
                                                      spec.session_dir));
     Chain chain(catalog, cfg);
+    chain.set_telemetry(telemetry_region.base);
     ChainError cerr;
     for (std::size_t i = 0; i < spec.ids.size(); ++i)
         if (!chain.add(spec.ids[i], cerr, paths[i].get())) return refused(cerr);

@@ -38,4 +38,4 @@ endif()
 
 # The LV2 and VST3 bundles, stereo and mono, with the key input.
 sonora_native_plugin(fet FACTORY make_fet DISPLAY "Sonora FET" UID SNfe MONO_UID SMfe
-  LV2_CATEGORY "lv2:LimiterPlugin" VST3_CATEGORIES "Fx|Dynamics" SIDECHAIN)
+  LV2_CATEGORY "lv2:LimiterPlugin" VST3_CATEGORIES "Fx|Dynamics" SIDECHAIN TELEMETRY)

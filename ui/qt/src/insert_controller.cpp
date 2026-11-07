@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "insert_controller.h"
 
+#include <iterator>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -592,6 +594,60 @@ bool InsertController::param_set(Id insert, const std::string& key, float v, std
     gesture_[key] = v;
     if (send_param_) send_param_(insert, key, v);
     return true;
+}
+
+bool InsertController::set_telemetry(const api::PluginTelemetry& f, uint64_t now_ns) {
+    if (find(f.insert) == nullptr) return false;
+    Stamped& s = telemetry_[f.insert];
+    s.frame = f;
+    s.at_ns = now_ns;
+    return true;
+}
+
+const api::PluginTelemetry* InsertController::telemetry(Id insert, uint64_t now_ns, bool* ever) const {
+    const auto it = telemetry_.find(insert);
+    if (ever != nullptr) *ever = it != telemetry_.end();
+    if (it == telemetry_.end() || now_ns - it->second.at_ns > kTelemetryStaleNs) return nullptr;
+    return &it->second.frame;
+}
+
+void InsertController::prune_inserts() {
+    for (auto it = telemetry_.begin(); it != telemetry_.end();)
+        it = find(it->first) == nullptr ? telemetry_.erase(it) : std::next(it);
+    for (auto it = compare_.begin(); it != compare_.end();)
+        it = find(it->first) == nullptr ? compare_.erase(it) : std::next(it);
+}
+
+char InsertController::compare_slot(Id insert) const {
+    const auto it = compare_.find(insert);
+    return it == compare_.end() ? 'A' : it->second.slot;
+}
+
+bool InsertController::compare_toggle(Id insert, std::string& why) {
+    if (gesture_insert_ != kNoId) {
+        why = "finish moving the control first";
+        return false;
+    }
+    const api::PluginInfo* plugin = plugin_of(insert);
+    if (plugin == nullptr) {
+        why = "the plugin is not in the engine's catalog, so its parameters are unknown";
+        return false;
+    }
+    Compare& c = compare_[insert];
+    const int from = c.slot == 'A' ? 0 : 1, to = 1 - from;
+    for (const api::PluginParam& p : plugin->params) {
+        if ((p.flags & api::kParamPastCap) == 0) c.sets[from][p.key] = value(insert, p);
+    }
+    if (c.sets[to].empty()) c.sets[to] = c.sets[from];
+    c.slot = c.slot == 'A' ? 'B' : 'A';
+    if (!param_begin(insert, why)) return false;
+    bool ok = true;
+    for (const api::PluginParam& p : plugin->params) {
+        const auto it = c.sets[to].find(p.key);
+        if (it == c.sets[to].end() || it->second == c.sets[from][p.key]) continue;
+        ok = param_set(insert, p.key, it->second, why) && ok;
+    }
+    return param_end(why) && ok;
 }
 
 bool InsertController::param_end(std::string& why) {

@@ -41,11 +41,54 @@ constexpr std::uint32_t kControl = 16;
 constexpr double kRmsSeconds = 0.010;
 constexpr std::uint32_t kMaxCh = 2;
 
+// What an editor draws (ui_hints.h): sections, the gain-reduction and level
+// meters, and the static transfer curve the threshold, ratio and knee shape.
+constexpr std::uint32_t kMeterGr = 0, kMeterIn = 1, kMeterOut = 2;
+constexpr std::uint32_t kCurvePoints = 128;
+constexpr float kCurveMin = -60.0f, kCurveMax = 0.0f;
+const MeterDecl kMeters[] = {kGainReductionMeter, kInputMeter, kOutputMeter};
+const CurveDecl kCurves[] = {{"transfer", "Transfer curve", "dB", "dB", kCurvePoints, false, kCurveMin,
+                              kCurveMax, kCurveMin, kCurveMax}};
+const ParamHint kHints[] = {
+    {"threshold", "Compressor", Widget::Knob, "transfer"},
+    {"ratio", "Compressor", Widget::Knob, "transfer"},
+    {"knee", "Compressor", Widget::Knob, "transfer"},
+    {"attack", "Timing", Widget::Knob, nullptr},
+    {"release", "Timing", Widget::Knob, nullptr},
+    {"makeup", "Output", Widget::Knob, nullptr},
+    {"auto_makeup", "Output", Widget::Switch, nullptr},
+    {"mix", "Output", Widget::Knob, nullptr},
+    {"detector", "Detector", Widget::Choice, nullptr},
+    {"sc_hpf_on", "Side-chain", Widget::Switch, nullptr},
+    {"sc_hpf_freq", "Side-chain", Widget::Knob, nullptr},
+    {"external_sc", "Side-chain", Widget::Switch, nullptr},
+    {"link", "Side-chain", Widget::Knob, nullptr},
+};
+const UiHints kUi = {kHints, sizeof kHints / sizeof kHints[0], kMeters, 3, kCurves, 1};
+
 class Compressor final : public ProcessorBase {
 public:
-    Compressor() : ProcessorBase(kDesc) {}
+    Compressor() : ProcessorBase(kDesc) { publish_levels(kMeterIn, kMeterOut); }
+    const UiHints* ui_hints() const noexcept override { return &kUi; }
 
 protected:
+    void on_publish(Telemetry& t) noexcept override {
+        t.meter(kMeterGr, static_cast<float>(gr_db_ > 0.0 ? gr_db_ : 0.0));
+        // The curve is the gain computer at the target values: recomputed
+        // only when one of its three controls moved.
+        const float thr = value(kThreshold), ratio = value(kRatio), knee = value(kKnee);
+        if (curve_valid_ && thr == curve_thr_ && ratio == curve_ratio_ && knee == curve_knee_) return;
+        curve_valid_ = true;
+        curve_thr_ = thr;
+        curve_ratio_ = ratio;
+        curve_knee_ = knee;
+        for (std::uint32_t i = 0; i < kCurvePoints; ++i) {
+            const double x = kCurveMin + (kCurveMax - kCurveMin) * i / (kCurvePoints - 1);
+            curve_[i] = static_cast<float>(dsp::compressor_curve_db(x, thr, ratio, knee));
+        }
+        t.curve(0, curve_, kCurvePoints);
+    }
+
     bool on_prepare() override {
         for (auto& m : ms_) m.set_time(kRmsSeconds, sample_rate());
         update_filter(0, true);
@@ -138,6 +181,9 @@ private:
     dsp::MeanSquare ms_[kMaxCh];
     dsp::BranchingSmoother det_[kMaxCh];
     double gr_db_ = 0.0;
+    float curve_[kCurvePoints] = {};
+    float curve_thr_ = 0.0f, curve_ratio_ = 0.0f, curve_knee_ = 0.0f;
+    bool curve_valid_ = false;
 };
 
 }  // namespace

@@ -33,8 +33,13 @@ struct FormatSymbol {
 // {"lv2": {"symbol": "lv2_enabled", "inverted": true}}.
 // With `files`, a "files" array lists the slots (id, name, extensions) for an
 // editor's file chooser.
+// With `ui` (ui_hints.h), each parameter it names gets "section", "widget"
+// ("knob", "fader", "switch", "choice") and "curve_source", and the root gets
+// "meters" and "curves" in slot order; the engine's scan reads them into the
+// catalog (engine/control plugin_scanner).
 std::string descriptor_json(const Descriptor& d, const FormatSymbol* symbols = nullptr,
-                            std::uint32_t symbol_count = 0, const FileSlots* files = nullptr);
+                            std::uint32_t symbol_count = 0, const FileSlots* files = nullptr,
+                            const UiHints* ui = nullptr);
 
 // A processor with file slots (files.h) also saves their paths under
 // "files": {"<slot id>": "<path>"}, only for a slot not at its default. What
