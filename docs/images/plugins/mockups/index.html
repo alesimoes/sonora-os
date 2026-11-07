@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Plugin faceplate mockups, round 4</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><style>
+body{margin:0;background:#16181b;color:#d9dde1;font-family:Segoe UI,Arial,sans-serif;line-height:1.45}
+header{padding:28px 40px 8px}h1{margin:0 0 6px;font-size:26px;font-weight:600}
+header p{margin:0;color:#98a0a8;max-width:900px}
+nav{padding:8px 40px}nav a{color:#8fb7e0;margin-right:18px;text-decoration:none}
+section{padding:26px 40px 34px;border-top:1px solid #2a2d31}
+h2{margin:0 0 4px;font-size:21px;font-weight:600}
+.insp{color:#aab2ba;margin:0 0 16px;max-width:1000px}
+.meta{color:#7f8790;font-size:13px;margin:0 0 14px}
+img{display:block;max-width:100%;height:auto;border-radius:3px;box-shadow:0 6px 28px #000a}
+table{border-collapse:collapse;margin:18px 0 6px;font-size:13px;width:100%;max-width:1200px}
+th,td{border:1px solid #2e3237;padding:5px 9px;text-align:left;vertical-align:top}
+th{background:#1f2327;color:#c6ccd2}code{color:#e6c38a}
+h3{font-size:15px;margin:20px 0 4px;color:#c6ccd2}ul{margin:4px 0 0 18px;padding:0;max-width:1000px;color:#aab2ba}
+footer{padding:20px 40px 40px;color:#7f8790;font-size:13px;border-top:1px solid #2a2d31}
+</style></head><body>
+<header><h1>Plugin faceplate mockups, round 4</h1><p>Faithful redraws of the unit types that inspired each plugin, for owner approval. Images only: no editor code until approved. Our names only; nothing traced.</p></header><nav>
+<a href="#sn-lume">SN-Lume</a>
+<a href="#sn-talon">SN-Talon</a>
+<a href="#sn-aurea">SN-Aurea</a>
+</nav>
+<section id="sn-lume"><h2>SN-Lume</h2><p class="insp">1960s tube optical leveling amplifier: flat pale grey-green 3U panel, one big pointer knob each side of a centred VU in a dark bevelled bezel, bat toggles at the corners.</p><p class="meta">Plugin <code>plugins/native/opto</code> (<code>org.sonora.opto</code>), window 900 x 249 (3U), PNG at 2x.</p><a href="sn-lume.png"><img src="sn-lume.png" alt="SN-Lume faceplate"></a>
+<h3>What changed since round 3</h3><ul><li>Panel colour and finish: flat grey-green paint (#c5cac7) instead of a cool brushed silver.</li><li>VU meter is the right shape and size (aspect 1.8 : 1) in a thick dark bevelled bezel with silver bevel, instead of a small black frame.</li><li>Knobs are cast pointer knobs with a wedge tab instead of plain round caps; scale numerals are bold, bigger and rotated radially; the printed ranges are 10..100 and 0..100 as on the original.</li><li>Meter selector is a full-size knob with three printed positions (was a tiny dial); power toggle has ON/POWER legends; no jewel lamp (the original has none).</li><li>Toggle spacing and the second (link) toggle moved to the original&#x27;s nut position; our extra controls (key, emphasis, mix) shrunk into the empty strip under the meter.</li><li>Wordmark in a plain red condensed face with one rule; the old italic script is gone.</li></ul>
+<h3>Control to parameter mapping</h3><table><tr><th>Control</th><th>Parameter id</th><th>Range / steps</th><th>Notes</th></tr>
+<tr><td>GAIN knob (left of the meter, printed 10 to 100)</td><td><code>gain</code></td><td>-12 to +40 dB, linear</td><td>Printed 10..100 over 270 degrees; the control maps linearly onto the parameter range. Tooltip %+.1f dB.</td></tr>
+<tr><td>PEAK REDUCTION knob (right of the meter, printed 0 to 100)</td><td><code>peak_reduction</code></td><td>0 to 100 %, linear</td><td></td></tr>
+<tr><td>LIMIT / COMPRESS bat toggle (bottom left)</td><td><code>mode</code></td><td>compress (down), limit (up)</td><td></td></tr>
+<tr><td>STEREO / DUAL bat toggle (beside it, where the original has its trim nut)</td><td><code>link</code></td><td>off / on</td><td>Our addition, drawn in the original&#x27;s empty spot.</td></tr>
+<tr><td>POWER bat toggle (right, under the selector)</td><td><code>bypass</code></td><td>up = processing, down = bypassed</td><td>The original&#x27;s mains switch, reused as bypass.</td></tr>
+<tr><td>EXT KEY mini toggle (under the meter)</td><td><code>external_sc</code></td><td>off / on</td><td>Our addition; hidden when the chain has no side-chain input.</td></tr>
+<tr><td>EMPHASIS mini knob (under the meter)</td><td><code>emphasis</code></td><td>0 to 100 %</td><td>Our addition, small.</td></tr>
+<tr><td>MIX mini knob (under the meter)</td><td><code>mix</code></td><td>0 to 100 %</td><td>Our addition, small.</td></tr>
+<tr><td>Meter selector (top right: GAIN REDUCTION / OUTPUT +10 / OUTPUT +4)</td><td><code>none</code></td><td>view state</td><td>Chooses what the needle shows; not a parameter.</td></tr>
+<tr><td>VU meter</td><td><code>none</code></td><td>live gain reduction / output</td><td>Needle ballistics live in the painter.</td></tr>
+</table></section>
+<section id="sn-talon"><h2>SN-Talon</h2><p class="insp">1970s FET peak limiter, blue-stripe edition: brushed aluminium on the left, a painted blue section on the right with the meter in a deep recess, knurled knobs, black push-button columns.</p><p class="meta">Plugin <code>plugins/native/fet</code> (<code>org.sonora.fet</code>), window 900 x 166 (2U), PNG at 2x.</p><a href="sn-talon.png"><img src="sn-talon.png" alt="SN-Talon faceplate"></a>
+<h3>What changed since round 3</h3><ul><li>The blue section now starts at 0.55 of the face (it was 0.58 and had the meter higher, smaller and in a thin frame): the meter sits in a deep recess with a bevel, and the lettering sits under it.</li><li>Knobs are knurled black cylinders with a metal cap (round 3 had a ribbed bevel look); INPUT and OUTPUT are side by side on the left with ticks and numerals printed on the panel, ATTACK and RELEASE are small and stacked, as on the original (round 3 used a 2 x 2 grid).</li><li>Ratio and METER columns are blocky black buttons with the pressed one recessed; OFF is red; ratio labels left of the buttons.</li><li>Engraved section outlines, corner screws, and the single pilot hole added; brushed grain is horizontal and fine.</li><li>Our added controls (link, key, bypass, mix) moved to the blank blue at the far right.</li></ul>
+<h3>Control to parameter mapping</h3><table><tr><th>Control</th><th>Parameter id</th><th>Range / steps</th><th>Notes</th></tr>
+<tr><td>INPUT knob (left, large, ticks every 6 dB, numerals -24 to +24)</td><td><code>input</code></td><td>-24 to +24 dB, linear</td><td>Tooltip %+.1f dB.</td></tr>
+<tr><td>OUTPUT knob (right of INPUT, large)</td><td><code>output</code></td><td>-24 to +24 dB, linear</td><td></td></tr>
+<tr><td>ATTACK knob (small, upper, printed 1 to 7)</td><td><code>attack</code></td><td>log, kAttackMinMs to kAttackMaxMs</td><td>1 = slow (max ms), 7 = fast (min ms): the control inverts the parameter, as on the original.</td></tr>
+<tr><td>RELEASE knob (small, lower, printed 1 to 7)</td><td><code>release</code></td><td>log, 59.4 to 1159.4 ms</td><td>7 = fast, inverted likewise.</td></tr>
+<tr><td>RATIO push buttons (one column, 20 / 12 / 8 / 4 top to bottom)</td><td><code>ratio</code></td><td>steps 0 to 3: 4:1, 8:1, 12:1, 20:1</td><td>Radio group; the pressed one sits recessed.</td></tr>
+<tr><td>All four ratio buttons in</td><td><code>ratio</code></td><td>step 4: all buttons</td><td>Shift-click on any ratio button; all four then show pressed.</td></tr>
+<tr><td>METER push buttons (GR, +8, +4, OFF; OFF is red)</td><td><code>none</code></td><td>view state</td><td>Not a parameter.</td></tr>
+<tr><td>LINK mini toggle (blue, right end)</td><td><code>link</code></td><td>off / on</td><td>Our addition on the blank blue.</td></tr>
+<tr><td>KEY mini toggle (blue, right end)</td><td><code>external_sc</code></td><td>off / on</td><td>Host-routed; hidden when there is no side-chain input.</td></tr>
+<tr><td>BYPASS mini toggle (blue, right end)</td><td><code>bypass</code></td><td>up = processing</td><td>Pilot lamp (top left of the blue) is lit while processing.</td></tr>
+<tr><td>MIX mini knob (blue, right end)</td><td><code>mix</code></td><td>0 to 100 %</td><td>Our addition.</td></tr>
+<tr><td>VU meter</td><td><code>none</code></td><td>live gain reduction</td><td></td></tr>
+</table></section>
+<section id="sn-aurea"><h2>SN-Aurea</h2><p class="insp">1950s/60s passive tube program equalizer: blue-grey hammer-finish 3U panel, four fluted bakelite knobs in the top row, rotary frequency selectors with paddle handles below, a toggle and a pilot lamp, no meter.</p><p class="meta">Plugin <code>plugins/native/passiveeq</code> (<code>org.sonora.passiveeq</code>), window 900 x 249 (3U), PNG at 2x.</p><a href="sn-aurea.png"><img src="sn-aurea.png" alt="SN-Aurea faceplate"></a>
+<h3>What changed since round 3</h3><ul><li>Panel colour: blue-grey steel with hammer finish (round 3 had a light powder blue with a silver strip).</li><li>Layout rebuilt in the original&#x27;s positions: four boost / atten knobs in the top row, the CPS selector, BANDWIDTH and KCS selector in the bottom row, ATTEN SEL top right (round 3 had two rows of identical knobs, a tiny VU and a title strip).</li><li>Knobs are fluted bakelite with a dished cap and cream 0..10 numerals close round them, no ticks; the frequency selectors are paddle handles with their values printed on an arc (round 3 used knobs).</li><li>Nameplate lines, pilot lamp, fuse holder, mains knob and slotted screws added; the title strip and the meter are gone (the original has none; the meter belongs to the host).</li><li>Our DRIVE, OUTPUT and IRON moved to the blank strip under the nameplate, small, in the same bakelite style.</li></ul>
+<h3>Control to parameter mapping</h3><table><tr><th>Control</th><th>Parameter id</th><th>Range / steps</th><th>Notes</th></tr>
+<tr><td>LOW BOOST knob (top row, first; printed 0 to 10)</td><td><code>lf_boost</code></td><td>0 to 14 dB</td><td>Tooltip %+.1f dB.</td></tr>
+<tr><td>LOW ATTEN knob (top row, second)</td><td><code>lf_atten</code></td><td>0 to 16 dB</td><td></td></tr>
+<tr><td>HIGH BOOST knob (top row, third)</td><td><code>hf_boost</code></td><td>0 to 16 dB</td><td></td></tr>
+<tr><td>HIGH ATTEN knob (top row, fourth)</td><td><code>hf_atten</code></td><td>0 to 20 dB</td><td></td></tr>
+<tr><td>LOW FREQUENCY selector, CPS (bottom, left of centre)</td><td><code>lf_freq</code></td><td>4 steps: 20, 30, 60, 100 Hz</td><td>Snaps; the paddle points at the printed value.</td></tr>
+<tr><td>BANDWIDTH knob (bottom centre, 0 to 10, SHARP to BROAD)</td><td><code>hf_q</code></td><td>0.3 to 3.0, log</td><td>SHARP (left) = high Q, BROAD (right) = low Q: the control inverts the parameter.</td></tr>
+<tr><td>HIGH FREQUENCY selector, KCS (bottom, right of centre)</td><td><code>hf_freq</code></td><td>7 steps: 3, 4, 5, 8, 10, 12, 16 kHz</td><td></td></tr>
+<tr><td>ATTEN SEL selector, KCS (top right)</td><td><code>hf_atten_freq</code></td><td>3 steps: 5, 10, 20 kHz</td><td></td></tr>
+<tr><td>IN toggle (bottom, left of the selectors)</td><td><code>bypass</code></td><td>up = IN (processing)</td><td>As on the original: toggle to switch the EQ in.</td></tr>
+<tr><td>IRON mini toggle (bottom left)</td><td><code>iron</code></td><td>off / on</td><td>Our addition, in the blank strip under the nameplate.</td></tr>
+<tr><td>DRIVE mini knob (bottom left)</td><td><code>drive</code></td><td>0 to 24 dB (default 6)</td><td>Our addition; tube make-up stage drive.</td></tr>
+<tr><td>OUTPUT mini knob (bottom left)</td><td><code>output</code></td><td>-12 to +12 dB</td><td>Our addition.</td></tr>
+<tr><td>Pilot lamp (right, red jewel)</td><td><code>none</code></td><td>indicator</td><td>Lit while processing.</td></tr>
+<tr><td>OFF / ON mains knob and fuse holder (right)</td><td><code>none</code></td><td>decoration</td><td>Drawn as on the original; not mapped (the host owns power).</td></tr>
+</table></section>
+<footer>Next, not drawn yet: Vari-Mu; Mix bus; Tape; Mastering console; Tube / iron / saturation. Details, reference notes and the unverified list are in README.md.</footer></body></html>
