@@ -23,11 +23,14 @@ namespace sonora {
 inline constexpr uint32_t kPluginBlockListVersion = 1;
 inline constexpr std::size_t kMaxPluginBlockListBytes = std::size_t{1} << 20;
 inline constexpr std::size_t kMaxBlockedPlugins = 4096;
+// A name is a label; a longer one in the file is cut on read.
+inline constexpr std::size_t kMaxBlockedNameBytes = 256;
 
 // What a blocked plug-in's catalog entry and chain start are refused with.
 // Also the reason the scan caches for a blocked plug-in it did not probe,
 // which is how such a record is told from a probe's own (Blocked) answer.
-inline constexpr const char* kBlockedByOperator = "it is blocked in the plug-in manager";
+inline constexpr const char* kBlockedByOperator =
+    "blocked by you: it is blocked in the plug-in manager";  // starts with api::kBlockedRefusalPrefix
 
 struct PluginBlockList {
     std::map<std::string, std::string> plugins;  // host id -> name
