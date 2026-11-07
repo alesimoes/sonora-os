@@ -580,7 +580,10 @@ function renderOrch(o){
   const extra=[...new Set(rest.map(f=>f.state).filter(x=>x&&!known.has(x)))];
   $('okan').innerHTML=KSTATES.map(([id,n])=>col(id,n,rest.filter(f=>f.state===id))).join('')+extra.map(x=>col(x,E(x),rest.filter(f=>f.state===x))).join('')+col('blocked','Bloqueado',blocked,true);
   const waits=o.waits_on_owner||o.waits||[],wl=Array.isArray(waits)?waits:[waits];
-  $('owaits').innerHTML=wl.length?`<div class="owner big"><h3>Espera o dono (${wl.length})</h3><ul>${wl.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||x.question||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`:'';
+  // Supervisor alerts (harness/supervisor.py): what the watchdog could not heal.
+  const al=Array.isArray(o.alerts)?o.alerts:[];
+  const alh=al.length?`<div class="owner big"><h3>Supervisor: ${al.length} alerta${al.length>1?'s':''}</h3><ul>${al.map(a=>`<li class="${a.level==='warn'?'':'bad'}" title="${E(a.check||'')}">${a.since?'<small>'+dur(Math.round(Date.now()/1000-a.since))+'</small> ':''}${E(a.text||a.id)}</li>`).join('')}</ul></div>`:'';
+  $('owaits').innerHTML=alh+(wl.length?`<div class="owner big"><h3>Espera o dono (${wl.length})</h3><ul>${wl.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||x.question||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`:'');
 }
 function orchRuns(o){
   if(!o||!Array.isArray(o.runs))return '';
