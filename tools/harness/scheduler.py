@@ -5,7 +5,9 @@ daemon executes the answer; nothing here launches, kills or writes.
 """
 import os
 import re
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 
 try:
@@ -83,11 +85,16 @@ class Config:
     seeds: dict = field(default_factory=dict)  # kind -> last used number
     live_pools: object = None  # None: every pool is live when not dry-run
     train_slots: int = 6        # adopted PRs with CI in flight at once
-    local_ci: bool = False      # tools/local-ci.sh gates PR opening and
-    #                             merging (harness/localci.py)
-    local_ci_slots: int = 1     # local CI runs at once (each takes -j all)
     daemon_merge: bool = True   # the daemon merges green PRs itself; no
     #                             detached merge-when-green watcher per PR
+    # [supervisor] table: thresholds of the watchdog (harness/supervisor.py
+    # Thresholds lists the keys and defaults).
+    supervisor: dict = field(default_factory=dict)
+    # ADR-0061: a PR's gate is its GitHub checks (the micro build and its
+    # tests); the full build runs nightly on main, and a red run there
+    # opens a fix task (harness/nightly.py).
+    nightly_workflow: str = "nightly.yml"
+    nightly_poll_s: float = 900.0
 
     def __post_init__(self):
         self.cap = min(int(self.cap), HARD_CAP)
@@ -101,8 +108,8 @@ def load_config(path=None, env=None):
         for k, v in data.items():
             if k == "floors":
                 cfg.floors = dict(v)
-            elif k == "seeds":
-                cfg.seeds = dict(v)
+            elif k in ("seeds", "supervisor"):
+                setattr(cfg, k, dict(v))
             elif k == "backoff_s":
                 cfg.backoff_s = tuple(float(x) for x in v)
             elif hasattr(cfg, k):
@@ -349,8 +356,11 @@ def store_deps_ok(t, by_id):
 
 
 def holds_build_slot(root, worktree):
-    """True when tools/build-slot.sh --list shows a holder whose cwd is this
-    worktree (the machine-wide lock lives under %LOCALAPPDATA%/sonora)."""
+    """True when tools/build-slot.sh --list shows a holder or a waiter whose
+    cwd is this worktree (the machine-wide lock lives under
+    %LOCALAPPDATA%/sonora). A waiter counts: its build is the agent's work,
+    and a run killed as stalled while its build sat in the queue never
+    finished (2026-11-07)."""
     if not worktree:
         return False
     script = os.path.join(root, "tools", "build-slot.sh")
@@ -363,8 +373,19 @@ def holds_build_slot(root, worktree):
 
 
 def _bash():
-    from .localci import bash_exe   # the Git shell on Windows, not WSL's
-    return bash_exe()
+    """Git's bash on Windows: a bare "bash" there can be WSL's
+    (System32/bash.exe), which reads none of the C:/ paths given to it."""
+    if sys.platform != "win32":
+        return "bash"
+    git = shutil.which("git")
+    if git:
+        base = os.path.dirname(os.path.dirname(git))
+        for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+            cand = os.path.join(base, *rel)
+            if os.path.exists(cand):
+                return cand
+    return os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                        "Git", "bin", "bash.exe")
 
 
 def _posix(path):
@@ -379,7 +400,7 @@ def holder_in_list(listing, worktree):
     want = _posix(worktree if re.match(r"^([a-zA-Z]:)?[\\/]", worktree)
                   else os.path.abspath(worktree))
     for line in listing.splitlines():
-        if not line.startswith("holds "):
+        if not line.startswith(("holds ", "waits ")):
             continue
         m = re.search(r"cwd=(.*?)\s+cmd=", line)
         cwd = m.group(1) if m else ""

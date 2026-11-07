@@ -15,7 +15,7 @@ BUILD="${SONORA_BUILD_DIR:-build-ui-container}"
 UI="$BUILD/sonora-ui"
 
 JOBS="${SONORA_JOBS:-$(nproc)}"
-# tools/local-ci.sh narrows the tests a PR runs. SONORA_SKIP_SLOW=1 leaves out
+# A caller may narrow the tests this runs. SONORA_SKIP_SLOW=1 leaves out
 # the tests labelled `slow` (the long DSP suites, about 20 min of the tree
 # step; main runs them) and SONORA_CTEST_LABELS is a ctest -L regex of the
 # areas the change touches. A function, so every ctest call below takes the

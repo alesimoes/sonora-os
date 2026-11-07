@@ -15,8 +15,10 @@ Local CI context: `os-image`. Agents: distro-engineer, driver-engineer.
 - The image must boot the same way every time on unseen hardware.
 
 ## Build and test
-- `tools/local-ci.sh --os` (ISO build then QEMU tests; `audio-stack/` also
-  runs the quantum pin test). Not part of `--full`; `--release` adds it.
+- `tools/build-iso.sh`, then `tools/test-boot-qemu.sh`, `test-install-qemu.sh`,
+  `test-policycheck-qemu.sh`, `test-virtualcard-qemu.sh` (KVM, this machine);
+  `audio-stack/` changes also run `tools/test-quantum-pin.sh`. The nightly
+  builds the ISO and runs the USB writer against it on GitHub.
 - The image takes the machine for an hour or more: through
   `tools/build-slot.sh` only, and only for iso PRs and releases.
 

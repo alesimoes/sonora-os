@@ -1,0 +1,626 @@
+name: Nightly full build
+
+# The whole product, once a day on main (ADR-0061; owner, 2026-11-07: a PR's
+# gate is its micro build; linking the full application, the sanitizers, the
+# interop suites, the Windows build, the slow DSP suites and the ISO are a
+# release process, not a code test). What ci.yml ran per PR until 2026-11-05
+# and main-full.yml ran per merge, lifted here as they were. A red run opens
+# a fix task on the orchestrator's board (tools/harness/nightly.py); it
+# blocks no PR. `workflow_dispatch` runs it on demand.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: nightly-full
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: Engine build and tests
+    # In tools/Dockerfile.build, the image tools/build-engine.sh uses: Debian
+    # trixie and its GCC 14, the compiler and baseline x86-64 codegen the
+    # appliance ships. The runner's own compiler moved with ubuntu-latest
+    # (Ubuntu 26.04's amd64v3 GCC 15 defaults to -march=x86-64-v3 and fuses
+    # FMAs, PR #154), so the host only runs Docker, and is pinned.
+    # brain/research/ci-shipped-toolchain.md.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the sonora-build image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
+          context: tools
+          rebuild: 'false'
+
+      # Unlimited memlock as tools/build-engine.sh and the appliance grant
+      # it, so test_memory_lock checks that locking works.
+      - name: Start the build container
+        run: |
+          docker run -d --name build --ulimit memlock=-1:-1 \
+            -v "$PWD:/src" -w /src sonora-build:trixie sleep infinity
+          docker exec build c++ --version
+
+      - name: Configure
+        run: docker exec build cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: docker exec build bash -c 'cmake --build build -j"$(nproc)"'
+
+      # The slow DSP tests (ctest label "slow") run one rate and one setting
+      # here; .github/workflows/main-full.yml runs them in full on main. Tests run in
+      # parallel: the timing checks among them compare blocks measured side
+      # by side, so a neighbour's load does not move them.
+      - name: Test
+        run: >-
+          docker exec -e SONORA_DSP_QUICK=1 build
+          bash -c 'ctest --test-dir build --output-on-failure -j"$(nproc)"'
+
+      # ADR-0007 follow-up: a quit (q, SIGTERM, the unit's stop) during a
+      # take the disk refused exits 1, gives the terminal back and leaves
+      # finished files. Fake backend on a pty, so no hardware; about 15 s.
+      - name: Quit during a failed take
+        run: docker exec build python3 tools/failed-take-quit.py --engine build/sonora-engine
+
+      # system.hardening.crash_recovery, software half: SIGKILL the engine
+      # mid-take, reopen the folder, check every take is repaired and loses
+      # nothing already on disk. Fake backend, no hardware.
+      - name: Kill mid-take, reopen the session
+        run: docker exec build python3 tools/crash-recovery-kill.py --engine build/sonora-engine
+
+  portable:
+    name: Portable modules under MSVC
+    # ADR-0008 §4: MSVC has no <unistd.h> or <sys/stat.h>, so a POSIX use in a
+    # module that claims to be neutral fails to compile here, and the tests
+    # run against the real UCRT. SONORA_PLATFORM=neutral configures only
+    # common/dsp, the native SDK, the measurement harness and the processors
+    # (and the OS seam's unsupported stubs, which are not built here).
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DSONORA_PLATFORM=neutral
+
+      # sonora_portable (sonora_define_portable_target, plugins/native/
+      # CMakeLists.txt): every library and executable under common/json,
+      # common/dsp, common/platform (the unsupported stubs), common/audiofile
+      # and plugins/native, so a new test target or processor is
+      # built here with no edit to this file.
+      - name: Build
+        run: cmake --build build --config Release --parallel --target sonora_portable
+
+      - name: Test
+        env:
+          SONORA_DSP_QUICK: "1"
+        run: ctest --test-dir build -C Release --output-on-failure -R "dsp_|native_"
+
+      # Windows PowerShell 5.1, the one the owner writes the stick with. Fake
+      # disks only (regular files in %TEMP%); no real disk is opened. Seconds.
+      - name: tools/write-usb.ps1 against fake disks
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-write-usb.ps1
+
+      # tools/umc-wsl.ps1 against fake usbipd, wsl and winget on PATH; nothing
+      # elevated, no USB.
+      - name: tools/umc-wsl.ps1 against fake usbipd and wsl
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-umc-wsl.ps1
+
+  ui:
+    name: Qt interface build and headless tests
+    # In tools/Dockerfile.ui, the image tools/build-ui.sh uses: Debian trixie
+    # and its Qt 6.8, the Qt the product ships. ui/qt needs 6.7 (QSGTextNode,
+    # QFont::Tag); Ubuntu 24.04's apt has 6.4, on which ui/qt skipped itself
+    # and the job ran no UI test at all. The image layers are cached in the
+    # Actions cache, so only a change to the Dockerfile pays for the install.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the sonora-ui image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-ui
+          dockerfile: tools/Dockerfile.ui
+          context: .
+          rebuild: 'false'
+
+      - name: Compiler
+        run: docker run --rm sonora-ui:trixie c++ --version
+
+      # tools/build-ui-entrypoint.sh fails before building if any UI test is
+      # not registered: ui/qt skips itself when Qt is missing or too old, and
+      # a green job that ran no UI test would say the interface was tested.
+      # The pixel test (ui_render) runs on a private Xvfb and llvmpipe.
+      # --measure is not run here: it is slow and only meaningful on the
+      # target.
+      # On a PR the engine job already built and ran every non-UI test, so
+      # this builds the UI targets and runs the ui_* tests only; main runs
+      # the whole tree here (owner, 2026-11-04: one build, one test pass).
+      - name: Build and test, the UI tests included
+        env:
+          SONORA_UI_IMAGE_BUILT: "1"
+          SONORA_UI_SCOPE: all
+        run: tools/build-ui.sh
+
+  sanitizers:
+    name: Thread and address sanitizers
+    # GCC 14's TSan, ASan and UBSan, in the engine job's trixie image: the
+    # shipped compiler's instrumentation, not whatever the runner carries.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the sonora-build image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
+          context: tools
+          rebuild: 'false'
+
+      - name: Start the build container
+        run: |
+          mkdir -p .ccache
+          docker run -d --name build --ulimit memlock=-1:-1 \
+            -e CCACHE_DIR=/src/.ccache -e CCACHE_BASEDIR=/src \
+            -e CCACHE_MAXSIZE=1G \
+            -v "$PWD:/src" -w /src sonora-build:trixie sleep infinity
+          docker exec build c++ --version
+
+      # The ring buffer is the one piece of genuinely concurrent code in the
+      # tree, so a data race in it is worth a dedicated job. TSan is the only
+      # thing that reliably catches a wrong memory ordering.
+      # Newer kernels randomise more address bits than TSan's shadow mapping
+      # expects, and it aborts with "unexpected memory mapping" before running
+      # a single test. That looks like a test failure and is not one, so pin
+      # it rather than letting the job go flaky. The setting is the kernel's,
+      # so it is made on the host and holds in the container.
+      # Two instrumented trees no longer fit beside the runner's preinstalled
+      # toolchains: the TSan link died with "No space left on device" (PR
+      # #395, 2026-11-04). .NET, Android, GHC and CodeQL are never used here
+      # and hold about 30 GB; removing them is a few seconds.
+      - name: Free runner disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Make ASLR compatible with the sanitizers
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      # ccache hashes the compiler, flags and preprocessed source, so TSan and
+      # ASan objects never collide and an unchanged translation unit is not
+      # recompiled. Only pushes to main save it (last step), so PR pushes do not
+      # churn the repo cache; restore-keys picks the newest one.
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-sanitizers-${{ github.sha }}
+          restore-keys: ccache-sanitizers-
+
+      - name: Build with TSan
+        run: |
+          docker exec build bash -ec '
+            cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_FLAGS="-fsanitize=thread -g"
+            cmake --build build-tsan -j"$(nproc)"
+            ccache -s'
+
+      - name: Run under TSan
+        # TSan is here for the concurrent code. The DSP and native processor
+        # tests are single-threaded arithmetic, slow under TSan's
+        # instrumentation and with nothing for it to find, so they are left
+        # out (ASan and UBSan below run them).
+        run: >-
+          docker exec build bash -c
+          'ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -E "^(dsp|native)_"'
+
+      # Except the format adapter, which is concurrent: a VST3 host sets
+      # parameters from its main thread while process() runs. These drive
+      # the Bridge and every bundle binary from two threads.
+      - name: Run the native format tests under TSan
+        run: >-
+          docker exec build bash -c
+          'ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -R "^native_format"'
+
+      # Two instrumented RelWithDebInfo trees do not fit on the runner's disk
+      # together: the ASan build died with "No space left on device" (run
+      # 41246994280). Nothing reads build-tsan after its tests, and the objects
+      # worth keeping live in .ccache, which this leaves alone. The files are
+      # root's, so they go from inside the container. df shows the margin.
+      # ASan and UBSan run on main only: a PR's concurrency is TSan's, and a
+      # second instrumented tree doubled this job (owner, 2026-11-04).
+      - name: Remove the TSan build tree
+        run: |
+          df -h "$PWD"
+          docker exec build rm -rf build-tsan
+          df -h "$PWD"
+
+      - name: Build with ASan and UBSan
+        run: |
+          docker exec build bash -ec '
+            cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+            cmake --build build-asan -j"$(nproc)"
+            ccache -s'
+
+      - name: Run under ASan and UBSan
+        run: >-
+          docker exec -e SONORA_DSP_QUICK=1 build bash -c
+          'ctest --test-dir build-asan --output-on-failure -j"$(nproc)"'
+
+      - name: Save the compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-sanitizers-${{ github.sha }}
+
+  rtsan:
+    name: RealtimeSanitizer over the SONORA_RT call graph
+    # Its own build: -fsanitize=realtime cannot be combined with ASan or
+    # TSan, and needs Clang 20 or later (clang-22 from trixie main, in
+    # tools/Dockerfile.rtsan). Every SONORA_RT function is
+    # [[clang::nonblocking]] there, so a test that drives Session::process
+    # (drivers/fake), plugin_client's InsertChain step or a native processor
+    # through the Bridge and its bundles into malloc, a lock or a syscall
+    # fails with RTSan's report. -Wfunction-effects prints its findings as
+    # warnings; the runtime check is the gate. With lilv and the VST3 SDK in
+    # the image, sonora-plugin-host's block (run_block) and the LV2/VST3
+    # plugins it runs are checked too, and a report in a test that passed
+    # anyway (a child the test lets die) fails the job. Then
+    # tools/rtsan-jack.sh runs JackBackend's process_cb and xrun_cb against
+    # jackd2 (dummy driver) and PipeWire (pipewire-jack, the shipped pin):
+    # a canary that must be reported, the backend conformance suite and a
+    # recorded take.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the sonora-rtsan image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-rtsan
+          dockerfile: tools/Dockerfile.rtsan
+          context: tools
+          rebuild: 'false'
+
+      - name: Compiler
+        run: docker run --rm sonora-rtsan:trixie clang++-22 --version
+
+      - name: Build with clang-22 -fsanitize=realtime and run every test under RTSan
+        env:
+          SONORA_RTSAN_IMAGE_BUILT: "1"
+        run: tools/build-rtsan.sh
+
+  record:
+    name: Records audio against PipeWire
+    # tools/build-engine.sh builds the engine in the sonora-build image, as
+    # the engine job does; only Docker runs on the host.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the sonora-build image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
+          context: tools
+          rebuild: 'false'
+
+      - name: Compiler
+        run: docker run --rm sonora-build:trixie c++ --version
+
+      # The unit tests cover the data path; this covers the thing the product
+      # is for. It caught an engine that recorded silence from unconnected
+      # ports and reported success, which no unit test would have.
+      - name: Get the sonora-runtime image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-runtime
+          dockerfile: tools/Dockerfile.runtime
+          context: .
+          rebuild: 'false'
+
+      - name: Record and verify
+        env:
+          SONORA_BUILD_IMAGE_BUILT: "1"
+          SONORA_RUNTIME_IMAGE_BUILT: "1"
+        run: tools/test-engine-docker.sh
+
+  interop:
+    name: BWF files read back by third-party tools
+    # Only what writes the takes can change what Ardour and friends read.
+    # The engine is built as in the record job, in the sonora-build image.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the sonora-build image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
+          context: tools
+          rebuild: 'false'
+
+      - name: Compiler
+        run: docker run --rm sonora-build:trixie c++ --version
+
+      # Phase 1 promises the takes open in another DAW at the right timecode.
+      # ffprobe, soxi, libsndfile, mediainfo and a headless Ardour 8 judge two
+      # recorded takes, the second starting off zero. About two minutes, most
+      # of it installing Ardour into the reader image.
+      - name: Get the sonora-runtime image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-runtime
+          dockerfile: tools/Dockerfile.runtime
+          context: .
+          rebuild: 'false'
+
+      - name: Get the sonora-bwf-readers image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-bwf-readers
+          dockerfile: tools/Dockerfile.bwfreaders
+          context: tools
+          rebuild: 'false'
+
+      - name: Record two takes and read them back
+        env:
+          SONORA_BUILD_IMAGE_BUILT: "1"
+          SONORA_RUNTIME_IMAGE_BUILT: "1"
+          SONORA_BWFREADERS_IMAGE_BUILT: "1"
+        run: tools/test-bwf-interop.sh
+
+  quantum:
+    name: Quantum and rate stay pinned
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the sonora-runtime image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-runtime
+          dockerfile: tools/Dockerfile.runtime
+          context: .
+          rebuild: 'false'
+
+      # Under ADR-0007 M2 a block-size or rate change mid-take ends the take.
+      # This tries every client-side route we know of to move the graph off
+      # 128 frames at 48 kHz, against the drop-in the image ships. No engine
+      # build is needed, so it costs one container image and about a minute.
+      - name: Try to move the graph
+        env:
+          SONORA_RUNTIME_IMAGE_BUILT: "1"
+        run: tools/test-quantum-pin.sh
+
+  plugins:
+    name: Plugin host against real LV2 and VST3 plugins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the sonora-plugins image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-plugins
+          dockerfile: tools/Dockerfile.plugins
+          context: tools
+          rebuild: 'false'
+
+      - name: Compiler
+        run: docker run --rm sonora-plugins:trixie c++ --version
+
+      # The engine job has no lilv, so plugins/host is skipped there. This
+      # builds the whole root in the sonora-plugins image (lilv, eg-amp,
+      # x42-dpl, the LSP limiter; the VST3 headers, AGain and the LSP
+      # limiter as VST3) and runs every test, including plugins that
+      # segfault, sleep past the deadline and write outside their buffers.
+      # A missing Debian plugin fails the job rather than skipping
+      # (SONORA_PLUGIN_TESTS_ALLOW_SKIP is OFF), and missing VST3 headers
+      # fail the configure step (SONORA_REQUIRE_VST3=ON).
+      # Sonora's own bundles (ADR-0011 N1) are loaded through the same host,
+      # LV2 and VST3, and compared with the N0 reference renders; lv2lint and
+      # the VST3 validator judge every bundle, and their absence fails the
+      # configure step (SONORA_REQUIRE_PLUGIN_VALIDATORS=ON).
+      # A PR runs the plugin tests (label "plugins") only: the engine job ran
+      # the rest of the suite. Main runs all of it here.
+      - name: Build and test the plugin host and the native bundles
+        env:
+          SONORA_PLUGINS_IMAGE_BUILT: "1"
+        run: >-
+          tools/build-plugins.sh
+
+
+  slow:
+    name: Slow DSP tests in full (${{ matrix.build }})
+    # In the sonora-build image, as PR CI's engine job: trixie's GCC 14, the
+    # compiler the appliance ships (brain/research/ci-shipped-toolchain.md).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: release
+            flags: ""
+            type: Release
+          - build: asan
+            flags: "-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+            type: RelWithDebInfo
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the sonora-build image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          file: tools/Dockerfile.build
+          tags: sonora-build:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-build
+
+      - name: Start the build container
+        run: |
+          docker run -d --name build --ulimit memlock=-1:-1 \
+            -v "$PWD:/src" -w /src sonora-build:trixie sleep infinity
+          docker exec build c++ --version
+
+      # A kernel setting, so made on the host; it holds in the container.
+      - name: Make ASLR compatible with the sanitizers
+        if: matrix.build == 'asan'
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Build
+        env:
+          TYPE: ${{ matrix.type }}
+          FLAGS: ${{ matrix.flags }}
+        run: |
+          docker exec -e TYPE -e FLAGS build bash -ec '
+            cmake -S . -B build -DCMAKE_BUILD_TYPE="$TYPE" -DCMAKE_CXX_FLAGS="$FLAGS"
+            cmake --build build -j"$(nproc)"'
+
+      # No SONORA_DSP_QUICK: every rate, ceiling and release.
+      - name: Slow tests, every rate and setting
+        run: >-
+          docker exec build bash -c
+          'ctest --test-dir build --output-on-failure -j"$(nproc)" -L slow'
+
+  cpu:
+    name: CPU per instance over 60 s (ADR-0011 §3.5)
+    # Measures the code the shipped compiler emits: GCC 14 for baseline
+    # x86-64 in the sonora-build image, not the runner's GCC.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the sonora-build image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools
+          file: tools/Dockerfile.build
+          tags: sonora-build:trixie
+          labels: org.sonora=1
+          load: true
+          cache-from: type=gha,scope=sonora-build
+
+      - name: Start the build container
+        run: |
+          docker run -d --name build -v "$PWD:/src" -w /src \
+            sonora-build:trixie sleep infinity
+          docker exec build c++ --version
+
+      - name: Build
+        run: |
+          docker exec build bash -ec '
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+            cmake --build build -j"$(nproc)" --target sonora-dsp-measure'
+
+      # A shared runner is not the reference machine (§3.5): a class bar
+      # missed here is a figure to look at, not a broken build, so this
+      # step does not fail the workflow. The reports are kept.
+      - name: Measure
+        continue-on-error: true
+        run: docker exec build tools/dsp-cpu.sh build 60
+
+      # The one exception, asked for on the review of PR #52: the tube
+      # drive's eco quality is the mode ADR-0011 §3.5 lets it ship with
+      # over class B, so its bar (60 us p99.9 per q128 stereo block, on the
+      # programme signal and on two full-drive worst cases) gates this
+      # workflow; the other processors' figures stay informative above.
+      # A shared runner is not the reference machine, so here
+      # the bar is runner-calibrated (merge gate of PR #52): it is scaled
+      # by this runner's cost of a frozen reference kernel over the
+      # reference machine's, measured in the same step. A red is the
+      # processor getting slower, not the runner. The absolute bar is
+      # held on the reference machine with tools/dsp-cpu.sh, unflagged.
+      # brain/research/native-tube-n2.md, "The gate". The opto's eco
+      # (class A, 20 us) is gated for the same reason, its standard
+      # quality shipping over class A beside it
+      # (brain/research/native-opto-n2.md), but more loosely: its
+      # quality.json has no cpu.p999_kernels yet, so only the scaled class
+      # bar holds (eco measures about 9 us, so a regression of about 2.2x
+      # still passes), not the tube's regression bar. Recording the
+      # baseline is planning/BACKLOG.md, N2 opto follow-ups, item (e).
+      # Exit 3 is inconclusive: the runner changed speed during the run,
+      # so the step neither passes nor fails it; it says so as a warning.
+      - name: Tube and opto eco, class bars, runner-calibrated (gates)
+        run: |
+          rc=0
+          docker exec build tools/dsp-cpu.sh --calibrated build 60 tube opto || rc=$?
+          if [[ $rc -eq 3 ]]; then
+            echo "::warning title=CPU gate inconclusive::the runner changed speed during the run (reference kernel before and after the loads differ by over 5 %); not held this night"
+            exit 0
+          fi
+          exit "$rc"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dsp-cpu-reports
+          path: build/dsp-reports-cpu/
+
+  usb-writer:
+    name: USB writer against the real ISO (container half)
+    # tools/test-write-usb.sh needs iso/sonora.iso, and building it takes tens
+    # of minutes, so it runs here and not on every PR. WRITE_USB_BOOT=0: the
+    # writer runs against loop devices over sparse files in a privileged
+    # container, every refusal included; the QEMU boots are left to the
+    # owner's machine (they need KVM). Then tools/make-stick-image.sh, the
+    # image Windows writes with tools/write-usb.ps1, made by the same writer.
+    # No real disk is involved anywhere. Cost: the ISO build (about 30-50
+    # runner minutes, most of it live-build) plus about 3 minutes.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the ISO
+        run: tools/build-iso.sh
+
+      - name: write-usb.sh refusals and write, against loop devices
+        env:
+          WRITE_USB_BOOT: "0"
+          # The stale-partition-3 case is built under flock so the runner's
+          # udevd leaves it alone; if it still cannot be built, fail here
+          # rather than skip it.
+          WRITE_USB_REQUIRE_STALE_P3: "1"
+        run: tools/test-write-usb.sh
+
+      - name: The stick image for Windows, and its sidecar
+        run: |
+          tools/make-stick-image.sh --persistence-mib 256
+          cd iso && sha256sum -c sonora-stick.img.sha256 && rm -f sonora-stick.img

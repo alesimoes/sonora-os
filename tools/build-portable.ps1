@@ -8,6 +8,14 @@
 # Needs Visual Studio 2022 Build Tools with the C++ workload (MSVC, the
 # Windows SDK, and the CMake and Ninja that ship with it). The tree stays in
 # build-portable\ so the next build is incremental.
+#
+# -Package [-OutDir dir] also builds the Windows VST3 package afterwards
+# (tools\package-plugins.ps1, build-plugins-win\): the portable target holds
+# no bundle, so the zip is a build of its own.
+param(
+    [switch]$Package,
+    [string]$OutDir = ''
+)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -34,4 +42,9 @@ Step 'build' { cmake --build build-portable --parallel --target sonora_portable 
 Step 'test' { ctest --test-dir build-portable --output-on-failure -R 'dsp_|native_' }
 Step 'write-usb.ps1 against fake disks' { powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-write-usb.ps1 }
 Step 'umc-wsl.ps1 against fake usbipd and wsl' { powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-umc-wsl.ps1 }
+if ($Package) {
+    $pkgArgs = @()
+    if ($OutDir) { $pkgArgs = @('-OutDir', $OutDir) }
+    Step 'plugin package (VST3 zip)' { powershell -NoProfile -ExecutionPolicy Bypass -File tools\package-plugins.ps1 @pkgArgs }
+}
 Write-Host 'portable: all passed'

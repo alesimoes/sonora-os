@@ -136,4 +136,11 @@ planning/orchestrator/shadow.log
 planning/orchestrator/plans/
 /build-portable/
 /.local-ci/
+# The micro build's changed-path list and plan (tools/micro-build.sh).
+/.micro-build/
+build-micro*/
 /.harness-lci/
+build-plugins-only/
+# The packages tools/package-plugins.* and local-ci --release keep.
+dist/
+build-plugins-win/

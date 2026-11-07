@@ -34,6 +34,10 @@ add_test(NAME native_format COMMAND test_native_format)
 # builds on Windows and macOS; turning those on is a packaging decision for
 # a Windows Sonora (ADR-0008), not a code change here.
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  if(WIN32 AND MSVC AND SONORA_WINDOWS_VST3)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/windows.cmake)
+    return()
+  endif()
   message(STATUS "plugins/native/format: LV2 and VST3 bundles are built on Linux only; skipped")
   function(sonora_native_plugin)
   endfunction()

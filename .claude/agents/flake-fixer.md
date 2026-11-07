@@ -42,3 +42,4 @@ Never the gate, sanitizer flags, ctest filters or timeouts.
 
 Root cause in one line, failure rate before and after (runs, load used), the
 commands, what is still unverified.
+- Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.

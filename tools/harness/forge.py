@@ -100,7 +100,12 @@ class Forge:
         return ""
 
     def set_status(self, sha, state, context, description):
-        """A commit status on GitHub (the local-ci result on the PR)."""
+        """A commit status on GitHub."""
+
+    def workflow_runs(self, workflow, branch="main", limit=3):
+        """[{id, head_sha, status, conclusion, url}] newest first, for the
+        workflow file on the branch (the nightly full build)."""
+        return []
 
     def contains(self, worktree, branch):
         """True when origin/<branch>'s head is in the worktree's HEAD (a
@@ -317,6 +322,19 @@ class GhForge(Forge):
                   f"repos/{{owner}}/{{repo}}/statuses/{sha}",
                   "-f", f"state={state}", "-f", f"context={context}",
                   "-f", f"description={description}"], timeout=60)
+
+    def workflow_runs(self, workflow, branch="main", limit=3):
+        try:
+            runs = json.loads(self._ok(
+                ["gh", "run", "list", "--workflow", workflow, "--branch",
+                 branch, "--limit", str(limit), "--json",
+                 "databaseId,headSha,status,conclusion,url"],
+                timeout=60) or "[]")
+        except ValueError as e:
+            raise ForgeError(f"gh run list: {e}")
+        return [{"id": r.get("databaseId"), "head_sha": r.get("headSha"),
+                 "status": r.get("status"), "conclusion": r.get("conclusion"),
+                 "url": r.get("url")} for r in runs]
 
     def failure_excerpt(self, head_sha, per_job=8):
         """The lines that say why each failed job of the head's CI failed,

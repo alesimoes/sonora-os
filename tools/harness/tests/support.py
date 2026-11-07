@@ -75,6 +75,11 @@ class FakeForge(Forge):
             [], [], [], []
         self.pre_pr_result = (True, "ok")
         self.fail = set()
+        self.nightly_runs = []  # what workflow_runs("nightly.yml") returns
+
+    def workflow_runs(self, workflow, branch="main", limit=3):
+        self._chk("workflow_runs")
+        return list(self.nightly_runs)[:limit]
 
     def _chk(self, what):
         if what in self.fail:

@@ -109,7 +109,7 @@ target_include_directories(sonora_ui_qt PUBLIC src)
 target_link_libraries(sonora_ui_qt PUBLIC sonora_base sonora_keymap sonora_model sonora_api sonora_api_fake sonora_audiofile
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
 # Only measure.cpp uses it, for per-thread CPU time (ADR-0008 V5).
-target_link_libraries(sonora_ui_qt PRIVATE sonora_platform)
+target_link_libraries(sonora_ui_qt PRIVATE sonora_platform sonora_audiofile)
 qt_add_resources(sonora_ui_qt sonora_qml
   PREFIX /sonora
   FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
@@ -126,7 +126,7 @@ file(GLOB SONORA_UI_SCENES CONFIGURE_DEPENDS src/scenes/*.cpp)
 add_executable(sonora-ui src/main.cpp ${SONORA_UI_SCENES})
 # ui/client: the socket to the real engine (M7). FakeEngine stays for when
 # none is running, and for the tests.
-target_link_libraries(sonora-ui PRIVATE sonora_ui_qt sonora_client sonora_platform)
+target_link_libraries(sonora-ui PRIVATE sonora_ui_qt sonora_client sonora_platform sonora_audiofile)
 install(TARGETS sonora-ui RUNTIME DESTINATION bin)
 # The profiles the Keys menu offers; keymap_profiles.h finds them beside bin/.
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/keymaps/ DESTINATION share/sonora/keymaps
@@ -157,6 +157,12 @@ target_link_libraries(test_ui_edit PRIVATE sonora_ui_qt sonora_session_files)
 target_compile_definitions(test_ui_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_edit COMMAND test_ui_edit)
+
+# FilePeakSource: the Edit window reads the overview files, builds a missing
+# one off the GUI thread, and says when a source is not readable.
+add_executable(test_ui_file_peaks tests/test_file_peaks.cpp)
+target_link_libraries(test_ui_file_peaks PRIVATE sonora_ui_qt sonora_audiofile)
+add_test(NAME ui_file_peaks COMMAND test_ui_file_peaks)
 
 add_executable(test_ui_strip_silence tests/test_strip_silence.cpp)
 target_link_libraries(test_ui_strip_silence PRIVATE sonora_ui_qt)

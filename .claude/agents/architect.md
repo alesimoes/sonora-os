@@ -74,3 +74,4 @@ For every task you also write the plan, `planning/plans/<item-id>.md` from
 `planning/plans/TEMPLATE.md` (skill `plan-task`): decide the contracts and ADR
 number, grade each slice, mark `Status: approved`. Ambiguity reported by any
 agent comes to you; update the plan and tell the `lead` to re-dispatch.
+- Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.

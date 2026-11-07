@@ -74,3 +74,4 @@ the slice's grade. Refuse to dispatch an unapproved plan: ask the `architect`.
 A QA bug: assign an engineer by area from `.claude/routing.toml` and tell the
 tester to re-test. A missing definition: forward to the `architect`, then
 re-dispatch when the plan is updated.
+- Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.
