@@ -244,10 +244,25 @@ void ShellModel::feedMeter(MeterItem* m, bool alive, float dt) {
         ok = feed_.bus(engine_, static_cast<std::size_t>(m->busSide()), peak);
     } else {
         const auto ch = static_cast<std::size_t>(m->channel());
-        ok = meter_point_ == MeterPoint::Post ? feed_.post_max(engine_, ch, peak)
-                                              : feed_.input(engine_, ch, peak);
+        if (meter_point_ == MeterPoint::Pre) {
+            ok = feed_.input(engine_, ch, peak);
+        } else if (m->side() >= 0) {
+            ok = feed_.post(engine_, ch, static_cast<std::size_t>(m->side()), peak);
+        } else {
+            ok = feed_.post_max(engine_, ch, peak);
+        }
     }
     if (ok) m->feed(peak, dt);
+}
+
+void ShellModel::setMeterPoint(MeterPoint p) {
+    if (p == meter_point_) return;
+    meter_point_ = p;
+    // The ballistics and the over latch belong to the point they were read
+    // at: a clip before the fader says nothing about after it.
+    for (MeterItem* m : meters_) {
+        if (m->busSide() < 0) m->reset();
+    }
 }
 
 void ShellModel::hideMeters() {

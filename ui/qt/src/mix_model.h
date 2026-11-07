@@ -106,9 +106,12 @@ class MixModel : public QObject {
     Q_PROPERTY(QList<bool> trimLanes READ trimLanes NOTIFY trimsChanged)
     // What the strips' meters read, said on the strips themselves; and the
     // line above the strips.
-    Q_PROPERTY(QString trackMeterCaption READ trackMeterCaption CONSTANT)
+    // "pre" (the input) or "post" (after the fader, the default): one choice
+    // for every strip, and the caption follows it.
+    Q_PROPERTY(QString meterPoint READ meterPoint WRITE setMeterPoint NOTIFY meterPointChanged)
+    Q_PROPERTY(QString trackMeterCaption READ trackMeterCaption NOTIFY meterPointChanged)
     Q_PROPERTY(QString busMeterCaption READ busMeterCaption CONSTANT)
-    Q_PROPERTY(QString note READ note CONSTANT)
+    Q_PROPERTY(QString note READ note NOTIFY meterPointChanged)
     // The Mix window's views (ui-design.md, "Mixer strip anatomy"): which
     // sections of a strip are shown. Interface state, outside the session
     // file (session-format.md, ADR-0007 5); it goes back to the defaults
@@ -168,6 +171,10 @@ public:
     QList<qreal> trims() const;
     QList<bool> trimLanes() const;
     QString trackMeterCaption() const;
+    QString meterPoint() const;
+    // Anything but "pre" or "post" is ignored: a point nobody can name
+    // would draw a meter that reads nothing in particular.
+    void setMeterPoint(const QString& point);
     QString busMeterCaption() const;
     QString note() const;
     bool showIO() const { return show_io_; }
@@ -256,6 +263,7 @@ signals:
     void rideChanged();
     void groupsChanged();
     void viewsChanged();
+    void meterPointChanged();
     void trimsChanged();
     void structureChanged();
 
@@ -340,6 +348,7 @@ private:
     uint64_t pan_generation_ = 0;
     float pan_value_ = 0.0f;      // the held pan's last value sent
     uint64_t live_steps_ = 0;
+    bool meter_post_ = true;
     bool show_io_ = true;
     bool show_inserts_ae_ = true;
     bool show_inserts_fj_ = false;

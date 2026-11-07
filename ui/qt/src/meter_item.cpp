@@ -83,6 +83,17 @@ void MeterItem::feed(float peak, float dt_s) {
     update();
 }
 
+void MeterItem::setSide(int s) {
+    if (s == side_) return;
+    side_ = s;
+    emit sideChanged();
+}
+
+void MeterItem::reset() {
+    ballistics_ = MeterBallistics{};
+    update();
+}
+
 void MeterItem::setNoData() {
     if (!ballistics_.has_data) return;
     ballistics_.set_no_data();

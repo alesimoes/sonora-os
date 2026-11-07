@@ -731,7 +731,21 @@ int qml() {
 
     // What each meter reads is written on it, and the line above says it.
     QQuickItem* cap = named(root, QStringLiteral("meterCaption0"));
-    CHECK(cap != nullptr && cap->property("text").toString() == QStringLiteral("IN"));
+    CHECK(cap != nullptr && cap->property("text").toString() == QStringLiteral("OUT"));
+    CHECK(r.shell.meterPoint() == MeterPoint::Post);
+    CHECK(!r.mixer.note().contains(QStringLiteral("input")));
+    CHECK(named(root, QStringLiteral("auxMeterNoData0")) == nullptr ||
+          named(root, QStringLiteral("auxMeterNoData0"))->property("text").toString() ==
+              QStringLiteral("NO DATA"));
+    // Toggled to Pre, the caption says IN, the shell reads the input, and the
+    // second meter goes; a new session puts it back.
+    r.mixer.setMeterPoint(QStringLiteral("pre"));
+    CHECK(cap->property("text").toString() == QStringLiteral("IN"));
+    CHECK(r.shell.meterPoint() == MeterPoint::Pre);
+    CHECK(named(root, QStringLiteral("mixMeterR0")) == nullptr);
+    CHECK(r.mixer.note().contains(QStringLiteral("input")));
+    r.mixer.setMeterPoint(QStringLiteral("post"));
+    CHECK(cap->property("text").toString() == QStringLiteral("OUT"));
     QQuickItem* bus = named(root, QStringLiteral("busMeterCaption"));
     CHECK(bus != nullptr && bus->property("text").toString() == QStringLiteral("OUT"));
     QQuickItem* note = named(root, QStringLiteral("mixNote"));
