@@ -36,6 +36,7 @@
 #include "shell_model.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/client/socket_engine.h"
+#include "sonora/peak_file.h"
 #include "sonora/platform/ipc.h"
 #include "theme.h"
 #include "capture.h"
@@ -569,10 +570,37 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "sonora-ui: the demo session: %s\n", why.c_str());
         }
     }
-    // No peak files exist yet, so every waveform is synthetic whichever
-    // session is open; the window says so whenever it draws one.
-    SyntheticPeakSource peaks(rate, 120.0);
-    SessionModel session(document, peaks, true);
+    // The real engine writes its takes' overviews as they close and the
+    // window reads them (FilePeakSource); the fake engine and the demo have
+    // no audio on disk, so those stay synthetic and the window says so.
+    const bool synthetic_audio = fake != nullptr || a.opt.demo;
+    SyntheticPeakSource synthetic_peaks(rate, 120.0);
+    SessionModel* session_for_peaks = nullptr;
+    FilePeakSource file_peaks(
+        [&document, &session_for_peaks](sonora::model::Id id, FilePeakSource::Located& out) {
+            if (session_for_peaks == nullptr || session_for_peaks->engineFolder().isEmpty()) {
+                return false;
+            }
+            for (const sonora::model::Source& s : document.snapshot().sources->sources) {
+                if (s.id != id) continue;
+                const std::string dir = session_for_peaks->engineFolder().toStdString();
+                out.wav = dir + "/" + s.path;
+                out.peak = sonora::peak_file_path(dir, s.path);
+                out.length = s.length;
+                return true;
+            }
+            return false;
+        },
+        [&session_for_peaks]() {
+            if (session_for_peaks == nullptr) return;
+            SessionModel* target = session_for_peaks;
+            QMetaObject::invokeMethod(target, [target]() { target->peaksReady(); },
+                                      Qt::QueuedConnection);
+        });
+    const PeakSource& peaks = synthetic_audio ? static_cast<const PeakSource&>(synthetic_peaks)
+                                              : static_cast<const PeakSource&>(file_peaks);
+    SessionModel session(document, peaks, synthetic_audio);
+    session_for_peaks = &session;
     if (!a.opt.sessions_dir.isEmpty()) session.setSessionsDir(a.opt.sessions_dir);
     session.setPreferencesFile(default_preferences_file());
     document.on_refused = [&session](const std::string& why) {

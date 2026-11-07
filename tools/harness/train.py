@@ -308,7 +308,11 @@ class Train:
     def head_is_gone(self, head):
         """True when an adopted PR with this head is no longer open (merged
         or closed). A head with no PR, or a failed listing, is not gone."""
-        prs = {i.get("pr") for i in self._all().values()
+        infos = list(self._all().values())
+        if any(head in (i.get("old_heads") or []) for i in infos) and \
+                not any(i.get("head") == head for i in infos):
+            return True   # a fixer or refresh replaced it: nobody awaits it
+        prs = {i.get("pr") for i in infos
                if i.get("head") == head and i.get("pr")}
         if not prs:
             return False
@@ -382,6 +386,8 @@ class Train:
             return
         head = d["head_sha"]
         upd = {"base": d["base"], "head": head}
+        if i.get("head") and i["head"] != head:
+            upd["old_heads"] = self._with_old(i, i["head"], head)
         # The first new head after a refresh or a fixer push is the one
         # whose CI decides; it is never refreshed again.
         if i.get("refresh_from") and head != i["refresh_from"]:
@@ -564,5 +570,19 @@ class Train:
                        rerun_at=self.o.clock(),
                        next="rerun; vermelho de novo → fixer")
             return
+        # The fixer's head is queued for the local gate now, not when the
+        # GitHub checks of the PR happen to settle: a new head with no queue
+        # entry stayed unjudged (#446, 2026-11-06). The old head is
+        # remembered so its queued or running batch can be cancelled.
+        if self.o.cfg.local_ci and local_head:
+            self.o.localci.start(local_head)
         self._save(fid, phase="CI rodando", action="push do fixer",
-                   refresh_from=head_before, next="CI do fix")
+                   refresh_from=head_before, next="CI do fix",
+                   old_heads=self._with_old(i, head_before, local_head))
+
+    @staticmethod
+    def _with_old(info, old, new):
+        """Heads this PR left behind, never including its current one."""
+        heads = [h for h in (info.get("old_heads") or []) + [old]
+                 if h and h != new]
+        return list(dict.fromkeys(heads))[-10:]
