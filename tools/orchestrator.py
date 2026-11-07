@@ -1019,6 +1019,7 @@ class Orchestrator:
 
     def enable_self_update(self, argv, **kw):
         """Re-exec when origin/main changes the harness (harness/selfupdate)."""
+        kw.setdefault("max_defer_s", self.cfg.self_update_max_defer_s)
         kw.setdefault("release", lambda: daemonlock.release(self.hdir))
         self.updater = selfupdate.SelfUpdate(self, argv, **kw)
 
