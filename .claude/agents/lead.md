@@ -65,3 +65,12 @@ shell costs tokens and attention until a human notices.
   Do not end a turn waiting for an answer; nobody reads your terminal.
 - Before reporting, `docker ps` and `ps -ef` for anything you started
   (docker runs, builds) and kill it.
+
+## Dispatch rule
+
+Engineers start only when you assign a slice of an approved plan
+(`planning/plans/<id>.md`, `Status: approved`); give each its model tier from
+the slice's grade. Refuse to dispatch an unapproved plan: ask the `architect`.
+A QA bug: assign an engineer by area from `.claude/routing.toml` and tell the
+tester to re-test. A missing definition: forward to the `architect`, then
+re-dispatch when the plan is updated.

@@ -3,8 +3,21 @@
 # shares ownership and holds strings. engine/control, ui/client and
 # interchange link it; engine/core sees only the plan built from it. It links
 # common/midi for notes (ADR-0014, the model-to-midi edge).
+# apply.cpp and op_codec.cpp are split by family of operations (ADR-0059):
+# each file visits one short variant, so no unit grows with all of them.
 set(SONORA_MODEL_SOURCES
   src/apply.cpp
+  src/apply_applier.cpp
+  src/apply_helpers.cpp
+  src/apply_session.cpp
+  src/apply_track.cpp
+  src/apply_region.cpp
+  src/apply_clip.cpp
+  src/apply_playlist.cpp
+  src/apply_insert.cpp
+  src/apply_mix.cpp
+  src/apply_group.cpp
+  src/apply_midi.cpp
   src/comping.cpp
   src/groups.cpp
   src/history.cpp
@@ -13,6 +26,19 @@ set(SONORA_MODEL_SOURCES
   src/model.cpp
   src/musical_map.cpp
   src/op_codec.cpp
+  src/op_codec_session.cpp
+  src/op_codec_track.cpp
+  src/op_codec_region.cpp
+  src/op_codec_clip.cpp
+  src/op_codec_playlist.cpp
+  src/op_codec_insert.cpp
+  src/op_codec_mix.cpp
+  src/op_codec_group.cpp
+  src/op_codec_midi.cpp
+  src/op_codec_read.cpp
+  src/op_codec_window_read.cpp
+  src/op_codec_window_write.cpp
+  src/op_codec_write.cpp
   src/plan.cpp
   src/sequence_file.cpp
   src/render_in_place.cpp
@@ -122,6 +148,8 @@ add_test(NAME model_random_edits COMMAND test_model_random_edits)
 # The replication format: the op codec and Document/Replica (ADR-0009 §2).
 add_executable(test_model_replication tests/test_replication.cpp)
 target_link_libraries(test_model_replication PRIVATE sonora_model_audited)
+target_compile_definitions(test_model_replication PRIVATE
+  SONORA_MODEL_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 add_test(NAME model_replication COMMAND test_model_replication)
 
 # Compound operations (ADR-0009 update 2026-10-14).

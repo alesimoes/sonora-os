@@ -40,6 +40,7 @@ import sys
 import time
 
 from .localci_steps import StepPoster, clear_steps
+from . import localci_cancel
 
 TIMEOUT_S = 3 * 3600
 BATCH_SETTLE_S = 60   # PRs ready within a minute share one build
@@ -233,10 +234,12 @@ class LocalCI:
                                    | subprocess.DETACHED_PROCESS)
         else:
             kw["start_new_session"] = True
-        subprocess.Popen([bash_exe(), "-c", cmd], cwd=wt, env=env,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, **kw)
+        proc = subprocess.Popen([bash_exe(), "-c", cmd], cwd=wt, env=env,
+                                stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, **kw)
         self._set(key, state="running", slot=slot, dir=logdir,
+                  pid=getattr(proc, "pid", None),
                   started=self.clock(), full=full, heads=merged, prio=prio)
         for h in merged:
             if h != key:
@@ -306,6 +309,34 @@ class LocalCI:
                 continue
             self._finish(sha, passed(rc, summary), summary, d)
         self._launch_queued()
+
+    def prune(self, gone):
+        """Drops queued work and cancels running batches whose heads are all
+        merged or closed; gone(head) says so for one head."""
+        for name in ("pool", "groups"):
+            q = self._queue(name)
+            if name == "groups":
+                kept = [g for g in q if not all(gone(h) for h in g)]
+                dropped = [h for g in q if g not in kept for h in g]
+            else:
+                kept, dropped = localci_cancel.prune_queue(q, lambda e: e["head"], gone)
+            if dropped:
+                self._set_queue(name, kept)
+                self._cancel_heads(dropped)
+        for key, r in self._running():
+            heads = r.get("heads") or [key]
+            if all(gone(h) for h in heads):
+                localci_cancel.kill_tree(r.get("pid"))
+                localci_cancel.mark_cancelled_files(r.get("dir") or "")
+                self._set(key, state="cancelled", ended=self.clock())
+                self._cancel_heads(heads)
+
+    def _cancel_heads(self, heads):
+        for h in heads:
+            self._set(h, state="cancelled", queued=False, batch=None,
+                      ended=self.clock())
+        self.o.store.event("local-ci", "local_ci_cancelled",
+                           ",".join(h[:8] for h in heads))
 
     def _finish(self, key, ok, summary, d):
         excerpt = summary.strip()

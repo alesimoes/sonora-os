@@ -37,6 +37,7 @@
 
 namespace sonora {
 class CommandRegistry;
+struct CommandContext;
 }
 
 namespace sonora::ui {
@@ -712,6 +713,20 @@ private:
     // here first, and held (ADR-0026 §4).
     bool playlistCommand(int track, bool chooses, const std::function<bool(std::string&)>& run_op,
                          std::string& why);
+    // installCommands() by topic (session_model_commands*.cpp). `simple`
+    // installs a handler that re-publishes (sync()) once it has run.
+    using SimpleHandler = std::function<bool(const CommandContext&, std::string&)>;
+    using InstallSimple = std::function<void(const char*, SimpleHandler)>;
+    void installEditStateCommands(CommandRegistry& local, const InstallSimple& simple);
+    void installTrackMenuCommands(CommandRegistry& local, const InstallSimple& simple);
+    void installNameCommands(CommandRegistry& local, const InstallSimple& simple);
+    void installClipCommands(CommandRegistry& local, const InstallSimple& simple);
+    void installCompingCommands(CommandRegistry& local, const InstallSimple& simple);
+    void installWindowCommands(CommandRegistry& local, const InstallSimple& simple);
+    void installEditCommands(CommandRegistry& local, const InstallSimple& simple);
+    void installFileCommands(CommandRegistry& local, const InstallSimple& simple);
+    // The track a track command acts on: the one given, else the selected.
+    int commandRow(const CommandContext& ctx) const;
     // Re-publishes what changed since the last call and marks the items.
     void sync();
     bool run(bool ok, const std::string& why);

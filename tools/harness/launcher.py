@@ -1,9 +1,10 @@
 """Builds and starts the headless `claude -p` processes (ADR-0047 section 1).
 
-The model flag lives in model_args() and nowhere else. build_command() has no
-model parameter, so no caller, config file or environment variable can ask
-for anything but Sonnet; the one exception is the escalation engineer, named
-in MODEL_OF_AGENT (owner, 2026-11-05).
+The model flag lives in model_args() and nowhere else. Since 2026-11-06 the
+model follows the task's tier (tiers.py): haiku, sonnet, opus or fable, and
+anything else is refused (ModelError) whether it comes from a caller, an
+agent file, settings or the environment. A caller that names no model gets
+sonnet; the escalation engineer is always fable (MODEL_OF_AGENT).
 """
 import json
 import os
@@ -14,9 +15,11 @@ import subprocess
 import sys
 import threading
 
-MODEL = "sonnet"
-# agent -> model. Everything absent from this map runs on Sonnet.
-MODEL_OF_AGENT = {"principal-engineer": "opus"}
+from .tiers import ALLOWED_MODELS, DEFAULT_MODEL
+
+MODEL = DEFAULT_MODEL
+# agent -> model, whatever the task's tier says.
+MODEL_OF_AGENT = {"principal-engineer": "fable"}
 FORBIDDEN_ENV = ("CLAUDE_MODEL", "ANTHROPIC_MODEL")
 DEFAULT_TOOLS = ("Bash", "Read", "Edit", "Write", "MultiEdit", "Grep", "Glob",
                  "mcp__harness__whoami", "mcp__harness__send",
@@ -29,21 +32,31 @@ class ModelError(Exception):
     pass
 
 
-def model_for(agent):
-    return MODEL_OF_AGENT.get(agent, MODEL)
+def model_for(agent, model=None):
+    """The agent's fixed model, else the requested tier model, else sonnet."""
+    if agent in MODEL_OF_AGENT:
+        return MODEL_OF_AGENT[agent]
+    if model is None:
+        return MODEL
+    if model not in ALLOWED_MODELS:
+        raise ModelError(f"model {model!r} is not one of "
+                         f"{', '.join(ALLOWED_MODELS)}")
+    return model
 
 
-def model_args(agent=None):
-    return ["--model", model_for(agent)]
+def model_args(agent=None, model=None):
+    return ["--model", model_for(agent, model)]
 
 
 def check_models(root, env=None):
-    """Refuse to start when the environment or an agent file names another
-    model. A file without a `model:` line inherits the --model flag."""
+    """Refuse to start when the environment, settings or an agent file names
+    a model outside the tiers. A file without a `model:` line inherits the
+    --model flag."""
     env = os.environ if env is None else env
     for k in FORBIDDEN_ENV:
-        if env.get(k) and env[k].strip().lower() != MODEL:
-            raise ModelError(f"{k}={env[k]} but only {MODEL} is allowed")
+        if env.get(k) and not _model_ok(env[k]):
+            raise ModelError(f"{k}={env[k]} but only "
+                             f"{'/'.join(ALLOWED_MODELS)} are allowed")
     _check_settings_model(os.path.join(root, ".claude", "settings.json"))
     _check_settings_model(os.path.join(root, ".claude", "settings.local.json"))
     agents = os.path.join(root, ".claude", "agents")
@@ -55,12 +68,20 @@ def check_models(root, env=None):
         with open(os.path.join(agents, fn), encoding="utf-8") as f:
             head = f.read(2000)
         m = re.match(r"---\r?\n(.*?)\r?\n---", head, re.S)
-        allowed = model_for(fn[:-3])
+        allowed = ALLOWED_MODELS
         for line in (m.group(1).splitlines() if m else ()):
             if line.startswith("model:") and \
-                    line.split(":", 1)[1].strip().strip("'\"") != allowed:
+                    line.split(":", 1)[1].strip().strip("'\"") not in allowed:
                 raise ModelError(f"{fn} says {line.strip()}; "
-                                 f"only {allowed} is allowed")
+                                 f"only {'/'.join(allowed)} is allowed")
+
+
+def _model_ok(value):
+    """A tier model, or a full id of one ("claude-opus-4" counts as opus)."""
+    v = str(value).strip().lower()
+    return v in ALLOWED_MODELS or any(
+        re.search(rf"(?:^|[-_/]){m}(?:$|[-_.\d])", v)
+        for m in ALLOWED_MODELS)
 
 
 def _check_settings_model(path):
@@ -77,16 +98,16 @@ def _check_settings_model(path):
         found.append((f"env.{k}", senv.get(k) if isinstance(senv, dict)
                       else None))
     for k, v in found:
-        if v and str(v).strip().lower() != MODEL:
+        if v and not _model_ok(v):
             raise ModelError(f"{os.path.basename(path)} sets {k}={v} but "
-                             f"only {MODEL} is allowed")
+                             f"only {'/'.join(ALLOWED_MODELS)} are allowed")
 
 
-def agent_definition(root, agent):
+def agent_definition(root, agent, model=None):
     """The --agents entry for `agent`, from the daemon's own checkout. The
     task worktree may predate the file (a PR branch cut earlier), and then
     `--agent` alone dies with "not found". None when the daemon has no file.
-    The model is forced to model_for(agent), whatever the file says."""
+    The model is forced to model_for(agent, model), whatever the file says."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", agent or ""):
         return None
     try:
@@ -109,7 +130,7 @@ def agent_definition(root, agent):
             fields[key] += " " + line.strip()
     d = {"description": fields.get("description", "").strip("'\""),
          "prompt": m.group(2).strip(),
-         "model": model_for(agent)}
+         "model": model_for(agent, model)}
     if fields.get("tools"):
         d["tools"] = [t.strip() for t in fields["tools"].split(",")
                       if t.strip()]
@@ -120,10 +141,10 @@ def agent_definition(root, agent):
 
 def build_command(claude, agent, prompt, mcp_path, settings_path,
                   max_turns=80, permission_mode="acceptEdits",
-                  tools=DEFAULT_TOOLS, agents_root=None):
+                  tools=DEFAULT_TOOLS, agents_root=None, model=None):
     argv = list(claude) if isinstance(claude, (list, tuple)) else [claude]
-    argv += ["-p"] + model_args(agent)
-    defs = agent_definition(agents_root, agent) if agents_root else None
+    argv += ["-p"] + model_args(agent, model)
+    defs = agent_definition(agents_root, agent, model) if agents_root else None
     if defs:
         argv += ["--agents", json.dumps(defs)]
     argv += ["--agent", agent,
@@ -150,8 +171,12 @@ def hook_settings(harness_py):
     return {"hooks": {
         "PostToolUse": [{"matcher": "*", "hooks": [recv]}],
         "UserPromptSubmit": [{"hooks": [recv]}],
-        "PreToolUse": [{"matcher": "Edit|Write|MultiEdit", "hooks": [
-            {"type": "command", "command": cmd("check", "--hook")}]}]}}
+        "PreToolUse": [
+            {"matcher": "Edit|Write|MultiEdit", "hooks": [
+                {"type": "command", "command": cmd("check", "--hook")}]},
+            # the same entry point refuses git moves in the daemon's checkout
+            {"matcher": "Bash", "hooks": [
+                {"type": "command", "command": cmd("check", "--hook")}]}]}}
 
 
 SECRET_KEYS = ("SONORA_HARNESS_TOKEN", "SONORA_TOKEN")

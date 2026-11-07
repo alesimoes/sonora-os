@@ -117,7 +117,10 @@ if [[ "$STAGE" == 1 ]]; then
     for t in sonora-plugin-host sonora-analyze sonora-mixplan; do
       [[ -f $BDIR/$t ]] && install -m 0755 $BDIR/$t $BDIR/stage/usr/local/bin/$t
     done
-    fmt="$(find "$BDIR" -path "*/plugins/native/format/cmake_install.cmake" | head -n 1)"
+    # The bundle install rules are generated in each plugin directory (the
+    # format helper is called from there), not in format/: the parent script
+    # includes them all.
+    fmt="$(find "$BDIR" -path "*/plugins/native/cmake_install.cmake" | head -n 1)"
     [[ -n "$fmt" ]] || { echo "error: no install script for the native bundles" >&2; exit 1; }
     cmake -DCMAKE_INSTALL_PREFIX=/src/$BDIR/stage/usr/local -DCMAKE_INSTALL_CONFIG_NAME=Release -P "$fmt" >/dev/null
     test -d $BDIR/stage/usr/local/lib/lv2 || { echo "error: no LV2 bundle was installed" >&2; exit 1; }

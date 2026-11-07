@@ -443,11 +443,14 @@ class LauncherTests(unittest.TestCase):
             self.assertIn("--strict-mcp-config", argv)
             self.assertNotIn("opus", " ".join(argv).lower())
 
-    def test_no_parameter_or_environment_can_change_the_model(self):
-        import inspect
-        self.assertNotIn("model", inspect.signature(
-            launcher.build_command).parameters)
-        os.environ["CLAUDE_MODEL"] = "opus"
+    def test_only_the_four_tier_models_can_be_asked_for(self):
+        for m in ("haiku", "sonnet", "opus", "fable"):
+            self.assertEqual(self.cmd(model=m)[2:4], ["--model", m])
+        with self.assertRaises(launcher.ModelError):
+            self.cmd(model="gpt-4")
+        # the environment never selects the model, and a foreign one stops
+        # the daemon
+        os.environ["CLAUDE_MODEL"] = "gpt-4"
         try:
             self.assertEqual(self.cmd()[2:4], ["--model", "sonnet"])
             with self.assertRaises(launcher.ModelError):
@@ -477,12 +480,16 @@ class LauncherTests(unittest.TestCase):
             os.makedirs(os.path.join(d, ".claude", "agents"))
             p = os.path.join(d, ".claude", "agents", "x.md")
             with open(p, "w") as f:
-                f.write("---\nname: x\nmodel: opus\n---\nbody\n")
+                f.write("---\nname: x\nmodel: gpt-4\n---\nbody\n")
             with self.assertRaises(launcher.ModelError):
                 launcher.check_models(d, env={})
-            with open(p, "w") as f:
-                f.write("---\nname: x\nmodel: sonnet\n---\nbody\n")
-            launcher.check_models(d, env={})
+            for m in ("haiku", "sonnet", "opus", "fable"):
+                with open(p, "w") as f:
+                    f.write(f"---\nname: x\nmodel: {m}\n---\nbody\n")
+                launcher.check_models(d, env={})
+            launcher.check_models(d, env={"ANTHROPIC_MODEL": "fable"})
+            with self.assertRaises(launcher.ModelError):
+                launcher.check_models(d, env={"ANTHROPIC_MODEL": "gpt-4"})
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -491,14 +498,14 @@ class LauncherTests(unittest.TestCase):
         try:
             os.makedirs(os.path.join(d, ".claude"))
             p = os.path.join(d, ".claude", "settings.json")
-            for body in ({"model": "opus"},
-                         {"env": {"ANTHROPIC_MODEL": "claude-opus-4"}}):
+            for body in ({"model": "gpt-4"},
+                         {"env": {"ANTHROPIC_MODEL": "gemini-2"}}):
                 with open(p, "w") as f:
                     json.dump(body, f)
                 with self.assertRaises(launcher.ModelError):
                     launcher.check_models(d, env={})
             with open(p, "w") as f:
-                json.dump({"model": "sonnet", "env": {"X": "1"}}, f)
+                json.dump({"model": "opus", "env": {"X": "1"}}, f)
             launcher.check_models(d, env={})
         finally:
             shutil.rmtree(d, ignore_errors=True)

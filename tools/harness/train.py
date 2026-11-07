@@ -143,14 +143,23 @@ class Train:
         return out
 
     # -- adoption -------------------------------------------------------
-    def adopt(self, numbers=None):
+    def adopt(self, numbers=None, auto=False):
         """Adopt open PRs (all, or the given numbers) that no feature owns.
-        Returns the adopted PR numbers."""
+        `auto` is the daemon's own sweep: drafts are on hold and only PRs
+        against main come. Returns the adopted PR numbers."""
         owned = {f["pr"] for f in self.o.store.features() if f["pr"]}
+        # A feature's own branch is its PR in the making (push done, number
+        # not yet recorded): the sweep must not take it from under it.
+        mine = {x["branch"] for x in (self.o.store.features()
+                                      + self.o.store.tasks())
+                if x["branch"] and not x["pr"]} if auto else set()
         done = []
         for p in self.o.forge.list_prs():
             n = p["number"]
             if n in owned or (numbers and n not in numbers):
+                continue
+            if auto and (p.get("draft") or p.get("base") != "main"
+                         or p["branch"] in mine):
                 continue
             fid = f"pr-{n}"
             track = track_of(p["files"])
@@ -165,7 +174,8 @@ class Train:
             self._save(fid, pr=n, title=p.get("title"), branch=p["branch"],
                        base=p.get("base"), phase="adotado",
                        next="ler o CI", action="adopted")
-            self.o.store.event(fid, "adopted_pr", f"#{n} {p['branch']}")
+            self.o.store.event(fid, "adopted_pr", f"#{n} {p['branch']}"
+                               + (" auto" if auto else ""))
             done.append(n)
         return done
 
@@ -294,6 +304,19 @@ class Train:
             rows = self.o.forge.list_prs()
             self._list = (now, rows)
         return rows
+
+    def head_is_gone(self, head):
+        """True when an adopted PR with this head is no longer open (merged
+        or closed). A head with no PR, or a failed listing, is not gone."""
+        prs = {i.get("pr") for i in self._all().values()
+               if i.get("head") == head and i.get("pr")}
+        if not prs:
+            return False
+        try:
+            open_nums = {r["number"] for r in self._open_list(self.o.clock())}
+        except Exception:
+            return False
+        return not (prs & open_nums)
 
     def busy(self):
         """PRs whose CI the train set running and which have not finished."""
