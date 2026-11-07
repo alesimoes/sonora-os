@@ -1,6 +1,6 @@
 # Plan: plugins.graph.parallel - Parallel processing graph on the plan, nodes dropped on deadline
 
-Status: approved   (approved only by architect sign-off, below)
+Status: approved
 Written by: architect   Dispatched by: lead   Architect sign-off: architect 2026-11-07
 Grouped items: only `plugins.graph.parallel` (BACKLOG DAW 4 item 8); buses, sends and automation of that line are on main (ADR-0022/0024/0027), so nothing else of the area ships here.
 
