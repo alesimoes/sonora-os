@@ -1889,7 +1889,8 @@ bool read_buses(Reader& rd, const Value& root, EditState& edit, MixState& mix) {
         const std::string p = index_path("buses", i);
         if (!rd.keys(v, p,
                      {"id", "name", "gain_db", "pan", "mute", "solo", "output", "sends",
-                      "automation", "hardware"})) {
+                      "automation"},
+                     {"hardware"})) {
             return false;
         }
         Bus b;
