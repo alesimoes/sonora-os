@@ -20,7 +20,6 @@
 <main>
   <header class="topbar">
     <img src="/static/dash-logo.svg" alt="Sonora" width="44" height="44" style="margin-right:10px;vertical-align:middle"><div><h1>Sonora · painel de trabalho</h1><div class="sub" id="sub">conectando</div></div>
-    <div class="gauges" id="usage"></div>
     <nav class="links" id="links" aria-label="Revisões"></nav>
     <div class="live" style="margin-left:auto"><span class="dot" id="dot"></span><span id="livetxt">sincronizando</span></div>
     <div class="clock"><b id="clock">--:--:--</b><span id="date"></span></div>
@@ -28,17 +27,20 @@
   <p class="err" id="err"></p>
   <div class="sit" id="sit">Carregando...</div>
   <div class="alerts" id="alerts" hidden></div>
-  <h2 class="h2">Agentes</h2>
-  <div class="people sm" id="people"></div>
+  <div class="strip"><div class="gauges" id="usage"></div><div class="chips" id="strip"></div></div>
+  <h2 class="h2">Agentes <span class="hint">quem está fazendo o quê agora</span></h2>
+  <div class="people" id="people"></div>
   <div class="pnote" id="pnote"></div>
-  <h2 class="h2">Máquina de build <span class="hint">só um build pesado roda por vez; os outros esperam na fila</span></h2>
-  <div class="mach" id="mach"></div>
-  <h2 class="h2">Disco <span class="hint" id="diskhint"></span></h2>
-  <div class="dgrid" id="disk"></div>
-  <h2 class="h2">Comandos <span class="hint">lista fechada; ações destrutivas pedem confirmação; tudo vai para .harness/dashboard-actions.log</span></h2>
-  <div class="cmds" id="cmds"></div>
   <h2 class="h2">Fluxo de construção <span class="hint" id="prhint"></span></h2>
   <div class="flow" id="flow"></div>
+  <details class="tech" id="sys"><summary>Máquina, disco e comandos <span class="hint">detalhes e ações de manutenção</span></summary>
+  <h3>Máquina de build <span class="hint">um build pesado por vez</span></h3>
+  <div class="mach" id="mach"></div>
+  <h3>Disco <span class="hint" id="diskhint"></span></h3>
+  <div class="dgrid" id="disk"></div>
+  <h3>Comandos <span class="hint">lista fechada; destrutivas pedem confirmação; log em .harness/dashboard-actions.log</span></h3>
+  <div class="cmds" id="cmds"></div>
+  </details>
   <details class="tech" id="tech"><summary>Detalhes técnicos <span class="hint">limites do orquestrador, espera do dono, eventos, merges armados, containers</span></summary>
   <div class="tgrid">
     <section class="tp wide"><h3>Orquestrador: limites e filas <small id="tmeta"></small></h3><div id="tlimits"></div><div class="pools" id="tpools"></div></section>
@@ -59,6 +61,7 @@
 <script src="/static/dash-prs.js"></script>
 <script src="/static/dash-flow.js"></script>
 <script src="/static/dash-disk.js"></script>
+<script src="/static/dash-strip.js"></script>
 <script src="/static/dash-tech.js"></script>
 <script src="/static/dash-detail.js"></script>
 <script src="/static/dash-chat.js"></script>
