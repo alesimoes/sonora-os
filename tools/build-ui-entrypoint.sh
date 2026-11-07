@@ -32,6 +32,9 @@ fi
 # CCACHE_DIR=/ccache).
 if command -v ccache >/dev/null; then
   export CMAKE_CXX_COMPILER_LAUNCHER=ccache CMAKE_C_COMPILER_LAUNCHER=ccache
+  # ui/qt precompiles the Qt headers (SONORA_UI_PCH); ccache caches those units
+  # only with this sloppiness, else it falls back to the real compiler.
+  export CCACHE_SLOPPINESS=pch_defines,time_macros
   ccache -z >/dev/null
 fi
 finish() {

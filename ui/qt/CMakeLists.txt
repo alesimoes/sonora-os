@@ -24,58 +24,114 @@ if(NOT Qt6_FOUND)
 endif()
 message(STATUS "ui/qt: building sonora-ui against Qt ${Qt6_VERSION}")
 
-# Everything but main(), so the tests drive the same code the binary runs.
-# The Qt-free parts (meter_model, key_router, control_adapter, and the
-# Edit/Mix logic: model_access, timeline_document, edit_controller, edit_clipboard,
-# insert_controller, live_take, timeline_scene, time_format, fader_taper, peak_source,
-# theme) are kept free
-# of Qt on purpose: they are what common/model and M7 touch, and what a test
-# can check without a display.
-add_library(sonora_ui_qt STATIC
+# The interface is a stack of libraries by domain, so that a change rebuilds
+# the library it is in and the ones above it, and the micro-build gate
+# (tools/micro_targets.py) runs only the tests that link them. Each links what
+# it uses and nothing above it; sonora_ui_qt, at the end, links them all for
+# the app and the tests that load the real QML.
+#
+#   sonora_ui_core     the Qt-free base: engine adapter, key router, meters'
+#                      model, time formats, fader taper, the timeline document
+#   sonora_ui_edit     the Edit window's logic, Qt-free: EditController,
+#                      clipboard, automation and strip-silence edits, the
+#                      timeline scene, the live take, the importer
+#   sonora_ui_inserts  the insert and send controllers, Qt-free
+#   sonora_ui_shell    ShellModel and what it carries: Qt keys, meter item,
+#                      render path, refusal page, measurement
+#   sonora_ui_session  SessionModel and its files, preferences, window layouts,
+#                      transport model, scene item, import model
+#   sonora_ui_mixer    the Mix window's models: mix, sends, inserts, loudness
+#   sonora_ui_qml      the QML resources and register_types.h
+#
+# The Qt-free ones are kept free of Qt on purpose: they are what common/model
+# and M7 touch, and what a test can check without a display. They link no Qt.
+set(SONORA_UI_QT_LIBS Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
+
+function(sonora_ui_library name)
+  cmake_parse_arguments(A "QT" "" "SOURCES" ${ARGN})
+  add_library(${name} STATIC ${A_SOURCES})
+  target_include_directories(${name} PUBLIC src)
+  if(A_QT)
+    set_target_properties(${name} PROPERTIES AUTOMOC ON)
+    target_link_libraries(${name} PUBLIC ${SONORA_UI_QT_LIBS})
+  endif()
+endfunction()
+
+sonora_ui_library(sonora_ui_core SOURCES
   src/engine_adapter.h
+  src/model_access.h
+  src/theme.h
   src/control_adapter.h src/control_adapter.cpp
   src/meter_model.h src/meter_model.cpp
   src/key_router.h src/key_router.cpp
   src/keymap_profiles.h src/keymap_profiles.cpp
-  src/qt_keys.h src/qt_keys.cpp
-  src/meter_item.h src/meter_item.cpp
-  src/shell_model.h src/shell_model.cpp
-  src/render_path.h src/render_path.cpp
-  src/measure.h src/measure.cpp
-  src/register_types.h
-  src/theme.h src/theme_object.h
-  src/model_access.h
   src/timeline_document.h src/timeline_document.cpp
   src/replica_document.h src/replica_document.cpp
   src/peak_source.h src/peak_source.cpp
   src/time_format.h src/time_format.cpp
-  src/transport_model.h src/transport_model.cpp
   src/fader_taper.h src/fader_taper.cpp
-  src/edit_controller.h src/edit_controller.cpp
+)
+# FakeEngine: the engine behind the adapter when no real one is running,
+# and in the tests (control_adapter.h).
+target_link_libraries(sonora_ui_core PUBLIC sonora_base sonora_keymap sonora_model sonora_api sonora_api_fake sonora_audiofile)
+
+sonora_ui_library(sonora_ui_edit SOURCES
+  src/edit_controller.h src/edit_controller.cpp src/edit_controller_detail.h
+  src/edit_gestures.cpp
+  src/edit_separate.cpp
+  src/edit_clipboard_ops.cpp
+  src/edit_fades.cpp
+  src/edit_history_mix.cpp
+  src/edit_tracks.cpp
+  src/edit_playlists.cpp
   src/edit_clipboard.h src/edit_clipboard.cpp
   src/edit_markers.cpp
   src/edit_names.cpp
   src/edit_vcas.cpp
-  src/mix_vcas.cpp
   src/edit_groups.cpp
-  src/mix_groups.cpp
   src/edit_clip_gain.cpp
   src/edit_tempo.cpp
   src/edit_clip_groups.cpp
   src/strip_silence.h src/strip_silence.cpp
   src/edit_strip_silence.cpp
-  src/edit_preferences.cpp
-  src/preferences.h src/preferences.cpp
   src/automation_edit.h src/automation_edit.cpp
   src/edit_automation.cpp
   src/edit_comping.cpp
   src/comping_demo.h src/comping_demo.cpp
   src/live_take.h src/live_take.cpp
   src/timeline_scene.h src/timeline_scene.cpp
-  src/scene_item.h src/scene_item.cpp
+  src/audio_importer.h src/audio_importer.cpp
+)
+target_link_libraries(sonora_ui_edit PUBLIC sonora_ui_core)
+
+sonora_ui_library(sonora_ui_inserts SOURCES
+  src/insert_controller.h src/insert_controller.cpp
+  src/send_controller.h src/send_controller.cpp
+)
+target_link_libraries(sonora_ui_inserts PUBLIC sonora_ui_core)
+
+sonora_ui_library(sonora_ui_shell QT SOURCES
+  src/shell_model.h src/shell_model.cpp
+  src/qt_keys.h src/qt_keys.cpp
+  src/meter_item.h src/meter_item.cpp
+  src/render_path.h src/render_path.cpp
+  src/measure.h src/measure.cpp
+  src/refusal_page.h src/refusal_page.cpp
+  src/theme_object.h
+  src/capture.h
+)
+target_link_libraries(sonora_ui_shell PUBLIC sonora_ui_core)
+# Only measure.cpp uses it, for per-thread CPU time (ADR-0008 V5).
+target_link_libraries(sonora_ui_shell PRIVATE sonora_platform)
+
+sonora_ui_library(sonora_ui_session QT SOURCES
   src/session_files.h src/session_files.cpp
   src/window_layouts.h src/window_layouts.cpp
-  src/session_model.h src/session_model.cpp
+  src/preferences.h src/preferences.cpp
+  src/import_model.h src/import_model.cpp
+  src/transport_model.h src/transport_model.cpp
+  src/scene_item.h src/scene_item.cpp
+  src/session_model.h src/session_model.cpp src/session_model_support.h
   src/session_model_commands.cpp
   src/session_model_commands_track.cpp
   src/session_model_commands_clip.cpp
@@ -89,33 +145,62 @@ add_library(sonora_ui_qt STATIC
   src/session_model_open.cpp
   src/session_model_templates.cpp
   src/session_model_mix.cpp
-  src/insert_controller.h src/insert_controller.cpp
-  src/insert_model.h src/insert_model.cpp
-  src/mix_model.h src/mix_model.cpp
-  src/loudness_model.h src/loudness_model.cpp
-  src/send_controller.h src/send_controller.cpp
-  src/send_model.h src/send_model.cpp
-  src/refusal_page.h src/refusal_page.cpp
-  src/audio_importer.h src/audio_importer.cpp
-  src/import_model.h src/import_model.cpp
+  src/edit_preferences.cpp
 )
-set_target_properties(sonora_ui_qt PROPERTIES AUTOMOC ON)
-target_include_directories(sonora_ui_qt PUBLIC src)
-# FakeEngine: the engine behind the adapter when no real one is running,
-# and in the tests (control_adapter.h).
-target_link_libraries(sonora_ui_qt PUBLIC sonora_base sonora_keymap sonora_model sonora_api sonora_api_fake sonora_audiofile
-  Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
-# Only measure.cpp uses it, for per-thread CPU time (ADR-0008 V5).
-target_link_libraries(sonora_ui_qt PRIVATE sonora_platform sonora_audiofile)
-qt_add_resources(sonora_ui_qt sonora_qml
+target_link_libraries(sonora_ui_session PUBLIC sonora_ui_edit sonora_ui_shell)
+
+sonora_ui_library(sonora_ui_mixer QT SOURCES
+  src/mix_model.h src/mix_model.cpp
+  src/mix_vcas.cpp
+  src/mix_groups.cpp
+  src/send_model.h src/send_model.cpp
+  src/insert_model.h src/insert_model.cpp
+  src/loudness_model.h src/loudness_model.cpp
+)
+target_link_libraries(sonora_ui_mixer PUBLIC sonora_ui_session sonora_ui_inserts)
+
+# The QML files are listed as sources so that the micro-build gate maps a QML
+# change to this library and to the tests that load it, not to the whole UI.
+set(SONORA_UI_QML_FILES
+  qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
+  qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
+  qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
+  qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml
+  qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
+)
+sonora_ui_library(sonora_ui_qml QT SOURCES
+  src/qml_resources.cpp src/register_types.h ${SONORA_UI_QML_FILES})
+set_source_files_properties(${SONORA_UI_QML_FILES} PROPERTIES HEADER_FILE_ONLY ON)
+target_link_libraries(sonora_ui_qml PUBLIC sonora_ui_mixer)
+qt_add_resources(sonora_ui_qml sonora_qml
   PREFIX /sonora
-  FILES qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
-        qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
-        qml/InsertPanel.qml qml/Knob.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-        qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml
-        qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
+  FILES ${SONORA_UI_QML_FILES}
 )
 
+# What the app and the tests that load the real QML link: everything.
+add_library(sonora_ui_qt INTERFACE)
+target_link_libraries(sonora_ui_qt INTERFACE sonora_ui_qml)
+
+
+# Precompiled headers: the Qt headers nearly every Qt translation unit pulls
+# in, parsed once per library. Only the libraries that use Qt get them, so the
+# Qt-free ones still fail to compile if they reach for Qt. OFF when a ccache
+# launcher is not told to cache them (ccache runs the real compiler, and so
+# loses its cache, on a precompiled header unless sloppiness has pch_defines).
+option(SONORA_UI_PCH "Precompile the common Qt headers of the ui/qt libraries" ON)
+if(SONORA_UI_PCH AND CMAKE_CXX_COMPILER_LAUNCHER MATCHES "ccache"
+   AND NOT "$ENV{CCACHE_SLOPPINESS}" MATCHES "pch_defines")
+  message(STATUS "ui/qt: ccache without CCACHE_SLOPPINESS=pch_defines,time_macros; precompiled headers off")
+  set(SONORA_UI_PCH OFF)
+endif()
+if(SONORA_UI_PCH)
+  foreach(lib sonora_ui_shell sonora_ui_session sonora_ui_mixer)
+    target_precompile_headers(${lib} PRIVATE
+      <QObject> <QString> <QStringList> <QList> <QVariant> <QVariantList> <QVariantMap>
+      <QHash> <QPointF> <QRectF> <QColor>
+      <algorithm> <functional> <memory> <optional> <string> <utility> <vector>)
+  endforeach()
+endif()
 # The screenshot scenes register themselves (scenes/screenshot_scene.h): in
 # the executable, not the static library, where the linker would drop a file
 # nothing names; and globbed, so a new scene is a new file and nothing else.
@@ -134,11 +219,11 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/keymaps/ DESTINATION share/sonora/keymap
 # test_shell loads the real QML on the offscreen platform and drives it with
 # key events, without rendering a frame.
 add_executable(test_ui_meter_model tests/test_meter_model.cpp)
-target_link_libraries(test_ui_meter_model PRIVATE sonora_ui_qt)
+target_link_libraries(test_ui_meter_model PRIVATE sonora_ui_core)
 add_test(NAME ui_meter_model COMMAND test_ui_meter_model)
 
 add_executable(test_ui_keys tests/test_qt_keys.cpp)
-target_link_libraries(test_ui_keys PRIVATE sonora_ui_qt)
+target_link_libraries(test_ui_keys PRIVATE sonora_ui_shell)
 target_compile_definitions(test_ui_keys PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_keys COMMAND test_ui_keys)
@@ -150,7 +235,7 @@ set_tests_properties(ui_keys PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 add_executable(test_ui_edit tests/test_edit.cpp)
 # common/session_files stands in for the engine behind ModelDocument
 # (tests/engine_saver.h); the interface itself does not link it.
-target_link_libraries(test_ui_edit PRIVATE sonora_ui_qt sonora_session_files)
+target_link_libraries(test_ui_edit PRIVATE sonora_ui_session sonora_session_files)
 target_compile_definitions(test_ui_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_edit COMMAND test_ui_edit)
@@ -158,25 +243,25 @@ add_test(NAME ui_edit COMMAND test_ui_edit)
 # FilePeakSource: the Edit window reads the overview files, builds a missing
 # one off the GUI thread, and says when a source is not readable.
 add_executable(test_ui_file_peaks tests/test_file_peaks.cpp)
-target_link_libraries(test_ui_file_peaks PRIVATE sonora_ui_qt sonora_audiofile)
+target_link_libraries(test_ui_file_peaks PRIVATE sonora_ui_core sonora_audiofile)
 add_test(NAME ui_file_peaks COMMAND test_ui_file_peaks)
 
 add_executable(test_ui_strip_silence tests/test_strip_silence.cpp)
-target_link_libraries(test_ui_strip_silence PRIVATE sonora_ui_qt)
+target_link_libraries(test_ui_strip_silence PRIVATE sonora_ui_edit Qt6::Gui)
 add_test(NAME ui_strip_silence COMMAND test_ui_strip_silence)
 set_tests_properties(ui_strip_silence PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 set_tests_properties(ui_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The take being recorded, drawn growing on the armed tracks' lanes.
 add_executable(test_ui_live_take tests/test_live_take.cpp)
-target_link_libraries(test_ui_live_take PRIVATE sonora_ui_qt)
+target_link_libraries(test_ui_live_take PRIVATE sonora_ui_session)
 add_test(NAME ui_live_take COMMAND test_ui_live_take)
 set_tests_properties(ui_live_take PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Automation lanes (ADR-0027): the operations a gesture is built into, the
 # lane rows, the mouse and Edit-command paths, and what the timeline draws.
 add_executable(test_ui_automation tests/test_automation.cpp)
-target_link_libraries(test_ui_automation PRIVATE sonora_ui_qt)
+target_link_libraries(test_ui_automation PRIVATE sonora_ui_edit)
 add_test(NAME ui_automation COMMAND test_ui_automation)
 
 # Cut, Copy, Paste, Duplicate and Clear as compounds, at the member limit
@@ -239,7 +324,7 @@ set_tests_properties(ui_playlists PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscr
 # region, a palette colour per track and per region, kept through a move;
 # then the real QML: the double-clicks, the Name dialog, the palette.
 add_executable(test_ui_clip_gain tests/test_clip_gain.cpp)
-target_link_libraries(test_ui_clip_gain PRIVATE sonora_ui_qt Qt6::Test)
+target_link_libraries(test_ui_clip_gain PRIVATE sonora_ui_session Qt6::Test)
 target_compile_definitions(test_ui_clip_gain PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_clip_gain COMMAND test_ui_clip_gain)
@@ -248,14 +333,14 @@ set_tests_properties(ui_clip_gain PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscr
 # Tempo editing (ADR-0050): set, ramp, scale, meter and remove as SetSettings,
 # Undo Tempo on its own stack, the tempo.edit text, the tempo track scene.
 add_executable(test_ui_tempo_edit tests/test_tempo_edit.cpp)
-target_link_libraries(test_ui_tempo_edit PRIVATE sonora_ui_qt Qt6::Test)
+target_link_libraries(test_ui_tempo_edit PRIVATE sonora_ui_session Qt6::Test)
 target_compile_definitions(test_ui_tempo_edit PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_tempo_edit COMMAND test_ui_tempo_edit)
 set_tests_properties(ui_tempo_edit PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 # Clip groups, loops and the sample edit request (ADR-0052).
 add_executable(test_ui_clip_groups tests/test_clip_groups.cpp)
-target_link_libraries(test_ui_clip_groups PRIVATE sonora_ui_qt Qt6::Test)
+target_link_libraries(test_ui_clip_groups PRIVATE sonora_ui_session Qt6::Test)
 add_test(NAME ui_clip_groups COMMAND test_ui_clip_groups)
 set_tests_properties(ui_clip_groups PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
@@ -335,14 +420,14 @@ set_tests_properties(ui_transport PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscr
 
 # The Edit window's document as the engine's, on FakeEngine (ADR-0007 M7).
 add_executable(test_ui_replica_document tests/test_replica_document.cpp)
-target_link_libraries(test_ui_replica_document PRIVATE sonora_ui_qt)
+target_link_libraries(test_ui_replica_document PRIVATE sonora_ui_edit)
 add_test(NAME ui_replica_document COMMAND test_ui_replica_document)
 
 # The same document on sonora-engine as a process, across lost connections.
 # The engine is run, not linked (ADR-0007 §1).
 if(UNIX AND TARGET sonora-engine)
   add_executable(test_ui_replica_reconnect tests/test_replica_reconnect.cpp)
-  target_link_libraries(test_ui_replica_reconnect PRIVATE sonora_ui_qt sonora_client sonora_platform)
+  target_link_libraries(test_ui_replica_reconnect PRIVATE sonora_ui_core sonora_client sonora_platform)
   target_compile_definitions(test_ui_replica_reconnect PRIVATE
     SONORA_ENGINE_BIN="$<TARGET_FILE:sonora-engine>")
   add_dependencies(test_ui_replica_reconnect sonora-engine)
@@ -370,14 +455,14 @@ set_tests_properties(ui_sends PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 # File > Open on FakeEngine (#109 review): a refused Open gives the window
 # back to the session it had, and both Open refusals are held notices.
 add_executable(test_ui_session_open tests/test_session_open.cpp)
-target_link_libraries(test_ui_session_open PRIVATE sonora_ui_qt sonora_session_files)
+target_link_libraries(test_ui_session_open PRIVATE sonora_ui_session sonora_session_files)
 add_test(NAME ui_session_open COMMAND test_ui_session_open)
 set_tests_properties(ui_session_open PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Session templates (ADR-0030): Save as Template and New from Template in
 # the window, behind common/session_files and on FakeEngine.
 add_executable(test_ui_session_templates tests/test_session_templates.cpp)
-target_link_libraries(test_ui_session_templates PRIVATE sonora_ui_qt sonora_session_files sonora_sha256)
+target_link_libraries(test_ui_session_templates PRIVATE sonora_ui_session sonora_session_files sonora_sha256)
 add_test(NAME ui_session_templates COMMAND test_ui_session_templates)
 set_tests_properties(ui_session_templates PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
@@ -409,7 +494,7 @@ set_tests_properties(ui_keymaps PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscree
 # Play of the Edit selection: its range sent with transport.play only to an
 # engine whose Hello announces it, on FakeEngine and across a reconnect.
 add_executable(test_ui_play_range tests/test_play_range.cpp)
-target_link_libraries(test_ui_play_range PRIVATE sonora_ui_qt Qt6::Test)
+target_link_libraries(test_ui_play_range PRIVATE sonora_ui_shell Qt6::Test)
 target_compile_definitions(test_ui_play_range PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_play_range COMMAND test_ui_play_range)
@@ -426,7 +511,7 @@ set_tests_properties(ui_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 # llvmpipe, on xcb. The offscreen platform would give the software scene
 # graph, where meters draw nothing by design.
 add_executable(test_ui_render tests/test_render.cpp)
-target_link_libraries(test_ui_render PRIVATE sonora_ui_qt Qt6::Test)
+target_link_libraries(test_ui_render PRIVATE sonora_ui_session Qt6::Test)
 # A private Xvfb per run, through tests/with-xvfb.sh, which says why it is
 # not xvfb-run.
 find_program(SONORA_XVFB Xvfb)
@@ -462,6 +547,6 @@ set_tests_properties(ui_comping PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscree
 # Import Audio (ui.editing.import): the copy at the session rate, the one-step
 # placement, the refusals, the browser, on FakeEngine.
 add_executable(test_ui_import tests/test_import.cpp)
-target_link_libraries(test_ui_import PRIVATE sonora_ui_qt)
+target_link_libraries(test_ui_import PRIVATE sonora_ui_session)
 add_test(NAME ui_import COMMAND test_ui_import)
 set_tests_properties(ui_import PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
