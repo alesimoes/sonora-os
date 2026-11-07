@@ -770,6 +770,7 @@ class Orchestrator:
         fid, rep = f["id"], ts[0]
         branch = self._feature_branch(fid)
         wt = self.worktrees.ensure(self._feature_key(fid), branch)
+        n = None
         try:
             ok, out = self.forge.pre_pr(wt)
             if not ok:
@@ -788,6 +789,9 @@ class Orchestrator:
                 n = self.forge.create_pr(branch, "main", title, body)
             self.forge.enqueue(n)
         except ForgeError as e:
+            if n is not None:
+                self._adopt_opened_pr(f, ts, rep, branch, n, now, e)
+                return True
             fails = int(self.store.get_meta(f"prfail:{fid}", 0)) + 1
             self.store.set_meta(f"prfail:{fid}", fails)
             self.store.event(rep["id"], "pr_open_failed", f"{e} (#{fails})")
@@ -802,6 +806,18 @@ class Orchestrator:
         self.ci_polled[fid] = now
         self.store.event(rep["id"], "pr_opened", f"#{n} {branch}")
         return True
+
+    def _adopt_opened_pr(self, f, ts, rep, branch, n, now, err):
+        """The PR exists on GitHub but a later step failed: record it so the
+        train watches it (#495-#497 sat unwatched, 2026-11-07)."""
+        fid = f["id"]
+        self.store.event(rep["id"], "pr_adopted",
+                         f"#{n} opened, later step failed: {err}")
+        self.store.set_feature(fid, pr=n, branch=branch)
+        self.store.advance_feature(fid, "pr_open", pr=n)
+        for x in ts:
+            self._release(x)
+        self.ci_polled[fid] = now
 
     def _pr_text(self, f, ts):
         try:
