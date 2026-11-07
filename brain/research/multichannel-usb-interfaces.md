@@ -146,6 +146,21 @@ adapter nodes ("Twin Pro") and checks the refusal lists "Twin Pro" and
 same results. Waits on hardware: two identical USB units, to see the
 suffix on real ALSA nodes and whether they report a usable serial.
 
+**A boot-stable unit key** (2026-11-07, recovered from a 2026-11-06 worktree).
+`alsa_card_unit()` in `drivers/support/include/sonora/alsa_card.h` reads the
+card's hardware unit from sysfs: `/proc/asound/<id>` -> `cardN`,
+`/sys/class/sound/cardN/device` -> the USB interface (`1-4:1.0`), whose
+parent holds `serial`. The key is `"<serial><bus path>"`: the serial
+first, so a unit keeps its place when its cable moves; the bus path, so two
+units with no serial (or the same one) stay apart and order by port. The JACK
+backend hands it per port to `describe_ports(names, usb, unit)`, which ranks
+a client's units by key instead of by pw-jack's creation-order suffix
+(`rank_units_by_key`). "UMC1820 Pro (2)" is then the same physical unit on
+every boot, so the name saved by `--device` or the device setting file keeps
+selecting it. Ports whose card has no readable sysfs device keep the suffix
+split, after the keyed units. Still unverified on two real interfaces: whether
+Behringer units report a serial (the bus path alone already orders them).
+
 ## Verified by booting the image
 
 Measured 2026-10-11 in QEMU with an emulated `intel-hda` card, via

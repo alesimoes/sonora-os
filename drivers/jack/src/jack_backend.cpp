@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <system_error>
@@ -55,34 +56,47 @@ uint64_t now_ns() {
 // names the bus, and the client name is the node's description ("UMC1820
 // Pro"), which does not either. Under jackd2, or with aliases off, no port
 // reads as USB, and a device is then used only when named.
-bool port_on_usb(jack_client_t* client, const char* name) {
+std::string port_card(jack_client_t* client, const char* name) {
     jack_port_t* port = jack_port_by_name(client, name);
-    if (!port) return false;
+    if (!port) return {};
     const std::size_t size = static_cast<std::size_t>(jack_port_name_size());
     std::vector<char> first(size, '\0'), second(size, '\0');
     char* aliases[2] = {first.data(), second.data()};
     const int n = jack_port_get_aliases(port, aliases);
     for (int i = 0; i < n && i < 2; ++i) {
         const std::string card = drivers::alsa_card_of(aliases[i]);
-        if (!card.empty()) return drivers::alsa_card_is_usb(card);
+        if (!card.empty()) return card;
     }
-    return false;
+    return {};
 }
 
+// The card also tells two units of one model apart in a way that holds
+// across boots, which their shared client name does not (describe_ports):
+// alsa_card_unit() reads the unit's serial and bus path from sysfs. A card
+// whose sysfs device cannot be read gets no key and falls back to the
+// pw-jack suffix, which keeps the units apart but not in a stable order.
 std::vector<PortInfo> list_physical(jack_client_t* client, unsigned long flags) {
     std::vector<std::string> names;
     std::vector<std::string> usb;
+    std::map<std::string, std::string> units;  // port name -> unit key
     if (const char** hw = jack_get_ports(client, nullptr, JACK_DEFAULT_AUDIO_TYPE,
                                          flags | JackPortIsPhysical)) {
         for (int i = 0; hw[i] != nullptr; ++i) {
             names.emplace_back(hw[i]);
-            if (port_on_usb(client, hw[i])) usb.emplace_back(hw[i]);
+            const std::string card = port_card(client, hw[i]);
+            if (card.empty()) continue;
+            if (drivers::alsa_card_is_usb(card)) usb.emplace_back(hw[i]);
+            units[hw[i]] = drivers::alsa_card_unit(card);
         }
         jack_free(hw);
     }
-    return drivers::describe_ports(std::move(names), [&usb](const std::string& n) {
-        return std::find(usb.begin(), usb.end(), n) != usb.end();
-    });
+    return drivers::describe_ports(
+        std::move(names),
+        [&usb](const std::string& n) { return std::find(usb.begin(), usb.end(), n) != usb.end(); },
+        [&units](const std::string& n) {
+            const auto it = units.find(n);
+            return it == units.end() ? std::string() : it->second;
+        });
 }
 
 }  // namespace
