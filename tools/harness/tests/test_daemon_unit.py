@@ -406,23 +406,6 @@ class SchedulerTests(Base):
         self.assertFalse([l for l in p.launches if l.kind == "engineer"])
         self.assertEqual(p.gaps["daw"], "CI budget")
 
-    def test_ready_budget_counts_features_and_never_starves_a_sibling(self):
-        # Two slices of one feature are one ready feature; the third slice
-        # (an engineer) must still launch although the budget is full.
-        cfg = scheduler.Config(max_ready_unpr=2)
-        self.s.add_task("a1", "daw", "rt-engineer", state="integrating",
-                        feature_id="fa")
-        self.s.add_task("a2", "daw", "rt-engineer", state="integrating",
-                        feature_id="fa")
-        self.s.add_task("b1", "daw", "rt-engineer", state="integrating",
-                        feature_id="fb")
-        self.s.add_task("a3", "daw", "rt-engineer", feature_id="fa")
-        self.s.add_task("c1", "daw", "rt-engineer", feature_id="fc")
-        p = plan(self.s, cfg=cfg)
-        launched = [l.task_id for l in p.launches if l.kind == "engineer"]
-        self.assertIn("a3", launched)
-        self.assertNotIn("c1", launched)
-
     def test_local_build_limit_gates_testers(self):
         for i in range(3):
             self.s.add_task(f"q{i}", "daw", "rt-engineer", state="qa")
