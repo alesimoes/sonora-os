@@ -113,7 +113,7 @@ jobs:
           # harness scripts the Sonora build depends on are NOT harness-only
           # and build everything: tools/build-*.sh (build-slot.sh excepted,
           # it is the lock, tested by tools/test-build-slot.sh in the Harness
-          # job), tools/local-ci.sh, tools/Dockerfile*, tools/*-entrypoint.sh.
+          # job), tools/micro-build.sh, tools/Dockerfile*, tools/*-entrypoint.sh.
           harness_only=false
           if [ "${{ github.event_name }}" = pull_request ] && [ -n "$files" ] &&
              ! printf '%s\n' "$files" | grep -qvE '^(planning|brain|docs|\.claude)/|\.md$|^tools/(harness/|harness[^/]*\.py$|orchestrator\.py$|supervisor\.py$|dashboard[^/]*$|build-slot\.sh$|test-build-slot\.sh$)'; then
@@ -424,6 +424,86 @@ jobs:
           done
           exit "$drift"
 
+  # The per-PR gate (ADR-0061): the CMake targets the changed files reach,
+  # built, and only their tests run, in the build image GHCR holds (the Qt
+  # one when ui/ is touched). A docs or harness PR skips it (a skipped job
+  # counts as passing). Linking the application, the sanitizers, the
+  # interop suites, the Windows build, the slow tests and the ISO run once a
+  # day on main (nightly.yml), never per PR.
+  micro:
+    name: Micro build
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # ccache across runs: a PR's second push and the next PR on the same
+      # module compile from cache on a 4-vCPU runner.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ccache-micro
+          key: micro-ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: micro-ccache-${{ runner.os }}-
+      - name: Get the sonora-build image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
+          context: tools
+          rebuild: ${{ needs.changes.outputs.image_build }}
+      - name: Get the sonora-ui image (pulled from GHCR)
+        if: needs.changes.outputs.ui == 'true'
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-ui
+          dockerfile: tools/Dockerfile.ui
+          context: .
+          rebuild: ${{ needs.changes.outputs.image_ui }}
+      - name: Build the affected targets, run their tests
+        env:
+          SONORA_HEAVY_HELD: "1"
+        run: |
+          export SONORA_CCACHE_DIR="$HOME/.ccache-micro"
+          tools/micro-build.sh --base origin/main --no-rtsan
+      - name: The plan (what was built and tested)
+        if: always()
+        run: cat .micro-build/plan.json 2>/dev/null || echo "no plan (nothing to build)"
+
+  # The real-time rule, per PR but on the affected targets only: a change in
+  # the RT call graph runs those targets' tests under RealtimeSanitizer.
+  micro-rtsan:
+    name: "Micro build: RTSan"
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.rt == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Get the sonora-build image (pulled from GHCR, for the plan)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
+          context: tools
+          rebuild: ${{ needs.changes.outputs.image_build }}
+      - name: Get the sonora-rtsan image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-rtsan
+          dockerfile: tools/Dockerfile.rtsan
+          context: tools
+          rebuild: ${{ needs.changes.outputs.image_rtsan }}
+      - name: RTSan on the affected targets
+        env:
+          SONORA_HEAVY_HELD: "1"
+          SONORA_RTSAN_IMAGE_BUILT: "1"
+        run: tools/micro-build.sh --base origin/main --rtsan-only
+
   # The orchestrator daemon, its broker and supervisor (ADR-0047), against a
   # fake claude; the heavy lock script. For a harness-only PR this is the
   # whole CI (see harness_only in `changes`).
@@ -439,7 +519,7 @@ jobs:
       - name: Install shellcheck
         run: for d in 0 15 45; do sleep "$d"; sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y shellcheck && exit 0; done; echo "apt failed after 3 attempts" >&2; exit 1
       - name: Harness shell scripts
-        run: shellcheck tools/build-slot.sh tools/test-build-slot.sh tools/local-ci.sh tools/dashboard-up.sh
+        run: shellcheck tools/build-slot.sh tools/test-build-slot.sh tools/micro-build.sh tools/micro-build-entrypoint.sh tools/dashboard-up.sh
       - name: Build slot limiter
         run: tools/test-build-slot.sh
       - name: Harness unit tests

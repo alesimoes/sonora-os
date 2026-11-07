@@ -72,7 +72,7 @@ class Registry(Base):
         self.assertEqual(A.submit("rm.rf", {})[0], 404)
         self.assertEqual(A.submit("daemon.status", "x")[0], 400)
         names = {a["name"] for a in A.catalogue()}
-        for n in ("run.stop", "run.relaunch", "pr.adopt", "pr.merge", "ci.cancel", "lock.remove", "pool.pause",
+        for n in ("run.stop", "run.relaunch", "pr.adopt", "pr.merge", "lock.remove", "pool.pause",
                   "pool.resume", "daemon.status", "daemon.restart", "daemon.update", "supervisor.start",
                   "supervisor.stop", "disk.preview", "disk.clean"):
             self.assertIn(n, names)
@@ -211,7 +211,7 @@ class Runs(Base):
             self.assertEqual(A.submit("run.stop", {"name": "a-1"}, True)[0], 400)
         killed = []
         with mock.patch.object(dashboard_actions_agents.launcher, "pid_alive", lambda p: True), \
-                mock.patch.object(dashboard_actions_agents.localci_cancel, "kill_tree", killed.append):
+                mock.patch.object(dashboard_actions_agents.proctree, "kill_tree", killed.append):
             self.assertEqual(A.submit("run.stop", {"name": "a-1"})[0], 409)   # destructive
             self.assertEqual(killed, [])
             _, _, job = self.go("run.stop", {"name": "a-1"}, True)
@@ -230,28 +230,13 @@ class Runs(Base):
 
 
 class Ci(Base):
-    def test_cancel_only_a_running_batch_with_a_live_pid(self):
-        d = os.path.join(self.tmp, "ci")
-        os.makedirs(d)
-        meta = {"localci:k1": json.dumps({"state": "running", "pid": 77, "dir": d}),
-                "localci:k2": json.dumps({"state": "passed", "pid": 78, "dir": d})}
-        self.write("state.json", {"meta": meta})
-        self.assertEqual(A.submit("ci.cancel", {"key": "k2"}, True)[0], 400)
-        killed = []
-        with mock.patch.object(CI.launcher, "pid_alive", lambda p: True), \
-                mock.patch.object(CI.localci_cancel, "kill_tree", killed.append):
-            _, _, job = self.go("ci.cancel", {"key": "k1"}, True)
-        self.assertEqual((job["state"], killed), ("done", [77]))
-        with open(os.path.join(d, "summary")) as f:
-            self.assertIn("cancelled", f.read())   # never read as a pass
-
     def lock(self, rows):
         return mock.patch.object(CI, "heavy_lock_list", lambda: rows)
 
     LINE = "%s pid=%d kind=win user=u prio=2 start=1 cwd=/c/x cmd=%s"
 
     def test_lock_entry_removable_only_when_dead_or_not_a_job(self):
-        rows = [self.LINE % ("holds", 11, "bash tools/local-ci.sh"), self.LINE % ("waits", 12, "sleep 1000")]
+        rows = [self.LINE % ("holds", 11, "bash tools/micro-build.sh"), self.LINE % ("waits", 12, "sleep 1000")]
         with self.lock(rows):
             with mock.patch.object(CI, "pid_dead", lambda e: False):
                 self.assertEqual(A.submit("lock.remove", {"pid": 11}, True)[0], 400)     # alive real job

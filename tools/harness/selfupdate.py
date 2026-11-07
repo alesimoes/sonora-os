@@ -3,13 +3,11 @@ fix already merged, auto-adopt, was not running, and the coordinator had
 to notice and restart it by hand).
 
 Every CHECK_S the live daemon fetches origin/main and diffs it with its own
-checkout's HEAD on WATCH: the daemon's code and the gate script it runs
-from its checkout. When they differ:
-  1. local-ci holds new launches (the running run uses the checkout's
-     local-ci.sh, which bash reads as it goes: never replaced under it);
-  2. once no local-ci run is left, the checkout moves to origin/main
-     (detached; refused, with an event, when tracked files are modified);
-  3. the store is flushed, the broker stopped, and the process re-execs
+checkout's HEAD on WATCH: the daemon's code and the lock script. When they
+differ:
+  1. the checkout moves to origin/main (detached; refused, with an event,
+     when tracked files are modified);
+  2. the store is flushed, the broker stopped, and the process re-execs
      itself with the same arguments. State is on disk; agents still running
      are adopted by the new daemon (Orchestrator.adopt_runs).
 """
@@ -17,8 +15,7 @@ import os
 import subprocess
 import sys
 
-WATCH = ("tools/harness", "tools/orchestrator.py", "tools/local-ci.sh",
-         "tools/build-slot.sh")
+WATCH = ("tools/harness", "tools/orchestrator.py", "tools/build-slot.sh")
 CHECK_S = 300
 CODE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -63,15 +60,6 @@ class SelfUpdate:
         return [f for f in r.stdout.splitlines() if f] if not r.returncode \
             else []
 
-    def _gate_busy(self):
-        ci = getattr(self.o, "localci", None)
-        return bool(ci and self.o.cfg.local_ci and ci._running())
-
-    def _hold(self, why):
-        ci = getattr(self.o, "localci", None)
-        if ci is not None:
-            ci.hold = why
-
     def update_checkout(self):
         """Moves the checkout to origin/main; False (and one event per
         target) when tracked files are modified or the checkout fails."""
@@ -102,14 +90,10 @@ class SelfUpdate:
             self.pending = self.changed()
             if not self.pending:
                 return False
-            self._hold("self-update: " + " ".join(self.pending)[:120])
             self.o.store.event("daemon", "self_update_pending",
                                " ".join(self.pending)[:200])
-        if self._gate_busy():
-            return False
         if not self.update_checkout():
             self.pending = []
-            self._hold(None)
             return False
         return True
 

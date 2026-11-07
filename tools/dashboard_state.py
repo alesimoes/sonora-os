@@ -6,7 +6,6 @@ import threading
 import time
 
 from dashboard_agents import read_agents, stamp_done
-from dashboard_buildtime import build_time
 from dashboard_disk import disk_view
 from dashboard_github import read_merged, read_prs
 from dashboard_machine import read_containers, read_lock, read_watchers
@@ -55,11 +54,6 @@ def refresh_once(agents_file, gh, progress):
     containers, watchers = read_containers(), read_watchers()
     lk = read_lock(labels)
     status = read_orchestrator()
-    try:
-        bt = build_time(status)
-    except Exception as e:
-        bt = None
-        errors.append("build time: %s" % e)
     if time.time() - progress["at"] > PROGRESS_EVERY_S:
         try:
             progress["value"] = read_progress()
@@ -70,7 +64,7 @@ def refresh_once(agents_file, gh, progress):
     with lock:
         state.update(updated=int(time.time()), progress=progress["value"], prs=gh.prs, watchers=watchers,
                      containers=containers, merged=gh.merged, usage=read_usage(), orchestrator=orch,
-                     coordinator=read_coordinator(), lock=lk, buildtime=bt, disk=disk_view())
+                     coordinator=read_coordinator(), lock=lk, buildtime=None, disk=disk_view())
     agents = read_agents(labels, containers, lk)
     with lock:
         state.update(agents=agents, errors=errors)

@@ -1,6 +1,6 @@
-"""Four orchestrator known bugs (2026-11-06): stale batch of merged PRs,
-status.json replace under a reader, build-slot lock location, git moves in
-the daemon's checkout."""
+"""Orchestrator known bugs (2026-11-06): status.json replace under a
+reader, build-slot lock location, git moves in the daemon's checkout. (The
+stale-batch case left with the local gate, ADR-0061.)"""
 import json
 import os
 import shutil
@@ -10,79 +10,7 @@ import unittest
 from unittest import mock
 
 import support  # noqa: F401  (sets sys.path)
-from harness import gitguard, launcher, localci, localci_cancel, scheduler, status
-from test_localci import Clock, Store
-
-
-class StaleBatch(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.tmp, True)
-        forge = types.SimpleNamespace(set_status=lambda *a: None)
-        o = types.SimpleNamespace(root=self.tmp, store=Store(), forge=forge,
-                                  cfg=types.SimpleNamespace(local_ci_slots=1))
-        self.ci = localci.LocalCI(o, Clock())
-        self.ci._checkout = lambda wt, heads: (None, [], list(heads))
-        self.killed = []
-        for target, fn in (("kill_tree", self.killed.append),):
-            p = mock.patch.object(localci_cancel, target, fn)
-            p.start()
-            self.addCleanup(p.stop)
-        p = mock.patch.object(localci.subprocess, "Popen",
-                              return_value=types.SimpleNamespace(pid=4242))
-        p.start()
-        self.addCleanup(p.stop)
-
-    def running_batch(self, *heads):
-        for h in heads:
-            self.ci.start(h)
-        self.ci.clock.t += localci.BATCH_SETTLE_S + 1
-        self.ci.poll()
-        return next(k for k, _ in self.ci._running())
-
-    def test_running_batch_of_merged_prs_is_cancelled_and_killed(self):
-        key = self.running_batch("a1", "b2")
-        self.ci.prune(lambda h: True)
-        self.assertEqual(self.killed, [4242])
-        for k in (key, "a1", "b2"):
-            self.assertEqual(self.ci.result(k)["state"], "cancelled")
-        self.assertEqual(self.ci._running(), [])
-        d = self.ci.result(key)["dir"]
-        summary = open(os.path.join(d, "summary")).read()
-        self.assertFalse(localci.passed(0, summary))
-        self.assertFalse(localci.passed(int(open(os.path.join(d, "rc")).read()),
-                                        summary))
-
-    def test_batch_with_one_gone_head_is_cancelled_and_the_rest_requeued(self):
-        # 2026-11-07: a batch kept building a merged PR's head for ~5 h. Its
-        # candidate merges a head nobody will merge, so it is stopped now and
-        # the live heads are built again, first, without it.
-        key = self.running_batch("a1", "b2")
-        self.ci.prune(lambda h: h == "a1")
-        self.assertEqual(self.killed, [4242])
-        self.assertEqual(self.ci.result(key)["state"], "cancelled")
-        self.assertEqual(self.ci.result("a1")["state"], "cancelled")
-        self.assertEqual(self.ci._queue("groups"), [["b2"]])
-        self.assertEqual(self.ci.result("b2")["state"], "running")
-        self.assertTrue(self.ci.result("b2")["queued"])
-        self.ci.poll()
-        (k2, r2), = self.ci._running()
-        self.assertEqual(r2["heads"], ["b2"])
-
-    def test_bisect_group_loses_only_its_gone_heads(self):
-        self.ci._set_queue("groups", [["a1", "b2"], ["c3"]])
-        self.ci.prune(lambda h: h == "a1")
-        self.assertEqual(self.ci._queue("groups"), [["b2"], ["c3"]])
-
-    def test_queued_heads_of_merged_prs_leave_the_queue(self):
-        self.ci.start("a1")
-        self.ci.start("b2")
-        self.ci._set_queue("groups", [["c3", "a1"], ["c3"]])
-        self.ci.prune(lambda h: h in ("a1", "c3"))
-        self.assertEqual([e["head"] for e in self.ci._queue("pool")], ["b2"])
-        self.assertEqual(self.ci._queue("groups"), [])
-        self.assertEqual(self.ci.result("a1")["state"], "cancelled")
-        self.assertEqual(self.ci.result("b2")["state"], "running")
+from harness import gitguard, launcher, scheduler, status
 
 
 class StatusWrite(unittest.TestCase):
