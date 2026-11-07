@@ -190,6 +190,107 @@ int test_usb_units_stay_usb() {
     return 0;
 }
 
+// Two UMC1820s as pw-jack 1.4.2 names them: one client, the second node's
+// ports suffixed with their global ids, handed out in creation order. So
+// which unit is suffixed can change between boots.
+std::vector<std::string> two_umcs(const char* suffix) {
+    std::vector<std::string> names;
+    for (int i = 17; i >= 0; --i) {
+        names.push_back("UMC1820 Pro:capture_AUX" + std::to_string(i));
+        names.push_back("UMC1820 Pro:capture_AUX" + std::to_string(i) + suffix);
+    }
+    return names;
+}
+
+// The key alsa_card_unit() gives: serial, then bus path. `a_first` says
+// whether unit A, serial "A", got the bare names this boot.
+std::string unit_of(const std::string& name, bool a_first) {
+    const bool suffixed = name.find('-') != std::string::npos;
+    const bool is_a = suffixed != a_first;
+    return is_a ? std::string("A\x01" "1-4:1.0") : std::string("B\x01" "1-3:1.0");
+}
+
+// Each unit is its own device, numbered from channel 0, and the unit keeps
+// its device name and channel order whichever of them enumerated first: the
+// saved --device "UMC1820 Pro (2)" is unit B on every boot.
+int test_two_units_keep_their_names_across_boots() {
+    for (const bool a_first : {true, false}) {
+        const char* suffix = a_first ? "-48" : "-112";
+        const std::vector<PortInfo> ports = describe_ports(
+            two_umcs(suffix), nullptr,
+            [a_first](const std::string& n) { return unit_of(n, a_first); });
+        CHECK(ports.size() == 36);
+        for (uint32_t k = 0; k < 18; ++k) {
+            const PortInfo& a = ports[k];
+            const PortInfo& b = ports[18 + k];
+            CHECK(a.device == "UMC1820 Pro");
+            CHECK(b.device == "UMC1820 Pro (2)");
+            CHECK(a.channel == k && b.channel == k);
+            CHECK(unit_of(a.name, a_first)[0] == 'A');
+            CHECK(unit_of(b.name, a_first)[0] == 'B');
+            const std::string aux = "UMC1820 Pro:capture_AUX" + std::to_string(k);
+            CHECK(a.name == (a_first ? aux : aux + suffix));
+            CHECK(b.name == (a_first ? aux + suffix : aux));
+        }
+    }
+    return 0;
+}
+
+// With two interfaces and no --device, the default policy names both and
+// records from neither; named, "(2)" selects unit B's ports and no other.
+int test_two_keyed_units_and_no_name_is_refused() {
+    const std::vector<PortInfo> ports = describe_ports(
+        two_umcs("-48"), [](const std::string&) { return true; },
+        [](const std::string& n) { return unit_of(n, false); });
+    std::vector<PortInfo> chosen;
+    std::string error;
+    CHECK(!sonora::backend::select_device(ports, "", chosen, error));
+    CHECK(error.find("\"UMC1820 Pro\"") != std::string::npos);
+    CHECK(error.find("\"UMC1820 Pro (2)\"") != std::string::npos);
+    CHECK(sonora::backend::select_device(ports, "UMC1820 Pro (2)", chosen, error));
+    CHECK(chosen.size() == 18);
+    for (const PortInfo& p : chosen) CHECK(unit_of(p.name, false)[0] == 'B');
+    return 0;
+}
+
+// Ports with no key (a card whose sysfs device could not be read) keep the
+// suffix split, ranked after the keyed units; a client with one keyed unit
+// keeps its bare name; and a key never touches another client.
+int test_keyless_units_follow_the_keyed_ones() {
+    const std::vector<PortInfo> ports = describe_ports(
+        {"Dup Pro:capture_AUX0", "Dup Pro:capture_AUX0-48", "Dup Pro:capture_AUX0-70",
+         "Solo:capture_AUX1", "Solo:capture_AUX0"},
+        nullptr, [](const std::string& n) {
+            if (n == "Dup Pro:capture_AUX0-70") return std::string("Z\x01" "1-2:1.0");
+            if (n.rfind("Solo", 0) == 0) return std::string("S\x01" "1-5:1.0");
+            return std::string();
+        });
+    CHECK(ports.size() == 5);
+    CHECK(ports[0].device == "Dup Pro" && ports[0].name == "Dup Pro:capture_AUX0-70");
+    CHECK(ports[1].device == "Dup Pro (2)" && ports[1].name == "Dup Pro:capture_AUX0");
+    CHECK(ports[2].device == "Dup Pro (3)" && ports[2].name == "Dup Pro:capture_AUX0-48");
+    CHECK(ports[3].device == "Solo" && ports[3].channel == 0);
+    CHECK(ports[4].device == "Solo" && ports[4].channel == 1);
+    return 0;
+}
+
+// One key across both pw-jack suffix forms is one unit: the key, not the
+// suffix, says what belongs together.
+int test_one_key_is_one_unit_whatever_the_suffix() {
+    const std::vector<PortInfo> ports = describe_ports(
+        {"Dup Pro:capture_AUX0", "Dup Pro:capture_AUX1-48", "Dup Pro-70:capture_AUX0"},
+        nullptr, [](const std::string& n) {
+            return n == "Dup Pro-70:capture_AUX0" ? std::string("B\x01" "1-3:1.0")
+                                                  : std::string("A\x01" "1-4:1.0");
+        });
+    CHECK(ports.size() == 3);
+    CHECK(ports[0].device == "Dup Pro" && ports[0].name == "Dup Pro:capture_AUX0");
+    CHECK(ports[1].device == "Dup Pro" && ports[1].name == "Dup Pro:capture_AUX1-48");
+    CHECK(ports[1].channel == 1);
+    CHECK(ports[2].device == "Dup Pro (2)" && ports[2].channel == 0);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -203,6 +304,10 @@ int main() {
     if (test_usb_units_stay_usb() != 0) return 1;
     if (test_client_suffix_is_a_unit_too() != 0) return 1;
     if (test_both_suffix_forms() != 0) return 1;
+    if (test_two_units_keep_their_names_across_boots() != 0) return 1;
+    if (test_two_keyed_units_and_no_name_is_refused() != 0) return 1;
+    if (test_keyless_units_follow_the_keyed_ones() != 0) return 1;
+    if (test_one_key_is_one_unit_whatever_the_suffix() != 0) return 1;
     std::printf("test_port_devices: ok\n");
     return 0;
 }

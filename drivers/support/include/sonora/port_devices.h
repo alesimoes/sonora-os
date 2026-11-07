@@ -112,6 +112,44 @@ inline std::vector<PortUnit> port_units(const std::vector<std::string>& names) {
     return out;
 }
 
+// Renumbers `units` so that, within each client, a unit's number follows its
+// key and not the server's creation order: ports with one key are one unit
+// whatever suffix they came with, keyed units rank by natural order of the
+// key, and ports with no key keep their suffix units after the keyed ones.
+// A client left with one unit keeps number 0, hence its bare name.
+inline void rank_units_by_key(const std::vector<std::string>& names,
+                              const std::function<std::string(const std::string&)>& unit,
+                              std::vector<PortUnit>& units) {
+    struct Group {
+        std::string key;    // empty for a keyless unit
+        uint32_t suffix = 0;  // port_units' number, for the keyless ones
+    };
+    const auto group_less = [](const Group& a, const Group& b) {
+        if (a.key.empty() != b.key.empty()) return !a.key.empty();
+        if (!a.key.empty()) return natural_less(a.key, b.key);
+        return a.suffix < b.suffix;
+    };
+    const auto same_group = [](const Group& a, const Group& b) {
+        return a.key == b.key && (!a.key.empty() || a.suffix == b.suffix);
+    };
+    std::map<std::string, std::vector<Group>> groups_of;  // client base -> its units
+    std::vector<Group> group(names.size());
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        group[i] = {unit(names[i]), units[i].unit};
+        std::vector<Group>& groups = groups_of[units[i].base];
+        bool seen = false;
+        for (const Group& g : groups) seen = seen || same_group(g, group[i]);
+        if (!seen) groups.push_back(group[i]);
+    }
+    for (auto& [base, groups] : groups_of) std::sort(groups.begin(), groups.end(), group_less);
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        const std::vector<Group>& groups = groups_of[units[i].base];
+        for (std::size_t k = 0; k < groups.size(); ++k) {
+            if (same_group(groups[k], group[i])) units[i].unit = static_cast<uint32_t>(k);
+        }
+    }
+}
+
 // Turns full "device:port" names into PortInfo: grouped by device, devices
 // in natural order, and channels numbered from 0 within each device. The
 // device is everything before the first ':', the JACK client part, except
@@ -119,14 +157,24 @@ inline std::vector<PortUnit> port_units(const std::vector<std::string>& names) {
 // "<client> (2)", "(3)", ..., whichever of pipewire-jack's two suffixes it
 // came with: left as one, its channels would interleave with the first
 // unit's and a track would record the other unit's input with nothing
-// looking wrong. Which physical unit is "(2)" follows the order
-// the server created them in, so it can change from boot to boot; the
-// default policy refuses two USB devices anyway (select_device). `usb` says,
-// by port name, whether the port is on a USB device; without it none is.
+// looking wrong. `usb` says, by port name, whether the port is on a USB
+// device; without it none is.
+//
+// Which physical unit is "(2)" follows the order the server created them
+// in, so it would change from boot to boot, and the device name the operator
+// saved (--device, the device setting file) would then name the other unit.
+// `unit` fixes that: per port, a key that names its hardware unit the same
+// way on every boot (alsa_card_unit(): serial, then bus path), or empty when
+// the backend cannot tell. Within a client the keyed units are ranked by
+// key, and the units with no key after them in suffix order, so a unit keeps
+// its name whichever of them the server enumerated first. The port names
+// themselves are left as the server gave them.
 inline std::vector<backend::PortInfo> describe_ports(
     std::vector<std::string> names,
-    const std::function<bool(const std::string&)>& usb = nullptr) {
-    const std::vector<PortUnit> units = port_units(names);
+    const std::function<bool(const std::string&)>& usb = nullptr,
+    const std::function<std::string(const std::string&)>& unit = nullptr) {
+    std::vector<PortUnit> units = port_units(names);
+    if (unit) rank_units_by_key(names, unit, units);
     std::vector<std::pair<std::string, std::string>> named;  // device, port
     named.reserve(names.size());
     for (std::size_t i = 0; i < names.size(); ++i) {
