@@ -14,6 +14,8 @@ import json
 import os
 
 SECTIONS = ("features", "tasks", "runs")
+# Store._sig while it loads: a save then (quarantine) writes what it read.
+LOADING = "loading"
 
 
 def signature(path):
@@ -60,8 +62,9 @@ def merge_into(mine, theirs):
 
 def merge_external(store):
     """Called by Store._save: keeps another writer's additions."""
+    mine = getattr(store, "_sig", None)
     sig = signature(store.path)
-    if sig is None or sig == getattr(store, "_sig", None):
+    if mine == LOADING or sig is None or sig == mine:
         return 0
     try:
         with open(store.path, encoding="utf-8") as f:

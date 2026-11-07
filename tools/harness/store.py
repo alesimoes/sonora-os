@@ -151,7 +151,7 @@ class Store:
             self._dir, os.path.splitext(os.path.basename(self.path))[0]
             + ".quarantine.json")
         self._d = _empty()
-        self._sig = None
+        self._sig = store_guard.LOADING   # the file is the source: no merge
         self._load()
         self._sig = store_guard.signature(self.path)
 
