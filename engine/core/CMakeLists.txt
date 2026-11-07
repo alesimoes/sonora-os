@@ -104,6 +104,11 @@ add_test(NAME latency_probe COMMAND test_latency_probe)
 add_executable(test_punch_points tests/test_punch_points.cpp)
 target_link_libraries(test_punch_points PRIVATE sonora_core)
 add_test(NAME punch_points COMMAND test_punch_points)
+# Wall-clock deadline (a poll with a timeout): alone under `ctest -j`, and
+# one at a time under the sanitizers (tools/local-ci.sh, label timing),
+# where it flaked beside the other tests (2026-11-07).
+set_tests_properties(punch_points PROPERTIES RUN_SERIAL TRUE)
+set_property(TEST punch_points APPEND PROPERTY LABELS timing)
 
 add_executable(test_heap_counter tests/test_heap_counter.cpp)
 target_link_libraries(test_heap_counter PRIVATE sonora_core)
@@ -221,6 +226,11 @@ if(UNIX)
   add_executable(test_take_kill tests/posix/test_take_kill.cpp)
   target_link_libraries(test_take_kill PRIVATE sonora_core sonora_audiofile Threads::Threads)
   add_test(NAME take_kill COMMAND test_take_kill)
+  # Wall-clock deadline (a poll with a timeout): alone under `ctest -j`, and
+  # one at a time under the sanitizers (tools/local-ci.sh, label timing),
+  # where it flaked beside the other tests (2026-11-07).
+  set_tests_properties(take_kill PROPERTIES RUN_SERIAL TRUE)
+  set_property(TEST take_kill APPEND PROPERTY LABELS timing)
 endif()
 # engine.record.direct_io: the disk thread's write path and wake, measured by
 # hand on the medium (brain/research/disk-write-path.md). Built with the

@@ -30,8 +30,13 @@
 #   os-image       iso/, audio-stack/            os (tools/build-iso.sh, then the
 #                                                QEMU tests), quantum (audio-stack/)
 #   harness/docs   tools/harness, .claude,       nothing heavy
-#                  planning, brain, docs, *.md, .github
-# A build script, Dockerfile or this script runs the three Sonora contexts.
+#                  planning, brain, docs, *.md, .github, tools/orchestrator.py,
+#                  tools/dashboard*, this script and tools/build-slot.sh (the
+#                  daemon runs its own copy of both; GitHub runs their tests)
+# A build or test script, or a Dockerfile, runs only the steps that call it
+# (owner, 2026-11-07: a 1-line shell fix paid all three Sonora contexts,
+# 2.5-4 h); the table is "which steps a script serves" below. One that is not
+# in it still runs the three Sonora contexts.
 #
 # --full is the whole Sonora software: all three Sonora contexts, every test
 # (slow ones included), ASan, and TSan including the plugins. The os-image
@@ -49,6 +54,18 @@
 # Each step's output goes to $SONORA_LOCAL_CI_DIR/<step>.log (default
 # .local-ci/ in the checkout); the summary on stdout is one line per step.
 # Exit 0 only when every step passed.
+#
+# A red step is run once more before it counts (2026-11-07: about half of 24
+# gate runs were red, each on a different load-sensitive test, and every red
+# batch was bisected, ~16 h of extra gates in two days). Green the second
+# time: the step passes, the first log stays as <step>.first.log, and the
+# failed tests go to $SONORA_LOCAL_CI_DIR/flakes as `step=S tests=A,B` for
+# the orchestrator to report. A build error is not rerun: it is not a flake.
+# SONORA_LOCAL_CI_RERUN=0 turns the rerun off (a developer bisecting by hand).
+#
+# Per-step results (from #464): after each step, <step>.status holds one
+# line `state=running|pass|fail seconds=N wait=W sha=HEAD`; W is the time
+# spent waiting for the machine lock, kept apart from the step's own time.
 set -uo pipefail
 
 # The orchestrator runs its own copy of this script on another checkout
@@ -62,6 +79,7 @@ DRY=0
 OS_ONLY=0
 WITH_OS=0
 STEP=""
+ARGS=("$@")
 while (($#)); do
   case "$1" in
     --full) FULL=1 ;;
@@ -93,6 +111,10 @@ mkdir -p "$OUT"
 c_pluginhost=0 c_ui=0 c_plugins=0 c_engine=0 c_os=0 c_quantum=0 bwf=0 portable=0
 LABELS=" " fullsuite=0
 lab() { local l; for l; do [[ "$LABELS" == *" $l "* ]] || LABELS+="$l "; done; }
+# Steps asked for by name: a script's change runs the steps that call it.
+WANT=" "
+want() { local w; for w; do [[ "$WANT" == *" $w "* ]] || WANT+="$w "; done; }
+wanted() { [[ "$WANT" == *" $1 "* ]]; }
 sonora() { c_pluginhost=1 c_ui=1 c_plugins=1 c_engine=1 portable=1 bwf=1 fullsuite=1; }
 if ((OS_ONLY)); then
   c_os=1 FULL=0
@@ -131,11 +153,26 @@ else
       common/*) c_engine=1 portable=1 fullsuite=1 ;;
       # the Windows build alone
       tools/*.ps1) portable=1 ;;
-      # build scripts, images and this script touch every Sonora context
-      tools/build-*|tools/test-engine-docker.sh|tools/test-bwf-interop*.sh) sonora ;;
-      tools/test-quantum-pin.sh|tools/rtsan-*|tools/failed-take-quit.py|tools/crash-recovery-kill.py) sonora ;;
-      tools/*-entrypoint.sh|tools/verify-recording.py|tools/local-ci.sh) sonora ;;
-      tools/Dockerfile*|tools/*.cmake|tools/*.supp) sonora ;;
+      # --- which steps a script serves: a change to it runs those steps only.
+      # The daemon judges with its own copy of these two; GitHub tests them.
+      tools/local-ci.sh|tools/build-slot.sh) ;;
+      # images of tests that run on GitHub, not here
+      tools/Dockerfile.labwc*|tools/Dockerfile.systemd-test|tools/Dockerfile.yabridge) ;;
+      tools/Dockerfile.livebuild|tools/Dockerfile.qemu|tools/Dockerfile.usbtest) c_os=1 ;;
+      tools/build-ui.sh|tools/build-ui-entrypoint.sh|tools/Dockerfile.ui) want tree; fullsuite=1 ;;
+      tools/failed-take-quit.py|tools/crash-recovery-kill.py) want tree engine-scripts; lab app ;;
+      tools/build-engine.sh) want record bwf ;;
+      tools/Dockerfile.build) want tsan record bwf ;;
+      tools/build-plugins.sh|tools/Dockerfile.plugins) want plugins pluginhost ;;
+      tools/package-plugins.sh) want plugins ;;
+      tools/build-rtsan.sh|tools/rtsan-*|tools/rtsan.supp|tools/Dockerfile.rtsan) want rtsan ;;
+      tools/test-engine-docker.sh|tools/test-engine-entrypoint.sh) want record ;;
+      tools/verify-recording.py) want record bwf ;;
+      tools/Dockerfile.runtime) want record quantum bwf ;;
+      tools/test-quantum-pin.sh|tools/test-quantum-entrypoint.sh|tools/jack-quantum-probe.py) want quantum ;;
+      tools/test-bwf-interop*.sh|tools/bwf-interop.py|tools/Dockerfile.bwfreaders) want bwf ;;
+      # a script or image the table does not know: every Sonora context
+      tools/build-*|tools/Dockerfile*|tools/*-entrypoint.sh|tools/*.cmake|tools/*.supp) sonora ;;
       tools/*) ;;
       *) sonora ;;
     esac
@@ -144,30 +181,32 @@ fi
 
 # --- the steps -----------------------------------------------------------------
 steps=()
-if ((c_engine || c_plugins)); then
+if ((c_engine || c_plugins)) || wanted tree; then
   # The whole tree with Qt: every ctest test, engine and plugins included.
   steps+=(tree)
 elif ((c_ui)); then
   # A UI-only change builds the UI and its tests only.
   steps+=(ui)
 fi
-((c_engine)) && steps+=(engine-scripts)
+{ ((c_engine)) || wanted engine-scripts; } && steps+=(engine-scripts)
 # plugins: the package's own build, tests and archive (common/* and
-# plugins/native only); pluginhost: the whole tree with lilv, for the host.
-((c_plugins)) && steps+=(plugins)
-((c_pluginhost)) && steps+=(pluginhost)
+# plugins/native only); pluginhost: the tree with lilv, for the host, and
+# only the tests labelled `plugins` (the tree step runs the others).
+{ ((c_plugins)) || wanted plugins; } && steps+=(plugins)
+{ ((c_pluginhost)) || wanted pluginhost; } && steps+=(pluginhost)
 # TSan: the engine's threads. The plugins' TSan runs on main (--full) only.
-((c_engine || FULL)) && steps+=(tsan)
+{ ((c_engine || FULL)) || wanted tsan; } && steps+=(tsan)
 ((FULL)) && steps+=(asan)
-((c_engine || c_plugins)) && steps+=(rtsan)
-((c_engine)) && steps+=(record)
-((c_quantum)) && steps+=(quantum)
-((c_engine && bwf)) && steps+=(bwf)
+{ ((c_engine || c_plugins)) || wanted rtsan; } && steps+=(rtsan)
+{ ((c_engine)) || wanted record; } && steps+=(record)
+{ ((c_quantum)) || wanted quantum; } && steps+=(quantum)
+{ ((c_engine && bwf)) || wanted bwf; } && steps+=(bwf)
 ((c_os)) && steps+=(os)
 # Windows last: the target is Linux, and a red Linux step skips it.
 ((c_plugins || portable)) && steps+=(windows)
 
 contexts=()
+[[ "$WANT" == " " ]] || contexts+=("scripts:$(echo $WANT | tr ' ' ',')")
 ((c_ui)) && contexts+=(sonora-ui)
 ((c_plugins)) && contexts+=(sonora-plugins)
 ((c_engine)) && contexts+=(sonora-engine)
@@ -190,7 +229,20 @@ else
   export SONORA_CTEST_LABELS SONORA_SKIP_SLOW=1
   filter="-L '$SONORA_CTEST_LABELS' -LE slow"
 fi
+# A run of the orchestrator (SONORA_LOCAL_CI_HOLD_LOCK=1, tools/harness/
+# localci.py: a batch, main's run, a pre-PR run) takes the machine-wide lock
+# once for all its steps (from #455). Released between steps, an agent's
+# build or a lower-priority job slipped in and the next step waited behind
+# it (2026-11-06: a 20-min wait before a 6-min record step; 39 of 130 step
+# logs began "waiting for the heavy lock"). The steps below see
+# SONORA_HEAVY_HELD and do not take it again; each keeps its own timeout.
+# The wait goes to $OUT/lock.wait and the summary, apart from step times.
+if [[ "${SONORA_LOCAL_CI_HOLD_LOCK:-0}" == 1 && -z "${SONORA_HEAVY_HELD:-}" && -z "$STEP" ]] && ((!DRY)); then
+  rm -f "$OUT/lock.wait"
+  SONORA_HEAVY_WAIT_FILE="$OUT/lock.wait" exec "$SELF_DIR/build-slot.sh" bash "$SELF_DIR/local-ci.sh" "${ARGS[@]}"
+fi
 if [[ -z "$STEP" ]]; then
+  [[ "${SONORA_LOCAL_CI_HOLD_LOCK:-0}" == 1 && -s "$OUT/lock.wait" ]] && echo "local-ci: waited $(cat "$OUT/lock.wait") s for the machine lock"
   echo "local-ci: context: ${contexts[*]:-windows-build}"
   echo "local-ci: ${steps[*]}"
   [[ " ${steps[*]} " == *" tree "* || " ${steps[*]} " == *" ui "* ]] && echo "local-ci: ctest filter: $filter"
@@ -198,8 +250,8 @@ fi
 ((DRY)) && exit 0
 
 # One heavy job at a time on the machine, each with every CPU: each step
-# takes the machine-wide lock (tools/build-slot.sh) for itself, so another
-# run's steps can go between ours, and the scripts a step calls see
+# takes the machine-wide lock (tools/build-slot.sh) for itself, unless the
+# whole run already holds it (above), and the scripts a step calls see
 # SONORA_HEAVY_HELD and do not take it again.
 # PRs run the slow DSP tests reduced (one rate, one setting); main runs them
 # in full, in Release and under ASan (what main-full.yml ran on GitHub).
@@ -235,7 +287,12 @@ sanitize() {  # thread | address
       cmake -S . -B /build/t -DCMAKE_BUILD_TYPE=RelWithDebInfo \
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_FLAGS='$flags'
       cmake --build /build/t -j\$(nproc)
-      ctest --test-dir /build/t --output-on-failure --timeout 900 -j\$(nproc) $filter
+      # The tests labelled timing hold a wall-clock deadline: under a
+      # sanitizer's slowdown, beside -j\$(nproc) others, they missed it
+      # (2026-11-07: session_saver, take_kill, control, ...). They run
+      # after the rest, one at a time; every test still runs.
+      ctest --test-dir /build/t --output-on-failure --timeout 900 -j\$(nproc) -LE timing $filter
+      ctest --test-dir /build/t --output-on-failure --timeout 900 -j1 -L timing --no-tests=ignore $filter
       $([[ "$kind" == thread ]] && echo "ctest --test-dir /build/t --output-on-failure --timeout 900 -j\$(nproc) -R ^native_format")"
 }
 
@@ -255,7 +312,11 @@ run_step() {
       pkg_out="$OUT/pkg"
       [[ -z "${SONORA_LOCAL_CI_RELEASE:-}" ]] || pkg_out="$ROOT/dist"
       tools/build-plugins.sh --plugins-only && tools/package-plugins.sh --out "$pkg_out" ;;
-    pluginhost) tools/build-plugins.sh ;;
+    pluginhost)
+      # The tests that need lilv and the real plugins: the host's own
+      # (module label pluginhost) and the engine's against it (plugins).
+      # The tree step already ran every other test of the same commit.
+      tools/build-plugins.sh -L '^(plugins|pluginhost)$' --timeout 900 ${SONORA_SKIP_SLOW:+-LE slow} ;;
     tsan) sanitize thread ;;
     asan) sanitize address ;;
     rtsan) tools/build-rtsan.sh ;;
@@ -297,20 +358,74 @@ if [[ "$(uname -s)" != Linux ]] && docker image inspect sonora-ui:trixie >/dev/n
     >/dev/null 2>&1 || true
 fi
 
+HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+step_status() {  # step state seconds wait
+  printf 'state=%s seconds=%s wait=%s sha=%s\n' "$2" "$3" "$4" "$HEAD_SHA" >"$OUT/$1.status"
+}
+# The tests ctest names as failed in a log, comma-separated.
+failed_tests() {
+  sed -n '/The following tests FAILED:/,/^[^[:space:]]/s/^[[:space:]]*[0-9][0-9]* - \([^ ]*\) .*/\1/p' "$1" |
+    sort -u | paste -sd, -
+}
+# A compile or link error is the code's, never the machine's: not rerun.
+build_error() {
+  grep -Eq '\.(c|cc|cpp|cxx|h|hpp|qml):[0-9]+:([0-9]+:)? (fatal )?error:|undefined reference to|ld returned [0-9]+ exit status|ninja: build stopped|g?make(\[[0-9]+\])?: \*\*\* ' "$1"
+}
+# One run of a step into a log. Adds its own time to STEP_SECS and its wait
+# for the machine lock to STEP_WAIT; returns the step's exit code.
+# A hung test or image build must not hold the machine's lock for good
+# (2026-11-05: playback_fake hung 68 min under TSan, a runtime image build
+# 70 min on apt): each run gets SONORA_STEP_TIMEOUT seconds, 3 h by default.
+run_once() {  # step log
+  local t0=$SECONDS w=0 rc=0
+  rm -f "$OUT/$1.lockwait"
+  SONORA_HEAVY_WAIT_FILE="$OUT/$1.lockwait" timeout "${SONORA_STEP_TIMEOUT:-10800}" \
+    "$SELF_DIR/build-slot.sh" bash "$SELF_DIR/local-ci.sh" --step "$1" >"$2" 2>&1 || rc=$?
+  [[ -f "$OUT/$1.lockwait" ]] && w="$(cat "$OUT/$1.lockwait")"
+  [[ "$w" =~ ^[0-9]+$ ]] || w=0
+  STEP_WAIT=$((STEP_WAIT + w))
+  STEP_SECS=$((STEP_SECS + SECONDS - t0 - w))
+  return "$rc"
+}
+# A step's verdict: one run, and one more when the first was red for a
+# reason that is not a build error nor the step's timeout (124). Sets NOTE.
+judge_step() {  # step
+  local s="$1" rc=0 first
+  NOTE=""
+  rm -f "$OUT/$s.first.log"
+  run_once "$s" "$OUT/$s.log" && return 0 || rc=$?
+  if [[ "${SONORA_LOCAL_CI_RERUN:-1}" != 1 || "$rc" == 124 ]] || build_error "$OUT/$s.log"; then
+    return 1
+  fi
+  mv -f "$OUT/$s.log" "$OUT/$s.first.log"
+  first="$(failed_tests "$OUT/$s.first.log")"
+  echo "rerun $s (red once${first:+: $first})"
+  if run_once "$s" "$OUT/$s.log"; then
+    NOTE=", flaky: green on its rerun"
+    echo "step=$s tests=${first:-unknown} sha=$HEAD_SHA" >>"$OUT/flakes"
+    return 0
+  fi
+  NOTE=", red twice"
+  return 1
+}
+
 failed=()
 for s in "${steps[@]}"; do
   if [[ "$s" == windows ]] && ((${#failed[@]})); then
     echo "skip windows (a Linux step failed)"
     continue
   fi
-  start=$SECONDS
-  # A hung test or image build must not hold the machine's lock for good
-  # (2026-11-05: playback_fake hung 68 min under TSan, a runtime image build
-  # 70 min on apt): each step gets SONORA_STEP_TIMEOUT seconds, 3 h by default.
-  if timeout "${SONORA_STEP_TIMEOUT:-10800}" "$SELF_DIR/build-slot.sh" bash "$SELF_DIR/local-ci.sh" --step "$s" >"$OUT/$s.log" 2>&1; then
-    echo "ok   $s ($((SECONDS - start)) s)"
+  STEP_SECS=0 STEP_WAIT=0
+  step_status "$s" running 0 0
+  if judge_step "$s"; then ok=1; else ok=0; fi
+  waited=""
+  ((STEP_WAIT)) && waited=", +$STEP_WAIT s waiting for the lock"
+  if ((ok)); then
+    step_status "$s" pass "$STEP_SECS" "$STEP_WAIT"
+    echo "ok   $s ($STEP_SECS s$waited$NOTE)"
   else
-    echo "FAIL $s ($((SECONDS - start)) s): $OUT/$s.log"
+    step_status "$s" fail "$STEP_SECS" "$STEP_WAIT"
+    echo "FAIL $s ($STEP_SECS s$waited$NOTE): $OUT/$s.log"
     failed+=("$s")
     # A batch of PRs only needs to know it is red: the orchestrator splits
     # it and reruns the halves, so the steps after the first failure would
