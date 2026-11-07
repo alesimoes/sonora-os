@@ -31,7 +31,8 @@ import time
 
 from . import store_guard
 
-# state -> states it may move to. "blocked" is reachable from everywhere.
+# state -> states it may move to. "blocked" and "closed" (PR closed without
+# merge) are reachable from everywhere; merged and closed are terminal.
 TRANSITIONS = {
     "queued": {"building", "designing"},
     "designing": {"building"},
@@ -42,6 +43,7 @@ TRANSITIONS = {
     "pr_open": {"merged", "ci_fix"},
     "ci_fix": {"pr_open", "ci_fix"},
     "merged": set(),
+    "closed": set(),
     "blocked": {"queued", "building", "qa", "bugfix", "integrating",
                 "pr_open", "ci_fix"},
 }
@@ -500,10 +502,13 @@ class Store:
             if t is None:
                 raise StateError(f"no task {id}")
             old = t["state"]
-            if new_state != "blocked" and new_state not in TRANSITIONS[old]:
+            if new_state not in ("blocked", "closed") \
+                    and new_state not in TRANSITIONS[old]:
                 raise StateError(f"{id}: {old} -> {new_state} not allowed")
-            if new_state == "blocked" and old == "blocked":
+            if new_state == old and new_state in ("blocked", "closed"):
                 return
+            if old in ("merged", "closed"):
+                raise StateError(f"{id}: {old} is terminal")
             fields = {"state": new_state}
             if new_state != old:
                 fields.update(attempts=0, cur_name=None, not_before=0)
@@ -525,7 +530,7 @@ class Store:
         merged). Blocked and merged tasks stay where they are."""
         with self.tx():
             for t in self.feature_tasks(fid):
-                if t["state"] in ("blocked", "merged"):
+                if t["state"] in ("blocked", "merged", "closed"):
                     continue
                 self.advance(t["id"], new_state, note=note)
                 if fields:

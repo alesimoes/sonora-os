@@ -105,7 +105,7 @@ def wake(orch, run):
         orch.store.event(tid, "owner_wake", f"{run['name']}: already running")
         return "running"
     t = orch.store.get_task(tid) or {}
-    if t.get("state") in ("blocked", "merged", None):
+    if t.get("state") in ("blocked", "merged", "closed", None):
         orch.store.event(tid, "owner_wake", f"{run['name']}: task is "
                          f"{t.get('state')}, not relaunched")
         return "not_relaunchable"

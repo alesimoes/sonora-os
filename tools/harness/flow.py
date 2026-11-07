@@ -127,7 +127,7 @@ class Flow:
         info = self.info(fid)
         text = info.get("waits_on") or ""
         for other in self.store.features():
-            if other["id"] == fid or other["state"] == "merged":
+            if other["id"] == fid or other["state"] in ("merged", "closed"):
                 continue
             ids = {other["id"], *self.info(other["id"]).get("backlog_ids", [])}
             if any(i and i in text for i in ids):
@@ -257,7 +257,7 @@ class Flow:
         out = {}
         for f in self.store.features():
             if f["id"] == exclude or f["state"] in ("merged", "blocked",
-                                                    "queued"):
+                                                    "queued", "closed"):
                 continue
             globs = []
             raw = self.store.get_meta(f"planfiles:{f['id']}")
@@ -419,7 +419,7 @@ class Flow:
 
     def _release_holds(self):
         for f in self.store.features():
-            if f["state"] in ("merged", "blocked") or not f["plan_path"]:
+            if f["state"] in ("merged", "blocked", "closed") or not f["plan_path"]:
                 continue
             plan = self.accepted_plan(f["id"])
             if plan is None or self._dep_unmet(plan):

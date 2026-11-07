@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-from . import launcher
+from . import launcher, supervisor_dash
 
 HOST_KIND = "win" if os.name == "nt" else "linux"
 
@@ -137,6 +137,12 @@ class RealSys:
             return None
 
     # -- the owner -----------------------------------------------------
+    def dash_up(self, port):
+        return supervisor_dash.probe(port)
+
+    def dash_start(self, port, repo_root):
+        return supervisor_dash.start(repo_root, port)
+
     def notify(self, title, text):
         try:
             self._notify(title, text)

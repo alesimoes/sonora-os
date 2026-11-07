@@ -257,12 +257,30 @@ class Lifecycle(support.DaemonCase):
         self.assertEqual(len(o.store.events("p", "ci_poll_failed")), 1)
         self.assertEqual(state(o, "p"), "pr_open")
 
-    def test_closed_pr_blocks(self):
+    def test_closed_pr_is_terminal_not_blocked(self):
         o = self.make()
         self.open_feature(o, "p", 100)
         self.forge.prs[100]["state"] = "closed"
         o.tick()
-        self.assertEqual(state(o, "p"), "blocked")
+        self.assertEqual(state(o, "p"), "closed")
+        self.assertEqual(o.store.get_feature("p")["state"], "closed")
+        self.assertEqual(o.store.events("p", "closed")[0]["detail"][:6], "PR #10")
+        self.assertEqual([t for t in o.store.tasks() if t["state"] == "blocked"], [])
+        self.poll_again()
+        o.tick()
+        self.assertEqual(state(o, "p"), "closed")   # terminal: stays
+
+    def test_migrate_blocked_closed_without_merge(self):
+        from harness import closed
+        o = self.make()
+        self.open_feature(o, "p", 100)
+        self.open_feature(o, "q", 101)
+        o._block_feature(o.store.get_feature("p"), "PR #100 closed without merge")
+        o._block_feature(o.store.get_feature("q"), "third bounce: owner decision")
+        self.assertEqual(closed.migrate(o), 1)
+        self.assertEqual(state(o, "p"), "closed")
+        self.assertEqual(state(o, "q"), "blocked")
+        self.assertEqual(closed.migrate(o), 0)
 
     # -- merged and janitor ------------------------------------------------
     def test_merge_and_janitor_every_three_merges(self):

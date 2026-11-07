@@ -23,7 +23,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import (autoadopt, cli, cli_mailbox, daemonlock, dispatch,  # noqa: E402
+from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch,  # noqa: E402
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
@@ -630,7 +630,7 @@ class Orchestrator:
         blocks at once."""
         for x in (self._feature_tasks(t["feature_id"]) if t["feature_id"]
                   else [t]):
-            if x["state"] in ("blocked", "merged"):
+            if x["state"] in ("blocked", "merged", "closed"):
                 continue
             fields = {"escalated": trigger, "not_before": now,
                       "attempts": self.cfg.max_attempts}
@@ -861,7 +861,7 @@ class Orchestrator:
             if st["state"] == "merged":
                 self._merged(f, ts)
             elif st["state"] == "closed":
-                self._block_feature(f, f"PR #{f['pr']} closed without merge")
+                self._close_feature(f, f"PR #{f['pr']} closed without merge")
             elif st["mergeable"] == "no":
                 self._red(f, ts, ["merge-conflict"], "conflict")
             else:
@@ -954,9 +954,12 @@ class Orchestrator:
                 "build dirs, docker images and volumes of ours only. Never "
                 "another project's." % n)
 
+    def _close_feature(self, f, why):
+        closed.close_feature(self, f, why)
+
     def _block_feature(self, f, why):
         ts = [x for x in self._feature_tasks(f["id"])
-              if x["state"] != "merged"]
+              if x["state"] not in ("merged", "closed")]
         for i, x in enumerate(ts):
             if i == 0:
                 self._block(x, why)
@@ -1028,6 +1031,7 @@ class Orchestrator:
             sleep=time.sleep):
         self.broker.start()
         self.adopt_runs()
+        closed.migrate(self)
         n = 0
         restart = False
         try:
