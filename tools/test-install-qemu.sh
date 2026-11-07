@@ -32,8 +32,11 @@ set -euo pipefail
 [[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ISO="$ROOT/iso/sonora.iso"
-WORK="$ROOT/build-qemu/install"
+# shellcheck source=tools/lib/artifacts.sh
+# shellcheck disable=SC1091
+. "$ROOT/tools/lib/artifacts.sh"
+ISO="$SONORA_ISO_DIR/sonora.iso"
+WORK="$SONORA_QEMU_DIR/install"
 MEMORY="${QEMU_MEMORY:-4096}"
 INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-900}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-420}"
@@ -118,7 +121,7 @@ if [[ "$FIRMWARE" == uefi && -z "$OVMF" ]]; then echo "error: no OVMF; use INSTA
 echo "firmware: $FIRMWARE"
 
 # --- the stick's kernel and initrd, and a blank disk ---
-docker run --rm --label org.sonora=1 -v "$(host_path "$ROOT/iso"):/iso:ro" -v "$(host_path "$WORK"):/out" \
+docker run --rm --label org.sonora=1 -v "$(host_path "$SONORA_ISO_DIR"):/iso:ro" -v "$(host_path "$WORK"):/out" \
   sonora-livebuild:trixie bash -lc '
     set -e
     K=$(xorriso -indev /iso/sonora.iso -find /live 2>/dev/null | tr -d "'"'"'" | grep -E "vmlinuz-.*-rt-" | head -1)
@@ -171,7 +174,7 @@ qemu_run() {
     w=/w; fw="$OVMF"
     CONTAINER="sonora-install-qemu-$$-$name"
     runner=(docker run --rm --name "$CONTAINER" --label org.sonora=1 "${KVM_DEV[@]}"
-            -v "$(host_path "$WORK"):/w" -v "$(host_path "$ROOT/iso"):/iso:ro" "$QEMU_IMAGE" qemu-system-x86_64)
+            -v "$(host_path "$WORK"):/w" -v "$(host_path "$SONORA_ISO_DIR"):/iso:ro" "$QEMU_IMAGE" qemu-system-x86_64)
   else
     w="$(host_path "$WORK")"; [[ -z "$OVMF" ]] || fw="$(host_path "$(dirname "$OVMF")")/$(basename "$OVMF")"
     runner=("$QEMU")
@@ -190,7 +193,7 @@ qemu_run() {
   fi
   if [[ "$stick" == 1 ]]; then
     local iso
-    if [[ "$IN_CONTAINER" == 1 ]]; then iso=/iso/sonora.iso; else iso="$(host_path "$ROOT/iso")/sonora.iso"; fi
+    if [[ "$IN_CONTAINER" == 1 ]]; then iso=/iso/sonora.iso; else iso="$(host_path "$SONORA_ISO_DIR")/sonora.iso"; fi
     args+=(-kernel "$w/vmlinuz" -initrd "$w/initrd.img" -append "$APPEND" -cdrom "$iso")
   fi
   echo "--- $name (stick: $stick, up to ${seconds}s) ---"

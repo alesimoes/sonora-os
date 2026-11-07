@@ -11,7 +11,10 @@
 # such lines, so it cannot pass.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG="$ROOT/build-qemu/serial.log"
+# shellcheck source=tools/lib/artifacts.sh
+# shellcheck disable=SC1091
+. "$ROOT/tools/lib/artifacts.sh"
+LOG="$SONORA_QEMU_DIR/serial.log"
 
 # Keep in step with the pc lines in sonora-policycheck (test-image-config does
 # not parse this; the loop below fails loudly on a missing item instead).

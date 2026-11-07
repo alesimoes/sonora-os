@@ -10,7 +10,10 @@
 # pass without testing anything, so this refuses it.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG="$ROOT/build-qemu/serial.log"
+# shellcheck source=tools/lib/artifacts.sh
+# shellcheck disable=SC1091
+. "$ROOT/tools/lib/artifacts.sh"
+LOG="$SONORA_QEMU_DIR/serial.log"
 
 export QEMU_APPEND_EXTRA="sonora.virtualcard sonora.expect_capture=18"
 "$ROOT/tools/test-boot-qemu.sh"

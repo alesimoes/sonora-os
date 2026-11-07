@@ -12,7 +12,23 @@ description: Build the bootable SonoraOS ISO with live-build, and write it to a 
     tools/build-iso.sh
 
 Output: `iso/sonora.iso`. A full build downloads a Debian base and takes tens
-of minutes; the cache in `iso/cache/` makes later builds much faster.
+of minutes; the cache in the `sonora-livebuild-work` volume makes later builds much faster.
+
+## Where the heavy files go
+
+`SONORA_ARTIFACTS_DIR` moves the ISO and stick image (`iso/`), and the QEMU and
+USB-writer test disks and logs (`vm/qemu`, `vm/usb`) to one place, e.g. an
+external drive. Unset, nothing moves. A machine sets it once in the untracked
+`.sonora-local.env` (copy `.sonora-local.env.example`; a worktree falls back to
+the main checkout's file); the environment overrides the file, and
+`SONORA_ISO_DIR`, `SONORA_QEMU_DIR`, `SONORA_USB_DIR` override one each.
+`tools/lib/artifacts.sh` prints the resolved paths.
+
+Only sequential files go there: exFAT has no symlinks, ownership or permission
+bits. The live-build work tree (debootstrap, chroot, package cache) needs a
+real Linux filesystem, so it stays in the Docker volume
+`sonora-livebuild-work` (`SONORA_LB_VOLUME`); a Windows or exFAT bind mount
+fails in debootstrap's tar.
 
 ## Write it to a USB stick
 

@@ -19,7 +19,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ISO="$ROOT/iso/sonora.iso"
+# shellcheck source=tools/lib/artifacts.sh
+# shellcheck disable=SC1091
+. "$ROOT/tools/lib/artifacts.sh"
+ISO="$SONORA_ISO_DIR/sonora.iso"
 IMAGE=sonora-usbtest:trixie
 VOLUME="sonora-stick-work-$(date +%s)-$$"
 PERSIST_MIB=4096
@@ -49,7 +52,7 @@ fi
 
 [[ -f "$ISO" ]] || die "$ISO not found. Run tools/build-iso.sh first."
 if [[ -f "$ISO.sha256" ]]; then
-  (cd "$ROOT/iso" && sha256sum -c --quiet sonora.iso.sha256) \
+  (cd "$SONORA_ISO_DIR" && sha256sum -c --quiet sonora.iso.sha256) \
     || die "$ISO does not match sonora.iso.sha256. Rebuild it: tools/build-iso.sh"
 fi
 command -v docker >/dev/null || die "docker is required."
@@ -61,7 +64,7 @@ docker build -q -t "$IMAGE" --label org.sonora=1 \
 trap 'docker volume rm -f "$VOLUME" >/dev/null 2>&1 || true' EXIT
 docker volume create --label org.sonora=1 "$VOLUME" >/dev/null
 
-rm -f "$ROOT/iso/sonora-stick.img" "$ROOT/iso/sonora-stick.img.sha256" "$ROOT/iso/sonora-stick.img.part"
+rm -f "$SONORA_ISO_DIR/sonora-stick.img" "$SONORA_ISO_DIR/sonora-stick.img.sha256" "$SONORA_ISO_DIR/sonora-stick.img.part"
 
 # --privileged lets the container see every block device of the Docker host
 # (on Docker Desktop, the Linux VM's virtual disks; on a CI runner, the
@@ -77,7 +80,7 @@ rm -f "$ROOT/iso/sonora-stick.img" "$ROOT/iso/sonora-stick.img.sha256" "$ROOT/is
 # image is copied out, under a .part name until it is complete.
 docker run --rm --privileged \
   -v "$(host_path "$ROOT"):/src:ro" \
-  -v "$(host_path "$ROOT/iso"):/out" \
+  -v "$(host_path "$SONORA_ISO_DIR"):/out" \
   -v "$VOLUME:/work" \
   -e PERSIST_MIB="$PERSIST_MIB" \
   "$IMAGE" bash -c '
@@ -85,20 +88,20 @@ set -euo pipefail
 # Docker gives the container a static /dev; the partition nodes write-usb.sh
 # waits for appear only on devtmpfs.
 [[ "$(stat -f -c %T /dev)" == devtmpfs ]] || mount -t devtmpfs devtmpfs /dev
-iso_mib=$(( ($(stat -Lc%s /src/iso/sonora.iso) + 1048575) / 1048576 ))
+iso_mib=$(( ($(stat -Lc%s /out/sonora.iso) + 1048575) / 1048576 ))
 img=/work/stick.img
 truncate -s "$(( iso_mib + PERSIST_MIB ))M" "$img"
 loop="$(losetup -fP --show "$img")"
 trap "losetup -d $loop 2>/dev/null || true" EXIT
-echo ERASE | SONORA_WRITE_USB_TEST_IMAGE="$img" bash /src/tools/write-usb.sh "$loop"
+echo ERASE | SONORA_WRITE_USB_TEST_IMAGE="$img" SONORA_ISO_DIR=/out bash /src/tools/write-usb.sh "$loop"
 losetup -d "$loop"
 trap - EXIT
 sfdisk -d "$img"
 cp "$img" /out/sonora-stick.img.part
 '
 
-mv -f "$ROOT/iso/sonora-stick.img.part" "$ROOT/iso/sonora-stick.img"
-(cd "$ROOT/iso" && sha256sum sonora-stick.img > sonora-stick.img.sha256)
-cat "$ROOT/iso/sonora-stick.img.sha256"
-ls -lh "$ROOT/iso/sonora-stick.img"
+mv -f "$SONORA_ISO_DIR/sonora-stick.img.part" "$SONORA_ISO_DIR/sonora-stick.img"
+(cd "$SONORA_ISO_DIR" && sha256sum sonora-stick.img > sonora-stick.img.sha256)
+cat "$SONORA_ISO_DIR/sonora-stick.img.sha256"
+ls -lh "$SONORA_ISO_DIR/sonora-stick.img"
 echo "built: $ROOT/iso/sonora-stick.img (write it from Windows with tools/write-usb.ps1)"
