@@ -273,7 +273,7 @@ bool valid_date(std::string_view d) {
 }
 
 // Lower-case ASCII alphanumerics only: punctuation and spacing are how a
-// near-variant hides ("JCM-800", "jcm 800").
+// near-variant hides ("ZX-900", "zx 900").
 std::string normalise(std::string_view s) {
     std::string out;
     for (const char ch : s) {

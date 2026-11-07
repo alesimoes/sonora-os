@@ -106,7 +106,7 @@ std::vector<std::string> parse_name_deny(std::string_view text);
 // The policy of ADR-0011 §4.6 and ADR-0069 §3. Returns every refusal, never
 // throws. `deny` holds normalised terms (parse_name_deny); a shipped name
 // (id, name, file.name) is refused when its lower-case alphanumerics contain
-// a term's, so "jcm-800" and "JCM800" match alike. unit.type is not
+// a term's, so "zx-900" and "ZX900" match alike. unit.type is not
 // checked: the card must name the real unit it records.
 std::vector<std::string> validate_card(const CaptureCard& card,
                                        const std::vector<std::string>& deny);
