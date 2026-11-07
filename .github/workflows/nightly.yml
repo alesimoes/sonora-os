@@ -21,6 +21,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The ccache the PRs' micro builds restore (ci.yml "micro"): the whole
+  # tree built in each image, saved under a key the PR runs match by prefix
+  # (restore-keys). Only runs on main (this workflow's ref), so the entry is
+  # visible to every PR and no PR's own save competes with it for the quota.
+  seed-ccache:
+    name: "Seed ccache: sonora-${{ matrix.image }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [build, ui]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the previous seed
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache-micro
+          key: micro-ccache-${{ matrix.image }}-${{ github.run_id }}
+          restore-keys: micro-ccache-${{ matrix.image }}-
+      - name: Get the image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-${{ matrix.image }}
+          dockerfile: tools/Dockerfile.${{ matrix.image }}
+          context: ${{ matrix.image == 'ui' && '.' || 'tools' }}
+          rebuild: 'false'
+      - name: Build the whole tree (compiles only, no tests)
+        env:
+          SONORA_HEAVY_HELD: "1"
+          SONORA_MICRO_BUILD_ONLY: "1"
+          SONORA_CCACHE_DIR: /home/runner/.ccache-micro
+          CCACHE_MAXSIZE: 4G
+        run: |
+          echo CMakeLists.txt > "$RUNNER_TEMP/all-files"
+          tools/micro-build.sh --files-from "$RUNNER_TEMP/all-files" --image "${{ matrix.image }}" --no-rtsan
+      - name: Save the seed
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache-micro
+          key: micro-ccache-${{ matrix.image }}-${{ github.run_id }}
+
   engine:
     name: Engine build and tests
     # In tools/Dockerfile.build, the image tools/build-engine.sh uses: Debian

@@ -10,6 +10,15 @@ differ:
   2. the store is flushed, the broker stopped, and the process re-execs
      itself with the same arguments. State is on disk; agents still running
      are adopted by the new daemon (Orchestrator.adopt_runs).
+
+Bounded wait (2026-11-07: a daemon stayed on old code for over an hour and
+kept launching deleted scripts). Nothing may defer the re-exec for longer
+than max_defer_s (Config.self_update_max_defer_s, default 600) from the
+moment the change is first seen: an optional `defer_reason()` can hold the
+re-exec back, and a dirty checkout blocks the move; once the bound passes
+the checkout is forced to origin/main (the event names what was discarded)
+and the process re-execs. Agent runs are separate processes recorded in
+the store; the new daemon re-attaches to them with adopt_runs.
 """
 import os
 import subprocess
@@ -40,7 +49,7 @@ def reexec(argv, exe=None):
 
 class SelfUpdate:
     def __init__(self, orch, argv, root=None, git=_git, restart=reexec,
-                 release=None):
+                 release=None, max_defer_s=600.0, defer_reason=None):
         self.o = orch
         self.argv = [os.path.abspath(argv[0])] + list(argv[1:])
         self.root = root or CODE_ROOT
@@ -50,6 +59,10 @@ class SelfUpdate:
         self.checked = 0.0
         self.pending = []
         self.blocked = None
+        self.max_defer_s = max_defer_s
+        self.defer_reason = defer_reason or (lambda: None)
+        self.first_seen = None
+        self.now = 0.0
 
     def changed(self):
         """WATCH files that differ between HEAD and origin/main."""
@@ -60,15 +73,24 @@ class SelfUpdate:
         return [f for f in r.stdout.splitlines() if f] if not r.returncode \
             else []
 
+    def overdue(self):
+        return self.first_seen is not None and             self.now - self.first_seen >= self.max_defer_s
+
     def update_checkout(self):
         """Moves the checkout to origin/main; False (and one event per
         target) when tracked files are modified or the checkout fails."""
         target = self.git(["rev-parse", "origin/main"], self.root).stdout.strip()
+        old = self.git(["rev-parse", "HEAD"], self.root).stdout.strip()
         dirty = self.git(["status", "--porcelain", "--untracked-files=no"],
                          self.root).stdout.strip()
-        why = f"tracked files modified: {dirty[:200]}" if dirty else None
+        force = self.overdue()
+        why = f"tracked files modified: {dirty[:200]}"             if dirty and not force else None
+        if dirty and force:
+            self.o.store.event("daemon", "self_update_forced",
+                               f"discarding: {dirty[:200]}")
         if not why:
-            r = self.git(["checkout", "-q", "--detach", "origin/main"],
+            r = self.git(["checkout", "-q", "--detach"]
+                         + (["-f"] if force else []) + ["origin/main"],
                          self.root)
             why = r.stderr.strip()[:200] if r.returncode else None
         if why:
@@ -77,12 +99,13 @@ class SelfUpdate:
             self.blocked = target
             return False
         self.o.store.event("daemon", "self_update",
-                           f"{target[:12]}: " + " ".join(self.pending)[:200])
+                           f"{old[:12]} -> {target[:12]}: " + " ".join(self.pending)[:200])
         return True
 
     def ready(self, now):
         """True when the checkout is on the new main and the process may
         re-exec now."""
+        self.now = now
         if not self.pending:
             if now - self.checked < CHECK_S:
                 return False
@@ -90,10 +113,16 @@ class SelfUpdate:
             self.pending = self.changed()
             if not self.pending:
                 return False
+            self.first_seen = now
             self.o.store.event("daemon", "self_update_pending",
                                " ".join(self.pending)[:200])
+        reason = self.defer_reason()
+        if reason and not self.overdue():
+            return False
         if not self.update_checkout():
-            self.pending = []
+            if not self.overdue():
+                return False   # retried each tick until the bound forces it
+            self.pending, self.first_seen = [], None
             return False
         return True
 

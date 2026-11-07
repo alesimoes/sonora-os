@@ -93,6 +93,7 @@ class Config:
     # ADR-0061: a PR's gate is its GitHub checks (the micro build and its
     # tests); the full build runs nightly on main, and a red run there
     # opens a fix task (harness/nightly.py).
+    self_update_max_defer_s: float = 600.0   # harness/selfupdate bound
     nightly_workflow: str = "nightly.yml"
     nightly_poll_s: float = 900.0
 

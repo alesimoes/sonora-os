@@ -221,5 +221,50 @@ class FileApi(unittest.TestCase):
         self.assertEqual(p["targets"], ["sonora_base", "test_base"])
 
 
+
+
+class UiLibraries(unittest.TestCase):
+    """ui/qt is a stack of domain libraries (core <- edit <- session <- mixer
+    <- qml) behind the INTERFACE target sonora_ui_qt: a change maps to its
+    library, its dependents and the tests that link them, not the whole UI."""
+    UI = [
+        T("sonora_ui_core", "ui/qt", ["ui/qt/src/fader_taper.cpp"]),
+        T("sonora_ui_edit", "ui/qt", ["ui/qt/src/edit_controller.cpp"],
+          ["sonora_ui_core"]),
+        T("sonora_ui_session", "ui/qt", ["ui/qt/src/session_model.cpp"],
+          ["sonora_ui_edit"]),
+        T("sonora_ui_mixer", "ui/qt", ["ui/qt/src/mix_model.cpp"],
+          ["sonora_ui_session"]),
+        T("sonora_ui_qml", "ui/qt", ["ui/qt/qml/MixWindow.qml"],
+          ["sonora_ui_mixer"]),
+        T("sonora_ui_qt", "ui/qt", [], ["sonora_ui_qml"], "INTERFACE_LIBRARY"),
+        T("test_ui_meter", "ui/qt", ["ui/qt/tests/test_meter.cpp"],
+          ["sonora_ui_core"], "EXECUTABLE"),
+        T("test_ui_edit", "ui/qt", ["ui/qt/tests/test_edit.cpp"],
+          ["sonora_ui_session"], "EXECUTABLE"),
+        T("test_ui_mix", "ui/qt", ["ui/qt/tests/test_mix.cpp"],
+          ["sonora_ui_qt"], "EXECUTABLE"),
+    ]
+
+    def names(self, path):
+        return mt.plan([path], self.UI)["targets"]
+
+    def test_a_mixer_file_leaves_the_lower_libraries_and_their_tests_alone(self):
+        got = self.names("ui/qt/src/mix_model.cpp")
+        self.assertEqual(got, ["sonora_ui_mixer", "sonora_ui_qml", "test_ui_mix"])
+
+    def test_a_core_file_rebuilds_the_stack_above_it(self):
+        self.assertEqual(self.names("ui/qt/src/fader_taper.cpp"), [
+            "sonora_ui_core", "sonora_ui_edit", "sonora_ui_mixer", "sonora_ui_qml",
+            "sonora_ui_session", "test_ui_edit", "test_ui_meter", "test_ui_mix"])
+
+    def test_a_qml_file_reaches_only_what_loads_the_resources(self):
+        self.assertEqual(self.names("ui/qt/qml/MixWindow.qml"),
+                         ["sonora_ui_qml", "test_ui_mix"])
+
+    def test_a_test_file_builds_only_its_own_executable(self):
+        self.assertEqual(self.names("ui/qt/tests/test_meter.cpp"), ["test_ui_meter"])
+
+
 if __name__ == "__main__":
     unittest.main()
