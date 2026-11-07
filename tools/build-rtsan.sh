@@ -47,8 +47,13 @@ native_build() {
     # exists is still built and tested.
     mapfile -t defined < <(cmake --build "$build" --target help | sed -n 's/^\.\.\. \([^ ]*\).*/\1/p')
     rtsan_targets=()
+    # An associative array, not `printf | grep -q`: grep -q exits at the first
+    # hit, printf then dies of SIGPIPE and pipefail reports "not defined" for
+    # a target that is (test_active_folder was skipped that way).
+    declare -A is_defined=()
+    for t in "${defined[@]}"; do is_defined["$t"]=1; done
     for t in "${wanted[@]}"; do
-      if printf '%s\n' "${defined[@]}" | grep -qxF -- "$t"; then
+      if [[ -n "${is_defined[$t]:-}" ]]; then
         rtsan_targets+=("$t")
       else
         echo "build-rtsan: skip $t (not defined in this configure)"
