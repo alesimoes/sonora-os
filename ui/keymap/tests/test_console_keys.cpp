@@ -148,7 +148,7 @@ static void test_essentials_on_console() {
     const std::vector<std::string>* record = nullptr;
     for (const auto& g : KeyMap::essential_commands())
         if (std::find(g.begin(), g.end(), "transport.toggle_record") != g.end())
-            record = &g;
+            if (!record) record = &g;  // the start group; the next is stop
     CHECK(record != nullptr);
     if (!record) return;
 
