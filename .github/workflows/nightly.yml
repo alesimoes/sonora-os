@@ -17,8 +17,9 @@ permissions:
   packages: read
 
 concurrency:
-  group: nightly-full
-  cancel-in-progress: true
+  group: nightly-${{ github.ref }}
+  # main's run is never cancelled (a branch dispatch used to cancel it)
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # The ccache the PRs' micro builds restore (ci.yml "micro"): the whole
