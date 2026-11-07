@@ -5,6 +5,6 @@ function chatHtml(c){if(!c)return '';
     <textarea id="chatbox" placeholder="O que você está fazendo?" maxlength="2000"></textarea>
     <div class="chatbtns"><button type="button" onclick="chatSend('ask')">perguntar</button><button type="button" onclick="chatSend('wake')">acordar</button><span class="st" id="chatst">${E(note)}</span></div>`}
 async function chatSend(kind){const box=$('chatbox'),name=detOpen&&detOpen.id,st=$('chatst');
-  const r=await fetch('/api/agent/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:lastChatName,text:box?box.value:''})});
+  const r=await fetch('/api/agent/'+kind,{method:'POST',headers:{'Content-Type':'application/json','X-Dash-Token':DASH_TOKEN},body:JSON.stringify({name:lastChatName,text:box?box.value:''})});
   const j=await r.json();if(r.ok&&kind==='ask'&&box)box.value='';st.textContent=r.ok?'pedido enviado ao daemon':(j.error||r.status);loadDetail()}
 let lastChatName='';

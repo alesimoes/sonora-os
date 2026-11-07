@@ -28,7 +28,8 @@ function repoCard(r){
 
 function renderDisk(s){
   const d=s.disk||{};
-  $('disk').innerHTML=driveCard(d.drive)+dockerCard(d.docker)+repoCard(d.repo);
+  $('disk').innerHTML=driveCard(d.drive)+dockerCard(d.docker)+repoCard(d.repo)
+    +`<div class="dcard"><b>Limpeza <small>tools/clean.sh: só o que é nosso</small></b><div class="dact">${actBtn('ver o que libera','disk.preview',{})}${actBtn('limpar','disk.clean',{},'dng')}${actBtn('só worktrees','disk.clean',{mode:'worktrees'},'dng')}</div></div>`;
   const dr=d.drive;
   $('diskhint').textContent=dr&&dr.ok?bytes(dr.free)+' livres':'';
   $('diskhint').className='hint '+(dr&&dr.ok?dr.level:'')}

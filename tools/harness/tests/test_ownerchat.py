@@ -14,6 +14,7 @@ from http.server import ThreadingHTTPServer
 import support  # noqa: F401  (sets sys.path)
 from harness import ownerchat
 from harness import protocol as P
+from dashboard_actions_http import TOKEN  # noqa: E402
 
 
 class FakeStore:
@@ -167,7 +168,8 @@ class Endpoint(unittest.TestCase):
     def call(self, path, payload=None, ctype="application/json", method=None):
         data = json.dumps(payload).encode() if payload is not None else None
         req = urllib.request.Request(self.url + path, data=data, method=method,
-                                     headers={"Content-Type": ctype} if data else {})
+                                     headers={"Content-Type": ctype,
+                                              "X-Dash-Token": TOKEN} if data else {})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, r.read(), r.headers.get("Content-Type")

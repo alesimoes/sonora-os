@@ -17,7 +17,7 @@ function detHtml(d){
   if(d.kind==='builder')return builderHtml(d);
   if(d.kind==='run'){const r=d.run||{};
     const act=(d.activity||[]).slice().reverse().map(a=>`<div class="act ${E(a.kind)}"><i>${E(a.kind)}</i>${E(a.text)}</div>`).join('')||'<div class="ev">sem atividade registrada ainda</div>';
-    return kv({papel:r.role,estado:r.state,começou:ago(r.started),'último sinal':ago(r.last_beat),fim:r.ended?ago(r.ended)+' (exit '+r.exit+')':''})
+    return (r.ended?'':'<div class="dact">'+runActs(r.name)+'</div>')+kv({papel:r.role,estado:r.state,começou:ago(r.started),'último sinal':ago(r.last_beat),fim:r.ended?ago(r.ended)+' (exit '+r.exit+')':''})
       +'<h4>O que está fazendo (mais recente primeiro)</h4>'+act+taskHtml(d.task)+evHtml(d.events)+chatHtml(d.chat)}
   const f=d.feature||{},tr=d.train;
   return kv({estado:f.state,trilha:f.track,PR:f.pr,branch:f.branch,correções:f.fixes,bloqueio:f.blocked_reason})
@@ -38,7 +38,7 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail();if(e.k
 
 function builderHtml(d){const b=d.builder||{},r=b.running,l=b.last,q=b.queue||{};
   const ids=h=>(h.heads||[]).map((x,i)=>(h.prs&&h.prs[i]?'#'+h.prs[i]+' ':'')+x.slice(0,10)).join('\n');
-  return (r?'<h4>Lote em execução</h4>'+kv({etapa:r.step,'tempo':dur(r.elapsed_s),prioridade:r.priority,logs:r.dir})+`<pre>${E(ids(r))}</pre>`:'<p>Livre: nenhum build pesado rodando.</p>')
+  return (r?'<h4>Lote em execução</h4>'+(r.key?'<div class="dact">'+actBtn('cancelar lote','ci.cancel',{key:r.key},'dng')+'</div>':'')+kv({etapa:r.step,'tempo':dur(r.elapsed_s),prioridade:r.priority,logs:r.dir})+`<pre>${E(ids(r))}</pre>`:'<p>Livre: nenhum build pesado rodando.</p>')
    +(d.log?`<h4>Fim do log da etapa</h4><pre>${E(d.log)}</pre>`:'')
    +'<h4>Fila atrás dele</h4>'+kv({'PRs na fila':(q.open_prs||[]).map(n=>'#'+n),lote:(q.batch||[]).map(x=>x.slice(0,10)),'pré-PR':(q.pre||[]).map(x=>x.slice(0,10)),bisecção:(q.bisect||[]).map(g=>g.map(x=>x.slice(0,7)).join('+'))})
    +(l?'<h4>Último resultado</h4>'+kv({estado:l.state,'terminou':ago(l.ended),resumo:(l.summary||[''])[0],logs:l.dir})+`<pre>${E(ids(l))}</pre>`:'')

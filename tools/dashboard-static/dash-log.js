@@ -18,4 +18,3 @@ function diff(s){
   }else ev('info','painel conectado: '+s.agents.length+' agentes, '+s.prs.length+' PRs');
   gone=gone.filter(g=>Date.now()-g.t<15*60e3);
   prev=cur}
-

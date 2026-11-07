@@ -17,7 +17,7 @@ function renderTech(s){
     const P=o.pools||{};
     $('tpools').innerHTML=Object.keys(P).filter(n=>(P[n].floor||0)>0||(P[n].live||0)>0||paused.includes(n)).map(n=>{const p=P[n],pp=POOL_PT[n]||[n,'AG'];
       const isP=p.paused||p.reason==='paused'||paused.includes(n),fl=p.floor||0,lv=p.live||0;
-      return `<div class="pool ${isP?'paused':lv<fl?'low':''}"><span class="pa">${pixelAvatar(pp[1],false,24,'pool-'+n)}</span><div><b>${E(pp[0])}</b><span>${isP?'pausado':lv+' ativos'+(fl?' · mínimo '+fl:'')}</span></div></div>`}).join('')}
+      return `<div class="pool ${isP?'paused':lv<fl?'low':''}"><span class="pa">${pixelAvatar(pp[1],false,24,'pool-'+n)}</span><div><b>${E(pp[0])}</b><span>${isP?'pausado':lv+' ativos'+(fl?' · mínimo '+fl:'')}</span>${poolActs(n,isP)}</div></div>`}).join('')}
   const w=(o&&o.waits_on_owner)||[];
   $('townerp').hidden=!w.length;
   $('towner').innerHTML=w.length?`<div class="owner"><ul>${w.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||x.question||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`:'';

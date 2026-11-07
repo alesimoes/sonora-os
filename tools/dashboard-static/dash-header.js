@@ -11,4 +11,3 @@ function renderUsage(u){const ses=u.sessions||[];const main=ses.find(x=>/sound/i
   setGauge('gw',u.week?.used_percentage,u.week?.resets_at?'renova em '+until(u.week.resets_at):'');
   setGauge('g5',u.five_hour?.used_percentage,u.five_hour?.resets_at?'renova em '+until(u.five_hour.resets_at):'');
   setGauge('gc',main?.context_pct,main?((main.model||'')+(main.context_tokens?' · '+Math.round(main.context_tokens/1000)+'k':'')):'')}
-

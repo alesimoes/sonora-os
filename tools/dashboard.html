@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="dash-token" content="__DASH_TOKEN__">
 <title>Sonora · painel de trabalho</title>
 <link rel="icon" type="image/svg+xml" href="/static/dash-logo.svg">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
@@ -13,6 +14,7 @@
 <link rel="stylesheet" href="/static/dash-disk.css">
 <link rel="stylesheet" href="/static/dash-tech.css">
 <link rel="stylesheet" href="/static/dash-detail.css">
+<link rel="stylesheet" href="/static/dash-actions.css">
 </head>
 <body>
 <main>
@@ -25,6 +27,7 @@
   </header>
   <p class="err" id="err"></p>
   <div class="sit" id="sit">Carregando...</div>
+  <div class="alerts" id="alerts" hidden></div>
   <h2 class="h2">Agentes</h2>
   <div class="people sm" id="people"></div>
   <div class="pnote" id="pnote"></div>
@@ -32,6 +35,8 @@
   <div class="mach" id="mach"></div>
   <h2 class="h2">Disco <span class="hint" id="diskhint"></span></h2>
   <div class="dgrid" id="disk"></div>
+  <h2 class="h2">Comandos <span class="hint">lista fechada; ações destrutivas pedem confirmação; tudo vai para .harness/dashboard-actions.log</span></h2>
+  <div class="cmds" id="cmds"></div>
   <h2 class="h2">Fluxo de construção <span class="hint" id="prhint"></span></h2>
   <div class="flow" id="flow"></div>
   <details class="tech" id="tech"><summary>Detalhes técnicos <span class="hint">limites do orquestrador, espera do dono, eventos, merges armados, containers</span></summary>
@@ -57,7 +62,9 @@
 <script src="/static/dash-tech.js"></script>
 <script src="/static/dash-detail.js"></script>
 <script src="/static/dash-chat.js"></script>
+<script src="/static/dash-actions.js"></script>
 <script src="/static/dash-main.js"></script>
+<div id="acttoast" class="acttoast" hidden></div>
 <aside id="drawer" aria-label="Detalhes"><div class="dh"><h2 id="dtitle">-</h2><button type="button" onclick="closeDetail()">fechar (Esc)</button></div><div class="db" id="dbody"></div></aside>
 </body>
 </html>

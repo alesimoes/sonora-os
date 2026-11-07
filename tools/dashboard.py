@@ -3,8 +3,10 @@
 
     python tools/dashboard.py [--port 8765] [--agents FILE]
 
-Listens on 127.0.0.1 only. Open http://127.0.0.1:8765/ . Read-only: it runs
-gh, docker, git and ps, and never changes anything.
+Listens on 127.0.0.1 only. Open http://127.0.0.1:8765/ . It reads with gh,
+docker, git and ps; it changes things only through the allowlisted actions of
+dashboard_actions*.py (a per-start token on every POST, confirmation for the
+destructive ones, an audit log in .harness/dashboard-actions.log).
 
 Agent state is inferred, not reported by the agent: a container that mounts the
 agent's worktree means "building/testing"; a file or git change in the last
@@ -19,6 +21,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import dashboard_actions_http as actions
 from dashboard_chat import handle_post
 from dashboard_detail import detail
 from dashboard_links import MOCKUPS_ROUTE, mockup_file, read_links
@@ -35,6 +38,11 @@ class Handler(BaseHTTPRequestHandler):
             with lock:
                 body = json.dumps(dict(state, links=read_links())).encode()
             ctype = "application/json"
+        elif path.startswith("/api/actions"):
+            body, ctype = json.dumps(actions.actions_view()).encode(), "application/json"
+        elif path.startswith("/api/action"):
+            code, obj = actions.job_view((parse_qs(urlparse(path).query).get("id") or [""])[0])
+            return self.reply(code, obj)
         elif path.startswith("/api/detail"):
             q = parse_qs(urlparse(path).query)
             try:
@@ -49,6 +57,7 @@ class Handler(BaseHTTPRequestHandler):
             body, ctype = got
         else:
             body, ctype = page()
+            body = actions.inject_token(body)
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
@@ -72,12 +81,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(403, {"error": "forbidden host"})
         if "application/json" not in (self.headers.get("Content-Type") or ""):
             return self.reply(415, {"error": "send application/json"})
+        if not actions.token_ok(self.headers.get(actions.TOKEN_HEADER)):
+            return self.reply(403, {"error": "missing or wrong token: reload the page"})
         try:
             n = int(self.headers.get("Content-Length") or 0)
             payload = json.loads(self.rfile.read(min(n, MAX_POST)) or b"{}")
         except ValueError:
             return self.reply(400, {"error": "bad JSON"})
-        code, obj = handle_post(self.path.split("?", 1)[0], payload)
+        route = self.path.split("?", 1)[0]
+        code, obj = actions.handle_action(payload) if route == "/api/action" else handle_post(route, payload)
         self.reply(code, obj)
 
     def log_message(self, *a):
