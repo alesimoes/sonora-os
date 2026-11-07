@@ -45,6 +45,9 @@ MEMORY="${QEMU_MEMORY:-4096}"
 KERNEL_BOOT_TIMEOUT="${KERNEL_BOOT_TIMEOUT:-240}"
 BOOTLOADER_SECONDS="${BOOTLOADER_SECONDS:-120}"
 DO_BOOT="${WRITE_USB_BOOT:-1}"
+# shellcheck source=tools/lib/qemu-accel.sh
+# shellcheck disable=SC1091
+. "$ROOT/tools/lib/qemu-accel.sh"
 
 host_path() {
   if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
@@ -194,24 +197,21 @@ else
   done
 fi
 
+# Acceleration and the slow-mode multiplier for TCG hosts: tools/lib/qemu-accel.sh.
 KVM_DEV=()
 if [[ "$IN_CONTAINER" == 1 ]]; then
   # Decided inside the Docker VM, where /dev/kvm is the VM's, not the host's.
-  if docker run --rm --privileged --label org.sonora=1 "$QEMU_IMAGE" test -c /dev/kvm; then
-    KVM_DEV=(--device /dev/kvm)
-    ACCEL=(-accel kvm)
-    echo "accel: kvm (in the Docker VM)"
-  else
-    ACCEL=(-accel tcg)
-    echo "accel: tcg (no /dev/kvm in the Docker VM; expect slow boots)"
-  fi
+  KVM_OK=0
+  if docker run --rm --privileged --label org.sonora=1 "$QEMU_IMAGE" test -c /dev/kvm 2>/dev/null; then KVM_DEV=(--device /dev/kvm); KVM_OK=1; fi
+  qemu_pick_accel container "$KVM_OK"
 elif [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
-  ACCEL=(-accel whpx -accel tcg)
-elif [[ -w /dev/kvm ]]; then
-  ACCEL=(-accel kvm)
+  qemu_pick_accel msys 0
 else
-  ACCEL=(-accel tcg)
+  qemu_pick_accel host 0
 fi
+KERNEL_BOOT_TIMEOUT="$(qemu_scale "$KERNEL_BOOT_TIMEOUT")"
+BOOTLOADER_SECONDS="$(qemu_scale "$BOOTLOADER_SECONDS")"
+SLOW_APPEND="$(qemu_append_slow)"
 
 # A named container, so a boot stopped on the clock can be removed: killing
 # the docker client alone leaves QEMU running in the VM.
@@ -261,7 +261,7 @@ boot() {
     kernel)
       args+=(-device "usb-storage,drive=stick,removable=on"
              -kernel "$w/vmlinuz" -initrd "$w/initrd.img"
-             -append "$SHIPPED_APPEND console=ttyS0,115200 $extra") ;;
+             -append "$SHIPPED_APPEND console=ttyS0,115200${SLOW_APPEND:+ $SLOW_APPEND} $extra") ;;
     uefi)
       # A fresh vars store each time: boot entries a previous run recorded
       # would let the firmware skip the removable-media path being tested.
