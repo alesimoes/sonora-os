@@ -484,7 +484,9 @@ void latency_minimum(Suite& s) {
 // The golden configuration, shared with the host tests (sonora-dsp-measure
 // --host-fixture): the bundles are rendered through Sonora's hosts with it.
 measure::Config multiband_golden_config() {
-    return {{"phase", 0.0f},         {"lookahead", 2.0f},       {"knee", 6.0f},         {"sc_hpf_on", 1.0f},
+    // No "phase" or "lookahead": both reconfigure, and the host fixture sets
+    // such a value only in its reconfigure case (defaults: minimum, 0 ms).
+    return {{"knee", 6.0f},           {"sc_hpf_on", 1.0f},
             {"b1_threshold", -26.0f}, {"b1_ratio", 3.0f},        {"b1_makeup", 2.0f},    {"b2_threshold", -24.0f},
             {"b2_ratio", 2.5f},       {"b3_threshold", -22.0f},  {"b3_ratio", 2.0f},     {"b4_threshold", -20.0f},
             {"b4_ratio", 3.0f},       {"b4_attack", 3.0f},       {"b4_release", 80.0f}};
