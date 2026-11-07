@@ -40,7 +40,20 @@ native_build() {
   # change reaches; the ctest arguments then select their tests. Unset: the
   # whole tree, as main's daily full run wants it.
   if [[ -n "${SONORA_RTSAN_TARGETS:-}" ]]; then
-    read -r -a rtsan_targets <<<"$SONORA_RTSAN_TARGETS"
+    read -r -a wanted <<<"$SONORA_RTSAN_TARGETS"
+    # The RTSan image has no Qt, so ui/qt is not configured and its targets do
+    # not exist here; build what this configure defines, so a UI change does
+    # not fail on "No rule to make target sonora_ui_qt". Every target that
+    # exists is still built and tested.
+    mapfile -t defined < <(cmake --build "$build" --target help | sed -n 's/^\.\.\. \([^ ]*\).*/\1/p')
+    rtsan_targets=()
+    for t in "${wanted[@]}"; do
+      if printf '%s\n' "${defined[@]}" | grep -qxF -- "$t"; then
+        rtsan_targets+=("$t")
+      else
+        echo "build-rtsan: skip $t (not defined in this configure)"
+      fi
+    done
     cmake --build "$build" -j"$(nproc)" --target "${rtsan_targets[@]}"
   else
     cmake --build "$build" -j"$(nproc)"
