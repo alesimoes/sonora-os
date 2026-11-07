@@ -90,10 +90,8 @@ jobs:
 
           # The micro build jobs are named for what they do (owner,
           # 2026-11-07); "Gate" below is the one stable name to require.
-          micro_label=$(printf '%s
-' "$files" | tools/ci-micro-label.sh build)
-          rtsan_label=$(printf '%s
-' "$files" | tools/ci-micro-label.sh rtsan)
+          micro_label=$(printf '%s\n' "$files" | tools/ci-micro-label.sh build)
+          rtsan_label=$(printf '%s\n' "$files" | tools/ci-micro-label.sh rtsan)
           case "$micro_label" in Nothing*) echo "micro_build=false" >> "$GITHUB_OUTPUT" ;;
             *) echo "micro_build=true" >> "$GITHUB_OUTPUT" ;; esac
           echo "micro_label=$micro_label" >> "$GITHUB_OUTPUT"
