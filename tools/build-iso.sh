@@ -7,6 +7,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tools/lib/artifacts.sh
+# shellcheck disable=SC1091
 . "$ROOT/tools/lib/artifacts.sh"
 IMAGE=sonora-livebuild:trixie
 # SONORA_LB_VOLUME: a separate volume, e.g. to time a cold build beside the
