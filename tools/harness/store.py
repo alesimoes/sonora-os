@@ -72,6 +72,7 @@ TASK_COLS = {
     "eng_name": None, "cur_name": None, "wants": "", "not_before": 0,
     "priority": 0, "created": None, "updated": None, "note": "",
     "integrated": 0, "fix_kind": None, "escalated": None, "event": None, "start_from": None,
+    "owner": None, "cause": None,
 }
 RUN_COLS = {
     "id": None, "task_id": None, "role": None, "name": None, "state": None,
@@ -511,7 +512,8 @@ class Store:
                 raise StateError(f"{id}: {old} is terminal")
             fields = {"state": new_state}
             if new_state != old:
-                fields.update(attempts=0, cur_name=None, not_before=0)
+                fields.update(attempts=0, cur_name=None, not_before=0,
+                              owner=None, cause=None)
             if note is not None:
                 fields["note"] = note
             self.set_task(id, **fields)

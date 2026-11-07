@@ -4,7 +4,9 @@ import json
 import os
 import time
 
+from . import blockinfo
 from .run_view import run_view
+from . import blockinfo
 from .scheduler import POOL_OF_KIND
 
 DONE_STATES = ("integrating", "pr_open", "ci_fix", "merged")
@@ -66,8 +68,8 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
             "floor": floor, "live": len(mine),
             "working": sum(1 for r in mine if r["working"]),
             "reason": gaps.get(track), "paused": track in paused}
-    blocked = [{"task": t["id"], "branch": t["branch"], "note": t["note"]}
-               for t in tasks if t["state"] == "blocked"]
+    by_feat = {f["id"]: f for f in store.features()}
+    blocked = blockinfo.blocked_groups(tasks, by_feat)
     feats = []
     for f in store.features():
         mine = [t for t in tasks if t["feature_id"] == f["id"]
@@ -88,9 +90,7 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
             "adr": f["adr_no"], "protocol": f["protocol_no"],
             "partial": bool(f["partial"]), "age": now - f["created"],
             "blocked_reason": why if f["state"] == "blocked" else None})
-    owner = [{"title": f"{t['id']}: {t['note'] or 'blocked'}",
-              "task": t["id"], "branch": t["branch"], "note": t["note"]}
-             for t in tasks if t["state"] == "blocked"]
+    owner = blockinfo.owner_items(tasks, by_feat)
     return {
         "updated": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),
         "updated_ts": now, "mode": mode,

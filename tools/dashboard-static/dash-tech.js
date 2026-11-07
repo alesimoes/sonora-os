@@ -22,6 +22,9 @@ function renderTech(s){
   const w=(o&&o.waits_on_owner)||[];
   $('townerp').hidden=!w.length;
   $('towner').innerHTML=w.length?`<div class="owner"><ul>${w.map(x=>`<li>${E(typeof x==='object'?(x.title||x.text||x.question||JSON.stringify(x)):x)}</li>`).join('')}</ul></div>`:'';
+  const bg=((o&&o.blocked)||[]).filter(g=>g&&g.items);
+  $('tblockp').hidden=!bg.length;
+  $('tblock').innerHTML=bg.map(g=>`<div class="owner"><b>${E(g.label||g.cause)} (${g.items.length})</b><ul>${g.items.map(x=>`<li>${E(x.task)}: ${E(String(x.note||'').slice(0,160))}</li>`).join('')}</ul></div>`).join('');
   $('wcount').textContent=s.watchers.length+' ativos';
   $('ws').innerHTML=s.watchers.map(x=>`<div class="trow"><a class="prn" href="${PRURL}${x.pr}" target="_blank" rel="noopener">PR #${x.pr}</a><span class="tt">espera ficar verde e faz o merge</span><small>pid ${E(x.pid)}</small></div>`).join('')||'<div class="empty">Nenhum merge automático armado.</div>';
   $('ccount').textContent=s.containers.length+' rodando';

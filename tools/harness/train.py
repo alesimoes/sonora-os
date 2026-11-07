@@ -344,7 +344,8 @@ class Train(BundleMixin):
                 and i.get("reruns", 0) >= 2:
             self._save(fid, phase="bloqueado", next="cancelado 3x no mesmo "
                        "head: decisão do owner", **upd)
-            o._block_feature(f, f"PR #{n}: checks cancelled three times")
+            o._block_feature(f, f"PR #{n}: checks cancelled three times",
+                            cause="retry")
             return
         # A real failure never waits for a CI slot: the fixer works locally
         # (it merges main first) and only its push costs a CI run.

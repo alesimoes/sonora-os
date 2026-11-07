@@ -125,14 +125,14 @@ class NightlyGuarantee(Nightly):
         self.assertEqual(len(self.mains(o)), 1)
         self.assertEqual(self.forge.dispatched, [])
 
-    def test_a_bogus_queued_task_of_a_cancelled_run_is_blocked(self):
+    def test_a_bogus_queued_task_of_a_cancelled_run_is_closed(self):
         o = self.make()
         sha = "ffa51121" + "0" * 32
         nightly.open_fix_task(o.store, sha, self.run_(4, "cancelled"), "")
         self.forge.nightly_runs = [self.at(4, "cancelled", 1, sha=sha)]
         o.tick()
         self.assertEqual(o.store.get_task("main-red-ffa51121")["state"],
-                         "blocked")
+                         "closed")
 
     def test_branch_and_pr_runs_never_count(self):
         o = self.make()
