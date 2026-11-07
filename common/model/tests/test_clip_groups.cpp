@@ -189,7 +189,7 @@ int test_codec_window_and_file() {
     Loaded loaded;
     LoadError le;
     CHECK(deserialize(file, loaded, le));
-    CHECK(loaded.file_version == kFormatVersion && kFormatVersion == 24);
+    CHECK(loaded.file_version == kFormatVersion && kFormatVersion == 25);
     CHECK(loaded.snapshot.edit->tracks[0]->playlists[0]->regions ==
           r.h.current().edit->tracks[0]->playlists[0]->regions);
     std::string again;

@@ -45,6 +45,16 @@ std::vector<uint32_t> resolve_outputs(uint32_t tracks, const MixLayout& mix,
     return dest;
 }
 
+// Whether the bus in plan position `i` is an output path the layout places.
+bool is_path(const MixLayout& mix, uint32_t i) {
+    return mix.bus_hardware != nullptr && mix.bus_order != nullptr &&
+           mix.bus_order[i] < mix.bus_count && mix.bus_hardware[mix.bus_order[i]] != kNoHardware;
+}
+
+// A path's return does not feed the BusSum: it is neither another bus's
+// (an index) nor the BusSum's (kNoBus).
+constexpr uint32_t kHardwareBus = 0xFFFFFFFEu;
+
 }  // namespace
 
 GraphSize mix_graph_size(uint32_t tracks, const ChainBinding* chains, const MixLayout& mix) {
@@ -65,6 +75,11 @@ GraphSize mix_graph_size(uint32_t tracks, const ChainBinding* chains, const MixL
     }
     g.nodes += 2 * mix.bus_count;
     g.edges += 2 * mix.bus_count + sends;
+    for (uint32_t i = 0; i < mix.bus_count; ++i) {
+        if (!is_path(mix, i)) continue;
+        ++g.nodes;
+        ++g.edges;
+    }
     return g;
 }
 
@@ -72,7 +87,10 @@ void layout_mix_graph(PlaybackPlan& plan, const ChainBinding* chains, const MixL
     const uint32_t tracks = plan.track_count;
     const uint32_t buses = mix.bus_count;
     const std::vector<uint32_t> pos = bus_positions(mix);
-    const std::vector<uint32_t> dest = resolve_outputs(tracks, mix, pos);
+    std::vector<uint32_t> dest = resolve_outputs(tracks, mix, pos);
+    for (uint32_t i = 0; i < buses; ++i) {
+        if (is_path(mix, i)) dest[tracks + mix.bus_order[i]] = kHardwareBus;
+    }
     std::vector<SendBinding> sends;
     std::vector<uint8_t> has_send(tracks, 0);
     for (uint32_t k = 0; k < mix.send_count; ++k) {
@@ -253,6 +271,25 @@ void layout_mix_graph(PlaybackPlan& plan, const ChainBinding* chains, const MixL
     hw.input_edge_count = 1;
     hw.scratch_buffer = out;
     plan.edges[e++] = PlanEdge{bus, out, 0, kNoDelayLine};
+
+    // After the HardwareOut, so compensate() knows the Master's latency when
+    // it reaches them.
+    for (uint32_t i = 0; i < buses; ++i) {
+        if (!is_path(mix, i)) continue;
+        const uint32_t b = mix.bus_order[i];
+        const uint32_t key = mix.bus_keys != nullptr ? mix.bus_keys[b] : b + 1;
+        PlanNode& p = plan.nodes[n];
+        p = PlanNode{};
+        p.kind = NodeKind::PathOut;
+        p.stable_id = kPathOutIdTag | key;
+        p.first_input_edge = e;
+        p.input_edge_count = 1;
+        p.scratch_buffer = n;
+        p.track = b;
+        p.hardware_out = mix.bus_hardware[b];
+        plan.edges[e++] = PlanEdge{returns[i], n, 0, kNoDelayLine};
+        ++n;
+    }
 }
 
 void layout_track_graph(PlaybackPlan& plan, const ChainBinding* chains) {
@@ -293,9 +330,21 @@ Compensation compensate(PlaybackPlan& plan, uint32_t max_delay_frames, DelayLine
     // An aux bus no send reaches plays silence, and silence needs no delay:
     // its return takes no line from an edge that carries sound.
     std::vector<uint8_t> silent(plan.node_count, 0);
+    uint64_t master_latency = 0;
     for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
         const PlanNode& node = plan.nodes[ni];
         uint64_t max_in = 0;
+        if (node.kind == NodeKind::BusSum) {
+            // The Master waits for the slowest output path too, so that the
+            // Master and every path play the same moment (ADR-0060).
+            for (uint32_t pi = ni + 1; pi < plan.node_count; ++pi) {
+                const PlanNode& path = plan.nodes[pi];
+                if (path.kind != NodeKind::PathOut || path.input_edge_count == 0) continue;
+                const uint32_t from = plan.edges[path.first_input_edge].from_node;
+                if (from < ni) max_in = std::max(max_in, latency[from]);
+            }
+        }
+        if (node.kind == NodeKind::PathOut) max_in = master_latency;
         bool all_silent = true;
         for (uint32_t k = 0; k < node.input_edge_count; ++k) {
             const uint32_t from = plan.edges[node.first_input_edge + k].from_node;
@@ -312,6 +361,7 @@ Compensation compensate(PlaybackPlan& plan, uint32_t max_delay_frames, DelayLine
         }
         latency[ni] = max_in + (node.kind == NodeKind::InsertChain ? node.latency_frames : 0);
         if (node.kind == NodeKind::HardwareOut) {
+            master_latency = latency[ni];
             result.compensation_frames =
                 static_cast<uint32_t>(std::min<uint64_t>(latency[ni], 0xFFFFFFFFu));
         }

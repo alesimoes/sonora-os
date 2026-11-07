@@ -582,6 +582,19 @@ public:
     // The Import Audio browser's model (import_model.h), made on first use.
     Q_INVOKABLE QObject* importer();
     bool openRecordingFolder(const QString& folder, bool discard, std::string& why);
+    // File > New Session (session_new.cpp): an empty session called `name`
+    // with this session's tracks, at this system's sample rate and bit
+    // depth, written to <sessions folder>/<name>/<name>.sonora once the
+    // engine has taken it. Refused, as Open is, while a take is open, while
+    // a save is in hand and over unsaved edits unless `discard`; and for a
+    // name that cannot name a folder or is taken. Returns the refusal,
+    // empty when the session was made.
+    Q_INVOKABLE QString newSession(const QString& name, bool discard);
+    bool makeNewSession(const QString& name, bool discard, std::string& why);
+    // What the New Session dialog offers: {name, where, rates: [{text, on,
+    // why}], depths: [{text, on, why}]}. Only the rate and the depth this
+    // system runs at are `on`; the others say why not.
+    Q_INVOKABLE QVariantMap newSessionChoices() const;
 
     // --- Mix window ---
     Q_INVOKABLE qreal faderPosition(qreal db) const;
@@ -778,6 +791,7 @@ private:
         std::string caution;
     };
     bool finishSave(bool ok, const std::string& message, Written w, std::string& why);
+    QString newSessionRoot() const;
 
     TimelineDocument& doc_;
     const PeakSource& peaks_;

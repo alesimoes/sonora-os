@@ -186,9 +186,12 @@ void SessionModel::saveAfterOpen() {
     after_open_.reset();
     std::string why;
     if (!writeSessionAs(target, why, std::string())) {
+        const bool from_template = making_from_template_;
         making_from_template_ = false;
         emit heldNotice(QStringLiteral("The session ") + target.name +
-                        QStringLiteral(" was not made from the template: ") + q(why) +
+                        (from_template ? QStringLiteral(" was not made from the template: ")
+                                       : QStringLiteral(" was not written: ")) +
+                        q(why) +
                         QStringLiteral(". It is open unsaved; its first save puts it in ") + sessions_dir_);
     }
 }

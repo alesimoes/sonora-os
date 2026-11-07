@@ -357,7 +357,7 @@ int test_fixture_is_canonical() {
     if (!load(text, l, e)) std::fprintf(stderr, "  %s\n", e.text().c_str());
     g_folder.reads = 0;
     CHECK(load(text, l, e));
-    CHECK(l.file_version == kFormatVersion && kFormatVersion == 24);
+    CHECK(l.file_version == kFormatVersion && kFormatVersion == 25);
     CHECK(l.repairs.empty());
     CHECK(l.missing_sequences.empty());
     // Three regions' sequences, each file read once.

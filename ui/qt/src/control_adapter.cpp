@@ -12,6 +12,8 @@ bool ControlAdapter::connect(std::string& error) {
     info_.sample_rate = h.sample_rate;
     info_.buffer_frames = h.buffer_frames;
     info_.track_count = h.track_count;
+    info_.input_count = h.input_count;
+    info_.output_count = h.output_count;
     info_.implemented_commands = h.implemented_commands;
     info_.capabilities = h.capabilities;
     if (probe_) connection_ = probe_();
@@ -124,8 +126,10 @@ void ControlAdapter::poll(std::vector<CommandOutcome>& replies) {
         info_.sample_rate = h.sample_rate;
         info_.buffer_frames = h.buffer_frames;
         info_.track_count = h.track_count;
+        info_.input_count = h.input_count;
+        info_.output_count = h.output_count;
         info_.implemented_commands = h.implemented_commands;
-    info_.capabilities = h.capabilities;
+        info_.capabilities = h.capabilities;
     }
     if (link_sink_) link_sink_(now != 0);
 }
@@ -149,6 +153,7 @@ void ControlAdapter::frame(EngineFrame& out) const {
                      ((s.health_flags & api::kHealthNoInputs) ? kHealthNoInputs : 0u) |
                      ((s.health_flags & api::kHealthTakeFailed) ? kHealthTakeFailed : 0u) |
                      ((s.health_flags & api::kHealthPluginsDisabled) ? kHealthPluginsDisabled : 0u);
+    t.inputs_connected = s.inputs_connected;
     t.compensation_frames = s.compensation_frames;
     t.compensation_shortfall_frames = s.compensation_shortfall_frames;
     t.click = (s.transport_flags & api::kTransportClick) != 0;

@@ -74,7 +74,10 @@ namespace sonora::model {
 // 24 (clip groups and loops, ADR-0052; 21 to 23 are other work's): a region may
 //    carry "clip_group" and "loop", only when it has them. A version 19 file
 //    opens with no groups.
-constexpr std::int64_t kFormatVersion = 24;
+// 25 (ADR-0060, hardware output paths): an aux bus may carry "hardware", the
+//    first of the pair of device outputs it plays on, only when it is a
+//    path. A version 24 file opens with none.
+constexpr std::int64_t kFormatVersion = 25;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

@@ -297,7 +297,8 @@ Session::Session(SessionConfig cfg)
     // Every track with a chain, and every bus: the largest graph a plan can
     // have.
     max_buses_ = pb.max_buses;
-    scratch_buffers_ = graph_nodes(tracks, tracks) + 2 * max_buses_;
+    // An output path adds a sink after its return.
+    scratch_buffers_ = graph_nodes(tracks, tracks) + 3 * max_buses_;
     // The store-to-node index (#68 RT audit N1). A plan has at most one
     // InsertChain node per track.
     max_param_stores_ = pb.max_param_stores;
@@ -1987,10 +1988,11 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
             }
             case NodeKind::BusSum:
             case NodeKind::HardwareOut:
+            case NodeKind::PathOut:
                 break;
         }
 
-        // BusSum and HardwareOut: the sum of their input edges, each
+        // BusSum, HardwareOut and PathOut: the sum of their input edges, each
         // through its delay line when it has a delay.
         std::memset(L, 0, n * sizeof(float));
         std::memset(R, 0, n * sizeof(float));
@@ -1999,6 +2001,16 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
             const uint32_t src = plan.nodes[edge.from_node].scratch_buffer;
             const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
             sum_edge(plan, edge, in, out, n);
+        }
+        if (node.kind == NodeKind::PathOut) {
+            // Straight to the interface: no Master gain, meter or tap.
+            if (node.hardware_out < block.output_count) {
+                std::memcpy(block.outputs[node.hardware_out] + offset, L, n * sizeof(float));
+            }
+            if (node.hardware_out + 1u < block.output_count) {
+                std::memcpy(block.outputs[node.hardware_out + 1u] + offset, R, n * sizeof(float));
+            }
+            continue;
         }
         if (node.kind != NodeKind::HardwareOut) continue;
 
@@ -2710,6 +2722,9 @@ bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
                 break;
             case NodeKind::BusSum:
             case NodeKind::HardwareOut:
+                break;
+            case NodeKind::PathOut:
+                if (node.input_edge_count != 1) return false;
                 break;
             default:
                 return false;

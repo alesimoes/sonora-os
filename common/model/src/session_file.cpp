@@ -648,10 +648,24 @@ bool v19_to_v20(Value& root, std::vector<Repair>&, std::string& error) {
 // Freeze. Nothing is added; the reader refuses the key in an older file.
 bool v22_to_v23(Value&, std::vector<Repair>&, std::string&) { return true; }
 
+// v24 -> v25 (ADR-0060): an aux bus may carry "hardware". A version 24 file
+// that holds it on a bus is refused, as a version 24 reader would refuse it.
+bool v24_to_v25(Value& root, std::vector<Repair>&, std::string& error) {
+    const Value* list = root.find("buses");
+    for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
+        const Value& b = list->items()[i];
+        if (b.is_object() && b.find("hardware") != nullptr) {
+            error = "buses[" + std::to_string(i) + "] has \"hardware\", which version 24 does not define";
+            return false;
+        }
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
      v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
-     v16_to_v17, v17_to_v18, v18_to_v19, v19_to_v20, carried, carried, v22_to_v23, v23_to_v24}};
+     v16_to_v17, v17_to_v18, v18_to_v19, v19_to_v20, carried, carried, v22_to_v23, v23_to_v24, v24_to_v25}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -1875,7 +1889,7 @@ bool read_buses(Reader& rd, const Value& root, EditState& edit, MixState& mix) {
         const std::string p = index_path("buses", i);
         if (!rd.keys(v, p,
                      {"id", "name", "gain_db", "pan", "mute", "solo", "output", "sends",
-                      "automation"})) {
+                      "automation", "hardware"})) {
             return false;
         }
         Bus b;
@@ -1894,6 +1908,17 @@ bool read_buses(Reader& rd, const Value& root, EditState& edit, MixState& mix) {
         if (!rd.flag(v, p, "solo", m.solo)) return false;
         // Whether it names a bus is check_invariants' to say, as a send's.
         if (!rd.id(v, p, "output", b.output)) return false;
+        if (v.find("hardware") != nullptr) {
+            std::uint16_t first = 0;
+            if (!rd.small(v, p, "hardware", first)) return false;
+            if (!rd.checked(first % 2 == 0 && first + 1 < kMaxOutputChannels
+                                ? ""
+                                : "is not the first of a pair of outputs",
+                            v, p + ".hardware", "")) {
+                return false;
+            }
+            b.hardware = first;
+        }
         std::string where;
         if (!rd.checked(detail::bus_mix_problem(m, where), v, p, where)) return false;
         if (!read_sends(rd, v, p, b.sends, mix)) return false;
@@ -2244,6 +2269,7 @@ bool serialize(const Snapshot& s, const WriteInfo& info, std::string& out,
         bv.set("mute", Value::boolean(m.mute));
         bv.set("solo", Value::boolean(m.solo));
         bv.set("output", id_value(b.output));
+        if (b.hardware != kNoHardwareOut) bv.set("hardware", Value::integer(b.hardware));
         Value& sends = bv.set("sends", Value::array());
         for (const Send& sd : b.sends) sends.push(send_value(sd, *s.mix.find_send(sd.id)));
         bv.set("automation", lanes_value(b.automation));

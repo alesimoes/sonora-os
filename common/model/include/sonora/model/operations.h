@@ -569,6 +569,19 @@ struct SetOutput {
     Id output = kMasterOutput;
 };
 
+// --- hardware output paths (ADR-0060) ---------------------------------------
+
+// Undoable: names aux bus `bus` and makes it the output path playing on the
+// device's output pair `first`, `first` + 1 (from 0, even), or an ordinary
+// aux bus again when `first` is kNoHardwareOut. A path's output is the
+// interface, so it leaves any bus it fed. Refused for a pair another path
+// or the Master (SetMonitorBus) already plays on.
+struct SetBusPath {
+    Id bus = 0;
+    std::string name;
+    std::uint16_t first = kNoHardwareOut;
+};
+
 // --- automation (ADR-0027) --------------------------------------------------
 
 // Undoable: replaces the points of `track`'s `param` lane in [from, to)
@@ -661,7 +674,7 @@ using Member =
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
                  EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetGroup,
                  RemoveGroup, SetRegionGain, SetClipGroup, SetRegionSources, SetVca, RemoveVca,
-                 SetVcaMix, SetFolder, RemoveFolder, ShiftRegions>;
+                 SetVcaMix, SetFolder, RemoveFolder, ShiftRegions, SetBusPath>;
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -698,7 +711,7 @@ using Operation =
                  DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
                  EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetGroup,
                  RemoveGroup, SetRegionGain, SetClipGroup, SetRegionSources, SetVca, RemoveVca,
-                 SetVcaMix, SetFolder, RemoveFolder, ShiftRegions, Compound>;
+                 SetVcaMix, SetFolder, RemoveFolder, ShiftRegions, SetBusPath, Compound>;
 
 static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
               "Operation is Member's alternatives and Compound");

@@ -241,6 +241,8 @@ public:
         std::string latency_file;
         LatencyKey latency_key;
         uint32_t latency_outputs = 2;
+        // The outputs the backend was opened with (Hello::output_count).
+        uint32_t output_count = 2;
     };
 
     static constexpr ClientId kFirstClient = 1;

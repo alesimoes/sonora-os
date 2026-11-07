@@ -494,6 +494,9 @@ int main(int argc, char** argv) {
     long input_latency = -1;
     uint32_t probe_output = 0;
     uint32_t probe_input = 0;
+    // The outputs registered, out_1..out_N: the UMC1820's ten, so output
+    // paths (ADR-0060) have pairs to play on.
+    uint32_t output_ports = 10;
     std::string keymap_path;
     std::string capture_device;
     std::string backend_name = "jack";
@@ -560,6 +563,14 @@ int main(int argc, char** argv) {
             }
             probe_output = out;
             probe_input = in;
+        } else if (std::strcmp(argv[i], "--outputs") == 0 && i + 1 < argc) {
+            const long n = std::atol(argv[++i]);
+            if (n < 2 || n > 64) {
+                std::fprintf(stderr, "sonora: --outputs takes a count from 2 to 64
+");
+                return 2;
+            }
+            output_ports = static_cast<uint32_t>(n);
         } else if (std::strcmp(argv[i], "--plugin-host") == 0 && i + 1 < argc) {
             control.plugin_host = argv[++i];
         } else if (std::strcmp(argv[i], "--plugin-bundle") == 0 && i + 1 < argc) {
@@ -686,6 +697,10 @@ int main(int argc, char** argv) {
                 "                    (impulses at -20 dBFS on out_OUT), and keep it for\n"
                 "                    this device, rate and period; without either, L is\n"
                 "                    what was kept, else what the audio server reports\n"
+                "  --outputs N         register out_1..out_N (default 10), the pairs the
+"
+                "                      Master and the output paths play on
+"
                 "  --plugin-host PATH  the plugin host (default: sonora-plugin-host\n"
                 "                    beside this binary; none: inserts show faulted)\n"
                 "  --plugin-bundle DIR  an extra LV2/VST3 bundle directory (repeatable)\n"
@@ -927,7 +942,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (!audio->open({"sonora", static_cast<uint32_t>(cfg.track_count),
-                      std::max<uint32_t>(2, probe_output), cfg.sample_rate, capture_device},
+                      std::max({2u, probe_output, output_ports}), cfg.sample_rate, capture_device},
                      session, backend_error) ||
         !audio->activate(backend_error)) {
         std::fprintf(stderr, "sonora: %s\n", backend_error.c_str());
@@ -975,6 +990,7 @@ int main(int argc, char** argv) {
                          why.c_str());
         }
     }
+    control.output_count = std::max({2u, probe_output, output_ports});
     if (!choose_latency(session, *audio, input_latency, probe_output, probe_input,
                         latency_file_given, control)) {
         return 2;

@@ -219,7 +219,7 @@ std::string step_text(const std::string& label) {
         {"RemoveInsert", "Remove Plug-in"},  {"MoveInsert", "Move Plug-in"},
         {"SetInsertActive", "Plug-in Active State"}, {"ReplaceInsert", "Replace Plug-in"},
         {"RemoveTrack", "Delete Track"},  {"DuplicateTrack", "Duplicate Track"},
-        {"SetOutput", "Set Output"},
+        {"SetOutput", "Set Output"}, {"SetBusPath", "Output Path"},
         {"DuplicatePlaylist", "Duplicate Playlist"}, {"SetPlaylistName", "Rename Playlist"},
         {"RemovePlaylist", "Delete Playlist"},       {"EditAutomation", "Automation Edit"},
         {"SetTrackColour", "Colour Track"},          {"SetRegionName", "Rename Region"},

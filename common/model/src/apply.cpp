@@ -307,6 +307,14 @@ public:
         std::string where;
         const std::string why = detail::bus_problem(op.bus, where);
         if (!why.empty()) return fail("monitor_bus." + where + ": " + why);
+        for (const Bus& path : before_.edit->buses) {
+            if (path.hardware != kNoHardwareOut &&
+                (in_pair(path.hardware, op.bus.outputs[0]) ||
+                 in_pair(path.hardware, op.bus.outputs[1]))) {
+                return fail("outputs " + std::to_string(path.hardware + 1u) + " and " +
+                            std::to_string(path.hardware + 2u) + " carry the path \"" + path.name + "\"");
+            }
+        }
         after_ = before_;
         after_.mix.bus = op.bus;
         return true;
@@ -1383,6 +1391,41 @@ public:
         return true;
     }
 
+    bool operator()(const SetBusPath& op) {
+        const std::size_t b = bus_index(op.bus);
+        if (b == kNone) return fail("bus " + str(op.bus) + " is not an aux bus");
+        if (!detail::valid_text(op.name) || op.name.empty() || op.name.size() > 64) {
+            return fail("an output path's name is 1 to 64 characters of valid UTF-8");
+        }
+        if (op.first != kNoHardwareOut) {
+            if (op.first % 2 != 0 || op.first + 1 >= kMaxOutputChannels) {
+                return fail("an output path is a pair of outputs from an odd number: 1-2, 3-4"
+                            " ... up to " + str(static_cast<std::uint64_t>(kMaxOutputChannels)));
+            }
+            const auto& master = before_.mix.bus.outputs;
+            if (in_pair(op.first, master[0]) || in_pair(op.first, master[1])) {
+                return fail("the Master plays on outputs " + std::to_string(master[0] + 1u) + " and " +
+                            std::to_string(master[1] + 1u) + "; pick another pair");
+            }
+            for (const Bus& other : before_.edit->buses) {
+                if (other.id != op.bus && other.hardware == op.first) {
+                    return fail("outputs " + std::to_string(other.hardware + 1u) + " and " +
+                                std::to_string(other.hardware + 2u) + " already carry the path \"" +
+                                other.name + "\"");
+                }
+            }
+        }
+        auto edit = std::make_shared<EditState>(*before_.edit);
+        Bus& bus = edit->buses[b];
+        bus.name = op.name;
+        bus.hardware = op.first;
+        // A path ends at the interface, so it leaves the bus it fed.
+        if (op.first != kNoHardwareOut) bus.output = kMasterOutput;
+        after_ = before_;
+        after_.edit = std::move(edit);
+        return true;
+    }
+
     bool operator()(const RemoveBus& op) {
         const std::size_t b = bus_index(op.bus);
         if (b == kNone) return fail("bus " + str(op.bus) + " is not an aux bus");
@@ -1573,6 +1616,10 @@ public:
                 return fail("strip " + str(op.strip) + " is neither a track nor an aux bus");
             }
             if (op.output == op.strip) return fail("a bus cannot be its own output");
+            if (edit->buses[b].hardware != kNoHardwareOut) {
+                return fail("bus " + bus_name(op.strip) +
+                            " is an output path; it plays on the interface");
+            }
             // Its new output closes a loop if that bus already reaches it
             // over sends and outputs (ADR-0024 §3). The search stops at the
             // strip, so the output being replaced is never followed.
@@ -2168,6 +2215,9 @@ private:
     bool no_insert(Id insert) {
         return fail("insert " + str(insert) + " is not on any track");
     }
+
+    // Whether output channel `ch` is one of the pair starting at `first`.
+    static bool in_pair(std::uint32_t first, std::uint32_t ch) { return ch == first || ch == first + 1; }
 
     std::size_t bus_index(Id bus) const {
         const auto& buses = before_.edit->buses;

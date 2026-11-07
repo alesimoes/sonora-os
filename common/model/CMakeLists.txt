@@ -77,6 +77,10 @@ add_test(NAME model_sends COMMAND test_model_sends)
 add_executable(test_model_routing tests/test_routing.cpp)
 target_link_libraries(test_model_routing PRIVATE sonora_model_audited)
 add_test(NAME model_routing COMMAND test_model_routing)
+# Hardware output paths (ADR-0060).
+add_executable(test_model_output_paths tests/test_output_paths.cpp)
+target_link_libraries(test_model_output_paths PRIVATE sonora_model_audited)
+add_test(NAME model_output_paths COMMAND test_model_output_paths)
 # Automation lanes and modes (ADR-0027).
 add_executable(test_model_automation tests/test_automation.cpp)
 target_link_libraries(test_model_automation PRIVATE sonora_model_audited)

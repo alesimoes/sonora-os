@@ -856,6 +856,13 @@ struct Encoder {
         v.set("mix", bus_mix_value(o.mix));
         return v;
     }
+    Value operator()(const SetBusPath& o) const {
+        Value v = with_kind("SetBusPath");
+        v.set("bus", id_value(o.bus));
+        v.set("name", Value::string(o.name));
+        v.set("first", integer(o.first));
+        return v;
+    }
     Value operator()(const RemoveBus& o) const {
         Value v = with_kind("RemoveBus");
         v.set("bus", id_value(o.bus));
@@ -2049,6 +2056,13 @@ bool decode_value(Reader& rd, const Value& v, const std::string& kind, Operation
             return false;
         }
         out = std::move(o);
+    } else if (kind == "SetBusPath") {
+        SetBusPath o;
+        if (!rd.keys(v, "", {"op", "bus", "name", "first"}) || !rd.id(v, "", "bus", o.bus) ||
+            !rd.text(v, "", "name", o.name) || !rd.small(v, "", "first", o.first)) {
+            return false;
+        }
+        out = std::move(o);
     } else if (kind == "RemoveBus") {
         RemoveBus o;
         if (!rd.keys(v, "", {"op", "bus"}) || !rd.id(v, "", "bus", o.bus)) return false;
@@ -3067,7 +3081,7 @@ const char* const kNames[] = {
     "SetOutput", "DuplicatePlaylist", "SetPlaylistName", "RemovePlaylist", "EditAutomation",
     "SetTrackColour", "SetRegionName", "SetRegionColour", "SetGroup", "RemoveGroup",
     "SetRegionGain", "SetClipGroup", "SetRegionSources", "SetVca", "RemoveVca", "SetVcaMix",
-    "SetFolder", "RemoveFolder", "ShiftRegions", "Compound"};
+    "SetFolder", "RemoveFolder", "ShiftRegions", "SetBusPath", "Compound"};
 static_assert(sizeof kNames / sizeof kNames[0] == std::variant_size_v<Operation>,
               "a name for every operation");
 

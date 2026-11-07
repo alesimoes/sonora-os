@@ -1877,6 +1877,8 @@ void EngineControlServer::greet(ClientId id) {
     hello.track_count = static_cast<uint32_t>(session_.tracks().size());
     for (const auto& t : session_.tracks()) hello.track_names.push_back(t->name());
     hello.implemented_commands = implemented_;
+    hello.input_count = static_cast<uint32_t>(session_.tracks().size());
+    hello.output_count = opts_.output_count;
     // session_commands' transport.play reads the range; a server wired
     // without it must not claim it.
     if (std::find(implemented_.begin(), implemented_.end(), "transport.play") !=
