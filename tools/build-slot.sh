@@ -86,7 +86,11 @@ if [[ "${1:-}" == --list ]]; then
   exit 0
 fi
 
-[[ $# -gt 0 ]] || { echo "usage: build-slot.sh COMMAND [ARG...] | --jobs | --list" >&2; exit 2; }
+usage() { echo "usage: build-slot.sh COMMAND [ARG...] | --jobs | --list" >&2; exit 2; }
+[[ $# -gt 0 ]] || usage
+# A flag this script does not know is a typo, never a command: `--status`
+# once sat in the queue as a job (2026-11-07).
+[[ "$1" != -* ]] || { echo "build-slot.sh: unknown flag $1" >&2; usage; }
 [[ -z "${SONORA_HEAVY_HELD:-}" ]] || exec "$@"
 
 mkdir -p "$DIR/wait"

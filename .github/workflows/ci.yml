@@ -30,6 +30,7 @@ jobs:
       rt: ${{ steps.filter.outputs.rt }}
       bwf: ${{ steps.filter.outputs.bwf }}
       full: ${{ steps.filter.outputs.full }}
+      harness_only: ${{ steps.filter.outputs.harness_only }}
       image_build: ${{ steps.filter.outputs.image_build }}
       image_ui: ${{ steps.filter.outputs.image_ui }}
       image_rtsan: ${{ steps.filter.outputs.image_rtsan }}
@@ -104,12 +105,29 @@ jobs:
           all='core=true ui=true plugins=true portable=true audio=true rt=true bwf=true'
           core=false ui=false plugins=false portable=false audio=false
           rt=false bwf=false full=false
+          # harness_only: every file is the harness's own (the daemon, its
+          # library and tests, the dashboard, the heavy lock, the agent
+          # files, planning, brain, docs). Such a PR runs the Harness job
+          # and the cheap catalogue checks, not the Shell-scripts job with
+          # its GHCR images and container tests (2026-11-07). The map:
+          # harness scripts the Sonora build depends on are NOT harness-only
+          # and build everything: tools/build-*.sh (build-slot.sh excepted,
+          # it is the lock, tested by tools/test-build-slot.sh in the Harness
+          # job), tools/local-ci.sh, tools/Dockerfile*, tools/*-entrypoint.sh.
+          harness_only=false
+          if [ "${{ github.event_name }}" = pull_request ] && [ -n "$files" ] &&
+             ! printf '%s\n' "$files" | grep -qvE '^(planning|brain|docs|\.claude)/|\.md$|^tools/(harness/|harness[^/]*\.py$|orchestrator\.py$|supervisor\.py$|dashboard[^/]*$|build-slot\.sh$|test-build-slot\.sh$)'; then
+            harness_only=true
+          fi
+          echo "harness_only=$harness_only" >> "$GITHUB_OUTPUT"
+          echo "harness_only=$harness_only"
           if [ "${{ github.event_name }}" != pull_request ] || [ -z "$files" ]; then
             eval "$all"; full=true
           elif [ "$code" = true ]; then
             while IFS= read -r f; do
               case "$f" in
                 planning/*|brain/*|docs/*|*.md) ;;
+                tools/build-slot.sh|tools/test-build-slot.sh|tools/supervisor.py) ;;
                 engine/core/*|common/audiofile/*) core=true rt=true bwf=true ;;
                 engine/*|drivers/*) core=true rt=true ;;
                 contracts/*) core=true ;;
@@ -264,6 +282,9 @@ jobs:
   shellcheck:
     name: Shell scripts
     needs: changes
+    # A harness-only PR runs the Harness job instead (its shellcheck covers
+    # the lock script); a skipped job counts as passing.
+    if: needs.changes.outputs.harness_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -403,7 +424,9 @@ jobs:
           done
           exit "$drift"
 
-  # The orchestrator daemon and its broker (ADR-0047), against a fake claude.
+  # The orchestrator daemon, its broker and supervisor (ADR-0047), against a
+  # fake claude; the heavy lock script. For a harness-only PR this is the
+  # whole CI (see harness_only in `changes`).
   harness:
     name: Harness
     runs-on: ubuntu-latest
@@ -413,5 +436,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Install shellcheck
+        run: for d in 0 15 45; do sleep "$d"; sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y shellcheck && exit 0; done; echo "apt failed after 3 attempts" >&2; exit 1
+      - name: Harness shell scripts
+        run: shellcheck tools/build-slot.sh tools/test-build-slot.sh tools/local-ci.sh tools/dashboard-up.sh
+      - name: Build slot limiter
+        run: tools/test-build-slot.sh
       - name: Harness unit tests
         run: python -m unittest discover -s tools/harness/tests

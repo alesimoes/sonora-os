@@ -139,6 +139,12 @@ fi
 if [[ "$(uname -s)" != Linux ]]; then
   docker run --rm --user 0 -v sonora-ccache:/ccache --entrypoint find "$IMAGE" \
     /ccache ! -user 1000 -exec chown 1000:1000 {} + >/dev/null 2>&1 || true
+  # The per-checkout volume is shared with tools/build-engine.sh, which runs as
+  # root: when it ran first (tools/build-iso.sh builds the engine, then the UI)
+  # /build is root's and the image user cannot create /build/ui in it.
+  docker run --rm --user 0 "${BUILD_VOL[@]}" --entrypoint sh "$IMAGE" -c \
+    'mkdir -p /build/ui && chown 1000:1000 /build && find /build/ui ! -user 1000 -exec chown 1000:1000 {} +' \
+    >/dev/null 2>&1 || true
 fi
 "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" \
   -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" -e SONORA_UI_SCOPE="${SONORA_UI_SCOPE:-all}" \
