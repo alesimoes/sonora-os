@@ -4,6 +4,7 @@ import json
 import os
 import time
 
+from .run_view import run_view
 from .scheduler import POOL_OF_KIND
 
 DONE_STATES = ("integrating", "pr_open", "ci_fix", "merged")
@@ -106,7 +107,8 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
         "runs": [{"id": r["id"], "task": r["task_id"], "role": r["role"],
                   "name": r["name"], "pid": r["pid"], "started": r["started"],
                   "last_beat": r["last_beat"], "working": r["working"],
-                  "building": r["building"], "suspect": bool(r["suspect"])}
+                  "building": r["building"], "suspect": bool(r["suspect"]),
+                  **run_view(r, by_id.get(r["task_id"]))}
                  for r in runs],
         "tasks": [{"id": t["id"], "state": t["state"], "track": t["track"],
                    "kind": t["kind"], "attempts": t["attempts"],

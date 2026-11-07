@@ -1,4 +1,5 @@
 const POOL_PT={'plan':['Planejamento','AR'],'build':['Construção (geral)','IN'],'build:daw':['Construção · DAW','UI'],'build:os':['Construção · OS','OS'],'build:plugin':['Construção · plugins','PL'],'qa':['Testes (QA)','QA'],'fix':['Correção','FX'],'merge':['Merge','IN'],'principal':['Engenheiro principal','P']};
+const POOL_HINT={'plan':'planejamento das tarefas','build':'tarefas sem trilha definida','build:daw':'tarefas da trilha DAW (motor e interface)','build:os':'tarefas da trilha OS (imagem e instalador)','build:plugin':'tarefas da trilha de plugins nativos','qa':'testes de aceitação','fix':'correções de PRs vermelhos','merge':'integração de conflitos','principal':'escalonamentos difíceis'};
 function renderTech(s){
   const o=s.orchestrator,now=Date.now()/1000;
   if(!o){$('tlimits').innerHTML='<div class="empty">Orquestrador desligado.</div>';$('tpools').innerHTML='';$('tmeta').textContent=''}

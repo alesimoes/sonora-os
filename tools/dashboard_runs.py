@@ -9,8 +9,10 @@ def tail_lines(path, max_bytes=600000):
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)
-            f.seek(max(0, f.tell() - max_bytes))
-            return f.read().decode("utf-8", "replace").splitlines()[1:]
+            start = max(0, f.tell() - max_bytes)
+            f.seek(start)
+            lines = f.read().decode("utf-8", "replace").splitlines()
+            return lines[1:] if start else lines   # the first line is cut only when we seeked into it
     except OSError:
         return []
 
