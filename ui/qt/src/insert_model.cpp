@@ -521,7 +521,7 @@ void InsertModel::refreshTelemetry() {
 }
 
 QString InsertModel::compareSlot() const {
-    return panel_insert_ == kNoId ? QStringLiteral("A") : QString(QChar(ctl_.compare_slot(panel_insert_)));
+    return panel_insert_ == kNoId ? QStringLiteral("A") : QString(QChar::fromLatin1(ctl_.compare_slot(panel_insert_)));
 }
 
 void InsertModel::toggleCompare() {

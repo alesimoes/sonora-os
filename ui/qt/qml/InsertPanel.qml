@@ -179,7 +179,7 @@ Item {
             spacing: Theme.space1
             readonly property var meters: panelRoot.inserts !== null ? panelRoot.inserts.panelMeters : []
             readonly property var curves: panelRoot.inserts !== null ? panelRoot.inserts.panelCurves : []
-            readonly property string state: panelRoot.inserts !== null ? panelRoot.inserts.telemetryState : "none"
+            readonly property string tstate: panelRoot.inserts !== null ? panelRoot.inserts.telemetryState : "none"
             visible: meters.length > 0 || curves.length > 0
             height: visible ? implicitHeight : 0
 
@@ -197,7 +197,7 @@ Item {
                     xMax: modelData.xMax
                     yMin: modelData.yMin
                     yMax: modelData.yMax
-                    emptyText: telemetry.state === "stopped" ? "the plugin stopped publishing" : "waiting for the plugin"
+                    emptyText: telemetry.tstate === "stopped" ? "the plugin stopped publishing" : "waiting for the plugin"
                     points: panelRoot.inserts.panelCurveData[modelData.id] !== undefined
                             ? panelRoot.inserts.panelCurveData[modelData.id] : []
                 }
@@ -219,12 +219,12 @@ Item {
                 }
             }
             Text {
-                visible: telemetry.state === "stopped" || telemetry.state === "waiting"
+                visible: telemetry.tstate === "stopped" || telemetry.tstate === "waiting"
                 width: parent.width
                 wrapMode: Text.Wrap
-                text: telemetry.state === "stopped" ? "Meter data stopped: the plugin is no longer publishing."
+                text: telemetry.tstate === "stopped" ? "Meter data stopped: the plugin is no longer publishing."
                                                     : "Waiting for the plugin's meter data."
-                color: telemetry.state === "stopped" ? Theme.caution : Theme.textTertiary
+                color: telemetry.tstate === "stopped" ? Theme.caution : Theme.textTertiary
                 font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
             }
         }
