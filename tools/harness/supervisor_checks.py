@@ -24,6 +24,7 @@ Which failure of the week each check would have caught:
 
 from . import supervisor_sys as S
 from .status import write_atomic
+from .supervisor_dash import check_dashboard
 
 PAUSED_META = "supervisor:paused"
 BUILD_POOLS = ("build", "qa")
@@ -283,4 +284,5 @@ def check_disk(sv, now):
                         store.set_meta(PAUSED_META, "")))
 
 
-DAEMON_CHECKS = (check_runs, check_lock, check_queues, check_prs, check_disk)
+DAEMON_CHECKS = (check_runs, check_lock, check_queues, check_prs, check_disk,
+                 check_dashboard)

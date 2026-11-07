@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import dashboard_actions_http as actions
+import dashboard_selfupdate
 from dashboard_chat import handle_post
 from dashboard_detail import detail
 from dashboard_links import MOCKUPS_ROUTE, mockup_file, read_links
@@ -102,6 +103,8 @@ def main():
     ap.add_argument("--agents", default=os.environ.get("SONORA_DASH_AGENTS"))
     args = ap.parse_args()
     threading.Thread(target=refresh_loop, args=(args.agents,), daemon=True).start()
+    if os.environ.get("SONORA_DASH_NO_SELFUPDATE") != "1":
+        dashboard_selfupdate.start()
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print("http://127.0.0.1:%d/" % args.port, flush=True)
     srv.serve_forever()

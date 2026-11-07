@@ -231,8 +231,8 @@ class Train(BundleMixin):
         o, fid = self.o, f["id"]
         d = o.forge.pr_detail(f["pr"])
         if d["state"] == "closed":
-            if (self.info(fid) or {}).get("phase") != "fechado":
-                self._save(fid, phase="fechado", next="fechado fora do trem")
+            self._save(fid, phase="fechado", next="fechado fora do trem")
+            o._close_feature(f, f"PR #{f['pr']} closed without merge")
             return
         if d["state"] != "merged":
             return
@@ -256,7 +256,7 @@ class Train(BundleMixin):
             return
         if d["state"] == "closed":
             self._save(fid, phase="fechado", next="decisão do owner")
-            o._block_feature(f, f"PR #{n} closed without merge")
+            o._close_feature(f, f"PR #{n} closed without merge")
             return
         head = d["head_sha"]
         upd = {"base": d["base"], "head": head}

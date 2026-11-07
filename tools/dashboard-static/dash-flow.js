@@ -28,7 +28,7 @@ function flowRows(s){
     rows.push({k:'agent',id:a.id,num:'',title:a.label,sub:'sessão do coordenador',col,w:[mkSess(a)],pend,t0:a.lock?a.lock.start:null})});
   // features do orquestrador sem PR
   const paused=(o.paused||[]);
-  (o.features||[]).filter(f=>!f.pr&&!['merged','blocked'].includes(f.state)).forEach(f=>{
+  (o.features||[]).filter(f=>!f.pr&&!['merged','blocked','closed'].includes(f.state)).forEach(f=>{
     const planning=['planning','queued'].includes(f.state),col=planning?0:1;
     const ag=(f.tasks||[]).map(t=>t.agent).filter(Boolean)[0];
     rows.push({k:'feature',id:f.id,num:'',title:f.name||f.id,sub:(f.track||'')+(f.adr?' · ADR-'+f.adr:''),col,planned:planning,pend:planning&&(paused.includes('plan')||paused.includes('build'))?'parado: filas pausadas':null,

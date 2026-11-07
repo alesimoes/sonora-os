@@ -15,7 +15,7 @@ DONE_STATES = ("integrating", "pr_open", "ci_fix", "merged")
 DASH_STATE = {"queued": "queued", "building": "building",
               "bugfix": "working", "qa": "working", "integrating": "done",
               "pr_open": "done", "merged": "done", "ci_fix": "red",
-              "blocked": "blocked"}
+              "blocked": "blocked", "closed": "closed"}
 
 
 def replace_retry(src, dst, tries=5, delay=0.2):
