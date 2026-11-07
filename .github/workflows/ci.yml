@@ -484,6 +484,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # A host directory owned by the runner user: the default docker volume
+      # is root-owned and ccache (running as the runner uid) gets EACCES.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ccache-micro-rtsan
+          key: micro-rtsan-ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: micro-rtsan-ccache-${{ runner.os }}-
       - name: Get the sonora-build image (pulled from GHCR, for the plan)
         uses: ./.github/actions/sonora-image
         with:
@@ -502,7 +509,9 @@ jobs:
         env:
           SONORA_HEAVY_HELD: "1"
           SONORA_RTSAN_IMAGE_BUILT: "1"
-        run: tools/micro-build.sh --base origin/main --rtsan-only
+        run: |
+          export SONORA_CCACHE_DIR="$HOME/.ccache-micro-rtsan"
+          tools/micro-build.sh --base origin/main --rtsan-only
 
   # The orchestrator daemon, its broker and supervisor (ADR-0047), against a
   # fake claude; the heavy lock script. For a harness-only PR this is the
