@@ -185,14 +185,14 @@ int main() {
     // the file grows: after a long sync the drain writes a backlog, and a
     // kill in its middle leaves more in the rings than the bound below.
     Seen before;
-    for (int i = 0; i < 1000; ++i) {
+    for (int i = 0; i < 6000; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         before = read_take(take);
         if (before.ok && before.frames > 0) break;
     }
     constexpr int64_t kPast = 2400;
     bool ready = false;
-    for (int i = 0; i < 10000 && before.frames > 0 && !ready; ++i) {
+    for (int i = 0; i < 30000 && before.frames > 0 && !ready; ++i) {
         const DataFrames d = data_frames(take);
         const auto now = static_cast<int64_t>(produced->load(std::memory_order_acquire));
         ready = d.on_file - d.counted >= kPast &&

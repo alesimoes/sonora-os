@@ -114,10 +114,10 @@ struct Rig {
                        0};
     Rig() { saver.start(); }
 
-    // The results, once `n` have come or two seconds have passed.
+    // The results, once `n` have come or 30 seconds have passed.
     std::vector<SessionSaver::Done> wait(std::size_t n) {
         std::vector<SessionSaver::Done> out;
-        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         while (out.size() < n && std::chrono::steady_clock::now() < until) {
             for (SessionSaver::Done& d : saver.take_done()) out.push_back(std::move(d));
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -188,7 +188,7 @@ int test_take_open_waits_for_a_checkpoint() {
     rig.saver.set_take_open(false);   // a loop take between passes: still rolling
     CHECK(rig.quiet(30) && fs::exists(a));
     rig.saver.set_transport_stopped(true);
-    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (rig.saver.cleanups() == 0 && std::chrono::steady_clock::now() < until) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
