@@ -1,27 +1,29 @@
-"""A fixer's pushed head is queued for the local gate at once, and the heads
-it replaced leave the local-CI queues (#446, 2026-11-06)."""
+"""A fixer's pushed head replaces the one it fixed: the old head is
+remembered and never judged as the new one (#446, 2026-11-06)."""
 import support  # noqa: F401  (sets sys.path)
-from test_merge_train import LocalGate
+from test_merge_train import Train
 
 
-class Regate(LocalGate):
+class Regate(Train):
     def adopted(self):
         o = self.make()
-        old = self.green(o)
+        self.forge.add_pr(10, "a", ["engine/x.cpp"],
+                          checks={"lint": "pass", "Micro build": "pending"})
+        o.train.adopt()
+        old = self.forge.pr_detail(10)["head_sha"]
         o.tick()
         return o, old
 
-    def test_fixer_head_goes_to_the_local_gate(self):
+    def test_fixer_push_remembers_the_old_head(self):
         o, old = self.adopted()
         o.train.after_fix("pr-10", "newhead1")
-        self.assertIn("newhead1", o.localci.started)
         self.assertEqual(o.train.info("pr-10")["old_heads"], [old])
+        self.assertEqual(o.train.info("pr-10")["phase"], "CI rodando")
 
-    def test_fixer_that_changed_nothing_does_not_requeue(self):
+    def test_fixer_that_changed_nothing_reruns_instead(self):
         o, old = self.adopted()
-        before = list(o.localci.started)
         o.train.after_fix("pr-10", old)
-        self.assertEqual(o.localci.started, before)
+        self.assertEqual(o.train.info("pr-10")["phase"], "rerodando")
 
     def test_replaced_head_is_gone_and_current_one_is_not(self):
         o, old = self.adopted()

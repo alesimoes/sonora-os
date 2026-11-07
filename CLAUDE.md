@@ -90,6 +90,13 @@ a real blocker goes in the handoff under "waits on the owner" and the work
 moves to the next item. When agents finish and none are running, launch
 the next items in the same turn. Context is reclaimed by auto-compaction,
 which the handoff survives.
+A PR always has base `main`, never another PR (stacked PRs are refused: the
+orchestrator retargets one to main); work that depends on an unmerged PR
+waits for it or goes in the same PR. The PR gate is GitHub CI's micro build
+(ADR-0061): the targets the PR's files reach, their unit and integration
+tests, RTSan on them for the RT path. Full builds (the application, the
+sanitizers, interop, Windows, the ISO) are release/nightly (`nightly.yml`,
+once a day on main); a red nightly opens a fix task, never blocks a PR.
 A PR is opened only for a task complete end to end: the whole path a user or
 the next layer depends on (contract, engine, UI, tests, docs, screenshots), so
 fewer PRs wait on CI and fewer branches conflict. No PR for half an item (an
@@ -128,8 +135,8 @@ The machine runs ONE heavy build or test at a time, with every CPU, the rest
 queued (`tools/build-slot.sh`, one lock for the whole host, owner 2026-11-05).
 Implementers do not run the full builds or the whole test suite: they build
 the narrowest target, through `tools/build-slot.sh`, only when the slice needs
-it. The orchestrator's local CI gate (`tools/local-ci.sh`, run in batches by
-`tools/harness/localci.py`) is what builds and tests the whole tree.
+it. `tools/micro-build.sh` is that narrowest build chosen for you: what your
+diff reaches, and its tests, the way the PR gate runs it.
 
 ## Before opening a PR (every agent)
 
@@ -151,9 +158,9 @@ something below is a PR that waits an hour.
   test target must be reachable from `sonora_portable` (defined in
   `plugins/native/CMakeLists.txt`; it collects every executable and static
   library under common/json, common/dsp, common/platform, common/audiofile
-  and plugins/native) and be named `dsp_*` or `native_*`, because the local
-  gate `tools/local-ci.sh` runs `tools/build-portable.ps1`, which builds
-  `sonora_portable` with MSVC and runs `ctest -R 'dsp_|native_'`. A processor over its
+  and plugins/native) and be named `dsp_*` or `native_*`, because the
+  nightly's Portable (MSVC) job builds `sonora_portable` and runs
+  `ctest -R 'dsp_|native_'`. A processor over its
   CPU class ships only with an eco mode that meets the class (ADR-0011 §3.5);
   until then gate it off so it is not installed.
 - New or changed scripts: mode 100755 in the index (`git update-index

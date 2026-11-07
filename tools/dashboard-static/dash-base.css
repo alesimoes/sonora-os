@@ -40,3 +40,17 @@ h1{margin:0;font-size:18px;font-weight:700;letter-spacing:.02em}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);animation:blink 2s ease-in-out infinite}
 .dot.stale{background:var(--bad)}
 .clk{cursor:pointer}
+/* faixa de status compacta: medidores pequenos e chips (disco, daemon, trava) */
+.strip{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;padding:4px 10px;margin-bottom:6px;background:var(--panel);border:1px solid var(--line);border-radius:4px;font-size:11px}
+.strip .gauges{margin:0;gap:12px}.strip .gauges .g svg{width:22px;height:22px}.strip .gauges .g text{font-size:30px}
+.strip .gauges .g .gl{font-size:10px}.strip .gauges .g small{font-size:9.5px}
+.chips{display:flex;flex-wrap:wrap;gap:4px 14px;margin-left:auto}
+.sc{white-space:nowrap;color:var(--muted)}.sc small{color:var(--faint);font-size:10px}.sc b{font-weight:600;color:var(--ink)}
+.sc.ok b{color:var(--ok)}.sc.warn b{color:var(--warn)}.sc.crit b,.sc.bad b{color:var(--bad)}
+.sit .sflow .sbad{color:var(--bad)}.sit .pgm .pgbar{width:70px}
+.sit{font-size:16px;border-left-width:4px;padding:12px 14px}
+.people .ag .an{font-size:18px}
+.people{grid-template-columns:repeat(auto-fill,minmax(380px,1fr))}
+.fr:not(.fh) .fc2.cur .pn small{font-size:12px}
+h2.h2{font-size:20px}
+details.tech h3{font-size:14px;margin:12px 0 6px}

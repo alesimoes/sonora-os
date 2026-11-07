@@ -102,10 +102,13 @@ class AutoAdopt(support.DaemonCase):
         self.forge.add_pr(11, "b", ["engine/y.cpp"], draft=True)
         self.forge.add_pr(12, "c", ["engine/z.cpp"], base="feat/other")
         o.tick()
-        self.assertEqual(self.events(o), ["#10 a auto"])
+        # The stacked one (#12) is adopted too, to be retargeted to main
+        # (ADR-0061 section 6); only the draft stays out.
+        self.assertEqual(sorted(self.events(o)), ["#10 a auto", "#12 c auto"])
         self.assertTrue(o.train.is_adopted("pr-10"))
         self.assertFalse(o.train.is_adopted("pr-11"))
-        self.assertFalse(o.train.is_adopted("pr-12"))
+        self.assertTrue(o.train.is_adopted("pr-12"))
+        self.assertEqual(self.forge.prs[12]["base"], "main")
 
     def test_sweep_follows_the_refresh_cadence_and_never_twice(self):
         o = self.make()

@@ -27,6 +27,11 @@
 # own steps and the scripts it calls may wrap them again. After
 # SONORA_HEAVY_WAIT seconds (default 4 h) the command runs anyway, with a
 # warning: a stuck queue must not stop work for good.
+#
+# SONORA_HEAVY_WAIT_FILE=PATH: the seconds spent waiting for the lock are
+# written there once it is ours (tools/micro-build.sh logs lock waits apart from
+# step times). The variable is not passed on to the command, so a nested call
+# does not overwrite it with its own zero.
 set -euo pipefail
 
 host_kind() {
@@ -91,6 +96,8 @@ usage() { echo "usage: build-slot.sh COMMAND [ARG...] | --jobs | --list" >&2; ex
 # A flag this script does not know is a typo, never a command: `--status`
 # once sat in the queue as a job (2026-11-07).
 [[ "$1" != -* ]] || { echo "build-slot.sh: unknown flag $1" >&2; usage; }
+WAIT_FILE="${SONORA_HEAVY_WAIT_FILE:-}"
+unset SONORA_HEAVY_WAIT_FILE
 [[ -z "${SONORA_HEAVY_HELD:-}" ]] || exec "$@"
 
 mkdir -p "$DIR/wait"
@@ -184,6 +191,7 @@ until may_go && take "$@"; do
   reap
 done
 rm -f "$ticket"
+[[ -z "$WAIT_FILE" ]] || echo "$((SECONDS - start))" >"$WAIT_FILE"
 
 export SONORA_HEAVY_HELD=1
 rc=0

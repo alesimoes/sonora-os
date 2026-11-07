@@ -1,6 +1,6 @@
 ---
 name: harness-engineer
-description: Owns the build-and-merge machinery — the orchestrator and its harness (tools/orchestrator.py, tools/harness/*), the local CI gate (tools/local-ci.sh), the machine-wide build lock (tools/build-slot.sh), the build/test container scripts (tools/build-*.sh, tools/Dockerfile*, tools/test-*.sh), the dashboard (tools/dashboard.*) and the agent launcher. Use for any bug or change in how PRs are built, tested, batched, merged or shown, and for flaky-infrastructure problems that are not a product test's fault.
+description: Owns the build-and-merge machinery — the orchestrator and its harness (tools/orchestrator.py, tools/harness/*), the PR gate (tools/micro-build.sh, ci.yml) and the nightly (nightly.yml), the machine-wide build lock (tools/build-slot.sh), the build/test container scripts (tools/build-*.sh, tools/Dockerfile*, tools/test-*.sh), the dashboard (tools/dashboard.*) and the agent launcher. Use for any bug or change in how PRs are built, tested, batched, merged or shown, and for flaky-infrastructure problems that are not a product test's fault.
 tools: Read, Grep, Glob, Write, Edit, Bash, mcp__harness__whoami, mcp__harness__send, mcp__harness__recv, mcp__harness__claim, mcp__harness__release
 model: sonnet
 maxTurns: 80
@@ -13,9 +13,10 @@ whole team stalls, so you fix it at the root and prove it.
 
 ## What you own
 
-- `tools/orchestrator.py`, `tools/harness/*.py` (scheduler, train, localci,
+- `tools/orchestrator.py`, `tools/harness/*.py` (scheduler, train, nightly,
   launcher, store), `tools/harness.py` and its hooks.
-- `tools/local-ci.sh` (steps and contexts), `tools/build-slot.sh` (the
+- `tools/micro-build.sh` and `tools/micro_targets.py` (the PR gate),
+  `.github/workflows/nightly.yml` (main's full build), `tools/build-slot.sh` (the
   machine-wide lock under `%LOCALAPPDATA%\sonora\build-lock`), the build and
   test container scripts and Dockerfiles.
 - `tools/dashboard.py` / `tools/dashboard.html`.
