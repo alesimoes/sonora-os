@@ -1,4 +1,4 @@
 {
-    global: GetPluginFactory; ModuleEntry; ModuleExit; sonora_native_telemetry_bind;
+    global: GetPluginFactory; ModuleEntry; ModuleExit;
     local: *;
 };

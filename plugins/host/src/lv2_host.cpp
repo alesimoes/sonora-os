@@ -696,18 +696,11 @@ std::unique_ptr<Processor> Lv2World::instantiate(const std::string& uri, const C
         error.message = "no LV2 plugin with URI " + uri + " is installed";
         return nullptr;
     }
+    // A Sonora native plugin pulls the insert's telemetry block while it is
+    // instantiated (loader.h); any other plugin never asks.
+    TelemetryOffer telemetry(config.telemetry);
     auto proc = std::make_unique<Lv2Processor>(*this, config);
     if (!proc->init(*this, p, describe(p), config.sample_rate, config.channels, in, out, key, error)) return nullptr;
-    if (config.telemetry != nullptr) {
-        // A Sonora native plugin's library exports the hand-over; lilv has
-        // it mapped already, so the path finds the same library.
-        if (const LilvNode* lib = lilv_plugin_get_library_uri(p)) {
-            if (char* path = lilv_file_uri_parse(lilv_node_as_uri(lib), nullptr)) {
-                bind_native_telemetry_at(path, config.telemetry);
-                lilv_free(path);
-            }
-        }
-    }
     return proc;
 }
 

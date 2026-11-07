@@ -189,3 +189,25 @@ draws no bar and says so. The header has Bypass and A/B compare: B starts as a
 copy of A and each toggle plays the other set as one gesture. A preset menu is
 not there: the engine's preset store has no interface message, which is a
 contract of its own.
+
+## Amendment 2026-11-07: the hand-over is pulled by the plugin, not exported
+
+The nightly's lv2lint refused every bundle: an LV2 binary may export only
+`lv2_descriptor`, and `sonora_native_telemetry_bind` was a second global
+symbol ("Plugin Symbols"). The hand-over above is replaced; lv2lint is not
+relaxed.
+
+The bundles now export nothing but their format's entry points (`lv2.version`
+lists `lv2_descriptor`, `vst3.version` the three VST3 ones). The direction is
+reversed: `sonora-plugin-host` links with `ENABLE_EXPORTS` and exports
+`void* sonora_host_telemetry_take()`. Around instantiating a plugin the host
+holds a `TelemetryOffer` with the insert's block (control thread, one at a
+time); the DPF glue looks the function up with `dlsym(RTLD_DEFAULT, ...)` at
+the end of its constructor, and again after each `activate()` (a processor
+that publishes offers its `Telemetry` when it is prepared, which on VST3 can
+be after construction), and passes the block to `Telemetry::bind_pending`.
+The first take clears the offer. "Oldest pending instance" is unchanged. Any
+other host does not export the function, the answer is nullptr and the
+telemetry stays private. A standard LV2 `extension_data` was the first
+choice but DPF owns that function and offers no hook to add an interface
+without patching the vendored sources. No change to the wire or the protocol.

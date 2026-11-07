@@ -17,14 +17,20 @@ namespace sonora::plugin_host {
 void* open_library(const std::string& path, std::string& error);
 void* library_symbol(void* library, const char* name);
 void close_library(void* library);
-// Hands a Sonora native plugin's library the insert's telemetry block
-// (ADR-0057): calls its sonora_native_telemetry_bind(block) when it exports
-// one. False for a library that does not (every third-party plugin) or when
-// nothing was bound. Main thread, right after the plugin was instantiated.
-bool bind_native_telemetry(void* library, void* block);
-// The same for a library lilv opened, found by its path (a library that is
-// already loaded is shared, not loaded again).
-bool bind_native_telemetry_at(const std::string& path, void* block);
+// Offers the insert's telemetry block (ADR-0057, amendment 2026-11-07) to the
+// Sonora native plugin the host instantiates while this object lives. The
+// plugin pulls it with sonora_host_telemetry_take(), which this executable
+// exports (a bundle exports nothing but its format's entry points, and
+// lv2lint holds it to that). The first take clears the offer, so a second
+// instance in the same window, or a third-party plugin, gets nothing.
+// Main thread only, one at a time.
+class TelemetryOffer {
+public:
+    explicit TelemetryOffer(void* block);
+    ~TelemetryOffer();
+    TelemetryOffer(const TelemetryOffer&) = delete;
+    TelemetryOffer& operator=(const TelemetryOffer&) = delete;
+};
 
 // The directory part of the platform's per-user and system VST3 locations
 // (Linux: ~/.vst3, /usr/lib/vst3, /usr/local/lib/vst3), in search order.

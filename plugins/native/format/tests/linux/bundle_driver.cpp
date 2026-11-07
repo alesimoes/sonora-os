@@ -135,8 +135,9 @@ constexpr int kBlocks = 64;
 bool g_state_ports = false;
 bool g_memoryless = false;  // --memoryless 1, see carries_state()
 // --telemetry 1: the processor publishes through native::Telemetry, so the
-// host's hand-over (sonora_native_telemetry_bind) must land in its block.
+// host's hand-over (sonora_host_telemetry_take) must land in its block.
 bool g_telemetry = false;
+void* g_telemetry_offer = nullptr;  // what the host side offers the next instance
 
 // --- VST3, through travesty ---------------------------------------------
 
@@ -940,17 +941,16 @@ int lv2_lazy(const char* path, const char* bundle, uint32_t inputs, uint32_t out
     if (g_state_ports) features.push_back(&worker_feature);
     features.push_back(nullptr);
 
-    LV2_Handle h = desc->instantiate(desc, 48000.0, bundle, features.data());
-    CHECK(h != nullptr);
-    // What sonora-plugin-host does right after it instantiates a plugin
-    // (plugins/host loader_linux.cpp): hand the insert's block over.
+    // What sonora-plugin-host does around instantiating a plugin (plugins/host
+    // loader_linux.cpp): offer the insert's block, which the plugin pulls
+    // through sonora_host_telemetry_take() (defined below, exported).
     sonora::plugin::TelemetryBlock tel{};
-    {
-        using Bind = int (*)(void*);
-        const auto bind = reinterpret_cast<Bind>(dlsym(lib, "sonora_native_telemetry_bind"));
-        CHECK(bind != nullptr);   // every bundle exports it, published or not
-        CHECK(bind(&tel) == (g_telemetry ? 1 : 0));
-    }
+    g_telemetry_offer = &tel;
+    LV2_Handle h = desc->instantiate(desc, 48000.0, bundle, features.data());
+    g_telemetry_offer = nullptr;
+    // The bundle exports nothing but lv2_descriptor (lv2lint): no side door.
+    CHECK(dlsym(lib, "sonora_native_telemetry_bind") == nullptr);
+    CHECK(h != nullptr);
     Block b(max_block, static_cast<int32_t>(inputs), static_cast<int32_t>(outputs));
     // DPF's LV2 port order: the audio inputs (the key input's last), the
     // audio outputs, then one port that is the transport input in a bundle
@@ -1433,6 +1433,14 @@ int lv2_state(const char* path, const char* bundle, uint32_t inputs, uint32_t ou
 }
 
 }  // namespace
+
+// The host's half of the telemetry hand-over (plugins/host loader_linux.cpp). The
+// driver is linked with ENABLE_EXPORTS so the bundle's dlsym(RTLD_DEFAULT) finds it.
+extern "C" __attribute__((visibility("default"))) void* sonora_host_telemetry_take() {
+    void* block = g_telemetry_offer;
+    g_telemetry_offer = nullptr;
+    return block;
+}
 
 int main(int argc, char** argv) {
     const char* vst3 = nullptr;
