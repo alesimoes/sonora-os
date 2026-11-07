@@ -104,6 +104,29 @@ class SelfUpdate(unittest.TestCase):
         self.assertFalse(self.up.ready(1000 + 10))
         self.assertTrue(self.up.ready(1000 + selfupdate.CHECK_S))
 
+    def test_a_dirty_checkout_is_forced_after_the_bound(self):
+        new = self.push("tools/harness/train.py", "v2\n")
+        write(self.daemon, "engine/x.cpp", "local edit\n")
+        self.assertFalse(self.up.ready(1000))
+        self.assertFalse(self.up.ready(1000 + self.up.max_defer_s - 1))
+        self.assertTrue(self.up.ready(1000 + self.up.max_defer_s))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
+        self.assertIn("self_update_forced", self.store.kinds())
+
+    def test_a_defer_reason_holds_back_only_until_the_bound(self):
+        self.up.defer_reason = lambda: "integrator running"
+        self.push("tools/harness/train.py", "v2\n")
+        self.assertFalse(self.up.ready(1000))
+        self.assertFalse(self.up.ready(1000 + 100))
+        self.assertTrue(self.up.ready(1000 + self.up.max_defer_s))
+
+    def test_event_names_old_and_new_sha(self):
+        old = git(self.daemon, "rev-parse", "HEAD")
+        new = self.push("tools/harness/train.py", "v2\n")
+        self.up.ready(1000)
+        ev = [r for r in self.store.rows if r[1] == "self_update"][0]
+        self.assertIn(f"{old[:12]} -> {new[:12]}", ev[2])
+
 
 class DaemonLoop(support.DaemonCase):
     def test_run_loop_restarts_when_the_updater_is_ready(self):
@@ -113,6 +136,21 @@ class DaemonLoop(support.DaemonCase):
                                           restart=lambda: calls.append(1))
         o.run(max_ticks=5, sleep=lambda s: None)
         self.assertEqual(calls, [1])
+
+
+class ReAttach(support.DaemonCase):
+    def test_runs_alive_across_a_restart_are_adopted_not_relaunched(self):
+        o = self.make(floors={"daw": 0}, dry_run=True)
+        import harness.launcher as launcher
+        runs = [{"id": "r1", "name": "a1", "pid": 4242, "task_id": "t1"},
+                {"id": "r2", "name": "a2", "pid": 4343, "task_id": "t2"}]
+        from unittest import mock
+        seen = []
+        o.broker.expect = seen.append
+        with mock.patch.object(o.store, "active_runs", lambda: runs),                 mock.patch.object(o.store, "set_run", lambda *a, **k: None),                 mock.patch.object(launcher, "pid_alive",
+                                  lambda pid: pid == 4242):
+            self.assertEqual(o.adopt_runs(), ["r1"])
+        self.assertEqual(seen, ["a1"])
 
 
 if __name__ == "__main__":
