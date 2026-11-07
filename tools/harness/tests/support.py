@@ -82,6 +82,10 @@ class FakeForge(Forge):
         self._chk("workflow_runs")
         return list(self.nightly_runs)[:limit]
 
+    def is_ancestor(self, sha, head):
+        self._chk("is_ancestor")
+        return (sha, head) in getattr(self, "ancestry", set())
+
     def dispatch_workflow(self, workflow, ref="main"):
         self._chk("dispatch_workflow")
         self.dispatched.append((workflow, ref))

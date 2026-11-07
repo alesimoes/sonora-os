@@ -11,7 +11,7 @@ per failed run, however many ticks see it.
 """
 import json
 
-from . import nightly_watch
+from . import nightly_supersede, nightly_watch
 
 META_POLLED = "nightly-polled-at"
 
@@ -41,6 +41,8 @@ def tick(orch, now):
     if done:
         nightly_watch.record_last(store, done[0], now)
         judged = judge(orch, done[0])
+        if done[0].get("conclusion") == "success":
+            nightly_supersede.close_superseded(orch, done[0])
     nightly_watch.watchdog(orch, runs, now, workflow)
     return judged
 
