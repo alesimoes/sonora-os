@@ -11,6 +11,8 @@ import re
 import subprocess
 import tempfile
 
+from harness import shell
+
 
 class ForgeError(Exception):
     pass
@@ -242,7 +244,7 @@ class GhForge(Forge):
         return int(m.group(1))
 
     def enqueue(self, pr):
-        self._ok(["sh", "tools/enqueue-pr.sh", str(pr)], timeout=60)
+        self._ok([shell.bash(), "tools/enqueue-pr.sh", str(pr)], timeout=60)
 
     def list_prs(self):
         out = self._ok(["gh", "pr", "list", "--state", "open", "--limit",
@@ -445,5 +447,5 @@ class GhForge(Forge):
         script = os.path.join(worktree, "tools", "pre-pr.sh")
         if not os.path.exists(script):
             return True, "tools/pre-pr.sh not present: not run"
-        r = self.run(["sh", "tools/pre-pr.sh"], worktree, 1800)
+        r = self.run([shell.bash(), "tools/pre-pr.sh"], worktree, 1800)
         return r.returncode == 0, (r.stdout + r.stderr)[-2000:]

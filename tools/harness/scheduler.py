@@ -5,10 +5,10 @@ daemon executes the answer; nothing here launches, kills or writes.
 """
 import os
 import re
-import shutil
 import subprocess
-import sys
 from dataclasses import dataclass, field
+
+from harness import shell
 
 try:
     import tomllib
@@ -366,27 +366,11 @@ def holds_build_slot(root, worktree):
         return False
     script = os.path.join(root, "tools", "build-slot.sh")
     try:
-        out = subprocess.run([_bash(), script, "--list"], capture_output=True,
+        out = subprocess.run([shell.bash(), script, "--list"], capture_output=True,
                              text=True, timeout=15).stdout
     except (OSError, subprocess.SubprocessError):
         return False
     return holder_in_list(out, worktree)
-
-
-def _bash():
-    """Git's bash on Windows: a bare "bash" there can be WSL's
-    (System32/bash.exe), which reads none of the C:/ paths given to it."""
-    if sys.platform != "win32":
-        return "bash"
-    git = shutil.which("git")
-    if git:
-        base = os.path.dirname(os.path.dirname(git))
-        for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
-            cand = os.path.join(base, *rel)
-            if os.path.exists(cand):
-                return cand
-    return os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
-                        "Git", "bin", "bash.exe")
 
 
 def _posix(path):

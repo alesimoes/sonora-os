@@ -122,6 +122,16 @@ class Lifecycle(support.DaemonCase):
         self.assertEqual(self.forge.created, [])
         self.assertEqual(o.store.get_feature("solo")["pr"], 7)
 
+    def test_pr_created_then_enqueue_fails_is_still_recorded(self):
+        o = self.make()
+        self.feature(o, "solo")
+        self.forge.fail.add("enqueue")
+        self.assertTrue(self.pump(o, lambda: state(o, "solo") == "pr_open"))
+        self.assertEqual(len(self.forge.created), 1)
+        self.assertEqual(o.store.get_feature("solo")["pr"],
+                         self.forge.created[0]["number"])
+        self.assertTrue(o.store.events("solo", "pr_adopted"))
+
     # -- back-pressure ----------------------------------------------------
     def test_max_open_prs_holds_the_next_feature(self):
         o = self.make(max_open_prs=1)
