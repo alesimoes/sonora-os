@@ -566,8 +566,7 @@ int main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--outputs") == 0 && i + 1 < argc) {
             const long n = std::atol(argv[++i]);
             if (n < 2 || n > 64) {
-                std::fprintf(stderr, "sonora: --outputs takes a count from 2 to 64
-");
+                std::fprintf(stderr, "sonora: --outputs takes a count from 2 to 64\n");
                 return 2;
             }
             output_ports = static_cast<uint32_t>(n);
@@ -697,10 +696,8 @@ int main(int argc, char** argv) {
                 "                    (impulses at -20 dBFS on out_OUT), and keep it for\n"
                 "                    this device, rate and period; without either, L is\n"
                 "                    what was kept, else what the audio server reports\n"
-                "  --outputs N         register out_1..out_N (default 10), the pairs the
-"
-                "                      Master and the output paths play on
-"
+                "  --outputs N         register out_1..out_N (default 10), the pairs the\n"
+                "                      Master and the output paths play on\n"
                 "  --plugin-host PATH  the plugin host (default: sonora-plugin-host\n"
                 "                    beside this binary; none: inserts show faulted)\n"
                 "  --plugin-bundle DIR  an extra LV2/VST3 bundle directory (repeatable)\n"
