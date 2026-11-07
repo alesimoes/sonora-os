@@ -103,7 +103,11 @@ echo "$changed" | grep -E '\.(cpp|cc|h|hpp|py|qml|sh)$' | grep -v '/third_party/
 # 9. Workflows must parse (a broken ci.yml makes GitHub run zero jobs), and no
 # added line may end inside an open quote with the next one starting with it
 # (a backslash-n turned into a real line break).
-py=$(command -v python3 || command -v python || true)
+py=
+for c in python3 python py; do
+  # the Windows Store stub answers command -v but does not run
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys' >/dev/null 2>&1; then py=$c; break; fi
+done
 if [ -n "$py" ]; then
   if ! "$py" -c 'import yaml' 2>/dev/null; then
     echo "pre-pr: warning: PyYAML missing; workflow YAML NOT parsed (pip install pyyaml)" >&2
