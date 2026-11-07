@@ -121,6 +121,10 @@ class Forge:
         bundle took that PR)."""
         raise NotImplementedError
 
+    def is_ancestor(self, sha, head):
+        """True when commit `sha` is an ancestor of (or equal to) `head`."""
+        raise NotImplementedError
+
 
 def job_signatures(excerpt):
     """{job name: cause} from failure_excerpt's text. The cause is the job's
@@ -428,6 +432,13 @@ class GhForge(Forge):
                  worktree, timeout=300)
         r = self.run(["git", "merge-base", "--is-ancestor",
                       f"origin/{branch}", "HEAD"], worktree, 60)
+        return r.returncode == 0
+
+    def is_ancestor(self, sha, head):
+        r = self.run(["git", "merge-base", "--is-ancestor", sha, head],
+                     self.root, 60)
+        if r.returncode not in (0, 1):   # unknown commit: not an answer
+            self._raise(["git", "merge-base"], r.stderr)
         return r.returncode == 0
 
     def pre_pr(self, worktree):
