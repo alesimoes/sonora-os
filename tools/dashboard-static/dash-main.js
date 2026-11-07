@@ -1,6 +1,6 @@
 function render(s){
   lastState=s;
-  renderSit(s);renderPeople(s);renderMachine(s);renderFlow(s);renderDisk(s);renderTech(s);renderAlerts(s);
+  renderSit(s);renderStrip(s);renderPeople(s);renderMachine(s);renderFlow(s);renderDisk(s);renderTech(s);renderAlerts(s);
   diff(s);
   renderUsage(s.usage||{});
   $('links').innerHTML=(s.links||[]).map(l=>`<a href="${E(l.url)}" target="_blank" rel="noopener">${E(l.title)}</a>`).join('');

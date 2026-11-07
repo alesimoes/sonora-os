@@ -41,5 +41,13 @@ const runActs=name=>actBtn('parar','run.stop',{name},'dng')+actBtn('relançar','
 const poolActs=(n,paused)=>actBtn(paused?'retomar':'pausar',paused?'pool.resume':'pool.pause',{pool:n});
 function alertsHtml(o){const a=(o&&o.alerts)||[];
   return a.length?a.map(x=>`<div class="alert">${E(typeof x==='object'?(x.text||x.message||x.reason||JSON.stringify(x)):x)}</div>`).join(''):''}
-function renderAlerts(s){const h=alertsHtml(s.orchestrator);$('alerts').hidden=!h;$('alerts').innerHTML=h}
+function derivedAlerts(s){const o=s.orchestrator,out=[],now=Date.now()/1000;
+  const st=s.prs.map(p=>[p,prState(p)]),nm=c=>st.filter(x=>x[1].col===c&&x[1].cls!=='wait').map(x=>'#'+x[0].number).join(' ');
+  if(!o)out.push('Daemon do orquestrador desligado: nada será mergeado nem distribuído.');
+  else if(!o.updated_ts||now-o.updated_ts>120)out.push('Daemon sem sinal há '+dur(Math.round(now-(o.updated_ts||0)))+'.');
+  const ready=nm(4);if(ready&&o&&((o.paused||[]).length||!o.updated_ts||now-o.updated_ts>120))out.push('PRs prontos esperando merge com o orquestrador pausado: '+ready);
+  const bad=nm(3);if(bad)out.push('PRs que precisam de correção: '+bad);
+  s.prs.filter(p=>p.base&&p.base!=='main').forEach(p=>out.push('PR #'+p.number+' empilhado na base '+p.base+' (proibido)'));
+  return out}
+function renderAlerts(s){const h=alertsHtml(s.orchestrator)+derivedAlerts(s).map(x=>`<div class="alert">${E(x)}</div>`).join('');$('alerts').hidden=!h;$('alerts').innerHTML=h}
 loadActions();setInterval(loadActions,15000);

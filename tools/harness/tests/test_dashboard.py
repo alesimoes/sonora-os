@@ -211,5 +211,30 @@ class Served(unittest.TestCase):
         self.assertEqual(json.loads(get("/api/state")[1])["disk"]["drive"]["level"], "warn")
 
 
+class ReadPrsDraft(unittest.TestCase):
+    def test_draft_flag_and_base_are_passed_on(self):
+        import dashboard_github
+        raw = json.dumps([{"number": 7, "title": "t", "headRefName": "b", "baseRefName": "main",
+                           "mergeStateStatus": "CLEAN", "mergeable": "MERGEABLE", "createdAt": "x",
+                           "isDraft": True, "statusCheckRollup": []}])
+        orig = dashboard_github.run
+        dashboard_github.run = lambda *a, **k: raw
+        try:
+            p = dashboard_github.read_prs()[0]
+        finally:
+            dashboard_github.run = orig
+        self.assertTrue(p["draft"])
+        self.assertEqual(p["base"], "main")
+
+
+class PageUsesGithubStatus(unittest.TestCase):
+    """The flow no longer reads local-ci lots or stacked-PR phases."""
+    def test_static_has_no_gate_phases(self):
+        d = os.path.join(os.path.dirname(dashboard_static.__file__), "dashboard-static")
+        text = "".join(open(os.path.join(d, n), encoding="utf-8").read() for n in ("dash-flow.js", "dash-prs.js"))
+        for word in ("empilhado", "retarget", "buildtime", "na fila do lote"):
+            self.assertNotIn(word, text)
+
+
 if __name__ == "__main__":
     unittest.main()
