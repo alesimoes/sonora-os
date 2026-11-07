@@ -25,6 +25,27 @@ class Refused(Exception):
     """The request cannot be applied now; the message says why."""
 
 
+def validate(kind, args):
+    """Cleaned args or ValueError; used by the poster and again by the daemon."""
+    if kind not in KINDS:
+        raise ValueError(f"unknown request {kind}")
+    pr = args.get("pr")
+    if isinstance(pr, bool) or not isinstance(pr, int) or pr <= 0:
+        raise ValueError("pr must be a positive number")
+    out = {"pr": pr}
+    if kind == "rerun-step":
+        step = args.get("step")
+        if not isinstance(step, str) or not STEP_RE.match(step):
+            raise ValueError("step must be a step name")
+        out["step"] = step
+    if kind == "assign":
+        who = args.get("as")
+        if who not in ASSIGN_AS:
+            raise ValueError("as must be fixer or integrator")
+        out["as"] = who
+    return out
+
+
 def post(hdir, kind, **args):
     """Queues one request on the daemon's CLI mailbox (harness/cli_mailbox.py)."""
     from . import cli_mailbox   # it imports this module for apply()
