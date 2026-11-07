@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "sonora/model/model.h"
+#include "sonora/model/op_variant.h"
 
 namespace sonora::model {
 
@@ -646,22 +647,37 @@ struct RemoveGroup {
     Id group = 0;
 };
 
+// The families (ADR-0059): an operation is first one of these, then one of
+// the family's own. Each stays short, which is what keeps a visit, a copy
+// and an assignment cheap to compile; a new operation joins the family of
+// its domain, and a family that outgrows about a dozen is split.
+using SessionOp = std::variant<AddSource, SetMonitorBus, SetSettings, AddMarker, MoveMarker,
+                               RemoveMarker>;
+using TrackOp = std::variant<AddTrack, RemoveTrack, DuplicateTrack, SetTrackName, SetTrackColour,
+                             ReorderTracks>;
+// What moves, cuts or records audio regions on a playlist.
+using RegionOp = std::variant<PlaceRegion, RecordTake, RecordLoopTake, MoveRegion, TrimRegion,
+                              SplitRegion, RemoveRegion, ShiftRegions>;
+// A region's own attributes and the fades between regions.
+using ClipOp = std::variant<SetFade, SetCrossfade, RemoveCrossfade, SetRegionName,
+                            SetRegionColour, SetRegionGain, SetClipGroup, SetRegionSources>;
+using PlaylistOp = std::variant<AddPlaylist, SetActivePlaylist, DuplicatePlaylist,
+                                SetPlaylistName, RemovePlaylist>;
+using InsertOp = std::variant<AddInsert, RemoveInsert, MoveInsert, SetInsertActive,
+                              ReplaceInsert, SetInsertBypass, SetInsertParams, SetInsertState>;
+using MixOp = std::variant<SetMix, AddBus, RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix,
+                           SetOutput, EditAutomation>;
+using GroupOp = std::variant<SetGroup, RemoveGroup, SetVca, RemoveVca, SetVcaMix, SetFolder,
+                             RemoveFolder>;
+using MidiOp = std::variant<AddMidiSource, PlaceMidiRegion, EditMidi, SetMidiRouting>;
+
 // Every operation but Compound: what a compound holds. The type, not a
 // runtime check, keeps a compound out of a compound.
-using Member =
-    std::variant<AddSource, SetMix, SetMonitorBus, SetSettings, AddTrack,
-                 PlaceRegion, RecordTake, MoveRegion, TrimRegion, SplitRegion,
-                 RemoveRegion, SetFade, SetCrossfade, RemoveCrossfade,
-                 AddPlaylist, SetActivePlaylist, AddMarker, MoveMarker,
-                 RemoveMarker, SetTrackName, ReorderTracks, AddInsert,
-                 RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
-                 SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
-                 PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
-                 RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
-                 DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetGroup,
-                 RemoveGroup, SetRegionGain, SetClipGroup, SetRegionSources, SetVca, RemoveVca,
-                 SetVcaMix, SetFolder, RemoveFolder, ShiftRegions>;
+class Member : public detail::OpVariant<SessionOp, TrackOp, RegionOp, ClipOp, PlaylistOp,
+                                        InsertOp, MixOp, GroupOp, MidiOp> {
+public:
+    using OpVariant::OpVariant;
+};
 
 // The largest limit measured under the 10 ms control-thread budget on 18
 // playlists of 2,000 regions (ADR-0009 note 2026-10-18): members validate
@@ -684,24 +700,70 @@ struct Compound {
     std::string label;
 };
 
-// The same alternatives as Member, at the same indices, then Compound.
-using Operation =
-    std::variant<AddSource, SetMix, SetMonitorBus, SetSettings, AddTrack,
-                 PlaceRegion, RecordTake, MoveRegion, TrimRegion, SplitRegion,
-                 RemoveRegion, SetFade, SetCrossfade, RemoveCrossfade,
-                 AddPlaylist, SetActivePlaylist, AddMarker, MoveMarker,
-                 RemoveMarker, SetTrackName, ReorderTracks, AddInsert,
-                 RemoveInsert, MoveInsert, SetInsertActive, ReplaceInsert,
-                 SetInsertBypass, SetInsertParams, SetInsertState, AddMidiSource,
-                 PlaceMidiRegion, EditMidi, SetMidiRouting, RecordLoopTake, AddBus,
-                 RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix, RemoveTrack,
-                 DuplicateTrack, SetOutput, DuplicatePlaylist, SetPlaylistName, RemovePlaylist,
-                 EditAutomation, SetTrackColour, SetRegionName, SetRegionColour, SetGroup,
-                 RemoveGroup, SetRegionGain, SetClipGroup, SetRegionSources, SetVca, RemoveVca,
-                 SetVcaMix, SetFolder, RemoveFolder, ShiftRegions, Compound>;
+// Member's families, in the same order, then Compound.
+class Operation : public detail::OpVariant<SessionOp, TrackOp, RegionOp, ClipOp, PlaylistOp,
+                                           InsertOp, MixOp, GroupOp, MidiOp, Compound> {
+public:
+    using OpVariant::OpVariant;
+};
 
-static_assert(std::variant_size_v<Operation> == std::variant_size_v<Member> + 1,
+static_assert(Operation::kinds == Member::kinds + 1,
               "Operation is Member's alternatives and Compound");
+
+// std::get_if, std::get, std::holds_alternative and std::visit for the
+// two-level variant: each reaches the leaf through its family.
+template <typename T>
+const T* get_if(const Operation* op) {
+    return op != nullptr ? op->get_if<T>() : nullptr;
+}
+template <typename T>
+T* get_if(Operation* op) {
+    return op != nullptr ? op->get_if<T>() : nullptr;
+}
+template <typename T>
+const T* get_if(const Member* m) {
+    return m != nullptr ? m->get_if<T>() : nullptr;
+}
+template <typename T>
+T* get_if(Member* m) {
+    return m != nullptr ? m->get_if<T>() : nullptr;
+}
+template <typename T>
+bool holds_alternative(const Operation& op) {
+    return op.holds<T>();
+}
+template <typename T>
+bool holds_alternative(const Member& m) {
+    return m.holds<T>();
+}
+template <typename T>
+const T& get(const Operation& op) {
+    if (const T* t = op.get_if<T>()) return *t;
+    throw std::bad_variant_access();
+}
+template <typename T>
+T& get(Operation& op) {
+    if (T* t = op.get_if<T>()) return *t;
+    throw std::bad_variant_access();
+}
+template <typename T>
+const T& get(const Member& m) {
+    if (const T* t = m.get_if<T>()) return *t;
+    throw std::bad_variant_access();
+}
+template <typename T>
+T& get(Member& m) {
+    if (T* t = m.get_if<T>()) return *t;
+    throw std::bad_variant_access();
+}
+template <typename F>
+decltype(auto) visit(F&& f, const Operation& op) {
+    return op.visit(std::forward<F>(f));
+}
+template <typename F>
+decltype(auto) visit(F&& f, const Member& m) {
+    return m.visit(std::forward<F>(f));
+}
 
 Operation to_operation(const Member& m);
 // False, leaving `out` alone, for a Compound.
@@ -724,7 +786,7 @@ public:
 
     template <typename T>
     const T* get_if() const {
-        return member_ != nullptr ? std::get_if<T>(member_) : std::get_if<T>(op_);
+        return member_ != nullptr ? member_->get_if<T>() : op_->get_if<T>();
     }
     template <typename T>
     bool holds() const {

@@ -141,10 +141,10 @@ bool one_take_update(Client& c) {
         std::fprintf(stderr, "  the take's update does not decode: %s\n", error.c_str());
         return false;
     }
-    const auto* take = std::get_if<sonora::model::Compound>(&op);
+    const auto* take = sonora::model::get_if<sonora::model::Compound>(&op);
     return take != nullptr && take->label == "Record" && take->ops.size() == 2 &&
-           std::holds_alternative<sonora::model::AddSource>(take->ops[0]) &&
-           std::holds_alternative<sonora::model::RecordTake>(take->ops[1]);
+           sonora::model::holds_alternative<sonora::model::AddSource>(take->ops[0]) &&
+           sonora::model::holds_alternative<sonora::model::RecordTake>(take->ops[1]);
 }
 
 sonora::SessionConfig config(const fs::path& dir) {
@@ -594,7 +594,7 @@ int test_a_refused_take_is_shown_as_failed() {
         CHECK(ops.size() == 1);
         sonora::model::Operation op;
         CHECK(sonora::model::decode_operation(ops[0]->bytes, op, error));
-        CHECK(std::holds_alternative<sonora::model::AddSource>(op));
+        CHECK(sonora::model::holds_alternative<sonora::model::AddSource>(op));
 
         engine.shutdown();
         audio.deactivate();

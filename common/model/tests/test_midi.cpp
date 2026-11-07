@@ -383,8 +383,8 @@ int test_place_midi_region_shares_by_reference() {
     CHECK(mentions(bytes, "\"notes\": []"));
     Operation back;
     CHECK(decode_operation(bytes, back, error));
-    CHECK(std::get<PlaceMidiRegion>(back).data_from ==
-          std::get<PlaceMidiRegion>(op).data_from);
+    CHECK(get<PlaceMidiRegion>(back).data_from ==
+          get<PlaceMidiRegion>(op).data_from);
 
     MidiRegion both = midi_region(ids(), 60 * kBeat, kBeat, 0, f.data);
     CHECK(refused(f.h, PlaceMidiRegion{f.midi_pl, both, 0, MidiDataRef{f.midi_pl, f.region}},

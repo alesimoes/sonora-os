@@ -36,3 +36,31 @@ now) is built and tested but not driven by the harness.
 - `multiband`: 3 or 4 band compressor, Linkwitz-Riley or linear-phase
   crossovers (`common/dsp/include/sonora/dsp/crossover.h`); design in
   `brain/research/native-multiband-n2.md`.
+
+## The plugin package
+
+The plugins are a product of their own (owner, 2026-11-05), so their build
+does not need the engine, the host or the UI. `-DSONORA_PLUGINS_ONLY=ON`
+configures only `common/*` and `plugins/native`.
+
+    tools/package-plugins.sh          # Linux: LV2 + VST3, in the sonora-plugins container
+    tools/package-plugins.ps1         # Windows: VST3 with MSVC (VS 2022 Build Tools)
+    tools/build-plugins.sh --plugins-only   # just the build and the native tests (ctest -L native)
+
+The archives land in `dist/` (gitignored):
+`sonora-plugins-<version>-linux-x86_64.tar.gz` and
+`sonora-plugins-<version>-windows-x64.zip`, each with the bundles, `licenses/`
+(Sonora GPL-3.0, DPF's ISC text, a NOTICE; see
+`brain/research/plugin-licences-onnx.md`) and a README. The version is
+`SONORA_VERSION`, else `git describe` (a tree with no tag reads
+`0.0.0-<commits>-g<sha>`). Only what the install rules of
+`plugins/native/format` install is packaged, so a processor marked
+`EXPERIMENTAL` (ADR-0011 3.5) is not.
+
+`tools/local-ci.sh` runs the same build, tests and archive as its `plugins`
+step, in a scratch folder; `--release` keeps both archives in `dist/`. The
+Windows zip is built with `tools/build-portable.ps1 -Package` (the `windows`
+step). The Windows build has no LV2 and no bundle driver or validator (both
+are POSIX); `package-plugins.ps1` checks the module's `GetPluginFactory`,
+`InitDll` and `ExitDll` exports instead. Not yet done: code signing, and
+loading the Windows bundles in a Windows host.
