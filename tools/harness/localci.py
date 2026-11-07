@@ -25,7 +25,12 @@ branches (start(..., pre=True)) take the checkouts one at a time, after the
 batches. Only the orchestrator (this module, from its tick) starts a heavy
 run. The machine-wide lock (tools/build-slot.sh) orders the steps of runs
 that overlap: SONORA_HEAVY_PRIORITY is 0 for a batch, 1 for main's full run
-and 2 for a pre-PR run. builder_status() is the dashboard's one "builder"
+and 2 for a pre-PR run, and every run holds the lock from its first step to
+its last (SONORA_LOCAL_CI_HOLD_LOCK, from #455), so no agent build starts
+in the middle of a gate. A red step is run once more inside the run before
+it counts, so a load-sensitive test does not split a batch; the flakes it
+caught are recorded (harness/localci_flakes.py). builder_status() is the
+dashboard's one "builder"
 card. The run is a detached shell that writes rc and
 summary files; the daemon only polls them, so a daemon restart loses
 nothing.
@@ -39,7 +44,7 @@ import subprocess
 import sys
 import time
 
-from . import localci_cancel
+from . import cleanwt, localci_cancel, localci_flakes, localci_steps
 
 TIMEOUT_S = 3 * 3600
 BATCH_SETTLE_S = 60   # PRs ready within a minute share one build
@@ -87,6 +92,9 @@ class LocalCI:
         self.o = orch
         self.clock = clock
         self.base = os.path.join(orch.root, ".harness", "ci")
+        # Why no new run starts (harness/selfupdate.py: the daemon waits for
+        # the running one, then moves its checkout and re-execs); None: go.
+        self.hold = None
 
     # -- state ------------------------------------------------------------
     def result(self, sha):
@@ -150,7 +158,7 @@ class LocalCI:
     def _launch_queued(self):
         """Fills the free checkouts: bisect halves first, then one batch of
         every ready PR, then the pre-PR runs of feature branches."""
-        while True:
+        while not self.hold:
             slot = self._free_slot()
             if slot is None:
                 return
@@ -191,11 +199,7 @@ class LocalCI:
                               queued=False, ended=self.clock())
                     self._post(h, "failure", why or "nothing to build")
             return True
-        for f in ("rc", "summary"):
-            try:
-                os.remove(os.path.join(logdir, f))
-            except OSError:
-                pass
+        localci_steps.clear_run(logdir)
         # The daemon's own copy of the script judges every head the same
         # way, including heads from before the script existed.
         script = os.path.join(self.o.root, "tools", "local-ci.sh")
@@ -206,6 +210,8 @@ class LocalCI:
                    SONORA_LOCAL_CI_ROOT=wt.replace("\\", "/"),
                    SONORA_LOCAL_CI_DIR=logdir.replace("\\", "/"),
                    SONORA_HEAVY_PRIORITY=str(prio),
+                   # the machine is the run's from its first step to its last
+                   SONORA_LOCAL_CI_HOLD_LOCK="1",
                    # a batch that fails is split anyway; stop at its first red
                    SONORA_LOCAL_CI_FAIL_FAST="1" if len(merged) > 1 else "0")
         kw = {}
@@ -249,9 +255,14 @@ class LocalCI:
                 return f"git worktree add: {r.stderr.strip()[:200]}", [], []
         for args in (["merge", "--abort"], ["reset", "-q", "--hard"],
                      ["checkout", "-q", "-f", "--detach", main],
-                     ["clean", "-fdxq", "-e", "build-ui-container",
-                      "-e", "build-container"]):
-            r = _git(args, wt)
+                     ["clean"]):
+            if args[0] == "clean":
+                # build trees stay, so the next build is incremental
+                r = cleanwt.clean(_git, wt, (
+                    "build-ui-container", "build-container", "build-plugins",
+                    "build-plugins-only", "build-rtsan"))
+            else:
+                r = _git(args, wt)
             if r.returncode and args[0] in ("checkout", "clean"):
                 return f"git {args[0]}: {r.stderr.strip()[:200]}", [], []
         dropped, merged = [], []
@@ -290,25 +301,9 @@ class LocalCI:
         self._launch_queued()
 
     def prune(self, gone):
-        """Drops queued work and cancels running batches whose heads are all
-        merged or closed; gone(head) says so for one head."""
-        for name in ("pool", "groups"):
-            q = self._queue(name)
-            if name == "groups":
-                kept = [g for g in q if not all(gone(h) for h in g)]
-                dropped = [h for g in q if g not in kept for h in g]
-            else:
-                kept, dropped = localci_cancel.prune_queue(q, lambda e: e["head"], gone)
-            if dropped:
-                self._set_queue(name, kept)
-                self._cancel_heads(dropped)
-        for key, r in self._running():
-            heads = r.get("heads") or [key]
-            if all(gone(h) for h in heads):
-                localci_cancel.kill_tree(r.get("pid"))
-                localci_cancel.mark_cancelled_files(r.get("dir") or "")
-                self._set(key, state="cancelled", ended=self.clock())
-                self._cancel_heads(heads)
+        """Merged, closed and replaced heads leave every queue, a running
+        run included (harness/localci_cancel.py); gone(head) says so."""
+        localci_cancel.prune(self, gone)
 
     def _cancel_heads(self, heads):
         for h in heads:
@@ -331,6 +326,8 @@ class LocalCI:
                 excerpt += f"\n[{m.group(1)}]\n" + "\n".join(
                     (hits or lines)[-EXCERPT_LINES:])
         heads = (self.result(key) or {}).get("heads") or [key]
+        if d:
+            localci_flakes.record(self.o.store, d, heads, self.clock())
         self._set(key, state="pass" if ok else "fail", summary=summary[-2000:],
                   excerpt=excerpt[-4000:], ended=self.clock())
         if not ok and len(heads) > 1:
@@ -361,19 +358,13 @@ class LocalCI:
         now = now or self.clock()
         cur = None
         for key, r in self._running():
-            step = None
-            try:
-                logs = [os.path.join(r["dir"], f) for f in
-                        os.listdir(r["dir"]) if f.endswith(".log")]
-                if logs:
-                    step = os.path.basename(max(logs, key=os.path.getmtime))[:-4]
-            except OSError:
-                pass
+            step = localci_steps.current_step(r.get("dir") or "")
             cur = {"key": key, "heads": r.get("heads") or [key],
                    "full": bool(r.get("full")), "priority": r.get("prio"),
                    "step": step, "started": r.get("started"),
                    "elapsed_s": int(now - r.get("started", now)),
-                   "dir": r.get("dir")}
+                   "dir": r.get("dir"),
+                   "steps": localci_steps.read_steps(r.get("dir") or "")}
             break
         last = None
         for k, v in list(self.o.store._d["meta"].items()):
@@ -392,6 +383,7 @@ class LocalCI:
                         .splitlines()[-1:] or [""]}
         pool = self._queue("pool")
         return {"running": cur, "last": last,
+                "flakes": localci_flakes.from_store(self.o.store)[:10],
                 "queue": {"batch": [e["head"] for e in pool
                                     if not e.get("pre")],
                           "pre": [e["head"] for e in pool if e.get("pre")],
@@ -409,7 +401,7 @@ class LocalCI:
         A red main is an event and the `local-ci` status on its commit; the
         next PR gates merge with it, so their failures say so too."""
         now = self.clock()
-        if now - getattr(self, "_main_checked", 0) < every_s:
+        if self.hold or now - getattr(self, "_main_checked", 0) < every_s:
             return
         # A batch waiting for a checkout goes first; main's full run takes
         # the slot for an hour.

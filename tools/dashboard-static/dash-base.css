@@ -1,0 +1,56 @@
+/* Mesma linguagem visual da interface do Sonora (ui/qt/src/theme.h): superfícies planas
+   escuras, destaque verde-azulado, Inter, raio 4, espaços de 4/8/12/16. */
+:root{
+  --window:#121417; --panel:#1a1d22; --raised:#252930; --hover:#2e333b; --sunken:#0d0f12;
+  --line:#2a2f36; --line2:#3a4048;
+  --ink:#e8ebef; --muted:#a3abb5; --faint:#7c8590;
+  --accent:#3fc1b0; --ok:#4cc38a; --warn:#e8b04b; --bad:#ff5a5f; --badbg:#3a1618; --opus:#9d7cf0;
+  --disp:"Inter","Segoe UI","Helvetica Neue",Arial,sans-serif;
+  --mono:"Cascadia Mono",ui-monospace,Consolas,monospace;
+  /* nomes antigos usados no resto da página */
+  --cyan:var(--accent); --teal:var(--ok); --amber:var(--warn); --red:var(--bad); --slate:var(--faint); --bg:var(--window);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;overflow-x:hidden;max-width:100vw}
+body{background:var(--window);color:var(--ink);font:13px/1.45 var(--disp);min-height:100vh}
+main{max-width:1500px;margin:0 auto;padding:16px 20px 40px}
+.mono,span.m{font-family:var(--mono)}
+h1{margin:0;font-size:18px;font-weight:700;letter-spacing:.02em}
+.sub{color:var(--faint);font-size:11px}
+@keyframes blink{50%{opacity:.4}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* topo */
+.topbar{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-bottom:12px}
+.gauges{display:flex;gap:16px;flex-wrap:wrap;margin-left:8px}
+.gauges .g{display:flex;align-items:center;gap:8px}
+.gauges .g svg{width:34px;height:34px;flex:none}
+.gauges .g .bg{fill:none;stroke:var(--raised);stroke-width:7}
+.gauges .g .fg{fill:none;stroke:var(--accent);stroke-width:7;stroke-linecap:round;transition:stroke-dasharray .9s}
+.gauges .g.hi .fg{stroke:var(--warn)} .g.crit .fg{stroke:var(--bad)}
+.gauges .g text{font-family:var(--disp);fill:var(--ink);font-size:28px;font-weight:600;text-anchor:middle}
+.gauges .g .gt{display:flex;flex-direction:column;line-height:1.2}
+.gauges .g .gl{font-size:11px;font-weight:600;color:var(--muted)}
+.gauges .g small{color:var(--faint);font-size:10px;white-space:nowrap}
+.clock{text-align:right}
+.clock b{display:block;font-size:20px;font-weight:500;font-variant-numeric:tabular-nums}
+.clock span{font-size:11px;color:var(--faint)}
+.live{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted);padding:4px 10px;background:var(--panel);border:1px solid var(--line);border-radius:4px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);animation:blink 2s ease-in-out infinite}
+.dot.stale{background:var(--bad)}
+.clk{cursor:pointer}
+/* faixa de status compacta: medidores pequenos e chips (disco, daemon, trava) */
+.strip{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;padding:4px 10px;margin-bottom:6px;background:var(--panel);border:1px solid var(--line);border-radius:4px;font-size:11px}
+.strip .gauges{margin:0;gap:12px}.strip .gauges .g svg{width:22px;height:22px}.strip .gauges .g text{font-size:30px}
+.strip .gauges .g .gl{font-size:10px}.strip .gauges .g small{font-size:9.5px}
+.chips{display:flex;flex-wrap:wrap;gap:4px 14px;margin-left:auto}
+.sc{white-space:nowrap;color:var(--muted)}.sc small{color:var(--faint);font-size:10px}.sc b{font-weight:600;color:var(--ink)}
+.sc.ok b{color:var(--ok)}.sc.warn b{color:var(--warn)}.sc.crit b,.sc.bad b{color:var(--bad)}
+.sit .sflow .sbad{color:var(--bad)}.sit .pgm .pgbar{width:70px}
+.sit{font-size:16px;border-left-width:4px;padding:12px 14px}
+.people .ag .an{font-size:18px}
+.people{grid-template-columns:repeat(auto-fill,minmax(380px,1fr))}
+.fr:not(.fh) .fc2.cur .pn small{font-size:12px}
+h2.h2{font-size:20px}
+details.tech h3{font-size:14px;margin:12px 0 6px}

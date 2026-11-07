@@ -53,11 +53,26 @@ class StaleBatch(unittest.TestCase):
         self.assertFalse(localci.passed(int(open(os.path.join(d, "rc")).read()),
                                         summary))
 
-    def test_batch_with_one_open_pr_keeps_running(self):
-        self.running_batch("a1", "b2")
+    def test_batch_with_one_gone_head_is_cancelled_and_the_rest_requeued(self):
+        # 2026-11-07: a batch kept building a merged PR's head for ~5 h. Its
+        # candidate merges a head nobody will merge, so it is stopped now and
+        # the live heads are built again, first, without it.
+        key = self.running_batch("a1", "b2")
         self.ci.prune(lambda h: h == "a1")
-        self.assertEqual(self.killed, [])
-        self.assertEqual(len(self.ci._running()), 1)
+        self.assertEqual(self.killed, [4242])
+        self.assertEqual(self.ci.result(key)["state"], "cancelled")
+        self.assertEqual(self.ci.result("a1")["state"], "cancelled")
+        self.assertEqual(self.ci._queue("groups"), [["b2"]])
+        self.assertEqual(self.ci.result("b2")["state"], "running")
+        self.assertTrue(self.ci.result("b2")["queued"])
+        self.ci.poll()
+        (k2, r2), = self.ci._running()
+        self.assertEqual(r2["heads"], ["b2"])
+
+    def test_bisect_group_loses_only_its_gone_heads(self):
+        self.ci._set_queue("groups", [["a1", "b2"], ["c3"]])
+        self.ci.prune(lambda h: h == "a1")
+        self.assertEqual(self.ci._queue("groups"), [["b2"], ["c3"]])
 
     def test_queued_heads_of_merged_prs_leave_the_queue(self):
         self.ci.start("a1")
@@ -111,9 +126,12 @@ class BuildSlot(unittest.TestCase):
     def test_holder_is_found_by_cwd_in_git_bash_form(self):
         self.assertTrue(scheduler.holder_in_list(self.LISTING, "C:\\src\\wt\\one"))
 
-    def test_waiter_and_other_worktree_do_not_hold(self):
-        self.assertFalse(scheduler.holder_in_list(self.LISTING, "C:\\src\\wt\\two"))
+    def test_waiter_counts_as_building_other_worktree_does_not(self):
+        # 2026-11-07: a run whose build sat in the lock queue had no stream
+        # output, was classified stalled and killed; a waiter is building.
+        self.assertTrue(scheduler.holder_in_list(self.LISTING, "C:\\src\\wt\\two"))
         self.assertFalse(scheduler.holder_in_list(self.LISTING, "C:\\src\\wt\\on"))
+        self.assertFalse(scheduler.holder_in_list(self.LISTING, "C:\\src\\wt\\three"))
 
     def test_holds_build_slot_reads_the_script_list(self):
         run = types.SimpleNamespace(stdout=self.LISTING)
