@@ -159,6 +159,8 @@ sonora_ui_library(sonora_ui_mixer QT SOURCES
   src/send_model.h src/send_model.cpp
   src/insert_model.h src/insert_model.cpp
   src/loudness_model.h src/loudness_model.cpp
+  src/plugin_favourites.h src/plugin_favourites.cpp
+  src/plugin_manager_model.h src/plugin_manager_model.cpp
 )
 target_link_libraries(sonora_ui_mixer PUBLIC sonora_ui_session sonora_ui_inserts)
 
@@ -170,6 +172,7 @@ set(SONORA_UI_QML_FILES
   qml/InsertPanel.qml qml/Knob.qml qml/Fader.qml qml/MeterBar.qml qml/CurveView.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
   qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml qml/IoSetupWindow.qml qml/NewSessionDialog.qml
   qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
+  qml/PluginManager.qml
 )
 sonora_ui_library(sonora_ui_qml QT SOURCES
   src/qml_resources.cpp src/register_types.h ${SONORA_UI_QML_FILES})
@@ -448,6 +451,16 @@ add_executable(test_ui_inserts tests/test_inserts.cpp)
 target_link_libraries(test_ui_inserts PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_inserts COMMAND test_ui_inserts)
 set_tests_properties(ui_inserts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The plug-in manager (ADR-0065) on FakeEngine: the catalog's three kinds of
+# entry, the filters, block and unblock round-tripping through the engine's
+# next catalog, rescan, favourites kept through a fake store (and refused
+# when it cannot save), then the chooser's Manage, star and Favourites
+# loaded offscreen.
+add_executable(test_ui_plugin_manager tests/test_plugin_manager.cpp)
+target_link_libraries(test_ui_plugin_manager PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_plugin_manager COMMAND test_ui_plugin_manager)
+set_tests_properties(ui_plugin_manager PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Sends and aux buses (ADR-0022) on FakeEngine: assign, reassign, a new bus
 # with its send, the send window's values, a loop offered with its reason
