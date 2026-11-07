@@ -14,6 +14,7 @@ import secrets
 import dashboard_actions
 import dashboard_actions_agents    # noqa: F401  (each module registers its actions)
 import dashboard_actions_ci        # noqa: F401
+import dashboard_actions_door      # noqa: F401
 import dashboard_actions_prs       # noqa: F401
 import dashboard_actions_sys       # noqa: F401
 import dashboard_audit
