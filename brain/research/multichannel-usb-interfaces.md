@@ -150,7 +150,7 @@ suffix on real ALSA nodes and whether they report a usable serial.
 `alsa_card_unit()` in `drivers/support/include/sonora/alsa_card.h` reads the
 card's hardware unit from sysfs: `/proc/asound/<id>` -> `cardN`,
 `/sys/class/sound/cardN/device` -> the USB interface (`1-4:1.0`), whose
-parent holds `serial`. The key is `"<serial><bus path>"`: the serial
+parent holds `serial`. The key is `"<serial>\x01<bus path>"`: the serial
 first, so a unit keeps its place when its cable moves; the bus path, so two
 units with no serial (or the same one) stay apart and order by port. The JACK
 backend hands it per port to `describe_ports(names, usb, unit)`, which ranks
