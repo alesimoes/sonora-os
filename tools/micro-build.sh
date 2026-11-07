@@ -115,6 +115,13 @@ fi
 if [[ -n "${SONORA_CCACHE_DIR:-}" ]]; then
   mkdir -p "$SONORA_CCACHE_DIR"
   CCACHE=(-v "$(host_path "$SONORA_CCACHE_DIR"):/ccache")
+elif [[ "$(uname -s)" == Linux ]]; then
+  # A host directory, not a named volume: a fresh volume is root's, and the
+  # container runs as the caller (ccache: Permission denied broke the RTSan
+  # job's configure on PRs #478 and #479, 2026-11-07).
+  SONORA_CCACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/sonora-ccache"
+  mkdir -p "$SONORA_CCACHE_DIR"
+  CCACHE=(-v "$SONORA_CCACHE_DIR:/ccache")
 else
   CCACHE=(-v sonora-ccache:/ccache)
   # A fresh named volume is root-owned; the caller-uid container (Linux) gets
