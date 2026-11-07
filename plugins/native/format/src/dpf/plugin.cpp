@@ -29,6 +29,10 @@
 #include <memory>
 #include <string>
 
+#if defined(__linux__)
+#include <dlfcn.h>
+#endif
+
 #include "DistrhoPlugin.hpp"
 #include "sonora/native/format/bridge.h"
 #include "sonora/native/format/entry.h"
@@ -84,6 +88,24 @@ const char* unit_text(Unit u) {
     }
 }
 
+// The insert's telemetry block (ADR-0057, amendment 2026-11-07). The bundle
+// exports nothing but its format's entry points (lv2lint refuses any other
+// global symbol), so the hand-over runs the other way: the Sonora plugin
+// host exports sonora_host_telemetry_take(), and the instance asks for the
+// block while the host instantiates it. Any other host does not export it,
+// the answer is nullptr and the telemetry stays private. Control thread,
+// before audio.
+void* take_host_telemetry_block() {
+#if defined(__linux__)
+    using Take = void* (*)();
+    // dlsym returns an object pointer; the cast is the loader's own idiom.
+    const Take take = reinterpret_cast<Take>(dlsym(RTLD_DEFAULT, "sonora_host_telemetry_take"));
+    return take != nullptr ? take() : nullptr;
+#else
+    return nullptr;
+#endif
+}
+
 }  // namespace
 
 class SonoraPlugin final : public Plugin {
@@ -97,6 +119,8 @@ public:
         // host's own rate and block size arrive with activate().
         bridge_.activate(getSampleRate(), getBufferSize());
         setLatency(bridge_.latency());
+        telemetry_block_ = take_host_telemetry_block();
+        bind_telemetry();
     }
 
 protected:
@@ -212,6 +236,7 @@ protected:
     void activate() override {
         bridge_.activate(getSampleRate(), getBufferSize());
         setLatency(bridge_.latency());
+        bind_telemetry();
     }
 
     // DPF calls these on the host's main thread (VST3 setupProcessing, LV2
@@ -247,6 +272,14 @@ protected:
     }
 
 private:
+    // A processor that publishes offers its Telemetry when it is prepared,
+    // which can be after the constructor (VST3 setActive); the oldest
+    // pending instance takes the block, as it did when the host pushed it.
+    void bind_telemetry() {
+        if (telemetry_block_ != nullptr) sonora::native::Telemetry::bind_pending(telemetry_block_);
+    }
+
+    void* telemetry_block_ = nullptr;
     sonora::native::format::Bridge bridge_;
 
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SonoraPlugin)
@@ -255,13 +288,3 @@ private:
 Plugin* createPlugin() { return new SonoraPlugin(); }
 
 END_NAMESPACE_DISTRHO
-
-// The one extra symbol a bundle exports (lv2.version, vst3 version script):
-// sonora-plugin-host calls it right after it instantiates the plugin, with
-// the insert's block of the telemetry region (ADR-0057), so the processor's
-// native::Telemetry writes where the engine reads. A host that does not
-// know it, or a third-party plugin that has none, leaves everything as it
-// was. Returns 1 when an instance was bound.
-extern "C" __attribute__((visibility("default"))) int sonora_native_telemetry_bind(void* block) {
-    return sonora::native::Telemetry::bind_pending(block) ? 1 : 0;
-}

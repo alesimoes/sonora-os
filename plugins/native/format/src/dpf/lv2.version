@@ -1,4 +1,4 @@
 {
-    global: lv2_descriptor; sonora_native_telemetry_bind;
+    global: lv2_descriptor;
     local: *;
 };

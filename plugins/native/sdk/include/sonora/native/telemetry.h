@@ -41,10 +41,9 @@ public:
     ~Telemetry() { withdraw(this); }
     Telemetry(const Telemetry&) = delete;
     Telemetry& operator=(const Telemetry&) = delete;
-
-    // How a plugin host that loaded this library hands the instance it just
-    // created its shared block (the library exports it as
-    // sonora_native_telemetry_bind, format/src/dpf/plugin.cpp). Binds the
+    // How a plugin host hands the instance it just created its shared block:
+    // the plugin pulls it from the host in its constructor (take_host_telemetry_block,
+    // format/src/dpf/plugin.cpp) and calls this. Binds the
     // oldest instance made since the last call and leaves the rest private:
     // a mono plugin run once per channel has several, and only one may write
     // the insert's block. True when one was bound. Control thread, before

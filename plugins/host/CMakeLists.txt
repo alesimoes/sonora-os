@@ -70,6 +70,8 @@ add_executable(sonora-plugin-host src/main.cpp src/processor.h src/chain.cpp src
                src/lv2_presets.cpp src/lv2_presets.h)
 target_link_libraries(sonora-plugin-host PRIVATE sonora_vstpreset sonora_plugin_ipc sonora_plugin_loader
                       sonora_urid_map sonora_plugin_host_control sonora_plugin_probe_record PkgConfig::LILV)
+# sonora_host_telemetry_take (loader.h) must be visible to the plugin libraries.
+set_target_properties(sonora-plugin-host PROPERTIES ENABLE_EXPORTS ON)
 if(VST3SDK_INCLUDE_DIR)
   target_sources(sonora-plugin-host PRIVATE src/vst3_host.cpp src/vst3_host.h)
   target_include_directories(sonora-plugin-host SYSTEM PRIVATE ${VST3SDK_INCLUDE_DIR})

@@ -1732,12 +1732,13 @@ std::unique_ptr<Processor> Vst3World::instantiate(const std::string& id, const C
     int ci = -1;
     Vst3Module* m = module_for(id, ci, error);
     if (!m) return nullptr;
+    // The plugin pulls the insert's telemetry block while it is created (loader.h).
+    TelemetryOffer telemetry(config.telemetry);
     auto p = std::make_unique<Vst3Processor>(*context_, *m, m->classes[std::size_t(ci)]);
     if (!p->open(error) || !p->negotiate(config.channels, error) ||
         !p->start(config, &in, &out, &key, error))
         return nullptr;
     p->begin_processing();
-    if (config.telemetry != nullptr) bind_native_telemetry(m->library, config.telemetry);
     return p;
 }
 
