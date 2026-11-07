@@ -22,6 +22,11 @@ def pr_of(task):
     return int(m.group(1)) if m else None
 
 
+def failed_steps(row):
+    """Names of the PR's failed GitHub jobs, as the merge train reports them."""
+    return [n for n in (row or {}).get("failing") or [] if isinstance(n, str)]
+
+
 def clean_orch(o, open_prs):
     """Drop what is no longer current: closed PRs, PR-less queue entries and
     runs that stopped giving signs of life. open_prs is None when GitHub
@@ -48,6 +53,8 @@ def clean_orch(o, open_prs):
         q["open_prs"] = seen
         b["queue"] = q
         o["builder"] = b
+    if o.get("train"):
+        o["train"] = [dict(r, failed_steps=failed_steps(r)) for r in o["train"]]
     o["runs"] = [r for r in o.get("runs") or [] if now - (r.get("last_beat") or r.get("started") or now) < 1800]
     return o
 

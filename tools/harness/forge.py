@@ -81,6 +81,11 @@ class Forge:
         False when there is no run to rerun."""
         raise NotImplementedError
 
+    def rerun_job(self, pr, head_sha, job_name):
+        """Rerun one failed job (by its check name) of the head's latest
+        finished CI run. False when there is no such failed job."""
+        raise NotImplementedError
+
     def merge(self, pr, head_sha):
         """Squash-merge, refused by GitHub if the head moved."""
         raise NotImplementedError
@@ -282,7 +287,7 @@ class GhForge(Forge):
             return "conflict"
         self._raise(["gh", "pr", "update-branch"], r.stderr)
 
-    def rerun_failed(self, pr, head_sha):
+    def _finished_runs(self, head_sha):
         out = self._ok(["gh", "run", "list", "--commit", head_sha, "--limit",
                         "5", "--json", "databaseId,status,workflowName"],
                        timeout=60)
@@ -290,11 +295,34 @@ class GhForge(Forge):
             runs = json.loads(out or "[]")
         except ValueError as e:
             raise ForgeError(f"gh run list: {e}")
-        done = [x for x in runs if x.get("status") == "completed"]
+        return [x for x in runs if x.get("status") == "completed"]
+
+    def rerun_failed(self, pr, head_sha):
+        done = self._finished_runs(head_sha)
         if not done:
             return False
         self._ok(["gh", "run", "rerun", str(done[0]["databaseId"]),
                   "--failed"], timeout=60)
+        return True
+
+    def rerun_job(self, pr, head_sha, job_name):
+        done = self._finished_runs(head_sha)
+        if not done:
+            return False
+        run_id = str(done[0]["databaseId"])
+        try:
+            jobs = json.loads(self._ok(
+                ["gh", "run", "view", run_id, "--json", "jobs"],
+                timeout=60) or "{}").get("jobs") or []
+        except ValueError as e:
+            raise ForgeError(f"gh run view: {e}")
+        job = next((j for j in jobs if j.get("name") == job_name and
+                    j.get("conclusion") in ("failure", "cancelled",
+                                            "timed_out")), None)
+        if job is None:
+            return False
+        self._ok(["gh", "run", "rerun", run_id, "--job",
+                  str(job["databaseId"])], timeout=60)
         return True
 
     def merge(self, pr, head_sha):
