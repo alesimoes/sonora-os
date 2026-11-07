@@ -40,7 +40,9 @@ def clean_orch(o, open_prs):
             n = pr_of(item.get("task")) if isinstance(item, dict) else None
             return n is not None and n not in open_prs
         o["train"] = [r for r in o.get("train") or [] if r.get("state") == "merged" or r.get("pr") in open_prs]
-        o["blocked"] = [b for b in o.get("blocked") or [] if not gone(b)]
+        o["blocked"] = [dict(g, items=[b for b in g.get("items") or [] if not gone(b)])
+                        for g in o.get("blocked") or [] if isinstance(g, dict)]
+        o["blocked"] = [g for g in o["blocked"] if g["items"]]
         o["waits_on_owner"] = [b for b in o.get("waits_on_owner") or [] if not gone(b)]
         o["features"] = [f for f in o.get("features") or []
                          if not (f.get("pr") and f["pr"] not in open_prs and f.get("state") != "merged")]

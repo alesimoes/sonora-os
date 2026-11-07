@@ -167,7 +167,7 @@ class Escalation(support.DaemonCase):
                 self.assertEqual(model, "sonnet", agent)
 
     # -- fallback ---------------------------------------------------------
-    def test_principal_failing_blocks_and_writes_waits_on_owner(self):
+    def test_principal_failing_blocks_as_infra_not_owner(self):
         o = self.make(floors={"daw": 1})
         self.script("eng-1", "die")
         self.script("principal-1", "die")
@@ -175,8 +175,9 @@ class Escalation(support.DaemonCase):
         self.assertTrue(self.pump(o, lambda: state(o, "a") == "blocked"))
         self.assertEqual(
             [r["role"] for r in o.store.runs_of("a")][-1], "principal")
-        with open(os.path.join(o.odir, "waits-on-owner.md")) as f:
-            self.assertIn("## a (blocked)", f.read())
+        # a dead run is an infra block, not a decision for the owner
+        self.assertFalse(os.path.exists(os.path.join(o.odir, "waits-on-owner.md")))
+        self.assertEqual(o.store.get_task("a")["cause"], "infra")
 
     def test_same_cause_after_the_principal_blocks(self):
         o = self.make()

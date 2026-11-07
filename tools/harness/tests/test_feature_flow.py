@@ -206,8 +206,8 @@ class InvalidFiles(FlowCase):
                                   timeout=30))
         self.assertEqual(o.store.feature_tasks(FEATURE), [])
         self.assertEqual(len(prompts("architect")), 4)  # 1 + 3 relaunches
-        with open(os.path.join(o.odir, "waits-on-owner.md")) as f:
-            self.assertIn(FEATURE, f.read())
+        # an agent that never writes a valid plan is a harness problem
+        self.assertFalse(os.path.exists(os.path.join(o.odir, "waits-on-owner.md")))
 
     def test_invalid_assignments_are_rejected_and_the_lead_relaunched(self):
         o = self.make()

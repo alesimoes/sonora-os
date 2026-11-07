@@ -27,6 +27,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch, 
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
+from harness import blockinfo  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
@@ -36,6 +37,7 @@ from harness.train import Train  # noqa: E402
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer",
                "integrator": "integrator", "principal": "principal"}
 PRINCIPAL_AGENT = "principal-engineer"
+RETRY_LATER_S = 900.0   # a janitor that found a build container running
 FIX_LIKE = ("fixer", "integrator", "principal")
 ATTRIBUTION = "\U0001F916 Generated with [Claude Code](https://claude.com/claude-code)"
 
@@ -609,7 +611,8 @@ class Orchestrator:
             self._escalate(t, "attempts", now)
             return
         if n > self.cfg.max_attempts:
-            self._block(t, f"{why}; {self.cfg.max_attempts} relaunches spent")
+            self._block(t, f"{why}; {self.cfg.max_attempts} relaunches spent",
+                        cause="infra")
             self._tell("lead", "agent_dead", {"task": t["id"], "why": why},
                        feature=t.get("feature_id"), task=t["id"])
             if t["kind"] == "work":
@@ -640,16 +643,32 @@ class Orchestrator:
         self.store.event(t["id"], "escalated", trigger)
         self.log(f"escalated {t['id']} to {PRINCIPAL_AGENT}: {trigger}")
 
-    def _block(self, t, why):
+    def _block(self, t, why, owner=None, cause=None):
+        """owner: why only the owner can unblock it (a decision with no
+        default, or hardware); cause: retry | conflict | infra."""
         self._release(t)
         if t["kind"] == "wake":
             self.store.set_task(t["id"], state="blocked", note=why)
             self.flow.on_wake_blocked(self.store.get_task(t["id"]))
         else:
             self.store.advance(t["id"], "blocked", note=why)
-        with open(self._p("waits-on-owner.md"), "a", encoding="utf-8") as f:
-            f.write(f"\n## {t['id']} (blocked)\n- branch: {t['branch']}\n"
-                    f"- reason: {why}\n")
+        self.store.set_task(t["id"], owner=owner, cause=cause)
+        if owner:
+            with open(self._p("waits-on-owner.md"), "a", encoding="utf-8") as f:
+                f.write(f"\n## {t['id']} (blocked)\n- branch: {t['branch']}\n"
+                        f"- reason: {why}\n- needs the owner: {owner}\n")
+
+    def _on_agent_blocked(self, t, kind, data, now):
+        why = data.get("summary", "blocked by agent")
+        if blockinfo.is_retry_later(kind, why):
+            # Nothing is wrong: the machine is busy. The same run is
+            # offered again later, no attempt counted, nothing blocked.
+            self.store.set_task(t["id"], not_before=now + RETRY_LATER_S)
+            self.store.event(t["id"], "retry_later", why[:200])
+            return
+        owner = data.get("needs_owner")
+        self._block(t, why, owner=owner if owner else None,
+                    cause=None if owner else "infra")
 
     # -- results ------------------------------------------------------
     def _on_result(self, r, data, now):
@@ -663,7 +682,7 @@ class Orchestrator:
         for line in data.get("followups", []):
             self.store.event(t["id"], "followup", str(line))
         if st == "blocked":
-            self._block(t, data.get("summary", "blocked by agent"))
+            self._on_agent_blocked(t, kind, data, now)
             return
         if t["kind"] == "wake":
             if st != "done":
@@ -903,7 +922,8 @@ class Orchestrator:
             self._block_feature(
                 f, f"PR #{f['pr']}: {', '.join(stuck)} still red after "
                    f"{self.cfg.principal_after_fixes} fixes and the "
-                   "principal engineer")
+                   "principal engineer",
+                owner="still red after the principal engineer: your call")
             return
         trigger = None
         # The senior tier of the area agent gets the first extra round; the
@@ -957,22 +977,24 @@ class Orchestrator:
     def _close_feature(self, f, why):
         closed.close_feature(self, f, why)
 
-    def _block_feature(self, f, why):
+    def _block_feature(self, f, why, cause="infra", owner=None):
         ts = [x for x in self._feature_tasks(f["id"])
               if x["state"] not in ("merged", "closed")]
         for i, x in enumerate(ts):
             if i == 0:
-                self._block(x, why)
+                self._block(x, why, cause=cause, owner=owner)
             else:
                 self._release(x)
                 self.store.advance(x["id"], "blocked", note=why)
+                self.store.set_task(x["id"], cause=cause, owner=owner)
         self.store.set_feature(f["id"], state="blocked")
 
     def _bounce(self, t):
         n = t["bounces"] + 1
         self.store.set_task(t["id"], bounces=n)
         if n >= 3:
-            self._block(t, "third bounce: owner decision")
+            self._block(t, "third bounce: owner decision",
+                        owner="third QA bounce, no recommended default")
             return
         self.store.advance(t["id"], "bugfix")
         self._tell("lead", "qa_fail", {"task": t["id"], "bounces": n},

@@ -108,11 +108,13 @@ class RunTests(support.DaemonCase):
                          ["engineer"] * 4 + ["principal"])
         self.assertEqual({r["name"] for r in runs[:4]}, {"eng-1"})
         self.assertIn("relaunches spent", o.store.get_task("a")["note"])
-        with open(os.path.join(o.odir, "waits-on-owner.md")) as f:
-            self.assertIn("## a (blocked)", f.read())
+        self.assertFalse(os.path.exists(os.path.join(o.odir, "waits-on-owner.md")))
         self.assertIn("agent_dead", [ty for _, ty, _ in o.broker.sent])
         with open(os.path.join(o.odir, "status.json")) as f:
-            self.assertEqual(json.load(f)["waits_on_owner"][0]["task"], "a")
+            st = json.load(f)
+        self.assertEqual(st["waits_on_owner"], [])
+        (g,) = st["blocked"]
+        self.assertEqual((g["cause"], g["items"][0]["task"]), ("infra", "a"))
 
     def test_dead_then_recovers(self):
         o = self.make(floors={"daw": 1})

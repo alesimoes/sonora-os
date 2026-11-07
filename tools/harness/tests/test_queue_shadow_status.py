@@ -101,7 +101,7 @@ class StatusJson(support.DaemonCase):
                              state=st, files=[f"{tid}/**"])
         o.store.set_feature("f1", pr=42)
         o.store.add_task("z", "daw", "rt-engineer", state="blocked")
-        o.store.set_task("z", note="third bounce")
+        o.store.set_task("z", note="third bounce", owner="no default")
         o.tick()
         with open(os.path.join(o.odir, "status.json")) as f:
             st = json.load(f)
