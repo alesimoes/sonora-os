@@ -161,8 +161,8 @@ int test_gain_staging() {
     const PlanStep* trim = step_titled(plan, "Trim Snare");
     const PlanStep* raise = step_titled(plan, "Raise Vocal");
     CHECK(trim != nullptr && raise != nullptr);
-    const float snare_db = std::get<SetMix>(trim->op).mix.gain_db;
-    const float vocal_db = std::get<SetMix>(raise->op).mix.gain_db;
+    const float snare_db = model::get<SetMix>(trim->op).mix.gain_db;
+    const float vocal_db = model::get<SetMix>(raise->op).mix.gain_db;
     // Both land on the target: the loud snare comes down about 15 dB, the
     // quiet vocal up about 20.
     CHECK(snare_db < -12.0f && snare_db > -19.0f);
@@ -178,8 +178,8 @@ int test_gain_staging() {
     Plan again;
     CHECK(gp.propose(r.h.current(), again, error));
     CHECK(again.steps.size() == plan.steps.size() &&
-          std::get<SetMix>(again.steps[0].op).mix.gain_db ==
-              std::get<SetMix>(plan.steps[0].op).mix.gain_db);
+          model::get<SetMix>(again.steps[0].op).mix.gain_db ==
+              model::get<SetMix>(plan.steps[0].op).mix.gain_db);
 
     CHECK(check_apply_and_undo(r, plan, false) == 0);
     CHECK(gain_of(r.h.current(), snare) == 0.0f);
@@ -220,7 +220,7 @@ int test_gain_staging_limits() {
     CHECK(muted_noted && step_titled(plan, "Raise Quiet") == nullptr);
     const TrackAnalysis* ca = a.find(click);
     for (const PlanStep& s : plan.steps) {
-        const float g = std::get<SetMix>(s.op).mix.gain_db;
+        const float g = model::get<SetMix>(s.op).mix.gain_db;
         CHECK(ca->true_peak_dbtp + g <= -3.0 + 1e-6);   // never over the ceiling
     }
 
@@ -239,7 +239,7 @@ int test_gain_staging_limits() {
     CHECK(master_noted);
     double power = 0.0;
     for (const PlanStep& s : plan.steps) {
-        const auto& sm = std::get<SetMix>(s.op);
+        const auto& sm = model::get<SetMix>(s.op);
         power += std::pow(10.0, (a.find(sm.mix.track)->true_peak_dbtp + sm.mix.gain_db) / 10.0);
     }
     CHECK(10.0 * std::log10(power) <= -30.0 + 1e-6);
@@ -297,9 +297,9 @@ int test_bus_structure() {
     // Only the drums have two tracks: a bus and two routes.
     CHECK(plan.steps.size() == 3);
     CHECK(plan.steps[0].title == "Add Drums bus");
-    CHECK(std::holds_alternative<AddBus>(plan.steps[0].op));
+    CHECK(model::holds_alternative<AddBus>(plan.steps[0].op));
     for (std::size_t i = 1; i < 3; ++i) {
-        CHECK(std::holds_alternative<SetOutput>(plan.steps[i].op));
+        CHECK(model::holds_alternative<SetOutput>(plan.steps[i].op));
         CHECK((plan.steps[i].needs == std::vector<std::size_t>{0}));
         CHECK(mentions(plan.steps[i].reason, "matches"));
     }
@@ -330,7 +330,7 @@ int test_bus_structure() {
     const Id hat = r.add("Hat", tone(6000, 0.1));
     CHECK(hat != 0);
     CHECK(bp.propose(r.h.current(), plan, error));
-    CHECK(plan.steps.size() == 1 && std::get<SetOutput>(plan.steps[0].op).output == drums);
+    CHECK(plan.steps.size() == 1 && model::get<SetOutput>(plan.steps[0].op).output == drums);
     CHECK(plan.steps[0].needs.empty());
     return 0;
 }
@@ -355,8 +355,8 @@ int test_kick_and_bass() {
     CHECK(pp.propose(r.h.current(), plan, error));
     CHECK(plan.steps.size() == 2);
     CHECK(plan.steps[0].title == "Add Bass Saturation bus");
-    const auto& send = std::get<AddSend>(plan.steps[1].op);
-    CHECK(send.strip == bass && send.bus == std::get<AddBus>(plan.steps[0].op).bus);
+    const auto& send = model::get<AddSend>(plan.steps[1].op);
+    CHECK(send.strip == bass && send.bus == model::get<AddBus>(plan.steps[0].op).bus);
     CHECK(send.mix.level_db == -12.0f && !send.mix.pre);
     CHECK((plan.steps[1].needs == std::vector<std::size_t>{0}));
     CHECK(pp.suggestions().size() == 1);
@@ -391,9 +391,9 @@ int test_parallel_drums_and_all() {
     CHECK(plan.steps.size() == 6);
     CHECK(plan.steps[0].title == "Add Drums Parallel bus");
     CHECK(mentions(plan.steps[0].reason, "crest"));
-    const float level = std::get<AddSend>(plan.steps[1].op).mix.level_db;
+    const float level = model::get<AddSend>(plan.steps[1].op).mix.level_db;
     CHECK(level >= -15.0f && level <= -6.0f);
-    for (std::size_t i = 2; i <= 3; ++i) CHECK(std::get<AddSend>(plan.steps[i].op).mix.level_db == level);
+    for (std::size_t i = 2; i <= 3; ++i) CHECK(model::get<AddSend>(plan.steps[i].op).mix.level_db == level);
     CHECK(pp.suggestions().size() == 2);
     const ProcessorSetting& comp = pp.suggestions()[0].processor;
     CHECK(comp.uri == "urn:sonora:native:compressor" && comp.name == "Sonora Compressor");
@@ -410,7 +410,7 @@ int test_parallel_drums_and_all() {
     Plan all;
     CHECK(propose_mix_plan(MixPlanKind::All, r.h.current(), a, all, error));
     CHECK(all.label == "Mix Assistant");
-    CHECK(std::holds_alternative<SetMix>(all.steps[0].op));
+    CHECK(model::holds_alternative<SetMix>(all.steps[0].op));
     for (std::size_t i = 0; i < all.steps.size(); ++i)
         for (const std::size_t n : all.steps[i].needs) CHECK(n < i);
     CHECK(all.steps.size() > plan.steps.size());
@@ -497,7 +497,7 @@ int test_reverb_delay() {
           param_of(dly, "sync") == 1.0f && param_of(dly, "tempo") == 120.0f);
     CHECK(param_of(rp.suggestions()[2].processor, "decay") <= 0.45f);   // the room: under a beat
     // Defaults: -14 and -18 dB sum to -12.5 dB, under the -10 limit.
-    const auto& vsend = std::get<AddSend>(plan.steps[1].op);
+    const auto& vsend = model::get<AddSend>(plan.steps[1].op);
     CHECK(vsend.strip == vocal && vsend.mix.level_db == -14.0f);
     CHECK(check_apply_and_undo(r, plan, true) == 0);
 
@@ -524,7 +524,7 @@ int test_reverb_delay() {
     wet.delay_wet_db = -6.0;
     ReverbDelayPlanner wp(a, wet);
     CHECK(wp.propose(r.h.current(), plan, error));
-    CHECK(std::get<AddSend>(plan.steps[1].op).mix.level_db <= -10.0f - 3.0f);
+    CHECK(model::get<AddSend>(plan.steps[1].op).mix.level_db <= -10.0f - 3.0f);
     bool excess = false;
     for (const PlanNote& n : plan.notes) excess = excess || mentions(n.text, "limit");
     CHECK(excess);

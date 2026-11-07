@@ -7,7 +7,9 @@
 #   tools/local-ci.sh                  the contexts the change since main touches
 #   tools/local-ci.sh --full           the whole Sonora software (main after a merge)
 #   tools/local-ci.sh --os             the os-image context alone
-#   tools/local-ci.sh --release        --full and --os (an image for the owner)
+#   tools/local-ci.sh --release        --full and --os (an image for the owner), and
+#                                      keeps the plugin packages (Linux tar.gz,
+#                                      Windows zip) in dist/
 #   tools/local-ci.sh --base REF       compare with REF (default origin/main)
 #   tools/local-ci.sh --dry-run        print contexts, steps and ctest filter, run none
 #
@@ -64,7 +66,7 @@ while (($#)); do
   case "$1" in
     --full) FULL=1 ;;
     --os) OS_ONLY=1 ;;
-    --release) FULL=1 WITH_OS=1 ;;
+    --release) FULL=1 WITH_OS=1; export SONORA_LOCAL_CI_RELEASE=1 ;;
     --base) BASE="$2"; shift ;;
     --dry-run) DRY=1 ;;
     --step) STEP="$2"; FULL=1; shift ;;   # internal: one step, lock held
@@ -88,10 +90,10 @@ mkdir -p "$OUT"
 # Context flags, then per-path extras: bwf and portable (the Windows build)
 # and ctest labels (module labels, CMakeLists.txt), or fullsuite when a path
 # has no label of its own.
-c_ui=0 c_plugins=0 c_engine=0 c_os=0 c_quantum=0 bwf=0 portable=0
+c_pluginhost=0 c_ui=0 c_plugins=0 c_engine=0 c_os=0 c_quantum=0 bwf=0 portable=0
 LABELS=" " fullsuite=0
 lab() { local l; for l; do [[ "$LABELS" == *" $l "* ]] || LABELS+="$l "; done; }
-sonora() { c_ui=1 c_plugins=1 c_engine=1 portable=1 bwf=1 fullsuite=1; }
+sonora() { c_pluginhost=1 c_ui=1 c_plugins=1 c_engine=1 portable=1 bwf=1 fullsuite=1; }
 if ((OS_ONLY)); then
   c_os=1 FULL=0
 elif ((FULL)); then
@@ -115,9 +117,9 @@ else
       # sonora-plugins
       common/dsp/*) c_plugins=1 portable=1; lab dsp native ;;
       plugins/native/*) c_plugins=1 portable=1; lab native ;;
-      plugins/client/*|plugins/sdk/*) c_plugins=1 portable=1; lab dsp native plugin_client ;;
-      plugins/host/*) c_plugins=1; lab pluginhost plugin_client ;;
-      plugins/*) c_plugins=1 fullsuite=1 ;;
+      plugins/client/*|plugins/sdk/*) c_plugins=1 c_pluginhost=1 portable=1; lab dsp native plugin_client ;;
+      plugins/host/*) c_plugins=1 c_pluginhost=1; lab pluginhost plugin_client ;;
+      plugins/*) c_plugins=1 c_pluginhost=1 fullsuite=1 ;;
       # sonora-engine
       engine/core/*) c_engine=1 bwf=1; lab core control app plugin_client drivers ui ;;
       common/audiofile/*) c_engine=1 bwf=1; lab audiofile core ;;
@@ -150,7 +152,10 @@ elif ((c_ui)); then
   steps+=(ui)
 fi
 ((c_engine)) && steps+=(engine-scripts)
+# plugins: the package's own build, tests and archive (common/* and
+# plugins/native only); pluginhost: the whole tree with lilv, for the host.
 ((c_plugins)) && steps+=(plugins)
+((c_pluginhost)) && steps+=(pluginhost)
 # TSan: the engine's threads. The plugins' TSan runs on main (--full) only.
 ((c_engine || FULL)) && steps+=(tsan)
 ((FULL)) && steps+=(asan)
@@ -245,7 +250,12 @@ run_step() {
         -v "$(host_path "$ROOT"):/src" -w /src sonora-ui:trixie bash -ec '
           python3 tools/failed-take-quit.py --engine build-ui-container/sonora-engine
           python3 tools/crash-recovery-kill.py --engine build-ui-container/sonora-engine' ;;
-    plugins) tools/build-plugins.sh ;;
+    plugins)
+      # The archive is made after the tests pass; --release keeps it in dist/.
+      pkg_out="$OUT/pkg"
+      [[ -z "${SONORA_LOCAL_CI_RELEASE:-}" ]] || pkg_out="$ROOT/dist"
+      tools/build-plugins.sh --plugins-only && tools/package-plugins.sh --out "$pkg_out" ;;
+    pluginhost) tools/build-plugins.sh ;;
     tsan) sanitize thread ;;
     asan) sanitize address ;;
     rtsan) tools/build-rtsan.sh ;;
@@ -261,7 +271,10 @@ run_step() {
         timeout 3600 bash "tools/$t.sh" || { echo "FAIL $t"; rc=1; }
       done
       return $rc ;;
-    windows) powershell -NoProfile -ExecutionPolicy Bypass -File "$(host_path "$ROOT")/tools/build-portable.ps1" ;;
+    windows)
+      pkg_arg=()
+      [[ -z "${SONORA_LOCAL_CI_RELEASE:-}" ]] || pkg_arg=(-Package -OutDir "$(host_path "$ROOT")/dist")
+      powershell -NoProfile -ExecutionPolicy Bypass -File "$(host_path "$ROOT")/tools/build-portable.ps1" ${pkg_arg[@]+"${pkg_arg[@]}"} ;;
   esac
 }
 

@@ -186,7 +186,7 @@ int test_volume_trim_lane_and_modes() {
     std::string again;
     CHECK(encode_operation(back, again, error));
     CHECK(again == bytes);
-    const auto* e = std::get_if<EditAutomation>(&back);
+    const auto* e = get_if<EditAutomation>(&back);
     CHECK(e != nullptr && e->param == AutomationParam::VolumeTrim && e->points.size() == 2);
 
     for (const AutomationMode mode : {AutomationMode::Trim, AutomationMode::WriteTrim}) {
@@ -196,7 +196,7 @@ int test_volume_trim_lane_and_modes() {
         CHECK(encode_operation(set, bytes, error));
         CHECK(mentions(bytes, mode == AutomationMode::Trim ? "\"trim\"" : "\"write_trim\""));
         CHECK(decode_operation(bytes, back, error));
-        const auto* s = std::get_if<SetMix>(&back);
+        const auto* s = get_if<SetMix>(&back);
         CHECK(s != nullptr && s->mix.automation == mode);
         CHECK(encode_operation(back, again, error) && again == bytes);
     }
@@ -231,7 +231,7 @@ int test_codec_window_and_duplicate() {
     std::string again;
     CHECK(encode_operation(back, again, error));
     CHECK(again == bytes);
-    const auto* e = std::get_if<EditAutomation>(&back);
+    const auto* e = get_if<EditAutomation>(&back);
     CHECK(e != nullptr && e->from == 100 && e->to == 5000 && e->points.size() == 3);
 
     Document doc(new_session(settings()), 4096);
@@ -313,12 +313,12 @@ int test_duplicate_without_automation() {
     CHECK(mentions(bytes, "\"automation\""));
     Operation back;
     CHECK(decode_operation(bytes, back, error));
-    const auto* d = std::get_if<DuplicateTrack>(&back);
+    const auto* d = get_if<DuplicateTrack>(&back);
     CHECK(d != nullptr && !d->automation);
     DuplicateTrack on = without;
     on.automation = true;
     CHECK(encode_operation(on, bytes, error) && decode_operation(bytes, back, error));
-    d = std::get_if<DuplicateTrack>(&back);
+    d = get_if<DuplicateTrack>(&back);
     CHECK(d != nullptr && d->automation);
 
     const std::string v34 =
@@ -529,7 +529,7 @@ int test_plugin_lanes_cross_the_wire_and_the_file() {
           mentions(bytes, "\"key\": \"threshold\""));
     Operation back;
     CHECK(decode_operation(bytes, back, error));
-    const auto* e = std::get_if<EditAutomation>(&back);
+    const auto* e = get_if<EditAutomation>(&back);
     CHECK(e != nullptr && e->param == AutomationParam::Plugin && e->insert == 7 &&
           e->key == "threshold");
     std::string again;
@@ -797,7 +797,7 @@ int test_strip_lanes_cross_the_wire_and_the_file() {
     CHECK(mentions(bytes, "\"send_pan\"") && mentions(bytes, "\"send\": 9"));
     Operation back;
     CHECK(decode_operation(bytes, back, error));
-    const auto* e = std::get_if<EditAutomation>(&back);
+    const auto* e = get_if<EditAutomation>(&back);
     CHECK(e != nullptr && e->param == AutomationParam::SendPan && e->send == 9 && e->track == 5);
     std::string again;
     CHECK(encode_operation(back, again, error) && again == bytes);
