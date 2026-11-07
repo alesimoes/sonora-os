@@ -383,8 +383,11 @@ run_once() {  # step log
     "$SELF_DIR/build-slot.sh" bash "$SELF_DIR/local-ci.sh" --step "$1" >"$2" 2>&1 || rc=$?
   [[ -f "$OUT/$1.lockwait" ]] && w="$(cat "$OUT/$1.lockwait")"
   [[ "$w" =~ ^[0-9]+$ ]] || w=0
+  # the wait is part of the wall time; never below zero on a rounding
+  t0=$((SECONDS - t0 - w))
+  ((t0 >= 0)) || t0=0
   STEP_WAIT=$((STEP_WAIT + w))
-  STEP_SECS=$((STEP_SECS + SECONDS - t0 - w))
+  STEP_SECS=$((STEP_SECS + t0))
   return "$rc"
 }
 # A step's verdict: one run, and one more when the first was red for a
