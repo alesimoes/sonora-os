@@ -14,7 +14,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ISO="$ROOT/iso/sonora.iso"
+# shellcheck source=tools/lib/artifacts.sh
+# shellcheck disable=SC1091
+. "$ROOT/tools/lib/artifacts.sh"
+ISO="$SONORA_ISO_DIR/sonora.iso"
 MEMORY="${QEMU_MEMORY:-4096}"
 CPUS="${QEMU_CPUS:-2}"
 
@@ -76,11 +79,11 @@ if [[ "$MODE" == "uefi" ]]; then
     exit 1
   fi
   # The vars store is written by the firmware, so it gets a private copy.
-  mkdir -p "$ROOT/build-qemu"
-  cp "$OVMF_VARS" "$ROOT/build-qemu/uefi-vars.fd"
+  mkdir -p "$SONORA_QEMU_DIR"
+  cp "$OVMF_VARS" "$SONORA_QEMU_DIR/uefi-vars.fd"
   FIRMWARE=(
     -drive "if=pflash,format=raw,readonly=on,file=$(host_path "$(dirname "$OVMF")")/$(basename "$OVMF")"
-    -drive "if=pflash,format=raw,file=$(host_path "$ROOT/build-qemu")/uefi-vars.fd"
+    -drive "if=pflash,format=raw,file=$(host_path "$SONORA_QEMU_DIR")/uefi-vars.fd"
   )
   echo "firmware: UEFI ($OVMF)"
 else
@@ -112,7 +115,7 @@ exec "$QEMU" \
   -smp "$CPUS" \
   "${ACCEL[@]}" \
   "${FIRMWARE[@]}" \
-  -cdrom "$(host_path "$ROOT/iso")/sonora.iso" \
+  -cdrom "$(host_path "$SONORA_ISO_DIR")/sonora.iso" \
   -boot d \
   -device intel-hda -device hda-duplex \
   -vga std \

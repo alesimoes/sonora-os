@@ -161,7 +161,7 @@ bool same_lanes(const AutomationLanes& a, const AutomationLanes& b) {
 
 bool Bus::operator==(const Bus& o) const {
     return id == o.id && name == o.name && sends == o.sends && output == o.output &&
-           same_lanes(automation, o.automation);
+           hardware == o.hardware && same_lanes(automation, o.automation);
 }
 
 const AutomationLane* TrackEdit::lane(AutomationParam param) const {
@@ -2129,6 +2129,30 @@ bool check_invariants(const Snapshot& s, std::string& error) {
         if (bus.output == bus.id) {
             error = path + ".output: a bus cannot be its own output";
             return false;
+        }
+        if (bus.hardware != kNoHardwareOut) {
+            // A path ends at the interface, on a pair of its own (ADR-0060).
+            const auto in_pair = [&](std::uint16_t ch) {
+                return ch == bus.hardware || ch == bus.hardware + 1;
+            };
+            if (bus.hardware % 2 != 0 || bus.hardware + 1 >= kMaxOutputChannels) {
+                error = path + ".hardware: is not the first of a pair of outputs";
+                return false;
+            }
+            if (bus.output != kMasterOutput) {
+                error = path + ".output: an output path plays on the interface";
+                return false;
+            }
+            if (in_pair(s.mix.bus.outputs[0]) || in_pair(s.mix.bus.outputs[1])) {
+                error = path + ".hardware: the Master plays on that pair";
+                return false;
+            }
+            for (std::size_t o = 0; o < b; ++o) {
+                if (buses[o].hardware == bus.hardware) {
+                    error = path + ".hardware: another output path plays on that pair";
+                    return false;
+                }
+            }
         }
     }
     {

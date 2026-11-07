@@ -261,6 +261,8 @@ public:
     bool latencyFailed() const;
     QString latencyResult() const { return latency_result_; }
     int latencyOutputs() const { return latency_outputs_; }
+    // The outputs the engine opened, from its Hello (0 when it did not say).
+    int deviceOutputs() const { return static_cast<int>(engine_.info().output_count); }
     QString latencyRefusal() const { return latency_refusal_; }
     QString consolidateText() const { return consolidate_text_; }
     bool consolidateFailed() const { return consolidate_failed_; }

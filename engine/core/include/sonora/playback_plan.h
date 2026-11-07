@@ -36,6 +36,9 @@ enum class NodeKind : uint8_t {
     TrackFader = 5,
     AuxSum = 6,
     AuxFader = 7,
+    // A hardware output path's sink (ADR-0060): one input edge, the path's
+    // return, written to two device outputs at PlanNode::hardware_out.
+    PathOut = 8,
 };
 
 // Send slots per strip, A to J: model::kSendSlots (ADR-0022 §2). A send's
@@ -156,6 +159,9 @@ struct PlanNode {
     uint32_t first_plugin_lane = 0;
     uint32_t plugin_lane_count = 0;
     uint16_t channels = 2;
+    // PathOut only: the device output the left side plays on; the right
+    // side plays on the next.
+    uint16_t hardware_out = 0;
     // The model track id, for the control thread; the audio thread never
     // reads it.
     uint64_t chain_id = 0;

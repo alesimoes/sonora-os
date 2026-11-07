@@ -18,8 +18,11 @@ set -euo pipefail
 [[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ISO="$ROOT/iso/sonora.iso"
-WORK="$ROOT/build-qemu"
+# shellcheck source=tools/lib/artifacts.sh
+# shellcheck disable=SC1091
+. "$ROOT/tools/lib/artifacts.sh"
+ISO="$SONORA_ISO_DIR/sonora.iso"
+WORK="$SONORA_QEMU_DIR"
 LOG="$WORK/serial.log"
 MEMORY="${QEMU_MEMORY:-4096}"
 TIMEOUT="${QEMU_TIMEOUT:-300}"
@@ -124,7 +127,7 @@ fi
 # the RT kernel. This is the static half of the bootloader coverage the
 # -kernel boot below cannot provide.
 echo "checking what the bootloaders point at..."
-docker run --rm -v "$(host_path "$ROOT/iso"):/iso:ro"   sonora-livebuild:trixie bash -lc '
+docker run --rm -v "$(host_path "$SONORA_ISO_DIR"):/iso:ro"   sonora-livebuild:trixie bash -lc '
     set -e
     cd /tmp
     xorriso -osirrox on -indev /iso/sonora.iso       -extract /isolinux/live.cfg /tmp/live.cfg       -extract /boot/grub/grub.cfg /tmp/grub.cfg >/dev/null 2>&1
@@ -153,7 +156,7 @@ docker run --rm -v "$(host_path "$ROOT/iso"):/iso:ro"   sonora-livebuild:trixie 
 
 echo "extracting the kernel and initrd..."
 docker run --rm \
-  -v "$(host_path "$ROOT/iso"):/iso:ro" \
+  -v "$(host_path "$SONORA_ISO_DIR"):/iso:ro" \
   -v "$(host_path "$WORK"):/out" \
   sonora-livebuild:trixie bash -lc '
     set -e
@@ -222,11 +225,11 @@ if [[ "$IN_CONTAINER" == 1 ]]; then
   W=/work
   I=/iso
   RUNNER=(docker run --rm --name "$CONTAINER" --label org.sonora=1 "${KVM_DEV[@]}"
-          -v "$(host_path "$WORK"):/work" -v "$(host_path "$ROOT/iso"):/iso:ro"
+          -v "$(host_path "$WORK"):/work" -v "$(host_path "$SONORA_ISO_DIR"):/iso:ro"
           "$QEMU_IMAGE" qemu-system-x86_64)
 else
   W="$(host_path "$WORK")"
-  I="$(host_path "$ROOT/iso")"
+  I="$(host_path "$SONORA_ISO_DIR")"
   RUNNER=("$QEMU")
 fi
 "${RUNNER[@]}" \

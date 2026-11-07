@@ -132,6 +132,9 @@ sonora_ui_library(sonora_ui_session QT SOURCES
   src/transport_model.h src/transport_model.cpp
   src/scene_item.h src/scene_item.cpp
   src/session_model.h src/session_model.cpp src/session_model_support.h
+  src/session_new.cpp
+  src/io_names.h src/io_names.cpp
+  src/io_setup_model.h src/io_setup_model.cpp src/io_setup_paths.cpp
   src/session_model_commands.cpp
   src/session_model_commands_track.cpp
   src/session_model_commands_clip.cpp
@@ -165,8 +168,8 @@ set(SONORA_UI_QML_FILES
   qml/Main.qml qml/SButton.qml qml/TransportBar.qml qml/TransportWindow.qml qml/EditWindow.qml
   qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
   qml/InsertPanel.qml qml/Knob.qml qml/Fader.qml qml/MeterBar.qml qml/CurveView.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
-  qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml
-  qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
+  qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml qml/IoSetupWindow.qml qml/NewSessionDialog.qml
+>>>>>>> origin/main
 )
 sonora_ui_library(sonora_ui_qml QT SOURCES
   src/qml_resources.cpp src/register_types.h ${SONORA_UI_QML_FILES})
@@ -461,6 +464,14 @@ add_executable(test_ui_session_open tests/test_session_open.cpp)
 target_link_libraries(test_ui_session_open PRIVATE sonora_ui_session sonora_session_files)
 add_test(NAME ui_session_open COMMAND test_ui_session_open)
 set_tests_properties(ui_session_open PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Setup > I/O Setup (the ports' names, a track's input picked by them, the
+# output paths of ADR-0060, the refusals held) and File > New Session on
+# FakeEngine (written only once the engine has its Load).
+add_executable(test_ui_io_setup tests/test_io_setup.cpp)
+target_link_libraries(test_ui_io_setup PRIVATE sonora_ui_qt)
+add_test(NAME ui_io_setup COMMAND test_ui_io_setup)
+set_tests_properties(ui_io_setup PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Session templates (ADR-0030): Save as Template and New from Template in
 # the window, behind common/session_files and on FakeEngine.

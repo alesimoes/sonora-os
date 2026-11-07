@@ -18,7 +18,7 @@ SMALL=/work/small.img
 DECOY=/work/decoy.img
 BIG=/work/big.img
 PARTTEST=/work/part.img
-ISO=/src/iso/sonora.iso
+ISO="${SONORA_ISO_DIR:-/src/iso}/sonora.iso"
 WRITER=/src/tools/write-usb.sh
 SIZE="${STICK_SIZE:-8G}"
 # The over-the-limit case needs a device just past write-usb.sh's 256 GiB

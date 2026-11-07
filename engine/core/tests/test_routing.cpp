@@ -70,8 +70,10 @@ struct Rig {
     std::unique_ptr<Session> session;
     std::vector<std::vector<float>> in;
     std::vector<const float*> in_ptrs;
-    std::vector<float> out[2];
-    float* out_ptrs[2];
+    // Six device outputs: the Master on 1-2, an output path on 3-4 or 5-6.
+    static constexpr uint32_t kOutputs = 6;
+    std::vector<float> out[kOutputs];
+    float* out_ptrs[kOutputs];
     int64_t frame = 0;
 
     explicit Rig(int tracks, uint32_t max_block = 256, uint32_t max_buses = 4,
@@ -90,7 +92,7 @@ struct Rig {
         session = std::make_unique<Session>(cfg);
         in.assign(tracks, std::vector<float>(kMaxCallback, 0.0f));
         for (auto& v : in) in_ptrs.push_back(v.data());
-        for (int o = 0; o < 2; ++o) {
+        for (uint32_t o = 0; o < kOutputs; ++o) {
             out[o].assign(kMaxCallback, 0.0f);
             out_ptrs[o] = out[o].data();
         }
@@ -105,7 +107,7 @@ struct Rig {
     PlaybackPlan* plan(const std::vector<ChainBinding>& chains, const std::vector<SendBinding>& sends,
                        uint32_t buses, const std::vector<uint32_t>& order, DelayLinePool& pool,
                        std::vector<uint32_t> track_out = {}, std::vector<uint32_t> bus_out = {},
-                       float pan_exponent = 0.0f) {
+                       float pan_exponent = 0.0f, std::vector<uint16_t> bus_hw = {}) {
         const auto tracks = static_cast<uint32_t>(session->tracks().size());
         std::vector<ChainBinding> c = chains;
         c.resize(tracks);
@@ -114,6 +116,8 @@ struct Rig {
         MixLayout mix;
         mix.track_outputs = track_out.data();
         mix.bus_outputs = bus_out.data();
+        bus_hw.resize(buses, sonora::kNoHardware);
+        mix.bus_hardware = bus_hw.data();
         mix.bus_count = buses;
         mix.bus_order = order.data();
         mix.sends = sends.data();
@@ -146,7 +150,7 @@ struct Rig {
         b.inputs = in_ptrs.data();
         b.input_count = static_cast<uint32_t>(in_ptrs.size());
         b.outputs = out_ptrs;
-        b.output_count = 2;
+        b.output_count = kOutputs;
         b.nframes = n;
         b.callback_ns = 1'000'000'000 + static_cast<uint64_t>(frame) * 1000;
         t_counting = true;
@@ -396,6 +400,99 @@ int test_block_split_invariance() {
     return 0;
 }
 
+// ADR-0060: a bus that is an output path plays on its own device pair,
+// not on the Master, and the Master does not hear it.
+int test_output_path_plays_on_its_pair() {
+    Rig rig(2);
+    Session& s = *rig.session;
+    s.tracks()[0]->set_gain(0.5f);
+    s.tracks()[1]->set_gain(0.25f);
+    s.set_aux(0, 2.0f, 0.0f, false);
+    DelayLinePool pool(s.delay_lines());
+    const std::vector<uint32_t> order{0};
+    PlaybackPlan* p = rig.plan({}, {}, 1, order, pool, {0, kNoBus}, {}, 0.0f, {2});
+    // Two tracks, the bus's sum and fader, the Master's sum and out, and the
+    // path's sink after them.
+    CHECK(p->node_count == 2 + 2 + 2 + 1);
+    const PlanNode& sink = p->nodes[p->node_count - 1];
+    CHECK(sink.kind == NodeKind::PathOut && sink.hardware_out == 2 && sink.input_edge_count == 1);
+    CHECK(p->nodes[p->edges[sink.first_input_edge].from_node].kind == NodeKind::AuxFader);
+    const PlanNode& master = p->nodes[p->node_count - 3];
+    CHECK(master.kind == NodeKind::BusSum && master.input_edge_count == 1);
+    CHECK(rig.publish(p));
+    reset_heap_counts();
+    for (int i = 0; i < 3; ++i) rig.block();
+    const int64_t at = rig.frame;
+    rig.block();
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        const float x = signal(at + i);
+        CHECK(rig.out[0][i] == x * 0.25f);   // the Master: track 1 only
+        CHECK(rig.out[1][i] == rig.out[0][i]);
+        CHECK(rig.out[2][i] == x * 0.5f * 2.0f);   // the path: track 0 through the bus
+        CHECK(rig.out[3][i] == rig.out[2][i]);
+        CHECK(rig.out[4][i] == 0.0f && rig.out[5][i] == 0.0f);
+    }
+    CHECK(heap_untouched());
+    return 0;
+}
+
+// The path and the Master play the same moment (ADR-0060): a chain on the
+// Master's side delays the path's dry track, and the other way round.
+int test_output_path_is_aligned_with_the_master() {
+    for (int chain_on_path = 0; chain_on_path < 2; ++chain_on_path) {
+        Rig rig(2);
+        Session& s = *rig.session;
+        DelayRunner runner(1, 4096);
+        s.set_insert_chains(&runner);
+        s.tracks()[0]->set_pan(-1.0f);
+        s.tracks()[1]->set_pan(-1.0f);
+        s.set_aux(0, 1.0f, 0.0f, false);
+        DelayLinePool pool(s.delay_lines());
+        const std::vector<uint32_t> order{0};
+        // Track 0 plays on the path, track 1 on the Master.
+        std::vector<ChainBinding> chains(2);
+        chains[chain_on_path ? 0 : 1] = latent_chain(0, 100);
+        PlaybackPlan* p = rig.plan(chains, {}, 1, order, pool, {0, kNoBus}, {}, 0.0f, {4});
+        CHECK(p->compensation_frames == 100);
+        CHECK(p->compensation_shortfall_frames == 0);
+        CHECK(rig.publish(p));
+        reset_heap_counts();
+        for (int i = 0; i < 4; ++i) rig.block();
+        for (int blk = 0; blk < 4; ++blk) {
+            const int64_t at = rig.frame;
+            rig.block();
+            for (uint32_t i = 0; i < kBlock; ++i) {
+                const float want = signal(at + i - 100);
+                CHECK(rig.out[0][i] == want);
+                CHECK(rig.out[4][i] == want);
+            }
+        }
+        CHECK(heap_untouched());
+    }
+    return 0;
+}
+
+// A path whose pair the device does not have is played nowhere, and the
+// rest of the mix is untouched.
+int test_output_path_past_the_device_is_dropped() {
+    Rig rig(2);
+    Session& s = *rig.session;
+    s.tracks()[0]->set_pan(-1.0f);
+    s.tracks()[1]->set_pan(-1.0f);
+    s.set_aux(0, 1.0f, 0.0f, false);
+    DelayLinePool pool(s.delay_lines());
+    const std::vector<uint32_t> order{0};
+    CHECK(rig.publish(rig.plan({}, {}, 1, order, pool, {0, kNoBus}, {}, 0.0f, {Rig::kOutputs})));
+    for (int i = 0; i < 3; ++i) rig.block();
+    const int64_t at = rig.frame;
+    rig.block();
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        CHECK(rig.out[0][i] == signal(at + i));
+        CHECK(rig.out[2][i] == 0.0f && rig.out[5][i] == 0.0f);
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -412,6 +509,9 @@ int main() {
     t(test_aux_solo);
     t(test_aux_solo_follows_the_plan);
     t(test_block_split_invariance);
+    t(test_output_path_plays_on_its_pair);
+    t(test_output_path_is_aligned_with_the_master);
+    t(test_output_path_past_the_device_is_dropped);
     if (failed != 0) {
         std::fprintf(stderr, "routing: %d of %d failed\n", failed, run);
         return 1;

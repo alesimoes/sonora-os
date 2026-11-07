@@ -233,7 +233,10 @@ if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ISO="$ROOT/iso/sonora.iso"
+# shellcheck source=tools/lib/artifacts.sh
+# shellcheck disable=SC1091
+. "$ROOT/tools/lib/artifacts.sh"
+ISO="$SONORA_ISO_DIR/sonora.iso"
 
 # Test-only. When set to the path of a regular file, the target must be a loop
 # device backed by exactly that file, and nothing else is accepted -- not a

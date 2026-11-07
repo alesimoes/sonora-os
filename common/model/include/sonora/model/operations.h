@@ -570,6 +570,19 @@ struct SetOutput {
     Id output = kMasterOutput;
 };
 
+// --- hardware output paths (ADR-0060) ---------------------------------------
+
+// Undoable: names aux bus `bus` and makes it the output path playing on the
+// device's output pair `first`, `first` + 1 (from 0, even), or an ordinary
+// aux bus again when `first` is kNoHardwareOut. A path's output is the
+// interface, so it leaves any bus it fed. Refused for a pair another path
+// or the Master (SetMonitorBus) already plays on.
+struct SetBusPath {
+    Id bus = 0;
+    std::string name;
+    std::uint16_t first = kNoHardwareOut;
+};
+
 // --- automation (ADR-0027) --------------------------------------------------
 
 // Undoable: replaces the points of `track`'s `param` lane in [from, to)
@@ -666,7 +679,7 @@ using PlaylistOp = std::variant<AddPlaylist, SetActivePlaylist, DuplicatePlaylis
 using InsertOp = std::variant<AddInsert, RemoveInsert, MoveInsert, SetInsertActive,
                               ReplaceInsert, SetInsertBypass, SetInsertParams, SetInsertState>;
 using MixOp = std::variant<SetMix, AddBus, RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix,
-                           SetOutput, EditAutomation>;
+                           SetOutput, EditAutomation, SetBusPath>;
 using GroupOp = std::variant<SetGroup, RemoveGroup, SetVca, RemoveVca, SetVcaMix, SetFolder,
                              RemoveFolder>;
 using MidiOp = std::variant<AddMidiSource, PlaceMidiRegion, EditMidi, SetMidiRouting>;

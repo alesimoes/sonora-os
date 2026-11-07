@@ -77,7 +77,16 @@ struct MixLayout {
     // or not after its source) feeds the BusSum instead.
     const uint32_t* track_outputs = nullptr;
     const uint32_t* bus_outputs = nullptr;
+    // Hardware output paths (ADR-0060): per engine bus, the first device
+    // output of its pair or kNoHardware. A path's return feeds a PathOut
+    // sink, aligned with the Master, and not the BusSum. Null: none.
+    const uint16_t* bus_hardware = nullptr;
 };
+
+// A bus that is not an output path (MixLayout::bus_hardware).
+constexpr uint16_t kNoHardware = 0xFFFF;
+// Stable id tag of a path's sink, over its bus key.
+constexpr uint32_t kPathOutIdTag = 0x06000000u;
 
 // A strip with no aux bus as its output (MixLayout::track_outputs).
 constexpr uint32_t kNoBus = 0xFFFFFFFFu;

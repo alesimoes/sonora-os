@@ -34,8 +34,11 @@ set -euo pipefail
 [[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ISO="$ROOT/iso/sonora.iso"
-WORK="$ROOT/build-usb"
+# shellcheck source=tools/lib/artifacts.sh
+# shellcheck disable=SC1091
+. "$ROOT/tools/lib/artifacts.sh"
+ISO="$SONORA_ISO_DIR/sonora.iso"
+WORK="$SONORA_USB_DIR"
 IMAGE=sonora-usbtest:trixie
 # One volume per run, removed when the run ends: a shared one outlived every
 # run and once held 350 GB of disk images. Per run, so that one run's cleanup
@@ -110,6 +113,7 @@ in_container() {
   docker run --rm --privileged \
     -v "$(host_path "$ROOT"):/src:ro" \
     -v "$(host_path "$WORK"):/out" \
+    -v "$(host_path "$SONORA_ISO_DIR"):/isodir:ro" -e SONORA_ISO_DIR=/isodir \
     -v "$VOLUME:/work" \
     "$@"
 }

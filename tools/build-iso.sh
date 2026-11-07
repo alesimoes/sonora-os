@@ -6,6 +6,9 @@ set -euo pipefail
 [[ -n "${SONORA_HEAVY_HELD:-}" ]] || exec "$(dirname "${BASH_SOURCE[0]}")/build-slot.sh" "${BASH_SOURCE[0]}" "$@"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=tools/lib/artifacts.sh
+# shellcheck disable=SC1091
+. "$ROOT/tools/lib/artifacts.sh"
 IMAGE=sonora-livebuild:trixie
 # SONORA_LB_VOLUME: a separate volume, e.g. to time a cold build beside the
 # cached one.
@@ -23,7 +26,7 @@ DEV_SNAPSHOT="$(pf_dev_env)" || exit 1
 OUT_NAME=sonora.iso
 if [[ -n "$DEV_SNAPSHOT" ]]; then
   OUT_NAME=sonora-dev.iso
-  echo "WARNING: DEVELOPMENT BUILD from snapshot $DEV_SNAPSHOT, not the committed one. Output: iso/$OUT_NAME. Not a release." >&2
+  echo "WARNING: DEVELOPMENT BUILD from snapshot $DEV_SNAPSHOT, not the committed one. Output: $SONORA_ISO_DIR/$OUT_NAME. Not a release." >&2
 fi
 CHECK_ONLY=0
 [[ "${1:-}" == "--check" ]] && CHECK_ONLY=1
@@ -101,8 +104,8 @@ esac
 # full disk or an interrupted transfer can still boot partway, which is worse
 # than not booting.
 write_sidecar() {
-  (cd "$ROOT/iso" && rm -f "$OUT_NAME.sha256" && sha256sum "$OUT_NAME" > "$OUT_NAME.sha256")
-  cat "$ROOT/iso/$OUT_NAME.sha256"
+  (cd "$SONORA_ISO_DIR" && rm -f "$OUT_NAME.sha256" && sha256sum "$OUT_NAME" > "$OUT_NAME.sha256")
+  cat "$SONORA_ISO_DIR/$OUT_NAME.sha256"
 }
 
 if [[ "$(uname -s)" == "Linux" && "$(id -u)" == "0" ]] && command -v lb >/dev/null; then
@@ -120,8 +123,9 @@ if [[ "$(uname -s)" == "Linux" && "$(id -u)" == "0" ]] && command -v lb >/dev/nu
   lb config
   lb build
   mv -f live-image-amd64.hybrid.iso "$OUT_NAME"
+  if [[ "$SONORA_ISO_DIR" != "$ROOT/iso" ]]; then mkdir -p "$SONORA_ISO_DIR"; mv -f "$OUT_NAME" "$SONORA_ISO_DIR/$OUT_NAME"; fi
   write_sidecar
-  echo "built: $ROOT/iso/sonora.iso"
+  echo "built: $SONORA_ISO_DIR/$OUT_NAME"
   exit 0
 fi
 
@@ -242,6 +246,7 @@ list_staged
 # Linux VM, and only the finished ISO is copied back out.
 # Kept between runs on purpose: it holds live-build's package cache.
 # tools/clean.sh removes it only with --deep.
+mkdir -p "$SONORA_ISO_DIR"
 docker volume create --label org.sonora=1 "$VOLUME" >/dev/null
 
 docker run --rm --privileged -e SONORA_DEV_SNAPSHOT="$DEV_SNAPSHOT" -e SONORA_RETRY_DELAY \
@@ -293,10 +298,10 @@ docker run --rm --privileged -e SONORA_DEV_SNAPSHOT="$DEV_SNAPSHOT" -e SONORA_RE
 # A second, unprivileged run copies the result to the host. Keeping this out of
 # the build step means a failed build cannot leave a half-written ISO behind.
 docker run --rm \
-  -v "$(host_path "$ROOT/iso"):/out" \
+  -v "$(host_path "$SONORA_ISO_DIR"):/out" \
   -v "$VOLUME:/work" \
   -e OUT_NAME="$OUT_NAME" "$IMAGE" bash -lc 'cp -f "/work/$OUT_NAME" "/out/$OUT_NAME"'
 
 write_sidecar
-ls -lh "$ROOT/iso/$OUT_NAME"
-echo "built: $ROOT/iso/$OUT_NAME"
+ls -lh "$SONORA_ISO_DIR/$OUT_NAME"
+echo "built: $SONORA_ISO_DIR/$OUT_NAME"

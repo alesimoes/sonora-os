@@ -29,6 +29,20 @@ if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
   export MSYS2_ARG_CONV_EXCL='*'
 fi
 
+# Prints the targets that exist in the configured build tree.
+filter_existing_targets() {
+  local build="$1" t known
+  shift
+  known="$(cmake --build "$build" --target help | sed -n 's/^\.\.\. \([^ ]*\).*/\1/p')"
+  for t in "$@"; do
+    if grep -qxF -- "$t" <<<"$known"; then
+      echo "$t"
+    else
+      echo "build-rtsan: target $t not in this configuration, skipped" >&2
+    fi
+  done
+}
+
 # Inside the container or on a host that has the toolchain.
 native_build() {
   local build="$1"
@@ -40,26 +54,11 @@ native_build() {
   # change reaches; the ctest arguments then select their tests. Unset: the
   # whole tree, as main's daily full run wants it.
   if [[ -n "${SONORA_RTSAN_TARGETS:-}" ]]; then
-    read -r -a wanted <<<"$SONORA_RTSAN_TARGETS"
-    # The RTSan image has no Qt, so ui/qt is not configured and its targets do
-    # not exist here; build what this configure defines, so a UI change does
-    # not fail on "No rule to make target sonora_ui_qt". Every target that
-    # exists is still built and tested.
-    mapfile -t defined < <(cmake --build "$build" --target help | sed -n 's/^\.\.\. \([^ ]*\).*/\1/p')
-    rtsan_targets=()
-    # An associative array, not `printf | grep -q`: grep -q exits at the first
-    # hit, printf then dies of SIGPIPE and pipefail reports "not defined" for
-    # a target that is (test_active_folder was skipped that way).
-    declare -A is_defined=()
-    for t in "${defined[@]}"; do is_defined["$t"]=1; done
-    for t in "${wanted[@]}"; do
-      if [[ -n "${is_defined[$t]:-}" ]]; then
-        rtsan_targets+=("$t")
-      else
-        echo "build-rtsan: skip $t (not defined in this configure)"
-      fi
-    done
-    cmake --build "$build" -j"$(nproc)" --target "${rtsan_targets[@]}"
+    read -r -a rtsan_targets <<<"$SONORA_RTSAN_TARGETS"
+    # This configuration has no Qt, so the plan's UI targets do not exist
+    # here; the Qt build stage of the micro build covers them.
+    mapfile -t rtsan_targets < <(filter_existing_targets "$build" "${rtsan_targets[@]}")
+    ((${#rtsan_targets[@]})) && cmake --build "$build" -j"$(nproc)" --target "${rtsan_targets[@]}"
   else
     cmake --build "$build" -j"$(nproc)"
   fi
