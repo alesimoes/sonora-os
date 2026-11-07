@@ -328,12 +328,12 @@ void as_scanned(model::PluginRef& ref, const PluginScanner::Catalog& c) {
 }
 
 void as_scanned(model::Operation& op, const PluginScanner::Catalog& c) {
-    if (auto* a = std::get_if<model::AddInsert>(&op)) as_scanned(a->plugin, c);
-    if (auto* r = std::get_if<model::ReplaceInsert>(&op)) as_scanned(r->plugin, c);
-    if (auto* k = std::get_if<model::Compound>(&op)) {
+    if (auto* a = model::get_if<model::AddInsert>(&op)) as_scanned(a->plugin, c);
+    if (auto* r = model::get_if<model::ReplaceInsert>(&op)) as_scanned(r->plugin, c);
+    if (auto* k = model::get_if<model::Compound>(&op)) {
         for (model::Member& m : k->ops) {
-            if (auto* a = std::get_if<model::AddInsert>(&m)) as_scanned(a->plugin, c);
-            if (auto* r = std::get_if<model::ReplaceInsert>(&m)) as_scanned(r->plugin, c);
+            if (auto* a = model::get_if<model::AddInsert>(&m)) as_scanned(a->plugin, c);
+            if (auto* r = model::get_if<model::ReplaceInsert>(&m)) as_scanned(r->plugin, c);
         }
     }
 }

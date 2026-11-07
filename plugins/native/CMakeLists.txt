@@ -8,10 +8,11 @@
 # sonora_native_plugin()), then the harness's executable, which links the
 # suites found.
 add_subdirectory(sdk)
-if(SONORA_PLATFORM STREQUAL "linux")
+if(SONORA_PLATFORM STREQUAL "linux" OR (WIN32 AND SONORA_WINDOWS_VST3))
   add_subdirectory(format)
 else()
-  # The LV2 and VST3 bundles are Linux-only; the processors still call this.
+  # The bundles are Linux-only unless SONORA_WINDOWS_VST3 (the Windows
+  # package, tools/package-plugins.ps1); the processors still call this.
   function(sonora_native_plugin)
   endfunction()
 endif()
@@ -100,6 +101,10 @@ function(sonora_define_portable_target)
   set(_deps)
   foreach(_t ${_all})
     get_target_property(_type ${_t} TYPE)
+    # The bundles' descriptor generators are not tests: the package builds them.
+    if(_t MATCHES "-bundle-files$")
+      continue()
+    endif()
     if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "STATIC_LIBRARY")
       list(APPEND _deps ${_t})
     endif()

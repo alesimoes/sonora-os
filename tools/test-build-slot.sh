@@ -73,10 +73,29 @@ j1="$("$SLOT" --jobs)"
 [[ "$j1" -ge 2 && "$j1" -ge "$j2" ]] || bad "--jobs gave $j1 with one slot, $j2 with two"
 rm -f "$T/lock/heavy.conf"
 
+# The wait for the lock is written to SONORA_HEAVY_WAIT_FILE, apart from
+# the command's own time; the command and its nested calls never see it.
+: >"$T/log"
+HOLD=2 job a 2>/dev/null & pa=$!
+until grep -q "^start a" "$T/log"; do sleep 0.1; done
+# shellcheck disable=SC2016  # expanded by the inner shell
+seen="$(SONORA_HEAVY_WAIT_FILE="$T/waited" "$SLOT" "$SLOT" bash -c 'echo "${SONORA_HEAVY_WAIT_FILE:-unset}"' 2>/dev/null)"
+wait "$pa"
+[[ "$seen" == unset ]] || bad "the command saw SONORA_HEAVY_WAIT_FILE=$seen"
+w="$(cat "$T/waited" 2>/dev/null || echo none)"
+[[ "$w" =~ ^[0-9]+$ && "$w" -ge 1 ]] || bad "lock wait file says '$w', want >= 1 s"
+
 # The command's exit status passes through.
 rc=0
 "$SLOT" bash -c 'exit 7' || rc=$?
 [[ "$rc" -eq 7 ]] || bad "exit status $rc, want 7"
+
+# An unknown flag is refused, not queued as a command (--status once sat in
+# the queue as a job).
+rc=0
+out="$("$SLOT" --status 2>&1)" || rc=$?
+[[ "$rc" -eq 2 && "$out" == *"unknown flag --status"* ]] || bad "--status: rc $rc, $out"
+[[ -z "$(ls -A "$T/lock/wait" 2>/dev/null)" ]] || bad "--status left a ticket"
 
 [[ "$fail" -eq 0 ]] || exit 1
 echo "ok: heavy lock has capacity 1, orders by priority, reaps dead owners"

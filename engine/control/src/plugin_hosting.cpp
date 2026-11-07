@@ -68,12 +68,12 @@ void record_value(std::vector<model::Operation>& ops, const model::Snapshot& doc
     }
     model::SetInsertParams* set = nullptr;
     for (model::Operation& op : ops) {
-        if (auto* s = std::get_if<model::SetInsertParams>(&op); s && s->insert == insert) set = s;
+        if (auto* s = model::get_if<model::SetInsertParams>(&op); s && s->insert == insert) set = s;
     }
     if (!set) {
         const model::InsertMix* m = doc.mix.find_insert(insert);
         ops.push_back(model::SetInsertParams{insert, m ? m->params : std::vector<model::ParamValue>{}});
-        set = std::get_if<model::SetInsertParams>(&ops.back());
+        set = model::get_if<model::SetInsertParams>(&ops.back());
     }
     const auto k = std::find_if(set->params.begin(), set->params.end(),
                                 [&](const model::ParamValue& p) { return p.key == key; });

@@ -604,7 +604,7 @@ int scenario_gestures(const Args& a) {
     rig.hosting->handle_host_message(100, bytes, rig.history.current(), ops);
     bool params = false;
     for (const auto& op : ops) {
-        if (const auto* s = std::get_if<SetInsertParams>(&op)) {
+        if (const auto* s = model::get_if<SetInsertParams>(&op)) {
             for (const ParamValue& v : s->params) params = params || (s->insert == 500 && v.key == "gain" && v.value == -6.f);
         }
     }
@@ -615,7 +615,7 @@ int scenario_gestures(const Args& a) {
     rig.hosting->handle_host_message(100, bytes, rig.history.current(), ops);
     bool bypass = false;
     for (const auto& op : ops)
-        if (const auto* s = std::get_if<SetInsertBypass>(&op)) bypass = s->insert == 500 && s->bypass;
+        if (const auto* s = model::get_if<SetInsertBypass>(&op)) bypass = s->insert == 500 && s->bypass;
     check(bypass, "SetInsertBypass for insert 500");
     return failures ? 1 : 0;
 }
@@ -941,7 +941,7 @@ int scenario_state_flush(const Args& a) {
     for (const auto& s : f.states) amp_empty = amp_empty || (s.insert == 501 && s.sha256.empty());
     check(amp_empty && (!amp || !amp->state), "eg-amp keeps no state: none named");
     int set_states = 0;
-    for (const auto& op : rig.ops_seen) set_states += std::holds_alternative<SetInsertState>(op) ? 1 : 0;
+    for (const auto& op : rig.ops_seen) set_states += model::holds_alternative<SetInsertState>(op) ? 1 : 0;
     check(set_states == 1, "one SetInsertState, none for eg-amp");
 
     // A crash: the restart restores the flushed state, so it counts on from

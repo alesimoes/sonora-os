@@ -286,14 +286,14 @@ int test_a_frozen_playlist_survives_file_wire_and_older_readers() {
     CHECK(encode_operation(Operation{add}, wire, error));
     Operation back;
     CHECK(decode_operation(wire, back, error));
-    const AddPlaylist* got = std::get_if<AddPlaylist>(&back);
+    const AddPlaylist* got = get_if<AddPlaylist>(&back);
     CHECK(got != nullptr && got->freeze && *got->freeze == *add.freeze);
     add.freeze.reset();
     wire.clear();
     CHECK(encode_operation(Operation{add}, wire, error));
     CHECK(wire.find("freeze") == std::string::npos);
     CHECK(decode_operation(wire, back, error));
-    CHECK(!std::get<AddPlaylist>(back).freeze);
+    CHECK(!get<AddPlaylist>(back).freeze);
 
     // The model refuses a freeze of a playlist or an insert the track lacks.
     AddPlaylist bad;

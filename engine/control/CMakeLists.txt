@@ -51,6 +51,11 @@ if(UNIX)
   target_include_directories(test_session_saver PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
   target_link_libraries(test_session_saver PRIVATE sonora_control sonora_sha256 Threads::Threads)
   add_test(NAME session_saver COMMAND test_session_saver)
+  # Wall-clock deadline (a poll with a timeout): alone under `ctest -j`, and
+  # one at a time under the sanitizers (tools/local-ci.sh, label timing),
+  # where it flaked beside the other tests (2026-11-07).
+  set_tests_properties(session_saver PROPERTIES RUN_SERIAL TRUE)
+  set_property(TEST session_saver APPEND PROPERTY LABELS timing)
 endif()
 
 # The machine's round trip kept per device, rate and period (ADR-0019,
@@ -115,6 +120,11 @@ if(UNIX)
   add_executable(test_render_in_place tests/test_render_in_place.cpp)
   target_link_libraries(test_render_in_place PRIVATE sonora_control Threads::Threads)
   add_test(NAME render_in_place COMMAND test_render_in_place)
+  # Wall-clock deadline (a poll with a timeout): alone under `ctest -j`, and
+  # one at a time under the sanitizers (tools/local-ci.sh, label timing),
+  # where it flaked beside the other tests (2026-11-07).
+  set_tests_properties(render_in_place PROPERTIES RUN_SERIAL TRUE)
+  set_property(TEST render_in_place APPEND PROPERTY LABELS timing)
 endif()
 
 # A closed take as one compound; a bad file costs one track (ADR-0009
@@ -143,6 +153,11 @@ add_executable(test_control tests/test_control.cpp)
 target_link_libraries(test_control PRIVATE
   sonora_control sonora_backend_fake sonora_api_conformance sonora_api_fake sonora_model)
 add_test(NAME control COMMAND test_control)
+# Wall-clock deadline (a poll with a timeout): alone under `ctest -j`, and
+# one at a time under the sanitizers (tools/local-ci.sh, label timing),
+# where it flaked beside the other tests (2026-11-07).
+set_tests_properties(control PROPERTIES RUN_SERIAL TRUE)
+set_property(TEST control APPEND PROPERTY LABELS timing)
 
 # The server on a socket (M7), driven by raw platform channels rather than
 # ui/client, so this module's test needs nothing above it: several
@@ -152,6 +167,11 @@ if(UNIX)
   add_executable(test_control_socket tests/test_control_socket.cpp)
   target_link_libraries(test_control_socket PRIVATE sonora_control sonora_backend_fake)
   add_test(NAME control_socket COMMAND test_control_socket)
+  # Wall-clock deadline (a poll with a timeout): alone under `ctest -j`, and
+  # one at a time under the sanitizers (tools/local-ci.sh, label timing),
+  # where it flaked beside the other tests (2026-11-07).
+  set_tests_properties(control_socket PROPERTIES RUN_SERIAL TRUE)
+  set_property(TEST control_socket APPEND PROPERTY LABELS timing)
 endif()
 
 # The plugin scan worker and its cache (ADR-0012, amendment of 2026-10-19),
@@ -164,6 +184,11 @@ if(UNIX)
   target_link_libraries(test_plugin_scanner PRIVATE sonora_control Threads::Threads)
   add_dependencies(test_plugin_scanner fake_plugin_host)
   add_test(NAME plugin_scanner COMMAND test_plugin_scanner --host $<TARGET_FILE:fake_plugin_host>)
+  # Wall-clock deadline (a poll with a timeout): alone under `ctest -j`, and
+  # one at a time under the sanitizers (tools/local-ci.sh, label timing),
+  # where it flaked beside the other tests (2026-11-07).
+  set_tests_properties(plugin_scanner PROPERTIES RUN_SERIAL TRUE)
+  set_property(TEST plugin_scanner APPEND PROPERTY LABELS timing)
   # The catalog through the control server: item 6's resolution, the
   # catalog sent, plugin.rescan refused during a take.
   # native.editors: the descriptor hints of a Sonora bundle into the catalog,
@@ -181,6 +206,11 @@ if(UNIX)
   target_link_libraries(test_factory_preset_reader PRIVATE sonora_control)
   add_dependencies(test_factory_preset_reader fake_plugin_host)
   add_test(NAME factory_preset_reader COMMAND test_factory_preset_reader --host $<TARGET_FILE:fake_plugin_host>)
+  # Wall-clock deadline (a poll with a timeout): alone under `ctest -j`, and
+  # one at a time under the sanitizers (tools/local-ci.sh, label timing),
+  # where it flaked beside the other tests (2026-11-07).
+  set_tests_properties(factory_preset_reader PROPERTIES RUN_SERIAL TRUE)
+  set_property(TEST factory_preset_reader APPEND PROPERTY LABELS timing)
   # A real cold and warm scan, timed by hand against the real host (never
   # run by ctest: minutes, and the machine's figure).
   add_executable(measure_plugin_scan tests/measure_plugin_scan.cpp)

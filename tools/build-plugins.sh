@@ -8,6 +8,19 @@
 #   tools/build-plugins.sh                 build + full ctest, -j$(nproc)
 #   tools/build-plugins.sh -L plugins      build + only the plugin host tests
 #   tools/build-plugins.sh --measure       build + a longer round-trip run
+#   tools/build-plugins.sh --plugins-only  the plugin package's build (owner,
+#                                          2026-11-05: the plugins are a product
+#                                          of their own): only common/* and
+#                                          plugins/native are configured
+#                                          (SONORA_PLUGINS_ONLY), in
+#                                          build-plugins-only/, and ctest runs
+#                                          the native label: the processors'
+#                                          suites, the format driver on every
+#                                          bundle, lv2lint, the VST3 validator
+#   tools/build-plugins.sh --plugins-only --stage
+#                                          the same tree, bundles only, laid out
+#                                          under build-plugins-only/stage for
+#                                          tools/package-plugins.sh
 #   tools/build-plugins.sh --stage         no tests: only sonora-plugin-host, the
 #                                          offline tools and the native bundles,
 #                                          laid out under build-plugins/stage for
@@ -39,14 +52,31 @@ fi
 
 MEASURE=0
 STAGE=0
+ONLY=0
 CTEST_ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --measure) MEASURE=1 ;;
     --stage) STAGE=1 ;;
+    --plugins-only) ONLY=1 ;;
     *) CTEST_ARGS+=("$arg") ;;
   esac
 done
+
+# The plugins-only tree has its own directory, so it never reconfigures the
+# full one; the container sees both as /src/<dir>.
+if [[ "$ONLY" == 1 ]]; then
+  BDIR=build-plugins-only
+  CMAKE_ROOT_ARGS="-DSONORA_PLUGINS_ONLY=ON"
+  if [[ ${#CTEST_ARGS[@]} -eq 0 ]]; then
+    CTEST_ARGS=(-L native -j 4 --timeout 900)
+    # A PR run skips the long DSP suites (the nightly runs them).
+    [[ -z "${SONORA_SKIP_SLOW:-}" ]] || CTEST_ARGS+=(-LE slow)
+  fi
+else
+  BDIR=build-plugins
+  CMAKE_ROOT_ARGS=""
+fi
 
 command -v docker >/dev/null || { echo "error: docker is required." >&2; exit 1; }
 docker info >/dev/null 2>&1 || {
@@ -69,26 +99,32 @@ fi
 # cmake_install.cmake runs, because the root install needs every target built.
 if [[ "$STAGE" == 1 ]]; then
   docker run --rm --label org.sonora=1 \
+    -e BDIR="$BDIR" -e ONLY="$ONLY" -e ROOT_ARGS="$CMAKE_ROOT_ARGS" \
     -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -c '
     set -euo pipefail
-    cmake -S . -B build-plugins -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON >/dev/null
+    # shellcheck disable=SC2086
+    cmake -S . -B "$BDIR" -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON $ROOT_ARGS >/dev/null
     targets="sonora-plugin-host sonora_native_bundles"
+    [[ "$ONLY" != 1 ]] || targets="sonora_native_bundles"
     # The offline passes (ADR-0011 4) when their targets exist.
     for t in sonora-analyze sonora-mixplan; do
-      cmake --build build-plugins --target help | grep -q "^\.\.\. $t\$" && targets="$targets $t"
+      cmake --build "$BDIR" --target help | grep -q "^\.\.\. $t\$" && targets="$targets $t"
     done
     # shellcheck disable=SC2086
-    cmake --build build-plugins -j"$(nproc)" --target $targets
-    rm -rf build-plugins/stage
-    mkdir -p build-plugins/stage/usr/local/bin
+    cmake --build "$BDIR" -j"$(nproc)" --target $targets
+    rm -rf $BDIR/stage
+    mkdir -p $BDIR/stage/usr/local/bin
     for t in sonora-plugin-host sonora-analyze sonora-mixplan; do
-      [[ -f build-plugins/$t ]] && install -m 0755 build-plugins/$t build-plugins/stage/usr/local/bin/$t
+      [[ -f $BDIR/$t ]] && install -m 0755 $BDIR/$t $BDIR/stage/usr/local/bin/$t
     done
-    fmt="$(find build-plugins -path "*/plugins/native/format/cmake_install.cmake" | head -n 1)"
+    # The bundle install rules are generated in each plugin directory (the
+    # format helper is called from there), not in format/: the parent script
+    # includes them all.
+    fmt="$(find "$BDIR" -path "*/plugins/native/cmake_install.cmake" | head -n 1)"
     [[ -n "$fmt" ]] || { echo "error: no install script for the native bundles" >&2; exit 1; }
-    cmake -DCMAKE_INSTALL_PREFIX=/src/build-plugins/stage/usr/local -DCMAKE_INSTALL_CONFIG_NAME=Release -P "$fmt" >/dev/null
-    test -d build-plugins/stage/usr/local/lib/lv2 || { echo "error: no LV2 bundle was installed" >&2; exit 1; }
-    test -d build-plugins/stage/usr/local/lib/vst3 || { echo "error: no VST3 bundle was installed" >&2; exit 1; }
+    cmake -DCMAKE_INSTALL_PREFIX=/src/$BDIR/stage/usr/local -DCMAKE_INSTALL_CONFIG_NAME=Release -P "$fmt" >/dev/null
+    test -d $BDIR/stage/usr/local/lib/lv2 || { echo "error: no LV2 bundle was installed" >&2; exit 1; }
+    test -d $BDIR/stage/usr/local/lib/vst3 || { echo "error: no VST3 bundle was installed" >&2; exit 1; }
   '
   exit 0
 fi
@@ -96,18 +132,18 @@ fi
 # The build directory is container-specific and ignored by git.
 docker run --rm --label org.sonora=1 \
   --cap-add=SYS_NICE --ulimit rtprio=99 --ulimit memlock=-1 \
-  -e MEASURE="$MEASURE" \
+  ${SONORA_DSP_QUICK:+-e SONORA_DSP_QUICK=1}   -e MEASURE="$MEASURE" -e BDIR="$BDIR" -e ROOT_ARGS="$CMAKE_ROOT_ARGS" \
   -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" bash -c '
   set -euo pipefail
-  cmake -S . -B build-plugins -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON \
-    -DSONORA_REQUIRE_PLUGIN_VALIDATORS=ON -DSONORA_REQUIRE_PLUGIN_EDITORS=ON >/dev/null
-  cmake --build build-plugins -j"$(nproc)"
+  # shellcheck disable=SC2086
+  cmake -S . -B "$BDIR" -DCMAKE_BUILD_TYPE=Release -DSONORA_REQUIRE_VST3=ON     -DSONORA_REQUIRE_PLUGIN_VALIDATORS=ON -DSONORA_REQUIRE_PLUGIN_EDITORS=ON $ROOT_ARGS >/dev/null
+  cmake --build "$BDIR" -j"$(nproc)"
   # In parallel: the tests that pace a host by the wall clock, or hold a
   # timing bar, are RUN_SERIAL (label "timing") and run alone. The arguments
   # given to this script come last, so a -j1 or an -L among them wins.
-  ctest --test-dir build-plugins --output-on-failure -j"$(nproc)" "$@"
+  ctest --test-dir "$BDIR" --output-on-failure -j"$(nproc)" "$@"
   if [[ "$MEASURE" == 1 ]]; then
-    d=build-plugins
+    d="$BDIR"
     for chain in http://lv2plug.in/plugins/eg-amp \
                  http://gareus.org/oss/lv2/dpl#mono,http://lsp-plug.in/plugins/lv2/limiter_mono,http://lv2plug.in/plugins/eg-amp; do
       "$d/plugin_driver" --host "$d/sonora-plugin-host" --bundle "$d/lv2/sonora-test.lv2" \

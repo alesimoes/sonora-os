@@ -164,6 +164,10 @@ void SessionModel::cycleGrid() {
     sync();
 }
 
+void SessionModel::peaksReady() {
+    for (SceneItem* item : items_) item->markContentDirty();
+}
+
 void SessionModel::cycleFadeShape() {
     ctl_.set_fade_shape(next_fade_shape(ctl_.fade_shape()));
     sync();

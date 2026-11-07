@@ -135,8 +135,8 @@ Compound compound_of(const Plan& plan, const Resolved& r) {
 }  // namespace
 
 bool plan_revertible(const Member& m) {
-    return member_is_undoable(m) || std::holds_alternative<SetMix>(m) ||
-           std::holds_alternative<SetSendMix>(m) || std::holds_alternative<SetBusMix>(m);
+    return member_is_undoable(m) || holds_alternative<SetMix>(m) ||
+           holds_alternative<SetSendMix>(m) || holds_alternative<SetBusMix>(m);
 }
 
 std::string plan_problem(const Plan& plan) {
@@ -277,27 +277,27 @@ bool accept_plan(History& history, const Plan& plan, const Selection& sel, PlanR
     };
     for (const std::size_t k : r.resolved.applied) {
         const Member& m = plan.steps[k].op;
-        if (const auto* s = std::get_if<SetMix>(&m)) {
+        if (const auto* s = get_if<SetMix>(&m)) {
             const TrackMix* old = before.mix.find(s->mix.track);
             const Id id = s->mix.track;
             if (old != nullptr && first([&](const Member& x) {
-                    const auto* y = std::get_if<SetMix>(&x);
+                    const auto* y = get_if<SetMix>(&x);
                     return y != nullptr && y->mix.track == id;
                 }))
                 r.restore.ops.push_back(SetMix{*old});
-        } else if (const auto* s2 = std::get_if<SetSendMix>(&m)) {
+        } else if (const auto* s2 = get_if<SetSendMix>(&m)) {
             const SendMix* old = before.mix.find_send(s2->mix.send);
             const Id id = s2->mix.send;
             if (old != nullptr && first([&](const Member& x) {
-                    const auto* y = std::get_if<SetSendMix>(&x);
+                    const auto* y = get_if<SetSendMix>(&x);
                     return y != nullptr && y->mix.send == id;
                 }))
                 r.restore.ops.push_back(SetSendMix{*old});
-        } else if (const auto* s3 = std::get_if<SetBusMix>(&m)) {
+        } else if (const auto* s3 = get_if<SetBusMix>(&m)) {
             const BusMix* old = before.mix.find_bus(s3->mix.bus);
             const Id id = s3->mix.bus;
             if (old != nullptr && first([&](const Member& x) {
-                    const auto* y = std::get_if<SetBusMix>(&x);
+                    const auto* y = get_if<SetBusMix>(&x);
                     return y != nullptr && y->mix.bus == id;
                 }))
                 r.restore.ops.push_back(SetBusMix{*old});
