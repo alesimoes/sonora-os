@@ -131,6 +131,12 @@ elif [[ "$(uname -s)" == Linux ]]; then
   CCACHE=(-v "$SONORA_CCACHE_DIR:/ccache")
 else
   CCACHE=(-v sonora-ccache:/ccache)
+  # A fresh named volume is root-owned; the caller-uid container (Linux) gets
+  # "ccache: Permission denied" at the first compiler check without this.
+  if ((${#AS_CALLER[@]})); then
+    docker run --rm --user 0 -v sonora-ccache:/ccache --entrypoint chown \
+      "sonora-$IMAGE:trixie" "$(id -u):$(id -g)" /ccache >/dev/null 2>&1 || true
+  fi
 fi
 # The table in the job's summary page (changed files, targets, tests, times),
 # also when a stage fails.

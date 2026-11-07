@@ -34,6 +34,8 @@ import os
 import re
 import sys
 
+from micro_test_needs import needed_targets
+
 CLIENT = "client-sonora-micro"
 ROOT_BUILD_FILES = ("CMakeLists.txt", "CMakePresets.json")
 ROOT_BUILD_DIRS = ("cmake/",)
@@ -248,31 +250,6 @@ def prune_apps(targets, names, ctest_json):
     return keep
 
 
-def object_targets_for(ctest_json, targets, tests):
-    """Names of the OBJECT libraries whose object files a selected test names
-    in its command. A test such as plugin_client_rt_canary_alloc runs
-    `cmake -P` over `canary_alloc.cpp.o`; no executable depends on that
-    library, so building only the plan's targets left the file missing (PR
-    #478, 2026-11-07)."""
-    want = set(tests)
-    words = set()
-    for test in ctest_json.get("tests", []):
-        if test["name"] not in want:
-            continue
-        for w in test.get("command") or []:
-            words |= {os.path.basename(x.replace("\\", "/"))
-                      for x in re.split(r"[\s;=]+", str(w)) if x}
-    out = set()
-    for t in targets:
-        if t["type"] != "OBJECT_LIBRARY":
-            continue
-        if any(os.path.basename(src) + ".o" in words
-               or os.path.basename(src) + ".obj" in words
-               for src in t["sources"]):
-            out.add(t["name"])
-    return out
-
-
 def ctest_regex(tests):
     return "^(" + "|".join(re.escape(t) for t in tests) + ")$"
 
@@ -307,8 +284,8 @@ def main(argv=None):
         listing = ctest_listing(a.build)
         out["targets"] = prune_apps(targets, out["targets"], listing)
         out["tests"] = match_tests(listing, targets, out["targets"])
-        out["targets"] = sorted(set(out["targets"]) | object_targets_for(
-            listing, targets, out["tests"]))
+        out["targets"] = sorted(set(out["targets"]) | set(
+            needed_targets(listing, targets, out["tests"])))
         out["ctest_regex"] = ctest_regex(out["tests"]) if out["tests"] else ""
     json.dump(out, sys.stdout, indent=1, sort_keys=True)
     print()
