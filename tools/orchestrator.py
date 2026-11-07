@@ -24,7 +24,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import (autoadopt, cli, cli_mailbox, daemonlock, dispatch,  # noqa: E402
-                     heartbeat, launcher, nightly, numbers, ownerchat,
+                     heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
@@ -235,6 +235,7 @@ class Orchestrator:
             self.usage_pause_until, paused,
             self.store.runs_started_since(now - 3600))
         data["train"] = self.train.rows()
+        data["nightly"] = nightly_watch.status(self.store)
         data["train_slots"] = self.cfg.train_slots
         data["gh_paused_until"] = self.train.pause_until or None
         data["daemon_pid"] = os.getpid()   # tools/supervisor.py probes it

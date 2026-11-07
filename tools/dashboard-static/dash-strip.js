@@ -18,4 +18,8 @@ function renderStrip(s){
     c.push(chip('','PRs abertos',(o.open_prs??s.prs.length)+' de '+(o.max_open_prs||'?'),'limite do orquestrador'))}
   c.push(chip(holder?'':'','Build pesado',holder?String(holder.who||'').slice(0,28)+(nw?' +'+nw+' na fila':''):'livre','trava da máquina (build-slot.sh)'));
   if(d&&d.ok)c.push(chip(d.level==='ok'?'':d.level,'Disco',bytes(d.free)+' livres',d.level==='crit'?'CRÍTICO: menos de 10 GB':d.level==='warn'?'Atenção: menos de 30 GB':'espaço suficiente'));
+  const n=s.orchestrator&&s.orchestrator.nightly;
+  if(o){const l=n&&n.last,age=l&&l.at?now-l.at:null,old=age==null||age>(n&&n.watch_s||93600),bad=!l||l.conclusion!=='success'||old,
+    val=l?(l.conclusion||'?')+' · '+(age==null?'?':'há '+dur(age))+' · '+l.sha.slice(0,8):'sem execução';
+    c.push(chip(bad?'bad':'ok','Nightly',val,'última execução na main'+(n&&n.dispatched_at?' · disparada pelo daemon há '+dur(now-n.dispatched_at):'')+(old?' · mais velha que 26 h':''),l&&l.url?`onclick="window.open('${E(l.url)}')" role="link" tabindex="0"`:''))}
   $('strip').innerHTML=c.join('')}

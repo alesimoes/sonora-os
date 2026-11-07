@@ -112,6 +112,10 @@ class Forge:
         workflow file on the branch (the nightly full build)."""
         return []
 
+    def dispatch_workflow(self, workflow, ref="main"):
+        """Start a workflow_dispatch run of the workflow on the ref."""
+        raise NotImplementedError
+
     def contains(self, worktree, branch):
         """True when origin/<branch>'s head is in the worktree's HEAD (a
         bundle took that PR)."""
@@ -351,18 +355,29 @@ class GhForge(Forge):
                   "-f", f"state={state}", "-f", f"context={context}",
                   "-f", f"description={description}"], timeout=60)
 
-    def workflow_runs(self, workflow, branch="main", limit=3):
+    def workflow_runs(self, workflow, branch="main", limit=20):
+        """Runs on `branch` started by the schedule or a dispatch only; a
+        PR or another branch's run never speaks for main."""
         try:
             runs = json.loads(self._ok(
                 ["gh", "run", "list", "--workflow", workflow, "--branch",
                  branch, "--limit", str(limit), "--json",
-                 "databaseId,headSha,status,conclusion,url"],
-                timeout=60) or "[]")
+                 "databaseId,headSha,status,conclusion,url,event,headBranch,"
+                 "updatedAt"], timeout=60) or "[]")
         except ValueError as e:
             raise ForgeError(f"gh run list: {e}")
         return [{"id": r.get("databaseId"), "head_sha": r.get("headSha"),
                  "status": r.get("status"), "conclusion": r.get("conclusion"),
-                 "url": r.get("url")} for r in runs]
+                 "url": r.get("url"), "event": r.get("event"),
+                 "branch": r.get("headBranch"),
+                 "updated_at": r.get("updatedAt")}
+                for r in runs
+                if r.get("headBranch") == branch
+                and r.get("event") in ("schedule", "workflow_dispatch")]
+
+    def dispatch_workflow(self, workflow, ref="main"):
+        self._ok(["gh", "workflow", "run", workflow, "--ref", ref],
+                 timeout=60)
 
     def failure_excerpt(self, head_sha, per_job=8):
         """The lines that say why each failed job of the head's CI failed,

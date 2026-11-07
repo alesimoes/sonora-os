@@ -11,6 +11,8 @@ per failed run, however many ticks see it.
 """
 import json
 
+from . import nightly_watch
+
 META_POLLED = "nightly-polled-at"
 
 
@@ -32,16 +34,33 @@ def tick(orch, now):
     except Exception as e:   # the board stands without the nightly card
         store.event("nightly", "poll_failed", str(e)[:200])
         return None
+    runs = nightly_watch.on_main(runs)
     done = [r for r in runs if r.get("status") == "completed"]
-    if not done:
-        return None
-    r = done[0]
+    nightly_watch.drop_bogus_tasks(store, done)
+    judged = None
+    if done:
+        nightly_watch.record_last(store, done[0], now)
+        judged = judge(orch, done[0])
+    nightly_watch.watchdog(orch, runs, now, workflow)
+    return judged
+
+
+def judge(orch, r):
+    """One completed run, once: success is an event, failure a fix task,
+    anything else (cancelled, skipped, startup_failure) is no verdict on
+    main and only an event; the watchdog re-dispatches."""
+    store = orch.store
     key = f"nightly:{r.get('id')}"
     if store.get_meta(key):
         return None
     store.set_meta(key, r.get("conclusion") or "?")
-    if r.get("conclusion") == "success":
+    concl = r.get("conclusion")
+    if concl == "success":
         store.event("nightly", "nightly_green", str(r.get("head_sha", ""))[:12])
+        return None
+    if concl != "failure":
+        store.event("nightly", "nightly_inconclusive",
+                    f"{concl} {r.get('id')}")
         return None
     excerpt = ""
     try:
