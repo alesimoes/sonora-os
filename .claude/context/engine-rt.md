@@ -19,9 +19,9 @@ Local CI context: `sonora-engine`. Agents: rt-engineer, rt-safety-auditor.
 ## Build and test
 - Module loop: `ctest -L core|control|app|audiofile|drivers|plugin_client`
   (labels from `sonora_label_module_tests`, root `CMakeLists.txt`).
-- Gate: `tools/local-ci.sh` steps tree, engine-scripts, tsan, rtsan, record,
-  bwf, windows. `engine/core` touches labels core control app plugin_client
-  drivers ui; `contracts/` runs the whole non-slow suite.
+- Gate: the micro build (`tools/micro-build.sh`, ADR-0061): the targets the
+  diff reaches and their tests, then RTSan on them. TSan, record, BWF and
+  Windows are the nightly on main (`.github/workflows/nightly.yml`).
 - Narrow build: `tools/build-slot.sh tools/build-engine.sh`.
 
 ## Traps

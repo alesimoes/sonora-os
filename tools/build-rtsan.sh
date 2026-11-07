@@ -36,7 +36,15 @@ native_build() {
   cmake -S "$ROOT" -B "$build" -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_CXX_COMPILER="clang++-$CLANG_VERSION" \
     -DSONORA_RTSAN=ON
-  cmake --build "$build" -j"$(nproc)"
+  # The micro build (tools/micro-build.sh, ADR-0061) names the targets the
+  # change reaches; the ctest arguments then select their tests. Unset: the
+  # whole tree, as main's daily full run wants it.
+  if [[ -n "${SONORA_RTSAN_TARGETS:-}" ]]; then
+    read -r -a rtsan_targets <<<"$SONORA_RTSAN_TARGETS"
+    cmake --build "$build" -j"$(nproc)" --target "${rtsan_targets[@]}"
+  else
+    cmake --build "$build" -j"$(nproc)"
+  fi
   # halt_on_error: a report is a failure, never a line nobody reads.
   # tools/rtsan.supp is for audited exceptions and holds none: the one there
   # is, wake_all's futex wake (ADR-0012 A1/A3), is a scope in its source.
@@ -44,7 +52,7 @@ native_build() {
   RTSAN_OPTIONS="halt_on_error=true:suppressions=$ROOT/tools/rtsan.supp" \
   RTSAN_SYMBOLIZER_PATH="/usr/bin/llvm-symbolizer-$CLANG_VERSION" \
   SONORA_DSP_QUICK=1 \
-    ctest --test-dir "$build" --output-on-failure -j"$(nproc)" "$@"
+    ctest --test-dir "$build" --output-on-failure -j"$(nproc)" --no-tests=ignore "$@"
   # A test can pass with a report in its output: one whose child process
   # RTSan halts while the test expects that child to die (plugin_host_deadline
   # passed with sonora-plugin-host aborted on its plugin's nanosleep). So any
@@ -110,5 +118,5 @@ fi
 # SCHED_FIFO, as the appliance runs its server (PR #77 RT audit B1).
 docker run --rm --ulimit memlock=-1:-1 --shm-size=512m \
   --cap-add=SYS_NICE --ulimit rtprio=95:95 -e SONORA_RTSAN_CONTAINER=1 \
-  -e SONORA_RTSAN_LIVE -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" \
+  -e SONORA_RTSAN_LIVE -e SONORA_RTSAN_TARGETS -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" \
   bash /src/tools/build-rtsan.sh --native "$@"

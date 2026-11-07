@@ -34,16 +34,6 @@ def track_of(files):
     return "daw"
 
 
-# GitHub jobs that tools/local-ci.sh replaces (owner, 2026-11-05).
-LOCAL_CI_JOBS = {
-    "Engine build and tests", "Portable modules under MSVC",
-    "Qt interface build and headless tests", "Thread and address sanitizers",
-    "RealtimeSanitizer over the SONORA_RT call graph",
-    "Records audio against PipeWire", "BWF files read back by third-party tools",
-    "Quantum and rate stay pinned",
-    "Plugin host against real LV2 and VST3 plugins",
-}
-
 def agent_of(track, files):
     if track == "os":
         return "distro-engineer"
@@ -159,8 +149,9 @@ class Train(BundleMixin):
             n = p["number"]
             if n in owned or (numbers and n not in numbers):
                 continue
-            if auto and (p.get("draft") or p.get("base") != "main"
-                         or p["branch"] in mine):
+            # A PR against another PR is adopted too: _step retargets it to
+            # main (stacked PRs are refused, CLAUDE.md).
+            if auto and (p.get("draft") or p["branch"] in mine):
                 continue
             fid = f"pr-{n}"
             track = track_of(p["files"])
@@ -276,33 +267,26 @@ class Train(BundleMixin):
         if i.get("refresh_from") and head != i["refresh_from"]:
             upd.update(refreshed=head, refresh_from=None)
             i["refreshed"] = head
+        # The PR's GitHub checks are the whole gate (ADR-0061): the micro
+        # build and its tests, the lint and harness jobs. No local run.
         checks = d["checks"]
-        if o.cfg.local_ci:
-            # Built and tested here instead (harness/localci.py); a PR from
-            # before the lean ci.yml still runs them on GitHub's runners.
-            # Our own `local-ci` status is judged from the store, never from
-            # GitHub: a run killed before it posted its verdict leaves it
-            # pending there, and the PR would wait for it forever (#439,
-            # 2026-11-05).
-            checks = [c for c in checks
-                      if c["name"] not in LOCAL_CI_JOBS and c["name"] != "local-ci"]
         passed = sum(1 for c in checks if c["state"] == "pass")
         upd.update(passed=passed, total=len(checks), waits_on=None,
                    failing=[c["name"] for c in checks
                             if c["state"] in ("fail", "cancel")])
 
         if d["base"] and d["base"] != "main":
-            owner = next((p["number"] for p in self._open_list(now)
-                          if p["branch"] == d["base"]), None)
-            if owner:
-                self._save(fid, phase="empilhado", waits_on=owner,
-                           next=f"aguarda o merge de #{owner}",
-                           **{k: v for k, v in upd.items()
-                              if k != "waits_on"})
-                return
+            # Stacked PRs are refused (owner, 2026-11-07): one waiting on
+            # another blocked everything behind it. The PR goes to main as
+            # it is; work that needs an unmerged PR waits for it or ships
+            # in the same PR.
             o.forge.retarget(n, "main")
-            self._save(fid, phase="retarget", action="retarget → main",
-                       next="atualizar com a main", **upd)
+            self._save(fid, phase="retarget",
+                       action=f"retarget {d['base']} → main (PR empilhado "
+                              "não é aceito)",
+                       next="CI contra a main", **upd)
+            o.store.event(ts[0]["id"], "train_retarget",
+                          f"#{n} base {d['base']} → main")
             return
 
         if d["mergeable"] == "no":
@@ -349,8 +333,6 @@ class Train(BundleMixin):
             if o._is_dry("merge"):
                 self._save(fid, phase="verde", next="merge (pool merge em "
                            "dry-run)", **upd)
-                return
-            if not self._local_ci_passed(f, ts, head, upd):
                 return
             o.forge.merge(n, head)
             self._save(fid, phase="mergeado", action=f"merge {head[:8]}",
@@ -403,36 +385,6 @@ class Train(BundleMixin):
                    next="novo CI; vermelho de novo → fixer", **upd)
         o.store.event(ts[0]["id"], "train_refresh", f"#{n} {how}")
 
-    def _local_ci_passed(self, f, ts, head, upd):
-        """GitHub runs the light checks only; the build and the tests run
-        here (harness/localci.py) on the head merged with main."""
-        o, fid = self.o, f["id"]
-        if not o.cfg.local_ci:
-            return True
-        r = o.localci.result(head)
-        if r is None:
-            if not o.localci.start(head):
-                self._save(fid, phase="aguardando CI local",
-                           next="vaga no CI local", **upd)
-                return False
-            r = o.localci.result(head) or {}
-        if r.get("state") == "running":
-            # Every ready PR joins one batch: one build, one test pass.
-            self._save(fid, phase="CI local rodando",
-                       next="na fila do lote (um build para todos os PRs "
-                       "prontos)" if r.get("queued") else
-                       "build e testes do lote nesta máquina", **upd)
-            return False
-        if r.get("state") == "fail":
-            self._save(fid, phase="fixer", action="fixer (CI local)",
-                       next="fixer corrige: local-ci", **upd)
-            kind = "conflict" if "conflicts with main" in (
-                r.get("summary") or "") else "ci"
-            jobs = ["merge-conflict"] if kind == "conflict" else ["local-ci"]
-            o._red(f, ts, jobs, kind, r.get("excerpt") or "")
-            return False
-        return True
-
     def _why(self, head):
         try:
             return self.o.forge.failure_excerpt(head)
@@ -453,12 +405,8 @@ class Train(BundleMixin):
                        rerun_at=self.o.clock(),
                        next="rerun; vermelho de novo → fixer")
             return
-        # The fixer's head is queued for the local gate now, not when the
-        # GitHub checks of the PR happen to settle: a new head with no queue
-        # entry stayed unjudged (#446, 2026-11-06). The old head is
-        # remembered so its queued or running batch can be cancelled.
-        if self.o.cfg.local_ci and local_head:
-            self.o.localci.start(local_head)
+        # The old head is remembered so a verdict on it is never read as
+        # the new head's.
         self._save(fid, phase="CI rodando", action="push do fixer",
                    refresh_from=head_before, next="CI do fix",
                    old_heads=self._with_old(i, head_before, local_head))

@@ -7,7 +7,7 @@ from dashboard_actions import ActionError, register
 from dashboard_actions_util import need_str, only
 from dashboard_chat import daemon_alive, harness_dir
 from dashboard_orch import orch_state
-from harness import launcher, localci_cancel, ownerchat
+from harness import launcher, ownerchat, proctree
 
 
 def live_run(name):
@@ -31,7 +31,7 @@ def _stop(p, timeout):
     pid = run.get("pid")
     if not launcher.pid_alive(pid):
         return False, "o processo já terminou"
-    localci_cancel.kill_tree(pid)
+    proctree.kill_tree(pid)
     return True, "árvore do pid %s encerrada; o daemon relança pelas regras de backoff" % pid
 
 

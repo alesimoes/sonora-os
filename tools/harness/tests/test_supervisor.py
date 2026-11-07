@@ -1,6 +1,6 @@
 """harness/supervisor.py and supervisor_checks.py: each check against a fake
 system (processes, lock directory, disk, notifications) and the real store,
-train and local-ci queues of an orchestrator built on a temp directory."""
+train of an orchestrator built on a temp directory."""
 import json
 import os
 import tempfile
@@ -156,29 +156,6 @@ class Lock(Case):
         self.sweep()
         self.assertEqual(self.sys.killed, [])
 
-    def test_gate_step_with_no_local_ci_run_is_killed(self):
-        ci = os.path.join(self.o.root, ".harness", "ci", "sonora-ci-0")
-        self.sys.entries = [entry("holds", 603, cwd=ci,
-                                  cmd="bash local-ci.sh --step plugins",
-                                  start=self.now() - 5)]
-        self.sweep()
-        self.assertEqual(self.sys.killed, [603])
-        self.assertIn("gate step with no local-ci run",
-                      self.actions("lock")[0].reason)
-
-    def test_gate_step_of_a_running_batch_is_kept_then_alerted(self):
-        ci = os.path.join(self.o.root, ".harness", "ci", "sonora-ci-0")
-        self.o.store.set_meta("localci:k1", json.dumps(
-            {"state": "running", "dir": "d", "heads": ["h1"]}))
-        self.sys.entries = [entry("holds", 604, cwd=ci,
-                                  start=self.now() - 5)]
-        al = self.sweep()
-        self.assertEqual(self.sys.killed, [])
-        self.assertNotIn("lock:gate:604", al)
-        self.sys.entries[0]["start"] = self.now() - 4 * 3600
-        al = self.sweep()
-        self.assertIn("lock:gate:604", al)
-
     def test_long_waiter_and_holder_alert(self):
         self.sys.entries = [
             entry("waits", 605, cwd="/elsewhere", start=self.now() - 3 * 3600),
@@ -208,21 +185,6 @@ class Queues(Case):
     def train(self, **rows):
         self.o.store.set_meta("train", json.dumps(rows))
 
-    def test_merged_head_is_dropped_and_unknown_head_alerted(self):
-        self.train(**{"pr-1": {"pr": 1, "head": "aaa", "phase": "CI rodando"},
-                      "pr-2": {"pr": 2, "head": "bbb", "phase": "mergeado"}})
-        lc = self.o.localci
-        for h in ("aaa", "bbb", "ccc"):
-            lc.start(h)
-        al = self.sweep()
-        self.assertEqual(lc.result("bbb")["state"], "cancelled")
-        self.assertEqual(lc.result("aaa")["state"], "running")
-        self.assertNotIn("queue:ccc", al)        # first seen: remembered
-        self.clock.offset += 120
-        al = self.sweep()
-        self.assertIn("queue:ccc", al)
-        self.assertEqual(lc.result("ccc")["state"], "running")  # alert only
-
     def test_open_pr_the_sweep_missed_is_adopted_after_the_grace(self):
         self.forge.add_pr(5, "feat/x", files=["ui/a.cpp"])
         self.sweep()
@@ -234,14 +196,15 @@ class Queues(Case):
         self.assertIn("auto", self.o.store.events("pr-5")[0]["detail"])
         self.assertEqual(self.sweep().get("queues:unadopted"), None)
 
-    def test_draft_and_foreign_base_are_not_adopted(self):
+    def test_draft_is_not_adopted_but_a_stacked_pr_is(self):
+        # ADR-0061 section 6: a PR on another PR is adopted and retargeted.
         self.forge.add_pr(6, "feat/d", draft=True)
         self.forge.add_pr(7, "feat/s", base="feat/d")
         self.sweep()
         self.clock.offset += self.th.adopt_grace_s + 1
         self.sweep()
         self.assertIsNone(self.o.store.get_feature("pr-6"))
-        self.assertIsNone(self.o.store.get_feature("pr-7"))
+        self.assertEqual(self.o.store.get_feature("pr-7")["pr"], 7)
 
 
 # -- PRs ----------------------------------------------------------------------

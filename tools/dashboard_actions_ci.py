@@ -1,13 +1,8 @@
-"""Actions on local CI and the machine-wide heavy lock.
-
-cancel a batch: only a batch state.json lists as running with a live pid;
-its process tree is stopped and rc/summary say `cancelled`, so the daemon
-reads a failure, never a pass (harness/localci_cancel.py).
+"""Actions on the machine-wide heavy lock.
 
 remove a lock entry: only one tools/build-slot.sh --list shows, whose pid is
 dead or whose command is not a build or test. The holders live in slot-N/owner
 and the waiters in wait/<ticket>; the entry is the file naming that pid."""
-import json
 import os
 import shutil
 
@@ -15,44 +10,8 @@ import dashboard_proc
 from dashboard_actions import ActionError, register
 from dashboard_actions_util import need_int, need_str, only
 from dashboard_machine import GIT_BASH, LOCK_RE, heavy_lock_list
-from dashboard_orch import orch_state
-from harness import launcher, localci_cancel
 
-REAL_JOB_MARKERS = ("build-", "local-ci", "docker", "ctest", "cmake", "test-", "pre-pr", "sonora")
-
-
-def running_batches():
-    out = {}
-    for k, v in (orch_state().get("meta") or {}).items():
-        if not k.startswith("localci:"):
-            continue
-        try:
-            r = json.loads(v)
-        except ValueError:
-            continue
-        if r.get("state") == "running" and r.get("pid") and r.get("dir") and not r.get("batch"):
-            out[k[len("localci:"):]] = r
-    return out
-
-
-def _v_cancel(p):
-    p = only(p, "key")
-    need_str(p, "key")
-    r = running_batches().get(p["key"])
-    if r is None:
-        raise ActionError("não há lote de CI local rodando com essa chave")
-    if not launcher.pid_alive(r["pid"]):
-        raise ActionError("o processo do lote já terminou")
-    return p
-
-
-def _cancel(p, timeout):
-    r = running_batches().get(p["key"])
-    if r is None:
-        return False, "o lote já terminou"
-    localci_cancel.kill_tree(r["pid"])
-    localci_cancel.mark_cancelled_files(r["dir"])
-    return True, "lote cancelado (pid %s); o resultado fica como falha, nunca como verde" % r["pid"]
+REAL_JOB_MARKERS = ("build-", "micro-build", "docker", "ctest", "cmake", "test-", "pre-pr", "sonora")
 
 
 # -- the lock ---------------------------------------------------------------
@@ -127,5 +86,4 @@ def _remove_lock(p, timeout):
     return bool(gone), ("removido: " + ", ".join(gone)) if gone else "nenhuma entrada com esse pid"
 
 
-register("ci.cancel", "ci", "cancelar lote", _v_cancel, _cancel, destructive=True, timeout=45)
 register("lock.remove", "ci", "remover da fila de trava", _v_lock, _remove_lock, destructive=True, timeout=20)

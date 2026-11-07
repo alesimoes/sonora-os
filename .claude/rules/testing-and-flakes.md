@@ -1,8 +1,8 @@
 # Testing and flakes
 
-- Tests are by context: a PR runs the contexts it touches (sonora-ui,
-  sonora-plugins, sonora-engine, os-image, harness/docs); main runs
-  everything (`tools/local-ci.sh --full`). Table in `tools/local-ci.sh`.
+- Tests are by target: a PR builds the CMake targets its files reach and
+  runs their tests (`tools/micro-build.sh`, ADR-0061); main runs everything
+  nightly (`.github/workflows/nightly.yml`).
 - Every test carries its module's ctest label (ADR-0007 section 7); a new
   test target is wired into the label function in the root `CMakeLists.txt`.
 - No test depends on wall-clock time. Wait on an event or observable state
