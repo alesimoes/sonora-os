@@ -39,7 +39,7 @@ function flowRows(s){
     if(col===2&&t&&t.agent)w.push(who(roleName(t.agent),'responsável · orquestrador',null,{dim:true,k:'pr',id:p.number}));
     if(col===1)w.push(who('Integrador','juntando os PRs',ts,{code:'IN',k:'pr',id:p.number}));
     sess.filter(a=>a.pr===p.number||(a.branch&&a.branch===p.branch)).forEach(a=>w.push(mkSess(a)));
-    rows.push({k:'pr',id:p.number,num:p.number,acts:prActs(p.number,ph),title:shortTitle(p.title),sub:(t&&t.track?t.track+' · ':'')+p.branch,col,w,pend,t0:ts})});
+    rows.push({k:'pr',id:p.number,num:p.number,acts:prActs(p.number,ph,t),title:shortTitle(p.title),sub:(t&&t.track?t.track+' · ':'')+p.branch,col,w,pend,t0:ts})});
   // trabalho da sessão sem PR: validação, empacotamento etc.
   sess.filter(a=>!used.has(a.id)).forEach(a=>{
     const col=a.lock?3:1,pend=a.state==='waiting_lock'?'espera a máquina':null;

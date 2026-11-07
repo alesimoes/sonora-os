@@ -205,6 +205,15 @@ fi
 # Windows last: the target is Linux, and a red Linux step skips it.
 ((c_plugins || portable)) && steps+=(windows)
 
+# SONORA_LOCAL_CI_FIRST (the dashboard's "rerun this step"): that step goes
+# first, so a step that is still red stops the run early. Nothing is dropped.
+if [[ -n "${SONORA_LOCAL_CI_FIRST:-}" ]]; then
+  reordered=()
+  for s in "${steps[@]}"; do [[ "$s" == "$SONORA_LOCAL_CI_FIRST" ]] && reordered+=("$s"); done
+  for s in "${steps[@]}"; do [[ "$s" == "$SONORA_LOCAL_CI_FIRST" ]] || reordered+=("$s"); done
+  steps=("${reordered[@]}")
+fi
+
 contexts=()
 if [[ "$WANT" != " " ]]; then
   w="${WANT# }"

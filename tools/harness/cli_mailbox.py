@@ -11,10 +11,11 @@ import json
 import os
 import time
 
+from . import dash_door
 from .status import write_atomic
 
 REQUEST_DIR = "cli-requests"
-KINDS = ("add", "import-queue", "bundle")
+KINDS = ("add", "import-queue", "bundle", "regate", "rerun-step", "assign")
 
 
 def request_dir(hdir):
@@ -55,6 +56,8 @@ def take(hdir):
 
 def apply(orch, kind, args):
     """Runs one request on the daemon's own store; returns what it did."""
+    if kind in dash_door.KINDS:
+        return dash_door.apply(orch, kind, args)
     if kind == "add":
         orch.store.add_task(
             args["id"], args["track"], args["agent"],

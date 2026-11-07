@@ -109,6 +109,21 @@ class LocalCI:
         r.update(fields)
         self.o.store.set_meta(f"localci:{sha}", json.dumps(r))
 
+    def forget(self, sha, first=None):
+        """Drops a head's verdict so start() queues it again; `first` is a
+        step the next run does before the others (dashboard rerun-step)."""
+        self.o.store.set_meta(f"localci:{sha}", "")
+        for name in ("pool", "groups"):
+            q = self._queue(name)
+            self._set_queue(name, [e for e in q if not (
+                e == sha or (isinstance(e, dict) and e.get("head") == sha))])
+        self.o.store.set_meta(f"localci-first:{sha}", first or "")
+
+    def _first_step(self, heads):
+        if len(heads) != 1:
+            return ""
+        return self.o.store.get_meta(f"localci-first:{heads[0]}") or ""
+
     def _running(self):
         out = []
         for k, v in list(self.o.store._d["meta"].items()):
@@ -212,6 +227,7 @@ class LocalCI:
                    SONORA_HEAVY_PRIORITY=str(prio),
                    # the machine is the run's from its first step to its last
                    SONORA_LOCAL_CI_HOLD_LOCK="1",
+                   SONORA_LOCAL_CI_FIRST=self._first_step(merged),
                    # a batch that fails is split anyway; stop at its first red
                    SONORA_LOCAL_CI_FAIL_FAST="1" if len(merged) > 1 else "0")
         kw = {}
