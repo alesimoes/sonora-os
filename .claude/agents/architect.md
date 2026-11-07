@@ -67,3 +67,10 @@ shell costs tokens and attention until a human notices.
   Do not end a turn waiting for an answer; nobody reads your terminal.
 - Before reporting, `docker ps` and `ps -ef` for anything you started
   (docker runs, builds) and kill it.
+
+## Plans
+
+For every task you also write the plan, `planning/plans/<item-id>.md` from
+`planning/plans/TEMPLATE.md` (skill `plan-task`): decide the contracts and ADR
+number, grade each slice, mark `Status: approved`. Ambiguity reported by any
+agent comes to you; update the plan and tell the `lead` to re-dispatch.

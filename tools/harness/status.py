@@ -18,6 +18,19 @@ DASH_STATE = {"queued": "queued", "building": "building",
               "blocked": "blocked"}
 
 
+def replace_retry(src, dst, tries=5, delay=0.2):
+    """os.replace, retried on Windows when the dashboard has the target
+    open (PermissionError)."""
+    for n in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if n == tries - 1:
+                raise
+            time.sleep(delay)
+
+
 def write_atomic(path, data):
     tmp = f"{path}.tmp.{os.getpid()}"
     try:
@@ -25,7 +38,7 @@ def write_atomic(path, data):
             json.dump(data, f, indent=1, sort_keys=True)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        replace_retry(tmp, path)
     except BaseException:
         try:
             os.remove(tmp)

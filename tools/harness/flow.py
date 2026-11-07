@@ -11,7 +11,7 @@ import json
 import os
 import re
 
-from . import plans, queueimport
+from . import dispatch, plangate, plans, queueimport, routing
 from .forge import ForgeError
 from .scheduler import HOLD
 from .status import write_atomic
@@ -228,7 +228,8 @@ class Flow:
                          "context (owner, 2026-11-04): backlog items of one "
                          "area that ship together go in this one feature "
                          "and its one PR, never one PR per item; say in "
-                         "the plan which open items you grouped and why.")
+                         "the plan which open items you grouped and why. "
+                         + self.gate_hint(fid))
         elif ev == "plan_ready":
             lines.append(f"Read the plan at {self.plan_file(fid)}; write the "
                          f"table to {self.assign_file(fid)}. Sub-branch of "
@@ -240,6 +241,15 @@ class Flow:
         lines += ["", "Channel log of this feature (replayed; everything "
                   "you remember):", self.replay(fid)]
         return "\n".join(lines)
+
+    def gate_hint(self, fid):
+        if not plangate.enabled(self.o.routing):
+            return ""
+        return (f"Also write planning/plans/{fid}.md from "
+                "planning/plans/TEMPLATE.md and set `Status: approved` when "
+                "the contracts and the ADR number are decided: the daemon "
+                "starts no engineer without it. Give every task a `tier` "
+                "(junior|pleno|senior) or a `grade` such as S/low.")
 
     # -- plan ingestion -------------------------------------------------
     def active_globs(self, exclude=None):
@@ -283,6 +293,12 @@ class Flow:
         if errs:
             self.store.event(None, "plan_invalid", f"{fid}: {errs[:6]}")
             return False, errs
+        # No engineer for new feature work without the approved plan file
+        # (adopted PRs never come through here).
+        errs = plangate.check(self.o.root, fid, self.o.routing)
+        if errs:
+            self.store.event(None, "plan_not_approved", fid)
+            return False, errs
         path = self.accepted_plan_file(fid)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         write_atomic(path, plan)
@@ -317,7 +333,8 @@ class Flow:
         if f["state"] != "distributing" and \
                 self.store.get_meta(f"assign_hash:{fid}") == raw:
             return True, []     # the lead left the table as it was
-        errs = plans.validate_assignments(table, plan)
+        errs = plans.validate_assignments(
+            table, plan, routing.track_engineers(self.o.routing))
         if errs:
             self.store.event(None, "assignments_invalid",
                              f"{fid}: {errs[:6]}")
@@ -365,6 +382,7 @@ class Flow:
                 start_from=row["start_from"],
                 not_before=HOLD if held else 0)
             row["engineer_name"] = name
+            dispatch.set_tier(self.o, tid, t.get("tier"), t.get("grade"))
         self.store.set_feature(fid, state="building")
         write_atomic(self.assign_file(fid), dict(table))
         self.store.event(None, "assignments_accepted",
