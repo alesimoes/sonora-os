@@ -1164,11 +1164,133 @@ int test_menu() {
 
 }  // namespace
 
+// --- Insert Time and Delete Time -------------------------------------------
+
+// two_regions() with markers at 0.5, 3 and 4.5 bars and a Volume lane on
+// track 1 running 0 dB at 0, -6 dB at 4 bars, 0 dB at 6 bars.
+Snapshot with_markers_and_lane() {
+    Snapshot s = two_regions();
+    auto edit = std::make_shared<EditState>(*s.edit);
+    MarkerList list;
+    const std::vector<std::pair<Id, Frames>> where{
+        {500, kBar / 2}, {501, 3 * kBar}, {502, 4 * kBar + kBar / 2}};
+    for (const auto& [id, at] : where) {
+        Marker m;
+        m.id = id;
+        m.position = at;
+        m.name = "M" + std::to_string(id);
+        list.markers.push_back(m);
+    }
+    edit->markers = std::make_shared<const MarkerList>(std::move(list));
+    auto t = std::make_shared<TrackEdit>(*edit->tracks[0]);
+    auto volume = std::make_shared<AutomationLane>();
+    volume->param = AutomationParam::Volume;
+    volume->points = {{0, 0.0f}, {4 * kBar, -6.0f}, {6 * kBar, 0.0f}};
+    t->automation = {volume};
+    edit->tracks[0] = t;
+    s.edit = edit;
+    s.next_id = 2000;
+    return s;
+}
+
+Frames marker_at(const Snapshot& s, Id id) {
+    for (const Marker& m : s.edit->markers->markers) {
+        if (m.id == id) return m.position;
+    }
+    return -1;
+}
+
+int test_insert_delete_time() {
+    ModelDocument doc(with_markers_and_lane());
+    CHECK(valid(doc.snapshot()));
+    EditController c(doc);
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    std::string why;
+    const Frames a = 2 * kBar + kBar / 2, b = 3 * kBar + kBar / 2;
+
+    // Nothing selected: refused by name, nothing sent.
+    CHECK(!c.insert_time(why) && !why.empty() && doc.history().undo_depth() == 0);
+
+    // Insert: A is split at the range's start; its right part, B, the
+    // markers after the range and the lane all move up by a bar.
+    c.select_range(0, a, b, 1);
+    CHECK(c.insert_time(why));
+    {
+        const Snapshot& s = doc.snapshot();
+        const Playlist& p = lane(s, 0);
+        CHECK(p.regions.size() == 3);
+        CHECK(p.regions[0].id == 10 && p.regions[0].end() == a);
+        CHECK(p.regions[1].position == b && p.regions[1].end() == 4 * kBar);
+        CHECK(p.regions[2].id == 11 && p.regions[2].position == 5 * kBar);
+        CHECK(marker_at(s, 500) == kBar / 2);
+        CHECK(marker_at(s, 501) == 4 * kBar);
+        CHECK(marker_at(s, 502) == 5 * kBar + kBar / 2);
+        const auto& pts = s.edit->tracks[0]->automation[0]->points;
+        CHECK(pts.size() == 5);
+        CHECK(pts[1].at == a && pts[2].at == b && pts[1].value == pts[2].value);
+        CHECK(pts[3].at == 5 * kBar && pts[3].value == -6.0f && pts[4].at == 7 * kBar);
+        CHECK(valid(s));
+    }
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Insert Time");
+    // One undo puts back the regions, the markers and the lane together.
+    CHECK(c.undo(why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 2 && start_of(doc.snapshot(), 11) == 4 * kBar);
+    CHECK(marker_at(doc.snapshot(), 502) == 4 * kBar + kBar / 2);
+    CHECK(doc.snapshot().edit->tracks[0]->automation[0]->points.size() == 3);
+
+    // Delete: what the range covers goes, everything after closes up by it;
+    // a marker inside the range lands on its start.
+    c.select_range(0, a, b, 1);
+    CHECK(c.delete_time(why));
+    {
+        const Snapshot& s = doc.snapshot();
+        const Playlist& p = lane(s, 0);
+        CHECK(p.regions.size() == 2);
+        CHECK(p.regions[0].id == 10 && p.regions[0].end() == a);
+        CHECK(p.regions[1].id == 11 && p.regions[1].position == 3 * kBar);
+        CHECK(marker_at(s, 500) == kBar / 2);
+        CHECK(marker_at(s, 501) == a);
+        CHECK(marker_at(s, 502) == 3 * kBar + kBar / 2);
+        const auto& pts = s.edit->tracks[0]->automation[0]->points;
+        CHECK(pts.size() == 5);
+        // The two sides join with a step at the range's start.
+        CHECK(pts[1].at == a && pts[2].at == a && pts[1].value > pts[2].value);
+        CHECK(pts[3].at == 3 * kBar && pts[3].value == -6.0f);
+        CHECK(valid(s));
+        CHECK(doc.undo_label() == "Delete Time");
+    }
+    CHECK(c.undo(why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 2 && start_of(doc.snapshot(), 11) == 4 * kBar);
+    CHECK(marker_at(doc.snapshot(), 501) == 3 * kBar);
+
+    // Two tracks: the other track's regions move too, in the same step.
+    {
+        Snapshot two = with_markers_and_lane();
+        auto edit = std::make_shared<EditState>(*two.edit);
+        auto t = std::make_shared<TrackEdit>(*edit->tracks[1]);
+        auto p = std::make_shared<Playlist>(*t->playlists[0]);
+        p->regions = {make_region(20, "C", 4 * kBar, kBar)};
+        t->playlists[0] = p;
+        edit->tracks[1] = t;
+        two.edit = edit;
+        ModelDocument d2(two);
+        EditController c2(d2);
+        c2.set_viewport(4000, 400);
+        c2.scroll_to_frame(0);
+        c2.select_range(0, a, b, 2);
+        CHECK(c2.insert_time(why));
+        CHECK(start_of(d2.snapshot(), 20, 1) == 5 * kBar);
+        CHECK(d2.history().undo_depth() == 1);
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() || test_shuffle() ||
-        test_shuffle_automation_notice() ||
+        test_shuffle_automation_notice() || test_insert_delete_time() ||
         test_repeat_count_text() || test_fades_and_crossfades() ||
         test_cut_edges_lose_fades() ||
         test_limit() || test_several_tracks() || test_menu()) {
