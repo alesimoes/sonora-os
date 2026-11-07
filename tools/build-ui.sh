@@ -146,10 +146,21 @@ if [[ "$(uname -s)" != Linux ]]; then
     'mkdir -p /build/ui && chown 1000:1000 /build && find /build/ui ! -user 1000 -exec chown 1000:1000 {} +' \
     >/dev/null 2>&1 || true
 fi
+# On a Linux host the container runs as the caller, so the cache must be a
+# host directory the caller owns: a named volume starts out as root's and
+# ccache then fails with "Permission denied" inside every compiler check
+# (the nightly's UI and ISO builds, 2026-11-07; same cause as micro-build.sh).
+if [[ "$(uname -s)" == Linux ]]; then
+  CCACHE_HOST_DIR="${SONORA_CCACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/sonora-ccache}"
+  mkdir -p "$CCACHE_HOST_DIR"
+  CCACHE_MOUNT=(-v "$CCACHE_HOST_DIR:/ccache")
+else
+  CCACHE_MOUNT=(-v sonora-ccache:/ccache)
+fi
 "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" \
   -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" -e SONORA_UI_SCOPE="${SONORA_UI_SCOPE:-all}" \
   ${SONORA_DSP_QUICK:+-e SONORA_DSP_QUICK="$SONORA_DSP_QUICK"} -e SONORA_SKIP_SLOW="${SONORA_SKIP_SLOW:-0}" -e SONORA_CTEST_LABELS="${SONORA_CTEST_LABELS:-}" \
   -e CCACHE_DIR=/ccache -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE=10G "${BUILD_VOL[@]}" \
-  -v sonora-ccache:/ccache \
+  "${CCACHE_MOUNT[@]}" \
   -v "$(host_path "$ROOT"):/src" "${OUT_MOUNT[@]}" -w /src "$IMAGE" \
   tools/build-ui-entrypoint.sh "$MODE" "$SHOT_NAME" "$SECONDS_EACH"

@@ -41,7 +41,7 @@ native_build() {
   forget_pre_m1_tree "$ROOT/build"
   cmake -S "$ROOT" -B "$ROOT/build" -DCMAKE_BUILD_TYPE=Release
   if [[ "$STAGE_ONLY" == 1 ]]; then
-    cmake --build "$ROOT/build" -j"$(nproc)" --target sonora-engine sonora-tui
+    cmake --build "$ROOT/build" -j"$(nproc)" --target sonora-engine sonora-tui sonora-ctl
     return
   fi
   cmake --build "$ROOT/build" -j"$(nproc)"
@@ -112,7 +112,7 @@ fi
   fi
   cmake -S . -B "$B" -DCMAKE_BUILD_TYPE=Release
   if [[ "$SONORA_STAGE_ONLY" == 1 ]]; then
-    cmake --build "$B" -j"$SONORA_JOBS" --target sonora-engine sonora-tui
+    cmake --build "$B" -j"$SONORA_JOBS" --target sonora-engine sonora-tui sonora-ctl
     exit 0
   fi
   cmake --build "$B" -j"$SONORA_JOBS"

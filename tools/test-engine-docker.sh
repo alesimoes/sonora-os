@@ -54,7 +54,7 @@ docker info >/dev/null 2>&1 || {
 }
 
 echo "=== building the engine ==="
-# The binary only (SONORA_STAGE_ONLY): a plain build-engine.sh also builds
+# The binaries only, engine and sonora-ctl (SONORA_STAGE_ONLY): a plain build-engine.sh also builds
 # every target and runs the whole ctest suite, slow tests included, which
 # the gate's tree step has already run on the same commit (2026-11-07).
 SONORA_STAGE_ONLY=1 "$ROOT/tools/build-engine.sh" >/dev/null
