@@ -361,9 +361,11 @@ int a_new_session_is_written_once_the_engine_has_it() {
     CHECK(r.connect());
     const QString file = QDir(r.dir.path()).filePath(QStringLiteral("Song/Song.sonora"));
     CHECK(r.session.newSession(QStringLiteral("Song"), false).isEmpty());
-    // Shown at once, with no file yet: the Load is not answered.
+    // Shown at once, with no file yet: the Load is not answered. Nothing on
+    // disk holds it, so the title reads it as unsaved until the Save As.
     CHECK(r.doc.opening());
-    CHECK(r.session.sessionName() == QStringLiteral("Song"));
+    CHECK(r.session.dirty());
+    CHECK(r.session.sessionName() == QStringLiteral("Song · edited"));
     CHECK(!QFileInfo::exists(file));
     r.settle();
     CHECK(!r.doc.opening());

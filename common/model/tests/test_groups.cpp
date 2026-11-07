@@ -183,11 +183,11 @@ int test_codec_and_file() {
     CHECK(encode_operation(g, bytes, error));
     Operation back;
     CHECK(decode_operation(bytes, back, error));
-    const auto* sg = std::get_if<SetGroup>(&back);
+    const auto* sg = get_if<SetGroup>(&back);
     CHECK(sg != nullptr && sg->group == id && sg->members == g.members &&
           sg->attrs == kGroupAllAttributes && !sg->relative && !sg->active && sg->name == "Drums");
     CHECK(encode_operation(RemoveGroup{id}, bytes, error));
-    CHECK(decode_operation(bytes, back, error) && std::holds_alternative<RemoveGroup>(back));
+    CHECK(decode_operation(bytes, back, error) && holds_alternative<RemoveGroup>(back));
     CHECK(!decode_operation(R"({"op":"SetGroup","id":1})", back, error));
 
     CHECK_APPLY(r.h, g);
@@ -210,7 +210,7 @@ int test_codec_and_file() {
     CHECK(!deserialize(bad, loaded, le));
     // A version 18 file may not hold groups.
     std::string old = file;
-    const std::size_t v = old.find("\"sonora_session\": 24");
+    const std::size_t v = old.find("\"sonora_session\": 25");
     CHECK(v != std::string::npos);
     old.replace(v, 20, "\"sonora_session\": 18");
     CHECK(!deserialize(old, loaded, le) && le.message.find("groups") != std::string::npos);

@@ -299,14 +299,20 @@ Rectangle {
     }
 
     // Beside the master: its loudness against a target.
-    LoudnessPanel {
+    // Not made at all where the loudness is not wired: the panel reads its
+    // model in every binding, shown or not.
+    Loader {
         id: loudnessPanel
-        objectName: "loudnessPanel"
         anchors { right: bus.left; top: note.bottom; bottom: parent.bottom
                   rightMargin: Theme.space2; topMargin: Theme.space2; bottomMargin: Theme.space3 }
-        visible: mix.loudness !== null && mix.loudness.panelOpen
-        shell: mix.shell
-        loudness: mix.loudness
+        width: 176
+        active: mix.loudness !== null
+        visible: active && mix.loudness.panelOpen
+        sourceComponent: LoudnessPanel {
+            objectName: "loudnessPanel"
+            shell: mix.shell
+            loudness: mix.loudness
+        }
     }
 
     ChannelStrip {

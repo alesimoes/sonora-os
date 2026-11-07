@@ -19,14 +19,29 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "harness"))
 from client import HarnessError, brief, env_config, oneshot  # noqa: E402
 
-
-def hook_path():
+def hook_input():
     try:
         data = json.load(sys.stdin)
     except ValueError:
-        return None
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def hook_path(data):
     ti = data.get("tool_input") or {}
     return ti.get("file_path") or ti.get("path")
+
+
+def bash_guard(data):
+    """PreToolUse for Bash: 2 (deny) when a git command would move the
+    daemon's own checkout (the root of the tools/ this file lives in)."""
+    from gitguard import MESSAGE, violates
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cmd = (data.get("tool_input") or {}).get("command", "")
+    if violates(cmd, data.get("cwd") or os.getcwd(), root):
+        print(f"harness: {MESSAGE}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def call(cfg, op, **fields):
@@ -72,7 +87,10 @@ def run_hook(a, hook_inbox):
                 print(json.dumps({"hookSpecificOutput": {
                     "hookEventName": "PostToolUse", "additionalContext": text}}))
             return 0
-        path = hook_path()
+        data = hook_input()
+        if data.get("tool_name") == "Bash":
+            return bash_guard(data)
+        path = hook_path(data)
         if not path:
             print("harness: no file path in hook input", file=sys.stderr)
             return 2

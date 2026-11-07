@@ -101,9 +101,9 @@ int test_codec_window_and_file() {
     CHECK(encode_operation(op, bytes, error));
     Operation back;
     CHECK(decode_operation(bytes, back, error));
-    CHECK(std::get<SetBusPath>(back).first == 8);
-    CHECK(std::get<SetBusPath>(back).name == "Wedge L/R");
-    CHECK(std::get<SetBusPath>(back).bus == 7);
+    CHECK(back.get_if<SetBusPath>()->first == 8);
+    CHECK(back.get_if<SetBusPath>()->name == "Wedge L/R");
+    CHECK(back.get_if<SetBusPath>()->bus == 7);
 
     Document doc(new_session(settings()), 4096);
     Replica replica;

@@ -224,7 +224,8 @@ namespace sonora::api {
 //   groups, clip gain, record modes, VCAs, folders, clip groups and loops.
 // 68 (ADR-0060, hardware output paths): Hello carries `input_count` and
 //   `output_count`, the device channels the engine opened, and the operation
-//   codec has SetBusPath. A peer of 67 or lower is refused at Hello.
+//   codec has SetBusPath; the undo window's aux bus carries `hardware`
+//   (65535: none). A peer of 67 or lower is refused at Hello.
 constexpr uint32_t kProtocolVersion = 68;
 
 // ModelAction::Load's file, when it starts with this and names a template's

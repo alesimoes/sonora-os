@@ -146,7 +146,9 @@ bool choose_latency(sonora::Session& session, sonora::backend::AudioBackend& aud
     if (!latency_file_given) {
         control.latency_file = sonora::machine_latency_file(sonora::platform::user_config_dir());
     }
-    control.latency_outputs = std::max<uint32_t>(2, probe_output);
+    // Every output the backend registered is one the probe can play on; the
+    // client asks for a pair past this count to get NoPort.
+    control.latency_outputs = std::max({2u, probe_output, control.output_count});
     if (input_latency >= 0) {
         std::string why;
         if (!session.set_input_latency(

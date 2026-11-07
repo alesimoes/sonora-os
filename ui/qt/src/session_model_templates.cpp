@@ -185,8 +185,9 @@ void SessionModel::saveAfterOpen() {
     const SaveAsTarget target = *after_open_;
     after_open_.reset();
     std::string why;
+    // Read before the write: the engine's answer to the Save As clears the flag.
+    const bool from_template = making_from_template_;
     if (!writeSessionAs(target, why, std::string())) {
-        const bool from_template = making_from_template_;
         making_from_template_ = false;
         emit heldNotice(QStringLiteral("The session ") + target.name +
                         (from_template ? QStringLiteral(" was not made from the template: ")

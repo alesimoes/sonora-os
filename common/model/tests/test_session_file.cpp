@@ -283,9 +283,9 @@ std::string as_v18(const std::string& v17) {
 // the transport's three record switches at their defaults, and
 // "track_punch": true after every audio track's solo_safe.
 std::string as_v19(const std::string& v18) {
-    // Versions 20 to 24 change nothing a v18 file has (ADR-0052 adds keys only
+    // Versions 20 to 25 change nothing a v18 file has (ADR-0052 adds keys only
     // to a region that uses them), so the current version is written.
-    std::string s = edit(v18, "\"sonora_session\": 18,", "\"sonora_session\": 24,");
+    std::string s = edit(v18, "\"sonora_session\": 18,", "\"sonora_session\": 25,");
     s = edit(s, "    \"loop_record\": false\n  },",
              "    \"loop_record\": false,\n    \"input_only\": false,\n"
              "    \"rolls_on\": true,\n    \"quick_punch\": false\n  },");
@@ -299,11 +299,11 @@ std::string as_v19(const std::string& v18) {
 }
 
 // What v19 -> v20 makes of a file with no VCA or folder (ADR-0048), and the
-// carried steps up to 24: the version alone. The as_v19 above already writes
+// carried steps up to 25: the version alone. The as_v19 above already writes
 // the current number, so only a real version 19 file is changed here.
 std::string as_v20(const std::string& v19) {
     if (v19.find("\"sonora_session\": 19,") == std::string::npos) return v19;
-    return edit(v19, "\"sonora_session\": 19,", "\"sonora_session\": 24,");
+    return edit(v19, "\"sonora_session\": 19,", "\"sonora_session\": 25,");
 }
 
 // A version 4 file with no MIDI region, as this build saves it.
@@ -313,7 +313,7 @@ std::string as_current(const std::string& v4) {
 
 // The current version's frozen fixture: what this build writes. Its
 // sequence files are in fixtures/MIDI Sequences/.
-constexpr const char* kCurrent = "v24-current.sonora";
+constexpr const char* kCurrent = "v25-current.sonora";
 // The version 19 fixture: the same session before VCAs and folders.
 constexpr const char* kNoVcas = "v19-current.sonora";
 // The version 18 fixture: the same session before groups, clip gain lines and
@@ -368,8 +368,8 @@ int test_fixture_is_canonical() {
     std::string out;
     CHECK(save(l, out));
     if (out != text) {
-        std::ofstream("v24-current.out.sonora", std::ios::binary) << out;
-        std::fprintf(stderr, "  re-saved bytes differ; wrote v24-current.out.sonora\n");
+        std::ofstream("v25-current.out.sonora", std::ios::binary) << out;
+        std::fprintf(stderr, "  re-saved bytes differ; wrote v25-current.out.sonora\n");
     }
     CHECK(out == text);
     // And each sequence encodes to the bytes of the file that names it.
@@ -967,22 +967,22 @@ int test_round_trip_from_edits() {
 int test_versions() {
     const std::string text = read_fixture(kCurrent);
     const int line = line_of(text, "\"sonora_session\"");
-    CHECK(refused(edit(text, "\"sonora_session\": 24,", "\"sonora_session\": 25,"),
-                  "format version 25, newer than this program, which reads up to version 24",
+    CHECK(refused(edit(text, "\"sonora_session\": 25,", "\"sonora_session\": 26,"),
+                  "format version 26, newer than this program, which reads up to version 25",
                   "sonora_session", line));
     // A newer file is refused even when it carries keys this version does
     // not know: the version is read before anything else.
-    CHECK(refused(edit(edit(text, "\"sonora_session\": 24,", "\"sonora_session\": 25,"),
+    CHECK(refused(edit(edit(text, "\"sonora_session\": 25,", "\"sonora_session\": 26,"),
                        "\"name\": \"Vocals Friday\",", "\"mixer\": {},"),
                   "newer than this program", "sonora_session"));
     // Too large for int64 is still a newer version, not a malformed one.
-    CHECK(refused(edit(text, "\"sonora_session\": 24,",
+    CHECK(refused(edit(text, "\"sonora_session\": 25,",
                        "\"sonora_session\": 99999999999999999999,"),
                   "format version 99999999999999999999, newer than this program",
                   "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 24,", "\"sonora_session\": 0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 25,", "\"sonora_session\": 0,"),
                   "does not exist", "sonora_session"));
-    CHECK(refused(edit(text, "\"sonora_session\": 24,", "\"sonora_session\": 17.0,"),
+    CHECK(refused(edit(text, "\"sonora_session\": 25,", "\"sonora_session\": 17.0,"),
                   "integer format version", "sonora_session"));
     // A current file must have the keys versions 2 and 3 added; only the
     // migrations fill them in for an older file.
@@ -995,8 +995,8 @@ int test_versions() {
                   "must be true or false", "tracks[1].solo_safe",
                   line_of(text, "\"solo_safe\": true,")));
     // The magic must come first, unlike every other key.
-    CHECK(refused(edit(text, "  \"sonora_session\": 24,\n  \"written_by\": \"sonora-engine 0.2.0\",",
-                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 24,"),
+    CHECK(refused(edit(text, "  \"sonora_session\": 25,\n  \"written_by\": \"sonora-engine 0.2.0\",",
+                       "  \"written_by\": \"sonora-engine 0.2.0\",\n  \"sonora_session\": 25,"),
                   "\"sonora_session\" must be the first key", ""));
     CHECK(refused("[]", "not a Sonora session", ""));
     CHECK(refused("{\"keymap\": 1}", "not a Sonora session", ""));

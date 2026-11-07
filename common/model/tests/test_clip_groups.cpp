@@ -173,7 +173,7 @@ int test_codec_window_and_file() {
     CHECK(encode_operation(PlaceRegion{pl, looped, 0}, bytes, error));
     Operation back;
     CHECK(decode_operation(bytes, back, error));
-    CHECK(std::get<PlaceRegion>(back).region.clip_group == r.a && std::get<PlaceRegion>(back).region.loop == 2);
+    CHECK(get<PlaceRegion>(back).region.clip_group == r.a && get<PlaceRegion>(back).region.loop == 2);
 
     // The undo window.
     WindowParts w;
@@ -203,7 +203,7 @@ int test_codec_window_and_file() {
 
     // A version 23 file may not hold a group.
     std::string old = file;
-    const std::size_t v = old.find("\"sonora_session\": 24");
+    const std::size_t v = old.find("\"sonora_session\": 25");
     CHECK(v != std::string::npos);
     old.replace(v, 20, "\"sonora_session\": 23");
     CHECK(!deserialize(old, loaded, le));
