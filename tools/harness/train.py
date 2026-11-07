@@ -190,10 +190,10 @@ class Train(BundleMixin):
 
     def head_is_gone(self, head):
         """True when an adopted PR with this head is no longer open (merged
-        or closed), or one a fixer push or a refresh replaced. A head with no
-        PR, or a failed listing, is not gone."""
+        or closed). A head with no PR, or a failed listing, is not gone."""
         infos = list(self._all().values())
-        if any(head in (i.get("old_heads") or []) for i in infos) and                 not any(i.get("head") == head for i in infos):
+        if any(head in (i.get("old_heads") or []) for i in infos) and \
+                not any(i.get("head") == head for i in infos):
             return True   # a fixer or refresh replaced it: nobody awaits it
         prs = {i.get("pr") for i in infos
                if i.get("head") == head and i.get("pr")}
@@ -456,7 +456,7 @@ class Train(BundleMixin):
         # The fixer's head is queued for the local gate now, not when the
         # GitHub checks of the PR happen to settle: a new head with no queue
         # entry stayed unjudged (#446, 2026-11-06). The old head is
-        # remembered so its queued or running batch is cancelled.
+        # remembered so its queued or running batch can be cancelled.
         if self.o.cfg.local_ci and local_head:
             self.o.localci.start(local_head)
         self._save(fid, phase="CI rodando", action="push do fixer",
