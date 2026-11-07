@@ -187,7 +187,10 @@ target_link_libraries(sonora_ui_qt INTERFACE sonora_ui_qml)
 # Qt-free ones still fail to compile if they reach for Qt. OFF when a ccache
 # launcher is not told to cache them (ccache runs the real compiler, and so
 # loses its cache, on a precompiled header unless sloppiness has pch_defines).
-option(SONORA_UI_PCH "Precompile the common Qt headers of the ui/qt libraries" ON)
+# Default OFF: measured on this stack (-j8, no ccache) the three Qt libraries
+# took 133 s with it and 77 s without, the PCH being built in series before each
+# library's units.
+option(SONORA_UI_PCH "Precompile the common Qt headers of the ui/qt libraries" OFF)
 if(SONORA_UI_PCH AND CMAKE_CXX_COMPILER_LAUNCHER MATCHES "ccache"
    AND NOT "$ENV{CCACHE_SLOPPINESS}" MATCHES "pch_defines")
   message(STATUS "ui/qt: ccache without CCACHE_SLOPPINESS=pch_defines,time_macros; precompiled headers off")
