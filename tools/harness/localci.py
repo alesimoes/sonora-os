@@ -92,6 +92,9 @@ class LocalCI:
         self.o = orch
         self.clock = clock
         self.base = os.path.join(orch.root, ".harness", "ci")
+        # Why no new run starts (harness/selfupdate.py: the daemon waits for
+        # the running one, then moves its checkout and re-execs); None: go.
+        self.hold = None
 
     # -- state ------------------------------------------------------------
     def result(self, sha):
@@ -155,7 +158,7 @@ class LocalCI:
     def _launch_queued(self):
         """Fills the free checkouts: bisect halves first, then one batch of
         every ready PR, then the pre-PR runs of feature branches."""
-        while True:
+        while not self.hold:
             slot = self._free_slot()
             if slot is None:
                 return
@@ -396,7 +399,7 @@ class LocalCI:
         A red main is an event and the `local-ci` status on its commit; the
         next PR gates merge with it, so their failures say so too."""
         now = self.clock()
-        if now - getattr(self, "_main_checked", 0) < every_s:
+        if self.hold or now - getattr(self, "_main_checked", 0) < every_s:
             return
         # A batch waiting for a checkout goes first; main's full run takes
         # the slot for an hour.
