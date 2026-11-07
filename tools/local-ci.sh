@@ -206,7 +206,11 @@ fi
 ((c_plugins || portable)) && steps+=(windows)
 
 contexts=()
-[[ "$WANT" == " " ]] || contexts+=("scripts:$(echo $WANT | tr ' ' ',')")
+if [[ "$WANT" != " " ]]; then
+  w="${WANT# }"
+  w="${w% }"
+  contexts+=("scripts:${w// /,}")
+fi
 ((c_ui)) && contexts+=(sonora-ui)
 ((c_plugins)) && contexts+=(sonora-plugins)
 ((c_engine)) && contexts+=(sonora-engine)
