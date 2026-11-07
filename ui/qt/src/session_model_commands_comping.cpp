@@ -105,6 +105,10 @@ void SessionModel::installCompingCommands(CommandRegistry& /*local*/, const Inst
         }
         return ctl_.repeat(count, why);
     });
+    simple("edit.insert_time",
+           [this](const CommandContext&, Why& why) { return ctl_.insert_time(why); });
+    simple("edit.delete_time",
+           [this](const CommandContext&, Why& why) { return ctl_.delete_time(why); });
     // Pro Tools' Spot dialog: the start time typed in the counter's format.
     simple("edit.spot", [this](const CommandContext& ctx, Why& why) {
         if (ctx.argument.empty()) return askSpot();

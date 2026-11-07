@@ -557,7 +557,9 @@ std::string check_fault(Rig& rig, Fault fault) {
     // A call already running when fatal() turned true may finish, and is
     // counted when it does; only an exact rig can rule that out.
     const uint64_t finished = rig.exact() ? 0 : 1;
-    if (f.rec.after_fatal() != 0 || f.rec.calls() > at_fatal + finished) {
+    // A call admitted before fatal() turned true can enter process() just
+    // after the suite saw it; the recorder cannot tell it from a late one.
+    if (f.rec.after_fatal() > finished || f.rec.calls() > at_fatal + finished) {
         return "process() ran " + n(f.rec.calls() - at_fatal) + " times after fatal()";
     }
     if (f.rec.size_changes() != 0) return "a block of the new size reached process()";

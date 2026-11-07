@@ -472,4 +472,48 @@ std::vector<EditAutomation> follow_clear_ops(const TrackEdit& track, Frames from
     return out;
 }
 
+std::vector<EditAutomation> follow_time_ops(const TrackEdit& track, Frames at, Frames delta,
+                                            std::vector<const AutomationLane*>* left_behind) {
+    std::vector<EditAutomation> out;
+    if (delta == 0 || at < 0 || at >= kMaxInteger - 1) return out;
+    const Frames end = delta < 0 ? at - delta : at;   // where the surviving tail starts
+    const Frames hi = kMaxInteger - 1;
+    for (const auto& lane : track.automation) {
+        if (lane == nullptr || lane->points.empty()) continue;
+        const auto& pts = lane->points;
+        // Nothing at or after `at`: the lane is held across the edit as it was.
+        if (pts.back().at < at) continue;
+        // The value the lane has going into `at` (the first of a step there)
+        // and, for a delete, coming out of the removed stretch.
+        const auto first = std::find_if(pts.begin(), pts.end(),
+                                        [&](const AutomationPoint& p) { return p.at >= at; });
+        const float v_in = first->at == at ? first->value : value_on(pts, at);
+        std::vector<AutomationPoint> after;
+        std::vector<AutomationPoint> moved;
+        for (const AutomationPoint& p : pts) {
+            if (p.at < end) continue;
+            const Frames to = p.at + delta;
+            if (to >= kMaxInteger - 1) continue;
+            moved.push_back(AutomationPoint{to, p.value});
+        }
+        if (delta > 0) {
+            after.push_back(AutomationPoint{at, v_in});
+            // The stretch inserted holds the value it was cut at.
+            if (moved.empty() || moved.front().at != at + delta) {
+                after.push_back(AutomationPoint{at + delta, v_in});
+            }
+        } else {
+            const float v_out = value_on(pts, end);
+            const bool lands = !moved.empty() && moved.front().at == at;
+            if (!lands) {
+                after.push_back(AutomationPoint{at, v_in});
+                if (v_out != v_in) after.push_back(AutomationPoint{at, v_out});
+            }
+        }
+        for (const AutomationPoint& p : moved) after.push_back(p);
+        follow_lane(track.id, *lane, at, hi, std::move(after), out, left_behind);
+    }
+    return out;
+}
+
 }  // namespace sonora::ui
