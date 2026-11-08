@@ -92,7 +92,7 @@ class HappyPath(FlowCase):
         pr = self.forge.created[0]
         self.assertEqual((pr["base"], pr["branch"]),
                          ("main", f"feat/{FEATURE}"))
-        self.assertEqual(self.forge.enqueued, [pr["number"]])
+        self.assertEqual(self.forge.enqueued, [])  # daemon merges (#512)
         self.assertEqual(len(self.forge.pre_pr_calls), 1)
         f = o.store.get_feature(FEATURE)
         self.assertEqual(f["pr"], pr["number"])
