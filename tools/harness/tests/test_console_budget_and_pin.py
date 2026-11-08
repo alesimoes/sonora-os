@@ -6,7 +6,7 @@ import sys
 import unittest
 
 import support  # noqa: F401  puts tools/ on sys.path before harness.*
-from harness import launcher, scheduler
+from harness import launcher, scheduler, stall_resolver
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 import dashboard_board  # noqa: E402
@@ -48,6 +48,37 @@ class Model(unittest.TestCase):
         self.assertEqual(launcher.model_args("principal-engineer",
                                              launcher.Pinned("opus")),
                          ["--model", "opus"])
+
+
+class Meta:
+    def __init__(self):
+        self.d = {}
+
+    def get_meta(self, k, default=None):
+        return self.d.get(k, default)
+
+    def set_meta(self, k, v):
+        self.d[k] = v
+
+
+class Ladder(unittest.TestCase):
+    """Owner: sonnet tries first, then opus, fable only when both failed."""
+    def test_sonnet_then_opus_then_fable(self):
+        m, H = Meta(), 3600.0
+        rungs = [stall_resolver._rung(m, "f", 1000 + i * H) for i in range(4)]
+        self.assertEqual(rungs, ["sonnet", "opus", None, None])
+        self.assertEqual(launcher.model_for("principal-engineer", None), "fable")
+
+    def test_a_stall_back_after_hours_starts_at_sonnet(self):
+        m = Meta()
+        stall_resolver._rung(m, "f", 0)
+        stall_resolver._rung(m, "f", 10)
+        self.assertEqual(stall_resolver._rung(m, "f", 10 + 7 * 3600), "sonnet")
+
+    def test_features_climb_separately(self):
+        m = Meta()
+        stall_resolver._rung(m, "a", 0)
+        self.assertEqual(stall_resolver._rung(m, "b", 0), "sonnet")
 
 
 class Labels(unittest.TestCase):

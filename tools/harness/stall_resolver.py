@@ -11,12 +11,30 @@ import json
 
 AGENT = "principal-engineer"
 EVENT = "stall_resolver"
+# Owner 2026-11-08: unblocking climbs a ladder, only for a stall nobody is
+# fixing: sonnet tries first, then opus, and fable only when both failed.
+# None = no pin, so the principal's own model (fable) applies.
+LADDER = ("sonnet", "opus", None)
+# A stall that comes back after this long starts at the bottom again.
+LADDER_RESET_S = 6 * 3600
 FIXING = ("fixer", "integrator", "principal")
 DONE = ("blocked", "merged", "closed")
 
 
 def _meta_key(fid):
     return f"stall_resolver:{fid}"
+
+
+def _rung(store, fid, now):
+    """The ladder step for this try of fid, and records the try."""
+    key = f"stall_resolver_tries:{fid}"
+    try:
+        d = json.loads(store.get_meta(key, "{}") or "{}")
+    except ValueError:
+        d = {}
+    n = d.get("n", 0) if now - d.get("ts", 0) < LADDER_RESET_S else 0
+    store.set_meta(key, json.dumps({"n": n + 1, "ts": now}))
+    return LADDER[min(n, len(LADDER) - 1)]
 
 
 def _resolver_wakes(sv):
@@ -110,9 +128,8 @@ def _queue(sv, fid, stalled, now):
     wid = f"wake-principal-{EVENT}-{fid}-{n}"
     store.add_task(wid, None, AGENT, kind="wake", feature_id=fid,
                    brief=brief(sv, fid, stalled))
-    # Opus first: fable is the last resort (agents-and-models.md), and a
-    # stall is usually a claim, a plan gap or a slow build, not a hard bug.
-    store.set_task(wid, event=EVENT, model_pin="opus")
+    model = _rung(store, fid, now)
+    store.set_task(wid, event=EVENT, model_pin=model)
     store.set_meta(_meta_key(fid), now)
     store.event(wid, "stall_resolver", json.dumps(
         {"feature": fid, "tasks": [t["id"] for t, _ in stalled]}))
