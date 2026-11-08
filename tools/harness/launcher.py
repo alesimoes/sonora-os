@@ -359,14 +359,20 @@ def _pump(src, path, secrets_):
 
 
 def kill_tree(pid):
-    if not pid:
+    # pid 1 is init and our own group is the daemon: a test run with a fake
+    # pid=1 made the supervisor killpg the CI runner (2026-11-08, #515).
+    if not pid or int(pid) <= 1 or int(pid) == os.getpid():
         return
     if os.name == "nt":
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
                        capture_output=True)
         return
     try:
-        os.killpg(os.getpgid(pid), signal.SIGKILL)
+        pg = os.getpgid(pid)
+        if pg <= 1 or pg == os.getpgrp():
+            os.kill(pid, signal.SIGKILL)   # never our own group or init's
+        else:
+            os.killpg(pg, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         try:
             os.kill(pid, signal.SIGKILL)

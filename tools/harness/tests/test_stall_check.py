@@ -3,6 +3,8 @@ progress past the bound is a dashboard alert, never a silent wait
 (2026-11-08: claim_denied every tick for hours, features in planning with
 no architect, PRs open and unmerged, all unseen)."""
 import json
+import subprocess
+import sys
 import unittest
 
 import support  # noqa: F401  puts tools/ on sys.path before harness.*
@@ -11,6 +13,14 @@ from harness.supervisor import Thresholds
 import test_supervisor as ts
 
 H = 3600.0
+
+
+def dead_pid():
+    """A pid that no longer runs: a fake run must never name a live
+    process, least of all pid 1 (the supervisor kills silent runs)."""
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    p.wait()
+    return p.pid
 
 
 class Stalls(ts.Case):
@@ -41,7 +51,7 @@ class Stalls(ts.Case):
         s = self.o.store
         s.add_task("run", "daw", "rt-engineer", state="building")
         s.add_run(id="run-r1", task_id="run", role="engineer", name="eng-1",
-                  state="building", pid=1, started=self.now(),
+                  state="building", pid=dead_pid(), started=self.now(),
                   last_beat=self.now(), result_path="x", stream_path="y",
                   worktree=None)
         s.add_task("held", "daw", "rt-engineer", feature_id="g")
@@ -57,7 +67,7 @@ class Stalls(ts.Case):
             s.add_task(n, "daw", "rt-engineer", feature_id="f",
                        state="integrating")
         s.add_run(id="f0-r1", task_id="f0", role="integrator",
-                  name="integrator", state="integrating", pid=1,
+                  name="integrator", state="integrating", pid=dead_pid(),
                   started=self.now(), last_beat=self.now(), result_path="x",
                   stream_path="y", worktree=None)
         self.age(5)

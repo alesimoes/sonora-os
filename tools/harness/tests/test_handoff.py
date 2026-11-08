@@ -23,7 +23,7 @@ class Unit(support.DaemonCase):
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"status": "done", "summary": "x", **data}, f)
         o.store.add_run(id=run_id, task_id=tid, role=role, name=name,
-                        state="building", pid=1, started=1.0, last_beat=1.0,
+                        state="building", pid=None, started=1.0, last_beat=1.0,
                         result_path=path, stream_path="s", worktree=None)
         o.store.set_run(run_id, ended=2.0, outcome="finished")
 
