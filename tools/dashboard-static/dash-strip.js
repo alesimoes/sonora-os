@@ -17,6 +17,8 @@ function renderStrip(s){
     c.push(chip(stale?'bad':paused.length?'warn':'ok','Daemon',stale?'parado há '+dur(age):'vivo',(o.mode||'')+' · atualizou há '+dur(age)));
     c.push(chip(paused.length?'warn':'','Agentes',runs+' de '+(o.cap||'?')+(paused.length?' · '+paused.length+' filas pausadas':''),paused.length?'clique para ver quais e retomar':'',paused.length?'data-pausetoggle role="button" tabindex="0"':''));
     renderPauseBox(o);
+    const h=o.budget_holds||{},hold=h.work||h.planner;
+    c.push(chip(h.work?'warn':'','Execuções/h',(o.runs_last_hour??'?')+' de '+(o.max_runs_per_hour||'?')+' · planners '+(o.planner_runs_last_hour??'?')+' de '+(o.max_planner_runs_per_hour||'?'),hold?'retido: '+(h.work?'trabalho ':'')+(h.planner?'planners ':'')+'(limite por hora)':'lançamentos na última hora; planners têm orçamento próprio'));
     c.push(chip('','PRs abertos',(o.open_prs??s.prs.length)+' de '+(o.max_open_prs||'?'),'limite do orquestrador'))}
   c.push(chip(holder?'':'','Build pesado',holder?String(holder.who||'').slice(0,28)+(nw?' +'+nw+' na fila':''):'livre','trava da máquina (build-slot.sh)'));
   if(d&&d.ok)c.push(chip(d.level==='ok'?'':d.level,'Disco',bytes(d.free)+' livres',d.level==='crit'?'CRÍTICO: menos de 10 GB':d.level==='warn'?'Atenção: menos de 30 GB':'espaço suficiente'));
