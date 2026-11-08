@@ -549,6 +549,7 @@ int job_runs_offline_and_cancels() {
 }
 
 std::size_t bounced_files(const std::string& dir) {
+    if (!fs::exists(dir + "/Bounced Files")) return 0;   // refused before it was made
     std::size_t files = 0;
     for (const auto& e : fs::directory_iterator(dir + "/Bounced Files")) {
         (void)e;
