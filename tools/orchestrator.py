@@ -386,12 +386,14 @@ class Orchestrator:
             mcp, settings = launcher.write_run_files(run_dir, env)
             prompt = launcher.build_prompt(t, run_id, name, ln.kind,
                                            result_path, self._extra(t, ln.kind))
+            agent = self._agent_for(t, ln.kind)
+            tier_model = dispatch.model_for(self, t, ln.kind)
+            model = launcher.model_for(agent, tier_model)
             argv = launcher.build_command(
                 launcher.claude_argv(self.fake_claude),
-                self._agent_for(t, ln.kind), prompt, mcp, settings,
+                agent, prompt, mcp, settings,
                 self.cfg.max_turns, self.cfg.permission_mode,
-                agents_root=self.root,
-                model=dispatch.model_for(self, t, ln.kind))
+                agents_root=self.root, model=tier_model)
             proc = launcher.spawn(argv, env, wt, stream)
         except Exception as e:  # launch failure counts like a dead run
             self.store.event(t["id"], "launch_failed", str(e))
@@ -401,7 +403,7 @@ class Orchestrator:
         self.store.add_run(id=run_id, task_id=t["id"], role=ln.kind,
                            name=name, state=t["state"], pid=proc.pid,
                            started=now, last_beat=now, result_path=result_path,
-                           stream_path=stream, worktree=wt)
+                           stream_path=stream, worktree=wt, model=model)
         if ln.kind == "engineer" and t["state"] == "queued":
             self.store.advance(t["id"], "building")
         self.store.event(t["id"], "launched", f"{run_id} {ln.kind} {name}")
