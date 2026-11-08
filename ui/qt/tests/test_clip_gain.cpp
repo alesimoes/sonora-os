@@ -8,8 +8,11 @@
 #include <QTest>
 #include <cstdio>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "edit_controller.h"
+#include "sonora/api/consolidate_argument.h"
 #include "peak_source.h"
 #include "session_model.h"
 #include "timeline_scene.h"
@@ -124,6 +127,43 @@ int test_commands() {
     return 0;
 }
 
+// Render Clip Gain is Consolidate of the selected region (ADR-0042 §4).
+int test_render() {
+    ModelDocument doc(make_demo_session(3, kRate));
+    SyntheticPeakSource peaks(kRate, 120.0);
+    SessionModel session(doc, peaks, true);
+    CommandRegistry local;
+    session.installCommands(local);
+    std::string why;
+    CommandContext none;
+
+    // No engine, no region: the region refusal comes first, then the engine one.
+    CHECK(local.dispatch("clip.gain_render", none, why) == DispatchResult::Failed);
+    CHECK(why == "select a region first: click it with the Grabber or the Smart Tool");
+    CHECK(session.controller().select_region(first_region(doc, 1).id));
+    CHECK(local.dispatch("clip.gain_render", none, why) == DispatchResult::Failed);
+    CHECK(why.find("no engine to render") != std::string::npos);
+
+    std::vector<std::pair<std::string, std::string>> sent;
+    session.setCommandSender([&sent](const QString& command, const QString& argument) {
+        sent.emplace_back(command.toStdString(), argument.toStdString());
+    });
+    session.controller().clear_selection();
+    CHECK(local.dispatch("clip.gain_render", none, why) == DispatchResult::Failed);
+    CHECK(sent.empty());
+
+    const Region r = first_region(doc, 1);
+    const TrackEdit& t = *doc.snapshot().edit->tracks[1];
+    CHECK(session.controller().select_region(r.id));
+    CHECK(local.dispatch("clip.gain_render", none, why) == DispatchResult::Ok);
+    CHECK(sent.size() == 1 && sent[0].first == "session.consolidate");
+    api::ConsolidateArgument arg;
+    CHECK(api::parse_consolidate_argument(sent[0].second, arg, why));
+    CHECK(arg.track == t.id && arg.playlist == t.active_playlist && arg.start == r.position &&
+          arg.end == r.end() && arg.name == r.name);
+    return 0;
+}
+
 // The scene: a clip with a level and a line draws more rectangles (the line
 // and its handles) than the same clip flat, and shows its level in its label.
 int test_scene_draws_the_line() {
@@ -156,6 +196,7 @@ int main(int argc, char** argv) {
     int failed = 0;
     failed += test_controller();
     failed += test_commands();
+    failed += test_render();
     failed += test_scene_draws_the_line();
     if (failed == 0) std::printf("ui_clip_gain: ok\n");
     return failed == 0 ? 0 : 1;
