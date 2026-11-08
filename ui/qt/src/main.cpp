@@ -32,6 +32,7 @@
 #include "register_types.h"
 #include "render_path.h"
 #include "replica_document.h"
+#include "sample_window.h"
 #include "scenes/screenshot_scene.h"
 #include "session_model.h"
 #include "shell_model.h"
@@ -600,8 +601,27 @@ int main(int argc, char** argv) {
         });
     const PeakSource& peaks = synthetic_audio ? static_cast<const PeakSource&>(synthetic_peaks)
                                               : static_cast<const PeakSource&>(file_peaks);
+    // The sample view's samples (ADR-0096 §2): read from the session's WAVs
+    // on the source's own thread. The fake engine and the demo have no audio
+    // on disk, so a sine stands in, as the synthetic overview does.
+    FakeSampleSource synthetic_samples(FakeSampleSource::Shape::Sine, 96, 0.6f);
+    FileSampleSource file_samples(
+        [&document, &session_for_peaks](sonora::model::Id id, FileSampleSource::Located& out) {
+            if (session_for_peaks == nullptr) return false;
+            return FileSampleSource::locate_in(*document.snapshot().sources,
+                                               session_for_peaks->engineFolder().toStdString(),
+                                               id, out);
+        },
+        [&session_for_peaks]() {
+            if (session_for_peaks == nullptr) return;
+            SessionModel* target = session_for_peaks;
+            QMetaObject::invokeMethod(target, [target]() { target->peaksReady(); },
+                                      Qt::QueuedConnection);
+        });
     SessionModel session(document, peaks, synthetic_audio);
     session_for_peaks = &session;
+    session.controller().set_sample_source(
+        synthetic_audio ? static_cast<const SampleSource*>(&synthetic_samples) : &file_samples);
     if (!a.opt.sessions_dir.isEmpty()) session.setSessionsDir(a.opt.sessions_dir);
     session.setPreferencesFile(default_preferences_file());
     document.on_refused = [&session](const std::string& why) {
