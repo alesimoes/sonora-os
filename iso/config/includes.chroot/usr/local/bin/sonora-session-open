@@ -1,0 +1,51 @@
+#!/bin/sh
+# sonora-session-open: is a recording session open right now? (ADR-0101 §2)
+#
+#   exit 0  a session is open
+#   exit 1  no session is open
+#   exit 2  cannot tell
+#
+# The app writes the state file while a session is open and removes it when the
+# session closes. Its directory lives on /run (tmpfs), so it only exists once
+# the app has started this boot: an absent file in a present directory is a
+# real "none", an absent directory is not. Callers (sonora-update) refuse on
+# anything but 1, so every doubt here is a 2, never a 1.
+#
+# Read-only: no writes, no waiting, nothing that touches the audio path.
+#
+# Overrides (tests): SONORA_SESSION_STATE (the state file), SONORA_ENGINE_UP=1
+# (when the directory is missing, accept "sonora-engine.service is active" as
+# proof the app is up), SONORA_ENGINE_UNIT (the unit asked about).
+set -u
+
+STATE=${SONORA_SESSION_STATE:-/run/sonora/session-open}
+UNIT=${SONORA_ENGINE_UNIT:-sonora-engine.service}
+# Parameter expansion, not dirname: the probe needs nothing on PATH but
+# systemctl, and only for the opt-in below.
+case "$STATE" in
+    */*) DIR=${STATE%/*} && DIR=${DIR:-/} ;;
+    *) DIR=. ;;
+esac
+
+# A directory we cannot search hides the file: "absent" would be a guess.
+if [ -d "$DIR" ] && [ ! -x "$DIR" ]; then
+    exit 2
+fi
+
+# Any kind of entry at the path counts, empty or not: the app may create it
+# before it writes anything into it.
+if [ -e "$STATE" ] || [ -L "$STATE" ]; then
+    exit 0
+fi
+
+if [ -d "$DIR" ]; then
+    exit 1
+fi
+
+# No directory: the app has not run this boot, or something is wrong. Only an
+# explicit opt-in lets the engine unit vouch for it.
+if [ "${SONORA_ENGINE_UP:-0}" = 1 ] && command -v systemctl >/dev/null 2>&1 &&
+    systemctl is-active --quiet "$UNIT" >/dev/null 2>&1; then
+    exit 1
+fi
+exit 2
