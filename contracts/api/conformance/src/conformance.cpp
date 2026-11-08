@@ -104,6 +104,28 @@ struct Session {
         return true;
     }
 
+    // For a reply to work the engine does on a thread of its own (Save As
+    // copies the audio): the wait ends when the reply is in, or when the
+    // engine stops publishing for a whole `until` window. A fixed count of
+    // polls failed under load, where the copy was merely slow.
+    bool await_work(Rig& rig, uint64_t seq, CommandReply& out) {
+        uint64_t seen = engine->state().transport().heartbeat;
+        int idle = 0;
+        while (idle < kMaxSteps) {
+            engine->poll(inbox);
+            feed_replica();
+            if (const CommandReply* r = reply(seq)) {
+                out = *r;
+                return true;
+            }
+            const uint64_t hb = engine->state().transport().heartbeat;
+            idle = hb != seen ? 0 : idle + 1;
+            seen = hb;
+            rig.wait_ns(kStepNs);
+        }
+        return false;
+    }
+
     // Waits until a publish has begun and ended since this call, so what
     // the state block says reflects every reply already received. A read
     // straight after a reply can still show the publish before it, and a
@@ -3413,7 +3435,7 @@ int check_save_as(Rig& rig) {
             load.action = ModelAction::Load;
             load.op = wire::encode_load((old / "Old.sonora").string(), bytes);
             CommandReply r;
-            EXPECT(s.await(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok,
+            EXPECT(s.await_work(rig_, s.engine->submit(load), r) && r.result == DispatchResult::Ok,
                    "the session was refused: " + r.message);
             EXPECT(s.until(rig_, [&]() { return folder(s.inbox) == old.lexically_normal().string(); }),
                    "no SessionFolder naming " + old.string());
@@ -3423,7 +3445,7 @@ int check_save_as(Rig& rig) {
             ModelRequest as;
             as.action = ModelAction::SaveAs;
             as.op = wire::encode_save_as(file.string(), 0, bytes);
-            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Ok,
+            EXPECT(s.await_work(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Ok,
                    "a Save As was refused: " + r.message);
             const std::string expected = moved.lexically_normal().string();
             EXPECT(folder(s.inbox) == expected,
@@ -3440,7 +3462,7 @@ int check_save_as(Rig& rig) {
             const std::size_t announced = s.count_events(EventKind::SessionFolder);
             const fs::path copy = root / "Copy" / "Copy.sonora";
             as.op = wire::encode_save_as(copy.string(), kSaveAsCopy | kSaveAsNoAudio, bytes);
-            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Ok,
+            EXPECT(s.await_work(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Ok,
                    "a Save Copy In was refused: " + r.message);
             EXPECT(read(copy) == bytes, "the copy does not hold the session file");
             EXPECT(!fs::exists(copy.parent_path() / "Audio Files" / "notes.txt", ec),
@@ -3450,14 +3472,14 @@ int check_save_as(Rig& rig) {
 
             // Refusals.
             as.op = wire::encode_save_as((old / "Old.sonora").string(), kSaveAsCopy, bytes);
-            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
+            EXPECT(s.await_work(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
                    "a Save Copy In over a folder that is not empty was accepted");
             as.op = wire::encode_save_as((root / "Bare" / "Bare.sonora").string(), kSaveAsNoAudio, bytes);
-            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
+            EXPECT(s.await_work(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
                    "a Save As without the audio was accepted");
             EXPECT(!fs::exists(root / "Bare", ec), "a refused Save As made its folder");
             as.op = wire::encode_save_as((root / "Odd" / "Odd.sonora").string(), 1u << 7, bytes);
-            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
+            EXPECT(s.await_work(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
                    "a Save As with an unknown flag was accepted");
 
             // A take after the Save As lands in the new folder; none during one.
@@ -3475,7 +3497,7 @@ int check_save_as(Rig& rig) {
                    }),
                    "the take never ran");
             as.op = wire::encode_save_as((root / "During" / "During.sonora").string(), 0, bytes);
-            EXPECT(s.await(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
+            EXPECT(s.await_work(rig_, s.engine->submit(as), r) && r.result == DispatchResult::Failed,
                    "a Save As during a take was accepted");
             EXPECT(mentions(r.message, "stop recording"), "the refusal does not say why");
             EXPECT(s.await(rig_, s.command("transport.stop"), r) &&
