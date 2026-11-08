@@ -1,10 +1,18 @@
 """Shared test fixtures: path setup, a stub broker, fake worktrees, clock."""
+import faulthandler
 import os
 import shutil
 import sys
 import tempfile
 import time
 import unittest
+
+# On GitHub a hung test is cancelled at the job's timeout and the log is
+# lost (2026-11-08, #515: two 20-minute runs, no trace of which test). The
+# suite takes under a minute there; past this bound every thread's stack is
+# dumped, the hanging test named, and the step fails with a readable log.
+if os.environ.get("GITHUB_ACTIONS"):
+    faulthandler.dump_traceback_later(540, exit=True)
 
 TOOLS = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))

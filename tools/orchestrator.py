@@ -27,7 +27,9 @@ from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch, 
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
-from harness import blockinfo, feature_merge, findings, leadwake, wakes  # noqa: E402
+from harness import (blockinfo, feature_merge, findings, handoff, leadwake,  # noqa: E402
+                     prtext, wakes)
+from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
@@ -69,6 +71,7 @@ class Orchestrator:
         self.forge = forge or GhForge(self.root)
         self.seed_fn = seed_fn or self._default_seed
         self.log = log or (lambda m: None)
+        self.guard = Guard(self.store, clock, self.log)
         self.broker = broker or NullBroker()
         self.done_msgs = {}   # run id -> (time, body) of its `done` message
         self.undeliverable = {}   # (sender, to, type) -> (time, text)
@@ -191,32 +194,37 @@ class Orchestrator:
 
     # -- the tick -----------------------------------------------------
     def tick(self):
-        now = self.clock()
-        self.drain_events()
+        """Every step and every item of a loop is isolated (harness/
+        tick_guard): one bad result, one PR's gh error, one failing
+        launch never stops the merges, the status or the launches."""
+        now, g = self.clock(), self.guard
+        g.step("drain_events", self.drain_events)
         stop, stop_now = self.kill_switch()
         if stop_now:
             self._kill_all("STOP.NOW")
-        self._poll_runs(now)
+        g.each("poll_run", self.store.active_runs(), self._poll_run, now,
+               key=lambda r: r["id"], task=lambda r: r["task_id"])
+        if not self.dry_run:   # every interval_s, not every tick
+            g.step("supervisor", self.supervisor.tick, now)
+        g.step("open_prs", self._open_pending_prs, now)
+        g.step("autoadopt", autoadopt.tick, self, now)
+        g.step("cli_mailbox", cli_mailbox.tick, self)
         if not self.dry_run:
-            self.supervisor.tick(now)   # every interval_s, not every tick
-        self._open_pending_prs(now)
-        autoadopt.tick(self, now)
-        cli_mailbox.tick(self)
-        if not self.dry_run:
-            ownerchat.tick(self)
-        self._watch_prs(now)
+            g.step("ownerchat", ownerchat.tick, self)
+        g.step("watch_prs", self._watch_prs, now)
         # Main's nightly full build on GitHub (ADR-0061): a red opens a task.
-        nightly.tick(self, now)
-        self.flow.tick(now)
+        g.step("nightly", nightly.tick, self, now)
+        g.step("flow", self.flow.tick, now)
         paused = self.paused()
         runs = self._enriched_runs(now)
-        plan = scheduler.plan(
-            self.store.tasks(), runs, self.cfg, now, stop=stop,
-            usage_pause_until=self.usage_pause_until, paused=paused,
-            hour_budget=self.cfg.max_runs_per_hour
+        plan = g.step(
+            "plan", scheduler.plan, self.store.tasks(), runs, self.cfg, now,
+            stop=stop, usage_pause_until=self.usage_pause_until,
+            paused=paused, hour_budget=self.cfg.max_runs_per_hour
             - self.store.runs_started_since(now - 3600, WORK_ROLES),
             planner_budget=self.cfg.max_planner_runs_per_hour
-            - self.store.runs_started_since(now - 3600, PLANNER_ROLES))
+            - self.store.runs_started_since(now - 3600, PLANNER_ROLES)
+        ) or scheduler.Plan()
         self.last_gaps = plan.gaps
         self.last_holds = plan.holds
         if self.shadow:
@@ -226,11 +234,11 @@ class Orchestrator:
                 plan.wakes, self.store.features(),
                 self.store.tasks(kind="wake"), now,
                 self.cfg.lead_wake_cooldown_s):
-            self._ensure_wake(role, kind, detail)
+            g.step("wake", self._ensure_wake, role, kind, detail, key=role)
         if not stop_now:
-            for ln in plan.launches:
-                self._launch(ln, now)
-        self._write_status(now, stop, stop_now, paused)
+            g.each("launch", plan.launches, self._launch, now,
+                   key=lambda ln: ln.task_id, task=lambda ln: ln.task_id)
+        g.step("status", self._write_status, now, stop, stop_now, paused)
         return plan
 
     def _enriched_runs(self, now):
@@ -259,6 +267,7 @@ class Orchestrator:
         data["gh_paused_until"] = self.train.pause_until or None
         data["daemon_pid"] = os.getpid()   # tools/supervisor.py probes it
         data.update(self.supervisor.status())
+        data["alerts"] = data.get("alerts", []) + self.guard.rows()
         try:
             status.write_atomic(self._p("status.json"), data)
         except OSError as e:   # the dashboard is reading it; next tick retries
@@ -519,64 +528,66 @@ class Orchestrator:
         if kind == "tester":
             extra += "\nYou are the tester: review and run accept commands; " \
                      "never edit code."
+        # The previous run's result.json is the next role's starting point.
+        sibs = self._feature_tasks(t["feature_id"]) if t["feature_id"] else ()
+        extra += "\n\n" + handoff.brief(self.store, t, sibs)
         return extra.strip()
 
     # -- polling ------------------------------------------------------
-    def _poll_runs(self, now):
-        for r in self.store.active_runs():
-            proc = self.procs.get(r["id"])
-            alive = proc.poll() is None if proc else \
-                launcher.pid_alive(r["pid"])
-            data, err = heartbeat.read_result(r["result_path"])
-            done = self.done_msgs.get(r["id"])
-            if data is None and done is not None and (
-                    not alive or now - done[0] >= self.cfg.done_grace_s):
-                # `done` message without result.json: the process is gone or
-                # result.json is overdue, so the message is the result.
-                data = self._result_from_done(r, done[1])
-            building = scheduler.holds_build_slot(self.root, r["worktree"])
-            beat = self.activity.sample(r["id"], r["worktree"],
-                                        r["stream_path"], r["last_beat"], now)
-            if beat != r["last_beat"]:
-                self.store.set_run(r["id"], last_beat=beat)
-                r["last_beat"] = beat
-            verdict = heartbeat.classify(
-                alive=alive, result_ok=data is not None, now=now,
-                started=r["started"], last_beat=r["last_beat"], role=r["role"],
-                building=building, cfg=self.cfg)
-            if verdict == "ok":
-                continue
-            if verdict == "suspect":
-                if not r["suspect"]:
-                    self.store.set_run(r["id"], suspect=1)
-                    self.store.event(r["task_id"], "suspect", r["id"])
-                continue
-            code = proc.returncode if proc else None
-            if verdict == "finished":
-                if alive:
-                    launcher.kill_tree(r["pid"])
-                self._end_run(r, "finished", code)
-                self._on_result(r, data, now)
-                continue
+    def _poll_run(self, r, now):
+        proc = self.procs.get(r["id"])
+        alive = proc.poll() is None if proc else \
+            launcher.pid_alive(r["pid"])
+        data, err = heartbeat.read_result(r["result_path"])
+        done = self.done_msgs.get(r["id"])
+        if data is None and done is not None and (
+                not alive or now - done[0] >= self.cfg.done_grace_s):
+            # `done` message without result.json: the process is gone or
+            # result.json is overdue, so the message is the result.
+            data = self._result_from_done(r, done[1])
+        building = scheduler.holds_build_slot(self.root, r["worktree"])
+        beat = self.activity.sample(r["id"], r["worktree"],
+                                    r["stream_path"], r["last_beat"], now)
+        if beat != r["last_beat"]:
+            self.store.set_run(r["id"], last_beat=beat)
+            r["last_beat"] = beat
+        verdict = heartbeat.classify(
+            alive=alive, result_ok=data is not None, now=now,
+            started=r["started"], last_beat=r["last_beat"], role=r["role"],
+            building=building, cfg=self.cfg)
+        if verdict == "ok":
+            return
+        if verdict == "suspect":
+            if not r["suspect"]:
+                self.store.set_run(r["id"], suspect=1)
+                self.store.event(r["task_id"], "suspect", r["id"])
+            return
+        code = proc.returncode if proc else None
+        if verdict == "finished":
             if alive:
                 launcher.kill_tree(r["pid"])
-            task = self.store.get_task(r["task_id"])
-            wait = heartbeat.usage_limit(r["stream_path"],
-                                         self.cfg.pause_default_s) \
-                if verdict == "dead" else None
-            if wait is not None:
-                self.usage_pause_until = max(self.usage_pause_until,
-                                             now + wait)
-                self._end_run(r, "rate_limited", code)
-                self.store.set_task(task["id"], not_before=now + wait)
-                self.store.event(task["id"], "usage_pause", f"{wait:.0f}s")
-                continue
-            self._end_run(r, verdict, code)
-            if task is None:  # task removed while its run was alive
-                continue
-            heartbeat.wip_checkpoint(r["worktree"] if task["kind"] == "work"
-                                     else None)
-            self._count_failure(task, f"run {r['id']} {verdict}", now)
+            self._end_run(r, "finished", code)
+            self._on_result(r, data, now)
+            return
+        if alive:
+            launcher.kill_tree(r["pid"])
+        task = self.store.get_task(r["task_id"])
+        wait = heartbeat.usage_limit(r["stream_path"],
+                                     self.cfg.pause_default_s) \
+            if verdict == "dead" else None
+        if wait is not None:
+            self.usage_pause_until = max(self.usage_pause_until,
+                                         now + wait)
+            self._end_run(r, "rate_limited", code)
+            self.store.set_task(task["id"], not_before=now + wait)
+            self.store.event(task["id"], "usage_pause", f"{wait:.0f}s")
+            return
+        self._end_run(r, verdict, code)
+        if task is None:  # task removed while its run was alive
+            return
+        heartbeat.wip_checkpoint(r["worktree"] if task["kind"] == "work"
+                                 else None)
+        self._count_failure(task, f"run {r['id']} {verdict}", now)
 
     @staticmethod
     def _result_from_done(r, body):
@@ -794,7 +805,8 @@ class Orchestrator:
                 continue
             if now < self.pr_retry.get(f["id"], 0):
                 continue
-            self._open_feature_pr(f, ts, now)
+            self.guard.step("open_pr", self._open_feature_pr, f, ts, now,
+                            key=f["id"], task=ts[0]["id"])
 
     def _open_feature_pr(self, f, ts, now):
         fid, rep = f["id"], ts[0]
@@ -817,7 +829,11 @@ class Orchestrator:
             if n is None:
                 title, body = self._pr_text(f, ts)
                 n = self.forge.create_pr(branch, "main", title, body)
-            self.forge.enqueue(n)
+            # The merge owner is the watch loop (harness/feature_merge), not
+            # a detached one-shot script: that script skipped PRs and nobody
+            # re-queued them (2026-11-08).
+            if not self.cfg.daemon_merge:
+                self.forge.enqueue(n)
         except ForgeError as e:
             if n is not None:
                 self._adopt_opened_pr(f, ts, rep, branch, n, now, e)
@@ -850,28 +866,7 @@ class Orchestrator:
         self.ci_polled[fid] = now
 
     def _pr_text(self, f, ts):
-        try:
-            ready = json.loads(self.store.get_meta(f"ready:{f['id']}", "{}"))
-        except ValueError:
-            ready = {}
-        summary = (ready.get("summary") or "").strip() or f["id"]
-        title = f"{f['id']}: {summary.splitlines()[0]}"[:100]
-        if f["partial"]:
-            title = "[partial] " + title
-        nums = [f"{r['kind']} {r['number']}" for r in
-                self.store.reservations()
-                if r["task_id"] in {x["id"] for x in ts}]
-        lines = ["## Summary", summary, "", "## Tasks"]
-        lines += [f"- {x['id']} ({x['agent']})" for x in ts]
-        if nums:
-            lines += ["", "## Reserved numbers", ", ".join(nums)]
-        for head, key in (("Follow-ups", "followups"),
-                          ("Unverified", "unverified")):
-            items = ready.get(key) or []
-            if items:
-                lines += ["", f"## {head}"] + [f"- {i}" for i in items]
-        lines += ["", ATTRIBUTION]
-        return title, "\n".join(lines)
+        return prtext.pr_text(self.store, f, ts, ATTRIBUTION)
 
     def _fix_done(self, t, now, data=None):
         fid = t["feature_id"]
@@ -890,7 +885,8 @@ class Orchestrator:
             else:
                 self.forge.push(self.worktrees.ensure(self._feature_key(fid),
                                                       branch), branch)
-                self.forge.enqueue(f["pr"])
+                if not self.cfg.daemon_merge:
+                    self.forge.enqueue(f["pr"])
         except ForgeError as e:
             self._count_failure(t, f"push after fix failed: {e}", now)
             return
@@ -898,48 +894,57 @@ class Orchestrator:
         self.ci_polled[fid] = now
 
     def _watch_prs(self, now):
-        for f in self.store.features():
-            ts = self._feature_tasks(f["id"])
-            if not f["pr"] or not ts:
-                continue
-            # A blocked train PR is still watched: someone may merge or close
-            # it by hand, and the board must not keep calling it blocked.
-            if ts[0]["state"] != "pr_open" and not (
-                    ts[0]["state"] == "blocked"
-                    and self.train.is_adopted(f["id"])):
-                continue
-            if now - self.ci_polled.get(f["id"], 0) < self.cfg.ci_poll_s:
-                continue
-            if self.train.is_adopted(f["id"]):
-                if now < self.train.pause_until:
-                    return
-                self.ci_polled[f["id"]] = now
-                if not self.train.step(f, ts, now):
-                    return
-                continue
+        """Every feature with a PR, one isolated step each; a GitHub rate
+        limit (step returns False) ends the sweep for this tick."""
+        self.guard.each("watch_pr", self.store.features(), self._watch_pr,
+                        now, key=lambda f: f["id"], task=self._rep_task)
+
+    def _rep_task(self, f):
+        """The task a feature's events are filed under (its first)."""
+        ts = self._feature_tasks(f["id"])
+        return ts[0]["id"] if ts else None
+
+    def _watch_pr(self, f, now):
+        ts = self._feature_tasks(f["id"])
+        if not f["pr"] or not ts:
+            return True
+        # A blocked train PR is still watched: someone may merge or close
+        # it by hand, and the board must not keep calling it blocked.
+        if ts[0]["state"] != "pr_open" and not (
+                ts[0]["state"] == "blocked"
+                and self.train.is_adopted(f["id"])):
+            return True
+        if now - self.ci_polled.get(f["id"], 0) < self.cfg.ci_poll_s:
+            return True
+        if self.train.is_adopted(f["id"]):
+            if now < self.train.pause_until:
+                return False
             self.ci_polled[f["id"]] = now
-            try:
-                st = self.forge.pr_status(f["pr"])
-            except ForgeError as e:
-                self.store.event(ts[0]["id"], "ci_poll_failed", str(e))
-                continue
-            if st["state"] == "merged":
-                self._merged(f, ts)
-            elif st["state"] == "closed":
-                self._close_feature(f, f"PR #{f['pr']} closed without merge")
-            elif st["mergeable"] == "no":
-                self._red(f, ts, ["merge-conflict"], "conflict")
-            else:
-                failing = sorted({c["name"] for c in st["checks"]
-                                  if c["state"] == "fail"})
-                if failing:
-                    self._red(f, ts, failing, "ci")
-                elif feature_merge.merge_if_green(self, f, ts):
-                    pass
-                elif f.get("red_since") or f.get("principal_runs"):
-                    self.store.set_feature(f["id"], red_since=None,
-                                           principal_runs=0)
-                    dispatch.clear_senior_round(self, f["id"])
+            return self.train.step(f, ts, now)
+        self.ci_polled[f["id"]] = now
+        try:
+            st = self.forge.pr_status(f["pr"])
+        except ForgeError as e:
+            self.store.event(ts[0]["id"], "ci_poll_failed", str(e))
+            return True
+        if st["state"] == "merged":
+            self._merged(f, ts)
+        elif st["state"] == "closed":
+            self._close_feature(f, f"PR #{f['pr']} closed without merge")
+        elif st["mergeable"] == "no":
+            self._red(f, ts, ["merge-conflict"], "conflict")
+        else:
+            failing = sorted({c["name"] for c in st["checks"]
+                              if c["state"] == "fail"})
+            if failing:
+                self._red(f, ts, failing, "ci")
+            elif feature_merge.merge_if_green(self, f, ts):
+                pass
+            elif f.get("red_since") or f.get("principal_runs"):
+                self.store.set_feature(f["id"], red_since=None,
+                                       principal_runs=0)
+                dispatch.clear_senior_round(self, f["id"])
+        return True
 
     def _red(self, f, ts, jobs, fix_kind, detail=""):
         """Red check or conflict: a fixer (the track's engineer) or the

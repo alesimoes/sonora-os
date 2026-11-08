@@ -44,6 +44,11 @@ class Thresholds:
     # an open PR the daemon's own sweep (train.LIST_TTL_S cadence) has not
     # adopted after this long is adopted here and, if that fails, alerted
     adopt_grace_s: float = 600.0
+    # a task, wake or feature with no run and no progress for this long is
+    # an alert (PROCESS.md: "stalled more than 2 h"); an open PR not merged
+    # for this long too (harness/stall_check.py)
+    stall_alert_s: float = 2 * 3600.0
+    pr_stall_s: float = 3 * 3600.0
     # owner notifications
     notify: bool = True
     notify_repeat_s: float = 3600.0
@@ -128,7 +133,7 @@ class Supervisor:
     """Runs inside the daemon: `sv.tick(now)` from Orchestrator.tick()."""
 
     def __init__(self, orch, sys_, th=None, clock=None, checks=None):
-        from . import supervisor_checks
+        from . import stall_check, supervisor_checks
         self.o = orch
         self.sys = sys_
         self.clock = clock or orch.clock
@@ -136,7 +141,7 @@ class Supervisor:
                                                      None))
         self.alerts = Alerts(self.clock, self.th, self._notify)
         self.checks = checks if checks is not None else \
-            supervisor_checks.DAEMON_CHECKS
+            supervisor_checks.DAEMON_CHECKS + (stall_check.check_stalls,)
         self.actions = []
         self.last_sweep = 0.0
         self.mem = {}            # per-check memory (first seen, nudged...)
