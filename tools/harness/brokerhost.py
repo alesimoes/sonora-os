@@ -82,6 +82,9 @@ class BrokerHost:
     def release_for(self, owner, paths=()):
         return self._call(self.broker.release_for, owner, paths)
 
+    def claim_owners(self):
+        return self._call(lambda: set(self.broker.claims.values()))
+
     def tell(self, to, type_, body=None, feature=None, task=None):
         """Daemon message. A role name (lead, architect) is registered as
         expected so the message waits in its mailbox until it is launched."""
@@ -119,6 +122,9 @@ class NullBroker:
 
     def release_for(self, owner, paths=()):
         return 0
+
+    def claim_owners(self):
+        return set()
 
     def tell(self, to, type_, body=None, feature=None, task=None):
         pass

@@ -55,6 +55,9 @@ class StubBroker:
     def release_for(self, owner, paths=()):
         return int(self.claims.pop(owner, None) is not None)
 
+    def claim_owners(self):
+        return set(self.claims)
+
     def tell(self, to, type_, body=None, feature=None, task=None):
         self.sent.append((to, type_, body))
 

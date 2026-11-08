@@ -581,15 +581,24 @@ class Orchestrator:
                 "summary": str(body.get("summary") or body.get("text")
                                or "done message"), **lists}
 
+    def _release_run_claims(self, r):
+        """A run's claims die with it, whatever its role. Planner names
+        ('architect') are reused across runs, so a claim left behind blocked
+        every task touching those paths until released by hand. Skipped only
+        while another live run uses the same name (it owns the claims now)."""
+        if any(o["name"] == r["name"] and o["id"] != r["id"]
+               for o in self.store.active_runs()):
+            return
+        try:
+            self.broker.release_for(r["name"])
+        except Exception as e:  # broker already stopped on shutdown
+            self.log(f"release {r['name']} failed: {e}")
+
     def _end_run(self, r, outcome, code):
         self.store.set_run(r["id"], ended=self.clock(), exit=code,
                            outcome=outcome)
         self.done_msgs.pop(r["id"], None)
-        if r["role"] in FIX_LIKE:
-            try:
-                self.broker.release_for(r["name"])
-            except Exception as e:  # broker already stopped on shutdown
-                self.log(f"release {r['name']} failed: {e}")
+        self._release_run_claims(r)
         self.activity.forget(r["id"])
         proc = self.procs.pop(r["id"], None)
         if proc is not None:
@@ -1049,6 +1058,19 @@ class Orchestrator:
                               body={"task": t["id"]})
 
     # -- loop ---------------------------------------------------------
+    def _release_orphan_claims(self):
+        """Claims persisted by a previous daemon whose run is gone."""
+        live = {r["name"] for r in self.store.active_runs()}
+        try:
+            owners = set(self.broker.claim_owners())
+        except Exception:
+            return
+        for name in sorted(owners - live):
+            try:
+                self.broker.release_for(name)
+            except Exception as e:
+                self.log(f"release {name} failed: {e}")
+
     def adopt_runs(self):
         """After a daemon restart the claude processes of the previous
         daemon are still running. They stay in the store as active runs and
@@ -1057,6 +1079,7 @@ class Orchestrator:
         are on disk. A client that connected to the old broker cannot
         reconnect (new port and token) and finishes on result.json alone."""
         adopted = []
+        self._release_orphan_claims()
         for r in self.store.active_runs():
             if launcher.pid_alive(r["pid"]):
                 self.broker.expect(r["name"])
