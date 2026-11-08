@@ -24,6 +24,11 @@ add_executable(test_bounce_wire tests/test_bounce_wire.cpp)
 target_link_libraries(test_bounce_wire PRIVATE sonora_api)
 add_test(NAME bounce_wire COMMAND test_bounce_wire)
 
+# Export Stems' wire argument over the bounce one (ADR-0085, no protocol bump).
+add_executable(test_stems_wire tests/test_stems_wire.cpp)
+target_link_libraries(test_stems_wire PRIVATE sonora_api)
+add_test(NAME stems_wire COMMAND test_stems_wire)
+
 # Render in place's wire argument (ADR-0051, protocol 56).
 add_executable(test_render_wire tests/test_render_wire.cpp)
 target_link_libraries(test_render_wire PRIVATE sonora_api)
