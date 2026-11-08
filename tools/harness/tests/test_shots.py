@@ -60,8 +60,13 @@ class Rule(unittest.TestCase):
             self.assertFalse(shots.needs_pictures(files), files)
 
 
-class Job(lc.Lifecycle):
+class Job(support.DaemonCase):
+    # Only the helpers of Lifecycle: its own tests would rerun here with
+    # a UI diff and wait on a job they never finish.
+    feature = lc.Lifecycle.feature
+
     def make(self, files=("ui/qt/src/a.cpp",), **kw):
+        kw.setdefault("floors", {"daw": 0})
         o = super().make(**kw)
         self.io = FakeIO(files)
         o.shots = shots.Shots(o, self.io)
