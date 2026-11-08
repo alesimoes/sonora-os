@@ -582,10 +582,13 @@ class Orchestrator:
                                or "done message"), **lists}
 
     def _release_run_claims(self, r):
-        """A run's claims die with it, whatever its role. Planner names
-        ('architect') are reused across runs, so a claim left behind blocked
-        every task touching those paths until released by hand. Skipped only
-        while another live run uses the same name (it owns the claims now)."""
+        """A run's claims die with it. Planner names ('architect') are
+        reused across runs, so a claim left behind blocked every task
+        touching those paths until released by hand. An engineer's name is
+        its task's and its claims span QA (released by _release at task
+        end). Skipped while another live run uses the same name."""
+        if r["role"] == "engineer":
+            return
         if any(o["name"] == r["name"] and o["id"] != r["id"]
                for o in self.store.active_runs()):
             return
@@ -1061,6 +1064,8 @@ class Orchestrator:
     def _release_orphan_claims(self):
         """Claims persisted by a previous daemon whose run is gone."""
         live = {r["name"] for r in self.store.active_runs()}
+        live.update(t["eng_name"] for t in self.store.tasks()
+                    if t["eng_name"] and t["state"] not in ("merged", "closed"))
         try:
             owners = set(self.broker.claim_owners())
         except Exception:
