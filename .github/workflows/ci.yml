@@ -580,4 +580,17 @@ jobs:
       - name: Build slot limiter
         run: tools/test-build-slot.sh
       - name: Harness unit tests
-        run: python -m unittest discover -s tools/harness/tests
+        # Output goes to a file, not the step's pipes: a child that outlives
+        # the suite then cannot keep the step open until the job timeout,
+        # which leaves no log (2026-11-08, #515: three 20-minute runs, no
+        # trace). The log names every test, is printed whole, and any
+        # survivor is listed; the kill at 10 min is well under the job's 15.
+        run: |
+          set +e
+          timeout -s KILL 600 python -m unittest discover -s tools/harness/tests -v > harness-tests.log 2>&1
+          rc=$?
+          cat harness-tests.log
+          echo "unittest exit=$rc"
+          echo "--- processes still alive after the suite:"
+          ps -eo pid,ppid,etimes,cmd --forest | grep -v "ps -eo"
+          exit $rc
