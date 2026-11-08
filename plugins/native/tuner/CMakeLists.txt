@@ -13,3 +13,7 @@ sonora_native_quality_test(tuner)
 # The LV2 and VST3 bundles, stereo and mono, through N1's format layer.
 sonora_native_plugin(tuner FACTORY make_tuner DISPLAY "Sonora Tuner" UID SNtu MONO_UID SMtu
   LV2_CATEGORY "lv2:PitchPlugin" VST3_CATEGORIES "Fx|Pitch Shift")
+
+# Offline evaluation on real voices (ADR-0077); nothing in it links the
+# processor's audio path.
+add_subdirectory(eval)
