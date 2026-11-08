@@ -122,16 +122,17 @@ class HappyPath(FlowCase):
                  for r in o.store.runs_of(t["id"])]
         self.assertEqual(sorted(roles), ["engineer"] * 3 + ["integrator"]
                          + ["tester"] * 3)
-        # event-driven wakes: architect once, lead for plan_ready and each
-        # task_done; each started with the channel log in its prompt
+        # event-driven wakes: architect once, lead for plan_ready only (a
+        # task_done is mail for the lead, not a wake); each started with the
+        # channel log in its prompt
         self.assertEqual(len(prompts("architect")), 1)
         lead = prompts("lead")
         self.assertIn("event: plan_ready", lead[0])
         self.assertIn("prefer 2x cap", lead[0])
         self.assertNotIn("not mine", lead[0])
         self.assertIn("Channel log of this feature", prompts("architect")[0])
-        self.assertTrue(self.pump(o, lambda: sum(
-            "event: task_done" in p for p in prompts("lead")) == 3))
+        self.assertEqual(sum("event: task_done" in p
+                             for p in prompts("lead")), 0)
         for p in (*lead, *prompts("architect")):
             self.assertEqual(p.count("reserved by the daemon"), 1)
         # the assignment table was completed with the engineer names

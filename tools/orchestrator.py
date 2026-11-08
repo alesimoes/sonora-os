@@ -723,9 +723,11 @@ class Orchestrator:
             return
         if kind == "engineer":
             self.store.advance(t["id"], "qa")
+            # The lead reads task_done from its mailbox on its next wake;
+            # waking it per task cost a third of the hourly run budget for
+            # runs its charter says end in "say nothing" (2026-11-08).
             self._tell("lead", "task_done", {"task": t["id"]},
                        feature=t["feature_id"], task=t["id"])
-            self._lead_event("task_done", t)
         elif kind in ("integrator", "fixer"):
             if t["state"] == "integrating":
                 self._integrated(t, data, now)
