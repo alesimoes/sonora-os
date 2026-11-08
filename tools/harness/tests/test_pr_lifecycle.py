@@ -122,6 +122,21 @@ class Lifecycle(support.DaemonCase):
         self.assertEqual(self.forge.created, [])
         self.assertEqual(o.store.get_feature("solo")["pr"], 7)
 
+    def test_integrator_pushed_same_patch_pr_is_adopted_first_try(self):
+        # #500: the integrator pushed and opened the PR from an older base;
+        # the daemon's rebased branch must adopt it, not fail 4 times.
+        o = self.make()
+        self.feature(o, "solo")
+        self.forge.remote_same_patch = {"feat/solo"}
+        self.forge.prs[7] = {"branch": "feat/solo", "files": [],
+                             "state": "open", "mergeable": "yes",
+                             "checks": {"build": "pass"}}
+        self.assertTrue(self.pump(o, lambda: state(o, "solo") == "pr_open"))
+        self.assertEqual((self.forge.created, self.forge.pushed), ([], []))
+        self.assertEqual(self.forge.enqueued, [7])
+        self.assertEqual(o.store.get_feature("solo")["pr"], 7)
+        self.assertEqual(o.store.events("solo", "pr_open_failed"), [])
+
     def test_pr_created_then_enqueue_fails_is_still_recorded(self):
         o = self.make()
         self.feature(o, "solo")

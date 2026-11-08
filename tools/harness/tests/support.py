@@ -120,7 +120,11 @@ class FakeForge(Forge):
 
     def push(self, worktree, branch):
         self._chk("push")
+        # A stray pusher already put the same patch there: nothing to push.
+        if branch in getattr(self, "remote_same_patch", ()):
+            return "same"
         self.pushed.append(branch)
+        return "pushed"
 
     def create_pr(self, branch, base, title, body):
         self._chk("create_pr")
