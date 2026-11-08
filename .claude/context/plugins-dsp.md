@@ -19,6 +19,9 @@ Local CI context: `sonora-plugins`. Agent: dsp-engineer (editor art: visual-desi
 - Gate steps: tree, plugins, rtsan, windows (Portable MSVC). A new target goes
   in the `--target` list of the Portable job in `.github/workflows/ci.yml`.
 - `tools/build-slot.sh tools/build-plugins.sh`.
+- Tuner on real voices (ADR-0077): offline tool `native_tuner_eval` in
+  `plugins/native/tuner/eval/`; datasets, usage and the results table (empty
+  until a command printed a number) in `brain/research/native-tuner-eval.md`.
 
 ## Traps
 - Timing label: `${_dsp_timing_tests}` in root `CMakeLists.txt`.
