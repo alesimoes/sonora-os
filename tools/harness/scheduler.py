@@ -67,6 +67,7 @@ class Config:
     max_active_features: int = 10   # features planned or built at once
     local_builds: int = field(default_factory=default_local_builds)
     max_runs_per_hour: int = 60
+    lead_wake_cooldown_s: float = 1800.0  # per track, pool_under_floor wakes
     max_turns: int = 80
     tick_s: float = 30.0
     working_s: float = 600.0

@@ -4,7 +4,7 @@ import json
 import os
 import time
 
-from . import blockinfo
+from . import blockinfo, leadwake
 from .run_view import run_view
 from .scheduler import POOL_OF_KIND, ready_feature_ids
 
@@ -97,6 +97,8 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
         "usage_pause_until": usage_pause_until or None,
         "cap": cfg.cap, "live": len(runs), "paused": sorted(paused),
         "runs_last_hour": hour_runs,
+        "lead_wakes_last_hour": leadwake.count_last_hour(
+            store.tasks(kind="wake"), now),
         "open_prs": len({t["feature_id"] for t in tasks
                          if t["state"] in ("pr_open", "ci_fix")}),
         "max_open_prs": cfg.max_open_prs,

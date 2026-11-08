@@ -27,7 +27,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch, 
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
-from harness import blockinfo, feature_merge, findings, wakes  # noqa: E402
+from harness import blockinfo, feature_merge, findings, leadwake, wakes  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
@@ -218,7 +218,10 @@ class Orchestrator:
         if self.shadow:
             self.shadow.record(self.store.tasks(), plan.launches,
                                self.cfg.floors)
-        for role, kind, detail in plan.wakes:
+        for role, kind, detail in leadwake.allowed(
+                plan.wakes, self.store.features(),
+                self.store.tasks(kind="wake"), now,
+                self.cfg.lead_wake_cooldown_s):
             self._ensure_wake(role, kind, detail)
         if not stop_now:
             for ln in plan.launches:
