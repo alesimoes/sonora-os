@@ -15,7 +15,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness.selfupdate import _git, reexec  # noqa: E402
 
-WATCH = ("tools/dashboard*",)
+WATCH = ("tools/dashboard*", "tools/harness/console*")
 CHECK_S = 300
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

@@ -1,4 +1,4 @@
-"""'Por que não entrou?' (harness/whynot.py, dashboard_why.py): one case per
+"""'Por que não entrou?' (harness/whynot.py): one case per
 way a green PR can sit unmerged, from the three seen on 2026-11-08."""
 import json
 import os
@@ -6,7 +6,6 @@ import tempfile
 import unittest
 
 import support  # noqa: F401
-import dashboard_why
 from harness import whynot
 
 
@@ -102,25 +101,6 @@ class Explain(unittest.TestCase):
         w = why(pr(1), {"train": [row()]}, ev)
         self.assertEqual(w["event"]["kind"], "train_rerun")
         self.assertIsNone(why(pr(7), {}, ev)["event"])
-
-
-class Attach(unittest.TestCase):
-    def test_with_why_copies_rows_and_survives_a_bad_one(self):
-        rows = [pr(1), {"number": 2}]
-        out = dashboard_why.with_why(rows, {}, events=[], up=True)
-        self.assertIn("why", out[0])
-        self.assertNotIn("why", rows[0])
-        self.assertIn("reason", out[1]["why"])
-
-    def test_recent_events_newest_first_skips_torn_lines(self):
-        with tempfile.TemporaryDirectory() as d:
-            p = os.path.join(d, "events.jsonl")
-            with open(p, "w") as f:
-                f.write('{"ts":1,"kind":"a"}\n{"ts":2,"kind":"b"}\n{"ts"')
-            self.assertEqual([e["kind"] for e in
-                              dashboard_why.recent_events(p)], ["b", "a"])
-            self.assertEqual(dashboard_why.recent_events(
-                os.path.join(d, "none")), [])
 
 
 if __name__ == "__main__":

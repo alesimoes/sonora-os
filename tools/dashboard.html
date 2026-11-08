@@ -2,78 +2,41 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="dash-token" content="__DASH_TOKEN__">
-<title>Sonora · painel de trabalho</title>
+<title>Sonora Console</title>
 <link rel="icon" type="image/svg+xml" href="/static/dash-logo.svg">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="/static/dash-base.css">
-<link rel="stylesheet" href="/static/dash-agents.css">
-<link rel="stylesheet" href="/static/dash-board.css">
-<link rel="stylesheet" href="/static/dash-machine.css">
-<link rel="stylesheet" href="/static/dash-flow.css">
-<link rel="stylesheet" href="/static/dash-disk.css">
-<link rel="stylesheet" href="/static/dash-tech.css">
-<link rel="stylesheet" href="/static/dash-detail.css">
-<link rel="stylesheet" href="/static/dash-actions.css">
+<link rel="stylesheet" href="/static/console.css">
 </head>
-<body>
-<main>
-  <header class="topbar">
-    <img src="/static/dash-logo.svg" alt="Sonora" width="44" height="44" style="margin-right:10px;vertical-align:middle"><div><h1>Sonora · painel de trabalho</h1><div class="sub" id="sub">conectando</div></div>
-    <nav class="links" id="links" aria-label="Revisões"></nav>
-    <div class="live" style="margin-left:auto"><span class="dot" id="dot"></span><span id="livetxt">sincronizando</span></div>
-    <div class="clock"><b id="clock">--:--:--</b><span id="date"></span></div>
-  </header>
-  <div class="strip"><div class="gauges" id="usage"></div><div class="chips" id="strip"></div></div>
-  <div class="pausebox" id="pausebox" hidden></div>
-  <p class="err" id="err"></p>
-  <div class="sit" id="sit">Carregando...</div>
-  <div class="alerts" id="alerts" hidden></div>
-  <h2 class="h2">Freios <span class="hint">por que o pipeline segura trabalho novo</span></h2>
-  <ul class="brakes" id="boardbrakes"></ul>
-  <h2 class="h2">Rodando agora <span class="hint" id="boardhint"></span></h2>
-  <div class="boardwarn" id="boardwarn" hidden></div>
-  <div id="boardagents"></div>
-  <h2 class="h2">PRs abertos <span class="hint" id="boardprhint"></span></h2>
-  <div id="boardprs"></div>
-  <h2 class="h2">Fluxo de construção <span class="hint" id="prhint"></span></h2>
-  <div class="flow" id="flow"></div>
-  <details class="tech" id="sys"><summary>Máquina, disco e comandos <span class="hint" id="syssum">detalhes e ações de manutenção</span></summary>
-  <h3>Máquina de build <span class="hint">um build pesado por vez</span></h3>
-  <div class="mach" id="mach"></div>
-  <div class="dgrid" id="disk"></div>
-  <h3>Comandos <span class="hint">lista fechada; destrutivas pedem confirmação; log em .harness/dashboard-actions.log</span></h3>
-  <div class="cmds" id="cmds"></div>
-  </details>
-  <details class="tech" id="tech"><summary>Detalhes técnicos <span class="hint">limites do orquestrador, decisões do dono, eventos, merges armados, containers</span></summary>
-  <div class="tgrid">
-    <section class="tp wide"><h3>Orquestrador: limites e filas <small id="tmeta"></small></h3><div id="tlimits"></div><div class="pools" id="tpools"></div></section>
-    <section class="tp" id="townerp"><h3>Decisão do dono</h3><div id="towner"></div></section>
-    <section class="tp" id="tblockp"><h3>Travado (não precisa de você)</h3><div id="tblock"></div></section>
-    <section class="tp"><h3>O que mudou <small>eventos recentes</small></h3><div class="log" id="log"><div class="info">aguardando eventos</div></div></section>
-    <section class="tp"><h3>Merges automáticos armados <small id="wcount"></small></h3><div id="ws"></div></section>
-    <section class="tp"><h3>Containers <small id="ccount"></small></h3><div id="cs"></div></section>
-  </div>
-  </details>
-  <div id="gal"></div>
-</main>
-<script src="/static/dash-core.js"></script>
-<script src="/static/dash-header.js"></script>
-<script src="/static/dash-log.js"></script>
-<script src="/static/dash-avatars.js"></script>
-<script src="/static/dash-board.js"></script>
-<script src="/static/dash-machine.js"></script>
-<script src="/static/dash-prs.js"></script>
-<script src="/static/dash-flow.js"></script>
-<script src="/static/dash-disk.js"></script>
-<script src="/static/dash-strip.js"></script>
-<script src="/static/dash-tech.js"></script>
-<script src="/static/dash-detail.js"></script>
-<script src="/static/dash-chat.js"></script>
-<script src="/static/dash-actions.js"></script>
-<script src="/static/dash-main.js"></script>
-<div id="acttoast" class="acttoast" hidden></div>
-<aside id="drawer" aria-label="Detalhes"><div class="dh"><h2 id="dtitle">-</h2><button type="button" onclick="closeDetail()">fechar (Esc)</button></div><div class="db" id="dbody"></div></aside>
+<body data-pane="chat">
+<header class="strip" id="strip" aria-label="Estado geral"></header>
+<div class="offline" id="offline" hidden>sem conexão, reenviando</div>
+<nav class="tabs" id="tabs" aria-label="Painéis"></nav>
+<div class="main">
+  <aside class="side l" aria-label="Agentes em execução">
+    <div class="sh"><span>Agentes</span><b id="agcount"></b></div>
+    <div id="agents"></div>
+  </aside>
+  <section class="chat" aria-label="Conversa com o orquestrador">
+    <div class="log" id="log" role="log" aria-live="polite"></div>
+    <button class="chip-new" id="newer" type="button" hidden>novas ↓</button>
+    <div class="comp">
+      <div class="to" id="to"></div>
+      <div class="sug" id="sug"></div>
+      <form class="row" id="form" autocomplete="off">
+        <input id="inp" aria-label="Mensagem" enterkeyhint="send">
+        <button class="btn go" type="submit">Enviar</button>
+      </form>
+    </div>
+  </section>
+  <aside class="side r" aria-label="Fila de atenção">
+    <div class="sh"><span>Precisa de você</span><b id="atcount"></b></div>
+    <div id="attn"></div>
+  </aside>
+</div>
+<script src="/static/console-core.js"></script>
+<script src="/static/console-panels.js"></script>
+<script src="/static/console-cards.js"></script>
+<script src="/static/console-chat.js"></script>
 </body>
 </html>
