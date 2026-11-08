@@ -28,7 +28,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch, 
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
 from harness import (blockinfo, feature_merge, findings, handoff, leadwake,  # noqa: E402
-                     prtext, wakes)
+                     prtext, triage, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
@@ -709,6 +709,8 @@ class Orchestrator:
             self.store.event(t["id"], "retry_later", why[:200])
             return
         owner = data.get("needs_owner")
+        if not owner and triage.handle(self, t, kind, why, data, now):
+            return
         self._block(t, why, owner=owner if owner else None,
                     cause=None if owner else "infra")
 
