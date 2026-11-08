@@ -148,7 +148,12 @@ bool make_profile(const std::string& id, const std::string& card_md, const std::
     p.id = id;
     p.card_sha256 = sonora::sha256_hex(card_md);
     p.stimulus = kToneStimulusId;
-    return measure_tone_profile(src, RunOptions{}, p.profile, error);
+    if (!measure_tone_profile(src, RunOptions{}, p.profile, error)) return false;
+    if (!fill_unresolved_bands(p.profile)) {
+        error = "the render is too quiet or too short to profile";
+        return false;
+    }
+    return true;
 }
 
 // 0 written, 1 failed, 2 skipped (no capture file).

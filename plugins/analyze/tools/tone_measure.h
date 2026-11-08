@@ -29,4 +29,12 @@ std::vector<float> tone_stimulus();
 // when the source cannot be read or the run is cancelled ("cancelled").
 bool measure_tone_profile(AudioSource& source, const RunOptions& run, ToneProfile& out, std::string& error);
 
+// A capture profile must be complete (ADR-0072 §2), but the timbre pass's
+// 8192-point window has no bin inside the 20 Hz band at 48 kHz, so that band
+// is never valid. Each invalid band takes the level of the nearest valid
+// one, which only the lowest band needs and which its weight (0.25) keeps
+// small. False when fewer than kToneBands - 2 bands were valid: the render
+// was silent or too short to profile.
+bool fill_unresolved_bands(ToneProfile& p);
+
 }  // namespace sonora::analyze

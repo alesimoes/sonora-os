@@ -222,6 +222,7 @@ int main(int argc, char** argv) {
     ToneProfile ref;
     std::string err;
     CHECK(measure_tone_profile(src, RunOptions{}, ref, err));
+    CHECK(fill_unresolved_bands(ref));
     CHECK(complete(ref));
 
     test_empty_library();

@@ -126,4 +126,21 @@ bool measure_tone_profile(AudioSource& source, const RunOptions& run, ToneProfil
     return true;
 }
 
+bool fill_unresolved_bands(ToneProfile& p) {
+    int valid = 0;
+    for (int b = 0; b < kToneBands; ++b) valid += p.valid[b] ? 1 : 0;
+    if (valid < kToneBands - 2) return false;
+    const ToneProfile src = p;
+    for (int b = 0; b < kToneBands; ++b) {
+        if (src.valid[b]) continue;
+        for (int d = 1; d < kToneBands; ++d) {
+            const int lo = b - d, hi = b + d;
+            if (lo >= 0 && src.valid[lo]) { p.bands_db[b] = src.bands_db[lo]; break; }
+            if (hi < kToneBands && src.valid[hi]) { p.bands_db[b] = src.bands_db[hi]; break; }
+        }
+        p.valid[b] = true;
+    }
+    return true;
+}
+
 }  // namespace sonora::analyze
