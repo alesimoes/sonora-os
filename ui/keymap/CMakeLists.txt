@@ -26,3 +26,23 @@ target_link_libraries(test_keymap_coverage PRIVATE sonora_keymap)
 target_compile_definitions(test_keymap_coverage PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME keymap_coverage COMMAND test_keymap_coverage)
+
+# ADR-0070: console chords from the console keymap. The implementation and its
+# test arrive in later tasks; the guards mean they never edit this file.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/console_keys.cpp")
+  add_library(sonora_keymap_console_keys STATIC src/console_keys.cpp)
+  target_include_directories(sonora_keymap_console_keys PUBLIC include)
+  target_link_libraries(sonora_keymap_console_keys PUBLIC sonora_keymap)
+endif()
+
+add_executable(test_console_keys_contract tests/test_console_keys_contract.cpp)
+target_link_libraries(test_console_keys_contract PRIVATE sonora_keymap)
+add_test(NAME keymap_console_contract COMMAND test_console_keys_contract)
+set_property(TEST keymap_console_contract APPEND PROPERTY LABELS keymap)
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_console_keys.cpp")
+  add_executable(test_console_keys tests/test_console_keys.cpp)
+  target_link_libraries(test_console_keys PRIVATE sonora_keymap_console_keys)
+  add_test(NAME keymap_console_keys COMMAND test_console_keys)
+  set_property(TEST keymap_console_keys APPEND PROPERTY LABELS keymap)
+endif()

@@ -2,9 +2,9 @@
 # links contracts/api and ui/keymap and nothing of engine/ (ADR-0007 §1).
 # Since M7 it is its own executable, sonora-tui, on ui/client's socket;
 # sonora-engine starts it on a terminal but does not link it.
-add_library(sonora_tui STATIC src/tty_mode.cpp src/terminal_ui.cpp)
+add_library(sonora_tui STATIC src/tty_mode.cpp src/terminal_ui.cpp src/console_probe.cpp)
 target_include_directories(sonora_tui PUBLIC include)
-target_link_libraries(sonora_tui PUBLIC sonora_api sonora_keymap)
+target_link_libraries(sonora_tui PUBLIC sonora_api sonora_keymap sonora_keymap_console_keys)
 
 add_executable(sonora-tui src/main.cpp)
 target_link_libraries(sonora-tui PRIVATE sonora_tui sonora_client)
@@ -19,3 +19,8 @@ add_test(NAME tty_mode COMMAND test_tty_mode)
 add_executable(test_terminal_ui tests/test_terminal_ui.cpp)
 target_link_libraries(test_terminal_ui PRIVATE sonora_tui sonora_api_fake)
 add_test(NAME terminal_ui COMMAND test_terminal_ui)
+
+# Console detection and the dumpkeys step (ADR-0070), against fakes.
+add_executable(test_console_probe tests/test_console_probe.cpp)
+target_link_libraries(test_console_probe PRIVATE sonora_tui sonora_api_fake)
+add_test(NAME tui_console_probe COMMAND test_console_probe)
