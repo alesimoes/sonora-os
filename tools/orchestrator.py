@@ -28,7 +28,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch, 
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
 from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
-                     leadwake, prtext, triage, wakes)
+                     leadwake, pr_sync, prtext, triage, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
@@ -910,6 +910,8 @@ class Orchestrator:
         return ts[0]["id"] if ts else None
 
     def _watch_pr(self, f, now):
+        if not self.dry_run and pr_sync.sync_tasks(self.store, f):
+            f = self.store.get_feature(f["id"])
         ts = self._feature_tasks(f["id"])
         if not f["pr"] or not ts:
             return True
