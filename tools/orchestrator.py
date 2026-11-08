@@ -27,7 +27,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch, 
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
-from harness import blockinfo, findings  # noqa: E402
+from harness import blockinfo, findings, wakes  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
@@ -1030,10 +1030,8 @@ class Orchestrator:
     def _ensure_wake(self, role, kind, detail, brief=None, feature=None,
                      body=None):
         prefix = f"wake-{role}-{kind}-{detail}"
-        for w in self.store.tasks(kind="wake"):
-            if w["id"].startswith(prefix) and w["state"] in ("queued",
-                                                             "blocked"):
-                return
+        if wakes.is_pending(self.store.tasks(kind="wake"), prefix):
+            return
         n = self.store.next_counter("wake")
         wid = f"{prefix}-{n}"
         self.store.add_task(wid, None, role, kind="wake", feature_id=feature,
