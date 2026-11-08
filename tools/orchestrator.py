@@ -27,7 +27,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch, 
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
-from harness import blockinfo, findings, wakes  # noqa: E402
+from harness import blockinfo, feature_merge, findings, wakes  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
@@ -911,6 +911,8 @@ class Orchestrator:
                                   if c["state"] == "fail"})
                 if failing:
                     self._red(f, ts, failing, "ci")
+                elif feature_merge.merge_if_green(self, f, ts):
+                    pass
                 elif f.get("red_since") or f.get("principal_runs"):
                     self.store.set_feature(f["id"], red_since=None,
                                            principal_runs=0)
