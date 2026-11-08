@@ -128,6 +128,10 @@ class BrokerHost:
     def claim_owners(self):
         return self._call(lambda: set(self.broker.claims.values()))
 
+    def mail_for(self, name):
+        """Every message ever put in `name`'s mailbox, acked or not."""
+        return self._call(self.broker.box.unacked, name, 0)
+
     def tell(self, to, type_, body=None, feature=None, task=None):
         """Daemon message. A role name (lead, architect) is registered as
         expected so the message waits in its mailbox until it is launched."""
@@ -168,6 +172,9 @@ class NullBroker:
 
     def claim_owners(self):
         return set()
+
+    def mail_for(self, name):
+        return []
 
     def tell(self, to, type_, body=None, feature=None, task=None):
         pass

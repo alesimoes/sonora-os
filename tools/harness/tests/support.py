@@ -40,6 +40,10 @@ class StubBroker:
         self.channels = {}
         self.claims = {}
         self.events = []
+        self.mail = {}        # name -> messages a test puts in its mailbox
+
+    def mail_for(self, name):
+        return list(self.mail.get(name, []))
 
     def start(self):
         self.started = True
