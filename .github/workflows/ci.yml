@@ -580,4 +580,4 @@ jobs:
       - name: Build slot limiter
         run: tools/test-build-slot.sh
       - name: Harness unit tests
-        run: python -m unittest discover -s tools/harness/tests
+        run: python -X faulthandler -c "import faulthandler, unittest; faulthandler.dump_traceback_later(420, exit=True); unittest.main(module=None, argv=['x', 'discover', '-s', 'tools/harness/tests', '-v'])"
