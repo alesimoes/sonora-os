@@ -22,6 +22,7 @@ FAKE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                     "fake_claude.py")
 
 from harness import scheduler  # noqa: E402
+from harness import shots  # noqa: E402
 from harness.forge import Forge, ForgeError  # noqa: E402
 import orchestrator  # noqa: E402
 
@@ -244,6 +245,15 @@ class FakeForge(Forge):
         return branch not in getattr(self, "left_out", ())
 
 
+class _NoPictures:
+    """Tests never start the real screenshot build; test_shots covers it."""
+    def head(self, wt):
+        return "h"
+
+    def changed(self, wt):
+        return []
+
+
 class DirWorktrees:
     """Plain directories; the git paths have their own test."""
 
@@ -309,6 +319,7 @@ class DaemonCase(unittest.TestCase):
             fake_claude=FAKE, clock=self.clock, forge=self.forge,
             worktrees=DirWorktrees(self.tmp),
             seed_fn=(lambda k: 10) if seed_fn == "fixed" else seed_fn)
+        o.shots = shots.Shots(o, io=_NoPictures())
         self.orchs.append(o)
         return o
 
