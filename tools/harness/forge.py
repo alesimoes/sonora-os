@@ -11,7 +11,7 @@ import re
 import subprocess
 import tempfile
 
-from harness import shell
+from harness import forge_push, shell
 
 
 class ForgeError(Exception):
@@ -225,8 +225,10 @@ class GhForge(Forge):
                 "checks": checks}
 
     def push(self, worktree, branch):
-        self._ok(["git", "push", "origin", f"{branch}:{branch}"], worktree,
-                 timeout=300)
+        def ok(argv, cwd, timeout):
+            return self._ok(argv, cwd, timeout)
+        return forge_push.push_feature_branch(ok, worktree, branch,
+                                              self.base_ref)
 
     def create_pr(self, branch, base, title, body):
         fd, path = tempfile.mkstemp(prefix="orch-prbody-", suffix=".md")
