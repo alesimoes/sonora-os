@@ -161,10 +161,15 @@ void FilePeakSource::work() {
             std::lock_guard<std::mutex> lock(m_);
             e->file = ok ? file : nullptr;
             e->state = ok ? Entry::State::Ready : Entry::State::Failed;
+        }
+        // Redraw is requested before idle is announced, so a waiter that
+        // sees idle also sees the redraw.
+        if (ok && on_ready_) on_ready_();
+        {
+            std::lock_guard<std::mutex> lock(m_);
             busy_ = false;
         }
         idle_.notify_all();
-        if (ok && on_ready_) on_ready_();
     }
 }
 
