@@ -191,6 +191,25 @@ int test_codec_window_and_file() {
     return 0;
 }
 
+// A version 19 file written before VCAs existed carries no VCA keys; it
+// opens, with no VCA, which is what the version bump promises.
+int test_a_version_19_file_without_vcas_opens() {
+    Rig r;
+    if (build(r) != 0) return 1;
+    std::string bytes, error;
+    CHECK(serialize(r.h.current(), WriteInfo{"test", 1}, bytes, error));
+    CHECK(!mentions(bytes, "\"vcas\":"));
+    const std::size_t ver = bytes.find("\"sonora_session\": 25");
+    CHECK(ver != std::string::npos);
+    bytes.replace(ver, 20, "\"sonora_session\": 19");
+    Loaded l;
+    LoadError le;
+    CHECK(deserialize(bytes, l, le));
+    CHECK(l.snapshot.edit->vcas.empty() && l.snapshot.mix.vcas.empty());
+    CHECK(l.snapshot.edit->tracks.size() == 3);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -205,6 +224,7 @@ int main() {
     t(test_folder_rules);
     t(test_deleting_a_track_leaves_and_undo_returns);
     t(test_codec_window_and_file);
+    t(test_a_version_19_file_without_vcas_opens);
     if (failed != 0) {
         std::fprintf(stderr, "model_vcas_folders: %d of %d failed\n", failed, run);
         return 1;
