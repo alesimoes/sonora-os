@@ -101,7 +101,8 @@ POWERED_OFF=0
 # qemu_run NAME TIMEOUT STICK(0|1) CODE VARS_TEMPLATE
 qemu_run() {
   local name="$1" seconds="$2" stick="$3" code="$4" vars="$5" waited=0 pid
-  local args=(-machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on
+  local machine="q35,smm=on" secure="driver=cfi.pflash01,property=secure,value=on"
+  local args=(-machine "$machine" -global "$secure"
         -m "$MEMORY" -smp 2 "${ACCEL[@]}"
         -drive "if=none,id=target,format=qcow2,file=$WORK/target.qcow2" -device "virtio-blk-pci,drive=target"
         -serial "file:$WORK/$name.serial.log" -display none -monitor none -no-reboot)
