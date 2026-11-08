@@ -332,8 +332,10 @@ jobs:
           rebuild: ${{ needs.changes.outputs.image_systemd }}
       - name: Install shellcheck and dbus-x11
         run: for d in 0 15 45; do sleep "$d"; sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y shellcheck dbus-x11 && exit 0; done; echo "apt failed after 3 attempts" >&2; exit 1
+      # -x follows `source=` directives, so tools/lib/* sourced by a script is
+      # checked in that script's context (tools/test-image-config.sh's parts).
       - name: Check
-        run: shellcheck tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck iso/config/includes.chroot/usr/local/bin/sonora-acceptance iso/config/includes.chroot/usr/local/bin/sonora-windows-plugins
+        run: shellcheck -x tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck iso/config/includes.chroot/usr/local/bin/sonora-acceptance iso/config/includes.chroot/usr/local/bin/sonora-windows-plugins
 
       # ADR-0007 M5: module include edges and the contract lock. Seconds,
       # no build needed.
