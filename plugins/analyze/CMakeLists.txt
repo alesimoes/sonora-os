@@ -81,7 +81,7 @@ endforeach()
 # cmd_vocal. The usage line holds for the stub and for the real command.
 sonora_analyze_cli_test(analyze_cli_vocal_usage 2 "usage: sonora-analyze vocal-balance" vocal-balance)
 
-foreach(_fragment models key timbre tone)
+foreach(_fragment models key timbre tone vocal)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_fragment}.cmake")
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_fragment}.cmake")
   endif()
