@@ -34,6 +34,15 @@
 #
 # The binary mirrors stay live on purpose: they are what the shipped system's
 # sources.list names, and a frozen source there would never get a security fix.
+#
+# --firmware-chroot false: live-build's default reads the archive's Contents
+# files and installs every package shipping a file under lib/firmware, contrib
+# included. That added firmware-b43-installer, whose postinst downloads the
+# Broadcom blob from github.com while the image builds; a 504 there failed the
+# nightly (2026-11-08). An image built from a dated snapshot fetches nothing
+# outside it, so the firmware is listed by name in
+# config/package-lists/sonora.list.chroot instead. --firmware-binary is the
+# same mechanism for the installer image, which this ISO does not carry.
 set -e
 
 SONORA_SNAPSHOT=20261101T000000Z
@@ -48,6 +57,8 @@ lb config noauto \
   --architectures amd64 \
   --linux-flavours rt-amd64 \
   --archive-areas "main contrib non-free non-free-firmware" \
+  --firmware-chroot false \
+  --firmware-binary false \
   --binary-images iso-hybrid \
   --bootappend-live "boot=live components quiet splash persistence username=sonora hostname=sonora threadirqs" \
   --debian-installer none \
