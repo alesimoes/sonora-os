@@ -419,7 +419,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready", "meters.reset",
         "transport.toggle_input_only", "transport.toggle_pre_post_roll",
         "transport.toggle_quick_punch",
-        "mix.bounce", "mix.bounce_cancel", "track.freeze", "track.commit", "track.process_selection",
+        "mix.bounce", "mix.bounce_cancel", "mix.stems", "track.freeze", "track.commit", "track.process_selection",
         "track.unfreeze", "track.render_cancel",
         "session.consolidate", "session.consolidate_cancel",
         "sample.edit",
@@ -1829,6 +1829,27 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         }
         bounce_running_ = true;
         bounce_age_ = 0;
+        stems_folder_.clear();
+        announce_bounce(static_cast<uint32_t>(BounceState::Running), 500, "");
+        return true;
+    }
+    // engine/control's stems_commands.cpp, its words; one export at a time,
+    // so it shares the bounce's running flag and its cancel.
+    if (id == "mix.stems") {
+        StemsOptions o;
+        if (!parse_stems_argument(r.argument, o, why)) return false;
+        if (bounce_running_) {
+            why = "a bounce or a stem export is already running; cancel it or wait for it";
+            return false;
+        }
+        if (recording) {
+            why = "stop recording before exporting stems";
+            return false;
+        }
+        bounce_running_ = true;
+        bounce_age_ = 0;
+        stems_folder_ = stems_folder(o.base.name.empty() ? std::string("Untitled") : o.base.name);
+        stems_files_ = o.tracks.empty() ? 1 : o.tracks.size();
         announce_bounce(static_cast<uint32_t>(BounceState::Running), 500, "");
         return true;
     }
@@ -2137,7 +2158,9 @@ void FakeEngine::announce_bounce(uint32_t state, uint32_t permille, const std::s
     e.frame = permille;
     e.flags = state;
     e.text = text;
-    if (state == static_cast<uint32_t>(BounceState::Done)) e.insert = 48000;
+    if (state == static_cast<uint32_t>(BounceState::Done)) {
+        e.insert = stems_folder_.empty() ? 48000 : stems_files_;
+    }
     bounce_event_.clear();
     wire::encode(e, bounce_event_);
     post_event(e);
@@ -2147,7 +2170,8 @@ void FakeEngine::check_bounce() {
     if (!bounce_running_) return;
     if (bounce_age_++ < 1) return;
     bounce_running_ = false;
-    announce_bounce(static_cast<uint32_t>(BounceState::Done), 1000, "Bounced Files/Bounce_01.wav");
+    announce_bounce(static_cast<uint32_t>(BounceState::Done), 1000,
+                    stems_folder_.empty() ? "Bounced Files/Bounce_01.wav" : stems_folder_);
 }
 
 // The server holds the last Consolidate event for a client that attaches

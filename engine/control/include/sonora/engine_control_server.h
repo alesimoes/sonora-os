@@ -91,6 +91,7 @@
 #include "sonora/session_commands.h"
 #include "sonora/session_saver.h"
 #include "sonora/state_publisher.h"
+#include "sonora/stems_job.h"
 
 namespace sonora {
 
@@ -631,6 +632,11 @@ private:
     void announce_bounce(api::BounceState state, uint32_t permille, uint64_t frames,
                          const std::string& text);
     void follow_bounce();
+    // Export Stems (ADR-0085): a worker renders, install_stems_commands()
+    // starts it, follow_stems() says how it ended on the same Bounce event.
+    // One export at a time: each side asks the other's gate.
+    StemsJob stems_job_;
+    BounceExportGate bounce_gate_{bounce_job_};
     // Render in place (ADR-0051): Freeze, Commit and Process Selection print
     // a track through its live chain in real time (RenderInPlace) and this
     // thread puts the file in the document. The standing Render event and
