@@ -76,7 +76,12 @@ measurement that would reopen it is under Unverified.
   `Hello::capabilities`.
 - No protocol bump: an old server refuses the unknown word with a reason,
   and a new client checks the capability before offering the choice.
-- `FakeEngine` reads the word as above and advertises the capability.
+- `FakeEngine` stands in for both engines: configured with the capability
+  it advertises it in Hello and reads the word as above; by default it is
+  the engine as it is, without the capability, and refuses the word. The
+  default stays the engine's because `engine/control`'s test requires the
+  fake's default capabilities to equal the real engine's; the engine task
+  adds `track.render.insert` to both in one change.
 
 ### 3. Model (`common/model/.../render_in_place.h`)
 
@@ -137,8 +142,8 @@ measurement that would reopen it is under Unverified.
 - Processing several times through different inserts is several renders,
   each in real time; each makes its own insert inactive, so the chain left
   on the track is what has not been printed yet.
-- `CONTRACTS.lock` changes with `render.h` as the contract-hash tool
-  requires.
+- `CONTRACTS.lock` changes with `render.h` and `render_in_place.h` as the
+  contract-hash tool requires.
 
 ## Alternatives rejected
 

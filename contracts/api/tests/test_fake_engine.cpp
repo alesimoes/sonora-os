@@ -5,6 +5,7 @@
 // asked to do: be deterministic, script an event, die on cue.
 #include "sonora/api/fake_engine.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -569,10 +570,9 @@ void bounce_events() {
     FakeEngine e(cfg);
     std::string error;
     CHECK(e.connect(error));
-    CHECK(e.hello().capabilities.size() == 5 && e.hello().capabilities[1] == kCapabilityBounce &&
+    CHECK(e.hello().capabilities.size() == 4 && e.hello().capabilities[1] == kCapabilityBounce &&
           e.hello().capabilities[2] == kCapabilityRender &&
-          e.hello().capabilities[3] == kCapabilityStems &&
-          e.hello().capabilities[4] == kCapabilityRenderInsert);
+          e.hello().capabilities[3] == kCapabilityStems);
     Inbox in;
     const auto run = [&](const char* id, const char* arg) {
         CommandRequest r;
@@ -770,9 +770,32 @@ void consolidate_events() {
 void render_events() {
     FakeEngine::Config cfg;
     cfg.tracks = 2;
+    {
+        // The default fake is the engine as it is: no track.render.insert,
+        // and insert= refused like any unknown word (ADR-0087).
+        FakeEngine old(cfg);
+        std::string error;
+        CHECK(old.connect(error));
+        const auto& caps = old.hello().capabilities;
+        CHECK(std::find(caps.begin(), caps.end(), kCapabilityRenderInsert) == caps.end());
+        CommandRequest r;
+        r.command = "track.process_selection";
+        r.argument = "track=1 start=10 end=900 insert=5";
+        const uint64_t seq = old.send(r);
+        Inbox in;
+        old.poll(in);
+        bool refused = false;
+        for (const CommandReply& c : in.replies) {
+            refused = refused || (c.seq == seq && c.result == DispatchResult::Failed);
+        }
+        CHECK(refused);
+    }
+    // The engine of ADR-0087 announces it in Hello.
+    cfg.capabilities.push_back(kCapabilityRenderInsert);
     FakeEngine e(cfg);
     std::string error;
     CHECK(e.connect(error));
+    CHECK(e.hello().capabilities.back() == kCapabilityRenderInsert);
     Inbox in;
     const auto run = [&](const char* id, const char* arg) {
         CommandRequest r;

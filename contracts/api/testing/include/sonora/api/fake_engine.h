@@ -113,8 +113,7 @@ public:
         // Hello's capabilities. The fake parses a play range as the engine
         // does; clear this to stand in for an engine that predates it.
         std::vector<std::string> capabilities = {kCapabilityPlayRange, kCapabilityBounce,
-                                                kCapabilityRender, kCapabilityStems,
-                                                kCapabilityRenderInsert};
+                                                kCapabilityRender, kCapabilityStems};
         // The engine's midi_max_entries (ADR-0015 §5), so a test can make a
         // Load the engine refuses without 2^24 notes.
         uint64_t midi_max_entries = uint64_t{1} << 24;
