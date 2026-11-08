@@ -36,6 +36,13 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .tabs{display:none}
 .main{flex:1;min-height:0;display:grid;grid-template-columns:300px minmax(0,1fr) 320px}
 .side{min-height:0;overflow:auto;background:rgba(7,13,24,.55);padding:14px}
+/* Thin dark scrollbars in the HUD palette; the browser default was a wide
+   light bar on the right panel (owner, 2026-11-08). */
+.side,.log{scrollbar-width:thin;scrollbar-color:var(--line2) transparent;scrollbar-gutter:stable}
+.side::-webkit-scrollbar,.log::-webkit-scrollbar{width:8px;height:8px}
+.side::-webkit-scrollbar-track,.log::-webkit-scrollbar-track{background:transparent}
+.side::-webkit-scrollbar-thumb,.log::-webkit-scrollbar-thumb{background:var(--line2);border-radius:4px;border:2px solid transparent;background-clip:padding-box}
+.side::-webkit-scrollbar-thumb:hover,.log::-webkit-scrollbar-thumb:hover{background:var(--cyan-d);background-clip:padding-box}
 .side.l{border-right:1px solid var(--line)} .side.r{border-left:1px solid var(--line)}
 .sh{display:flex;justify-content:space-between;align-items:baseline;font:600 11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--mute);margin-bottom:10px}
 .sh b{color:var(--cyan)}
