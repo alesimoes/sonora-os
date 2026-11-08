@@ -23,9 +23,10 @@ function renderStrip() {
   if (!strip.querySelector(".cells"))
     strip.innerHTML = '<div class="brand live"><i></i><span>Sonora Console</span></div><div class="cells"></div>';
   if (!setHTML(strip.querySelector(".cells"), dcell + cell("Agentes", s.agents) + cell("Execuções", s.runs, "hide-s") +
-    cell("PRs", s.prs) + `<div class="cell ${s.alerts.level}"><small>Alertas</small><b>${s.alerts.n}</b></div>`)) return;
+    cell("PRs", s.prs) + `<div class="cell ${s.alerts.level}"><small>Alertas</small><b>${s.alerts.n}</b></div>` +
+    kpiCells())) return;
   document.querySelectorAll("#strip .cell").forEach((el, i) => {
-    const q = [null, "quem está rodando?", "o que o freio está segurando?", "quais PRs estão abertos?", "o que precisa de mim?"][i];
+    const q = el.dataset.q || [null, "quem está rodando?", "o que o freio está segurando?", "quais PRs estão abertos?", "o que precisa de mim?"][i];
     if (q) el.onclick = () => { $("#inp").value = q; };
   });
 }
@@ -77,7 +78,7 @@ function renderHarness() {
 
 function renderTabs() {
   const n = C.data.agents.length, a = C.data.attention.length, cur = document.body.dataset.pane;
-  if (!setHTML($("#tabs"), [["chat", "Chat"], ["agentes", "Agentes", n], ["atencao", "Atenção", a]].map(([k, l, c]) =>
+  if (!setHTML($("#tabs"), [["chat", "Chat"], ["agentes", "Agentes", n], ["numeros", "Números"], ["atencao", "Atenção", a]].map(([k, l, c]) =>
     `<button data-p="${k}" class="${cur === k ? "on" : ""} ${k === "atencao" && c ? "al" : ""}">${l}${c != null ? `<i>${c}</i>` : ""}</button>`).join(""))) return;
   document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => pane(b.dataset.p));
 }

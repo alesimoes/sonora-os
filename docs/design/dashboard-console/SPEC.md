@@ -46,7 +46,7 @@ envia o comando correspondente (o cartão de confirmação aparece lá). Nenhuma
 Grade `300px | 1fr | 320px` sob a faixa de estado (todas as colunas rolam sozinhas): Agentes à esquerda, Chat no centro
 (texto e cartões com no máximo 680 px), Precisa de você à direita. Sem abas. Faixa de estado com os 5 cartões, mais larga, inclui "Execuções".
 
-### Faixa de estado (5 células)
+### Faixa de estado (5 células + 2 de números)
 
 | Célula | Valor | Fonte em `status.json` | Cor / regra |
 |---|---|---|---|
@@ -55,8 +55,30 @@ Grade `300px | 1fr | 320px` sob a faixa de estado (todas as colunas rolam sozinh
 | Execuções (só desktop) | `5/6` + barra | contagem de work runs, limite por hora | mesma regra |
 | PRs | `7/8` + barra | `prs[]`, freio (8) | mesma regra; bad = freio ligado |
 | Alertas | `3` | tamanho da fila de atenção | ok se 0; warn se > 0; bad se algum item é `bad` |
+| Concluído | `52%` + barra | `kpis.progress.pct` | sempre ok (é progresso, não alarme) |
+| Merges hoje (só desktop) | `5 · 2/h` | `kpis.merges` | neutro |
 
 Tocar numa célula não abre nada; pergunta ao chat (ex.: tocar em PRs pré-preenche "quais PRs estão abertos?" no campo, sem enviar). Exceção só de atalho, nunca obrigatória.
+
+### Números (painel compacto; dono, 2026-11-08)
+
+O dono vê os números importantes sem abrir o chat. No desktop ficam no topo da coluna da esquerda (acima de Agentes); no celular
+são a aba **Números** (Chat, Agentes, Números, Atenção). Mesmo estilo escuro; o chat continua sendo a tela principal.
+
+1. **Progresso**: percentual geral e por trilha (Complete DAW, Plugins, OS packaging), com pontos feitos / total e "+N em curso"
+   (barra verde = feito, âmbar = em curso). Fonte: `planning/progress.json` em `origin/main`, o mesmo leitor do dashboard antigo
+   (`tools/progress.py`, só trabalho mergeado e verificado conta; opcional não entra). Plugins são os módulos `daw.plugins`,
+   `daw.native` e `daw.ampcab`; saem de "Complete DAW", então as três trilhas somam o geral. Relido a cada 5 min.
+2. **PRs abertos**: lista com número, título, CI (verde / vermelho / rodando; conflito e cancelado contam como vermelho),
+   o que o trem faz com o PR (fase do trem e dono do próximo passo) e minutos aberto. Tocar num PR vai ao Chat e envia
+   "por que o PR N não entrou?". Máximo de 30.
+3. **Merges**: hoje (dia local) e na última hora, contados dos PRs mergeados lidos do GitHub.
+
+Dados: `GET /api/console` ganha `kpis: {progress: {pct, done, doing, total, tracks[{key,title,pct,done,doing,total}]},
+prs[{number,title,ci,level,ci_text,train,minutes_open,late,tap}], merges: {today, last_hour}}`. `progress` é `null` se o
+catálogo não pôde ser lido. Código: `tools/dashboard_kpis.py` (regras), `tools/dashboard_progress.py` (leitura),
+`tools/dashboard-static/console-kpis.js` (tela). Capturas da tela real com números de exemplo (`render_live.py`):
+`docs/images/dashboard-console/celular-numeros.png`, `celular-chat-kpis.png`, `desktop-chat-kpis.png`.
 
 ### Lista de agentes
 
