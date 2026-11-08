@@ -13,7 +13,7 @@ function renderTech(s){
       +(o.kill_switch?`<div class="banner bad">Chave de emergência ligada: ${E(typeof o.kill_switch==='object'?JSON.stringify(o.kill_switch):o.kill_switch)}</div>`:'')
       +(o.usage_pause_until?`<div class="banner">Pausa por consumo até ${clk(Number(o.usage_pause_until)||Date.parse(o.usage_pause_until)/1000)}</div>`:'')
       +'<div class="stats">'+st(runs+' de '+(cap||'?'),'agentes rodando / limite')+st((o.open_prs??0)+' de '+(o.max_open_prs||'?'),'PRs abertos / limite')
-      +st(o.ready_unpr??0,'prontos esperando PR')+st(o.runs_last_hour??0,'execuções na última hora')+st((o.reservations||[]).length,'reservas de ADR e protocolo')+'</div>';
+      +st(o.ready_unpr??0,'prontos esperando PR')+st(o.runs_last_hour??0,'execuções na última hora')+st(o.lead_wakes_last_hour??0,'despertares do lead na última hora')+st((o.reservations||[]).length,'reservas de ADR e protocolo')+'</div>';
     $('tlimits').innerHTML=h;
     const P=o.pools||{};
     $('tpools').innerHTML=Object.keys(P).filter(n=>(P[n].floor||0)>0||(P[n].live||0)>0||paused.includes(n)).map(n=>{const p=P[n],pp=POOL_PT[n]||[n,'AG'];
