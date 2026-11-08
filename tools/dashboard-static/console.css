@@ -59,6 +59,8 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .at.bad{border-left-color:var(--bad)}
 .at h4{font-size:14px;font-weight:600}
 .at p{color:var(--mute);font-size:13px;margin:3px 0 8px}
+.at h4,.at p{user-select:text;-webkit-user-select:text}
+.at-act{display:flex;gap:6px;flex-wrap:wrap}
 .empty{color:var(--mute);font:12px var(--mono);border:1px dashed var(--line);padding:14px;text-align:center}
 
 /* buttons */

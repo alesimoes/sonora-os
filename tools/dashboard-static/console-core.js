@@ -48,8 +48,15 @@ async function flushQueue() {
   C.busy = true;
   while (C.queue.length) {
     try {
-      await post("/api/chat", C.queue[0]);
+      const q = C.queue[0];
+      await post("/api/chat", q);
       C.queue.shift();
+      // Shown as sent at once; the next poll replaces it with the server's copy.
+      if (C.data && C.data.chat) {
+        C.data.chat.messages.push({id: "local-" + Date.now(), kind: "user", text: q.text,
+          to: q.to, ts: new Date().toISOString()});
+        renderChat();
+      }
     } catch (e) {
       if (!e.status) break;
       C.queue.shift();
@@ -64,6 +71,9 @@ function send(text, to) {
   text = (text || "").trim();
   if (!text) return;
   C.queue.push({text, to: to || null});
+  // The owner sees the message the moment it is sent (2026-11-08: it only
+  // appeared on the next poll, seconds later, and looked lost).
+  if (C.data) renderChat();
   flushQueue();
 }
 

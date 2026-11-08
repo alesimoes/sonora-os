@@ -39,7 +39,7 @@ function renderChat() {
   let html = chat.messages.length ? "" : welcome();
   html += chat.messages.map(m => bubble(m) + cardsHtml(m, chat.actions)).join("");
   html += C.queue.map(q => `<div class="msg me"><div class="who"><span>Você${q.to ? " → " + esc(q.to) : ""}</span>` +
-    `<time>⏱ aguardando envio</time></div><p>${esc(q.text)}</p></div>`).join("");
+    `<time>enviando…</time></div><p>${esc(q.text)}</p></div>`).join("");
   if (thinking(chat.messages)) html += '<div class="msg think"><div class="who"><span>Orquestrador</span></div><p><i></i><i></i><i></i></p></div>';
   if (notice) html += `<div class="sys">${esc(notice)}</div>`;
   log.innerHTML = html;
