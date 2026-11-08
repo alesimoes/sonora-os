@@ -96,6 +96,8 @@ class SessionModel : public QObject {
     Q_PROPERTY(QString prefCounter READ prefCounter NOTIFY preferencesChanged)
     Q_PROPERTY(QString prefGrid READ prefGrid NOTIFY preferencesChanged)
     Q_PROPERTY(QString prefMode READ prefMode NOTIFY preferencesChanged)
+    Q_PROPERTY(bool prefClick READ prefClick NOTIFY preferencesChanged)
+    Q_PROPERTY(bool prefCountOff READ prefCountOff NOTIFY preferencesChanged)
     Q_PROPERTY(QString prefRefusal READ prefRefusal NOTIFY preferencesChanged)
     Q_PROPERTY(QString preferencesFile READ preferencesFile NOTIFY preferencesChanged)
     // Window configurations: the nine slots, {slot, stored, summary}, and
@@ -407,6 +409,8 @@ public:
     QString prefCounter() const { return QString::fromLatin1(time_format_name(prefs_.counter)); }
     QString prefGrid() const { return QString::fromLatin1(grid_value_name(prefs_.grid)); }
     QString prefMode() const { return QString::fromLatin1(edit_mode_name(prefs_.mode)); }
+    bool prefClick() const { return prefs_.click_at_start; }
+    bool prefCountOff() const { return prefs_.count_off_at_start; }
     QString prefRefusal() const { return prefs_refusal_; }
     QString preferencesFile() const { return prefs_file_; }
     Q_INVOKABLE void setPreferencesOpen(bool on);
@@ -839,6 +843,11 @@ private:
     Preferences prefs_;
     QString prefs_file_, prefs_refusal_;
     void applyPreferences();
+    // Click and Count Off are toggles: planned against the last state block.
+    void applyTransportPrefs();
+    void noteEngineToggles(const TransportSnapshot& t, bool alive);
+    bool engine_alive_ = false, engine_click_ = false, engine_count_off_ = false;
+    bool transport_prefs_pending_ = true;
     void setCounterFormat(TimeFormat main);
     QString render_what_;
     bool window_configs_open_ = false;

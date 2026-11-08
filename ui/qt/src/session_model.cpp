@@ -207,6 +207,7 @@ void SessionModel::onTransport(const TransportSnapshot& t, bool alive) {
     // shown, as TransportModel does, or the bar counter drops to the
     // insertion point while the Transport window keeps the playhead.
     if (alive && t.stale) return;
+    noteEngineToggles(t, alive);
     const bool rolling = alive && t.state != TransportMode::Stopped;
     const bool recording = rolling && t.state == TransportMode::Recording;
     const auto playhead = static_cast<Frames>(t.playhead_frames);

@@ -118,9 +118,31 @@ Rectangle {
             }
         }
 
-        Overline { text: "AUDIO (SET WHEN THE ENGINE STARTS)" }
-        Fact { objectName: "prefAudio"; label: "Format"; value: win.shell.formatText }
-        Fact { label: "Inputs"; value: win.shell.trackCount + " tracks" }
+        // Facts only: the engine sets them when it starts, and a row appears
+        // only when its value exists (no device or buffer control, ADR-0075).
+        Overline { text: "PLAYBACK ENGINE (SET WHEN THE ENGINE STARTS)" }
+        Fact {
+            objectName: "prefAudio"; label: "Format"; value: win.shell.formatText
+            visible: value.length > 0
+        }
+        Fact {
+            objectName: "prefInputs"; label: "Inputs"; value: win.shell.trackCount + " tracks"
+            visible: win.shell.trackCount > 0
+        }
+
+        Overline { text: "CLICK / COUNT OFF (AT START)" }
+        Choice {
+            objectName: "prefClick"
+            label: "Click"; what: "click"
+            options: ["on", "off"]
+            current: win.session.prefClick ? "on" : "off"
+        }
+        Choice {
+            objectName: "prefCountOff"
+            label: "Count off"; what: "countoff"
+            options: ["on", "off"]
+            current: win.session.prefCountOff ? "on" : "off"
+        }
 
         Overline { text: "RECORD PATHS" }
         Fact { objectName: "prefSessions"; label: "Sessions"; value: win.session.sessionsFolder() }
