@@ -24,10 +24,3 @@ target_link_libraries(ampcab-tone-profile PRIVATE sonora_analyze_tone_measure
   sonora_native_ampcab_nam sonora_native_ampcab_cards sonora_sha256 sonora_json)
 target_compile_definitions(ampcab-tone-profile PRIVATE ${_tone_defs})
 
-add_executable(test_analyze_tone_cmd tests/test_tone_cmd.cpp)
-target_link_libraries(test_analyze_tone_cmd PRIVATE sonora_analyze_tone_measure
-  sonora_native_ampcab_cards sonora_sha256 sonora_json)
-add_test(NAME analyze_tone_cmd
-  COMMAND test_analyze_tone_cmd $<TARGET_FILE:sonora-analyze> $<TARGET_FILE:ampcab-tone-profile>
-          ${_tone_ampcab}/tests/data/tiny.nam ${CMAKE_CURRENT_BINARY_DIR}/tone_cmd_fixture)
-set_tests_properties(analyze_tone_cmd PROPERTIES LABELS analyze)

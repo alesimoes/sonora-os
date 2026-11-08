@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // sonora-analyze tone and ampcab-tone-profile, end to end through the two
-// executables (ADR-0072): the empty library, a fixture library of three
+// executables (ADR-0072; the name-hygiene case reads the ampcab deny list): the empty library, a fixture library of three
 // near and one far capture, a stale card, a missing profile, and the
 // generator's determinism and its no-capture exit.
 //
-// usage: test_analyze_tone_cmd <sonora-analyze> <ampcab-tone-profile> <tiny.nam> <scratch dir>
+// usage: test_analyze_tone_command <sonora-analyze> <ampcab-tone-profile> <tiny.nam> <scratch dir>
 #include <sys/wait.h>
 
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -167,6 +168,56 @@ void test_fixture_library(const ToneProfile& ref) {
     CHECK(missing.rc == 1 && missing.out.find("fixture-a") != std::string::npos);
 }
 
+std::string squash(const std::string& s) {
+    std::string o;
+    for (char c : s)
+        if (std::isalnum(static_cast<unsigned char>(c))) o.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    return o;
+}
+
+// ADR-0072 / ADR-0011 s5: the reference is labelled by the user's file name,
+// echoed once; nothing else in the output may carry a deny-listed name. The
+// file is named after a deny-listed term, and with that echoed name removed
+// no term may remain in the text or JSON report.
+void test_name_hygiene(const ToneProfile& ref) {
+#ifdef AMPCAB_NAME_DENY_FILE
+    std::ifstream f(AMPCAB_NAME_DENY_FILE);
+    if (!f) {
+        std::puts("SKIP name hygiene: deny list not found, " AMPCAB_NAME_DENY_FILE);
+        return;
+    }
+    std::vector<std::string> terms;
+    for (std::string line; std::getline(f, line);) {
+        const std::size_t hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);
+        const std::string t = squash(line);
+        if (!t.empty()) terms.push_back(t);
+    }
+    CHECK(!terms.empty());
+    if (terms.empty()) return;
+    const fs::path lib = g_root / "hyg";
+    make_library(lib, ref, {{"fixture-a", 1.0}, {"fixture-b", 2.0}});
+    const std::string name = terms.front() + "-crunch.wav";
+    fs::copy_file(g_root / "ref.wav", g_root / name, fs::copy_options::overwrite_existing);
+    for (const char* extra : {"", "--json"}) {
+        std::string cmd = tone_cmd(lib, extra);
+        const std::string from = (g_root / "ref.wav").string();
+        cmd.replace(cmd.find(from), from.size(), (g_root / name).string());
+        const Run r = run(cmd);
+        CHECK(r.rc == 0);
+        CHECK(r.out.find(name) != std::string::npos);  // echoed verbatim
+        // The run's own paths carry the scratch directory, not the output.
+        std::string rest = r.out;
+        for (std::size_t at; (at = rest.find(name)) != std::string::npos;) rest.erase(at, name.size());
+        const std::string flat = squash(rest);
+        for (const std::string& t : terms) CHECK(flat.find(t) == std::string::npos);
+    }
+#else
+    (void)ref;
+    std::puts("SKIP name hygiene: no deny list configured");
+#endif
+}
+
 void test_generator(const fs::path& nam) {
     const fs::path lib = g_root / "gen";
     const std::string nam_bytes = slurp(nam);
@@ -227,6 +278,7 @@ int main(int argc, char** argv) {
 
     test_empty_library();
     test_fixture_library(ref);
+    test_name_hygiene(ref);
     test_generator(argv[3]);
     if (failures) std::fprintf(stderr, "%d check(s) failed\n", failures);
     return failures ? 1 : 0;

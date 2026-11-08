@@ -12,7 +12,3 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tone_tests.cmake")
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/tone_tests.cmake")
 endif()
 
-add_executable(test_analyze_tone_matcher tests/test_tone_matcher.cpp)
-target_link_libraries(test_analyze_tone_matcher PRIVATE sonora_analyze)
-add_test(NAME analyze_tone_matcher COMMAND test_analyze_tone_matcher)
-set_tests_properties(analyze_tone_matcher PROPERTIES LABELS analyze)
