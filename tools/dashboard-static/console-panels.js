@@ -57,9 +57,12 @@ function renderAttention() {
   $("#atcount").textContent = q.length;
   if (!setHTML($("#attn"), q.length ? q.map((x, i) => `<div class="at ${x.level === "bad" ? "bad" : ""}">
     <h4>${esc(x.title)}</h4><p>${esc(x.reason)}</p>` +
+    '<div class="at-act">' +
     (x.button ? `<button class="btn sm ${x.level === "bad" ? "am" : ""}" data-i="${i}">${esc(x.button.label)}</button>` : "") +
+    `<button class="btn sm cp" data-c="${i}">Copiar</button></div>` +
     "</div>").join("") : '<div class="empty">Nada precisa de você agora.</div>')) return;
-  document.querySelectorAll(".at .btn").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".at .cp").forEach(b => b.onclick = () => copyText(b, q[b.dataset.c]));
+  document.querySelectorAll(".at .btn[data-i]").forEach(b => b.onclick = () => {
     setTarget(null); pane("chat"); send(q[b.dataset.i].button.command);
   });
 }
@@ -81,4 +84,22 @@ function renderTo() {
     : '<span>Para</span><span class="pill">orquestrador</span>';
   if (C.target) $("#back").onclick = () => setTarget(null);
   $("#inp").placeholder = C.target ? `Mensagem direta para ${C.target}…` : "Escreva um pedido… ex.: pare o eng-104";
+}
+
+/* The owner pastes an attention item elsewhere (owner, 2026-11-08). The
+   clipboard API needs a secure context; the textarea copy covers the rest. */
+function copyText(btn, x) {
+  const text = x.title + "\n" + x.reason;
+  const done = () => { btn.textContent = "Copiado"; setTimeout(() => { btn.textContent = "Copiar"; }, 1500); };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+  } else fallbackCopy(text, done);
+}
+
+function fallbackCopy(text, done) {
+  const t = document.createElement("textarea");
+  t.value = text; t.style.position = "fixed"; t.style.opacity = "0";
+  document.body.appendChild(t); t.select();
+  try { document.execCommand("copy"); done(); } catch (e) { /* text stays selectable */ }
+  t.remove();
 }
