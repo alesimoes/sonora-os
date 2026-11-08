@@ -493,6 +493,13 @@ target_link_libraries(test_ui_session_templates PRIVATE sonora_ui_session sonora
 add_test(NAME ui_session_templates COMMAND test_ui_session_templates)
 set_tests_properties(ui_session_templates PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# Strip metering: post-fader peaks, the Pre/Post point, the over latch, one
+# read per tick, on a recording adapter.
+add_executable(test_ui_strip_metering tests/test_strip_metering.cpp)
+target_link_libraries(test_ui_strip_metering PRIVATE sonora_ui_qt)
+add_test(NAME ui_strip_metering COMMAND test_ui_strip_metering)
+set_tests_properties(ui_strip_metering PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # The Mix window on the monitor bus, on FakeEngine: typed gain and pan,
 # strips by display order, fader rides (ParameterChange per step, one SetMix
 # at release), Alt- and Ctrl-clicks on solo and mute; then the QML.
