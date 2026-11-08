@@ -3,7 +3,7 @@
 // plugins_host_stock_probe (ADR-0076): every LV2 bundle that a package of
 // plugins/content/stock.json installed goes through the host's own scan
 // (`sonora-plugin-host --list --json --format lv2 --only-given --bundle DIR`,
-// one child per bundle) and must answer usable with audio in and out. A bundle
+// one child per bundle) and must answer usable with an audio output. A bundle
 // that makes the host die is a refusal naming it, never an abort of this test.
 //
 //   test_stock_probe --host PATH --manifest stock.json
@@ -100,7 +100,8 @@ std::string string_after(const std::string& line, const char* key) {
 }
 
 // Returns the number of plugins found; adds a message per refusal.
-int probe_bundle(const std::string& host, const std::string& bundle, std::vector<std::string>& refusals) {
+int probe_bundle(const std::string& host, const std::string& bundle, std::vector<std::string>& refusals,
+                 int& instruments) {
     const Run r = run(quote(host) + " --list --json --format lv2 --only-given --bundle " + quote(bundle));
     if (!WIFEXITED(r.status) || WEXITSTATUS(r.status) != 0) {
         refusals.push_back(bundle + ": the host did not finish the scan (status " + std::to_string(r.status) + ")");
@@ -114,11 +115,14 @@ int probe_bundle(const std::string& host, const std::string& bundle, std::vector
         const std::string name = string_after(line, "\"uri\":\"");
         if (line.find("\"usable\":true") == std::string::npos)
             refusals.push_back(name + " (" + bundle + "): not usable: " + string_after(line, "\"reason\":\""));
-        else if (number_after(line, "\"audio_in\":") == 0 || number_after(line, "\"audio_out\":") == 0)
-            refusals.push_back(name + " (" + bundle + "): no audio in and out");
-        else if (line.find("\"type\":\"audio\",\"direction\":\"in\"") == std::string::npos ||
+        else if (number_after(line, "\"audio_out\":") == 0 ||
                  line.find("\"type\":\"audio\",\"direction\":\"out\"") == std::string::npos)
-            refusals.push_back(name + " (" + bundle + "): ports are not audio in/out");
+            refusals.push_back(name + " (" + bundle + "): no audio out");
+        // ADR-0076 section 3 curates by package, so a package's instruments
+        // (zam-plugins' synths, LSP's samplers: audio out, no audio in) are in
+        // the set; counted, not refused.
+        else if (number_after(line, "\"audio_in\":") == 0)
+            ++instruments;
     }
     if (plugins == 0) refusals.push_back(bundle + ": the scan found no plugin");
     return plugins;
@@ -138,13 +142,13 @@ int main(int argc, char** argv) {
     }
     const std::string root = lv2_path(manifest);
     std::vector<std::string> refusals;
-    int bundles = 0, plugins = 0;
+    int bundles = 0, plugins = 0, instruments = 0;
     for (const std::string& pkg : manifest_packages(manifest)) {
         const std::vector<std::string> found = bundles_of(pkg, root);
         if (found.empty()) refusals.push_back(pkg + ": installed no LV2 bundle under " + root);
         for (const std::string& b : found) {
             ++bundles;
-            plugins += probe_bundle(host, b, refusals);
+            plugins += probe_bundle(host, b, refusals, instruments);
         }
     }
     const char* optional = std::getenv("SONORA_STOCK_OPTIONAL");
