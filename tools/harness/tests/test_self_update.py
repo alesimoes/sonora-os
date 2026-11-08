@@ -120,6 +120,35 @@ class SelfUpdate(unittest.TestCase):
         self.assertFalse(self.up.ready(1000 + 100))
         self.assertTrue(self.up.ready(1000 + self.up.max_defer_s))
 
+    def test_local_plan_commits_are_rebased_not_dropped(self):
+        # 2026-11-08: an architect committed plans in the daemon checkout.
+        write(self.daemon, "planning/plans/x.md", "plan\n")
+        git(self.daemon, "add", "-A")
+        git(self.daemon, "commit", "-qm", "x: plan")
+        new = self.push("tools/harness/train.py", "v2\n")
+        self.assertTrue(self.up.ready(1000))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD~1"), new)
+        self.assertTrue(os.path.exists(
+            os.path.join(self.daemon, "planning/plans/x.md")))
+        self.assertIn("self_update_rebased", self.store.kinds())
+
+    def test_a_conflicting_local_commit_blocks_and_reports(self):
+        write(self.daemon, "tools/harness/train.py", "local\n")
+        git(self.daemon, "add", "-A")
+        git(self.daemon, "commit", "-qm", "local harness edit")
+        self.push("tools/harness/train.py", "v2\n")
+        self.assertFalse(self.up.ready(1000))
+        self.assertIn("self_update_blocked", self.store.kinds())
+        self.assertEqual(git(self.daemon, "status", "--porcelain"), "")
+
+    def test_an_error_in_the_check_is_one_event_not_silence(self):
+        def boom(now):
+            raise RuntimeError("git exploded")
+        self.up.ready = boom
+        self.assertFalse(self.up.ready_or_report(1000))
+        self.assertFalse(self.up.ready_or_report(1001))
+        self.assertEqual(self.store.kinds().count("self_update_error"), 1)
+
     def test_event_names_old_and_new_sha(self):
         old = git(self.daemon, "rev-parse", "HEAD")
         new = self.push("tools/harness/train.py", "v2\n")
@@ -132,7 +161,7 @@ class DaemonLoop(support.DaemonCase):
     def test_run_loop_restarts_when_the_updater_is_ready(self):
         o = self.make(floors={"daw": 0}, dry_run=True)
         calls = []
-        o.updater = types.SimpleNamespace(ready=lambda now: True,
+        o.updater = types.SimpleNamespace(ready_or_report=lambda now: True,
                                           restart=lambda: calls.append(1))
         o.run(max_ticks=5, sleep=lambda s: None)
         self.assertEqual(calls, [1])

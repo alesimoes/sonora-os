@@ -168,6 +168,22 @@ int bounce_window_over_the_fake_engine() {
     click(view, named(win, QStringLiteral("bounceDismiss")));
     CHECK(model.notices().size() == base && model.bounceState() == -1);
 
+    // A real-time bounce with the transport rolling is refused by the engine;
+    // its words are shown in the window (held, not the status line) and the
+    // next action clears them.
+    CommandContext none;
+    CHECK(engine.send("transport.play", none) != 0);
+    model.tick();
+    model.startBounce(true, QStringLiteral("bwf"), 24, 0, QStringLiteral("auto"), false, -16.0, QString());
+    model.tick();
+    CHECK(model.bounceRefusal().contains(QStringLiteral("stop the transport")));
+    CHECK(refusal->isVisible());
+    CHECK(text_of(win, "bounceRefusal").contains(QStringLiteral("stop the transport")));
+    CHECK(model.bounceState() == -1);
+    model.startBounce(false, QStringLiteral("bwf"), 24, 0, QStringLiteral("auto"), false, -16.0, QString());
+    CHECK(model.bounceRefusal().isEmpty());
+    CHECK(engine.send("mix.bounce_cancel", none) != 0);
+
     click(view, named(win, QStringLiteral("bounceClose")));
     CHECK(!session.bounceOpen() && !win->isVisible());
     return 0;
