@@ -5,6 +5,7 @@ no architect, PRs open and unmerged, all unseen)."""
 import json
 import unittest
 
+import support  # noqa: F401  (sys.path)
 from harness.scheduler import HOLD
 from harness.supervisor import Thresholds
 import test_supervisor as ts

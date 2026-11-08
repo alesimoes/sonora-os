@@ -61,7 +61,14 @@ class Unit(unittest.TestCase):
         self.assertEqual([r["id"] for r in self.g.rows()], ["tick:e:2"])
 
 
-class Daemon(lc.Lifecycle):
+class Daemon(support.DaemonCase):
+    """Not a Lifecycle subclass: that would re-run its whole suite here."""
+    feature, open_feature = lc.Lifecycle.feature, lc.Lifecycle.open_feature
+
+    def make(self, **kw):
+        kw.setdefault("floors", {"daw": 0})
+        return super().make(**kw)
+
     def test_one_pr_poll_crash_does_not_stop_the_next_merge_or_status(self):
         o = self.make()
         self.open_feature(o, "bad", 100, checks=GREEN)
