@@ -66,7 +66,11 @@ class Config:
     max_ready_unpr: int = 6
     max_active_features: int = 10   # features planned or built at once
     local_builds: int = field(default_factory=default_local_builds)
+    # Work runs (engineer, tester, integrator, fixer, principal) and planner
+    # runs (lead, architect, janitor) have separate hourly budgets: short
+    # planner wakes must never use up the builders' (2026-11-08).
     max_runs_per_hour: int = 60
+    max_planner_runs_per_hour: int = 20
     lead_wake_cooldown_s: float = 1800.0  # per track, pool_under_floor wakes
     max_turns: int = 80
     tick_s: float = 30.0
@@ -149,18 +153,22 @@ class Plan:
     gaps: dict = field(default_factory=dict)
     wakes: list = field(default_factory=list)  # (role, kind, detail)
     seats_free: int = 0
+    holds: dict = field(default_factory=dict)  # budget -> reason held
 
 
 def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
-         paused=(), hour_budget=None):
+         paused=(), hour_budget=None, planner_budget=None):
     """tasks: store task dicts. runs: active runs as dicts with keys task_id,
     role (kind), working (bool), building (bool), name."""
     out = Plan()
     live = len(runs)
     seats = max(cfg.cap - live, 0)
-    if hour_budget is not None:
-        seats = min(seats, max(hour_budget, 0))
     out.seats_free = seats
+    # Seats left in each hourly budget; None means unlimited.
+    left = {"work": hour_budget, "planner": planner_budget}
+    for name, n in left.items():
+        if n is not None and n <= 0:
+            out.holds[name] = "hourly run limit"
     by_id = {t["id"]: t for t in tasks}
     running = {r["task_id"] for r in runs}
     running_names = {r.get("name") for r in runs}
@@ -191,7 +199,7 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
     elif usage_pause_until > now:
         block = "usage pause"
     elif seats <= 0:
-        block = "cap" if live >= cfg.cap else "hourly run limit"
+        block = "cap"
 
     def paused_for(pool, track):
         return pool in paused or (track is not None and track in paused)
@@ -245,6 +253,8 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
 
     def can(kind, t):
         pool = POOL_OF_KIND[kind]
+        if left["planner" if kind == "planner" else "work"] is not None                 and left["planner" if kind == "planner" else "work"] <= 0:
+            return False
         if paused_for(pool, t["track"] if kind != "planner" else None):
             return False
         if kind == "tester" and (count["tester"] >= cfg.max_testers
@@ -281,6 +291,9 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
         t = by_id[tid]
         out.launches.append(Launch(tid, kind, POOL_OF_KIND[kind], cls, reason))
         seats -= 1
+        budget = "planner" if kind == "planner" else "work"
+        if left[budget] is not None:
+            left[budget] -= 1
         launched += 1
         count[kind] += 1
         if kind == "engineer":
@@ -343,6 +356,8 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             out.gaps[track] = block
         elif track in paused or "build" in paused:
             out.gaps[track] = "paused"
+        elif "work" in out.holds:
+            out.gaps[track] = out.holds["work"]
         elif open_prs >= cfg.max_open_prs:
             out.gaps[track] = f"{open_prs} open PRs: merging first"
         elif ready_unpr >= cfg.max_ready_unpr:
