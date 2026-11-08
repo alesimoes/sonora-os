@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 import support  # noqa: F401  (sets sys.path)
-from harness import pathnorm
+from harness import hookretry, pathnorm
 
 
 def _load_cli():
@@ -80,6 +80,39 @@ class HookEndToEnd(unittest.TestCase):
     def test_unclaimed_still_denied(self):
         with mock.patch("sys.stderr", io.StringIO()):
             self.assertEqual(self.run_hook(set())[0], 2)
+
+    def run_flaky(self, fail_first, claimed=True):
+        calls = []
+
+        def oneshot(port, name, token, op, **f):
+            calls.append(f["path"])
+            if len(calls) <= fail_first:
+                raise ConnectionRefusedError(10061, "refused")
+            return {"ok": True, "allowed": claimed}
+        data = {"tool_name": "Edit", "tool_input": {"file_path": self.path}}
+        cfg = {"port": 1, "name": "n", "token": "t"}
+        with mock.patch.object(self.cli, "oneshot", oneshot), \
+                mock.patch.object(self.cli, "with_one_retry",
+                                  lambda fn: hookretry.with_one_retry(
+                                      fn, 0, lambda s: None)), \
+                mock.patch.object(self.cli, "env_config", lambda: cfg), \
+                mock.patch.object(self.cli, "hook_input", lambda: data), \
+                mock.patch.dict(os.environ, {"SONORA_UNCLAIMED_OK": "0"}), \
+                mock.patch("sys.stderr", io.StringIO()):
+            return self.cli.run_hook(mock.Mock(), False), calls
+
+    def test_broker_up_on_second_attempt_allows(self):
+        rc, calls = self.run_flaky(1)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(calls), 2)
+
+    def test_broker_down_twice_still_fails_closed(self):
+        self.assertEqual(self.run_flaky(99)[0], 2)
+
+    def test_real_denial_is_not_retried(self):
+        rc, calls = self.run_flaky(0, claimed=False)
+        self.assertEqual(rc, 2)
+        self.assertEqual(len(calls), len(set(calls)))  # one ask per form
 
 
 if __name__ == "__main__":
