@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "models": [
+    {
+      "name": "musicalkeycnn-keynet",
+      "version": "61d8fc1",
+      "file": "keynet.pt",
+      "url": "https://github.com/a1ex90/MusicalKeyCNN/raw/61d8fc170f262410f66a12057adffc5aceea0b2c/checkpoints/keynet.pt",
+      "sha256": "fc92072f1b9b19552ce3b74a9c8ce0cecb97633a12ae524ac0d93c05800e354e",
+      "size_bytes": 1874533,
+      "licence": "MIT",
+      "licence_url": "https://github.com/a1ex90/MusicalKeyCNN/blob/61d8fc170f262410f66a12057adffc5aceea0b2c/LICENSE",
+      "weights_status": "conditional",
+      "training_data_note": "Trained on the GiantSteps-MTG key dataset (Beatport previews); its licence was not found, so whether the weights inherit a restriction is not determined. Pins the upstream checkpoint; the ONNX export's own sha256 and size replace these when the export lands.",
+      "card": "brain/models/musicalkeycnn-keynet.md",
+      "onnx_opset": 15,
+      "input": { "sample_rate": 44100, "channels": 1, "layout": "cqt_magnitude_1x1xfreqxtime" },
+      "outputs": ["logits"],
+      "ort_min_api": 21,
+      "attribution": "MusicalKeyCNN, Copyright (c) 2025 Alexander Sommer, MIT licence; method after Korzeniowski and Widmer."
+    }
+  ]
+}
