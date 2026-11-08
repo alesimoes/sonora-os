@@ -62,6 +62,7 @@
 
 #include "sonora/api/bounce.h"
 #include "sonora/api/render.h"
+#include "sonora/api/stems.h"
 #include "sonora/api/engine_control.h"
 #include "sonora/api/state_block.h"
 #include "sonora/api/state_view.h"
@@ -112,7 +113,7 @@ public:
         // Hello's capabilities. The fake parses a play range as the engine
         // does; clear this to stand in for an engine that predates it.
         std::vector<std::string> capabilities = {kCapabilityPlayRange, kCapabilityBounce,
-                                                kCapabilityRender};
+                                                kCapabilityRender, kCapabilityStems};
         // The engine's midi_max_entries (ADR-0015 §5), so a test can make a
         // Load the engine refuses without 2^24 notes.
         uint64_t midi_max_entries = uint64_t{1} << 24;
@@ -464,6 +465,9 @@ private:
     bool bounce_running_ = false;
     uint32_t bounce_age_ = 0;
     std::string bounce_event_;
+    // Set while the export running is mix.stems: its Done names the folder.
+    std::string stems_folder_;
+    uint64_t stems_files_ = 0;
     void announce_bounce(uint32_t state, uint32_t permille, const std::string& text);
     void check_bounce();
     bool render_running_ = false;

@@ -150,7 +150,12 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // whether the render started; progress and the end are Bounce events.
         {"mix.bounce", CommandTarget::None,
          "Bounce the mix to one stereo file in Bounced Files, offline or in real time", true},
-        {"mix.bounce_cancel", CommandTarget::None, "Stop the bounce that is running"},
+        {"mix.bounce_cancel", CommandTarget::None,
+         "Stop the bounce or the stem export that is running"},
+        // ADR-0085, no protocol bump: capability mix.stems. The argument is
+        // api/stems.h's; progress and the end are Bounce events.
+        {"mix.stems", CommandTarget::None,
+         "Export stems: one file per track or per output in Bounced Files, offline", true},
         // Protocol 56 (ADR-0051). The argument is api/render.h's: the track's
         // model id, and for Process Selection its range. The reply says only
         // whether the render started; progress and the end are Render events.
