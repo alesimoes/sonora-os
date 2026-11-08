@@ -79,6 +79,7 @@ plugins/analyze -> common/dsp
 plugins/analyze -> common/json
 plugins/analyze -> common/model
 plugins/analyze -> plugins/native
+plugins/native -> common/audiofile   # off-thread WAV loading only: cab IR file (#331), tuner eval (ADR-0077)
 plugins/native -> common/base
 plugins/native -> common/dsp
 plugins/native -> common/json
