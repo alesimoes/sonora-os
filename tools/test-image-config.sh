@@ -45,6 +45,9 @@ done
 # shellcheck source=tools/lib/image-config/staged.sh
 . "$LIB/staged.sh"
 
+# --- the stock effects set: list equals manifest (ADR-0076) ---
+bash "$ROOT/tools/test-stock-set.sh" >/dev/null || bad "tools/test-stock-set.sh failed (stock list, manifest, licences or names)"
+
 if [ "$fail" -eq 0 ]; then
   echo "ok: whole archive from snapshot $auto_ts (hook checks .list and deb822); test bases by digest; pipewire $pw_pin, wireplumber $wp_pin; rt kernel; firmware by name, no build-time download; tty1 owned, no VT gettys; sysctl ${#sc[@]} keys; smoketest powers off in order"
 fi
