@@ -1,0 +1,83 @@
+#!/bin/sh
+# Read-only report of the Secure Boot chain required by ADR-0034 / ADR-0099.
+# Prints key=value lines. Exit 0: the ESP holds shim, signed GRUB and the
+# removable loader. 3: one of them is missing (named on stderr). 4: --require-on
+# and Secure Boot is not on. Secure Boot off is not a failure by default.
+# Test overrides: SONORA_ROOT, SONORA_ESP, SONORA_MOKUTIL, SONORA_EFIBOOTMGR,
+# SONORA_LOCKDOWN, SONORA_UNAME.
+ROOT=${SONORA_ROOT:-}
+ESP=${SONORA_ESP:-$ROOT/boot/efi}
+MOKUTIL=${SONORA_MOKUTIL:-mokutil}
+EFIBOOTMGR=${SONORA_EFIBOOTMGR:-efibootmgr}
+LOCKDOWN=${SONORA_LOCKDOWN:-$ROOT/sys/kernel/security/lockdown}
+REQUIRE_ON=0
+
+for a in "$@"; do
+    case $a in
+        --require-on) REQUIRE_ON=1 ;;
+        *) echo "usage: sonora-secureboot-check [--require-on]" >&2; exit 2 ;;
+    esac
+done
+
+secure_boot=unsupported
+if out=$("$MOKUTIL" --sb-state 2>&1); then
+    case $out in
+        *"SecureBoot enabled"*) secure_boot=on ;;
+        *"SecureBoot disabled"*) secure_boot=off ;;
+    esac
+fi
+
+lockdown=none
+if [ -r "$LOCKDOWN" ]; then
+    # The active mode is the bracketed word: "none [integrity] confidential".
+    case $(cat "$LOCKDOWN" 2>/dev/null) in
+        *"[integrity]"*) lockdown=integrity ;;
+        *"[confidential]"*) lockdown=confidential ;;
+    esac
+fi
+
+rel=${SONORA_UNAME:-$(uname -r)}
+case $rel in *rt-amd64) kernel_rt=yes ;; *) kernel_rt=no ;; esac
+
+# The NVRAM entry's directory is its bootloader-id, so match any but BOOT.
+find_in_dirs() {
+    for d in "$ESP"/EFI/*/; do
+        case $d in */EFI/BOOT/) continue ;; esac
+        [ -f "${d}$1" ] && return 0
+    done
+    return 1
+}
+esp_shim=no; esp_grub=no; removable=no
+find_in_dirs shimx64.efi && esp_shim=yes
+find_in_dirs grubx64.efi && esp_grub=yes
+[ -f "$ESP/EFI/BOOT/BOOTX64.EFI" ] && removable=yes
+
+nvram_entry=unknown
+if boot=$("$EFIBOOTMGR" 2>/dev/null); then
+    case $boot in
+        *[Ss]onora*|*[Dd]ebian*) nvram_entry=yes ;;
+        *) nvram_entry=no ;;
+    esac
+fi
+
+echo "secure_boot=$secure_boot"
+echo "lockdown=$lockdown"
+echo "kernel_rt=$kernel_rt"
+echo "esp_shim=$esp_shim"
+echo "esp_grub=$esp_grub"
+echo "removable=$removable"
+echo "nvram_entry=$nvram_entry"
+
+missing=
+[ "$esp_shim" = yes ] || missing="$missing EFI/<id>/shimx64.efi"
+[ "$esp_grub" = yes ] || missing="$missing EFI/<id>/grubx64.efi"
+[ "$removable" = yes ] || missing="$missing EFI/BOOT/BOOTX64.EFI"
+if [ -n "$missing" ]; then
+    echo "sonora-secureboot-check: missing on the ESP:$missing" >&2
+    exit 3
+fi
+if [ $REQUIRE_ON -eq 1 ] && [ "$secure_boot" != on ]; then
+    echo "sonora-secureboot-check: Secure Boot is $secure_boot, --require-on given" >&2
+    exit 4
+fi
+exit 0
