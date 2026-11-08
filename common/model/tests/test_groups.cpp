@@ -5,7 +5,9 @@
 // does to the others (relative and absolute), and the codec and the session
 // file carrying groups.
 #include <cmath>
+#include <fstream>
 #include <memory>
+#include <sstream>
 
 #include "model_test.h"
 #include "sonora/model/groups.h"
@@ -223,6 +225,82 @@ int test_codec_and_file() {
     return 0;
 }
 
+// The 65th group is refused whole: the 64 before it stay.
+int test_group_limit() {
+    Rig r;
+    Ids ids(r.h.current());
+    std::vector<Id> tracks;
+    for (std::size_t i = 0; i < 2 * kMaxGroups + 2; ++i) {
+        AddTrack a = add_track(ids, "T" + std::to_string(i + 1));
+        tracks.push_back(a.track);
+        CHECK_APPLY(r.h, a);
+    }
+    for (std::size_t g = 0; g < kMaxGroups; ++g) {
+        CHECK_APPLY(r.h, make_group(r.h.current().next_id, {tracks[2 * g], tracks[2 * g + 1]}));
+    }
+    CHECK(r.h.current().edit->groups.size() == kMaxGroups);
+    CHECK(refused(r.h, make_group(r.h.current().next_id, {tracks[2 * kMaxGroups], tracks[2 * kMaxGroups + 1]}),
+                  "at most 64 groups"));
+    CHECK(r.h.current().edit->groups.size() == kMaxGroups);
+    return 0;
+}
+
+// Relative volume clamps at both ends; mute and solo copy the leader's value
+// to peers (solo linked on its own); the follow set undoes as one step.
+int test_follow_clamp_copy_undo() {
+    Rig r;
+    if (build(r) != 0) return 1;
+    const Id id = r.h.current().next_id;
+    CHECK_APPLY(r.h, make_group(id, {r.t[0], r.t[1]}, kGroupVolume | kGroupSolo));
+    TrackMix a = mix_of(r.h.current(), r.t[0]);
+    a.gain_db = -1000.0f;
+    // A relative drop far past the fader's bottom stops at the bottom.
+    std::vector<TrackMix> peers = group_follow(r.h.current(), a);
+    CHECK(peers.size() == 1 && peers[0].gain_db == kMinGainDb);
+    // Solo copies the leader's state both ways; mute is not linked here.
+    a = mix_of(r.h.current(), r.t[0]);
+    a.solo = true;
+    a.mute = true;
+    peers = group_follow(r.h.current(), a);
+    CHECK(peers.size() == 1 && peers[0].solo && !peers[0].mute);
+    CHECK_APPLY(r.h, SetMix{a});
+    CHECK_APPLY(r.h, SetMix{peers[0]});
+    a.solo = false;
+    peers = group_follow(r.h.current(), a);
+    CHECK(peers.size() == 1 && !peers[0].solo);
+
+    // One compound, one undo step: every member returns together.
+    const TrackMix before0 = mix_of(r.h.current(), r.t[0]);
+    const TrackMix before1 = mix_of(r.h.current(), r.t[1]);
+    a = before0;
+    a.gain_db = -12.0f;
+    Compound c;
+    c.ops.push_back(SetMix{a});
+    for (const TrackMix& m : group_follow(r.h.current(), a)) c.ops.push_back(SetMix{m});
+    CHECK(c.ops.size() == 2);
+    CHECK_APPLY(r.h, c);
+    CHECK(mix_of(r.h.current(), r.t[1]).gain_db == -12.0f);
+    CHECK(r.h.undo());
+    CHECK(mix_of(r.h.current(), r.t[0]) == before0 && mix_of(r.h.current(), r.t[1]) == before1);
+    return 0;
+}
+
+// A version 18 file, from before groups, opens with none.
+int test_v18_opens_without_groups() {
+    std::string path = __FILE__;
+    path = path.substr(0, path.find_last_of("/\\") + 1) + "fixtures/v18-strip-lanes.sonora";
+    std::ifstream in(path, std::ios::binary);
+    CHECK(in.good());
+    std::ostringstream s;
+    s << in.rdbuf();
+    Loaded l;
+    LoadError e;
+    CHECK(deserialize(s.str(), l, e));
+    CHECK(l.file_version == 18);
+    CHECK(l.snapshot.edit->groups.empty());
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -237,6 +315,9 @@ int main() {
     t(test_delete_track_leaves_group);
     t(test_follow);
     t(test_codec_and_file);
+    t(test_group_limit);
+    t(test_follow_clamp_copy_undo);
+    t(test_v18_opens_without_groups);
     if (failed != 0) {
         std::fprintf(stderr, "model_groups: %d of %d failed\n", failed, run);
         return 1;

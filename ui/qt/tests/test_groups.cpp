@@ -354,12 +354,39 @@ int qml() {
     return 0;
 }
 
+// The 65th group is refused with a reason and changes nothing; a group move
+// is one undo step that returns every member.
+int limit_and_undo() {
+    ModelDocument doc(make_empty_session(2 * static_cast<int>(model::kMaxGroups) + 2, 48000));
+    EditController c(doc);
+    std::string why;
+    for (int g = 0; g < static_cast<int>(model::kMaxGroups); ++g) {
+        CHECK(c.group_tracks(2 * g, 2, "", kMixAttrs, why));
+    }
+    CHECK(doc.snapshot().edit->groups.size() == model::kMaxGroups);
+    const std::uint64_t rev = doc.revision();
+    CHECK(!c.group_tracks(2 * static_cast<int>(model::kMaxGroups), 2, "", kMixAttrs, why));
+    CHECK(why.find("at most 64 groups") != std::string::npos);
+    CHECK(doc.snapshot().edit->groups.size() == model::kMaxGroups && doc.revision() == rev);
+
+    ModelDocument d2(make_empty_session(3, 48000));
+    EditController c2(d2);
+    CHECK(c2.group_tracks(0, 2, "", kMixAttrs, why));
+    CHECK(c2.set_gain(0, -9.0f, why) && near(gain(d2, 0), -9.0) && near(gain(d2, 1), -9.0));
+    CHECK(c2.undo(why));
+    CHECK(near(gain(d2, 0), 0.0) && near(gain(d2, 1), 0.0));
+    CHECK(d2.snapshot().edit->groups.size() == 1);   // the group itself is a step further back
+    std::printf("  limit and undo: ok\n");
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (controller() != 0) return 1;
+    if (limit_and_undo() != 0) return 1;
     if (commands() != 0) return 1;
     if (ride_moves_the_group() != 0) return 1;
     if (qml() != 0) return 1;
