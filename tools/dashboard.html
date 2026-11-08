@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/static/dash-base.css">
 <link rel="stylesheet" href="/static/dash-agents.css">
+<link rel="stylesheet" href="/static/dash-board.css">
 <link rel="stylesheet" href="/static/dash-machine.css">
 <link rel="stylesheet" href="/static/dash-flow.css">
 <link rel="stylesheet" href="/static/dash-disk.css">
@@ -29,9 +30,13 @@
   <p class="err" id="err"></p>
   <div class="sit" id="sit">Carregando...</div>
   <div class="alerts" id="alerts" hidden></div>
-  <h2 class="h2">Agentes <span class="hint">quem está fazendo o quê agora</span></h2>
-  <div class="people" id="people"></div>
-  <div class="pnote" id="pnote"></div>
+  <h2 class="h2">Freios <span class="hint">por que o pipeline segura trabalho novo</span></h2>
+  <ul class="brakes" id="boardbrakes"></ul>
+  <h2 class="h2">Rodando agora <span class="hint" id="boardhint"></span></h2>
+  <div class="boardwarn" id="boardwarn" hidden></div>
+  <div id="boardagents"></div>
+  <h2 class="h2">PRs abertos <span class="hint" id="boardprhint"></span></h2>
+  <div id="boardprs"></div>
   <h2 class="h2">Fluxo de construção <span class="hint" id="prhint"></span></h2>
   <div class="flow" id="flow"></div>
   <details class="tech" id="sys"><summary>Máquina, disco e comandos <span class="hint" id="syssum">detalhes e ações de manutenção</span></summary>
@@ -41,10 +46,10 @@
   <h3>Comandos <span class="hint">lista fechada; destrutivas pedem confirmação; log em .harness/dashboard-actions.log</span></h3>
   <div class="cmds" id="cmds"></div>
   </details>
-  <details class="tech" id="tech"><summary>Detalhes técnicos <span class="hint">limites do orquestrador, espera do dono, eventos, merges armados, containers</span></summary>
+  <details class="tech" id="tech"><summary>Detalhes técnicos <span class="hint">limites do orquestrador, decisões do dono, eventos, merges armados, containers</span></summary>
   <div class="tgrid">
     <section class="tp wide"><h3>Orquestrador: limites e filas <small id="tmeta"></small></h3><div id="tlimits"></div><div class="pools" id="tpools"></div></section>
-    <section class="tp" id="townerp"><h3>Espera o dono</h3><div id="towner"></div></section>
+    <section class="tp" id="townerp"><h3>Decisão do dono</h3><div id="towner"></div></section>
     <section class="tp" id="tblockp"><h3>Travado (não precisa de você)</h3><div id="tblock"></div></section>
     <section class="tp"><h3>O que mudou <small>eventos recentes</small></h3><div class="log" id="log"><div class="info">aguardando eventos</div></div></section>
     <section class="tp"><h3>Merges automáticos armados <small id="wcount"></small></h3><div id="ws"></div></section>
@@ -57,7 +62,7 @@
 <script src="/static/dash-header.js"></script>
 <script src="/static/dash-log.js"></script>
 <script src="/static/dash-avatars.js"></script>
-<script src="/static/dash-agents.js"></script>
+<script src="/static/dash-board.js"></script>
 <script src="/static/dash-machine.js"></script>
 <script src="/static/dash-prs.js"></script>
 <script src="/static/dash-flow.js"></script>

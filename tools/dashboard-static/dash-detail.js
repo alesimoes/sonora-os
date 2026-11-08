@@ -14,7 +14,6 @@ function detHtml(d){
       +(a.lock?'<h4>Fila da máquina</h4>'+kv({papel:a.lock.role==='holds'?'usando':'esperando',prioridade:a.lock.prio,'desde':ago(a.lock.start),comando:a.lock.cmd}):'')
       +'<h4>Quem usa a máquina</h4>'+lockRows(d.lock)
       +(d.not_reachable?`<h4>Conversa</h4><div class="ev">${E(d.not_reachable)}</div>`:'')}
-  if(d.kind==='builder')return builderHtml(d);
   if(d.kind==='run'){const r=d.run||{};
     const act=(d.activity||[]).slice().reverse().map(a=>`<div class="act ${E(a.kind)}"><i>${E(a.kind)}</i>${E(a.text)}</div>`).join('')||'<div class="ev">sem atividade registrada ainda</div>';
     return (r.ended?'':'<div class="dact">'+runActs(r.name)+'</div>')+kv({papel:r.role,estado:r.state,começou:ago(r.started),'último sinal':ago(r.last_beat),fim:r.ended?ago(r.ended)+' (exit '+r.exit+')':''})
@@ -35,11 +34,3 @@ function openDetail(k,id){detOpen={k,id};$('dtitle').textContent=id;$('dbody').i
 function closeDetail(){detOpen=null;clearInterval(detTimer);$('drawer').classList.remove('on')}
 document.addEventListener('click',e=>{if(e.target.closest('a,button,input,label,.kh,h3[onclick]'))return;const el=e.target.closest('[data-k]');if(el)openDetail(el.dataset.k,el.dataset.id)});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail();if(e.key==='Enter'){const el=e.target.closest&&e.target.closest('[data-k]');if(el&&el.tagName!=='A')openDetail(el.dataset.k,el.dataset.id)}});
-
-function builderHtml(d){const b=d.builder||{},r=b.running,l=b.last,q=b.queue||{};
-  const ids=h=>(h.heads||[]).map((x,i)=>(h.prs&&h.prs[i]?'#'+h.prs[i]+' ':'')+x.slice(0,10)).join('\n');
-  return (r?'<h4>Lote em execução</h4>'+(r.key?'<div class="dact">'+actBtn('cancelar lote','ci.cancel',{key:r.key},'dng')+'</div>':'')+kv({etapa:r.step,'tempo':dur(r.elapsed_s),prioridade:r.priority,logs:r.dir})+`<pre>${E(ids(r))}</pre>`:'<p>Livre: nenhum build pesado rodando.</p>')
-   +(d.log?`<h4>Fim do log da etapa</h4><pre>${E(d.log)}</pre>`:'')
-   +'<h4>Fila atrás dele</h4>'+kv({'PRs na fila':(q.open_prs||[]).map(n=>'#'+n),lote:(q.batch||[]).map(x=>x.slice(0,10)),'pré-PR':(q.pre||[]).map(x=>x.slice(0,10)),bisecção:(q.bisect||[]).map(g=>g.map(x=>x.slice(0,7)).join('+'))})
-   +(l?'<h4>Último resultado</h4>'+kv({estado:l.state,'terminou':ago(l.ended),resumo:(l.summary||[''])[0],logs:l.dir})+`<pre>${E(ids(l))}</pre>`:'')
-   +(d.lock&&d.lock.length?'<h4>Fila da máquina (tools/build-slot.sh --list)</h4><pre>'+E(d.lock.join('\n'))+'</pre>':'')}

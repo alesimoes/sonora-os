@@ -1,5 +1,5 @@
 """What the dashboard reads about one orchestrator run or task: the event
-log, a run's stream-json log, a task's summary and the builder's step log."""
+log, a run's stream-json log, and a task's summary."""
 import json
 import os
 
@@ -76,13 +76,3 @@ def task_view(t):
             "brief": (t.get("brief") or "")[:1500], "note": (t.get("note") or "")[:2000],
             "attempts": t.get("attempts"), "fix_kind": t.get("fix_kind"),
             "files": files[:12], "nfiles": len(files)}
-
-
-def builder_log(d):
-    """The tail of the newest step log of the batch that is running."""
-    try:
-        logs = [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".log")]
-        with open(max(logs, key=os.path.getmtime), encoding="utf-8", errors="replace") as f:
-            return "".join(f.readlines()[-25:])[-3000:]
-    except (OSError, ValueError, TypeError):
-        return ""

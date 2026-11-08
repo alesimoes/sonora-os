@@ -9,8 +9,11 @@ from dashboard_agents import read_agents, stamp_done
 from dashboard_disk import disk_view
 from dashboard_github import read_merged, read_prs
 from dashboard_machine import read_containers, read_lock, read_watchers
-from dashboard_runview import add_last_steps
-from dashboard_orch import clean_orch, read_coordinator, read_orchestrator, read_progress
+from dashboard_board import agent_rows
+from dashboard_brakes import brakes
+from dashboard_orch import clean_orch, read_coordinator, read_coordinator_agents, read_orchestrator, read_progress
+from dashboard_prboard import GreenClock, pr_rows
+from dashboard_runview import add_last_steps, with_live_paused
 from dashboard_usage import read_usage
 
 GH_EVERY_S = 20
@@ -18,8 +21,19 @@ PROGRESS_EVERY_S = 300
 LOOP_S = 4
 
 state = {"usage": {"sessions": [], "week": None, "five_hour": None}, "updated": 0, "agents": [], "prs": [],
-         "watchers": [], "containers": [], "errors": [], "orchestrator": None, "merged": [], "lock": [], "disk": None}
+         "watchers": [], "containers": [], "errors": [], "orchestrator": None, "merged": [], "lock": [], "disk": None,
+         "board": {"agents": [], "prs": [], "brakes": []}}
 lock = threading.Lock()
+green_clock = GreenClock()
+
+
+def build_board(orch, prs, agents, now=None):
+    """What the board shows: every running agent, the open PRs and the brakes.
+    Each source fails alone: its part is empty and the error is listed."""
+    now = now or time.time()
+    orch = with_live_paused(orch)
+    return {"agents": agent_rows(orch, read_coordinator_agents(now), agents, now),
+            "prs": pr_rows(prs, orch, green_clock, now), "brakes": brakes(orch, now)}
 
 
 def read_labels(agents_file, errors):
@@ -67,8 +81,13 @@ def refresh_once(agents_file, gh, progress):
                      containers=containers, merged=gh.merged, usage=read_usage(), orchestrator=orch,
                      coordinator=read_coordinator(), lock=lk, buildtime=None, disk=disk_view())
     agents = read_agents(labels, containers, lk)
+    try:
+        board = build_board(orch, gh.prs, agents)
+    except Exception as e:
+        board = state["board"]
+        errors.append("quadro: %s" % e)
     with lock:
-        state.update(agents=agents, errors=errors)
+        state.update(agents=agents, errors=errors, board=board)
 
 
 def refresh_loop(agents_file):

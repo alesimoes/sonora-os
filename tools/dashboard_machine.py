@@ -62,7 +62,7 @@ def read_lock(labels):
             if meta.get("status") not in ("done", "paused") and "/worktrees/" + d in low:
                 who = meta.get("label", aid)
         if not who and "/.harness/ci" in low:
-            who = "Builder do orquestrador (CI local)"
+            who = "Build do orquestrador"
         if not who:
             who = os.path.basename(r["cwd"].rstrip("/")) or "?"
         r["who"] = who

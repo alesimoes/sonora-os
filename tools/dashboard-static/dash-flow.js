@@ -19,7 +19,7 @@ function flowRows(s){
     if(col===3){const f=t&&t.fixer&&runByName[t.fixer];
       if(t&&t.fixer)w.push(who(roleName(roleOf(t.fixer)),'orquestrador · '+t.fixer,f?f.started:ts,{k:f?'run':'pr',id:f?f.id:p.number}));
       else w.push(who(roleName(t&&t.agent),st.text+' · aguardando agente',ts,{dim:true,k:'pr',id:p.number}))}
-    if(col===4)w.push(who('Orquestrador',st.text,ts,{code:'OR',k:'builder',id:'orch',dim:true}));
+    if(col===4)w.push(who('Orquestrador',st.text,ts,{code:'OR',dim:true}));
     sess.filter(a=>a.pr===p.number||(a.branch&&a.branch===p.branch)).forEach(a=>w.push(mkSess(a)));
     rows.push({k:'pr',id:p.number,num:p.number,acts:prActs(p.number,col===4?'verde':'',t),title:shortTitle(p.title),sub:(t&&t.track?t.track+' · ':'')+p.branch,col,w,pend,t0:ts,bad:st.cls==='bad'})});
   // trabalho da sessão sem PR: validação, empacotamento etc.

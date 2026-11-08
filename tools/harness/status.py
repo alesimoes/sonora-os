@@ -102,6 +102,7 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
         "max_planner_runs_per_hour": getattr(
             cfg, "max_planner_runs_per_hour", None),
         "budget_holds": dict(holds or {}),
+        "max_principals": getattr(cfg, "max_principals", None),
         "lead_wakes_last_hour": leadwake.count_last_hour(
             store.tasks(kind="wake"), now),
         "open_prs": len({t["feature_id"] for t in tasks
