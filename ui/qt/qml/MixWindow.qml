@@ -26,6 +26,15 @@ Rectangle {
     id: mix
     required property ShellModel shell
     required property SessionModel session
+    // The shell feeds every meter, so it is told where they read.
+    function syncMeterPoint() {
+        if (mix.mixer !== null) mix.shell.setMeterPostFader(mix.mixer.meterPoint === "post")
+    }
+    Component.onCompleted: syncMeterPoint()
+    Connections {
+        target: mix.mixer
+        function onMeterPointChanged() { mix.syncMeterPoint() }
+    }
     property InsertModel inserts: null
     property SendModel sends: null
     property MixModel mixer: null
@@ -109,6 +118,13 @@ Rectangle {
         spacing: 2
         visible: mix.mixer !== null
         width: visible ? implicitWidth : 0
+        SButton {
+            objectName: "meterPoint"
+            text: mix.mixer !== null && mix.mixer.meterPoint === "pre" ? "Pre" : "Post"
+            implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            active: mix.mixer !== null && mix.mixer.meterPoint === "pre"
+            onClicked: mix.mixer.meterPoint = mix.mixer.meterPoint === "pre" ? "post" : "pre"
+        }
         SButton {
             objectName: "viewIO"
             text: "I/O"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false

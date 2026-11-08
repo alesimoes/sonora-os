@@ -355,6 +355,11 @@ int qml() {
     QTest::qWait(30);
     CHECK(r.ctl().bus_count() == 1);
     CHECK(named(root, QStringLiteral("aux0")) != nullptr);
+    // The engine publishes no aux level: the strip says so where a meter
+    // would be, instead of a bar at zero that reads as silence.
+    QQuickItem* nodata = named(root, QStringLiteral("auxMeterNoData0"));
+    CHECK(nodata != nullptr &&
+          nodata->property("text").toString() == QStringLiteral("NO DATA"));
 
     // A click on track 0's empty send A: the chooser; a click on the bus
     // makes the send, shown on the slot.

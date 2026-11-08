@@ -6,6 +6,7 @@
 // engine happened to agree with it. Engine behaviour is FakeEngine's (M4).
 #pragma once
 
+#include <array>
 #include <string>
 #include <utility>
 #include <vector>
@@ -29,6 +30,7 @@ public:
         info_.track_count = tracks;
         info_.implemented_commands = std::move(implemented);
         peaks.assign(tracks, 0.0f);
+        post_peaks.assign(tracks, {0.0f, 0.0f});
     }
 
     // As a new Hello would change them.
@@ -74,6 +76,13 @@ public:
         if (side >= 2) return 0.0f;
         const float p = bus_peaks[side];
         bus_peaks[side] = 0.0f;
+        return p;
+    }
+    float take_post_peak(uint32_t i, uint32_t side) override {
+        ++post_peak_reads;
+        if (i >= post_peaks.size() || side >= 2) return 0.0f;
+        const float p = post_peaks[i][side];
+        post_peaks[i][side] = 0.0f;
         return p;
     }
     bool engine_alive(uint64_t) const override { return alive; }
@@ -127,6 +136,7 @@ public:
 
     std::vector<Sent> sent;
     std::vector<float> peaks;
+    std::vector<std::array<float, 2>> post_peaks;  // [track][side]
     float bus_peaks[2] = {0.0f, 0.0f};
     std::vector<bool> armed;
     TransportSnapshot snapshot;
@@ -136,6 +146,7 @@ public:
     std::string link_error_text;
     int peak_reads = 0;
     int bus_peak_reads = 0;
+    int post_peak_reads = 0;
     DispatchResult next_result = DispatchResult::Ok;
     std::string next_message;
 
