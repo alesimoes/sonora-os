@@ -6,7 +6,7 @@ import time
 
 from . import blockinfo
 from .run_view import run_view
-from .scheduler import POOL_OF_KIND
+from .scheduler import POOL_OF_KIND, ready_feature_ids
 
 DONE_STATES = ("integrating", "pr_open", "ci_fix", "merged")
 # The dashboard colours a task by matching its `state` text against
@@ -100,7 +100,7 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
         "open_prs": len({t["feature_id"] for t in tasks
                          if t["state"] in ("pr_open", "ci_fix")}),
         "max_open_prs": cfg.max_open_prs,
-        "ready_unpr": sum(1 for t in tasks if t["state"] == "integrating"),
+        "ready_unpr": len(ready_feature_ids(tasks)),
         "max_ready_unpr": cfg.max_ready_unpr,
         "pools": pools,
         "runs": [{"id": r["id"], "task": r["task_id"], "role": r["role"],

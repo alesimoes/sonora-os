@@ -179,7 +179,8 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
     # One PR per feature, however many tasks it has.
     open_prs = len({t["feature_id"] or t["id"] for t in work
                     if t["state"] in ("pr_open", "ci_fix")})
-    ready_unpr = sum(1 for t in tasks if t["state"] == "integrating")
+    ready_features = ready_feature_ids(tasks)
+    ready_unpr = len(ready_features)
     claims = [t["files"] for t in tasks if t["state"] in CLAIMING_STATES
               and t["kind"] == "work" and t["files"]]
 
@@ -257,7 +258,10 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
                 or (t["state"] != "ci_fix" and open_prs >= cfg.max_open_prs)):
             return False
         if kind == "engineer":
-            if ready_unpr >= cfg.max_ready_unpr:
+            # A sibling of a feature already waiting for its PR completes
+            # that feature; refusing it would deadlock the budget.
+            if ready_unpr >= cfg.max_ready_unpr and \
+                    (t["feature_id"] or t["id"]) not in ready_features:
                 return False
             if t["state"] == "queued" and t["files"] and any(
                     files_overlap(t["files"], c) for c in new_claims):
@@ -345,6 +349,12 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             out.gaps[track] = "files claimed or dependencies pending"
     out.seats_free = seats
     return out
+
+
+def ready_feature_ids(tasks):
+    """Features with a work slice integrating (ready, PR not yet open)."""
+    return {t["feature_id"] or t["id"] for t in tasks
+            if t["kind"] == "work" and t["state"] == "integrating"}
 
 
 def store_deps_ok(t, by_id):
