@@ -29,14 +29,14 @@ private slots:
         t = plan_transport_toggles(p, 0);
         QVERIFY(t.toggle_click && !t.toggle_count_off);
         // Already on (a reconnect): nothing to send.
-        t = plan_transport_toggles(p, kTransportClick);
+        t = plan_transport_toggles(p, api::kTransportClick);
         QVERIFY(!t.toggle_click);
         p.count_off_at_start = true;
-        t = plan_transport_toggles(p, kTransportClick);
+        t = plan_transport_toggles(p, api::kTransportClick);
         QVERIFY(!t.toggle_click && t.toggle_count_off);
         // Off in the preference, on in the engine: toggled off.
         p = Preferences{};
-        t = plan_transport_toggles(p, kTransportClick | kTransportCountOff);
+        t = plan_transport_toggles(p, api::kTransportClick | api::kTransportCountOff);
         QVERIFY(t.toggle_click && t.toggle_count_off);
     }
     void version_1_loads_with_new_fields_false() {
