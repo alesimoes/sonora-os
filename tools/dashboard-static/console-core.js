@@ -6,9 +6,11 @@ const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
   c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const TOKEN = (document.querySelector('meta[name="dash-token"]') || {}).content || "";
 const POLL_MS = 3000;
+const STREAM_RETRY_MS = 5000;
 const SUGGESTIONS = ["status", "o que precisa de mim?", "quais PRs estão abertos?",
   "por que não lança agente?", "quem está rodando?", "ajuda"];
-const C = {data: null, target: null, online: true, queue: [], busy: false};
+const C = {data: null, target: null, online: true, queue: [], busy: false, echo: [], live: false};
+const ECHO_MAX_MS = 60000;
 
 function hhmm(iso) {
   const d = new Date(iso);
@@ -34,6 +36,34 @@ async function poll() {
   }
 }
 
+/* Push: the server sends the whole console view when anything changes. While
+   the stream is up the poll stays quiet; when it drops the poll takes over
+   and the stream is retried. */
+function startStream() {
+  if (!window.EventSource) return;
+  const es = new EventSource("/api/console/stream");
+  es.addEventListener("console", e => {
+    try { C.data = JSON.parse(e.data); } catch (err) { return; }
+    C.live = true;
+    setOnline(true);
+    renderAll();
+  });
+  es.onerror = () => {
+    C.live = false;
+    es.close();
+    setTimeout(startStream, STREAM_RETRY_MS);
+  };
+}
+
+/* Local echoes the server has not shown yet (same text and target, or too old). */
+function pendingEcho(messages) {
+  const now = Date.now();
+  C.echo = C.echo.filter(e => now - Date.parse(e.ts) < ECHO_MAX_MS &&
+    !messages.some(m => m.kind === "user" && m.text === e.text && (m.to || null) === (e.to || null) &&
+      Date.parse(m.ts) >= Date.parse(e.ts) - ECHO_MAX_MS));
+  return C.echo;
+}
+
 function setOnline(on) {
   C.online = on;
   $("#offline").hidden = on;
@@ -51,12 +81,11 @@ async function flushQueue() {
       const q = C.queue[0];
       await post("/api/chat", q);
       C.queue.shift();
-      // Shown as sent at once; the next poll replaces it with the server's copy.
-      if (C.data && C.data.chat) {
-        C.data.chat.messages.push({id: "local-" + Date.now(), kind: "user", text: q.text,
-          to: q.to, ts: new Date().toISOString()});
-        renderChat();
-      }
+      // Shown as sent at once and kept until the server's copy arrives, so a
+      // push or poll that lands first does not make it vanish.
+      C.echo.push({id: "local-" + Date.now(), kind: "user", text: q.text,
+        to: q.to, ts: new Date().toISOString()});
+      if (C.data && C.data.chat) renderChat();
     } catch (e) {
       if (!e.status) break;
       C.queue.shift();

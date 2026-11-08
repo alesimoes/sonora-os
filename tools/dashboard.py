@@ -30,11 +30,23 @@ class Handler(BaseHTTPRequestHandler):
         route = self.path.split("?", 1)[0]
         if route == "/api/console":
             return self.reply(200, console.view())
+        if route == "/api/console/stream":
+            return self.stream()
         if route.startswith(STATIC_ROUTE):
             got = static_file(route)
             return self.send(*got) if got else self.reply(404, {"error": "not found"})
         body, ctype = page()
         self.send(inject_token(body), ctype)
+
+    def stream(self):
+        """Server-Sent Events: one thread per open page (ThreadingHTTPServer)."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        self.close_connection = True
+        console.stream.serve(self.wfile, console.frames())
 
     def send(self, body, ctype, code=200):
         self.send_response(code)

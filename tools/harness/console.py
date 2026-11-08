@@ -13,6 +13,7 @@ The dashboard posts requests (console_door); the daemon, which alone writes
   Confirmar (console_actions.confirm).
 """
 from . import console_actions as A
+from . import console_session as session
 from . import console_store as S
 from . import ownerchat
 from . import protocol as P
@@ -23,7 +24,12 @@ MAX_LIST_ROWS = 30
 BRIEF = ("Answer the owner's unanswered console messages: run "
          "`python tools/console_read.py inbox`, read what you need with the "
          "other console_read.py commands, and send one console_reply per "
-         "message (see .claude/agents/console.md). Then write result.json.")
+         "message (see .claude/agents/console.md). Then stay alive: wait for "
+         "the next owner_ask with recv and answer it the same way, until one "
+         "says end (then write result.json and stop). Never answer one "
+         "req twice. For a slow answer you may first send console_reply "
+         "{req, text, partial: true}; the screen shows it until the final "
+         "reply.")
 
 
 # -- requests from the dashboard (called by ownerchat.tick) -------------
@@ -63,6 +69,9 @@ def _busy(orch):
 def tick(orch, now):
     A.sweep(orch)
     pending = S.unanswered(orch.hdir)
+    if session.is_active(orch):
+        session.feed(orch, pending, now)
+        return
     if not pending or _busy(orch):
         return
     first = pending[0]
@@ -73,7 +82,8 @@ def tick(orch, now):
                       "tente de novo ou pergunte a um agente.", req=first["id"])
         return
     orch.store.set_meta(key, str(tries + 1))
-    n = orch.store.next_counter("wake")
+    session.start(orch, pending, now)
+    n =orch.store.next_counter("wake")
     wid = f"wake-console-{KIND}-{n}"
     orch.store.add_task(wid, None, "console", kind="wake", brief=BRIEF)
     orch.store.set_task(wid, event=KIND)
@@ -122,6 +132,10 @@ def on_reply(orch, msg):
     req_id = str(body.get("req") or "")
     if req_id not in open_ids and open_ids:
         req_id = open_ids[0]    # a wrong id must not leave the message open
+    if body.get("partial"):
+        S.set_partial(orch.hdir, req_id, str(body.get("text") or ""))
+        return
+    S.clear_partial(orch.hdir)
     cards = []
     lst = _list_card(body.get("list"))
     if lst:

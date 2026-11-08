@@ -24,6 +24,12 @@ function thinking(messages) {
   return open.some(m => !answered.has(m.id));
 }
 
+/* "pensando" at once; the half-written answer shows in it when the agent sent one. */
+function thinkingBubble(partial) {
+  const text = partial && partial.text ? `<span class="partial">${esc(partial.text)} </span>` : "";
+  return `<div class="msg think"><div class="who"><span>Orquestrador</span></div><p>${text}<i></i><i></i><i></i></p></div>`;
+}
+
 function welcome() {
   return '<div class="msg"><div class="who"><span>Orquestrador</span></div>' +
     "<p>Oi. Pergunte como estão as coisas ou peça uma ação; nada roda sem o seu Confirmar.</p></div>";
@@ -31,16 +37,18 @@ function welcome() {
 
 function renderChat() {
   const chat = C.data.chat, log = $("#log");
-  const sig = JSON.stringify([chat, Object.keys(CLICKED), notice, C.queue.length]);
+  const echo = pendingEcho(chat.messages);
+  const messages = chat.messages.concat(echo);
+  const sig = JSON.stringify([chat, Object.keys(CLICKED), notice, C.queue.length, echo.length]);
   if (sig === lastSig) return;
   lastSig = sig;
   const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
   const prev = log.querySelectorAll(".msg,.card,.sys").length;
-  let html = chat.messages.length ? "" : welcome();
-  html += chat.messages.map(m => bubble(m) + cardsHtml(m, chat.actions)).join("");
+  let html = messages.length ? "" : welcome();
+  html += messages.map(m => bubble(m) + cardsHtml(m, chat.actions)).join("");
   html += C.queue.map(q => `<div class="msg me"><div class="who"><span>Você${q.to ? " → " + esc(q.to) : ""}</span>` +
     `<time>enviando…</time></div><p>${esc(q.text)}</p></div>`).join("");
-  if (thinking(chat.messages)) html += '<div class="msg think"><div class="who"><span>Orquestrador</span></div><p><i></i><i></i><i></i></p></div>';
+  if (thinking(messages)) html += thinkingBubble(chat.partial);
   if (notice) html += `<div class="sys">${esc(notice)}</div>`;
   log.innerHTML = html;
   wireCards(log);
@@ -65,4 +73,5 @@ if (QUERY.get("pane")) document.body.dataset.pane = QUERY.get("pane");
 initComposer();
 renderTo();
 poll();
-setInterval(poll, POLL_MS);
+startStream();
+setInterval(() => { if (!C.live) poll(); }, POLL_MS);
