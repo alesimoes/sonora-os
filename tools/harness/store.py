@@ -51,6 +51,10 @@ STATES = frozenset(TRANSITIONS)
 # States in which a task is waiting for an agent (no run needed otherwise).
 AGENT_STATES = ("queued", "building", "bugfix", "qa", "integrating", "ci_fix")
 OPEN_PR_STATES = ("pr_open", "ci_fix")
+# Runs that do the work and count against max_runs_per_hour. Planner runs
+# (lead, architect, janitor) mostly last 1-2 minutes; counting them let 28
+# of them use up an hour's budget while 3 engineers worked (2026-11-08).
+WORK_ROLES = ("engineer", "tester", "integrator", "fixer", "principal")
 NUMBER_KINDS = ("adr", "protocol", "format", "window")
 
 SCHEMA_VERSION = 1
@@ -590,9 +594,10 @@ class Store:
             lambda r: r["task_id"] == task_id and r["role"] == role)
         return rs[-1]["name"] if rs else None
 
-    def runs_started_since(self, ts):
+    def runs_started_since(self, ts, roles=None):
         return len(self._sorted_runs(
-            lambda r: r["started"] is not None and r["started"] >= ts))
+            lambda r: r["started"] is not None and r["started"] >= ts
+            and (roles is None or r["role"] in roles)))
 
     # -- number reservation ------------------------------------------
     def reserve(self, kind, task_id, seed):
