@@ -4,7 +4,7 @@
 // its mute and solo, its own sends, its output, a fader and the name, laid
 // out as ChannelStrip so every fader starts at the same height. It returns
 // to its output, the Master or another bus (ADR-0024). Soloing it plays
-// what feeds it; its inserts and meter come later, and the insert area is
+// what feeds it; its inserts come later, and its meter says NO DATA, and the insert area is
 // left empty until then.
 //
 // Fader: drag (Ctrl for fine), Alt-click for 0 dB, click the readout to
@@ -231,6 +231,19 @@ Rectangle {
                 lastY = m.y
             }
         }
+    }
+
+    // The engine publishes no level for an aux bus, and a meter at zero would
+    // look like silence: say there is nothing to read, where a meter would be.
+    Text {
+        objectName: "auxMeterNoData" + aux.bus
+        anchors { right: faderArea.right; rightMargin: 1; bottom: faderArea.bottom }
+        rotation: -90
+        transformOrigin: Item.BottomRight
+        text: "NO DATA"
+        color: Theme.textTertiary
+        font { family: Theme.fontFamily; pixelSize: Theme.textOverline; weight: Font.DemiBold
+               letterSpacing: 0.5 }
     }
 
     Rectangle {

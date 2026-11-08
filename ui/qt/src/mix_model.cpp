@@ -96,6 +96,7 @@ void MixModel::resetViews() {
     setShowInsertsAE(true);
     setShowInsertsFJ(false);
     setShowSends(true);
+    setMeterPoint(QStringLiteral("post"));
     closed_folders_.clear();
     emit structureChanged();
 }
@@ -181,22 +182,37 @@ void MixModel::dropRide(const std::string& why) {
     emit trimsChanged();
 }
 
-QString MixModel::trackMeterCaption() const { return QStringLiteral("IN"); }
+QString MixModel::trackMeterCaption() const {
+    return meter_post_ ? QStringLiteral("OUT") : QStringLiteral("IN");
+}
+
+QString MixModel::meterPoint() const {
+    return meter_post_ ? QStringLiteral("post") : QStringLiteral("pre");
+}
+
+void MixModel::setMeterPoint(const QString& point) {
+    const bool post = point == QLatin1String("post");
+    if (!post && point != QLatin1String("pre")) return;
+    if (post == meter_post_) return;
+    meter_post_ = post;
+    emit meterPointChanged();
+}
 
 QString MixModel::busMeterCaption() const { return QStringLiteral("OUT"); }
 
 QString MixModel::note() const {
-    // The state block carries each track's input peak and nothing after the
-    // fader (state_block.h, layout 2), so that is what the meters are said
-    // to read, and the Master's pair the bus (layout 5).
-    return audible_
-               ? QStringLiteral("Faders, pan, mute and solo play through the monitor bus. "
-                                "Strip meters read each track's input, the Master's the "
-                                "monitor bus after its fader; the engine does not publish "
-                                "post-fader track levels yet.")
-               : QStringLiteral("The built-in fake engine plays nothing back: the mix is kept "
-                                "with the session and changes nothing you hear. Strip meters "
-                                "read its synthetic inputs.");
+    // Post reads the fader's output, which the state block publishes per
+    // side (layout 7); Pre reads the input. The Master's pair is the bus.
+    const QString point =
+        meter_post_ ? QStringLiteral("Strip meters read each track after its fader (OUT), "
+                                     "the Master's the monitor bus after its fader.")
+                    : QStringLiteral("Strip meters read each track's input (IN), the "
+                                     "Master's the monitor bus after its fader.");
+    return audible_ ? QStringLiteral("Faders, pan, mute and solo play through the monitor bus. ") +
+                          point
+                    : QStringLiteral("The built-in fake engine plays nothing back: the mix is "
+                                     "kept with the session and changes nothing you hear. ") +
+                          point;
 }
 
 bool MixModel::live(int track) const {

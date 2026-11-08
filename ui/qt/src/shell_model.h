@@ -176,7 +176,11 @@ public:
 
     void attachMeter(MeterItem* m);
     void detachMeter(MeterItem* m);
-    void setMeterPoint(MeterPoint p) { meter_point_ = p; }
+    void setMeterPoint(MeterPoint p);
+    // From the Mix window's Pre/Post toggle.
+    Q_INVOKABLE void setMeterPostFader(bool post) {
+        setMeterPoint(post ? MeterPoint::Post : MeterPoint::Pre);
+    }
     MeterPoint meterPoint() const { return meter_point_; }
     int attachedMeters() const { return static_cast<int>(meters_.size()); }
     // For --no-meters, the baseline a measurement subtracts.
