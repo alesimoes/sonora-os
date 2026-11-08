@@ -196,6 +196,42 @@ container), `tools/test-install-qemu.sh` (the exit test: install to a virtio
 disk from the ISO, restart without the stick, find the session). The last two
 have not been run in CI; see the PR that added them.
 
+### Installed layout (ADR-0090)
+
+Partitions on the installed disk, in order (GPT, 1 MiB aligned):
+
+| # | Label | Size | Filesystem | Mount |
+|---|---|---|---|---|
+| 1 | bios (BIOS installs only) | 1 MiB | none | none |
+| 2 | ESP | 512 MiB | FAT32 | `/boot/efi` |
+| 3 | sonora-root | 16 GiB | ext4 | `/` |
+| 4 | sonora-swap | clamp(RAM/2, 2 GiB, 8 GiB), rounded down to 256 MiB | swap | enabled at boot |
+| 5 | sonora-data | the rest (at least 8 GiB) | ext4, `-m 1`, largefile | `/home/sonora/Sessions` |
+
+- **Swap.** The installer formats swap but never enables it on the machine it
+  runs on, so the installing host is not paged onto the target disk. The
+  installed `fstab` enables it at boot. An engine killed by the OOM killer loses
+  the take, so swap is sized to keep that from happening on small RAM.
+- **Minimum disk.** The installer refuses a disk too small for the layout before
+  it erases anything (exit 4) and prints the smallest size for that RAM.
+- **Data mount has no `nofail`.** Sessions are the product. Without the data
+  partition the engine must not record into the empty mount point on root, so
+  the `fstab` line is not optional and the engine unit carries a
+  `RequiresMountsFor=` drop-in. The install self-check refuses a `fstab` whose
+  data line says `nofail`.
+- **When the data partition is missing** (disk swapped, partition deleted, or
+  its UUID no longer resolves): boot waits for it, then systemd drops to
+  emergency mode, a root shell. This follows from the missing `nofail` and is
+  deliberate: the box does not record into the root disk. Recover from that
+  shell: `blkid -L sonora-data` finds the partition; if it is on the disk, run
+  `mount LABEL=sonora-data /home/sonora/Sessions` and then `systemctl default`.
+  If the partition is gone, the sessions on it are gone: reinstall with
+  `sonora-install`, which erases the target disk. Do not reformat a disk you
+  have not identified.
+- The arithmetic is `install-layout.sh`; its tests are
+  `tools/test-install-layout.sh` and `tools/test-installer.sh` (privileged
+  container). This layout is not yet checked on hardware or under QEMU.
+
 ## Hardware acceptance
 
 One session on the real laptop with the UMC1820 gives evidence for
