@@ -552,8 +552,7 @@ void test_block_list() {
 // still a stand-in, so unblocking probes the plug-in instead of leaving it
 // refused from the stale record.
 void test_legacy_stand_in() {
-    std::printf("legacy_stand_in
-");
+    std::printf("legacy_stand_in\n");
     Fixture fx("legacy");
     const std::string h = fx.bundle("h.lv2");
     fx.set_world({"plugin urn:h " + h + " lv2 1 1 ok"});
