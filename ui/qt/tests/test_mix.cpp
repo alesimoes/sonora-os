@@ -750,7 +750,7 @@ int qml() {
     CHECK(bus != nullptr && bus->property("text").toString() == QStringLiteral("OUT"));
     QQuickItem* note = named(root, QStringLiteral("mixNote"));
     CHECK(note != nullptr && note->property("text").toString() == r.mixer.note());
-    CHECK(r.mixer.note().contains(QStringLiteral("input")));
+    CHECK(!r.mixer.note().contains(QStringLiteral("input")));
 
     // A drag on a fader is a ride: heard, the cap following it, saved at
     // release.
