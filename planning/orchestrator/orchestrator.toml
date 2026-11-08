@@ -9,7 +9,9 @@ max_runs_per_hour = 60
 max_turns = 250
 
 # PRs and integration.
-max_open_prs = 30
+# The brake on new work (owner 2026-11-08): at this many open PRs no new
+# task starts; fixers and integrators get the seats to merge them.
+max_open_prs = 8
 max_ready_unpr = 12
 max_integrators = 8
 train_slots = 8
