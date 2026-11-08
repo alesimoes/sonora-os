@@ -97,9 +97,10 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
         "usage_pause_until": usage_pause_until or None,
         "cap": cfg.cap, "live": len(runs), "paused": sorted(paused),
         "runs_last_hour": hour_runs,
-        "max_runs_per_hour": cfg.max_runs_per_hour,
+        "max_runs_per_hour": getattr(cfg, "max_runs_per_hour", None),
         "planner_runs_last_hour": planner_runs,
-        "max_planner_runs_per_hour": cfg.max_planner_runs_per_hour,
+        "max_planner_runs_per_hour": getattr(
+            cfg, "max_planner_runs_per_hour", None),
         "budget_holds": dict(holds or {}),
         "lead_wakes_last_hour": leadwake.count_last_hour(
             store.tasks(kind="wake"), now),
