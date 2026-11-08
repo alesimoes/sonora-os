@@ -21,7 +21,7 @@ function flowRows(s){
       else w.push(who(roleName(t&&t.agent),st.text+' · aguardando agente',ts,{dim:true,k:'pr',id:p.number}))}
     if(col===4)w.push(who('Orquestrador',st.text,ts,{code:'OR',dim:true}));
     sess.filter(a=>a.pr===p.number||(a.branch&&a.branch===p.branch)).forEach(a=>w.push(mkSess(a)));
-    rows.push({k:'pr',id:p.number,num:p.number,acts:prActs(p.number,col===4?'verde':'',t),title:shortTitle(p.title),sub:(t&&t.track?t.track+' · ':'')+p.branch,col,w,pend,t0:ts,bad:st.cls==='bad'})});
+    rows.push({k:'pr',id:p.number,num:p.number,acts:prActs(p.number,col===4?'verde':'',t),why:p.why,whyN:p.number,title:shortTitle(p.title),sub:(t&&t.track?t.track+' · ':'')+p.branch,col,w,pend,t0:ts,bad:st.cls==='bad'})});
   // trabalho da sessão sem PR: validação, empacotamento etc.
   sess.filter(a=>!used.has(a.id)).forEach(a=>{
     const col=1,pend=null;
@@ -37,7 +37,7 @@ function flowRows(s){
 function renderFlow(s){
   const rows=flowRows(s),act=rows.filter(r=>!r.planned),plan=rows.filter(r=>r.planned);
   const head=`<div class="fr fh"><div class="ft">O que estamos construindo</div>${PH.map((x,i)=>`<div class="fp"><b>${x[0]}</b><small>${x[1]}</small></div>`).join('')}</div>`;
-  const row=r=>`<div class="fr ${r.pend?'hold':''} clk" tabindex="0" data-k="${r.k}" data-id="${E(r.id)}"><div class="ft">${r.num?`<a class="prn" href="${PRURL}${r.num}" target="_blank" rel="noopener">#${r.num}</a> `:''}<span class="ftt">${E(r.title)}</span><div class="fs">${E(r.sub||'')}</div>${r.acts?`<div class="ra">${r.acts}</div>`:''}${r.pend?`<div class="fw">${E(r.pend)}</div>`:''}</div>`
+  const row=r=>`<div class="fr ${r.pend?'hold':''} clk" tabindex="0" data-k="${r.k}" data-id="${E(r.id)}"><div class="ft">${r.num?`<a class="prn" href="${PRURL}${r.num}" target="_blank" rel="noopener">#${r.num}</a> `:''}<span class="ftt">${E(r.title)}</span><div class="fs">${E(r.sub||'')}</div>${r.acts?`<div class="ra">${r.acts}</div>`:''}${r.pend?`<div class="fw">${E(r.pend)}</div>`:''}${r.why?whyHtml(r.why,r.whyN):''}</div>`
     +PH.map((x,i)=>i===r.col?`<div class="fc2 cur ${r.pend?'hold':''}">${r.w.map(whoHtml).join('')||'<span class="none">sem agente</span>'}</div>`:`<div class="fc2 ${i<r.col?'past':'next'}">${i<r.col?'✓':''}</div>`).join('')+'</div>';
   const mg=(s.merged||[]).slice(0,5).map(m=>`<div class="fr done clk" tabindex="0" data-k="pr" data-id="${m.number}"><div class="ft"><a class="prn" href="${PRURL}${m.number}" target="_blank" rel="noopener">#${m.number}</a> <span class="ftt">${E(shortTitle(m.title))}</span></div>${PH.map((x,i)=>i===5?`<div class="fc2 cur ok">entrou às ${clk(Date.parse(m.mergedAt)/1000)}</div>`:'<div class="fc2 past">'+(i<5?'✓':'')+'</div>').join('')}</div>`).join('');
   $('prhint').textContent=`${act.length} em andamento · ${act.filter(r=>r.bad).length} falhando · ${act.filter(r=>r.col===4).length} prontos · ${(s.merged||[]).length} entraram hoje`;

@@ -32,5 +32,5 @@ async function loadDetail(){if(!detOpen)return;
 function openDetail(k,id){detOpen={k,id};$('dtitle').textContent=id;$('dbody').innerHTML='<div class="ev">carregando…</div>';$('drawer').classList.add('on');
   clearInterval(detTimer);loadDetail();detTimer=setInterval(loadDetail,4000)}
 function closeDetail(){detOpen=null;clearInterval(detTimer);$('drawer').classList.remove('on')}
-document.addEventListener('click',e=>{if(e.target.closest('a,button,input,label,.kh,h3[onclick]'))return;const el=e.target.closest('[data-k]');if(el)openDetail(el.dataset.k,el.dataset.id)});
+document.addEventListener('click',e=>{if(e.target.closest('a,button,input,label,summary,.kh,h3[onclick]'))return;const el=e.target.closest('[data-k]');if(el)openDetail(el.dataset.k,el.dataset.id)});
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail();if(e.key==='Enter'){const el=e.target.closest&&e.target.closest('[data-k]');if(el&&el.tagName!=='A')openDetail(el.dataset.k,el.dataset.id)}});

@@ -29,3 +29,7 @@
 .fr:not(.fh) .ft .ftt{display:inline}
 .fr.done .ft .ftt{display:inline-block;max-width:calc(100% - 50px);vertical-align:bottom;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media (max-width:1100px){.fr{grid-template-columns:200px repeat(6,minmax(90px,1fr));overflow-x:auto}}
+.why{margin-top:4px;font-size:12px;color:var(--fg,#dde)}
+.why summary{cursor:pointer}
+.why summary b{font-weight:600;color:var(--warn)}
+.why div{margin:2px 0 0 14px}
