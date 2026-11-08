@@ -11,6 +11,7 @@ message or decision is refused while the daemon is down, because nobody would
 consume it."""
 import os
 
+import dashboard_console_stream as stream
 from dashboard_console import build
 from dashboard_daemon import daemon_alive
 from dashboard_state import lock, state
@@ -32,6 +33,17 @@ def view():
     out = build(snap, alive)
     out["chat"] = console_chat.view(harness_dir())
     return out
+
+
+def stream_signature():
+    """Changes whenever view() would: the chat files or the daemon snapshot."""
+    with lock:
+        updated = state.get("updated")
+    return (stream.file_signature(harness_dir()), updated, daemon_alive())
+
+
+def frames(**kw):
+    return stream.frames(view, stream_signature, **kw)
 
 
 def _post(kind, **fields):

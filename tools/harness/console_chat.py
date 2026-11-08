@@ -33,6 +33,13 @@ def _card_state(rec, now):
     return view
 
 
+def _live_partial(hdir, rows):
+    """The half-written answer, only while its message is still unanswered."""
+    p = S.get_partial(hdir)
+    answered = {m.get("req") for m in rows if m["kind"] in ("orch", "system")}
+    return p if p and p.get("req") not in answered else None
+
+
 def view(hdir, now=None):
     """{messages, actions}: the last HISTORY messages, card states by id."""
     now = now or time.time()
@@ -41,5 +48,5 @@ def view(hdir, now=None):
     rows = rows[-S.HISTORY:]
     acts = S.load_actions(hdir)
     wanted = {c["id"] for m in rows for c in m.get("cards") or [] if c.get("type") == "action"}
-    return {"messages": rows,
+    return {"messages": rows, "partial": _live_partial(hdir, rows),
             "actions": {i: _card_state(acts[i], now) for i in wanted if i in acts}}

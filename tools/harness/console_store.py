@@ -87,6 +87,29 @@ def unanswered(hdir):
             and m["id"] not in answered]
 
 
+# -- partial answer ---------------------------------------------------
+def set_partial(hdir, req, text):
+    """Text the console run sent before its final reply; one at a time."""
+    atomic_write(_path(hdir, "partial.json"),
+                 json.dumps({"req": req, "text": str(text)[:MAX_TEXT], "ts": P.now_iso()}).encode())
+
+
+def get_partial(hdir):
+    try:
+        with open(_path(hdir, "partial.json"), encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return d if isinstance(d, dict) and d.get("text") else None
+
+
+def clear_partial(hdir):
+    try:
+        os.remove(_path(hdir, "partial.json"))
+    except OSError:
+        pass
+
+
 # -- actions ----------------------------------------------------------
 def load_actions(hdir):
     try:
