@@ -41,7 +41,7 @@ N/A - none.
 `tools/test-install-layout.sh` (pure, no Docker; RAM 2/4/16/64 GiB, smallest
 disk, BIOS vs EFI). `tools/test-installer.sh` (privileged loop-device run):
 four UUIDs in fstab, swap signature, data mounted, refusal exit 4.
-`tools/test-install-qemu.sh`: `swapon --show` and the Sessions mount in the
+new `tools/test-install-layout-qemu.sh` (test-install-qemu.sh is owned by open PR 442): `swapon --show` and the Sessions mount in the
 installed boot. No new ctest target; these are the existing os-image tests.
 
 ## 8. QA
@@ -63,7 +63,7 @@ layout (contract) -> wire -> tests + docs. Single PR.
 |---|---|---|---|---|---|---|---|
 | layout | distro-engineer | M | high | senior | feat/system.install.rootfs-layout | main | install-layout.sh, tools/test-install-layout.sh |
 | wire | distro-engineer | M | high | senior | feat/system.install.rootfs-wire | layout | sonora-install |
-| tests | distro-engineer | M | med | pleno | feat/system.install.rootfs-tests | wire | tools/test-installer.sh, tools/test-install-qemu.sh |
+| tests | distro-engineer | M | med | pleno | feat/system.install.rootfs-tests | wire | tools/test-installer.sh, tools/test-install-layout-qemu.sh |
 | docs | distro-engineer | S | low | junior | feat/system.install.rootfs-docs | wire | iso/README.md |
 Integrator: the lead names one.
 Single PR title: `installer: swap, separate data partition, fit check (ADR-0090)`
