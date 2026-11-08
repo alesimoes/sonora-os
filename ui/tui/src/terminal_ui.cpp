@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <thread>
 #include <utility>
 
@@ -13,6 +14,7 @@
 
 #include "sonora/api/bounce.h"
 #include "sonora/api/render.h"
+#include "sonora/console_probe.h"
 #include "sonora/tty_mode.h"
 
 namespace sonora::tui {
@@ -360,11 +362,22 @@ TerminalExit run_terminal(TerminalView& view, const TerminalOptions& options) {
     // the cooked mode would believe Ctrl+Q quits when flow control eats it.
     TermiosGuard term;
     term.raw();
-    const auto terminal_device = [&term]() {
-        return KeyMap::terminal_chords([&term](unsigned char byte) { return term.delivers(byte); });
+    const bool on_console =
+        is_linux_console(STDIN_FILENO, std::getenv("TERM"), real_keyboard_type_probe());
+    std::string console_notice;
+    const auto terminal_device = [&term, on_console, &console_notice]() {
+        auto delivered = KeyMap::terminal_chords(
+            [&term](unsigned char byte) { return term.delivers(byte); });
+        ConsoleChords c = chords_for_console(delivered, on_console, real_dumpkeys_runner());
+        console_notice = c.notice;
+        return c.chords;
     };
     std::vector<KeyChord> device = terminal_device();
     std::vector<std::string> notices = view.prepare(device);
+    if (!console_notice.empty()) {
+        notices.push_back(console_notice);
+        view.add_notice(console_notice);
+    }
 
     // With signals off and no key that runs app.quit, nothing on the keyboard
     // could leave. Ctrl+C is then given back to the terminal, and the profile
@@ -374,6 +387,7 @@ TerminalExit run_terminal(TerminalView& view, const TerminalOptions& options) {
         const bool interrupt = term.keep_interrupt_key();
         device = terminal_device();
         notices = view.prepare(device);
+        if (!console_notice.empty()) notices.push_back(console_notice);  // on screen already
         if (interrupt) {
             const std::string n =
                 "Ctrl+C leaves the engine: no key in this profile can, so it is not passed to"
