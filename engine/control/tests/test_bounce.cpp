@@ -548,6 +548,94 @@ int job_runs_offline_and_cancels() {
     return 0;
 }
 
+std::size_t bounced_files(const std::string& dir) {
+    std::size_t files = 0;
+    for (const auto& e : fs::directory_iterator(dir + "/Bounced Files")) {
+        (void)e;
+        ++files;
+    }
+    return files;
+}
+
+// Plug-in inserts are not run by the offline render, so a mix with an active
+// one would come out dry: refused before a file is made. An inactive insert
+// is not in the chain and does not block, and real time hears the active one.
+int an_active_insert_refuses_an_offline_bounce() {
+    Rig r;
+    CHECK(make_rig(r, "bounce_t8"));
+    model::Snapshot doc = r.doc->current();
+    auto edit = std::make_shared<model::EditState>(*doc.edit);
+    auto track = std::make_shared<model::TrackEdit>(*edit->tracks[0]);
+    model::PluginRef ref;
+    ref.id = "urn:test:insert";
+    track->inserts = {model::Insert{doc.next_id, 0, ref, false}};
+    edit->tracks[0] = track;
+    doc.edit = edit;
+    api::BounceOptions o;
+    o.format = api::BounceFormat::Float32;
+    BounceResult res;
+    std::string err;
+    BounceHooks hooks;
+    CHECK_BOUNCE(bounce_check(doc, o, err), err);   // inactive: not in the chain
+
+    auto active = std::make_shared<model::TrackEdit>(*track);
+    active->inserts[0].active = true;
+    auto edit2 = std::make_shared<model::EditState>(*edit);
+    edit2->tracks[0] = active;
+    doc.edit = edit2;
+    CHECK(!bounce_check(doc, o, err) && err.find("plug-in inserts") != std::string::npos);
+    err.clear();
+    CHECK(!bounce_offline(doc, r.dir, o, hooks, res, err));
+    CHECK(err.find("bounce in real time") != std::string::npos);
+    CHECK(bounced_files(r.dir) == 0);
+    o.mode = api::BounceMode::RealTime;   // real time is where inserts are heard
+    CHECK_BOUNCE(bounce_check(doc, o, err), err);
+    return 0;
+}
+
+// A real-time bounce records the live master: an open take or a transport
+// that is not stopped makes the file ambiguous, so it is refused with its
+// reason and leaves nothing behind.
+int real_time_is_refused_with_a_take_or_a_roll() {
+    Rig r;
+    CHECK(make_rig(r, "bounce_t9"));
+    r.session->reader().start();
+    r.session->disk().start();
+    PlaybackController ctl(*r.session);
+    std::string err;
+    CHECK(ctl.show(r.doc->current(), err));
+    CHECK(ctl.settle(5.0));
+    ctl.apply_mix(r.doc->current());
+    RealTimeBounce rt(*r.session, ctl);
+    api::BounceOptions o;
+    o.mode = api::BounceMode::RealTime;
+    o.format = api::BounceFormat::Float32;
+    o.end = 4800;
+    r.session->tracks()[0]->set_rec_armed(true);
+    CHECK_BOUNCE(r.session->start_recording(1, &err), err);
+    CHECK(!rt.start(r.doc->current(), r.dir, o, err));
+    CHECK(err.find("stop recording") != std::string::npos);
+    CHECK(!rt.running());
+    CHECK_BOUNCE(r.session->stop(&err), err);
+
+    {
+        Driver audio(*r.session);
+        r.session->play();
+        const auto until = deadline();
+        while (r.session->transport().state() == TransportState::Stopped &&
+               std::chrono::steady_clock::now() < until) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        CHECK(r.session->transport().state() != TransportState::Stopped);
+        err.clear();
+        CHECK(!rt.start(r.doc->current(), r.dir, o, err));
+        CHECK(err.find("stop the transport") != std::string::npos);
+        CHECK(!rt.running());
+    }
+    CHECK(bounced_files(r.dir) == 0);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -561,6 +649,8 @@ int main() {
     rc |= real_time_bounce_records_the_master();
     rc |= real_time_bounce_refuses_a_roll_the_disk_missed();
     rc |= job_runs_offline_and_cancels();
+    rc |= an_active_insert_refuses_an_offline_bounce();
+    rc |= real_time_is_refused_with_a_take_or_a_roll();
     if (rc == 0) std::printf("bounce: ok\n");
     return rc;
 }
