@@ -11,7 +11,7 @@ import json
 import os
 import re
 
-from . import dispatch, plangate, plans, queueimport, routing
+from . import dispatch, plangate, plans, proposal, queueimport, routing
 from .forge import ForgeError
 from .scheduler import HOLD
 from .status import write_atomic
@@ -102,7 +102,9 @@ class Flow:
     def on_proposal(self, body, sender):
         """The lead's pool_under_floor answer: a `plan_request` message to
         the daemon naming the next feature for a track."""
-        if not isinstance(body, dict):
+        body = proposal.normalize(body)
+        if body is None:
+            self.store.event(None, "proposal_rejected", f"{sender}: shape")
             return False
         fid, track = body.get("feature"), body.get("track")
         ids = body.get("backlog_ids")

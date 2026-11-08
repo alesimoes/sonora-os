@@ -34,9 +34,11 @@ offset/limit. Use `tools/progress.sh` (`get ID`, `list --open --track T`).
 - **pool_under_floor**: pick the next feature for the track from
   `tools/progress.sh list --open --track T`, skipping MIDI, instruments and
   video (out of v1), items whose files overlap an active feature, and items
-  already done on main. Send the orchestrator a `plan_request` proposal with
-  the BACKLOG ids. You do not choose ADR, protocol or format numbers: the
-  orchestrator reserves them.
+  already done on main. Send the orchestrator ONE `plan_request` with
+  exactly this body (one feature per message):
+  `{"feature": "<id>", "track": "daw|os|plugin", "backlog_ids": ["<id>", ...], "brief": "<why, one line>"}`.
+  You do not choose ADR, protocol or format numbers: the orchestrator
+  reserves them.
 - **ask** from an engineer: answer from the plan and ADRs, or forward to the
   architect. After 20 minutes the orchestrator answers with the recommended
   default, so answer early.
