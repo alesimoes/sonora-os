@@ -21,4 +21,5 @@ def run_view(run, task):
     return {"title": brief_title(t.get("brief"), t.get("id") or ""),
             "kind": t.get("kind"), "agent": t.get("agent"),
             "branch": t.get("branch"), "pr": t.get("pr"),
+            "feature": t.get("feature_id"),
             "stream_path": run.get("stream_path")}

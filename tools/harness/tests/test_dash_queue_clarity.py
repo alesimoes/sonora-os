@@ -38,7 +38,7 @@ class Title(unittest.TestCase):
             def features(self): return []
             def reservations(self): return []
         class Cfg:
-            floors, cap, max_open_prs, max_ready_unpr = {}, 3, 4, 2
+            floors, cap, max_open_prs, max_ready_unpr, max_runs_per_hour = {}, 3, 4, 2, 60
         run = {"id": "r", "task_id": "t1", "role": "fix", "name": "n", "pid": 1, "started": 1,
                "last_beat": 2, "working": True, "building": False, "suspect": 0, "stream_path": "/x"}
         d = status.build(Store(), Cfg, 10, [run], {}, "live", False, False, None, set(), 0)
@@ -148,9 +148,9 @@ class Frontend(unittest.TestCase):
         self.assertIn("tick()", self.read("dash-actions.js"))
 
     def test_run_row_shows_title_and_last_step(self):
-        s = self.read("dash-agents.js")
-        self.assertIn("r.title", s)
-        self.assertIn("r.last_step", s)
+        s = self.read("dash-board.js")
+        self.assertIn("a.what", s)
+        self.assertIn("a.step", s)
 
 
 if __name__ == "__main__":

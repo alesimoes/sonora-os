@@ -43,8 +43,6 @@ const prActs=(n,phase,t)=>actBtn('adotar','pr.adopt',{pr:n})+(phase==='verde'?ac
     +(t.fixer?'':actBtn('fixer','pr.assign',{pr:n,as:'fixer'})+actBtn('integrador','pr.assign',{pr:n,as:'integrator'})):'');
 const runActs=name=>actBtn('parar','run.stop',{name},'dng')+actBtn('relançar','run.relaunch',{name});
 const poolActs=(n,paused)=>actBtn(paused?'retomar':'pausar',paused?'pool.resume':'pool.pause',{pool:n});
-function alertsHtml(o){const a=(o&&o.alerts)||[];
-  return a.length?a.map(x=>`<div class="alert">${E(typeof x==='object'?(x.text||x.message||x.reason||JSON.stringify(x)):x)}</div>`).join(''):''}
 function derivedAlerts(s){const o=s.orchestrator,out=[],now=Date.now()/1000;
   const st=s.prs.map(p=>[p,prState(p)]),nm=c=>st.filter(x=>x[1].col===c&&x[1].cls!=='wait').map(x=>'#'+x[0].number).join(' ');
   if(!o)out.push('Daemon do orquestrador desligado: nada será mergeado nem distribuído.');
@@ -53,5 +51,5 @@ function derivedAlerts(s){const o=s.orchestrator,out=[],now=Date.now()/1000;
   const bad=nm(3);if(bad)out.push('PRs que precisam de correção: '+bad);
   s.prs.filter(p=>p.base&&p.base!=='main').forEach(p=>out.push('PR #'+p.number+' empilhado na base '+p.base+' (proibido)'));
   return out}
-function renderAlerts(s){const h=alertsHtml(s.orchestrator)+derivedAlerts(s).map(x=>`<div class="alert">${E(x)}</div>`).join('');$('alerts').hidden=!h;$('alerts').innerHTML=h}
+function renderAlerts(s){const h=derivedAlerts(s).map(x=>`<div class="alert">${E(x)}</div>`).join('');$('alerts').hidden=!h;$('alerts').innerHTML=h}
 loadActions();setInterval(loadActions,15000);

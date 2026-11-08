@@ -57,8 +57,6 @@ h1{margin:0;font-size:18px;font-weight:700;letter-spacing:.02em}
 .pausebox .pz{display:inline-flex;align-items:center;gap:6px}
 .sit .sflow .sbad{color:var(--bad)}.sit .pgm .pgbar{width:70px}
 .sit{font-size:16px;border-left-width:4px;padding:12px 14px}
-.people .ag .an{font-size:18px}
-.people{grid-template-columns:repeat(auto-fill,minmax(380px,1fr))}
 .fr:not(.fh) .fc2.cur .pn small{font-size:12px}
 h2.h2{font-size:20px}
 details.tech h3{font-size:14px;margin:12px 0 6px}

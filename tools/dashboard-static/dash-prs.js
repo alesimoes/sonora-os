@@ -1,5 +1,4 @@
-/* Estado de cada PR a partir do que o GitHub diz (checks e estado de merge). O gate local
-   (lotes do builder) está sendo aposentado e não decide mais a coluna. col: 2 checks,
+/* Estado de cada PR a partir do que o GitHub diz (checks e estado de merge). O gate é o do GitHub. col: 2 checks,
    3 corrigindo, 4 pronto. PR com outra base é proibido: base diferente de main vira alerta. */
 function prState(p){
   const failed=(p.failed||[]).length-(p.cancelled||[]).length,pend=(p.pending||[]).length;
