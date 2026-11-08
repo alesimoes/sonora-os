@@ -31,7 +31,7 @@ endif()
 # The subcommands (app/commands.h): a pass's real command file replaces its
 # stub by existing; fragments do not add app/cmd_*.cpp.
 set(_sonora_analyze_app app/main.cpp)
-foreach(_cmd key timbre tone)
+foreach(_cmd key timbre tone vocal)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/app/cmd_${_cmd}.cpp")
     list(APPEND _sonora_analyze_app app/cmd_${_cmd}.cpp)
   else()
@@ -76,6 +76,10 @@ foreach(_cmd key timbre tone)
     sonora_analyze_cli_test(analyze_cli_${_cmd}_stub 1 "${_cmd}: not implemented" ${_cmd})
   endif()
 endforeach()
+
+# Vocal Balance (ADR-0104): the subcommand is `vocal-balance`, the file is
+# cmd_vocal. The usage line holds for the stub and for the real command.
+sonora_analyze_cli_test(analyze_cli_vocal_usage 2 "usage: sonora-analyze vocal-balance" vocal-balance)
 
 foreach(_fragment models key timbre tone)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_fragment}.cmake")
