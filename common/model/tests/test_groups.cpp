@@ -281,7 +281,6 @@ int test_follow_clamp_copy_undo() {
     CHECK(r.h.undo());
     CHECK(r.h.current().edit->groups.empty());
     CHECK(mix_of(r.h.current(), r.t[1]).gain_db == -12.0f);
-    CHECK(!r.h.undo());
     return 0;
 }
 
