@@ -1859,18 +1859,18 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
     for (uint32_t o = 0; o < block.output_count; ++o) {
         std::memset(block.outputs[o] + offset, 0, n * sizeof(float));
     }
-    pass_ = MixPass{&plan, &block, offset, n, rolling, recording, from};
+    pass_ = MixPass{&plan, &block, offset, n, rolling, recording, from, mix_stamp_};
     mix_graph();
 }
 
-void Session::mix_node(uint32_t ni) noexcept SONORA_RT {
-    const PlaybackPlan& plan = *pass_.plan;
-    const backend::AudioBlock& block = *pass_.block;
-    const uint32_t offset = pass_.offset;
-    const uint32_t n = pass_.n;
-    const bool rolling = pass_.rolling;
-    const bool recording = pass_.recording;
-    const uint64_t from = pass_.from;
+void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
+    const PlaybackPlan& plan = *pass.plan;
+    const backend::AudioBlock& block = *pass.block;
+    const uint32_t offset = pass.offset;
+    const uint32_t n = pass.n;
+    const bool rolling = pass.rolling;
+    const bool recording = pass.recording;
+    const uint64_t from = pass.from;
     const float inv_block = 1.0f / static_cast<float>(block_frames_);
     float* const tb[2] = {track_buf_.get(), track_buf_.get() + max_block_};
     {
@@ -1901,7 +1901,7 @@ void Session::mix_node(uint32_t ni) noexcept SONORA_RT {
                 // One input edge, never delayed: compensation sits on the
                 // edges into the bus.
                 const uint32_t src = plan.edges[node.first_input_edge].from_node;
-                const float* const in[2] = {node_out(src, 0), node_out(src, 1)};
+                const float* const in[2] = {node_out(pass, src, 0), node_out(pass, src, 1)};
                 const bool silent = node.channel_slot == kSilentChannelSlot;
                 bool played = false;
                 if (runner_ != nullptr && node.channel_slot != kNoChannelSlot && !silent) {
@@ -1950,7 +1950,7 @@ void Session::mix_node(uint32_t ni) noexcept SONORA_RT {
             case NodeKind::TrackFader: {
                 const uint32_t ci = plan.edges[node.first_input_edge].from_node;
                 const PlanNode& chain = plan.nodes[ci];
-                const float* const in[2] = {node_out(ci, 0), node_out(ci, 1)};
+                const float* const in[2] = {node_out(pass, ci, 0), node_out(pass, ci, 1)};
                 const PlanTrack& pt = plan.tracks[node.track];
                 // The chain's output is its latency late: the lanes follow
                 // the audio they scale (ADR-0027 §2).
@@ -1967,8 +1967,8 @@ void Session::mix_node(uint32_t ni) noexcept SONORA_RT {
                 for (uint32_t k = 0; k < node.input_edge_count; ++k) {
                     const PlanEdge& edge = plan.edges[node.first_input_edge + k];
                     const PlanNode& src = plan.nodes[edge.from_node];
-                    const float* const in[2] = {node_out(edge.from_node, 0),
-                                                node_out(edge.from_node, 1)};
+                    const float* const in[2] = {node_out(pass, edge.from_node, 0),
+                                                node_out(pass, edge.from_node, 1)};
                     if (edge.send == kNoSend) {
                         sum_edge(plan, edge, in, out, n);
                         continue;
@@ -1985,8 +1985,8 @@ void Session::mix_node(uint32_t ni) noexcept SONORA_RT {
             }
             case NodeKind::AuxFader: {
                 const uint32_t src = plan.edges[node.first_input_edge].from_node;
-                const float* const in0 = node_out(src, 0);
-                const float* const in1 = node_out(src, 1);
+                const float* const in0 = node_out(pass, src, 0);
+                const float* const in1 = node_out(pass, src, 1);
                 const uint32_t b = node.track;
                 const float l0 = aux_gain_[2 * b];
                 const float r0 = aux_gain_[2 * b + 1];
@@ -2011,7 +2011,8 @@ void Session::mix_node(uint32_t ni) noexcept SONORA_RT {
         std::memset(R, 0, n * sizeof(float));
         for (uint32_t k = 0; k < node.input_edge_count; ++k) {
             const PlanEdge& edge = plan.edges[node.first_input_edge + k];
-            const float* const in[2] = {node_out(edge.from_node, 0), node_out(edge.from_node, 1)};
+            const float* const in[2] = {node_out(pass, edge.from_node, 0),
+                                        node_out(pass, edge.from_node, 1)};
             sum_edge(plan, edge, in, out, n);
         }
         if (node.kind == NodeKind::PathOut) {

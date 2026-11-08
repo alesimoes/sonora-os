@@ -6,7 +6,9 @@
 // never costs a recorded sample; a pool that cannot start fails the
 // session's creation. Drops come from the fake scheduler, never from time:
 // the worker runs get a deadline an hour away, so only a hung worker could
-// make one late.
+// make one late. A worker still out after the deadline is played by the test
+// itself, through the session's own claim, so it stays out for exactly the
+// blocks the test says.
 #define PLAYBACK_TEST_COUNT_HEAP 1
 #include "playback_test.h"
 
@@ -26,6 +28,30 @@ struct SessionTestAccess {
     static bool levels_ok(const Session& s) { return s.graph_levels_ok_; }
     static const float* scratch(Session& s, uint32_t buffer, uint32_t side) {
         return s.scratch(buffer, side);
+    }
+    static bool dropped_last_mix(const Session& s, uint32_t node) {
+        return s.graph_dropped_ != nullptr && s.graph_dropped_[node] == s.mix_stamp_;
+    }
+    // A worker that claimed `node` and has not come back: it holds the plan
+    // and its copy of the pass, as graph_run() does, until finish().
+    struct LateWorker {
+        Session::MixPass pass;
+        uint32_t node = ~uint32_t{0};
+        bool out = false;
+    };
+    static bool claim(Session& s, uint32_t node, LateWorker& w) noexcept {
+        s.plans_->hold();
+        w.out = s.graph_claim(node, w.pass);
+        w.node = node;
+        if (!w.out) s.plans_->release();
+        return w.out;
+    }
+    // Its run lands now, on this thread, from the old plan's pass.
+    static void finish(Session& s, LateWorker& w) {
+        s.mix_node(w.pass, w.node);
+        s.graph_return(w.node);
+        s.plans_->release();
+        w.out = false;
     }
 };
 }  // namespace sonora
@@ -93,51 +119,74 @@ struct Run {
     bool heap_untouched = true;
 };
 
-// kBlocks blocks while recording. `silent_track` feeds zeros instead of its
-// input; `stall_from`..`stall_to` stall that track's TrackSource on `fake`.
-int roll(Session& s, Run& run, uint32_t silent_track = kTracks,
-         graph_test::FakeGraphScheduler* fake = nullptr, uint32_t stall_from = 0,
-         uint32_t stall_to = 0, uint32_t stall_track = 0) {
-    s.transport().set_state(sonora::TransportState::Recording);
-    std::vector<std::vector<float>> in(kTracks, std::vector<float>(kFrames));
-    std::vector<const float*> inputs(kTracks);
-    std::vector<float> left(kFrames);
-    std::vector<float> right(kFrames);
-    float* outputs[2] = {left.data(), right.data()};
-    const uint32_t stalled = fake != nullptr ? node_of(s, NodeKind::TrackSource, stall_track) : 0;
-    for (uint32_t b = 0; b < kBlocks; ++b) {
-        for (uint32_t t = 0; t < kTracks; ++t) {
-            for (uint32_t f = 0; f < kFrames; ++f) {
-                in[t][f] = t == silent_track ? 0.0f : input_value(t, b, f);
-            }
-            inputs[t] = in[t].data();
-        }
-        if (fake != nullptr) fake->set_stalled(stalled, b >= stall_from && b < stall_to);
-        sonora::backend::AudioBlock block{};
+// A backend's buffers and block: they outlive every callback, as a driver's
+// do, because a late worker reads the block of the callback it was given.
+struct Deck {
+    Deck() : in(kTracks, std::vector<float>(kFrames)), inputs(kTracks), left(kFrames), right(kFrames) {
+        for (uint32_t t = 0; t < kTracks; ++t) inputs[t] = in[t].data();
+        outputs[0] = left.data();
+        outputs[1] = right.data();
         block.inputs = inputs.data();
         block.input_count = kTracks;
         block.outputs = outputs;
         block.output_count = 2;
         block.nframes = kFrames;
-        block.callback_ns = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                (std::chrono::steady_clock::now() + std::chrono::hours(1)).time_since_epoch())
-                .count());
-        sonora::backend::ProcessCallback& cb = s;
-        reset_heap_counts();
-        t_counting = true;
-        cb.process(block);
-        t_counting = false;
-        run.heap_untouched = run.heap_untouched && playback_test::heap_untouched();
-        run.out.insert(run.out.end(), left.begin(), left.end());
-        run.out.insert(run.out.end(), right.begin(), right.end());
     }
+    Deck(const Deck&) = delete;
+    Deck& operator=(const Deck&) = delete;
+
+    std::vector<std::vector<float>> in;
+    std::vector<const float*> inputs;
+    std::vector<float> left;
+    std::vector<float> right;
+    float* outputs[2] = {nullptr, nullptr};
+    sonora::backend::AudioBlock block{};
+};
+
+// Block `b` of a roll while recording; `silent_track` feeds zeros instead of
+// its input. The heap is counted around process() alone.
+void play_block(Session& s, Deck& deck, Run& run, uint32_t b, uint32_t silent_track) {
+    for (uint32_t t = 0; t < kTracks; ++t) {
+        for (uint32_t f = 0; f < kFrames; ++f) {
+            deck.in[t][f] = t == silent_track ? 0.0f : input_value(t, b, f);
+        }
+    }
+    deck.block.callback_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            (std::chrono::steady_clock::now() + std::chrono::hours(1)).time_since_epoch())
+            .count());
+    sonora::backend::ProcessCallback& cb = s;
+    reset_heap_counts();
+    t_counting = true;
+    cb.process(deck.block);
+    t_counting = false;
+    run.heap_untouched = run.heap_untouched && playback_test::heap_untouched();
+    run.out.insert(run.out.end(), deck.left.begin(), deck.left.end());
+    run.out.insert(run.out.end(), deck.right.begin(), deck.right.end());
+}
+
+void collect_take(Session& s, Run& run) {
     run.captured.assign(kTracks, {});
     for (uint32_t t = 0; t < kTracks; ++t) {
         sonora::Track& track = *s.tracks()[t];
         run.captured[t].resize(track.capture_ring().read_space());
         track.capture_ring().read(run.captured[t].data(), run.captured[t].size());
     }
+}
+
+// kBlocks blocks while recording. `silent_track` feeds zeros instead of its
+// input; `stall_from`..`stall_to` stall that track's TrackSource on `fake`.
+int roll(Session& s, Run& run, uint32_t silent_track = kTracks,
+         graph_test::FakeGraphScheduler* fake = nullptr, uint32_t stall_from = 0,
+         uint32_t stall_to = 0, uint32_t stall_track = 0) {
+    s.transport().set_state(sonora::TransportState::Recording);
+    const uint32_t stalled = fake != nullptr ? node_of(s, NodeKind::TrackSource, stall_track) : 0;
+    Deck deck;
+    for (uint32_t b = 0; b < kBlocks; ++b) {
+        if (fake != nullptr) fake->set_stalled(stalled, b >= stall_from && b < stall_to);
+        play_block(s, deck, run, b, silent_track);
+    }
+    collect_take(s, run);
     return 0;
 }
 
@@ -265,6 +314,166 @@ int test_drop_ramps_in_its_own_buffer() {
     return 0;
 }
 
+// Serial, except that a node the test names is claimed through the session
+// and dropped: a worker that won its claim and missed the deadline, still
+// inside run() when the level is settled.
+class LateScheduler final : public sonora::GraphScheduler {
+public:
+    LateScheduler(uint32_t max_nodes, SessionTestAccess::LateWorker& worker)
+        : book_(max_nodes), worker_(worker) {}
+
+    void bind(Session& s) { session_ = &s; }
+    // At its next offer.
+    void abandon(uint32_t node) { abandon_ = node; }
+
+    uint32_t workers() const noexcept override { return 2; }
+
+    sonora::GraphLevelResult run_level(const sonora::GraphLevel& level,
+                                       sonora::GraphNodeWork& work) noexcept SONORA_RT override {
+        sonora::GraphLevelResult r;
+        for (uint32_t i = 0; i < level.count; ++i) {
+            const uint32_t n = level.nodes[i];
+            if (n == abandon_ && SessionTestAccess::claim(*session_, n, worker_)) {
+                abandon_ = ~uint32_t{0};
+                work.drop(n);
+                book_.note_dropped(n);
+                ++r.dropped;
+                continue;
+            }
+            work.run(n);
+            book_.note_ran(n);
+            ++r.ran;
+        }
+        return r;
+    }
+
+    void reset_drops() noexcept SONORA_RT override { book_.reset(); }
+
+    sonora::GraphDropCounts drop_counts() const noexcept override { return book_.counts(); }
+
+private:
+    sonora::GraphDropBook book_;
+    SessionTestAccess::LateWorker& worker_;
+    Session* session_ = nullptr;
+    uint32_t abandon_ = ~uint32_t{0};
+};
+
+// Plan B: track 0's chain gone, so every later node moves; with the level
+// pass reordering indices, B gives the late node's buffer to another node
+// of its track, at another index.
+bool swap_to_plan_b(Session& s, sonora::DelayLinePool& pool) {
+    std::vector<sonora::ChainBinding> chains(kTracks);
+    for (uint32_t t = 1; t < kTracks; ++t) chains[t].active = true;
+    sonora::PlaybackPlan* p = chain_plan(s, chains, pool);
+    if (!sonora::assign_plan_levels(*p)) {
+        sonora::destroy_plan(p);
+        return false;
+    }
+    return publish_plan(s, p);
+}
+
+// tester-102 on 2df38be1: a worker abandoned at a deadline was fenced by
+// node index alone, so after a plan swap its scratch buffer and its track's
+// state belonged to nodes at other indices that ran beside it. While it is
+// out, every node writing its buffer or its track is now dropped: the mix
+// is the mix with that track silent, bit for bit, the take is whole, and
+// the track plays again once the worker is back.
+int test_late_worker_fenced_across_plan_swap() {
+    constexpr uint32_t kLate = 1;     // the track whose source is abandoned
+    constexpr uint32_t kAbandon = 5;  // the block it is abandoned in
+    constexpr uint32_t kBack = 12;    // the first block after it returns
+    SessionTestAccess::LateWorker worker;
+    LateScheduler late(4096, worker);
+    Session s(config(0, &late));
+    late.bind(s);
+    Session ref(config(0));
+    Session plain(config(0));
+    sonora::DelayLinePool pool_s(s.delay_lines());
+    sonora::DelayLinePool pool_r(ref.delay_lines());
+    sonora::DelayLinePool pool_p(plain.delay_lines());
+    CHECK(prepare(s, pool_s));
+    CHECK(prepare(ref, pool_r));
+    CHECK(prepare(plain, pool_p));
+    const uint32_t x = node_of(s, NodeKind::TrackSource, kLate);
+    CHECK(x < s.plans().current()->node_count);
+    const uint32_t x_buffer = s.plans().current()->nodes[x].scratch_buffer;
+    Run r;
+    Run q;
+    Run a;
+    Deck deck_s;
+    Deck deck_r;
+    Deck deck_p;
+    uint64_t fenced_while_out = 0;
+    for (Session* each : {&s, &ref, &plain}) {
+        each->transport().set_state(sonora::TransportState::Recording);
+    }
+    for (uint32_t b = 0; b < kBlocks; ++b) {
+        if (b == kAbandon) late.abandon(x);
+        if (b == kAbandon + 1) {
+            CHECK(worker.out);
+            CHECK(swap_to_plan_b(s, pool_s));
+            CHECK(swap_to_plan_b(ref, pool_r));
+            CHECK(swap_to_plan_b(plain, pool_p));
+            // The scenario holds: in B the late node's buffer is another
+            // index's, a node of the same track.
+            const sonora::PlaybackPlan& pb = *s.plans().current();
+            uint32_t owner = ~uint32_t{0};
+            for (uint32_t i = 0; i < pb.node_count; ++i) {
+                if (pb.nodes[i].scratch_buffer == x_buffer) owner = i;
+            }
+            CHECK(owner < pb.node_count && owner != x);
+            CHECK(pb.tracks[pb.nodes[owner].track].engine_track == kLate);
+        }
+        if (b == kBack) {
+            fenced_while_out = s.graph_fenced();
+            SessionTestAccess::finish(s, worker);
+        }
+        play_block(s, deck_s, r, b, kTracks);
+        play_block(ref, deck_r, q, b, kLate);
+        play_block(plain, deck_p, a, b, kTracks);
+        if (b <= kAbandon || b >= kBack) continue;
+        // No node of B that writes the late node's buffer or its track's
+        // state ran beside it.
+        const sonora::PlaybackPlan& pb = *s.plans().current();
+        for (uint32_t i = 0; i < pb.node_count; ++i) {
+            const sonora::PlanNode& node = pb.nodes[i];
+            const bool track_state = node.kind == NodeKind::TrackSource ||
+                                     node.kind == NodeKind::TrackFader ||
+                                     node.kind == NodeKind::TrackOut;
+            if (node.scratch_buffer == x_buffer ||
+                (track_state && pb.tracks[node.track].engine_track == kLate)) {
+                CHECK(SessionTestAccess::dropped_last_mix(s, i));
+            }
+        }
+    }
+    collect_take(s, r);
+    collect_take(plain, a);
+    CHECK(SessionTestAccess::levels_ok(s));
+    // Under B while the worker is out: track kLate silent, nothing else
+    // touched.
+    const std::size_t block = 2 * kFrames;
+    for (uint32_t b = kAbandon + 1; b < kBack; ++b) {
+        CHECK(std::memcmp(r.out.data() + b * block, q.out.data() + b * block,
+                          block * sizeof(float)) == 0);
+    }
+    // Counted while it was out, and nothing once it is back.
+    std::printf("session_parallel: %llu fenced node blocks while the worker was out\n",
+                static_cast<unsigned long long>(fenced_while_out));
+    CHECK(fenced_while_out >= 2 * (kBack - kAbandon - 1));
+    CHECK(s.graph_fenced() == fenced_while_out);
+    CHECK(s.graph_drops().dropped == 1);
+    // Back: the track plays, as in the roll that never dropped.
+    const std::size_t last = static_cast<std::size_t>(kBlocks - 1) * block;
+    CHECK(std::memcmp(r.out.data() + last, q.out.data() + last, block * sizeof(float)) != 0);
+    CHECK(std::memcmp(r.out.data() + last, a.out.data() + last, block * sizeof(float)) == 0);
+    for (uint32_t t = 0; t < kTracks; ++t) {
+        CHECK(r.captured[t].size() == kBlocks * kFrames);
+        CHECK(same_bits(a.captured[t], r.captured[t]));
+    }
+    CHECK(r.heap_untouched);
+    return 0;
+}
+
 // ADR-0063 §6: a pool that cannot start fails the session's creation with
 // the reason; it never falls back to serial. A SCHED_FIFO priority past
 // the range fails on every machine, privileged or not.
@@ -287,6 +496,7 @@ int main() {
     if (test_workers_equal_serial_without_heap() != 0) return 1;
     if (test_drops_never_touch_the_take() != 0) return 1;
     if (test_drop_ramps_in_its_own_buffer() != 0) return 1;
+    if (test_late_worker_fenced_across_plan_swap() != 0) return 1;
     if (test_pool_start_failure_fails_creation() != 0) return 1;
     std::printf("session_parallel: ok (heap counter: %s)\n", heap_counter_scope());
     return 0;

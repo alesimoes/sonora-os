@@ -694,6 +694,9 @@ public:
     uint32_t graph_workers() const;
     GraphDropCounts graph_drops() const;
     uint64_t graph_late_results() const;
+    // Node blocks dropped because a worker abandoned at a deadline still
+    // held the node's index, scratch buffer or track (graph_session.cpp).
+    uint64_t graph_fenced() const { return graph_fenced_.load(std::memory_order_relaxed); }
 
 private:
     // Only a test defines it, to reach word_hook_.
@@ -777,10 +780,12 @@ private:
         bool rolling = false;
         bool recording = false;
         uint64_t from = 0;
+        uint64_t stamp = 0;  // mix_stamp_ of the mix() call
     };
     MixPass pass_;
-    // Node `ni` of pass_.plan, into its scratch buffer.
-    void mix_node(uint32_t ni) noexcept SONORA_RT;
+    // Node `ni` of pass.plan, into its scratch buffer. A worker passes its
+    // own copy of the pass, never pass_, which the next mix() rewrites.
+    void mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT;
     // --- the processing graph (graph_session.cpp, ADR-0063) ---
     // Constructor: the scheduler, its index list and the drop buffers.
     void start_graph();
@@ -795,14 +800,31 @@ private:
     void graph_run(uint32_t ni) noexcept SONORA_RT;
     // GraphNodeWork, audio thread: the drop buffer gets the ramp to silence.
     void graph_drop(uint32_t ni) noexcept SONORA_RT;
+    // The fence against late workers (graph_session.cpp's file comment).
+    // Claims armed node `ni` and copies its pass; false: nothing to run.
+    bool graph_claim(uint32_t ni, MixPass& pass) noexcept SONORA_RT;
+    void graph_return(uint32_t ni) noexcept SONORA_RT;
+    void graph_arm(uint32_t ni) noexcept SONORA_RT;
+    // After run_level(): a dropped node its worker is still in joins the
+    // in-flight list.
+    void graph_settle(uint32_t ni) noexcept SONORA_RT;
+    void refresh_graph_fences() noexcept SONORA_RT;
+    // The engine track whose state node `ni` writes, or ~0u.
+    uint32_t graph_state_track(const PlaybackPlan& plan, uint32_t ni) const noexcept SONORA_RT;
+    // An in-flight worker writes node `ni`'s scratch buffer or track state.
+    bool graph_fenced_node(const PlaybackPlan& plan, uint32_t ni) const noexcept SONORA_RT;
+    void set_graph_fence(uint32_t entry, uint8_t on) noexcept SONORA_RT;
+    // mix_node(), or fence_drop() when graph_fenced_node().
+    void mix_or_fence(uint32_t ni) noexcept SONORA_RT;
+    void fence_drop(uint32_t ni) noexcept SONORA_RT;
     // What node `ni`'s readers read this mix: its scratch, or its drop
     // buffer when it was dropped (a late worker may still write the
     // scratch).
-    const float* node_out(uint32_t ni, uint32_t side) noexcept SONORA_RT {
-        if (graph_dropped_ != nullptr && graph_dropped_[ni] == mix_stamp_) {
+    const float* node_out(const MixPass& pass, uint32_t ni, uint32_t side) noexcept SONORA_RT {
+        if (graph_dropped_ != nullptr && graph_dropped_[ni] == pass.stamp) {
             return graph_drop_buf_.get() + (static_cast<std::size_t>(ni) * 2 + side) * max_block_;
         }
-        return scratch(pass_.plan->nodes[ni].scratch_buffer, side);
+        return scratch(pass.plan->nodes[ni].scratch_buffer, side);
     }
     void render_track(const PlaybackPlan& plan, uint32_t plan_track, uint64_t from,
                       uint32_t n, float* const out[2]) noexcept SONORA_RT;
@@ -1361,6 +1383,23 @@ private:
     // True while mix_graph() runs levels: a worker that finds it false holds
     // a claim older than the plan it could read, and runs nothing.
     std::atomic<bool> graph_open_{false};
+    // Per node index: 0, or armed for a claim, or claimed (graph_session.cpp).
+    std::unique_ptr<std::atomic<uint32_t>[]> graph_arm_;
+    std::unique_ptr<MixPass[]> graph_pass_;     // per node: the pass it was armed with
+    // Nodes a worker abandoned at a deadline is still in, and what it
+    // writes. A worker holds one node at a time, so `nodes` entries is ample.
+    struct GraphFlight {
+        uint32_t node;
+        uint32_t buffer;
+        uint32_t track;  // engine track, or ~0u
+    };
+    std::unique_ptr<GraphFlight[]> graph_flight_;
+    uint32_t graph_flights_ = 0;
+    // What the in-flight list covers; audio thread only.
+    std::unique_ptr<uint8_t[]> graph_fence_node_;
+    std::unique_ptr<uint8_t[]> graph_fence_buf_;
+    std::unique_ptr<uint8_t[]> graph_fence_track_;
+    std::atomic<uint64_t> graph_fenced_{0};
     struct GraphParts;
     static void destroy_graph_parts(GraphParts* parts) noexcept;
     // Last, so destroyed first: the pool joins its workers before anything
