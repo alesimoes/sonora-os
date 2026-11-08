@@ -55,7 +55,7 @@ std::vector<std::string> manifest_packages(const std::string& path) {
     ss << in.rdbuf();
     const std::string text = ss.str();
     std::vector<std::string> out;
-    const std::regex re("\"package\"\s*:\s*\"([^\"]+)\"");
+    const std::regex re("\"package\"\\s*:\\s*\"([^\"]+)\"");
     for (std::sregex_iterator it(text.begin(), text.end(), re), end; it != end; ++it) out.push_back((*it)[1]);
     return out;
 }
@@ -66,7 +66,7 @@ std::string lv2_path(const std::string& path) {
     ss << in.rdbuf();
     std::smatch m;
     const std::string text = ss.str();
-    if (std::regex_search(text, m, std::regex("\"lv2_path\"\s*:\s*\"([^\"]+)\""))) return m[1];
+    if (std::regex_search(text, m, std::regex("\"lv2_path\"\\s*:\\s*\"([^\"]+)\""))) return m[1];
     return "/usr/lib/lv2";
 }
 
