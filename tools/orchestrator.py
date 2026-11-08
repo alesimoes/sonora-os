@@ -23,7 +23,7 @@ import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch,  # noqa: E402
+from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, dispatch,  # noqa: E402
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
@@ -120,6 +120,14 @@ class Orchestrator:
             self.on_broker_event(kind, **data)
 
     def on_broker_event(self, kind, **data):
+        msg = data.get("msg") or {}
+        if kind == "message" and msg.get("type") == "console_reply":
+            # Before the run check below: the reply must not be lost when
+            # the short run has already ended.
+            try:
+                console.on_reply(self, msg)
+            except Exception as e:
+                self.store.event(None, "console_reply_failed", str(e)[:160])
         if kind == "undeliverable":
             text = (f"{data.get('type')} from {data.get('sender')} to "
                     f"'{data.get('to')}' had no recipient")
@@ -211,6 +219,7 @@ class Orchestrator:
         g.step("cli_mailbox", cli_mailbox.tick, self)
         if not self.dry_run:
             g.step("ownerchat", ownerchat.tick, self)
+            g.step("console", console.tick, self, now)
         g.step("watch_prs", self._watch_prs, now)
         g.step("feature_sync", feature_sync.sync, self, now)
         # Main's nightly full build on GitHub (ADR-0061): a red opens a task.

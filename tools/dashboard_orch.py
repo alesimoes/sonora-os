@@ -1,11 +1,11 @@
 """What the dashboard reads from the orchestrator: status.json (parsed in one
-place), state.json, the coordinator's note and main's progress catalogue."""
+place) and the coordinator's subagent file."""
 import json
 import os
 import re
 import time
 
-from dashboard_util import main_root, orch_root, orch_status_path, run
+from dashboard_util import main_root, orch_root, orch_status_path
 
 AGENT_STALE_S = 6 * 3600
 
@@ -54,16 +54,6 @@ def clean_orch(o, open_prs):
     return o
 
 
-def read_coordinator():
-    """What the coordinator session (Claude in the terminal) says it is doing:
-    <orchestrator root>/.harness/coordinator.json, written by the session."""
-    try:
-        with open(os.path.join(orch_root(), ".harness", "coordinator.json"), encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
 def read_coordinator_agents(now=None):
     """The coordinator's own subagents, as the hooks of harness/coord_hook.py
     record them: <root>/.harness/coordinator-agents.json under the
@@ -80,32 +70,3 @@ def read_coordinator_agents(now=None):
             if isinstance(a, dict) and now - (a.get("last") or 0) < AGENT_STALE_S:
                 rows.setdefault(k, a)
     return list(rows.values())
-
-
-def read_progress():
-    """How much of the project is done, from main's catalogue
-    (planning/progress.json on origin/main, tallied by tools/progress.py):
-    only merged and verified work counts, as in planning/PROGRESS.md."""
-    import importlib.util
-    root = orch_root()
-    run(["git", "-C", root, "fetch", "-q", "origin", "main"], timeout=60)
-    raw = run(["git", "-C", root, "show", "origin/main:planning/progress.json"])
-    spec = importlib.util.spec_from_file_location(
-        "sonora_progress", os.path.join(os.path.dirname(os.path.abspath(__file__)), "progress.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    overall, fronts, _ = mod.tally(json.loads(raw))
-    one = lambda t: {"pct": t.pct(), "done": t.done, "total": t.total, "doing": t.doing}
-    return dict(one(overall), fronts=[dict(one(t), title=f["title"]) for f, t, _ in fronts])
-
-
-def orch_state():
-    try:
-        with open(os.path.join(orch_root(), "planning", "orchestrator", "state.json"), encoding="utf-8") as f:
-            s = json.load(f)
-    except Exception:
-        return {}
-    for k in ("tasks", "features", "runs"):
-        v = s.get(k) or []
-        s[k] = list(v.values()) if isinstance(v, dict) else v
-    return s
