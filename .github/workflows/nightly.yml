@@ -129,7 +129,9 @@ jobs:
     # common/dsp, the native SDK, the measurement harness and the processors
     # (and the OS seam's unsupported stubs, which are not built here).
     runs-on: windows-latest
-    timeout-minutes: 25
+    # 25 -> 60 (ADR-0071): the Qt interface adds a cached Qt install (about 5
+    # min on a cold cache), a second configure and an MSVC build of ui/qt.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -160,6 +162,31 @@ jobs:
       - name: tools/umc-wsl.ps1 against fake usbipd and wsl
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\test-umc-wsl.ps1
+
+      # ADR-0071: the Qt interface (ui/qt, the neutral-plus-Qt row of ADR-0008
+      # section 1) under MSVC. Qt 6.8.2 is the Qt of the Linux image (Debian
+      # trixie, tools/Dockerfile.ui); aqt downloads it once and the cache keeps
+      # it. A red step here is an ADR-0008 finding: move platform code to an
+      # edge module, never filter the target out.
+      - name: Install Qt 6.8.2 (cached)
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
+        with:
+          version: '6.8.2'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Configure the Qt interface
+        run: cmake -S . -B build-ui -DSONORA_PLATFORM=neutral -DSONORA_PORTABLE_UI=ON
+
+      - name: Build the Qt interface
+        run: cmake --build build-ui --config Release --parallel --target sonora_portable_ui
+
+      - name: Test the Qt interface (label ui)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build-ui -C Release --output-on-failure -L ui
 
   ui:
     name: Qt interface build and headless tests
