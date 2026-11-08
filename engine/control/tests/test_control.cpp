@@ -352,7 +352,7 @@ void same_commands_as_the_fake() {
     // announcing it (ADR-0007 §6); the fake announces what the engine does.
     CHECK(real.hello().capabilities ==
           (std::vector<std::string>{api::kCapabilityPlayRange, api::kCapabilityBounce,
-                                      api::kCapabilityRender}));
+                                      api::kCapabilityRender, api::kCapabilityStems}));
     CHECK(real.hello().capabilities == api::testing::FakeEngine::Config{}.capabilities);
     // app.quit is installed by install_session_commands but belongs to the
     // interface (ADR-0007 §5): never announced, and refused if sent.
