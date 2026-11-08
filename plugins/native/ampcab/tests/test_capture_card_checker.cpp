@@ -66,6 +66,16 @@ struct Fixture {
         return cards.back();
     }
 
+    // For the size bounds: the card claims the size but not the hash, so the
+    // test never hashes tens of MB itself (the checker's hash then differs,
+    // an extra refusal the case does not look at).
+    CaptureCard& add_unhashed(CaptureCard c, const std::string& bytes) {
+        c.file.size = bytes.size();
+        write(root / "files" / c.file.name, bytes);
+        cards.push_back(c);
+        return cards.back();
+    }
+
     void write_cards() const {
         std::string entries;
         for (const auto& c : cards) {
@@ -151,16 +161,18 @@ int main(int argc, char** argv) {
         refused("bad hash", f, cap.id);
     }
     {
-        Fixture f(scratch / "oversized");
-        f.add(cap, std::string(kMaxCaptureFileBytes + 1, 'a'));
-        refused("oversized file", f, "25 MB");
-    }
-    {
-        // Six files of 17 MB: each under the file bound, 102 MB together.
-        Fixture f(scratch / "total");
-        const std::string body(17'000'000, 'b');
-        for (int i = 0; i < 6; ++i) f.add(numbered(cap, i), body);
-        refused("100 MB total", f, "100 MB");
+        // One file just over 25 MB plus four of 18.8 MB: 100.2 MB together,
+        // so one run shows both bounds.
+        Fixture f(scratch / "sizes");
+        f.add_unhashed(numbered(cap, 0), std::string(kMaxCaptureFileBytes + 1, 'a'));
+        const std::string body(18'800'000, 'b');
+        for (int i = 1; i < 5; ++i) f.add_unhashed(numbered(cap, i), body);
+        const Result r = f.run(tool, real_deny);
+        expect(r.code == 1, "size bounds: exits 1");
+        expect(r.out.find(numbered(cap, 0).id + ": file above 25 MB") != std::string::npos,
+               "oversized file names its card: " + r.out);
+        expect(r.out.find("manifest: files total above 100 MB") != std::string::npos,
+               "100 MB total is refused: " + r.out);
     }
     {
         Fixture f(scratch / "orphan");
