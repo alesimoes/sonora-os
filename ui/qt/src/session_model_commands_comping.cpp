@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <memory>
 
+#include "consolidate_send.h"
 #include "fader_taper.h"
 #include "scene_item.h"
 #include "edit_clipboard.h"
@@ -67,19 +68,7 @@ void SessionModel::installCompingCommands(CommandRegistry& /*local*/, const Inst
     simple("edit.consolidate", [this](const CommandContext&, Why& why) {
         EditController::ConsolidateRequest req;
         if (!ctl_.consolidate_request(req, why)) return false;
-        if (!send_command_) {
-            why = "no engine to render the consolidated file";
-            return false;
-        }
-        api::ConsolidateArgument arg;
-        arg.track = req.track;
-        arg.playlist = req.playlist;
-        arg.start = req.start;
-        arg.end = req.end;
-        arg.name = req.name;
-        send_command_(QStringLiteral("session.consolidate"),
-                      q(api::format_consolidate_argument(arg)));
-        return true;
+        return send_consolidate(send_command_, req, "the consolidated file", why);
     });
     simple("edit.duplicate",
            [this](const CommandContext&, Why& why) { return ctl_.duplicate(why); });
