@@ -1,0 +1,20 @@
+# Orchestrator daemon settings (tools/harness/scheduler.py Config).
+# Tracked since 2026-11-08: the untracked copy in the daemon checkout vanished
+# and the daemon fell back to defaults (6 ready features, 10 active), which
+# stopped every engineer with "CI budget". Change it through a PR.
+
+# Agents at once; the weekly-quota guard is max_runs_per_hour.
+cap = 12
+max_runs_per_hour = 60
+max_turns = 250
+
+# PRs and integration.
+max_open_prs = 30
+max_ready_unpr = 12
+max_integrators = 8
+train_slots = 8
+daemon_merge = true
+
+# Features planned or being built at once (owner 2026-11-08: plan the v1
+# queue in bulk).
+max_active_features = 24
