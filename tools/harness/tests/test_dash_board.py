@@ -1,6 +1,5 @@
 """The dashboard board: every running agent from both launchers (duplicates
-flagged), open PRs with gate and merge owner (green too long is red), the
-brakes in plain words, and the hook that records the coordinator's subagents."""
+flagged), open PRs with gate and merge owner (green too long is red), and the hook that records the coordinator's subagents."""
 import os
 import shutil
 import tempfile
@@ -11,7 +10,6 @@ from unittest import mock
 import support  # noqa: F401  (sets sys.path)
 
 import dashboard_board as B
-import dashboard_brakes as K
 import dashboard_orch
 import dashboard_prboard as P
 from harness import coord_agents as CA
@@ -107,47 +105,6 @@ class Prs(unittest.TestCase):
         self.assertEqual(row["opened_min"], 90)
 
 
-class Brakes(unittest.TestCase):
-    O = {"updated_ts": NOW, "open_prs": 8, "max_open_prs": 8, "runs_last_hour": 12, "max_runs_per_hour": 60,
-         "live": 3, "cap": 10, "paused": ["build:os"],
-         "pools": {"build:daw": {"floor": 8, "live": 0, "reason": "8 open PRs: merging first"},
-                   "build:os": {"floor": 4, "live": 0, "reason": "paused"},
-                   "build:plugin": {"floor": 2, "live": 2, "reason": None}},
-         "alerts": [{"id": "a", "level": "alert", "text": "fila de lock parada", "since": NOW - 1200, "check": "lock"}]}
-
-    def texts(self, o=None, now=NOW):
-        return [(r["level"], r["text"]) for r in K.brakes(self.O if o is None else o, now)]
-
-    def test_pr_limit_in_plain_words(self):
-        self.assertIn(("warn", "8 PRs abertos (limite 8): priorizando merges, nenhuma tarefa nova começa"), self.texts())
-
-    def test_hour_and_cap_rows(self):
-        t = [x[1] for x in self.texts()]
-        self.assertIn("12 de 60 execuções na última hora", t)
-        self.assertIn("3 de 10 agentes simultâneos", t)
-
-    def test_hour_limit_reached(self):
-        o = dict(self.O, runs_last_hour=60)
-        self.assertTrue(any("limite 60" in x[1] and x[0] == "warn" for x in self.texts(o)))
-
-    def test_every_held_build_pool_gives_its_reason(self):
-        t = [x[1] for x in self.texts()]
-        self.assertIn("Construção · DAW: 0 de 8 ativos, segurada porque: 8 PRs abertos: priorizando merges", t)
-        self.assertIn("Construção · OS pausada", t)
-        self.assertFalse(any("plugins" in x for x in t))
-
-    def test_alerts_with_age(self):
-        self.assertIn(("bad", "Alerta (lock): fila de lock parada · há 20 min"), self.texts())
-
-    def test_switches_and_dead_daemon(self):
-        o = dict(self.O, kill_switch="STOP", usage_pause_until=NOW + 600)
-        t = [x[1] for x in self.texts(o)]
-        self.assertTrue(any("Chave de emergência STOP" in x for x in t))
-        self.assertTrue(any("Pausa por consumo da conta por mais 10 min" in x for x in t))
-        self.assertEqual(K.brakes(None, NOW)[0]["level"], "bad")
-        self.assertIn("parado há 10 min", K.brakes(self.O, NOW + 600)[0]["text"])
-
-
 class Hook(unittest.TestCase):
     def ev(self, name, tool, inp=None, **kw):
         return dict({"hook_event_name": name, "tool_name": tool, "tool_input": inp or {}}, **kw)
@@ -208,26 +165,6 @@ class HookFile(unittest.TestCase):
     def test_bad_input_never_raises(self):
         with mock.patch("sys.stdin", mock.Mock(read=lambda *a: "not json")):
             self.assertEqual(coord_hook.main(), 0)
-
-
-class Layout(unittest.TestCase):
-    TOOLS = os.path.join(os.path.dirname(__file__), "..", "..")
-
-    def read(self, *p):
-        with open(os.path.join(self.TOOLS, *p), encoding="utf-8") as f:
-            return f.read()
-
-    def test_board_sections_and_no_leftovers(self):
-        h = self.read("dashboard.html")
-        for i in ("boardbrakes", "boardagents", "boardprs", "boardwarn"):
-            self.assertIn('id="%s"' % i, h)
-        self.assertNotIn("Espera o dono", h)
-        self.assertNotIn("dash-agents.js", h)
-        self.assertIn("dash-board.js", h)
-        for f in os.listdir(os.path.join(self.TOOLS, "dashboard-static")):
-            if f.endswith(".js"):
-                self.assertNotIn("CI local", self.read("dashboard-static", f))
-        self.assertNotIn("CI local", self.read("dashboard_machine.py"))
 
 
 if __name__ == "__main__":

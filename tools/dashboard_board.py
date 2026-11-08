@@ -48,7 +48,7 @@ def daemon_row(r, features):
             "name": r.get("name") or r.get("id"), "what": r.get("title") or r.get("task"),
             "feature": feature_of(r, features), "pr": pr_for(r, features),
             "since": r.get("started"), "last": r.get("last_beat"),
-            "step": r.get("last_step") or "",
+            "step": r.get("last_step") or "", "model": r.get("model"),
             "state": "sem sinal" if r.get("suspect") else "buildando" if r.get("building") else "trabalhando"}
 
 

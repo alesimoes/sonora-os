@@ -1,50 +1,28 @@
-"""The dashboard's shared snapshot and the loop that refreshes it. Each source
-fails on its own: an error is listed in the snapshot, never raised."""
-import json
-import os
+"""The console's snapshot and the loop that refreshes it: the daemon's
+status.json, the open and merged PRs from GitHub, and the board rows built
+from them. Each source fails on its own: an error is listed, never raised."""
 import threading
 import time
 
-from dashboard_agents import read_agents, stamp_done
-from dashboard_disk import disk_view
-from dashboard_github import read_merged, read_prs
-from dashboard_machine import read_containers, read_lock, read_watchers
 from dashboard_board import agent_rows
-from dashboard_brakes import brakes
-from dashboard_orch import clean_orch, read_coordinator, read_coordinator_agents, read_orchestrator, read_progress
+from dashboard_github import read_merged, read_prs
+from dashboard_orch import clean_orch, read_coordinator_agents, read_orchestrator
 from dashboard_prboard import GreenClock, pr_rows
-from dashboard_runview import add_last_steps, with_live_paused
-from dashboard_usage import read_usage
-from dashboard_why import with_why
 
 GH_EVERY_S = 20
-PROGRESS_EVERY_S = 300
 LOOP_S = 4
 
-state = {"usage": {"sessions": [], "week": None, "five_hour": None}, "updated": 0, "agents": [], "prs": [],
-         "watchers": [], "containers": [], "errors": [], "orchestrator": None, "merged": [], "lock": [], "disk": None,
-         "board": {"agents": [], "prs": [], "brakes": []}}
+state = {"updated": 0, "prs": [], "merged": [], "errors": [], "orchestrator": None,
+         "board": {"agents": [], "prs": []}}
 lock = threading.Lock()
 green_clock = GreenClock()
 
 
-def build_board(orch, prs, agents, now=None):
-    """What the board shows: every running agent, the open PRs and the brakes.
-    Each source fails alone: its part is empty and the error is listed."""
+def build_board(orch, prs, now=None):
+    """Every running agent and the open PRs with their gate."""
     now = now or time.time()
-    orch = with_live_paused(orch)
-    return {"agents": agent_rows(orch, read_coordinator_agents(now), agents, now),
-            "prs": pr_rows(prs, orch, green_clock, now), "brakes": brakes(orch, now)}
-
-
-def read_labels(agents_file, errors):
-    try:
-        if agents_file and os.path.exists(agents_file):
-            with open(agents_file, encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        errors.append("agents file: %s" % e)
-    return {}
+    return {"agents": agent_rows(orch, read_coordinator_agents(now), [], now),
+            "prs": pr_rows(prs, orch, green_clock, now)}
 
 
 class Gh:
@@ -61,39 +39,22 @@ class Gh:
             errors.append("gh: %s" % e)
 
 
-def refresh_once(agents_file, gh, progress):
-    """One pass; `progress` is a one-slot dict {"at", "value"} owned by the loop."""
+def refresh_once(gh):
     errors = []
     gh.poll(errors)
-    labels = read_labels(agents_file, errors)
-    stamp_done(labels, agents_file)
-    containers, watchers = read_containers(), read_watchers()
-    lk = read_lock(labels)
-    status = read_orchestrator()
-    if time.time() - progress["at"] > PROGRESS_EVERY_S:
-        try:
-            progress["value"] = read_progress()
-        except Exception as e:
-            errors.append("progress: %s" % e)
-        progress["at"] = time.time()
-    orch = add_last_steps(clean_orch(status, {p["number"] for p in gh.prs} if gh.ok else None))
-    prs = with_why(gh.prs, orch)
-    with lock:
-        state.update(updated=int(time.time()), progress=progress["value"], prs=prs, watchers=watchers,
-                     containers=containers, merged=gh.merged, usage=read_usage(), orchestrator=orch,
-                     coordinator=read_coordinator(), lock=lk, buildtime=None, disk=disk_view())
-    agents = read_agents(labels, containers, lk)
+    orch = clean_orch(read_orchestrator(), {p["number"] for p in gh.prs} if gh.ok else None)
     try:
-        board = build_board(orch, gh.prs, agents)
+        board = build_board(orch, gh.prs)
     except Exception as e:
         board = state["board"]
         errors.append("quadro: %s" % e)
     with lock:
-        state.update(agents=agents, errors=errors, board=board)
+        state.update(updated=int(time.time()), prs=gh.prs, merged=gh.merged,
+                     orchestrator=orch, board=board, errors=errors)
 
 
-def refresh_loop(agents_file):
-    gh, progress = Gh(), {"at": 0.0, "value": None}
+def refresh_loop():
+    gh = Gh()
     while True:
-        refresh_once(agents_file, gh, progress)
+        refresh_once(gh)
         time.sleep(LOOP_S)

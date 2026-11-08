@@ -66,6 +66,8 @@ MSG_TYPES = frozenset({
     # the owner, from the dashboard (harness/ownerchat.py); additive, so the
     # wire version stays 1
     "owner_ask",
+    # the console run's answer to the owner (harness/console.py); additive
+    "console_reply",
     # wake events, sent by the daemon
     "plan_request", "plan_ready", "task_done", "qa_fail", "agent_dead",
     "pool_under_floor",
