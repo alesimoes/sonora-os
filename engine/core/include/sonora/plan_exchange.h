@@ -58,6 +58,16 @@ public:
         return plan_.load(std::memory_order_seq_cst);
     }
 
+    // --- graph workers (ADR-0063 §4) ---
+    // A worker the audio thread abandoned at a deadline may still be reading
+    // a plan blocks later, so it is not covered by the block count. While
+    // any hold is taken nothing retired is freed, not even after
+    // deactivate(). A holder takes it before it looks for the plan it will
+    // read, and that plan must be one the audio thread loaded after the
+    // hold (Session checks its open flag after hold()).
+    void hold() noexcept SONORA_RT { holds_.fetch_add(1, std::memory_order_seq_cst); }
+    void release() noexcept SONORA_RT { holds_.fetch_sub(1, std::memory_order_seq_cst); }
+
     // --- publisher: one non-real-time thread ---
     // Epochs for the plans this exchange will carry, from 1; 0 is "none".
     uint64_t next_epoch() { return ++last_epoch_; }
@@ -96,6 +106,7 @@ private:
 
     alignas(64) std::atomic<uint64_t> blocks_{0};
     alignas(64) std::atomic<PlaybackPlan*> plan_{nullptr};
+    alignas(64) std::atomic<uint32_t> holds_{0};
     Retired retired_[kRetireCapacity] = {};
     std::size_t retired_count_ = 0;
     uint64_t last_epoch_ = 0;

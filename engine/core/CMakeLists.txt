@@ -48,6 +48,13 @@ foreach(_src IN LISTS _sonora_core_graph_tests)
   add_test(NAME ${_name} COMMAND ${_exe})
 endforeach()
 
+# ADR-0063 through Session::process(): real workers equal serial bit for bit
+# with no heap on the audio thread, drops never touch the take, a drop ramps
+# in its own buffer, a pool that cannot start fails creation.
+add_executable(test_session_parallel tests/test_session_parallel.cpp)
+target_link_libraries(test_session_parallel PRIVATE sonora_core Threads::Threads)
+add_test(NAME session_parallel COMMAND test_session_parallel)
+
 add_executable(test_session_process tests/test_session_process.cpp)
 target_link_libraries(test_session_process PRIVATE sonora_core)
 add_test(NAME session_process COMMAND test_session_process)

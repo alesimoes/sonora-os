@@ -13,6 +13,11 @@ Local CI context: `sonora-engine`. Agents: rt-engineer, rt-safety-auditor.
 - ADR-0009: immutable edit state, undo = pointer, plan swap, takes close in-band.
 - ADR-0012: plugin hosting; audio thread never waits.
 - ADR-0016: loop-record take model. ADR-0022/0023: sends, track structure.
+- ADR-0063: the graph by levels, help-first workers (`graph_workers`, default
+  0 = serial), drops ramped and counted. A worker abandoned at a deadline
+  may run blocks later: nothing writes its node's index, buffer or track until
+  it returns (`graph_session.cpp` fence); test late workers through
+  `SessionTestAccess::claim`, never with time.
 - ADR-0008: neutral modules are standard C++17 only.
 - RT rules: `CLAUDE.md` "Rules for the real-time path".
 
