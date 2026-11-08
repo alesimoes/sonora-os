@@ -89,3 +89,13 @@ Single PR title: ui.editing.clip_groups: Loop Clip... dialog and ADR-0098 (loop 
 - [ ] section 7 tests pass (commands and output in the PR)
 - [ ] screenshot committed and opened
 - [ ] `tools/pre-pr.sh` clean
+
+## Replan (2026-11-08): Main.qml is held by plugins.offline
+
+The daemon refused the dialog task: `ui/qt/qml/Main.qml` overlaps active
+feature plugins.offline. This feature now ships only ADR-0098 (which still
+decides the Loop Clip... dialog, section 2) and the clip.loop argument tests in
+`ui/qt/tests/test_clipboard.cpp`. The dialog itself (Main.qml, scene,
+screenshot) is a BACKLOG follow-up that starts after plugins.offline merges.
+`depends_on_feature` is dropped; the PR is partial and its title says so.
+Status: approved
