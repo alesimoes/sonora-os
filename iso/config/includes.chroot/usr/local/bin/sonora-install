@@ -2,8 +2,9 @@
 # sonora-install: whole-disk install of the running SonoraOS stick (ADR-0032).
 #
 # Copies the squashfs the stick booted, so the installed system is the tested
-# image. The exit codes and the "STEP n/N name" lines are the interface; the
-# screens only call this script.
+# image. Layout (ADR-0090, arithmetic in install-layout.sh): (BIOS boot,) ESP,
+# sonora-root 16 GiB, sonora-swap (formatted, never enabled on this machine),
+# sonora-data (the rest, at /home/sonora/Sessions).
 #
 #   sonora-install [--yes] [--allow-removable] [--select-only] [--list] [--target DISK]
 #
@@ -11,14 +12,11 @@
 # exits 0; it opens nothing for writing. Screens use it to offer the choice.
 #
 # Sessions on the running stick (/home/sonora/Sessions, which is the stick's
-# persistence overlay when there is one) are copied to the installed system in
+# persistence overlay when there is one) are copied to the data partition in
 # step 4 and checked file by file with SHA-256 in step 7. The stick's copy is
-# only ever read. A recording that is still running while the copy happens
-# changes files under the checksum list; that fails with exit 11 and the
-# operator stops recording and runs the install again.
+# only ever read. A take still recording during the copy fails with exit 11.
 #
-# Screens (the tty2 front end sonora-install-tty, a Qt page later) need only
-# three things from this program, none of which is a private detail:
+# Screens (sonora-install-tty, a Qt page later) need only these, none private:
 #   - progress: stdout lines "STEP n/7 name", n = 1..7, in order;
 #   - result: the exit code below; the last line on stderr names the reason;
 #   - the erase confirmation is theirs to ask; they pass --yes after it.
@@ -44,8 +42,10 @@ SYSBLOCK=${SONORA_SYSBLOCK:-/sys/block}
 # full line; tools/test-installer.sh keeps the two in step.
 CMDLINE=${SONORA_CMDLINE:-quiet splash threadirqs}
 LIVE_PKGS="live-boot live-boot-initramfs-tools live-config live-config-systemd"
-ESP_MIB=512
 STEPS=7
+# The layout library; the variable exists so the container test runs it from
+# the source tree.
+LIB=${SONORA_LIB:-/usr/local/lib/sonora}
 
 # Where the running system keeps its sessions; the target always gets the
 # standard path. The variable exists for the container test only.
@@ -63,8 +63,13 @@ DEV=
 EFI=0
 ROOT_UUID=
 ESP_UUID=
+SWAP_UUID=
+DATA_UUID=
 ROOTP=
 ESPP=
+SWAPP=
+DATAP=
+PLAN=
 
 step() { echo "STEP $1/$STEPS $2"; }
 fail() { echo "sonora-install: $2" >&2; exit "$1"; }
@@ -80,7 +85,7 @@ in_target() {
 
 cleanup() {
     if [ -n "$WORK" ]; then
-        for m in run sys proc dev/pts dev boot/efi; do
+        for m in run sys proc dev/pts dev boot/efi home/sonora/Sessions; do
             mountpoint -q "$WORK/root/$m" 2>/dev/null && umount "$WORK/root/$m"
         done
         mountpoint -q "$WORK/root" 2>/dev/null && umount "$WORK/root"
@@ -230,51 +235,67 @@ attach() {
     esac
 }
 
+plan_get() { printf '%s\n' "$PLAN" | sed -n "s/^$1=//p"; }
+# Uncompressed size of the image in MiB, rounded up. unsquashfs -s gives only
+# the compressed size, so the regular files of the long listing are summed.
+image_mib() {
+    unsquashfs -lls "$SQUASHFS" 2>/dev/null |
+        awk '/^-/ { b += $3 } END { if (NR == 0) exit 1; printf "%d\n", (b + 1048575) / 1048576 }'
+}
+
 partition() {
     step 2 partition
     hook_guard "$TARGET"
+    [ -r "$SQUASHFS" ] || fail 6 "$SQUASHFS not readable"
     attach
-    # The BIOS boot partition exists only where it is needed.
-    if [ $EFI -eq 1 ]; then
-        layout="size=${ESP_MIB}MiB, type=U, name=ESP
-type=L, name=sonora-root"
-        espn=1
-        rootn=2
-    else
-        layout="size=1MiB, type=21686148-6449-6E6F-744E-656564454649, name=bios
-size=${ESP_MIB}MiB, type=U, name=ESP
-type=L, name=sonora-root"
-        espn=2
-        rootn=3
-    fi
+    bytes=$(blockdev --getsize64 "$DEV") || fail 4 "cannot read the size of $DEV"
+    # SONORA_RAM_MIB exists so the test plans a fixed swap size.
+    ram=${SONORA_RAM_MIB:-$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo)}
+    PLAN=$(layout_plan $((bytes / 1048576)) "$ram" "$EFI") || fail 4 "the layout refused $TARGET (reason above)"
+    # Checked before anything is erased: an image that cannot fit costs nothing.
+    img=$(image_mib) || fail 4 "cannot read the uncompressed size of $SQUASHFS"
+    layout_fits_root "$img" "$(plan_get root_mib)" || fail 4 "the image does not fit the root partition"
     wipefs -a "$DEV" >/dev/null 2>&1
-    printf 'label: gpt\n%s\n' "$layout" | sfdisk --quiet "$DEV" ||
+    printf '%s\n' "$PLAN" | sed -n '/^label: gpt$/,$p' | sfdisk --quiet "$DEV" ||
         fail 4 "sfdisk failed on $DEV"
     partprobe "$DEV" 2>/dev/null
-    ESPP=$(part_name "$DEV" $espn)
-    ROOTP=$(part_name "$DEV" $rootn)
-    wait_node "$ESPP" || fail 4 "partitions did not appear"
-    wait_node "$ROOTP" || fail 4 "partitions did not appear"
+    ESPP=$(part_name "$DEV" "$(plan_get esp_part)")
+    ROOTP=$(part_name "$DEV" "$(plan_get root_part)")
+    SWAPP=$(part_name "$DEV" "$(plan_get swap_part)")
+    DATAP=$(part_name "$DEV" "$(plan_get data_part)")
+    for p in "$ESPP" "$ROOTP" "$SWAPP" "$DATAP"; do
+        wait_node "$p" || fail 4 "partition $p did not appear"
+    done
 }
+
+new_uuid() { cat /proc/sys/kernel/random/uuid; }
 
 format() {
     step 3 format
-    ROOT_UUID=$(cat /proc/sys/kernel/random/uuid)
-    volid=$(tr -d - </proc/sys/kernel/random/uuid | cut -c1-8 | tr a-f A-F)
-    mkfs.ext4 -q -F -L sonora-root -U "$ROOT_UUID" "$ROOTP" || fail 5 "mkfs.ext4 failed"
+    ROOT_UUID=$(new_uuid)
+    SWAP_UUID=$(new_uuid)
+    DATA_UUID=$(new_uuid)
+    volid=$(new_uuid | tr -d - | cut -c1-8 | tr a-f A-F)
+    mkfs.ext4 -q -F -L sonora-root -U "$ROOT_UUID" "$ROOTP" || fail 5 "mkfs.ext4 of sonora-root failed"
     mkfs.vfat -F 32 -n SONORAEFI -i "$volid" "$ESPP" >/dev/null || fail 5 "mkfs.vfat failed"
     ESP_UUID=$(printf '%s' "$volid" | sed 's/^\(....\)\(....\)$/\1-\2/')
+    # Formatted only: a swapon here would page the installing host onto this disk.
+    mkswap -L sonora-swap -U "$SWAP_UUID" "$SWAPP" >/dev/null || fail 5 "mkswap of sonora-swap failed"
+    # -m 1: a root reserve protects nothing on a data-only filesystem (ADR-0090 4).
+    mkfs.ext4 -q -F -m 1 -T largefile -L sonora-data -U "$DATA_UUID" "$DATAP" ||
+        fail 5 "mkfs.ext4 of sonora-data failed"
 }
 
 copy() {
     step 4 copy
-    [ -r "$SQUASHFS" ] || fail 6 "$SQUASHFS not readable"
     WORK=$(mktemp -d /tmp/sonora-install.XXXXXX) || fail 6 "no temp directory"
     mkdir "$WORK/root"
     mount -o noatime "$ROOTP" "$WORK/root" || fail 6 "cannot mount $ROOTP"
     unsquashfs -f -n -d "$WORK/root" "$SQUASHFS" >/dev/null || fail 6 "unsquashfs failed"
     mkdir -p "$WORK/root/boot/efi"
     mount "$ESPP" "$WORK/root/boot/efi" || fail 6 "cannot mount the ESP"
+    mkdir -p "$WORK/root$SESSIONS_DEST" || fail 6 "cannot create $SESSIONS_DEST on the target"
+    mount -o noatime "$DATAP" "$WORK/root$SESSIONS_DEST" || fail 6 "cannot mount sonora-data"
     carry_sessions
 }
 
@@ -294,9 +315,7 @@ carry_sessions() {
     fi
     manifest "$SESSIONS" >"$WORK/sessions.sha" || fail 11 "cannot read the sessions in $SESSIONS"
     dest=$WORK/root$SESSIONS_DEST
-    mkdir -p "$dest" || fail 11 "cannot create $SESSIONS_DEST on the target"
     cp -a "$SESSIONS/." "$dest/" || fail 11 "copying the sessions failed (target full?)"
-    chown --reference="$SESSIONS" "$dest" 2>/dev/null
     echo "INFO carried over $(grep -c . "$WORK/sessions.sha") session files"
 }
 
@@ -319,7 +338,17 @@ configure() {
     cat >"$r/etc/fstab" <<FSTAB || fail 7 "cannot write fstab"
 UUID=$ROOT_UUID / ext4 noatime,errors=remount-ro 0 1
 UUID=$ESP_UUID /boot/efi vfat umask=0077 0 2
+UUID=$SWAP_UUID none swap sw 0 0
+UUID=$DATA_UUID $SESSIONS_DEST ext4 noatime,errors=remount-ro 0 2
 FSTAB
+    # No nofail above, and the engine needs the mount: without its data
+    # partition it must not record into the bare mount point on root (ADR-0090 5).
+    dropin=$r/etc/systemd/system/sonora-engine.service.d
+    mkdir -p "$dropin" || fail 7 "cannot create $dropin"
+    cat >"$dropin/sessions-mount.conf" <<DROPIN || fail 7 "cannot write the engine mount drop-in"
+[Unit]
+RequiresMountsFor=$SESSIONS_DEST
+DROPIN
     # An empty id is filled in by systemd at first boot, so clones differ.
     : >"$r/etc/machine-id"
     echo sonora >"$r/etc/hostname"
@@ -342,6 +371,10 @@ GRUBCFG
         fi
     done
     in_target update-initramfs -u -k all >/dev/null || fail 7 "update-initramfs failed"
+    # The engine's user and its ids are the target's, not the stick's.
+    in_target chown -R sonora:sonora "$SESSIONS_DEST" || fail 7 "cannot give $SESSIONS_DEST to sonora"
+    # Weekly trim instead of the discard mount option, which costs write latency.
+    in_target systemctl enable fstrim.timer >/dev/null 2>&1 || fail 7 "cannot enable fstrim.timer"
 }
 
 bootloader() {
@@ -381,12 +414,19 @@ selfcheck() {
     sed -n 's/^UUID=\([^ ]*\) .*/\1/p' "$r/etc/fstab" >"$WORK/uuids"
     while read -r u; do
         found=0
-        for p in "$ROOTP" "$ESPP"; do
+        for p in "$ROOTP" "$ESPP" "$SWAPP" "$DATAP"; do
             [ "$(blkid -s UUID -o value "$p")" = "$u" ] && found=1
         done
         [ $found -eq 1 ] || check_fail "fstab UUID $u does not resolve"
     done <"$WORK/uuids"
-    [ "$(grep -c . "$WORK/uuids")" -eq 2 ] || check_fail "fstab does not name both partitions"
+    [ "$(grep -c . "$WORK/uuids")" -eq 4 ] || check_fail "fstab does not name root, ESP, swap and data"
+    data_line=$(grep "^UUID=$DATA_UUID $SESSIONS_DEST ext4 " "$r/etc/fstab") ||
+        check_fail "fstab does not mount sonora-data at $SESSIONS_DEST"
+    case $data_line in *nofail*) check_fail "the sonora-data mount has nofail" ;; esac
+    [ "$(findmnt -n -o SOURCE "$r$SESSIONS_DEST" 2>/dev/null)" = "$DATAP" ] ||
+        check_fail "sonora-data is not mounted at $SESSIONS_DEST"
+    [ -s "$r/etc/systemd/system/sonora-engine.service.d/sessions-mount.conf" ] ||
+        check_fail "no RequiresMountsFor drop-in for the engine"
     if [ $EFI -eq 1 ]; then
         ls "$r"/boot/efi/EFI/sonora/*.efi >/dev/null 2>&1 || check_fail "no loader under EFI/sonora"
         # Secure Boot (ADR-0034): the signed shim and signed GRUB, not a bare grub.
@@ -401,9 +441,13 @@ selfcheck() {
 }
 
 [ "$(id -u)" = 0 ] || fail 10 "must run as root"
-for t in sfdisk wipefs mkfs.ext4 mkfs.vfat unsquashfs mount blkid findmnt lsblk losetup; do
+for t in sfdisk wipefs mkfs.ext4 mkfs.vfat mkswap unsquashfs mount blkid blockdev findmnt lsblk losetup; do
     command -v "$t" >/dev/null 2>&1 || fail 10 "missing tool: $t"
 done
+# dash exits on a "." it cannot open, so the check comes first.
+[ -r "$LIB/install-layout.sh" ] || fail 10 "missing library: $LIB/install-layout.sh"
+# shellcheck source=/dev/null
+. "$LIB/install-layout.sh"
 
 if [ $LIST -eq 1 ]; then list_candidates; exit 0; fi
 select_target
