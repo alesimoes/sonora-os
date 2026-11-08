@@ -12,8 +12,8 @@ Acceptance: a nightly run shows the boot step(s) green or red with the serial lo
 N/A - no UI.
 
 ## 3. Contracts and integrations
-ADR-0095 (reserved), written in the same PR as the workflow change. Decision: do NOT add a second workflow that rebuilds the ISO (30-50 runner minutes twice). Add the QEMU boot steps to the existing `usb-writer` nightly job, which already builds `iso/sonora.iso`, renamed "ISO: USB writer and QEMU boots". Rejected: separate workflow with its own ISO build (double cost); ISO as a cross-job artifact (about 1 GB upload/download per night for no gain); running on every PR (violates ADR-0061, tens of minutes).
-Failing loudly: boot steps are not `continue-on-error`; if `/dev/kvm` is absent the default boot still runs under TCG (multiplier x8 from `qemu-accel.sh`) and the `--gui*` boots run only when KVM exists, the skip printed as a `::warning`, never silent. A red nightly opens a fix task (CLAUDE.md), it never blocks a PR.
+ADR-0095 (reserved), written in the same PR. Target shape: boot steps inside nightly.yml's `usb-writer` job, sharing its ISO build. INTERIM (this PR): a new `.github/workflows/nightly-boot.yml` (schedule + `workflow_dispatch`) that builds the ISO and runs `tools/test-boot-qemu.sh` unchanged, because the daemon found `nightly.yml` held by active feature architecture.adr0007.m1_docs and `tools/test-boot-qemu.sh` by pr-442. Cost: a second ISO build (30-50 runner min) per night until a follow-up BACKLOG line folds the steps into usb-writer and deletes the file, after those two land. Rejected: ISO as cross-job artifact (~1 GB/night); every PR (ADR-0061); waiting for both features (the test stays unrun).
+Failing loudly: boot steps not `continue-on-error`; without `/dev/kvm` only the default boot runs (TCG) and a `::warning` names the skipped `--gui*` boots. A red nightly opens a fix task; it never blocks a PR.
 Reserved numbers: ADR 95, protocol none, format none.
 
 ## 4. DAW core
@@ -26,7 +26,7 @@ N/A.
 N/A.
 
 ## 7. Tests
-The deliverable is the CI step. `tools/test-boot-qemu.sh` is reused unchanged unless the runner needs a small fix (artifact path for `serial.log`). Run `shellcheck` and `tools/pre-pr.sh`.
+The deliverable is the CI step. `tools/test-boot-qemu.sh` is reused UNCHANGED (pr-442 owns it); the workflow finds the serial logs by glob. Run `shellcheck` and `tools/pre-pr.sh`.
 
 ## 8. QA
 Trigger the nightly with `workflow_dispatch` is not available (schedule only): if the workflow has no dispatch trigger, add `workflow_dispatch:` so the first run can be exercised by hand. Check timings of the first real run.
