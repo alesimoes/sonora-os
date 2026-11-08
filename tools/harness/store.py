@@ -55,6 +55,7 @@ OPEN_PR_STATES = ("pr_open", "ci_fix")
 # (lead, architect, janitor) mostly last 1-2 minutes; counting them let 28
 # of them use up an hour's budget while 3 engineers worked (2026-11-08).
 WORK_ROLES = ("engineer", "tester", "integrator", "fixer", "principal")
+PLANNER_ROLES = ("planner",)
 NUMBER_KINDS = ("adr", "protocol", "format", "window")
 
 SCHEMA_VERSION = 1

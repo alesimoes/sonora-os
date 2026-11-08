@@ -8,6 +8,7 @@
 //                  [--out report.json]
 //   sonora-analyze key ...       (app/cmd_key.cpp, or a stub: exit 1)
 //   sonora-analyze timbre ...    (app/cmd_timbre.cpp, or a stub: exit 1)
+//   sonora-analyze tone ...      (app/cmd_tone.cpp, or a stub: exit 1; ADR-0072)
 //
 // The mastering pass measures the bounce (mix_analysis.h), applies the mastering rules
 // (mastering_rules.h) and writes a JSON report: the measurements, the
@@ -65,7 +66,8 @@ Value settings_json(const std::vector<float>& values) {
 int usage() {
     std::fputs("usage: sonora-analyze mastering <bounce.wav> [--target-lufs N] [--ceiling N] [--out report.json]\n"
                "       sonora-analyze key ...\n"
-               "       sonora-analyze timbre ...\n",
+               "       sonora-analyze timbre ...\n"
+               "       sonora-analyze tone ...\n",
                stderr);
     return 2;
 }
@@ -174,6 +176,7 @@ const Command kCommands[] = {
     {"mastering", sonora::analyze::app::run_mastering_command},
     {"key", sonora::analyze::app::run_key_command},
     {"timbre", sonora::analyze::app::run_timbre_command},
+    {"tone", sonora::analyze::app::run_tone_command},
 };
 
 }  // namespace

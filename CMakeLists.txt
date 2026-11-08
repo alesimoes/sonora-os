@@ -190,6 +190,8 @@ add_subdirectory(drivers/fake)
 # common/platform PRIVATE so engine/core still cannot include a platform
 # header (ADR-0007 §1).
 add_subdirectory(engine/plugin_client)
+# The plug-in editor service contract and its fake (ADR-0088); header-only.
+add_subdirectory(engine/editor_service)
 add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)
 add_subdirectory(engine/control)
@@ -219,6 +221,7 @@ sonora_label_module_tests(contracts/plugin contracts)
 sonora_label_module_tests(plugins/host pluginhost)
 sonora_label_module_tests(engine/core core)
 sonora_label_module_tests(engine/plugin_client plugin_client)
+sonora_label_module_tests(engine/editor_service control)
 sonora_label_module_tests(engine/control control)
 sonora_label_module_tests(engine/app app)
 sonora_label_module_tests(drivers/support drivers)

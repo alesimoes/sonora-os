@@ -33,7 +33,7 @@ from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
-from harness.store import WORK_ROLES, Store  # noqa: E402
+from harness.store import PLANNER_ROLES, WORK_ROLES, Store  # noqa: E402
 from harness.train import Train  # noqa: E402
 
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer",
@@ -83,6 +83,7 @@ class Orchestrator:
         self.usage_pause_until = 0.0
         self.dry_logged = set()
         self.last_gaps = {}
+        self.last_holds = {}
         self.flow = Flow(self)
         self.train = Train(self)
         # The watchdog over runs, lock, queues, PRs and disk; the tests hand
@@ -220,9 +221,12 @@ class Orchestrator:
             "plan", scheduler.plan, self.store.tasks(), runs, self.cfg, now,
             stop=stop, usage_pause_until=self.usage_pause_until,
             paused=paused, hour_budget=self.cfg.max_runs_per_hour
-            - self.store.runs_started_since(now - 3600, WORK_ROLES)
+            - self.store.runs_started_since(now - 3600, WORK_ROLES),
+            planner_budget=self.cfg.max_planner_runs_per_hour
+            - self.store.runs_started_since(now - 3600, PLANNER_ROLES)
         ) or scheduler.Plan()
         self.last_gaps = plan.gaps
+        self.last_holds = plan.holds
         if self.shadow:
             self.shadow.record(self.store.tasks(), plan.launches,
                                self.cfg.floors)
@@ -254,7 +258,9 @@ class Orchestrator:
             self.store, self.cfg, now, runs, self.last_gaps,
             "dry-run" if self.dry_run else "live", stop, stop_now,
             self.usage_pause_until, paused,
-            self.store.runs_started_since(now - 3600, WORK_ROLES))
+            self.store.runs_started_since(now - 3600, WORK_ROLES),
+            self.store.runs_started_since(now - 3600, PLANNER_ROLES),
+            self.last_holds)
         data["train"] = self.train.rows()
         data["nightly"] = nightly_watch.status(self.store)
         data["train_slots"] = self.cfg.train_slots

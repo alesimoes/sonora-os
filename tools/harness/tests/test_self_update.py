@@ -132,6 +132,17 @@ class SelfUpdate(unittest.TestCase):
             os.path.join(self.daemon, "planning/plans/x.md")))
         self.assertIn("self_update_rebased", self.store.kinds())
 
+    def test_local_commit_outside_plans_is_alerted_not_rebased(self):
+        write(self.daemon, "engine/y.cpp", "local\n")
+        git(self.daemon, "add", "-A")
+        git(self.daemon, "commit", "-qm", "stray product edit")
+        self.push("tools/harness/train.py", "v2\n")
+        self.assertFalse(self.up.ready(1000))
+        ev = [r for r in self.store.rows if r[1] == "self_update_blocked"]
+        self.assertIn("ALERT", ev[0][2])
+        self.assertIn("engine/y.cpp", ev[0][2])
+        self.assertNotIn("self_update_rebased", self.store.kinds())
+
     def test_a_conflicting_local_commit_blocks_and_reports(self):
         write(self.daemon, "tools/harness/train.py", "local\n")
         git(self.daemon, "add", "-A")

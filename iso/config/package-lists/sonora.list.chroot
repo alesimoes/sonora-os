@@ -20,8 +20,27 @@ alsa-utils
 # exist: "Cannot connect to server socket". The hook makes pipewire-jack the
 # system-wide JACK instead.
 
-# Firmware, so unknown hardware has a chance of working on first boot.
-firmware-linux
+# Firmware, so unknown hardware has a chance of working on first boot. Listed
+# by name: auto/config turns live-build's firmware auto-inclusion off, because
+# it installed every archive package with a file under lib/firmware, and the
+# b43 installers among them download the Broadcom blob from github.com during
+# the build (a 504 there failed the nightly of 2026-11-08). No metapackage
+# either: firmware-linux's dependency set is Debian's choice, not this list's.
+firmware-linux-free
+firmware-misc-nonfree
+firmware-realtek
+firmware-atheros
+firmware-iwlwifi
+firmware-brcm80211
+firmware-mediatek
+firmware-libertas
+firmware-ti-connectivity
+firmware-bnx2
+firmware-bnx2x
+firmware-amd-graphics
+firmware-intel-graphics
+firmware-intel-misc
+firmware-intel-sound
 firmware-sof-signed
 
 # Storage for session disks.
