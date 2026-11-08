@@ -17,6 +17,7 @@ the rest wait for a slot. GitHub rate limits pause every gh call.
 """
 import json
 
+from . import prpending
 from .forge import ForgeError, RateLimited
 from .train_bundle import BundleMixin
 
@@ -141,9 +142,7 @@ class Train(BundleMixin):
         owned = {f["pr"] for f in self.o.store.features() if f["pr"]}
         # A feature's own branch is its PR in the making (push done, number
         # not yet recorded): the sweep must not take it from under it.
-        mine = {x["branch"] for x in (self.o.store.features()
-                                      + self.o.store.tasks())
-                if x["branch"] and not x["pr"]} if auto else set()
+        mine = prpending.in_the_making(self.o.store) if auto else set()
         done = []
         for p in self.o.forge.list_prs():
             n = p["number"]
