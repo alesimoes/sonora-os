@@ -32,7 +32,7 @@ class Title(unittest.TestCase):
 
     def test_status_runs_carry_title_agent_branch_pr(self):
         class Store:
-            def tasks(self): return [{"id": "t1", "brief": "Fazer X\nmais", "kind": "fix", "agent": "fixer",
+            def tasks(self, states=None, kind=None): return [{"id": "t1", "brief": "Fazer X\nmais", "kind": "fix", "agent": "fixer",
                                       "branch": "b", "pr": 7, "state": "building", "track": None,
                                       "created": 0, "attempts": 0}]
             def features(self): return []
