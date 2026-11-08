@@ -53,7 +53,9 @@ def _merge_remote(ok, worktree, branch):
     if _contains(ok, worktree, "FETCH_HEAD", "HEAD"):
         return
     try:
-        ok(["git", "merge", "--no-edit", "FETCH_HEAD"], worktree, 300)
+        ok(["git", "-c", "user.name=sonora-harness",
+            "-c", "user.email=harness@sonora.invalid",
+            "merge", "--no-edit", "FETCH_HEAD"], worktree, 300)
     except Exception:
         try:
             ok(["git", "merge", "--abort"], worktree, 60)
@@ -73,7 +75,8 @@ def push_feature_branch(ok, worktree, branch, base_ref="origin/main",
             ok(["git", "push", "origin", f"{branch}:{branch}"], worktree, 300)
             return PUSHED
         ok(["git", "fetch", "origin", branch], worktree, 300)
-        if _patch_of(ok, worktree, base_ref, "FETCH_HEAD") ==                 _patch_of(ok, worktree, base_ref, branch):
+        theirs = _patch_of(ok, worktree, base_ref, "FETCH_HEAD")
+        if theirs == _patch_of(ok, worktree, base_ref, branch):
             return SAME
         _merge_remote(ok, worktree, branch)
         try:
