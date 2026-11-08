@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "feature": "plugins.host.editors",
+  "backlog_ids": ["plugins.host.editors"],
+  "track": "plugin",
+  "feature_branch": "feat/plugins.host.editors",
+  "depends_on_feature": null,
+  "reserved": {"adr": 88, "protocol": null, "formats": []},
+  "adr": "ADR-0088",
+  "tasks": [
+    {
+      "id": "contract",
+      "kind": "contract",
+      "title": "ADR-0088 and the engine-side editor service interface",
+      "brief": "The host side of editors is on main (#322, #339: plugins/host editor_x11.cpp, HostControl OpenEditor/EditorOpened/EditorFailed/EditorClosed, HostSupervisor tracks open_editors_). Missing: nothing in engine/control or contracts/api lets the UI open one. Write brain/decisions/ADR-0088-plugin-editor-launch.md (its INDEX line goes in the PR description, not the INDEX file, other features edit it). Decide: (1) the UI asks the engine, the engine asks the host; the UI never talks to a host; (2) one editor per insert, a second request raises the existing window; (3) states reported to the UI: Closed, Opening, Open, Failed(reason text from EditorFailed); an editor that cannot open (no DISPLAY, LV2 UI, host without X11) shows the reason and the UI offers the generic editor, never a blank window; (4) the parent token is empty on the appliance and on WSLg (parentless toplevel); (5) the editor lives and dies with the host: host crash or chain removal reports Closed; (6) values moved in the editor reach the document through the existing ParamTouched/gesture path, no new value path; (7) wire: two api commands (OpenPluginEditor{track,slot}, ClosePluginEditor{track,slot}) and one state event (PluginEditorState{track,slot,state,reason}) need a protocol number: the coordinator reserves the next free one when it dispatches the engine slice; this contract PR carries the ADR and the header-only engine interface, no wire. Rejected: embedding the plugin window in Qt (X11 reparenting under Wayland labwc is fragile, ADR-0010); generic editor only; polling plugin state. Unverified: behaviour under WSLg and labwc (researcher measures). Add engine/control/include/sonora/control/plugin_editor_service.h: enum class EditorState{Closed,Opening,Open,Failed}; struct EditorStatus{state, reason}; interface class PluginEditorService{open(track,slot)->EditorStatus; close(track,slot); status(track,slot)->EditorStatus; set_listener(...)}; inline FakePluginEditorService and a contract test (open twice raises, not duplicates; failed carries reason; close of closed is ignored; host-stop reports Closed).",
+      "files": [
+        "brain/decisions/ADR-0088-plugin-editor-launch.md",
+        "engine/control/include/sonora/control/plugin_editor_service.h",
+        "engine/control/tests/test_plugin_editor_service.cpp"
+      ],
+      "depends_on": [],
+      "agent": "plugin-engineer",
+      "grade": "M/high",
+      "accept": ["ADR-0088 has Context, Decision, Rationale, Consequences, Alternatives rejected", "the contract test builds and passes under tools/micro-build.sh", "tools/pre-pr.sh reports no ADR number clash"]
+    },
+    {
+      "id": "engine",
+      "kind": "engine",
+      "title": "Engine opens, closes and reports editors through the host supervisor",
+      "brief": "Implement PluginEditorService over HostSupervisor in a new engine/control/src/plugin_editor_service.cpp (do not grow plugin_hosting.cpp past 500 lines): open/close become OpenEditor/CloseEditor; EditorOpened/Failed/Closed become EditorStatus; EditorClosed{HostStopping} and chain removal become Closed. Add the api commands and state event of ADR-0088 in a new contracts/api header (protocol number reserved by the coordinator: ask the lead before starting, never pick one) and route them in the control server, in-process and socket. Tests with the fake host and a codec round-trip. No change to plugins/host or HostControl, nothing on the audio path.",
+      "files": [
+        "engine/control/src/plugin_editor_service.cpp",
+        "engine/control/src/engine_control_server_editors.cpp",
+        "engine/control/CMakeLists.txt",
+        "contracts/api/include/sonora/api/plugin_editor_messages.h",
+        "contracts/api/tests/test_plugin_editor_messages.cpp",
+        "engine/control/tests/test_plugin_editor_service_host.cpp"
+      ],
+      "depends_on": ["contract"],
+      "agent": "plugin-engineer",
+      "grade": "L/high",
+      "accept": ["engine control tests pass with the fake host", "protocol round-trip test passes", "no file on the audio path is touched"]
+    },
+    {
+      "id": "ui",
+      "kind": "ui",
+      "title": "Open native editor from the insert slot, with reason and generic fallback",
+      "brief": "In ui/qt: an Open editor action on an insert with has_editor, bound to OpenPluginEditor; show Opening/Open on the slot; on Failed show the reason in the insert panel and offer the generic editor (spec ui-design.md, Plugin window chrome, States). The plugin window is its own toplevel; chrome work (D10 ui.design.plugin_chrome) is a separate item. New files only plus one small hook in insert_controller.cpp. Fake-engine test; regenerate and commit the screenshots of the scenes touched under docs/images and open them.",
+      "files": [
+        "ui/qt/src/insert_editor_controller.h",
+        "ui/qt/src/insert_editor_controller.cpp",
+        "ui/qt/qml/EditorStatusBanner.qml",
+        "ui/qt/tests/test_insert_editor_controller.cpp",
+        "docs/images/insert-editor-*.png"
+      ],
+      "depends_on": ["engine"],
+      "agent": "ui-engineer",
+      "grade": "M/med",
+      "accept": ["ui controller test passes with the fake engine", "screenshots committed and opened", "a failed open shows its reason and the generic editor button"]
+    }
+  ]
+}
