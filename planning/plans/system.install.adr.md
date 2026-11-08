@@ -11,7 +11,7 @@ Acceptance: `grep -n system.install.adr brain/decisions/ADR-0032*.md`.
 ## 2. Design
 N/A - no UI.
 ## 3. Contracts and integrations
-ADR: none new (reserved 89 left unused). Protocol/format: none.
+ADR: ADR-0089, a short pointer record closing the item by reference to ADR-0032. Protocol/format: none.
 ## 4. DAW core
 N/A - no engine work.
 ## 5. Plugins, DSP, host
@@ -30,4 +30,4 @@ N/A - docs only.
 Grouping: single item. One docs slice.
 | Slice | Agent | Difficulty | Risk | Tier | Sub-branch | Starts from | Files |
 |---|---|---|---|---|---|---|---|
-| close | distro-engineer | S | low | haiku | feat/system.install.adr | main | brain/decisions/ADR-0032-installer-our-own-thin-installer.md |
+| close | distro-engineer | S | low | haiku | feat/system.install.adr | main | brain/decisions/ADR-0032-installer-our-own-thin-installer.md (ADR-0089 and INDEX line done by architect) |
