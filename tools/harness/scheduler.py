@@ -62,6 +62,7 @@ class Config:
     principal_after_fixes: int = 2
     principal_after_hours: float = 3.0
     max_principals: int = 1
+    max_stall_resolvers: int = 1   # principal runs for stalled features
     max_open_prs: int = 10
     max_ready_unpr: int = 6
     max_active_features: int = 10   # features planned or built at once

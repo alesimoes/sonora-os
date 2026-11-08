@@ -119,6 +119,10 @@ def cmd_task(tid):
 
 
 def main(argv):
+    # The agent's pipe on Windows defaults to cp1252; the log showed mojibake.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     cmd, arg = (argv + [None, None])[:2]
     num = int(arg.lstrip("#")) if arg and arg.lstrip("#").isdigit() else None
     table = {"inbox": cmd_inbox, "status": cmd_status, "agents": cmd_agents, "prs": cmd_prs}

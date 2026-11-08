@@ -91,6 +91,12 @@ class SelfUpdate(unittest.TestCase):
         self.assertTrue(os.path.isabs(self.restarted[0][0]))
         self.assertIn("self_update", self.store.kinds())
 
+    def test_a_dashboard_only_change_moves_the_checkout(self):
+        # the dashboard is served from the daemon's checkout (2026-11-08)
+        new = self.push("tools/dashboard-static/console-core.js", "v2\n")
+        self.assertTrue(self.up.ready(1000))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
+
     def test_modified_tracked_files_block_the_update(self):
         self.push("tools/harness/train.py", "v2\n")
         write(self.daemon, "engine/x.cpp", "local edit\n")

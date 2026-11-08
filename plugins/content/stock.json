@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "adr": "ADR-0076",
+  "suite": "trixie",
+  "lv2_path": "/usr/lib/lv2",
+  "spdx_allow": [
+    "GPL-3.0-or-later",
+    "GPL-2.0-or-later",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-or-later",
+    "MIT",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause"
+  ],
+  "packages": [
+    {
+      "package": "lsp-plugins-lv2",
+      "version_pin_policy": "snapshot",
+      "spdx": "LGPL-3.0-or-later AND LGPL-2.1-or-later AND ISC",
+      "category": ["eq", "dynamics", "delay", "reverb", "modulation"],
+      "replaced_by": "eq",
+      "retire_when": "eq, compressor, gate, limiter, multiband, delay, chorus and phaser pass ADR-0011 section 3 and are installed by default"
+    },
+    {
+      "package": "dragonfly-reverb-lv2",
+      "version_pin_policy": "snapshot",
+      "spdx": "GPL-3.0-or-later AND GPL-2.0-or-later AND BSD-3-Clause",
+      "category": ["reverb"],
+      "replaced_by": "reverb",
+      "retire_when": "reverb passes ADR-0011 section 3 and is installed by default"
+    },
+    {
+      "package": "zam-plugins",
+      "version_pin_policy": "snapshot",
+      "spdx": "GPL-2.0-or-later",
+      "category": ["eq", "dynamics", "delay", "reverb", "saturation"],
+      "replaced_by": "tube",
+      "retire_when": "tube, saturator, compressor, gate, eq, delay and reverb pass ADR-0011 section 3 and are installed by default"
+    },
+    {
+      "package": "invada-studio-plugins-lv2",
+      "version_pin_policy": "snapshot",
+      "spdx": "GPL-2.0-or-later",
+      "category": ["eq", "dynamics", "delay", "reverb", "modulation", "saturation"],
+      "replaced_by": "delay",
+      "retire_when": "delay, compressor, phaser, tube, reverb and eq pass ADR-0011 section 3 and are installed by default"
+    }
+  ]
+}

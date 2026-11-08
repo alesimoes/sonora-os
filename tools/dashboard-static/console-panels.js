@@ -54,6 +54,7 @@ function renderAgents() {
 }
 
 function renderAttention() {
+  renderHarness();
   const q = C.data.attention;
   $("#atcount").textContent = q.length;
   if (!setHTML($("#attn"), q.length ? q.map((x, i) => `<div class="at ${x.level === "bad" ? "bad" : ""}">
@@ -66,6 +67,13 @@ function renderAttention() {
   document.querySelectorAll(".at .btn[data-i]").forEach(b => b.onclick = () => {
     setTarget(null); pane("chat"); send(q[b.dataset.i].button.command);
   });
+}
+
+function renderHarness() {
+  const h = C.data.harness || {n: 0, groups: []};
+  const open = document.querySelector("#hcare details")?.open;
+  $("#hcare").innerHTML = h.n ? `<details${open ? " open" : ""}><summary>harness cuidando <b>${h.n}</b></summary>` +
+    h.groups.map(g => `<div class="hc"><h4>${esc(g.title)}</h4><p>${esc(g.reason)}</p></div>`).join("") + "</details>" : "";
 }
 
 function renderTabs() {

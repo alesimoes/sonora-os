@@ -8,7 +8,7 @@ names a blocked feature, a PR open and not merging. These checks raise a
 dashboard alert for any task, feature or PR with no run and no progress
 past a bound, with the reason the daemon knows, and re-issue a lost wake.
 """
-from . import wakes
+from . import stall_resolver, wakes
 from .scheduler import HOLD
 from .supervisor_checks import (_active, _feature_has_run, _hms,
                                 _waiting_since, _why_not_launched)
@@ -39,6 +39,7 @@ def _has_run(sv, t):
 
 
 def stalled_tasks(sv, now):
+    stalled = []
     for t in sv.o.store.tasks(kind="work"):
         if t["state"] not in TASK_STATES or t["not_before"] >= HOLD:
             continue
@@ -48,14 +49,19 @@ def stalled_tasks(sv, now):
         age = _waiting_since(sv, t, now)
         if age <= sv.th.stall_alert_s:
             continue
+        stalled.append((t, age))
+    stall_resolver.resolve(sv, now, stalled)
+    for t, age in stalled:
         why = _last_event(sv, t["id"], ("claim_denied", "pre_pr_failed",
                                         "pr_open_failed", "pr_deferred",
                                         "reserve_failed", "launch_failed",
                                         "run_failed", "retry_later"))
+        care = stall_resolver.caring(sv, t["feature_id"] or t["id"])
         sv.alert(f"stall:{t['id']}",
                  f"{t['id']} sits in {t['state']} with no agent for "
                  f"{_hms(age)}: {_why_not_launched(sv, t, now)}"
-                 + (f"; last: {why}" if why else ""), check="stall")
+                 + (f"; last: {why}" if why else "")
+                 + (f"; {care}" if care else ""), check="stall")
 
 
 def stalled_wakes(sv, now):
