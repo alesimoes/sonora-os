@@ -59,6 +59,16 @@ class Sweep(support.DaemonCase):
         triage_sweep.sweep(self.o, 100.0)
         self.assertEqual(self.get("g")["state"], "qa")
 
+    def test_blocked_task_whose_mailbox_holds_a_decision_is_revived(self):
+        # eng_name outlives the run (advance clears cur_name); the mailbox
+        # is the engineer's, named after its task.
+        self.blocked("k", "no lead or architect is live to decide", eng_name="eng-9")
+        self.o.broker.mail["eng-9"] = [{"type": "decision", "from": "lead",
+                                        "body": "take the default"}]
+        self.assertEqual(triage_sweep.sweep(self.o, 100.0), 1)
+        self.assertEqual(self.get("k")["state"], "building")
+        self.assertIn("take the default", self.get("k")["note"])
+
     def test_busy_janitor_wake_is_closed(self):
         self.o.store.add_task("w", None, "janitor", kind="wake", state="building")
         self.o.store.set_task("w", state="blocked",

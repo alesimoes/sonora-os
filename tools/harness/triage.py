@@ -9,13 +9,24 @@ human has to look:
             backoff, attempts kept
   nocommit  "No commits between main and <branch>" -> close as already on
             main when the task's files are there, else requeue once
-  scope     accept passed, blocked only on files outside its claim -> QA,
-            claim widened if no other live task holds them, else the
-            architect is woken and the task requeued
+  scope     the work is green (accept, tests, QA or "functionally green"),
+            blocked only on files outside its claim -> the claim is widened
+            with every path named and the task goes to QA. A path another
+            live feature holds is widened too: the edit is already made,
+            and claims serialise the next engineer/integrator launch
+            (claim_for at launch time), so holding the task gained nothing
+            (2026-11-08: interchange.stems sat blocked 3 h because one of
+            six paths, a one-line test_control.cpp hunk, was held). A report
+            that names no path still wakes the architect and requeues.
+  decided   the agent reported blocked on a question that a `decision` or
+            `answer` in its mailbox already settles (the lead answered in
+            the run's last minute and the run ended without acting on it)
+            -> requeued once with the decision in the note
   (the janitor 'container running' retry lives in blockinfo.)
 
 `classify` is pure; `handle` applies the action and returns True when it
 dealt with the result (the caller then does not block)."""
+import json
 import re
 
 RETRY_S = 300.0        # first infra backoff; doubles per retry
@@ -23,6 +34,7 @@ RETRY_MAX_S = 3600.0
 PLAN_WAIT_S = 900.0    # a scope requeue waits for the architect this long
 LIVE_OTHER = ("queued", "building", "bugfix", "qa", "integrating",
               "pr_open", "ci_fix", "designing")
+DECISION_TYPES = ("decision", "answer")
 
 _INFRA = re.compile(
     r"WinError 10061|broker (is )?(unreachable|down)|connection refused"
@@ -34,9 +46,18 @@ _INFRA = re.compile(
 _NOCOMMIT = re.compile(r"no commits between\s+\S*main\b", re.I)
 _ACCEPT_OK = re.compile(
     r"accept(ance)?[^.\n]{0,40}\b(pass(es|ed|ing)?|green|ok)\b", re.I)
+# The same news in an engineer's own words: "functionally green per
+# tester-113", "tests pass", "QA passed", "code is green", "ctest ... Passed".
+_GREEN = re.compile(
+    r"\b(functionally|code(-wise)?|tests?|tester-?\d*|qa|ctest|build)\b"
+    r"[^.\n]{0,60}\b(pass(es|ed|ing)?|green|ok)\b", re.I)
+# The tester failed on scope and nothing else.
+_SCOPE_ONLY = re.compile(
+    r"\b(fail(ed|s)?|blocked)\s+(only\s+)?on\s+(a\s+|the\s+)?scope\b"
+    r"|\bscope(\s+(decision|finding|issue))?\s+only\b", re.I)
 _SCOPE = re.compile(r"\b(scope|outside (its|my|the|our) claim|"
                     r"not in (its|my|the) claim|outside (its|my|the) files|"
-                    r"files? outside)", re.I)
+                    r"files? outside|unclaimed files?)", re.I)
 _PATH = re.compile(r"[\w.+-]+(?:/[\w.+-]+)+")
 _MARK = re.compile(r"\[triage:(\w+) (\d+)\]")
 
@@ -47,7 +68,8 @@ def classify(role, summary):
         return "infra"
     if _NOCOMMIT.search(s):
         return "nocommit"
-    if role == "engineer" and _SCOPE.search(s) and _ACCEPT_OK.search(s):
+    if role == "engineer" and _SCOPE.search(s) and (
+            _ACCEPT_OK.search(s) or _GREEN.search(s) or _SCOPE_ONLY.search(s)):
         return "scope"
     return None
 
@@ -70,6 +92,7 @@ def mark(note, cls, n):
 def paths_in(summary):
     seen = []
     for p in _PATH.findall(summary or ""):
+        p = p.rstrip(".,;:")   # "..., test_control.cpp." ends a sentence
         if "." in p.rsplit("/", 1)[-1] and p not in seen:
             seen.append(p)
     return seen
@@ -117,26 +140,31 @@ def _nocommit(o, t, why, data, now):
     return True
 
 
-def _held_elsewhere(o, t, paths):
+def held_elsewhere(o, t, paths):
+    """Live tasks of other features whose files meet `paths`: 'path (task)'."""
+    out = []
+    same = t.get("feature_id")
     for x in o.store.tasks():
         if x["id"] == t["id"] or x["kind"] != "work" \
                 or x["state"] not in LIVE_OTHER:
             continue
-        if x.get("feature_id") == t.get("feature_id"):
+        if same is not None and x.get("feature_id") == same:
             continue
-        if set(x.get("files") or []) & set(paths):
-            return True
-    return False
+        for p in sorted(set(x.get("files") or []) & set(paths)):
+            out.append(f"{p} ({x['id']})")
+    return out
 
 
 def _scope(o, t, why, now):
     paths = [p for p in paths_in(why) if p not in (t.get("files") or [])]
-    if paths and not _held_elsewhere(o, t, paths):
+    if paths:
+        held = held_elsewhere(o, t, paths)
         o.store.set_task(t["id"], files=list(t["files"]) + paths)
         o.store.advance(t["id"], "qa",
                         note="claim widened: " + ", ".join(paths))
         o._release(t)
-        o.store.event(t["id"], "triage_scope", "widened " + ",".join(paths))
+        o.store.event(t["id"], "triage_scope", "widened " + ", ".join(paths)
+                      + ("; also held by: " + ", ".join(held) if held else ""))
         o._tell("lead", "task_done", {"task": t["id"]},
                 feature=t["feature_id"], task=t["id"])
         return True
@@ -149,6 +177,40 @@ def _scope(o, t, why, now):
     return True
 
 
+def decisions_for(o, t):
+    """`decision`/`answer` messages in the mailbox of the task's agent (an
+    engineer's name is its task's, so every message there is about it)."""
+    mail_for = getattr(o.broker, "mail_for", None)
+    if mail_for is None:
+        return []
+    out = []
+    for name in sorted({t.get("cur_name"), t.get("eng_name")} - {None}):
+        try:
+            msgs = mail_for(name)
+        except Exception:  # noqa: BLE001 - the broker may be stopping
+            continue
+        out += [m for m in msgs if m.get("type") in DECISION_TYPES]
+    return out
+
+
+def _decided(o, t, why, now):
+    if count(t.get("note"), "decided") >= 1:
+        return False
+    msgs = decisions_for(o, t)
+    if not msgs:
+        return False
+    lines = []
+    for m in msgs:
+        body = m.get("body")
+        text = body if isinstance(body, str) else json.dumps(body, sort_keys=True)
+        lines.append(f"- {m.get('type')} from {m.get('from')}: {text[:600]}")
+    _requeue(o, t, now, why, "decided", 0, note=(
+        "You reported blocked on a question that was already answered in "
+        "your mailbox; act on it:\n" + "\n".join(lines)))
+    o.store.event(t["id"], "triage_decided", f"{len(msgs)} decision(s) in the mailbox")
+    return True
+
+
 def handle(o, t, role, why, data, now):
     cls = classify(role, why)
     if cls == "infra":
@@ -158,4 +220,6 @@ def handle(o, t, role, why, data, now):
         return _nocommit(o, t, why, data, now)
     if cls == "scope" and t["kind"] == "work":
         return _scope(o, t, why, now)
+    if t["kind"] == "work" and _decided(o, t, why, now):
+        return True
     return False

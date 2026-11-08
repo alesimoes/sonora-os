@@ -31,7 +31,9 @@ def _worth_trying(o, t, why):
     churn events on a task that really is stuck."""
     cls = triage.classify(ROLE, why)
     if cls is None:
-        return False
+        # A decision mailed after the run gave up revives it once.
+        return (triage.count(t.get("note"), "decided") < 1
+                and bool(triage.decisions_for(o, t)))
     if cls == "nocommit":
         return (triage.count(t.get("note"), "nocommit") < 1
                 or triage.on_main(o, t, {}))
