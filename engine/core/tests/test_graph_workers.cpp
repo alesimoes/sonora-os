@@ -35,6 +35,18 @@ bool wait_for(Pred pred) {
     return false;
 }
 
+// The same wait inside a node's run(): on the audio thread that is inside
+// run_level(), on a worker inside worker_step(), both nonblocking, where
+// RTSan rejects sched_yield, so it spins. The bound is
+// wider because a spin iteration is much shorter than a yield.
+template <typename Pred>
+bool spin_for(Pred pred) noexcept {
+    for (uint64_t i = 0; i < (uint64_t{1} << 32); ++i) {
+        if (pred()) return true;
+    }
+    return false;
+}
+
 // ---- Bit-exactness ------------------------------------------------------
 
 constexpr uint32_t kFrames = 256;
@@ -158,12 +170,12 @@ public:
     void run(uint32_t n) noexcept override {
         runs[n].fetch_add(1, std::memory_order_relaxed);
         if (std::this_thread::get_id() == caller) {
-            if (handshake) handshake_ok = wait_for([&] { return worker_node.load() >= 0; });
+            if (handshake) handshake_ok = spin_for([&] { return worker_node.load() >= 0; });
             return;
         }
         if (!hold) return;
         worker_node.store(static_cast<int>(n));
-        wait_for([&] { return release.load(); });
+        spin_for([&] { return release.load(); });
         worker_returned.store(true);
     }
     void drop(uint32_t n) noexcept override {
