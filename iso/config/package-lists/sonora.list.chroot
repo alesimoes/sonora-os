@@ -21,7 +21,26 @@ alsa-utils
 # system-wide JACK instead.
 
 # Firmware, so unknown hardware has a chance of working on first boot.
-firmware-linux
+# Not the firmware-linux metapackage: it depends on firmware-linux-nonfree,
+# which depends on firmware-b43-installer and firmware-b43legacy-installer.
+# Their postinst downloads the Broadcom blob from github.com while the image
+# builds, and a 504 there failed the whole ISO build (nightly 2026-11-08). An
+# image built from a dated snapshot must not fetch anything outside it.
+firmware-linux-free
+firmware-misc-nonfree
+firmware-realtek
+firmware-atheros
+firmware-iwlwifi
+firmware-brcm80211
+firmware-mediatek
+firmware-libertas
+firmware-ti-connectivity
+firmware-bnx2
+firmware-bnx2x
+firmware-amd-graphics
+firmware-intel-graphics
+firmware-intel-misc
+firmware-intel-sound
 firmware-sof-signed
 
 # Storage for session disks.

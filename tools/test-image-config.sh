@@ -170,6 +170,10 @@ grep -q 'COPY iso/config/archives/sonora-backports.pref.chroot ' "$RUNTIME" || b
 # --- RT kernel ---
 grep -Eq -- '--linux-flavours[[:space:]]+rt-amd64' "$AUTO" || bad "auto/config: RT kernel is not the bootstrap flavour"
 grep -Eq '^linux-image' "$PKGS" && bad "package list names a kernel; it would pull the generic one in"
+# firmware-linux pulls firmware-b43-installer, whose postinst downloads from
+# github.com during the build; a 504 there failed the ISO build.
+grep -Eq '^(firmware-linux|firmware-linux-nonfree|firmware-b43[a-z]*-installer)$' "$PKGS" &&
+  bad "package list names a firmware package that depends on a build-time download (b43 installer)"
 grep -Eq '^libjack-jackd2-0$|^jackd' "$PKGS" && bad "package list installs a libjack that shadows pipewire-jack"
 for p in pipewire pipewire-jack wireplumber libspa-0.2-modules; do
   grep -qx "$p" "$PKGS" || bad "package list lacks $p"
