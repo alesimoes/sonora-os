@@ -30,6 +30,16 @@ std::vector<const Region*> members_of(const Playlist& p, Id group) {
     return out;
 }
 
+// "VERB REGION FROM TO CHANNEL [PARAM]", as engine/control's
+// parse_sample_edit reads it.
+std::string sample_edit_text(const std::string& verb, Id region, Frames from, Frames to,
+                             const std::string& channel, const std::string& param) {
+    std::string out = verb + " " + std::to_string(region) + " " + std::to_string(from) + " " +
+                      std::to_string(to) + " " + channel;
+    if (!param.empty()) out += " " + param;
+    return out;
+}
+
 }  // namespace
 
 bool EditController::group_clips(std::string& why) {
@@ -235,9 +245,27 @@ bool EditController::sample_edit_argument(const std::string& verb, const std::st
               "Nothing was edited.";
         return false;
     }
-    argument = verb + " " + std::to_string(in->id) + " " + std::to_string(sel_.start) + " " +
-               std::to_string(sel_.end) + " all";
-    if (!param.empty()) argument += " " + param;
+    argument = sample_edit_text(verb, in->id, sel_.start, sel_.end, "all", param);
+    return true;
+}
+
+bool EditController::pencil_argument(const Drag& d, std::string& argument,
+                                     std::string& why) const {
+    if (d.kind != Drag::Kind::Pencil) {
+        why = "draw with the Pencil on a clip's waveform first; nothing was drawn";
+        return false;
+    }
+    const Region* r = find_region(snapshot(), d.region);
+    if (r == nullptr || d.channel >= r->channels.size()) {
+        why = "the clip drawn on is gone; nothing was drawn";
+        return false;
+    }
+    // The clip's bounds cut the stroke: a drawing stays on one clip.
+    const PencilFrame view{view_.scroll, view_.fpp, r->position, r->end()};
+    PencilStroke stroke;
+    if (!pencil_points(d.pencil, view, stroke, why)) return false;
+    argument = sample_edit_text("draw", r->id, stroke.from, stroke.to,
+                                std::to_string(d.channel + 1), stroke.points);
     return true;
 }
 
