@@ -6,7 +6,9 @@ import sys
 import unittest
 
 import support  # noqa: F401  puts tools/ on sys.path before harness.*
-from harness import launcher, scheduler, stall_resolver
+import types
+
+from harness import dispatch, launcher, scheduler, stall_resolver
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 import dashboard_board  # noqa: E402
@@ -63,11 +65,22 @@ class Meta:
 
 class Ladder(unittest.TestCase):
     """Owner: sonnet tries first, then opus, fable only when both failed."""
-    def test_sonnet_then_opus_then_fable(self):
+    def test_sonnet_then_opus_then_fable_then_replan(self):
         m, H = Meta(), 3600.0
-        rungs = [stall_resolver._rung(m, "f", 1000 + i * H) for i in range(4)]
-        self.assertEqual(rungs, ["sonnet", "opus", None, None])
+        rungs = [stall_resolver._rung(m, "f", 1000 + i * H) for i in range(5)]
+        R = stall_resolver.REPLAN
+        self.assertEqual(rungs, ["sonnet", "opus", None, R, R])
         self.assertEqual(launcher.model_for("principal-engineer", None), "fable")
+
+    def test_a_replanned_feature_runs_engineers_and_fixers_on_opus(self):
+        m = Meta()
+        m.set_meta(stall_resolver.exec_model_key("f"), "opus")
+        o = types.SimpleNamespace(store=m)
+        t = {"id": "f.ui", "feature_id": "f"}
+        for kind in ("engineer", "fixer"):
+            got = dispatch.model_for(o, t, kind)
+            self.assertIsInstance(got, launcher.Pinned)
+            self.assertEqual(launcher.model_for("ui-engineer", got), "opus")
 
     def test_a_stall_back_after_hours_starts_at_sonnet(self):
         m = Meta()

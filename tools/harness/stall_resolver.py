@@ -12,9 +12,14 @@ import json
 AGENT = "principal-engineer"
 EVENT = "stall_resolver"
 # Owner 2026-11-08: unblocking climbs a ladder, only for a stall nobody is
-# fixing: sonnet tries first, then opus, and fable only when both failed.
-# None = no pin, so the principal's own model (fable) applies.
+# fixing: sonnet tries first, then opus, then fable (None = no pin, so the
+# principal's own model applies). Past the ladder every new stall of the
+# feature is REPLAN: fable re-plans it and opus executes the new plan; if it
+# stalls again, fable re-plans again.
 LADDER = ("sonnet", "opus", None)
+REPLAN = "replan"
+REPLAN_AGENT = "architect"
+EXEC_MODEL = "opus"
 # A stall that comes back after this long starts at the bottom again.
 LADDER_RESET_S = 6 * 3600
 FIXING = ("fixer", "integrator", "principal")
@@ -34,7 +39,12 @@ def _rung(store, fid, now):
         d = {}
     n = d.get("n", 0) if now - d.get("ts", 0) < LADDER_RESET_S else 0
     store.set_meta(key, json.dumps({"n": n + 1, "ts": now}))
-    return LADDER[min(n, len(LADDER) - 1)]
+    return LADDER[n] if n < len(LADDER) else REPLAN
+
+
+def exec_model_key(fid):
+    """Meta key: the model a re-planned feature's engineers and fixers run."""
+    return f"exec_model:{fid}"
 
 
 def _resolver_wakes(sv):
@@ -122,14 +132,31 @@ def brief(sv, fid, stalled):
     return "\n".join(lines)
 
 
+REPLAN_BRIEF = (
+    "Re-plan this feature: the sonnet, opus and fable unblock tries did not "
+    "move it (or it stalled again after a re-plan). Read the stall below, then "
+    "rewrite planning/plans/{fid}.md so every slice can finish: split or merge "
+    "slices, fix files/claims overlaps and dependencies, drop what is already "
+    "on main. Send the lead plan_ready for {fid} through mcp__harness__send. "
+    "Engineers and fixers of this feature run on opus from now on."
+    + chr(10) * 2)
+
+
 def _queue(sv, fid, stalled, now):
     store = sv.o.store
-    n = store.next_counter("wake")
-    wid = f"wake-principal-{EVENT}-{fid}-{n}"
-    store.add_task(wid, None, AGENT, kind="wake", feature_id=fid,
-                   brief=brief(sv, fid, stalled))
     model = _rung(store, fid, now)
-    store.set_task(wid, event=EVENT, model_pin=model)
+    n = store.next_counter("wake")
+    if model == REPLAN:
+        wid = f"wake-{REPLAN_AGENT}-{EVENT}-{fid}-{n}"
+        store.add_task(wid, None, REPLAN_AGENT, kind="wake", feature_id=fid,
+                       brief=REPLAN_BRIEF.format(fid=fid) + brief(sv, fid, stalled))
+        store.set_task(wid, event=EVENT, model_pin="fable")
+        store.set_meta(exec_model_key(fid), EXEC_MODEL)
+    else:
+        wid = f"wake-principal-{EVENT}-{fid}-{n}"
+        store.add_task(wid, None, AGENT, kind="wake", feature_id=fid,
+                       brief=brief(sv, fid, stalled))
+        store.set_task(wid, event=EVENT, model_pin=model)
     store.set_meta(_meta_key(fid), now)
     store.event(wid, "stall_resolver", json.dumps(
         {"feature": fid, "tasks": [t["id"] for t, _ in stalled]}))

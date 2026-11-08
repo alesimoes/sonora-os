@@ -65,6 +65,12 @@ def model_for(orch, t, kind):
     """`--model` for one run; None leaves it to the launcher (principal)."""
     if t.get("model_pin"):
         return launcher.Pinned(t["model_pin"])
+    # A feature the stall resolver re-planned runs its engineers and fixers
+    # on opus (owner, 2026-11-08: fable re-plans, opus executes).
+    fid = t.get("feature_id")
+    pin = fid and kind in ("engineer", "fixer") and         orch.store.get_meta(f"exec_model:{fid}")
+    if pin:
+        return launcher.Pinned(pin)
     if kind == "principal":
         return None
     tier, grade = tier_of(orch, t["id"])
