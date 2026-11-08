@@ -139,10 +139,10 @@ cmd_verify() {
     [ -x "$ENGINE" ] || die "engine not found: $ENGINE"
     [ -f "$WITNESS/$LOG" ] || die "no $LOG in $WITNESS"
     engine_args
-    local elog="$WITNESS/verify-engine.log" i
+    local elog="$WITNESS/verify-engine.log"
     "$ENGINE" "${ENGINE_ARGS[@]}" --headless < /dev/null > "$elog" 2>&1 &
     ENGINE_PID=$!
-    for i in $(seq 1 300); do
+    for _ in $(seq 1 300); do
         grep -q "engine listening on" "$elog" 2>/dev/null && break
         kill -0 "$ENGINE_PID" 2>/dev/null || break
         sleep 0.1
