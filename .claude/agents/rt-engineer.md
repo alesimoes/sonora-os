@@ -94,3 +94,4 @@ shell costs tokens and attention until a human notices.
 
 - Build budget: finish the whole slice before building; at most three build cycles per task, narrowest target, no rebuild per edit (CLAUDE.md "Build budget"). Only the narrowest target, through `tools/build-slot.sh` (one heavy job at a time on the machine); the whole tree is built and tested by the orchestrator's local CI gate, never by you.
 - Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.
+- Portability: a neutral module takes no platform header, macro or OS path: ADR-0008 section 1; platform code goes to an edge module through a seam.

@@ -408,7 +408,7 @@ In every case the capture ports of a node had increasing registry ids in AUX
 order: for example, 189..206 for AUX0..AUX17. That is **not** true of
 `monitor_` ports on the output node, where `monitor_AUX0` was id 46 and
 `monitor_AUX1` id 45. Registry order is therefore not a channel order, and
-sorting by name with `natural_less` (`engine/include/sonora/port_order.h`)
+sorting by name with `natural_less` (`drivers/support/include/sonora/port_order.h`)
 remains the right rule.
 
 [source] Why no driver gives exactly 18 natively: `snd-dummy`'s models fix
