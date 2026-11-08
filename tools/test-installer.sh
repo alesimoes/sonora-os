@@ -101,7 +101,7 @@ newimg() { detach_all; rm -f $T/disk.img; truncate -s "${1:-28G}" $T/disk.img; :
 inspect() {
     INSPECT_OK=0
     L=$(losetup -f --show -P $T/disk.img) || { bad "inspect: losetup failed"; return 0; }
-    local i p n m ROOTDEV='' DATADEV=''
+    local i p n m ROOTDEV='' DATADEV='' SWAPDEV=''
     # The kernel scans partitions after the attach returns: wait for them.
     for i in $(seq 50); do
         [ -e "/sys/class/block/${L##*/}/${L##*/}p2" ] && break
@@ -120,6 +120,7 @@ inspect() {
         case $(blkid -s LABEL -o value "$p" 2>/dev/null) in
             sonora-root) ROOTDEV=$p ;;
             sonora-data) DATADEV=$p ;;
+            sonora-swap) SWAPDEV=$p ;;
         esac
     done
     if [ -z "$ROOTDEV" ]; then bad "inspect: no sonora-root partition on $L ($(echo "${L}"p*))"; return 0; fi
@@ -127,6 +128,7 @@ inspect() {
     if mount -o ro "$ROOTDEV" $T/m; then INSPECT_OK=1; else bad "inspect: mount -o ro $ROOTDEV $T/m failed"; fi
     ROOTDEV_LAST=$ROOTDEV
     DATADEV_LAST=$DATADEV
+    SWAPDEV_LAST=$SWAPDEV
     if [ "$INSPECT_OK" = 1 ] && [ -n "$DATADEV" ] && ! mount -o ro "$DATADEV" $T/m/home/sonora/Sessions; then
         bad "inspect: mount -o ro $DATADEV failed"
     fi
@@ -150,6 +152,15 @@ du=$(sed -n 's/^UUID=\([^ ]*\) \/home\/sonora\/Sessions ext4 noatime,errors=remo
 if [ -n "$du" ] && [ "$(blkid -s UUID -o value "$DATADEV_LAST")" = "$du" ]; then ok "fstab data line is sonora-data's"; else bad "fstab data line"; fi
 if grep -q nofail $T/m/etc/fstab; then bad "nofail in fstab"; else ok "no nofail in fstab"; fi
 if grep -q '^UUID=[^ ]* none swap sw 0 0$' $T/m/etc/fstab; then ok "fstab swap line"; else bad "fstab swap line"; fi
+# the four fstab UUIDs are four different partitions that exist
+fu=$(sed -n 's/^UUID=\([^ ]*\) .*/\1/p' $T/m/etc/fstab | sort -u)
+fu_ok=1
+for u in $fu; do blkid -U "$u" >/dev/null || fu_ok=0; done
+if [ "$(wc -l <<<"$fu")" = 4 ] && [ "$fu_ok" = 1 ]; then ok "fstab names four distinct UUIDs that exist"; else bad "fstab UUIDs: $fu"; fi
+if [ -n "${SWAPDEV_LAST:-}" ] && [ "$(blkid -s TYPE -o value "$SWAPDEV_LAST")" = swap ]; then ok "blkid TYPE=swap on the swap partition"; else bad "swap partition type"; fi
+su=$(sed -n 's/^UUID=\([^ ]*\) none swap.*/\1/p' $T/m/etc/fstab)
+if [ -n "$su" ] && [ "$(blkid -s UUID -o value "${SWAPDEV_LAST:-/dev/null}")" = "$su" ]; then ok "fstab swap UUID is the swap partition's"; else bad "fstab swap UUID"; fi
+if [ "$(findmnt -n -o SOURCE "$T/m/home/sonora/Sessions" 2>/dev/null)" = "$DATADEV_LAST" ]; then ok "data partition mounted at Sessions"; else bad "Sessions not on the data partition"; fi
 if grep -qx 'RequiresMountsFor=/home/sonora/Sessions' $T/m/etc/systemd/system/sonora-engine.service.d/sessions-mount.conf 2>/dev/null; then ok "engine requires the Sessions mount"; else bad "engine drop-in"; fi
 if [ -s $T/m/var/lib/sonora/installed ]; then ok "marker written"; else bad "marker missing"; fi
 if [ -f $T/m/etc/machine-id ] && [ ! -s $T/m/etc/machine-id ]; then ok "machine-id emptied"; else bad "machine-id"; fi
@@ -206,6 +217,21 @@ newimg 20G
 expect_code "too small a disk exits 4" 4 "$rc"
 if grep -q 'too small' $T/err; then ok "names the size refusal"; else bad "size refusal not named"; fi
 if [ "$(sfdisk -d $T/disk.img 2>/dev/null | grep -c 'start=')" = 0 ]; then ok "small disk left unpartitioned"; else bad "small disk was partitioned"; fi
+
+# 3c. an image too big for the root partition is refused before any write
+newimg
+mkdir -p $T/fakebin
+cat >$T/fakebin/unsquashfs <<'STUB'
+#!/bin/sh
+# 60 GiB of regular files in the listing; anything else is the real tool.
+if [ "$1" = -lls ]; then echo "-rw-r--r-- root/root 64424509440 2024-01-01 00:00 squashfs-root/big"; exit 0; fi
+exec /usr/bin/unsquashfs "$@"
+STUB
+chmod +x $T/fakebin/unsquashfs
+PATH=$T/fakebin:$PATH "$INST" --yes --target $T/disk.img >/dev/null 2>$T/err && rc=0 || rc=$?
+expect_code "oversize image exits 4" 4 "$rc"
+if grep -q 'does not fit the root partition' $T/err; then ok "names the fit refusal"; else bad "fit refusal not named: $(cat $T/err)"; fi
+if [ "$(sfdisk -d $T/disk.img 2>/dev/null | grep -c 'start=')" = 0 ]; then ok "oversize image left the disk unpartitioned"; else bad "oversize image partitioned the disk"; fi
 
 # 4. refusals
 "$INST" --bogus >/dev/null 2>&1 && rc=0 || rc=$?
