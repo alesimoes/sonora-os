@@ -1099,7 +1099,8 @@ class Orchestrator:
                 n += 1
                 try:
                     restart = bool(self.updater
-                                   and self.updater.ready(self.clock()))
+                                   and self.updater.ready_or_report(
+                                       self.clock()))
                 except Exception:   # an update check never stops the daemon
                     traceback.print_exc()
                 if restart:
