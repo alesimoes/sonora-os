@@ -27,7 +27,8 @@ from harness import (autoadopt, closed, cli, cli_mailbox, daemonlock, dispatch, 
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
-from harness import (blockinfo, feature_merge, findings, handoff, leadwake,  # noqa: E402
+from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
+                     leadwake,
                      prtext, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
@@ -212,6 +213,7 @@ class Orchestrator:
         if not self.dry_run:
             g.step("ownerchat", ownerchat.tick, self)
         g.step("watch_prs", self._watch_prs, now)
+        g.step("feature_sync", feature_sync.sync, self, now)
         # Main's nightly full build on GitHub (ADR-0061): a red opens a task.
         g.step("nightly", nightly.tick, self, now)
         g.step("flow", self.flow.tick, now)
