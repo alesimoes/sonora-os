@@ -13,7 +13,7 @@ N/A - no UI.
 ## 3. Contracts and integrations
 ADR-0091 (reserved, written by the architect). No protocol or format change.
 Reserved numbers: ADR 91, protocol none, format none.
-Acceptance: `grep ADR-0091 brain/INDEX.md`.
+Acceptance: ADR-0091 file exists; its INDEX line is added by the coordinator at merge (brain/INDEX.md is claimed by plugins.graph.parallel, so this task does not touch it).
 
 ## 4. DAW core
 N/A - no engine change.
