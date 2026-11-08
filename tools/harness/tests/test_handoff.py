@@ -51,7 +51,7 @@ class Unit(support.DaemonCase):
                              + 1)
 
 
-class Daemon(lc.Lifecycle):
+class Daemon(support.DaemonCase):
     def test_tester_and_integrator_prompts_carry_the_previous_result(self):
         o = self.make(floors={"daw": 1})
         o.store.add_task("a", "daw", "rt-engineer", files=["a/**"],
