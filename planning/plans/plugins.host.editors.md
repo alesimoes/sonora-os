@@ -60,3 +60,10 @@ Single PR title: Plugin editors: open, close and report from the UI (ADR-0088)
 - [ ] tests pass (commands in PR)
 - [ ] QA done, screenshots committed
 - [ ] `tools/pre-pr.sh` clean; no file past ~500 lines
+
+## Sequencing note
+
+The engine slice registers its sources and tests in `engine/control/CMakeLists.txt`,
+which the active feature `interchange.stems` also edits. The plan therefore sets
+`depends_on_feature: interchange.stems`: the contract slice (ADR, header, test)
+may start at once, the engine slice starts from main after stems merges.

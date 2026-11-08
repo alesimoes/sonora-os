@@ -1,11 +1,17 @@
 {
   "version": 1,
   "feature": "plugins.host.editors",
-  "backlog_ids": ["plugins.host.editors"],
+  "backlog_ids": [
+    "plugins.host.editors"
+  ],
   "track": "plugin",
   "feature_branch": "feat/plugins.host.editors",
-  "depends_on_feature": null,
-  "reserved": {"adr": 88, "protocol": null, "formats": []},
+  "depends_on_feature": "interchange.stems",
+  "reserved": {
+    "adr": 88,
+    "protocol": null,
+    "formats": []
+  },
   "adr": "ADR-0088",
   "tasks": [
     {
@@ -21,7 +27,11 @@
       "depends_on": [],
       "agent": "plugin-engineer",
       "grade": "M/high",
-      "accept": ["ADR-0088 has Context, Decision, Rationale, Consequences, Alternatives rejected", "the contract test builds and passes under tools/micro-build.sh", "tools/pre-pr.sh reports no ADR number clash"]
+      "accept": [
+        "ADR-0088 has Context, Decision, Rationale, Consequences, Alternatives rejected",
+        "the contract test builds and passes under tools/micro-build.sh",
+        "tools/pre-pr.sh reports no ADR number clash"
+      ]
     },
     {
       "id": "engine",
@@ -36,10 +46,16 @@
         "contracts/api/tests/test_plugin_editor_messages.cpp",
         "engine/control/tests/test_plugin_editor_service_host.cpp"
       ],
-      "depends_on": ["contract"],
+      "depends_on": [
+        "contract"
+      ],
       "agent": "plugin-engineer",
       "grade": "L/high",
-      "accept": ["engine control tests pass with the fake host", "protocol round-trip test passes", "no file on the audio path is touched"]
+      "accept": [
+        "engine control tests pass with the fake host",
+        "protocol round-trip test passes",
+        "no file on the audio path is touched"
+      ]
     },
     {
       "id": "ui",
@@ -53,10 +69,26 @@
         "ui/qt/tests/test_insert_editor_controller.cpp",
         "docs/images/insert-editor-*.png"
       ],
-      "depends_on": ["engine"],
+      "depends_on": [
+        "engine"
+      ],
       "agent": "ui-engineer",
       "grade": "M/med",
-      "accept": ["ui controller test passes with the fake engine", "screenshots committed and opened", "a failed open shows its reason and the generic editor button"]
+      "accept": [
+        "ui controller test passes with the fake engine",
+        "screenshots committed and opened",
+        "a failed open shows its reason and the generic editor button"
+      ]
     }
-  ]
+  ],
+  "merge_order": [
+    "contract",
+    "engine",
+    "ui"
+  ],
+  "pr": {
+    "title": "plugins.host.editors: open a plugin's native editor from the insert slot (ADR-0088)",
+    "partial": false,
+    "partial_reason": null
+  }
 }
