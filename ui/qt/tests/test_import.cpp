@@ -227,6 +227,13 @@ int refusals_write_nothing() {
     CHECK(why.find("notes.wav") != std::string::npos);
     // One bad file among good ones refuses the lot.
     CHECK(!imp.start({good.toStdString(), three.toStdString()}, folder, false, why));
+    CHECK(!imp.start({good.toStdString(), bad.fileName().toStdString()}, folder, false, why));
+    CHECK(why.find("notes.wav") != std::string::npos);
+    CHECK(!QFileInfo::exists(r.audio("ok.wav")) && !QFileInfo::exists(r.audio("ok.wav.part")));
+    // More files than one import may make: refused before any is read.
+    const std::vector<std::string> many(AudioImporter::most_files() + 1, good.toStdString());
+    CHECK(!imp.start(many, folder, false, why));
+    CHECK(why.find("at most") != std::string::npos);
     CHECK(!imp.start({good.toStdString()}, "", false, why));
     CHECK(why.find("where this session's audio goes") != std::string::npos);
     CHECK(!imp.start({}, folder, false, why));

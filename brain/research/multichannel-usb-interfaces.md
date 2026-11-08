@@ -40,8 +40,8 @@ constraint objects, `~` prefixing a regex) and `actions.update-props`.
 **Port ordering.** `jack_get_ports` documents no ordering. A lexicographic
 sort places `capture_AUX10` before `capture_AUX2`, which on an 18-channel
 interface records channel 10 onto track 3 with nothing looking wrong. Hence
-`sonora::natural_less` in `engine/include/sonora/port_order.h`, with the
-18-channel case as a test in `engine/tests/test_port_order.cpp`.
+`sonora::natural_less` in `drivers/support/include/sonora/port_order.h`, with the
+18-channel case as a test in `drivers/support/tests/test_port_order.cpp`.
 
 ## Which name auto-connection depends on, and why no udev rule is needed
 

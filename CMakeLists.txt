@@ -50,6 +50,10 @@ message(STATUS "SONORA_PLATFORM=${SONORA_PLATFORM} SONORA_BACKENDS=${SONORA_BACK
 # Portable job so it stays a test of the neutral modules.
 option(SONORA_WINDOWS_VST3 "Build the native plugins as Windows VST3 bundles" OFF)
 option(SONORA_PLUGINS_ONLY "Configure only the native plugin suite and what it links" OFF)
+# ADR-0071: under SONORA_PLATFORM=neutral, also configure ui/qt and the modules
+# it links, so the nightly's Portable job builds the Qt interface under MSVC.
+# Off elsewhere; the Linux build already configures all of it.
+option(SONORA_PORTABLE_UI "With SONORA_PLATFORM=neutral, also configure ui/qt" OFF)
 
 # The RealtimeSanitizer build (tools/build-rtsan.sh, CI's rtsan job; ADR-0007,
 # first 2026-10-12 update). Every SONORA_RT function is [[clang::nonblocking]]
@@ -99,7 +103,7 @@ enable_testing()
 add_subdirectory(common/base)
 # Strict JSON for the session file and the key maps (ADR-0009 §5), layer 0.
 add_subdirectory(common/json)
-if(SONORA_PLATFORM STREQUAL "linux")
+if(SONORA_PLATFORM STREQUAL "linux" OR SONORA_PORTABLE_UI)
 add_subdirectory(common/midi)
 # The session document (ADR-0009), layer 1 beside common/audiofile. It links
 # common/midi for notes and edits (ADR-0014 §1), above it in this list.
@@ -110,7 +114,7 @@ add_subdirectory(common/platform)
 # The take file (BWF writer, reader, crash recovery). Standard C++ plus the
 # OS seam, so the neutral build and the MSVC job compile it (ADR-0008 P2).
 add_subdirectory(common/audiofile)
-if(SONORA_PLATFORM STREQUAL "linux" AND NOT SONORA_PLUGINS_ONLY)
+if((SONORA_PLATFORM STREQUAL "linux" OR SONORA_PORTABLE_UI) AND NOT SONORA_PLUGINS_ONLY)
 # A session folder on disk (ADR-0015 §3, §6), layer 2 on common/model and
 # common/platform: the engine's saver writes through it.
 add_subdirectory(common/session_files)
@@ -153,6 +157,27 @@ function(sonora_label_module_tests dir label)
   endwhile()
 endfunction()
 
+# ADR-0071: the Qt interface and the neutral modules it links (ui/tui and
+# anything POSIX stay out). sonora_portable_ui is what the nightly builds.
+if(SONORA_PORTABLE_UI AND NOT SONORA_PLATFORM STREQUAL "linux" AND NOT SONORA_PLUGINS_ONLY)
+  add_subdirectory(contracts/api)
+  add_subdirectory(ui/keymap)
+  add_subdirectory(ui/client)
+  add_subdirectory(ui/qt)
+  _sonora_collect_targets(${CMAKE_SOURCE_DIR}/ui/qt _ui_targets)
+  set(_ui_deps)
+  foreach(_t ${_ui_targets})
+    get_target_property(_type ${_t} TYPE)
+    if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "STATIC_LIBRARY")
+      list(APPEND _ui_deps ${_t})
+    endif()
+  endforeach()
+  add_custom_target(sonora_portable_ui DEPENDS ${_ui_deps})
+  sonora_label_module_tests(ui/keymap ui)
+  sonora_label_module_tests(ui/client ui)
+  sonora_label_module_tests(ui/qt ui)
+endif()
+
 # Everything below is POSIX or Qt: the neutral build stops here, and so does
 # the plugins-only one.
 if(NOT SONORA_PLATFORM STREQUAL "linux" OR SONORA_PLUGINS_ONLY)
@@ -190,6 +215,8 @@ add_subdirectory(drivers/fake)
 # common/platform PRIVATE so engine/core still cannot include a platform
 # header (ADR-0007 §1).
 add_subdirectory(engine/plugin_client)
+# The plug-in editor service contract and its fake (ADR-0088); header-only.
+add_subdirectory(engine/editor_service)
 add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)
 add_subdirectory(engine/control)
@@ -219,6 +246,7 @@ sonora_label_module_tests(contracts/plugin contracts)
 sonora_label_module_tests(plugins/host pluginhost)
 sonora_label_module_tests(engine/core core)
 sonora_label_module_tests(engine/plugin_client plugin_client)
+sonora_label_module_tests(engine/editor_service control)
 sonora_label_module_tests(engine/control control)
 sonora_label_module_tests(engine/app app)
 sonora_label_module_tests(drivers/support drivers)

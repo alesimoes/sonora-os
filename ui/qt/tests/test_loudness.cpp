@@ -180,6 +180,50 @@ int resetting() {
     return 0;
 }
 
+int audit_edges() {
+    Spy s;
+    // A target with nothing measured yet gives no verdict and no delta.
+    s.model.setPreset(2);
+    s.model.onFrame(EngineFrame{}, true);
+    CHECK(s.model.verdict() == 0);
+    CHECK(s.model.deltaText().isEmpty());
+    CHECK(!s.model.truePeakOver());
+
+    // Exactly on the tolerance edge is within; just past it is outside.
+    s.model.onFrame(frame_with(-23.0f, -23.0f, -23.5f, 5.0f, -3.0f), true);
+    CHECK(s.model.verdict() == 1);
+    s.model.onFrame(frame_with(-23.0f, -23.0f, -22.4f, 5.0f, -3.0f), true);
+    CHECK(s.model.verdict() == 2);
+
+    // A dead engine gives no verdict even with a target and a loud last reading.
+    s.model.onFrame(frame_with(-10.0f, -10.0f, -10.0f, 5.0f, 2.0f), false);
+    CHECK(s.model.verdict() == 0);
+    CHECK(s.model.deltaText().isEmpty());
+    CHECK(!s.model.truePeakOver());
+    CHECK(s.model.truePeakText() == QStringLiteral("—"));
+
+    // An index below -1 is ignored, as one past the table is.
+    s.model.setPreset(-2);
+    CHECK(s.model.preset() == 2);
+
+    // Dead engine and a missing command together: refused, nothing sent,
+    // and the engine's silence is the reason given.
+    s.implemented = false;
+    CHECK(!s.model.canReset());
+    CHECK(!s.model.reset());
+    CHECK(s.resets.empty());
+    CHECK(s.model.refusal().contains(QStringLiteral("not responding")));
+
+    // A new session drops the old reading, target and refusal together.
+    s.model.onFrame(frame_with(-20.0f, -21.0f, -23.0f, 5.0f, -3.0f), true);
+    s.model.sessionOpened();
+    CHECK(s.model.preset() == -1);
+    CHECK(s.model.refusal().isEmpty());
+    CHECK(s.model.integratedText() == QStringLiteral("—"));
+    CHECK(s.model.verdict() == 0);
+    return 0;
+}
+
 int through_the_shell() {
     api::testing::FakeEngine::Config cfg;
     cfg.tracks = 2;
@@ -288,6 +332,7 @@ int main(int argc, char** argv) {
     if (formatting() != 0) return 1;
     if (targets() != 0) return 1;
     if (resetting() != 0) return 1;
+    if (audit_edges() != 0) return 1;
     if (through_the_shell() != 0) return 1;
     if (qml() != 0) return 1;
     std::printf("ui loudness: all checks passed\n");

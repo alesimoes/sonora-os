@@ -1,10 +1,18 @@
 """Shared test fixtures: path setup, a stub broker, fake worktrees, clock."""
+import faulthandler
 import os
 import shutil
 import sys
 import tempfile
 import time
 import unittest
+
+# On GitHub a hung test is cancelled at the job's timeout and the log is
+# lost (2026-11-08, #515: two 20-minute runs, no trace of which test). The
+# suite takes under a minute there; past this bound every thread's stack is
+# dumped, the hanging test named, and the step fails with a readable log.
+if os.environ.get("GITHUB_ACTIONS"):
+    faulthandler.dump_traceback_later(540, exit=True)
 
 TOOLS = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -14,6 +22,7 @@ FAKE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                     "fake_claude.py")
 
 from harness import scheduler  # noqa: E402
+from harness import shots  # noqa: E402
 from harness.forge import Forge, ForgeError  # noqa: E402
 import orchestrator  # noqa: E402
 
@@ -31,6 +40,10 @@ class StubBroker:
         self.channels = {}
         self.claims = {}
         self.events = []
+        self.mail = {}        # name -> messages a test puts in its mailbox
+
+    def mail_for(self, name):
+        return list(self.mail.get(name, []))
 
     def start(self):
         self.started = True
@@ -54,6 +67,9 @@ class StubBroker:
 
     def release_for(self, owner, paths=()):
         return int(self.claims.pop(owner, None) is not None)
+
+    def claim_owners(self):
+        return set(self.claims)
 
     def tell(self, to, type_, body=None, feature=None, task=None):
         self.sent.append((to, type_, body))
@@ -85,6 +101,10 @@ class FakeForge(Forge):
     def is_ancestor(self, sha, head):
         self._chk("is_ancestor")
         return (sha, head) in getattr(self, "ancestry", set())
+
+    def branch_tip(self, branch):
+        self._chk("branch_tip")
+        return getattr(self, "tips", {}).get(branch)
 
     def dispatch_workflow(self, workflow, ref="main"):
         self._chk("dispatch_workflow")
@@ -233,6 +253,15 @@ class FakeForge(Forge):
         return branch not in getattr(self, "left_out", ())
 
 
+class _NoPictures:
+    """Tests never start the real screenshot build; test_shots covers it."""
+    def head(self, wt):
+        return "h"
+
+    def changed(self, wt):
+        return []
+
+
 class DirWorktrees:
     """Plain directories; the git paths have their own test."""
 
@@ -298,6 +327,7 @@ class DaemonCase(unittest.TestCase):
             fake_claude=FAKE, clock=self.clock, forge=self.forge,
             worktrees=DirWorktrees(self.tmp),
             seed_fn=(lambda k: 10) if seed_fn == "fixed" else seed_fn)
+        o.shots = shots.Shots(o, io=_NoPictures())
         self.orchs.append(o)
         return o
 

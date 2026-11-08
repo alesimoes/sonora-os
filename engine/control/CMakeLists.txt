@@ -24,6 +24,9 @@ add_library(sonora_control STATIC
   src/consolidate.cpp
   src/bounce.cpp
   src/bounce_job.cpp
+  src/stems.cpp
+  src/stems_job.cpp
+  src/stems_commands.cpp
   src/render_in_place.cpp
   src/consolidate_job.cpp
   src/sample_edit.cpp
@@ -114,6 +117,19 @@ if(UNIX)
   # time into a tap that holds 2 s, so a worker starved for ~0.6 s by the
   # other tests overruns it (2 of 25 runs beside the native renders).
   set_tests_properties(bounce PROPERTIES RUN_SERIAL TRUE LABELS timing)
+
+  # Export Stems (ADR-0085): the plan, the file names, the refusals, and no
+  # folder left by a cancel or a failure; the passes are a fake renderer.
+  add_executable(test_stems tests/test_stems.cpp)
+  target_link_libraries(test_stems PRIVATE sonora_control Threads::Threads)
+  add_test(NAME stems COMMAND test_stems)
+  # The null test: the stems summed are the full bounce within 1 LSB at 24
+  # bit. Alone under `ctest -j`, as bounce: seven offline passes through the
+  # disk reader, which retries when it is starved.
+  add_executable(test_stems_sum tests/test_stems_sum.cpp)
+  target_link_libraries(test_stems_sum PRIVATE sonora_control Threads::Threads)
+  add_test(NAME stems_sum COMMAND test_stems_sum)
+  set_tests_properties(stems_sum PROPERTIES RUN_SERIAL TRUE LABELS timing)
 
   # Track Freeze, Commit and Process Selection (ADR-0051): the print through
   # a chain with a declared latency, to the sample.

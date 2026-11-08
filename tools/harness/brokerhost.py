@@ -4,18 +4,54 @@ The broker is single-loop by design (no locks), so every call into it is
 marshalled onto that loop. Broker events fire on the loop thread; they are
 queued here and the daemon drains them on its own thread, so the daemon's
 state store is never touched from two threads.
+
+Port and token are pinned across daemon restarts (2026-11-08: a self-update
+restart gave the broker a new port and token, so every agent running at that
+moment lost the hub: WinError 10061, the edit hook denied every write, the
+agents reported blocked). The port is in broker.json already; the token goes
+to broker.token, owner-readable only, beside the run files that carry it
+anyway. When the old port cannot be bound the host falls back to a free one.
 """
 import asyncio
+import os
 import queue
 import threading
 
 from . import protocol as P
 from .broker import Broker
+from .mailbox import Mailbox
+
+TOKEN_FILE = "broker.token"
+
+
+def pinned(harness_dir):
+    """(port, token) of the previous broker in this directory, or (0, None)."""
+    box = Mailbox(harness_dir)
+    port = box.load_state("broker.json", {}).get("port") or 0
+    try:
+        with open(os.path.join(harness_dir, TOKEN_FILE), encoding="utf-8") as f:
+            token = f.read().strip() or None
+    except OSError:
+        token = None
+    return (int(port) if token else 0), token
+
+
+def save_token(harness_dir, token):
+    path = os.path.join(harness_dir, TOKEN_FILE)
+    os.makedirs(harness_dir, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(token)
 
 
 class BrokerHost:
-    def __init__(self, harness_dir, **broker_kw):
+    def __init__(self, harness_dir, pin=True, **broker_kw):
         self.events = queue.Queue()
+        self.dir = harness_dir
+        if pin:
+            port, token = pinned(harness_dir)
+            broker_kw.setdefault("port", port)
+            broker_kw.setdefault("token", token)
         self.broker = Broker(harness_dir, on_event=self._on_event, **broker_kw)
         self.loop = asyncio.new_event_loop()
         self._thread = None
@@ -56,7 +92,14 @@ class BrokerHost:
         self._thread = threading.Thread(target=self._run_loop, daemon=True,
                                         name="broker")
         self._thread.start()
-        self._await(self.broker.start())
+        try:
+            self._await(self.broker.start())
+        except OSError:
+            if not self.broker.port:
+                raise
+            self.broker.port = 0   # the pinned port is taken: a fresh one
+            self._await(self.broker.start())
+        save_token(self.dir, self.broker.token)
 
     def stop(self):
         if self._thread is None:
@@ -81,6 +124,13 @@ class BrokerHost:
 
     def release_for(self, owner, paths=()):
         return self._call(self.broker.release_for, owner, paths)
+
+    def claim_owners(self):
+        return self._call(lambda: set(self.broker.claims.values()))
+
+    def mail_for(self, name):
+        """Every message ever put in `name`'s mailbox, acked or not."""
+        return self._call(self.broker.box.unacked, name, 0)
 
     def tell(self, to, type_, body=None, feature=None, task=None):
         """Daemon message. A role name (lead, architect) is registered as
@@ -119,6 +169,12 @@ class NullBroker:
 
     def release_for(self, owner, paths=()):
         return 0
+
+    def claim_owners(self):
+        return set()
+
+    def mail_for(self, name):
+        return []
 
     def tell(self, to, type_, body=None, feature=None, task=None):
         pass

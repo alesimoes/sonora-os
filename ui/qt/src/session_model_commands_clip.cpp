@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <memory>
 
+#include "consolidate_send.h"
 #include "fader_taper.h"
 #include "scene_item.h"
 #include "edit_clipboard.h"
@@ -114,10 +115,12 @@ void SessionModel::installClipCommands(CommandRegistry& /*local*/, const Install
     simple("clip.gain_line_clear",
            [this](const CommandContext&, Why& why) { return ctl_.clear_gain_line(why); });
     simple("clip.gain_render", [this](const CommandContext&, Why& why) {
+        // Render Clip Gain is Consolidate of the selected region (ADR-0042 §4);
+        // a range or no selection is not a clip to render.
         if (ctl_.selected_region(why) == nullptr) return false;
-        why = "Render Clip Gain bakes the clip through Consolidate, which this interface does "
-              "not drive yet; the engine renders it";
-        return false;
+        EditController::ConsolidateRequest req;
+        if (!ctl_.consolidate_request(req, why)) return false;
+        return send_consolidate(send_command_, req, "the clip gain", why);
     });
     simple("tempo.edit", [this](const CommandContext& ctx, Why& why) {
         if (ctx.argument.empty()) {

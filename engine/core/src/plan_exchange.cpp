@@ -27,10 +27,13 @@ std::size_t PlanExchange::reclaim_after_deactivate(MayFree may_free, void* conte
 std::size_t PlanExchange::reclaim_where(bool stalled, MayFree may_free,
                                         void* context) {
     const uint64_t now = blocks_.load(std::memory_order_seq_cst);
+    // After blocks_: a hold taken later than this load reads only a plan of
+    // a block that began after `now`, never one freed below (hold()).
+    const bool held = holds_.load(std::memory_order_seq_cst) != 0;
     std::size_t kept = 0;
     for (std::size_t i = 0; i < retired_count_; ++i) {
         const Retired r = retired_[i];
-        const bool ended = stalled || now != r.blocks_at_retire;
+        const bool ended = !held && (stalled || now != r.blocks_at_retire);
         if (ended && (!may_free || may_free(context, r.plan))) {
             destroy_plan(r.plan);
         } else {

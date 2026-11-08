@@ -53,8 +53,11 @@ bool same(const ViewState& a, const ViewState& b) {
 }
 
 bool same(const Drag& a, const Drag& b) {
+    // A Pencil stroke grows with every move while the rest stays put: its
+    // preview is redrawn as it grows (ADR-0096).
     return a.kind == b.kind && a.moved == b.moved && a.start == b.start && a.end == b.end &&
-           a.region == b.region && a.track_end == b.track_end && a.lane == b.lane;
+           a.region == b.region && a.track_end == b.track_end && a.lane == b.lane &&
+           a.pencil.size() == b.pencil.size();
 }
 
 }  // namespace

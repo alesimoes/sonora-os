@@ -26,6 +26,8 @@ class MeterItem : public QQuickItem {
     Q_PROPERTY(int channel READ channel WRITE setChannel NOTIFY channelChanged)
     // 0 or 1 reads the monitor bus's left or right instead of a track.
     Q_PROPERTY(int busSide READ busSide WRITE setBusSide NOTIFY busSideChanged)
+    // Post-fader: 0 or 1 reads that side of the track; -1 the louder side.
+    Q_PROPERTY(int side READ side WRITE setSide NOTIFY sideChanged)
     Q_PROPERTY(sonora::ui::ShellModel* source READ source WRITE setSource NOTIFY sourceChanged)
 
 public:
@@ -36,6 +38,10 @@ public:
     void setChannel(int c);
     int busSide() const { return bus_side_; }
     void setBusSide(int s);
+    int side() const { return side_; }
+    void setSide(int s);
+    // The meter point changed: nothing shown before is worth falling from.
+    void reset();
     ShellModel* source() const { return source_; }
     void setSource(ShellModel* s);
 
@@ -50,6 +56,7 @@ signals:
     void channelChanged();
     void busSideChanged();
     void sourceChanged();
+    void sideChanged();
 
 protected:
     QSGNode* updatePaintNode(QSGNode* old, UpdatePaintNodeData*) override;
@@ -61,6 +68,7 @@ private:
 
     int channel_ = -1;
     int bus_side_ = -1;
+    int side_ = -1;
     QPointer<ShellModel> source_;
     bool attached_ = false;
     MeterBallistics ballistics_;

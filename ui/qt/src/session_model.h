@@ -127,6 +127,12 @@ class SessionModel : public QObject {
     Q_PROPERTY(qreal scrollY READ scrollY NOTIFY viewChanged)
     Q_PROPERTY(qreal trackHeight READ trackHeight NOTIFY viewChanged)
     Q_PROPERTY(QString zoomText READ zoomText NOTIFY viewChanged)
+    // ADR-0096: the timeline shows samples (the Pencil draws on them, the
+    // Sample Edit panel shows), and a range lies inside one clip so a
+    // sample.* command has something to change. The second also follows the
+    // clips under the range: EditWindow.qml reads trackRows beside it.
+    Q_PROPERTY(bool sampleView READ sampleView NOTIFY viewChanged)
+    Q_PROPERTY(bool sampleEditable READ sampleEditable NOTIFY selectionChanged)
     // One entry per track: {top, shown, captions}. `top` is the row's top in
     // the track area before the scroll; `shown` says its automation lanes
     // are disclosed under it (ADR-0027), `captions` what each lane says about
@@ -470,6 +476,11 @@ public:
     qreal scrollY() const { return ctl_.view().scroll_y; }
     qreal trackHeight() const { return ctl_.view().track_height; }
     QString zoomText() const;
+    bool sampleView() const { return ctl_.sample_zoom(); }
+    bool sampleEditable() const {
+        std::string argument, why;
+        return ctl_.sample_edit_argument("repair", std::string(), argument, why);
+    }
     QList<bool> mutes() const;
     QList<bool> solos() const;
     QList<bool> soloSafes() const;
@@ -551,7 +562,18 @@ public:
     // How an engine command with an argument leaves this model: the shell's
     // invokeWith(), set by link_transport().
     using SendCommand = std::function<void(const QString& command, const QString& argument)>;
-    void setCommandSender(SendCommand send) { send_command_ = std::move(send); }
+    void setCommandSender(SendCommand send) {
+        send_command_ = std::move(send);
+        // A Pencil stroke on the waveform ends as the sample.* commands do,
+        // in one sample.edit (ADR-0096 §1); no sender, and the Pencil refuses.
+        if (!send_command_) {
+            ctl_.set_sample_edit_sender(nullptr);
+            return;
+        }
+        ctl_.set_sample_edit_sender([this](const std::string& argument) {
+            send_command_(QStringLiteral("sample.edit"), QString::fromStdString(argument));
+        });
+    }
     // The engine's transport read when a command runs, the shell's
     // readTransport(), set by link_marker_locate(). None, or false from it,
     // and marker.add takes the last tick's onTransport() reading.

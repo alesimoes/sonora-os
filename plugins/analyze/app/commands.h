@@ -20,5 +20,9 @@ using CommandFn = int (*)(const std::vector<std::string>& args, const std::atomi
 int run_mastering_command(const std::vector<std::string>& args, const std::atomic<bool>& cancel);
 int run_key_command(const std::vector<std::string>& args, const std::atomic<bool>& cancel);
 int run_timbre_command(const std::vector<std::string>& args, const std::atomic<bool>& cancel);
+// Reference-tone matching (ADR-0072).
+int run_tone_command(const std::vector<std::string>& args, const std::atomic<bool>& cancel);
+// Vocal Balance whole-track analysis (ADR-0104); the subcommand is `vocal-balance`.
+int run_vocal_balance_command(const std::vector<std::string>& args, const std::atomic<bool>& cancel);
 
 }  // namespace sonora::analyze::app

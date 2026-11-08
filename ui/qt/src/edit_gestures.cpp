@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "edit_controller_detail.h"
+#include "theme.h"
 
 namespace sonora::ui {
 
@@ -65,6 +66,7 @@ bool EditController::press(double x, double y, std::string& why) {
     sel_.autolane = sel_.point = -1;
     if (h.zone == HitZone::Automation) return press_autolane(h, x, y, why);
     if (h.zone == HitZone::TakeLane) return press_takelane(h, x, why);
+    if (tool_ == Tool::Pencil && h.region != kNoId) return press_pencil(h, x, y, why);
 
     Drag::Kind kind = Drag::Kind::Range;
     const bool in_region = h.region != kNoId;
@@ -87,7 +89,7 @@ bool EditController::press(double x, double y, std::string& why) {
             }
             break;
         case Tool::Select:
-        case Tool::Pencil: break;  // the Pencil draws only on an automation lane
+        case Tool::Pencil: break;  // off a clip and off a lane the Pencil selects time
     }
 
     drag_.kind = kind;
@@ -152,6 +154,13 @@ bool EditController::press(double x, double y, std::string& why) {
 void EditController::move(double x, double y) {
     if (drag_.kind == Drag::Kind::None) return;
     refresh_rows();
+    if (drag_.kind == Drag::Kind::Pencil) {
+        if (std::abs(x - drag_.press_x) >= kDragSlopPx || std::abs(y - drag_.press_y) >= kDragSlopPx) {
+            drag_.moved = true;
+        }
+        drag_.pencil.push_back({x, pencil_level(drag_, y)});
+        return;
+    }
     const bool automation = drag_.kind == Drag::Kind::Point || drag_.kind == Drag::Kind::Stroke;
     if (std::abs(x - drag_.press_x) >= kDragSlopPx ||
         (automation && std::abs(y - drag_.press_y) >= kDragSlopPx)) {
@@ -232,6 +241,7 @@ void EditController::move(double x, double y) {
         }
         case Drag::Kind::Point:
         case Drag::Kind::Stroke:
+        case Drag::Kind::Pencil:
         case Drag::Kind::None: break;
     }
 }
@@ -242,6 +252,8 @@ bool EditController::release(double x, double y, std::string& why) {
     drag_ = Drag{};
     if (d.kind == Drag::Kind::Point || d.kind == Drag::Kind::Stroke) return release_autolane(d, why);
     if (d.kind == Drag::Kind::Swipe) return release_swipe(d, why);
+    // A click without a move still draws: one sample, where it was put.
+    if (d.kind == Drag::Kind::Pencil) return release_pencil(d, why);
     if (d.kind == Drag::Kind::None || !d.moved) return true;
     switch (d.kind) {
         case Drag::Kind::Range:
@@ -277,6 +289,7 @@ bool EditController::release(double x, double y, std::string& why) {
         case Drag::Kind::Swipe:
         case Drag::Kind::Point:
         case Drag::Kind::Stroke:
+        case Drag::Kind::Pencil:
         case Drag::Kind::None: break;
     }
     if (const Region* r = find_region(snapshot(), d.region)) {
@@ -285,6 +298,99 @@ bool EditController::release(double x, double y, std::string& why) {
         sel_.end = r->end();
         sel_.insertion = r->position;
     }
+    return true;
+}
+
+// --- the Pencil on a clip's waveform (ADR-0096) ---
+
+SampleLane sample_lane(double row_top, double row_height, int count, int lane) {
+    // As timeline_scene.cpp's draw_region lays a region out: a 2 px inset,
+    // the name band, a pixel either side of the waveform.
+    constexpr double kInset = 2.0;
+    const double h = row_height - 2 * kInset;
+    const double band = std::min<double>(theme::kRegionNameBand, h / 3);
+    const double top = row_top + kInset + band + 1, height = std::max(0.0, h - band - 2);
+    const int n = std::max(1, count);
+    const double each = height / n;
+    return SampleLane{top + each * std::clamp(lane, 0, n - 1), each};
+}
+
+bool EditController::sample_view_at(double x, double y) const {
+    if (!sample_zoom()) return false;
+    const Hit h = hit(x, y);
+    return h.region != kNoId && h.zone != HitZone::TakeLane && h.zone != HitZone::Automation;
+}
+
+bool EditController::press_pencil(const Hit& h, double x, double y, std::string& why) {
+    if (!sample_zoom()) {
+        // The operator's next action, not a failure: the status line (§6).
+        why = "zoom in to the samples to draw: the Pencil draws at 4 samples a pixel or closer";
+        return false;
+    }
+    if (recording_) {
+        why = "a take is recording; the Pencil draws once it stops. Nothing was drawn.";
+        return false;
+    }
+    const Region* r = find_region(snapshot(), h.region);
+    if (r == nullptr || r->channels.empty()) {
+        why = "that clip has no audio to draw on";
+        return false;
+    }
+    const int count = static_cast<int>(r->channels.size());
+    const double row_top = view_.y_of_track(h.track);
+    int lane = count - 1;
+    for (int c = 0; c < count; ++c) {
+        const SampleLane l = sample_lane(row_top, view_.track_height, count, c);
+        if (y < l.top + l.height) {
+            lane = c;
+            break;
+        }
+    }
+    if (samples_ != nullptr &&
+        !samples_->ready(r->channels[static_cast<std::size_t>(lane)].source)) {
+        // Zeros while loading are not the audio; a stroke over them would
+        // replace samples the operator never saw.
+        why = "the samples are still loading; draw once the waveform shows. Nothing was drawn.";
+        return false;
+    }
+    drag_.kind = Drag::Kind::Pencil;
+    drag_.track = drag_.track_end = h.track;
+    drag_.region = r->id;
+    drag_.channel = static_cast<uint16_t>(lane);
+    drag_.press_x = x;
+    drag_.press_y = y;
+    drag_.press_frame = view_.frame_at(x);
+    drag_.pencil.push_back({x, pencil_level(drag_, y)});
+    return true;
+}
+
+float EditController::pencil_level(const Drag& d, double y) const {
+    const Region* r = find_region(snapshot(), d.region);
+    const int count = r != nullptr ? static_cast<int>(r->channels.size()) : 1;
+    const SampleLane l =
+        sample_lane(view_.y_of_track(d.track), view_.track_height, count, d.channel);
+    const double half = l.height / 2;
+    if (!(half > 0.0)) return 0.0f;
+    // At the operator's vertical zoom, so the level under the pointer is the
+    // level the line shows there; pencil_points clamps it to -1..1.
+    const double scale = view_.wave_scale > 0.0f ? view_.wave_scale : 1.0;
+    return static_cast<float>((l.mid() - y) / half / scale);
+}
+
+bool EditController::release_pencil(const Drag& d, std::string& why) {
+    // A take may have started during the stroke: nothing goes to the engine.
+    if (recording_) {
+        why = "a take is recording; the Pencil draws once it stops. Nothing was drawn.";
+        return false;
+    }
+    std::string argument;
+    if (!pencil_argument(d, argument, why)) return false;
+    if (!sample_sender_) {
+        why = "no engine to edit the samples; nothing was drawn";
+        return false;
+    }
+    // One stroke, one sample.edit, one undo step (ADR-0096 §4).
+    sample_sender_(argument);
     return true;
 }
 

@@ -13,13 +13,18 @@
 #include <QQuickWindow>
 #include <QSGRendererInterface>
 #include <QTest>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
+#include "control_adapter.h"
+#include "key_router.h"
 #include "meter_item.h"
 #include "peak_source.h"
 #include "scene_item.h"
 #include "session_model.h"
+#include "shell_model.h"
+#include "sonora/api/fake_engine.h"
 #include "theme.h"
 #include "timeline_document.h"
 
@@ -48,6 +53,21 @@ public:
                PeakPair* out) const override {
         for (int i = 0; i < count; ++i) out[i] = {-0.5f, 0.5f};
     }
+};
+
+// Every sample at one level, so the sample view's line has one known y; or
+// still loading, and no line at all (ADR-0096 §2).
+class LevelSamples final : public SampleSource {
+public:
+    explicit LevelSamples(float level) : level_(level) {}
+    void read(model::Id, uint16_t, model::Frames, int count, float* out) const override {
+        for (int i = 0; i < count; ++i) out[i] = loaded ? level_ : 0.0f;
+    }
+    bool ready(model::Id) const override { return loaded; }
+    bool loaded = true;
+
+private:
+    float level_;
 };
 
 // One track, one unnamed region of five seconds at the session start.
@@ -201,6 +221,101 @@ int main(int argc, char** argv) {
         CHECK(is(shot, 300, wave_y(0), region_wave(region_colour(0))));
         // Track 12 wears the colour it was given when it was added.
         CHECK(is(shot, 300, wave_y(11), region_wave(region_colour(model::auto_colour(11)))));
+    }
+
+    // --- the sample view (ADR-0096): the samples, not the overview ---
+    {
+        QQuickWindow w;
+        w.setColor(QColor::fromRgb(kBlue));
+        w.resize(400, 100);
+        ModelDocument d(one_region());
+        FlatPeaks flat;  // -0.5..0.5: the overview would fill the lane's middle
+        LevelSamples half(0.5f);
+        SessionModel s(d, flat, false);
+        s.controller().set_sample_source(&half);
+        auto* tl = new TimelineItem(w.contentItem());
+        tl->setPosition(QPointF(0, 0));
+        tl->setSize(QSizeF(400, 100));
+        tl->setSession(&s);
+        s.controller().zoom_by(1.0 / s.controller().view().fpp, 0);  // a frame a pixel
+        s.setViewport(400, 100);
+        CHECK(s.sampleView());
+        w.show();
+        CHECK(QTest::qWaitForWindowExposed(&w));
+        const SampleLane lane = sample_lane(0, s.controller().view().track_height, 1, 0);
+        const int line_y = static_cast<int>(std::floor(lane.mid() - 0.5 * lane.height / 2));
+        const int under = static_cast<int>(std::floor(lane.mid() + lane.height / 8));
+        QImage shot = w.grabWindow();
+        CHECK(is(shot, 200, line_y, region_wave(palette)));  // the samples' line at 0.5
+        CHECK(is(shot, 200, under, region_body(palette)));   // no overview below it
+        // Still loading: no line drawn over zeros that are not the audio.
+        half.loaded = false;
+        s.peaksReady();
+        shot = w.grabWindow();
+        CHECK(is(shot, 200, line_y, region_body(palette)));
+        // Coarser than 4 frames a pixel: the overview again.
+        half.loaded = true;
+        s.controller().zoom_by(8.0, 0);
+        s.setViewport(400, 100);
+        CHECK(!s.sampleView());
+        shot = w.grabWindow();
+        CHECK(is(shot, 200, under, region_wave(palette)));
+    }
+
+    // --- a refused sample.edit is a held notice (ADR-0052 §5, ADR-0096 §5) ---
+    // The panel's command and a Pencil stroke both end in sample.edit, which
+    // FakeEngine refuses (it has no audio files): each refusal is held under
+    // the window until dismissed, not left to the status line that clears.
+    {
+        sonora::api::testing::FakeEngine::Config cfg;
+        cfg.tracks = 1;
+        sonora::api::testing::FakeEngine fake(cfg);
+        ControlAdapter engine(fake);
+        std::string err;
+        CHECK(engine.connect(err));
+        sonora::KeyMap map;
+        ModelDocument d(one_region());
+        FlatPeaks flat;
+        LevelSamples half(0.5f);
+        SessionModel s(d, flat, false);
+        s.controller().set_sample_source(&half);
+        KeyRouter router(map, engine.info().implemented_commands,
+                         [&](const std::string& c, const sonora::CommandContext& ctx) {
+                             return engine.send(c, ctx);
+                         });
+        s.installCommands(router.local());
+        ShellModel shell(engine, router);
+        s.setCommandSender([&shell](const QString& command, const QString& argument) {
+            shell.invokeWith(command, -1, argument);
+        });
+        shell.tick();
+        const auto base = shell.notices().size();
+        const auto answered = [&](qsizetype want) {
+            // The fake answers on a following tick; a bounded number of them.
+            for (int i = 0; i < 20 && shell.notices().size() < want; ++i) shell.tick();
+            return shell.notices().size() == want;
+        };
+        auto& ctl = s.controller();
+        ctl.set_viewport(400, 100);
+        ctl.zoom_by(1.0 / ctl.view().fpp, 0);
+        // A range across the clip's end: nothing for a sample edit to change.
+        ctl.select_range(0, 48000 * 5 - 100, 48000 * 5 + 100);
+        CHECK(!s.sampleEditable());
+        ctl.select_range(0, 100, 300);
+        CHECK(s.sampleEditable());
+        shell.invoke(QStringLiteral("sample.reverse"), -1);
+        CHECK(answered(base + 1));
+        CHECK(shell.notices().last().startsWith(QStringLiteral("Sample edit refused: ")));
+        // The Pencil's stroke: one sample.edit draw, refused and held the same way.
+        ctl.clear_selection();
+        ctl.set_tool(Tool::Pencil);
+        const SampleLane lane = sample_lane(0, ctl.view().track_height, 1, 0);
+        s.press(100, lane.mid());
+        s.drag(120, lane.mid() - lane.height / 4);
+        s.release(120, lane.mid() - lane.height / 4);
+        CHECK(answered(base + 2));
+        CHECK(shell.notices().last().startsWith(QStringLiteral("Sample edit refused: ")));
+        std::printf("ui render: held: %s\n", qPrintable(shell.notices().last()));
     }
 
     std::printf("ui render: all checks passed\n");

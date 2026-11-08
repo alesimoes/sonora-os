@@ -63,13 +63,56 @@ class PushRace(unittest.TestCase):
         self.assertEqual(self.forge.push(self.wt, "feat/x"), forge_push.SAME)
         self.assertEqual(self.remote_head(), before)
 
-    def test_different_patch_replaces_remote_with_lease(self):
+    def test_remote_ahead_is_merged_never_forced(self):
+        # someone pushes a fix to the branch after the daemon's copy
+        other = os.path.join(self.tmp.name, "other")
+        git(self.tmp.name, "clone", self.origin, other)
+        git(other, "checkout", "feat/x")
+        commit_file(other, "theirs.txt", "t\n", "their fix")
+        git(other, "push", "origin", "feat/x")
+        theirs = git(other, "rev-parse", "HEAD")
         git(self.wt, "fetch", "origin", "main")
         git(self.wt, "rebase", "origin/main")
         commit_file(self.wt, "more.txt", "more\n", "daemon work")
         self.assertEqual(self.forge.push(self.wt, "feat/x"),
                          forge_push.PUSHED)
-        self.assertEqual(self.remote_head(), git(self.wt, "rev-parse", "HEAD"))
+        head = self.remote_head()
+        self.assertEqual(head, git(self.wt, "rev-parse", "HEAD"))
+        git(self.origin, "merge-base", "--is-ancestor", theirs, head)
+        tree = git(self.origin, "ls-tree", "--name-only", head)
+        self.assertIn("theirs.txt", tree)
+        self.assertIn("more.txt", tree)
+
+    def test_conflicting_remote_raises_and_leaves_remote_alone(self):
+        other = os.path.join(self.tmp.name, "other")
+        git(self.tmp.name, "clone", self.origin, other)
+        git(other, "checkout", "feat/x")
+        commit_file(other, "feature.txt", "theirs\n", "their edit")
+        git(other, "push", "origin", "feat/x")
+        before = self.remote_head()
+        commit_file(self.wt, "feature.txt", "ours\n", "our edit")
+        with self.assertRaises(Exception):
+            self.forge.push(self.wt, "feat/x")
+        self.assertEqual(self.remote_head(), before)
+        self.assertEqual(git(self.wt, "status", "--porcelain"), "")
+
+    def test_no_force_flag_is_ever_used(self):
+        argvs = []
+
+        def ok(argv, cwd, timeout):
+            argvs.append(argv)
+            if argv[:2] == ["git", "push"] and len(argvs) < 8:
+                raise RuntimeError("rejected non-fast-forward")
+            return ""
+        try:
+            forge_push.push_feature_branch(ok, ".", "b")
+        except Exception:
+            pass
+        pushes = [a for a in argvs if a[:2] == ["git", "push"]]
+        self.assertTrue(pushes)
+        for a in pushes:
+            self.assertFalse([x for x in a if x.startswith("--force")
+                              or x == "-f"], a)
 
     def test_new_branch_is_a_plain_push(self):
         git(self.wt, "checkout", "-b", "feat/new", "origin/main")

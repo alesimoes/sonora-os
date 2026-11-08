@@ -205,6 +205,8 @@ class Flow:
 
     def wake_context(self, t):
         fid, ev = t["feature_id"], t.get("event") or "wake"
+        if ev == "stall_resolver":
+            return ""   # its brief (harness/stall_resolver.py) is all it needs
         lines = [f"event: {ev} feature={fid or '-'}"]
         if not fid:
             return "\n".join(lines)

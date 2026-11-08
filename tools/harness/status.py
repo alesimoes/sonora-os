@@ -4,7 +4,7 @@ import json
 import os
 import time
 
-from . import blockinfo
+from . import blockinfo, leadwake
 from .run_view import run_view
 from .scheduler import POOL_OF_KIND, ready_feature_ids
 
@@ -50,7 +50,7 @@ def write_atomic(path, data):
 
 
 def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
-          paused, hour_runs):
+          paused, hour_runs, planner_runs=0, holds=None):
     """runs: active-run dicts already enriched with working/building."""
     tasks = store.tasks()
     by_id = {t["id"]: t for t in tasks}
@@ -97,6 +97,14 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
         "usage_pause_until": usage_pause_until or None,
         "cap": cfg.cap, "live": len(runs), "paused": sorted(paused),
         "runs_last_hour": hour_runs,
+        "max_runs_per_hour": getattr(cfg, "max_runs_per_hour", None),
+        "planner_runs_last_hour": planner_runs,
+        "max_planner_runs_per_hour": getattr(
+            cfg, "max_planner_runs_per_hour", None),
+        "budget_holds": dict(holds or {}),
+        "max_principals": getattr(cfg, "max_principals", None),
+        "lead_wakes_last_hour": leadwake.count_last_hour(
+            store.tasks(kind="wake"), now),
         "open_prs": len({t["feature_id"] for t in tasks
                          if t["state"] in ("pr_open", "ci_fix")}),
         "max_open_prs": cfg.max_open_prs,

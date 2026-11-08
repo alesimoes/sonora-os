@@ -564,7 +564,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                       ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
                           api::BounceOptions o;
                           if (!api::parse_bounce_argument(ctx.argument, o, why)) return false;
-                          if (bounce_job_.active()) {
+                          if (bounce_job_.active() || stems_job_.exporting()) {
                               why = "a bounce is already running; cancel it or wait for it";
                               return false;
                           }
@@ -590,6 +590,11 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                       }));
     registry_.install("mix.bounce_cancel",
                       ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          // One export at a time: this cancels whichever runs.
+                          if (stems_job_.active()) {
+                              stems_job_.cancel();
+                              return true;
+                          }
                           if (!bounce_job_.active()) {
                               why = "no bounce is running";
                               return false;
@@ -597,6 +602,19 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                           bounce_job_.cancel();
                           return true;
                       }));
+    StemsCommandDeps stems;
+    stems.bounce = &bounce_gate_;
+    stems.snapshot = [this]() { return document_->current(); };
+    stems.session_dir = [this]() {
+        const auto folder = session_.folder();
+        return folder ? *folder : std::string();
+    };
+    stems.recording = [this]() { return takes_in_flight(); };
+    stems.announce = [this](api::BounceState state, uint32_t permille, uint64_t files,
+                            const std::string& text) {
+        announce_bounce(state, permille, files, text);
+    };
+    install_stems_commands(registry_, stems_job_, std::move(stems));
     // Consolidate (ADR-0031 §6): the render runs on a worker, never the
     // audio thread; the edit is committed here, in tick().
     registry_.install("session.consolidate",
@@ -1888,6 +1906,7 @@ void EngineControlServer::greet(ClientId id) {
     }
     hello.capabilities.push_back(api::kCapabilityBounce);
     hello.capabilities.push_back(api::kCapabilityRender);
+    hello.capabilities.push_back(api::kCapabilityStems);
     std::string bytes;
     api::wire::encode(hello, bytes);
     send_to(client, bytes);
@@ -3091,6 +3110,10 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                     announce_bounce(api::BounceState::Cancelled, 0, 0,
                                     "the session was closed; the bounce was stopped");
                 }
+                if (stems_job_.abandon()) {
+                    announce_bounce(api::BounceState::Cancelled, 0, 0,
+                                    "the session was closed; the stem export was stopped");
+                }
                 // A render rolling the old session's chain prints nothing
                 // for the new one: stopped (its destructor removes the
                 // file), its standing event dropped.
@@ -3430,7 +3453,7 @@ bool EngineControlServer::start_render(model::RenderKind kind, const std::string
                                        std::string& why) {
     api::RenderOptions o;
     if (!api::parse_render_argument(argument, o, why)) return false;
-    if (render_ || bounce_job_.active()) {
+    if (render_ || bounce_job_.active() || stems_job_.exporting()) {
         why = "a render or a bounce is already running; cancel it or wait for it";
         return false;
     }
@@ -3595,6 +3618,14 @@ void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
     follow_bounce();
+    {
+        const auto folder = session_.folder();
+        follow_stems(stems_job_, folder ? *folder : std::string(),
+                     [this](api::BounceState state, uint32_t permille, uint64_t files,
+                            const std::string& text) {
+                         announce_bounce(state, permille, files, text);
+                     });
+    }
     follow_consolidate();
     follow_render();
     autosave_when_due();

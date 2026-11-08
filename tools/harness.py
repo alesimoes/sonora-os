@@ -18,6 +18,8 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "harness"))
 from client import HarnessError, brief, env_config, oneshot  # noqa: E402
+from hookretry import with_one_retry  # noqa: E402
+from pathnorm import candidates  # noqa: E402
 
 def hook_input():
     try:
@@ -101,9 +103,12 @@ def run_hook(a, hook_inbox):
             return 0
         if os.environ.get("SONORA_UNCLAIMED_OK") == "1":
             return 0
-        r = oneshot(cfg["port"], cfg["name"], cfg["token"], "check", path=path)
-        if r.get("ok") and r.get("allowed"):
-            return 0
+        r = {}
+        for cand in candidates(path):
+            r = with_one_retry(lambda: oneshot(
+                cfg["port"], cfg["name"], cfg["token"], "check", path=cand))
+            if r.get("ok") and r.get("allowed"):
+                return 0
         why = r.get("reason") or r.get("error") or "claim it first"
         print(f"harness: edit of {path} denied: {why}", file=sys.stderr)
         return 2

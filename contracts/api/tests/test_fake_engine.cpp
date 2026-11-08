@@ -569,8 +569,9 @@ void bounce_events() {
     FakeEngine e(cfg);
     std::string error;
     CHECK(e.connect(error));
-    CHECK(e.hello().capabilities.size() == 3 && e.hello().capabilities[1] == kCapabilityBounce &&
-          e.hello().capabilities[2] == kCapabilityRender);
+    CHECK(e.hello().capabilities.size() == 4 && e.hello().capabilities[1] == kCapabilityBounce &&
+          e.hello().capabilities[2] == kCapabilityRender &&
+          e.hello().capabilities[3] == kCapabilityStems);
     Inbox in;
     const auto run = [&](const char* id, const char* arg) {
         CommandRequest r;
@@ -615,6 +616,22 @@ void bounce_events() {
     in.clear();
     e.poll(in);
     CHECK(states().empty());
+
+    // A stem export (ADR-0085) rides the same event and the same one-at-a-time
+    // rule; real time is refused, and Done names the folder and the count.
+    CHECK(run("mix.stems", "mode=realtime").result == DispatchResult::Failed);
+    CHECK(run("mix.stems", "by=track tracks=4,7 name=Mix").result == DispatchResult::Ok);
+    CHECK((states() == std::vector<uint32_t>{running}));
+    CHECK(run("mix.bounce", "").result == DispatchResult::Failed);
+    bool named = false;
+    for (const EngineEvent& ev : in.events) {
+        named = named || (ev.kind == EventKind::Bounce && ev.flags == done &&
+                          ev.text == "Bounced Files/Mix Stems" && ev.insert == 2);
+    }
+    CHECK(named);
+    CHECK(run("mix.stems", "").result == DispatchResult::Ok);
+    CHECK(run("mix.bounce_cancel", "").result == DispatchResult::Ok);
+    CHECK((states() == std::vector<uint32_t>{cancelled}));
 }
 
 // ADR-0057: a scripted plugin frame reaches the client through the codec,

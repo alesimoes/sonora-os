@@ -62,9 +62,16 @@ for t in ui_meter_model ui_keys ui_keymaps ui_edit ui_clipboard ui_inserts ui_sh
   grep -q " $t\$" <<<"$listed" || { echo "error: $t is not registered; is Qt too old?" >&2; exit 1; }
 done
 
+# A picture run builds the two binaries the scenes use and nothing else. It
+# used to build the whole tree and run every test first: that is the gate's
+# job (micro-build, the nightly), and it put a screenshot run past 10 minutes
+# even with the build tree kept (2026-11-08). The tests are not skipped
+# anywhere: `tools/build-ui.sh` without --screenshot still runs them all.
+if [[ "$MODE" == screenshot ]]; then
+  cmake --build "$BUILD" -j"$JOBS" --target sonora-ui sonora-engine
 # SONORA_UI_SCOPE=ui (CI on a PR): build the UI and its tests only and run
 # the ui_* tests; the engine job already built and ran everything else.
-if [[ "${SONORA_UI_SCOPE:-all}" == ui ]]; then
+elif [[ "${SONORA_UI_SCOPE:-all}" == ui ]]; then
   # The targets are named test_ui_<name> (Makefiles generator: "... target").
   mapfile -t ui_targets < <(cmake --build "$BUILD" --target help |
     grep -oE 'test_ui_[A-Za-z0-9_]+' | sort -u)

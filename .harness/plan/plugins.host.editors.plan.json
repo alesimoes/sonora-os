@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "feature": "plugins.host.editors",
+  "backlog_ids": ["plugins.host.editors"],
+  "track": "plugin",
+  "feature_branch": "feat/plugins.host.editors",
+  "reserved": {"adr": 88, "protocol": null, "formats": []},
+  "adr": "ADR-0088",
+  "tasks": [
+    {
+      "id": "contract",
+      "kind": "contract",
+      "title": "ADR-0088 and the plugin editor service interface (contract only)",
+      "brief": "The host side of editors is on main (#322, #339: plugins/host editor_x11.cpp, HostControl OpenEditor/EditorOpened/EditorFailed/EditorClosed, HostSupervisor tracks open_editors_). Nothing lets the UI open one. This feature is the CONTRACT PR only: engine wiring and UI are a follow-up feature (plugins.host.editors.wire) planned after interchange.stems merges, because they must edit engine/control/CMakeLists.txt, engine_control_server.cpp and contracts/api/CMakeLists.txt, which interchange.stems owns. Write brain/decisions/ADR-0088-plugin-editor-launch.md (its INDEX line goes in the PR description, not the INDEX file). Decide: (1) the UI asks the engine, the engine asks the host; the UI never talks to a host; (2) one editor per insert, a second request raises the existing window; (3) states Closed, Opening, Open, Failed(reason from EditorFailed); an editor that cannot open (no DISPLAY, LV2 UI, host without X11) shows the reason and the UI offers the generic editor, never a blank window; (4) parent token empty on appliance and WSLg (parentless toplevel); (5) the editor lives and dies with the host: host crash or chain removal reports Closed; (6) values moved in the editor reach the document through the existing ParamTouched/gesture path, no new value path; (7) wire for the follow-up: commands OpenPluginEditor{track,slot}, ClosePluginEditor{track,slot}, state event PluginEditorState{track,slot,state,reason}; protocol number reserved by the coordinator when it dispatches the follow-up, this PR carries no wire. Rejected: embedding the plugin window in Qt (X11 reparenting under Wayland labwc is fragile, ADR-0010); generic editor only; polling plugin state. Unverified: behaviour under WSLg and labwc (researcher measures). Code: new module engine/editor_service with its own CMakeLists.txt, header-only INTERFACE library sonora_editor_service, std only: include/sonora/editor_service/plugin_editor_service.h with enum class EditorState{Closed,Opening,Open,Failed}; struct EditorStatus{state, reason}; interface PluginEditorService{open(track,slot)->EditorStatus; close(track,slot); status(track,slot)->EditorStatus; set_listener(...)}; inline FakePluginEditorService; tests/test_plugin_editor_service.cpp (open twice raises, not duplicates; failed carries reason; close of closed ignored; host-stop reports Closed). Register in root CMakeLists.txt: add_subdirectory(engine/editor_service) and sonora_label_module_tests(engine/editor_service control).",
+      "files": [
+        "brain/decisions/ADR-0088-plugin-editor-launch.md",
+        "engine/editor_service/**",
+        "CMakeLists.txt"
+      ],
+      "depends_on": [],
+      "agent": "plugin-engineer",
+      "grade": "M/high",
+      "tier": "senior",
+      "accept": [
+        "ADR-0088 has Context, Decision, Rationale, Consequences, Alternatives rejected",
+        "the contract test builds and passes under tools/micro-build.sh",
+        "tools/pre-pr.sh reports no ADR number clash"
+      ]
+    }
+  ],
+  "merge_order": ["contract"],
+  "pr": {
+    "title": "plugins.host.editors: plugin editor launch contract (ADR-0088); engine wiring and UI follow (partial)",
+    "partial": true,
+    "partial_reason": "Contract-only PR: engine wiring and UI share files with interchange.stems and need a protocol number; they ship as follow-up feature plugins.host.editors.wire"
+  }
+}

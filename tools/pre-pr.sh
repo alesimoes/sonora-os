@@ -26,32 +26,42 @@ changed=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD)
 # 1. Whitespace errors and conflict markers.
 git diff --check "$base"...HEAD >/dev/null 2>&1 || bad "git diff --check reports whitespace errors or conflict markers"
 
-# 2. Executable bits: tools/*.sh, hooks and usr/local/bin must be 100755.
+# 2. Executable bits: tools/*.sh and tools/*.py (top level, as CI's
+# "Executable bits" job checks), hooks and usr/local/bin must be 100755.
+# The .py case was missing: three agent PRs went red on it (2026-11-08).
 echo "$changed" | while IFS= read -r f; do
   case "$f" in
-    tools/*.sh | */usr/local/bin/* | iso/config/hooks/*)
+    tools/*/*) ;;
+    tools/*.sh | tools/*.py | */usr/local/bin/* | iso/config/hooks/*)
       mode=$(git ls-files -s -- "$f" | cut -c1-6)
-      [ "$mode" = 100755 ] || echo "pre-pr: FAIL: $f is mode ${mode:-missing}, want 100755 (git update-index --chmod=+x)" >&2
+      [ "$mode" = 100755 ] || echo "$f is mode ${mode:-missing}, want 100755 (git update-index --chmod=+x $f)"
       ;;
   esac
-done | grep -q . && fail=1
+done > "${TMPDIR:-/tmp}/pre-pr-modes.$$"
+# The loop runs in a pipeline subshell: its findings come back through a file,
+# not stderr (an earlier version printed FAIL and still ended "ok").
+while IFS= read -r m; do bad "$m"; done < "${TMPDIR:-/tmp}/pre-pr-modes.$$"
+rm -f "${TMPDIR:-/tmp}/pre-pr-modes.$$"
 
 # 3. shellcheck on the shell scripts you changed, as CI runs it.
 scripts=$(echo "$changed" | grep -E '^tools/.*\.sh$|/usr/local/bin/|\.hook\.chroot$|^iso/auto/config$' || true)
 if [ -n "$scripts" ]; then
   # CI checks every tools/*.sh at once, so a sourced helper is an input there;
   # checking only the changed file reports SC1091. Use CI's file list.
+  # -x as CI: tools/lib/* sourced through a `source=` directive is checked in
+  # the sourcing script's context.
   b=iso/config/includes.chroot/usr/local/bin
   ci_scripts=$(ls tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot \
     "$b/sonora-smoketest" "$b/sonora-display-gave-up" "$b/sonora-install" \
     "$b/sonora-install-tty" "$b/sonora-update" "$b/sonora-policycheck" \
+    "$b/sonora-acceptance" "$b/sonora-windows-plugins" \
     iso/config/includes.chroot/usr/local/lib/sonora/slots.sh 2>/dev/null)
   if command -v shellcheck >/dev/null 2>&1; then
     # shellcheck disable=SC2086
-    shellcheck $ci_scripts || bad "shellcheck"
+    shellcheck -x $ci_scripts || bad "shellcheck"
   elif command -v docker >/dev/null 2>&1; then
     # shellcheck disable=SC2086
-    MSYS_NO_PATHCONV=1 docker run --rm -v "$root:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 $ci_scripts || bad "shellcheck (docker)"
+    MSYS_NO_PATHCONV=1 docker run --rm -v "$root:/mnt" -w /mnt koalaman/shellcheck:v0.11.0 -x $ci_scripts || bad "shellcheck (docker)"
   else
     echo "pre-pr: warning: no shellcheck or docker; shellcheck NOT run" >&2
   fi

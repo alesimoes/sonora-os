@@ -4,13 +4,17 @@
 // controller's group, ungroup, loop and unloop, each one undo step; a group
 // moving as one; the commands with their refusals; the sample edit request the
 // selection becomes; and the scene marking grouped clips and loop repeats.
+// The sample view's contract (ADR-0096): SampleSource reads and the Pencil's
+// stroke turned into the points of one sample.edit draw.
 #include <QGuiApplication>
 #include <QTest>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
 #include "edit_controller.h"
 #include "peak_source.h"
+#include "sample_view.h"
 #include "session_model.h"
 #include "timeline_scene.h"
 
@@ -250,6 +254,108 @@ int test_scene_marks_groups() {
     return 0;
 }
 
+
+// The fake answers every read from memory, deterministically, and zeros
+// outside the source; a source still loading says so.
+int test_sample_source_fake() {
+    FakeSampleSource ramp(FakeSampleSource::Shape::Ramp, 100, 1.0f, 1000);
+    float buf[8] = {};
+    ramp.read(1, 0, 0, 4, buf);
+    CHECK(buf[0] == -1.0f && buf[1] > buf[0] && buf[2] > buf[1] && buf[3] > buf[2]);
+    ramp.read(1, 0, 50, 1, buf);
+    CHECK(std::fabs(buf[0]) < 1e-6f);
+    ramp.read(1, 0, 998, 4, buf);
+    CHECK(buf[1] != 0.0f && buf[2] == 0.0f && buf[3] == 0.0f);
+    ramp.read(1, 0, -2, 2, buf);
+    CHECK(buf[0] == 0.0f && buf[1] == 0.0f);
+    // Channels differ, so a stereo view shows two lanes.
+    CHECK(ramp.at(0, 10) != ramp.at(1, 10));
+    FakeSampleSource sine(FakeSampleSource::Shape::Sine, 40, 0.5f);
+    CHECK(std::fabs(sine.at(0, 10) - 0.5f) < 1e-5f && std::fabs(sine.at(0, 0)) < 1e-6f);
+    const SampleSource& s = sine;
+    CHECK(s.ready(7));
+    sine.set_not_ready(7);
+    CHECK(!s.ready(7) && s.ready(8));
+    // The thresholds the view and the Pencil share, and the engine's limits.
+    CHECK(kSampleDotsMaxFpp < 1.0 && kSampleViewMaxFpp == 4.0);
+    CHECK(kPencilMaxPoints == 4096 && kPencilMaxFrames == 16'000'000);
+    return 0;
+}
+
+// One point per pixel column, none skipped between two far-apart pointer
+// positions, in increasing frame order.
+int test_pencil_interpolates() {
+    PencilFrame v;
+    v.scroll = 1000.0;
+    v.fpp = 2.0;
+    v.clip_first = 0;
+    v.clip_end = 100000;
+    PencilStroke out;
+    std::string why;
+    CHECK(pencil_points({{10.0, 0.0f}, {14.0, 1.0f}}, v, out, why));
+    CHECK(out.points == "1020:0,1022:0.25,1024:0.5,1026:0.75,1028:1");
+    CHECK(out.from == 1020 && out.to == 1029 && out.count == 5);
+    // Right to left comes out in frame order all the same.
+    CHECK(pencil_points({{14.0, 1.0f}, {10.0, 0.0f}}, v, out, why));
+    CHECK(out.points == "1020:0,1022:0.25,1024:0.5,1026:0.75,1028:1");
+    // Going back over a column redraws it with the later level.
+    CHECK(pencil_points({{10.0, 0.5f}, {11.0, 0.5f}, {10.0, -0.5f}}, v, out, why));
+    CHECK(out.points == "1020:-0.5,1022:0.5");
+    // Zoomed past a frame a pixel, columns sharing a frame give one point.
+    v.fpp = 0.5;
+    CHECK(pencil_points({{0.0, 0.1f}, {3.0, 0.4f}}, v, out, why));
+    CHECK(out.count <= 3 && out.from == 1000 && out.to == 1003);
+    CHECK(out.points.find("1001:") != std::string::npos);
+    // A level is written with a decimal point whatever the locale.
+    CHECK(out.points.rfind("1000:0.1,", 0) == 0);
+    return 0;
+}
+
+// Levels clamp to -1..1; columns off the clip draw nothing.
+int test_pencil_clamps() {
+    PencilFrame v;
+    v.scroll = 0.0;
+    v.fpp = 1.0;
+    v.clip_first = 5;
+    v.clip_end = 8;
+    PencilStroke out;
+    std::string why;
+    CHECK(pencil_points({{0.0, 0.0f}, {5.0, 3.0f}, {7.0, -3.0f}}, v, out, why));
+    CHECK(out.from == 5 && out.to == 8 && out.count == 3);
+    CHECK(out.points == "5:1,6:0,7:-1");
+    CHECK(pencil_points({{6.0, 2.0f}}, v, out, why) && out.points == "6:1");
+    CHECK(pencil_points({{6.0, -0.000001f}}, v, out, why) && out.points == "6:-0.000001");
+    return 0;
+}
+
+// Nothing to send is refused with a reason, never sent empty.
+int test_pencil_refuses() {
+    PencilFrame v;
+    v.fpp = 1.0;
+    v.clip_first = 100;
+    v.clip_end = 200;
+    PencilStroke out;
+    std::string why;
+    CHECK(!pencil_points({}, v, out, why) && why.find("nothing drawn") != std::string::npos);
+    CHECK(out.points.empty() && out.count == 0);
+    // Wholly off the clip.
+    CHECK(!pencil_points({{0.0, 0.5f}, {50.0, 0.5f}}, v, out, why));
+    CHECK(why.find("nothing drawn") != std::string::npos);
+    // At an overview zoom the Pencil does not draw and says why.
+    v.fpp = 4.5;
+    CHECK(!pencil_points({{120.0, 0.5f}}, v, out, why) && why.find("zoom in") != std::string::npos);
+    v.fpp = 4.0;
+    CHECK(pencil_points({{30.0, 0.5f}}, v, out, why) && out.points == "120:0.5");
+    // More columns than one draw takes.
+    v.fpp = 1.0;
+    v.clip_first = 0;
+    v.clip_end = 1'000'000;
+    CHECK(pencil_points({{0.0, 0.0f}, {4095.0, 0.0f}}, v, out, why) && out.count == 4096);
+    CHECK(!pencil_points({{0.0, 0.0f}, {4096.0, 0.0f}}, v, out, why));
+    CHECK(why.find("4096 points") != std::string::npos);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -260,6 +366,10 @@ int main(int argc, char** argv) {
     failed += test_sample_edit_request();
     failed += test_commands();
     failed += test_scene_marks_groups();
+    failed += test_sample_source_fake();
+    failed += test_pencil_interpolates();
+    failed += test_pencil_clamps();
+    failed += test_pencil_refuses();
     if (failed == 0) std::printf("ui_clip_groups: ok\n");
     return failed == 0 ? 0 : 1;
 }
