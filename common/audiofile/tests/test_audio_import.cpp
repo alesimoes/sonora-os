@@ -112,8 +112,10 @@ int main() {
         std::string why;
         CHECK(import_audio(src, dst, 44100, nullptr, nullptr, res, why));
         CHECK(res.floating);
+        CHECK(res.frames == 44100);  // 1 s at 96 kHz is 1 s at 44.1 kHz
         WavReader r;
         CHECK(r.open(dst, why));
+        CHECK(r.frames() == 44100);
         std::vector<float> buf(44100);
         CHECK(r.read(0, 44100, buf.data()) == 44100);
         double peak = 0;
@@ -121,6 +123,11 @@ int main() {
         CHECK(peak < 0.5 * 0.01 + 1e-9);  // 30 kHz is under 44.1/2 here; see below
     }
     // (30 kHz is above 22.05 kHz: the check above is the alias test.)
+
+    // The converter sizes its output from the two rates alone; the files
+    // above come out at exactly these lengths.
+    CHECK(Resampler(44100, 48000, 1).output_frames(44100) == 48000);
+    CHECK(Resampler(96000, 44100, 1).output_frames(96000) == 44100);
 
     // Up from 22.05 kHz.
     CHECK(write_sines(src, 22050, 22050, {2000.0}, WavWriter::Format::Int24));

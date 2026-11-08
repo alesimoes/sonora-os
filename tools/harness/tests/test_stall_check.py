@@ -5,6 +5,7 @@ no architect, PRs open and unmerged, all unseen)."""
 import json
 import unittest
 
+import support  # noqa: F401  puts tools/ on sys.path before harness.*
 from harness.scheduler import HOLD
 from harness.supervisor import Thresholds
 import test_supervisor as ts

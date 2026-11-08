@@ -404,6 +404,11 @@ class SchedulerTests(Base):
         self.add(3)
         p = plan(self.s, cfg=cfg)
         self.assertFalse([l for l in p.launches if l.kind == "engineer"])
+        # 10 open PRs reach the default max_open_prs: that brake is named
+        # first (owner 2026-11-08); below it, ready_unpr says "CI budget".
+        self.assertEqual(p.gaps["daw"], "10 open PRs: merging first")
+        p = plan(self.s, cfg=scheduler.Config(max_ready_unpr=1,
+                                              max_open_prs=11))
         self.assertEqual(p.gaps["daw"], "CI budget")
 
     def test_local_build_limit_gates_testers(self):
