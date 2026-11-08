@@ -100,7 +100,8 @@ void SessionModel::resetPan(int track) {
 
 void SessionModel::buildTimeline(Scene& out) const {
     build_timeline_scene(ctl_.snapshot(), ctl_.view(), ctl_.selection(), ctl_.drag(),
-                         ctl_.grid_lines(), ctl_.grid(), peaks_, out, ctl_.lane_selection());
+                         ctl_.grid_lines(), ctl_.grid(), peaks_, out, ctl_.lane_selection(),
+                         ctl_.sample_source());
 }
 
 void SessionModel::buildOverlay(std::vector<SceneRect>& out) const {

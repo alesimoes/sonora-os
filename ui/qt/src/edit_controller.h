@@ -578,6 +578,8 @@ public:
     // What the Pencil checks before it draws (ready(), so it never draws over
     // a window still loading); none, and it does not check.
     void set_sample_source(const SampleSource* s) { samples_ = s; }
+    // What the timeline draws the sample view from (sample_scene.h).
+    const SampleSource* sample_source() const { return samples_; }
     // Where a finished stroke goes: the argument of one `sample.edit`. None,
     // and a stroke is refused: there is no engine to draw.
     using SampleEditSender = std::function<void(const std::string& argument)>;
