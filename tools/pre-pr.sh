@@ -34,10 +34,14 @@ echo "$changed" | while IFS= read -r f; do
     tools/*/*) ;;
     tools/*.sh | tools/*.py | */usr/local/bin/* | iso/config/hooks/*)
       mode=$(git ls-files -s -- "$f" | cut -c1-6)
-      [ "$mode" = 100755 ] || echo "pre-pr: FAIL: $f is mode ${mode:-missing}, want 100755 (git update-index --chmod=+x)" >&2
+      [ "$mode" = 100755 ] || echo "$f is mode ${mode:-missing}, want 100755 (git update-index --chmod=+x $f)"
       ;;
   esac
-done | grep -q . && fail=1
+done > "${TMPDIR:-/tmp}/pre-pr-modes.$$"
+# The loop runs in a pipeline subshell: its findings come back through a file,
+# not stderr (an earlier version printed FAIL and still ended "ok").
+while IFS= read -r m; do bad "$m"; done < "${TMPDIR:-/tmp}/pre-pr-modes.$$"
+rm -f "${TMPDIR:-/tmp}/pre-pr-modes.$$"
 
 # 3. shellcheck on the shell scripts you changed, as CI runs it.
 scripts=$(echo "$changed" | grep -E '^tools/.*\.sh$|/usr/local/bin/|\.hook\.chroot$|^iso/auto/config$' || true)
