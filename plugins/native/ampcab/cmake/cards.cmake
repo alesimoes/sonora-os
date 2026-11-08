@@ -20,3 +20,7 @@ add_test(NAME native_ampcab_card_check_fixtures
          COMMAND test_native_ampcab_card_check $<TARGET_FILE:ampcab-card-check>
                  ${_ampcab_dir}/tools/ampcab_name_deny.txt
                  ${CMAKE_CURRENT_BINARY_DIR}/card_check_fixture)
+
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/cards_tests.cmake)
+    include(${CMAKE_CURRENT_LIST_DIR}/cards_tests.cmake)
+endif()
