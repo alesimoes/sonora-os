@@ -31,6 +31,7 @@
 #include "automation_edit.h"
 #include "edit_clipboard.h"
 #include "peak_source.h"
+#include "sample_view.h"
 #include "strip_silence.h"
 #include "time_format.h"
 #include "timeline_document.h"
@@ -157,7 +158,9 @@ struct Hit {
 struct Drag {
     // Point: a breakpoint added or moved; Stroke: the Pencil's line.
     // Swipe: a range dragged across a take lane (`lane` its playlist).
-    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut, Point, Stroke, Swipe };
+    // Pencil: the Pencil on a clip's waveform at sample zoom (ADR-0096).
+    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut, Point, Stroke, Swipe,
+                      Pencil };
     Kind kind = Kind::None;
     model::Id lane = 0;
     // An automation gesture: its lane (-1 for the others); the point it
@@ -182,7 +185,22 @@ struct Drag {
     // A trim's playlist as the drop would leave it, neighbours overwritten;
     // null when there is nothing to show beyond start and end.
     std::shared_ptr<const model::Playlist> preview;
+    // A Pencil stroke on `region`: the pointer positions so far, the preview,
+    // and the region channel it draws (from 0; the lane it was pressed on).
+    std::vector<PencilPosition> pencil;
+    uint16_t channel = 0;
 };
+
+// One channel's lane of a clip in a track row at [row_top, row_top +
+// row_height): the waveform area under the name band, split evenly between
+// `count` channels, as the sample view draws them. The inset is the
+// timeline's lane inset (timeline_scene.cpp) and the band theme's
+// kRegionNameBand, so a level read from a y is the level drawn there.
+struct SampleLane {
+    double top = 0.0, height = 0.0;
+    double mid() const { return top + height / 2; }
+};
+SampleLane sample_lane(double row_top, double row_height, int count, int lane);
 
 class EditController {
 public:
@@ -551,6 +569,28 @@ public:
     // which must lie inside one clip; otherwise why not.
     bool sample_edit_argument(const std::string& verb, const std::string& param,
                               std::string& argument, std::string& why) const;
+    // --- the sample view and the Pencil on the waveform (ADR-0096) ---
+    // At kSampleViewMaxFpp or closer the sample view replaces the overview.
+    bool sample_zoom() const { return view_.fpp <= kSampleViewMaxFpp; }
+    // True where the sample view shows: at sample zoom, over a clip on a
+    // track's own row.
+    bool sample_view_at(double x, double y) const;
+    // What the Pencil checks before it draws (ready(), so it never draws over
+    // a window still loading); none, and it does not check.
+    void set_sample_source(const SampleSource* s) { samples_ = s; }
+    // Where a finished stroke goes: the argument of one `sample.edit`. None,
+    // and a stroke is refused: there is no engine to draw.
+    using SampleEditSender = std::function<void(const std::string& argument)>;
+    void set_sample_edit_sender(SampleEditSender s) { sample_sender_ = std::move(s); }
+    // Whether a take is recording. The engine refuses sample.edit then
+    // (sample_edit.h); the Pencil refuses before sending, so nothing is drawn
+    // on screen that the engine will not write.
+    void set_recording(bool on) { recording_ = on; }
+    bool recording() const { return recording_; }
+    // The `sample.edit draw REGION FROM TO CHANNEL POINTS` argument a Pencil
+    // drag `d` would send (pencil_points), cut at its clip's edges; otherwise
+    // why not.
+    bool pencil_argument(const Drag& d, std::string& argument, std::string& why) const;
     // The palette index a region is drawn in: its own, else its track's.
     static int region_colour(const model::TrackEdit& t, const model::Region& r) {
         return r.colour == model::kTrackColour ? t.colour : r.colour;
@@ -783,6 +823,10 @@ private:
     bool press_autolane(const Hit& h, double x, double y, std::string& why);
     bool release_autolane(const Drag& d, std::string& why);
     void move_autolane(double x, double y);
+    // The Pencil on a clip's waveform (edit_gestures.cpp).
+    bool press_pencil(const Hit& h, double x, double y, std::string& why);
+    float pencil_level(const Drag& d, double y) const;
+    bool release_pencil(const Drag& d, std::string& why);
     // The lane value under pixel `y` of lane `lane` of track `index`.
     float autolane_value_at(int index, int lane, double y) const;
 
@@ -816,6 +860,9 @@ private:
     Locator locate_;
     uint64_t clipboard_serial_ = 0;
     model::Id spot_request_ = kNoId;
+    const SampleSource* samples_ = nullptr;
+    SampleEditSender sample_sender_;
+    bool recording_ = false;
 };
 
 // The audio playlist `id` of `t`, or null.
