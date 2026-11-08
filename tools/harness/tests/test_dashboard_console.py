@@ -73,9 +73,10 @@ class Attention(unittest.TestCase):
         self.assertEqual(self.queue(), [])
 
     def test_silent_agent_gets_a_restart_button_and_goes_away_with_the_cause(self):
-        q = self.queue(agents=[agent("eng-104", last=NOW - 200)])
+        q = self.queue(agents=[agent("eng-104", last=NOW - 2400)])
         self.assertEqual((q[0]["level"], q[0]["button"]["label"]), ("bad", "Reiniciar eng-104"))
         self.assertEqual(self.queue(agents=[agent("eng-104", last=NOW - 20)]), [])
+        self.assertEqual(self.queue(agents=[agent("eng-104", last=NOW - 540)]), [])   # supervisor still on it
 
     def test_green_pr_without_merge_owner_decision_alert_and_stop_switch(self):
         o = orch(waits_on_owner=[{"task": "t9", "title": "ADR"}], kill_switch="STOP",

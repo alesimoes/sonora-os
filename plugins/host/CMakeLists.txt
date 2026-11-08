@@ -194,6 +194,13 @@ add_test(NAME plugin_host_list_bundles_only COMMAND sonora-plugin-host --list --
          --bundle ${SONORA_TEST_BUNDLE})
 set_tests_properties(plugin_host_list_bundles_only PROPERTIES PASS_REGULAR_EXPRESSION
   "{\"bundle\":\"[^\"]*/lv2/sonora-test.lv2\",\"format\":\"lv2\"}\n")
+# The stock effects set (ADR-0076): every LV2 bundle its packages installed
+# goes through the host's scan. Absent bundles fail unless SONORA_STOCK_OPTIONAL=1
+# (set by the PR micro build only).
+add_executable(test_stock_probe tests/test_stock_probe.cpp)
+add_test(NAME plugin_host_stock_probe COMMAND test_stock_probe --host $<TARGET_FILE:sonora-plugin-host>
+         --manifest ${CMAKE_SOURCE_DIR}/plugins/content/stock.json)
+set_tests_properties(plugin_host_stock_probe PROPERTIES LABELS plugins)
 # One probe record, version 3 (contracts/plugin probe_record.h), with the
 # description the catalog shows: the parameter's name, range and unit-less
 # flags; native, so no "bridge" after the bundle. eg-amp is from Debian's
