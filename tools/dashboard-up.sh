@@ -7,6 +7,11 @@
 #   SONORA_ORCH_STATUS   orchestrator status.json (default: the live daemon's worktree)
 set -u
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# An agent's session runs this from its own worktree (<main>/.claude/worktrees/
+# <daemon>/.claude/worktrees/<task>); the daemon's status lives under the main
+# checkout. Rooting here made agents start a dashboard reading a status.json
+# that does not exist, and it showed the daemon as off (2026-11-08).
+root="${root%%/.claude/worktrees/*}"
 port=8765
 
 if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/"; then

@@ -62,6 +62,9 @@ chmod +x $T/fakechroot
 
 export SONORA_SQUASHFS=$T/fs.squashfs SONORA_ALLOW_FILE=1 SONORA_EFI=1
 export SONORA_IN_TARGET=$T/fakechroot SONORA_SYSBLOCK=$T/sys
+# The layout library from the tree, and a fixed RAM so swap is 2 GiB and the
+# smallest accepted disk is known (ADR-0090: about 26.5 GiB with EFI).
+export SONORA_LIB=/src/iso/config/includes.chroot/usr/local/lib/sonora SONORA_RAM_MIB=4096
 mkdir -p $T/sys
 
 # The stick's sessions: a name with a space, an empty directory, a symlink.
@@ -82,6 +85,7 @@ expect_code() { # name want got
 # (losetup -j misses a backing file that was already removed).
 detach_all() {
     local l
+    mountpoint -q $T/m/home/sonora/Sessions 2>/dev/null && umount $T/m/home/sonora/Sessions 2>/dev/null
     mountpoint -q $T/m 2>/dev/null && umount $T/m 2>/dev/null
     for l in $(losetup -nO NAME,BACK-FILE 2>/dev/null | awk -v f="$T/disk.img" '$2 == f || $2 == f "(deleted)" {print $1}'); do
         losetup -d "$l" 2>/dev/null || true
@@ -89,21 +93,22 @@ detach_all() {
 }
 trap detach_all EXIT
 detach_all
-newimg() { detach_all; rm -f $T/disk.img; truncate -s 2G $T/disk.img; : >$T/calls; }
+# Sparse: only what mkfs and the copy write takes space on the host.
+newimg() { detach_all; rm -f $T/disk.img; truncate -s "${1:-28G}" $T/disk.img; : >$T/calls; }
 # Mounts the root partition of the image read-only at $T/m. Sets INSPECT_OK;
 # a failure is reported and the run goes on, so one flaky mount cannot hide
 # the checks after it.
 inspect() {
     INSPECT_OK=0
     L=$(losetup -f --show -P $T/disk.img) || { bad "inspect: losetup failed"; return 0; }
-    local i p n m ROOTDEV=
+    local i p n m ROOTDEV='' DATADEV='' SWAPDEV=''
     # The kernel scans partitions after the attach returns: wait for them.
     for i in $(seq 50); do
         [ -e "/sys/class/block/${L##*/}/${L##*/}p2" ] && break
         [ "$i" = 10 ] && { partx -u "$L" 2>/dev/null || blockdev --rereadpt "$L" 2>/dev/null || true; }
         sleep 0.1
     done
-    for n in 1 2 3; do
+    for n in 1 2 3 4 5; do
         p="${L}p$n"
         m=$(cat "/sys/class/block/${p##*/}/dev" 2>/dev/null) || continue
         rm -f "$p"
@@ -112,12 +117,21 @@ inspect() {
     # This loop's partitions only: a leaked loop may carry the same label.
     for p in "${L}"p*; do
         [ -b "$p" ] || continue
-        if [ "$(blkid -s LABEL -o value "$p" 2>/dev/null)" = sonora-root ]; then ROOTDEV=$p; break; fi
+        case $(blkid -s LABEL -o value "$p" 2>/dev/null) in
+            sonora-root) ROOTDEV=$p ;;
+            sonora-data) DATADEV=$p ;;
+            sonora-swap) SWAPDEV=$p ;;
+        esac
     done
     if [ -z "$ROOTDEV" ]; then bad "inspect: no sonora-root partition on $L ($(echo "${L}"p*))"; return 0; fi
     mkdir -p $T/m
     if mount -o ro "$ROOTDEV" $T/m; then INSPECT_OK=1; else bad "inspect: mount -o ro $ROOTDEV $T/m failed"; fi
     ROOTDEV_LAST=$ROOTDEV
+    DATADEV_LAST=$DATADEV
+    SWAPDEV_LAST=$SWAPDEV
+    if [ "$INSPECT_OK" = 1 ] && [ -n "$DATADEV" ] && ! mount -o ro "$DATADEV" $T/m/home/sonora/Sessions; then
+        bad "inspect: mount -o ro $DATADEV failed"
+    fi
 }
 release() { detach_all; }
 
@@ -129,8 +143,25 @@ expect_code "uefi install exits 0" 0 "$rc"
 for n in 1 2 3 4 5 6 7; do
     if grep -q "^STEP $n/7 " <<<"$out"; then ok "STEP $n/7 announced"; else bad "STEP $n/7 missing"; fi
 done
-if [ "$(sfdisk -d $T/disk.img | grep -c 'start=')" = 2 ]; then ok "two partitions (ESP, root)"; else bad "partition count"; fi
+if [ "$(sfdisk -d $T/disk.img | grep -c 'start=')" = 4 ]; then ok "four partitions (ESP, root, swap, data)"; else bad "partition count"; fi
+if sfdisk -d $T/disk.img | grep -q 'size= *4194304,.*name="sonora-swap"'; then ok "swap is RAM/2 (2 GiB)"; else bad "swap size"; fi
+if swapon --show=NAME --noheadings | grep -q loop; then bad "swap enabled on the installing host"; else ok "swap not enabled on the host"; fi
 inspect
+if [ "$(grep -c '^UUID=' $T/m/etc/fstab)" = 4 ]; then ok "fstab has four lines"; else bad "fstab lines: $(cat $T/m/etc/fstab)"; fi
+du=$(sed -n 's/^UUID=\([^ ]*\) \/home\/sonora\/Sessions ext4 noatime,errors=remount-ro 0 2$/\1/p' $T/m/etc/fstab)
+if [ -n "$du" ] && [ "$(blkid -s UUID -o value "$DATADEV_LAST")" = "$du" ]; then ok "fstab data line is sonora-data's"; else bad "fstab data line"; fi
+if grep -q nofail $T/m/etc/fstab; then bad "nofail in fstab"; else ok "no nofail in fstab"; fi
+if grep -q '^UUID=[^ ]* none swap sw 0 0$' $T/m/etc/fstab; then ok "fstab swap line"; else bad "fstab swap line"; fi
+# the four fstab UUIDs are four different partitions that exist
+fu=$(sed -n 's/^UUID=\([^ ]*\) .*/\1/p' $T/m/etc/fstab | sort -u)
+fu_ok=1
+for u in $fu; do blkid -U "$u" >/dev/null || fu_ok=0; done
+if [ "$(wc -l <<<"$fu")" = 4 ] && [ "$fu_ok" = 1 ]; then ok "fstab names four distinct UUIDs that exist"; else bad "fstab UUIDs: $fu"; fi
+if [ -n "${SWAPDEV_LAST:-}" ] && [ "$(blkid -s TYPE -o value "$SWAPDEV_LAST")" = swap ]; then ok "blkid TYPE=swap on the swap partition"; else bad "swap partition type"; fi
+su=$(sed -n 's/^UUID=\([^ ]*\) none swap.*/\1/p' $T/m/etc/fstab)
+if [ -n "$su" ] && [ "$(blkid -s UUID -o value "${SWAPDEV_LAST:-/dev/null}")" = "$su" ]; then ok "fstab swap UUID is the swap partition's"; else bad "fstab swap UUID"; fi
+if [ "$(findmnt -n -o SOURCE "$T/m/home/sonora/Sessions" 2>/dev/null)" = "$DATADEV_LAST" ]; then ok "data partition mounted at Sessions"; else bad "Sessions not on the data partition"; fi
+if grep -qx 'RequiresMountsFor=/home/sonora/Sessions' $T/m/etc/systemd/system/sonora-engine.service.d/sessions-mount.conf 2>/dev/null; then ok "engine requires the Sessions mount"; else bad "engine drop-in"; fi
 if [ -s $T/m/var/lib/sonora/installed ]; then ok "marker written"; else bad "marker missing"; fi
 if [ -f $T/m/etc/machine-id ] && [ ! -s $T/m/etc/machine-id ]; then ok "machine-id emptied"; else bad "machine-id"; fi
 if [ "$INSPECT_OK" = 1 ] && [ ! -e $T/m/var/lib/dbus/machine-id ]; then ok "dbus machine-id removed"; else bad "dbus machine-id"; fi
@@ -139,11 +170,13 @@ if [ "$(blkid -s UUID -o value "$ROOTDEV_LAST")" = "$ru" ]; then ok "fstab root 
 if grep -q 'ext4 noatime' $T/m/etc/fstab; then ok "root mounted noatime"; else bad "noatime"; fi
 if grep -q 'GRUB_CMDLINE_LINUX_DEFAULT=.*threadirqs' $T/m/etc/default/grub.d/90-sonora.cfg; then ok "cmdline keeps threadirqs"; else bad "threadirqs"; fi
 # session carry-over: identical on the target, and the stick's copy untouched
-if diff -r "$T/sessions" "$T/m/home/sonora/Sessions" >/dev/null 2>&1; then ok "sessions carried over byte for byte"; else bad "sessions differ on the target"; fi
+if diff -r -x lost+found "$T/sessions" "$T/m/home/sonora/Sessions" >/dev/null 2>&1; then ok "sessions carried over byte for byte"; else bad "sessions differ on the target"; fi
 if [ -d "$T/m/home/sonora/Sessions/Empty" ] && [ -L "$T/m/home/sonora/Sessions/Take 1/latest.wav" ]; then ok "empty directory and symlink carried"; else bad "directory or symlink lost"; fi
 if [ "$(cd "$T/sessions" && find . -type f -exec sha256sum {} + | sort -k2)" = "$SRC_SUMS" ]; then ok "stick's sessions untouched"; else bad "stick's sessions changed"; fi
 if grep -q '^INFO carried over 2 session files' <<<"$out"; then ok "carry-over reported"; else bad "carry-over not reported"; fi
 release
+if grep -q 'chown -R sonora:sonora /home/sonora/Sessions' $T/calls; then ok "sessions given to sonora"; else bad "chown call"; fi
+if grep -q 'systemctl enable fstrim.timer' $T/calls; then ok "fstrim.timer enabled"; else bad "fstrim call"; fi
 if grep -q 'update-initramfs -u -k all' $T/calls; then ok "initramfs rebuilt for all kernels"; else bad "initramfs call"; fi
 if grep -q -- '--bootloader-id=sonora' $T/calls && grep -q -- '--removable' $T/calls; then ok "NVRAM entry and removable path"; else bad "grub-install calls"; fi
 
@@ -176,7 +209,29 @@ if grep -q 'no sessions on this system' $T/out; then ok "says there is nothing t
 newimg
 SONORA_EFI=0 "$INST" --yes --target $T/disk.img >/dev/null 2>&1 && rc=0 || rc=$?
 expect_code "bios install exits 0" 0 "$rc"
-if [ "$(sfdisk -d $T/disk.img | grep -c 'start=')" = 3 ]; then ok "bios: boot partition + ESP + root"; else bad "bios partition count"; fi
+if [ "$(sfdisk -d $T/disk.img | grep -c 'start=')" = 5 ]; then ok "bios: boot partition + ESP + root + swap + data"; else bad "bios partition count"; fi
+
+# 3b. a disk under the smallest layout is refused before anything is written
+newimg 20G
+"$INST" --yes --target $T/disk.img >/dev/null 2>$T/err && rc=0 || rc=$?
+expect_code "too small a disk exits 4" 4 "$rc"
+if grep -q 'too small' $T/err; then ok "names the size refusal"; else bad "size refusal not named"; fi
+if [ "$(sfdisk -d $T/disk.img 2>/dev/null | grep -c 'start=')" = 0 ]; then ok "small disk left unpartitioned"; else bad "small disk was partitioned"; fi
+
+# 3c. an image too big for the root partition is refused before any write
+newimg
+mkdir -p $T/fakebin
+cat >$T/fakebin/unsquashfs <<'STUB'
+#!/bin/sh
+# 60 GiB of regular files in the listing; anything else is the real tool.
+if [ "$1" = -lls ]; then echo "-rw-r--r-- root/root 64424509440 2024-01-01 00:00 squashfs-root/big"; exit 0; fi
+exec /usr/bin/unsquashfs "$@"
+STUB
+chmod +x $T/fakebin/unsquashfs
+PATH=$T/fakebin:$PATH "$INST" --yes --target $T/disk.img >/dev/null 2>$T/err && rc=0 || rc=$?
+expect_code "oversize image exits 4" 4 "$rc"
+if grep -q 'does not fit the root partition' $T/err; then ok "names the fit refusal"; else bad "fit refusal not named: $(cat $T/err)"; fi
+if [ "$(sfdisk -d $T/disk.img 2>/dev/null | grep -c 'start=')" = 0 ]; then ok "oversize image left the disk unpartitioned"; else bad "oversize image partitioned the disk"; fi
 
 # 4. refusals
 "$INST" --bogus >/dev/null 2>&1 && rc=0 || rc=$?
