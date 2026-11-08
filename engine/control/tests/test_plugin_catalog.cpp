@@ -39,6 +39,7 @@
 #include "sonora/fake_backend.h"
 #include "sonora/model/op_codec.h"
 #include "sonora/model/replication.h"
+#include "sonora/plugin_block_list.h"
 #include "sonora/session.h"
 
 using namespace sonora;
@@ -287,7 +288,7 @@ void test_block() {
         return c.replica.synced() && m && m->usable && h && !h->usable;
     }),
           "the scan completes without waiting on the blocked, hung plugin");
-    check(entry("urn:hang")->refusal == "it is blocked in the plug-in manager", "refused in the operator's words");
+    check(entry("urn:hang")->refusal == kBlockedByOperator, "refused in the operator's words");
     std::string probes;
     {
         std::ifstream f(log);
@@ -300,7 +301,7 @@ void test_block() {
     check(says(c.command("plugin.block", -1, "lv2 urn:mono"), DispatchResult::Ok, ""), "plugin.block is Ok");
     check(c.until([&] { return entry("urn:mono") && !entry("urn:mono")->usable; }), "a new catalog shows it blocked");
     check(says(c.apply(add(track, c.replica.current().next_id, "urn:mono")), DispatchResult::Failed,
-               "Fake urn:mono cannot be used: it is blocked in the plug-in manager"),
+               std::string("Fake urn:mono cannot be used: ") + kBlockedByOperator),
           "AddInsert of a blocked plugin is refused in those words");
     check(says(c.command("plugin.block", -1, "urn:mono"), DispatchResult::Failed, "name the plug-in as"),
           "an argument without a format is refused");

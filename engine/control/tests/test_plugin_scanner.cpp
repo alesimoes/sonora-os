@@ -74,6 +74,7 @@
 #include "sonora/api/wire.h"
 #include "sonora/plugin_block_list.h"
 #include "sonora/plugin_catalog_cache.h"
+#include "sonora/api/plugin_refusal.h"
 #include "sonora/plugin_scanner.h"
 
 using namespace sonora;
@@ -545,6 +546,101 @@ void test_block_list() {
         check(fs::exists(list + ".unreadable") && !fs::exists(list), "kept aside, not written over");
         check(s.catalog()->blocked.empty(), "nothing blocked");
     }
+}
+
+// A cache written before ADR-0065 holds the stand-in in the old words; it is
+// still a stand-in, so unblocking probes the plug-in instead of leaving it
+// refused from the stale record.
+void test_legacy_stand_in() {
+    std::printf("legacy_stand_in\n");
+    Fixture fx("legacy");
+    const std::string h = fx.bundle("h.lv2");
+    fx.set_world({"plugin urn:h " + h + " lv2 1 1 ok"});
+    const std::string list = fx.root + "/config/plugin-blocklist.json";
+    {
+        PluginBlockList l;
+        l.plugins["urn:h"] = "Hanger";
+        std::string why;
+        check(save_plugin_block_list(list, l, why), "a block list written (" + why + ")");
+    }
+    PluginScannerConfig cfg = fx.config();
+    cfg.block_list_path = list;
+    {
+        PluginScanner s(cfg);
+        check(scanned(s) && s.probes_started() == 0, "blocked: cached as a stand-in, not probed");
+    }
+    std::string text;
+    {
+        std::ifstream f(fx.cache);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        text = ss.str();
+    }
+    const std::string now = kBlockedByOperator;
+    const auto at = text.find(now);
+    check(at != std::string::npos, "the cache holds the stand-in's words");
+    if (at == std::string::npos) return;
+    text.replace(at, now.size(), kBlockedByOperatorLegacy);
+    std::ofstream(fx.cache, std::ios::trunc) << text;
+    PluginScanner s(cfg);
+    check(scanned(s) && s.probes_started() == 0 && entry(s, "urn:h") &&
+              api::is_blocked_refusal(entry(s, "urn:h")->refusal),
+          "after the upgrade: still blocked, in the new words, nothing probed");
+    s.set_blocked("urn:h", "Hanger", false);
+    check(until(s, [&] {
+        const api::PluginInfo* p = entry(s, "urn:h");
+        return p && p->usable && s.idle();
+    }, 5000),
+          "unblocked: the old stand-in is released and the plug-in probed");
+    check(s.probes_started() == 1, "one probe");
+}
+
+// A blocked plug-in no bundle names is still in the catalog, worded with the
+// contract's marker so plugin.unblock can reach it; a name past 256 bytes is
+// cut on read; with no config folder the list cannot persist, said once.
+void test_blocked_without_bundle() {
+    std::printf("blocked_without_bundle\n");
+    Fixture fx("orphan");
+    fx.set_world({});
+    const std::string list = fx.root + "/config/plugin-blocklist.json";
+    {
+        PluginBlockList l;
+        l.plugins["urn:gone"] = std::string(1000, 'n');
+        l.plugins["vst3:D0000000000000000000000000000000"] = "Missing";
+        std::string why;
+        check(save_plugin_block_list(list, l, why), "a block list written (" + why + ")");
+    }
+    PluginScannerConfig cfg = fx.config();
+    cfg.block_list_path = list;
+    {
+        PluginScanner s(cfg);
+        check(scanned(s), "scan completes");
+        const api::PluginInfo* g = entry(s, "urn:gone");
+        const api::PluginInfo* m = entry(s, "D0000000000000000000000000000000");
+        check(g && !g->usable && api::is_blocked_refusal(g->refusal), "a blocked plug-in with no bundle carries the marker");
+        check(m && !m->usable && api::is_blocked_refusal(m->refusal) && m->name == "Missing" &&
+                  m->format == api::PluginFormat::Vst3,
+              "so does a VST3 one, with its name");
+        check(g && g->name.size() == kMaxBlockedNameBytes, "a name is capped at 256 bytes on read");
+        s.set_blocked("urn:gone", "", false);
+        check(until(s, [&] { return !entry(s, "urn:gone"); }, 5000), "unblocking removes the entry");
+    }
+}
+
+void test_block_without_config_folder() {
+    std::printf("block_without_config_folder\n");
+    Fixture fx("nocfg");
+    three(fx);
+    PluginScanner s(fx.config());  // no block_list_path: no HOME, no XDG_CONFIG_HOME
+    check(scanned(s), "scan completes");
+    s.set_blocked("urn:a", "A", true);
+    s.set_blocked("urn:a", "A", false);
+    s.set_blocked("urn:a", "A", true);
+    check(until(s, [&] { return s.catalog()->blocked.count("urn:a") != 0; }, 5000), "blocked for this run");
+    int said = 0;
+    for (const std::string& n : notices(s))
+        if (n.find("XDG_CONFIG_HOME") != std::string::npos) ++said;
+    check(said == 1, "said once that it cannot persist (" + std::to_string(said) + ")");
 }
 
 void test_recording() {
@@ -1139,6 +1235,9 @@ int main(int argc, char** argv) {
     test_bundle_gone();
     test_rescan();
     test_block_list();
+    test_legacy_stand_in();
+    test_blocked_without_bundle();
+    test_block_without_config_folder();
     test_recording();
     test_reserved_slot();
     test_dedup();

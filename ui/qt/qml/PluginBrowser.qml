@@ -9,6 +9,10 @@
 //
 // Typing goes to the search field while it has focus (ShellModel's text
 // entry); Escape closes, Return takes the first plugin that fits.
+//
+// The star marks a favourite (the interface's own, ADR-0065 §6) and
+// "Favourites" lists only those; "Manage" opens the plug-in manager over
+// the chooser, where plug-ins are blocked, unblocked and rescanned.
 import QtQuick
 import Sonora
 
@@ -17,8 +21,19 @@ Item {
     required property ShellModel shell
     property InsertModel inserts: null
     property string category: ""
-    readonly property var entries: inserts !== null && visible
-                                   ? (inserts.browserTrack, inserts.browse(category, search.text)) : []
+    // PluginManagerModel, as main() sets it on the view's context; null
+    // where nothing did (a test that loads the chooser alone).
+    readonly property var manager: typeof pluginManager !== "undefined" ? pluginManager : null
+    // Kept from one opening to the next: an operator who works from
+    // favourites finds them again.
+    property bool favouritesOnly: false
+    readonly property var entries: {
+        if (inserts === null || !visible) return []
+        const all = (inserts.browserTrack, inserts.browse(category, search.text))
+        if (!favouritesOnly || manager === null) return all
+        const rev = manager.favouritesRevision
+        return all.filter(e => manager.favouriteAt(e.index))
+    }
 
     onVisibleChanged: {
         if (visible) {
@@ -28,6 +43,7 @@ Item {
         } else {
             search.focus = false
             shell.setTextEntry(false)
+            if (manager !== null) manager.closeManager()
         }
     }
 
@@ -72,11 +88,23 @@ Item {
         }
         Text {
             anchors { left: title.right; leftMargin: Theme.space3; baseline: title.baseline
-                      right: closeButton.left; rightMargin: Theme.space3 }
+                      right: manageButton.left; rightMargin: Theme.space3 }
             elide: Text.ElideRight
             text: browser.inserts !== null ? browser.inserts.browserTitle : ""
             color: Theme.textSecondary
             font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+        }
+        SButton {
+            id: manageButton
+            objectName: "pluginManage"
+            anchors { right: closeButton.left; top: parent.top; topMargin: Theme.space3; rightMargin: Theme.space2 }
+            text: "Manage"
+            implicitHeight: 24
+            visible: browser.manager !== null
+            onClicked: {
+                search.focus = false
+                browser.manager.openManager()
+            }
         }
         SButton {
             id: closeButton
@@ -130,6 +158,18 @@ Item {
                 color: Theme.textTertiary
                 font { family: Theme.fontFamily; pixelSize: Theme.textOverline; letterSpacing: 0.6 }
             }
+            SButton {
+                objectName: "pluginFavourites"
+                width: categories.width
+                implicitHeight: 24
+                bold: false
+                fontPx: Theme.textSmall
+                visible: browser.manager !== null
+                text: "★ Favourites"
+                active: browser.favouritesOnly
+                onClicked: browser.favouritesOnly = !browser.favouritesOnly
+            }
+            Item { width: 1; height: Theme.space2; visible: browser.manager !== null }
             Repeater {
                 model: browser.inserts !== null ? [""].concat(browser.inserts.categories) : []
                 SButton {
@@ -202,6 +242,20 @@ Item {
                     // A plugin that does not fit still answers, with why.
                     onClicked: browser.inserts.choose(row.modelData.index)
                 }
+                Text {
+                    visible: browser.manager !== null
+                    anchors { right: parent.right; rightMargin: Theme.space2; verticalCenter: rowName.verticalCenter }
+                    readonly property bool on: browser.manager !== null
+                                               && (browser.manager.favouritesRevision,
+                                                   browser.manager.favouriteAt(row.modelData.index))
+                    text: on ? "★" : "☆"
+                    color: on ? Theme.accent : Theme.textTertiary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                    MouseArea {
+                        anchors { fill: parent; margins: -4 }
+                        onClicked: browser.manager.toggleFavouriteAt(row.modelData.index)
+                    }
+                }
             }
         }
         Text {
@@ -212,10 +266,21 @@ Item {
             wrapMode: Text.Wrap
             text: browser.inserts !== null && !browser.inserts.hasCatalog
                   ? "The engine has not sent its plugin catalog."
+                  : browser.favouritesOnly && search.text.length === 0 && browser.category.length === 0
+                    ? "No favourites yet: star a plugin to keep it here."
                   : search.text.length > 0 ? "No plugin matches \"" + search.text + "\"."
                   : "The engine found no plugins."
             color: Theme.textSecondary
             font { family: Theme.fontFamily; pixelSize: Theme.textBody }
         }
+    }
+
+    PluginManager {
+        objectName: "pluginManager"
+        anchors.fill: parent
+        z: 10
+        visible: browser.manager !== null && browser.manager.open
+        shell: browser.shell
+        plugins: browser.manager
     }
 }

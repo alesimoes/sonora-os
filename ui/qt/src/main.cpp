@@ -11,6 +11,7 @@
 #include <QElapsedTimer>
 #include <QGuiApplication>
 #include <QImage>
+#include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickItem>
 #include <QQuickView>
@@ -719,8 +720,29 @@ int main(int argc, char** argv) {
                          session.controller().set_quick_swipe(
                              now.contains(QStringLiteral("Logic"), Qt::CaseInsensitive));
                      });
+    // The plug-in manager (ADR-0065): its commands go the way a key's do, so
+    // a refusal reaches the status line; favourites stay in this process.
+    FileFavouritesStore favourites_store(default_favourites_file());
+    PluginFavourites favourites(favourites_store);
+    PluginManagerModel plugin_manager(
+        favourites,
+        {[&model](const std::string& command, const std::string& argument) {
+             model.invokeWith(QString::fromStdString(command), -1, QString::fromStdString(argument));
+         },
+         [&model](const std::string& command) { return model.implemented(QString::fromStdString(command)); }});
+    {
+        std::string why;
+        if (!favourites.load(why)) {
+            const QString text = QStringLiteral("Plug-in favourites were not read: ") + QString::fromStdString(why);
+            model.addNotice(text);
+            plugin_manager.hold(text);
+        }
+    }
     ShellModel::PluginSinks plugin_sinks;
-    plugin_sinks.catalog = [&inserts](const api::PluginCatalog& c) { inserts.onCatalog(c); };
+    plugin_sinks.catalog = [&inserts, &plugin_manager](const api::PluginCatalog& c) {
+        inserts.onCatalog(c);
+        plugin_manager.onCatalog(c);
+    };
     plugin_sinks.fault = [&inserts](uint64_t insert, const std::string& text) {
         inserts.onFault(insert, text);
     };
@@ -776,6 +798,9 @@ int main(int argc, char** argv) {
                                {QStringLiteral("mixer"), QVariant::fromValue(&mixer)}});
     QObject::connect(view.engine(), &QQmlEngine::quit, &app, &QCoreApplication::quit);
     probe_render_path(&view, &model, on_render_path, &a);
+    // A context property, not a Main.qml property: only the plugin chooser
+    // reaches it, and it opens the manager over itself.
+    view.rootContext()->setContextProperty(QStringLiteral("pluginManager"), &plugin_manager);
     view.setSource(QUrl(QStringLiteral("qrc:/sonora/qml/Main.qml")));
     if (view.status() == QQuickView::Error) {
         for (const auto& e : view.errors()) {

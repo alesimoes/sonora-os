@@ -17,6 +17,7 @@
 #include <sstream>
 #include <tuple>
 
+#include "sonora/api/plugin_refusal.h"
 #include "sonora/api/wire.h"
 #include "sonora/json/json.h"
 #include "sonora/platform/process.h"
@@ -27,6 +28,8 @@
 namespace sonora {
 
 namespace pr = plugin::probe;
+
+static_assert(api::is_blocked_refusal(kBlockedByOperator), "the operator's block is worded with the contract's prefix");
 using Key = PluginScanner::Key;
 
 static_assert(uint32_t(pr::kParamAutomatable) == api::kParamAutomatable && uint32_t(pr::kParamToggle) == api::kParamToggle &&
@@ -75,7 +78,10 @@ bool same_key(const pr::Record& r, const Key& k) { return r.uri == k.first && r.
 
 // What the scan caches in place of a probe for a plug-in the operator has
 // blocked: nothing of it ran, so it says nothing about the plug-in.
-bool stand_in(const pr::Record& r) { return r.outcome == pr::Outcome::Blocked && r.reason == kBlockedByOperator; }
+bool stand_in(const pr::Record& r) {
+    return r.outcome == pr::Outcome::Blocked &&
+           (r.reason == kBlockedByOperator || r.reason == kBlockedByOperatorLegacy);
+}
 
 std::string ended(platform::ChildProcess& c) {
     return c.exited_normally() ? "exited with code " + std::to_string(c.exit_code())
@@ -302,6 +308,7 @@ struct PluginScanner::Worker {
     // False when an unreadable list could not be moved aside: changes are
     // then kept for this run only, never written over the operator's file.
     bool block_list_writable = true;
+    bool said_no_block_path = false;
     bool dirty = false;
     uint64_t saved_ms = 0;
 
@@ -446,7 +453,13 @@ struct PluginScanner::Worker {
     }
 
     void save_block_list() {
-        if (cfg.block_list_path.empty()) return;
+        if (cfg.block_list_path.empty()) {
+            if (!said_no_block_path)
+                notice("the plug-in block list cannot be saved: neither XDG_CONFIG_HOME nor HOME names a folder, so it "
+                       "holds for this run only");
+            said_no_block_path = true;
+            return;
+        }
         std::string why;
         if (!block_list_writable)
             notice("the plug-in block list is kept for this run only: " + cfg.block_list_path + " is unreadable");
@@ -594,6 +607,18 @@ struct PluginScanner::Worker {
                     (p->channels != want && r.channels > p->channels))
                     p = &r;
             }
+        }
+        // Blocked and known to no bundle: listed so plugin.unblock reaches it.
+        std::deque<pr::Record> orphans;
+        for (const auto& [id, name] : block_list.plugins) {
+            const std::string fmt = format_of(id);
+            if (pick.count({fmt, id})) continue;
+            pr::Record o;
+            o.uri = id;
+            o.format = fmt;
+            o.name = name;
+            o.outcome = pr::Outcome::Blocked;
+            pick[{fmt, id}] = &orphans.emplace_back(std::move(o));
         }
         api::PluginCatalog c;
         for (const auto& [k, r] : pick) {
