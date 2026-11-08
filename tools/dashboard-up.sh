@@ -22,12 +22,18 @@ command -v python >/dev/null 2>&1 || { echo "dashboard-up: no python" >&2; exit 
 agents="${SONORA_DASH_AGENTS:-$HOME/.claude/dashboard-agents.json}"
 orch_default="$root/.claude/worktrees/agent-a7018d355a2572f2a/planning/orchestrator/status.json"
 export SONORA_ORCH_STATUS="${SONORA_ORCH_STATUS:-$orch_default}"
+orch_status_posix="$SONORA_ORCH_STATUS"
 log="${TMPDIR:-/tmp}/sonora-dashboard.log"
 
 if command -v cygpath >/dev/null 2>&1; then
   agents="$(cygpath -w "$agents")"
   SONORA_ORCH_STATUS="$(cygpath -w "$SONORA_ORCH_STATUS")"
 fi
-cd "$root" || exit 0
+# Serve the code from the daemon's checkout: it follows main (self-update),
+# while the main checkout may sit on any old branch. Starting from the main
+# checkout brought the old dashboard back over the console (2026-11-08).
+app="$(dirname "$(dirname "$(dirname "$orch_status_posix")")")"
+[ -f "$app/tools/dashboard.py" ] || app="$root"
+cd "$app" || exit 0
 nohup python tools/dashboard.py --port "$port" --agents "$agents" >"$log" 2>&1 &
 echo "dashboard: http://127.0.0.1:$port/ (started)"
