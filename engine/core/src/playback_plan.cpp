@@ -26,8 +26,9 @@ PlaybackPlan* create_plan(const PlanSizes& sizes) {
     const std::size_t send_mix = round_up(sizeof(PlanSendMix) * sizes.send_mix);
     const std::size_t auto_points = round_up(sizeof(PlanAutoPoint) * sizes.auto_points);
     const std::size_t plugin_lanes = round_up(sizeof(PlanPluginLane) * sizes.plugin_lanes);
+    const std::size_t levels = round_up(sizeof(uint32_t) * (std::size_t{sizes.nodes} + 1));
     const std::size_t total = header + tracks + segments + nodes + edges + slots + click + mix +
-                              send_mix + auto_points + plugin_lanes;
+                              send_mix + auto_points + plugin_lanes + levels;
 
     void* raw = ::operator new(total, std::align_val_t{kAlign}, std::nothrow);
     if (!raw) return nullptr;
@@ -70,6 +71,9 @@ PlaybackPlan* create_plan(const PlanSizes& sizes) {
     at += auto_points;
     plan->plugin_lanes = new (at) PlanPluginLane[sizes.plugin_lanes];
     plan->plugin_lane_count = sizes.plugin_lanes;
+    at += plugin_lanes;
+    // level_count stays 0 until the builder's level pass (ADR-0063 §1).
+    plan->level_first = reinterpret_cast<uint32_t*>(at);
     return plan;
 }
 

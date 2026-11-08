@@ -411,6 +411,7 @@ Session::Session(SessionConfig cfg)
     aux_open_.reset(new float[max_buses_ + 1]());
     aux_level_.reset(new float[max_buses_ + 1]());
     aux_pan_.reset(new float[max_buses_ + 1]());
+    start_graph();
 
     // Until engine/control publishes one: every track into the bus, no
     // region. Published before any backend can call process().
@@ -1187,6 +1188,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         reseek_ = true;
         plan_valid_ = plan_in_bounds(*plan);
         adopt_param_order(*plan);
+        adopt_graph_plan(*plan);
         follow_track_owners(*plan);
         snap_mix_ = false;
         for (std::size_t e = 0; e < tracks_.size(); ++e) {
@@ -1857,10 +1859,21 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
     for (uint32_t o = 0; o < block.output_count; ++o) {
         std::memset(block.outputs[o] + offset, 0, n * sizeof(float));
     }
+    pass_ = MixPass{&plan, &block, offset, n, rolling, recording, from, mix_stamp_};
+    mix_graph();
+}
+
+void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
+    const PlaybackPlan& plan = *pass.plan;
+    const backend::AudioBlock& block = *pass.block;
+    const uint32_t offset = pass.offset;
+    const uint32_t n = pass.n;
+    const bool rolling = pass.rolling;
+    const bool recording = pass.recording;
+    const uint64_t from = pass.from;
     const float inv_block = 1.0f / static_cast<float>(block_frames_);
     float* const tb[2] = {track_buf_.get(), track_buf_.get() + max_block_};
-
-    for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
+    {
         const PlanNode& node = plan.nodes[ni];
         float* const out[2] = {scratch(node.scratch_buffer, 0), scratch(node.scratch_buffer, 1)};
         float* const L = out[0];
@@ -1874,7 +1887,7 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 const PlanTrack& pt = plan.tracks[node.track];
                 apply_track_fader(plan, pt, stereo, in, out, n, from, 0);
                 track_meters_[pt.engine_track].process(out, n);
-                continue;
+                return;
             }
             case NodeKind::TrackSource: {
                 const bool stereo =
@@ -1882,13 +1895,13 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 // A mono source feeds a stereo-planed chain; the copy keeps
                 // side 1 defined for a runner that reads it anyway.
                 if (!stereo) std::memcpy(R, L, n * sizeof(float));
-                continue;
+                return;
             }
             case NodeKind::InsertChain: {
                 // One input edge, never delayed: compensation sits on the
                 // edges into the bus.
-                const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
-                const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
+                const uint32_t src = plan.edges[node.first_input_edge].from_node;
+                const float* const in[2] = {node_out(pass, src, 0), node_out(pass, src, 1)};
                 const bool silent = node.channel_slot == kSilentChannelSlot;
                 bool played = false;
                 if (runner_ != nullptr && node.channel_slot != kNoChannelSlot && !silent) {
@@ -1932,19 +1945,19 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                     }
                 }
                 if (runner_ != nullptr && ni == plan.last_insert_node) runner_->end();
-                continue;
+                return;
             }
             case NodeKind::TrackFader: {
-                const PlanNode& chain = plan.nodes[plan.edges[node.first_input_edge].from_node];
-                const float* const in[2] = {scratch(chain.scratch_buffer, 0),
-                                            scratch(chain.scratch_buffer, 1)};
+                const uint32_t ci = plan.edges[node.first_input_edge].from_node;
+                const PlanNode& chain = plan.nodes[ci];
+                const float* const in[2] = {node_out(pass, ci, 0), node_out(pass, ci, 1)};
                 const PlanTrack& pt = plan.tracks[node.track];
                 // The chain's output is its latency late: the lanes follow
                 // the audio they scale (ADR-0027 §2).
                 apply_track_fader(plan, pt, pt.channels >= 2, in, out, n, from,
                                   chain.latency_frames);
                 track_meters_[pt.engine_track].process(out, n);
-                continue;
+                return;
             }
             case NodeKind::AuxSum: {
                 // Every input is a send (ADR-0022 §5), in the builder's
@@ -1954,8 +1967,8 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 for (uint32_t k = 0; k < node.input_edge_count; ++k) {
                     const PlanEdge& edge = plan.edges[node.first_input_edge + k];
                     const PlanNode& src = plan.nodes[edge.from_node];
-                    const float* const in[2] = {scratch(src.scratch_buffer, 0),
-                                                scratch(src.scratch_buffer, 1)};
+                    const float* const in[2] = {node_out(pass, edge.from_node, 0),
+                                                node_out(pass, edge.from_node, 1)};
                     if (edge.send == kNoSend) {
                         sum_edge(plan, edge, in, out, n);
                         continue;
@@ -1968,12 +1981,12 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                         src.kind == NodeKind::InsertChain ? src.latency_frames : 0;
                     sum_send(plan, edge, mono, in, out, n, from, lag);
                 }
-                continue;
+                return;
             }
             case NodeKind::AuxFader: {
-                const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
-                const float* const in0 = scratch(src, 0);
-                const float* const in1 = scratch(src, 1);
+                const uint32_t src = plan.edges[node.first_input_edge].from_node;
+                const float* const in0 = node_out(pass, src, 0);
+                const float* const in1 = node_out(pass, src, 1);
                 const uint32_t b = node.track;
                 const float l0 = aux_gain_[2 * b];
                 const float r0 = aux_gain_[2 * b + 1];
@@ -1984,7 +1997,7 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                     L[i] = in0[i] * (l0 + dl * a);
                     R[i] = in1[i] * (r0 + dr * a);
                 }
-                continue;
+                return;
             }
             case NodeKind::BusSum:
             case NodeKind::HardwareOut:
@@ -1998,8 +2011,8 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
         std::memset(R, 0, n * sizeof(float));
         for (uint32_t k = 0; k < node.input_edge_count; ++k) {
             const PlanEdge& edge = plan.edges[node.first_input_edge + k];
-            const uint32_t src = plan.nodes[edge.from_node].scratch_buffer;
-            const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
+            const float* const in[2] = {node_out(pass, edge.from_node, 0),
+                                        node_out(pass, edge.from_node, 1)};
             sum_edge(plan, edge, in, out, n);
         }
         if (node.kind == NodeKind::PathOut) {
@@ -2010,9 +2023,9 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
             if (node.hardware_out + 1u < block.output_count) {
                 std::memcpy(block.outputs[node.hardware_out + 1u] + offset, R, n * sizeof(float));
             }
-            continue;
+            return;
         }
-        if (node.kind != NodeKind::HardwareOut) continue;
+        if (node.kind != NodeKind::HardwareOut) return;
 
         const float b0 = bus_applied_;
         const float db = bus_target_ - b0;
