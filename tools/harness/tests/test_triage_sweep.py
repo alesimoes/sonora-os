@@ -69,6 +69,38 @@ class Sweep(support.DaemonCase):
         self.assertEqual(self.get("k")["state"], "building")
         self.assertIn("take the default", self.get("k")["note"])
 
+    def tip(self, branch, ts, sha="b302f565", subject="docs: the pointer"):
+        self.forge.tips = {branch: {"sha": sha, "ts": ts, "subject": subject}}
+
+    def test_blocked_task_fixed_by_hand_on_its_branch_goes_to_qa(self):
+        # native.tuner.docs 2026-11-08: the refused .claude edit was committed
+        # by a resolver after the block; the note still read "permission".
+        self.blocked("h", "refused by a permission prompt (sensitive file)")
+        at = triage.blocked_at(self.o, self.get("h"))
+        self.tip("feat/h", at + 60)
+        self.assertEqual(triage_sweep.sweep(self.o, at + 3600), 1)
+        t = self.get("h")
+        self.assertEqual(t["state"], "qa")
+        self.assertIn("b302f565", t["note"])
+        self.assertEqual(self.o.store.events("h", kind="triage_handfixed")[0]
+                         ["detail"][:8], "b302f565")
+
+    def test_commit_before_the_block_or_a_wip_checkpoint_is_no_fix(self):
+        self.blocked("i", "tool missing")
+        at = triage.blocked_at(self.o, self.get("i"))
+        self.tip("feat/i", at - 60)
+        self.assertEqual(triage_sweep.sweep(self.o, at + 3600), 0)
+        self.tip("feat/i", at + 60, subject="WIP: orchestrator checkpoint")
+        self.assertEqual(triage_sweep.sweep(self.o, at + 3600), 0)
+        self.assertEqual(self.get("i")["state"], "blocked")
+
+    def test_hand_fix_wins_over_the_infra_requeue(self):
+        self.blocked("j", "broker unreachable: WinError 10061")
+        at = triage.blocked_at(self.o, self.get("j"))
+        self.tip("feat/j", at + 5)
+        triage_sweep.sweep(self.o, at + 3600)
+        self.assertEqual(self.get("j")["state"], "qa")
+
     def test_busy_janitor_wake_is_closed(self):
         self.o.store.add_task("w", None, "janitor", kind="wake", state="building")
         self.o.store.set_task("w", state="blocked",

@@ -61,6 +61,21 @@ class Stalls(ts.Case):
         self.assertEqual([k for k in self.sweep() if k.startswith("stall:")],
                          [])
 
+    def test_integrating_task_alert_names_the_sibling_it_waits_for(self):
+        # native.tuner 2026-11-08: contract and evaltool sat "integrating
+        # with no agent" for 4 h; the cause was the blocked docs sibling.
+        s = self.o.store
+        for n in ("t.contract", "t.evaltool"):
+            s.add_task(n, "plugin", "dsp-engineer", feature_id="t",
+                       state="integrating")
+        s.add_task("t.docs", "plugin", "dsp-engineer", feature_id="t",
+                   state="building")
+        s.advance("t.docs", "blocked", note="refused by a permission prompt")
+        self.age(2.5)
+        a = self.sweep()["stall:t.contract"]["text"]
+        self.assertIn("integrator waits for t.docs (blocked: refused", a)
+        self.assertNotIn("not launched", a)
+
     def test_integrating_task_counts_the_integrator_on_its_sibling(self):
         s = self.o.store
         for n in ("f0", "f1"):
