@@ -4,6 +4,8 @@ snapshot and a clock, so every rule is unit-tested; nothing here does I/O.
 """
 import time
 
+import dashboard_kpis
+
 NO_SIGNAL_S = 120
 DAEMON_OK_S, DAEMON_WARN_S = 30, 120
 SEVERITY = {"bad": 0, "warn": 1}
@@ -101,4 +103,4 @@ def build(snap, daemon_alive, now=None):
                       "prs": _cell(prs_n, prs_cap, brake=bool(prs_cap and prs_n >= prs_cap)),
                       "alerts": {"n": len(queue), "level": "ok" if not queue else
                                  "bad" if queue[0]["level"] == "bad" else "warn", "text": str(len(queue))}},
-            "agents": agents, "attention": queue}
+            "agents": agents, "attention": queue, "kpis": dashboard_kpis.build(snap, now)}

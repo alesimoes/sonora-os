@@ -63,6 +63,28 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .at-act{display:flex;gap:6px;flex-wrap:wrap}
 .empty{color:var(--mute);font:12px var(--mono);border:1px dashed var(--line);padding:14px;text-align:center}
 
+/* numbers: progress per track, open PRs */
+.sh.sp{margin-top:14px}.sec:first-child .sh.sp{margin-top:0}
+.trk{border:1px solid var(--line);background:var(--panel);padding:8px 12px;margin-bottom:8px;border-radius:3px}
+.trk .n{display:flex;justify-content:space-between;font:600 13px var(--mono)}
+.trk .n b{color:var(--cyan)}
+.trk .bar{height:4px;background:var(--line);margin:5px 0 4px;position:relative}
+.trk .bar span{position:absolute;top:0;bottom:0;left:0;background:var(--ok)}
+.trk .bar .dg{background:var(--amber);opacity:.6}
+.trk .m{font:11px var(--mono);color:var(--mute)}.trk .m em{font-style:normal;color:var(--amber)}
+.trk.all .n b{font-size:20px}
+.mrg{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--mute);margin-bottom:6px}
+.mrg b{color:var(--text);font-size:14px;margin-left:4px}
+.pr{display:block;width:100%;text-align:left;border:1px solid var(--line);border-left:3px solid var(--amber);background:var(--panel);padding:8px 12px;margin-bottom:8px;border-radius:3px}
+.pr.ok{border-left-color:var(--ok)}.pr.bad{border-left-color:var(--bad)}.pr.run{border-left-color:var(--cyan)}
+.pr:hover{border-color:var(--line2)}
+.pr .n{display:flex;justify-content:space-between;font:600 13px var(--mono)}
+.pr .ci{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--amber)}
+.pr .ci.ok{color:var(--ok)}.pr .ci.bad{color:var(--bad)}.pr .ci.run{color:var(--cyan)}
+.pr .t{color:var(--mute);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pr .m{display:flex;justify-content:space-between;gap:8px;margin-top:4px;font:11px var(--mono);color:var(--mute)}
+.pr .m span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pr .m b{color:var(--text);font-weight:500;flex:none}
+
 /* buttons */
 .btn{border:1px solid var(--line2);padding:6px 12px;font:600 12px var(--mono);letter-spacing:.06em;text-transform:uppercase;border-radius:3px;min-height:34px;color:var(--cyan)}
 .btn:hover{background:var(--cyan-d)}
@@ -153,7 +175,8 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   .main{display:block;position:relative}
   .side,.chat{position:absolute;inset:0;display:none;border:0!important}
   body[data-pane=chat] .chat{display:flex}
-  body[data-pane=agentes] .side.l{display:block}
+  body[data-pane=agentes] .side.l,body[data-pane=numeros] .side.l{display:block}
+  body[data-pane=agentes] .sec-nums,body[data-pane=numeros] .sec-ag{display:none}
   body[data-pane=atencao] .side.r{display:block}
   .log{padding:14px 12px}
   .card{width:100%}.msg{max-width:94%}

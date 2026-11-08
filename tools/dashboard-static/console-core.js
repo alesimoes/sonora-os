@@ -78,5 +78,5 @@ function send(text, to) {
 }
 
 function renderAll() {
-  renderStrip(); renderAgents(); renderAttention(); renderTabs(); renderChat();
+  renderStrip(); renderAgents(); renderNums(); renderAttention(); renderTabs(); renderChat();
 }

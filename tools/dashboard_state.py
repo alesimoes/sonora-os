@@ -8,11 +8,12 @@ from dashboard_board import agent_rows
 from dashboard_github import read_merged, read_prs
 from dashboard_orch import clean_orch, read_coordinator_agents, read_orchestrator
 from dashboard_prboard import GreenClock, pr_rows
+from dashboard_progress import EVERY_S as PROGRESS_EVERY_S, read_progress
 
 GH_EVERY_S = 20
 LOOP_S = 4
 
-state = {"updated": 0, "prs": [], "merged": [], "errors": [], "orchestrator": None,
+state = {"updated": 0, "progress": None, "prs": [], "merged": [], "errors": [], "orchestrator": None,
          "board": {"agents": [], "prs": []}}
 lock = threading.Lock()
 green_clock = GreenClock()
@@ -23,6 +24,21 @@ def build_board(orch, prs, now=None):
     now = now or time.time()
     return {"agents": agent_rows(orch, read_coordinator_agents(now), [], now),
             "prs": pr_rows(prs, orch, green_clock, now)}
+
+
+class Progress:
+    """The catalogue, re-read every PROGRESS_EVERY_S; the last good value stands."""
+    def __init__(self):
+        self.at, self.value = 0.0, None
+
+    def poll(self, errors):
+        if time.time() - self.at <= PROGRESS_EVERY_S:
+            return
+        self.at = time.time()
+        try:
+            self.value = read_progress() or self.value
+        except Exception as e:
+            errors.append("progresso: %s" % e)
 
 
 class Gh:
@@ -39,9 +55,11 @@ class Gh:
             errors.append("gh: %s" % e)
 
 
-def refresh_once(gh):
+def refresh_once(gh, prog=None):
     errors = []
     gh.poll(errors)
+    if prog:
+        prog.poll(errors)
     orch = clean_orch(read_orchestrator(), {p["number"] for p in gh.prs} if gh.ok else None)
     try:
         board = build_board(orch, gh.prs)
@@ -50,11 +68,12 @@ def refresh_once(gh):
         errors.append("quadro: %s" % e)
     with lock:
         state.update(updated=int(time.time()), prs=gh.prs, merged=gh.merged,
-                     orchestrator=orch, board=board, errors=errors)
+                     orchestrator=orch, board=board, errors=errors,
+                     progress=prog.value if prog else state["progress"])
 
 
 def refresh_loop():
-    gh = Gh()
+    gh, prog = Gh(), Progress()
     while True:
-        refresh_once(gh)
+        refresh_once(gh, prog)
         time.sleep(LOOP_S)
