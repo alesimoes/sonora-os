@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 
+from .agent_perms import writable_rules
 from .tiers import ALLOWED_MODELS, DEFAULT_MODEL
 
 MODEL = DEFAULT_MODEL
@@ -150,7 +151,7 @@ def build_command(claude, agent, prompt, mcp_path, settings_path,
     argv += ["--agent", agent,
              "--mcp-config", str(mcp_path), "--strict-mcp-config",
              "--settings", str(settings_path),
-             "--allowedTools", ",".join(tools),
+             "--allowedTools", ",".join(list(tools) + writable_rules()),
              "--permission-mode", permission_mode,
              "--max-turns", str(max_turns),
              "--output-format", "stream-json", "--verbose",
@@ -168,7 +169,7 @@ def hook_settings(harness_py):
     def cmd(*a):
         return " ".join([f'"{sys.executable}"', f'"{harness_py}"', *a])
     recv = {"type": "command", "command": cmd("recv", "--brief", "--hook")}
-    return {"hooks": {
+    return {"permissions": {"allow": writable_rules()}, "hooks": {
         "PostToolUse": [{"matcher": "*", "hooks": [recv]}],
         "UserPromptSubmit": [{"hooks": [recv]}],
         "PreToolUse": [
