@@ -107,7 +107,9 @@ class SelfUpdate:
         local = self.git(["rev-list", "origin/main..HEAD"],
                          self.root).stdout.split()
         if local:
-            r = self.git(["rebase", "-q", "origin/main"], self.root)
+            r = self.git(["-c", "user.name=sonora-harness",
+                          "-c", "user.email=harness@sonora.invalid",
+                          "rebase", "-q", "origin/main"], self.root)
             if r.returncode:
                 self.git(["rebase", "--abort"], self.root)
                 return (f"rebase of {len(local)} local commit(s) onto "
