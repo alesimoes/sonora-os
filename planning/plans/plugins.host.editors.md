@@ -12,7 +12,7 @@ Acceptance: slot shows Opening/Open/Failed(reason); a second click raises, never
 N/A - reuses spec ui-design.md "Plugin window chrome" States; only a status banner is new (ui-engineer, from the spec).
 
 ## 3. Contracts and integrations
-ADR-0088 (reserved). Header engine/control/include/sonora/control/plugin_editor_service.h with fake and contract test, merged first. The wire (OpenPluginEditor, ClosePluginEditor, PluginEditorState) needs a protocol number; none is reserved yet, so the engine slice asks the lead. The contract PR carries no wire.
+ADR-0088 (reserved). Header engine/editor_service/include/sonora/editor_service/plugin_editor_service.h with fake and contract test, merged first. The wire (OpenPluginEditor, ClosePluginEditor, PluginEditorState) needs a protocol number; none is reserved yet, so the engine slice asks the lead. The contract PR carries no wire.
 Acceptance: per task in the plan JSON.
 
 ## 4. DAW core
@@ -37,12 +37,10 @@ No audio path touched; reviewer confirms. Files under ~500 lines (plugin_hosting
 `.claude/rules/code-structure.md`, `testing-and-flakes.md`, `gates-and-checks.md`.
 
 ## 11. Dependencies and order
-contract -> engine -> ui, one feature branch, one PR.
+contract only (this PR); engine and UI follow as plugins.host.editors.wire after interchange.stems.
 | Slice | Agent | Difficulty (S/M/L) | Risk | Tier | Sub-branch | Starts from | Files |
 |---|---|---|---|---|---|---|---|
 | contract | plugin-engineer | M | high | opus | feat/plugins.host.editors-contract | main | ADR-0088, plugin_editor_service.h, test |
-| engine | plugin-engineer | L | high | opus | feat/plugins.host.editors-engine | contract | engine/control, contracts/api |
-| ui | ui-engineer | M | med | sonnet | feat/plugins.host.editors-ui | engine | ui/qt, docs/images |
 
 Integrator: lead names one.
 Single PR title: Plugin editors: open, close and report from the UI (ADR-0088)
@@ -63,7 +61,10 @@ Single PR title: Plugin editors: open, close and report from the UI (ADR-0088)
 
 ## Sequencing note
 
-The engine slice registers its sources and tests in `engine/control/CMakeLists.txt`,
-which the active feature `interchange.stems` also edits. The plan therefore sets
-`depends_on_feature: interchange.stems`: the contract slice (ADR, header, test)
-may start at once, the engine slice starts from main after stems merges.
+Re-scoped after the daemon rejected the earlier plan (engine files overlap
+interchange.stems). This feature is the contract PR only: ADR-0088 plus the new
+module `engine/editor_service` (header-only interface, fake, contract test),
+registered from the root `CMakeLists.txt`. It touches no file of interchange.stems.
+The engine service, api commands, server routing and UI banner become follow-up
+feature `plugins.host.editors.wire`, planned after interchange.stems merges, with a
+protocol number reserved then. The PR is marked partial for that reason.
