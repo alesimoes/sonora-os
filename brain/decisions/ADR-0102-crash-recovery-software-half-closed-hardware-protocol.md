@@ -122,6 +122,9 @@ from the take data the disk thread syncs.
   partition that holds the session folder is mounted by live-boot as an
   overlay (`usb-stick-layout.md`); the options of that partition in the
   installed (non-live) layout were not read here and are unverified.
+  Also: `sonora-install` writes its own fstab (`noatime,errors=remount-ro`,
+  no `commit=60`) instead of rendering `fstab.template`, so they disagree;
+  the run records the real options from `findmnt` on the unit.
 - Whether the engine reports each checkpoint to a host-side witness today. The
   witness design above assumes the engine's sync events can be read from
   outside; if they cannot, the witness needs a control-protocol event, which
