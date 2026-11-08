@@ -322,17 +322,16 @@ public:
     }
 };
 
-// Polls until `pred` holds or two seconds pass.
+// Polls until `pred` holds. No wall-clock bound: the engine's own events end
+// the wait (a render or a save under load takes as long as the machine
+// needs), and a real hang is ctest's timeout, not a guess in milliseconds.
 template <typename Pred>
 bool until(api::EngineControl& e, api::Inbox& in, Pred pred) {
-    const auto end = Clock::now() + std::chrono::seconds(2);
-    while (Clock::now() < end) {
+    for (;;) {
         e.poll(in);
         if (pred()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    e.poll(in);
-    return pred();
 }
 
 void same_commands_as_the_fake() {
