@@ -78,7 +78,10 @@ bool same_key(const pr::Record& r, const Key& k) { return r.uri == k.first && r.
 
 // What the scan caches in place of a probe for a plug-in the operator has
 // blocked: nothing of it ran, so it says nothing about the plug-in.
-bool stand_in(const pr::Record& r) { return r.outcome == pr::Outcome::Blocked && r.reason == kBlockedByOperator; }
+bool stand_in(const pr::Record& r) {
+    return r.outcome == pr::Outcome::Blocked &&
+           (r.reason == kBlockedByOperator || r.reason == kBlockedByOperatorLegacy);
+}
 
 std::string ended(platform::ChildProcess& c) {
     return c.exited_normally() ? "exited with code " + std::to_string(c.exit_code())

@@ -548,6 +548,54 @@ void test_block_list() {
     }
 }
 
+// A cache written before ADR-0065 holds the stand-in in the old words; it is
+// still a stand-in, so unblocking probes the plug-in instead of leaving it
+// refused from the stale record.
+void test_legacy_stand_in() {
+    std::printf("legacy_stand_in
+");
+    Fixture fx("legacy");
+    const std::string h = fx.bundle("h.lv2");
+    fx.set_world({"plugin urn:h " + h + " lv2 1 1 ok"});
+    const std::string list = fx.root + "/config/plugin-blocklist.json";
+    {
+        PluginBlockList l;
+        l.plugins["urn:h"] = "Hanger";
+        std::string why;
+        check(save_plugin_block_list(list, l, why), "a block list written (" + why + ")");
+    }
+    PluginScannerConfig cfg = fx.config();
+    cfg.block_list_path = list;
+    {
+        PluginScanner s(cfg);
+        check(scanned(s) && s.probes_started() == 0, "blocked: cached as a stand-in, not probed");
+    }
+    std::string text;
+    {
+        std::ifstream f(fx.cache);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        text = ss.str();
+    }
+    const std::string now = kBlockedByOperator;
+    const auto at = text.find(now);
+    check(at != std::string::npos, "the cache holds the stand-in's words");
+    if (at == std::string::npos) return;
+    text.replace(at, now.size(), kBlockedByOperatorLegacy);
+    std::ofstream(fx.cache, std::ios::trunc) << text;
+    PluginScanner s(cfg);
+    check(scanned(s) && s.probes_started() == 0 && entry(s, "urn:h") &&
+              api::is_blocked_refusal(entry(s, "urn:h")->refusal),
+          "after the upgrade: still blocked, in the new words, nothing probed");
+    s.set_blocked("urn:h", "Hanger", false);
+    check(until(s, [&] {
+        const api::PluginInfo* p = entry(s, "urn:h");
+        return p && p->usable && s.idle();
+    }, 5000),
+          "unblocked: the old stand-in is released and the plug-in probed");
+    check(s.probes_started() == 1, "one probe");
+}
+
 // A blocked plug-in no bundle names is still in the catalog, worded with the
 // contract's marker so plugin.unblock can reach it; a name past 256 bytes is
 // cut on read; with no config folder the list cannot persist, said once.
@@ -1188,6 +1236,7 @@ int main(int argc, char** argv) {
     test_bundle_gone();
     test_rescan();
     test_block_list();
+    test_legacy_stand_in();
     test_blocked_without_bundle();
     test_block_without_config_folder();
     test_recording();

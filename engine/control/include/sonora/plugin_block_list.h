@@ -31,6 +31,10 @@ inline constexpr std::size_t kMaxBlockedNameBytes = 256;
 // which is how such a record is told from a probe's own (Blocked) answer.
 inline constexpr const char* kBlockedByOperator =
     "blocked by you: it is blocked in the plug-in manager";  // starts with api::kBlockedRefusalPrefix
+// The words a scan cache written before ADR-0065 holds for the same stand-in.
+// Still read as one, so a plug-in blocked before the upgrade is probed when
+// unblocked after it instead of staying refused from a stale record.
+inline constexpr const char* kBlockedByOperatorLegacy = "it is blocked in the plug-in manager";
 
 struct PluginBlockList {
     std::map<std::string, std::string> plugins;  // host id -> name
