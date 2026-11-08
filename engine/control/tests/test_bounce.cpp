@@ -618,6 +618,12 @@ int real_time_is_refused_with_a_take_or_a_roll() {
     CHECK(err.find("stop recording") != std::string::npos);
     CHECK(!rt.running());
     CHECK_BOUNCE(r.session->stop(&err), err);
+    // The closed take is finished by the disk thread; the refusal holds until then.
+    for (const auto until = deadline(); r.session->takes_closing() && std::chrono::steady_clock::now() < until;) {
+        (void)r.session->closed_takes();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(!r.session->takes_closing());
 
     {
         Driver audio(*r.session);
