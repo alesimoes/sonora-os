@@ -1,9 +1,8 @@
-"""The drawer's content for a clicked card: the coordinator, an agent, the
-builder, one run, or a feature / PR with its tasks, runs and events."""
+"""The drawer's content for a clicked card: the coordinator, an agent, one
+run, or a feature / PR with its tasks, runs and events."""
 from dashboard_chat import NOT_REACHABLE, chat_view
-from dashboard_machine import heavy_lock_list
 from dashboard_orch import orch_state, read_coordinator
-from dashboard_runs import builder_log, events_of, run_activity, task_view
+from dashboard_runs import events_of, run_activity, task_view
 from dashboard_state import lock, state
 
 RUN_KEYS = ("id", "name", "role", "state", "started", "ended", "exit")
@@ -14,12 +13,6 @@ def _agent(ident):
         a = next((x for x in state["agents"] if x["id"] == ident), None)
         lk = list(state.get("lock") or [])
     return {"kind": "agent", "title": (a or {}).get("label", ident), "agent": a, "lock": lk, "not_reachable": NOT_REACHABLE}
-
-
-def _builder():
-    b = (state.get("orchestrator") or {}).get("builder") or {}
-    return {"kind": "builder", "title": "Builder (build pesado em lote)", "builder": b,
-            "log": builder_log((b.get("running") or {}).get("dir")), "lock": heavy_lock_list()}
 
 
 def _run(ident, tasks, runs):
@@ -57,8 +50,6 @@ def detail(kind, ident):
         return {"kind": "coord", "title": "Coordenador (Claude, sessão no terminal)", "coord": read_coordinator() or {}}
     if kind == "agent":
         return _agent(ident)
-    if kind == "builder":
-        return _builder()
     s = orch_state()
     tasks, feats, runs = s.get("tasks", []), s.get("features", []), s.get("runs", [])
     if kind == "run":

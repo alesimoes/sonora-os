@@ -37,5 +37,6 @@ def run_view(run, task):
     return {"title": task_title(t),
             "kind": t.get("kind"), "agent": t.get("agent"),
             "branch": t.get("branch"), "pr": t.get("pr"),
+            "feature": t.get("feature_id"),
             "stream_path": run.get("stream_path"),
             "model": run.get("model"), "launched_by": launched_by(task)}

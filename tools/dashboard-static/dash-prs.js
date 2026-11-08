@@ -1,5 +1,4 @@
-/* Estado de cada PR a partir do que o GitHub diz (checks e estado de merge). O gate local
-   (lotes do builder) está sendo aposentado e não decide mais a coluna. col: 2 checks,
+/* Estado de cada PR a partir do que o GitHub diz (checks e estado de merge). O gate é o do GitHub. col: 2 checks,
    3 corrigindo, 4 pronto. PR com outra base é proibido: base diferente de main vira alerta. */
 function prState(p){
   const failed=(p.failed||[]).length-(p.cancelled||[]).length,pend=(p.pending||[]).length;
@@ -23,3 +22,11 @@ function renderSit(s){
   const flow=`<span class="sflow" title="PRs abertos: checks, correção, pronto, entrou hoje"><b>${s.prs.length}</b> PRs abertos → <b>${test.length}</b> testando · <b class="${bad.length?'sbad':''}">${bad.length}</b> corrigindo · <b>${ready.length}</b> prontos → <b>${(s.merged||[]).length}</b> na main hoje</span>`;
   const act=bad.length?'corrigir '+nums(bad):ready.length?'merge de '+nums(ready):test.length?'esperar checks de '+nums(test):'nada pendente';
   $('sit').innerHTML=prog+flow+`<span>Próximo: <b>${E(act)}</b></span>`+(owner?`<span class="sitw">${owner} decisão(ões) do dono</span>`:'')}
+
+/* "Por que não entrou?": a resposta do daemon para o PR (harness/whynot.py). A razão fica
+   sempre visível em uma linha; o resto abre ao clicar. */
+function whyHtml(w,n){
+  const ev=w.event?`${E(w.event.kind)} ${E(w.event.detail||'')} (${E(ago(w.event.ts))})`:'nenhum evento recente';
+  const kv=[['Por que não entrou?',w.reason],['Dono do merge',w.owner],['Gate e checks',w.gate],['Estado no GitHub',w.merge_state],['Último evento',ev]];
+  return `<details class="why" data-key="why-${n}"><summary>Por que não entrou? <b>${E(w.reason||'')}</b></summary>`
+    +kv.slice(1).map(x=>`<div><b>${E(x[0])}:</b> ${x[0]==='Último evento'?ev:E(x[1]||'-')}</div>`).join('')+'</details>'}
