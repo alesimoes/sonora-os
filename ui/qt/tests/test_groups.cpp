@@ -354,8 +354,8 @@ int qml() {
     return 0;
 }
 
-// The 65th group is refused with a reason and changes nothing; a group move
-// is one undo step that returns every member.
+// The 65th group is refused with a reason and changes nothing; a group is one
+// undo step and its mix moves add none.
 int limit_and_undo() {
     ModelDocument doc(make_empty_session(2 * static_cast<int>(model::kMaxGroups) + 2, 48000));
     EditController c(doc);
@@ -373,9 +373,12 @@ int limit_and_undo() {
     EditController c2(d2);
     CHECK(c2.group_tracks(0, 2, "", kMixAttrs, why));
     CHECK(c2.set_gain(0, -9.0f, why) && near(gain(d2, 0), -9.0) && near(gain(d2, 1), -9.0));
+    // The mix move is no undo step: one undo takes the whole group back, the
+    // faders stay where they were moved.
     CHECK(c2.undo(why));
-    CHECK(near(gain(d2, 0), 0.0) && near(gain(d2, 1), 0.0));
-    CHECK(d2.snapshot().edit->groups.size() == 1);   // the group itself is a step further back
+    CHECK(d2.snapshot().edit->groups.empty());
+    CHECK(near(gain(d2, 0), -9.0) && near(gain(d2, 1), -9.0));
+    CHECK(!c2.undo(why));
     std::printf("  limit and undo: ok\n");
     return 0;
 }
