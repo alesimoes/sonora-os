@@ -357,7 +357,7 @@ int qml() {
 // The 65th group is refused with a reason and changes nothing; a group is one
 // undo step and its mix moves add none.
 int limit_and_undo() {
-    ModelDocument doc(make_empty_session(2 * static_cast<int>(model::kMaxGroups) + 2, 48000));
+    ModelDocument doc(make_empty_session(static_cast<uint32_t>(2 * model::kMaxGroups + 2), 48000));
     EditController c(doc);
     std::string why;
     for (int g = 0; g < static_cast<int>(model::kMaxGroups); ++g) {
