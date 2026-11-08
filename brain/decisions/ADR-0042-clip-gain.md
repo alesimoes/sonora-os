@@ -25,6 +25,13 @@
   `clip.gain_point` sets a point at the insertion point. Pointer dragging of
   handles is left for a follow-up.
 
+**Amendment, 2026-11-08 (§4).** Since protocol 63 the interface drives
+Consolidate, so `clip.gain_render` no longer refuses: with a region selected it
+sends `session.consolidate` for that region (track, active playlist, start, end,
+name), through the same helper as `edit.consolidate`. With no region it keeps
+its refusal; with no engine it refuses with "no engine to render". No contract,
+protocol or format change.
+
 ## Decision
 
 As the summary. A line holds at most 256 points, strictly increasing, within
