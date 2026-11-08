@@ -83,7 +83,7 @@ RUN_COLS = {
     "id": None, "task_id": None, "role": None, "name": None, "state": None,
     "pid": None, "started": None, "last_beat": None, "ended": None,
     "exit": None, "result_path": None, "stream_path": None, "worktree": None,
-    "session_id": None, "suspect": 0, "outcome": None,
+    "session_id": None, "suspect": 0, "outcome": None, "model": None,
 }
 
 

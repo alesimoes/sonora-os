@@ -162,6 +162,9 @@ class Escalation(support.DaemonCase):
         by_agent = {a[a.index("--agent") + 1]: a[a.index("--model") + 1]
                     for a in argvs}
         self.assertEqual(by_agent["principal-engineer"], "fable")
+        models = {r["role"]: r["model"] for r in o.store.runs_of("a")}
+        self.assertEqual(models["principal"], "fable")
+        self.assertEqual(models["engineer"], "sonnet")
         for agent, model in by_agent.items():
             if agent != "principal-engineer":
                 self.assertEqual(model, "sonnet", agent)

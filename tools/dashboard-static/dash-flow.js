@@ -17,7 +17,7 @@ function flowRows(s){
     const col=st.col,pend=st.hold?st.text:null,w=[];
     if(col===2)w.push(who('CI do GitHub',st.text,null,{code:'BD',dim:true}));
     if(col===3){const f=t&&t.fixer&&runByName[t.fixer];
-      if(t&&t.fixer)w.push(who(roleName(roleOf(t.fixer)),'orquestrador · '+t.fixer,f?f.started:ts,{k:f?'run':'pr',id:f?f.id:p.number}));
+      if(t&&t.fixer)w.push(who(roleName(roleOf(t.fixer)),'lançado pelo daemon',f?f.started:ts,{k:f?'run':'pr',id:f?f.id:p.number}));
       else w.push(who(roleName(t&&t.agent),st.text+' · aguardando agente',ts,{dim:true,k:'pr',id:p.number}))}
     if(col===4)w.push(who('Orquestrador',st.text,ts,{code:'OR',k:'builder',id:'orch',dim:true}));
     sess.filter(a=>a.pr===p.number||(a.branch&&a.branch===p.branch)).forEach(a=>w.push(mkSess(a)));
@@ -32,7 +32,7 @@ function flowRows(s){
     const planning=['planning','queued'].includes(f.state),col=planning?0:1;
     const ag=(f.tasks||[]).map(t=>t.agent).filter(Boolean)[0];
     rows.push({k:'feature',id:f.id,num:'',title:f.name||f.id,sub:(f.track||'')+(f.adr?' · ADR-'+f.adr:''),col,planned:planning,pend:planning&&(paused.includes('plan')||paused.includes('build'))?'parado: filas pausadas':null,
-      w:planning?[who('Arquiteto','orquestrador · aguardando vaga',null,{dim:true,code:'AR',seed:f.id})]:[who(roleName(ag),'orquestrador',f.age?now-f.age:null,{k:'feature',id:f.id,seed:f.id})]})});
+      w:planning?[who('Arquiteto','orquestrador · aguardando vaga',null,{dim:true,code:'AR',seed:f.id})]:[who(roleName(ag),'lançado pelo daemon',f.age?now-f.age:null,{k:'feature',id:f.id,seed:f.id})]})});
   return rows}
 function renderFlow(s){
   const rows=flowRows(s),act=rows.filter(r=>!r.planned),plan=rows.filter(r=>r.planned);
