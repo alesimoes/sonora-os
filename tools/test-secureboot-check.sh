@@ -66,9 +66,10 @@ CASE=bad-arg; run a mok_on --bogus; rc_is 2
 
 CASE=non-rt
 set +e
-SONORA_ROOT="$T/a" SONORA_MOKUTIL="$T/mok_on" SONORA_EFIBOOTMGR="$T/efi_ok" \
-    SONORA_UNAME=6.12.0-1-amd64 sh "$CHECK" | grep -qx kernel_rt=no || bad "$CASE"
+out="$(SONORA_ROOT="$T/a" SONORA_MOKUTIL="$T/mok_on" SONORA_EFIBOOTMGR="$T/efi_ok" \
+    SONORA_UNAME=6.12.0-1-amd64 sh "$CHECK")"
 set -e
+want kernel_rt=no
 
 [ $fail -eq 0 ] && echo "secureboot-check: all cases pass"
 exit $fail
