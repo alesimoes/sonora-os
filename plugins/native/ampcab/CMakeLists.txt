@@ -16,3 +16,21 @@ add_test(NAME native_ampcab_nam
 # printed for the record (`ampcab-budget [seconds]`).
 add_executable(ampcab-budget tools/budget.cpp)
 target_link_libraries(ampcab-budget PRIVATE sonora_dsp)
+
+# Capture cards (ADR-0069): the provenance record a shipped capture or IR
+# needs before it enters captures/manifest.json. Build-time and load-time
+# code, never reached from a `process`.
+add_library(sonora_native_ampcab_cards STATIC src/capture_card.cpp
+            src/capture_card_format.cpp)
+target_include_directories(sonora_native_ampcab_cards PUBLIC include)
+target_link_libraries(sonora_native_ampcab_cards PRIVATE sonora_json sonora_sha256)
+
+add_executable(test_native_ampcab_card_contract tests/test_capture_card_contract.cpp)
+target_link_libraries(test_native_ampcab_card_contract PRIVATE sonora_native_ampcab_cards)
+add_test(NAME native_ampcab_card_contract COMMAND test_native_ampcab_card_contract)
+
+# The card check over brain/models/ and the capture manifest comes in its own
+# file, so the slices after the contract never edit this one.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/cards.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/cards.cmake)
+endif()
