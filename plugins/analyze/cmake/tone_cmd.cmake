@@ -23,4 +23,3 @@ add_executable(ampcab-tone-profile tools/tone_profile_gen.cpp)
 target_link_libraries(ampcab-tone-profile PRIVATE sonora_analyze_tone_measure
   sonora_native_ampcab_nam sonora_native_ampcab_cards sonora_sha256 sonora_json)
 target_compile_definitions(ampcab-tone-profile PRIVATE ${_tone_defs})
-

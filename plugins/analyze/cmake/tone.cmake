@@ -11,4 +11,3 @@ endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tone_tests.cmake")
   include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/tone_tests.cmake")
 endif()
-
