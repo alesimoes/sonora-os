@@ -22,6 +22,13 @@ human has to look:
             `answer` in its mailbox already settles (the lead answered in
             the run's last minute and the run ended without acting on it)
             -> requeued once with the decision in the note
+  handfixed (sweep only) a commit landed on the task's branch after it
+            blocked, and it is not the daemon's WIP checkpoint: somebody
+            (a stall resolver, the coordinator) finished the slice by hand
+            -> QA, which judges it. 2026-11-08: native.tuner.docs and
+            plugins.stock.docs were completed on their branches and asked
+            to be moved, nobody listened, and each feature's integrator
+            waited 4 h on the blocked sibling (scheduler.py, DONE_STATES).
   (the janitor 'container running' retry lives in blockinfo.)
 
 `classify` is pure; `handle` applies the action and returns True when it
@@ -208,6 +215,47 @@ def _decided(o, t, why, now):
         "You reported blocked on a question that was already answered in "
         "your mailbox; act on it:\n" + "\n".join(lines)))
     o.store.event(t["id"], "triage_decided", f"{len(msgs)} decision(s) in the mailbox")
+    return True
+
+
+def blocked_at(o, t):
+    """When the task last entered `blocked`, from the state events."""
+    for e in o.store.events(t["id"], kind="state", limit=10):
+        if "->blocked" in (e.get("detail") or ""):
+            return e.get("ts")
+    return None
+
+
+def hand_fixed(o, t):
+    """The branch tip, when it was committed after the block by a hand
+    other than the daemon's WIP checkpoint (heartbeat.wip_checkpoint commits
+    whatever a dead run left, which proves nothing)."""
+    if t["kind"] != "work" or not t.get("branch"):
+        return None
+    tip_of = getattr(o.forge, "branch_tip", None)
+    if tip_of is None:
+        return None
+    try:
+        tip = tip_of(t["branch"])
+    except Exception:  # noqa: BLE001 - an unreadable branch is not a fix
+        return None
+    at = blocked_at(o, t)
+    if not tip or at is None or tip["ts"] <= at:
+        return None
+    if (tip.get("subject") or "").startswith("WIP:"):
+        return None
+    return tip
+
+
+def handfixed(o, t, tip):
+    """Hand the hand-fixed slice to QA, which verifies the accept."""
+    sha, subject = tip["sha"][:8], (tip.get("subject") or "")[:120]
+    o.store.advance(t["id"], "qa", note=f"hand-fixed after the block: "
+                    f"{sha} {subject}")
+    o._release(t)
+    o.store.event(t["id"], "triage_handfixed", f"{sha} {subject}")
+    o._tell("lead", "task_done", {"task": t["id"]},
+            feature=t["feature_id"], task=t["id"])
     return True
 
 

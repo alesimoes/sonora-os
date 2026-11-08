@@ -127,6 +127,11 @@ class Forge:
         """True when commit `sha` is an ancestor of (or equal to) `head`."""
         raise NotImplementedError
 
+    def branch_tip(self, branch):
+        """{sha, ts (committer epoch seconds), subject} of the local
+        branch's head, or None when no such branch exists."""
+        raise NotImplementedError
+
 
 def job_signatures(excerpt):
     """{job name: cause} from failure_excerpt's text. The cause is the job's
@@ -444,6 +449,18 @@ class GhForge(Forge):
         if r.returncode not in (0, 1):   # unknown commit: not an answer
             self._raise(["git", "merge-base"], r.stderr)
         return r.returncode == 0
+
+    def branch_tip(self, branch):
+        # Agents' sub-branches live in worktrees of this repository, so the
+        # local ref is the truth: an unpushed hand fix must count.
+        r = self.run(["git", "log", "-1", "--format=%H%x1f%ct%x1f%s",
+                      f"refs/heads/{branch}", "--"], self.root, 60)
+        if r.returncode:
+            return None
+        parts = r.stdout.strip().split("\x1f")
+        if len(parts) != 3 or not parts[1].isdigit():
+            return None
+        return {"sha": parts[0], "ts": float(parts[1]), "subject": parts[2]}
 
     def pre_pr(self, worktree):
         script = os.path.join(worktree, "tools", "pre-pr.sh")

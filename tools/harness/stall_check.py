@@ -9,7 +9,7 @@ dashboard alert for any task, feature or PR with no run and no progress
 past a bound, with the reason the daemon knows, and re-issue a lost wake.
 """
 from . import stall_resolver, wakes
-from .scheduler import HOLD
+from .scheduler import DONE_STATES, HOLD
 from .supervisor_checks import (_active, _feature_has_run, _hms,
                                 _waiting_since, _why_not_launched)
 
@@ -38,6 +38,26 @@ def _has_run(sv, t):
     return any(r["task_id"] == t["id"] for r in _active(sv))
 
 
+def _waiting_siblings(sv, t):
+    """The feature's tasks that keep its integrator from launching
+    (scheduler: one integrator per feature, once every slice is done).
+    2026-11-08: five 'integrating with no agent' alerts were one blocked
+    docs sibling each, and the text named neither the sibling nor its note."""
+    if t["state"] != "integrating" or not t.get("feature_id"):
+        return []
+    return [s for s in sv.o.store.feature_tasks(t["feature_id"])
+            if s["state"] not in DONE_STATES]
+
+
+def _why_stalled(sv, t, now):
+    sibs = _waiting_siblings(sv, t)
+    if not sibs:
+        return _why_not_launched(sv, t, now)
+    return "integrator waits for " + ", ".join(
+        f"{s['id']} ({s['state']}" + (f": {s['note'][:120]}" if s.get("note")
+                                      else "") + ")" for s in sibs)
+
+
 def stalled_tasks(sv, now):
     stalled = []
     for t in sv.o.store.tasks(kind="work"):
@@ -59,7 +79,7 @@ def stalled_tasks(sv, now):
         care = stall_resolver.caring(sv, t["feature_id"] or t["id"])
         sv.alert(f"stall:{t['id']}",
                  f"{t['id']} sits in {t['state']} with no agent for "
-                 f"{_hms(age)}: {_why_not_launched(sv, t, now)}"
+                 f"{_hms(age)}: {_why_stalled(sv, t, now)}"
                  + (f"; last: {why}" if why else "")
                  + (f"; {care}" if care else ""), check="stall")
 

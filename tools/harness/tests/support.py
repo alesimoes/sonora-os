@@ -102,6 +102,10 @@ class FakeForge(Forge):
         self._chk("is_ancestor")
         return (sha, head) in getattr(self, "ancestry", set())
 
+    def branch_tip(self, branch):
+        self._chk("branch_tip")
+        return getattr(self, "tips", {}).get(branch)
+
     def dispatch_workflow(self, workflow, ref="main"):
         self._chk("dispatch_workflow")
         self.dispatched.append((workflow, ref))

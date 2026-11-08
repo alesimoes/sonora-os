@@ -6,6 +6,9 @@ there for ever. On startup and then every hour this sweep reads the note of
 each blocked task that does not wait on the owner and applies the same
 classes, so no human has to look.
 
+A blocked work task whose branch received a commit after the block was
+finished by hand (triage.hand_fixed): it goes to QA, whatever its note said.
+
 A janitor wake blocked by "containers running" is closed: the next merge
 wakes the janitor again, a retry of the old one would only pile up."""
 from . import blockinfo, triage
@@ -62,7 +65,12 @@ def sweep_one(o, t, features, now):
     if _is_busy_janitor_wake(t):
         close_wake(o, t, "janitor: containers running; next merge wakes it")
         return True
-    if t["kind"] != "work" or not _worth_trying(o, t, why):
+    if t["kind"] != "work":
+        return False
+    tip = triage.hand_fixed(o, t)
+    if tip:
+        return triage.handfixed(o, t, tip)
+    if not _worth_trying(o, t, why):
         return False
     return _revive(o, t, why, now)
 
