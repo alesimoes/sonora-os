@@ -28,7 +28,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, d
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
 from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
-                     leadwake, pr_sync, prtext, triage, wakes)
+                     leadwake, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
@@ -39,7 +39,6 @@ from harness.train import Train  # noqa: E402
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer",
                "integrator": "integrator", "principal": "principal"}
 PRINCIPAL_AGENT = "principal-engineer"
-RETRY_LATER_S = 900.0   # a janitor that found a build container running
 FIX_LIKE = ("fixer", "integrator", "principal")
 ATTRIBUTION = "\U0001F916 Generated with [Claude Code](https://claude.com/claude-code)"
 
@@ -222,6 +221,7 @@ class Orchestrator:
             g.step("console", console.tick, self, now)
         g.step("watch_prs", self._watch_prs, now)
         g.step("feature_sync", feature_sync.sync, self, now)
+        g.step("triage_sweep", triage_sweep.tick, self, now)
         # Main's nightly full build on GitHub (ADR-0061): a red opens a task.
         g.step("nightly", nightly.tick, self, now)
         g.step("flow", self.flow.tick, now)
@@ -713,10 +713,9 @@ class Orchestrator:
     def _on_agent_blocked(self, t, kind, data, now):
         why = data.get("summary", "blocked by agent")
         if blockinfo.is_retry_later(kind, why):
-            # Nothing is wrong: the machine is busy. The same run is
-            # offered again later, no attempt counted, nothing blocked.
-            self.store.set_task(t["id"], not_before=now + RETRY_LATER_S)
-            self.store.event(t["id"], "retry_later", why[:200])
+            # Nothing is wrong: the machine is busy. The wake is closed;
+            # the next merge wakes the janitor again.
+            triage_sweep.close_wake(self, t, why[:200])
             return
         owner = data.get("needs_owner")
         if not owner and triage.handle(self, t, kind, why, data, now):
@@ -851,6 +850,8 @@ class Orchestrator:
         except ForgeError as e:
             if n is not None:
                 self._adopt_opened_pr(f, ts, rep, branch, n, now, e)
+                return True
+            if triage_pr.handle(self, f, ts, e, now):
                 return True
             fails = int(self.store.get_meta(f"prfail:{fid}", 0)) + 1
             self.store.set_meta(f"prfail:{fid}", fails)
