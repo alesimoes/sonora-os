@@ -275,8 +275,9 @@ int refusals_say_why() {
           why.find("plug-in inserts") != std::string::npos &&
           why.find("freeze") != std::string::npos);
 
-    // An empty range, given or because nothing is on the timeline.
-    CHECK(!stems_check(plain, dir, options("start=500 end=500"), why) &&
+    // An empty range: a start past the session's end (an equal start and end
+    // the parser refuses itself), or nothing on the timeline.
+    CHECK(!stems_check(plain, dir, options("start=9000"), why) &&
           why.find("range is empty") != std::string::npos);
     const model::Snapshot empty = snapshot_of({{1, "Kick"}}, 0);
     CHECK(!stems_check(empty, dir, options(""), why) &&
@@ -285,9 +286,12 @@ int refusals_say_why() {
     // A gain per file would stop the stems summing to the mix.
     CHECK(!stems_check(plain, dir, options("normalise=-14"), why) &&
           why.find("normalised") != std::string::npos);
-    // The bounce's own pair refusal holds.
-    CHECK(!stems_check(plain, dir, options("file=flac format=float32"), why) &&
-          why.find("FLAC") != std::string::npos);
+    // The bounce's own pair refusal holds for options not from the parser,
+    // which refuses the pair itself.
+    api::StemsOptions flac = options("");
+    flac.base.file = api::BounceFile::Flac;
+    flac.base.format = api::BounceFormat::Float32;
+    CHECK(!stems_check(plain, dir, flac, why) && why.find("FLAC") != std::string::npos);
     CHECK(entries(dir) == 0);
     return 0;
 }
