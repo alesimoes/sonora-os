@@ -27,8 +27,8 @@ from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, d
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
-from harness import (blockinfo, feature_merge, findings, handoff, leadwake,  # noqa: E402
-                     prtext, wakes)
+from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
+                     leadwake, prtext, triage, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
@@ -221,6 +221,7 @@ class Orchestrator:
             g.step("ownerchat", ownerchat.tick, self)
             g.step("console", console.tick, self, now)
         g.step("watch_prs", self._watch_prs, now)
+        g.step("feature_sync", feature_sync.sync, self, now)
         # Main's nightly full build on GitHub (ADR-0061): a red opens a task.
         g.step("nightly", nightly.tick, self, now)
         g.step("flow", self.flow.tick, now)
@@ -718,6 +719,8 @@ class Orchestrator:
             self.store.event(t["id"], "retry_later", why[:200])
             return
         owner = data.get("needs_owner")
+        if not owner and triage.handle(self, t, kind, why, data, now):
+            return
         self._block(t, why, owner=owner if owner else None,
                     cause=None if owner else "infra")
 
