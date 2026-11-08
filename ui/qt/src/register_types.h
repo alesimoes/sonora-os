@@ -8,6 +8,7 @@
 #include "io_setup_model.h"
 #include "meter_item.h"
 #include "mix_model.h"
+#include "plugin_manager_model.h"
 #include "scene_item.h"
 #include "send_model.h"
 #include "session_model.h"
@@ -40,6 +41,8 @@ inline void register_types() {
                                               QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<IoSetupModel>("Sonora", 1, 0, "IoSetupModel",
                                              QStringLiteral("made once, in main()"));
+    qmlRegisterUncreatableType<PluginManagerModel>("Sonora", 1, 0, "PluginManagerModel",
+                                                   QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<SendModel>("Sonora", 1, 0, "SendModel",
                                           QStringLiteral("made once, in main()"));
     qmlRegisterSingletonType<ThemeObject>("Sonora", 1, 0, "Theme",
