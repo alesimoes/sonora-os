@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "sonora/click.h"
+#include "sonora/graph_levels.h"
 #include "sonora/model/musical_map.h"
 
 namespace sonora {
@@ -577,6 +578,10 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     report.compensation_shortfall_frames = comp.shortfall_frames;
     report.clamped_edges = comp.clamped_edges;
     report.undelayed_edges = comp.undelayed_edges;
+    // ADR-0063 §1: after compensate(), which it leaves as it found it (delay
+    // lines by stable id, edges in place). A plan it refuses keeps one serial
+    // level, which is still a correct plan.
+    assign_plan_levels(*plan);
     // What the plan carries, not what the resolver asked for: a binding the
     // layout left unbound plays with latency 0, and the state block must
     // show the latency that is compensated (PR #59 re-review).
