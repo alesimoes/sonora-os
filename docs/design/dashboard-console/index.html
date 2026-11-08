@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sonora Console (maquete)</title>
+<style>
+:root{
+  --bg:#04070d; --bg2:#070d18; --panel:#09121f; --panel2:#0c1829;
+  --line:#143049; --line2:#1d4263;
+  --text:#d6e6f6; --mute:#6c88a4;
+  --cyan:#33dcff; --cyan-d:#0e3a4a; --amber:#ffb23a; --amber-d:#3a2807;
+  --ok:#38d996; --bad:#ff5c6c; --bad-d:#3a1219;
+  --glow:0 0 14px rgba(51,220,255,.22);
+  --mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:radial-gradient(1200px 600px at 50% -10%,#0a1c30 0,var(--bg) 60%);color:var(--text);
+  font:15px/1.45 var(--sans);display:flex;flex-direction:column;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+
+/* ---------- status strip ---------- */
+.strip{display:flex;align-items:stretch;border-bottom:1px solid var(--line);background:rgba(7,13,24,.9);flex:none}
+.brand{display:flex;align-items:center;gap:8px;padding:0 14px;font:600 12px var(--mono);letter-spacing:.16em;color:var(--cyan);text-transform:uppercase;border-right:1px solid var(--line)}
+.brand i{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--cyan);box-shadow:var(--glow);position:relative}
+.brand i::after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--cyan)}
+.cells{display:flex;flex:1;min-width:0}
+.cell{flex:1;min-width:0;padding:7px 12px;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
+.cell:last-child{border-right:0}
+.cell small{font:500 10px var(--mono);letter-spacing:.12em;color:var(--mute);text-transform:uppercase;white-space:nowrap}
+.cell b{font:600 17px var(--mono);white-space:nowrap;font-variant-numeric:tabular-nums}
+.cell b em{font-style:normal;color:var(--mute);font-weight:400}
+.cell.ok b{color:var(--ok)} .cell.warn b{color:var(--amber)} .cell.bad b{color:var(--bad)}
+.cell .bar{height:2px;background:var(--line);margin-top:3px;position:relative}
+.cell .bar span{position:absolute;inset:0 auto 0 0}
+.cell.ok .bar span{background:var(--ok)}.cell.warn .bar span{background:var(--amber)}.cell.bad .bar span{background:var(--bad)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:currentColor;box-shadow:0 0 8px currentColor}
+@media (prefers-reduced-motion:no-preference){.live .dot{animation:pl 2s ease-in-out infinite}@keyframes pl{50%{opacity:.35}}}
+
+/* ---------- layout ---------- */
+.tabs{display:none}
+.main{flex:1;min-height:0;display:grid;grid-template-columns:300px minmax(0,1fr) 320px}
+.side{min-height:0;overflow:auto;background:rgba(7,13,24,.55);padding:14px}
+.side.l{border-right:1px solid var(--line)} .side.r{border-left:1px solid var(--line)}
+.sh{display:flex;justify-content:space-between;align-items:baseline;font:600 11px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--mute);margin-bottom:10px}
+.sh b{color:var(--cyan)}
+.chat{display:flex;flex-direction:column;min-height:0;min-width:0}
+
+/* agents */
+.ag{display:block;width:100%;text-align:left;border:1px solid var(--line);background:var(--panel);padding:10px 12px;margin-bottom:8px;position:relative;border-radius:3px}
+.ag:hover{border-color:var(--line2)}
+.ag.sel{border-color:var(--cyan);box-shadow:var(--glow);background:var(--cyan-d)}
+.ag .n{font:600 13px var(--mono);display:flex;justify-content:space-between;gap:8px}
+.ag .n span+span{color:var(--cyan);font-weight:500}
+.ag .t{color:var(--mute);font-size:13px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ag .m{display:flex;gap:10px;margin-top:6px;font:11px var(--mono);color:var(--mute);flex-wrap:wrap}
+.ag .m b{color:var(--text);font-weight:500}
+.ag.bad{border-left:3px solid var(--bad)}
+.ag .st{color:var(--bad)}
+.ag.all{border-style:dashed;text-align:center;color:var(--mute);font:12px var(--mono)}
+
+/* attention */
+.at{border:1px solid var(--line);border-left:3px solid var(--amber);background:var(--panel);padding:10px 12px;margin-bottom:10px;border-radius:3px}
+.at.bad{border-left-color:var(--bad)}
+.at h4{font-size:14px;font-weight:600}
+.at p{color:var(--mute);font-size:13px;margin:3px 0 8px}
+.empty{color:var(--mute);font:12px var(--mono);border:1px dashed var(--line);padding:14px;text-align:center}
+
+/* buttons */
+.btn{border:1px solid var(--line2);padding:6px 12px;font:600 12px var(--mono);letter-spacing:.06em;text-transform:uppercase;border-radius:3px;min-height:34px;color:var(--cyan)}
+.btn:hover{background:var(--cyan-d)}
+.btn.go{background:var(--cyan);color:#021018;border-color:var(--cyan);box-shadow:var(--glow)}
+.btn.go:hover{background:#7aeaff}
+.btn.am{color:var(--amber);border-color:#6b4a10}
+.btn.am:hover{background:var(--amber-d)}
+.btn.sm{min-height:34px;padding:4px 10px}
+
+/* ---------- conversation ---------- */
+.log{flex:1;min-height:0;overflow:auto;padding:18px 22px;display:flex;flex-direction:column;gap:12px}
+.sys{align-self:center;font:11px var(--mono);color:var(--mute);letter-spacing:.08em;border-top:1px solid var(--line);padding-top:6px;width:100%;text-align:center}
+.msg{max-width:min(680px,92%);padding:9px 13px;border-radius:3px;border:1px solid var(--line);background:var(--panel)}
+.msg.me{align-self:flex-end;background:#0b2233;border-color:var(--line2)}
+.msg.me .who{color:var(--amber)}
+.who{font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--cyan);margin-bottom:3px;display:flex;gap:8px;justify-content:space-between}
+.who time{color:var(--mute);font-weight:400;letter-spacing:.04em}
+.msg p+p{margin-top:6px}
+.msg code,.card code{font:13px var(--mono);color:var(--cyan)}
+.msg.agm{border-color:#16525f}
+.msg.alert{border-color:#6b4a10;background:#150f05}
+.msg.alert .who{color:var(--amber)}
+
+.card{align-self:flex-start;width:min(680px,92%);border:1px solid var(--line2);background:linear-gradient(180deg,var(--panel2),var(--panel));border-radius:3px;box-shadow:var(--glow)}
+.card header{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 13px;border-bottom:1px solid var(--line);font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase}
+.card header .k{color:var(--cyan)}
+.card.risk header .k{color:var(--amber)}
+.card .body{padding:10px 13px}
+.card .body h5{font-size:15px;font-weight:600;margin-bottom:6px}
+.steps{list-style:none;padding:0;font:13px var(--mono)}
+.steps li{padding:3px 0 3px 18px;position:relative;color:#b5cde2}
+.steps li::before{content:"\203A";position:absolute;left:4px;color:var(--cyan)}
+.effects{margin-top:8px;font-size:13px;color:var(--mute)}
+.effects b{color:var(--amber);font-weight:500}
+.card footer{display:flex;gap:8px;padding:9px 13px;border-top:1px solid var(--line);align-items:center;flex-wrap:wrap}
+.card footer .info{margin-left:auto;font:11px var(--mono);color:var(--mute)}
+.badge{font:600 10px var(--mono);letter-spacing:.1em;padding:2px 7px;border:1px solid currentColor;border-radius:2px}
+.badge.pend{color:var(--amber)}.badge.done{color:var(--ok)}.badge.undo{color:var(--mute)}.badge.run{color:var(--cyan)}
+.card.done{box-shadow:none;border-color:var(--line)}
+.card.undone{opacity:.6;box-shadow:none}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl td{padding:5px 6px 5px 0;border-bottom:1px solid var(--line)}
+.tbl td:first-child{font-family:var(--mono);color:var(--cyan);white-space:nowrap}
+.tbl td:last-child{text-align:right;color:var(--text);font-family:var(--mono)}
+.am{color:var(--amber)}
+
+/* composer */
+.comp{flex:none;border-top:1px solid var(--line);background:rgba(7,13,24,.95);padding:10px 16px calc(10px + env(safe-area-inset-bottom))}
+.to{display:flex;align-items:center;gap:8px;font:11px var(--mono);color:var(--mute);margin-bottom:8px;letter-spacing:.08em;text-transform:uppercase}
+.to .pill{color:var(--cyan);border:1px solid var(--line2);padding:2px 8px;border-radius:2px;letter-spacing:.04em;text-transform:none}
+.to .pill.pa{color:var(--amber);border-color:#6b4a10}
+.to .pill{flex:none}
+.to button{margin-left:auto;white-space:nowrap;color:var(--mute);text-decoration:underline;text-transform:none;font-size:11px;min-height:24px}
+.sug{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;scrollbar-width:none}
+.sug::-webkit-scrollbar{display:none}
+.sug button{flex:none;border:1px solid var(--line);color:var(--mute);font-size:13px;padding:5px 11px;border-radius:99px;min-height:34px;white-space:nowrap}
+.sug button:hover{border-color:var(--cyan);color:var(--cyan)}
+.row{display:flex;gap:8px}
+.row input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line2);color:var(--text);font:16px var(--sans);padding:11px 13px;border-radius:3px;outline:0}
+.row input:focus{border-color:var(--cyan);box-shadow:var(--glow)}
+.row input::placeholder{color:#47627c}
+
+/* ---------- phone ---------- */
+@media (max-width:900px){
+  .brand span{display:none} .brand{padding:0 12px}
+  .cell{padding:6px 8px}.cell b{font-size:15px}.cell small{font-size:9px;letter-spacing:.06em}
+  .cell.hide-s{display:none}
+  .tabs{display:flex;flex:none;border-bottom:1px solid var(--line);background:var(--bg2)}
+  .tabs button{flex:1;padding:11px 4px;font:600 12px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);border-bottom:2px solid transparent;min-height:44px}
+  .tabs button.on{color:var(--cyan);border-bottom-color:var(--cyan)}
+  .tabs button i{font-style:normal;margin-left:5px;padding:1px 6px;border-radius:9px;background:var(--line);color:var(--text)}
+  .tabs button.al i{background:var(--amber);color:#201400}
+  .main{display:block;position:relative}
+  .side,.chat{position:absolute;inset:0;display:none;border:0!important}
+  body[data-pane=chat] .chat{display:flex}
+  body[data-pane=agentes] .side.l{display:block}
+  body[data-pane=atencao] .side.r{display:block}
+  .log{padding:14px 12px}
+  .card{width:100%}.msg{max-width:94%}
+  .comp{padding:8px 10px calc(8px + env(safe-area-inset-bottom))}
+}
+</style>
+</head>
+<body data-pane="chat">
+
+<header class="strip" id="strip" aria-label="Estado geral"></header>
+<nav class="tabs" id="tabs" aria-label="Painéis"></nav>
+
+<div class="main">
+  <aside class="side l" aria-label="Agentes em execução">
+    <div class="sh"><span>Agentes</span><b id="agcount"></b></div>
+    <div id="agents"></div>
+  </aside>
+
+  <section class="chat" aria-label="Conversa com o orquestrador">
+    <div class="log" id="log" role="log" aria-live="polite"></div>
+    <div class="comp">
+      <div class="to" id="to"></div>
+      <div class="sug" id="sug"></div>
+      <form class="row" id="form" autocomplete="off">
+        <input id="inp" aria-label="Mensagem" enterkeyhint="send">
+        <button class="btn go" type="submit">Enviar</button>
+      </form>
+    </div>
+  </section>
+
+  <aside class="side r" aria-label="Fila de atenção">
+    <div class="sh"><span>Precisa de você</span><b id="atcount"></b></div>
+    <div id="attn"></div>
+  </aside>
+</div>
+
+<script>
+/* Dados de exemplo; em produção vêm de status.json (SPEC.md, "Fontes de dados"). */
+const D = {
+  daemon:{alive:true, age:6},
+  cap:8, runs:{n:5, lim:6}, prs:{n:7, lim:8},
+  agents:[
+    {id:"eng-108", role:"visual-designer", model:"sonnet", task:"dash.console-design", min:14},
+    {id:"eng-101", role:"ui-engineer", model:"opus", task:"mixer.routing-matrix", min:46},
+    {id:"eng-104", role:"rt-engineer", model:"opus", task:"engine.xrun-recovery", min:73, pr:"#528", silent:200},
+    {id:"qa-032", role:"tester", model:"sonnet", task:"review do PR #544", min:9, pr:"#544"},
+    {id:"eng-110", role:"dsp-engineer", model:"haiku", task:"plugins.eq-tilt", min:5},
+  ],
+  attn:[
+    {sev:"bad", t:"eng-104 sem sinal há 3 min", why:"Último sinal às 14:02; o PR #528 depende dele.", btn:["Reiniciar eng-104","reinicia eng-104"]},
+    {sev:"warn", t:"PR #544 verde há 18 min sem merge", why:"A fila de merge está parada pelo freio (7 de 8 abertos).", btn:["Retomar fila","retome a fila de merge"]},
+    {sev:"warn", t:"Decisão sua: ADR de roteamento", why:"O arquiteto recomenda o padrão A; falta seu OK.", btn:["Aceitar padrão A","aceite o adr"]},
+  ],
+};
+const SUG = ["status","por que o PR 544 não entrou?","prioriza o mixer","pare o #528","para tudo","ajuda"];
+const $ = s=>document.querySelector(s);
+const q = new URLSearchParams(location.search);
+let target = q.get("to") || null;
+let nmsg = 0;
+const esc = s=>s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const hhmm = ()=>"14:"+String(5+Math.floor(nmsg/2)).padStart(2,"0");
+
+function renderStrip(){
+  const a=D.agents.length, pr=D.prs, al=D.attn.length;
+  const cls=(n,l)=>n>=l?"bad":n/l>=.8?"warn":"ok";
+  const cell=(l,v,c,bar,extra="")=>`<div class="cell ${c} ${extra}"><small>${l}</small><b>${v}</b>${bar!=null?`<div class="bar"><span style="width:${bar}%"></span></div>`:""}</div>`;
+  $("#strip").innerHTML=`<div class="brand live"><i></i><span>Sonora Console</span></div><div class="cells">`+
+   cell("Daemon",`<span class="live"><span class="dot"></span></span>vivo <em>${D.daemon.age}s</em>`,D.daemon.alive?"ok":"bad",null)+
+   cell("Agentes",`${a}<em>/${D.cap}</em>`,cls(a,D.cap),a/D.cap*100)+
+   cell("Execuções",`${D.runs.n}<em>/${D.runs.lim}</em>`,cls(D.runs.n,D.runs.lim),D.runs.n/D.runs.lim*100,"hide-s")+
+   cell("PRs",`${pr.n}<em>/${pr.lim}</em>`,cls(pr.n,pr.lim),pr.n/pr.lim*100)+
+   cell("Alertas",al,al?"warn":"ok",null)+`</div>`;
+}
+function renderAgents(){
+  $("#agcount").textContent=D.agents.length+" / "+D.cap;
+  $("#agents").innerHTML=D.agents.map(a=>`<button class="ag ${a.silent?"bad":""} ${target===a.id?"sel":""}" data-id="${a.id}" aria-pressed="${target===a.id}">
+      <div class="n"><span>${a.id}</span><span>${a.model}</span></div>
+      <div class="t">${a.task}</div>
+      <div class="m"><b>${a.min} min</b><span>${a.role}</span>${a.pr?`<span>${a.pr}</span>`:""}${a.silent?`<span class="st">sem sinal ${Math.round(a.silent/60)} min</span>`:""}</div></button>`).join("")+
+    `<button class="ag all" data-id="">${target?"↩ voltar ao orquestrador":"Toque num agente para falar com ele"}</button>`;
+  document.querySelectorAll(".ag[data-id]").forEach(b=>b.onclick=()=>{target=b.dataset.id||null;renderAgents();renderTo();if(innerWidth<=900)pane("chat");$("#inp").focus()});
+}
+function renderAttn(){
+  $("#atcount").textContent=D.attn.length;
+  $("#attn").innerHTML=D.attn.length?D.attn.map((x,i)=>`<div class="at ${x.sev==="bad"?"bad":""}"><h4>${x.t}</h4><p>${x.why}</p>
+    <button class="btn sm ${x.sev==="bad"?"am":""}" data-i="${i}">${x.btn[0]}</button></div>`).join(""):`<div class="empty">Nada precisa de você agora.</div>`;
+  document.querySelectorAll(".at .btn").forEach(b=>b.onclick=()=>{const x=D.attn[b.dataset.i];target=null;renderAgents();renderTo();pane("chat");say(x.btn[1])});
+}
+function renderTabs(){
+  $("#tabs").innerHTML=[["chat","Chat"],["agentes","Agentes",D.agents.length],["atencao","Atenção",D.attn.length]]
+   .map(([k,l,n])=>`<button data-p="${k}" class="${document.body.dataset.pane===k?"on":""} ${k==="atencao"&&n?"al":""}">${l}${n!=null?`<i>${n}</i>`:""}</button>`).join("");
+  document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>pane(b.dataset.p));
+}
+function pane(p){document.body.dataset.pane=p;renderTabs()}
+function renderTo(){
+  $("#to").innerHTML=target?`<span>Para</span><span class="pill pa">${target}</span><button type="button" id="back">voltar ao orquestrador</button>`
+    :`<span>Para</span><span class="pill">orquestrador</span>`;
+  if(target)$("#back").onclick=()=>{target=null;renderAgents();renderTo()};
+  $("#inp").placeholder=target?`Mensagem direta para ${target}…`:"Escreva um pedido… ex.: pare o #528";
+}
+$("#sug").innerHTML=SUG.map(s=>`<button type="button">${s}</button>`).join("");
+document.querySelectorAll("#sug button").forEach(b=>b.onclick=()=>say(b.textContent));
+
+function add(html){const d=document.createElement("div");d.innerHTML=html;const e=d.firstElementChild;$("#log").appendChild(e);nmsg++;$("#log").scrollTop=1e9;return e}
+const me=(t,to)=>add(`<div class="msg me"><div class="who"><span>Você${to?` → ${to}`:""}</span><time>${hhmm()}</time></div><p>${esc(t)}</p></div>`);
+const orc=t=>add(`<div class="msg"><div class="who"><span>Orquestrador</span><time>${hhmm()}</time></div>${t}</div>`);
+const agm=(id,t)=>add(`<div class="msg agm"><div class="who"><span>${id}</span><time>${hhmm()}</time></div>${t}</div>`);
+const alertm=t=>add(`<div class="msg alert"><div class="who"><span>▲ Alerta</span><time>${hhmm()}</time></div>${t}</div>`);
+const sysm=t=>add(`<div class="sys">${t}</div>`);
+function actionCard({title,steps,effect,risk,confirm="Confirmar"}){
+  const c=add(`<div class="card ${risk?"risk":""}"><header><span class="k">${risk?"▲ Ação com risco":"Ação proposta"}</span><span class="badge pend" data-b>AGUARDA</span></header>
+   <div class="body"><h5>${title}</h5><ul class="steps">${steps.map(s=>`<li>${s}</li>`).join("")}</ul><div class="effects">${effect}</div></div>
+   <footer><button class="btn go" data-ok>${confirm}</button><button class="btn" data-no>Cancelar</button><span class="info" data-i>Nada roda até confirmar</span></footer></div>`);
+  const foot=c.querySelector("footer");
+  const set=(cl,b,bc,info,btns)=>{c.className="card "+cl;const bd=c.querySelector("[data-b]");bd.className="badge "+bc;bd.textContent=b;foot.innerHTML=`<span class="info" style="margin-left:0">${info}</span>`;btns.forEach(([t,f])=>{const x=document.createElement("button");x.className="btn";x.textContent=t;x.onclick=f;foot.prepend(x)})};
+  c.querySelector("[data-ok]").onclick=()=>{set("done","EXECUTADO","done","feito às "+hhmm()+" · desfazer vale 10 min",[["Desfazer",()=>{set("undone","DESFEITO","undo","revertido às "+hhmm(),[]);orc("<p>Desfeito. Voltou ao estado anterior.</p>")}]]);orc("<p>Feito. "+effect.replace(/<[^>]+>/g,"")+"</p>")};
+  c.querySelector("[data-no]").onclick=()=>set("undone","CANCELADO","undo","nada foi executado",[]);
+  return c;
+}
+const listCard=(title,rows)=>add(`<div class="card done"><header><span class="k">${title}</span><span class="badge run">SÓ LEITURA</span></header><div class="body"><table class="tbl">${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join("")}</table></div></div>`);
+
+/* Interpretação simulada; a real é do orquestrador (SPEC.md, "Comandos"). */
+function say(text){
+  text=text.trim(); if(!text)return;
+  me(text,target);
+  if(target){agm(target,"<p>Recebi. Termino o passo atual e aplico; te aviso aqui.</p>");return}
+  setTimeout(()=>reply(text.toLowerCase()),200);
+}
+function reply(t){
+  const n=(t.match(/#?(\d{3})/)||[])[1];
+  if(/^(ajuda|help)/.test(t))return orc("<p>Posso: <code>status</code>, <code>por que o PR N não entrou?</code>, <code>pare o #N</code>, <code>retome o #N</code>, <code>prioriza X</code>, <code>para tudo</code>, <code>manda o eng-N mudar de rota</code>, <code>reinicia o daemon</code>, <code>desfaz</code>. Toque num agente para falar direto com ele.</p>");
+  if(/para tudo|pausa tudo/.test(t))return actionCard({title:"Parar tudo",risk:true,steps:["Pausar novos lançamentos","Pedir a "+D.agents.length+" agentes que salvem e encerrem","Manter o daemon vivo"],effect:"<b>5 agentes</b> param; nenhum trabalho é apagado, tudo fica no branch.",confirm:"Parar tudo"});
+  if(/prioriz/.test(t))return actionCard({title:"Priorizar: mixer",steps:["Mover 3 itens do mixer para o topo da fila","Próximo lançamento será de mixer.*"],effect:"Nenhum agente é interrompido. <b>mixer.routing-matrix</b> sobe de 4º para 1º."});
+  if(/(^|\s)(pare|parar|para)\b/.test(t)&&n)return actionCard({title:"Parar #"+n,steps:["Sinalizar eng-104 para encerrar","Manter o branch <code>feat/engine.xrun-recovery</code>","Soltar o lock da feature"],effect:"<b>eng-104</b> encerra em até 30 s. O PR #"+n+" fica como está.",risk:true,confirm:"Parar #"+n});
+  if(/por ?que|porque/.test(t)&&n){
+    orc("<p>O <code>#"+n+"</code> está verde há <b>18 min</b>, mas a fila de merge está parada: <b>7 de 8</b> PRs abertos e ele depende do #531, que ainda roda o <code>micro-build</code> (9 de 14).</p>");
+    return actionCard({title:"Retomar fila de merge",steps:["Enfileirar #"+n+" na fila de merge","Aguardar #531 antes dele"],effect:"Não muda o limite de 8. O merge ocorre quando o #531 ficar verde."});
+  }
+  if(/rota|muda/.test(t))return actionCard({title:"Mudar de rota",steps:["Pausar eng-101 no passo atual","Nova tarefa: <code>mixer.bus-meters</code>","Branch atual segue intacto"],effect:"<b>eng-101</b> troca de tarefa; o trabalho de roteamento volta à fila."});
+  if(/reinicia|retom|aceit/.test(t))return actionCard({title:/aceit/.test(t)?"Aceitar ADR: padrão A":/reinicia/.test(t)?"Reiniciar eng-104":"Retomar fila de merge",steps:["Aplicar a ação","Remover o item da fila de atenção"],effect:"Reversível por 10 min."});
+  if(/status|situa|como est/.test(t)){
+    orc("<p>Tudo de pé. 5 de 8 agentes, 7 de 8 PRs, 3 merges na última hora. <span class='am'>3 itens</span> pedem você.</p>");
+    return listCard("Resumo",[["Daemon","vivo há 6 s"],["Agentes","5 de 8"],["PRs abertos","7 de 8"],["Merges 1 h","3"]]);
+  }
+  if(/desfaz/.test(t))return orc("<p>Nada recente para desfazer. Última ação: <code>retomar fila</code>, às 13:48 (prazo vencido).</p>");
+  orc("<p>Não entendi. Tente <code>status</code>, <code>pare o #528</code> ou <code>ajuda</code>.</p>");
+}
+
+$("#form").onsubmit=e=>{e.preventDefault();const v=$("#inp").value;$("#inp").value="";say(v)};
+renderStrip();renderAgents();renderAttn();renderTo();
+sysm("SONORA CONSOLE · 08/11 · dados de exemplo");
+alertm("<p><b>eng-104</b> parou de enviar sinal há 3 min (PR #528).</p>");
+me("por que o PR 544 não entrou?");
+orc("<p>O <code>#544</code> está verde há <b>18 min</b>, mas a fila de merge está parada: <b>7 de 8</b> PRs abertos e ele depende do #531, que ainda roda o <code>micro-build</code> (9 de 14).</p>");
+actionCard({title:"Retomar fila de merge",steps:["Enfileirar #544 na fila de merge","Aguardar #531 antes dele"],effect:"Não muda o limite de 8. O merge ocorre quando o #531 ficar verde."});
+me("pare o #528");
+actionCard({title:"Parar #528",risk:true,steps:["Sinalizar eng-104 para encerrar","Manter o branch <code>feat/engine.xrun-recovery</code>","Soltar o lock da feature"],effect:"<b>eng-104</b> encerra em até 30 s. O PR #528 fica como está.",confirm:"Parar #528"});
+if(q.get("ok")==="1")document.querySelectorAll("[data-ok]")[0].click();
+if(q.get("direct")==="1"&&target){me("muda para a rota B e me avise",target);agm(target,"<p>Recebi. Termino o passo atual e aplico; te aviso aqui.</p>");}
+pane(q.get("pane")||"chat");
+</script>
+</body>
+</html>
