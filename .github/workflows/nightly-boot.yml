@@ -1,0 +1,76 @@
+# Nightly QEMU boot test (ADR-0095). INTERIM: a separate workflow with its own
+# ISO build, because nightly.yml and tools/test-boot-qemu.sh are held by other
+# features. The follow-up folds these steps into nightly.yml's usb-writer job
+# (which already builds the ISO) and deletes this file.
+name: Nightly boot
+
+on:
+  schedule:
+    # nightly.yml runs at 03:00 UTC; start later so the two do not compete.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: Boot the real ISO in QEMU
+    # The ISO build (about 30-50 runner minutes) plus up to three boots.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      # A fixed directory, so the serial logs are collected without guessing.
+      SONORA_QEMU_DIR: ${{ github.workspace }}/boot-work
+      BOOT_LOGS: ${{ github.workspace }}/boot-logs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the ISO
+        run: tools/build-iso.sh
+
+      - name: Detect KVM
+        id: kvm
+        run: |
+          if [[ -c /dev/kvm ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=No /dev/kvm::the --gui and --gui-broken boots are skipped (they need KVM); only the default boot runs"
+          fi
+          mkdir -p "$BOOT_LOGS"
+
+      - name: Boot (default)
+        timeout-minutes: 20
+        run: |
+          rc=0
+          tools/test-boot-qemu.sh || rc=$?
+          cp "$SONORA_QEMU_DIR/serial.log" "$BOOT_LOGS/serial-default.log" || true
+          exit "$rc"
+
+      - name: Boot (--gui)
+        if: ${{ always() && steps.kvm.outputs.present == 'true' }}
+        timeout-minutes: 20
+        run: |
+          rc=0
+          tools/test-boot-qemu.sh --gui || rc=$?
+          cp "$SONORA_QEMU_DIR/serial.log" "$BOOT_LOGS/serial-gui.log" || true
+          exit "$rc"
+
+      - name: Boot (--gui-broken)
+        if: ${{ always() && steps.kvm.outputs.present == 'true' }}
+        timeout-minutes: 20
+        run: |
+          rc=0
+          tools/test-boot-qemu.sh --gui-broken || rc=$?
+          cp "$SONORA_QEMU_DIR/serial.log" "$BOOT_LOGS/serial-gui-broken.log" || true
+          exit "$rc"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boot-serial-logs
+          path: |
+            boot-logs/
+            boot-work/**/*.log
+          if-no-files-found: warn
