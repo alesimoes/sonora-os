@@ -1896,10 +1896,10 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     }
     // Render in place (ADR-0051): like the bounce above, Running then Done.
     // The real engine renders the track's chain; the fake has no document to
-    // put the file in.
+    // put the file in, so insert=<id> (ADR-0087) is read and not checked.
     if (id == "track.freeze" || id == "track.commit" || id == "track.process_selection") {
         RenderOptions o;
-        if (!parse_render_argument(r.argument, o, why)) return false;
+        if (!parse_render_argument(id, r.argument, o, why)) return false;
         if (id == "track.process_selection" && o.end == 0) {
             why = "select a range to process";
             return false;

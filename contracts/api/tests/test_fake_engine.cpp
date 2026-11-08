@@ -569,9 +569,10 @@ void bounce_events() {
     FakeEngine e(cfg);
     std::string error;
     CHECK(e.connect(error));
-    CHECK(e.hello().capabilities.size() == 4 && e.hello().capabilities[1] == kCapabilityBounce &&
+    CHECK(e.hello().capabilities.size() == 5 && e.hello().capabilities[1] == kCapabilityBounce &&
           e.hello().capabilities[2] == kCapabilityRender &&
-          e.hello().capabilities[3] == kCapabilityStems);
+          e.hello().capabilities[3] == kCapabilityStems &&
+          e.hello().capabilities[4] == kCapabilityRenderInsert);
     Inbox in;
     const auto run = [&](const char* id, const char* arg) {
         CommandRequest r;
@@ -812,6 +813,14 @@ void render_events() {
     CHECK(run("track.process_selection", "track=1 start=10 end=900").result == DispatchResult::Ok);
     CHECK(run("track.render_cancel", "").result == DispatchResult::Ok);
     CHECK((states() == std::vector<uint32_t>{cancelled}));
+
+    // ADR-0087: one insert for Process Selection, refused for the others.
+    CommandReply refused = run("track.freeze", "track=1 insert=5");
+    CHECK(refused.result == DispatchResult::Failed && !refused.message.empty());
+    CHECK(run("track.commit", "track=1 insert=5").result == DispatchResult::Failed);
+    CHECK(run("track.process_selection", "track=1 start=10 end=900 insert=5").result ==
+          DispatchResult::Ok);
+    CHECK(run("track.render_cancel", "").result == DispatchResult::Ok);
 }
 
 }  // namespace
