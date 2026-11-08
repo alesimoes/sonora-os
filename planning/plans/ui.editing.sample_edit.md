@@ -64,7 +64,7 @@ CMake files are free (BACKLOG line from the integrator).
 contract -> core -> view -> one PR.
 | Slice | Agent | Difficulty | Risk | Tier | Sub-branch | Starts from | Files |
 |---|---|---|---|---|---|---|---|
-| contract | architect | M | high | opus | feat/ui.editing.sample_edit-contract | main | ADR-0096, INDEX, sample_view.h, test_clip_groups.cpp |
+| contract | architect | M | high | opus | feat/ui.editing.sample_edit-contract | main | ADR-0096 (INDEX line goes in the PR body: brain/INDEX.md is held by plugins.graph.parallel), sample_view.h, test_clip_groups.cpp |
 | core | ui-engineer | L | med | opus | ...-core | contract | sample_window.h, edit_controller.h, edit_gestures.cpp, edit_clip_groups.cpp, test_edit.cpp |
 | view | ui-engineer | L | med | opus | ...-view | core | EditWindow.qml, scenes/edit_sample_*.cpp, timeline_scene.*, test_render.cpp, 2 PNGs |
 
