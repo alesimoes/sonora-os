@@ -26,6 +26,9 @@ import sys
 
 WATCH = ("tools/harness", "tools/orchestrator.py", "tools/build-slot.sh")
 CHECK_S = 300
+# Local commits the planners may leave in the daemon checkout; anything else
+# there is a mistake that must be seen, not rebased under the daemon's feet.
+PLAN_ONLY = ("planning/plans/", "brain/", ".harness/")
 CODE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
 
@@ -107,6 +110,11 @@ class SelfUpdate:
         local = self.git(["rev-list", "origin/main..HEAD"],
                          self.root).stdout.split()
         if local:
+            foreign = self._non_plan_files()
+            if foreign:
+                return (f"ALERT {len(local)} local commit(s) in the daemon "
+                        f"checkout touch more than plans: "
+                        f"{' '.join(foreign)[:150]}; move them to a branch")
             r = self.git(["-c", "user.name=sonora-harness",
                           "-c", "user.email=harness@sonora.invalid",
                           "rebase", "-q", "origin/main"], self.root)
@@ -120,6 +128,11 @@ class SelfUpdate:
         r = self.git(["checkout", "-q", "--detach"]
                      + (["-f"] if force else []) + [target], self.root)
         return r.stderr.strip()[:200] if r.returncode else None
+
+    def _non_plan_files(self):
+        r = self.git(["diff", "--name-only", "origin/main...HEAD"], self.root)
+        return [f for f in r.stdout.splitlines()
+                if f and not f.startswith(PLAN_ONLY)]
 
     def ready_or_report(self, now):
         """ready(), but an exception becomes one event per distinct error
