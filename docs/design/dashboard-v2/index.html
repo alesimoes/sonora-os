@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="pt-BR" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Console de operações · SonoraOS (maquete)</title>
+<link rel="stylesheet" href="console.css">
+</head>
+<body>
+<header class="top">
+  <div class="bar">
+    <div class="brand"><i aria-hidden="true">S</i> Console de operações</div>
+    <nav class="tabs" role="tablist" aria-label="Seções">
+      <button role="tab" data-v="visao">Visão geral</button>
+      <button role="tab" data-v="agentes">Agentes<span class="n">7</span></button>
+      <button role="tab" data-v="prs">PRs<span class="n">8</span></button>
+      <button role="tab" data-v="freios">Freios e alertas<span class="n bad">4</span></button>
+      <button role="tab" data-v="progresso">Progresso</button>
+    </nav>
+    <div class="tools"><span class="mute" style="font-size:.82rem">dados de exemplo</span><button class="btn" id="th" type="button">Tema claro</button></div>
+  </div>
+  <div class="health" id="health" aria-live="polite"></div>
+</header>
+<main>
+  <section class="view" id="v-visao"></section>
+  <section class="view" id="v-agentes"></section>
+  <section class="view" id="v-prs"></section>
+  <section class="view" id="v-freios"></section>
+  <section class="view" id="v-progresso"></section>
+</main>
+<script src="console.js"></script>
+</body>
+</html>
