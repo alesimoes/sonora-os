@@ -1,0 +1,15 @@
+{
+  "spdx_allow": [
+    "GPL-3.0-or-later",
+    "MIT"
+  ],
+  "packages": [
+    {
+      "package": "pkg-a",
+      "spdx": "GPL-3.0-or-later AND MIT",
+      "category": ["eq", "reverb"],
+      "replaced_by": "eq",
+      "retire_when": "eq passes"
+    }
+  ]
+}
