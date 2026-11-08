@@ -71,7 +71,13 @@ BlockListLoad load_plugin_block_list(const std::string& path, PluginBlockList& o
             why = "the plug-in block list " + path + " has a malformed entry (line " + std::to_string(e.line()) + ")";
             return BlockListLoad::Unreadable;
         }
-        list.plugins[id->text()] = name ? name->text() : std::string();
+        std::string label = name ? name->text() : std::string();
+        if (label.size() > kMaxBlockedNameBytes) {
+            label.resize(kMaxBlockedNameBytes);
+            // Cut back to a character boundary, so the label stays UTF-8.
+            while (!label.empty() && !json::valid_utf8(label)) label.pop_back();
+        }
+        list.plugins[id->text()] = std::move(label);
     }
     out = std::move(list);
     return BlockListLoad::Loaded;
