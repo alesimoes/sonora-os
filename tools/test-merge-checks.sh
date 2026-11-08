@@ -15,9 +15,9 @@ Progress catalogue${tab}SUCCESS
 Shell scripts${tab}SUCCESS"
 all=$(printf '%s\n' "$HEAVY_CHECKS" | awk '{ print $0 "\tSUCCESS" }')
 skipped=$(printf '%s\n' "$HEAVY_CHECKS" | awk '{ print $0 "\tSKIPPED" }')
-no_engine=$(printf '%s\n' "$all" | grep -v '^Engine build')
+no_engine=$(printf '%s\n' "$all" | grep -v '^Gate')
 
-expect "only cheap checks (before dependents exist)" 9 "$cheap"
+expect "only cheap checks (before dependents exist)" 1 "$cheap"
 expect "all heavy pass" 0 "$cheap
 $all"
 expect "doc-only: all heavy skipping" 0 "$cheap
@@ -26,17 +26,17 @@ expect "engine absent" 1 "$cheap
 $no_engine"
 expect "engine pending" 1 "$cheap
 $no_engine
-Engine build and tests${tab}IN_PROGRESS"
+Gate${tab}IN_PROGRESS"
 expect "engine failed" 1 "$cheap
 $no_engine
-Engine build and tests${tab}FAILURE"
+Gate${tab}FAILURE"
 
 # Any state but SUCCESS or SKIPPED in a heavy slot is missing. NEUTRAL is the
 # one gh's bucket calls "skipping"; it must not pass.
 for st in FAILURE CANCELLED ERROR TIMED_OUT STARTUP_FAILURE ACTION_REQUIRED           NEUTRAL STALE IN_PROGRESS QUEUED PENDING WAITING EXPECTED success pass skipping ""; do
   expect "heavy check in state '$st'" 1 "$cheap
 $no_engine
-Engine build and tests${tab}$st"
+Gate${tab}$st"
 done
 
 # merge-when-green.sh end to end, against a fake gh that can "push" a new head
@@ -112,12 +112,12 @@ gate_case() {  # label, state to put on the check named by $3, check, expected
 }
 i=0
 for st in FAILURE CANCELLED ERROR TIMED_OUT NEUTRAL STALE IN_PROGRESS QUEUED PENDING ACTION_REQUIRED; do
-  for name in "Shell scripts" "Engine build and tests"; do
+  for name in "Shell scripts" "Gate"; do
     i=$((i + 1))
     gate_case "$i-$st" "$st" "$name" ""
   done
 done
-gate_case ok SKIPPED "Engine build and tests" "merged A"
+gate_case ok SKIPPED "Gate" "merged A"
 
 # Without the second head read the push-between-reads case merges. Compare
 # the head with itself instead and require that the case then goes through:

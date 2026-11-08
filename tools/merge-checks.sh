@@ -11,15 +11,12 @@
 # STALE) into "skipping", which would let a check that neither passed nor was
 # skipped by `if:` count as fine. Only SUCCESS and SKIPPED are green.
 
-HEAVY_CHECKS="Engine build and tests
-Portable modules under MSVC
-Qt interface build and headless tests
-Thread and address sanitizers
-RealtimeSanitizer over the SONORA_RT call graph
-Records audio against PipeWire
-BWF files read back by third-party tools
-Quantum and rate stay pinned
-Plugin host against real LV2 and VST3 plugins"
+# Since ADR-0061 the PR gate is the micro build; "Gate" needs changes,
+# micro and micro-rtsan and fails when any of them failed or was cancelled,
+# so its presence and success stand for them. The nine full-build job names
+# listed here before moved to the nightly and never report on a PR, which
+# made every code PR "skipped: heavy checks not reported" (2026-11-07).
+HEAVY_CHECKS="Gate"
 
 # stdin: "name<TAB>state" lines. Prints each heavy check that is absent or
 # not SUCCESS/SKIPPED; prints nothing when all are present and fine.
