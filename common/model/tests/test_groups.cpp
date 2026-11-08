@@ -14,6 +14,10 @@
 #include "sonora/model/op_codec.h"
 #include "sonora/model/session_file.h"
 
+#ifndef SONORA_MODEL_FIXTURES
+#define SONORA_MODEL_FIXTURES "fixtures"
+#endif
+
 using namespace model_test;
 
 namespace {
@@ -286,8 +290,7 @@ int test_follow_clamp_copy_undo() {
 
 // A version 18 file, from before groups, opens with none.
 int test_v18_opens_without_groups() {
-    std::string path = __FILE__;
-    path = path.substr(0, path.find_last_of("/\\") + 1) + "fixtures/v18-strip-lanes.sonora";
+    const std::string path = std::string(SONORA_MODEL_FIXTURES) + "/v18-strip-lanes.sonora";
     std::ifstream in(path, std::ios::binary);
     CHECK(in.good());
     std::ostringstream s;
