@@ -24,7 +24,10 @@ import os
 import subprocess
 import sys
 
-WATCH = ("tools/harness", "tools/orchestrator.py", "tools/build-slot.sh")
+# The dashboard is served from this checkout too: a dashboard-only merge must
+# move it, or the owner keeps the old page (2026-11-08, #571 never showed).
+WATCH = ("tools/harness", "tools/orchestrator.py", "tools/build-slot.sh",
+         "tools/dashboard*")
 CHECK_S = 300
 # Local commits the planners may leave in the daemon checkout; anything else
 # there is a mistake that must be seen, not rebased under the daemon's feet.
