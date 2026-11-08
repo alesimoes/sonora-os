@@ -22,6 +22,12 @@ Status: Accepted (architect, recommended defaults; plugins.graph.parallel)
 7. **Workers never touch** the filesystem, log, allocate, throw, or call into plugin hosts. They run only node kinds marked `parallel_safe` (TrackSource, TrackFader, AuxFader fused work); `InsertChain` (ring/channel protocol, ADR-0012 §7.2), `BusSum`, `AuxSum`, `HardwareOut`, `PathOut` and delay-line writes stay on the audio thread, in plan order, between levels. This keeps PDC and the host protocol exactly as accepted.
 8. **Determinism.** A level's nodes write to distinct scratch buffers and are summed later by the audio thread in plan order, so the float sum order is identical for any N. Output with N workers equals serial output bit for bit when nothing is dropped (a test).
 
+## Contract (as built, contract slice)
+- `playback_plan.h`: `PlanNode::level` (uint16, 0 until the level pass); `PlaybackPlan::level_first` (uint32 array of `node_count + 1` entries, allocated and zeroed by `create_plan()`) and `level_count` (0: no level pass, the plan is one level). `plan_level_count()` / `plan_level_range()` are what a scheduler walks.
+- `graph_schedule.h`: `GraphNodeWork` (`run(node)` on any thread into the node's own scratch, `drop(node)` on the audio thread only), `GraphLevel` (plan node indices plus the absolute `deadline_ns` from `graph_deadline_ns()`), `GraphScheduler` (`workers()`, `run_level()` runs or drops each node exactly once, `reset_drops()` at a plan swap, `drop_counts()` from any thread), `GraphDropBook` (per-node streak, down after `kGraphDownAfterDrops` = 8, atomic totals `dropped` and `skipped`), `GraphSchedulerConfig` (workers, max_nodes, deadline fraction), `make_serial_graph_scheduler()`.
+- The session filters a level's parallel-safe nodes (§7) into an index array sized at creation; the scheduler never sees a node kind.
+- Tests inject stalls with `engine/core/tests/graph_schedule_fake.h` (serial plus `set_stalled(node)`); `engine/core` globs `src/graph_*.cpp` and `tests/test_graph_*.cpp` (ctest `graph_<name>`, label `core`).
+
 ## Rationale
 Help-first means the audio thread is never worse than serial by more than the deadline poll, and with N = 0 it is serial. Bounded spin with a drop is the only way to meet a deadline without a blocking wait; the cost is a spin on the RT core, bounded by the deadline and ruled on by the auditor (Unverified 3). Keeping sums on the audio thread preserves bit-exactness and the ADR-0012/0024 behaviour.
 
