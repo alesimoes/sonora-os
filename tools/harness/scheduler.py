@@ -23,6 +23,8 @@ P_FIX, P_TESTER, P_INTEGRATOR, P_ENGINEER, P_PLANNER, P_BURST = range(6)
 POOL_OF_KIND = {"fixer": "fix", "tester": "qa", "integrator": "merge",
                 "engineer": "build", "planner": "plan",
                 "principal": "principal"}
+# Agents whose runs serve the owner directly and spend no hourly budget.
+BUDGET_FREE_AGENTS = ("console",)
 KIND_OF_STATE = {"ci_fix": "fixer", "qa": "tester", "integrating": "integrator",
                  "queued": "engineer", "building": "engineer",
                  "bugfix": "engineer"}
@@ -252,9 +254,18 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
     launched = 0
     new_claims = []
 
+    def budget_of(kind, t):
+        """The hourly budget a launch spends, or None for the owner's console:
+        the owner's answers must never wait for the planners' hour, nor eat
+        it (2026-11-08: console replies used 5 of 20 planner runs)."""
+        if kind == "planner" and t.get("agent") in BUDGET_FREE_AGENTS:
+            return None
+        return "planner" if kind == "planner" else "work"
+
     def can(kind, t):
         pool = POOL_OF_KIND[kind]
-        if left["planner" if kind == "planner" else "work"] is not None                 and left["planner" if kind == "planner" else "work"] <= 0:
+        b = budget_of(kind, t)
+        if b is not None and left[b] is not None and left[b] <= 0:
             return False
         if paused_for(pool, t["track"] if kind != "planner" else None):
             return False
@@ -292,8 +303,8 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
         t = by_id[tid]
         out.launches.append(Launch(tid, kind, POOL_OF_KIND[kind], cls, reason))
         seats -= 1
-        budget = "planner" if kind == "planner" else "work"
-        if left[budget] is not None:
+        budget = budget_of(kind, t)
+        if budget is not None and left[budget] is not None:
             left[budget] -= 1
         launched += 1
         count[kind] += 1

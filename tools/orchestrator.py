@@ -235,7 +235,8 @@ class Orchestrator:
             paused=paused, hour_budget=self.cfg.max_runs_per_hour
             - self.store.runs_started_since(now - 3600, WORK_ROLES),
             planner_budget=self.cfg.max_planner_runs_per_hour
-            - self.store.runs_started_since(now - 3600, PLANNER_ROLES)
+            - self.store.runs_started_since(now - 3600, PLANNER_ROLES,
+                                         scheduler.BUDGET_FREE_AGENTS)
         ) or scheduler.Plan()
         self.last_gaps = plan.gaps
         self.last_holds = plan.holds
@@ -271,7 +272,8 @@ class Orchestrator:
             "dry-run" if self.dry_run else "live", stop, stop_now,
             self.usage_pause_until, paused,
             self.store.runs_started_since(now - 3600, WORK_ROLES),
-            self.store.runs_started_since(now - 3600, PLANNER_ROLES),
+            self.store.runs_started_since(now - 3600, PLANNER_ROLES,
+                                         scheduler.BUDGET_FREE_AGENTS),
             self.last_holds)
         data["train"] = self.train.rows()
         data["nightly"] = nightly_watch.status(self.store)

@@ -13,6 +13,27 @@ ROLE_PT = {"engineer": "Engenheiro", "fixer": "Corretor", "fix": "Corretor",
            "blocker": "Triagem", "reviewer": "Revisor"}
 
 
+# The run's agent says who it really is; its role is only the launch slot
+# ("planner" covers architect, lead, console, janitor and the stall
+# principal), so the console labelled the principal "Arquiteto" (2026-11-08).
+AGENT_PT = {"architect": "Arquiteto", "lead": "Líder", "console": "Console",
+            "janitor": "Faxineiro", "principal-engineer": "Engenheiro principal",
+            "rt-engineer": "Engenheiro de tempo real", "ui-engineer": "Engenheiro de interface",
+            "plugin-engineer": "Engenheiro de plugins", "dsp-engineer": "Engenheiro de DSP",
+            "distro-engineer": "Engenheiro do sistema", "driver-engineer": "Engenheiro de drivers",
+            "harness-engineer": "Engenheiro do harness", "visual-designer": "Designer visual",
+            "flake-fixer": "Corretor de testes instáveis", "researcher": "Pesquisador",
+            "refactor-engineer": "Engenheiro de refatoração", "release-engineer": "Engenheiro de release",
+            "tester": "Testes (QA)", "integrator": "Integrador", "code-reviewer": "Revisor"}
+
+
+def run_role_pt(r):
+    role = role_key(r.get("role"))
+    if role == "fixer":
+        return "Corretor"
+    return AGENT_PT.get(str(r.get("agent") or "")) or role_pt(r.get("role"))
+
+
 def role_key(name):
     """principal-2 / principal-engineer / principal -> principal."""
     k = re.sub(r"-\d+$", "", str(name or "").lower())
@@ -44,7 +65,7 @@ def pr_for(run, features):
 
 def daemon_row(r, features):
     return {"key": "run:" + str(r.get("id")), "launcher": "daemon", "kind": "run",
-            "id": r.get("id"), "role": role_key(r.get("role")), "role_pt": role_pt(r.get("role")),
+            "id": r.get("id"), "role": role_key(r.get("role")), "role_pt": run_role_pt(r),
             "name": r.get("name") or r.get("id"), "what": r.get("title") or r.get("task"),
             "feature": feature_of(r, features), "pr": pr_for(r, features),
             "since": r.get("started"), "last": r.get("last_beat"),
