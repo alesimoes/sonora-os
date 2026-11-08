@@ -26,10 +26,13 @@ changed=$(git diff --name-only --diff-filter=ACMR "$base"...HEAD)
 # 1. Whitespace errors and conflict markers.
 git diff --check "$base"...HEAD >/dev/null 2>&1 || bad "git diff --check reports whitespace errors or conflict markers"
 
-# 2. Executable bits: tools/*.sh, hooks and usr/local/bin must be 100755.
+# 2. Executable bits: tools/*.sh and tools/*.py (top level, as CI's
+# "Executable bits" job checks), hooks and usr/local/bin must be 100755.
+# The .py case was missing: three agent PRs went red on it (2026-11-08).
 echo "$changed" | while IFS= read -r f; do
   case "$f" in
-    tools/*.sh | */usr/local/bin/* | iso/config/hooks/*)
+    tools/*/*) ;;
+    tools/*.sh | tools/*.py | */usr/local/bin/* | iso/config/hooks/*)
       mode=$(git ls-files -s -- "$f" | cut -c1-6)
       [ "$mode" = 100755 ] || echo "pre-pr: FAIL: $f is mode ${mode:-missing}, want 100755 (git update-index --chmod=+x)" >&2
       ;;
