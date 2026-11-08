@@ -267,6 +267,11 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             if t["state"] == "queued" and t["files"] and any(
                     files_overlap(t["files"], c) for c in new_claims):
                 return False
+            # Owner 2026-11-08: the brake on new work is the number of open
+            # PRs; while it is reached, seats go to fixers and integrators
+            # that merge them. Work already started and bug fixes go on.
+            if t["state"] == "queued" and open_prs >= cfg.max_open_prs:
+                return False
         if kind == "planner" and t.get("agent") in running_names:
             return False
         return True
@@ -338,8 +343,9 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             out.gaps[track] = block
         elif track in paused or "build" in paused:
             out.gaps[track] = "paused"
-        elif ready_unpr >= cfg.max_ready_unpr or (
-                open_prs >= cfg.max_open_prs and ready_unpr):
+        elif open_prs >= cfg.max_open_prs:
+            out.gaps[track] = f"{open_prs} open PRs: merging first"
+        elif ready_unpr >= cfg.max_ready_unpr:
             out.gaps[track] = "CI budget"
         elif seats <= 0:
             out.gaps[track] = "cap"
