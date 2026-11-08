@@ -1,0 +1,32 @@
+# Terms a shipped capture or IR name (id, name, file name) must not contain
+# (ADR-0011 s5, ADR-0069 s3). One per line, case-insensitive; matching ignores
+# everything but letters and digits, so "Hi-Watt" and "hiwatt" match alike.
+# '#' starts a comment. Brands, model numbers and artists only; the card's
+# unit.type may still name the real unit, it is provenance and never shipped.
+marshall
+fender
+peavey
+soldano
+bogner
+friedman
+dumble
+ampeg
+hiwatt
+randall
+diezel
+mesaboogie
+kemper
+neuraldsp
+line6
+celestion
+greenback
+eminence
+jensen
+vox
+plexi
+jcm800
+twinreverb
+5150
+hendrix
+vaughan
+clapton
