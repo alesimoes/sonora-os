@@ -369,6 +369,107 @@ int test_a_late_window_past_the_cap_places_no_pass() {
     return 0;
 }
 
+// ADR-0141, with a cap of 3. Two opens in a ring of one: track 2's waits,
+// undrained, through `held` blocks of 250 and opens two blocks later; from
+// there every block drains, and track 2's wrap records lose to track 1's.
+bool late_take(Rig& rig, int held, int blocks) {
+    LoopRange l;
+    l.from = kA;
+    l.to = kB;
+    l.start = kA - 500;
+    std::string why;
+    if (!rig.session->start_loop(1, l, &why)) return false;
+    for (int b = 0; b < blocks; ++b) rig.block(250, b >= held);
+    return rig.session->stop();
+}
+
+const DiskThread::ClosedFile* file_of(const Session::ClosedTake& take, int track) {
+    for (const auto& f : take.files) {
+        if (f.track == track) return &f;
+    }
+    return nullptr;
+}
+
+// Exactly these passes on playlists, by the take's numbers.
+bool names_are(const model::TrackEdit& t, const std::vector<int>& want) {
+    bool ok = t.playlists.size() == want.size() + 1;
+    for (std::size_t k = 0; ok && k < want.size(); ++k) {
+        ok = t.playlists[k + 1]->name == t.name + ".T1.P" + std::to_string(want[k]);
+    }
+    if (!ok) {
+        for (const auto& p : t.playlists) std::fprintf(stderr, "  got: %s\n", p->name.c_str());
+    }
+    return ok;
+}
+
+// Opened after wrap 3 and stopped in pass 4, its list [before x3] is whole;
+// opened after wrap 4, its fourth before-file place is past the list's cap
+// and only on disk. Either way none of its passes is on a playlist.
+int test_a_late_window_past_a_cap_of_3() {
+    struct Case {
+        const char* name;
+        int held, blocks;
+        uint64_t before, past_cap;
+        const char* said;
+    };
+    const Case cases[] = {
+        {"sonora_test_loop_take_late_3", 27, 33, 3, 0, "take 1 recorded 4 passes; the first 3"},
+        {"sonora_test_loop_take_late_3_past", 35, 43, 4, 1,
+         "take 1 recorded 6 passes; the first 3"}};
+    for (const Case& c : cases) {
+        Rig rig(c.name, 2, 2, 3);
+        CHECK(late_take(rig, c.held, c.blocks));
+        const Session::ClosedTake take = rig.take();
+        const DiskThread::ClosedFile* f = file_of(take, 1);
+        CHECK(f != nullptr);
+        CHECK(f->frames == static_cast<uint64_t>(c.blocks - c.held - 1) * 250);
+        CHECK(f->wraps == std::vector<uint64_t>(3, WrapSidecar::kBeforeFile));
+        CHECK(f->wraps_before_file == c.before && f->wraps_past_cap == c.past_cap);
+        WrapList list;
+        std::string error;
+        CHECK(read_wrap_sidecar(WrapSidecar::path_for(f->path), list, error));
+        CHECK(list.wraps == std::vector<uint64_t>(c.before, WrapSidecar::kBeforeFile));
+
+        model::Document doc(engine_document(*rig.session));
+        const TakeAdded r = add_closed_take(doc, *rig.session, take);
+        CHECK(r.refused.empty());
+        CHECK(names_are(*doc.current().edit->tracks[0], {1, 2, 3}));
+        CHECK(names_are(*doc.current().edit->tracks[1], {}));
+        CHECK(active(doc.current(), 1)->regions.empty());
+        CHECK(any_mentions(r.track_notices, c.said));
+    }
+    return 0;
+}
+
+// Opened in pass 2 of six, cap 3: P2 and P3 go on playlists under track 1's,
+// P4 to P6 stay in the file and are said, and track 1's list on disk still
+// holds wraps 4 and 5, past the cap.
+int test_a_late_window_under_a_cap_of_3_keeps_its_numbers() {
+    Rig rig("sonora_test_loop_take_late_3_kept", 2, 2, 3);
+    CHECK(late_take(rig, 11, 43));
+    const Session::ClosedTake take = rig.take();
+    CHECK(take.loop_wraps == 5);
+    const DiskThread::ClosedFile* first = file_of(take, 0);
+    CHECK(first != nullptr && first->wraps_past_cap == 2);
+    WrapList list;
+    std::string error;
+    CHECK(read_wrap_sidecar(WrapSidecar::path_for(first->path), list, error));
+    CHECK((list.wraps == std::vector<uint64_t>{WrapSidecar::kLostWrap, 4500, 6500, 8500, 10500}));
+
+    model::Document doc(engine_document(*rig.session));
+    const TakeAdded r = add_closed_take(doc, *rig.session, take);
+    CHECK(r.refused.empty());
+    CHECK(names_are(*doc.current().edit->tracks[0], {1, 2, 3}));
+    const model::TrackEdit& late = *doc.current().edit->tracks[1];
+    CHECK(names_are(late, {2, 3}));
+    // Opened at file frame 3000, A + 500 in pass 2.
+    CHECK(late.playlists[1]->regions[0].position == static_cast<model::Frames>(kA + 500));
+    CHECK(late.playlists[1]->regions[0].length == static_cast<model::Frames>(kLen - 500));
+    CHECK(late.playlists[2]->regions[0].source_offset == static_cast<model::Frames>(kLen - 500));
+    CHECK(any_mentions(r.track_notices, "take 1 recorded 6 passes; the first 3 are on playlists"));
+    return 0;
+}
+
 // O1: a take stopped before its first wrap has one pass, cut short, on its
 // own playlist only; one stopped in its pre-roll has none, and says so.
 int test_no_complete_pass() {
@@ -499,6 +600,8 @@ int main() {
     if (test_a_late_window_keeps_the_take_s_pass_numbers()) return 1;
     if (test_passes_past_the_cap_are_said()) return 1;
     if (test_a_late_window_past_the_cap_places_no_pass()) return 1;
+    if (test_a_late_window_past_a_cap_of_3()) return 1;
+    if (test_a_late_window_under_a_cap_of_3_keeps_its_numbers()) return 1;
     if (test_no_complete_pass()) return 1;
     if (test_the_document_loop()) return 1;
     if (test_record_commands_start_a_loop_take()) return 1;
