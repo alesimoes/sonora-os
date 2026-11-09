@@ -9,11 +9,15 @@ add_library(sonora_midi STATIC
   src/smf.cpp
   src/edit.cpp
   src/stream_parser.cpp
+  src/chord.cpp
+  src/chord_track.cpp
+  src/chord_follow.cpp
 )
 target_include_directories(sonora_midi PUBLIC include)
 target_link_libraries(sonora_midi PUBLIC sonora_base)
 
-foreach(name midi_event midi_tempo_map midi_notes midi_smf midi_edit midi_stream_parser)
+foreach(name midi_event midi_tempo_map midi_notes midi_smf midi_edit midi_stream_parser
+    midi_chord midi_chord_track midi_chord_follow)
   add_executable(test_${name} tests/test_${name}.cpp)
   target_link_libraries(test_${name} PRIVATE sonora_midi)
   add_test(NAME ${name} COMMAND test_${name})
