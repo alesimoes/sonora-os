@@ -42,7 +42,7 @@ int pump(api::testing::FakeEngine& engine, PitchEditorModel& model) {
     api::Inbox in;
     engine.poll(in);
     for (const api::CommandReply& r : in.replies) {
-        model.on_reply(r.seq, r.result == api::DispatchResult::Ok, r.message);
+        model.on_reply(r.seq, r.result == DispatchResult::Ok, r.message);
     }
     return int(in.replies.size());
 }
