@@ -118,10 +118,34 @@ def _queue(sv, fid, stalled, now):
         {"feature": fid, "tasks": [t["id"] for t, _ in stalled]}))
 
 
+def _waits_on_moving_dep(t, by_id, running):
+    """True when a dependency of t, direct or through other dependencies,
+    has a live run of any role: t is waiting, not stalled. Why: #448
+    (2026-11-09) was queued for ui.workflow.windows while the contract its
+    tasks waited on sat in QA with a tester running, because only
+    fixer/integrator/principal runs counted as progress."""
+    seen, todo = set(), list(t.get("depends_on") or ())
+    while todo:
+        dep = todo.pop()
+        if dep in seen:
+            continue
+        seen.add(dep)
+        if dep in running:
+            return True
+        d = by_id.get(dep)
+        if d is not None:
+            todo.extend(d.get("depends_on") or ())
+    return False
+
+
 def resolve(sv, now, stalled):
     """stalled: [(task, age)] for every work task past the bound with no
     run. Queues at most one resolver per call, within the cap."""
     cap = int(getattr(sv.o.cfg, "max_stall_resolvers", 1))
+    running = _active_task_ids(sv)
+    by_id = {t["id"]: t for t in sv.o.store.tasks()}
+    stalled = [(t, age) for t, age in stalled
+               if not _waits_on_moving_dep(t, by_id, running)]
     by_feature = {}
     for t, age in stalled:
         by_feature.setdefault(t["feature_id"] or t["id"], []).append((t, age))
