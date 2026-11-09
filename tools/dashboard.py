@@ -13,6 +13,7 @@ needs the per-start token (dashboard_token.py).
 import argparse
 import json
 import os
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -23,6 +24,22 @@ from dashboard_static import STATIC_ROUTE, page, static_file
 from dashboard_token import TOKEN_HEADER, inject_token, token_ok
 
 MAX_POST = 20000
+
+
+def host_ok(header, hostname=None, env=None):
+    """Local names, and this machine's own Tailscale name: the owner opens the
+    console from the phone through `tailscale serve` (2026-11-08). Any other
+    Host is refused, so a page elsewhere cannot post here by DNS rebinding;
+    the token is still required. SONORA_DASH_HOSTS adds names (comma list)."""
+    host = (header or "").split(":")[0].lower().rstrip(".")
+    if host in ("127.0.0.1", "localhost"):
+        return True
+    env = os.environ if env is None else env
+    extra = {h.strip().lower() for h in env.get("SONORA_DASH_HOSTS", "").split(",") if h.strip()}
+    if host in extra:
+        return True
+    me = (hostname or socket.gethostname()).lower()
+    return host.startswith(me + ".") and host.endswith(".ts.net")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -62,8 +79,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         """A JSON content type forces a CORS preflight, which this server
         never answers, so another web page cannot post here."""
-        host = (self.headers.get("Host") or "").split(":")[0]
-        if host not in ("127.0.0.1", "localhost"):
+        if not host_ok(self.headers.get("Host")):
             return self.reply(403, {"error": "forbidden host"})
         if "application/json" not in (self.headers.get("Content-Type") or ""):
             return self.reply(415, {"error": "send application/json"})
