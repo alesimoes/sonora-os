@@ -735,6 +735,7 @@ int main(int argc, char** argv) {
     link_transport(model, session, transport);
     link_marker_locate(model, session);
     session.setLayoutsFile(default_layouts_file());
+    session.setMarkerViewsFile(a.opt.demo ? QString() : default_marker_views_file());
     // Quick Swipe follows the key map the operator comes from (ADR-0031 §3):
     // on under Logic's, off under Pro Tools'; a toggle holds until the profile changes.
     QObject::connect(&model, &ShellModel::keymapChanged, &session,
@@ -787,6 +788,20 @@ int main(int argc, char** argv) {
     track_views.installCommands(router.local());
     session.controller().set_row_policy(&track_views);
     QObject::connect(&track_views, &TrackViewModel::changed, &session, &SessionModel::documentUpdated);
+    // A marker recall that ticks Track layout (ADR-0137): hide exactly the
+    // stored tracks, show the rest. An armed track refuses to hide and stays.
+    session.setMarkerTrackHider([&session, &track_views](const std::vector<std::uint64_t>& hidden) {
+        const auto& ts = session.controller().snapshot().edit->tracks;
+        for (std::size_t i = 0; i < ts.size(); ++i) {
+            const int index = static_cast<int>(i);
+            std::string why;
+            if (std::find(hidden.begin(), hidden.end(), ts[i]->id) != hidden.end()) {
+                track_views.hide(index, why);
+            } else {
+                track_views.show(index);
+            }
+        }
+    });
     QObject::connect(&track_views, &TrackViewModel::heldNotice, &model, &ShellModel::addNotice);
     {
         std::string why;

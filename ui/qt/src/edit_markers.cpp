@@ -7,6 +7,8 @@
 #include <set>
 
 #include "edit_controller.h"
+#include "edit_controller_detail.h"
+#include "marker_views.h"
 #include "theme.h"
 
 namespace sonora::ui {
@@ -81,7 +83,87 @@ bool EditController::recall_marker(Id marker, std::string& why) {
     sel_.end = m->position + m->length;
     reveal(m->position);
     if (locate_) locate_(m->position);
+    apply_marker_view(marker);
     return true;
+}
+
+void EditController::apply_marker_view(Id marker) {
+    if (marker_views_ == nullptr) return;
+    const MarkerView* v = marker_views_->find(snapshot().settings.session_id, marker);
+    if (v == nullptr) return;
+    if (v->recall_zoom && v->fpp > 0) {
+        const double max_fpp = std::max(kMinFpp, snapshot().settings.sample_rate * 60.0);
+        view_.fpp = std::clamp(v->fpp, kMinFpp, max_fpp);
+        view_.scroll = v->start;
+        clamp_scroll();
+    }
+    if (v->recall_tracks) {
+        if (v->track_height > 0) set_track_height(v->track_height);
+        if (hide_tracks_) {
+            // A track deleted since the view was stored is skipped, not an error.
+            std::vector<std::uint64_t> alive;
+            for (const auto& t : snapshot().edit->tracks) {
+                if (std::find(v->hidden.begin(), v->hidden.end(), t->id) != v->hidden.end()) {
+                    alive.push_back(t->id);
+                }
+            }
+            hide_tracks_(alive);
+        }
+    }
+}
+
+bool EditController::marker_has_view(Id marker) const {
+    return marker_views_ != nullptr &&
+           marker_views_->find(snapshot().settings.session_id, marker) != nullptr;
+}
+
+void EditController::prune_marker_views() {
+    if (marker_views_ == nullptr) return;
+    std::set<std::uint64_t> live;
+    for (const Marker& m : markers().markers) live.insert(m.id);
+    marker_views_->prune(snapshot().settings.session_id, live);
+}
+
+bool EditController::store_marker_view(Id marker, std::string& why) {
+    if (find_marker(markers(), marker) == nullptr) {
+        why = "that marker is no longer in the session";
+        return false;
+    }
+    if (marker_views_ == nullptr) {
+        why = "marker views are not available";
+        return false;
+    }
+    MarkerView v;
+    v.fpp = view_.fpp;
+    v.start = view_.scroll;
+    v.track_height = view_.track_height;
+    const ViewState& rows = view();
+    const auto& ts = snapshot().edit->tracks;
+    for (std::size_t i = 0; i < ts.size(); ++i) {
+        if (rows.row_hidden(static_cast<int>(i))) v.hidden.push_back(ts[i]->id);
+    }
+    marker_views_->store(snapshot().settings.session_id, marker, std::move(v));
+    prune_marker_views();
+    return true;
+}
+
+bool EditController::clear_marker_view(Id marker, std::string& why) {
+    if (marker_views_ == nullptr ||
+        !marker_views_->clear(snapshot().settings.session_id, marker)) {
+        why = "that marker has no stored view";
+        return false;
+    }
+    prune_marker_views();
+    return true;
+}
+
+bool EditController::set_marker_view_part(Id marker, bool zoom, bool on, std::string& why) {
+    const std::string& sid = snapshot().settings.session_id;
+    const bool ok = marker_views_ != nullptr &&
+                    (zoom ? marker_views_->setRecallZoom(sid, marker, on)
+                          : marker_views_->setRecallTracks(sid, marker, on));
+    if (!ok) why = "store the view first: this marker has none";
+    return ok;
 }
 
 void EditController::locate_to(Frames frame) {
