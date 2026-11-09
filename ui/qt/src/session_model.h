@@ -78,6 +78,12 @@ class SessionModel : public QObject {
     // length, range}] for every marker, in time order, the times in the main
     // counter's format; `range` true for a selection marker.
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
+    // Sections (range markers) with Move to / Copy to, ADR-0116: [{row, name,
+    // start, length}], the destination (the insertion point, in the main
+    // counter's format) and the last refusal or what the edit left, held.
+    Q_PROPERTY(QVariantList arrangementSections READ arrangementSections NOTIFY markersChanged)
+    Q_PROPERTY(QString arrangementDestination READ arrangementDestination NOTIFY selectionChanged)
+    Q_PROPERTY(QString arrangementNotice READ arrangementNotice NOTIFY arrangementNoticeChanged)
     Q_PROPERTY(bool memoryLocationsOpen READ memoryLocationsOpen NOTIFY memoryLocationsOpenChanged)
     // Setup > Latency (ADR-0019, update of 2026-10-26): window.latency.
     // The Event List window: the points of one automation lane of the
@@ -455,6 +461,11 @@ public:
     // one undo step.
     Q_INVOKABLE bool recallMarker(int row);
     Q_INVOKABLE bool removeMarker(int row);
+    // Section `row` of arrangementSections moved or copied to the insertion point.
+    Q_INVOKABLE bool arrangementApply(int row, bool move);
+    QVariantList arrangementSections() const;
+    QString arrangementDestination() const;
+    QString arrangementNotice() const { return arrangement_notice_; }
     // A click on the Markers ruler: on a marker it recalls it, and with Alt
     // clears it, as Pro Tools' Option-click does; elsewhere it places the
     // insertion point, as the other rulers do.
@@ -737,6 +748,7 @@ signals:
     // a Save As the engine refused after the dialog closed. Held in the
     // shell's notice list until dismissed.
     void heldNotice(const QString& text);
+    void arrangementNoticeChanged();
     void copyWithAudioChanged();
     void routingRefusalChanged();
 
@@ -905,6 +917,7 @@ private:
     std::function<int()> engine_track_count_;
     QString track_refusal_;
     QString routing_refusal_;
+    QString arrangement_notice_;
     TimeFormat main_fmt_ = TimeFormat::BarsBeats;
     TimeFormat sub_fmt_ = TimeFormat::MinSec;
     QString main_counter_, sub_counter_;
