@@ -426,6 +426,13 @@ class SchedulerTests(Base):
         self.assertIn(("lead", "pool_under_floor", "daw"), p.wakes)
         self.assertEqual(p.gaps["daw"], "no eligible task")
 
+    def test_new_work_paused_means_no_lead_wake_but_started_work_goes_on(self):
+        self.s.add_task("q1", "daw", "rt-engineer", state="qa")
+        p = plan(self.s, paused={"new"})
+        self.assertNotIn(("lead", "pool_under_floor", "daw"), p.wakes)
+        self.assertEqual(p.gaps["daw"], "new work paused")
+        self.assertEqual([x.task_id for x in p.launches], ["q1"])
+
     def test_backoff_holds_a_task(self):
         self.add(1)
         self.s.set_task("tdaw0", not_before=NOW + 60)
