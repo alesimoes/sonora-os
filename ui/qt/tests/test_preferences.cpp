@@ -118,6 +118,11 @@ int test_window() {
     // What the engine owns is reported as it is, not offered.
     QQuickItem* audio = named(win, QStringLiteral("prefAudio"));
     CHECK(audio != nullptr);
+    CHECK(named(win, QStringLiteral("prefClick")) != nullptr);
+    CHECK(named(win, QStringLiteral("prefCountOff")) != nullptr);
+    CHECK(named(win, QStringLiteral("prefBuffer")) == nullptr &&
+          named(win, QStringLiteral("prefDevice")) == nullptr &&
+          named(win, QStringLiteral("prefAutosave")) == nullptr);
     CHECK(named(win, QStringLiteral("pref_counter_Bars|Beats")) != nullptr);
     CHECK(active(win, "pref_counter_Bars|Beats") && active(win, "pref_mode_Slip"));
 
@@ -182,12 +187,47 @@ int test_window() {
     return 0;
 }
 
+// Click on, then a restart: it is on after the first state block, and a
+// second connect (the engine kept it on) toggles nothing.
+int test_click_at_start() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    const QString file = dir.filePath(QStringLiteral("preferences.json"));
+    SyntheticPeakSource peaks(kRate, 120.0);
+    {
+        ModelDocument doc(make_empty_session(4, kRate));
+        SessionModel first(doc, peaks, true);
+        first.setPreferencesFile(file);
+        CHECK(first.setPreference(QStringLiteral("click"), QStringLiteral("on")));
+        CHECK(!first.setPreference(QStringLiteral("click"), QStringLiteral("maybe")));
+        CHECK(!first.setPreference(QStringLiteral("buffer"), QStringLiteral("64")));
+    }
+    ModelDocument doc(make_empty_session(4, kRate));
+    SessionModel session(doc, peaks, true);
+    QStringList sent;
+    session.setCommandSender(
+        [&sent](const QString& c, const QString&) { sent << c; });
+    session.setPreferencesFile(file);
+    CHECK(session.prefClick() && !session.prefCountOff());
+    CHECK(sent.isEmpty());   // no engine yet: it waits
+
+    TransportSnapshot t;
+    session.onTransport(t, true);   // first state block, click off
+    CHECK(sent == QStringList{QStringLiteral("transport.toggle_click")});
+    t.click = true;
+    session.onTransport(t, true);
+    session.onTransport(t, false);   // engine gone
+    session.onTransport(t, true);    // second connect, click already on
+    CHECK(sent.size() == 1);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
-    if (test_window()) return 1;
+    if (test_window() || test_click_at_start()) return 1;
     std::printf("ui preferences: ok\n");
     return 0;
 }
