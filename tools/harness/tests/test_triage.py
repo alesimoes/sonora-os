@@ -34,6 +34,19 @@ class Classify(unittest.TestCase):
                                        "files outside the claim: ui/z.cpp"), "scope")
         self.assertIsNone(c("engineer", "tests fail; files outside my claim: ui/z.cpp"))
 
+    def test_work_complete_blocked_on_globs_is_scope(self):
+        # eng-207's report, 2026-11-09 (daw.model.session_mgmt.ui): "work is
+        # complete" matched no green pattern, the task stayed blocked and the
+        # feature's contract and model sat in integrating for 6 h.
+        real = ("Work is complete at 6923c036 but the diff touches files "
+                "outside the claimed globs. They are needed for the Save as "
+                "Template category field and its tests: ui/qt/CMakeLists.txt, "
+                "scenes/save_as_template.cpp, session_model_templates.cpp. "
+                "Ask lead/architect to widen the globs.")
+        self.assertEqual(triage.classify("engineer", real), "scope")
+        self.assertIsNone(triage.classify(
+            "engineer", "work is not complete; files outside my claim: a/b.c"))
+
     def test_paths_and_marks(self):
         self.assertEqual(triage.paths_in("touch engine/a.cpp, ui/b.h and 1/2"),
                          ["engine/a.cpp", "ui/b.h"])
@@ -94,6 +107,29 @@ class Actions(support.DaemonCase):
                          "accept passes; blocked only on files outside its claim: ui/z.cpp")
         self.assertEqual(t["state"], "qa")
         self.assertEqual(t["files"], ["engine/a.cpp", "ui/z.cpp"])
+
+    def test_scope_widens_to_the_branch_diff_not_the_reports_shorthand(self):
+        # The report names "scenes/save_as_template.cpp" for
+        # ui/qt/src/scenes/save_as_template.cpp and bare file names: widening
+        # with the text gave globs that match nothing and QA bounced again.
+        self.task("e2", files=("ui/qt/qml/Main.qml", "docs/images/x*.png"))
+        self.forge.changed = {"feat/e2": [
+            "ui/qt/qml/Main.qml", "docs/images/x-one.png",
+            "ui/qt/src/scenes/save_as_template.cpp", "ui/qt/tests/rig.h"]}
+        t = self.blocked(self.o.store.get_task("e2"),
+                         "Work is complete but files outside the claimed globs: "
+                         "scenes/save_as_template.cpp, rig.h")
+        self.assertEqual(t["state"], "qa")
+        self.assertEqual(t["files"], [
+            "ui/qt/qml/Main.qml", "docs/images/x*.png",
+            "ui/qt/src/scenes/save_as_template.cpp", "ui/qt/tests/rig.h"])
+
+    def test_scope_with_nothing_outside_the_claim_goes_to_qa(self):
+        self.task("e3")
+        self.forge.changed = {"feat/e3": ["engine/a.cpp"]}
+        t = self.blocked(self.o.store.get_task("e3"),
+                         "accept passes; files outside its claim: x/y.cpp")
+        self.assertEqual((t["state"], t["files"]), ("qa", ["engine/a.cpp"]))
 
     def test_scope_held_by_another_task_still_widens_and_names_the_holder(self):
         # The hunk is already made; claims serialise the next launch. Holding

@@ -104,3 +104,33 @@ def sync_local(run, root, branch):
         return False, f"worktree {wt} has uncommitted changes"
     r = run(["git", "merge", "-q", "--ff-only", head["sha"]], wt, 120)
     return r.returncode == 0, (r.stderr or "").strip() or "fast-forwarded"
+
+
+def _resolve(run, root, *refs):
+    for ref in refs:
+        if run(["git", "rev-parse", "-q", "--verify", ref + "^{commit}"],
+               root, 60).returncode == 0:
+            return ref
+    return None
+
+
+def changed_files(run, root, base, branch):
+    """Paths the branch changed since it left `base` (the task's start_from;
+    origin/main when that branch was never made), from the head that counts.
+    None when the branch is unknown. A scope triage widens the claim with
+    these, not with the agent's shorthand for them."""
+    tip = branch_tip(run, root, branch)
+    if tip is None:
+        return None
+    head = ("refs/remotes/origin/" if tip["ref"] == "origin"
+            else "refs/heads/") + branch
+    start = _resolve(run, root, *(
+        [f"refs/heads/{base}", f"refs/remotes/origin/{base}"] if base else []),
+        "refs/remotes/origin/main", "refs/heads/main")
+    if start is None:
+        return None
+    r = run(["git", "diff", "--name-only", f"{start}...{head}", "--"],
+            root, 120)
+    if r.returncode:
+        return None
+    return [ln for ln in r.stdout.splitlines() if ln.strip()]

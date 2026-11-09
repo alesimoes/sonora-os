@@ -106,6 +106,10 @@ class FakeForge(Forge):
         self._chk("branch_tip")
         return getattr(self, "tips", {}).get(branch)
 
+    def changed_files(self, base, branch):
+        self._chk("changed_files")
+        return getattr(self, "changed", {}).get(branch)
+
     def sync_local(self, branch):
         self._chk("sync_local")
         self.synced = getattr(self, "synced", []) + [branch]
