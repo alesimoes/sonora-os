@@ -64,7 +64,7 @@ void insert_by_slot(std::vector<Insert>& v, Insert in);
 
 const Insert* in_slot(const std::vector<Insert>& v, std::uint8_t slot);
 
-// Unkeys every insert keyed by `bus` (ADR-0058 ง1): the removal that takes
+// Unkeys every insert keyed by `bus` (ADR-0058 ยง1): the removal that takes
 // the bus takes its keys in the same step, so one undo restores both.
 void clear_keys(EditState& edit, Id bus);
 
