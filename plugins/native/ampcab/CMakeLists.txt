@@ -12,8 +12,15 @@ target_link_libraries(test_native_ampcab PRIVATE sonora_native_ampcab_nam)
 add_test(NAME native_ampcab_nam
          COMMAND test_native_ampcab ${CMAKE_CURRENT_SOURCE_DIR}/tests/data)
 
-# Not a test: per-block cost of the trainer's four WaveNet sizes at q128,
-# printed for the record (`ampcab-budget [seconds]`).
+# The LSTM kernel (ADR-0111) against the reference's outputs, through the
+# reader, on the generic and the SIMD product.
+add_executable(test_native_ampcab_lstm_equiv tests/test_lstm_equiv.cpp)
+target_link_libraries(test_native_ampcab_lstm_equiv PRIVATE sonora_native_ampcab_nam)
+add_test(NAME native_ampcab_lstm_equiv
+         COMMAND test_native_ampcab_lstm_equiv ${CMAKE_CURRENT_SOURCE_DIR}/tests/data)
+
+# Not a test: per-block cost of the trainer's four WaveNet sizes and of the
+# LSTM sizes at q128, printed for the record (`ampcab-budget [seconds]`).
 add_executable(ampcab-budget tools/budget.cpp)
 target_link_libraries(ampcab-budget PRIVATE sonora_dsp)
 
