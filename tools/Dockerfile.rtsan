@@ -45,6 +45,9 @@ RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
       lv2-examples \
       x42-plugins \
       lsp-plugins-lv2 \
+      dragonfly-reverb-lv2 \
+      zam-plugins \
+      invada-studio-plugins-lv2 \
       libvst3sdk-dev \
       vst3sdk-plugins \
       lsp-plugins-vst3 \
