@@ -45,10 +45,33 @@ done
 # shellcheck source=tools/lib/image-config/staged.sh
 . "$LIB/staged.sh"
 
+# --- the smoketest asserts the kiosk really runs (ADR-0118 decisions 1-2) ---
+# A missing unit reads "inactive", so dropping the LoadState test, or a call
+# site, would let a lost unit pass. Patterns anchor on code, not comments.
+SMOKE="$INC/usr/local/bin/sonora-smoketest"
+for u in sonora-ui sonora-compositor sonora-session; do
+  [ -f "$INC/etc/systemd/system/$u.service" ] || bad "missing unit $u.service (ADR-0118)"
+done
+# shellcheck disable=SC2016 # literal $ in the patterns: they match script text
+kiosk_asserts=(
+  '^  \[ "\$\(systemctl show -p LoadState --value "\$1" 2>/dev/null\)" != not-found \] &&$|unit_running does not refuse a not-found unit'
+  '^    systemctl is-active --quiet "\$1"$|unit_running does not require the unit active'
+  '^  check "[^"]*" unit_running sonora-compositor\.service$|kiosk_running does not assert the compositor'
+  '^  check "[^"]*" unit_running sonora-ui\.service$|kiosk_running does not assert the UI'
+  '^  check "[^"]*" unit_running sonora-session\.service$|fallback_ran does not assert the session'
+  '^  check "[^"]*" test -e "\$FLAG"$|fallback_ran does not assert /run/sonora-display-failed'
+  '^  kiosk_running$|the sonora.gui branch does not call kiosk_running'
+  '^  fallback_ran$|the sonora.expect_fallback branch does not call fallback_ran'
+)
+for a in "${kiosk_asserts[@]}"; do
+  grep -Eq -- "${a%%|*}" "$SMOKE" || bad "smoketest: ${a#*|} (ADR-0118)"
+done
+grep -q '^FLAG=/run/sonora-display-failed$' "$SMOKE" || bad "smoketest: FLAG is not /run/sonora-display-failed (ADR-0118)"
+
 # --- the stock effects set: list equals manifest (ADR-0076) ---
 bash "$ROOT/tools/test-stock-set.sh" >/dev/null || bad "tools/test-stock-set.sh failed (stock list, manifest, licences or names)"
 
 if [ "$fail" -eq 0 ]; then
-  echo "ok: whole archive from snapshot $auto_ts (hook checks .list and deb822); test bases by digest; pipewire $pw_pin, wireplumber $wp_pin; rt kernel; firmware by name, no build-time download; tty1 owned, no VT gettys; sysctl ${#sc[@]} keys; smoketest powers off in order"
+  echo "ok: whole archive from snapshot $auto_ts (hook checks .list and deb822); test bases by digest; pipewire $pw_pin, wireplumber $wp_pin; rt kernel; firmware by name, no build-time download; tty1 owned, no VT gettys; sysctl ${#sc[@]} keys; smoketest powers off in order and asserts the kiosk runs"
 fi
 exit "$fail"
