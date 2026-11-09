@@ -911,6 +911,55 @@ void output_stage(Suite& s) {
     }
 }
 
+// Goldens with the output stage at full: transformer 100 % and sag 100 %,
+// eco (2x) and standard (4x), so the Jiles-Atherton core and the one-step
+// rail lag are pinned too. The generic check_golden() names its files after
+// the suite, so these carry their own names (tube-xfmr-sag-<quality>-<rate>.wav).
+void golden_output_stage(Suite& s, const Config& golden) {
+    const double tol = s.bar("golden_abs");
+    const struct { const char* name; float quality; } qualities[] = {{"eco", 0.0f}, {"standard", 1.0f}};
+    for (const auto& q : qualities) {
+        Config c = golden;
+        c.push_back({"quality", q.quality});
+        c.push_back({"transformer", 100.0f});
+        c.push_back({"sag", 100.0f});
+        for (double fs : measure::kRates) {
+            auto p = s.make();
+            measure::apply(*p, c);
+            if (!p->prepare(fs, 128, 2)) {
+                s.fail("golden output stage: prepare failed");
+                continue;
+            }
+            const Chans out = measure::render(*p, measure::golden_input(fs, 0.5));
+            const std::string what = std::string(q.name) + ", " + fmt("%.0f Hz", fs);
+            const std::string path = s.args().golden_dir + "/tube-xfmr-sag-" + q.name + "-" +
+                                     std::to_string(static_cast<int>(fs)) + ".wav";
+            if (s.args().regenerate_golden) {
+                if (!measure::write_wav_f32(path, out, fs)) s.fail("cannot write " + path);
+                else s.info("golden regenerated, " + what, 0.0, "", path);
+                continue;
+            }
+            Chans ref;
+            double rfs = 0.0;
+            std::string err;
+            if (!measure::read_wav_f32(path, ref, rfs, err)) {
+                s.fail("golden: " + err);
+                continue;
+            }
+            bool shape = ref.size() == out.size() && rfs == fs;
+            double worst = 0.0;
+            for (std::size_t ch = 0; shape && ch < out.size(); ++ch) {
+                shape = ref[ch].size() == out[ch].size();
+                for (std::size_t i = 0; shape && i < out[ch].size(); ++i) {
+                    worst = std::fmax(worst, std::fabs(static_cast<double>(out[ch][i]) - ref[ch][i]));
+                }
+            }
+            if (!shape) s.fail("golden " + path + ": rate, channels or length differ");
+            else s.check_le("golden render, transformer 100 %, sag 100 %, " + what + ": max |difference|", worst, tol, "abs");
+        }
+    }
+}
+
 }  // namespace
 
 // The golden configuration, shared with the host tests (sonora-dsp-measure
@@ -949,6 +998,7 @@ int tube(const measure::Args& args) {
     measure::check_denormals(s, xfmr);
     measure::check_zipper(s, {{"mix", 60.0f}, {"transformer", 100.0f}}, "");
     measure::check_golden(s, golden);
+    golden_output_stage(s, golden);
     cpu_qualities(s, golden);
     return s.finish();
 }
