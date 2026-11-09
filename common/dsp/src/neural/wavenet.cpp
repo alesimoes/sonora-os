@@ -58,12 +58,16 @@ constexpr int kMaxArrays = 16;
 //   history             98 208 floats          cap 4 Mi floats (16 MiB)
 //   weights             13 802                 cap 1 Mi
 //   layer rows          240 (layers x channels) cap 4 096
-//   warm-up work        5.6e7 multiply-adds    cap 2^30 (about 1 s here)
+//   warm-up work        5.6e7 multiply-adds    cap 2^32 (a few seconds here)
+// The warm-up cap is weights x (receptive field + 1). A 64-channel gated net
+// of the standard shape (kernel 3, 20 layers, dilations to 512) has 580 k
+// weights x 4 093 = 2.4e9, which the earlier 2^30 refused; 2^32 (4.3e9) takes
+// it and still refuses the 7.7e9 case of test_neural.
 constexpr long kMaxReceptiveField = 1L << 16;
 constexpr unsigned long long kMaxHistoryFloats = 1ULL << 22;
 constexpr unsigned long long kMaxWeights = 1ULL << 20;
 constexpr unsigned long long kMaxLayerRows = 4096;
-constexpr unsigned long long kMaxWarmupWork = 1ULL << 30;
+constexpr unsigned long long kMaxWarmupWork = 1ULL << 32;
 // prepare() sizes every row for at most this many frames; process() runs a
 // longer block in pieces, so the cap costs nothing but bounds memory by
 // kMaxLayerRows x kMaxBlock floats whatever the host asks for.
