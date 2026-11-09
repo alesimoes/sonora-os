@@ -116,6 +116,8 @@ class SessionModel : public QObject {
     // is what the render under way is doing, for the footer.
     Q_PROPERTY(bool selectedTrackFrozen READ selectedTrackFrozen NOTIFY editStateChanged)
     Q_PROPERTY(QString renderWhat READ renderWhat NOTIFY renderWhatChanged)
+    // Track > Process Selection With (ADR-0087) needs a range on the track.
+    Q_PROPERTY(bool rangeOnSelectedTrack READ rangeOnSelectedTrack NOTIFY selectionChanged)
     // Every track the selection covers: the headers the Shift-click on R and I
     // acts on, drawn as selected.
     Q_PROPERTY(QList<int> selectedTracks READ selectedTracks NOTIFY selectionChanged)
@@ -551,8 +553,14 @@ public:
     QString renderWhat() const { return render_what_; }
     // "freeze", "commit", "unfreeze" or "process": the selected track (and
     // for "process" its selected range) sent to the engine as the matching
-    // track.* command.
-    Q_INVOKABLE bool renderInPlace(const QString& what);
+    // track.* command. `insert` (Process only, ADR-0087): the model id, in
+    // decimal, of the one insert the range goes through; empty is the chain.
+    Q_INVOKABLE bool renderInPlace(const QString& what, const QString& insert = QString());
+    bool rangeOnSelectedTrack() const;
+    // [{id, name}] of the selected track's inserts a Process Selection can
+    // run through alone: active and not bypassed, in slot order. The id is a
+    // decimal string, since a JS number cannot hold every 64-bit id.
+    Q_INVOKABLE QVariantList selectedTrackInserts() const;
     Q_INVOKABLE bool setPreRollText(const QString& text);
     Q_INVOKABLE bool setPostRollText(const QString& text);
     // How an engine command with an argument leaves this model: the shell's

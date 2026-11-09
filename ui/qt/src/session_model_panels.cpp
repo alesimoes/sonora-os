@@ -384,10 +384,38 @@ bool SessionModel::selectedTrackFrozen() const {
            model::frozen_playlist(*tracks[static_cast<std::size_t>(i)]) != nullptr;
 }
 
+bool SessionModel::rangeOnSelectedTrack() const {
+    const Selection& sel = ctl_.selection();
+    return sel.track >= 0 && sel.has_range() && sel.covers(sel.track);
+}
+
+QVariantList SessionModel::selectedTrackInserts() const {
+    QVariantList out;
+    const int i = ctl_.selection().track;
+    const model::Snapshot& s = ctl_.snapshot();
+    if (i < 0 || i >= static_cast<int>(s.edit->tracks.size())) return out;
+    const model::TrackEdit& t = *s.edit->tracks[static_cast<std::size_t>(i)];
+    std::vector<const model::Insert*> slots;
+    for (const model::Insert& in : t.inserts) slots.push_back(&in);
+    std::sort(slots.begin(), slots.end(),
+              [](const model::Insert* a, const model::Insert* b) { return a->slot < b->slot; });
+    std::string why;
+    // The model's own check, so the menu never offers what the engine refuses.
+    for (const model::Insert* in : slots) {
+        if (!model::render_insert_valid(s, t.id, in->id, why)) continue;
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), QString::number(in->id));
+        row.insert(QStringLiteral("name"), q(in->plugin.name));
+        out.push_back(row);
+    }
+    return out;
+}
+
 // Track > Freeze, Commit, Unfreeze and Process Selection (ADR-0051): the
 // engine prints the track through its inserts and puts the file in the
-// document, so this only names the track and, for Process, the range.
-bool SessionModel::renderInPlace(const QString& what) {
+// document, so this only names the track and, for Process, the range and
+// the one insert it may go through (ADR-0087).
+bool SessionModel::renderInPlace(const QString& what, const QString& insert) {
     const int i = ctl_.selection().track;
     const auto& tracks = ctl_.snapshot().edit->tracks;
     if (i < 0 || i >= static_cast<int>(tracks.size())) return run(false, "select a track first");
@@ -415,6 +443,17 @@ bool SessionModel::renderInPlace(const QString& what) {
         verb = QStringLiteral("Processing ");
     } else {
         return run(false, "unknown render \"" + what.toStdString() + "\"");
+    }
+    if (!insert.isEmpty()) {
+        bool ok = false;
+        o.only_insert = insert.toULongLong(&ok);
+        if (!ok || o.only_insert == 0 || command != QLatin1String(api::kCommandProcessSelection)) {
+            return run(false, "only Process Selection runs through one plug-in");
+        }
+        std::string why;
+        if (!model::render_insert_valid(ctl_.snapshot(), t.id, o.only_insert, why)) {
+            return run(false, why);
+        }
     }
     render_what_ = verb.isEmpty() ? QString() : verb + q(t.name);
     emit renderWhatChanged();
