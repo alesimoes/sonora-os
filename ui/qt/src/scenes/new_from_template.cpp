@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The New from Template browser (ADR-0030), as app.new_from_template opens
-// it, over four templates written for the picture: the first chosen, with
+// it, over templates in three categories written for the picture: the first chosen, with
 // the new session's name offered; one made at another sample rate, shown
 // as unusable with the reason; and one whose Delete is asking to confirm.
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QQuickItem>
 #include <cstdio>
 #include <string>
@@ -49,19 +50,32 @@ const ShotRegistrar registrar{[] {
         const uint32_t rate = now.settings.sample_rate;
         const uint32_t other = rate == 44100 ? 48000 : 44100;
         const QDate day(2026, 10, 30);
-        write_template(dir.path(), QStringLiteral("Band Tracking"), make_empty_session(16, rate),
+        // Two categories and one top-level template (ADR-0146); "Archive"
+        // holds one a later build wrote, which is listed greyed.
+        const QString band = dir.filePath(QStringLiteral("Band"));
+        const QString voice = dir.filePath(QStringLiteral("Voice"));
+        write_template(band, QStringLiteral("Band Tracking"), make_empty_session(16, rate),
                        QDateTime(day, QTime(19, 42)));
+        write_template(band, QStringLiteral("Vocal Overdubs"), make_empty_session(4, rate),
+                       QDateTime(day.addDays(-2), QTime(16, 18)));
+        write_template(voice, QStringLiteral("Podcast"), make_empty_session(2, other),
+                       QDateTime(day.addDays(-40), QTime(9, 30)));
+        write_template(voice, QStringLiteral("Voice-over"), make_empty_session(2, rate),
+                       QDateTime(day.addDays(-9), QTime(10, 0)));
         write_template(dir.path(), QStringLiteral("Mix Setup"), model::template_of(now),
                        QDateTime(day.addDays(-6), QTime(11, 5)));
-        write_template(dir.path(), QStringLiteral("Podcast"), make_empty_session(2, other),
-                       QDateTime(day.addDays(-40), QTime(9, 30)));
-        write_template(dir.path(), QStringLiteral("Vocal Overdubs"), make_empty_session(4, rate),
-                       QDateTime(day.addDays(-2), QTime(16, 18)));
+        const QByteArray future = "{\"sonora_session\": " +
+                                  QByteArray::number(qint64{model::kFormatVersion} + 1) + "}";
+        const QString archive = dir.filePath(QStringLiteral("Archive"));
+        const QString future_file = session_file_path(archive, QStringLiteral("Surround Mix"));
+        QDir().mkpath(QFileInfo(future_file).absolutePath());
+        QFile ff(future_file);
+        if (ff.open(QIODevice::WriteOnly)) ff.write(future);
         c.session.setTemplatesDir(dir.path());
         c.model.invoke(QStringLiteral("app.new_from_template"), -1);
         QQuickItem* root = c.view.rootObject();
         if (auto* panel = root->findChild<QQuickItem*>(QStringLiteral("templatePanel")))
-            panel->setProperty("confirming", QStringLiteral("Vocal Overdubs"));
+            panel->setProperty("confirming", QStringLiteral("Band/Vocal Overdubs"));
     };
     return s;
 }()};

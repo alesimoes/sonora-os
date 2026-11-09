@@ -1050,6 +1050,7 @@ Rectangle {
             visible = true
         }
         function choose(entry) {
+            if (entry.problem.length > 0) return
             chosen = entry.file
             chosenName = entry.name
             templateNameInput.text = root.session.unusedSessionName(entry.name)
@@ -1108,13 +1109,32 @@ Rectangle {
             }
             Repeater {
                 model: templatePanel.entries
+                Column {
+                    id: templateGroup
+                    required property var modelData
+                    required property int index
+                    // ADR-0146: entries come sorted by category; a header opens each group.
+                    readonly property bool anyCategory: templatePanel.entries.some(e => e.category.length > 0)
+                    readonly property bool firstOfGroup: index === 0
+                        || templatePanel.entries[index - 1].category !== modelData.category
+                    spacing: Theme.space1
+                    Text {
+                        objectName: "templateCategoryHeader"
+                        visible: templateGroup.anyCategory && templateGroup.firstOfGroup
+                        height: visible ? implicitHeight + Theme.space1 : 0
+                        verticalAlignment: Text.AlignBottom
+                        text: templateGroup.modelData.category.length > 0 ? templateGroup.modelData.category : "No category"
+                        color: Theme.textSecondary
+                        font { family: Theme.fontFamily; pixelSize: Theme.textSmall; weight: Font.DemiBold; capitalization: Font.AllUppercase }
+                    }
                 Rectangle {
                     id: templateRow
-                    required property var modelData
+                    property var modelData: templateGroup.modelData
+                    opacity: usable ? 1.0 : 0.55
                     readonly property bool usable: modelData.problem.length === 0
                     readonly property bool picked: modelData.file === templatePanel.chosen
-                    readonly property bool asking: modelData.name === templatePanel.confirming
-                    readonly property bool editing: modelData.name === templatePanel.renaming
+                    readonly property bool asking: modelData.path === templatePanel.confirming
+                    readonly property bool editing: modelData.path === templatePanel.renaming
                     objectName: "templateRow"
                     width: templateColumn.width
                     height: 44
@@ -1126,11 +1146,31 @@ Rectangle {
                         id: rowArea
                         anchors.fill: parent
                         hoverEnabled: true
-                        enabled: templateRow.usable && !templateRow.editing
-                        onClicked: templatePanel.choose(templateRow.modelData)
+                        // Enabled when greyed too, for the tooltip; the clicks do nothing then.
+                        enabled: !templateRow.editing
+                        onClicked: if (templateRow.usable) templatePanel.choose(templateRow.modelData)
                         onDoubleClicked: {
+                            if (!templateRow.usable) return
                             templatePanel.choose(templateRow.modelData)
                             templatePanel.accept()
+                        }
+                    }
+                    Rectangle {
+                        objectName: "templateTooltip"
+                        visible: !templateRow.usable && rowArea.containsMouse
+                        z: 5
+                        anchors { left: parent.left; leftMargin: Theme.space3; top: parent.bottom; topMargin: 2 }
+                        width: tipText.implicitWidth + 2 * Theme.space2
+                        height: tipText.implicitHeight + Theme.space2
+                        radius: Theme.radiusSmall
+                        color: Theme.window
+                        border.color: Theme.caution
+                        Text {
+                            id: tipText
+                            anchors.centerIn: parent
+                            text: templateRow.modelData.problem
+                            color: Theme.text
+                            font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                         }
                     }
                     Column {
@@ -1195,7 +1235,7 @@ Rectangle {
                             onClicked: {
                                 templatePanel.confirming = ""
                                 templatePanel.problem = ""
-                                templatePanel.renaming = templateRow.modelData.name
+                                templatePanel.renaming = templateRow.modelData.path
                                 renameInput.text = templateRow.modelData.name
                                 renameInput.forceActiveFocus()
                                 renameInput.selectAll()
@@ -1210,7 +1250,7 @@ Rectangle {
                             onClicked: {
                                 templatePanel.renaming = ""
                                 templatePanel.problem = ""
-                                templatePanel.confirming = templateRow.modelData.name
+                                templatePanel.confirming = templateRow.modelData.path
                             }
                         }
                         SButton {
@@ -1226,7 +1266,7 @@ Rectangle {
                             implicitHeight: 24
                             active: true
                             activeColour: Theme.alarm
-                            onClicked: templatePanel.remove(templateRow.modelData.name)
+                            onClicked: templatePanel.remove(templateRow.modelData.path)
                         }
                         SButton {
                             visible: templateRow.editing
@@ -1245,6 +1285,7 @@ Rectangle {
                             onClicked: templatePanel.rename(renameInput.text)
                         }
                     }
+                }
                 }
             }
             Row {
