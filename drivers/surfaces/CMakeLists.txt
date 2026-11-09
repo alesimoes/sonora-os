@@ -29,3 +29,10 @@ add_test(NAME surface_engine_bridge COMMAND test_surface_bridge)
 add_executable(test_raw_midi_port tests/test_raw_midi_port.cpp)
 target_link_libraries(test_raw_midi_port PRIVATE sonora_surface_testing)
 add_test(NAME surface_raw_midi_port COMMAND test_raw_midi_port)
+
+# MTC codec and chase (ADR-0122). Header-only; the root does not label
+# drivers/surfaces yet, so the label is set here.
+add_executable(test_mtc_contract tests/test_mtc_contract.cpp)
+target_link_libraries(test_mtc_contract PRIVATE sonora_surface_testing)
+add_test(NAME surface_mtc_contract COMMAND test_mtc_contract)
+set_tests_properties(surface_mtc_contract PROPERTIES LABELS drivers)
