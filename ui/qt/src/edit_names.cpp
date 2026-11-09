@@ -6,10 +6,15 @@
 #include <algorithm>
 
 #include "edit_controller.h"
+#include "theme.h"
 
 namespace sonora::ui {
 
 using namespace model;
+
+// The swatches the windows draw are the palette the model stores.
+static_assert(theme::kRegionPaletteSize == model::kColours,
+              "theme palette and model::kColours must stay the same size");
 
 namespace {
 
@@ -23,6 +28,21 @@ std::string trimmed(const std::string& s) {
 
 std::string no_track(int index) {
     return index < 0 ? "no track is selected" : "there is no track " + std::to_string(index + 1);
+}
+
+// The active audio playlist's name after the track is renamed: a playlist
+// still called after the old name ("Kick" or "Kick.01") follows the track.
+// Empty when it carries some other name, which the operator chose.
+std::string followed_playlist_name(const TrackEdit& t, const std::string& fresh) {
+    for (const auto& p : t.playlists) {
+        if (p->id != t.active_playlist) continue;
+        const std::string& old = t.name;
+        if (p->name.compare(0, old.size(), old) != 0) return {};
+        const std::string rest = p->name.substr(old.size());
+        if (!rest.empty() && rest[0] != '.') return {};
+        return fresh + rest;
+    }
+    return {};
 }
 
 }  // namespace
@@ -47,7 +67,14 @@ bool EditController::rename_track(int index, const std::string& name, std::strin
         why = "another track is already named \"" + n + "\"";
         return false;
     }
-    return submit(SetTrackName{t->id, n}, why);
+    const std::string playlist = followed_playlist_name(*t, n);
+    if (playlist.empty() || playlist_name_taken(snapshot(), playlist)) {
+        return submit(SetTrackName{t->id, n}, why);
+    }
+    std::vector<Member> members;
+    members.push_back(SetTrackName{t->id, n});
+    members.push_back(SetPlaylistName{t->id, t->active_playlist, playlist});
+    return submit(Compound{std::move(members), "Rename Track"}, why);
 }
 
 bool EditController::set_track_colour(int index, int count, int colour, std::string& why) {
@@ -68,7 +95,11 @@ bool EditController::set_track_colour(int index, int count, int colour, std::str
     }
     if (members.empty()) return true;
     if (members.size() == 1) return submit(to_operation(members.front()), why);
-    if (members.size() > kMaxCompoundMembers) members.resize(kMaxCompoundMembers);
+    if (members.size() > kMaxCompoundMembers) {
+        why = std::to_string(members.size()) + " tracks need a new colour but one step holds " +
+              std::to_string(kMaxCompoundMembers) + "; select fewer tracks. Nothing was coloured.";
+        return false;
+    }
     return submit(Compound{std::move(members), "Colour Tracks"}, why);
 }
 
