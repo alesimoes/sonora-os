@@ -96,6 +96,32 @@ class Resolver(ts.Case):
         self.sweep()
         self.assertEqual(self.resolvers(), [])
 
+    def dependent_chain(self):
+        """f.contract (in QA) <- f.ui (queued) <- f.tests (queued)."""
+        s = self.o.store
+        s.add_task("f.contract", "daw", "ui-engineer", feature_id="f",
+                   state="qa")
+        s.add_task("f.ui", "daw", "ui-engineer", feature_id="f",
+                   depends_on=["f.contract"])
+        s.add_task("f.tests", "daw", "ui-engineer", feature_id="f",
+                   depends_on=["f.ui"])
+
+    def test_waiting_on_a_dependency_with_a_live_tester_is_not_a_stall(self):
+        # 2026-11-09 #448: a resolver was queued for ui.workflow.windows
+        # while its contract was in QA with a tester running.
+        self.dependent_chain()
+        self.run_of("f.contract", "tester")
+        self.age(2.5)
+        self.sweep()
+        self.assertEqual(self.resolvers(), [])
+
+    def test_waiting_on_an_idle_dependency_still_gets_a_resolver(self):
+        self.dependent_chain()
+        self.age(2.5)
+        self.sweep()
+        (w,) = self.resolvers()
+        self.assertIn("f.ui", w["brief"])
+
 
 if __name__ == "__main__":
     unittest.main()
