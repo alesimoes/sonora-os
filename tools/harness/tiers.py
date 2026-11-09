@@ -27,8 +27,11 @@ def model_of_tier(tier, routing=None):
 
 
 def task_model(routing, tier=None, grade=None):
-    """The tier wins over the grade; no tier or grade means sonnet."""
-    return (model_of_tier(tier, routing) or model_of_tier(grade, routing)
+    """The grade wins over a tier name; no tier or grade means sonnet.
+    Owner 2026-11-09: the model follows the risk, read from the grade
+    through routing.toml; 40 slices carried a "senior" tier picked by size
+    under the old table and ran on opus (5 of 6 agents at once)."""
+    return (model_of_tier(grade, routing) or model_of_tier(tier, routing)
             or DEFAULT_MODEL)
 
 
