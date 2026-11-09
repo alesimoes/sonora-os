@@ -49,9 +49,11 @@ using sonora::PlanNode;
 
 constexpr Id kVox = 100;
 constexpr Id kKick = 102;
-constexpr Id kBus = 300;
-constexpr Id kVoxInsert = 200;
-constexpr Id kKickInsert = 201;
+// Ids rise in the order keyed_session() applies them: the model refuses an
+// id below its next fresh one.
+constexpr Id kBus = 200;
+constexpr Id kVoxInsert = 300;
+constexpr Id kKickInsert = 301;
 constexpr uint32_t kKickLatency = 64;
 
 AddTrack track_op(Id track, Id playlist, const std::string& name) {
@@ -78,10 +80,12 @@ bool keyed_session(History& h, std::string& error) {
     key.track = kVox;
     key.insert = kVoxInsert;
     key.key_bus = kBus;
-    return h.apply(track_op(kVox, 101, "Vox"), error) && h.apply(track_op(kKick, 103, "Kick"), error) &&
-           h.apply(AddBus{kBus, "Key", BusMix{}}, error) && h.apply(insert_op(kVox, kVoxInsert), error) &&
-           h.apply(insert_op(kKick, kKickInsert), error) && h.apply(SetOutput{kKick, kBus}, error) &&
-           h.apply(key, error);
+    const bool ok = h.apply(track_op(kVox, 101, "Vox"), error) && h.apply(track_op(kKick, 103, "Kick"), error) &&
+                    h.apply(AddBus{kBus, "Key", BusMix{}}, error) && h.apply(insert_op(kVox, kVoxInsert), error) &&
+                    h.apply(insert_op(kKick, kKickInsert), error) && h.apply(SetOutput{kKick, kBus}, error) &&
+                    h.apply(key, error);
+    if (!ok) std::fprintf(stderr, "keyed_session refused: %s\n", error.c_str());
+    return ok;
 }
 
 sonora::BuildLimits limits() {
