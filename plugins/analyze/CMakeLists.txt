@@ -31,7 +31,7 @@ endif()
 # The subcommands (app/commands.h): a pass's real command file replaces its
 # stub by existing; fragments do not add app/cmd_*.cpp.
 set(_sonora_analyze_app app/main.cpp)
-foreach(_cmd key timbre tone vocal)
+foreach(_cmd key timbre tone vocal beat)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/app/cmd_${_cmd}.cpp")
     list(APPEND _sonora_analyze_app app/cmd_${_cmd}.cpp)
   else()
@@ -56,6 +56,12 @@ add_test(NAME analyze_tone_contract COMMAND test_analyze_tone_contract)
 # The root labels no plugins/analyze test yet; this one carries its module's.
 set_tests_properties(analyze_tone_contract PROPERTIES LABELS analyze)
 
+# The beat contract (ADR-0114): report round trip, schema refusal, fake.
+add_executable(test_analyze_beat_contract tests/test_beat_contract.cpp)
+target_link_libraries(test_analyze_beat_contract PRIVATE sonora_analyze)
+add_test(NAME analyze_beat_contract COMMAND test_analyze_beat_contract)
+set_tests_properties(analyze_beat_contract PROPERTIES LABELS analyze)
+
 # The command line: exit code and message together (ctest alone can check one
 # or the other). `sh` is fine here: the module is Linux-only.
 # No ';' in the script: CMake would read it as a list separator.
@@ -71,7 +77,7 @@ endfunction()
 sonora_analyze_cli_test(analyze_cli_usage 2 "usage: sonora-analyze mastering" frobnicate)
 sonora_analyze_cli_test(analyze_cli_mastering_usage 2 "usage: sonora-analyze mastering" mastering)
 # Only while the stub is the one built; the pass's own tests replace these.
-foreach(_cmd key timbre tone)
+foreach(_cmd key timbre tone beat)
   if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/app/cmd_${_cmd}.cpp")
     sonora_analyze_cli_test(analyze_cli_${_cmd}_stub 1 "${_cmd}: not implemented" ${_cmd})
   endif()
@@ -81,7 +87,7 @@ endforeach()
 # cmd_vocal. The usage line holds for the stub and for the real command.
 sonora_analyze_cli_test(analyze_cli_vocal_usage 2 "usage: sonora-analyze vocal-balance" vocal-balance)
 
-foreach(_fragment models key timbre tone vocal)
+foreach(_fragment models key timbre tone vocal beat beat_tempo)
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_fragment}.cmake")
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_fragment}.cmake")
   endif()
