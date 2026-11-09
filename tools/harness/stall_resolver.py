@@ -11,12 +11,50 @@ import json
 
 AGENT = "principal-engineer"
 EVENT = "stall_resolver"
+# Owner 2026-11-08/09: unblocking climbs a ladder, sonnet first, and only the
+# product's core climbs past it: opus and fable go where a mistake breaks all
+# of Sonora, the build or the OS (a feature with a high-risk slice). A plugin,
+# a screen or one feature stays on sonnet. Past the ladder the feature is
+# re-planned (architect; fable for the core) and the next stall re-plans again.
+CORE_LADDER = ("sonnet", "opus", "fable")
+PART_LADDER = ("sonnet", "sonnet")
+REPLAN = "replan"
+REPLAN_AGENT = "architect"
+# A stall that comes back after this long starts at the bottom again.
+LADDER_RESET_S = 6 * 3600
 FIXING = ("fixer", "integrator", "principal")
 DONE = ("blocked", "merged", "closed")
 
 
 def _meta_key(fid):
     return f"stall_resolver:{fid}"
+
+
+def is_core(store, fid):
+    """A feature with a high-risk slice (grade "<size>/high", or only a
+    "senior" tier when no grade was given)."""
+    for t in store.feature_tasks(fid):
+        try:
+            d = json.loads(store.get_meta(f"tier:{t['id']}", "{}") or "{}")
+        except ValueError:
+            continue
+        grade = str(d.get("grade") or "")
+        if grade.endswith("/high") or (not grade and d.get("tier") == "senior"):
+            return True
+    return False
+
+
+def _rung(store, fid, now, core):
+    """The model of this try of fid (or REPLAN), and records the try."""
+    key = f"stall_resolver_tries:{fid}"
+    try:
+        d = json.loads(store.get_meta(key, "{}") or "{}")
+    except ValueError:
+        d = {}
+    n = d.get("n", 0) if now - d.get("ts", 0) < LADDER_RESET_S else 0
+    store.set_meta(key, json.dumps({"n": n + 1, "ts": now}))
+    ladder = CORE_LADDER if core else PART_LADDER
+    return ladder[n] if n < len(ladder) else REPLAN
 
 
 def _resolver_wakes(sv):
@@ -43,7 +81,7 @@ def caring(sv, fid):
     w, run = _resolver_for(sv, fid)
     if w is None:
         return ""
-    return f"harness cuidando: {run['name'] if run else AGENT + ' (na fila)'}"
+    return f"harness cuidando: {run['name'] if run else w['agent'] + ' (na fila)'}"
 
 
 def _busy(sv):
@@ -104,15 +142,30 @@ def brief(sv, fid, stalled):
     return "\n".join(lines)
 
 
+REPLAN_BRIEF = (
+    "Re-plan this feature: the unblock tries did not move it (or it stalled "
+    "again after a re-plan). Read the stall below, then rewrite "
+    "planning/plans/{fid}.md so every slice can finish: split or merge "
+    "slices, fix files/claims overlaps and dependencies, drop what is "
+    "already on main, grade each slice by risk. Send the lead plan_ready "
+    "for {fid} through mcp__harness__send." + chr(10) * 2)
+
+
 def _queue(sv, fid, stalled, now):
     store = sv.o.store
+    core = is_core(store, fid)
+    model = _rung(store, fid, now, core)
     n = store.next_counter("wake")
-    wid = f"wake-principal-{EVENT}-{fid}-{n}"
-    store.add_task(wid, None, AGENT, kind="wake", feature_id=fid,
-                   brief=brief(sv, fid, stalled))
-    # Opus first: fable is the last resort (agents-and-models.md), and a
-    # stall is usually a claim, a plan gap or a slow build, not a hard bug.
-    store.set_task(wid, event=EVENT, model_pin="opus")
+    if model == REPLAN:
+        wid = f"wake-{REPLAN_AGENT}-{EVENT}-{fid}-{n}"
+        store.add_task(wid, None, REPLAN_AGENT, kind="wake", feature_id=fid,
+                       brief=REPLAN_BRIEF.format(fid=fid) + brief(sv, fid, stalled))
+        model = "fable" if core else "sonnet"
+    else:
+        wid = f"wake-principal-{EVENT}-{fid}-{n}"
+        store.add_task(wid, None, AGENT, kind="wake", feature_id=fid,
+                       brief=brief(sv, fid, stalled))
+    store.set_task(wid, event=EVENT, model_pin=model)
     store.set_meta(_meta_key(fid), now)
     store.event(wid, "stall_resolver", json.dumps(
         {"feature": fid, "tasks": [t["id"] for t, _ in stalled]}))
