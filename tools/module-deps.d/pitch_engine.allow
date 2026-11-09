@@ -6,6 +6,8 @@
 # Folded into tools/module-deps.allow, with pitch.allow, once it is free.
 engine/control -> engine/pitch
 engine/pitch -> common/audiofile
+engine/pitch -> common/pitch
 engine/pitch -> common/model
 engine/pitch -> common/session_files
+engine/pitch -> contracts/api
 engine/pitch -> engine/core
