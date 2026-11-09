@@ -36,6 +36,18 @@ class View(Base):
         self.assertEqual([(m["kind"], m["text"]) for m in msgs], [("user", "muda para B"), ("agent", "recebi")])
         self.assertEqual(msgs[1]["from"], "eng-1")
 
+    def test_a_message_sent_again_in_a_row_shows_once_with_one_answer(self):
+        def msg(i, ts, kind, text, **kw):
+            return dict({"id": i, "ts": "2026-11-09T01:%s.000Z" % ts, "kind": kind, "text": text}, **kw)
+        rows = [msg("u1", "15:03", "user", "PR 599?"), msg("u2", "15:03", "user", "PR 599?"),
+                msg("u3", "15:04", "user", "PR 599?"),
+                msg("o1", "16:00", "orch", "a", req="u1"), msg("o2", "16:00", "orch", "a", req="u2"),
+                msg("o3", "16:01", "orch", "a", req="u3"),
+                msg("u4", "40:00", "user", "PR 599?"), msg("o4", "40:30", "orch", "b", req="u4"),
+                msg("u5", "40:01", "user", "PR 599?", to="eng-1")]
+        self.assertEqual([m["id"] for m in console_chat._collapse_repeats(rows)],
+                         ["u1", "o1", "u4", "o4", "u5"])
+
     def test_card_states_travel_with_the_messages_and_expire_on_read(self):
         rec = A.propose(self.tmp, "drain", {}, 1000.0)
         S.add_message(self.tmp, "orch", "ok", cards=[{"type": "action", "id": rec["id"]}])
