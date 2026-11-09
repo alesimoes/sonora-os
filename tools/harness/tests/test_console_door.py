@@ -25,7 +25,9 @@ class Post(unittest.TestCase):
 
     def test_a_message_becomes_a_request_file_at_the_ownerchat_door(self):
         console_door.post(self.tmp, "console", text="  status  ", to=None)
-        self.assertEqual(self.files(), [{"kind": "console", "text": "status", "to": None}])
+        [f] = self.files()
+        self.assertEqual(f.pop("sent")[:2], "20")
+        self.assertEqual(f, {"kind": "console", "text": "status", "to": None})
 
     def test_bad_requests_are_refused_before_they_are_written(self):
         bad = [("console", {"text": "  "}), ("console", {"text": "x", "to": "../etc"}),
@@ -35,6 +37,13 @@ class Post(unittest.TestCase):
             with self.assertRaises(ValueError, msg=(kind, f)):
                 console_door.post(self.tmp, kind, **f)
         self.assertFalse(os.path.isdir(ownerchat.request_dir(self.tmp)))
+
+    def test_a_repeat_waiting_at_the_door_is_absorbed(self):
+        a = console_door.post(self.tmp, "console", text="por que o PR 599?")
+        b = console_door.post(self.tmp, "console", text="por que o PR 599?")
+        console_door.post(self.tmp, "console", text="por que o PR 599?", to="eng-1")
+        self.assertEqual(a, b)
+        self.assertEqual(len(self.files()), 2)
 
     def test_long_text_is_cut(self):
         console_door.post(self.tmp, "console", text="x" * 5000)

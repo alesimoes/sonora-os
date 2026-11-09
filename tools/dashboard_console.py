@@ -8,7 +8,11 @@ import dashboard_kpis
 from dashboard_attention import attention
 
 NO_SIGNAL_S = 120
-DAEMON_OK_S, DAEMON_WARN_S = 30, 120
+# The daemon writes status.json once a tick: tick_s (30 s) of sleep plus the
+# tick's own work, about 50 s in practice and minutes for a startup sweep.
+# 30/120 showed a healthy daemon as amber all the time and as "parado" after
+# one slow tick (owner, 2026-11-09: "parece que o daemon está parado").
+DAEMON_OK_S, DAEMON_WARN_S = 120, 600
 
 
 def level_of(n, cap, brake=False):
@@ -18,13 +22,20 @@ def level_of(n, cap, brake=False):
     return "warn" if cap and n >= 0.8 * cap else "ok"
 
 
-def daemon_cell(orch, now):
+def daemon_cell(orch, now, alive=True):
+    """vivo / lento / travado (the process runs but its ticks do not come
+    back) / parado (no process)."""
     ts = (orch or {}).get("updated_ts")
     if not isinstance(ts, (int, float)):
         return {"level": "bad", "text": "parado"}
     age = max(0, int(now - ts))
-    level = "ok" if age < DAEMON_OK_S else "warn" if age < DAEMON_WARN_S else "bad"
-    return {"level": level, "text": f"vivo {age}s" if level != "bad" else "parado"}
+    if age < DAEMON_OK_S:
+        return {"level": "ok", "text": f"vivo {age}s"}
+    if not alive:
+        return {"level": "bad", "text": "parado"}
+    if age < DAEMON_WARN_S:
+        return {"level": "warn", "text": f"lento {age}s"}
+    return {"level": "bad", "text": f"travado {age // 60}min"}
 
 
 def _cell(n, cap, brake=False):
@@ -56,7 +67,7 @@ def build(snap, daemon_alive, now=None):
     orch = snap.get("orchestrator")
     board = snap.get("board") or {}
     o = orch if isinstance(orch, dict) else {}
-    daemon = daemon_cell(orch, now)
+    daemon = daemon_cell(orch, now, daemon_alive)
     agents = agent_rows(board.get("agents"), now)
     queue, harness = attention(orch, agents, board.get("prs"), daemon, now)
     prs_n, prs_cap = o.get("open_prs") or 0, o.get("max_open_prs") or 0
