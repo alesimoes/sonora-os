@@ -18,6 +18,25 @@ class Classify(unittest.TestCase):
         self.assertIsNone(c("engineer", "which ADR should I follow?"))
         self.assertIsNone(c("engineer", "scope unclear: which files are mine?"))
 
+    def test_a_timeout_wrapped_build_slot_run_is_infra(self):
+        # ui.comping.loop_takes.tests r1429, 2026-11-09: `timeout 590` put
+        # before build-slot, killed with rc=124. Nothing matched, the slice
+        # stayed blocked, and its feature's adr and engine sat in
+        # integrating for 9 h while two stall resolvers found nothing to fix.
+        real = ("No code change this run; the cases from commit 8781c057 stand. "
+                "Ran: timeout 590 tools/build-slot.sh tools/micro-build.sh "
+                "--no-rtsan --files-from <only test_loop_take.cpp>. It waited for "
+                "the heavy lock, printed 'micro-build: 1 changed paths, image "
+                "sonora-build, rtsan=0' and 'phases: configure, build, test', then "
+                "'Terminated' with rc=124. That is the third timeout for the same "
+                "reason (the previous run had two), so I stopped.")
+        self.assertEqual(triage.classify("engineer", real), "infra")
+        self.assertEqual(triage.classify(
+            "engineer", "tools/micro-build.sh was killed by the 590 s tool cap"), "infra")
+        # rc=124 of a test that timed out on its own is the code's problem.
+        self.assertIsNone(triage.classify(
+            "engineer", "ctest loop_take: rc=124, the test hangs in drain_once"))
+
     def test_scope_in_the_engineers_own_words(self):
         # eng-67's report, 2026-11-08: green per the tester, blocked on
         # scope only; it classified as nothing and the task sat blocked 3 h.
