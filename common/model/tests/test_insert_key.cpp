@@ -95,12 +95,12 @@ int test_key_undo_redo() {
     CHECK(r.h.undo());
     CHECK(insert_of(r.h, 0, 0).key_bus == 0);
     CHECK(r.h.redo());
-    CHECK(r.h.current() == keyed);
+    CHECK(same_document(r.h.current(), keyed));
     // Self-inverse: the same operation with 0 takes the key off.
     CHECK_APPLY(r.h, (SetInsertKey{r.kick.track, r.gate.insert, 0}));
     CHECK(insert_of(r.h, 0, 0).key_bus == 0);
     CHECK(r.h.undo());
-    CHECK(r.h.current() == keyed);
+    CHECK(same_document(r.h.current(), keyed));
     // A replacement plug-in starts unkeyed; undo brings the keyed one back.
     Ids ids(r.h.current());
     ReplaceInsert swap;
@@ -110,7 +110,7 @@ int test_key_undo_redo() {
     CHECK_APPLY(r.h, swap);
     CHECK(insert_of(r.h, 0, 0).key_bus == 0);
     CHECK(r.h.undo());
-    CHECK(r.h.current() == keyed);
+    CHECK(same_document(r.h.current(), keyed));
     return 0;
 }
 
@@ -183,7 +183,7 @@ int test_remove_bus_takes_its_keys() {
     CHECK(insert_of(r.h, 0, 0).key_bus == 0 && insert_of(r.h, 1, 0).key_bus == 0);
     CHECK(invariants_hold(r.h.current()));
     CHECK(r.h.undo());
-    CHECK(r.h.current() == keyed);
+    CHECK(same_document(r.h.current(), keyed));
     CHECK(insert_of(r.h, 0, 0).key_bus == r.key.bus && insert_of(r.h, 1, 0).key_bus == r.key.bus);
     CHECK(r.h.redo());
     CHECK(insert_of(r.h, 0, 0).key_bus == 0);
