@@ -1321,13 +1321,75 @@ int test_clip_loop_command() {
     return 0;
 }
 
+// Paste across sessions (ADR-0142): the clipboard keeps its origin through a
+// session open; the audio is brought in first, as AddSource members ahead of
+// the paste in the same Compound; refusals send nothing.
+int test_paste_across_sessions() {
+    ModelDocument doc(two_regions());
+    EditController c(doc);
+    std::string folder = "/music/Song A";
+    c.set_session_folder_source([&folder] { return folder; });
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    std::string why;
+    CHECK(c.select_region(10));
+    CHECK(c.copy(why));
+    CHECK(c.clipboard().origin_folder == "/music/Song A" && c.clipboard().origin_sample_rate == kRate);
+
+    // Another session, without source 100.
+    Snapshot other = make_empty_session(2, kRate);
+    other.next_id = 500;
+    CHECK(doc.reset(other, why));
+    c.document_replaced();
+    folder = "/music/Song B";
+    CHECK(c.clipboard().origin_folder == "/music/Song A");   // kept
+
+    int calls = 0;
+    bool refuse = false;
+    c.set_bring_in([&](const Snapshot& dest, const std::vector<Source>& sources,
+                       const std::string& origin, std::uint32_t, BroughtIn& out, std::string& w) {
+        ++calls;
+        if (refuse) {
+            w = "Take.wav is not readable in " + origin + "; nothing was pasted";
+            return false;
+        }
+        Source s = sources.at(0);
+        s.id = dest.next_id;
+        out.ops.push_back(AddSource{s});
+        out.remap[sources[0].id] = s.id;
+        out.next_id = s.id + 1;
+        return true;
+    });
+    c.select_track(1);
+    c.set_insertion(0);
+    refuse = true;
+    CHECK(!c.paste(why) && has(why, "not readable") && calls == 1);
+    CHECK(doc.history().undo_depth() == 0 && doc.snapshot().sources->sources.empty());
+    refuse = false;
+    c.set_recording(true);
+    const int before = calls;
+    CHECK(!c.paste(why) && has(why, "Stop recording") && calls == before);
+    c.set_recording(false);
+    CHECK(c.paste(why));
+    CHECK(doc.snapshot().sources->sources.size() == 1);
+    const Playlist& pl = lane(doc.snapshot(), 1);
+    CHECK(pl.regions.size() == 1 && pl.regions[0].channels[0].source == 500);
+    CHECK(pl.regions[0].id > 500);
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Paste");
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+    CHECK(lane(doc.snapshot(), 1).regions.empty());
+    CHECK(doc.snapshot().sources->sources.size() == 1);   // the audio stays
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() || test_shuffle() ||
         test_shuffle_automation_notice() || test_insert_delete_time() ||
         test_repeat_count_text() || test_clip_loop_command() || test_fades_and_crossfades() ||
-        test_cut_edges_lose_fades() ||
+        test_cut_edges_lose_fades() || test_paste_across_sessions() ||
         test_limit() || test_several_tracks() || test_menu()) {
         return 1;
     }
