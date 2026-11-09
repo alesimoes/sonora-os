@@ -105,7 +105,7 @@ Rectangle {
     onAuxCountChanged: showAll()
     onVcaCountChanged: showAll()
     Connections {
-        target: mix.mixer
+        target: mix.session
         function onSessionOpened() { mix.showAll() }
     }
 

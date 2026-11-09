@@ -370,10 +370,10 @@ int strip_visibility() {
     QQuickItem* meter = named(root, QStringLiteral("mixMeter1"));
     CHECK(meter != nullptr && meter->property("channel").toInt() == 1 &&
           meter->property("source").value<QObject*>() == &r.shell);
-    CHECK(r.mixer.soloClick(1, 0));
+    CHECK(r.session.controller().toggle_solo(1, why));
     r.settle();
-    CHECK(r.session.solos().value(1));
-    CHECK(r.mixer.soloClick(1, 0));
+    CHECK(r.session.solos().value(1) && r.session.implicitMutes().value(0));
+    CHECK(r.session.controller().toggle_solo(1, why));
 
     // The master is pinned.
     call("setStripHidden", QStringLiteral("master"), true);
