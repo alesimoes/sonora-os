@@ -189,6 +189,26 @@ tried first) let all three through at drive 0 dB. The second harmonic sits
 at -146 dBc (the loop is symmetric), so `thd.h2_below_h3_db` (-20 dB, measured
 -102.7) is left as the ceiling it is.
 
+### Regenerating the THD rows
+
+The rows are written by the harness, not typed in. Run from the repository
+root, after the build has produced `sonora-dsp-measure`:
+
+    mkdir -p build/dsp-reports && SONORA_DSP_QUICK=1 sonora-dsp-measure --processor tape --quality plugins/native/tape/quality.json --golden plugins/native/tape/tests/golden --report build/dsp-reports
+
+The measured rows land in `build/dsp-reports/tape.json` under
+`data.drive_level_gain_thdn_h2_h3`: one row per drive (0, 12 dB) and level
+(-36, -18, 0, 6 dBFS in quick mode), each `[drive, level, gain, thd_pct, h2_dbc,
+h3_dbc]`. The `-18 dBFS` rows are the ones the bands read. The bands
+themselves are not written by the command: they are the `thd` keys in
+`plugins/native/tape/quality.json`, set by hand from the standard-quality
+figure at 48 kHz, +-5 %.
+
+Scope of the bands, as the tape task left them: held at 48 kHz in all three
+qualities, and in standard also at 44.1 and 96 kHz (`distortion()` in
+`plugins/native/tape/tests/suite.cpp`, #286 review). The table above lists
+every rate, but only those three checks are held.
+
 ## Open
 
 Aliasing above 8 kHz;
