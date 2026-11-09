@@ -438,9 +438,16 @@ int the_browser_lists_renames_and_deletes() {
     const QString templates = templates_dir.path();
     CHECK(write_template(templates, QStringLiteral("Band"), make_empty_session(3, 48000)));
     CHECK(write_template(templates, QStringLiteral("Podcast"), make_empty_session(2, 44100)));
+    // A session file's head on a body no load accepts: listed, and why not.
     CHECK(QDir().mkpath(QDir(templates).filePath(QStringLiteral("Broken"))));
     {
         QFile f(session_file_path(templates, QStringLiteral("Broken")));
+        CHECK(f.open(QIODevice::WriteOnly) && f.write("{\"sonora_session\": 1, \"broken\": true}") > 0);
+    }
+    // No session file at all, only its name: not a template (ADR-0146 §3).
+    CHECK(QDir().mkpath(QDir(templates).filePath(QStringLiteral("Junk"))));
+    {
+        QFile f(session_file_path(templates, QStringLiteral("Junk")));
         CHECK(f.open(QIODevice::WriteOnly) && f.write("not a session") > 0);
     }
     ModelDocument doc(make_empty_session(1, 48000));
@@ -460,6 +467,7 @@ int the_browser_lists_renames_and_deletes() {
     const QVariantMap broken = listed_template(session, QStringLiteral("Broken"));
     CHECK(broken.value(QStringLiteral("tracks")).toInt() == -1);
     CHECK(broken.value(QStringLiteral("problem")).toString().contains(QStringLiteral("cannot be read")));
+    CHECK(listed_template(session, QStringLiteral("Junk")).isEmpty());
     CHECK(session.unusedSessionName(QStringLiteral("Band")) == QStringLiteral("Band"));
 
     std::string why;
@@ -551,6 +559,207 @@ int delete_never_leaves_the_templates_folder() {
     return 0;
 }
 
+bool write_bytes(const QString& file, const QByteArray& bytes) {
+    if (!QDir().mkpath(QFileInfo(file).absolutePath())) return false;
+    QFile f(file);
+    return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size();
+}
+
+// A name that is a Windows device, or that Windows would cut a trailing dot
+// from, is refused: the stick may be read there.
+int windows_names_are_refused() {
+    for (const char* bad : {"CON", "nul", "Prn", "aux", "COM1", "com9", "LPT1", "lpt0", "CON.backup",
+                            "NUL .x", "Mix.", "Mix..", "CONIN$"}) {
+        if (session_name_problem(QString::fromLatin1(bad)).empty()) {
+            std::fprintf(stderr, "  \"%s\" was accepted\n", bad);
+            return 1;
+        }
+    }
+    CHECK(!session_name_problem(QStringLiteral("COM") + QChar(0x00B9)).empty());
+    for (const char* good : {"Console", "COM10", "LPT", "Null Mix", "Mix.Final", "Aux Sends", "My CON"}) {
+        if (!session_name_problem(QString::fromLatin1(good)).empty()) {
+            std::fprintf(stderr, "  \"%s\" was refused\n", good);
+            return 1;
+        }
+    }
+    QTemporaryDir sessions_dir, templates_dir;
+    CHECK(sessions_dir.isValid() && templates_dir.isValid());
+    ModelDocument doc(make_empty_session(1, 48000));
+    SyntheticPeakSource peaks(48000, 120.0);
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(sessions_dir.path());
+    session.setTemplatesDir(templates_dir.path());
+    std::string why;
+    CHECK(!session.saveSessionAsTemplate(QStringLiteral("NUL"), false, why));
+    CHECK(why.find("Windows") != std::string::npos);
+    CHECK(!session.saveSessionAsTemplate(QStringLiteral("Band."), false, why));
+    CHECK(QDir(templates_dir.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty());
+    return 0;
+}
+
+// ADR-0146: a category is one subfolder, Rename and Delete take its
+// "Category/Name", and a template from a newer build is listed, flagged and
+// never loaded.
+int categories_and_newer_templates_are_listed() {
+    QTemporaryDir sessions_dir, templates_dir;
+    CHECK(sessions_dir.isValid() && templates_dir.isValid());
+    const QString templates = templates_dir.path();
+    const QString band = QDir(templates).filePath(QStringLiteral("Band"));
+    CHECK(write_template(templates, QStringLiteral("Plain"), make_empty_session(1, 48000)));
+    CHECK(write_template(band, QStringLiteral("Drums"), make_empty_session(4, 48000)));
+    CHECK(write_template(QDir(band).filePath(QStringLiteral("Deeper")), QStringLiteral("Lost"),
+                         make_empty_session(1, 48000)));
+    const QByteArray future = "{\"sonora_session\": " + QByteArray::number(qint64{model::kFormatVersion} + 1) +
+                              ", \"from\": \"a later build\"}";
+    CHECK(write_bytes(session_file_path(templates, QStringLiteral("Future")), future));
+
+    ModelDocument doc(make_empty_session(1, 48000));
+    SyntheticPeakSource peaks(48000, 120.0);
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(sessions_dir.path());
+    session.setTemplatesDir(templates);
+
+    const QVariantList listed = session.templateList();
+    CHECK(listed.size() == 3);
+    const QVariantMap plain = listed_template(session, QStringLiteral("Plain"));
+    CHECK(plain.value(QStringLiteral("category")).toString().isEmpty());
+    CHECK(plain.value(QStringLiteral("formatVersion")).toLongLong() == model::kFormatVersion);
+    CHECK(!plain.value(QStringLiteral("newerThanBuild")).toBool());
+    const QVariantMap drums = listed_template(session, QStringLiteral("Drums"));
+    CHECK(drums.value(QStringLiteral("category")).toString() == QStringLiteral("Band"));
+    CHECK(drums.value(QStringLiteral("path")).toString() == QStringLiteral("Band/Drums"));
+    CHECK(drums.value(QStringLiteral("tracks")).toInt() == 4);
+    CHECK(listed_template(session, QStringLiteral("Lost")).isEmpty());
+    const QVariantMap newer = listed_template(session, QStringLiteral("Future"));
+    CHECK(newer.value(QStringLiteral("newerThanBuild")).toBool());
+    CHECK(newer.value(QStringLiteral("formatVersion")).toLongLong() == model::kFormatVersion + 1);
+    CHECK(newer.value(QStringLiteral("tracks")).toInt() == -1);
+    CHECK(newer.value(QStringLiteral("problem")).toString().contains(QStringLiteral("newer")));
+
+    std::string why;
+    CHECK(session.renameSessionTemplate(QStringLiteral("Band/Drums"), QStringLiteral("Kit"), why));
+    CHECK(QFileInfo(session_file_path(band, QStringLiteral("Kit"))).isFile());
+    CHECK(!QFileInfo::exists(QDir(templates).filePath(QStringLiteral("Kit"))));
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Kit"), why));
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Band/Deeper"), why));
+    CHECK(session.deleteSessionTemplate(QStringLiteral("Band/Kit"), why));
+    CHECK(!QFileInfo::exists(QDir(band).filePath(QStringLiteral("Kit"))));
+    CHECK(QFileInfo(session_file_path(QDir(band).filePath(QStringLiteral("Deeper")), QStringLiteral("Lost"))).isFile());
+    return 0;
+}
+
+// Delete never follows a link however deep, removes dangling links, stops
+// at audio in any case of extension, and gets through read-only entries;
+// nothing it leaves is a half template in the list.
+int delete_is_hardened() {
+    QTemporaryDir sessions_dir, templates_dir, elsewhere_dir;
+    CHECK(sessions_dir.isValid() && templates_dir.isValid() && elsewhere_dir.isValid());
+    const QString templates = templates_dir.path();
+    const QString elsewhere = elsewhere_dir.path();
+    const QString kept = QDir(elsewhere).filePath(QStringLiteral("keep.wav"));
+    CHECK(write_bytes(kept, "RIFF"));
+    ModelDocument doc(make_empty_session(1, 48000));
+    SyntheticPeakSource peaks(48000, 120.0);
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(sessions_dir.path());
+    session.setTemplatesDir(templates);
+    std::string why;
+
+    // A link two folders down, to a folder with audio in it: not audio of
+    // the template's, and removed as a link.
+    CHECK(write_template(templates, QStringLiteral("Nested"), make_empty_session(1, 48000)));
+    const QString sub = QDir(templates).filePath(QStringLiteral("Nested/Plug-In Settings/Sub"));
+    CHECK(QDir().mkpath(sub));
+    CHECK(QFile::link(elsewhere, QDir(sub).filePath(QStringLiteral("out"))));
+    CHECK(session.deleteSessionTemplate(QStringLiteral("Nested"), why));
+    CHECK(!QFileInfo::exists(QDir(templates).filePath(QStringLiteral("Nested"))));
+    CHECK(QFileInfo(kept).isFile());
+
+    // A dangling link inside is removed; a dangling template is not one.
+    CHECK(write_template(templates, QStringLiteral("Dangle"), make_empty_session(1, 48000)));
+    const QString nowhere = QDir(elsewhere).filePath(QStringLiteral("gone"));
+    CHECK(QFile::link(nowhere, QDir(templates).filePath(QStringLiteral("Dangle/gone"))));
+    CHECK(session.deleteSessionTemplate(QStringLiteral("Dangle"), why));
+    CHECK(!QFileInfo::exists(QDir(templates).filePath(QStringLiteral("Dangle"))));
+    CHECK(QFile::link(nowhere, QDir(templates).filePath(QStringLiteral("Ghost"))));
+    CHECK(listed_template(session, QStringLiteral("Ghost")).isEmpty());
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Ghost"), why));
+
+    // A real folder whose .sonora is a link to another's: not listed, and
+    // Delete leaves the file it points at.
+    CHECK(write_template(elsewhere, QStringLiteral("Linked"), make_empty_session(1, 48000)));
+    const QString target = session_file_path(elsewhere, QStringLiteral("Linked"));
+    CHECK(QDir().mkpath(QDir(templates).filePath(QStringLiteral("Linked"))));
+    CHECK(QFile::link(target, session_file_path(templates, QStringLiteral("Linked"))));
+    CHECK(listed_template(session, QStringLiteral("Linked")).isEmpty());
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Linked"), why));
+    CHECK(QFileInfo(target).isFile());
+
+    // Audio named in capitals, outside "Audio Files": still a session.
+    CHECK(write_template(templates, QStringLiteral("Upper"), make_empty_session(1, 48000)));
+    CHECK(write_bytes(QDir(templates).filePath(QStringLiteral("Upper/Take 1.WAV")), "RIFF"));
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Upper"), why));
+    CHECK(why.find("audio") != std::string::npos);
+    CHECK(QFileInfo(session_file_path(templates, QStringLiteral("Upper"))).isFile());
+
+    // Read-only file and read-only folder: deleted all the same.
+    CHECK(write_template(templates, QStringLiteral("Locked"), make_empty_session(1, 48000)));
+    const QString inner = QDir(templates).filePath(QStringLiteral("Locked/States"));
+    const QString state = QDir(inner).filePath(QStringLiteral("eq.state"));
+    CHECK(write_bytes(state, "state"));
+    const QFileDevice::Permissions read_only = QFileDevice::ReadOwner | QFileDevice::ReadUser;
+    CHECK(QFile::setPermissions(state, read_only));
+    CHECK(QFile::setPermissions(session_file_path(templates, QStringLiteral("Locked")), read_only));
+    CHECK(QFile::setPermissions(inner, read_only | QFileDevice::ExeOwner | QFileDevice::ExeUser));
+    CHECK(session.deleteSessionTemplate(QStringLiteral("Locked"), why));
+    CHECK(!QFileInfo::exists(QDir(templates).filePath(QStringLiteral("Locked"))));
+
+    // Nothing staged aside is left behind by a delete that went through.
+    for (const QString& name : QDir(templates).entryList(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden))
+        CHECK(!name.endsWith(QStringLiteral(".deleting")));
+    return 0;
+}
+
+// The templates folder named through a link is still the folder the engine
+// is in, and a templates folder that is the sessions folder does not make
+// every untitled session a template's.
+int folders_compare_canonically() {
+    QTemporaryDir sessions_dir, templates_dir, links_dir;
+    CHECK(sessions_dir.isValid() && templates_dir.isValid() && links_dir.isValid());
+    const QString real = templates_dir.path();
+    const QString linked = QDir(links_dir.path()).filePath(QStringLiteral("Templates"));
+    CHECK(QFile::link(real, linked));
+    CHECK(write_template(real, QStringLiteral("Band"), make_empty_session(1, 48000)));
+    ModelDocument doc(make_empty_session(1, 48000));
+    SyntheticPeakSource peaks(48000, 120.0);
+    SessionModel session(doc, peaks, true);
+    session.setSessionsDir(sessions_dir.path());
+    session.setTemplatesDir(linked);
+    std::string why;
+
+    session.setEngineFolder(QDir(real).filePath(QStringLiteral("Band")));
+    CHECK(!session.commandRefusal("transport.record").empty());
+    CHECK(!session.deleteSessionTemplate(QStringLiteral("Band"), why));
+    CHECK(why.find("engine is in this template") != std::string::npos);
+    session.setTemplatesDir(real);
+    session.setEngineFolder(QDir(linked).filePath(QStringLiteral("Band")));
+    CHECK(!session.commandRefusal("transport.record").empty());
+    CHECK(!session.renameSessionTemplate(QStringLiteral("Band"), QStringLiteral("Gig"), why));
+    CHECK(QFileInfo(session_file_path(real, QStringLiteral("Band"))).isFile());
+
+    // Through the link, a free template still deletes.
+    session.setTemplatesDir(linked);
+    session.setEngineFolder(QDir(sessions_dir.path()).filePath(QStringLiteral("Mix")));
+    CHECK(session.deleteSessionTemplate(QStringLiteral("Band"), why));
+    CHECK(!QFileInfo::exists(QDir(real).filePath(QStringLiteral("Band"))));
+    CHECK(QFileInfo(linked).isSymLink());
+
+    session.setTemplatesDir(sessions_dir.path() + QStringLiteral("/."));
+    session.setEngineFolder(QDir(sessions_dir.path()).filePath(QStringLiteral("Untitled")), true);
+    CHECK(session.commandRefusal("transport.record").empty());
+    return 0;
+}
+
 // The File menu's entries are commands: without a name Save as Template
 // asks for one, offering a free name in the templates folder; with one it
 // saves, markers as the dialog's check box says. New from Template asks
@@ -614,6 +823,10 @@ int main(int argc, char** argv) {
     if (the_browser_lists_renames_and_deletes() != 0) return 1;
     if (the_commands_ask_then_save() != 0) return 1;
     if (delete_never_leaves_the_templates_folder() != 0) return 1;
+    if (windows_names_are_refused() != 0) return 1;
+    if (categories_and_newer_templates_are_listed() != 0) return 1;
+    if (delete_is_hardened() != 0) return 1;
+    if (folders_compare_canonically() != 0) return 1;
     std::printf("session templates: ok\n");
     return 0;
 }
