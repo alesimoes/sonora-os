@@ -69,8 +69,39 @@ class Sweep(support.DaemonCase):
         self.assertEqual(self.get("k")["state"], "building")
         self.assertIn("take the default", self.get("k")["note"])
 
-    def tip(self, branch, ts, sha="b302f565", subject="docs: the pointer"):
-        self.forge.tips = {branch: {"sha": sha, "ts": ts, "subject": subject}}
+    def tip(self, branch, ts, sha="b302f565", subject="docs: the pointer",
+            ref="local"):
+        self.forge.tips = {branch: {"sha": sha, "ts": ts, "subject": subject,
+                                    "ref": ref}}
+
+    def test_fix_pushed_from_another_worktree_syncs_the_branch_then_qa(self):
+        # plugins.offline.ui 2026-11-09: the resolver pushed 7b6fcab4 to
+        # origin; the local branch stayed at the block and the feature's
+        # integrator waited 4 h.
+        self.blocked("p", "headers off limits for this task")
+        at = triage.blocked_at(self.o, self.get("p"))
+        self.tip("feat/p", at + 60, sha="7b6fcab4", ref="origin")
+        self.assertEqual(triage_sweep.sweep(self.o, at + 3600), 1)
+        self.assertEqual(self.forge.synced, ["feat/p"])
+        self.assertEqual(self.get("p")["state"], "qa")
+
+    def test_pushed_fix_that_cannot_reach_the_local_branch_stays_blocked(self):
+        self.blocked("q", "headers off limits for this task")
+        at = triage.blocked_at(self.o, self.get("q"))
+        self.tip("feat/q", at + 60, sha="7b6fcab4", ref="origin")
+        self.forge.sync_result = (False, "worktree has uncommitted changes")
+        self.assertEqual(triage_sweep.sweep(self.o, at + 3600), 0)
+        self.assertEqual(self.get("q")["state"], "blocked")
+        ev = self.o.store.events("q", kind="triage_handfixed_unsynced")
+        self.assertIn("uncommitted changes", ev[0]["detail"])
+
+    def test_local_hand_fix_needs_no_sync(self):
+        self.blocked("r", "tool missing")
+        at = triage.blocked_at(self.o, self.get("r"))
+        self.tip("feat/r", at + 60)
+        triage_sweep.sweep(self.o, at + 3600)
+        self.assertEqual(getattr(self.forge, "synced", []), [])
+        self.assertEqual(self.get("r")["state"], "qa")
 
     def test_blocked_task_fixed_by_hand_on_its_branch_goes_to_qa(self):
         # native.tuner.docs 2026-11-08: the refused .claude edit was committed
