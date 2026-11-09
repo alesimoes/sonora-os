@@ -233,6 +233,10 @@ int amp(const measure::Args& args) {
     Suite s("amp",
             [] {
                 auto p = make_amp();
+                // These checks compare instances, so each must load the capture: a
+                // sanitizer build under load can time past the class E bars and have
+                // one prepare() refuse it (the budget is tested in suite_load).
+                p->set_budget(amp::Budget{1e12, 1e12});
                 std::string msg;
                 p->load_nam(amp_test::lstm(1, 8), msg);
                 return std::unique_ptr<Processor>(std::move(p));

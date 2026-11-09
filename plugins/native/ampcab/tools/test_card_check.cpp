@@ -23,6 +23,16 @@ void write(const fs::path& p, const std::string& s) {
     std::ofstream(p, std::ios::binary) << s;
 }
 
+// cmd.exe /c drops the first and last quote of a line that starts with one,
+// leaving the tool path unquoted; one more pair around the whole line keeps it.
+std::string shell_line(const std::string& cmd) {
+#ifdef _WIN32
+    return "\"" + cmd + "\"";
+#else
+    return cmd;
+#endif
+}
+
 // Returns the tool's exit code, its output left in `out`.
 int run(const std::string& tool, const std::string& deny, const fs::path& root,
         std::string& out) {
@@ -31,7 +41,7 @@ int run(const std::string& tool, const std::string& deny, const fs::path& root,
                             (root / "manifest.json").string() + "\" --cards \"" +
                             (root / "cards").string() + "\" --files \"" +
                             (root / "files").string() + "\" > \"" + log.string() + "\"";
-    const int rc = std::system(cmd.c_str());
+    const int rc = std::system(shell_line(cmd).c_str());
     std::ifstream in(log);
     out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     return rc == 0 ? 0 : 1;
