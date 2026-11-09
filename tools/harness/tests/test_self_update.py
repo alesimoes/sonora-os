@@ -97,6 +97,12 @@ class SelfUpdate(unittest.TestCase):
         self.assertTrue(self.up.ready(1000))
         self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
 
+    def test_an_agent_definition_change_moves_the_checkout(self):
+        # agents are launched from this checkout's .claude/agents (2026-11-08)
+        new = self.push(".claude/agents/lead.md", "v2" + chr(10))
+        self.assertTrue(self.up.ready(1000))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
+
     def test_modified_tracked_files_block_the_update(self):
         self.push("tools/harness/train.py", "v2\n")
         write(self.daemon, "engine/x.cpp", "local edit\n")
