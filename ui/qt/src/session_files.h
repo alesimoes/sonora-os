@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "sonora/model/session_file.h"
+#include "sonora/model/session_template.h"
 
 namespace sonora::ui {
 
@@ -53,6 +54,27 @@ struct SessionEntry {
 // Every <dir>/<Name>/<Name>.sonora, sorted by name. A folder without its
 // session file is not listed.
 std::vector<SessionEntry> list_sessions(const QString& dir);
+
+// Whether `path` is a link of any kind (a symlink, or a junction on
+// Windows), read afresh from the disk on every call, never from a cache.
+bool is_link(const QString& path);
+
+// The templates under `dir` as the browser lists them (ADR-0146): one
+// category level, each template's declared format version, and nothing
+// reached through a link, so Rename and Delete never leave the folder.
+std::vector<model::TemplateInfo> list_session_templates(const QString& dir);
+
+// Any audio in `folder`, links not followed, extension in any case: a
+// template has none, so a folder that has some is a session misplaced.
+bool holds_audio(const QString& folder);
+
+// Deletes the template folder `folder`. It is first renamed to a hidden
+// name beside it, so the template leaves the list whole or not at all;
+// then removed without following a link (each folder re-checked as it is
+// entered), read-only entries made writable, stopping at the first entry
+// that will not go. On failure `why` names that entry and where the rest
+// is; when the rename itself fails nothing has changed.
+bool remove_template_folder(const QString& folder, std::string& why);
 
 struct RecordingEntry {
     QString name;    // the folder's name

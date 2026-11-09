@@ -92,6 +92,16 @@ add_executable(test_model_session_template tests/test_session_template.cpp)
 target_link_libraries(test_model_session_template PRIVATE sonora_model_audited)
 add_test(NAME model_session_template COMMAND test_model_session_template)
 
+# A template browser's entry (ADR-0146): category and newer-than-build.
+add_executable(test_session_template_info tests/test_session_template_info.cpp)
+target_link_libraries(test_session_template_info PRIVATE sonora_model_audited)
+add_test(NAME test_session_template_info COMMAND test_session_template_info)
+
+# The template list (ADR-0146 §1): one category level, version from the head.
+add_executable(test_session_template_list tests/test_session_template_list.cpp)
+target_link_libraries(test_session_template_list PRIVATE sonora_model_audited)
+add_test(NAME test_session_template_list COMMAND test_session_template_list)
+
 # Plugin inserts (ADR-0012 6): operations, undo under O1, refusals.
 add_executable(test_model_inserts tests/test_inserts.cpp)
 target_link_libraries(test_model_inserts PRIVATE sonora_model_audited)
