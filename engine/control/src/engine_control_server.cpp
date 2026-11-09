@@ -2073,6 +2073,28 @@ std::string EngineControlServer::step_refusal(bool undo) const {
 std::string EngineControlServer::catalog_refusal(const model::Snapshot& doc, model::MemberRef member) const {
     const model::PluginRef* ref = nullptr;
     const model::TrackEdit* on = nullptr;
+    if (const auto* k = member.get_if<model::SetInsertKey>()) {
+        // ADR-0058 §1: only a plug-in with a side-chain input takes a key.
+        // One the catalog and this run's probes do not know is let through:
+        // it is out of the chain anyway, and apply() judges the rest.
+        if (k->key_bus == 0 || !scanner_) return {};
+        for (const auto& t : doc.edit->tracks)
+            for (const model::Insert& in : t->inserts)
+                if (in.id == k->insert) ref = &in.plugin;
+        if (ref == nullptr) return {};
+        const auto& c = scanner_->catalog();
+        uint32_t keys = 1;
+        std::string name = ref->name;
+        if (const api::PluginInfo* p = catalog_find(*c, ref->format, ref->id)) {
+            keys = p->key_inputs;
+            name = p->name;
+        } else if (const plugin::probe::Record* rec = c->any_probe(host_id(*ref))) {
+            keys = rec->sidechain_in;
+        }
+        if (keys != 0) return {};
+        return std::string(model::insert_key_refusal::kNoKeyInput) + ": " + name +
+               " cannot be keyed by a bus";
+    }
     if (const auto* a = member.get_if<model::AddInsert>()) {
         ref = &a->plugin;
         for (const auto& t : doc.edit->tracks)

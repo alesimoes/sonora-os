@@ -468,7 +468,8 @@ void version_check() {
     // 65: plugin descriptor hints and PluginTelemetry (ADR-0057).
     // 66: the bundle's 61 to 63 land together on top of 65.
     // 68: Hello::input_count and output_count, SetBusPath (ADR-0060).
-    CHECK(kProtocolVersion == 68);
+    // 69: SetInsertKey, the window insert's key_bus, PluginInfo::key_inputs (ADR-0058).
+    CHECK(kProtocolVersion == 69);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.

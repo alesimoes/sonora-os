@@ -146,7 +146,7 @@ const char* const kNames[] = {
     "AddInsert", "RemoveInsert", "MoveInsert", "SetInsertActive", "ReplaceInsert",
     "SetInsertBypass", "SetInsertParams", "SetInsertState",
     "SetMix", "AddBus", "RemoveBus", "AddSend", "RemoveSend", "SetSendMix", "SetBusMix",
-    "SetOutput", "EditAutomation", "SetBusPath",
+    "SetOutput", "EditAutomation", "SetBusPath", "SetInsertKey",
     "SetGroup", "RemoveGroup", "SetVca", "RemoveVca", "SetVcaMix", "SetFolder", "RemoveFolder",
     "AddMidiSource", "PlaceMidiRegion", "EditMidi", "SetMidiRouting",
     "Compound"};

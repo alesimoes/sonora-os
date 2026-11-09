@@ -1911,6 +1911,58 @@ int check_output_routing(Rig& rig) {
     return C(rig, "output routing").go();
 }
 
+// Side-chain keys (ADR-0058, protocol 69): SetInsertKey crosses as an
+// operation; one naming an insert the track does not hold, or a bus the
+// session does not have, is refused saying so and changes nothing. Which
+// plug-ins take a key is the catalog's, so no engine is asked to key one.
+int check_insert_key(Rig& rig) {
+    struct C : Check {
+        using Check::Check;
+
+        bool apply(Session& s, const model::Operation& op, CommandReply& r) {
+            ModelRequest m;
+            m.action = ModelAction::Apply;
+            std::string error;
+            if (!model::encode_operation(op, m.op, error)) return false;
+            return s.await(rig_, s.engine->submit(m), r);
+        }
+
+        int go() {
+            Session s;
+            EXPECT(s.open(rig_), "connect failed: " + s.error);
+            EXPECT(s.until(rig_, [&]() { return s.replica.synced(); }),
+                   "no snapshot after connect: " + s.replica_error);
+            const model::Snapshot before = s.replica.current();
+            const model::Id track = before.edit->tracks.at(0)->id;
+            const model::Id key = before.next_id;
+            CommandReply r;
+            EXPECT(apply(s, model::AddBus{key, "Key", model::BusMix{}}, r) &&
+                       r.result == DispatchResult::Ok,
+                   "AddBus was refused: " + r.message);
+            EXPECT(s.until(rig_, [&]() { return s.replica.current().revision == before.revision + 1; }),
+                   "no update for the bus: " + s.replica_error);
+            const model::Snapshot here = s.replica.current();
+            const std::size_t updates = s.inbox.model.size();
+            EXPECT(apply(s, model::SetInsertKey{track, key + 1000, key}, r) &&
+                       r.result == DispatchResult::Failed,
+                   "a key on an insert the track does not hold was accepted");
+            EXPECT(mentions(r.message, model::insert_key_refusal::kUnknownInsert),
+                   "the refusal does not say the insert is missing");
+            EXPECT(s.next_publish(rig_), "nothing published after the refusal");
+            EXPECT(apply(s, model::SetInsertKey{track + 1000, key + 1000, key}, r) &&
+                       r.result == DispatchResult::Failed,
+                   "a key on a track the session does not hold was accepted");
+            EXPECT(mentions(r.message, model::insert_key_refusal::kUnknownTrack),
+                   "the refusal does not say the track is missing");
+            EXPECT(s.next_publish(rig_), "nothing published after the second refusal");
+            EXPECT(s.inbox.model.size() == updates, "a refused key sent an update");
+            EXPECT(s.replica.current() == here, "a refused key changed the replica");
+            return ok();
+        }
+    };
+    return C(rig, "side-chain keys").go();
+}
+
 // Automation (ADR-0027, protocol 32): a lane edit crosses as an operation
 // and every replica holds it; a point outside its range or a write mode is
 // refused, saying so, and changes nothing; undo takes the lane edit back
@@ -3868,6 +3920,7 @@ int run(Rig& rig) {
     failures += check_sends(rig);
     failures += check_live_send_rides(rig);
     failures += check_output_routing(rig);
+    failures += check_insert_key(rig);
     failures += check_automation(rig);
     failures += check_duplicate_automation(rig);
     failures += check_track_structure(rig);

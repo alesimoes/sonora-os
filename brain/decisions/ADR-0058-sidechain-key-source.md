@@ -1,6 +1,6 @@
 # ADR-0058: Side-chain key source on an insert
 
-Status: Proposed (architect, 2026-11-04; recommended defaults, nothing here needs the owner).
+Status: Accepted (2026-11-09, with the contract: items 1 and 5 implemented; architect 2026-11-04, recommended defaults, nothing here needs the owner).
 Backlog: `ui.mixer.sidechain` (the whole item), `ui.mixer.io` (its aux/Master inserts line is NOT in this ADR).
 Builds on: ADR-0012 amendment 2026-11-01 (the key is the region's last planes; `InsertChainRef::key_channels`), ADR-0022 (aux buses), ADR-0024 (bus graph, loops), ADR-0027 (lanes).
 
@@ -16,6 +16,12 @@ PR #224 settled the wire between the engine and the plugin host: a keyed chain's
 4. **Host spawn.** `PluginHosting` passes `key_channels = chain signal channels` (1 or 2) when any insert in the chain has a live `key_bus`, 0 otherwise. Changing the key bus between none and some restarts the chain make-before-break (ADR-0012 §restart); changing between two buses is a plan swap only (same layout). Only one insert per chain may be keyed in this ADR (the host's `Load::key_channels` is per chain).
 5. **Formats.** Session format and protocol each bump by one, at the next free number when the code lands (the daemon reserved none; the contract task takes them from the then-current `kFormatVersion` and `kProtocolVersion` and says so in its PR). Window format bumps only if the undo window codec carries `SetInsertKey` (it does: one new op code, appended). Older engines answer the new command NotImplemented; an older session file is read with `key_bus` 0.
 6. **UI (Mix window).** The insert slot shows a key chooser (a small "Key" popup beside the slot, enabled only when the plugin has a side-chain input) listing "None" and the session's aux buses by name; a keyed slot shows the bus name, a missing bus shows "Key: (missing)" in the warning colour. Pro Tools' "Key input" menu is the workflow reference; its bus-or-input choice is the same, hardware inputs as keys are not offered (item 6 of Alternatives). The chooser is a plain control-thread command, no audio-thread involvement.
+
+## Implementation notes (contract, 2026-11-09)
+
+- The model cannot see the catalogue, so item 1's "plugin that declares no key input" is refused by engine/control's catalogue check before `apply()`, from the new `PluginInfo::key_inputs` (the probe record's `sidechain_in`); the model refuses the rest (unknown track, insert or bus, a second keyed insert, a loop). The refusals start with fixed words (`insert_key_refusal` in `common/model/include/sonora/model/insert_key.h`).
+- The key edge joins the bus graph in `bus_path` and `bus_loop_problem`: a bus that keys a track reaches that track's output and send buses. So a later `AddSend`, `SetOutput` or `MoveInsert` that would close a loop through a key is refused too, naming the path.
+- Session format 26, protocol 69 (25 and 68 on main when the work started; the daemon reserved none), undo window format 21 (an insert carries `key_bus`). `ReplaceInsert` leaves the replacement unkeyed; undo restores the keyed one.
 
 ## Rationale
 
