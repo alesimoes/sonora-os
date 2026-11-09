@@ -22,13 +22,24 @@ target_sources(sonora_ui_edit PRIVATE
 target_include_directories(sonora_ui_edit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(sonora_ui_edit PUBLIC sonora_groove sonora_json)
 
-# The panel, in the same resource prefix as ui/qt's QML (qrc:/sonora/qml/).
-if(TARGET sonora_ui_qml)
-  qt_add_resources(sonora_ui_qml sonora_groove_qml
-    PREFIX /sonora
-    FILES qml/GroovePanel.qml
-  )
-endif()
+# The panel's QML as text in a generated header (groove_panel.h). Not a Qt
+# resource: qt_add_resources from this directory, on a target ui/qt defines,
+# generated nothing, and ui/qt's resource list is not this module's to edit.
+# The loader gives it its qrc:/sonora/qml/ address, so SButton and Theme
+# resolve as for the QML beside it.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  ${CMAKE_CURRENT_SOURCE_DIR}/qml/GroovePanel.qml)
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/qml/GroovePanel.qml SONORA_GROOVE_PANEL_QML)
+file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/groove_panel_qml.inc
+  CONTENT "R\"sonoraqml(${SONORA_GROOVE_PANEL_QML})sonoraqml\"\n" @ONLY)
+target_sources(sonora_ui_edit PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include/sonora/ui_groove/groove_panel.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/groove_panel.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/qml/GroovePanel.qml
+)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/qml/GroovePanel.qml
+  PROPERTIES HEADER_FILE_ONLY ON)
+target_include_directories(sonora_ui_edit PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 add_executable(test_ui_groove tests/test_groove_ui.cpp)
 target_link_libraries(test_ui_groove PRIVATE sonora_ui_edit)

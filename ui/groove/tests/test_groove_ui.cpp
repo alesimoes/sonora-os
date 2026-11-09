@@ -18,6 +18,7 @@
 #include "edit_controller.h"
 #include "peak_source.h"
 #include "sonora/ui_groove/groove_command.h"
+#include "sonora/ui_groove/groove_panel.h"
 #include "sonora/ui_groove/onset_source.h"
 #include "sonora/ui_groove/template_store.h"
 #include "timeline_document.h"
@@ -363,11 +364,23 @@ int test_peak_onsets() {
     return 0;
 }
 
+// The panel's QML is built in whole, with what the scene and the Edit
+// window look for by name.
+int test_panel_text() {
+    const std::string qml = groove_panel_qml();
+    OK(qml.rfind("// SPDX-License-Identifier", 0) == 0);
+    OK(qml.find("objectName: \"grooveApply\"") != std::string::npos);
+    OK(qml.find("\"tempo.edit\"") != std::string::npos);
+    OK(qml.size() > 1000 && qml.back() == '\n');
+    return 0;
+}
+
 }  // namespace
 
 int main() {
     if (test_swing_and_undo() || test_from_reference() || test_overlap_reported() ||
-        test_refusals() || test_saved_templates() || test_corrupt_file() || test_peak_onsets()) {
+        test_refusals() || test_saved_templates() || test_corrupt_file() || test_peak_onsets() ||
+        test_panel_text()) {
         return 1;
     }
     std::printf("ui groove: ok\n");

@@ -5,6 +5,16 @@
 // the Groove panel open over them with a preset chosen and a saved groove
 // listed; "edit-groove-applied" is the same hits after an eighth shuffle at
 // 66%, every second one late by a third of its slot.
+
+// First, before any Qt header: groove.h names a member `slots`, which Qt
+// defines as a macro. Only where ui/groove is configured (the Linux build),
+// as in edit_tempo.cpp.
+#if __has_include("sonora/ui_groove/groove_command.h")
+#include "sonora/ui_groove/groove_command.h"
+#include "sonora/ui_groove/groove_panel.h"
+#define SONORA_UI_GROOVE_SCENE 1
+#endif
+
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickItem>
@@ -12,10 +22,8 @@
 #include <QVariantMap>
 
 #include "screenshot_scene.h"
-// Only where ui/groove is configured (the Linux build), as in edit_tempo.cpp.
-#if __has_include("sonora/ui_groove/groove_command.h")
-#include "sonora/ui_groove/groove_command.h"
 
+#ifdef SONORA_UI_GROOVE_SCENE
 namespace sonora::ui {
 namespace {
 
@@ -39,8 +47,10 @@ void slice_snare(ShotContext& c) {
     std::vector<model::Member> ops;
     for (int k = 15; k >= 0; --k) {
         const model::Frames gap_from = from + k * eighth + eighth / 2, gap_to = from + (k + 1) * eighth;
+        // Reserved in the order the operations use them: new ids must rise.
+        const model::Id right = doc.reserve_id();
         const model::Id gap = doc.reserve_id();
-        ops.push_back(model::SplitRegion{t->active_playlist, r->id, gap_to, doc.reserve_id()});
+        ops.push_back(model::SplitRegion{t->active_playlist, r->id, gap_to, right});
         ops.push_back(model::SplitRegion{t->active_playlist, r->id, gap_from, gap});
         ops.push_back(model::RemoveRegion{t->active_playlist, gap});
     }
@@ -54,7 +64,8 @@ void slice_snare(ShotContext& c) {
 }
 
 void open_panel(ShotContext& c) {
-    QQmlComponent comp(c.view.engine(), QUrl(QStringLiteral("qrc:/sonora/qml/GroovePanel.qml")));
+    QQmlComponent comp(c.view.engine());
+    comp.setData(QByteArray(groove_panel_qml()), QUrl(QString::fromLatin1(kGroovePanelUrl)));
     QVariantMap props;
     props.insert(QStringLiteral("shell"), QVariant::fromValue(static_cast<QObject*>(&c.model)));
     props.insert(QStringLiteral("saved"), QStringList{QStringLiteral("Late pocket")});
