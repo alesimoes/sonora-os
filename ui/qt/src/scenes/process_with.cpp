@@ -12,11 +12,20 @@
 namespace sonora::ui {
 namespace {
 
+// A Repeater's delegates hang off the visual tree, not the QObject one.
+QQuickItem* visual_child(QQuickItem* item, const QString& name) {
+    if (item->objectName() == name) return item;
+    for (QQuickItem* child : item->childItems()) {
+        if (QQuickItem* found = visual_child(child, name)) return found;
+    }
+    return nullptr;
+}
+
 void open_process_with(ShotContext& c) {
     QQuickItem* root = c.view.rootObject();
     auto* button = root->findChild<QQuickItem*>(QStringLiteral("trackMenuButton"));
     auto* menu = root->findChild<QQuickItem*>(QStringLiteral("trackMenu"));
-    auto* with = root->findChild<QQuickItem*>(QStringLiteral("trackProcessWith"));
+    auto* with = visual_child(root, QStringLiteral("trackProcessWith"));
     auto* sub = root->findChild<QQuickItem*>(QStringLiteral("processWithMenu"));
     if (button == nullptr || menu == nullptr || with == nullptr || sub == nullptr) return;
     const QPointF at = button->mapToScene(QPointF(0, button->height()));
