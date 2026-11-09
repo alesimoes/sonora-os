@@ -305,20 +305,22 @@ void distortion(Suite& s) {
     // saturates more. Each band is the standard-quality figure +-5 %; every
     // quality and rate sits within 2 % of it (the oversampler, not the
     // curve), and a curve driven 1 dB harder (+10 %, +15 %) leaves it
-    // (brain/research/native-tape-n2.md, "THD bars"). Held in every quality.
-    for (int q = 0; q < 3; ++q) {
+    // (brain/research/native-tape-n2.md, "THD bars"). Held in every quality
+    // at 48 kHz, and in standard at 44.1 and 96 kHz (#286 review).
+    for (const auto& [q, rate] : {std::pair<int, double>{0, fs}, {1, fs}, {2, fs}, {1, 44100.0}, {1, 96000.0}}) {
         for (const auto& [drive, lo, hi] : {std::tuple<double, const char*, const char*>{0.0, "thd.nominal_min_pct", "thd.nominal_pct"},
                                             {12.0, "thd.drive12_min_pct", "thd.drive12_pct"}}) {
-            double thd = q == 1 ? (drive == 0.0 ? nominal_thd : driven_thd) : 0.0;
-            if (q != 1) {
-                auto p = measuring(s, fs, 1, {{"drive", static_cast<float>(drive)}, {"quality", static_cast<float>(q)}});
-                const Chans x = measure::sine(fs, 1000.0, -18.0, 1.5, 1);
+            double thd = q == 1 && rate == fs ? (drive == 0.0 ? nominal_thd : driven_thd) : 0.0;
+            if (q != 1 || rate != fs) {
+                auto p = measuring(s, rate, 1, {{"drive", static_cast<float>(drive)}, {"quality", static_cast<float>(q)}});
+                const Chans x = measure::sine(rate, 1000.0, -18.0, 1.5, 1);
                 const Chans y = aligned(*p, x);
-                thd = 100.0 * std::pow(10.0, measure::thdn_db(y[0], static_cast<std::size_t>(0.5 * fs), fs, 1000.0) / 20.0);
+                thd = 100.0 * std::pow(10.0, measure::thdn_db(y[0], static_cast<std::size_t>(0.5 * rate), rate, 1000.0) / 20.0);
             }
             const double min = s.bar(lo), max = s.bar(hi);
-            s.check(fmt("THD+N at 1 kHz, -18 dBFS, drive %.0f dB, ", drive) + kQualityIds[q], thd, max, thd >= min && thd <= max,
-                    "%", fmt("band %.3g-%.3g %%", min, max));
+            const std::string at = rate == fs ? std::string() : ", " + hz(rate);
+            s.check(fmt("THD+N at 1 kHz, -18 dBFS, drive %.0f dB, ", drive) + kQualityIds[q] + at, thd, max,
+                    thd >= min && thd <= max, "%", fmt("band %.3g-%.3g %%", min, max));
         }
     }
     // The anhysteretic curve is odd: the third harmonic leads, the second
