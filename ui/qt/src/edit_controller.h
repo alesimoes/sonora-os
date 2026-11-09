@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "automation_edit.h"
+#include "sonora/model/arrangement.h"
 #include "edit_clipboard.h"
 #include "peak_source.h"
 #include "sample_view.h"
@@ -484,6 +485,15 @@ public:
     // marker's flag, else a selection marker's bar; kNoId over neither.
     model::Id marker_at(double x) const;
     const model::MarkerList& markers() const { return *snapshot().edit->markers; }
+
+    // --- arrangement sections (edit_arrangement.cpp, ADR-0116) ---
+    // The session's range markers: the sections Move to / Copy to act on.
+    std::vector<model::Marker> arrangement_sections() const;
+    // Moves or copies `section` to the timeline frame `destination` as one
+    // Compound, one undo step. `message` is set either way: on success what
+    // the edit left where it was, else the refusal (nothing was changed).
+    bool arrangement_apply(model::Id section, model::Frames destination, model::SectionMode mode,
+                           std::string& message);
 
     // --- tracks: Pro Tools' Track menu (ADR-0023), each one undo step ---
     // `count` mono audio tracks named "Audio <n>" with the lowest free
