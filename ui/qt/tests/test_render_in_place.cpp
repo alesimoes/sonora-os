@@ -198,19 +198,21 @@ int process_with_one_insert() {
     CHECK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/protools.json", map, err));
     ModelDocument doc(make_empty_session(4, kRate));
     const sonora::model::Id track = doc.snapshot().edit->tracks[1]->id;
-    const auto add = [&](std::uint8_t slot, const char* name) {
+    const auto add = [&](std::uint8_t slot, const char* uri, const char* name) {
         sonora::model::AddInsert a;
         a.track = track;
         a.insert = doc.reserve_id();
         a.slot = slot;
-        a.plugin.id = std::string("urn:sonora:test:") + name;
+        a.plugin.id = std::string("urn:sonora:test:") + uri;
         a.plugin.name = name;
         std::string why;
-        return doc.submit(a, why) ? a.insert : sonora::model::Id{0};
+        if (doc.submit(a, why)) return a.insert;
+        std::fprintf(stderr, "AddInsert %s: %s\n", name, why.c_str());
+        return sonora::model::Id{0};
     };
-    const sonora::model::Id limiter = add(0, "Limiter");
-    const sonora::model::Id reverb = add(1, "Plate Reverb");
-    const sonora::model::Id delay = add(2, "Tape Delay");
+    const sonora::model::Id limiter = add(0, "limiter", "Limiter");
+    const sonora::model::Id reverb = add(1, "plate-reverb", "Plate Reverb");
+    const sonora::model::Id delay = add(2, "tape-delay", "Tape Delay");
     CHECK(limiter != 0 && reverb != 0 && delay != 0);
     std::string why;
     CHECK(doc.submit(sonora::model::SetInsertBypass{limiter, true}, why));
@@ -241,8 +243,7 @@ int process_with_one_insert() {
     view.setInitialProperties({{QStringLiteral("shell"), QVariant::fromValue(&model)},
                                {QStringLiteral("session"), QVariant::fromValue(&session)}});
     view.setSource(QUrl(QStringLiteral("qrc:/sonora/qml/Main.qml")));
-    for (const auto& e : view.errors()) std::fprintf(stderr, "%s
-", qPrintable(e.toString()));
+    for (const auto& e : view.errors()) std::fprintf(stderr, "%s\n", qPrintable(e.toString()));
     CHECK(view.status() == QQuickView::Ready);
     view.show();
     CHECK(QTest::qWaitForWindowExposed(&view));

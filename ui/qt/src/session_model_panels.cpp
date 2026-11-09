@@ -395,13 +395,13 @@ QVariantList SessionModel::selectedTrackInserts() const {
     const model::Snapshot& s = ctl_.snapshot();
     if (i < 0 || i >= static_cast<int>(s.edit->tracks.size())) return out;
     const model::TrackEdit& t = *s.edit->tracks[static_cast<std::size_t>(i)];
-    std::vector<const model::Insert*> slots;
-    for (const model::Insert& in : t.inserts) slots.push_back(&in);
-    std::sort(slots.begin(), slots.end(),
+    std::vector<const model::Insert*> ordered;
+    for (const model::Insert& in : t.inserts) ordered.push_back(&in);
+    std::sort(ordered.begin(), ordered.end(),
               [](const model::Insert* a, const model::Insert* b) { return a->slot < b->slot; });
     std::string why;
     // The model's own check, so the menu never offers what the engine refuses.
-    for (const model::Insert* in : slots) {
+    for (const model::Insert* in : ordered) {
         if (!model::render_insert_valid(s, t.id, in->id, why)) continue;
         QVariantMap row;
         row.insert(QStringLiteral("id"), QString::number(in->id));

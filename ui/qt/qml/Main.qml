@@ -1549,7 +1549,6 @@ Rectangle {
             y = Math.min(py, root.height - height - Theme.space2)
             visible = true
         }
-        onVisibleChanged: if (!visible) inserts = []
         Connections {
             target: trackMenu
             function onVisibleChanged() { if (!trackMenu.visible) processWithMenu.visible = false }
@@ -1580,9 +1579,10 @@ Rectangle {
                     bold: false
                     fontPx: Theme.textBody
                     text: modelData.name
+                    // Sent before the menus close: closing them ends this delegate.
                     onClicked: {
-                        trackMenu.visible = false
                         root.session.renderInPlace("process", modelData.id)
+                        trackMenu.visible = false
                     }
                 }
             }
