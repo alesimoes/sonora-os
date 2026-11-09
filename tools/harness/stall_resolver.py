@@ -110,7 +110,9 @@ def _queue(sv, fid, stalled, now):
     wid = f"wake-principal-{EVENT}-{fid}-{n}"
     store.add_task(wid, None, AGENT, kind="wake", feature_id=fid,
                    brief=brief(sv, fid, stalled))
-    store.set_task(wid, event=EVENT)
+    # Opus first: fable is the last resort (agents-and-models.md), and a
+    # stall is usually a claim, a plan gap or a slow build, not a hard bug.
+    store.set_task(wid, event=EVENT, model_pin="opus")
     store.set_meta(_meta_key(fid), now)
     store.event(wid, "stall_resolver", json.dumps(
         {"feature": fid, "tasks": [t["id"] for t, _ in stalled]}))

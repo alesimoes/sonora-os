@@ -43,18 +43,45 @@ function renderChat() {
   if (sig === lastSig) return;
   lastSig = sig;
   const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
-  const prev = log.querySelectorAll(".msg,.card,.sys").length;
-  let html = messages.length ? "" : welcome();
-  html += messages.map(m => bubble(m) + cardsHtml(m, chat.actions)).join("");
-  html += C.queue.map(q => `<div class="msg me"><div class="who"><span>Você${q.to ? " → " + esc(q.to) : ""}</span>` +
-    `<time>enviando…</time></div><p>${esc(q.text)}</p></div>`).join("");
-  if (thinking(messages)) html += thinkingBubble(chat.partial);
-  if (notice) html += `<div class="sys">${esc(notice)}</div>`;
-  log.innerHTML = html;
-  wireCards(log);
-  const now = log.querySelectorAll(".msg,.card,.sys").length;
+  const top = log.scrollTop;
+  const items = [];
+  if (!messages.length) items.push(["welcome", welcome()]);
+  messages.forEach((m, i) => items.push(["m:" + (m.id || i), bubble(m) + cardsHtml(m, chat.actions)]));
+  C.queue.forEach((q, i) => items.push(["q:" + i, `<div class="msg me"><div class="who"><span>Você${q.to ? " → " + esc(q.to) : ""}</span>` +
+    `<time>enviando…</time></div><p>${esc(q.text)}</p></div>`]));
+  if (thinking(messages)) items.push(["think", thinkingBubble(chat.partial)]);
+  if (notice) items.push(["notice", `<div class="sys">${esc(notice)}</div>`]);
+  const added = patchLog(log, items);
   if (atEnd) { log.scrollTop = log.scrollHeight; $("#newer").hidden = true; }
-  else if (now > prev) $("#newer").hidden = false;
+  else { log.scrollTop = top; if (added) $("#newer").hidden = false; }
+}
+
+/* Only the items whose markup changed are replaced, new ones appended, gone
+   ones removed: rewriting the whole log on every pushed frame made the chat
+   shake while the owner scrolled (2026-11-08). Each item is a display:contents
+   wrapper, so the log's layout is the same as before. Returns how many were new. */
+function patchLog(log, items) {
+  const old = new Map();
+  for (const el of Array.from(log.children)) {
+    if (el.dataset && el.dataset.k) old.set(el.dataset.k, el); else el.remove();
+  }
+  let added = 0, prev = null;
+  for (const [k, html] of items) {
+    let el = old.get(k);
+    if (el) old.delete(k);
+    if (!el || el._html !== html) {
+      const fresh = document.createElement("div");
+      fresh.className = "it"; fresh.dataset.k = k; fresh._html = html; fresh.innerHTML = html;
+      wireCards(fresh);
+      if (el) el.replaceWith(fresh); else added++;
+      el = fresh;
+    }
+    const want = prev ? prev.nextSibling : log.firstChild;
+    if (want !== el) log.insertBefore(el, want);
+    prev = el;
+  }
+  old.forEach(el => el.remove());
+  return added;
 }
 
 function initComposer() {

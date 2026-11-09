@@ -8,7 +8,7 @@ agent, sonnet, and no senior round.
 import json
 import os
 
-from . import failures, tiers
+from . import failures, launcher, tiers
 
 PRINCIPAL_AGENT = "principal-engineer"
 
@@ -63,6 +63,8 @@ def tier_of(orch, task_id):
 
 def model_for(orch, t, kind):
     """`--model` for one run; None leaves it to the launcher (principal)."""
+    if t.get("model_pin"):
+        return launcher.Pinned(t["model_pin"])
     if kind == "principal":
         return None
     tier, grade = tier_of(orch, t["id"])
