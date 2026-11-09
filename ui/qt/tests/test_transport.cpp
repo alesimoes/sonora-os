@@ -467,6 +467,9 @@ void type(QQuickView& view, const char* text) {
 }
 
 void click(QQuickView& view, QQuickItem* item) {
+    // A Row repositions its children when polished; a chip that just became
+    // visible still sits where its hidden sibling is until then.
+    view.grabWindow();
     const QPointF c = item->mapToScene(QPointF(item->width() / 2, item->height() / 2));
     QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier, c.toPoint());
 }
