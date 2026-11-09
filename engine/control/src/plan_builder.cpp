@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sonora/bus_order.h"
 #include "sonora/click.h"
 #include "sonora/graph_levels.h"
 #include "sonora/model/musical_map.h"
@@ -389,33 +390,10 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
             bus_outputs[b] = it->second;
         }
     }
-    // Topological over sends and outputs, ties in display order: the
-    // lowest-numbered bus no remaining bus feeds goes next. Quadratic in
-    // buses, which are few.
-    std::vector<uint32_t> inputs(bus_count, 0);
-    for (const SendBinding& s : sends) {
-        if (s.strip >= limits.engine_tracks) ++inputs[s.bus];
-    }
-    for (uint32_t b = 0; b < bus_count; ++b) {
-        if (bus_outputs[b] != kNoBus) ++inputs[bus_outputs[b]];
-    }
     std::vector<uint32_t> bus_order;
-    std::vector<uint8_t> placed(bus_count, 0);
-    while (bus_order.size() < bus_count) {
-        uint32_t next = bus_count;
-        for (uint32_t b = 0; b < bus_count && next == bus_count; ++b) {
-            if (!placed[b] && inputs[b] == 0) next = b;
-        }
-        if (next == bus_count) {
-            error = "the aux buses' sends and outputs make a feedback loop; the plan is not built";
-            return false;
-        }
-        placed[next] = 1;
-        bus_order.push_back(next);
-        for (const SendBinding& s : sends) {
-            if (s.strip == limits.engine_tracks + next) --inputs[s.bus];
-        }
-        if (bus_outputs[next] != kNoBus) --inputs[bus_outputs[next]];
+    if (!order_buses(limits.engine_tracks, sends, bus_outputs, bus_order)) {
+        error = "the aux buses' sends and outputs make a feedback loop; the plan is not built";
+        return false;
     }
     MixLayout mix;
     mix.bus_count = bus_count;

@@ -9,6 +9,7 @@ add_library(sonora_control STATIC
   src/engine_control_in_process.cpp
   src/control_socket_server.cpp
   src/plan_builder.cpp
+  src/bus_order.cpp
   src/playback_controller.cpp
   src/closed_take.cpp
   src/orphan_offer.cpp
