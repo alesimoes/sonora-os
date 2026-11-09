@@ -20,7 +20,7 @@ namespace {
 // Sends through the fake engine as the interface's link does.
 class FakeEngineSink : public PitchCommandSink {
 public:
-    explicit FakeEngineSink(api::FakeEngine& engine) : engine_(engine) {}
+    explicit FakeEngineSink(api::testing::FakeEngine& engine) : engine_(engine) {}
     uint64_t send(const std::string& command, const std::string& argument,
                   std::string&) override {
         ++sent;
@@ -34,11 +34,11 @@ public:
     uint64_t last_seq = 0;
 
 private:
-    api::FakeEngine& engine_;
+    api::testing::FakeEngine& engine_;
 };
 
 // The replies the engine has for us, handed to the model.
-int pump(api::FakeEngine& engine, PitchEditorModel& model) {
+int pump(api::testing::FakeEngine& engine, PitchEditorModel& model) {
     api::Inbox in;
     engine.poll(in);
     for (const api::CommandReply& r : in.replies) {
@@ -47,10 +47,10 @@ int pump(api::FakeEngine& engine, PitchEditorModel& model) {
     return int(in.replies.size());
 }
 
-std::unique_ptr<api::FakeEngine> engine_with_pitch(bool pitch) {
-    api::FakeEngine::Config config;
+std::unique_ptr<api::testing::FakeEngine> engine_with_pitch(bool pitch) {
+    api::testing::FakeEngine::Config config;
     if (pitch) config.capabilities.push_back(api::kCapabilityPitch);
-    auto engine = std::make_unique<api::FakeEngine>(config);
+    auto engine = std::make_unique<api::testing::FakeEngine>(config);
     std::string error;
     if (!engine->connect(error)) std::fprintf(stderr, "connect: %s\n", error.c_str());
     return engine;
