@@ -9,6 +9,7 @@
 #include "sonora/bus_order.h"
 #include "sonora/click.h"
 #include "sonora/graph_levels.h"
+#include "sonora/key_edges.h"
 #include "sonora/model/musical_map.h"
 
 namespace sonora {
@@ -411,12 +412,13 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     }
     mix.bus_hardware = bus_hardware.data();
     const GraphSize graph = mix_graph_size(limits.engine_tracks, bindings.data(), mix);
+    const std::vector<uint32_t> keys = chain_keys(tracks, bindings, bus_index);
 
     PlanSizes sizes;
     sizes.tracks = limits.engine_tracks;
     sizes.segments = static_cast<uint32_t>(segment_total);
     sizes.nodes = graph.nodes;
-    sizes.edges = graph.edges;
+    sizes.edges = graph.edges + key_edge_count(keys);
     sizes.chunk_slots = static_cast<uint32_t>(slot_total);
     const std::vector<ClickSegment> click = click_segments(snapshot.settings);
     sizes.click_segments = static_cast<uint32_t>(click.size());
@@ -549,6 +551,12 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         n.first_plugin_lane = lanes_first[t];
         n.plugin_lane_count = lanes_count[t];
     }
+    KeyEdgeResult keyed;
+    if (!add_key_edges(*plan, keys, keyed, error)) {
+        destroy_plan(plan);
+        return false;
+    }
+    report.missing_keys = keyed.missing;
     report.track_shortfall.assign(limits.engine_tracks, 0);
     const Compensation comp =
         compensate(*plan, limits.max_delay_frames, continuity.pool, report.track_shortfall.data());

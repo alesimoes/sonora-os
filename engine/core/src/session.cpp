@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "denormals.h"
+#include "sonora/chain_key.h"
 #include "sonora/frame_text.h"
 #include "sonora/plan_graph.h"
 
@@ -1898,10 +1899,19 @@ void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
                 return;
             }
             case NodeKind::InsertChain: {
-                // One input edge, never delayed: compensation sits on the
-                // edges into the bus.
-                const uint32_t src = plan.edges[node.first_input_edge].from_node;
-                const float* const in[2] = {node_out(pass, src, 0), node_out(pass, src, 1)};
+                // The signal edge is delayed only to meet a key bus's late
+                // sum (ADR-0058 §2); the rest of compensation sits on the
+                // edges into the bus. Delayed here, into the node's own
+                // planes, which the runner may read in place.
+                const PlanEdge& signal = plan.edges[node.first_input_edge];
+                const float* in[2] = {node_out(pass, signal.from_node, 0), node_out(pass, signal.from_node, 1)};
+                if (signal.delay_frames != 0) {
+                    std::memset(L, 0, n * sizeof(float));
+                    std::memset(R, 0, n * sizeof(float));
+                    sum_edge(plan, signal, in, out, n);
+                    in[0] = L;
+                    in[1] = R;
+                }
                 const bool silent = node.channel_slot == kSilentChannelSlot;
                 bool played = false;
                 if (runner_ != nullptr && node.channel_slot != kNoChannelSlot && !silent) {
@@ -1911,11 +1921,30 @@ void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
                     // changes gather_params() sorted to it.
                     const uint32_t o = node_order_[ni];
                     const uint32_t k = o < order_chains_ ? order_count_[o] : 0;
-                    runner_->run(node, in, out, n, k != 0 ? node_params_.get() + order_first_[o] : nullptr, k);
+                    const ChainParamEvent* events = k != 0 ? node_params_.get() + order_first_[o] : nullptr;
+                    if (node.key_channels == 0) {
+                        runner_->run(node, in, out, n, events, k);
+                    } else {
+                        // No key edge: the bus is gone, and the key is
+                        // silence, never the chain's own signal.
+                        const uint32_t ks = key_source(plan, node);
+                        const float* key[2] = {nullptr, nullptr};
+                        if (ks != kNoNode) {
+                            key[0] = node_out(pass, ks, 0);
+                            key[1] = node_out(pass, ks, 1);
+                        }
+                        // A mono chain's side 1 is free until it copies
+                        // side 0 there after the run.
+                        if (ks != kNoNode && node.key_channels == 1 && node.channels == 1) {
+                            mono_key(key[0], key[1], R, n);
+                            key[0] = R;
+                        }
+                        runner_->run_keyed(node, in, key, out, n, events, k);
+                    }
                 } else if (node.channel_slot == kNoChannelSlot) {
                     // Unbound: laid out with latency 0, so dry is aligned.
-                    std::memcpy(L, in[0], n * sizeof(float));
-                    std::memcpy(R, in[1], n * sizeof(float));
+                    if (in[0] != L) std::memcpy(L, in[0], n * sizeof(float));
+                    if (in[1] != R) std::memcpy(R, in[1], n * sizeof(float));
                 } else {
                     // Laid out silent, or bound but not run this callback
                     // (no runner, a callback the runner does not take): the
@@ -1937,7 +1966,7 @@ void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
                     if (TrackTap* tap = track_tap_.load(std::memory_order_acquire)) {
                         if (tap->engine_track() == plan.tracks[node.track].engine_track) {
                             if (played) {
-                                tap->push(L, R, n, node.latency_frames);
+                                tap->push(L, R, n, chain_lag(plan, node));
                             } else {
                                 tap->unplayed(n);
                             }
@@ -1955,7 +1984,7 @@ void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
                 // The chain's output is its latency late: the lanes follow
                 // the audio they scale (ADR-0027 §2).
                 apply_track_fader(plan, pt, pt.channels >= 2, in, out, n, from,
-                                  chain.latency_frames);
+                                  chain_lag(plan, chain));
                 track_meters_[pt.engine_track].process(out, n);
                 return;
             }
@@ -1978,7 +2007,7 @@ void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
                     // A chain's output is its latency late, as for the
                     // fader after it.
                     const uint32_t lag =
-                        src.kind == NodeKind::InsertChain ? src.latency_frames : 0;
+                        src.kind == NodeKind::InsertChain ? chain_lag(plan, src) : 0;
                     sum_send(plan, edge, mono, in, out, n, from, lag);
                 }
                 return;
@@ -2723,7 +2752,11 @@ bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
                 if (node.input_edge_count != 1) return false;
                 break;
             case NodeKind::InsertChain:
-                if (node.input_edge_count != 1) return false;
+                // The signal, and a keyed chain's key when its bus exists.
+                if (node.key_channels > node.channels) return false;
+                if (node.input_edge_count != 1 && (node.input_edge_count != 2 || node.key_channels == 0)) {
+                    return false;
+                }
                 if (node.track >= plan.track_count) return false;
                 break;
             case NodeKind::AuxSum:
