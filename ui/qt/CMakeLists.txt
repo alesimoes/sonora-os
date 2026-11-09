@@ -517,6 +517,11 @@ add_executable(test_ui_session_templates tests/test_session_templates.cpp)
 target_link_libraries(test_ui_session_templates PRIVATE sonora_ui_session sonora_session_files sonora_sha256)
 add_test(NAME ui_session_templates COMMAND test_ui_session_templates)
 set_tests_properties(ui_session_templates PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# Save as Template into a category (ADR-0146 §4), on the same rig.
+add_executable(test_ui_session_template_categories tests/test_session_template_save_category.cpp)
+target_link_libraries(test_ui_session_template_categories PRIVATE sonora_ui_session sonora_session_files)
+add_test(NAME ui_session_template_categories COMMAND test_ui_session_template_categories)
+set_tests_properties(ui_session_template_categories PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Strip metering: post-fader peaks, the Pre/Post point, the over latch, one
 # read per tick, on a recording adapter.

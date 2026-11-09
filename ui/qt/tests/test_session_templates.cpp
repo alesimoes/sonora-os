@@ -162,7 +162,8 @@ int save_as_template_and_new_from_it() {
     CHECK(session.sessionList().isEmpty());
     CHECK(!session.saveSessionAsTemplate(QStringLiteral("Vocal Setup"), false, why));
     CHECK(why.find("already") != std::string::npos);
-    CHECK(!session.saveSessionAsTemplate(QStringLiteral("a/b"), false, why));
+    // One category level at most (ADR-0146 §1).
+    CHECK(!session.saveSessionAsTemplate(QStringLiteral("a/b/c"), false, why));
     const auto template_before = tree(tdir);
 
     // New from Template: the engine enters the template's folder on the

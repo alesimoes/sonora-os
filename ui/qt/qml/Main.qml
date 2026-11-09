@@ -869,6 +869,7 @@ Rectangle {
             saveAsPanel.where = where
             saveAsPanel.problem = ""
             saveAsInput.text = name
+            saveAsCategory.text = ""
             visible = true
             saveAsInput.forceActiveFocus()
             saveAsInput.selectAll()
@@ -880,12 +881,17 @@ Rectangle {
         function close() {
             visible = false
             saveAsInput.focus = false
+            saveAsCategory.focus = false
             root.shell.setTextEntry(false)
         }
         function accept() {
             const command = saveAsPanel.asTemplate ? "app.save_as_template"
                           : saveAsPanel.copy ? "app.save_copy_in" : "app.save_as"
-            if (root.shell.invokeWith(command, -1, saveAsInput.text)) close()
+            // ADR-0146 §4: a category is the template's path one level deeper.
+            const category = saveAsCategory.text.trim()
+            const name = saveAsPanel.asTemplate && category.length > 0
+                       ? category + "/" + saveAsInput.text : saveAsInput.text
+            if (root.shell.invokeWith(command, -1, name)) close()
             else saveAsPanel.problem = root.shell.statusText
         }
 
@@ -915,6 +921,7 @@ Rectangle {
             Row {
                 spacing: Theme.space2
                 Text {
+                    id: saveAsNameLabel
                     anchors.verticalCenter: parent.verticalCenter
                     text: saveAsPanel.asTemplate ? "Template name" : "Session name"
                     color: Theme.text
@@ -941,6 +948,48 @@ Rectangle {
                         Keys.onEscapePressed: saveAsPanel.close()
                         Keys.onReturnPressed: saveAsPanel.accept()
                         Keys.onEnterPressed: saveAsPanel.accept()
+                    }
+                }
+            }
+            // Optional: empty saves the template at the top of the list.
+            Row {
+                visible: saveAsPanel.asTemplate
+                spacing: Theme.space2
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: saveAsNameLabel.width
+                    text: "Category"
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                }
+                Rectangle {
+                    width: 240
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.window
+                    border.color: saveAsCategory.activeFocus ? Theme.accent : Theme.borderStrong
+                    TextInput {
+                        id: saveAsCategory
+                        objectName: "saveAsCategory"
+                        anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.selectionFill
+                        selectedTextColor: Theme.text
+                        font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                        onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                        onTextChanged: saveAsPanel.problem = ""
+                        Keys.onEscapePressed: saveAsPanel.close()
+                        Keys.onReturnPressed: saveAsPanel.accept()
+                        Keys.onEnterPressed: saveAsPanel.accept()
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: saveAsCategory.text.length === 0 && !saveAsCategory.activeFocus
+                            text: "None"
+                            color: Theme.textSecondary
+                            font { family: Theme.fontFamily; pixelSize: Theme.textBody; italic: true }
+                        }
                     }
                 }
             }
