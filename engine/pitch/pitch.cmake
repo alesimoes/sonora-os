@@ -1,9 +1,10 @@
 # time.pitch (ADR-0143 sections 4 and 6): the `pitch` verb of sample.edit.
-# Added by the deferred hook in plugins/analyze/CMakeLists.txt once the root is
-# read and only when sonora_control exists; this file joins its sources to
-# sonora_control (engine/control/CMakeLists.txt is held by other features),
-# so the paths are absolute. Moves to engine/control when that file frees.
-set(_pitch_dir "${CMAKE_CURRENT_SOURCE_DIR}")
+# Included by the deferred hook in plugins/analyze/CMakeLists.txt once the
+# root is read and only when sonora_control exists, in the root's scope (CMake
+# refuses add_subdirectory() there); it joins its sources to sonora_control
+# (engine/control/CMakeLists.txt is held by other features), so every path is
+# absolute. Moves to engine/control when that file frees.
+set(_pitch_dir "${CMAKE_CURRENT_LIST_DIR}")
 
 target_sources(sonora_control PRIVATE
   "${_pitch_dir}/src/pitch_render.cpp"
@@ -31,7 +32,7 @@ else()
 endif()
 target_compile_definitions(sonora_control PRIVATE SONORA_PITCH_RUBBERBAND=${SONORA_PITCH_RUBBERBAND})
 
-# The root labels by directory and does not know this one; label "engine"
+# The root labels by directory and does not know this file; label "engine"
 # for the task's ctest -L engine, "control" as the tests of the code they run.
 add_executable(test_sample_edit_pitch
   "${CMAKE_SOURCE_DIR}/engine/control/tests/test_sample_edit_pitch.cpp")
@@ -42,9 +43,9 @@ add_test(NAME sample_edit_pitch COMMAND test_sample_edit_pitch)
 set_tests_properties(sample_edit_pitch PROPERTIES LABELS "control;engine")
 
 if(SONORA_PITCH_RUBBERBAND)
-  add_executable(test_pitch_rubberband tests/test_rubberband_shifter.cpp
-    src/rubberband_shifter.cpp)
-  target_include_directories(test_pitch_rubberband PRIVATE src)
+  add_executable(test_pitch_rubberband "${_pitch_dir}/tests/test_rubberband_shifter.cpp"
+    "${_pitch_dir}/src/rubberband_shifter.cpp")
+  target_include_directories(test_pitch_rubberband PRIVATE "${_pitch_dir}/src")
   target_link_libraries(test_pitch_rubberband PRIVATE sonora_pitch PkgConfig::SONORA_RUBBERBAND)
   add_test(NAME pitch_rubberband COMMAND test_pitch_rubberband)
   set_tests_properties(pitch_rubberband PROPERTIES LABELS "control;engine")
