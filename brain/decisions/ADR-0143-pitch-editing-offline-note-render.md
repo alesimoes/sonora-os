@@ -46,9 +46,11 @@ resting on unmeasured CPU. ADR-0136 already settled the same trade for time stre
 6. **Overlap with in-flight features:** this ADR's code lands in new directories only.
    CMake hooks go at the top of `plugins/analyze/CMakeLists.txt` (guarded `if(EXISTS)`);
    `engine/pitch` is added by a `cmake_language(DEFER DIRECTORY <root>)` call that runs
-   once the root is read and only `if(TARGET sonora_control)`, so its own
-   `CMakeLists.txt` adds its sources to `sonora_control` with a plain `target_sources`
-   and labels its tests itself. The contract test is `contracts/api/pitch`. They move to the root and `engine/control/CMakeLists.txt`
+   once the root is read and only `if(TARGET sonora_control)`, and `include()`s the
+   fragment `engine/pitch/pitch.cmake` (amended 2026-11-09: CMake refuses
+   `add_subdirectory()` during deferred execution), which adds its sources to
+   `sonora_control` with a plain `target_sources` and labels its tests itself. Its
+   module edges live in the drop-in `tools/module-deps.d/pitch_engine.allow`. The contract test is `contracts/api/pitch`. They move to the root and `engine/control/CMakeLists.txt`
    once time.elastic and ui.mixer.sidechain merge.
 
 ## Rationale
@@ -72,9 +74,11 @@ they free (PR title says partial).
    needs listening plus a measured pitch error (target < 5 cents) on a sung test file.
 2. YIN accuracy and CPU on 10 min mono 48 kHz (target: < 20 % of real time, < 10 cents
    error on the voiced frames of a reference file).
-3. The deferred `add_subdirectory(engine/pitch)` and its `target_sources` into
+3. The deferred `include(engine/pitch/pitch.cmake)` and its `target_sources` into
    `sonora_control` under CMake of the shipped toolchain (3.19+ needed;
-   older warns); fallback is the root hook after time.elastic merges.
+   older warns); fallback is the root hook after time.elastic merges. Checked
+   2026-11-09 in sonora-build:trixie: a deferred `add_subdirectory()` is refused,
+   the `include()` configures and builds.
 4. Whether sample.edit's own line parsing takes a 4096-character PARAM. The wire is
    settled: `kMaxPitchParamChars` (64 x 64) is below `kMaxText` (64 KiB), checked by the
    contract test.

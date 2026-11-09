@@ -19,15 +19,17 @@ foreach(_pitch_dir contracts/api/pitch common/pitch ui/pitch)
   endif()
 endforeach()
 # engine/pitch adds its sources to sonora_control, which engine/control
-# defines later; so it is added once the root has been read, and only when
-# that target exists (it does not in the neutral or plugins-only builds).
-if(EXISTS "${CMAKE_SOURCE_DIR}/engine/pitch/CMakeLists.txt")
+# defines later; so its fragment is read once the root has been, and only
+# when that target exists (it does not in the neutral or plugins-only
+# builds). include(), not add_subdirectory(): CMake refuses a subdirectory
+# during deferred execution.
+if(EXISTS "${CMAKE_SOURCE_DIR}/engine/pitch/pitch.cmake")
   if(CMAKE_VERSION VERSION_LESS 3.19)
     message(WARNING "engine/pitch needs CMake 3.19 (cmake_language DEFER); not built")
   else()
     function(_sonora_pitch_join_control)
       if(TARGET sonora_control)
-        add_subdirectory("${CMAKE_SOURCE_DIR}/engine/pitch" "${CMAKE_BINARY_DIR}/engine/pitch")
+        include("${CMAKE_SOURCE_DIR}/engine/pitch/pitch.cmake")
       endif()
     endfunction()
     cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _sonora_pitch_join_control)
