@@ -49,8 +49,8 @@ check "host gone silent also passes" "$(is $rc 0)"
 
 rc=0
 eval_run "$W/slow.lat" "$W/ps-rt.txt" "$W/crash-ok.log" 0 || rc=$?
-check "p99 over the deadline exits 1" "$(is $rc 1)"
-check "names the p99 criterion" "$(has "$W/out" 'FAIL  p99 inside the deadline')"
+check "p99.9 over the deadline exits 1" "$(is $rc 1)"
+check "names the p99.9 criterion" "$(has "$W/out" 'FAIL  p99.9 inside the deadline')"
 
 rc=0
 eval_run "$W/good.lat" "$W/ps-none.txt" "$W/crash-ok.log" 0 || rc=$?

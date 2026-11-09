@@ -71,7 +71,7 @@ yb_evaluate() {
   echo "yabridge sign-off report"
   echo "  round trip us: p50 $p50  p99 $p99  p99.9 $p999  max $max"
   echo "  period $YB_PERIOD_US us, deadline $YB_DEADLINE_US us, dropped $dropped"
-  crit "p99 inside the deadline" "$(yb_ok yb_le "$p99" "$YB_DEADLINE_US")" "$p99 us against $YB_DEADLINE_US us"
+  crit "p99.9 inside the deadline" "$(yb_ok yb_le "$p999" "$YB_DEADLINE_US")" "$p999 us against $YB_DEADLINE_US us"
   crit "max inside the period" "$(yb_ok yb_le "$max" "$YB_PERIOD_US")" "$max us against $YB_PERIOD_US us"
   crit "no block dropped" "$(yb_ok yb_eq "$dropped" 0)" "$dropped dropped"
   rt="$(yb_wine_rt_count "$psf")"

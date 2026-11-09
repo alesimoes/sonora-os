@@ -26,7 +26,7 @@ fail() {
   exit 1
 }
 
-HOST="" DRIVER="" PLUGIN="" BLOCKS=20000 REPORT=""
+HOST="" DRIVER="" PLUGIN="" BLOCKS=225000 REPORT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host) HOST="$2"; shift 2 ;;
