@@ -70,7 +70,12 @@ const ShotRegistrar registrar{[] {
         const QString future_file = session_file_path(archive, QStringLiteral("Surround Mix"));
         QDir().mkpath(QFileInfo(future_file).absolutePath());
         QFile ff(future_file);
-        if (ff.open(QIODevice::WriteOnly)) ff.write(future);
+        // Closed before the browser lists the folder: left open, the bytes
+        // were still buffered and the row never appeared.
+        if (ff.open(QIODevice::WriteOnly)) {
+            ff.write(future);
+            ff.close();
+        }
         c.session.setTemplatesDir(dir.path());
         c.model.invoke(QStringLiteral("app.new_from_template"), -1);
         QQuickItem* root = c.view.rootObject();
