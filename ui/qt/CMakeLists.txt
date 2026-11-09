@@ -128,6 +128,7 @@ sonora_ui_library(sonora_ui_session QT SOURCES
   src/session_files.h src/session_files.cpp
   src/window_layouts.h src/window_layouts.cpp
   src/preferences.h src/preferences.cpp
+  src/transport_prefs.h src/transport_prefs.cpp
   src/import_model.h src/import_model.cpp
   src/transport_model.h src/transport_model.cpp
   src/scene_item.h src/scene_item.cpp
@@ -407,6 +408,11 @@ target_compile_definitions(test_ui_preferences PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_preferences COMMAND test_ui_preferences)
 set_tests_properties(ui_preferences PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# Click / Count Off at start (ADR-0075): the pure plan and the version-1 file.
+add_executable(test_ui_transport_prefs tests/test_transport_prefs.cpp)
+target_link_libraries(test_ui_transport_prefs PRIVATE sonora_ui_session Qt6::Test)
+add_test(NAME ui_transport_prefs COMMAND test_ui_transport_prefs)
+set_target_properties(test_ui_transport_prefs PROPERTIES AUTOMOC ON)
 
 # Track > Freeze, Commit, Unfreeze, Process Selection (ADR-0051): the menu over
 # FakeEngine's wire, the argument it sends, progress and the held notice.

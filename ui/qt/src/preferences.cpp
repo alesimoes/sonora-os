@@ -13,7 +13,7 @@
 namespace sonora::ui {
 namespace {
 
-constexpr int kVersion = 1;
+constexpr int kVersion = 2;   // 1 is still read: its missing keys keep the defaults
 
 template <typename E, std::size_t N>
 bool pick(const QJsonObject& o, const char* key, const E (&all)[N], const char* (*name)(E), E& out,
@@ -60,10 +60,11 @@ bool load_preferences(const QString& file, Preferences& out, std::string& why) {
         return false;
     }
     const QJsonObject o = doc.object();
-    if (o.value(QStringLiteral("version")).toInt(0) != kVersion) {
+    const int version = o.value(QStringLiteral("version")).toInt(0);
+    if (version < 1 || version > kVersion) {
         why = file.toStdString() + " is version " +
               std::to_string(o.value(QStringLiteral("version")).toInt(0)) +
-              "; this one reads version " + std::to_string(kVersion);
+              "; this one reads versions 1 to " + std::to_string(kVersion);
         return false;
     }
     Preferences p = out;
@@ -74,6 +75,16 @@ bool load_preferences(const QString& file, Preferences& out, std::string& why) {
         why = file.toStdString() + ": " + reason;
         return false;
     }
+    for (const char* key : {"click_at_start", "count_off_at_start"}) {
+        const QJsonValue v = o.value(QString::fromLatin1(key));
+        if (!v.isUndefined() && !v.isBool()) {
+            why = file.toStdString() + ": " + key + " must be true or false";
+            return false;
+        }
+    }
+    p.click_at_start = o.value(QStringLiteral("click_at_start")).toBool(p.click_at_start);
+    p.count_off_at_start =
+        o.value(QStringLiteral("count_off_at_start")).toBool(p.count_off_at_start);
     out = p;
     return true;
 }
@@ -88,6 +99,8 @@ bool save_preferences(const QString& file, const Preferences& prefs, std::string
     o[QStringLiteral("counter")] = QString::fromLatin1(time_format_name(prefs.counter));
     o[QStringLiteral("grid")] = QString::fromLatin1(grid_value_name(prefs.grid));
     o[QStringLiteral("mode")] = QString::fromLatin1(edit_mode_name(prefs.mode));
+    o[QStringLiteral("click_at_start")] = prefs.click_at_start;
+    o[QStringLiteral("count_off_at_start")] = prefs.count_off_at_start;
     QSaveFile f(file);
     if (!f.open(QIODevice::WriteOnly) ||
         f.write(QJsonDocument(o).toJson(QJsonDocument::Indented)) < 0 || !f.commit()) {
