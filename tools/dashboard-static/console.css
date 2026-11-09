@@ -102,6 +102,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .btn.sm{min-height:34px;padding:4px 10px}
 
 /* ---------- conversation ---------- */
+.log .it{display:contents}
 .log{flex:1;min-height:0;overflow:auto;padding:18px 22px;display:flex;flex-direction:column;gap:12px}
 .sys{align-self:center;font:11px var(--mono);color:var(--mute);letter-spacing:.08em;border-top:1px solid var(--line);padding-top:6px;width:100%;text-align:center}
 .msg{max-width:min(680px,92%);padding:9px 13px;border-radius:3px;border:1px solid var(--line);background:var(--panel)}
