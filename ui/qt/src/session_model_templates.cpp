@@ -313,7 +313,9 @@ bool SessionModel::templateFolderSafe(const QString& key, std::string& why) cons
     // category swapped for a link since then resolves somewhere else.
     const QString parent = key_parent(templates_dir_, key);
     const QString folder = QDir(templates_dir_).filePath(key);
-    if (is_link(parent) || is_link(folder) || is_link(session_file_path(parent, key_name(key))) ||
+    // The templates folder itself may be a link; a category may not.
+    const bool categorised = key.contains(QLatin1Char('/'));
+    if ((categorised && is_link(parent)) || is_link(folder) || is_link(session_file_path(parent, key_name(key))) ||
         canonical(folder) != root + QLatin1Char('/') + key) {
         why = "the template \"" + key.toStdString() + "\" is a link to a folder elsewhere; it is left alone";
         return false;
