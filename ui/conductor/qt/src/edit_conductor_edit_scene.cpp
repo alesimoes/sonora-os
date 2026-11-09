@@ -18,8 +18,19 @@
 namespace sonora::ui {
 namespace {
 
+// The rulers are a Repeater's delegates: visual children only, which
+// findChild() does not walk.
+QQuickItem* item_named(QQuickItem* item, const QString& name) {
+    if (item == nullptr) return nullptr;
+    if (item->objectName() == name) return item;
+    for (QQuickItem* child : item->childItems()) {
+        if (QQuickItem* f = item_named(child, name)) return f;
+    }
+    return nullptr;
+}
+
 ConductorRulerItem* ruler_of(ShotContext& c, const char* name) {
-    return c.view.rootObject()->findChild<ConductorRulerItem*>(QString::fromLatin1(name));
+    return qobject_cast<ConductorRulerItem*>(item_named(c.view.rootObject(), QString::fromLatin1(name)));
 }
 
 // The editor EditWindow laid over the ruler.
