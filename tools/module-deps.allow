@@ -15,6 +15,7 @@ common/audiofile -> common/platform
 common/dsp -> common/base
 common/groove -> common/model
 common/model -> common/base
+common/stretch -> common/model
 common/model -> common/json
 common/model -> common/midi
 common/platform -> common/base
