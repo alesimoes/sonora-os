@@ -56,7 +56,10 @@ std::string data(const char* file) { return std::string(SONORA_AMP_TEST_DATA) + 
 
 void refusal(Suite& s) {
     const double fs = 48000.0;
-    const Chans x = measure::noise(fs, -6.0, 0.25, 9u);
+    // Equal channels: the amp sums a stereo input to mono, and a capture's
+    // output is that sum, so this way the output is comparable to x.
+    Chans x = measure::noise(fs, -6.0, 0.25, 9u);
+    x[1] = x[0];
     {
         // Before prepare(): refused at once, and prepare() has nothing to play.
         auto p = make_amp();
@@ -149,7 +152,8 @@ void deferred(Suite& s) {
     const auto r = p->load_capture(at::identity(fs), msg);
     ok(s, "a 44.1 kHz capture in a 44.1 kHz session prepared for 48 kHz: Deferred, and said why",
        r == Amp::LoadResult::Deferred && msg.find("restarts") != std::string::npos, msg);
-    const Chans x = measure::noise(fs, -6.0, 0.25, 3u);
+    Chans x = measure::noise(fs, -6.0, 0.25, 3u);
+    x[1] = x[0];  // see refusal()
     const Chans y = measure::render(*p, x);
     s.check("deferred: the latency stays until prepare()", p->latency(), before, p->latency() == before, "samples");
     s.check("deferred: the old state plays on (the input, delayed)", delayed_error(x, y, before), 0.0,

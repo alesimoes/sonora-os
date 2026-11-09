@@ -44,7 +44,8 @@ double delayed_error(const std::vector<float>& x, const std::vector<float>& y, s
     return e;
 }
 
-// An identity capture at 48 kHz: what is left is the resampler pair, whose
+// An identity capture at 48 kHz, both channels the same signal (the amp
+// sums them to one): what is left is the resampler pair, whose
 // delay is the latency and whose passband (0.418 of the lower rate) holds
 // the test noise, band-limited to 16 kHz.
 void latency_identity(Suite& s) {
@@ -57,6 +58,7 @@ void latency_identity(Suite& s) {
             p->prepare(fs, block, 2);
             Chans x = measure::noise(fs, -6.0, 0.5, 21u);
             measure::band_limit_and_fade(x, fs, 16000.0);
+            x[1] = x[0];  // the amp is mono: equal channels sum to exactly this
             measure::RenderOptions opt;
             opt.block = block;
             const Chans y = measure::render(*p, x, {}, opt);
