@@ -97,8 +97,6 @@ plugins/native -> contracts/plugin
 ui/client -> common/model
 ui/client -> common/platform
 ui/client -> contracts/api
-ui/elastic -> common/model
-ui/elastic -> contracts/api
 ui/groove -> common/groove
 ui/groove -> common/json
 ui/groove -> common/model
@@ -111,7 +109,6 @@ ui/qt -> common/platform
 ui/qt -> common/session_files
 ui/qt -> contracts/api
 ui/qt -> ui/client
-ui/qt -> ui/elastic
 ui/qt -> ui/groove
 ui/qt -> ui/keymap
 ui/qt -> ui/smart_controls
