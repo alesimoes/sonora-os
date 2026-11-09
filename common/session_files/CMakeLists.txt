@@ -4,7 +4,7 @@
 # for the engine, and the interface itself does not. Never on the audio
 # thread.
 add_library(sonora_session_files STATIC src/session_folder.cpp src/session_import.cpp
-            src/session_import_plan_ops.cpp src/session_import_copy.cpp)
+            src/session_import_plan_ops.cpp src/session_import_copy.cpp src/session_plugin_verify.cpp)
 target_include_directories(sonora_session_files PUBLIC include)
 target_link_libraries(sonora_session_files PUBLIC sonora_model PRIVATE sonora_platform sonora_sha256)
 
@@ -47,4 +47,10 @@ if(UNIX)
   target_include_directories(test_session_plugin_files PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
   target_link_libraries(test_session_plugin_files PRIVATE sonora_session_files sonora_sha256)
   add_test(NAME session_folder_plugin_files COMMAND test_session_plugin_files)
+
+  # Plugin files verified at open (ADR-0151 §2): tampered, short, missing
+  # and linked files refused by name; symlinks, so POSIX's.
+  add_executable(test_session_plugin_verify tests/test_session_plugin_verify.cpp)
+  target_link_libraries(test_session_plugin_verify PRIVATE sonora_session_files sonora_sha256)
+  add_test(NAME session_plugin_verify COMMAND test_session_plugin_verify)
 endif()
