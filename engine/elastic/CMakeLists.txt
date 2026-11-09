@@ -39,6 +39,10 @@ add_executable(test_elastic_onsets tests/test_elastic_onsets.cpp)
 target_link_libraries(test_elastic_onsets PRIVATE sonora_control)
 add_test(NAME elastic_onsets COMMAND test_elastic_onsets)
 
+add_executable(test_elastic_partial_copy tests/test_elastic_partial_copy.cpp)
+target_link_libraries(test_elastic_partial_copy PRIVATE sonora_control)
+add_test(NAME elastic_partial_copy COMMAND test_elastic_partial_copy)
+
 if(RUBBERBAND_FOUND)
   add_executable(test_elastic_rubberband tests/test_elastic_rubberband.cpp)
   target_link_libraries(test_elastic_rubberband PRIVATE sonora_control)

@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "sonora/elastic/elastic_job.h"
+#include "sonora/elastic/partial_copy.h"
 #include "sonora/session_files/session_folder.h"
 #include "sonora/stretch/quantize.h"
 #include "sonora/wav_reader.h"
@@ -255,11 +256,11 @@ bool render_elastic(const ElasticPlan& plan, const std::string& session_dir,
         return false;
     }
     const std::string full = dir + "/" + file;
-    // A partial copy is never left behind: cancelled, failed or unreadable.
+    // A partial copy is never left behind: cancelled, failed, unreadable or
+    // thrown out of (ElasticJob catches the throw but never learns the path).
+    PartialCopy partial(writer, full);
     if (!write_copy(plan, stretched, writer, cancel, permille, why) ||
         !describe_copy(full, file, out.source, why)) {
-        writer.close();
-        std::remove(full.c_str());
         if (why != kCancelled) why = "cannot write " + file + ": " + why;
         return false;
     }
@@ -267,6 +268,7 @@ bool render_elastic(const ElasticPlan& plan, const std::string& session_dir,
     out.region_length = markers.empty()
                             ? plan.region.length
                             : markers.back().target + (plan.region.length - markers.back().source);
+    partial.keep();
     permille.store(kWritten, std::memory_order_relaxed);
     return true;
 }
