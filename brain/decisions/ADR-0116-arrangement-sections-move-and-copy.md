@@ -25,17 +25,28 @@ format (the daemon reserved none) and the `Operation` variant is a known compile
    are not sections. Selection markers also show as sections; a `kind` field is a later format bump if
    owners want them apart.
 2. `arrangement.h/.cpp`: `SectionEdit {section, destination, mode}` with mode `Copy` or `Move`, and
-   `plan_section_edit(snapshot, edit, next_id) -> expected<Compound, Refusal>`. Both modes are
-   insert-style: material at or after `destination` shifts later by the section length (`ShiftRegions`),
-   the copy fills the gap. `Move` then removes the source range and closes the gap (`ShiftRegions` by
-   -length). Regions straddling a boundary are split first; audio playlists of the active playlist of every
-   audio track only. Markers at or after the destination shift with the material; markers inside the
-   section are copied with it (`Copy`) or move with it (`Move`); the section marker itself is re-added.
-3. Reserved ids: the planner takes ids from `next_id` strictly increasing, reserving every conditional one
-   (`split_right_id`), as `Compound` requires.
-4. Refusals (a message, nothing applied): destination inside the section itself; section end beyond the
-   timeline; section has no audio and no markers; Compound would exceed `kMaxCompoundMembers` (256) members
-   (message names the count); a MIDI-only session part is skipped, never an error.
+   `plan_section_edit(snapshot, edit, next_id) -> SectionPlan` (C++17 has no `expected`: a `Compound`
+   and a `refusal` string, `ok()` when the refusal is empty). Both modes are insert-style: material at or
+   after `destination` shifts later by the section length (`ShiftRegions`), the copy fills the gap
+   (`PlaceRegion`, new ids, no clip group). `Move` moves the section's own regions into the gap
+   (`MoveRegion`, ids kept), then closes the gap it left (`ShiftRegions` by -length); a Move to a
+   destination after the section lands it at `destination - length`, before what was at the destination.
+   Regions straddling the section's start, end or the destination are split first (`SplitRegion`);
+   every audio track shifts, so tracks stay aligned; the active playlist of every audio track only.
+   Markers at or after the destination shift with the material (`MoveMarker`); markers inside the
+   section are copied with it (`AddMarker`, `Copy`) or move with it (`Move`); a copy of the section
+   marker itself is added at the destination (`Copy`) or the marker moves (`Move`).
+   `section_markers()` lists the sections; `kSectionEditLimits` is the text of Decision 5.
+3. Ids: the planner takes ids from `next_id` strictly increasing in member order, as `Compound`
+   requires. Every split is decided at plan time, so no id is conditional: `PlaceRegion` and
+   `MoveRegion` carry `split_right_id = 0`, which makes `apply()` refuse instead of overwriting if the
+   gap were ever not empty. The planner applies each member to a working copy as it builds, so a plan
+   it returns is one `apply()` accepts.
+4. Refusals (a message, nothing applied): no such marker, or a point marker; destination inside the
+   section itself, or for `Move` at either of its ends (it is already there); destination before frame
+   0, or material pushed past the end of the timeline; section has no audio and no markers; Compound
+   would exceed `kMaxCompoundMembers` (256) members (message names the count, worked out before
+   anything is built); MIDI tracks are skipped, never an error.
 5. Automation lanes, tempo/meter map entries, plugin state and crossfades across the cut are NOT moved
    in v1 (crossfades drop, as `ShiftRegions` already defines). The UI says so in the command message.
 6. UI: a Sections list in `MemoryLocationsWindow.qml` (rows of range markers) with Move to... and Copy to...
