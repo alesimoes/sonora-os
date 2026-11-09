@@ -38,7 +38,25 @@ Rectangle {
     property real gainDb: 0
     // What the cap and readout show: the ride's value while this fader is
     // being ridden, the document's otherwise.
-    readonly property real shownGain: mixer !== null && mixer.rideTrack === track ? mixer.rideGain : gainDb
+    // A released written Touch ride glides to the static over the model's
+    // AutoMatch time: the animation clock below only prompts the re-read, the
+    // value comes from the model's (injectable) clock.
+    property bool glideActive: false
+    property int glideTick: 0
+    readonly property real shownGain: mixer !== null && mixer.rideTrack === track ? mixer.rideGain
+        : (glideActive && glideTick >= 0 && mixer !== null && !isBus) ? mixer.glideGain(track)
+        : gainDb
+    Connections {
+        target: strip.mixer
+        function onRideChanged() { strip.glideActive = strip.mixer.gliding(strip.track) }
+    }
+    FrameAnimation {
+        running: strip.glideActive
+        onTriggered: {
+            strip.glideTick = strip.glideTick + 1
+            if (!strip.mixer.gliding(strip.track)) strip.glideActive = false
+        }
+    }
     // In Trim and Write/Trim the fader is the trim fader (ADR-0027 §8 slice
     // 5, as in Pro Tools' Trim modes): the cap and the readout show the
     // trim, in the trim colour, and the volume stays where the document has
