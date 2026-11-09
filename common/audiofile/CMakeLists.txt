@@ -1,5 +1,5 @@
 add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp src/wav_recovery.cpp
-  src/wrap_sidecar.cpp src/audio_export.cpp src/audio_import.cpp src/peak_file.cpp)
+  src/wrap_sidecar.cpp src/audio_export.cpp src/export_file.cpp src/audio_import.cpp src/peak_file.cpp)
 target_include_directories(sonora_audiofile PUBLIC include)
 # common/platform for the take file's exclusive, close-on-exec create and its
 # periodic sync (ADR-0008 Â§3; ADR-0009 Consequences).
