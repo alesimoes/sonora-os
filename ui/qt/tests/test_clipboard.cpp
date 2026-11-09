@@ -1557,13 +1557,13 @@ int test_paste_across_sessions_shuffle() {
     Snapshot other = session_with({make_region(30, "X", 4 * kBar, kBar)});
     {
         auto pool = std::make_shared<SourcePool>(*other.sources);
-        pool->sources[0].id = 900;
+        pool->sources[0].id = 400;  // below open_other's next_id: the pool stays sorted by id
         pool->sources[0].path = "Audio Files/Other.wav";
         other.sources = pool;
         auto edit = std::make_shared<EditState>(*other.edit);
         auto t = std::make_shared<TrackEdit>(*edit->tracks[0]);
         auto p = std::make_shared<Playlist>(*t->playlists[0]);
-        p->regions[0].channels = {{900, 0}};
+        p->regions[0].channels = {{400, 0}};
         t->playlists[0] = p;
         edit->tracks[0] = t;
         other.edit = edit;
@@ -1572,7 +1572,9 @@ int test_paste_across_sessions_shuffle() {
     x.c.set_mode(EditMode::Shuffle);
     x.c.select_track(0);
     x.c.set_insertion(0);
-    CHECK(x.c.paste(x.why));
+    const bool ok = x.c.paste(x.why);
+    if (!ok) std::fprintf(stderr, "WHY: %s\n", x.why.c_str());
+    CHECK(ok);
     CHECK(start_of(x.doc.snapshot(), 30) == 6 * kBar);   // moved by the 2 bars pasted
     CHECK(lane(x.doc.snapshot(), 0).regions.size() == 2 &&
           lane(x.doc.snapshot(), 0).regions[0].position == 0);
