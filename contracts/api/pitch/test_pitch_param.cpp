@@ -79,7 +79,7 @@ int max_notes_fit_the_wire() {
     CHECK(validate_pitch_spec(spec, why));
     const std::string text = format_pitch_param(spec);
     CHECK(text.size() <= kMaxPitchParamChars);
-    CHECK(kMaxPitchParamChars < kMaxText);
+    CHECK(kMaxPitchParamChars < wire::kMaxText);
     PitchEditSpec back;
     CHECK(parse_pitch_param(text, back, why));
     CHECK(back.notes.size() == kMaxPitchNotes);
