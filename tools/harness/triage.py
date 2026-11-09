@@ -247,9 +247,29 @@ def hand_fixed(o, t):
     return tip
 
 
+def _sync_pushed_fix(o, t, tip):
+    """A fix pushed from another worktree reaches the local branch, which
+    the tester and the integrator work from. (ok, why)."""
+    if tip.get("ref") != "origin":
+        return True, ""
+    sync = getattr(o.forge, "sync_local", None)
+    if sync is None:
+        return False, "this forge cannot sync the local branch"
+    try:
+        return sync(t["branch"])
+    except Exception as e:  # noqa: BLE001 - git failed: leave it blocked
+        return False, str(e)[:200]
+
+
 def handfixed(o, t, tip):
     """Hand the hand-fixed slice to QA, which verifies the accept."""
     sha, subject = tip["sha"][:8], (tip.get("subject") or "")[:120]
+    ok, why = _sync_pushed_fix(o, t, tip)
+    if not ok:
+        # QA on a local branch without the fix would judge the old code.
+        o.store.event(t["id"], "triage_handfixed_unsynced",
+                      f"{sha} on origin/{t['branch']}: {why}"[:200])
+        return False
     o.store.advance(t["id"], "qa", note=f"hand-fixed after the block: "
                     f"{sha} {subject}")
     o._release(t)

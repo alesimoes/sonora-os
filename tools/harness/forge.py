@@ -11,7 +11,7 @@ import re
 import subprocess
 import tempfile
 
-from harness import forge_push, shell
+from harness import branch_tip, forge_push, shell
 
 
 class ForgeError(Exception):
@@ -128,8 +128,14 @@ class Forge:
         raise NotImplementedError
 
     def branch_tip(self, branch):
-        """{sha, ts (committer epoch seconds), subject} of the local
-        branch's head, or None when no such branch exists."""
+        """{sha, ts (committer epoch seconds), subject, ref} of the branch
+        head that counts: the local one, or origin's when it is strictly
+        ahead (a hand fix pushed from another worktree, harness/branch_tip.py).
+        None when no such branch exists."""
+        raise NotImplementedError
+
+    def sync_local(self, branch):
+        """Fast-forward the local branch to origin's head. (ok, why)."""
         raise NotImplementedError
 
 
@@ -451,16 +457,10 @@ class GhForge(Forge):
         return r.returncode == 0
 
     def branch_tip(self, branch):
-        # Agents' sub-branches live in worktrees of this repository, so the
-        # local ref is the truth: an unpushed hand fix must count.
-        r = self.run(["git", "log", "-1", "--format=%H%x1f%ct%x1f%s",
-                      f"refs/heads/{branch}", "--"], self.root, 60)
-        if r.returncode:
-            return None
-        parts = r.stdout.strip().split("\x1f")
-        if len(parts) != 3 or not parts[1].isdigit():
-            return None
-        return {"sha": parts[0], "ts": float(parts[1]), "subject": parts[2]}
+        return branch_tip.branch_tip(self.run, self.root, branch)
+
+    def sync_local(self, branch):
+        return branch_tip.sync_local(self.run, self.root, branch)
 
     def pre_pr(self, worktree):
         script = os.path.join(worktree, "tools", "pre-pr.sh")

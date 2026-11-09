@@ -103,6 +103,8 @@ ui/qt -> contracts/api
 ui/qt -> ui/client
 ui/qt -> ui/groove
 ui/qt -> ui/keymap
+ui/qt -> ui/smart_controls
+ui/smart_controls -> common/json
 ui/tui -> contracts/api
 ui/tui -> ui/client
 ui/tui -> ui/keymap

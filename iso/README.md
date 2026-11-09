@@ -172,6 +172,25 @@ with `SONORA_WITH_UI=1`; without it the UI unit fails and falls back.
 `tools/test-display-fallback.sh` runs this hand-back under systemd in a
 container.
 
+### Kiosk: opt-in, QEMU checks, the default flip (2026-11-09, ADR-0118)
+
+The kiosk stays opt-in: it runs only when the kernel command line carries
+`sonora.gui`. Without it the image boots the session on tty1 as before.
+To try it in QEMU, boot the ISO with the kiosk flag:
+
+- `tools/test-boot-qemu.sh --gui` boots with `sonora.gui` and checks that
+  labwc and the UI come back within 3 s after a SIGKILL.
+- `tools/test-boot-qemu.sh --gui-broken` boots with `sonora.gui sonora.break_ui`
+  and checks that the fallback ends on tty1 with the session.
+
+The default flip (kiosk on unless the operator opts out) waits for a passing
+`--gui` boot on KVM and a passing `--gui-broken` boot, both recorded under
+`brain/research/` with the machine named (ADR-0118; ADR-0010's stage 2 note
+says the same). Until both are recorded, `sonora.gui` stays opt-in.
+
+Unverified: neither QEMU run has been executed for this note (no `/dev/kvm`
+on the authoring machine).
+
 ## Installing to disk (ADR-0032)
 
 The installed system is the target; the stick is for trying it. Boot the stick

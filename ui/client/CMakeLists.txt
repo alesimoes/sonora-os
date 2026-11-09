@@ -25,3 +25,8 @@ if(UNIX AND TARGET sonora-engine)
   add_dependencies(test_socket_engine sonora-engine)
   add_test(NAME client_socket_engine COMMAND test_socket_engine)
 endif()
+
+# Smart Controls (ADR-0117) hooks in here so no other CMake file is edited.
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/smart_controls/CMakeLists.txt)
+  add_subdirectory(${CMAKE_SOURCE_DIR}/ui/smart_controls ${CMAKE_BINARY_DIR}/ui/smart_controls)
+endif()

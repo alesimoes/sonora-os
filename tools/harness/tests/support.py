@@ -106,6 +106,11 @@ class FakeForge(Forge):
         self._chk("branch_tip")
         return getattr(self, "tips", {}).get(branch)
 
+    def sync_local(self, branch):
+        self._chk("sync_local")
+        self.synced = getattr(self, "synced", []) + [branch]
+        return getattr(self, "sync_result", (True, "fast-forwarded"))
+
     def dispatch_workflow(self, workflow, ref="main"):
         self._chk("dispatch_workflow")
         self.dispatched.append((workflow, ref))
