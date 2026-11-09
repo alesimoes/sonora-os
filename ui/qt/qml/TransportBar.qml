@@ -286,6 +286,30 @@ Rectangle {
                 activeColour: Theme.record
                 onClicked: bar.shell.invoke(command, -1)
             }
+            // Shown only while on: a mode that changes what Record does must
+            // be visible, and its default needs no chip.
+            Row {
+                spacing: Theme.space1
+                visible: bar.transport !== null && (bar.transport.quickPunch || bar.transport.inputOnly)
+                height: visible ? 16 : 0
+                SButton {
+                    objectName: "barQuickPunch"
+                    visible: bar.transport !== null && bar.transport.quickPunch
+                    text: "QUICKPUNCH"
+                    implicitWidth: 70; implicitHeight: 16; fontPx: Theme.textCaption
+                    active: true
+                    activeColour: Theme.record
+                    onClicked: bar.shell.invoke("transport.toggle_quick_punch", -1)
+                }
+                SButton {
+                    objectName: "barInputOnly"
+                    visible: bar.transport !== null && bar.transport.inputOnly
+                    text: "INPUT ONLY"
+                    implicitWidth: 66; implicitHeight: 16; fontPx: Theme.textCaption
+                    active: true
+                    onClicked: bar.shell.invoke("transport.toggle_input_only", -1)
+                }
+            }
             Text {
                 objectName: "barTempo"
                 // The map's tempo where the counter is, not its first entry.
