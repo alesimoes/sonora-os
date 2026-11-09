@@ -383,6 +383,12 @@ target_compile_definitions(test_ui_window_layouts PRIVATE
 add_test(NAME ui_window_layouts COMMAND test_ui_window_layouts)
 set_tests_properties(ui_window_layouts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# Track view contract (ADR-0106): the commands and the per-session store.
+add_executable(test_ui_track_views tests/test_track_views.cpp)
+target_include_directories(test_ui_track_views PRIVATE src)
+target_link_libraries(test_ui_track_views PRIVATE sonora_ui_qt)
+add_test(NAME ui_track_views COMMAND test_ui_track_views)
+
 # Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
 # measurement, its figure by hand, and refusals held in the window.
 add_executable(test_ui_latency tests/test_latency.cpp)
