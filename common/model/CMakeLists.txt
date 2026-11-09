@@ -18,6 +18,7 @@ set(SONORA_MODEL_SOURCES
   src/apply_mix.cpp
   src/apply_group.cpp
   src/apply_midi.cpp
+  src/arrangement.cpp
   src/comping.cpp
   src/groups.cpp
   src/history.cpp
@@ -216,3 +217,8 @@ add_test(NAME model_sequence_file COMMAND test_model_sequence_file)
 add_executable(test_model_tempo_edit tests/test_tempo_edit.cpp)
 target_link_libraries(test_model_tempo_edit PRIVATE sonora_model_audited)
 add_test(NAME model_tempo_edit COMMAND test_model_tempo_edit)
+
+# Arrangement sections (ADR-0116): copy and move a range marker as one Compound.
+add_executable(test_model_arrangement tests/test_arrangement.cpp)
+target_link_libraries(test_model_arrangement PRIVATE sonora_model_audited)
+add_test(NAME model_arrangement COMMAND test_model_arrangement)
