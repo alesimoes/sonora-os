@@ -17,6 +17,10 @@ constexpr std::size_t kBlockFrames = 4096;   // output frames per pass; also FLA
 
 class OutFile {
 public:
+    // `size_limit`: a finished BWF/WAV over this many bytes becomes RF64, an
+    // AIFF over it is refused. The default is what 32-bit sizes hold; tests
+    // lower it so they need not write 4 GiB.
+    explicit OutFile(uint64_t size_limit = 0xFFFFFFFFull);
     ~OutFile();
 
     bool open(const std::string& path, ExportContainer c, int bits, uint32_t rate, uint16_t ch,
@@ -32,6 +36,8 @@ public:
 private:
     bool put(const std::vector<uint8_t>& b, std::string& error);
     void patch(std::size_t at, uint64_t v, int bytes, bool big);
+    void patch_bytes(std::size_t at, const std::vector<uint8_t>& b);
+    void patch_rf64(uint64_t total);
     static void put_extended(std::vector<uint8_t>& b, uint32_t rate);
     static void append_bext(std::vector<uint8_t>& h, const ExportMeta& meta);
 
@@ -39,6 +45,8 @@ private:
     bool flac_frame(std::string& error);
     bool flac_finish(std::string& error);
 
+    uint64_t size_limit_;
+    uint64_t written_ = 0;   // the file size so far, without ftell's long
     std::FILE* file_ = nullptr;
     std::string path_;
     ExportContainer c_ = ExportContainer::Wav;

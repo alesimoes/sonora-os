@@ -1,5 +1,5 @@
 add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp src/wav_recovery.cpp
-  src/wrap_sidecar.cpp src/audio_export.cpp src/export_file.cpp src/audio_import.cpp src/peak_file.cpp)
+  src/wrap_sidecar.cpp src/audio_export.cpp src/export_file.cpp src/flac_bits.cpp src/audio_import.cpp src/peak_file.cpp)
 target_include_directories(sonora_audiofile PUBLIC include)
 # common/platform for the take file's exclusive, close-on-exec create and its
 # periodic sync (ADR-0008 Â§3; ADR-0009 Consequences).
@@ -47,6 +47,12 @@ add_test(NAME wrap_sidecar COMMAND test_wrap_sidecar)
 add_executable(test_audio_export tests/test_audio_export.cpp)
 target_link_libraries(test_audio_export PRIVATE sonora_audiofile)
 add_test(NAME audio_export COMMAND test_audio_export)
+
+# RF64 for a BWF/WAV export past the 32-bit sizes (ADR-0119): the size limit is
+# lowered through the private OutFile so no test writes 4 GiB.
+add_executable(test_audio_export_rf64 tests/test_audio_export_rf64.cpp)
+target_link_libraries(test_audio_export_rf64 PRIVATE sonora_audiofile)
+add_test(NAME audio_export_rf64 COMMAND test_audio_export_rf64)
 
 # Import: any WAV to the session rate, as a BWF copy (ui.editing.import).
 add_executable(test_audio_import tests/test_audio_import.cpp)
