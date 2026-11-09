@@ -48,6 +48,10 @@ _INFRA = re.compile(
     r"WinError 10061|broker (is )?(unreachable|down)|connection refused"
     r"|10[- ]minute (command )?(limit|timeout)|command (time ?limit|timed out)"
     r".{0,80}build-slot|build-slot.{0,120}(time ?limit|timed? ?out|10 min)"
+    # `timeout N tools/build-slot.sh ...` killed: rc=124 / "Terminated" come
+    # a sentence or two after the command (loop_takes.tests r1429, 2026-11-09).
+    r"|(build-slot|micro-build).{0,400}(\brc\s*=\s*124\b|\bTerminated\b"
+    r"|\btool (cap|limit)\b)"
     r"|(docker|container) (engine|daemon)[^.\n]{0,40}(error|not running|"
     r"unreachable|unavailable)|cannot connect to the docker daemon"
     r"|error during connect.{0,60}docker", re.I | re.S)
