@@ -1,0 +1,12 @@
+{
+  "processor": "org.sonora.amp",
+  "class": "E",
+  "note": "ADR-0011 3.2 and 3.5, ADR-0111 5-6. Filled in after the first measured run.",
+  "amp": {"exact_error": 1e-7, "resampled_error": 1e-3, "resampled_level_db": 0.1, "change_step_ratio": 1.2},
+  "denormal_ratio": 1.2,
+  "zipper_dbfs": -60.0,
+  "zipper_tone_dbfs": -24.0,
+  "zipper": ["input", "output", "mix"],
+  "golden_abs": 1e-5,
+  "cpu": {"p999_us": 250.0, "max_us": 500.0, "held": []}
+}
