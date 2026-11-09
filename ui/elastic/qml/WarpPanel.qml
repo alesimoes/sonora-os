@@ -331,6 +331,7 @@ Item {
 
             // The algorithm: what kind of material is being stretched.
             Column {
+                id: algoColumn
                 visible: warpPanel.available
                 width: parent.width
                 spacing: 2
@@ -345,7 +346,8 @@ Item {
                         required property int index
                         required property var modelData
                         readonly property bool chosen: index === warpPanel.algorithm
-                        width: parent.width
+                        // A delegate has no parent while it is created.
+                        width: algoColumn.width
                         height: 28
                         radius: Theme.radiusSmall
                         color: chosen ? Theme.selectionFill : (algoMouse.containsMouse ? Theme.hover : "transparent")

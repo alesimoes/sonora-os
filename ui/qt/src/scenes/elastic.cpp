@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Elastic Audio (ADR-0136). The snare region under bar 5 is selected and
-// zoomed to, and the Warp panel is open over it: "edit-elastic" with three
-// warp markers from the editor's marker model, "edit-elastic-quantize" on
-// the Quantize page, and "edit-elastic-unavailable" as an engine built
-// without the stretcher shows it, the reason and nothing to press. The first
-// two picture the panel as on an engine announcing audio.elastic; the demo's
-// fake engine does not, which is the third picture's state.
+// Elastic Audio (ADR-0136). The Warp panel is open over the snare region the
+// demo selects: "edit-elastic" with three warp markers from the editor's
+// marker model, "edit-elastic-quantize" on the Quantize page, and
+// "edit-elastic-unavailable" as an engine built without the stretcher shows
+// it, the reason and nothing to press. The first two picture the panel as
+// on an engine announcing audio.elastic; the demo's fake engine does not,
+// which is the third picture's state.
 #if __has_include("sonora/ui_elastic/elastic_command.h")
 #include "sonora/ui_elastic/elastic_command.h"
 #include "sonora/ui_elastic/warp_markers.h"
@@ -19,8 +19,8 @@
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickItem>
-#include <QUrl>
 #include <QStringList>
+#include <QUrl>
 #include <QVariantMap>
 
 #include "screenshot_scene.h"
@@ -29,23 +29,12 @@
 namespace sonora::ui {
 namespace {
 
-// The snare region that covers bar 5, selected and in view; null when the
-// demo has none there.
-const model::Region* select_snare(ShotContext& c) {
-    auto& ctl = c.session.controller();
-    const model::Frames bar = 2 * static_cast<model::Frames>(ctl.snapshot().settings.sample_rate);
-    const model::Region* r = nullptr;
-    for (const model::Region& x : c.playlist->regions) {
-        if (x.position <= 4 * bar && x.end() > 4 * bar) r = &x;
-    }
-    if (r == nullptr) {
-        std::fprintf(stderr, "sonora-ui: elastic scene: no snare region under bar 5\n");
-        return nullptr;
-    }
+// The region the demo selects (the snare's second), which the panel acts
+// on; null, said on stderr, when there is none.
+const model::Region* selected_snare(ShotContext& c) {
     std::string why;
-    ctl.select_range(c.track, r->position, r->end());
-    if (!ctl.zoom_fit_selection(why)) std::fprintf(stderr, "sonora-ui: elastic scene: %s\n", why.c_str());
-    ctl.select_region(r->id);
+    const model::Region* r = c.session.controller().selected_region(why);
+    if (r == nullptr) std::fprintf(stderr, "sonora-ui: elastic scene: %s\n", why.c_str());
     return r;
 }
 
@@ -111,7 +100,7 @@ const ShotRegistrar markers_scene{[] {
     s.take = false;
     s.apply = [](ShotContext& c) {
         when_open(c, [](ShotContext& c) {
-            const model::Region* r = select_snare(c);
+            const model::Region* r = selected_snare(c);
             if (r == nullptr) return;
             WarpMarkers markers;
             place_markers(markers, *r);
@@ -133,7 +122,7 @@ const ShotRegistrar quantize_scene{[] {
     s.take = false;
     s.apply = [](ShotContext& c) {
         when_open(c, [](ShotContext& c) {
-            const model::Region* r = select_snare(c);
+            const model::Region* r = selected_snare(c);
             if (r == nullptr) return;
             QVariantMap props = region_props(c, *r);
             props.insert(QStringLiteral("mode"), 2);
@@ -152,7 +141,7 @@ const ShotRegistrar unavailable_scene{[] {
     s.take = false;
     s.apply = [](ShotContext& c) {
         when_open(c, [](ShotContext& c) {
-            const model::Region* r = select_snare(c);
+            const model::Region* r = selected_snare(c);
             if (r == nullptr) return;
             // The refusal itself, as elastic_command gives it on this engine.
             std::string why;
