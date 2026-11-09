@@ -37,12 +37,14 @@ private:
     api::testing::FakeEngine& engine_;
 };
 
-// The replies the engine has for us, handed to the model.
-int pump(api::testing::FakeEngine& engine, PitchEditorModel& model) {
+// The replies the engine has for us, handed to the model; the last one's
+// reason in `message`.
+int pump(api::testing::FakeEngine& engine, PitchEditorModel& model, std::string* message = nullptr) {
     api::Inbox in;
     engine.poll(in);
     for (const api::CommandReply& r : in.replies) {
         model.on_reply(r.seq, r.result == DispatchResult::Ok, r.message);
+        if (message != nullptr) *message = r.message;
     }
     return int(in.replies.size());
 }
@@ -117,11 +119,13 @@ int test_engine_refusal_is_held() {
     CHECK(m.begin_drag(0, why) && m.drag_to(-200.0, why));
     m.end_drag();
     CHECK(m.apply(why));
-    CHECK(pump(*engine, m) == 1);
-    // The fake has no audio files and says so; the edit is kept for another try.
+    std::string reason;
+    CHECK(pump(*engine, m, &reason) == 1);
+    // The fake renders nothing and refuses; its reason is held word for word,
+    // and the edit is kept for another try.
+    CHECK(!reason.empty());
     CHECK(!m.pending() && !m.stale());
-    CHECK(m.notice().find("pitch: not applied: ") == 0);
-    CHECK(m.notice().find("no audio files") != std::string::npos);
+    CHECK(m.notice() == "pitch: not applied: " + reason);
     CHECK(m.edit(0).shift_cents == -200.0);
     CHECK(m.begin_drag(0, why));
     return 0;
