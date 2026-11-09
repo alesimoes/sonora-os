@@ -213,7 +213,7 @@ struct SampleLane {
 };
 SampleLane sample_lane(double row_top, double row_height, int count, int lane);
 
-class MarkerViews;
+class MarkerViewStore;
 
 class EditController {
 public:
@@ -502,7 +502,7 @@ public:
     // is what applies the track layout, since the rows belong to the track
     // list. With neither wired, a recall moves the position only.
     using TrackHider = std::function<void(const std::vector<std::uint64_t>& hidden)>;
-    void set_marker_views(MarkerViews* store, TrackHider hide) {
+    void set_marker_views(MarkerViewStore* store, TrackHider hide) {
         marker_views_ = store;
         hide_tracks_ = std::move(hide);
     }
@@ -904,7 +904,7 @@ private:
     void apply_marker_view(model::Id marker);
     void prune_marker_views();
     Locator locate_;
-    MarkerViews* marker_views_ = nullptr;
+    MarkerViewStore* marker_views_ = nullptr;
     TrackHider hide_tracks_;
     uint64_t clipboard_serial_ = 0;
     model::Id spot_request_ = kNoId;

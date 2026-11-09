@@ -27,16 +27,9 @@
 #include <utility>
 #include <vector>
 
-namespace sonora::ui {
+#include "marker_view_store.h"
 
-struct MarkerView {
-    double fpp = 0.0;          // frames per pixel
-    double start = 0.0;        // frame at the left edge
-    double track_height = 0.0; // px
-    std::vector<std::uint64_t> hidden;  // track ids
-    bool recall_zoom = true;
-    bool recall_tracks = true;
-};
+namespace sonora::ui {
 
 // $SONORA_MARKER_VIEWS_FILE, else $XDG_CONFIG_HOME/sonora/marker-views.json.
 inline QString default_marker_views_file() {
@@ -46,9 +39,9 @@ inline QString default_marker_views_file() {
         .filePath(QStringLiteral("sonora/marker-views.json"));
 }
 
-class MarkerViews {
+class MarkerViews final : public MarkerViewStore {
 public:
-    const MarkerView* find(const std::string& session, std::uint64_t marker) const {
+    const MarkerView* find(const std::string& session, std::uint64_t marker) const override {
         const auto s = views_.find(session);
         if (s == views_.end()) return nullptr;
         const auto m = s->second.find(marker);
@@ -56,7 +49,7 @@ public:
     }
 
     // Replaces the captured view; the two toggles keep what the operator set.
-    void store(const std::string& session, std::uint64_t marker, MarkerView v) {
+    void store(const std::string& session, std::uint64_t marker, MarkerView v) override {
         if (const MarkerView* old = find(session, marker)) {
             v.recall_zoom = old->recall_zoom;
             v.recall_tracks = old->recall_tracks;
@@ -64,7 +57,7 @@ public:
         views_[session][marker] = std::move(v);
     }
 
-    bool clear(const std::string& session, std::uint64_t marker) {
+    bool clear(const std::string& session, std::uint64_t marker) override {
         const auto s = views_.find(session);
         if (s == views_.end() || s->second.erase(marker) == 0) return false;
         if (s->second.empty()) views_.erase(s);
@@ -72,13 +65,13 @@ public:
     }
 
     // False when the marker has no stored view: a toggle on nothing lies.
-    bool setRecallZoom(const std::string& session, std::uint64_t marker, bool on) {
+    bool setRecallZoom(const std::string& session, std::uint64_t marker, bool on) override {
         MarkerView* v = mutableFind(session, marker);
         if (v == nullptr) return false;
         v->recall_zoom = on;
         return true;
     }
-    bool setRecallTracks(const std::string& session, std::uint64_t marker, bool on) {
+    bool setRecallTracks(const std::string& session, std::uint64_t marker, bool on) override {
         MarkerView* v = mutableFind(session, marker);
         if (v == nullptr) return false;
         v->recall_tracks = on;
@@ -87,7 +80,7 @@ public:
 
     // Drops the entries of `session` whose marker is no longer in `live`.
     // Returns how many went.
-    int prune(const std::string& session, const std::set<std::uint64_t>& live) {
+    int prune(const std::string& session, const std::set<std::uint64_t>& live) override {
         const auto s = views_.find(session);
         if (s == views_.end()) return 0;
         int dropped = 0;

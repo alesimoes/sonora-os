@@ -8,7 +8,7 @@
 
 #include "edit_controller.h"
 #include "edit_controller_detail.h"
-#include "marker_views.h"
+#include "marker_view_store.h"
 #include "theme.h"
 
 namespace sonora::ui {
