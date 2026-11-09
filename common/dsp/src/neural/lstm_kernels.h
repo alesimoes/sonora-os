@@ -26,7 +26,7 @@ namespace sonora::dsp::neural::detail {
 
 // out[o] = row o of w ([rows][nin], row-major) dot x[0..nin), for o < rows,
 // in the order above.
-using LstmMatvec = void (*)(const float* w, int rows, int nin, const float* x, float* out) noexcept;
+using LstmMatvec = void (*)(const float* w, int rows, int nin, const float* x, float* out) noexcept SONORA_RT;
 
 void lstm_matvec_generic(const float* w, int rows, int nin, const float* x, float* out) noexcept SONORA_RT;
 
