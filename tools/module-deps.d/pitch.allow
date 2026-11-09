@@ -7,3 +7,4 @@ engine/pitch -> contracts/api
 ui/pitch -> common/pitch
 ui/pitch -> contracts/api
 common/pitch -> contracts/api
+ui/qt -> ui/pitch
