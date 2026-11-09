@@ -58,7 +58,16 @@ struct RenderPlacement {
     Frames start = 0;   // where the rendered file starts on the timeline
     Id source = 0;      // the file, already in the pool (AddSource)
     std::string name;   // the region's, and the playlist's when it is new
+    // Process only (ADR-0087): the one insert the selection went through;
+    // only it is made inactive, the track's other inserts stay as they are.
+    // 0 is the whole active chain. Freeze and Commit refuse it.
+    Id only_insert = 0;
 };
+
+// Whether `insert` can be the one insert a Process Selection runs through:
+// an active insert of `track`, not bypassed (a bypassed insert would print
+// the dry signal and call it processed). False with `why` otherwise.
+bool render_insert_valid(const Snapshot& s, Id track, Id insert, std::string& why);
 
 // The members that put `source` (its whole length, from `start`) in the
 // track as `kind` says. New ids come from `next_id`, in member order, every

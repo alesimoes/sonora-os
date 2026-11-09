@@ -37,6 +37,7 @@
 #include "session_model.h"
 #include "shell_model.h"
 #include "sonora/api/fake_engine.h"
+#include "sonora/api/render.h"
 #include "sonora/client/socket_engine.h"
 #include "sonora/peak_file.h"
 #include "sonora/platform/ipc.h"
@@ -505,6 +506,8 @@ int main(int argc, char** argv) {
         // A loopback cable, out_2 into the last input, so the Latency window
         // measures something here as on a patched interface.
         fake_config.latency_cable = {2, fake_config.tracks, 287};
+        // Process Selection With (ADR-0087) on the demo; the fake reads insert=.
+        fake_config.capabilities.push_back(api::kCapabilityRenderInsert);
         if (a.opt.scene != nullptr && a.opt.scene->cabinet) {
             fake_config.plugins = api::testing::fake_catalog();
             fake_config.plugins.push_back(demo_cabinet_info());

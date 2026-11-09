@@ -35,12 +35,20 @@
 
 namespace sonora {
 
+namespace api {
+struct RenderOptions;
+}
+
 class Session;
 class PlaybackController;
+class RenderSolo;
 class TrackTap;
 
 inline constexpr uint32_t kRenderPrerollMs = 1000;   // warms dynamics before the range
 inline constexpr uint32_t kRenderFreezeTailMs = 2000;
+// How long the hosts get to confirm a render-scoped solo (ADR-0087 §4)
+// before the render fails: a host reads its bypass at its next block.
+inline constexpr uint32_t kRenderSoloConfirmMs = 2000;
 
 struct RenderRequest {
     model::RenderKind kind = model::RenderKind::Freeze;
@@ -49,6 +57,9 @@ struct RenderRequest {
     model::Frames start = 0;
     model::Frames end = 0;
     model::Frames tail = 0;
+    // Process only (ADR-0087): the one insert the selection goes through,
+    // the others silenced for the render; 0 is the whole active chain.
+    model::Id only_insert = 0;
     std::string name;   // empty: "<track> Frozen", "<track> Committed", "<track> Processed"
 };
 
@@ -85,10 +96,16 @@ public:
     RenderInPlace(const RenderInPlace&) = delete;
     RenderInPlace& operator=(const RenderInPlace&) = delete;
 
+    // The override a request with `only_insert` needs (ADR-0087 §4); it
+    // outlives this object. Without one such a request is refused, never
+    // printed through the whole chain.
+    void set_solo(RenderSolo* solo) { solo_ = solo; }
+
     // Locates before the range (waiting for the window, as locate/settle do),
-    // opens the file, taps the track and rolls over it. Refused while a take
-    // is open or the transport is not stopped, and for a track the session
-    // has no engine strip for.
+    // opens the file, taps the track and rolls over it; with `only_insert`,
+    // silences the other inserts first and waits for the hosts to confirm
+    // it. Refused while a take is open or the transport is not stopped, and
+    // for a track the session has no engine strip for.
     bool start(const model::Snapshot& snapshot, const std::string& session_dir,
                const RenderRequest& request, ChainMisses chain_misses, std::string& error);
     bool running() const { return worker_.joinable(); }
@@ -105,6 +122,10 @@ private:
     struct Run;
     void work();
     void release_tap();
+    // render_solo.cpp: the override posted and confirmed (false with
+    // `error` when a host did not confirm it), and lifted on every exit.
+    bool engage_solo(model::Id track, model::Id insert, std::string& error);
+    void lift_solo();
 
     Session& session_;
     PlaybackController& playback_;
@@ -113,6 +134,8 @@ private:
     RenderRequest request_;
     RenderBasis basis_;
     ChainMisses chain_misses_;
+    RenderSolo* solo_ = nullptr;
+    model::Id soloed_track_ = 0;   // 0: no override standing
     std::thread worker_;
     std::atomic<bool> cancel_{false};
     std::atomic<bool> finished_{false};
@@ -139,13 +162,19 @@ struct RenderAsk {
     uint64_t start = 0;
     uint64_t end = 0;
     int64_t tail_ms = -1;   // -1: the kind's own
+    model::Id only_insert = 0;
     std::string name;
     uint32_t sample_rate = 48000;
+
+    // What the wire asked for, at the session's rate.
+    static RenderAsk from_options(const api::RenderOptions& o, uint32_t sample_rate);
 };
 
 // The request a command asks for, checked against the document: the range of
 // the track's audio (Freeze, Commit) or the selection (Process), the tail,
-// and the refusals of the model in the operator's words.
+// and the refusals of the model in the operator's words. `only_insert` is
+// Process Selection's only and must be an active, unbypassed insert of the
+// track (model::render_insert_valid).
 bool plan_render(const model::Snapshot& snapshot, model::RenderKind kind, const RenderAsk& ask,
                  RenderRequest& out, std::string& error);
 

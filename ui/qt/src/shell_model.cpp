@@ -512,6 +512,11 @@ bool ShellModel::renderAvailable() const {
     return std::find(caps.begin(), caps.end(), api::kCapabilityRender) != caps.end();
 }
 
+bool ShellModel::renderInsertAvailable() const {
+    const auto& caps = engine_.info().capabilities;
+    return std::find(caps.begin(), caps.end(), api::kCapabilityRenderInsert) != caps.end();
+}
+
 void ShellModel::holdRenderNotice(const QString& text) {
     if (text == render_notice_) return;
     render_notice_ = text;
@@ -597,6 +602,8 @@ void ShellModel::tick() {
     if (engine_.info().implemented_commands != router_.engineCommands()) followEngineCommands();
     if (engine_.info().capabilities != router_.engineCapabilities()) {
         router_.setEngineCapabilities(engine_.info().capabilities);
+        // The Track menu's render entries read the capabilities.
+        emit renderChanged();
     }
     const EngineInfo& info = engine_.info();
     const bool reformatted = info.sample_rate != sized_rate_ ||
