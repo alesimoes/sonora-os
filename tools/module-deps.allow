@@ -13,6 +13,7 @@
 #                                     contract headers)
 common/audiofile -> common/platform
 common/dsp -> common/base
+common/groove -> common/model
 common/model -> common/base
 common/model -> common/json
 common/model -> common/midi
@@ -89,6 +90,9 @@ plugins/native -> contracts/plugin
 ui/client -> common/model
 ui/client -> common/platform
 ui/client -> contracts/api
+ui/groove -> common/groove
+ui/groove -> common/json
+ui/groove -> common/model
 ui/keymap -> common/json
 ui/keymap -> contracts/api
 ui/qt -> common/audiofile
@@ -98,6 +102,7 @@ ui/qt -> common/platform
 ui/qt -> common/session_files
 ui/qt -> contracts/api
 ui/qt -> ui/client
+ui/qt -> ui/groove
 ui/qt -> ui/keymap
 ui/qt -> ui/smart_controls
 ui/smart_controls -> common/json
