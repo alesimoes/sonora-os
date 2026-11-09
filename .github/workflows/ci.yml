@@ -344,7 +344,7 @@ jobs:
           tools/check-deps.sh --test
           tools/check-deps.sh
 
-      - name: Every module with tests has a ctest label (ADR-0007 ง7)
+      - name: Every module with tests has a ctest label (ADR-0007 ยง7)
         run: |
           tools/check-test-labels.sh --test
           tools/check-test-labels.sh
