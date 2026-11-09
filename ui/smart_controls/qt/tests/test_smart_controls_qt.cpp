@@ -121,6 +121,16 @@ sc::Mapping mapping(model::Id insert, const char* key, float lo, float hi, bool 
 
 bool near(float a, float b) { return std::fabs(a - b) < 1e-4f; }
 
+// A Repeater's delegates are children of the item tree, not of the
+// Repeater's QObject, so findChild does not reach them.
+QQuickItem* find_item(QQuickItem* item, const QString& name) {
+    if (item == nullptr) return nullptr;
+    if (item->objectName() == name) return item;
+    for (QQuickItem* child : item->childItems())
+        if (QQuickItem* found = find_item(child, name)) return found;
+    return nullptr;
+}
+
 int macro_reaches_every_mapped_parameter() {
     Rig r;
     CHECK(r.drive != 0 && r.comp != 0);
@@ -283,14 +293,14 @@ int panel_loads_and_drives() {
         {{QStringLiteral("smart"), QVariant::fromValue(static_cast<QObject*>(&r.smart))}}));
     if (!panel) std::fprintf(stderr, "%s\n", qPrintable(component.errorString()));
     CHECK(panel != nullptr);
-    CHECK(panel->findChild<QObject*>(QStringLiteral("macro7")) != nullptr);
-    QObject* learn = panel->findChild<QObject*>(QStringLiteral("learnButton"));
+    CHECK(find_item(qobject_cast<QQuickItem*>(panel.get()), QStringLiteral("macro7")) != nullptr);
+    QObject* learn = find_item(qobject_cast<QQuickItem*>(panel.get()), QStringLiteral("learnButton"));
     CHECK(learn != nullptr);
     CHECK(learn->property("text").toString() == QStringLiteral("Learn"));
     QMetaObject::invokeMethod(learn, "clicked", Q_ARG(QVariant, QVariant()));
     CHECK(r.smart.learning() == 0);
     CHECK(learn->property("text").toString() == QStringLiteral("Done"));
-    QObject* notice = panel->findChild<QObject*>(QStringLiteral("smartNotice"));
+    QObject* notice = find_item(qobject_cast<QQuickItem*>(panel.get()), QStringLiteral("smartNotice"));
     CHECK(notice != nullptr && !notice->property("visible").toBool());
     r.smart.renameMacro(1, QString());   // refused: a macro needs a name
     CHECK(notice->property("visible").toBool());
