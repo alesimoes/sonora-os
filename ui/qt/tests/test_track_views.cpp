@@ -50,6 +50,8 @@ static int presets() {
 static int store() {
     FakeTrackViewStore st;
     CHECK(st.get("a", 1).height == TrackHeight::Medium && !st.get("a", 1).hidden);
+    // A track id the store has never seen reads as plain, not as an error.
+    CHECK(st.get("a", 999).height == TrackHeight::Medium && !st.get("a", 999).hidden);
     st.set("a", 1, {TrackHeight::Jumbo, true});
     st.set("a", 2, {TrackHeight::Small, true});
     st.set("b", 1, {TrackHeight::Large, false});
@@ -203,6 +205,33 @@ static int geometry() {
     return 0;
 }
 
+// Rows of three heights, one hidden: every visible row's pixels land on that
+// row, and the hidden one between them is skipped in both directions.
+static int mixed_hit() {
+    using namespace sonora::ui::model;
+    ModelDocument doc(make_empty_session(4, 48000));
+    EditController ctl(doc);
+    ctl.set_viewport(1000, 600);
+    Policy p;
+    p.rows[0] = {height_scale(TrackHeight::Large), false};
+    p.rows[1] = {height_scale(TrackHeight::Small), false};
+    p.rows[2] = {1.0, true};
+    p.rows[3] = {height_scale(TrackHeight::Jumbo), false};
+    ctl.set_row_policy(&p);
+    const ViewState& v = ctl.view();
+    for (int t : {0, 1, 3}) {
+        CHECK(!v.row_hidden(t));
+        CHECK(v.track_at(v.y_of_track(t)) == t);
+        CHECK(v.track_at(v.y_of_track(t) + v.row_h(t) / 2) == t);
+        CHECK(ctl.hit(50, v.y_of_track(t) + v.row_h(t) / 2).track == t);
+    }
+    CHECK(v.row_h(0) > v.row_h(1) && v.row_h(3) > v.row_h(0));
+    CHECK(v.track_at(v.y_of_track(3) - 1) == 1);  // the last pixel above row 3 is row 1's
+    CHECK(v.track_at(v.y_of_track(1) - 1) == 0);
+    return 0;
+}
+
 int main() {
-    return commands() || presets() || store() || file_store() || view_model() || geometry();
+    return commands() || presets() || store() || file_store() || view_model() || geometry() ||
+           mixed_hit();
 }
