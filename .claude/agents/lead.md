@@ -31,12 +31,18 @@ offset/limit. Use `tools/progress.sh` (`get ID`, `list --open --track T`).
   Say nothing when it is not.
 - **agent_dead** (three tries spent): reassign the task to a fresh name, or
   `blocked` to `owner` with the cause. Never retry the same thing a fourth time.
-- **pool_under_floor**: pick the next feature for the track from
-  `tools/progress.sh list --open --track T`, skipping MIDI, instruments and
-  video (out of v1), items whose files overlap an active feature, and items
-  already done on main. Send the orchestrator ONE `plan_request` with
-  exactly this body (one feature per message):
+- **pool_under_floor**: fill the track, not one seat. Count the gap from
+  `planning/orchestrator/status.json`: `pools["build:<track>"].floor` minus
+  its `live`, minus the track's features already `planning` or `queued` in
+  `features`. Pick that many features (at least 1, at most 4) for the track
+  from `tools/progress.sh list --open --track T`, skipping MIDI, instruments
+  and video (out of v1), items already done on main, and items whose files
+  overlap an active feature or another feature you pick now (they must be
+  able to run in parallel). Send the orchestrator one `plan_request` per
+  feature, each with exactly this body:
   `{"feature": "<id>", "track": "daw|os|plugin", "backlog_ids": ["<id>", ...], "brief": "<why, one line>"}`.
+  Why: one feature per wake left the floors (8 DAW, 4 OS, 2 plugin) empty
+  for hours with 2-3 agents running (owner, 2026-11-08).
   You do not choose ADR, protocol or format numbers: the orchestrator
   reserves them.
 - **ask** from an engineer: answer from the plan and ADRs, or forward to the
