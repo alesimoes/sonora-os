@@ -24,3 +24,17 @@ What did not survive is printed to standard output as `dropped:` and
 Do not run it against a session an engine has open.
 
 Tests: `ctest -R interchange`.
+
+## Import Session Data (ADR-0123)
+
+Tracks taken from another `.sonora` session into the open one live in
+`common/session_files` (`session_import.h`, `session_import_copy.h`), not
+here: the planner returns one undoable `Compound` and the list of audio
+files to bring into `Audio Files/` (hard link, else a synced copy, all
+deleted again on failure or cancel). Audio tracks with their active
+playlist, mix (never solo), inserts without plug-in state, and volume and
+pan lanes come over; MIDI and instrument tracks, sends, buses, groups,
+VCAs and folders are listed as `dropped:`. A newer format, a missing file,
+another sample rate or an open take refuses the import before anything is
+written. Logic projects come in through AAF or stems, not through this.
+Tests: `ctest -R session_import`.
