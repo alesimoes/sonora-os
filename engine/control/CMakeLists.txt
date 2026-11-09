@@ -28,6 +28,7 @@ add_library(sonora_control STATIC
   src/stems_job.cpp
   src/stems_commands.cpp
   src/render_in_place.cpp
+  src/render_solo.cpp
   src/consolidate_job.cpp
   src/sample_edit.cpp
   src/mix_planner.cpp
@@ -141,6 +142,15 @@ if(UNIX)
   # where it flaked beside the other tests (2026-11-07).
   set_tests_properties(render_in_place PROPERTIES RUN_SERIAL TRUE)
   set_property(TEST render_in_place APPEND PROPERTY LABELS timing)
+
+  # Process Selection through one insert (ADR-0087 §4): the other inserts
+  # silenced by a render-scoped override, lifted on every exit.
+  add_executable(test_render_solo tests/test_render_solo.cpp)
+  target_link_libraries(test_render_solo PRIVATE sonora_control Threads::Threads)
+  add_test(NAME render_solo COMMAND test_render_solo)
+  # The same real-time roll and wall-clock deadlines as render_in_place.
+  set_tests_properties(render_solo PROPERTIES RUN_SERIAL TRUE)
+  set_property(TEST render_solo APPEND PROPERTY LABELS timing)
 endif()
 
 # A closed take as one compound; a bad file costs one track (ADR-0009
@@ -274,7 +284,7 @@ if(TARGET sonora-plugin-host)
   set(_ph_tests)
   foreach(scenario open_starts_silent new_insert_dry edit_keeps_old undo_abandons missing refused params lanes lanes_second_insert
                    down_keeps_latency gestures server values_while_starting reload_starts_afresh
-                   repost_bypass_off gesture_left_open failed_edit state_not_restored work_refused touch_faults work_refused_new_session server_work_refused play_waits play_wait_bounded move_off_missing
+                   repost_bypass_off render_solo render_unsolo_document render_solo_refused gesture_left_open failed_edit state_not_restored work_refused touch_faults work_refused_new_session server_work_refused play_waits play_wait_bounded move_off_missing
                    play_no_hosting play_wait_cancel rescan_drops_stale rescan_loses_running
                    rescan_blocks_running state_flush server_state_flush flush_active_folder
                    flush_read_across_load state_read_timeout state_reads_in_turn plugin_files_restore
