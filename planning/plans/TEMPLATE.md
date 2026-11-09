@@ -60,8 +60,10 @@ contract PR -> parallel slices -> integrator -> one PR.
 | Slice | Agent | Difficulty (S/M/L) | Risk (low/med/high) | Tier (haiku/sonnet/opus) | Sub-branch | Starts from | Files |
 |---|---|---|---|---|---|---|---|
 
-Tier from the table in `.claude/rules/agents-and-models.md`; RT, contracts,
-storage, recovery and concurrency are high risk; no XL slice.
+Tier from the table in `.claude/rules/agents-and-models.md`: the risk picks
+it, not the size. High only when a mistake breaks all of Sonora, the build or
+the OS (contracts, engine core/RT, storage, recovery, shared concurrency,
+build/CI); one plugin, screen or feature is at most med. No XL slice.
 Integrator:
 Single PR title:
 
