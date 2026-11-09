@@ -1,6 +1,8 @@
 # ADR-0040 — Control surface boundary as landed (ADR-0007 4.4, M11)
 
 Status: accepted. Amends ADR-0007 section 4.4.
+Implemented 2026-11-09: boundary landed by #358 (contracts/surfaces, tests);
+HUI, MCU, engine_bridge and raw_midi_port are present in drivers/surfaces.
 
 ## Summary
 
