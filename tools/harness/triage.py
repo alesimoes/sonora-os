@@ -33,6 +33,7 @@ human has to look:
 
 `classify` is pure; `handle` applies the action and returns True when it
 dealt with the result (the caller then does not block)."""
+import fnmatch
 import json
 import re
 
@@ -58,6 +59,11 @@ _ACCEPT_OK = re.compile(
 _GREEN = re.compile(
     r"\b(functionally|code(-wise)?|tests?|tester-?\d*|qa|ctest|build)\b"
     r"[^.\n]{0,60}\b(pass(es|ed|ing)?|green|ok)\b", re.I)
+# "Work is complete at 6923c036 but ...": done in the engineer's own words
+# (daw.model.session_mgmt.ui, 2026-11-09). QA still judges it.
+_COMPLETE = re.compile(
+    r"\b(work|slice|code|feature|task)\s+(is\s+)?(complete|done|finished)\b",
+    re.I)
 # The tester failed on scope and nothing else.
 _SCOPE_ONLY = re.compile(
     r"\b(fail(ed|s)?|blocked)\s+(only\s+)?on\s+(a\s+|the\s+)?scope\b"
@@ -76,7 +82,8 @@ def classify(role, summary):
     if _NOCOMMIT.search(s):
         return "nocommit"
     if role == "engineer" and _SCOPE.search(s) and (
-            _ACCEPT_OK.search(s) or _GREEN.search(s) or _SCOPE_ONLY.search(s)):
+            _ACCEPT_OK.search(s) or _GREEN.search(s) or _SCOPE_ONLY.search(s)
+            or _COMPLETE.search(s)):
         return "scope"
     return None
 
@@ -162,13 +169,40 @@ def held_elsewhere(o, t, paths):
     return out
 
 
-def _scope(o, t, why, now):
-    paths = [p for p in paths_in(why) if p not in (t.get("files") or [])]
+def out_of_claim(o, t):
+    """Paths the task's branch changed that none of its claim globs cover;
+    None when the forge cannot tell. An agent's report abbreviates paths
+    ("scenes/save_as_template.cpp", bare file names): widened as written they
+    matched nothing and QA bounced the slice on scope again."""
+    diff_of = getattr(o.forge, "changed_files", None)
+    if diff_of is None or not t.get("branch"):
+        return None
+    try:
+        changed = diff_of(t.get("start_from"), t["branch"])
+    except Exception:  # noqa: BLE001 - unknown, fall back to the report
+        return None
+    if changed is None:
+        return None
+    globs = t.get("files") or []
+    return [p for p in changed
+            if not any(fnmatch.fnmatchcase(p, g) for g in globs)]
+
+
+def _widen(o, t, paths):
     if paths:
+        o.store.set_task(t["id"], files=list(t.get("files") or []) + paths)
+
+
+def _scope(o, t, why, now):
+    diff = out_of_claim(o, t)
+    paths = diff if diff is not None else [
+        p for p in paths_in(why) if p not in (t.get("files") or [])]
+    if paths or diff is not None:
         held = held_elsewhere(o, t, paths)
-        o.store.set_task(t["id"], files=list(t["files"]) + paths)
-        o.store.advance(t["id"], "qa",
-                        note="claim widened: " + ", ".join(paths))
+        _widen(o, t, paths)
+        o.store.advance(t["id"], "qa", note=(
+            "claim widened: " + ", ".join(paths) if paths
+            else "nothing on the branch is outside the claim"))
         o._release(t)
         o.store.event(t["id"], "triage_scope", "widened " + ", ".join(paths)
                       + ("; also held by: " + ", ".join(held) if held else ""))
@@ -270,10 +304,15 @@ def handfixed(o, t, tip):
         o.store.event(t["id"], "triage_handfixed_unsynced",
                       f"{sha} on origin/{t['branch']}: {why}"[:200])
         return False
+    # A hand fix often reaches past the slice's globs; QA must not bounce
+    # it on scope for that (daw.model.session_mgmt.ui, 2026-11-09).
+    extra = out_of_claim(o, t) or []
+    _widen(o, t, extra)
     o.store.advance(t["id"], "qa", note=f"hand-fixed after the block: "
                     f"{sha} {subject}")
     o._release(t)
-    o.store.event(t["id"], "triage_handfixed", f"{sha} {subject}")
+    o.store.event(t["id"], "triage_handfixed", f"{sha} {subject}" + (
+        "; claim widened: " + ", ".join(extra) if extra else ""))
     o._tell("lead", "task_done", {"task": t["id"]},
             feature=t["feature_id"], task=t["id"])
     return True

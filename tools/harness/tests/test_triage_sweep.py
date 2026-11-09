@@ -116,6 +116,30 @@ class Sweep(support.DaemonCase):
         self.assertEqual(self.o.store.events("h", kind="triage_handfixed")[0]
                          ["detail"][:8], "b302f565")
 
+    def test_hand_fix_widens_the_claim_to_the_branch_diff(self):
+        # A resolver's hand fix touched files outside the slice's globs; QA
+        # then failed it on scope (daw.model.session_mgmt.ui, 2026-11-09).
+        self.blocked("w", "tool missing")
+        at = triage.blocked_at(self.o, self.get("w"))
+        self.tip("feat/w", at + 60)
+        self.forge.changed = {"feat/w": ["engine/a.cpp", "ui/b.cpp"]}
+        triage_sweep.sweep(self.o, at + 3600)
+        t = self.get("w")
+        self.assertEqual((t["state"], t["files"]),
+                         ("qa", ["engine/a.cpp", "ui/b.cpp"]))
+
+    def test_blocked_complete_on_scope_is_revived_with_the_diff(self):
+        note = ("Work is complete at 6923c036 but the diff touches files "
+                "outside the claimed globs: scenes/save_as_template.cpp. "
+                "Ask lead/architect to widen the globs.")
+        self.blocked("v", note, files=("ui/qt/qml/Main.qml",))
+        self.forge.changed = {"feat/v": [
+            "ui/qt/qml/Main.qml", "ui/qt/src/scenes/save_as_template.cpp"]}
+        self.assertEqual(triage_sweep.sweep(self.o, 100.0), 1)
+        t = self.get("v")
+        self.assertEqual(t["state"], "qa")
+        self.assertIn("ui/qt/src/scenes/save_as_template.cpp", t["files"])
+
     def test_commit_before_the_block_or_a_wip_checkpoint_is_no_fix(self):
         self.blocked("i", "tool missing")
         at = triage.blocked_at(self.o, self.get("i"))
