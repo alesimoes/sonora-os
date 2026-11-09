@@ -186,8 +186,9 @@ it (the reference chain and the goldens do): eco, standard, high read
 0.6926, 0.7035, 0.7067 % at drive 0 dB and 2.6186, 2.6558, 2.6666 % at
 drive 12 dB, outside both bands in every quality. A +-10 % band (0.57-0.71 %,
 tried first) let all three through at drive 0 dB. The second harmonic sits
-at -146 dBc (the loop is symmetric), so `thd.h2_below_h3_db` (-20 dB, measured
--102.7) is left as the ceiling it is.
+at -146 dBc (the loop is symmetric), and `thd.h2_below_h3_db` holds it 90 dB
+under the third (measured -102.7 dB; the bar was -20 dB before the
+native.analog tape task tightened it).
 
 ### Regenerating the THD rows
 
@@ -206,7 +207,8 @@ table above.
 
 The measured rows land in `build/dsp-reports/tape.json` under
 `data.drive_level_gain_thdn_h2_h3`: one row per drive (0, 12 dB) and level
-(-36, -18, 0, 6 dBFS in quick mode), each `[drive, level, gain, thd_pct, h2_dbc,
+(-36, -18, 0 dBFS in quick mode; -48 to +6 dBFS in 6 dB steps in the full
+run), each `[drive, level, gain, thd_pct, h2_dbc,
 h3_dbc]`. The `-18 dBFS` rows are the ones the bands read. The bands
 themselves are not written by the command: they are the `thd` keys in
 `plugins/native/tape/quality.json`, set by hand from the standard-quality
