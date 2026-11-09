@@ -1,0 +1,8 @@
+# time.pitch (ADR-0143): edges of its new modules, merged into
+# tools/module-deps.allow by tools/check-deps.sh. Folded into that file once
+# it is free.
+common/pitch -> common/model
+engine/pitch -> common/pitch
+engine/pitch -> contracts/api
+ui/pitch -> common/pitch
+ui/pitch -> contracts/api
