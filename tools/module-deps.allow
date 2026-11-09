@@ -13,6 +13,7 @@
 #                                     contract headers)
 common/audiofile -> common/platform
 common/dsp -> common/base
+common/groove -> common/model
 common/model -> common/base
 common/model -> common/json
 common/model -> common/midi

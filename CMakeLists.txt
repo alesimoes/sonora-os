@@ -108,6 +108,8 @@ add_subdirectory(common/midi)
 # The session document (ADR-0009), layer 1 beside common/audiofile. It links
 # common/midi for notes and edits (ADR-0014 §1), above it in this list.
 add_subdirectory(common/model)
+# Groove templates (ADR-0115), pure functions over the model's tempo map.
+add_subdirectory(common/groove)
 endif()
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
@@ -227,6 +229,10 @@ add_subdirectory(ui/client)
 # Optional: skipped, with one status line, where Qt 6 is not installed (the
 # engine's build container and CI). tools/build-ui.sh builds it.
 add_subdirectory(ui/qt)
+# time.groove's panel and command, a module of its own (ADR-0115).
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/groove/CMakeLists.txt)
+  add_subdirectory(ui/groove)
+endif()
 
 # Module labels (see sonora_label_module_tests above). The neutral modules
 # are labelled here too; the early return above covers the neutral build.
@@ -238,6 +244,7 @@ sonora_label_module_tests(plugins/native native)
 sonora_label_module_tests(common/audiofile audiofile)
 sonora_label_module_tests(common/midi midi)
 sonora_label_module_tests(common/model model)
+sonora_label_module_tests(common/groove model)
 sonora_label_module_tests(common/session_files session_files)
 sonora_label_module_tests(contracts/api contracts)
 sonora_label_module_tests(contracts/backend contracts)
