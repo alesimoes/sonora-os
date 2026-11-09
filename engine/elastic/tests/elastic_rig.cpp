@@ -63,6 +63,7 @@ bool make_rig(Rig& r, const char* dir, std::int64_t frames, Frames position, Fra
     t.channels = r.channels;
     t.playlist = t.track + 1;
     t.playlist_name = "Drums";
+    t.mix.input = {0, 1};
     if (!r.doc->apply(t, u, err)) {
         std::fprintf(stderr, "AddTrack: %s\n", err.c_str());
         return false;
