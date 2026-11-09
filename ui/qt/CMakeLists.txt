@@ -128,6 +128,8 @@ target_link_libraries(sonora_ui_shell PRIVATE sonora_platform)
 sonora_ui_library(sonora_ui_session QT SOURCES
   src/session_files.h src/session_files.cpp
   src/window_layouts.h src/window_layouts.cpp
+  src/track_views.h src/track_views.cpp src/track_row_geometry.h
+  src/track_view_model.h src/track_view_model.cpp
   src/preferences.h src/preferences.cpp
   src/transport_prefs.h src/transport_prefs.cpp
   src/import_model.h src/import_model.cpp
@@ -175,7 +177,7 @@ set(SONORA_UI_QML_FILES
   qml/InsertPanel.qml qml/Knob.qml qml/Fader.qml qml/MeterBar.qml qml/CurveView.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
   qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml qml/IoSetupWindow.qml qml/NewSessionDialog.qml
   qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
-  qml/PluginManager.qml
+  qml/PluginManager.qml qml/TrackListWindow.qml
 )
 sonora_ui_library(sonora_ui_qml QT SOURCES
   src/qml_resources.cpp src/register_types.h ${SONORA_UI_QML_FILES})
@@ -394,6 +396,12 @@ target_compile_definitions(test_ui_window_layouts PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_window_layouts COMMAND test_ui_window_layouts)
 set_tests_properties(ui_window_layouts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Track view contract (ADR-0106): the commands and the per-session store.
+add_executable(test_ui_track_views tests/test_track_views.cpp)
+target_include_directories(test_ui_track_views PRIVATE src)
+target_link_libraries(test_ui_track_views PRIVATE sonora_ui_qt)
+add_test(NAME ui_track_views COMMAND test_ui_track_views)
 
 # Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
 # measurement, its figure by hand, and refusals held in the window.

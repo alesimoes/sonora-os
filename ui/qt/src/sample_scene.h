@@ -156,7 +156,7 @@ inline void draw_pencil_preview(const model::Snapshot& s, const ViewState& v, co
     const model::Region* r = find_region(s, d.region);
     if (r == nullptr || r->channels.empty()) return;
     const int lanes = static_cast<int>(r->channels.size());
-    const SampleLane lane = sample_lane(v.y_of_track(d.track), v.track_height, lanes, d.channel);
+    const SampleLane lane = sample_lane(v.y_of_track(d.track), v.row_h(d.track), lanes, d.channel);
     const double cx0 = std::max(0.0, v.x_of(r->position));
     const double cx1 = std::min(v.width, v.x_of(r->end()));
     double prev = NAN;
