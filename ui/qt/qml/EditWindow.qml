@@ -228,6 +228,7 @@ Item {
                     }
                 }
                 ConductorRuler {
+                    id: conductorRuler
                     objectName: index === 0 ? "tempoRuler" : "meterRuler"
                     x: Theme.trackHeaderWidth
                     width: parent.width - Theme.trackHeaderWidth
@@ -235,6 +236,17 @@ Item {
                     session: edit.session
                     kind: index
                     MouseArea { anchors.fill: parent; onClicked: (m) => edit.session.rulerClick(m.x) }
+                    // Editing on the ruler (ADR-0140), ui/conductor/qt's editor laid
+                    // over it; where that module is not built, the click above stays.
+                    Component.onCompleted: {
+                        if (editorQml === "") return
+                        const e = Qt.createQmlObject(editorQml, conductorRuler, "qrc:/sonora/qml/ConductorRulerEdit.qml")
+                        e.objectName = objectName + "Edit"
+                        e.session = edit.session
+                        e.shell = edit.shell
+                        e.ruler = conductorRuler
+                        e.host = edit
+                    }
                 }
             }
         }
