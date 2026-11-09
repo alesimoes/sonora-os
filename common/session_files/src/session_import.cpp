@@ -146,11 +146,12 @@ bool plan_session_import(const model::Snapshot& dest, const model::Snapshot& sou
     }
     std::vector<std::string> missing = missing_files(build.copies, request);
     if (!missing.empty()) {
-        return refuse(refusal, Reason::MissingFile,
-                      "Import Session Data: " + std::to_string(missing.size()) +
-                          " audio file(s) of the source session cannot be read, first " +
-                          missing.front(),
-                      std::move(missing));
+        // Built first: the order a call's arguments are evaluated in is
+        // unspecified, and the move would empty `missing` before it is read.
+        std::string message = "Import Session Data: " + std::to_string(missing.size()) +
+                              " audio file(s) of the source session cannot be read, first " +
+                              missing.front();
+        return refuse(refusal, Reason::MissingFile, std::move(message), std::move(missing));
     }
     if (build.ops.size() > model::kMaxCompoundMembers) {
         const std::size_t fit = tracks_that_fit(introduced, members, markers);
