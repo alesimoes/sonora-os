@@ -149,6 +149,11 @@ class Served(unittest.TestCase):
         import dashboard
         self.assertGreaterEqual(dashboard.Server.request_queue_size, 64)
 
+    def test_a_second_dashboard_cannot_share_the_port(self):
+        import dashboard
+        with self.assertRaises(OSError):
+            dashboard.Server(("127.0.0.1", self.srv.server_address[1]), dashboard.Handler)
+
     def requests(self):
         d = os.path.join(self.hdir, "owner-requests")
         out = []

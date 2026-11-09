@@ -51,6 +51,17 @@ class Server(ThreadingHTTPServer):
     keeps the server alive."""
     request_queue_size = 128
     daemon_threads = True
+    # One dashboard per port. HTTPServer sets SO_REUSEADDR, which on Windows
+    # lets a second process bind the same port: every agent session's start
+    # hook found a slow page, started another, and ten copies shared :8765
+    # answering at random (2026-11-09, "o computador está em loop"). With an
+    # exclusive bind the second start fails and exits.
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 class Handler(BaseHTTPRequestHandler):
