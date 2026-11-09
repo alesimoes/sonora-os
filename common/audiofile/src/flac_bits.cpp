@@ -171,5 +171,6 @@ void encode_subframe(BitWriter& bw, const int32_t* x, std::size_t n, int bps) {
             bw.put(u[i], k);
         }
     }
+}
 
 }  // namespace sonora
