@@ -1193,6 +1193,50 @@ void test_punch_from_the_ui() {
     for (int i = 0; i < 4; ++i) r.model.tick();
 }
 
+// ADR-0129: the record-mode switches send ADR-0043's commands and light from
+// the replica's fields, never from the press; the bar's chips show only when on.
+void test_record_mode_switches() {
+    model::Snapshot demo = make_demo_session(4, kRate);
+    demo.settings.transport.input_only = false;
+    demo.settings.transport.quick_punch = false;
+    demo.settings.transport.rolls_on = true;
+    BarRig r("protools.json", std::move(demo));
+    if (r.root == nullptr) return;
+    r.transport.setOpen(true);
+    r.model.tick();
+    struct Sw { const char* name; const char* command; };
+    const Sw switches[] = {{"transportInputOnly", "transport.toggle_input_only"},
+                           {"transportPrePostRoll", "transport.toggle_pre_post_roll"},
+                           {"transportQuickPunch", "transport.toggle_quick_punch"}};
+    OK(!r.active("barQuickPunch") && !r.active("barInputOnly"));
+    OK(r.active("transportPrePostRoll"));
+    for (const Sw& s : switches) {
+        QQuickItem* item = r.item(s.name);
+        OK(item != nullptr);
+        if (item == nullptr) continue;
+        const bool lit = r.active(s.name);
+        click(r.view, item);
+        OK(!r.engine.sent.empty() && r.engine.sent.back().command == s.command);
+        OK(r.active(s.name) == lit);   // a refusal leaves it as it was
+    }
+    SessionSettings st = r.session.controller().snapshot().settings;
+    st.transport.input_only = true;
+    st.transport.quick_punch = true;
+    st.transport.rolls_on = false;
+    std::string why;
+    OK(r.document.submit(model::SetSettings{st}, why));
+    r.session.documentUpdated();
+    r.model.tick();
+    OK(r.active("transportInputOnly") && r.active("transportQuickPunch"));
+    OK(!r.active("transportPrePostRoll"));
+    OK(r.active("barQuickPunch") && r.active("barInputOnly"));
+    r.transport.setOpen(false);   // the window must not cover the bar's chips
+    click(r.view, r.item("barQuickPunch"));
+    OK(r.engine.sent.back().command == "transport.toggle_quick_punch");
+    click(r.view, r.item("barInputOnly"));
+    OK(r.engine.sent.back().command == "transport.toggle_input_only");
+}
+
 }  // namespace
 
 // --- "Locating..." after 100 ms, and the playback misses -------------------------
@@ -1257,6 +1301,7 @@ int main(int argc, char** argv) {
     test_window();
     test_bar_loop_record();
     test_punch_from_the_ui();
+    test_record_mode_switches();
     test_locating();
     if (failures != 0) {
         std::fprintf(stderr, "test_ui_transport: %d failure(s)\n", failures);
