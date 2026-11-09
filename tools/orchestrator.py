@@ -207,6 +207,7 @@ class Orchestrator:
         tick_guard): one bad result, one PR's gh error, one failing
         launch never stops the merges, the status or the launches."""
         now, g = self.clock(), self.guard
+        g.begin_tick()
         g.step("drain_events", self.drain_events)
         stop, stop_now = self.kill_switch()
         if stop_now:
@@ -282,6 +283,7 @@ class Orchestrator:
         data["daemon_pid"] = os.getpid()   # tools/supervisor.py probes it
         data.update(self.supervisor.status())
         data["alerts"] = data.get("alerts", []) + self.guard.rows()
+        data["tick_steps"] = self.guard.slowest()
         try:
             status.write_atomic(self._p("status.json"), data)
         except OSError as e:   # the dashboard is reading it; next tick retries
