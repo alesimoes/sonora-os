@@ -107,6 +107,7 @@ target_link_libraries(sonora_ui_edit PUBLIC sonora_ui_core)
 
 sonora_ui_library(sonora_ui_inserts SOURCES
   src/insert_controller.h src/insert_controller.cpp
+  src/insert_key_controller.h src/insert_key_controller.cpp
   src/send_controller.h src/send_controller.cpp
 )
 target_link_libraries(sonora_ui_inserts PUBLIC sonora_ui_core)
@@ -175,7 +176,7 @@ set(SONORA_UI_QML_FILES
   qml/InsertPanel.qml qml/Knob.qml qml/Fader.qml qml/MeterBar.qml qml/CurveView.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
   qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml qml/IoSetupWindow.qml qml/NewSessionDialog.qml
   qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
-  qml/PluginManager.qml
+  qml/PluginManager.qml qml/KeyChooser.qml
 )
 sonora_ui_library(sonora_ui_qml QT SOURCES
   src/qml_resources.cpp src/register_types.h ${SONORA_UI_QML_FILES})
@@ -468,6 +469,12 @@ add_executable(test_ui_inserts tests/test_inserts.cpp)
 target_link_libraries(test_ui_inserts PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_inserts COMMAND test_ui_inserts)
 set_tests_properties(ui_inserts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The side-chain key chooser's logic (ADR-0058): offered only to a plugin with
+# a key input, None plus every bus, one undo step, a loop refused, a stale bus.
+add_executable(test_ui_insert_key tests/test_insert_key.cpp)
+target_link_libraries(test_ui_insert_key PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_insert_key COMMAND test_ui_insert_key)
 
 # The plug-in manager (ADR-0065) on FakeEngine: the catalog's three kinds of
 # entry, the filters, block and unblock round-tripping through the engine's

@@ -21,6 +21,12 @@ Rectangle {
     property int slot: 0
     property var info: ({ present: false, letter: "?" })
     readonly property bool present: info.present === true
+    // ADR-0058: a plugin with a side-chain input gets a key button.
+    readonly property bool keyCapable: present && info.keyCapable === true
+    readonly property bool keyMissing: keyCapable && info.keyMissing === true
+    readonly property string keyName: keyCapable && info.keyName !== undefined ? info.keyName : ""
+    property bool keyOpen: false
+    function openKey() { if (keyCapable) keyOpen = true }
     readonly property bool dropTarget: dragHost !== null && dragHost.dragging
                                        && dragHost.targetTrack === track && dragHost.targetSlot === slot
 
@@ -46,7 +52,8 @@ Rectangle {
     }
 
     Text {
-        anchors { fill: parent; leftMargin: Theme.space1; rightMargin: Theme.space1 }
+        anchors { fill: parent; leftMargin: Theme.space1
+                  rightMargin: Theme.space1 + (s.keyCapable ? keyButton.width + 2 : 0) }
         verticalAlignment: Text.AlignVCenter
         horizontalAlignment: s.present ? Text.AlignLeft : Text.AlignHCenter
         elide: Text.ElideRight
@@ -86,7 +93,9 @@ Rectangle {
             const p = mapToItem(s.dragHost, 0, height)
             s.dragHost.showHint(s.track, s.slot,
                                 s.info.name + (!s.info.active ? " (inactive)" : s.info.bypass ? " (bypassed)" : "")
-                                + (s.info.faulted ? "\n" + s.info.fault : ""),
+                                + (s.info.faulted ? "\n" + s.info.fault : "")
+                                + (s.keyMissing ? "\nKey: (missing)"
+                                   : s.keyName.length > 0 ? "\nKey: " + s.keyName : ""),
                                 p.x, p.y, s.info.faulted)
         }
         onPressed: (m) => {
@@ -119,6 +128,52 @@ Rectangle {
                 return
             }
             s.inserts.slotClicked(s.track, s.slot, m.modifiers)
+        }
+    }
+
+    // The side-chain key (ADR-0058): its bus's short name when keyed, "K"
+    // when not, "K!" in the caution colour when the bus is gone.
+    Rectangle {
+        id: keyButton
+        objectName: "keyButton_" + s.track + "_" + s.slot
+        visible: s.keyCapable
+        anchors { right: parent.right; rightMargin: 2; verticalCenter: parent.verticalCenter }
+        width: Math.min(40, keyText.contentWidth + 2 * Theme.space1)
+        height: parent.height - 6
+        radius: Theme.radiusSmall
+        color: keyArea.containsMouse ? Theme.hover : Theme.sunken
+        border.width: 1
+        border.color: s.keyMissing ? Theme.caution : Theme.borderSubtle
+        Text {
+            id: keyText
+            anchors.centerIn: parent
+            text: s.keyMissing ? "K!"
+                  : s.keyName.length > 0 ? (s.inserts !== null ? s.inserts.shortName(s.keyName, 5) : s.keyName)
+                  : "K"
+            color: s.keyMissing ? Theme.caution : s.keyName.length > 0 ? Theme.accent : Theme.textSecondary
+            font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+        }
+        MouseArea {
+            id: keyArea
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: s.openKey()
+        }
+    }
+
+    // Opened over the whole Mix window, so the strip's clipping does not cut it.
+    Loader {
+        active: s.keyOpen && s.dragHost !== null
+        parent: s.dragHost
+        anchors.fill: parent
+        sourceComponent: KeyChooser {
+            inserts: s.inserts
+            track: s.track
+            slot: s.slot
+            info: s.info
+            anchorX: s.dragHost.mapFromItem(s, 0, s.height).x
+            anchorY: s.dragHost.mapFromItem(s, 0, s.height).y + 2
+            onClosed: s.keyOpen = false
         }
     }
 }
