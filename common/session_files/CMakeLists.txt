@@ -3,11 +3,25 @@
 # engine's saver thread links it; the interface's tests link it to stand in
 # for the engine, and the interface itself does not. Never on the audio
 # thread.
-add_library(sonora_session_files STATIC src/session_folder.cpp)
+add_library(sonora_session_files STATIC src/session_folder.cpp src/session_import.cpp
+            src/session_import_plan_ops.cpp src/session_import_copy.cpp)
 target_include_directories(sonora_session_files PUBLIC include)
 target_link_libraries(sonora_session_files PUBLIC sonora_model PRIVATE sonora_platform sonora_sha256)
 
+# Import Session Data (ADR-0123): a pure planner over two snapshots, no disk
+# and no POSIX, so it runs on every platform the library builds on.
+add_executable(test_session_import tests/test_session_import.cpp)
+target_include_directories(test_session_import PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
+target_link_libraries(test_session_import PRIVATE sonora_session_files)
+add_test(NAME session_import COMMAND test_session_import)
+
 if(UNIX)
+  # Import Session Data's copier (ADR-0123 decision 3): hard links, synced
+  # copies and symlinks in a temporary folder, so POSIX's.
+  add_executable(test_session_import_copy tests/test_session_import_copy.cpp)
+  target_link_libraries(test_session_import_copy PRIVATE sonora_session_files)
+  add_test(NAME session_import_copy COMMAND test_session_import_copy)
+
   add_executable(test_session_folder tests/test_session_folder.cpp)
   target_include_directories(test_session_folder PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
   target_link_libraries(test_session_folder PRIVATE sonora_session_files sonora_sha256)
