@@ -1489,7 +1489,10 @@ Rectangle {
                         { name: "trackFreeze", label: "Freeze", command: "track.freeze", render: "freeze", on: render && sel >= 0 && !frozen },
                         { name: "trackCommit", label: "Commit", command: "track.commit", render: "commit", on: render && sel >= 0 && !frozen },
                         { name: "trackUnfreeze", label: "Unfreeze", command: "track.unfreeze", render: "unfreeze", on: render && frozen },
-                        { name: "trackProcess", label: "Process Selection", command: "track.process_selection", render: "process", on: render && sel >= 0 && !frozen }
+                        { name: "trackProcess", label: "Process Selection", command: "track.process_selection", render: "process", on: render && sel >= 0 && !frozen },
+                        // ADR-0087: one chosen insert, offered only by an engine that renders it.
+                        { name: "trackProcessWith", label: "Process Selection With ▸", command: "track.process_selection", render: "with",
+                          on: render && root.shell.renderInsertAvailable && sel >= 0 && !frozen && root.session.rangeOnSelectedTrack }
                     ]
                 }
                 Item {
@@ -1511,11 +1514,75 @@ Rectangle {
                         available: modelData.on
                         text: modelData.label
                         onClicked: {
+                            if (modelData.render === "with") {
+                                processWithMenu.show(trackMenu.x + trackMenu.width, trackMenu.y + parent.y)
+                                return
+                            }
                             trackMenu.visible = false
                             // A render names the track and its range from the selection.
                             if (modelData.render) root.session.renderInPlace(modelData.render)
                             else root.shell.invoke(modelData.command, -1)
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Track > Process Selection With: the one insert (ADR-0087) ----------------
+    // The selected track's active, non-bypassed inserts, read when it opens;
+    // a pick sends track.process_selection with insert=<id>.
+    Rectangle {
+        id: processWithMenu
+        objectName: "processWithMenu"
+        visible: false
+        z: 11
+        property var inserts: []
+        width: 200
+        height: processWithColumn.implicitHeight + 2 * Theme.space1
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        function show(px, py) {
+            inserts = root.session.selectedTrackInserts()
+            x = Math.min(px, root.width - width - Theme.space2)
+            y = Math.min(py, root.height - height - Theme.space2)
+            visible = true
+        }
+        Connections {
+            target: trackMenu
+            function onVisibleChanged() { if (!trackMenu.visible) processWithMenu.visible = false }
+        }
+        MouseArea { anchors.fill: parent }
+        Column {
+            id: processWithColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space1 }
+            spacing: 2
+            Text {
+                visible: processWithMenu.inserts.length === 0
+                width: parent.width
+                height: 26
+                verticalAlignment: Text.AlignVCenter
+                leftPadding: Theme.space1
+                text: "No active plug-in on this track"
+                color: Theme.textSecondary
+                font.pixelSize: Theme.textBody
+            }
+            Repeater {
+                model: processWithMenu.inserts
+                SButton {
+                    required property var modelData
+                    required property int index
+                    objectName: "processWith" + index
+                    width: processWithColumn.width
+                    height: 26
+                    bold: false
+                    fontPx: Theme.textBody
+                    text: modelData.name
+                    // Sent before the menus close: closing them ends this delegate.
+                    onClicked: {
+                        root.session.renderInPlace("process", modelData.id)
+                        trackMenu.visible = false
                     }
                 }
             }
