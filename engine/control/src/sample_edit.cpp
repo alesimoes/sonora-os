@@ -13,6 +13,7 @@
 #include <sstream>
 
 #include "sonora/model/operations.h"
+#include "sonora/pitch_render.h"
 #include "sonora/session_files/session_folder.h"
 #include "sonora/wav_reader.h"
 #include "sonora/wav_writer.h"
@@ -36,6 +37,7 @@ constexpr VerbName kVerbs[] = {
     {"invert", SampleVerb::Invert, "Invert"},       {"gain", SampleVerb::Gain, "Gain"},
     {"normalize", SampleVerb::Normalize, "Normalize"},
     {"fade_in", SampleVerb::FadeIn, "Fade In"},     {"fade_out", SampleVerb::FadeOut, "Fade Out"},
+    {api::kPitchVerb, SampleVerb::Pitch, "Pitch"},
 };
 
 const char* label_of(SampleVerb v) {
@@ -134,7 +136,7 @@ bool parse_sample_edit(const std::string& text, SampleEditRequest& out, std::str
     }
     if (!known) {
         why = "\"" + verb + "\" is not a sample edit; use repair, draw, silence, reverse, invert, "
-              "gain, normalize, fade_in or fade_out";
+              "gain, normalize, fade_in, fade_out or pitch";
         return false;
     }
     long long r = 0, f = 0, t = 0, c = 0;
@@ -202,6 +204,16 @@ bool parse_sample_edit(const std::string& text, SampleEditRequest& out, std::str
             }
             break;
         }
+        case SampleVerb::Pitch:
+            if (out.channel != -1) {
+                why = "pitch shifts every channel of the region; give all";
+                return false;
+            }
+            if (param.empty()) {
+                why = "pitch needs its notes as n=START:END:CENTS;n=...";
+                return false;
+            }
+            return api::parse_pitch_param(param, out.pitch, why);
         default:
             if (!param.empty()) {
                 why = std::string(label_of(out.verb)) + " takes no parameter; \"" + param +
@@ -303,6 +315,7 @@ bool process_samples(const SampleEditRequest& rq, std::vector<float>& buf, std::
                 x[i] *= static_cast<float>(count - 1 - i) / static_cast<float>(count);
             }
             return true;
+        case SampleVerb::Pitch: why = "pitch is rendered whole, not as a stretch"; return false;
     }
     return false;
 }
@@ -310,6 +323,10 @@ bool process_samples(const SampleEditRequest& rq, std::vector<float>& buf, std::
 bool sample_edit(model::Document& document, const Session& session, const std::string& session_dir,
                  const SampleEditRequest& rq, std::vector<model::ReplicationUpdate>& updates,
                  std::string& error) {
+    if (rq.verb == SampleVerb::Pitch) {
+        return pitch_sample_edit(document, session, session_dir,
+                                 PitchRenderRequest{rq.region, rq.from, rq.to, rq.pitch}, updates, error);
+    }
     const std::string nothing = "; nothing was edited";
     if (session.recording_take() != 0 || session.takes_closing()) {
         error = "stop recording before editing samples" + nothing;
