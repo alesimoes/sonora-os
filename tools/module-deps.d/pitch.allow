@@ -3,3 +3,6 @@
 ui/pitch -> common/pitch
 ui/pitch -> contracts/api
 ui/qt -> ui/pitch
+# Carried until the analysis branch lands its own (ratification pending):
+common/pitch -> common/model
+common/pitch -> contracts/api
