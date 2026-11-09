@@ -75,6 +75,16 @@ std::vector<float> room_noise() {
     return out;
 }
 
+// A scene analyses on the interface's thread, where a long stall reads as a
+// lost engine: a 10 ms hop and nothing below 100 Hz (a voice's range) cost a
+// quarter of the defaults.
+pitch::YinTracker scene_tracker() {
+    pitch::YinConfig config;
+    config.hop_ms = 10.0;
+    config.min_hz = 100.0;
+    return pitch::YinTracker(config);
+}
+
 ui_pitch::PitchRegion region_for(const std::vector<float>& audio, const char* name) {
     ui_pitch::PitchRegion r;
     r.id = 1;
@@ -191,7 +201,7 @@ void edited_phrase(ShotContext& c) {
     PitchEditorModel m;
     m.set_capability({true, ""});
     std::string why;
-    pitch::YinTracker yin;
+    pitch::YinTracker yin = scene_tracker();
     const std::vector<float> audio = sung_phrase();
     if (!m.analyse(region_for(audio, "Lead Vocal_03"), audio, yin, why)) return complain(why);
     if (!m.set_key(4, why)) return complain(why);  // E minor
@@ -209,7 +219,7 @@ void refused_noise(ShotContext& c) {
     PitchEditorModel m;
     m.set_capability({true, ""});
     std::string why;
-    pitch::YinTracker yin;
+    pitch::YinTracker yin = scene_tracker();
     const std::vector<float> audio = room_noise();
     if (m.analyse(region_for(audio, "Room Tone_01"), audio, yin, why)) {
         complain("room noise was not refused");

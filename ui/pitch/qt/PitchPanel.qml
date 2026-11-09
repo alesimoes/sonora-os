@@ -185,11 +185,14 @@ Item {
                     radius: Theme.radiusSmall
                     clip: true
 
-                    Item {
+                    // A keyboard on its side: ivory throughout, the black keys
+                    // shorter on top, a seam under every white row.
+                    Rectangle {
                         id: ruler
                         x: 1; y: 1
                         width: 56
                         height: pitchPanel.canvasHeight
+                        color: "#d9dbde"
                         Repeater {
                             model: pitchPanel.rows
                             Rectangle {
@@ -197,9 +200,15 @@ Item {
                                 y: modelData.y
                                 width: modelData.black ? 34 : ruler.width
                                 height: modelData.h
-                                color: modelData.black ? "#1d2024" : "#d9dbde"
-                                border.color: "#7d8288"
-                                border.width: modelData.black ? 0 : 0.5
+                                color: modelData.black ? "#1d2024" : "transparent"
+                                radius: modelData.black ? 2 : 0
+                                Rectangle {
+                                    visible: !modelData.black
+                                    anchors.bottom: parent.bottom
+                                    width: parent.width
+                                    height: 1
+                                    color: "#9ba0a6"
+                                }
                                 Text {
                                     visible: modelData.name.length > 0
                                     anchors { right: parent.right; rightMargin: 4; verticalCenter: parent.verticalCenter }
@@ -281,7 +290,7 @@ Item {
                                 const g = getContext("2d")
                                 g.reset()
                                 g.lineWidth = 1.5
-                                g.strokeStyle = Theme.text
+                                g.strokeStyle = "#eef1f3"
                                 for (const n of pitchPanel.notes) {
                                     const c = n.contour
                                     if (!c || c.length < 4) continue
@@ -420,7 +429,7 @@ Item {
 
                     Column {
                         spacing: 4
-                        Caption { text: "DRAG SNAP" }
+                        Text { text: "DRAG SNAP"; color: Theme.textTertiary; font { family: Theme.fontFamily; pixelSize: Theme.textOverline; weight: Font.DemiBold; letterSpacing: 1 } }
                         Row {
                             spacing: 2
                             Repeater {
@@ -438,7 +447,7 @@ Item {
                     }
                     Column {
                         spacing: 4
-                        Caption { text: "KEY" }
+                        Text { text: "KEY"; color: Theme.textTertiary; font { family: Theme.fontFamily; pixelSize: Theme.textOverline; weight: Font.DemiBold; letterSpacing: 1 } }
                         Row {
                             spacing: 2
                             Repeater {
@@ -456,7 +465,7 @@ Item {
                     }
                     Column {
                         spacing: 4
-                        Caption { text: "SCALE" }
+                        Text { text: "SCALE"; color: Theme.textTertiary; font { family: Theme.fontFamily; pixelSize: Theme.textOverline; weight: Font.DemiBold; letterSpacing: 1 } }
                         Row {
                             spacing: 2
                             SButton {
@@ -486,7 +495,7 @@ Item {
                     }
                     Column {
                         spacing: 4
-                        Caption { text: "AMOUNT  " + Math.round(pitchPanel.amount) + "%" }
+                        Text { text: "AMOUNT  " + Math.round(pitchPanel.amount) + "%"; color: Theme.textTertiary; font { family: Theme.fontFamily; pixelSize: Theme.textOverline; weight: Font.DemiBold; letterSpacing: 1 } }
                         Item {
                             id: amountBar
                             width: 120
@@ -517,7 +526,7 @@ Item {
                     }
                     Column {
                         spacing: 4
-                        Caption { text: " " }
+                        Text { text: " "; color: Theme.textTertiary; font { family: Theme.fontFamily; pixelSize: Theme.textOverline; weight: Font.DemiBold; letterSpacing: 1 } }
                         SButton {
                             text: "Snap Notes"
                             available: pitchPanel.canEdit
@@ -561,10 +570,5 @@ Item {
                 }
             }
         }
-    }
-
-    component Caption: Text {
-        color: Theme.textTertiary
-        font { family: Theme.fontFamily; pixelSize: Theme.textOverline; weight: Font.DemiBold; letterSpacing: 1 }
     }
 }
