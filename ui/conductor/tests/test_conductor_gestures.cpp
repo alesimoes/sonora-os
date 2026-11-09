@@ -40,9 +40,9 @@ int test_hit() {
     std::string why;
     auto m = base();
     OK(tempo_set_at(m, kRate, kBar * 2, 90.0f, why));
-    const double fpp = 100.0;  // mark 1 at x = 960
+    const double fpp = 100.0;  // mark 1 at x = 1920
     OK(hit_test(m, kRate, fpp, 0.0) == std::optional<std::size_t>(0));
-    OK(hit_test(m, kRate, fpp, 960.0) == std::optional<std::size_t>(1));
+    OK(hit_test(m, kRate, fpp, 1920.0) == std::optional<std::size_t>(1));
     OK(!hit_test(m, kRate, fpp, 500.0));
     OK(!hit_test({}, kRate, fpp, 0.0));
     OK(!hit_test(m, kRate, 0.0, 0.0));
@@ -53,14 +53,14 @@ int test_slop() {
     std::string why;
     auto m = base();
     OK(tempo_set_at(m, kRate, kBar * 2, 90.0f, why));
-    OK(hit_test(m, kRate, 100.0, 954.0) == std::optional<std::size_t>(1));
-    OK(hit_test(m, kRate, 100.0, 966.0) == std::optional<std::size_t>(1));
-    OK(!hit_test(m, kRate, 100.0, 953.5));
-    OK(!hit_test(m, kRate, 100.0, 966.5));
+    OK(hit_test(m, kRate, 100.0, 1914.0) == std::optional<std::size_t>(1));
+    OK(hit_test(m, kRate, 100.0, 1926.0) == std::optional<std::size_t>(1));
+    OK(!hit_test(m, kRate, 100.0, 1913.5));
+    OK(!hit_test(m, kRate, 100.0, 1926.5));
     // Two marks inside one slop: the nearer wins.
     OK(tempo_set_at(m, kRate, kBar * 2 + 300, 95.0f, why));
-    OK(hit_test(m, kRate, 100.0, 961.0) == std::optional<std::size_t>(1));
-    OK(hit_test(m, kRate, 100.0, 962.5) == std::optional<std::size_t>(2));
+    OK(hit_test(m, kRate, 100.0, 1921.0) == std::optional<std::size_t>(1));
+    OK(hit_test(m, kRate, 100.0, 1922.5) == std::optional<std::size_t>(2));
     return 0;
 }
 
