@@ -24,6 +24,7 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, dispatch,  # noqa: E402
+                     docker_guard,
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
@@ -91,6 +92,10 @@ class Orchestrator:
         # it a fake system (supervisor_sys.RealSys surface).
         self.supervisor = supervisor.Supervisor(
             self, sys_ or supervisor_sys.RealSys(clock=clock))
+        # Live only: a dry run or a test (fake system) never probes Docker.
+        self.docker = docker_guard.Guard(
+            self.store, docker_guard.docker_up if (sys_ is None and not dry_run)
+            else (lambda: True))
         self.attribution = ATTRIBUTION
         self.shadow = None
         self.updater = None   # enable_self_update(): a live daemon only
@@ -228,7 +233,7 @@ class Orchestrator:
         # Main's nightly full build on GitHub (ADR-0061): a red opens a task.
         g.step("nightly", nightly.tick, self, now)
         g.step("flow", self.flow.tick, now)
-        paused = self.paused()
+        paused = self.paused() | (g.step("docker", self.docker.held, now) or frozenset())
         runs = self._enriched_runs(now)
         plan = g.step(
             "plan", scheduler.plan, self.store.tasks(), runs, self.cfg, now,

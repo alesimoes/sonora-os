@@ -170,13 +170,15 @@ def desktop_notify(title, text, timeout=15):
             "CreateToastNotifier('SonoraOS harness').Show("
             "[Windows.UI.Notifications.ToastNotification]::new($x))")
         env = dict(os.environ, SONORA_N_TITLE=title, SONORA_N_TEXT=text)
+        # No console window flashes on the owner's screen for each toast.
+        hidden = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
                             "-Command", ps], env=env, capture_output=True,
-                           timeout=timeout)
+                           timeout=timeout, creationflags=hidden)
         if r.returncode != 0:
             subprocess.run(["msg.exe", "*", "/TIME:30",
                             f"{title}\n{text}"], capture_output=True,
-                           timeout=timeout)
+                           timeout=timeout, creationflags=hidden)
         return
     subprocess.run(["notify-send", "-u", "critical", title, text],
                    capture_output=True, timeout=timeout)
