@@ -21,7 +21,7 @@
   only the engine adapter links it. Algorithm names map to its options: Polyphonic,
   Rhythmic (crisp transients), Monophonic (formant preserved), Varispeed (plain resample,
   pitch follows, no library).
-- §4 Quantize Audio = onsets -> warp markers moving each onset to the grid (strength 0..100)
+- §4 Quantize Audio = onsets -> warp markers moving each onset to the grid (strength 1..100)
   computed by a pure planner in `common/stretch`, then §2.
 - §5 A render that would grow past the next region is refused with a reason (playlists never
   overlap); no silent ripple.
@@ -44,6 +44,25 @@ block it.
 `kMaxElasticFrames` in memory, ratio within 0.25..4. Refusals are held notices (ADR-0052 §5).
 The job runs on the control thread with progress events like ADR-0051; cancellable; a
 partial file is deleted on cancel or failure.
+
+Contract details (`contracts/api/include/sonora/api/elastic.h`, header-only):
+- `REGION` is the model id of an audio region; `ALGO` is `polyphonic`, `rhythmic`,
+  `monophonic` or `varispeed`; exactly one mode word follows.
+- `ratio` is new length / old length (2 = twice as long). Markers are frames counted from
+  the region's first frame on both sides; the region start is the implicit marker `0:0`, so
+  every marker is past it, at most `kMaxElasticMarkers` (1024), and a source frame is not
+  past the region's end. What follows the last marker keeps its speed, so the result is
+  `last.DST + (region length - last.SRC)` frames.
+- `GRID` is in beats, 0.0625..16; `STRENGTH` is a percentage 1..100, 100 when omitted
+  (0 would move nothing and is refused).
+- Decimals use `.` and at most six places, parsed by hand: Qt sets `LC_NUMERIC` from the
+  environment, and the interface and the engine must read the same number.
+- `kMaxElasticFrames` is ten minutes at 48 kHz, for the region and for the result.
+- `parse_elastic_request` refuses the grammar and the ranges; `validate_elastic_request`
+  adds what needs the region's length. The engine adds overlap with the next region and a
+  take open for writing. FakeEngine (contracts/api/testing) announces the command only when
+  `Config::capabilities` holds `audio.elastic`, refuses with the same words, and records an
+  accepted request (`elastic_log()`); it renders nothing.
 
 ### 3. Library gating
 `find_package`/pkg-config for `rubberband`. Absent: the module compiles without the adapter

@@ -108,6 +108,11 @@ add_subdirectory(common/midi)
 # The session document (ADR-0009), layer 1 beside common/audiofile. It links
 # common/midi for notes and edits (ADR-0014 §1), above it in this list.
 add_subdirectory(common/model)
+# Elastic audio's pure half (ADR-0136): warp maps, the quantize planner and
+# the Stretcher interface; no stretcher library here.
+if(EXISTS ${CMAKE_SOURCE_DIR}/common/stretch/CMakeLists.txt)
+  add_subdirectory(common/stretch)
+endif()
 # Groove templates (ADR-0115), pure functions over the model's tempo map.
 add_subdirectory(common/groove)
 endif()
@@ -191,6 +196,10 @@ if(NOT SONORA_PLATFORM STREQUAL "linux" OR SONORA_PLUGINS_ONLY)
   return()
 endif()
 add_subdirectory(contracts/api)
+# audio.elastic's contract tests (ADR-0136), on contracts/api's targets.
+if(EXISTS ${CMAKE_SOURCE_DIR}/contracts/api/elastic/CMakeLists.txt)
+  add_subdirectory(contracts/api/elastic)
+endif()
 add_subdirectory(contracts/backend)
 # Control surface events in, feedback out (ADR-0007 4.4, ADR-0040).
 add_subdirectory(contracts/surfaces)
@@ -222,6 +231,10 @@ add_subdirectory(engine/editor_service)
 add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)
 add_subdirectory(engine/control)
+# The audio.elastic job and its stretcher adapter (ADR-0136), on sonora_control.
+if(EXISTS ${CMAKE_SOURCE_DIR}/engine/elastic/CMakeLists.txt)
+  add_subdirectory(engine/elastic)
+endif()
 add_subdirectory(engine/app)
 # The interfaces' side of the socket (M7). After engine/app: its test runs
 # sonora-engine as a process, a build-order dependency, never a link.
@@ -232,6 +245,10 @@ add_subdirectory(ui/qt)
 # time.groove's panel and command, a module of its own (ADR-0115).
 if(EXISTS ${CMAKE_SOURCE_DIR}/ui/groove/CMakeLists.txt)
   add_subdirectory(ui/groove)
+endif()
+# The elastic audio editor and its command (ADR-0136).
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/elastic/CMakeLists.txt)
+  add_subdirectory(ui/elastic)
 endif()
 
 # Module labels (see sonora_label_module_tests above). The neutral modules
@@ -271,3 +288,12 @@ sonora_label_module_tests(ui/client ui)
 sonora_label_module_tests(ui/qt ui)
 sonora_label_module_tests(ui/groove ui)
 sonora_label_module_tests(ui/smart_controls ui)
+foreach(_elastic common/stretch:model contracts/api/elastic:contracts engine/elastic:control
+                 ui/elastic:ui)
+  string(REPLACE ":" ";" _pair "${_elastic}")
+  list(GET _pair 0 _dir)
+  list(GET _pair 1 _label)
+  if(EXISTS ${CMAKE_SOURCE_DIR}/${_dir}/CMakeLists.txt)
+    sonora_label_module_tests(${_dir} ${_label})
+  endif()
+endforeach()
