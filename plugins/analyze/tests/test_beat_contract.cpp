@@ -12,6 +12,9 @@
 
 #include "sonora/analyze/beat_detector.h"
 #include "sonora/analyze/beat_fakes.h"
+// Not called here (the model slice defines it); included so the declaration
+// compiles in the contract's own build.
+#include "sonora/analyze/beat_tempo.h"
 
 using namespace sonora::analyze;
 
