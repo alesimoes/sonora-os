@@ -344,6 +344,11 @@ jobs:
           tools/check-deps.sh --test
           tools/check-deps.sh
 
+      - name: Every module with tests has a ctest label (ADR-0007 ง7)
+        run: |
+          tools/check-test-labels.sh --test
+          tools/check-test-labels.sh
+
       - name: Contract files match contracts/CONTRACTS.lock (ADR-0007 ยง6)
         run: |
           tools/contracts-lock.sh --test
