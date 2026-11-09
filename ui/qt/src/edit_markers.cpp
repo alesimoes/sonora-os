@@ -92,8 +92,8 @@ void EditController::apply_marker_view(Id marker) {
     const MarkerView* v = marker_views_->find(snapshot().settings.session_id, marker);
     if (v == nullptr) return;
     if (v->recall_zoom && v->fpp > 0) {
-        const double max_fpp = std::max(kMinFpp, snapshot().settings.sample_rate * 60.0);
-        view_.fpp = std::clamp(v->fpp, kMinFpp, max_fpp);
+        const double max_fpp = std::max(edit_detail::kMinFpp, snapshot().settings.sample_rate * 60.0);
+        view_.fpp = std::clamp(v->fpp, edit_detail::kMinFpp, max_fpp);
         view_.scroll = v->start;
         clamp_scroll();
     }
