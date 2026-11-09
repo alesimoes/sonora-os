@@ -110,8 +110,7 @@ class SelfUpdate:
     def _move_to(self, target, force):
         """Checkout origin/main, keeping local commits. Planners commit plans
         in this checkout (2026-11-08: five plan commits); a bare checkout
-        would drop them, so they are rebased onto origin/main instead. A
-        rebase conflict is aborted and reported, never resolved here."""
+        would drop them, so they are rebased onto origin/main instead."""
         local = self.git(["rev-list", "origin/main..HEAD"],
                          self.root).stdout.split()
         if local:
@@ -120,19 +119,50 @@ class SelfUpdate:
                 return (f"ALERT {len(local)} local commit(s) in the daemon "
                         f"checkout touch more than plans: "
                         f"{' '.join(foreign)[:150]}; move them to a branch")
-            r = self.git(["-c", "user.name=sonora-harness",
-                          "-c", "user.email=harness@sonora.invalid",
-                          "rebase", "-q", "origin/main"], self.root)
-            if r.returncode:
-                self.git(["rebase", "--abort"], self.root)
-                return (f"rebase of {len(local)} local commit(s) onto "
-                        f"origin/main failed: {r.stderr.strip()[:150]}")
-            self.o.store.event("daemon", "self_update_rebased",
-                               f"{len(local)} local commit(s) kept")
-            return None
+            return self._rebase(len(local), target, force)
+        return self._checkout(target, force)
+
+    def _checkout(self, target, force):
         r = self.git(["checkout", "-q", "--detach"]
                      + (["-f"] if force else []) + [target], self.root)
         return r.stderr.strip()[:200] if r.returncode else None
+
+    def _rebase(self, n, target, force):
+        """A plan or ADR a feature PR carried to main, edited in review,
+        conflicts with the planner's local commit of the same file
+        (2026-11-09: aborted every 5 min for hours, so #607 never ran).
+        Main holds the reviewed text, so its side wins conflicting hunks
+        (`-X ours`: in a rebase "ours" is the upstream). What even that
+        cannot resolve is saved on a branch once the bound passes and the
+        checkout goes to main: the harness must not stay old for a plan."""
+        err = ""
+        for extra, how in (([], "kept"),
+                           (["-X", "ours"], "kept, main's version won "
+                                            "the conflicting hunks")):
+            r = self.git(["-c", "user.name=sonora-harness",
+                          "-c", "user.email=harness@sonora.invalid",
+                          "rebase", "-q"] + extra + ["origin/main"], self.root)
+            if not r.returncode:
+                self.o.store.event("daemon", "self_update_rebased",
+                                   f"{n} local commit(s) {how}")
+                return None
+            self.git(["rebase", "--abort"], self.root)
+            err = err or r.stderr.strip()[:150]
+        if not force:
+            return (f"rebase of {n} local commit(s) onto origin/main "
+                    f"failed: {err}")
+        return self._save_and_checkout(n, target)
+
+    def _save_and_checkout(self, n, target):
+        head = self.git(["rev-parse", "HEAD"], self.root).stdout.strip()
+        saved = f"harness/daemon-local-{head[:12]}"
+        r = self.git(["branch", "-f", saved, head], self.root)
+        if r.returncode:
+            return f"could not save local commits: {r.stderr.strip()[:150]}"
+        self.o.store.event("daemon", "self_update_forced",
+                           f"ALERT {n} local commit(s) did not rebase; "
+                           f"saved on {saved}")
+        return self._checkout(target, True)
 
     def _non_plan_files(self):
         r = self.git(["diff", "--name-only", "origin/main...HEAD"], self.root)

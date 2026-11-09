@@ -164,6 +164,51 @@ class SelfUpdate(unittest.TestCase):
         self.assertIn("self_update_blocked", self.store.kinds())
         self.assertEqual(git(self.daemon, "status", "--porcelain"), "")
 
+    def commit_plan(self, rel, text):
+        write(self.daemon, rel, text)
+        git(self.daemon, "add", "-A")
+        git(self.daemon, "commit", "-qm", "plan " + rel)
+
+    def test_a_plan_also_merged_on_main_rebases_with_main_winning(self):
+        # 2026-11-09: a feature PR carried its plan and ADR to main with
+        # edits; the planner's local commit of the same files conflicted, the
+        # rebase was aborted every 5 min and the daemon ran 11 commits behind
+        # main for hours (#607 never loaded; plugins.offline stalled).
+        self.commit_plan("brain/decisions/ADR-1.md", "draft\n")
+        self.commit_plan("planning/plans/y.md", "local only\n")
+        self.push("brain/decisions/ADR-1.md", "reviewed\n")
+        new = self.push("tools/harness/train.py", "v2\n")
+        self.assertTrue(self.up.ready(1000))
+        self.assertEqual(git(self.daemon, "merge-base", "HEAD", new), new)
+        with open(os.path.join(self.daemon, "brain/decisions/ADR-1.md")) as f:
+            self.assertEqual(f.read(), "reviewed\n")
+        self.assertTrue(os.path.exists(
+            os.path.join(self.daemon, "planning/plans/y.md")))
+        self.assertEqual(git(self.daemon, "status", "--porcelain"), "")
+        ev = [r for r in self.store.rows if r[1] == "self_update_rebased"]
+        self.assertIn("main's version", ev[0][2])
+
+    def test_an_unrebaseable_plan_commit_is_saved_and_forced_at_the_bound(self):
+        # modify/delete: no merge option resolves it, yet the daemon must
+        # still reach main's harness within the bound, keeping the commits.
+        self.commit_plan("planning/plans/z.md", "v1\n")
+        git(self.dev, "pull", "-q", self.daemon, "HEAD")
+        git(self.dev, "push", "-q", "origin", "main")
+        self.commit_plan("planning/plans/z.md", "local v2\n")
+        git(self.dev, "rm", "-q", "planning/plans/z.md")
+        git(self.dev, "commit", "-qm", "drop z")
+        git(self.dev, "push", "-q", "origin", "main")
+        local = git(self.daemon, "rev-parse", "HEAD")
+        new = self.push("tools/harness/train.py", "v2\n")
+        self.assertFalse(self.up.ready(1000))
+        self.assertIn("self_update_blocked", self.store.kinds())
+        self.assertEqual(git(self.daemon, "status", "--porcelain"), "")
+        self.assertTrue(self.up.ready(1000 + self.up.max_defer_s))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
+        ev = [r for r in self.store.rows if r[1] == "self_update_forced"]
+        saved = ev[-1][2].split()[-1]
+        self.assertEqual(git(self.daemon, "rev-parse", saved), local)
+
     def test_an_error_in_the_check_is_one_event_not_silence(self):
         def boom(now):
             raise RuntimeError("git exploded")
