@@ -184,6 +184,96 @@ Rectangle {
             }
         }
 
+        // --- Sections: a selection marker moved or copied to the insertion
+        // point (ADR-0116). Typing in the field locates there, as the main
+        // counter does; the buttons then act on that point.
+        Rectangle { width: parent.width; height: 1; color: Theme.borderSubtle }
+        Text {
+            text: "SECTIONS"
+            color: Theme.textTertiary
+            font { family: Theme.fontFamily; pixelSize: Theme.textOverline; letterSpacing: 0.6 }
+        }
+        Row {
+            spacing: Theme.space2
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Destination"
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            CounterField {
+                objectName: "arrangementDestination"
+                anchors.verticalCenter: parent.verticalCenter
+                width: 150
+                shell: win.shell
+                session: win.session
+                fontPx: Theme.textBody
+                text: win.session.arrangementDestination
+            }
+        }
+        Text {
+            visible: sectionList.count === 0
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: "No sections. A selection marker over a range is a section."
+            color: Theme.textTertiary
+            font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+        }
+        ListView {
+            id: sectionList
+            objectName: "arrangementList"
+            width: parent.width
+            height: Math.min(count, 4) * win.rowHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            model: win.session.arrangementSections
+            delegate: Item {
+                id: sec
+                objectName: "arrangementRow"
+                required property var modelData
+                width: ListView.view.width
+                height: win.rowHeight
+                Text {
+                    x: Theme.space1; width: 150
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: sec.modelData.name
+                    elide: Text.ElideRight
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.DemiBold }
+                }
+                Text {
+                    x: 160; width: 130
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: sec.modelData.start + " · " + sec.modelData.length
+                    elide: Text.ElideRight
+                    color: Theme.textSecondary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
+                }
+                Row {
+                    anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+                    spacing: Theme.space1
+                    SButton {
+                        objectName: "arrangementMove"
+                        text: "Move to"; implicitWidth: 80; implicitHeight: 20; fontPx: Theme.textSmall
+                        onClicked: win.session.arrangementApply(sec.modelData.row, true)
+                    }
+                    SButton {
+                        objectName: "arrangementCopy"
+                        text: "Copy to"; implicitWidth: 80; implicitHeight: 20; fontPx: Theme.textSmall
+                        onClicked: win.session.arrangementApply(sec.modelData.row, false)
+                    }
+                }
+            }
+        }
+        Text {  // held: the refusal, or what the edit left, until the next try
+            objectName: "arrangementNotice"
+            visible: text.length > 0
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: win.session.arrangementNotice
+            color: Theme.textSecondary
+            font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+        }
         Text {
             width: parent.width
             wrapMode: Text.Wrap

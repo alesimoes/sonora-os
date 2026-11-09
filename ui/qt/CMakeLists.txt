@@ -86,6 +86,7 @@ sonora_ui_library(sonora_ui_edit SOURCES
   src/edit_playlists.cpp
   src/edit_clipboard.h src/edit_clipboard.cpp
   src/edit_markers.cpp
+  src/edit_arrangement.cpp
   src/edit_names.cpp
   src/edit_vcas.cpp
   src/edit_groups.cpp
@@ -143,6 +144,7 @@ sonora_ui_library(sonora_ui_session QT SOURCES
   src/session_model_commands_edit.cpp
   src/session_model_commands_app.cpp
   src/session_model_panels.cpp
+  src/edit_arrangement_session.cpp
   src/session_model_state.cpp
   src/session_model_gestures.cpp
   src/session_model_save.cpp
@@ -300,6 +302,15 @@ target_compile_definitions(test_ui_markers PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_markers COMMAND test_ui_markers)
 set_tests_properties(ui_markers PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Sections in Memory Locations: Move to / Copy to as one Compound, the
+# refusal held in the window (ADR-0116).
+add_executable(test_ui_arrangement tests/test_arrangement_ui.cpp)
+target_link_libraries(test_ui_arrangement PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_arrangement PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_arrangement COMMAND test_ui_arrangement)
+set_tests_properties(ui_arrangement PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The automation Event List and Snapshot: the lane's points listed, edited and
 # deleted, the strip's value written at the insertion point, then the window
