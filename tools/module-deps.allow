@@ -103,6 +103,7 @@ ui/qt -> common/platform
 ui/qt -> common/session_files
 ui/qt -> contracts/api
 ui/qt -> ui/client
+ui/qt -> ui/conductor
 ui/qt -> ui/groove
 ui/qt -> ui/keymap
 ui/qt -> ui/smart_controls
