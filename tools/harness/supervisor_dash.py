@@ -39,7 +39,9 @@ def start(repo_root, port=PORT, popen=subprocess.Popen, env=None):
     if not os.path.exists(script):
         return None
     cmd = [sys.executable, script, "--port", str(port)]
-    flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0  # detached
+    # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: no visible console for it
+    # or its children (DETACHED_PROCESS made each child open a window).
+    flags = 0x08000000 | 0x00000200 if os.name == "nt" else 0
     popen(cmd, cwd=os.path.dirname(os.path.dirname(script)),
           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
           creationflags=flags, start_new_session=os.name != "nt")
