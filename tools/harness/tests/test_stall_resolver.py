@@ -1,8 +1,10 @@
 """harness/stall_resolver: a stalled feature gets one principal-engineer run
 (trigger, dedupe within the bound, cap, skip when a fixer is on it)."""
+import json
 import unittest
 
 import support  # noqa: F401  puts tools/ on sys.path before harness.*
+from harness import stall_resolver as SR
 from harness.supervisor import Thresholds
 from test_stall_check import dead_pid
 import test_supervisor as ts
@@ -121,6 +123,36 @@ class Resolver(ts.Case):
         self.sweep()
         (w,) = self.resolvers()
         self.assertIn("f.ui", w["brief"])
+
+
+class Ladder(Resolver):
+    """Owner 2026-11-09: sonnet first; only the core climbs to opus and fable."""
+    def climb(self, grade, tries):
+        self.stalled_feature()
+        if grade:
+            self.o.store.set_meta("tier:f.a", json.dumps({"tier": None, "grade": grade}))
+        out = []
+        for i in range(tries):
+            SR._queue(self.sv, "f", [(self.o.store.get_task("f.a"), 3 * H)], self.now() + i)
+            w = self.resolvers()[-1]
+            out.append((w["agent"], w["model_pin"]))
+        return out
+
+    def test_a_part_of_the_product_stays_on_sonnet_then_is_replanned_on_sonnet(self):
+        self.assertEqual(self.climb("L/med", 4), [
+            ("principal-engineer", "sonnet"), ("principal-engineer", "sonnet"),
+            ("architect", "sonnet"), ("architect", "sonnet")])
+
+    def test_the_core_climbs_sonnet_opus_fable_then_fable_replans(self):
+        self.assertEqual(self.climb("M/high", 5), [
+            ("principal-engineer", "sonnet"), ("principal-engineer", "opus"),
+            ("principal-engineer", "fable"), ("architect", "fable"), ("architect", "fable")])
+
+    def test_a_stall_after_the_reset_starts_at_the_bottom(self):
+        self.climb("S/high", 2)
+        self.age(SR.LADDER_RESET_S / H + 1)
+        SR._queue(self.sv, "f", [(self.o.store.get_task("f.a"), 3 * H)], self.now())
+        self.assertEqual(self.resolvers()[-1]["model_pin"], "sonnet")
 
 
 if __name__ == "__main__":
