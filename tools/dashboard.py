@@ -49,6 +49,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, console.view())
         if route == "/api/console/stream":
             return self.stream()
+        parts = route.strip("/").split("/")
+        if len(parts) == 4 and parts[:2] == ["api", "agent"] and parts[3] == "activity":
+            return self.reply(*console.agent_activity(parts[2]))
         if route.startswith(STATIC_ROUTE):
             got = static_file(route)
             return self.send(*got) if got else self.reply(404, {"error": "not found"})

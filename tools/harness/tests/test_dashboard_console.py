@@ -40,8 +40,11 @@ class Strip(unittest.TestCase):
         self.assertEqual(V.level_of(3, 0), "ok")
 
     def test_daemon_cell_by_age(self):
-        for age, level in ((5, "ok"), (60, "warn"), (500, "bad")):
-            self.assertEqual(V.daemon_cell({"updated_ts": NOW - age}, NOW)["level"], level)
+        # One tick is ~50 s (30 s sleep + work): a normal tick must read ok.
+        for age, text in ((5, "vivo 5s"), (90, "vivo 90s"), (300, "lento 300s"), (900, "travado 15min")):
+            self.assertEqual(V.daemon_cell({"updated_ts": NOW - age}, NOW)["text"], text)
+        self.assertEqual(V.daemon_cell({"updated_ts": NOW - 300}, NOW, alive=False),
+                         {"level": "bad", "text": "parado"})
         self.assertEqual(V.daemon_cell(None, NOW), {"level": "bad", "text": "parado"})
 
     def test_cells_read_the_status_and_the_open_pr_brake(self):
@@ -149,7 +152,8 @@ class Served(unittest.TestCase):
     def test_a_message_only_drops_a_request_for_the_daemon(self):
         code, body = self.call("/api/chat", {"text": "status", "to": None})
         self.assertEqual(code, 202)
-        self.assertEqual(self.requests(), [{"kind": "console", "text": "status", "to": None}])
+        self.assertEqual([{k: v for k, v in r.items() if k != "sent"} for r in self.requests()],
+                         [{"kind": "console", "text": "status", "to": None}])
         self.assertEqual(S.history(self.hdir), [])       # the dashboard never writes the chat
 
     def test_confirm_cancel_retry_post_the_decision_and_run_nothing(self):
