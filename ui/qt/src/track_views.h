@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
 
 namespace sonora::ui {
 
@@ -83,6 +84,43 @@ public:
     void forget(const std::string& session_id) override { views_.erase(session_id); }
 
 private:
+    std::map<std::string, std::map<uint32_t, TrackView>> views_;
+};
+
+// The store a machine keeps: one JSON file beside the preferences, every
+// session's views in it by session id (ADR-0106). Per machine, never in the
+// session file: opening the session elsewhere shows it plain.
+//
+// An empty path keeps it in memory (a picture, a test).
+class TrackViews final : public TrackViewStore {
+public:
+    // $SONORA_TRACK_VIEWS_FILE, else $XDG_CONFIG_HOME/sonora/track-views.json.
+    static std::string default_path();
+
+    explicit TrackViews(std::string path = {}) : path_(std::move(path)) {}
+
+    // A missing file is not a fault. A file that does not parse, or has an
+    // unexpected shape, is ignored whole and `why` says so: a view is never
+    // worth refusing to start for. Entries naming an unknown height are
+    // dropped one by one.
+    bool load(std::string& why);
+
+    TrackView get(const std::string& session_id, uint32_t track) const override;
+    void set(const std::string& session_id, uint32_t track, const TrackView& v) override;
+    uint32_t show_all(const std::string& session_id) override;
+    void forget(const std::string& session_id) override;
+
+    // Why the last write failed, empty when it succeeded. The change itself
+    // stands for this run; the model holds the text for the operator.
+    const std::string& save_error() const { return save_error_; }
+    // The tracks with a non-default view in `session_id`.
+    uint32_t customised(const std::string& session_id) const;
+
+private:
+    void save();
+
+    std::string path_;
+    std::string save_error_;
     std::map<std::string, std::map<uint32_t, TrackView>> views_;
 };
 

@@ -23,7 +23,9 @@ std::string lane_label(const TrackEdit& t, AutomationParam p) {
 }  // namespace
 
 void EditController::refresh_rows() const {
-    if (autolanes_open_.empty() && comp_lanes_open_.empty()) {
+    const bool sized = rows_ != nullptr && rows_->active();
+    if (autolanes_open_.empty() && comp_lanes_open_.empty() && !sized) {
+        view_.heights.clear();
         view_.tops.clear();
         view_.open.clear();
         view_.lanes.clear();
@@ -33,15 +35,21 @@ void EditController::refresh_rows() const {
     view_.tops.assign(ts.size() + 1, 0.0);
     view_.open.assign(ts.size(), 0);
     view_.lanes.assign(ts.size(), 0);
+    view_.heights.assign(sized ? ts.size() : 0, 0.0);
     double y = 0;
     for (std::size_t i = 0; i < ts.size(); ++i) {
         view_.tops[i] = y;
-        const bool open = autolanes_open_.count(ts[i]->id) != 0 && ts[i]->kind != TrackKind::Midi;
+        const RowSpec spec = sized ? rows_->row(static_cast<int>(i), ts[i]->id) : RowSpec{};
+        // A hidden track takes none of its lanes' room either.
+        const bool open = !spec.hidden && autolanes_open_.count(ts[i]->id) != 0 &&
+                          ts[i]->kind != TrackKind::Midi;
         view_.open[i] = open ? 1 : 0;
-        view_.lanes[i] = comp_lanes_open_.count(ts[i]->id) != 0
+        view_.lanes[i] = !spec.hidden && comp_lanes_open_.count(ts[i]->id) != 0
                              ? static_cast<std::uint8_t>(take_lane_ids(static_cast<int>(i)).size())
                              : 0;
-        y += view_.track_height + (open ? kLaneCount * view_.autolane_height : 0.0) +
+        const double own = spec.hidden ? 0.0 : view_.track_height * spec.scale;
+        if (sized) view_.heights[i] = own;
+        y += own + (open ? kLaneCount * view_.autolane_height : 0.0) +
              view_.lanes[i] * view_.comp_lane_height;
     }
     view_.tops[ts.size()] = y;
