@@ -175,7 +175,9 @@ if [[ "$RTSAN" == 1 && -f "$OUT/plan.json" ]]; then
     [[ "$scope" == all ]] || { export SONORA_RTSAN_TARGETS="$targets"; args=(-R "${regex:-^$}"); }
     echo "micro-build: rtsan: building and running the tests of: $targets"
     start=$SECONDS
-    if ! SONORA_RTSAN_LIVE=0 "$ROOT/tools/build-rtsan.sh" "${args[@]}"; then
+    # The RTSan image has no stock LV2 bundles; a root build file change runs every
+    # test there (plugins/host/CMakeLists.txt: optional in the PR micro build only).
+    if ! SONORA_STOCK_OPTIONAL=1 SONORA_RTSAN_LIVE=0 "$ROOT/tools/build-rtsan.sh" "${args[@]}"; then
       echo "micro-build: FAIL rtsan ($((SECONDS - start)) s)"
       exit 1
     fi
