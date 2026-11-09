@@ -277,6 +277,11 @@ struct PluginHosting::Chain {
     // Changes for the running store the session refused, or that wait for
     // its first plan: (instance, param) -> the newest value.
     std::map<std::pair<uint32_t, uint32_t>, float> retry;
+    // ADR-0087 §4: the one insert a render leaves playing (0: no override),
+    // and the inserts whose bypass in the running store is the override's,
+    // not the document's.
+    model::Id solo = 0;
+    std::set<model::Id> solo_posted;
 
     // Gestures the running host has open: the last value touched, by
     // (instance, param), with what the document needs to record it.
@@ -466,6 +471,8 @@ void PluginHosting::drop_chain(Chain& c) {
     c.running_doc.clear();
     c.posted.clear();
     c.retry.clear();
+    c.solo = 0;
+    c.solo_posted.clear();
     c.open_touches.clear();
     c.store_epoch = 0;
     c.named = false;
@@ -693,6 +700,7 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const st
 }
 
 void PluginHosting::show(const model::Snapshot& doc, bool opened) {
+    shown_ = doc;
     if (opened) {
         // A session opened, even the one already open (B3 on #80): ids are
         // per session, so no host of the document it replaces is kept, and
@@ -836,6 +844,16 @@ void PluginHosting::post(Chain& c, uint32_t instance, uint32_t param, float valu
     c.retry[{instance, param}] = value;
 }
 
+void PluginHosting::flush_retry(Chain& c) {
+    if (!c.running || c.running->down() || post_epoch(c) == 0) return;
+    const uint64_t epoch = post_epoch(c);
+    for (auto it = c.retry.begin(); it != c.retry.end();) {
+        const auto [instance, param] = it->first;
+        it = session_.post_plugin_param(epoch, c.store, instance, param, it->second) ? c.retry.erase(it)
+                                                                                   : std::next(it);
+    }
+}
+
 void PluginHosting::post_values(Chain& c, const model::Snapshot& doc, bool force) {
     if (!c.running || c.running->down() || !c.running->host()) return;
     if (post_epoch(c) == 0) {
@@ -851,7 +869,15 @@ void PluginHosting::post_values(Chain& c, const model::Snapshot& doc, bool force
         const model::InsertMix* m = doc.mix.find_insert(id);
         const model::InsertMix now = m ? *m : model::InsertMix{id, false, {}, {}};
         model::InsertMix& was = c.posted[id];
-        if (force || now.bypass != was.bypass) post(c, i, plugin::kBypassParam, now.bypass ? 1.f : 0.f);
+        const bool silenced = c.solo != 0 && id != c.solo;
+        const bool bypass = now.bypass || silenced;
+        const bool was_bypass = was.bypass || c.solo_posted.count(id) != 0;
+        if (force || bypass != was_bypass) post(c, i, plugin::kBypassParam, bypass ? 1.f : 0.f);
+        if (silenced) {
+            c.solo_posted.insert(id);
+        } else {
+            c.solo_posted.erase(id);
+        }
         for (const model::ParamValue& v : now.params) {
             const auto old = std::find_if(was.params.begin(), was.params.end(),
                                           [&](const model::ParamValue& p) { return p.key == v.key; });
@@ -929,6 +955,9 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                     // plan has the store (B2 on #80).
                     c.posted = std::move(c.pending_seeded);
                     c.pending_seeded.clear();
+                    // A new store, seeded from the document: a standing
+                    // override is posted to it with the rest (need_post).
+                    c.solo_posted.clear();
                     c.state_lost = std::move(c.pending_state_lost);
                     c.pending_state_lost.clear();
                     c.work_noticed.clear();
@@ -989,14 +1018,7 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
                 fail_state_requests(c.track, "its plug-in host stopped before it answered");
             }
             if (c.need_post) post_values(c, doc);
-            if (post_epoch(c) != 0 && !c.running->down()) {
-                const uint64_t epoch = post_epoch(c);
-                for (auto it = c.retry.begin(); it != c.retry.end();) {
-                    const auto [instance, param] = it->first;
-                    it = session_.post_plugin_param(epoch, c.store, instance, param, it->second) ? c.retry.erase(it)
-                                                                                               : std::next(it);
-                }
-            }
+            flush_retry(c);
             if (c.restart_swapped && c.restart_retire_epoch != 0 && oldest_live_epoch >= c.restart_retire_epoch) {
                 c.running->retired();
                 c.restart_swapped = false;
@@ -1658,6 +1680,42 @@ bool PluginHosting::chain_ready(model::Id track) const {
         if (faults_.count(m.insert)) return false;
     }
     return true;
+}
+
+bool PluginHosting::render_solo(model::Id track, model::Id insert) {
+    const auto it = chains_.find(track);
+    if (!ok_ || it == chains_.end()) return false;
+    Chain& c = *it->second;
+    if (!c.running || c.running->down() || !c.running->host()) return false;
+    const auto target = std::find_if(c.running_spec.begin(), c.running_spec.end(),
+                                     [&](const Member& m) { return m.insert == insert; });
+    // An insert the running host left out (missing, refused) prints nothing.
+    if (target == c.running_spec.end()) return false;
+    if (c.solo != insert) {
+        c.solo = insert;
+        post_values(c, shown_);
+    }
+    flush_retry(c);
+    if (c.need_post || !c.retry.empty()) return false;
+    plugin_client::HostProcess& h = *c.running->host();
+    for (uint32_t i = 0; i < c.running_spec.size(); ++i) {
+        if (i >= plugin::kMaxInstances) return false;
+        const model::Id id = c.running_spec[i].insert;
+        const model::InsertMix* m = shown_.mix.find_insert(id);
+        const float want = id != insert || (m != nullptr && m->bypass) ? 1.f : 0.f;
+        if (h.header().bypass[i].load(std::memory_order_relaxed) != want) return false;
+    }
+    return true;
+}
+
+void PluginHosting::render_unsolo(model::Id track) {
+    const auto it = chains_.find(track);
+    if (it == chains_.end() || it->second->solo == 0) return;
+    Chain& c = *it->second;
+    c.solo = 0;
+    // Forced, as for a dropped change: the hosts end where the document
+    // says, whatever part of the override reached them.
+    post_values(c, shown_, true);
 }
 
 uint64_t PluginHosting::chain_misses(model::Id track) const {

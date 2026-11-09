@@ -61,6 +61,7 @@
 #include "sonora/model/operations.h"
 #include "sonora/plan_graph.h"
 #include "sonora/platform/wait_set.h"
+#include "sonora/render_solo.h"
 
 namespace sonora {
 
@@ -97,7 +98,7 @@ struct PluginHostingConfig {
     std::string plugin_scratch_root;
 };
 
-class PluginHosting {
+class PluginHosting final : public RenderSolo {
 public:
     // Builds the client for config.block_frames and two-channel chains,
     // the supervisor (the host's --version, the sealed clock) and the
@@ -111,7 +112,7 @@ public:
     // has deactivated the backend or seen a callback pass since; chains,
     // supervisor, client. Every host is asked to stop first and the whole
     // set gets one grace (2 s) before it is killed, not one per host.
-    ~PluginHosting();
+    ~PluginHosting() override;
     PluginHosting(const PluginHosting&) = delete;
     PluginHosting& operator=(const PluginHosting&) = delete;
 
@@ -167,6 +168,14 @@ public:
     // rises while the host runs; 0 when there is none. A render compares two
     // readings and refuses its file when they differ.
     uint64_t chain_misses(model::Id track) const;
+    // Process Selection through one insert (ADR-0087 §4, render_solo.h): the
+    // other inserts of the chain bypassed on its host for the render, the
+    // document untouched. The override is the chain's, so every post of its
+    // values honours it, a forced repost of dropped changes included, until
+    // render_unsolo() republishes the document's bypass; a session opened or
+    // the chain dropped forgets it.
+    bool render_solo(model::Id track, model::Id insert) override;
+    void render_unsolo(model::Id track) override;
 
     // Standing faults by insert id (item 5): the text names the plugin,
     // track and slot. An insert not here has none standing.
@@ -332,6 +341,8 @@ private:
     // The epoch a change for the chain's store is tagged with; 0 while no
     // plan built names the store.
     uint64_t post_epoch(const Chain& c) const;
+    // The changes kept for a retry, sent again while the store is in a plan.
+    void flush_retry(Chain& c);
     // One change to the running store, or kept for a retry, newest wins.
     void post(Chain& c, uint32_t instance, uint32_t param, float value);
     // The running host's messages taken and mapped (poll does it every
@@ -369,6 +380,8 @@ private:
     PluginScanner& scanner_;
     bool ok_ = false;
     std::string why_;
+    // The document last shown: what render_unsolo() republishes.
+    model::Snapshot shown_;
     std::unique_ptr<plugin_client::PluginClient> client_;
     std::unique_ptr<plugin_client::HostSupervisor> supervisor_;
     std::unique_ptr<PluginChainRunner> runner_;
