@@ -47,6 +47,24 @@ class Classify(unittest.TestCase):
         self.assertIsNone(triage.classify(
             "engineer", "work is not complete; files outside my claim: a/b.c"))
 
+    def test_plan_must_add_files_is_scope(self):
+        # eng-179's report, 2026-11-09 (time.elastic.engine): QA failed it on
+        # two out-of-claim files only, the engineer asked for "the plan to add
+        # those two files", no pattern matched and the feature's contract,
+        # stretch and ui sat in integrating for 9 h behind it.
+        real = ("Finding 3 partly fixed: the three ui/elastic edges are dropped "
+                "from tools/module-deps.allow (commit bc5c2fdd); check-deps 'ok "
+                "(108 edges)', pre-pr 'ok (43 files)'. Findings 3 (six engine "
+                "edges) and 4 (ElasticService member in engine_control_server.h) "
+                "need the plan to add those two files to this task; the only "
+                "header-free option is a file-static global, which code-structure "
+                "rules forbid. Amendment asked via daemon (no live architect/lead).")
+        c = triage.classify
+        self.assertEqual(c("engineer", real), "scope")
+        self.assertEqual(c("engineer", "the plan must add ui/z.cpp to my files"), "scope")
+        self.assertIsNone(c("tester", real))
+        self.assertIsNone(c("engineer", "should the plan add a new module?"))
+
     def test_paths_and_marks(self):
         self.assertEqual(triage.paths_in("touch engine/a.cpp, ui/b.h and 1/2"),
                          ["engine/a.cpp", "ui/b.h"])

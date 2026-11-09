@@ -64,13 +64,17 @@ _GREEN = re.compile(
 _COMPLETE = re.compile(
     r"\b(work|slice|code|feature|task)\s+(is\s+)?(complete|done|finished)\b",
     re.I)
+# "need the plan to add those two files to this task": what is left is the
+# claim, nothing else (time.elastic.engine, 2026-11-09: 9 h blocked).
+_PLAN_ADD = (r"\b(needs?|asks?|wants?)\s+the\s+plan\s+to\s+add\b"
+             r"|\bplan\s+(must|has\s+to|needs\s+to)\s+add\b")
 # The tester failed on scope and nothing else.
 _SCOPE_ONLY = re.compile(
     r"\b(fail(ed|s)?|blocked)\s+(only\s+)?on\s+(a\s+|the\s+)?scope\b"
-    r"|\bscope(\s+(decision|finding|issue))?\s+only\b", re.I)
+    r"|\bscope(\s+(decision|finding|issue))?\s+only\b|" + _PLAN_ADD, re.I)
 _SCOPE = re.compile(r"\b(scope|outside (its|my|the|our) claim|"
                     r"not in (its|my|the) claim|outside (its|my|the) files|"
-                    r"files? outside|unclaimed files?)", re.I)
+                    r"files? outside|unclaimed files?)|" + _PLAN_ADD, re.I)
 _PATH = re.compile(r"[\w.+-]+(?:/[\w.+-]+)+")
 _MARK = re.compile(r"\[triage:(\w+) (\d+)\]")
 
