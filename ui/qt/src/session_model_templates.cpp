@@ -57,6 +57,41 @@ bool SessionModel::inTemplateFolder() const {
     return folder.startsWith(root + QLatin1Char('/'));
 }
 
+namespace {
+
+// ADR-0146 §1 and §4: Save as Template takes "Name" or "Category/Name"; the
+// category is one folder of the templates folder, named as a session is,
+// never a template's folder and never a link. Sets the folder the template
+// goes in.
+bool template_save_folder(const QString& root, const QString& key, QString& parent, std::string& why) {
+    const auto refuse = [&why, &key](const std::string& reason) {
+        why = "cannot save the template \"" + key.toStdString() + "\": " + reason;
+        return false;
+    };
+    const int slashes = key.count(QLatin1Char('/'));
+    if (slashes > 1) return refuse("a category holds templates, never another category");
+    const QString leaf = key.section(QLatin1Char('/'), -1);
+    if (const std::string bad = session_name_problem(leaf); !bad.empty()) return refuse(bad);
+    parent = root;
+    if (slashes == 0) return true;
+    const QString category = key.section(QLatin1Char('/'), 0, 0);
+    if (const std::string bad = session_name_problem(category); !bad.empty()) {
+        return refuse("the category: " + bad);
+    }
+    parent = QDir(root).filePath(category);
+    if (QFileInfo::exists(session_file_path(root, category))) {
+        return refuse("\"" + category.toStdString() + "\" is a template, so it cannot be a category");
+    }
+    if (is_link(parent)) return refuse("the category \"" + category.toStdString() + "\" is a link; it is left alone");
+    const QFileInfo folder(parent);
+    if (folder.exists() && !folder.isDir()) {
+        return refuse(parent.toStdString() + " is a file, not a category folder");
+    }
+    return true;
+}
+
+}  // namespace
+
 bool SessionModel::saveSessionAsTemplate(const QString& name, bool markers, std::string& why) {
     if (overlay_.recording) {
         why = "stop recording before Save as Template: the take being written belongs to this "
@@ -68,19 +103,19 @@ bool SessionModel::saveSessionAsTemplate(const QString& name, bool markers, std:
         return false;
     }
     const QString wanted = name.trimmed();
-    const std::string bad = session_name_problem(wanted);
-    if (!bad.empty()) {
-        why = "cannot save the template \"" + wanted.toStdString() + "\": " + bad;
-        return false;
-    }
-    if (QFileInfo::exists(QDir(templates_dir_).filePath(wanted))) {
-        why = "a template named \"" + wanted.toStdString() + "\" is already in " +
-              templates_dir_.toStdString() + "; choose another name";
+    QString parent;
+    if (!template_save_folder(templates_dir_, wanted, parent, why)) return false;
+    const QString leaf = wanted.section(QLatin1Char('/'), -1);
+    if (QFileInfo::exists(QDir(parent).filePath(leaf))) {
+        why = "a template named \"" + leaf.toStdString() + "\" is already in " + parent.toStdString() +
+              "; choose another name";
         return false;
     }
     SaveAsTarget target;
-    target.file = session_file_path(templates_dir_, wanted);
-    target.name = wanted;
+    // The engine makes a new category's folder with the template's
+    // (SessionFolder::save_as), and removes both if the write fails.
+    target.file = session_file_path(parent, leaf);
+    target.name = leaf;
     target.copy = true;
     target.audio = false;
     target.as_template = true;
