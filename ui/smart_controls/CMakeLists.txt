@@ -8,13 +8,14 @@ target_link_libraries(test_smart_controls PRIVATE sonora_smart_controls)
 add_test(NAME smart_controls COMMAND test_smart_controls)
 set_tests_properties(smart_controls PROPERTIES LABELS ui)
 
-# The Qt part is added after ui/qt defines sonora_ui_session, so it is
-# deferred to the end of the top-level configure.
+# The Qt part joins sonora_ui_session, which ui/qt defines after this
+# directory, so it waits for the end of the top-level configure. CMake
+# refuses add_subdirectory there, so the file is included instead: it runs
+# in the top-level directory's scope and names its paths absolutely.
 function(_sonora_smart_controls_qt)
   if(TARGET sonora_ui_session AND
      EXISTS ${CMAKE_SOURCE_DIR}/ui/smart_controls/qt/CMakeLists.txt)
-    add_subdirectory(${CMAKE_SOURCE_DIR}/ui/smart_controls/qt
-                     ${CMAKE_BINARY_DIR}/ui/smart_controls/qt)
+    include(${CMAKE_SOURCE_DIR}/ui/smart_controls/qt/CMakeLists.txt)
   endif()
 endfunction()
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.19)
