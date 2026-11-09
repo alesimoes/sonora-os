@@ -70,13 +70,22 @@ void round_trips() {
     built.algorithm = ElasticAlgorithm::Varispeed;
     built.ratio = 1.25;
     CHECK(parsed(format_elastic_request(built)) == built);
-    built.mode = ElasticMode::Quantize;
-    built.grid_beats = 0.125;
-    built.strength = 75;
-    CHECK(parsed(format_elastic_request(built)) == built);
+    // Only the mode's own fields travel; the rest parse back at their defaults.
+    ElasticRequest quantize;
+    quantize.region = 8;
+    quantize.mode = ElasticMode::Quantize;
+    quantize.grid_beats = 0.125;
+    quantize.strength = 75;
+    CHECK(parsed(format_elastic_request(quantize)) == quantize);
+    ElasticRequest warp;
+    warp.region = 8;
+    warp.algorithm = ElasticAlgorithm::Monophonic;
+    warp.mode = ElasticMode::Warp;
+    warp.markers = {{1, 2}, {3, 9}};
+    CHECK(parsed(format_elastic_request(warp)) == warp);
     built.mode = ElasticMode::Warp;
     built.markers = {{1, 2}, {3, 9}};
-    CHECK(parsed(format_elastic_request(built)) == built);
+    CHECK(!(parsed(format_elastic_request(built)) == built));   // ratio=1.25 did not travel
 }
 
 void refused(const std::string& text, const char* reason) {
