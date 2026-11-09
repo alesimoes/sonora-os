@@ -13,6 +13,7 @@
 #include <QTest>
 #include <algorithm>
 #include <cstdio>
+#include <set>
 #include <string>
 
 #include "edit_clipboard.h"
@@ -1321,13 +1322,276 @@ int test_clip_loop_command() {
     return 0;
 }
 
+// Paste across sessions (ADR-0142): the clipboard keeps its origin through a
+// session open; the audio is brought in first, as AddSource members ahead of
+// the paste in the same Compound; refusals send nothing.
+int test_paste_across_sessions() {
+    ModelDocument doc(two_regions());
+    EditController c(doc);
+    std::string folder = "/music/Song A";
+    c.set_session_folder_source([&folder] { return folder; });
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    std::string why;
+    CHECK(c.select_region(10));
+    CHECK(c.copy(why));
+    CHECK(c.clipboard().origin_folder == "/music/Song A" && c.clipboard().origin_sample_rate == kRate);
+
+    // Another session, without source 100.
+    Snapshot other = make_empty_session(2, kRate);
+    other.next_id = 500;
+    CHECK(doc.reset(other, why));
+    c.document_replaced();
+    folder = "/music/Song B";
+    CHECK(c.clipboard().origin_folder == "/music/Song A");   // kept
+
+    int calls = 0;
+    bool refuse = false;
+    c.set_bring_in([&](const Snapshot& dest, const std::vector<Source>& sources,
+                       const std::string& origin, std::uint32_t, BroughtIn& out, std::string& w) {
+        ++calls;
+        if (refuse) {
+            w = "Take.wav is not readable in " + origin + "; nothing was pasted";
+            return false;
+        }
+        Source s = sources.at(0);
+        s.id = dest.next_id;
+        out.ops.push_back(AddSource{s});
+        out.remap[sources[0].id] = s.id;
+        out.next_id = s.id + 1;
+        return true;
+    });
+    c.select_track(1);
+    c.set_insertion(0);
+    refuse = true;
+    CHECK(!c.paste(why) && has(why, "not readable") && calls == 1);
+    CHECK(doc.history().undo_depth() == 0 && doc.snapshot().sources->sources.empty());
+    refuse = false;
+    c.set_recording(true);
+    const int before = calls;
+    CHECK(!c.paste(why) && has(why, "Stop recording") && calls == before);
+    c.set_recording(false);
+    CHECK(c.paste(why));
+    CHECK(doc.snapshot().sources->sources.size() == 1);
+    const Playlist& pl = lane(doc.snapshot(), 1);
+    CHECK(pl.regions.size() == 1 && pl.regions[0].channels[0].source == 500);
+    CHECK(pl.regions[0].id > 500);
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Paste");
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why));
+    CHECK(lane(doc.snapshot(), 1).regions.empty());
+    CHECK(doc.snapshot().sources->sources.size() == 1);   // the audio stays
+    return 0;
+}
+
+// --- cross-session paste: the fixture and its fake copier ---------------------
+// The planner and the disk copies are tested in common (test_paste_sources);
+// these cases pin what the controller does with what the seam answers. The fake
+// follows the planner's rules (umid reuse, " 2" on a taken name, origin gone
+// refuses) over an in-memory file list, so nothing touches a disk or a clock.
+// A separate test file for this waits for ui/qt/CMakeLists.txt to free up.
+
+struct CrossSession {
+    ModelDocument doc;
+    EditController c;
+    std::string folder = "/music/Song A";
+    std::set<std::string> dest_files;
+    bool origin_exists = true;
+    std::vector<std::string> copies;   // files the fake copier wrote
+    int calls = 0;
+    std::string why;
+
+    explicit CrossSession(Snapshot start = umid_session(two_regions()))
+        : doc(std::move(start)), c(doc) {
+        c.set_viewport(4000, 400);
+        c.scroll_to_frame(0);
+        c.set_session_folder_source([this] { return folder; });
+        c.set_bring_in([this](const Snapshot& dest, const std::vector<Source>& sources,
+                              const std::string&, std::uint32_t, BroughtIn& out, std::string& w) {
+            return plan(dest, sources, out, w);
+        });
+    }
+
+    static Snapshot umid_session(Snapshot s) {
+        auto pool = std::make_shared<SourcePool>(*s.sources);
+        pool->sources[0].umid = std::string(64, 'a');
+        s.sources = pool;
+        return s;
+    }
+
+    bool plan(const Snapshot& dest, const std::vector<Source>& sources, BroughtIn& out,
+              std::string& w) {
+        ++calls;
+        if (!origin_exists) {
+            w = "the folder " + folder + " is gone; nothing was pasted";
+            return false;
+        }
+        Id next = dest.next_id;
+        for (const Source& s : sources) {
+            const auto same = std::find_if(
+                dest.sources->sources.begin(), dest.sources->sources.end(),
+                [&s](const Source& d) { return !s.umid.empty() && d.umid == s.umid; });
+            if (same != dest.sources->sources.end()) {   // reused: no copy, no AddSource
+                out.remap[s.id] = same->id;
+                continue;
+            }
+            Source n = s;
+            n.id = next++;
+            while (dest_files.count(n.path) != 0) n.path.insert(n.path.size() - 4, " 2");
+            dest_files.insert(n.path);
+            copies.push_back(n.path);
+            out.ops.push_back(AddSource{n});
+            out.remap[s.id] = n.id;
+        }
+        out.next_id = next;
+        return true;
+    }
+
+    // Open `other` in place of this session (the clipboard stays), ready to paste on track 2.
+    bool open_other(Snapshot other) {
+        other.next_id = 500;
+        if (!doc.reset(other, why)) return false;
+        c.document_replaced();
+        folder = "/music/Song B";
+        c.select_track(1);
+        c.set_insertion(0);
+        return true;
+    }
+    bool copy_region_and_open(Snapshot other) {
+        return c.select_region(10) && c.copy(why) && open_other(std::move(other));
+    }
+};
+
+Snapshot empty_other() { return make_empty_session(2, kRate); }
+
+int test_paste_across_sessions_arrive() {
+    CrossSession x;
+    CHECK(x.copy_region_and_open(empty_other()));
+    CHECK(x.c.paste(x.why));
+    CHECK(x.copies.size() == 1 && x.copies[0] == "Audio Files/Take 1.wav");
+    CHECK(x.doc.snapshot().sources->sources.size() == 1);
+    const Playlist& pl = lane(x.doc.snapshot(), 1);
+    CHECK(pl.regions.size() == 1 && pl.regions[0].channels[0].source == 500);
+    CHECK(x.doc.history().undo_depth() == 1 && x.doc.undo_label() == "Paste");
+    CHECK(valid(x.doc.snapshot()));
+    CHECK(x.c.undo(x.why));
+    CHECK(lane(x.doc.snapshot(), 1).regions.empty());
+    CHECK(x.doc.snapshot().sources->sources.size() == 1);   // the audio stays
+    CHECK(!x.doc.can_undo());
+    return 0;
+}
+
+int test_paste_across_sessions_reuse_and_rename() {
+    {   // The same umid is already here: reused, nothing copied or added.
+        CrossSession x;
+        Snapshot other = empty_other();
+        auto pool = std::make_shared<SourcePool>();
+        Source have;
+        have.id = 77;
+        have.path = "Audio Files/Elsewhere.wav";
+        have.length = 40 * kBar;
+        have.umid = std::string(64, 'a');
+        pool->sources.push_back(have);
+        other.sources = pool;
+        CHECK(x.copy_region_and_open(other));
+        CHECK(x.c.paste(x.why));
+        CHECK(x.copies.empty() && x.doc.snapshot().sources->sources.size() == 1);
+        CHECK(lane(x.doc.snapshot(), 1).regions.at(0).channels[0].source == 77);
+        CHECK(valid(x.doc.snapshot()));
+    }
+    {   // A different file already holds the name: the arrival is "... 2".
+        CrossSession x;
+        x.dest_files.insert("Audio Files/Take 1.wav");
+        CHECK(x.copy_region_and_open(empty_other()));
+        CHECK(x.c.paste(x.why));
+        CHECK(x.copies.size() == 1 && x.copies[0] == "Audio Files/Take 1 2.wav");
+        CHECK(x.doc.snapshot().sources->sources.at(0).path == "Audio Files/Take 1 2.wav");
+    }
+    return 0;
+}
+
+int test_paste_across_sessions_refusals() {
+    {   // The origin folder is gone: held refusal, nothing sent, nothing copied.
+        CrossSession x;
+        CHECK(x.copy_region_and_open(empty_other()));
+        x.origin_exists = false;
+        const uint64_t r0 = x.doc.revision();
+        CHECK(!x.c.paste(x.why) && has(x.why, "is gone") && has(x.why, "nothing was pasted"));
+        CHECK(x.calls == 1 && x.copies.empty());
+        CHECK(x.doc.revision() == r0 && !x.doc.can_undo());
+        CHECK(x.doc.snapshot().sources->sources.empty());
+    }
+    {   // A mono clip on a stereo track: refused before the seam is asked.
+        CrossSession x;
+        Snapshot other = empty_other();
+        auto edit = std::make_shared<EditState>(*other.edit);
+        auto t = std::make_shared<TrackEdit>(*edit->tracks[1]);
+        t->channels = 2;
+        edit->tracks[1] = t;
+        other.edit = edit;
+        CHECK(x.copy_region_and_open(other));
+        CHECK(!x.c.paste(x.why) && has(x.why, "nothing was pasted"));
+        CHECK(x.calls == 0 && x.copies.empty() && !x.doc.can_undo());
+    }
+    return 0;
+}
+
+// The AddSource member counts against the limit: kLimit regions fit alone (see
+// test_limit) and not with the source that has to arrive with them.
+int test_paste_across_sessions_limit() {
+    CrossSession x(CrossSession::umid_session(dense()));
+    select_range(x.c, 0, 0, span(kLimit));
+    CHECK(x.c.copy(x.why));
+    CHECK(x.open_other(empty_other()));
+    const uint64_t r0 = x.doc.revision();
+    CHECK(!x.c.paste(x.why));
+    CHECK(x.why == "Paste needs " + std::to_string(kLimit + 1) + " changes; at most " +
+                       std::to_string(kLimit) + " in one edit. Nothing was pasted.");
+    CHECK(x.doc.revision() == r0 && lane(x.doc.snapshot(), 1).regions.empty());
+    return 0;
+}
+
+// Shuffle ripples what follows by the clipboard's length, as inside one session.
+int test_paste_across_sessions_shuffle() {
+    CrossSession x;
+    Snapshot other = session_with({make_region(30, "X", 4 * kBar, kBar)});
+    {
+        auto pool = std::make_shared<SourcePool>(*other.sources);
+        pool->sources[0].id = 900;
+        pool->sources[0].path = "Audio Files/Other.wav";
+        other.sources = pool;
+        auto edit = std::make_shared<EditState>(*other.edit);
+        auto t = std::make_shared<TrackEdit>(*edit->tracks[0]);
+        auto p = std::make_shared<Playlist>(*t->playlists[0]);
+        p->regions[0].channels = {{900, 0}};
+        t->playlists[0] = p;
+        edit->tracks[0] = t;
+        other.edit = edit;
+    }
+    CHECK(x.copy_region_and_open(other));
+    x.c.set_mode(EditMode::Shuffle);
+    x.c.select_track(0);
+    x.c.set_insertion(0);
+    CHECK(x.c.paste(x.why));
+    CHECK(start_of(x.doc.snapshot(), 30) == 6 * kBar);   // moved by the 2 bars pasted
+    CHECK(lane(x.doc.snapshot(), 0).regions.size() == 2 &&
+          lane(x.doc.snapshot(), 0).regions[0].position == 0);
+    CHECK(x.doc.history().undo_depth() == 1 && valid(x.doc.snapshot()));
+    CHECK(x.c.undo(x.why));
+    CHECK(start_of(x.doc.snapshot(), 30) == 4 * kBar);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() || test_shuffle() ||
         test_shuffle_automation_notice() || test_insert_delete_time() ||
         test_repeat_count_text() || test_clip_loop_command() || test_fades_and_crossfades() ||
-        test_cut_edges_lose_fades() ||
+        test_cut_edges_lose_fades() || test_paste_across_sessions() ||
+        test_paste_across_sessions_arrive() || test_paste_across_sessions_reuse_and_rename() ||
+        test_paste_across_sessions_refusals() || test_paste_across_sessions_limit() ||
+        test_paste_across_sessions_shuffle() ||
         test_limit() || test_several_tracks() || test_menu()) {
         return 1;
     }
