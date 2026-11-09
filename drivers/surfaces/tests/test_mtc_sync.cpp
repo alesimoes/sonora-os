@@ -365,6 +365,82 @@ void test_generate_into_chase() {
     CHECK(slave_engine.commands.size() == 1);
     CHECK(slave_engine.commands[0].argument == std::to_string(30 * kSr));
 }
+
+// 8 quarter frames per 2 frames at every rate: over 4 frames of playhead,
+// 17 pieces (two whole cycles and the first piece of a third), decoding to
+// frames 2 and 4 of the same rate.
+void test_generator_rates() {
+    const FrameRate rates[] = {FrameRate::Fps24, FrameRate::Fps25, FrameRate::Fps2997Drop,
+                               FrameRate::Fps30};
+    for (const FrameRate r : rates) {
+        Engine engine;
+        FakeMtcPort port;
+        std::string error;
+        MtcGenerator gen(settings(MtcMode::Generate, r), engine, port);
+        CHECK(gen.start(error));
+        gen.tick(0);  // stopped: the full frame at the hour
+        const std::uint64_t end = to_samples(tc(1, 0, 0, 4, r), kSr) - to_samples(tc(1, 0, 0, 0, r), kSr);
+        for (std::uint64_t p = 0; p <= end; p += 50) {
+            engine.publish(api::TransportState::Rolling, p);
+            gen.tick(50);
+        }
+        engine.publish(api::TransportState::Rolling, end + 1);  // exactly past the piece
+        gen.tick(1);
+        CHECK(gen.stats().quarter_frames == 17);
+        const auto ev = decode_sent(port);
+        CHECK(ev.size() == 3);
+        if (ev.size() == 3) {
+            CHECK(ev[1].position == tc(1, 0, 0, 2, r));
+            CHECK(ev[2].position == tc(1, 0, 0, 4, r));
+        }
+    }
+}
+
+// A quarter frame lost on the wire costs the lock, not the roll: no stop and
+// no locate, and the next whole cycle chases again.
+void test_chase_tolerates_dropped_quarter_frame() {
+    Engine engine;
+    FakeMtcPort port;
+    std::string error;
+    MtcChaseDriver chase(settings(MtcMode::Chase), engine, port);
+    CHECK(chase.start(error));
+    MtcEncoder enc;
+    enc.start(tc(1, 0, 4, 0));
+    engine.publish(api::TransportState::Stopped, 4 * kSr + 2 * kFrame25);
+    feed_cycles(port, enc, 2);
+    chase.tick(4 * kFrame25);
+    CHECK(engine.count("transport.play") == 1);
+    engine.publish(api::TransportState::Rolling, 4 * kSr + 4 * kFrame25);
+
+    for (int i = 0; i < 8; ++i) {  // one cycle with piece 3 missing
+        std::uint8_t q[2];
+        enc.next(q);
+        if (i != 3) port.feed(q, 2);
+    }
+    chase.tick(2 * kFrame25);
+    feed_cycles(port, enc, 1);
+    engine.publish(api::TransportState::Rolling, 4 * kSr + 8 * kFrame25);
+    chase.tick(2 * kFrame25);
+    CHECK(engine.count("transport.stop") == 0);
+    CHECK(engine.count("transport.locate") == 0);
+    CHECK(engine.count("transport.play") == 1);
+    CHECK(chase.locked());
+}
+
+// A master at another rate than the session's is counted and still chased
+// (the sample position is right); the operator-facing refusal of a wrong
+// mode or sample rate happens in start().
+void test_chase_counts_rate_mismatch() {
+    Engine engine;
+    FakeMtcPort port;
+    std::string error;
+    MtcChaseDriver chase(settings(MtcMode::Chase, FrameRate::Fps25), engine, port);
+    CHECK(chase.start(error));
+    feed_full(port, tc(1, 0, 10, 0, FrameRate::Fps30));
+    chase.tick(0);
+    CHECK(chase.stats().rate_mismatches == 1);
+    CHECK(engine.count("transport.locate") == 1);
+}
 }  // namespace
 
 int main() {
@@ -378,6 +454,9 @@ int main() {
     test_generator_refused_writes();
     test_generator_drop_frame_roundtrip();
     test_generate_into_chase();
+    test_generator_rates();
+    test_chase_tolerates_dropped_quarter_frame();
+    test_chase_counts_rate_mismatch();
     if (failures == 0) std::printf("surface_mtc_sync: all passed\n");
     return failures == 0 ? 0 : 1;
 }
