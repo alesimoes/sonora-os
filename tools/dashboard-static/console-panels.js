@@ -18,7 +18,10 @@ function cell(label, c, extra) {
 function renderStrip() {
   const s = C.data.strip, d = s.daemon;
   const dot = d.level === "bad" ? "" : '<span class="live"><span class="dot"></span></span>';
-  const dcell = `<div class="cell ${d.level}"><small>Daemon</small><b>${dot}${esc(d.text)}</b></div>`;
+  // "vivo 47s": on a phone only the age shows (the word is hidden by CSS).
+  const m = /^(\S+)\s+(.+)$/.exec(d.text || "");
+  const dtext = m ? `<span class="dtext">${esc(m[1])} </span>${esc(m[2])}` : esc(d.text);
+  const dcell = `<div class="cell ${d.level}"><small>Daemon</small><b>${dot}${dtext}</b></div>`;
   const strip = $("#strip");
   if (!strip.querySelector(".cells"))
     strip.innerHTML = '<div class="brand live"><i></i><span>Sonora Console</span></div><div class="cells"></div>';

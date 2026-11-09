@@ -9,7 +9,10 @@
   --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
 }
 *{box-sizing:border-box;margin:0}
-html,body{height:100%}
+/* The page is the viewport: 100% alone left the body a third of the phone
+   screen high in the Android browser (white below, chat squeezed, 2026-11-08). */
+html{height:100%;background:var(--bg)}
+body{height:100%;height:100vh;height:100dvh}
 body{background:radial-gradient(1200px 600px at 50% -10%,#0a1c30 0,var(--bg) 60%);color:var(--text);
   font:15px/1.45 var(--sans);display:flex;flex-direction:column;overflow:hidden}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
@@ -20,10 +23,10 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .brand i{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--cyan);box-shadow:var(--glow);position:relative}
 .brand i::after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--cyan)}
 .cells{display:flex;flex:1;min-width:0}
-.cell{flex:1;min-width:0;padding:7px 12px;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
+.cell{flex:1;min-width:0;overflow:hidden;padding:7px 12px;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
 .cell:last-child{border-right:0}
 .cell small{font:500 10px var(--mono);letter-spacing:.12em;color:var(--mute);text-transform:uppercase;white-space:nowrap}
-.cell b{font:600 17px var(--mono);white-space:nowrap;font-variant-numeric:tabular-nums}
+.cell b{font:600 17px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .cell b em{font-style:normal;color:var(--mute);font-weight:400}
 .cell.ok b{color:var(--ok)} .cell.warn b{color:var(--amber)} .cell.bad b{color:var(--bad)}
 .cell .bar{height:2px;background:var(--line);margin-top:3px;position:relative}
@@ -173,12 +176,14 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 /* ---------- phone ---------- */
 @media (max-width:900px){
   .brand span{display:none} .brand{padding:0 12px}
-  .cell{padding:6px 8px}.cell b{font-size:15px}.cell small{font-size:9px;letter-spacing:.06em}
+  .cell{padding:6px 6px}.cell b{font-size:14px}.cell small{font-size:9px;letter-spacing:.04em}
+  /* the daemon cell shows the dot and the age only: 'vivo 47s' ran over the next cell */
+  .cell .dtext{display:none}
   .cell.hide-s{display:none}
   .tabs{display:flex;flex:none;border-bottom:1px solid var(--line);background:var(--bg2)}
-  .tabs button{flex:1;padding:11px 4px;font:600 12px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);border-bottom:2px solid transparent;min-height:44px}
+  .tabs button{flex:1 1 0;min-width:0;padding:11px 2px;font:600 11px var(--mono);letter-spacing:.02em;text-transform:uppercase;color:var(--mute);border-bottom:2px solid transparent;min-height:44px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .tabs button.on{color:var(--cyan);border-bottom-color:var(--cyan)}
-  .tabs button i{font-style:normal;margin-left:5px;padding:1px 6px;border-radius:9px;background:var(--line);color:var(--text)}
+  .tabs button i{font-style:normal;margin-left:3px;padding:1px 6px;border-radius:9px;background:var(--line);color:var(--text)}
   .tabs button.al i{background:var(--amber);color:#201400}
   .main{display:block;position:relative}
   .side,.chat{position:absolute;inset:0;display:none;border:0!important}
