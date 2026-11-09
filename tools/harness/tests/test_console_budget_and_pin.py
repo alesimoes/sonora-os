@@ -59,6 +59,8 @@ class Labels(unittest.TestCase):
                          "Engenheiro de plugins")
         self.assertEqual(f({"role": "planner", "agent": "architect"}), "Arquiteto")
         self.assertEqual(f({"role": "tester"}), "Testes (QA)")
+        self.assertEqual(f({"role": "tester", "agent": "ui-engineer"}), "Testes (QA)")
+        self.assertEqual(f({"role": "integrator", "agent": "rt-engineer"}), "Integrador")
 
 
 if __name__ == "__main__":
