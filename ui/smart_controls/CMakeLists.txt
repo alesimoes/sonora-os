@@ -14,8 +14,8 @@ set_tests_properties(smart_controls PROPERTIES LABELS ui)
 # in the top-level directory's scope and names its paths absolutely.
 function(_sonora_smart_controls_qt)
   if(TARGET sonora_ui_session AND
-     EXISTS ${CMAKE_SOURCE_DIR}/ui/smart_controls/qt/CMakeLists.txt)
-    include(${CMAKE_SOURCE_DIR}/ui/smart_controls/qt/CMakeLists.txt)
+     EXISTS ${CMAKE_SOURCE_DIR}/ui/qt/smart_controls/CMakeLists.txt)
+    include(${CMAKE_SOURCE_DIR}/ui/qt/smart_controls/CMakeLists.txt)
   endif()
 endfunction()
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.19)

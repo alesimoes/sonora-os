@@ -1,7 +1,8 @@
 # The Smart Controls panel (ADR-0117 §6). Included (not added as a
 # subdirectory: CMake refuses that in deferred execution) from
-# ui/smart_controls once ui/qt has defined sonora_ui_session, so no file of
-# ui/qt is edited. This runs in the top-level directory's scope: every path
+# ui/smart_controls once ui/qt has defined sonora_ui_session, so no other
+# file of ui/qt is edited. It lives under ui/qt because only ui/qt may
+# include Qt (ADR-0007 §1, tools/check-deps.sh). This runs in the top-level directory's scope: every path
 # is absolute. The sources join sonora_ui_session and the QML joins its
 # resources under qrc:/sonora/qml/, beside Knob.qml and SButton.qml.
 set(_sc_qt ${CMAKE_CURRENT_LIST_DIR})

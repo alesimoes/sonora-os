@@ -30,8 +30,11 @@ the protocol or the session format.
    schema 1. A corrupt file or another schema version is reported with a
    reason and the in-memory set is left untouched.
 6. The Qt panel (a later task) is the only consumer; it hooks into the build
-   from inside `ui/smart_controls`, so no file outside the module is edited
-   beyond one guarded `add_subdirectory` in `ui/client/CMakeLists.txt`.
+   from inside `ui/smart_controls`, so no existing build file is edited
+   beyond one guarded `add_subdirectory` in `ui/client/CMakeLists.txt`. Its
+   sources live in `ui/qt/smart_controls/`, because only `ui/qt` may include
+   Qt (ADR-0007 §1); the module graph gains `ui/qt -> ui/smart_controls` and
+   `ui/smart_controls -> common/json`.
 
 ## Consequences
 
