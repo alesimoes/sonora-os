@@ -20,6 +20,8 @@ from .status import write_atomic
 
 LOG = "supervisor.log"
 OUTER_ALERTS = "supervisor-alerts.json"   # written by tools/supervisor.py
+# Checks whose alerts show in the console only, never as a desktop toast.
+QUIET_CHECKS = ("stall",)
 
 
 @dataclass
@@ -105,8 +107,12 @@ class Alerts:
         else:
             a.text, a.level, a.last, a.count = text, level, now, a.count + 1
         self._seen.add(id)
-        if level == "alert" and self.th.notify and \
-                now - a.notified >= self.th.notify_repeat_s:
+        # Stalls go to the console (the resolver takes them, "harness
+        # cuidando"); as desktop toasts they were 73 in two hours, resent on
+        # every daemon restart (owner 2026-11-09: "algo está em loop abrindo
+        # no PC").
+        if level == "alert" and self.th.notify and check not in QUIET_CHECKS \
+                and now - a.notified >= self.th.notify_repeat_s:
             a.notified = now
             self._notify(f"SonoraOS harness: {check or id}", text)
         return a
