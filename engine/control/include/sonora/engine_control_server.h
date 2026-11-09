@@ -104,6 +104,9 @@ class Session;
 namespace backend {
 class AudioBackend;
 }
+namespace elastic {
+class ElasticService;
+}
 namespace model {
 class Document;
 class LoadParts;
@@ -648,6 +651,10 @@ private:
                          const std::string& text);
     bool start_render(model::RenderKind kind, const std::string& argument, std::string& why);
     void follow_render();
+    // Elastic audio (ADR-0136): a worker stretches a region into a new file,
+    // this thread places it, on the same Render event. Null when the build
+    // has no stretcher: the command and its capability are then absent.
+    std::unique_ptr<elastic::ElasticService> elastic_;
     // The compound the engine itself applied: every replica is sent it, the
     // chains follow the document and the playing plan is built again.
     void document_changed_by_engine(const std::vector<model::ReplicationUpdate>& updates);

@@ -61,7 +61,13 @@ engine/control -> contracts/backend
 engine/control -> contracts/plugin
 engine/control -> drivers/fake
 engine/control -> engine/core
+engine/control -> engine/elastic
 engine/control -> engine/plugin_client
+engine/elastic -> common/audiofile
+engine/elastic -> common/model
+engine/elastic -> common/session_files
+engine/elastic -> common/stretch
+engine/elastic -> contracts/api
 engine/core -> common/audiofile
 engine/core -> common/base
 engine/core -> common/dsp
