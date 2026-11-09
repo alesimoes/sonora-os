@@ -214,3 +214,9 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .act li.text b{color:var(--amber)}
 .act li span{overflow-wrap:anywhere;color:var(--text)}
 @media (max-width:900px){.act{max-height:50%;padding:8px 12px}.act li{grid-template-columns:40px 70px 1fr}}
+
+/* Long messages open on a tap (console-chat.js bodyHtml). */
+.msg details.more summary{list-style:none;cursor:pointer}
+.msg details.more summary::-webkit-details-marker{display:none}
+.msg details.more summary u{color:var(--cyan);text-decoration:underline;font-size:12px}
+.msg details.more[open] summary{display:none}
