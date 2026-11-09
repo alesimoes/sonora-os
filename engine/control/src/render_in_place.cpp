@@ -470,6 +470,7 @@ bool place_render(model::Document& document, const std::string& session_dir,
     p.kind = request.kind;
     p.start = rendered.start;
     p.source = add.source.id;
+    p.only_insert = request.only_insert;
     p.name = request.name;
     std::vector<model::Member> members;
     if (!model::render_members(with, p, [&id] { return id++; }, members, why)) {
