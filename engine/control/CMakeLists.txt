@@ -13,6 +13,7 @@ add_library(sonora_control STATIC
   src/closed_take.cpp
   src/orphan_offer.cpp
   src/plugin_hosting.cpp
+  src/plugin_hosting_state.cpp
   src/plugin_scanner.cpp
   src/plugin_catalog_cache.cpp
   src/plugin_block_list.cpp
@@ -349,6 +350,12 @@ add_executable(test_mix_planner tests/test_mix_planner.cpp)
 target_include_directories(test_mix_planner PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
 target_link_libraries(test_mix_planner PRIVATE sonora_control)
 add_test(NAME mix_planner COMMAND test_mix_planner)
+
+# GetState deadlines and the one-copying-save-at-a-time queue (ADR-0151
+# sections 1 and 4) on a fake clock: no host, no sleep.
+add_executable(test_plugin_hosting_state_wait tests/test_plugin_hosting_state_wait.cpp)
+target_link_libraries(test_plugin_hosting_state_wait PRIVATE sonora_control)
+add_test(NAME plugin_hosting_state_wait COMMAND test_plugin_hosting_state_wait)
 
 # Reverb and delay space of a reference recording (ADR-0045 8).
 add_executable(test_space_measure tests/test_space_measure.cpp)
