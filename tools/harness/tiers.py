@@ -46,7 +46,13 @@ def run_model(routing, kind, tier=None, grade=None, senior_round=False):
     model = task_model(routing, tier, grade)
     floor = (routing.tiers().get("review_min") if routing else None) \
         or DEFAULT_MODEL
-    if kind in ("tester", "integrator", "planner"):
+    if kind == "integrator":
+        # Merging a conflict is mechanical whatever the slice's risk: an
+        # opus integrator on a contract slice cost several dollars a run
+        # (owner 2026-11-09). A stuck one climbs through the stall
+        # resolver's pin, not through the grade.
+        return floor if floor in ORDER else DEFAULT_MODEL
+    if kind in ("tester", "planner"):
         return at_least(model, floor if floor in ORDER else DEFAULT_MODEL)
     if senior_round:
         return at_least(model, SENIOR)

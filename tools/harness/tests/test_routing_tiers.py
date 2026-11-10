@@ -153,6 +153,11 @@ class Tiers(unittest.TestCase):
                          "haiku")
         self.assertEqual(tiers.run_model(self.r, "tester", "senior"), "opus")
 
+    def test_an_integrator_is_never_above_the_floor(self):
+        # A conflict merge is mechanical, even on a high-risk slice.
+        self.assertEqual(tiers.run_model(self.r, "integrator", "senior",
+                                         "L/high"), "sonnet")
+
     def test_senior_round_lifts_a_fixer(self):
         self.assertEqual(tiers.run_model(self.r, "fixer", "junior",
                                          senior_round=True), "opus")
