@@ -167,6 +167,12 @@ add_executable(test_loop_take tests/test_loop_take.cpp)
 target_link_libraries(test_loop_take PRIVATE sonora_control)
 add_test(NAME loop_take COMMAND test_loop_take)
 
+# A loop take whose window opened late on a track: the take's pass numbers
+# kept, and nothing placed past the pass cap (ADR-0141). Same rig.
+add_executable(test_loop_take_late tests/test_loop_take_late.cpp)
+target_link_libraries(test_loop_take_late PRIVATE sonora_control)
+add_test(NAME loop_take_late COMMAND test_loop_take_late)
+
 # The handlers on a real Session (moved here from ui/keymap's test in M4).
 add_executable(test_session_commands tests/test_session_commands.cpp)
 target_link_libraries(test_session_commands PRIVATE sonora_control)
