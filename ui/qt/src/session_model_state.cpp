@@ -70,6 +70,8 @@ QVariantList SessionModel::trackRows() const {
         const TrackEdit& t = *s.edit->tracks[i];
         QVariantMap row;
         row[QStringLiteral("top")] = v.tops.size() > i ? v.tops[i] : static_cast<qreal>(i) * v.track_height;
+        row[QStringLiteral("height")] = v.row_h(static_cast<int>(i));
+        row[QStringLiteral("hidden")] = v.row_hidden(static_cast<int>(i));
         row[QStringLiteral("shown")] = v.autolanes_open(static_cast<int>(i));
         row[QStringLiteral("canShow")] = t.kind != TrackKind::Midi;
         // Take lanes (ADR-0031 §1): the other playlists, shown under the

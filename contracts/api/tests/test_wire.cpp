@@ -599,6 +599,8 @@ void domains() {
                                id == "app.quit" || id == "automation.thin" ||
                                id == "automation.write_selection" || id == "automation.snapshot" ||
                                id == "window.event_list" ||
+                               id == "track.height" || id == "track.hide" ||
+                               id == "track.show_all" || id == "window.tracks_list" ||
                                id == "automation.toggle_follows_edit" ||
                                id == "window.transport" ||
                                id == "window.undo_history" ||

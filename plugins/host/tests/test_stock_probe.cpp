@@ -111,6 +111,9 @@ int probe_bundle(const std::string& host, const std::string& bundle, std::vector
     std::istringstream in(r.out);
     for (std::string line; std::getline(in, line);) {
         if (line.find("\"uri\":\"") == std::string::npos) continue;
+        // --only-given limits the VST3 scan only: the LV2 world lists every
+        // installed plugin, so a record belongs to this bundle by its own field.
+        if (string_after(line, "\"bundle\":\"") != bundle) continue;
         ++plugins;
         const std::string name = string_after(line, "\"uri\":\"");
         if (line.find("\"usable\":true") == std::string::npos)

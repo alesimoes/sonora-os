@@ -63,7 +63,7 @@ int ViewState::track_at(double y) const {
 
 int ViewState::autolane_at(int index, double y) const {
     if (!autolanes_open(index)) return -1;
-    const double rel = y - y_of_track(index) - track_height;
+    const double rel = y - y_of_track(index) - row_h(index);
     if (rel < 0 || rel >= kLaneCount * autolane_height) return -1;
     return std::min(kLaneCount - 1, static_cast<int>(rel / autolane_height));
 }
@@ -395,12 +395,19 @@ bool EditController::select_next_track(int delta, std::string& why) {
         why = "the session has no tracks";
         return false;
     }
-    const int next = sel_.track < 0 ? 0 : std::clamp(sel_.track + delta, 0, n - 1);
+    int next = sel_.track < 0 ? 0 : std::clamp(sel_.track + delta, 0, n - 1);
+    // A hidden track is not on screen to land on (ADR-0106).
+    const int step = delta < 0 ? -1 : 1;
+    while (next >= 0 && next < n && view_.row_hidden(next)) next += step;
+    if (next < 0 || next >= n) {
+        why = "no visible track that way";
+        return false;
+    }
     select_track(next);
     // Keep the selected lane on screen.
     const double y = view_.y_of_track(next);
     if (y < 0) view_.scroll_y += y;
-    else if (y + view_.track_height > view_.height) view_.scroll_y += y + view_.track_height - view_.height;
+    else if (y + view_.row_h(next) > view_.height) view_.scroll_y += y + view_.row_h(next) - view_.height;
     clamp_scroll();
     return true;
 }

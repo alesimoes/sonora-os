@@ -199,3 +199,24 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 #hcare .hc{border-left:3px solid var(--line);padding:4px 10px;margin:6px 0}
 #hcare .hc h4{font-size:13px;font-weight:500}
 #hcare .hc p{color:var(--mute);font-size:12px;margin:2px 0}
+
+/* The selected agent's last steps (console-activity.js). */
+.act{flex:none;max-height:42%;display:flex;flex-direction:column;border-bottom:1px solid var(--line);background:var(--panel);padding:10px 16px}
+.act .ah,.act .atitle{flex:none}
+.act .ah{display:flex;gap:10px;align-items:center;font:600 13px var(--mono)}
+.act .ah span+span{color:var(--cyan);font-weight:500}
+.act .ah button{margin-left:auto;color:var(--mute);text-decoration:underline;font:11px var(--mono);min-height:24px}
+.act .atitle{color:var(--mute);font-size:13px;margin:4px 0 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act ol{list-style:none;margin:0;padding:0;overflow:auto;min-height:0}
+.act li{display:grid;grid-template-columns:44px 84px 1fr;gap:8px;padding:4px 0;border-top:1px solid var(--line);font-size:12px}
+.act li time,.act li b{font:11px var(--mono);color:var(--mute);font-weight:500}
+.act li b{color:var(--cyan)}
+.act li.text b{color:var(--amber)}
+.act li span{overflow-wrap:anywhere;color:var(--text)}
+@media (max-width:900px){.act{max-height:50%;padding:8px 12px}.act li{grid-template-columns:40px 70px 1fr}}
+
+/* Long messages open on a tap (console-chat.js bodyHtml). */
+.msg details.more summary{list-style:none;cursor:pointer}
+.msg details.more summary::-webkit-details-marker{display:none}
+.msg details.more summary u{color:var(--cyan);text-decoration:underline;font-size:12px}
+.msg details.more[open] summary{display:none}

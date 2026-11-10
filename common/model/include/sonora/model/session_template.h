@@ -7,11 +7,44 @@
 // the folder is written by the engine's saver, as for Save Copy In.
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "sonora/model/model.h"
+#include "sonora/model/session_file.h"
 
 namespace sonora::model {
+
+// One template as a template browser lists it (ADR-0146). Filled by whoever
+// lists the templates folder; the model does no I/O. Every field has a
+// default so a caller that sets only name and file still compiles.
+struct TemplateInfo {
+    std::string name;  // the template folder's name
+    std::string file;  // its .sonora file
+    // The one subfolder of the templates folder it sits in. Empty is
+    // uncategorised: a template directly under the templates folder.
+    std::string category;
+    // What the file declares, read by file_format_version() and never by a
+    // full load; 0 until read.
+    std::int64_t file_format_version = 0;
+    // Declared above kFormatVersion: listed greyed, never opened, since the
+    // loader would refuse it anyway (ADR-0030 §5).
+    bool newer_than_build = false;
+};
+
+inline bool format_newer_than_build(std::int64_t version) { return version > kFormatVersion; }
+
+// Sets `info`'s version fields from the file's bytes without deserializing
+// them. False, leaving `info` as it was, when the bytes are not a session
+// file: the lister leaves such a folder out, as list_sessions() does.
+inline bool read_template_version(std::string_view bytes, TemplateInfo& info) {
+    std::int64_t version = 0;
+    if (!file_format_version(bytes, version)) return false;
+    info.file_format_version = version;
+    info.newer_than_build = format_newer_than_build(version);
+    return true;
+}
 
 struct TemplateOptions {
     // Pro Tools leaves the choice to the operator: a song form is worth

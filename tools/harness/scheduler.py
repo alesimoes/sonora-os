@@ -16,6 +16,9 @@ except ImportError:  # Python < 3.11
     tomllib = None
 
 HARD_CAP = 20
+# In paused.json: no new features (no pool_under_floor lead wakes); the
+# features already started go on to their PRs.
+NEW_WORK = "new"
 HOLD = 1e18   # not_before of a task held back until another feature merges
 # Priority classes, lowest number first: fix > tester > integrator > engineer
 # (below its track floor) > lead/architect > burst engineer.
@@ -368,6 +371,10 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             out.gaps[track] = block
         elif track in paused or "build" in paused:
             out.gaps[track] = "paused"
+        elif NEW_WORK in paused:
+            # Owner 2026-11-09 (weekly tokens): finish what started, plan
+            # nothing new; the lead is not woken to fill the floor.
+            out.gaps[track] = "new work paused"
         elif "work" in out.holds:
             out.gaps[track] = out.holds["work"]
         elif open_prs >= cfg.max_open_prs:

@@ -24,7 +24,7 @@ target_link_libraries(sonora_plugin_host_control PUBLIC sonora_plugin_protocol s
 
 add_executable(test_plugin_host_control tests/test_host_control.cpp)
 target_link_libraries(test_plugin_host_control PRIVATE sonora_plugin_host_control)
-add_test(NAME plugin_host_control COMMAND test_plugin_host_control)
+add_test(NAME plugin_host_control_unit COMMAND test_plugin_host_control)
 
 # The probe record, record version 3 (ADR-0012, amendment of 2026-10-19,
 # item 2; ADR-0017 Y2; ADR-0029 presets): what `sonora-plugin-host --probe` prints and the engine's plugin

@@ -18,6 +18,25 @@ class Classify(unittest.TestCase):
         self.assertIsNone(c("engineer", "which ADR should I follow?"))
         self.assertIsNone(c("engineer", "scope unclear: which files are mine?"))
 
+    def test_a_timeout_wrapped_build_slot_run_is_infra(self):
+        # ui.comping.loop_takes.tests r1429, 2026-11-09: `timeout 590` put
+        # before build-slot, killed with rc=124. Nothing matched, the slice
+        # stayed blocked, and its feature's adr and engine sat in
+        # integrating for 9 h while two stall resolvers found nothing to fix.
+        real = ("No code change this run; the cases from commit 8781c057 stand. "
+                "Ran: timeout 590 tools/build-slot.sh tools/micro-build.sh "
+                "--no-rtsan --files-from <only test_loop_take.cpp>. It waited for "
+                "the heavy lock, printed 'micro-build: 1 changed paths, image "
+                "sonora-build, rtsan=0' and 'phases: configure, build, test', then "
+                "'Terminated' with rc=124. That is the third timeout for the same "
+                "reason (the previous run had two), so I stopped.")
+        self.assertEqual(triage.classify("engineer", real), "infra")
+        self.assertEqual(triage.classify(
+            "engineer", "tools/micro-build.sh was killed by the 590 s tool cap"), "infra")
+        # rc=124 of a test that timed out on its own is the code's problem.
+        self.assertIsNone(triage.classify(
+            "engineer", "ctest loop_take: rc=124, the test hangs in drain_once"))
+
     def test_scope_in_the_engineers_own_words(self):
         # eng-67's report, 2026-11-08: green per the tester, blocked on
         # scope only; it classified as nothing and the task sat blocked 3 h.
@@ -33,6 +52,37 @@ class Classify(unittest.TestCase):
         self.assertEqual(c("engineer", "ctest control Passed; blocked: "
                                        "files outside the claim: ui/z.cpp"), "scope")
         self.assertIsNone(c("engineer", "tests fail; files outside my claim: ui/z.cpp"))
+
+    def test_work_complete_blocked_on_globs_is_scope(self):
+        # eng-207's report, 2026-11-09 (daw.model.session_mgmt.ui): "work is
+        # complete" matched no green pattern, the task stayed blocked and the
+        # feature's contract and model sat in integrating for 6 h.
+        real = ("Work is complete at 6923c036 but the diff touches files "
+                "outside the claimed globs. They are needed for the Save as "
+                "Template category field and its tests: ui/qt/CMakeLists.txt, "
+                "scenes/save_as_template.cpp, session_model_templates.cpp. "
+                "Ask lead/architect to widen the globs.")
+        self.assertEqual(triage.classify("engineer", real), "scope")
+        self.assertIsNone(triage.classify(
+            "engineer", "work is not complete; files outside my claim: a/b.c"))
+
+    def test_plan_must_add_files_is_scope(self):
+        # eng-179's report, 2026-11-09 (time.elastic.engine): QA failed it on
+        # two out-of-claim files only, the engineer asked for "the plan to add
+        # those two files", no pattern matched and the feature's contract,
+        # stretch and ui sat in integrating for 9 h behind it.
+        real = ("Finding 3 partly fixed: the three ui/elastic edges are dropped "
+                "from tools/module-deps.allow (commit bc5c2fdd); check-deps 'ok "
+                "(108 edges)', pre-pr 'ok (43 files)'. Findings 3 (six engine "
+                "edges) and 4 (ElasticService member in engine_control_server.h) "
+                "need the plan to add those two files to this task; the only "
+                "header-free option is a file-static global, which code-structure "
+                "rules forbid. Amendment asked via daemon (no live architect/lead).")
+        c = triage.classify
+        self.assertEqual(c("engineer", real), "scope")
+        self.assertEqual(c("engineer", "the plan must add ui/z.cpp to my files"), "scope")
+        self.assertIsNone(c("tester", real))
+        self.assertIsNone(c("engineer", "should the plan add a new module?"))
 
     def test_paths_and_marks(self):
         self.assertEqual(triage.paths_in("touch engine/a.cpp, ui/b.h and 1/2"),
@@ -94,6 +144,29 @@ class Actions(support.DaemonCase):
                          "accept passes; blocked only on files outside its claim: ui/z.cpp")
         self.assertEqual(t["state"], "qa")
         self.assertEqual(t["files"], ["engine/a.cpp", "ui/z.cpp"])
+
+    def test_scope_widens_to_the_branch_diff_not_the_reports_shorthand(self):
+        # The report names "scenes/save_as_template.cpp" for
+        # ui/qt/src/scenes/save_as_template.cpp and bare file names: widening
+        # with the text gave globs that match nothing and QA bounced again.
+        self.task("e2", files=("ui/qt/qml/Main.qml", "docs/images/x*.png"))
+        self.forge.changed = {"feat/e2": [
+            "ui/qt/qml/Main.qml", "docs/images/x-one.png",
+            "ui/qt/src/scenes/save_as_template.cpp", "ui/qt/tests/rig.h"]}
+        t = self.blocked(self.o.store.get_task("e2"),
+                         "Work is complete but files outside the claimed globs: "
+                         "scenes/save_as_template.cpp, rig.h")
+        self.assertEqual(t["state"], "qa")
+        self.assertEqual(t["files"], [
+            "ui/qt/qml/Main.qml", "docs/images/x*.png",
+            "ui/qt/src/scenes/save_as_template.cpp", "ui/qt/tests/rig.h"])
+
+    def test_scope_with_nothing_outside_the_claim_goes_to_qa(self):
+        self.task("e3")
+        self.forge.changed = {"feat/e3": ["engine/a.cpp"]}
+        t = self.blocked(self.o.store.get_task("e3"),
+                         "accept passes; files outside its claim: x/y.cpp")
+        self.assertEqual((t["state"], t["files"]), ("qa", ["engine/a.cpp"]))
 
     def test_scope_held_by_another_task_still_widens_and_names_the_holder(self):
         # The hunk is already made; claims serialise the next launch. Holding

@@ -33,8 +33,16 @@ def _path(hdir, name):
     return os.path.join(console_dir(hdir), name)
 
 
+_last_ns = 0
+
+
 def new_id(prefix):
-    return f"{prefix}{time.time_ns():020d}"
+    """Strictly increasing within the process: Windows' clock ticks coarsely,
+    and an action's EXECUTADO line once got the same id as the owner's
+    message it answered, which the console then drew twice (2026-11-09)."""
+    global _last_ns
+    _last_ns = max(time.time_ns(), _last_ns + 1)
+    return f"{prefix}{_last_ns:020d}"
 
 
 def _append(path, obj):

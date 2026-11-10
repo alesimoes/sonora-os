@@ -138,6 +138,11 @@ class Forge:
         """Fast-forward the local branch to origin's head. (ok, why)."""
         raise NotImplementedError
 
+    def changed_files(self, base, branch):
+        """Paths `branch` changed since `base` (harness/branch_tip.py), or
+        None when that cannot be told."""
+        raise NotImplementedError
+
 
 def job_signatures(excerpt):
     """{job name: cause} from failure_excerpt's text. The cause is the job's
@@ -461,6 +466,9 @@ class GhForge(Forge):
 
     def sync_local(self, branch):
         return branch_tip.sync_local(self.run, self.root, branch)
+
+    def changed_files(self, base, branch):
+        return branch_tip.changed_files(self.run, self.root, base, branch)
 
     def pre_pr(self, worktree):
         script = os.path.join(worktree, "tools", "pre-pr.sh")

@@ -88,7 +88,7 @@ function renderTabs() {
 
 function pane(p) { document.body.dataset.pane = p; if (C.data) renderTabs(); }
 
-function setTarget(id) { C.target = id; if (C.data) renderAgents(); renderTo(); }
+function setTarget(id) { C.target = id; if (C.data) renderAgents(); renderTo(); followAgent(id); }
 
 function renderTo() {
   $("#to").innerHTML = C.target

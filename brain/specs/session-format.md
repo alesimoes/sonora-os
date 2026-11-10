@@ -849,7 +849,13 @@ provides them:
   full ring lost, `~0 - 1` for a wrap the take made before this track's
   file opened (a late open), so its passes keep the take's numbers
   (`common/audiofile` `WrapSidecar`). Version 1 never wrote `~0 - 1` and
-  reads as version 2. The disk thread
+  reads as version 2. An engine from before wrap list version 2 reads
+  versions up to 1 only and refuses a version 2 list: it recovers that take
+  as if there were no list, its passes placed by loop length. A loop take's
+  passes are placed by loop length wherever the list lacks a wrap (an open
+  BACKLOG line). A file opened after `loop_pass_cap` keeps only passes
+  numbered up to the cap, by the take's number; the wraps past it stay in
+  the list (ADR-0141). The disk thread
   appends each wrap as it comes and syncs the list after the take's own
   checkpoint, so the loss window covers the wraps too. A wrap can reach the
   medium before the audio it ends, by writeback; recovery drops a wrap past
