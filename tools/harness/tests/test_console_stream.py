@@ -44,11 +44,13 @@ class Loop(unittest.TestCase):
         self.assertEqual(views, ["a", "b", "c"])
         self.assertEqual(out[0], b'event: console\ndata: {"sig": "a"}\n\n')
 
-    def test_a_quiet_stream_sends_heartbeat_comments(self):
+    def test_a_quiet_stream_resends_the_view_on_the_heartbeat_only(self):
         t = iter(range(0, 1000, 10))
         out, views = self.run_loop(["a"] * 5, heartbeat_s=15, clock=lambda: next(t))
-        self.assertEqual(views, ["a"])
-        self.assertTrue(len(out) > 1 and all(o == b": ping\n\n" for o in out[1:]))
+        # the clock steps 10 s and the beat is 15 s: fewer frames than ticks
+        self.assertEqual(len(out), len(views))
+        self.assertTrue(1 < len(out) < 5)
+        self.assertTrue(all(o.startswith(b"event: console") for o in out))
 
     def test_the_signature_follows_the_chat_files(self):
         tmp = tempfile.mkdtemp()

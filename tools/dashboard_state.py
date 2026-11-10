@@ -1,6 +1,8 @@
 """The console's snapshot and the loop that refreshes it: the daemon's
 status.json, the open and merged PRs from GitHub, and the board rows built
 from them. Each source fails on its own: an error is listed, never raised."""
+import hashlib
+import json
 import os
 import threading
 import time
@@ -78,10 +80,19 @@ def refresh_once(gh, prog=None):
             cost = read_cost(os.path.join(orch_root(), ".harness", "runs")) or cost
         except Exception as e:
             errors.append("custo: %s" % e)
+    progress = prog.value if prog else state["progress"]
+    # `rev` moves only when what the screen shows moved: `updated` ticks on
+    # every pass, and a stream keyed to it pushed a full 25 KB frame every 4 s
+    # to every open page whether or not anything had changed (2026-11-09).
+    digest = hashlib.md5(json.dumps(
+        [gh.prs, gh.merged, orch, board, errors, cost, progress],
+        sort_keys=True, default=str).encode()).hexdigest()
     with lock:
-        state.update(updated=int(time.time()), prs=gh.prs, merged=gh.merged,
+        if digest != state.get("digest"):
+            state["rev"] = state.get("rev", 0) + 1
+        state.update(updated=int(time.time()), digest=digest, prs=gh.prs, merged=gh.merged,
                      orchestrator=orch, board=board, errors=errors, cost=cost,
-                     progress=prog.value if prog else state["progress"])
+                     progress=progress)
 
 
 def refresh_loop():
