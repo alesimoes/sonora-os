@@ -61,6 +61,7 @@
 #include <vector>
 
 #include "sonora/api/bounce.h"
+#include "sonora/api/elastic.h"
 #include "sonora/api/render.h"
 #include "sonora/api/stems.h"
 #include "sonora/api/engine_control.h"
@@ -112,6 +113,8 @@ public:
         std::vector<std::string> planned_commands;
         // Hello's capabilities. The fake parses a play range as the engine
         // does; clear this to stand in for an engine that predates it.
+        // kCapabilityElastic is left out, as by an engine built without the
+        // stretcher (ADR-0136 §3); added, audio.elastic is announced too.
         std::vector<std::string> capabilities = {kCapabilityPlayRange, kCapabilityBounce,
                                                 kCapabilityRender, kCapabilityStems};
         // The engine's midi_max_entries (ADR-0015 §5), so a test can make a
@@ -292,6 +295,10 @@ public:
         int32_t target;
     };
     const std::vector<PlannedCall>& planned_log() const { return planned_log_; }
+    // Every audio.elastic request accepted, as parsed (ADR-0136). The fake
+    // stretches nothing: it checks the request against its document's region
+    // with the engine's words, answers Ok and records it here.
+    const std::vector<ElasticRequest>& elastic_log() const { return elastic_log_; }
     // The engine's own document, read-only: what a test checks a mix field
     // the state block does not carry (solo, solo safe) against, rather than
     // the interface's replica of it.
@@ -312,6 +319,7 @@ private:
     bool alive() const;
     void handle(const std::string& bytes);
     bool command(const CommandRequest& r, std::string& why);
+    bool elastic(const CommandRequest& r, std::string& why);
     void reply(uint64_t seq, DispatchResult result, std::string message);
     void broadcast(const ModelUpdate& u);
     // A model update, a Snapshot as its header, parts and window.
@@ -393,6 +401,8 @@ private:
     bool record_ready_ = false;
     std::vector<std::string> planned_;
     std::vector<PlannedCall> planned_log_;
+    bool elastic_ = false;
+    std::vector<ElasticRequest> elastic_log_;
     std::vector<float> gain_;
     std::map<model::Id, float> rides_;
     std::vector<bool> muted_;

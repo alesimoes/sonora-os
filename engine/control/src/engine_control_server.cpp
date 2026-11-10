@@ -16,6 +16,8 @@
 #include "sonora/audio_backend.h"
 #include "sonora/closed_take.h"
 #include "sonora/consolidate.h"
+#include "sonora/elastic/elastic_commands.h"
+#include "sonora/elastic/library_stretcher.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/groups.h"
 #include "sonora/model/op_codec.h"
@@ -615,6 +617,25 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
         announce_bounce(state, permille, files, text);
     };
     install_stems_commands(registry_, stems_job_, std::move(stems));
+    // Elastic audio (ADR-0136): a worker stretches, tick() places the copy.
+    // Without a stretcher in the build nothing is installed.
+    elastic::ElasticCommandDeps elastic_deps;
+    elastic_deps.document = document_.get();
+    elastic_deps.session_dir = [this]() {
+        const auto folder = session_.folder();
+        return folder ? *folder : std::string();
+    };
+    elastic_deps.recording = [this]() { return takes_in_flight(); };
+    elastic_deps.changed = [this](const std::vector<model::ReplicationUpdate>& updates) {
+        document_changed_by_engine(updates);
+    };
+    elastic_deps.announce = [this](api::RenderState state, uint32_t permille, model::Id track,
+                                   const std::string& text) {
+        announce_render(state, permille, track, text);
+    };
+    elastic::install_elastic_commands(registry_, elastic_, elastic::library_stretcher(),
+                                      std::make_unique<elastic::PeakOnsetSource>(),
+                                      std::move(elastic_deps));
     // Consolidate (ADR-0031 §6): the render runs on a worker, never the
     // audio thread; the edit is committed here, in tick().
     registry_.install("session.consolidate",
@@ -671,6 +692,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                       }));
     registry_.install("track.render_cancel",
                       ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          if (elastic_ && elastic_->cancel()) return true;
                           if (!render_) {
                               why = "no render is running";
                               return false;
@@ -790,6 +812,8 @@ EngineControlServer::~EngineControlServer() {
     stop();
     // A render reads the hosts and rolls the playback controller: it goes first.
     render_.reset();
+    // Its worker only reads files; the copy of one unplaced is removed.
+    elastic_.reset();
     // Hosts before the plans that name their slots are freed.
     hosting_.reset();
     // Every probe child killed and reaped before its thread is joined.
@@ -1907,6 +1931,7 @@ void EngineControlServer::greet(ClientId id) {
     hello.capabilities.push_back(api::kCapabilityBounce);
     hello.capabilities.push_back(api::kCapabilityRender);
     hello.capabilities.push_back(api::kCapabilityStems);
+    if (elastic_) hello.capabilities.push_back(api::kCapabilityElastic);
     std::string bytes;
     api::wire::encode(hello, bytes);
     send_to(client, bytes);
@@ -3131,6 +3156,8 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                     render_event_.clear();
                     render_said_ = 0;
                 }
+                // A copy for the old session's region: stopped and removed.
+                if (elastic_) elastic_->abandon();
                 withdraw_orphans();
                 offer_orphans();
             }
@@ -3628,6 +3655,7 @@ void EngineControlServer::tick() {
     }
     follow_consolidate();
     follow_render();
+    if (elastic_) elastic_->follow();
     autosave_when_due();
     follow_latency();
     follow_reported_latency();

@@ -15,6 +15,7 @@
 #include <variant>
 
 #include "sonora/api/consolidate_argument.h"
+#include "sonora/api/elastic.h"
 #include "sonora/api/wire.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/op_codec.h"
@@ -465,6 +466,11 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
         planned_.push_back(id);
         hello_.implemented_commands.push_back(id);
     }
+    // As engine/control: the command is installed only beside the
+    // capability, so a peer reads one from the other.
+    elastic_ = std::find(cfg_.capabilities.begin(), cfg_.capabilities.end(),
+                         std::string(kCapabilityElastic)) != cfg_.capabilities.end();
+    if (elastic_) hello_.implemented_commands.push_back("audio.elastic");
     folder_ = cfg_.folder;
     folder_untitled_ = cfg_.folder_untitled;
     armed_.assign(cfg_.tracks, false);
@@ -1547,6 +1553,12 @@ void FakeEngine::handle(const std::string& bytes) {
             reply(r.seq, DispatchResult::Ok, "");
             return;
         }
+        if (elastic_ && r.command == "audio.elastic") {
+            std::string why;
+            const bool ok = elastic(r, why);
+            reply(r.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
+            return;
+        }
         const auto& ids = engine_commands();
         if (std::find(ids.begin(), ids.end(), r.command) == ids.end()) {
             reply(r.seq, DispatchResult::NotImplemented, "");
@@ -1745,6 +1757,28 @@ void FakeEngine::handle(const std::string& bytes) {
 
 // The same handlers, refusals and words as engine/control's
 // install_session_commands(); the conformance suite holds both to them.
+// The refusals the contract defines (api/elastic.h), against the region in
+// the fake's document; then recorded, with nothing rendered.
+bool FakeEngine::elastic(const CommandRequest& r, std::string& why) {
+    ElasticRequest req;
+    if (!parse_elastic_request(r.argument, req, why)) return false;
+    const model::Region* region = nullptr;
+    for (const auto& t : document_->current().edit->tracks) {
+        for (const auto& p : t->playlists) {
+            for (const model::Region& g : p->regions) {
+                if (g.id == req.region) region = &g;
+            }
+        }
+    }
+    if (region == nullptr) {
+        why = "region " + std::to_string(req.region) + " is not an audio region of this session";
+        return false;
+    }
+    if (!validate_elastic_request(req, region->length, why)) return false;
+    elastic_log_.push_back(std::move(req));
+    return true;
+}
+
 bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     const bool recording = mode_ == TransportState::Recording;
     // The transport moves from where the playhead stands now.
