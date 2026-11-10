@@ -4,7 +4,8 @@
 # for the engine, and the interface itself does not. Never on the audio
 # thread.
 add_library(sonora_session_files STATIC src/session_folder.cpp src/session_import.cpp
-            src/session_import_plan_ops.cpp src/session_import_copy.cpp src/session_plugin_verify.cpp)
+            src/session_import_plan_ops.cpp src/session_import_copy.cpp src/session_plugin_verify.cpp
+            src/paste_sources.cpp)
 target_include_directories(sonora_session_files PUBLIC include)
 target_link_libraries(sonora_session_files PUBLIC sonora_model PRIVATE sonora_platform sonora_sha256)
 
@@ -14,6 +15,16 @@ add_executable(test_session_import tests/test_session_import.cpp)
 target_include_directories(test_session_import PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
 target_link_libraries(test_session_import PRIVATE sonora_session_files)
 add_test(NAME session_import COMMAND test_session_import)
+
+# Cross-session paste (ADR-0142): the planner is pure and runs everywhere;
+# the case through the real copier needs its POSIX file handling.
+add_executable(test_paste_sources tests/test_paste_sources.cpp)
+target_include_directories(test_paste_sources PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
+target_link_libraries(test_paste_sources PRIVATE sonora_session_files)
+if(UNIX)
+  target_compile_definitions(test_paste_sources PRIVATE SONORA_TEST_DISK_COPIER=1)
+endif()
+add_test(NAME session_paste_sources COMMAND test_paste_sources)
 
 if(UNIX)
   # Import Session Data's copier (ADR-0123 decision 3): hard links, synced
