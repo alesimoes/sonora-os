@@ -74,6 +74,9 @@ ADR, which belongs to `architect`.
 - The report is at most 5 lines.
 - A new screenshot scene is a new file under `ui/qt/src/scenes/` and nothing
   else: never an edit to `main.cpp` or `tools/build-ui-entrypoint.sh`.
+- Do not run the full `tools/build-ui.sh --screenshot`: the daemon
+  regenerates every picture before the PR (`tools/harness/shots.py`). Shoot
+  your own scene alone to check it, and do not block the slice on pictures.
 
 ## Process hygiene (every agent)
 
