@@ -78,4 +78,4 @@ def build(snap, daemon_alive, now=None):
                       "alerts": {"n": len(queue), "level": "ok" if not queue else
                                  "bad" if queue[0]["level"] == "bad" else "warn", "text": str(len(queue))}},
             "agents": agents, "attention": queue, "harness": harness,
-            "kpis": dashboard_kpis.build(snap, now)}
+            "kpis": dashboard_kpis.build(snap, now), "cost": snap.get("cost")}
