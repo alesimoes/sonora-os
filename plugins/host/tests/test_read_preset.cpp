@@ -13,7 +13,8 @@
 //     under $HOME/.vst3/presets: a good one byte for byte, one of another
 //     class, one with a chunk cut short, one over the size cap, one the
 //     plugin refuses, one outside the preset folders by "..", one by a
-//     symlink.
+//     symlink; one listed by its Info chunk's Name and one whose Info is
+//     refused, listed by its file name (ADR-0144).
 //
 //   test_read_preset --host PATH --lv2-bundle DIR [--vst3-bundle DIR]
 //
@@ -286,6 +287,17 @@ void vst3() {
     const fs::path root = tmp / "home/.vst3/presets";
     const fs::path dir = root / "SonoraOS tests" / "Sonora Test State";
     write_file(dir / "Warm.vstpreset", vstpreset(kVstStateHex, {{"Comp", snts(42)}, {"Info", "<MetaInfo/>"}}));
+    // ADR-0144: the Info chunk's Name is the listed name; a bad Info (here
+    // an entity it would have to expand) leaves the file name.
+    write_file(dir / "Strings/Named.vstpreset",
+               vstpreset(kVstStateHex, {{"Comp", snts(3)},
+                                        {"Info", "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<MetaInfo>\n"
+                                                 "\t<Attr id=\"Name\" value=\"Soft &amp; Warm\" type=\"string\"/>\n"
+                                                 "</MetaInfo>\n"}}));
+    write_file(dir / "Strings/Bomb.vstpreset",
+               vstpreset(kVstStateHex, {{"Comp", snts(4)},
+                                        {"Info", "<!DOCTYPE m [<!ENTITY a \"aaaa\">]><MetaInfo>"
+                                                 "<Attr id=\"Name\" value=\"&a;\"/></MetaInfo>"}}));
     write_file(dir / "Strings/Other.vstpreset", vstpreset(kVstCrashHex, {{"Comp", snts(7)}}));
     {
         std::string cut = vstpreset(kVstStateHex, {{"Comp", snts(9)}});
@@ -307,6 +319,8 @@ void vst3() {
     CHECK(lists(rec, "vst3-program:0/0", "Count 0"));
     CHECK(lists(rec, "vst3-program:0/2", "Count 2000"));
     CHECK(lists(rec, "vst3-file:SonoraOS tests/Sonora Test State/Warm.vstpreset", "Warm"));
+    CHECK(lists(rec, "vst3-file:SonoraOS tests/Sonora Test State/Strings/Named.vstpreset", "Soft & Warm"));
+    CHECK(lists(rec, "vst3-file:SonoraOS tests/Sonora Test State/Strings/Bomb.vstpreset", "Bomb"));
     CHECK(!lists_id(rec, "vst3-file:SonoraOS tests/Sonora Test State/Strings/Other.vstpreset"));
     CHECK(!lists_id(rec, "vst3-file:SonoraOS tests/Sonora Test State/Big.vstpreset"));
     CHECK(!lists_id(rec, "vst3-file:SonoraOS tests/Sonora Test State/Link.vstpreset"));

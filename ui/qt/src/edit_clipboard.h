@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,11 @@ struct Clip {
 // copied from, and pasting it clears what it covers, as its gap would.
 struct Clipboard {
     std::vector<Clip> lanes;
+    // The session folder and rate it was cut or copied in (ADR-0142). Kept
+    // when another session opens: that is how a paste there knows whose audio
+    // it holds. Empty/0 when the interface did not know.
+    std::string origin_folder;
+    std::uint32_t origin_sample_rate = 0;
 
     bool empty() const;   // no region on any lane
     model::Frames length() const { return lanes.empty() ? 0 : lanes.front().length; }
@@ -101,6 +107,29 @@ std::size_t repeat_members(const model::Playlist& p, model::Frames at, const Cli
 // the operator's words.
 std::string paste_problem(const model::Snapshot& s, const model::TrackEdit& track,
                           const Clip& clip);
+
+// True when a source the clip names is not in `s`'s pool as the clip kept it:
+// the audio of another session.
+bool sources_missing(const model::Snapshot& s, const Clip& clip);
+
+// paste_problem's channel check alone.
+std::string channel_problem(const model::TrackEdit& track, const Clip& clip);
+
+// What a cross-session paste brings in first (ADR-0142): AddSource members,
+// the clipboard source id -> this session's id, and the id the paste's own
+// members start from. The seam hides the planner, the file copies and the
+// worker thread they run on; on false `why` is the held refusal and nothing
+// was sent or copied.
+struct BroughtIn {
+    std::vector<model::Member> ops;
+    std::map<model::Id, model::Id> remap;
+    model::Id next_id = 1;
+};
+using BringInFn = std::function<bool(const model::Snapshot& dest,
+                                     const std::vector<model::Source>& sources,
+                                     const std::string& origin_folder,
+                                     std::uint32_t origin_sample_rate, BroughtIn& out,
+                                     std::string& why)>;
 
 // Repeat's typed count: a whole number, with an optional sign and spaces
 // around it, that fits an int. "3x", "2.5" and "" are not counts; "0" and

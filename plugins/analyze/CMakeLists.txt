@@ -6,6 +6,36 @@
 # This file is the single owner of the module's build (ADR-0066 §5). A pass
 # adds its sources and tests in its own fragment, cmake/<pass>.cmake, which is
 # included below when it exists; it never edits this file.
+
+# time.pitch (ADR-0143 §6): its modules are new directories, and the files
+# that would normally add them (the root, contracts/api, engine/control) are
+# held by other features, so they hook in here. Each is optional. Tests under
+# them are labelled "analyze" by the root as this directory's children; each
+# module also sets its own label. The block moves to the root and
+# engine/control once those files free.
+foreach(_pitch_dir contracts/api/pitch common/pitch ui/pitch)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/${_pitch_dir}/CMakeLists.txt")
+    add_subdirectory("${CMAKE_SOURCE_DIR}/${_pitch_dir}" "${CMAKE_BINARY_DIR}/${_pitch_dir}")
+  endif()
+endforeach()
+# engine/pitch adds its sources to sonora_control, which engine/control
+# defines later; so its fragment is read once the root has been, and only
+# when that target exists (it does not in the neutral or plugins-only
+# builds). include(), not add_subdirectory(): CMake refuses a subdirectory
+# during deferred execution.
+if(EXISTS "${CMAKE_SOURCE_DIR}/engine/pitch/pitch.cmake")
+  if(CMAKE_VERSION VERSION_LESS 3.19)
+    message(WARNING "engine/pitch needs CMake 3.19 (cmake_language DEFER); not built")
+  else()
+    function(_sonora_pitch_join_control)
+      if(TARGET sonora_control)
+        include("${CMAKE_SOURCE_DIR}/engine/pitch/pitch.cmake")
+      endif()
+    endfunction()
+    cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _sonora_pitch_join_control)
+  endif()
+endif()
+
 add_library(sonora_analyze STATIC
   src/mastering_plan.cpp
   src/mastering_rules.cpp

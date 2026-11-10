@@ -35,8 +35,12 @@ class RealIO:
                   f'{SHOT_FILE} > "{log}" 2>&1; echo $? > "{rc}"')
         kw = {}
         if os.name == "nt":
+            # CREATE_NO_WINDOW, not DETACHED_PROCESS: a detached process has no console,
+            # so every console child it runs (bash, git, docker) opened its own
+            # visible window on the owner's screen (2026-11-09). A hidden console is
+            # inherited by the children; the process still outlives the daemon.
             kw["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP
-                                   | getattr(subprocess, "DETACHED_PROCESS", 0))
+                                   | subprocess.CREATE_NO_WINDOW)
         else:
             kw["start_new_session"] = True
         p = subprocess.Popen([shell.bash(), "-c", script], cwd=worktree,

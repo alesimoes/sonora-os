@@ -69,7 +69,10 @@ def attention(orch, agents, prs, daemon, now):
     """-> (owner items, harness fold); each item goes away when its cause does."""
     items = []
     if daemon["level"] == "bad":
-        items.append(item("daemon", "bad", "Daemon parado", "Sem o daemon o chat só mostra o estado e nada executa."))
+        stuck = daemon["text"].startswith("travado")
+        items.append(item("daemon", "bad", "Daemon travado" if stuck else "Daemon parado",
+                          "O processo roda, mas o ciclo dele não volta há " + daemon["text"][8:] + "."
+                          if stuck else "Sem o daemon o chat só mostra o estado e nada executa."))
     o = orch or {}
     if o.get("kill_switch"):
         items.append(item("switch", "warn", "Lançamentos parados", f"A chave {o['kill_switch']} está ligada.",

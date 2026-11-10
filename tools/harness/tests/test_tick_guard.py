@@ -28,6 +28,16 @@ class Unit(unittest.TestCase):
     def boom(self, x=None):
         raise ValueError(f"bad {x}")
 
+    def test_step_times_add_up_per_tick_and_reset(self):
+        clock = iter([0.0, 2.0, 2.0, 3.0, 3.0, 3.5, 10.0, 11.0])
+        self.g._timer = lambda: next(clock)
+        self.g.step("watch", lambda: None)
+        self.g.each("poll", [1, 2], lambda x: None)
+        self.assertEqual(self.g.slowest(), [["watch", 2.0], ["poll", 1.5]])
+        self.g.begin_tick()
+        self.g.step("watch", self.boom)    # a failed step is timed too
+        self.assertEqual(self.g.slowest(), [["watch", 1.0]])
+
     def test_error_is_one_event_then_counted_and_shown(self):
         for _ in range(3):
             self.assertIsNone(self.g.step("poll", self.boom, "a", key="a",

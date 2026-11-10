@@ -5,6 +5,7 @@
 // asked to do: be deterministic, script an event, die on cue.
 #include "sonora/api/fake_engine.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -769,9 +770,32 @@ void consolidate_events() {
 void render_events() {
     FakeEngine::Config cfg;
     cfg.tracks = 2;
+    {
+        // The default fake is the engine as it is: no track.render.insert,
+        // and insert= refused like any unknown word (ADR-0087).
+        FakeEngine old(cfg);
+        std::string error;
+        CHECK(old.connect(error));
+        const auto& caps = old.hello().capabilities;
+        CHECK(std::find(caps.begin(), caps.end(), kCapabilityRenderInsert) == caps.end());
+        CommandRequest r;
+        r.command = "track.process_selection";
+        r.argument = "track=1 start=10 end=900 insert=5";
+        const uint64_t seq = old.send(r);
+        Inbox in;
+        old.poll(in);
+        bool refused = false;
+        for (const CommandReply& c : in.replies) {
+            refused = refused || (c.seq == seq && c.result == DispatchResult::Failed);
+        }
+        CHECK(refused);
+    }
+    // The engine of ADR-0087 announces it in Hello.
+    cfg.capabilities.push_back(kCapabilityRenderInsert);
     FakeEngine e(cfg);
     std::string error;
     CHECK(e.connect(error));
+    CHECK(e.hello().capabilities.back() == kCapabilityRenderInsert);
     Inbox in;
     const auto run = [&](const char* id, const char* arg) {
         CommandRequest r;
@@ -812,6 +836,14 @@ void render_events() {
     CHECK(run("track.process_selection", "track=1 start=10 end=900").result == DispatchResult::Ok);
     CHECK(run("track.render_cancel", "").result == DispatchResult::Ok);
     CHECK((states() == std::vector<uint32_t>{cancelled}));
+
+    // ADR-0087: one insert for Process Selection, refused for the others.
+    CommandReply refused = run("track.freeze", "track=1 insert=5");
+    CHECK(refused.result == DispatchResult::Failed && !refused.message.empty());
+    CHECK(run("track.commit", "track=1 insert=5").result == DispatchResult::Failed);
+    CHECK(run("track.process_selection", "track=1 start=10 end=900 insert=5").result ==
+          DispatchResult::Ok);
+    CHECK(run("track.render_cancel", "").result == DispatchResult::Ok);
 }
 
 }  // namespace
