@@ -314,6 +314,7 @@ bool encode(const PluginCatalog& m, std::string& out, std::string& error) {
         w.list(p.categories);
         w.u32(p.inputs);
         w.u32(p.outputs);
+        w.u32(p.key_inputs);
         w.u32(p.usable ? 1 : 0);
         w.str(p.refusal);
         w.u32(p.has_editor ? 1 : 0);
@@ -546,7 +547,7 @@ bool decode(std::string_view bytes, PluginCatalog& out, std::string& error) {
         if (!r.enumeration(p.format, kLastFormat) || !r.str(p.id) || !r.str(p.name) ||
             !r.str(p.vendor) || !r.str(p.version) ||
             !r.list(p.categories, kMaxPluginCategories) || !r.u32(p.inputs) || !r.u32(p.outputs) ||
-            !r.flag(p.usable) || !r.str(p.refusal) || !r.flag(p.has_editor) ||
+            !r.u32(p.key_inputs) || !r.flag(p.usable) || !r.str(p.refusal) || !r.flag(p.has_editor) ||
             !r.enumeration(p.bridge, kLastBridge) || !r.count(params, kMaxPluginParams, "parameters")) {
             return false;
         }
