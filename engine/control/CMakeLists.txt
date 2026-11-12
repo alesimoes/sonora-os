@@ -9,6 +9,8 @@ add_library(sonora_control STATIC
   src/engine_control_in_process.cpp
   src/control_socket_server.cpp
   src/plan_builder.cpp
+  src/bus_order.cpp
+  src/key_edges.cpp
   src/playback_controller.cpp
   src/closed_take.cpp
   src/orphan_offer.cpp
@@ -153,6 +155,13 @@ if(UNIX)
   set_tests_properties(render_solo PROPERTIES RUN_SERIAL TRUE)
   set_property(TEST render_solo APPEND PROPERTY LABELS timing)
 endif()
+
+# Side-chain key edges (ADR-0058 items 2, 3): the plan's key edge from the
+# bus's AuxSum, PDC over it, a missing bus as a silent key, a key loop
+# refused, and signal and key sample-aligned through Session::process().
+add_executable(test_key_edges tests/test_key_edges.cpp)
+target_link_libraries(test_key_edges PRIVATE sonora_control)
+add_test(NAME key_edges COMMAND test_key_edges)
 
 # A closed take as one compound; a bad file costs one track (ADR-0009
 # update 2026-10-14, item 8).

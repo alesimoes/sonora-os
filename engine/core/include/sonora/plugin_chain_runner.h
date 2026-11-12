@@ -56,6 +56,12 @@ public:
     void begin(uint64_t now_ns) noexcept SONORA_RT override;
     void run(const PlanNode& node, const float* const in[2], float* const out[2], uint32_t frames,
              const ChainParamEvent* events, uint32_t event_count) noexcept SONORA_RT override;
+    // The key goes to process_chain(), which submits it into the region's
+    // last planes; the slot's layout must carry node.key_channels, or the
+    // client counts a shape fault and the chain plays silence.
+    void run_keyed(const PlanNode& node, const float* const in[2], const float* const* key,
+                   float* const out[2], uint32_t frames, const ChainParamEvent* events,
+                   uint32_t event_count) noexcept SONORA_RT override;
     void end() noexcept SONORA_RT override;
     void skip(const PlanNode& node, float* const out[2], uint32_t frames) noexcept SONORA_RT override;
     uint32_t block_frames() const noexcept SONORA_RT override { return client_.config().block_frames; }
