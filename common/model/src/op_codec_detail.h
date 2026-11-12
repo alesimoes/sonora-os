@@ -439,6 +439,7 @@ Value encode(const InsertOp& op);
 Value encode(const MixOp& op);
 Value encode(const GroupOp& op);
 Value encode(const MidiOp& op);
+Value encode(const Compound& o);
 bool decode(Reader& rd, const Value& v, const std::string& kind, SessionOp& out,
             bool& known);
 bool decode(Reader& rd, const Value& v, const std::string& kind, TrackOp& out,
