@@ -123,9 +123,31 @@ int a_stale_bus_reads_as_missing() {
     return 0;
 }
 
+int the_list_follows_a_bus_rename() {
+    Rig r;
+    std::string why;
+    CHECK(r.keys.set(0, 0, r.delay, why));
+    model::SetBusPath rename;
+    rename.bus = r.delay;
+    rename.name = "Echo";
+    CHECK(r.doc.submit(rename, why));
+    // Read afresh: the same names must not be cached from before the rename.
+    CHECK(r.keys.choices(0, 0)[2].name == "Echo");
+    CHECK(r.keys.choices(0, 0)[2].current);
+    CHECK(r.keys.view(0, 0).name == "Echo");
+    // The key is one undo step: the first undo reverts the rename and keeps
+    // the key, the second removes the key.
+    CHECK(r.doc.undo(why));
+    CHECK(r.keys.view(0, 0).name == "Delay" && r.keys.view(0, 0).bus == r.delay);
+    CHECK(r.doc.undo(why));
+    CHECK(r.keys.view(0, 0).bus == kNoId);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
+    if (the_list_follows_a_bus_rename() != 0) return 1;
     if (only_a_keyed_plugin_is_offered() != 0) return 1;
     if (lists_none_and_every_bus_by_name() != 0) return 1;
     if (keying_is_one_undo_step() != 0) return 1;
