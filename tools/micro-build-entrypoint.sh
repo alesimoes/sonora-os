@@ -67,7 +67,7 @@ mkdir -p "$(dirname "$PLAN")"
 python3 tools/micro_targets.py plan "$BUILD" . --files-from "$FILES" "${direct[@]}" >"$PLAN"
 
 scope=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["scope"])' "$PLAN")
-mapfile -t targets < <(python3 -c 'import json,sys; print("\n".join(t for t in json.load(open(sys.argv[1]))["targets"] if t))' "$PLAN")
+mapfile -t targets < <(python3 -c 'import json,sys; [print(t) for t in json.load(open(sys.argv[1]))["targets"] if t]' "$PLAN")
 mapfile -t tests < <(python3 -c '
 import json, sys
 p = json.load(open(sys.argv[1]))

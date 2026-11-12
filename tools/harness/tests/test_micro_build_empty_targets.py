@@ -1,12 +1,20 @@
-"""A plan whose only owner is a product executable no test runs has no
-targets; the entrypoint must not call `cmake --build --target` with an empty
-(or blank) name, which failed PR #669's gate."""
+"""A plan with no targets must give an empty bash array: `print("")` still
+emits a newline, so mapfile made one blank element and the entrypoint ran
+`cmake --build --target ` (PR #669's gate)."""
+import json
 import os
+import re
+import shutil
 import subprocess
+import sys
+import tempfile
 import unittest
 
 PATH = os.path.join(os.path.dirname(__file__), "..", "..", "micro-build-entrypoint.sh")
-EXTRACT = 'import json,sys; print("\n".join(t for t in json.load(open(sys.argv[1]))["targets"] if t))'
+
+
+def extraction_line(text):
+    return next(l for l in text.splitlines() if l.startswith("mapfile -t targets"))
 
 
 class EmptyTargets(unittest.TestCase):
@@ -14,20 +22,26 @@ class EmptyTargets(unittest.TestCase):
         with open(PATH, encoding="utf-8") as f:
             self.text = f.read()
 
-    def test_extraction_snippet_is_in_the_script(self):
-        self.assertIn('for t in json.load(open(sys.argv[1]))["targets"] if t', self.text)
-
-    def test_empty_plan_yields_no_blank_target(self):
-        import json, sys, tempfile
+    def count(self, targets):
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("no bash")
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-            json.dump({"targets": []}, f)
+            json.dump({"targets": targets}, f)
         try:
-            out = subprocess.run([sys.executable, "-c", EXTRACT, f.name],
-                                 capture_output=True, text=True).stdout
+            line = extraction_line(self.text).replace("python3", '"$PY"')
+            script = line + '\necho "${#targets[@]}"'
+            env = dict(os.environ, PY=sys.executable, PLAN=f.name.replace("\\", "/"))
+            r = subprocess.run([bash, "-c", script], capture_output=True, text=True, env=env)
         finally:
             os.unlink(f.name)
-        self.assertEqual(out.split("\n")[0], "")
-        self.assertEqual([x for x in out.split("\n") if x], [])
+        return r.stdout.strip()
+
+    def test_empty_plan_gives_zero_targets(self):
+        self.assertEqual(self.count([]), "0")
+
+    def test_blank_entries_dropped_real_kept(self):
+        self.assertEqual(self.count(["", "a", "b"]), "2")
 
     def test_build_is_guarded_by_a_non_empty_list(self):
         i = self.text.index('--target "${targets[@]}"')
