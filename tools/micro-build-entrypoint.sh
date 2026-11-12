@@ -67,7 +67,7 @@ mkdir -p "$(dirname "$PLAN")"
 python3 tools/micro_targets.py plan "$BUILD" . --files-from "$FILES" "${direct[@]}" >"$PLAN"
 
 scope=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["scope"])' "$PLAN")
-mapfile -t targets < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["targets"]))' "$PLAN")
+mapfile -t targets < <(python3 -c 'import json,sys; [print(t) for t in json.load(open(sys.argv[1]))["targets"] if t]' "$PLAN")
 mapfile -t tests < <(python3 -c '
 import json, sys
 p = json.load(open(sys.argv[1]))
@@ -94,8 +94,13 @@ case "$scope" in
     echo "micro-build: running every test (not slow)"
     QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure -j"$(nproc)" -LE slow       --output-junit "$JUNIT" ;;
   targets)
-    printf '  target %s\n' "${targets[@]}"
-    cmake --build "$BUILD" -j"$JOBS" --target "${targets[@]}"
+    if ((${#targets[@]})); then
+      printf '  target %s\n' "${targets[@]}"
+      cmake --build "$BUILD" -j"$JOBS" --target "${targets[@]}"
+    else
+      # Every owner was an executable no test runs (pruned as a product).
+      echo "micro-build: no library or test target to build"
+    fi
     if ((${#tests[@]})); then
       regex=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ctest_regex"])' "$PLAN")
       echo "micro-build: ctest -R '$regex'"
