@@ -258,6 +258,11 @@ if(UNIX)
   target_link_libraries(test_factory_preset_reader PRIVATE sonora_control)
   add_dependencies(test_factory_preset_reader fake_plugin_host)
   add_test(NAME factory_preset_reader COMMAND test_factory_preset_reader --host $<TARGET_FILE:fake_plugin_host>)
+  # plugin.rescan forgets the reader's Blocked presets (ADR-0144 amendment).
+  add_executable(test_plugin_rescan_presets tests/test_plugin_rescan_presets.cpp)
+  target_link_libraries(test_plugin_rescan_presets PRIVATE sonora_control sonora_backend_fake Threads::Threads)
+  add_dependencies(test_plugin_rescan_presets fake_plugin_host)
+  add_test(NAME plugin_rescan_presets COMMAND test_plugin_rescan_presets --host $<TARGET_FILE:fake_plugin_host>)
   # Wall-clock deadline (a poll with a timeout): alone under `ctest -j`, and
   # one at a time under the sanitizers (tools/local-ci.sh, label timing),
   # where it flaked beside the other tests (2026-11-07).

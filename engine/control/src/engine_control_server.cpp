@@ -18,6 +18,7 @@
 #include "sonora/consolidate.h"
 #include "sonora/elastic/elastic_commands.h"
 #include "sonora/elastic/library_stretcher.h"
+#include "sonora/factory_preset_reader.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/groups.h"
 #include "sonora/model/op_codec.h"
@@ -475,6 +476,11 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
         sc.scan_at_start = opts_.plugin_scan_at_start;
         sc.max_probes = opts_.plugin_probe_slots;
         scanner_ = std::make_unique<PluginScanner>(sc);
+        FactoryPresetReaderConfig rc;
+        rc.host_path = sc.host_path;
+        rc.bundles = sc.bundles;
+        rc.timeout_ms = sc.probe_timeout_ms;
+        preset_reader_ = std::make_unique<FactoryPresetReader>(std::move(rc));
         registry_.install("plugin.rescan", ExplainingHandler([this](const CommandContext&, std::string& why) {
                               // Item 5 and Q3: answered when queued, not when
                               // it ends, and never during a take.
@@ -483,6 +489,9 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                   why = kNoRescanWhileRecording;
                                   return false;
                               }
+                              // A rescan is the operator's retry for presets
+                              // that crashed their reader.
+                              preset_reader_->forget_blocked();
                               scanner_->rescan();
                               return true;
                           }));
@@ -818,6 +827,7 @@ EngineControlServer::~EngineControlServer() {
     hosting_.reset();
     // Every probe child killed and reaped before its thread is joined.
     scanner_.reset();
+    preset_reader_.reset();
     // Its destructor waits for the reader to let go of the plans this side
     // still owns, so it goes while the session's reader is certainly there.
     playback_.reset();
