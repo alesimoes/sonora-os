@@ -165,10 +165,11 @@ sonora_ui_library(sonora_ui_mixer QT SOURCES
   src/send_model.h src/send_model.cpp
   src/insert_model.h src/insert_model.cpp
   src/loudness_model.h src/loudness_model.cpp
+  src/step_sequencer_model.h src/step_sequencer_model.cpp
   src/plugin_favourites.h src/plugin_favourites.cpp
   src/plugin_manager_model.h src/plugin_manager_model.cpp
 )
-target_link_libraries(sonora_ui_mixer PUBLIC sonora_ui_session sonora_ui_inserts)
+target_link_libraries(sonora_ui_mixer PUBLIC sonora_ui_session sonora_ui_inserts sonora_stepseq)
 
 # The QML files are listed as sources so that the micro-build gate maps a QML
 # change to this library and to the tests that load it, not to the whole UI.
@@ -178,7 +179,7 @@ set(SONORA_UI_QML_FILES
   qml/InsertPanel.qml qml/Knob.qml qml/Fader.qml qml/MeterBar.qml qml/CurveView.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
   qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml qml/IoSetupWindow.qml qml/NewSessionDialog.qml
   qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
-  qml/PluginManager.qml qml/KeyChooser.qml qml/TrackListWindow.qml
+  qml/PluginManager.qml qml/KeyChooser.qml qml/TrackListWindow.qml qml/StepSequencer.qml
 )
 sonora_ui_library(sonora_ui_qml QT SOURCES
   src/qml_resources.cpp src/register_types.h ${SONORA_UI_QML_FILES})
@@ -551,6 +552,13 @@ add_executable(test_ui_loudness tests/test_loudness.cpp)
 target_link_libraries(test_ui_loudness PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_loudness COMMAND test_ui_loudness)
 set_tests_properties(ui_loudness PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The Step Sequencer window: the pattern edits, mute/solo, the clamps and
+# the QML grid and lane.
+add_executable(test_step_sequencer tests/test_step_sequencer.cpp)
+target_link_libraries(test_step_sequencer PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_step_sequencer COMMAND test_step_sequencer)
+set_tests_properties(ui_step_sequencer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Key maps on the control API: commands routed by domain, the Commands
 # Keyboard Focus toggle, the profile switch and what it remembers, on
