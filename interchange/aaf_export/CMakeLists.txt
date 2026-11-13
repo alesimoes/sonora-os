@@ -1,0 +1,25 @@
+# AAF export (ADR-0161). Reached from interchange/CMakeLists.txt.
+add_library(sonora_aaf_export STATIC src/aaf_export.cpp src/aaf_export_map.cpp src/aaf_libaaf_writer.cpp)
+target_include_directories(sonora_aaf_export PUBLIC include PRIVATE src)
+target_link_libraries(sonora_aaf_export PUBLIC sonora_interchange)
+
+add_executable(test_aaf_export_contract tests/test_aaf_export_contract.cpp)
+target_link_libraries(test_aaf_export_contract PRIVATE sonora_aaf_export)
+target_include_directories(test_aaf_export_contract PRIVATE tests)
+add_test(NAME aaf_export_contract COMMAND test_aaf_export_contract)
+set_tests_properties(aaf_export_contract PROPERTIES LABELS interchange)
+
+add_executable(test_aaf_export_map tests/test_aaf_export_map.cpp)
+target_link_libraries(test_aaf_export_map PRIVATE sonora_aaf_export)
+target_include_directories(test_aaf_export_map PRIVATE src)
+add_test(NAME aaf_export_map COMMAND test_aaf_export_map)
+set_tests_properties(aaf_export_map PROPERTIES LABELS interchange)
+
+if(SONORA_WITH_LIBAAF)
+  target_compile_definitions(sonora_aaf_export PRIVATE SONORA_WITH_LIBAAF)
+endif()
+
+add_executable(test_aaf_export_writer tests/test_aaf_export_writer.cpp)
+target_link_libraries(test_aaf_export_writer PRIVATE sonora_aaf_export)
+add_test(NAME aaf_export_writer COMMAND test_aaf_export_writer)
+set_tests_properties(aaf_export_writer PROPERTIES LABELS interchange)
