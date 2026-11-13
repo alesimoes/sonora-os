@@ -19,6 +19,8 @@ Item {
     signal trackMenuRequested(real x, real y)
     // A track's playlist selector was clicked: the window draws its menu.
     signal playlistMenuRequested(int track, real x, real y)
+    // The Pitch button: open the Note Pitch panel on the selected clip.
+    signal pitchRequested()
 
     // A track's top in the track area, before the scroll: its lanes, when
     // disclosed, make the rows below it start lower.
@@ -367,6 +369,17 @@ Item {
                     available: samplePanel.editable
                     onClicked: samplePanel.run(modelData[1], false)
                 }
+            }
+            Rectangle { width: 1; height: 20; anchors.verticalCenter: parent.verticalCenter; color: Theme.borderSubtle }
+            // Dimmed with the rest while no clip is selected: the panel
+            // edits a clip, and an enabled button over nothing would lie.
+            SButton {
+                objectName: "openPitch"
+                text: "Pitch…"
+                implicitWidth: 66
+                enabled: samplePanel.editable
+                available: samplePanel.editable
+                onClicked: edit.pitchRequested()
             }
             Rectangle { width: 1; height: 20; anchors.verticalCenter: parent.verticalCenter; color: Theme.borderSubtle }
             // The level Gain changes by and Normalize brings the peak to.

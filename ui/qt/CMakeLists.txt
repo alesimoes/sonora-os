@@ -184,7 +184,7 @@ set(SONORA_UI_QML_FILES
   qml/InsertPanel.qml qml/Knob.qml qml/Fader.qml qml/MeterBar.qml qml/CurveView.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
   qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml qml/IoSetupWindow.qml qml/NewSessionDialog.qml
   qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
-  qml/PluginManager.qml qml/KeyChooser.qml qml/TrackListWindow.qml qml/StepSequencer.qml qml/TakeFolder.qml qml/LoopBrowser.qml
+  qml/PluginManager.qml qml/KeyChooser.qml qml/TrackListWindow.qml qml/StepSequencer.qml qml/TakeFolder.qml qml/LoopBrowser.qml qml/PitchScaleBar.qml
 )
 sonora_ui_library(sonora_ui_qml QT SOURCES
   src/qml_resources.cpp src/register_types.h ${SONORA_UI_QML_FILES})
