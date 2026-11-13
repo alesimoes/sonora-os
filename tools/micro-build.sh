@@ -116,10 +116,19 @@ ID="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
 # volume every worktree shares, or SONORA_CCACHE_DIR (a host directory the
 # GitHub job restores from its cache).
 VOL=() AS_CALLER=()
+# Hands a volume to the container's user: only what someone else owns (a
+# root build-engine.sh run), found by a walk that only reads. A recursive
+# chown rewrote the metadata of every file of the shared ccache (24k files) on
+# every run: 76 s of a cold UI micro build on this host's USB disk, outside
+# the lock, beside the build holding it (2026-11-13).
+own_volume() {  # VOLUME:MOUNT OWNER
+  local mount="${1#*:}" uid="${2%:*}" gid="${2#*:}"
+  docker run --rm --user 0 -v "$1" --entrypoint find "sonora-$IMAGE:trixie" \
+    "$mount" \( ! -user "$uid" -o ! -group "$gid" \) -exec chown "$2" {} + >/dev/null 2>&1 || true
+}
 if [[ "$(uname -s)" != Linux ]]; then
   VOL=(-v "sonora-build-$ID:/build" -e "SONORA_BUILD_DIR=/build/micro-$IMAGE")
-  docker run --rm --user 0 -v "sonora-build-$ID:/build" --entrypoint chown "sonora-$IMAGE:trixie" \
-    -R 1000:1000 /build >/dev/null 2>&1 || true
+  own_volume "sonora-build-$ID:/build" 1000:1000
 else
   VOL=(-e "SONORA_BUILD_DIR=build-micro-$IMAGE")
   AS_CALLER=(--user "$(id -u):$(id -g)" -e HOME=/tmp)
@@ -143,8 +152,7 @@ else
   # (sonora-ui, 2026-11-07). Hand it to that user, whichever way it was made.
   owner="1000:1000"
   if ((${#AS_CALLER[@]})); then owner="$(id -u):$(id -g)"; fi
-  docker run --rm --user 0 -v sonora-ccache:/ccache --entrypoint chown \
-    "sonora-$IMAGE:trixie" -R "$owner" /ccache >/dev/null 2>&1 || true
+  own_volume sonora-ccache:/ccache "$owner"
 fi
 # The table in the job's summary page (changed files, targets, tests, times),
 # also when a stage fails.
