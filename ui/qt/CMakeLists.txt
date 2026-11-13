@@ -195,6 +195,8 @@ qt_add_resources(sonora_ui_qml sonora_qml
   FILES ${SONORA_UI_QML_FILES}
 )
 
+include(live_loops.cmake)
+
 # What the app and the tests that load the real QML link: everything.
 add_library(sonora_ui_qt INTERFACE)
 target_link_libraries(sonora_ui_qt INTERFACE sonora_ui_qml)
