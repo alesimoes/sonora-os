@@ -109,7 +109,15 @@ int main() {
     AafImporter imp(&reader);
     model::Snapshot b;
     ConversionReport in_rep;
-    CHECK(imp.read("x.aaf", b, in_rep, err));
+    const bool imported = imp.read("x.aaf", b, in_rep, err);
+    if (!imported) std::printf("import error: %s
+", err.c_str());
+    CHECK(imported);
+    if (!imported) return 1;
+    for (const auto& l : in_rep.dropped) std::printf("in dropped: %s
+", l.c_str());
+    for (const auto& l : in_rep.approximated) std::printf("in approx: %s
+", l.c_str());
     CHECK(in_rep.dropped.empty());
     CHECK(in_rep.approximated.empty());
 
