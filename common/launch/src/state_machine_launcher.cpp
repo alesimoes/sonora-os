@@ -202,7 +202,7 @@ void StateMachineLauncher::fire_due(std::uint32_t track, std::int64_t block_star
     col.pending = Pending::None;
     col.pending_scene = kNone;
     if (col.playing != kNone) {
-        emit(Transition::Kind::Stop, track, col.playing, col.playing_clip, offset);
+        push_transition(Transition::Kind::Stop, track, col.playing, col.playing_clip, offset);
         col.playing = kNone;
         col.playing_clip = kNoClip;
     }
@@ -211,7 +211,7 @@ void StateMachineLauncher::fire_due(std::uint32_t track, std::int64_t block_star
         // The cell may have been emptied after the start was queued.
         const ClipId next = grid_.cell(track, static_cast<std::uint32_t>(scene)).clip;
         if (next != kNoClip) {
-            emit(Transition::Kind::Start, track, scene, next, offset);
+            push_transition(Transition::Kind::Start, track, scene, next, offset);
             col.playing = scene;
             col.playing_clip = next;
         }
@@ -224,7 +224,7 @@ void StateMachineLauncher::fire_due(std::uint32_t track, std::int64_t block_star
 
 void StateMachineLauncher::end_capture(std::uint32_t track, std::uint32_t offset) {
     Column& col = columns_[track];
-    emit(Transition::Kind::RecordStop, track, col.recording, col.recording_clip, offset);
+    push_transition(Transition::Kind::RecordStop, track, col.recording, col.recording_clip, offset);
     grid_.cell(track, static_cast<std::uint32_t>(col.recording)).clip = col.recording_clip;
     col.recording = kNone;
     col.recording_clip = kNoClip;
@@ -234,7 +234,7 @@ void StateMachineLauncher::begin_capture(std::uint32_t track, std::int64_t frame
                                          std::uint32_t offset) {
     Column& col = columns_[track];
     col.recording_clip = col.pending_clip;
-    emit(Transition::Kind::RecordStart, track, col.recording, col.recording_clip, offset);
+    push_transition(Transition::Kind::RecordStart, track, col.recording, col.recording_clip, offset);
     const double bar = step_frames(transport_, Quantize::Bar);
     if (col.pending_bars == 0 || !(bar > 0.0)) return;
     // A fixed-length capture ends by starting its own cell: the capture
@@ -247,7 +247,7 @@ void StateMachineLauncher::begin_capture(std::uint32_t track, std::int64_t frame
     col.pending_resnaps = false;
 }
 
-void StateMachineLauncher::emit(Transition::Kind kind, std::uint32_t track, std::int32_t scene,
+void StateMachineLauncher::push_transition(Transition::Kind kind, std::uint32_t track, std::int32_t scene,
                                 ClipId clip, std::uint32_t offset) {
     if (transition_count_ == transitions_.size()) {
         ++dropped_;

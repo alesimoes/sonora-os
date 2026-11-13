@@ -78,7 +78,7 @@ private:
     void fire_due(std::uint32_t track, std::int64_t block_start, std::uint32_t frames);
     void end_capture(std::uint32_t track, std::uint32_t offset);
     void begin_capture(std::uint32_t track, std::int64_t frame, std::uint32_t offset);
-    void emit(Transition::Kind kind, std::uint32_t track, std::int32_t scene, ClipId clip,
+    void push_transition(Transition::Kind kind, std::uint32_t track, std::int32_t scene, ClipId clip,
               std::uint32_t offset);
     void clear_marks(std::uint32_t track);
     void mark(std::uint32_t track);
