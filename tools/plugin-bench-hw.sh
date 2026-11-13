@@ -52,6 +52,13 @@ if [ "$SELF_TEST" = 1 ]; then
   T="$(mktemp -d)"
   trap 'rm -rf "$T"' EXIT
   fails=0
+  # No built bench on a clean checkout: a stub keeps the self-test about the
+  # script's own logic (verdicts, early abort), not the bench's.
+  if ! { command -v "$BENCH" >/dev/null || [ -x "$BENCH" ]; }; then
+    printf '#!/bin/sh\nsleep 2\necho "RESULT max_us=10 p99_us=5 misses=0 drops=0"\n' >"$T/stub-bench"
+    chmod +x "$T/stub-bench"
+    export SONORA_BENCH="$T/stub-bench"
+  fi
   common=(--buffer 128 --seconds 2 --warmup 0 --runs 1 --out "$T/out")
   echo "self-test 1/2: clean run must PASS"
   SONORA_BENCH_NO_PREFLIGHT=1 "$0" "${common[@]}" >"$T/pass.log" 2>&1
