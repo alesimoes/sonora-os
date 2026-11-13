@@ -20,6 +20,26 @@
     },
     "numpad_4": "transport.toggle_loop",
     "ctrl+shift+l": "transport.toggle_loop",
+    "alt+k": {
+      "command": "transport.toggle_input_only",
+      "verified": false,
+      "comment": "Input Only Monitoring against Auto Input (ADR-0043, ADR-0129). Chord not confirmed against Avid's guide."
+    },
+    "ctrl+k": {
+      "command": "transport.toggle_pre_post_roll",
+      "verified": false,
+      "comment": "Pre/Post-Roll on/off (ADR-0043, ADR-0129). Chord not confirmed against Avid's guide."
+    },
+    "ctrl+shift+p": {
+      "command": "transport.toggle_quick_punch",
+      "verified": false,
+      "comment": "QuickPunch record mode on/off; Command+Shift+P in brain/research/protools-logic-key-bindings.md, Ctrl on this profile's modifier map (ADR-0043, ADR-0129)."
+    },
+    "ctrl+shift+t": {
+      "command": "track.toggle_track_punch",
+      "verified": false,
+      "comment": "TrackPunch on/off for the selected armed track (ADR-0043, ADR-0129); the header button is a later PR."
+    },
     "alt+l": {
       "command": "transport.toggle_loop_record",
       "verified": false,
