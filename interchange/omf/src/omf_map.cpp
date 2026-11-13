@@ -71,6 +71,7 @@ private:
         model::Snapshot snap = model::new_session(settings);
         auto edit = std::make_shared<model::EditState>();
         edit->tracks = std::move(tracks);
+        edit->markers = std::make_shared<const model::MarkerList>();
         snap.edit = std::move(edit);
         auto pool = std::make_shared<model::SourcePool>();
         pool->sources = sources_;
