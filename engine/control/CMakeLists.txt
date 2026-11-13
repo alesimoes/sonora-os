@@ -201,6 +201,16 @@ add_test(NAME control COMMAND test_control)
 set_tests_properties(control PROPERTIES RUN_SERIAL TRUE)
 set_property(TEST control APPEND PROPERTY LABELS timing)
 
+# Process Selection With through the real server (ADR-0087): Hello's
+# capability, insert= for process_selection only and into the plan; with a
+# real host (below), the print through one insert with the solo seam set.
+add_executable(test_control_process_with tests/test_control_process_with.cpp)
+target_link_libraries(test_control_process_with PRIVATE sonora_control sonora_backend_fake)
+add_test(NAME control_process_with COMMAND test_control_process_with)
+# drivers/fake's real-time thread: alone under `ctest -j`, as control is.
+set_tests_properties(control_process_with PROPERTIES RUN_SERIAL TRUE)
+set_property(TEST control_process_with APPEND PROPERTY LABELS timing)
+
 # The server on a socket (M7), driven by raw platform channels rather than
 # ui/client, so this module's test needs nothing above it: several
 # clients, a client gone mid-take, malformed frames refused, the state
@@ -308,6 +318,11 @@ if(TARGET sonora-plugin-host)
     add_test(NAME plugin_hosting_${scenario} COMMAND ${_ph} --scenario ${scenario})
     list(APPEND _ph_tests plugin_hosting_${scenario})
   endforeach()
+  add_dependencies(test_control_process_with sonora-plugin-host)
+  add_test(NAME control_process_with_host
+           COMMAND $<TARGET_FILE:test_control_process_with> --host $<TARGET_FILE:sonora-plugin-host>
+                   --bundle ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
+  list(APPEND _ph_tests control_process_with_host)
   # native.editors (ADR-0057): the real host, a Sonora EQ and its descriptor.
   get_property(_eq_mono_uri GLOBAL PROPERTY SONORA_NATIVE_eq-mono_LV2_URI)
   if(_eq_mono_uri)
