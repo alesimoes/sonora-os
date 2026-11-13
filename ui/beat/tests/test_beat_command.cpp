@@ -15,6 +15,7 @@
 
 using namespace sonora::ui;
 using namespace sonora::ui::model;
+namespace analyze = sonora::analyze;
 
 static int failures = 0;
 #define CHECK(c)                                                              \
