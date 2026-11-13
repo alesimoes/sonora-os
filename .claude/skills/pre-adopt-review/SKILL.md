@@ -21,7 +21,7 @@ Cheap checks on the diff and the report, not a code review (that is
    commit), no stale commits, no merge commits.
 6. `tools/pre-pr.sh` was run (whitespace, exec bits, ADR numbers, no BACKLOG
    edit, reserved numbers).
-7. UI change: screenshots committed under `docs/images` for each scene.
+7. UI change: no generated screenshots committed (they are ignored).
 8. Docs and ADR travel with the code; contract changes have fake + test.
 
 Result: adopt, or send back with the failed item numbers. Never fix it

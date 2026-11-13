@@ -148,3 +148,6 @@ build-plugins-only/
 dist/
 build-plugins-win/
 .sonora-local.env
+
+# Generated UI scene screenshots are not committed (owner, 2026-11-13).
+docs/images/sonora-ui-*.png
