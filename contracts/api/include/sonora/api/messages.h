@@ -231,7 +231,11 @@ namespace sonora::api {
 //   insert carries `key_bus` (window format 21), and PluginInfo carries
 //   `key_inputs`. A peer of 68 or lower is refused at Hello, so an older
 //   engine never meets the command.
-constexpr uint32_t kProtocolVersion = 69;
+// 70 (ADR-0088, plug-in editors; reserved by the lead): the commands
+//   plugin.editor_open and plugin.editor_close and EventKind::PluginEditor
+//   (11; api/plugin_editor.h), which a version-69 decoder refuses as an
+//   unknown kind. A peer of 69 or lower is refused at Hello.
+constexpr uint32_t kProtocolVersion = 70;
 
 // ModelAction::Load's file, when it starts with this and names a template's
 // session file: the engine makes a new Untitled folder in its sessions
@@ -545,6 +549,7 @@ enum class EventKind : uint32_t {
     // failure stays on screen until dismissed and a client that attaches
     // later is sent it.
     Render = 10,
+    PluginEditor = 11,  // an insert's own editor window (api/plugin_editor.h, protocol 70)
 };
 
 // EngineEvent::flags of a Consolidate.

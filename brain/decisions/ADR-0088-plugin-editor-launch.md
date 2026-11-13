@@ -143,3 +143,33 @@ header-only INTERFACE library `sonora_editor_service`, std only:
   misses a window closed between two polls. State is event-driven end to end.
 - **The UI talking to the host directly.** Breaks the module graph and races
   the engine's host swaps (Context).
+
+## Amendment 2026-11-13: the wire (protocol 70)
+
+Decision 7's messages, as `plugins.host.editors.rest` puts them on the wire.
+The lead reserved protocol **70**; a peer of 69 or lower is refused at Hello.
+
+- They are words of the existing messages, not wire types of their own, so
+  the codec, the reply and the command map stay the ones every command uses.
+  `contracts/api/include/sonora/api/plugin_editor.h` declares the structs and
+  the mapping; `contracts/api/src/plugin_editor_wire.cpp` implements it.
+- `OpenPluginEditor{track, slot}` is the command `plugin.editor_open`:
+  `CommandRequest::target` the track index, argument `slot=<n>`,
+  `0 <= n < kInsertSlots`. `ClosePluginEditor` is `plugin.editor_close`, the
+  same. The reply is Ok once the request is taken; the outcome is the event.
+- `PluginEditorState{track, slot, state, reason}` is `EventKind::PluginEditor`
+  (11): `track` the track index, `insert` the slot, `flags` the
+  `PluginEditorStatus` (`Closed 0`, `Opening 1`, `Open 2`, `Failed 3`, as
+  `editor_service::EditorState`), `text` the host's reason on `Failed` and
+  empty otherwise. The codec refuses a state past `Failed`; `from_event`
+  also refuses a negative track, a slot out of range and a reason on any
+  other state.
+- A client that attaches later is sent every editor that is not `Closed`.
+  Opening a session reports `Closed` for every editor of the last one,
+  `Failed` included, so no notice outlives the insert it names.
+- `FakeEngine` runs the two commands with `Config::plugin_editors` (off by
+  default until engine/control installs them, so `engine_commands()` still
+  matches it), with `script_editor_failure`, `hold_editor_opening`,
+  `complete_editor_open` and `editor_host_stopped`.
+- Test: `contracts/api/tests/test_plugin_editor_wire.cpp` (ctest
+  `api_plugin_editor_wire`, label `contracts`).
