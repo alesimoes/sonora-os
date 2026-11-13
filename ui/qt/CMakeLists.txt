@@ -100,6 +100,7 @@ sonora_ui_library(sonora_ui_edit SOURCES
   src/edit_comping.cpp
   src/comping_demo.h src/comping_demo.cpp
   src/live_take.h src/live_take.cpp
+  src/take_folder_view.h src/take_folder_view.cpp
   src/timeline_scene.h src/timeline_scene.cpp
   src/audio_importer.h src/audio_importer.cpp
 )
@@ -107,6 +108,7 @@ target_link_libraries(sonora_ui_edit PUBLIC sonora_ui_core)
 
 sonora_ui_library(sonora_ui_inserts SOURCES
   src/insert_controller.h src/insert_controller.cpp
+  src/insert_key_controller.h src/insert_key_controller.cpp
   src/send_controller.h src/send_controller.cpp
 )
 target_link_libraries(sonora_ui_inserts PUBLIC sonora_ui_core)
@@ -128,6 +130,8 @@ target_link_libraries(sonora_ui_shell PRIVATE sonora_platform)
 sonora_ui_library(sonora_ui_session QT SOURCES
   src/session_files.h src/session_files.cpp
   src/window_layouts.h src/window_layouts.cpp
+  src/track_views.h src/track_views.cpp src/track_row_geometry.h
+  src/track_view_model.h src/track_view_model.cpp
   src/preferences.h src/preferences.cpp
   src/transport_prefs.h src/transport_prefs.cpp
   src/import_model.h src/import_model.cpp
@@ -175,7 +179,7 @@ set(SONORA_UI_QML_FILES
   qml/InsertPanel.qml qml/Knob.qml qml/Fader.qml qml/MeterBar.qml qml/CurveView.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
   qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml qml/IoSetupWindow.qml qml/NewSessionDialog.qml
   qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
-  qml/PluginManager.qml
+  qml/PluginManager.qml qml/KeyChooser.qml qml/TrackListWindow.qml qml/TakeFolder.qml
 )
 sonora_ui_library(sonora_ui_qml QT SOURCES
   src/qml_resources.cpp src/register_types.h ${SONORA_UI_QML_FILES})
@@ -269,6 +273,12 @@ add_executable(test_ui_live_take tests/test_live_take.cpp)
 target_link_libraries(test_ui_live_take PRIVATE sonora_ui_session)
 add_test(NAME ui_live_take COMMAND test_ui_live_take)
 set_tests_properties(ui_live_take PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Take-folder collapsed view state (ADR-0159).
+add_executable(test_ui_take_folder_view tests/test_take_folder_view.cpp)
+target_link_libraries(test_ui_take_folder_view PRIVATE sonora_ui_session)
+add_test(NAME ui_take_folder_view COMMAND test_ui_take_folder_view)
+set_tests_properties(ui_take_folder_view PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Automation lanes (ADR-0027): the operations a gesture is built into, the
 # lane rows, the mouse and Edit-command paths, and what the timeline draws.
@@ -395,6 +405,12 @@ target_compile_definitions(test_ui_window_layouts PRIVATE
 add_test(NAME ui_window_layouts COMMAND test_ui_window_layouts)
 set_tests_properties(ui_window_layouts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# Track view contract (ADR-0106): the commands and the per-session store.
+add_executable(test_ui_track_views tests/test_track_views.cpp)
+target_include_directories(test_ui_track_views PRIVATE src)
+target_link_libraries(test_ui_track_views PRIVATE sonora_ui_qt)
+add_test(NAME ui_track_views COMMAND test_ui_track_views)
+
 # Setup > Latency (ADR-0019): the window over FakeEngine's wire, its
 # measurement, its figure by hand, and refusals held in the window.
 add_executable(test_ui_latency tests/test_latency.cpp)
@@ -469,6 +485,12 @@ target_link_libraries(test_ui_inserts PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_inserts COMMAND test_ui_inserts)
 set_tests_properties(ui_inserts PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# The side-chain key chooser's logic (ADR-0058): offered only to a plugin with
+# a key input, None plus every bus, one undo step, a loop refused, a stale bus.
+add_executable(test_ui_insert_key tests/test_insert_key.cpp)
+target_link_libraries(test_ui_insert_key PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_insert_key COMMAND test_ui_insert_key)
+
 # The plug-in manager (ADR-0065) on FakeEngine: the catalog's three kinds of
 # entry, the filters, block and unblock round-tripping through the engine's
 # next catalog, rescan, favourites kept through a fake store (and refused
@@ -509,6 +531,11 @@ add_executable(test_ui_session_templates tests/test_session_templates.cpp)
 target_link_libraries(test_ui_session_templates PRIVATE sonora_ui_session sonora_session_files sonora_sha256)
 add_test(NAME ui_session_templates COMMAND test_ui_session_templates)
 set_tests_properties(ui_session_templates PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# Save as Template into a category (ADR-0146 §4), on the same rig.
+add_executable(test_ui_session_template_categories tests/test_session_template_save_category.cpp)
+target_link_libraries(test_ui_session_template_categories PRIVATE sonora_ui_session sonora_session_files)
+add_test(NAME ui_session_template_categories COMMAND test_ui_session_template_categories)
+set_tests_properties(ui_session_template_categories PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Strip metering: post-fader peaks, the Pre/Post point, the over latch, one
 # read per tick, on a recording adapter.

@@ -281,6 +281,7 @@ Value insert_value(const Insert& in) {
     v.set("slot", integer(in.slot));
     v.set("plugin", plugin_value(in.plugin));
     v.set("active", Value::boolean(in.active));
+    v.set("key_bus", id_value(in.key_bus));
     return v;
 }
 

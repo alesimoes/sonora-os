@@ -28,6 +28,14 @@
 # SONORA_HEAVY_WAIT seconds (default 4 h) the command runs anyway, with a
 # warning: a stuck queue must not stop work for good.
 #
+# A `docker run` command gets a container name (sonora-heavy-PID-TIME unless
+# it has its own --name), recorded in the owner file. Its slot stays held
+# while that container runs, even when the client is dead: an agent's tool
+# call cut at its time limit kills the client, never the container, which
+# kept building outside the lock while the next build took the slot
+# (2026-11-09: ten builds at once, Docker hung, every agent build timed out).
+# A holder stopped by a signal kills its container on the way out.
+#
 # SONORA_HEAVY_WAIT_FILE=PATH: the seconds spent waiting for the lock are
 # written there once it is ours (tools/micro-build.sh logs lock waits apart from
 # step times). The variable is not passed on to the command, so a nested call
@@ -103,9 +111,13 @@ unset SONORA_HEAVY_WAIT_FILE
 mkdir -p "$DIR/wait"
 ticket="$DIR/wait/$PRIO-$(printf '%020d' "$(date +%s%N)")-$$"
 held=""
+container="" running=0
 # shellcheck disable=SC2329  # runs from the EXIT trap
 release() {
   rm -f "$ticket"
+  if ((running)) && [[ -n "$container" ]]; then
+    timeout 60 docker kill "$container" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$held" ]]; then
     rm -rf "$held"
     held=""
@@ -119,6 +131,18 @@ trap 'exit 143' TERM
 describe() {
   printf 'pid=%s\nkind=%s\nuser=%s\nprio=%s\nstart=%s\ncwd=%s\ncmd=%s\n' \
     "$$" "$KIND" "${USERNAME:-${USER:-?}}" "$PRIO" "$(date +%s)" "$PWD" "$(printf '%s ' "$@" | cut -c1-200)"
+  [[ -z "$container" ]] || printf 'container=%s\n' "$container"
+}
+
+# The holder's container still runs. A docker that does not answer in time
+# counts as running: a hung daemon is a loaded machine, not a free one.
+container_running() {
+  local c state rc=0
+  c="$(sed -n 's/^container=//p' "$1" 2>/dev/null)"
+  [[ -n "$c" ]] || return 1
+  state="$(timeout 30 docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" || rc=$?
+  ((rc != 124)) || return 0
+  [[ "$state" == true ]]
 }
 
 alive() {  # a pid of another kind of shell cannot be probed: assume alive
@@ -126,7 +150,9 @@ alive() {  # a pid of another kind of shell cannot be probed: assume alive
   k="$(sed -n 's/^kind=//p' "$1" 2>/dev/null)"
   pid="$(sed -n 's/^pid=//p' "$1" 2>/dev/null)"
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  [[ "$k" != "$KIND" ]] || kill -0 "$pid" 2>/dev/null
+  if [[ "$k" == "$KIND" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    container_running "$1"
+  fi
 }
 
 # A directory with no owner file yet is a claim between mkdir and the write;
@@ -173,6 +199,20 @@ take() {
   return 1
 }
 
+cmd=("$@")
+if [[ "${1##*/}" == docker || "${1##*/}" == docker.exe ]] && [[ "${2:-}" == run ]]; then
+  prev=""
+  for a in "${@:3}"; do
+    case "$a" in --name=*) container="${a#--name=}" ;; esac
+    [[ "$prev" != --name ]] || container="$a"
+    prev="$a"
+  done
+  if [[ -z "$container" ]]; then
+    container="sonora-heavy-$$-$(date +%s)"
+    cmd=("$1" run --name "$container" "${@:3}")
+  fi
+fi
+
 describe "$@" >"$ticket"
 start=$SECONDS
 announced=0
@@ -195,5 +235,7 @@ rm -f "$ticket"
 
 export SONORA_HEAVY_HELD=1
 rc=0
-"$@" || rc=$?
+running=1
+"${cmd[@]}" || rc=$?
+running=0
 exit "$rc"

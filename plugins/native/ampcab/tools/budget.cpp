@@ -6,7 +6,9 @@
 // trainer's preset, the two test shapes and the largest the kernel takes,
 // at q128 and 48 kHz, mono, as the amp processor will run one capture.
 // p50, p99.9 and max per block, against class E's 250 us p99.9 and 500 us
-// max, which also has to hold the cabinet IR.
+// max. The timed block is the amp network followed by the cabinet: a
+// 200 ms IR at 48 kHz (9600 taps) in common/dsp's partitioned Convolver,
+// quantum-sized partitions (ADR-0011 §4.3, Unverified 9).
 //
 //   ampcab-budget [SECONDS]   (default 20 s of audio per size)
 //
@@ -24,15 +26,20 @@
 #include <string>
 #include <vector>
 
+#include "sonora/dsp/convolver.h"
 #include "sonora/dsp/neural/lstm.h"
 #include "sonora/dsp/neural/wavenet.h"
 
 namespace {
 
 using namespace sonora::dsp::neural;
+using sonora::dsp::ConvolutionKernel;
+using sonora::dsp::Convolver;
 
 constexpr int kQ = 128;
 constexpr double kFs = 48000.0;
+// A 200 ms cabinet IR at 48 kHz, the length class E has to hold.
+constexpr std::uint32_t kIrTaps = 9600;
 
 LayerArraySpec arr(int in, int c, int h, std::vector<int> d, bool hb) {
     LayerArraySpec s;
@@ -84,18 +91,42 @@ std::vector<float> guitar(std::size_t total, Noise& noise) {
     return in;
 }
 
-// Times `blocks` q128 blocks after 200 untimed ones and prints one row.
+// A decaying noise IR, 60 dB down at its end: the convolver's arithmetic
+// does not depend on the taps, but a real cabinet decays, so its tail is
+// not all loud.
+struct Cabinet {
+    ConvolutionKernel kernel;
+    Convolver conv;
+    bool prepare() {
+        std::vector<double> ir(kIrTaps);
+        Noise ir_noise;
+        ir_noise.s = 7;
+        for (std::uint32_t i = 0; i < kIrTaps; ++i) {
+            const double decay = std::exp(-6.9078 * static_cast<double>(i) / kIrTaps);
+            ir[i] = 0.05 * decay * static_cast<double>(ir_noise());
+        }
+        const auto q = static_cast<std::uint32_t>(kQ);
+        if (!kernel.prepare(q, kIrTaps) || !kernel.set(ir.data(), kIrTaps)) return false;
+        return conv.prepare(q, kIrTaps) && conv.accepts(kernel);
+    }
+};
+
+// Times `blocks` q128 blocks after 200 untimed ones and prints one row. The
+// timed work is the network and then the cabinet's convolution.
 template <class Net>
-void time_blocks(Net& net, const char* name, std::size_t weights, int blocks, Noise& noise) {
+void time_blocks(Net& net, Cabinet& cab, const char* name, std::size_t weights, int blocks, Noise& noise) {
     const std::vector<float> in = guitar(static_cast<std::size_t>(blocks + 200) * kQ, noise);
+    std::vector<float> mid(static_cast<std::size_t>(kQ));
     std::vector<float> out(static_cast<std::size_t>(kQ));
+    cab.conv.reset();
     std::vector<double> us(static_cast<std::size_t>(blocks));
     std::clock_t cpu0 = 0;
     for (int b = -200; b < blocks; ++b) {
         if (b == 0) cpu0 = std::clock();
         const float* x = in.data() + static_cast<std::size_t>(b + 200) * static_cast<std::size_t>(kQ);
         const auto t0 = std::chrono::steady_clock::now();
-        net.process(x, out.data(), kQ);
+        net.process(x, mid.data(), kQ);
+        cab.conv.process(cab.kernel, mid.data(), out.data(), static_cast<std::uint32_t>(kQ));
         const auto t1 = std::chrono::steady_clock::now();
         if (b >= 0) us[static_cast<std::size_t>(b)] = std::chrono::duration<double, std::micro>(t1 - t0).count();
     }
@@ -127,6 +158,11 @@ int wavenets(int blocks, Noise& noise) {
     };
     const Size sizes[] = {{"nano", 4}, {"feather", 8}, {"lite", 12}, {"standard", 16}};
     header("WaveNet", blocks);
+    Cabinet cab;
+    if (!cab.prepare()) {
+        std::fprintf(stderr, "cabinet IR: kernel refused\n");
+        return 1;
+    }
     for (int pass = 0; pass < 2 * 4; ++pass) {
         const Size& sz = sizes[pass / 2];
         const bool simd = pass % 2 == 1;
@@ -144,7 +180,7 @@ int wavenets(int blocks, Noise& noise) {
         }
         if (simd && std::string(net.kernels_name()) == "generic") continue;
         net.prepare(kQ);
-        time_blocks(net, sz.name, w.size(), blocks, noise);
+        time_blocks(net, cab, sz.name, w.size(), blocks, noise);
     }
     return 0;
 }
@@ -161,6 +197,11 @@ int lstms(int blocks, Noise& noise) {
     const Size sizes[] = {{"1x16", 1, 16},  {"2x8", 2, 8},   {"1x24", 1, 24},
                           {"2x32", 2, 32},  {"4x64", 4, 64}, {"1x128", 1, 128}};
     header("LSTM", blocks);
+    Cabinet cab;
+    if (!cab.prepare()) {
+        std::fprintf(stderr, "cabinet IR: kernel refused\n");
+        return 1;
+    }
     for (int pass = 0; pass < 2 * 6; ++pass) {
         const Size& sz = sizes[pass / 2];
         const bool simd = pass % 2 == 1;
@@ -179,7 +220,7 @@ int lstms(int blocks, Noise& noise) {
         }
         if (simd && std::string(net.kernels_name()) == "generic") continue;
         net.prepare(kQ, kFs);
-        time_blocks(net, sz.name, w.size(), blocks, noise);
+        time_blocks(net, cab, sz.name, w.size(), blocks, noise);
     }
     return 0;
 }

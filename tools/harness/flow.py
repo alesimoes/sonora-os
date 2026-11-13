@@ -11,7 +11,8 @@ import json
 import os
 import re
 
-from . import dispatch, plangate, plans, proposal, queueimport, routing
+from . import (dispatch, plan_numbers, plangate, plans, proposal,
+               queueimport, replan, routing)
 from .forge import ForgeError
 from .scheduler import HOLD
 from .status import write_atomic
@@ -99,6 +100,20 @@ class Flow:
                 made.append(row["id"])
         return made
 
+    def known_features(self):
+        """The lead's pool_under_floor prompt: every feature id the daemon
+        already has. 2026-11-09: progress.sh still listed merged items as
+        open, every proposal of a wake was a feature already on main
+        (time.tempo_edit, time.groove, rf64...), each was rejected, and the
+        DAW floor of 8 sat at 0 for hours."""
+        by = {}
+        for f in self.store.features():
+            by.setdefault(f["state"], []).append(f["id"])
+        rows = [f"{st}: {', '.join(sorted(ids))}" for st, ids in sorted(by.items())]
+        return ("Features the daemon already has; proposing one of these is "
+                "rejected, so pick others (a merged one is done even if "
+                "progress.sh still lists it open):\n" + "\n".join(rows))
+
     def on_proposal(self, body, sender):
         """The lead's pool_under_floor answer: a `plan_request` message to
         the daemon naming the next feature for a track."""
@@ -121,8 +136,12 @@ class Flow:
                                      wants=body.get("wants") or ("adr",))
         except ValueError:
             made = False
+        why = ""
+        if not made:
+            old = self.store.get_feature(fid)
+            why = f" (exists: {old['state']})" if old else " (bad id)"
         self.store.event(None, "proposal_accepted" if made
-                         else "proposal_rejected", f"{sender}: {fid}")
+                         else "proposal_rejected", f"{sender}: {fid}{why}")
         return made
 
     def _waits_unmet(self, fid):
@@ -208,6 +227,8 @@ class Flow:
         if ev == "stall_resolver":
             return ""   # its brief (harness/stall_resolver.py) is all it needs
         lines = [f"event: {ev} feature={fid or '-'}"]
+        if ev == "pool_under_floor":
+            lines.append(self.known_features())
         if not fid:
             return "\n".join(lines)
         f = self.store.get_feature(fid) or {}
@@ -289,6 +310,11 @@ class Flow:
         if err:
             return False, [err]
         f = self.store.get_feature(fid)
+        try:
+            plan_numbers.reserve(self.store, self.owner(fid), plan,
+                                 self.o.seed_fn)
+        except ForgeError as e:
+            return False, [f"could not reserve a version number: {e}"]
         res = self.reserved_for(fid)
         errs = plans.validate_plan(
             plan, {"feature": fid, "track": f["track"], "adr": res["adr"],
@@ -352,7 +378,7 @@ class Flow:
         return True, []
 
     def _task_id(self, fid, tid):
-        return f"{fid}.{tid}"
+        return f"{fid}.{tid}" + replan.suffix(self.store, fid)
 
     def _brief(self, t, row):
         lines = [f"{t['title']} ({t['kind']})", "", t["brief"], "",
@@ -458,8 +484,8 @@ class Flow:
         ev, fid = t.get("event"), t["feature_id"]
         if not fid:
             return True, []
-        if ev == "plan_request":
-            return self.ingest_plan(fid)
+        if ev == "plan_request" or replan.is_replan(t):
+            return replan.ingest(self, t)
         if t["agent"] == "lead" and (ev == "plan_ready" or
                                      self.is_planned(fid)):
             if ev != "plan_ready" and not os.path.exists(self.assign_file(fid)):

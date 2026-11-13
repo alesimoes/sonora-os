@@ -40,6 +40,16 @@ std::string slurp(const fs::path& p) {
     return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
+// cmd.exe /c drops the first and last quote of a line that starts with one,
+// leaving the tool path unquoted; one more pair around the whole line keeps it.
+std::string shell_line(const std::string& cmd) {
+#ifdef _WIN32
+    return "\"" + cmd + "\"";
+#else
+    return cmd;
+#endif
+}
+
 struct Result {
     int code = -1;
     std::string out;
@@ -95,7 +105,7 @@ struct Fixture {
                                 (root / "cards").string() + "\" --files \"" +
                                 (root / "files").string() + "\" > \"" + log.string() + "\"";
         Result r;
-        r.code = std::system(cmd.c_str()) == 0 ? 0 : 1;
+        r.code = std::system(shell_line(cmd).c_str()) == 0 ? 0 : 1;
         r.out = slurp(log);
         return r;
     }

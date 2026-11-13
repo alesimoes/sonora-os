@@ -15,6 +15,7 @@
 #include <variant>
 #include <vector>
 
+#include "sonora/model/insert_key.h"
 #include "sonora/model/model.h"
 #include "sonora/model/op_variant.h"
 
@@ -679,7 +680,7 @@ using PlaylistOp = std::variant<AddPlaylist, SetActivePlaylist, DuplicatePlaylis
 using InsertOp = std::variant<AddInsert, RemoveInsert, MoveInsert, SetInsertActive,
                               ReplaceInsert, SetInsertBypass, SetInsertParams, SetInsertState>;
 using MixOp = std::variant<SetMix, AddBus, RemoveBus, AddSend, RemoveSend, SetSendMix, SetBusMix,
-                           SetOutput, EditAutomation, SetBusPath>;
+                           SetOutput, EditAutomation, SetBusPath, SetInsertKey>;
 using GroupOp = std::variant<SetGroup, RemoveGroup, SetVca, RemoveVca, SetVcaMix, SetFolder,
                              RemoveFolder>;
 using MidiOp = std::variant<AddMidiSource, PlaceMidiRegion, EditMidi, SetMidiRouting>;

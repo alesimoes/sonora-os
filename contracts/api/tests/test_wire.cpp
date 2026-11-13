@@ -468,7 +468,8 @@ void version_check() {
     // 65: plugin descriptor hints and PluginTelemetry (ADR-0057).
     // 66: the bundle's 61 to 63 land together on top of 65.
     // 68: Hello::input_count and output_count, SetBusPath (ADR-0060).
-    CHECK(kProtocolVersion == 68);
+    // 69: SetInsertKey, the window insert's key_bus, PluginInfo::key_inputs (ADR-0058).
+    CHECK(kProtocolVersion == 69);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -479,7 +480,7 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 68 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 69 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // Bounce and Consolidate are the first two kinds past Latency, which a
@@ -491,7 +492,7 @@ void version_check() {
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 68"));
+                   "speaks version 69"));
 }
 
 // Protocol 49: a Bounce event carries the fraction in `frame`, the frames in
@@ -598,6 +599,8 @@ void domains() {
                                id == "app.quit" || id == "automation.thin" ||
                                id == "automation.write_selection" || id == "automation.snapshot" ||
                                id == "window.event_list" ||
+                               id == "track.height" || id == "track.hide" ||
+                               id == "track.show_all" || id == "window.tracks_list" ||
                                id == "automation.toggle_follows_edit" ||
                                id == "window.transport" ||
                                id == "window.undo_history" ||
@@ -874,12 +877,12 @@ void plugin_messages() {
     CHECK(refused(bad, "over the cap"));
     // A flag byte that is neither 0 nor 1. `usable` follows the outputs:
     // type, generation, count, format, four strings, categories (a count),
-    // inputs, outputs.
+    // inputs, outputs, key_inputs (protocol 69).
     std::string enc;
     PluginCatalog one;
     one.plugins.resize(1);
     CHECK(wire::encode(one, enc, error));
-    const std::size_t usable_at = 1 + 8 + 4 + 4 + 4 * 4 + 4 + 4 + 4;
+    const std::size_t usable_at = 1 + 8 + 4 + 4 + 4 * 4 + 4 + 4 + 4 + 4;
     enc[usable_at] = 2;
     CHECK(!wire::decode(enc, back, error) && mentions(error, "a flag of 2"));
     // A count past the cap is refused before anything is reserved for it.

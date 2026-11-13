@@ -14,7 +14,8 @@
 //         chunk id (4 bytes), offset (int64), size (int64)
 //
 // 'Comp' (the component's state) and 'Cont' (the controller's) become a
-// StateBlob's two sections; 'Info' and 'Prog' are not read. The file is
+// StateBlob's two sections; 'Info' is read for the preset's display name
+// only (ADR-0144) and 'Prog' is not read. The file is
 // untrusted input (anyone can drop one into ~/.vst3/presets), so nothing
 // here trusts an offset, a size or a count before checking it against the
 // bytes that are actually there, and no plugin code runs. No SDK, no lilv:
@@ -67,13 +68,36 @@ bool load(const std::string& path, std::string& bytes, std::string& error);
 // The first kHeaderBytes of `path`, the same checks.
 bool load_header(const std::string& path, std::string& bytes, std::string& error);
 
+// The 'Info' chunk is XML the SDK's PresetFile writes, a <MetaInfo> of
+// <Attr id="..." value="..."/> entries. Only the Attr whose id is "Name" is
+// used (ADR-0144): category and the rest would need a probe record version
+// 4. An Info over kMaxInfoBytes is not scanned; a name over kMaxNameBytes is
+// cut at a character boundary.
+inline constexpr std::size_t kMaxInfoBytes = std::size_t{64} << 10;
+inline constexpr std::size_t kMaxNameBytes = 128;
+
+// The display name an Info chunk carries, decoded: the five predefined
+// entities and character references only. False for anything else: no
+// Name, two of them, a DOCTYPE or declared entity (never expanded), an
+// unknown entity, a tag cut short, a name that is not valid UTF-8 or holds
+// a control character, an empty name, an Info over the cap. A bounded,
+// single forward pass: no recursion, nothing allocated past the chunk's size.
+bool info_name(std::string_view xml, std::string& name);
+
+// The bytes of `path`'s one 'Info' chunk, read through the header and the
+// chunk list alone (never the whole file). False, with the reason, when
+// there is none, two, or one outside the data or over kMaxInfoBytes.
+bool load_info(const std::string& path, std::string& info, std::string& error);
+
 // The VST3 preset roots the SDK documents for Linux, in this order:
 // $HOME/.vst3/presets, /usr/share/vst3/presets, /usr/local/share/vst3/presets.
 std::vector<std::string> default_roots();
 
 struct Listed {
     std::string relative;  // to its root, '/'-separated: the id after "vst3-file:"
-    std::string name;      // the file name without ".vstpreset"
+    // The Info chunk's Name; the file name without ".vstpreset" when the
+    // file has no usable one. A bad Info never drops the preset.
+    std::string name;
 };
 
 // Every .vstpreset under <root>/<vendor>/<plugin name>/ (subfolders, four

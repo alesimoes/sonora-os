@@ -47,12 +47,12 @@ Hit EditController::hit(double x, double y) const {
     const double x0 = view_.x_of(r->position), x1 = view_.x_of(r->end());
     const double edge = std::min(kEdgePx, (x1 - x0) / 4);
     const double corner = std::min(kFadeZonePx, (x1 - x0) / 4);
-    const bool top = y - view_.y_of_track(i) < view_.track_height / 4;
+    const bool top = y - view_.y_of_track(i) < view_.row_h(i) / 4;
     if (top && x - x0 <= corner) h.zone = HitZone::FadeIn;
     else if (top && x1 - x <= corner) h.zone = HitZone::FadeOut;
     else if (x - x0 <= edge) h.zone = HitZone::TrimStart;
     else if (x1 - x <= edge) h.zone = HitZone::TrimEnd;
-    else if (y - view_.y_of_track(i) < view_.track_height / 2) h.zone = HitZone::Select;
+    else if (y - view_.y_of_track(i) < view_.row_h(i) / 2) h.zone = HitZone::Select;
     else h.zone = HitZone::Body;
     return h;
 }
@@ -340,7 +340,7 @@ bool EditController::press_pencil(const Hit& h, double x, double y, std::string&
     const double row_top = view_.y_of_track(h.track);
     int lane = count - 1;
     for (int c = 0; c < count; ++c) {
-        const SampleLane l = sample_lane(row_top, view_.track_height, count, c);
+        const SampleLane l = sample_lane(row_top, view_.row_h(h.track), count, c);
         if (y < l.top + l.height) {
             lane = c;
             break;
@@ -368,7 +368,7 @@ float EditController::pencil_level(const Drag& d, double y) const {
     const Region* r = find_region(snapshot(), d.region);
     const int count = r != nullptr ? static_cast<int>(r->channels.size()) : 1;
     const SampleLane l =
-        sample_lane(view_.y_of_track(d.track), view_.track_height, count, d.channel);
+        sample_lane(view_.y_of_track(d.track), view_.row_h(d.track), count, d.channel);
     const double half = l.height / 2;
     if (!(half > 0.0)) return 0.0f;
     // At the operator's vertical zoom, so the level under the pointer is the

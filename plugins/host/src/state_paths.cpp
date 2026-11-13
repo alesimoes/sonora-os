@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <system_error>
 #include <utility>
 
@@ -117,6 +118,29 @@ int open_real_dir(int parent, const char* name, std::string& why) {
     const int fd = ::openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) why = errno == ELOOP || errno == ENOTDIR ? "it is a symlink or not a folder" : std::strerror(errno);
     return fd;
+}
+
+// A file already saved under this name that holds exactly these bytes. Opened
+// O_NONBLOCK without following a link, so a FIFO put there cannot block the
+// save, and only a regular file of the right size is read.
+bool existing_verifies(int dir, const char* name, const std::string& hex, uint64_t size,
+                       const std::function<bool()>& out_of_time, struct stat& st) {
+    const Fd f(::openat(dir, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    if (!f || ::fstat(f.fd, &st) != 0 || !S_ISREG(st.st_mode) || uint64_t(st.st_size) != size) return false;
+    Sha256 hash;
+    std::vector<char> buf(std::size_t(1) << 20);
+    uint64_t total = 0;
+    for (;;) {
+        if (out_of_time()) return false;
+        const ssize_t n = ::read(f.fd, buf.data(), buf.size());
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0) return false;
+        if (n == 0) break;
+        total += uint64_t(n);
+        if (total > size) return false;
+        hash.update(buf.data(), std::size_t(n));
+    }
+    return total == size && hash.hex() == hex;
 }
 
 // ".incoming-<pid>-<n>": the pid, or 0 for any other name.
@@ -467,13 +491,17 @@ bool StatePaths::copy_in(const std::string& given, const std::string& canonical,
     }
     if (ok) {
         const Fd dir(open_real_dir(files.fd, hex.c_str(), why));
-        // Moved over whatever has the name: the same bytes when a state or an
-        // earlier save put them there, and otherwise a file that no longer
-        // matches its hash, which these bytes put right. A link there is
+        // An existing file that verifies stays: renaming over it would give it
+        // a new inode, and every other host's seen_ entry for it goes stale.
+        // Anything else with the name (other bytes, a link, a FIFO) is
         // replaced, not followed.
+        struct stat kept {};
         if (!dir) {
             error = "cannot save plugin files into " + (into / hex).string() + ": " + why;
             ok = false;
+        } else if (existing_verifies(dir.fd, name.c_str(), hex, total, [this] { return out_of_time(); }, kept)) {
+            ::unlinkat(files.fd, tmp.c_str(), 0);
+            written = kept;
         } else if (::renameat(files.fd, tmp.c_str(), dir.fd, name.c_str()) != 0) {
             error = "cannot move a plugin file into " + (into / hex / name).string() + ": " + std::strerror(errno);
             ok = false;

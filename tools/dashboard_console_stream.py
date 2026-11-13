@@ -40,7 +40,7 @@ def frame(view):
 def frames(view_fn, sig_fn, sleep=time.sleep, running=lambda: True,
            clock=time.monotonic, heartbeat_s=HEARTBEAT_S, poll_s=POLL_S):
     """Yields bytes: a console frame at once and after every change of
-    sig_fn(), a comment heartbeat when quiet. Ends when running() is false."""
+    sig_fn(), the same frame again as a heartbeat when quiet. Ends when running() is false."""
     last_sig, last_sent = object(), clock()
     while running():
         sig = sig_fn()
@@ -49,8 +49,10 @@ def frames(view_fn, sig_fn, sleep=time.sleep, running=lambda: True,
             last_sent = clock()
             yield frame(view_fn())
         elif clock() - last_sent >= heartbeat_s:
+            # A full frame, not a comment: it also keeps the ages on screen
+            # ("vivo 44 s", "26 min") moving while nothing else changes.
             last_sent = clock()
-            yield b": ping\n\n"
+            yield frame(view_fn())
         sleep(poll_s)
 
 

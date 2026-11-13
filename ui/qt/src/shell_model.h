@@ -131,6 +131,8 @@ class ShellModel : public QObject {
     // refused, held in the footer until dismissRender() or the next render,
     // not on the status line.
     Q_PROPERTY(bool renderAvailable READ renderAvailable NOTIFY renderChanged)
+    // "track.render.insert": Process Selection through one insert (ADR-0087).
+    Q_PROPERTY(bool renderInsertAvailable READ renderInsertAvailable NOTIFY renderChanged)
     Q_PROPERTY(bool renderRunning READ renderRunning NOTIFY renderChanged)
     Q_PROPERTY(qreal renderProgress READ renderProgress NOTIFY renderChanged)
     Q_PROPERTY(QString renderNotice READ renderNotice NOTIFY renderChanged)
@@ -298,6 +300,7 @@ public:
     Q_INVOKABLE void cancelBounce();
     Q_INVOKABLE void dismissBounce();
     bool renderAvailable() const;
+    bool renderInsertAvailable() const;
     bool renderRunning() const { return render_state_ == 0; }
     qreal renderProgress() const { return render_progress_; }
     QString renderNotice() const { return render_notice_; }

@@ -173,7 +173,7 @@ private:
     double c_[kCells][4];
 };
 
-template <class V>
+template <class V, class Bits>
 struct TapeSolve;  // src/tape_solve.h
 
 // The processor's integrator. The ODE above is equivalent to the
@@ -246,7 +246,8 @@ public:
         sync();
     }
     const JilesAthertonParams& params() const noexcept { return p_; }
-    void reset() noexcept {
+    // The processor's on_reset() calls it on the audio thread.
+    void reset() noexcept SONORA_RT {
         m_ = 0.0;
         h_ = 0.0;
         sync();
@@ -312,10 +313,11 @@ public:
     const LangevinTable& table() const noexcept { return table_; }
 
 private:
-    template <class V>
+    template <class V, class Bits>
     friend struct TapeSolve;
-    // The algebraic form's state from (H, M).
-    void sync() noexcept {
+    // The algebraic form's state from (H, M). Reached from reset() and
+    // tick_with(), both real-time.
+    void sync() noexcept SONORA_RT {
         he_ = h_ + p_.alpha * m_;
         double l, dl;
         table_.eval(he_ * inv_a_, l, dl);

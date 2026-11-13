@@ -509,6 +509,7 @@ What this means for SonoraOS [inferred]:
    upstream cage still misplaces override-redirect windows.
 7. The engine actually recording from the `snd-dummy`/`snd-aloop` ports in
    QEMU, and whether quantum 128 holds there.
+8. The plugin boundary is decided in ADR-0012 and closed by ADR-0147; the bare-metal IPC figures remain open (item 1).
 
 ## Consequences for ADR-0007 (for its owner to apply by a new ADR or an amendment)
 

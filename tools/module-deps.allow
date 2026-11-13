@@ -9,12 +9,15 @@
 # module is tested against the fakes of its neighbours):
 #   engine/core, engine/control, engine/plugin_client -> drivers/fake
 #   engine/core -> common/platform   (test_session_plugins)
+#   engine/core -> contracts/plugin  (test_keyed_chain_runner: a fake host
+#                                     on the shared-memory protocol)
 #   contracts/api -> common/model    (FakeEngine and conformance, not the
 #                                     contract headers)
 common/audiofile -> common/platform
 common/dsp -> common/base
 common/groove -> common/model
 common/model -> common/base
+common/stretch -> common/model
 common/model -> common/json
 common/model -> common/midi
 common/platform -> common/base
@@ -60,12 +63,19 @@ engine/control -> contracts/backend
 engine/control -> contracts/plugin
 engine/control -> drivers/fake
 engine/control -> engine/core
+engine/control -> engine/elastic
 engine/control -> engine/plugin_client
+engine/elastic -> common/audiofile
+engine/elastic -> common/model
+engine/elastic -> common/session_files
+engine/elastic -> common/stretch
+engine/elastic -> contracts/api
 engine/core -> common/audiofile
 engine/core -> common/base
 engine/core -> common/dsp
 engine/core -> common/platform
 engine/core -> contracts/backend
+engine/core -> contracts/plugin
 engine/core -> drivers/fake
 engine/core -> engine/plugin_client
 engine/plugin_client -> common/base
@@ -90,6 +100,8 @@ plugins/native -> contracts/plugin
 ui/client -> common/model
 ui/client -> common/platform
 ui/client -> contracts/api
+ui/elastic -> common/model
+ui/elastic -> contracts/api
 ui/groove -> common/groove
 ui/groove -> common/json
 ui/groove -> common/model
@@ -102,6 +114,7 @@ ui/qt -> common/platform
 ui/qt -> common/session_files
 ui/qt -> contracts/api
 ui/qt -> ui/client
+ui/qt -> ui/elastic
 ui/qt -> ui/groove
 ui/qt -> ui/keymap
 ui/qt -> ui/smart_controls
@@ -109,6 +122,7 @@ ui/smart_controls -> common/json
 ui/tui -> contracts/api
 ui/tui -> ui/client
 ui/tui -> ui/keymap
+interchange -> common/audiofile
 interchange -> common/midi
 interchange -> common/model
 interchange -> common/session_files

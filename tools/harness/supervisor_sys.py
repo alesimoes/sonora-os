@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-from . import launcher, supervisor_dash
+from . import docker_heal, launcher, supervisor_dash
 
 HOST_KIND = "win" if os.name == "nt" else "linux"
 
@@ -143,6 +143,9 @@ class RealSys:
     def dash_start(self, port, repo_root):
         return supervisor_dash.start(repo_root, port)
 
+    def docker_restart(self):
+        return docker_heal.restart_docker_desktop()
+
     def notify(self, title, text):
         try:
             self._notify(title, text)
@@ -170,13 +173,15 @@ def desktop_notify(title, text, timeout=15):
             "CreateToastNotifier('SonoraOS harness').Show("
             "[Windows.UI.Notifications.ToastNotification]::new($x))")
         env = dict(os.environ, SONORA_N_TITLE=title, SONORA_N_TEXT=text)
+        # No console window flashes on the owner's screen for each toast.
+        hidden = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
                             "-Command", ps], env=env, capture_output=True,
-                           timeout=timeout)
+                           timeout=timeout, creationflags=hidden)
         if r.returncode != 0:
             subprocess.run(["msg.exe", "*", "/TIME:30",
                             f"{title}\n{text}"], capture_output=True,
-                           timeout=timeout)
+                           timeout=timeout, creationflags=hidden)
         return
     subprocess.run(["notify-send", "-u", "critical", title, text],
                    capture_output=True, timeout=timeout)

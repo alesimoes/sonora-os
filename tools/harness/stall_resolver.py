@@ -11,12 +11,50 @@ import json
 
 AGENT = "principal-engineer"
 EVENT = "stall_resolver"
+# Owner 2026-11-08/09: unblocking climbs a ladder, sonnet first, and only the
+# product's core climbs past it: opus and fable go where a mistake breaks all
+# of Sonora, the build or the OS (a feature with a high-risk slice). A plugin,
+# a screen or one feature stays on sonnet. Past the ladder the feature is
+# re-planned (architect; fable for the core) and the next stall re-plans again.
+CORE_LADDER = ("sonnet", "opus", "fable")
+PART_LADDER = ("sonnet", "sonnet")
+REPLAN = "replan"
+REPLAN_AGENT = "architect"
+# A stall that comes back after this long starts at the bottom again.
+LADDER_RESET_S = 6 * 3600
 FIXING = ("fixer", "integrator", "principal")
 DONE = ("blocked", "merged", "closed")
 
 
 def _meta_key(fid):
     return f"stall_resolver:{fid}"
+
+
+def is_core(store, fid):
+    """A feature with a high-risk slice (grade "<size>/high", or only a
+    "senior" tier when no grade was given)."""
+    for t in store.feature_tasks(fid):
+        try:
+            d = json.loads(store.get_meta(f"tier:{t['id']}", "{}") or "{}")
+        except ValueError:
+            continue
+        grade = str(d.get("grade") or "")
+        if grade.endswith("/high") or (not grade and d.get("tier") == "senior"):
+            return True
+    return False
+
+
+def _rung(store, fid, now, core):
+    """The model of this try of fid (or REPLAN), and records the try."""
+    key = f"stall_resolver_tries:{fid}"
+    try:
+        d = json.loads(store.get_meta(key, "{}") or "{}")
+    except ValueError:
+        d = {}
+    n = d.get("n", 0) if now - d.get("ts", 0) < LADDER_RESET_S else 0
+    store.set_meta(key, json.dumps({"n": n + 1, "ts": now}))
+    ladder = CORE_LADDER if core else PART_LADDER
+    return ladder[n] if n < len(ladder) else REPLAN
 
 
 def _resolver_wakes(sv):
@@ -43,7 +81,7 @@ def caring(sv, fid):
     w, run = _resolver_for(sv, fid)
     if w is None:
         return ""
-    return f"harness cuidando: {run['name'] if run else AGENT + ' (na fila)'}"
+    return f"harness cuidando: {run['name'] if run else w['agent'] + ' (na fila)'}"
 
 
 def _busy(sv):
@@ -82,7 +120,14 @@ def brief(sv, fid, stalled):
              "code or config in your own fresh worktree from origin/main "
              "(never edit the daemon's checkout, its state.json or "
              ".harness/ci), or say in result.json what the owner must "
-             "decide. Never disable a check to get green.", "",
+             "decide. Never disable a check to get green.",
+             f"If you open a PR for it, start its title with `{fid}: ` and "
+             "put its branch in result.json `branch` (its number in `pr`): "
+             "the daemon ties that PR to the feature and closes the feature "
+             "when it merges. If only the owner can unblock it (a decision "
+             "with no recommended default, or the host), report status "
+             "blocked with `needs_owner` saying what the owner must decide.",
+             "",
              "Stalled tasks:"]
     claims = set()
     for t, age in stalled:
@@ -104,24 +149,72 @@ def brief(sv, fid, stalled):
     return "\n".join(lines)
 
 
+REPLAN_BRIEF = (
+    "Re-plan this feature: the unblock tries did not move it (or it stalled "
+    "again after a re-plan). Read the stall below, then rewrite the plan so "
+    "every slice can finish: split or merge slices, fix files/claims "
+    "overlaps and dependencies, drop what is already on main, grade each "
+    "slice by risk. Write the machine plan to {plan} (schema "
+    "planning/orchestrator/plan.schema.json; the daemon reads this file, "
+    "not the markdown) and keep planning/plans/{fid}.md in step with it. "
+    "When you finish, the daemon applies it: the old unfinished slices "
+    "close, the plan's tasks start (start_from may name an old sub-branch "
+    "to keep its commits) and the lead distributes them. Nothing is left "
+    "to build (already on main): write it with \"tasks\": []. An "
+    "unchanged plan file means you found nothing to change, and the "
+    "feature then waits on the owner." + chr(10) * 2)
+
+
 def _queue(sv, fid, stalled, now):
     store = sv.o.store
+    core = is_core(store, fid)
+    model = _rung(store, fid, now, core)
     n = store.next_counter("wake")
-    wid = f"wake-principal-{EVENT}-{fid}-{n}"
-    store.add_task(wid, None, AGENT, kind="wake", feature_id=fid,
-                   brief=brief(sv, fid, stalled))
-    # Opus first: fable is the last resort (agents-and-models.md), and a
-    # stall is usually a claim, a plan gap or a slow build, not a hard bug.
-    store.set_task(wid, event=EVENT, model_pin="opus")
+    if model == REPLAN:
+        wid = f"wake-{REPLAN_AGENT}-{EVENT}-{fid}-{n}"
+        store.add_task(wid, None, REPLAN_AGENT, kind="wake", feature_id=fid,
+                       brief=REPLAN_BRIEF.format(
+                           fid=fid, plan=sv.o.flow.plan_file(fid))
+                       + brief(sv, fid, stalled))
+        model = "fable" if core else "sonnet"
+    else:
+        wid = f"wake-principal-{EVENT}-{fid}-{n}"
+        store.add_task(wid, None, AGENT, kind="wake", feature_id=fid,
+                       brief=brief(sv, fid, stalled))
+    store.set_task(wid, event=EVENT, model_pin=model)
     store.set_meta(_meta_key(fid), now)
     store.event(wid, "stall_resolver", json.dumps(
         {"feature": fid, "tasks": [t["id"] for t, _ in stalled]}))
+
+
+def _waits_on_moving_dep(t, by_id, running):
+    """True when a dependency of t, direct or through other dependencies,
+    has a live run of any role: t is waiting, not stalled. Why: #448
+    (2026-11-09) was queued for ui.workflow.windows while the contract its
+    tasks waited on sat in QA with a tester running, because only
+    fixer/integrator/principal runs counted as progress."""
+    seen, todo = set(), list(t.get("depends_on") or ())
+    while todo:
+        dep = todo.pop()
+        if dep in seen:
+            continue
+        seen.add(dep)
+        if dep in running:
+            return True
+        d = by_id.get(dep)
+        if d is not None:
+            todo.extend(d.get("depends_on") or ())
+    return False
 
 
 def resolve(sv, now, stalled):
     """stalled: [(task, age)] for every work task past the bound with no
     run. Queues at most one resolver per call, within the cap."""
     cap = int(getattr(sv.o.cfg, "max_stall_resolvers", 1))
+    running = _active_task_ids(sv)
+    by_id = {t["id"]: t for t in sv.o.store.tasks()}
+    stalled = [(t, age) for t, age in stalled
+               if not _waits_on_moving_dep(t, by_id, running)]
     by_feature = {}
     for t, age in stalled:
         by_feature.setdefault(t["feature_id"] or t["id"], []).append((t, age))

@@ -36,6 +36,7 @@
 #include "strip_silence.h"
 #include "time_format.h"
 #include "timeline_document.h"
+#include "track_row_geometry.h"
 
 namespace sonora::ui {
 
@@ -66,6 +67,15 @@ struct ViewState {
     double autolane_height = kAutolaneBaseHeight;
     std::vector<double> tops;
     std::vector<std::uint8_t> open;
+    // Each track's own row, apart from its lanes (ADR-0106): empty while
+    // every row is `track_height`, 0 for a hidden track.
+    std::vector<double> heights;
+    double row_h(int index) const {
+        return index >= 0 && static_cast<std::size_t>(index) < heights.size()
+                   ? heights[static_cast<std::size_t>(index)]
+                   : track_height;
+    }
+    bool row_hidden(int index) const { return row_h(index) <= 0.0; }
     // Take lanes (ADR-0031 §1, ADR-0049): a track's other playlists shown
     // under its row, below its automation lanes, each `comp_lane_height`
     // tall. `lanes[i]` is how many track i shows; empty when none does.
@@ -77,7 +87,7 @@ struct ViewState {
     }
     // The top of take lane `lane` (0 first) under track `index`.
     double y_of_complane(int index, int lane) const {
-        return y_of_track(index) + track_height +
+        return y_of_track(index) + row_h(index) +
                (autolanes_open(index) ? kLaneCount * autolane_height : 0.0) +
                lane * comp_lane_height;
     }
@@ -100,7 +110,7 @@ struct ViewState {
     }
     // The top of automation lane `lane` (0 .. kLaneCount - 1) under track `index`.
     double y_of_autolane(int index, int lane) const {
-        return y_of_track(index) + track_height + lane * autolane_height;
+        return y_of_track(index) + row_h(index) + lane * autolane_height;
     }
     // The automation lane under pixel `y` of track `index`'s block: -1 over
     // the track's own row.
@@ -221,6 +231,8 @@ public:
     }
     void set_viewport(double width, double height);
     void set_track_height(double h);
+    // Per-track heights and hidden rows (ADR-0106); not owned, null for plain rows.
+    void set_row_policy(const RowPolicy* p) { rows_ = p; }
     void zoom_in();
     void zoom_out();
     // `x` is the pixel kept still; the insertion point when it is in view,
@@ -369,6 +381,11 @@ public:
     // Tools leaves them: the paste goes ahead, and `why` then names what was
     // not pasted, for the status line (empty when everything was).
     bool paste(std::string& why);
+    // Where the open session lives, and how a paste brings another session's
+    // audio in (ADR-0142). Unset, a paste of audio from another session is
+    // refused, saying so.
+    void set_session_folder_source(std::function<std::string()> folder);
+    void set_bring_in(BringInFn bring_in);
     // A copy of the selection placed straight after it on the same tracks,
     // which then becomes the selection. The clipboard is left alone.
     bool duplicate(std::string& why);
@@ -814,6 +831,7 @@ private:
 
     TimelineDocument& doc_;
     void refresh_rows() const;
+    const RowPolicy* rows_ = nullptr;
     bool autolane_selected() const { return sel_.autolane >= 0; }
     // Cut, Copy, Paste and Clear on the selected lane's range: that lane on
     // every track the range covers that shows its lanes; the others are
@@ -861,6 +879,11 @@ private:
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
     Clipboard clipboard_;
+    std::function<std::string()> session_folder_;
+    BringInFn bring_in_;
+    void stamp_origin(Clipboard& clip) const;
+    bool bring_clipboard_in(Clipboard& use, std::vector<model::Member>& ops,
+                            std::string& why);
     std::vector<AutomationClip> auto_clips_;
     std::set<model::Id> autolanes_open_;
     std::set<model::Id> comp_lanes_open_;
