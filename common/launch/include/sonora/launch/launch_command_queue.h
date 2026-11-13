@@ -20,12 +20,19 @@
 namespace sonora::launch {
 
 struct Command {
-    enum class Kind : std::uint8_t { AssignClip, SetQuantize, TriggerCell, TriggerScene, StopTrack, StopAll };
+    enum class Kind : std::uint8_t {
+        AssignClip, SetQuantize, TriggerCell, TriggerScene, StopTrack, StopAll, ArmRecord
+    };
     Kind kind = Kind::StopAll;
     Quantize quantize = Quantize::Bar;
     std::uint32_t track = 0;
     std::uint32_t scene = 0;
     ClipId clip = kNoClip;
+    // ArmRecord: capture length in bars; 0 records until the next trigger.
+    std::uint32_t bars = 0;
+    // Launch-clock frame the command arrived at (the end of the last block
+    // the audio thread finished); quantisation counts from here.
+    std::int64_t arrival = 0;
 };
 static_assert(std::is_trivially_copyable<Command>::value, "commands cross threads by copy");
 

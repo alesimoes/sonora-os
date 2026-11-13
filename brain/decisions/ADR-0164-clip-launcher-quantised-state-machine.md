@@ -77,6 +77,65 @@ frame instead of rounding to the block.
   `common/pitch/CMakeLists.txt` while the root file is held; it moves to the
   root when that frees. Its tests carry the `launch` label.
 
+### Amendment 2026-11-13: transport wiring, record-to-cell, bounce
+
+- **Launch clock.** The audio callback drives the launcher through
+  `LaunchClock::process(BlockTransport, frames)` once per block
+  (`launch_clock.h`). The launcher runs on its own frame clock: it advances
+  by every block, rolling or not, and never jumps. The transport only moves
+  the bar grid: while rolling, the anchor is `clock - (position -
+  bar1_position)`, so bar lines are the transport's. **While stopped,
+  `advance` is still called** and the grid keeps its last anchor and
+  free-runs: a launch pressed with the transport stopped lands on a bar a
+  performer can count, and pressing play re-aligns it to the transport.
+- **Grid changes re-snap.** A snapshot whose grid differs from the last
+  (locate, loop wrap, start of rolling, tempo or meter change) moves each
+  quantised pending action to the first boundary of the new grid from the
+  current clock frame. When the grid is unchanged (a loop of whole steps)
+  that is the same frame, so nothing moves. Immediate actions and a
+  fixed-length capture's end keep their frame.
+- **Loop wrap inside a block.** `LaunchClock` splits the block at the wrap
+  frame and advances each segment with its own anchor; transitions are
+  merged with offsets from the block's first frame. The merged list is
+  sized 4 x tracks at construction (two segments); a loop shorter than a
+  block yields more segments and anything past that capacity is counted in
+  `dropped`, never allocated.
+- **Arrival frame.** The producer stamps each command with the launch-clock
+  frame the audio thread last published (an atomic, lock-free, checked by
+  the tests). The command is quantised from that frame, not from the block
+  that drains it: a boundary that passed while the command waited (a late
+  drain, a bounded drain) fires at offset 0 instead of a whole step later.
+  Before the first block, or if a caller's `block_start` goes behind the
+  stamp, the block start is used.
+- **Record-to-cell.** `arm_record(track, scene, clip, bars)`. The caller
+  reserves the region id `clip` beforehand, because the audio thread cannot
+  create one. On the next boundary the column stops whatever it plays and
+  emits `RecordStart` (cell state `Armed`, then `Recording`). With `bars > 0`
+  the capture ends exactly `bars x bar` frames later and the new clip plays:
+  `RecordStop` and `Start` on the same frame. With `bars == 0` it runs until
+  the next command on the column. A trigger of the recording cell (or its
+  scene) ends the capture and plays the clip. A stop ends it silently. A
+  trigger of another cell ends it and starts that cell. The cell takes the
+  clip when the capture ends. A column still yields at most one ending
+  (`Stop`/`RecordStop`) and one beginning (`Start`/`RecordStart`) per block,
+  so the list stays 2 x tracks. The engine captures the track's input
+  between the two offsets and writes the region with that id off the audio
+  thread. It must serve playback of the fresh clip from the capture until
+  the disk side has it.
+- **Bounce.** `LaunchMirror` is the control thread's copy of the grid. It
+  is built from the assignments the control side sends and from the
+  transitions forwarded from the audio thread; `RecordStop` gives it the
+  captured clip. `bounce_scene` and `bounce_cell` (`launch_bounce.h`) turn
+  a scene or a cell into `Placement`s (track, clip, start, length) on the
+  arrangement timeline, skipping empty cells. The arrangement writer applies
+  them as one undo step, looping each clip to fill its length.
+- **Unverified, still open:** the `Session::process()` call site and the
+  ring that forwards transitions to the control thread (engine slice); the
+  tempo map slice under a mid-block tempo change (the snapshot is constant
+  per segment); a fixed capture end that falls in the same block as its
+  start (a block longer than the capture) fires one block late; bounce of a
+  recorded performance (the transition log) rather than a scene.
+
 ## Alternatives rejected
 
 - Launching by mutating the arrangement model live: inserting a region

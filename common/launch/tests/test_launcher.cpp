@@ -164,6 +164,21 @@ int test_immediate() {
     return 0;
 }
 
+// A command is quantised from the frame it arrived at: a bar line that went
+// by while it waited (the drain came late) still lands, at offset 0, rather
+// than a whole bar later.
+int test_quantised_from_arrival() {
+    StateMachineLauncher l = make();
+    fill(l);
+    l.advance(0, 512);
+    CHECK(l.trigger_cell(0, 1));  // arrives at 512: the next bar is kBar
+    const TransitionList list = l.advance(kBar + 10, 512);
+    CHECK(list.count == 1);
+    CHECK(list[0].kind == Transition::Kind::Start && list[0].offset == 0);
+    CHECK(l.clock_is_lock_free());
+    return 0;
+}
+
 int test_queue_overrun_counted() {
     LauncherConfig c;
     c.tracks = 1;
@@ -190,6 +205,7 @@ int main() {
     if (test_scene_and_stop_all()) return 1;
     if (test_stop_track_keeps_clip_identity()) return 1;
     if (test_immediate()) return 1;
+    if (test_quantised_from_arrival()) return 1;
     if (test_queue_overrun_counted()) return 1;
     std::printf("launch_launcher: ok\n");
     return 0;

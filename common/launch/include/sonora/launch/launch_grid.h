@@ -14,7 +14,9 @@ using ClipId = std::uint64_t;
 inline constexpr ClipId kNoClip = 0;
 inline constexpr std::int32_t kNone = -1;
 
-enum class CellState : std::uint8_t { Stopped, Queued, Playing, QueuedStop };
+// Armed: a capture waits for its boundary. Recording: the cell is capturing;
+// it gets its clip when the capture ends.
+enum class CellState : std::uint8_t { Stopped, Queued, Playing, QueuedStop, Armed, Recording };
 
 struct Cell {
     ClipId clip = kNoClip;
