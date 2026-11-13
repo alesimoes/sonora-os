@@ -13,6 +13,7 @@
 #include "send_model.h"
 #include "session_model.h"
 #include "shell_model.h"
+#include "step_sequencer_model.h"
 #include "theme_object.h"
 #include "transport_model.h"
 
@@ -45,6 +46,8 @@ inline void register_types() {
                                                    QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<SendModel>("Sonora", 1, 0, "SendModel",
                                           QStringLiteral("made once, in main()"));
+    qmlRegisterUncreatableType<StepSequencerModel>("Sonora", 1, 0, "StepSequencerModel",
+                                                   QStringLiteral("made by its window's owner"));
     qmlRegisterSingletonType<ThemeObject>("Sonora", 1, 0, "Theme",
                                           [](QQmlEngine*, QJSEngine*) -> QObject* {
                                               return new ThemeObject;

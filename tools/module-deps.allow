@@ -113,6 +113,7 @@ ui/qt -> common/base
 ui/qt -> common/model
 ui/qt -> common/platform
 ui/qt -> common/session_files
+ui/qt -> common/stepseq
 ui/qt -> contracts/api
 ui/qt -> ui/client
 ui/qt -> ui/conductor
