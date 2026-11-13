@@ -35,8 +35,10 @@ offset/limit. Use `tools/progress.sh` (`get ID`, `list --open --track T`).
   `planning/orchestrator/status.json`: `pools["build:<track>"].floor` minus
   its `live`, minus the track's features already `planning` or `queued` in
   `features`. Pick that many features (at least 1, at most 4) for the track
-  from `tools/progress.sh list --open --track T`, skipping MIDI, instruments
-  and video (out of v1), items already done on main, and items whose files
+  from `tools/progress.sh list --open --track T`, skipping MIDI, instruments,
+  video, AAF export and the AAF round trip (out of v1; libaaf only reads),
+  hardware-only runs (parked until the product is complete; the prompt
+  lists them), items already done on main, and items whose files
   overlap an active feature or another feature you pick now (they must be
   able to run in parallel). Send the orchestrator one `plan_request` per
   feature, each with exactly this body:

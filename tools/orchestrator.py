@@ -24,13 +24,13 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, dispatch,  # noqa: E402
-                     docker_guard,
+                     docker_guard, bounce, console_session,
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
 from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
                      prepr, shots, siblings,
-                     leadwake, owner_infer, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
+                     leadwake, owner_infer, owner_route, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
@@ -568,6 +568,7 @@ class Orchestrator:
             # `done` message without result.json: the process is gone or
             # result.json is overdue, so the message is the result.
             data = self._result_from_done(r, done[1])
+        data = data or console_session.clean_exit(r, alive)
         building = scheduler.holds_build_slot(self.root, r["worktree"])
         beat = self.activity.sample(r["id"], r["worktree"],
                                     r["stream_path"], r["last_beat"], now)
@@ -728,11 +729,12 @@ class Orchestrator:
             # the next merge wakes the janitor again.
             triage_sweep.close_wake(self, t, why[:200])
             return
-        owner = data.get("needs_owner") or owner_infer.owner_from(why)
+        owner, hint, why = owner_route.route(
+            data.get("needs_owner") or owner_infer.owner_from(why), why)
         if not owner and triage.handle(self, t, kind, why, data, now):
             return
-        self._block(t, why, owner=owner if owner else None,
-                    cause=None if owner else blockinfo.classify(why))
+        self._block(t, why, owner=owner,
+                    cause=None if owner else hint or blockinfo.classify(why))
 
     # -- results ------------------------------------------------------
     def _on_result(self, r, data, now):
@@ -766,7 +768,7 @@ class Orchestrator:
         if kind == "tester":
             blocking = findings.blocking(data.get("findings"))
             if st == "fail" or blocking:
-                self._bounce(t)
+                bounce.bounce(self, t, data)
             else:
                 self.store.advance(t["id"], "integrating")
                 self._release(t)
@@ -1072,21 +1074,6 @@ class Orchestrator:
                 self.store.advance(x["id"], "blocked", note=why)
                 self.store.set_task(x["id"], cause=cause, owner=owner)
         self.store.set_feature(f["id"], state="blocked")
-
-    def _bounce(self, t):
-        n = t["bounces"] + 1
-        self.store.set_task(t["id"], bounces=n)
-        if n >= 3:
-            self._block(t, "third bounce: owner decision",
-                        owner="third QA bounce, no recommended default")
-            return
-        self.store.advance(t["id"], "bugfix")
-        self._tell("lead", "qa_fail", {"task": t["id"], "bounces": n},
-                   feature=t["feature_id"], task=t["id"])
-        self._lead_event("qa_fail", t)
-        if n == 2:
-            self._ensure_wake("architect", "bug_ruling", t["id"],
-                              feature=t["feature_id"])
 
     def _ensure_wake(self, role, kind, detail, brief=None, feature=None,
                      body=None):

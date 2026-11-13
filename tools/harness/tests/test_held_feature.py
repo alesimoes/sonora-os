@@ -45,7 +45,7 @@ class Routed(ts.Case):
                    feature_id="f", files=["u/**"])
         s.set_task("f.ui", note="Build exceeded 10 min in the build slot "
                    "queue and was killed", cause="code")
-        old = "wake-principal-stall_resolver-f-1"
+        old = "wake-principal-stall_resolver-f-900"
         s.add_task(old, None, SR.AGENT, kind="wake", feature_id="f",
                    state="blocked")
         s.set_task(old, event=SR.EVENT, owner=DOCKER_ASK,
