@@ -472,6 +472,10 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
     elastic_ = std::find(cfg_.capabilities.begin(), cfg_.capabilities.end(),
                          std::string(kCapabilityElastic)) != cfg_.capabilities.end();
     if (elastic_) hello_.implemented_commands.push_back("audio.elastic");
+    if (cfg_.plugin_editors) {
+        hello_.implemented_commands.push_back(kCommandOpenPluginEditor);
+        hello_.implemented_commands.push_back(kCommandClosePluginEditor);
+    }
     folder_ = cfg_.folder;
     folder_untitled_ = cfg_.folder_untitled;
     armed_.assign(cfg_.tracks, false);
@@ -542,6 +546,7 @@ bool FakeEngine::connect(std::string& error) {
     if (!bounce_event_.empty()) queue(outbound_, bounce_event_);
     if (!consolidate_event_.empty()) queue(outbound_, consolidate_event_);
     if (!render_event_.empty()) queue(outbound_, render_event_);
+    announce_editors();
     return true;
 }
 
@@ -711,6 +716,7 @@ bool FakeEngine::load(const std::string& op, std::string& why) {
     }
     // Per-session, as the engine's: the next session opens not ready.
     record_ready_ = false;
+    close_all_editors();
     if (!folder.empty()) {
         folder_ = folder;
         folder_untitled_ = untitled;
@@ -1557,6 +1563,13 @@ void FakeEngine::handle(const std::string& bytes) {
         if (elastic_ && r.command == "audio.elastic") {
             std::string why;
             const bool ok = elastic(r, why);
+            reply(r.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
+            return;
+        }
+        if (cfg_.plugin_editors && (r.command == kCommandOpenPluginEditor ||
+                                    r.command == kCommandClosePluginEditor)) {
+            std::string why;
+            const bool ok = plugin_editor(r, why);
             reply(r.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
             return;
         }

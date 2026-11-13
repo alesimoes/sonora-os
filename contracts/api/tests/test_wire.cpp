@@ -399,6 +399,11 @@ void version_check() {
     CHECK(mentions(p, "refusing to connect"));
     CHECK(mentions(p, ("protocol version " + std::to_string(kProtocolVersion + 1)).c_str()));
     CHECK(mentions(p, ("speaks version " + std::to_string(kProtocolVersion)).c_str()));
+    // A version-69 peer would answer plugin.editor_open NotImplemented and
+    // refuse EventKind::PluginEditor as unknown: it is refused at Hello.
+    const std::string old = wire::version_mismatch(69, kStateLayoutVersion);
+    CHECK(mentions(old, "refusing to connect"));
+    CHECK(mentions(old, "protocol version 69"));
     const std::string l = wire::version_mismatch(kProtocolVersion, kStateLayoutVersion + 7);
     CHECK(mentions(l, "layout version"));
     CHECK(mentions(l, std::to_string(kStateLayoutVersion + 7).c_str()));
@@ -469,7 +474,8 @@ void version_check() {
     // 66: the bundle's 61 to 63 land together on top of 65.
     // 68: Hello::input_count and output_count, SetBusPath (ADR-0060).
     // 69: SetInsertKey, the window insert's key_bus, PluginInfo::key_inputs (ADR-0058).
-    CHECK(kProtocolVersion == 69);
+    // 70: plugin.editor_open, plugin.editor_close, EventKind::PluginEditor (ADR-0088).
+    CHECK(kProtocolVersion == 70);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.

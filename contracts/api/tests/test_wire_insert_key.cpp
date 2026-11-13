@@ -77,7 +77,7 @@ void catalog_carries_key_inputs() {
 }  // namespace
 
 int main() {
-    CHECK(kProtocolVersion == 69);
+    CHECK(kProtocolVersion == 70);
     set_insert_key_crosses();
     catalog_carries_key_inputs();
     if (failures != 0) {

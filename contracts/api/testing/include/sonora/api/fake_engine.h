@@ -65,6 +65,7 @@
 #include "sonora/api/render.h"
 #include "sonora/api/stems.h"
 #include "sonora/api/engine_control.h"
+#include "sonora/api/plugin_editor.h"
 #include "sonora/api/state_block.h"
 #include "sonora/api/state_view.h"
 #include "sonora/api/telemetry_throttle.h"
@@ -117,6 +118,10 @@ public:
         // stretcher (ADR-0136 §3); added, audio.elastic is announced too.
         std::vector<std::string> capabilities = {kCapabilityPlayRange, kCapabilityBounce,
                                                 kCapabilityRender, kCapabilityStems};
+        // plugin.editor_open and plugin.editor_close (ADR-0088, protocol 70)
+        // run and are announced in Hello. Off by default until engine/control
+        // installs them, so engine_commands() still matches it.
+        bool plugin_editors = false;
         // The engine's midi_max_entries (ADR-0015 §5), so a test can make a
         // Load the engine refuses without 2^24 notes.
         uint64_t midi_max_entries = uint64_t{1} << 24;
@@ -248,6 +253,15 @@ public:
     // The state GetState would return for an insert now, as the file it
     // would be written to: FlushPluginState records it with SetInsertState.
     void script_plugin_state(uint64_t insert, const std::string& sha256, uint64_t bytes);
+    // Plug-in editors (ADR-0088), with Config::plugin_editors. The host's
+    // EditorFailed text for an insert's next opens; empty: they open again.
+    void script_editor_failure(uint32_t track, uint32_t slot, std::string reason);
+    // While held, an open stops at Opening until complete_editor_open().
+    void hold_editor_opening(bool hold) { hold_editor_opening_ = hold; }
+    void complete_editor_open(uint32_t track, uint32_t slot);
+    // The track's host stopped or crashed: each of its editors is Closed.
+    void editor_host_stopped(uint32_t track);
+    PluginEditorStatus editor_status(uint32_t track, uint32_t slot) const;
     // The plugin's live value, by insert and key, as a PluginParameterChange
     // or its own editor last set it; NaN when neither has.
     float plugin_value(uint64_t insert, const std::string& key) const;
@@ -320,6 +334,11 @@ private:
     void handle(const std::string& bytes);
     bool command(const CommandRequest& r, std::string& why);
     bool elastic(const CommandRequest& r, std::string& why);
+    bool plugin_editor(const CommandRequest& r, std::string& why);
+    void set_editor(uint32_t track, uint32_t slot, PluginEditorStatus state, std::string reason);
+    void announce_editors();
+    // A session opens: the last one's editors close with it.
+    void close_all_editors();
     void reply(uint64_t seq, DispatchResult result, std::string message);
     void broadcast(const ModelUpdate& u);
     // A model update, a Snapshot as its header, parts and window.
@@ -403,6 +422,9 @@ private:
     std::vector<PlannedCall> planned_log_;
     bool elastic_ = false;
     std::vector<ElasticRequest> elastic_log_;
+    std::map<std::pair<uint32_t, uint32_t>, PluginEditorState> editors_;
+    std::map<std::pair<uint32_t, uint32_t>, std::string> editor_failures_;
+    bool hold_editor_opening_ = false;
     std::vector<float> gain_;
     std::map<model::Id, float> rides_;
     std::vector<bool> muted_;

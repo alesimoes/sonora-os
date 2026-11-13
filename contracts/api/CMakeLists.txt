@@ -3,6 +3,7 @@
 # Depends on common/base only (ADR-0007 §1).
 add_library(sonora_api STATIC
   src/wire.cpp
+  src/plugin_editor_wire.cpp
   src/state_block.cpp
   src/state_view.cpp
 )
@@ -28,6 +29,12 @@ add_test(NAME bounce_wire COMMAND test_bounce_wire)
 add_executable(test_stems_wire tests/test_stems_wire.cpp)
 target_link_libraries(test_stems_wire PRIVATE sonora_api)
 add_test(NAME stems_wire COMMAND test_stems_wire)
+
+# Plug-in editor commands and event (ADR-0088, protocol 70), and the fake's
+# handling of them.
+add_executable(test_plugin_editor_wire tests/test_plugin_editor_wire.cpp)
+target_link_libraries(test_plugin_editor_wire PRIVATE sonora_api sonora_api_fake sonora_model)
+add_test(NAME api_plugin_editor_wire COMMAND test_plugin_editor_wire)
 
 # Render in place's wire argument (ADR-0051, protocol 56).
 add_executable(test_render_wire tests/test_render_wire.cpp)

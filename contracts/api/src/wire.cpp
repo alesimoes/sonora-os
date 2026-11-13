@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "sonora/api/bounce.h"
+#include "sonora/api/plugin_editor.h"
 #include "sonora/api/render.h"
 #include "sonora/api/state_block.h"
 
@@ -168,7 +169,7 @@ constexpr uint32_t kLastDispatchResult = static_cast<uint32_t>(DispatchResult::F
 constexpr uint32_t kLastParam = static_cast<uint32_t>(ParamId::VolumeTrim);
 constexpr uint32_t kLastGesture = static_cast<uint32_t>(Gesture::Release);
 constexpr uint32_t kLastAction = static_cast<uint32_t>(ModelAction::SaveAs);
-constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::Render);
+constexpr uint32_t kLastEvent = static_cast<uint32_t>(EventKind::PluginEditor);
 constexpr uint32_t kEventFlags = kFolderUntitled | kFolderReadOnly;
 constexpr uint32_t kLastUpdate = static_cast<uint32_t>(ModelUpdateKind::SnapshotPart);
 constexpr uint32_t kLastFormat = static_cast<uint32_t>(PluginFormat::Vst3);
@@ -498,6 +499,12 @@ bool decode(std::string_view bytes, EngineEvent& out, std::string& error) {
     } else if (m.kind == EventKind::Render) {
         if (m.flags > static_cast<uint32_t>(RenderState::Cancelled)) {
             error = "a render event in state " + std::to_string(m.flags) +
+                    " this version does not define";
+            return false;
+        }
+    } else if (m.kind == EventKind::PluginEditor) {
+        if (m.flags > kLastPluginEditorStatus) {
+            error = "an editor event in state " + std::to_string(m.flags) +
                     " this version does not define";
             return false;
         }
