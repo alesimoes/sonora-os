@@ -1,0 +1,67 @@
+# libptformat, built from source on top of the engine toolchain, so the .ptx
+# adapter (ADR-0156) can be configured with -DSONORA_WITH_LIBPTFORMAT=ON.
+#
+# Debian has no libptformat package (Ardour vendors its own copy), and the
+# upstream tree ships no library target and no pkg-config file: it builds
+# three command-line tools from one translation unit. So the library is built
+# here as libptformat.so.0 with a ptformat.pc beside it. CMake never fetches
+# it (interchange/ptx/CMakeLists.txt finds it on the system only); the fetch
+# happens once, here, at a pinned commit that is checked after the fetch.
+#
+# Licence: LGPL-2.1-or-later (COPYING.LESSER upstream; licences/libptformat.md).
+# The exact source that was built is kept in the image under
+# /usr/local/src, and the licence text under /usr/local/share/doc, because
+# whoever ships the binary owes its corresponding source.
+#
+# BASE is the engine build image (tools/Dockerfile.build); tools/build-ptformat.sh
+# builds it first so the adapter is compiled with the toolchain CI uses.
+ARG BASE=sonora-build:trixie
+FROM ${BASE}
+
+# Upstream has no release tags past "legacy"; the commit is the pin.
+ARG PTFORMAT_URL=https://github.com/zamaudio/ptformat
+ARG PTFORMAT_COMMIT=af15ee90825f59b84b9977591862cce96bb1d781
+
+RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
+ for d in 0 15 45; do [ "$d" = 0 ] || sleep "$d"; \
+ if apt-get $A update && apt-get $A install -y --no-install-recommends \
+      git \
+    ; then ok=1; break; fi; echo "apt attempt $d failed" >&2; done; \
+    [ -n "$ok" ] || { echo "apt-get update/install failed after 3 attempts (mirror unreachable?)" >&2; exit 1; }; \
+    rm -rf /var/lib/apt/lists/*
+
+# -std=c++98 is the dialect upstream's own Makefile builds with. HAVE_GLIB is
+# left undefined: plain fopen, no glib dependency.
+RUN set -eu; \
+    src=/usr/local/src/libptformat-${PTFORMAT_COMMIT}; \
+    git init -q "$src"; \
+    git -C "$src" fetch -q --depth 1 "${PTFORMAT_URL}" "${PTFORMAT_COMMIT}"; \
+    git -C "$src" checkout -q FETCH_HEAD; \
+    got="$(git -C "$src" rev-parse HEAD)"; \
+    [ "$got" = "${PTFORMAT_COMMIT}" ] || { echo "libptformat: fetched $got, pinned ${PTFORMAT_COMMIT}" >&2; exit 1; }; \
+    rm -rf "$src/.git"; \
+    cd "$src"; \
+    g++ -std=c++98 -O2 -g -fPIC -shared -I. -Wl,-soname,libptformat.so.0 \
+        -o /usr/local/lib/libptformat.so.0 ptformat.cc; \
+    ln -sf libptformat.so.0 /usr/local/lib/libptformat.so; \
+    install -d /usr/local/include/ptformat /usr/local/lib/pkgconfig \
+               /usr/local/share/doc/libptformat; \
+    install -m 0644 ptformat/ptformat.h ptformat/visibility.h /usr/local/include/ptformat/; \
+    install -m 0644 COPYING.LESSER README.md /usr/local/share/doc/libptformat/; \
+    printf '%s\n' \
+      'prefix=/usr/local' \
+      'libdir=${prefix}/lib' \
+      'includedir=${prefix}/include' \
+      '' \
+      'Name: ptformat' \
+      'Description: Pro Tools session reader (LGPL-2.1-or-later)' \
+      "Version: 0.0.0+git${PTFORMAT_COMMIT}" \
+      'Libs: -L${libdir} -lptformat' \
+      'Cflags: -I${includedir}' \
+      > /usr/local/lib/pkgconfig/ptformat.pc; \
+    tar -C /usr/local/src -czf "/usr/local/src/libptformat-${PTFORMAT_COMMIT}.tar.gz" \
+        "libptformat-${PTFORMAT_COMMIT}"; \
+    ldconfig; \
+    pkg-config --modversion ptformat
+
+CMD ["bash"]
