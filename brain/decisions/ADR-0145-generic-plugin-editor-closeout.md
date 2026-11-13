@@ -57,9 +57,11 @@ would make this PR collide with that feature, so it is deferred.
    - At either end of the range the key is a no-op and emits nothing.
 3. The knob's accessibility role is `Slider`. Its accessible value text is the
    current value as shown to the operator.
-4. Lane awareness of plugin knobs is deferred to a follow-up feature. It is
-   scheduled after `ui.mixer.sidechain` merges and does not block this
-   close-out.
+4. Lane awareness of plugin knobs was deferred past `ui.mixer.sidechain`.
+   Follow-up 2 is done (`native.editors.rest.lane`): each panel parameter
+   carries a read-only `automated` flag taken from the track's existing lanes
+   (no engine call, no protocol change); `Knob.laneActive` draws a marker and
+   adds "automated" to the accessible description.
 5. `brain/INDEX.md` is not edited here. It is shared with active features,
    and the coordinator adds this record's line in its chore PR.
 
