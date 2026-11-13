@@ -10,3 +10,11 @@ add_executable(test_ptx_contract tests/test_ptx_contract.cpp)
 target_include_directories(test_ptx_contract PRIVATE tests)
 target_link_libraries(test_ptx_contract PRIVATE sonora_ptx)
 add_test(NAME interchange_ptx_contract COMMAND test_ptx_contract)
+
+add_library(sonora_ptx_map STATIC src/ptx_map.cpp)
+target_include_directories(sonora_ptx_map PUBLIC src)
+target_link_libraries(sonora_ptx_map PUBLIC sonora_ptx)
+
+add_executable(test_ptx_map tests/test_ptx_map.cpp)
+target_link_libraries(test_ptx_map PRIVATE sonora_ptx_map)
+add_test(NAME interchange_ptx_map COMMAND test_ptx_map)
