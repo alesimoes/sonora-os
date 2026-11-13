@@ -8,7 +8,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 
-from harness import shell
+from harness import shell, siblings
 
 try:
     import tomllib
@@ -193,9 +193,7 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             working_eng[tr] = working_eng.get(tr, 0) + 1
 
     work = [t for t in tasks if t["kind"] == "work"]
-    by_feature = {}
-    for t in work:
-        by_feature.setdefault(t["feature_id"] or t["id"], []).append(t)
+    by_feature = siblings.by_feature(work)
     # One PR per feature, however many tasks it has.
     open_prs = len({t["feature_id"] or t["id"] for t in work
                     if t["state"] in ("pr_open", "ci_fix")})
@@ -220,17 +218,17 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
         return t["id"] not in running and t["not_before"] <= now
 
     cands = []  # (class, task priority, created, task, kind)
-    eligible_by_track = {}
+    eligible_by_track, held_by_track = {}, {}
     for t in tasks:
         kind = "planner" if t["kind"] == "wake" and t["state"] == "queued" \
             else KIND_OF_STATE.get(t["state"]) if t["kind"] == "work" else None
         if kind in ("engineer", "fixer", "integrator") and t["kind"] == "work"                 and t.get("escalated") and t["state"] != "queued":
             kind = "principal"
         if kind == "engineer" and t["not_before"] >= HOLD:
-            # Waits for another feature: not launchable, but not a gap that
-            # should wake the lead either.
-            eligible_by_track[t["track"]] = \
-                eligible_by_track.get(t["track"], 0) + 1
+            # Waits for another feature to merge: no engineer can start it,
+            # so it must not pass for eligible work and silence the lead
+            # (2026-11-13: one held task kept the DAW track at 0 of 8).
+            held_by_track[t["track"]] = held_by_track.get(t["track"], 0) + 1
             continue
         if kind is None or not ready(t):
             continue
@@ -394,12 +392,20 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
         elif seats <= 0:
             out.gaps[track] = "cap"
         elif eligible_by_track.get(track, 0) == 0:
-            out.gaps[track] = "no eligible task"
+            # leadwake.allowed bounds these wakes (cooldown, busy features).
+            out.gaps[track] = idle_reason(held_by_track.get(track, 0))
             out.wakes.append(("lead", "pool_under_floor", track))
         else:
             out.gaps[track] = "files claimed or dependencies pending"
     out.seats_free = seats
     return out
+
+
+def idle_reason(held):
+    """The gap of a track with nothing an engineer can start."""
+    if not held:
+        return "no eligible task"
+    return f"no eligible task ({held} held: waits on another feature)"
 
 
 def ready_feature_ids(tasks):
