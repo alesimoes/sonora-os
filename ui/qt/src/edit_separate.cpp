@@ -164,26 +164,24 @@ bool EditController::trim_start_to_insertion(std::string& why) {
     if (refuse_several("Trimming to the insertion point", why)) return false;
     int index = -1;
     const Region* r = target_region(index);
-    if (refuse_in_mode("Trimming", why)) return false;
     TrimRegion op;
     if (r == nullptr || !resolve_trim(snapshot(), r->id, Edge::Start, sel_.insertion, op)) {
         why = "the insertion point is not inside a region on the selected track";
         return false;
     }
-    return submit(op, why);
+    return submit_trim(op, why);
 }
 
 bool EditController::trim_end_to_insertion(std::string& why) {
     if (refuse_several("Trimming to the insertion point", why)) return false;
     int index = -1;
     const Region* r = target_region(index);
-    if (refuse_in_mode("Trimming", why)) return false;
     TrimRegion op;
     if (r == nullptr || !resolve_trim(snapshot(), r->id, Edge::End, sel_.insertion, op)) {
         why = "the insertion point is not inside a region on the selected track";
         return false;
     }
-    return submit(op, why);
+    return submit_trim(op, why);
 }
 
 bool EditController::clear(std::string& why) {
@@ -317,10 +315,6 @@ bool EditController::shift_time(bool insert, std::string& why) {
 }
 
 bool EditController::spot_region(Frames to, std::string& why) {
-    if (mode_ == EditMode::Shuffle) {
-        why = "Spotting a region in Shuffle mode is not built yet; use Slip, Spot or Grid";
-        return false;
-    }
     const Region* r = sel_.region != kNoId ? find_region(snapshot(), sel_.region) : nullptr;
     if (r == nullptr) {
         why = "select a region to spot";
@@ -337,7 +331,7 @@ bool EditController::spot_region(Frames to, std::string& why) {
         why = "the region cannot be placed there";
         return false;
     }
-    if (!submit_move(op, why)) return false;
+    if (!submit_place(op, why)) return false;
     if (const Region* moved = find_region(snapshot(), id)) {
         sel_.start = moved->position;
         sel_.end = moved->end();
@@ -347,7 +341,6 @@ bool EditController::spot_region(Frames to, std::string& why) {
 }
 
 bool EditController::nudge(int direction, std::string& why) {
-    if (refuse_in_mode("Nudging", why)) return false;
     const Region* r = sel_.region != kNoId ? find_region(snapshot(), sel_.region) : nullptr;
     if (r == nullptr) {
         why = "select a region to nudge";
@@ -360,7 +353,7 @@ bool EditController::nudge(int direction, std::string& why) {
         why = "the region is already at the session start";
         return false;
     }
-    if (!submit_move(op, why)) return false;
+    if (!submit_place(op, why)) return false;
     if (const Region* moved = find_region(snapshot(), id)) {
         sel_.start = moved->position;
         sel_.end = moved->end();

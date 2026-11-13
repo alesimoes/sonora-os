@@ -100,6 +100,7 @@ plugins/native -> contracts/plugin
 ui/client -> common/model
 ui/client -> common/platform
 ui/client -> contracts/api
+ui/conductor -> common/model
 ui/elastic -> common/model
 ui/elastic -> contracts/api
 ui/groove -> common/groove
@@ -115,6 +116,7 @@ ui/qt -> common/session_files
 ui/qt -> common/stepseq
 ui/qt -> contracts/api
 ui/qt -> ui/client
+ui/qt -> ui/conductor
 ui/qt -> ui/elastic
 ui/qt -> ui/groove
 ui/qt -> ui/keymap

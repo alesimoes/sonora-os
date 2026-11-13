@@ -768,7 +768,6 @@ private:
     bool submit(const model::Operation& op, std::string& why);
     // The ids of `count` tracks from `first` down.
     bool selected_ids(int first, int count, std::vector<model::Id>& out, std::string& why) const;
-    bool refuse_in_mode(const char* what, std::string& why) const;
     model::Frames snapped(model::Frames f) const;
     void clamp_scroll();
     // Pages the view so `frame` is a tenth in from the left edge, when it
@@ -806,10 +805,14 @@ private:
                     std::string& why) const;
     // `span` becomes the selection: a range on its tracks, no region.
     void select_span(int first, int count, model::Frames a, model::Frames b);
-    // Refuses, by name, a gesture whose Shuffle form is not built (Strip
-    // Silence); the ones that are build their ripple (shuffle_shift).
     bool shift_time(bool insert, std::string& why);
-    bool refuse_shuffle(const char* gesture, const char* nothing_was, std::string& why) const;
+    // Shuffle's trim, move and spot: one compound with the ripple
+    // (edit_shuffle_ops.h). A grouped clip is refused: its group would not ripple.
+    bool submit_shuffle_trim(const model::TrimRegion& op, std::string& why);
+    bool submit_shuffle_move(const model::MoveRegion& op, std::string& why);
+    // Trim / move through the mode: Shuffle ripples, the others send the one op.
+    bool submit_trim(const model::TrimRegion& op, std::string& why);
+    bool submit_place(const model::MoveRegion& op, std::string& why);
     // Shuffle moves regions, not the automation under them: names the tracks
     // whose lanes now sit out of step, as a held notice.
     void note_shuffle_automation(const char* gesture, int first, int count);

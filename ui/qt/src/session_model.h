@@ -531,6 +531,14 @@ public:
     // scrolls time, Ctrl zooms about the pointer.
     Q_INVOKABLE void wheel(qreal x, qreal dx, qreal dy, bool shift, bool ctrl);
     Q_INVOKABLE void rulerClick(qreal x);
+    // Editing on the Tempo and Meter rulers (ADR-0140; ConductorRulerEdit.qml,
+    // ui/conductor/qt). Each returns "" or the refusal, which the ruler shows
+    // beside itself; each edit is one Undo Tempo step, refused during a take.
+    // `mark` is a tempo-map index (-1: a new change at the insertion point).
+    Q_INVOKABLE QString conductorDragEnd(int mark, qreal dy, bool wholeBpm);
+    Q_INVOKABLE QString conductorTypeTempo(int mark, const QString& text);
+    Q_INVOKABLE QString conductorRemove(int mark);
+    Q_INVOKABLE QString conductorSetMeter(qreal x, int beats, int note);
     Q_INVOKABLE void selectTrack(int index);
     // The tracks a Shift-click on a track's R or I button acts on (Pro
     // Tools' "apply to the selected tracks"): the selection's tracks when it
