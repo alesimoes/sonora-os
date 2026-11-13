@@ -1724,10 +1724,52 @@ int test_paste_across_sessions_shuffle() {
     return 0;
 }
 
+// ADR-0098 follow-up (c): a group move carries each member's lane points.
+// A [1,3) and B [4,5) bars grouped; Volume points sit inside A, inside B and
+// after both (the last belongs to neither and stays).
+int test_group_move_automation_follows() {
+    const std::vector<AutomationPoint> before{
+        {kBar + kBar / 2, -1.0f}, {4 * kBar + kBar / 2, -2.0f}, {7 * kBar, -3.0f}};
+    for (const bool follows : {true, false}) {
+        Snapshot s = with_markers_and_lane();
+        auto edit = std::make_shared<EditState>(*s.edit);
+        auto t = std::make_shared<TrackEdit>(*edit->tracks[0]);
+        auto lane_copy = std::make_shared<AutomationLane>(*t->automation[0]);
+        lane_copy->points = before;
+        t->automation = {lane_copy};
+        auto p = std::make_shared<Playlist>(*t->playlists[0]);
+        for (Region& r : p->regions) r.clip_group = 10;
+        t->playlists[0] = p;
+        edit->tracks[0] = t;
+        s.edit = edit;
+        ModelDocument doc(std::move(s));
+        EditController c(doc);
+        c.set_automation_follows_edit(follows);
+        std::string why;
+        CHECK(c.select_region(10));
+        const Frames a0 = start_of(doc.snapshot(), 10), b0 = start_of(doc.snapshot(), 11);
+        CHECK(c.nudge(1, why));
+        const Frames delta = start_of(doc.snapshot(), 10) - a0;
+        CHECK(delta != 0 && start_of(doc.snapshot(), 11) - b0 == delta);
+        CHECK(doc.undo_label() == "Move Group");
+        const auto& pts = doc.snapshot().edit->tracks[0]->automation[0]->points;
+        CHECK(pts.size() == 3);
+        CHECK(pts[0].at == before[0].at + (follows ? delta : 0));
+        CHECK(pts[1].at == before[1].at + (follows ? delta : 0));
+        CHECK(pts[2].at == before[2].at);
+        CHECK(doc.history().undo_depth() == 1);
+        CHECK(c.undo(why));
+        const auto& back = doc.snapshot().edit->tracks[0]->automation[0]->points;
+        CHECK(start_of(doc.snapshot(), 10) == a0 && start_of(doc.snapshot(), 11) == b0);
+        CHECK(back.size() == 3 && back[0].at == before[0].at && back[1].at == before[1].at);
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
-    if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() || test_shuffle() || test_shuffle_trim_and_spot() ||
+    if (test_group_move_automation_follows() ||test_copy_paste() || test_cut_clear_duplicate() || test_repeat() || test_shuffle() || test_shuffle_trim_and_spot() ||
         test_shuffle_nudge_and_drag() || test_shuffle_loop_ripples() ||
         test_shuffle_automation_notice() || test_insert_delete_time() ||
         test_repeat_count_text() || test_clip_loop_command() || test_fades_and_crossfades() ||
