@@ -1462,6 +1462,40 @@ int test_clip_loop_command() {
     return 0;
 }
 
+// The loop handle (ADR-0098 4a): dragging a selected clip's bottom-right corner
+// 2.4 lengths past its end lays two repeats as one undo step; Esc leaves the
+// session untouched.
+int test_loop_handle_drag() {
+    ModelDocument doc(two_regions());
+    EditController c(doc);
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    std::string why;
+    const std::size_t before = lane(doc.snapshot(), 0).regions.size();
+    const double low = c.view().track_height * 0.9;
+    const double edge = c.view().x_of(5 * kBar) - 2;
+    CHECK(c.select_region(11));
+    CHECK(c.hit(edge, low).zone == HitZone::LoopHandle);
+    const double to = c.view().x_of(5 * kBar + kBar * 12 / 5);
+
+    CHECK(c.press(edge, low, why));
+    c.move(to, low);
+    CHECK(c.drag().kind == Drag::Kind::Loop && c.drag().loops == 2);
+    c.cancel_drag();
+    CHECK(c.release(to, low, why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == before && !doc.can_undo());
+
+    CHECK(c.select_region(11));
+    CHECK(c.press(edge, low, why));
+    c.move(to, low);
+    CHECK(c.release(to, low, why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == before + 2);
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Loop Clip");
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why) && !doc.can_undo());
+    return 0;
+}
+
 // Paste across sessions (ADR-0142): the clipboard keeps its origin through a
 // session open; the audio is brought in first, as AddSource members ahead of
 // the paste in the same Compound; refusals send nothing.
@@ -1730,7 +1764,7 @@ int main(int argc, char** argv) {
     if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() || test_shuffle() || test_shuffle_trim_and_spot() ||
         test_shuffle_nudge_and_drag() || test_shuffle_loop_ripples() ||
         test_shuffle_automation_notice() || test_insert_delete_time() ||
-        test_repeat_count_text() || test_clip_loop_command() || test_fades_and_crossfades() ||
+        test_repeat_count_text() || test_clip_loop_command() || test_loop_handle_drag() || test_fades_and_crossfades() ||
         test_cut_edges_lose_fades() || test_paste_across_sessions() ||
         test_paste_across_sessions_arrive() || test_paste_across_sessions_reuse_and_rename() ||
         test_paste_across_sessions_refusals() || test_paste_across_sessions_limit() ||
