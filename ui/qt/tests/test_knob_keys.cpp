@@ -25,10 +25,23 @@ using namespace sonora::ui;
 
 namespace {
 
-struct Log {
+class Log : public QObject {
+    Q_OBJECT
+public:
     int begins = 0, ends = 0, resets = 0;
     double last = -1;
     int moves = 0;
+    QObject* knob = nullptr;
+public slots:
+    void onBegin() { ++begins; }
+    void onEnd() { ++ends; }
+    void onReset() { ++resets; }
+    // The model accepts what it is told, as the panel does.
+    void onMoved(qreal p) {
+        last = p;
+        ++moves;
+        knob->setProperty("position", p);
+    }
 };
 
 int knob_keys() {
@@ -44,15 +57,11 @@ int knob_keys() {
     CHECK(knob != nullptr && knob->activeFocusOnTab());
 
     Log log;
-    QObject::connect(knob, SIGNAL(begin()), qApp, [&] { ++log.begins; });
-    QObject::connect(knob, SIGNAL(end()), qApp, [&] { ++log.ends; });
-    QObject::connect(knob, SIGNAL(reset()), qApp, [&] { ++log.resets; });
-    // The model accepts what it is told, as the panel does.
-    QObject::connect(knob, SIGNAL(moved(qreal)), qApp, [&](qreal p) {
-        log.last = p;
-        ++log.moves;
-        knob->setProperty("position", p);
-    });
+    log.knob = knob;
+    QObject::connect(knob, SIGNAL(begin()), &log, SLOT(onBegin()));
+    QObject::connect(knob, SIGNAL(end()), &log, SLOT(onEnd()));
+    QObject::connect(knob, SIGNAL(reset()), &log, SLOT(onReset()));
+    QObject::connect(knob, SIGNAL(moved(qreal)), &log, SLOT(onMoved(qreal)));
 
     knob->forceActiveFocus();
     CHECK(knob->hasActiveFocus());
@@ -98,3 +107,5 @@ int main(int argc, char** argv) {
     std::printf("ui knob keys: ok\n");
     return 0;
 }
+
+#include "test_knob_keys.moc"

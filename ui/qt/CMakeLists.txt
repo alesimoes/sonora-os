@@ -614,5 +614,6 @@ set_tests_properties(ui_import PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen
 # press, step sizes, Home resets, Slider role and value text.
 add_executable(test_ui_knob_keys tests/test_knob_keys.cpp)
 target_link_libraries(test_ui_knob_keys PRIVATE sonora_ui_qt Qt6::Test)
+set_target_properties(test_ui_knob_keys PROPERTIES AUTOMOC ON)
 add_test(NAME ui_knob_keys COMMAND test_ui_knob_keys)
 set_tests_properties(ui_knob_keys PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
