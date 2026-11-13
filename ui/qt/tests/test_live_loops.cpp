@@ -40,6 +40,7 @@ struct Rig {
         launcher.set_transport(launch::TransportSnapshot{});
         for (std::uint32_t t = 0; t < 3; ++t) launcher.assign_clip(t, 0, 10 + t);
         launcher.assign_clip(0, 1, 20);  // (1, 1) and (2, 1) stay empty
+        (void)launcher.advance(0, 1);  // assignments are queued; the audio-thread advance applies them
     }
     QString state(int track, int scene) const {
         return model.scenes().at(scene).toMap().value("cells").toList().at(track).toMap()
