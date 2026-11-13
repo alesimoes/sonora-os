@@ -11,8 +11,8 @@ import json
 import os
 import re
 
-from . import (dispatch, plan_numbers, plangate, plans, proposal,
-               queueimport, replan, routing)
+from . import (dispatch, plan_numbers, plangate, plans, pool_prompt,
+               proposal, queueimport, remainder, replan, routing)
 from .forge import ForgeError
 from .scheduler import HOLD
 from .status import write_atomic
@@ -100,20 +100,6 @@ class Flow:
                 made.append(row["id"])
         return made
 
-    def known_features(self):
-        """The lead's pool_under_floor prompt: every feature id the daemon
-        already has. 2026-11-09: progress.sh still listed merged items as
-        open, every proposal of a wake was a feature already on main
-        (time.tempo_edit, time.groove, rf64...), each was rejected, and the
-        DAW floor of 8 sat at 0 for hours."""
-        by = {}
-        for f in self.store.features():
-            by.setdefault(f["state"], []).append(f["id"])
-        rows = [f"{st}: {', '.join(sorted(ids))}" for st, ids in sorted(by.items())]
-        return ("Features the daemon already has; proposing one of these is "
-                "rejected, so pick others (a merged one is done even if "
-                "progress.sh still lists it open):\n" + "\n".join(rows))
-
     def on_proposal(self, body, sender):
         """The lead's pool_under_floor answer: a `plan_request` message to
         the daemon naming the next feature for a track."""
@@ -130,6 +116,11 @@ class Flow:
         if queueimport.out_of_scope(" ".join([fid, *map(str, ids)])):
             self.store.event(None, "proposal_rejected", f"{fid}: out of v1")
             return False
+        rest, why = remainder.target(self.store, fid)
+        if rest or why:
+            if why:
+                self.store.event(None, "proposal_rejected", f"{fid}: {why}")
+            return bool(rest) and remainder.open_rest(self, rest, sender)
         try:
             made = self.open_feature(fid, track, [str(i) for i in ids],
                                      brief=str(body.get("brief") or ""),
@@ -228,7 +219,7 @@ class Flow:
             return ""   # its brief (harness/stall_resolver.py) is all it needs
         lines = [f"event: {ev} feature={fid or '-'}"]
         if ev == "pool_under_floor":
-            lines.append(self.known_features())
+            lines.append(pool_prompt.text(self.store, t.get("id")))
         if not fid:
             return "\n".join(lines)
         f = self.store.get_feature(fid) or {}
@@ -255,6 +246,7 @@ class Flow:
                          "and its one PR, never one PR per item; say in "
                          "the plan which open items you grouped and why. "
                          + self.gate_hint(fid))
+            lines += remainder.plan_lines(self, fid)
         elif ev == "plan_ready":
             lines.append(f"Read the plan at {self.plan_file(fid)}; write the "
                          f"table to {self.assign_file(fid)}. Sub-branch of "
@@ -446,6 +438,7 @@ class Flow:
         self.promote_queued(now)
         self._release_holds()
         self.sync_states()
+        remainder.settle(self.store)
 
     def _release_holds(self):
         for f in self.store.features():
