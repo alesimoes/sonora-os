@@ -119,6 +119,7 @@ ui/smart_controls -> common/json
 ui/tui -> contracts/api
 ui/tui -> ui/client
 ui/tui -> ui/keymap
+interchange -> common/audiofile
 interchange -> common/midi
 interchange -> common/model
 interchange -> common/session_files

@@ -19,4 +19,8 @@ private:
     AafReader* reader_;
 };
 
+// A reader over libaaf, or nullptr when built without SONORA_WITH_LIBAAF.
+// The caller owns it.
+AafReader* make_libaaf_reader();
+
 }  // namespace sonora::interchange
