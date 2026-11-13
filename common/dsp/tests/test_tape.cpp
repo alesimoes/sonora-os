@@ -75,7 +75,7 @@ int test_langevin_table() {
 // The integrator's own e^-tau (tape_solve.h) against std::exp on the range
 // it is called with.
 int test_exp_neg() {
-    using S = TapeSolve<tape_detail::V1>;
+    using S = TapeSolve<tape_detail::V1, tape_detail::V1Bits>;
     double worst = 0.0;
     for (int i = 0; i <= 400000; ++i) {
         const double tau = tape_detail::kTauMax * i / 400000.0;
@@ -310,8 +310,13 @@ int test_reversibility_limit() {
     for (int i = 0; i <= 100; ++i) t.tick(-40.0 * i / 100.0);
     for (int i = 100; i >= 0; --i) t.tick(-40.0 * i / 100.0);
     const double from_below = t.magnetisation();
-    std::printf("c = 1 (clamped to %.17g): remanence %.3g Ms\n", t.params().c, 0.5 * (from_above - from_below));
-    CHECK_LE(std::fabs(from_above - from_below), 2e-3, "c = 1 is all but anhysteretic");
+    const double remanence = 0.5 * (from_above - from_below);
+    std::printf("c = 1 (clamped to %.17g): remanence %.3g Ms\n", t.params().c, remanence);
+    // Held near the measured 1.5e-4 Ms: under 5e-4 (the loop has all but
+    // closed; the bar was 1e-3 before #261's review), and still above 5e-5,
+    // positive (a loop, not the anhysteretic curve the clamp keeps it from).
+    CHECK_LE(std::fabs(remanence), 5e-4, "c = 1 is all but anhysteretic");
+    CHECK(remanence > 5e-5);
     return 0;
 }
 

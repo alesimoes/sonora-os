@@ -42,6 +42,28 @@ def host_ok(header, hostname=None, env=None):
     return host.startswith(me + ".") and host.endswith(".ts.net")
 
 
+class Server(ThreadingHTTPServer):
+    """The phone opens the page through `tailscale serve`, which fetches the
+    six scripts, the stylesheet and the stream at once. socketserver's accept
+    queue is 5: the rest were refused, tailscale answered 502, and the page
+    came up without its chat (2026-11-09: 19 of 64 parallel requests refused
+    on 127.0.0.1). Threads die with the process, so a stuck stream never
+    keeps the server alive."""
+    request_queue_size = 128
+    daemon_threads = True
+    # One dashboard per port. HTTPServer sets SO_REUSEADDR, which on Windows
+    # lets a second process bind the same port: every agent session's start
+    # hook found a slow page, started another, and ten copies shared :8765
+    # answering at random (2026-11-09, "o computador está em loop"). With an
+    # exclusive bind the second start fails and exits.
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         route = self.path.split("?", 1)[0]
@@ -107,7 +129,7 @@ def main():
     threading.Thread(target=refresh_loop, daemon=True).start()
     if os.environ.get("SONORA_DASH_NO_SELFUPDATE") != "1":
         dashboard_selfupdate.start()
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    srv = Server(("127.0.0.1", args.port), Handler)
     print("http://127.0.0.1:%d/" % args.port, flush=True)
     srv.serve_forever()
 

@@ -16,6 +16,9 @@ except ImportError:  # Python < 3.11
     tomllib = None
 
 HARD_CAP = 20
+# In paused.json: no new features (no pool_under_floor lead wakes); the
+# features already started go on to their PRs.
+NEW_WORK = "new"
 HOLD = 1e18   # not_before of a task held back until another feature merges
 # Priority classes, lowest number first: fix > tester > integrator > engineer
 # (below its track floor) > lead/architect > burst engineer.
@@ -160,10 +163,14 @@ class Plan:
 
 
 def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
-         paused=(), hour_budget=None, planner_budget=None):
+         paused=(), hour_budget=None, planner_budget=None, docker_held=()):
     """tasks: store task dicts. runs: active runs as dicts with keys task_id,
-    role (kind), working (bool), building (bool), name."""
+    role (kind), working (bool), building (bool), name. paused: the owner's
+    paused.json; docker_held: pools held while Docker is down (launch-wise a
+    pause, but the gap names Docker, not the owner)."""
     out = Plan()
+    docker_held = frozenset(docker_held)
+    paused = frozenset(paused) | docker_held
     live = len(runs)
     seats = max(cfg.cap - live, 0)
     out.seats_free = seats
@@ -193,8 +200,9 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
                     if t["state"] in ("pr_open", "ci_fix")})
     ready_features = ready_feature_ids(tasks)
     ready_unpr = len(ready_features)
-    claims = [t["files"] for t in tasks if t["state"] in CLAIMING_STATES
-              and t["kind"] == "work" and t["files"]]
+    claims = [(t["id"], t["files"]) for t in tasks
+              if t["state"] in CLAIMING_STATES and t["kind"] == "work"
+              and t["files"]]
 
     block = None
     if stop:
@@ -239,8 +247,10 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             if not store_deps_ok(t, by_id):
                 continue
             mine = t["files"]
+            built_on = finished_deps(t, by_id)
             if t["state"] == "queued" and mine and any(
-                    files_overlap(mine, c) for c in claims):
+                    files_overlap(mine, c) for tid, c in claims
+                    if tid not in built_on):
                 continue
             eligible_by_track[t["track"]] = \
                 eligible_by_track.get(t["track"], 0) + 1
@@ -366,8 +376,14 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             continue
         if block:
             out.gaps[track] = block
+        elif track in docker_held or "build" in docker_held:
+            out.gaps[track] = "docker down"
         elif track in paused or "build" in paused:
             out.gaps[track] = "paused"
+        elif NEW_WORK in paused:
+            # Owner 2026-11-09 (weekly tokens): finish what started, plan
+            # nothing new; the lead is not woken to fill the floor.
+            out.gaps[track] = "new work paused"
         elif "work" in out.holds:
             out.gaps[track] = out.holds["work"]
         elif open_prs >= cfg.max_open_prs:
@@ -398,6 +414,23 @@ def store_deps_ok(t, by_id):
                                            "ci_fix", "merged"):
             return False
     return True
+
+
+def finished_deps(t, by_id):
+    """Ids of the tasks t depends on, directly or through other
+    dependencies, that are integrating. Such a slice is finished and its
+    engineer gone; it keeps its claim until the integrator runs, and the
+    integrator waits for every sibling, t included. t is built on that
+    slice's branch, so its claim must not refuse t: ui.mixer.sidechain.ui
+    held the one file of ui-tests and neither could move (2026-11-12)."""
+    seen, todo = set(), list(t.get("depends_on") or ())
+    while todo:
+        dep = todo.pop()
+        if dep in seen or dep not in by_id:
+            continue
+        seen.add(dep)
+        todo.extend(by_id[dep].get("depends_on") or ())
+    return {d for d in seen if by_id[d]["state"] == "integrating"}
 
 
 def holds_build_slot(root, worktree):

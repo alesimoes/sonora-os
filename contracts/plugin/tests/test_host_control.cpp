@@ -132,7 +132,7 @@ void every_message_round_trips() {
           lb.instances[1].id == kVstId && lb.flags == kLoadReactivate && lb.key_channels == 1);
     CHECK(lb.session_dir == load.session_dir && lb.instances[0].scratch_dir == load.instances[0].scratch_dir &&
           lb.instances[1].scratch_dir.empty());
-    round_trip(GetState{7, 2}, "GetState");
+    round_trip(GetState{7, 2, "", 0}, "GetState");
     const GetState gs = round_trip(GetState{7, 2, "/home/op/Sessions/Take Five", kGetStateNoCopy}, "GetState save_dir");
     CHECK(gs.save_dir == "/home/op/Sessions/Take Five" && gs.flags == kGetStateNoCopy);
     const DescribeValue dv = round_trip(DescribeValue{1, 2, 3, -6.5f}, "DescribeValue");
@@ -174,8 +174,8 @@ void every_message_round_trips() {
     }
 
     round_trip(Refused{Refusal::ParamMismatch, 1, "has 3 parameters; the engine expects 4"}, "Refused");
-    round_trip(State{3, 0, StateStatus::Ok, "blob", ""}, "State");
-    round_trip(State{3, 0, StateStatus::Failed, "", "getState returned kResultFalse"}, "State failed");
+    round_trip(State{3, 0, StateStatus::Ok, "blob", "", {}}, "State");
+    round_trip(State{3, 0, StateStatus::Failed, "", "getState returned kResultFalse", {}}, "State failed");
     const std::string sha(64, 'a'), sha2(64, '0');
     State files{3, 0, StateStatus::Ok, "blob", "", {}};
     files.files.push_back({plugin_file_path(sha, "kick.wav"), sha, 48000});
@@ -231,7 +231,7 @@ void untrusted_fields_are_refused() {
     refuse(Fault{FaultKind::EventsDropped, 0, 3, ""}, "an EventsDropped fault naming a plugin");
     refuse(Fault{FaultKind::EventsDropped, -1, 0, ""}, "an EventsDropped fault counting nothing");
     refuse(Fault{static_cast<FaultKind>(5), 0, 1, ""}, "an unknown fault kind");
-    refuse(State{0, 0, StateStatus::Empty, "bytes", ""}, "state bytes with status Empty");
+    refuse(State{0, 0, StateStatus::Empty, "bytes", "", {}}, "state bytes with status Empty");
     // Plugin files and folders (wire 4).
     refuse(Fault{FaultKind::Plugin, -1, 2, ""}, "a counted Plugin fault naming no plugin");
     {
@@ -357,7 +357,7 @@ void untrusted_fields_are_refused() {
     {
         // A state length just under the cap in a message that holds 3 bytes.
         std::string forged;
-        encode(State{1, 0, StateStatus::Ok, "abc", ""}, forged);
+        encode(State{1, 0, StateStatus::Ok, "abc", "", {}}, forged);
         const uint32_t n = uint32_t(kMaxStateBytes);
         std::memcpy(&forged[10], &n, 4);
         State x;
@@ -385,7 +385,7 @@ void fuzz_decoders() {
         seeds.push_back(b);
         encode(EditorClosed{0, EditorCloseReason::Requested, {{0, 1.f}}}, b);
         seeds.push_back(b);
-        encode(State{1, 0, StateStatus::Ok, "xyz", "t"}, b);
+        encode(State{1, 0, StateStatus::Ok, "xyz", "t", {}}, b);
         seeds.push_back(b);
         encode(Fault{FaultKind::Plugin, 0, 1, "f"}, b);
         seeds.push_back(b);

@@ -1,3 +1,8 @@
+# Stem separation (ADR-0165); guarded so the root hook can adopt it later.
+if(NOT TARGET sonora_stems AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/../stems/CMakeLists.txt")
+  add_subdirectory(../stems stems)
+endif()
+
 # Groove templates (ADR-0115). Pure functions over common/model's MusicalMap,
 # off the audio thread; a module of its own so the model's CMake is untouched.
 add_library(sonora_groove STATIC src/groove.cpp)

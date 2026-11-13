@@ -91,5 +91,18 @@ class ReadHelper(Base):
         self.assertIn("PR #544", out)
 
 
+
+
+class Ids(Base):
+    def test_messages_written_in_one_clock_tick_get_distinct_ids(self):
+        # 2026-11-09: an EXECUTADO line shared the owner's message id and the
+        # console drew a stale copy of both at the end of the chat.
+        from unittest import mock
+        with mock.patch.object(S.time, "time_ns", return_value=1_000):
+            ids = [S.add_message(self.tmp, "user", str(n))["id"] for n in range(5)]
+        self.assertEqual(len(set(ids)), 5)
+        self.assertEqual(ids, sorted(ids))
+
+
 if __name__ == "__main__":
     unittest.main()

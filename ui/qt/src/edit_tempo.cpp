@@ -16,6 +16,10 @@
 #include "sonora/ui_groove/groove_command.h"
 #define SONORA_UI_GROOVE 1
 #endif
+#if __has_include("sonora/ui_elastic/elastic_command.h")
+#include "sonora/ui_elastic/elastic_command.h"
+#define SONORA_UI_ELASTIC 1
+#endif
 
 namespace sonora::ui {
 
@@ -145,6 +149,9 @@ bool EditController::edit_tempo(const std::string& raw, std::string& why) {
     if (text == "remove") return remove_tempo(sel_.insertion, why);
 #ifdef SONORA_UI_GROOVE
     if (text.rfind("groove", 0) == 0) return groove_command(*this, text, why);
+#endif
+#ifdef SONORA_UI_ELASTIC
+    if (text.rfind("elastic", 0) == 0) return elastic_command(*this, text, why);
 #endif
     if (number_of(text, a)) return set_tempo(where, static_cast<float>(a), why);
     const std::size_t gt = text.find('>');

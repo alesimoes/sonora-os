@@ -19,7 +19,11 @@ Local CI context: `sonora-ui`. Agent: ui-engineer (look: visual-designer).
 - Gate: `ui/` and `keymaps/` touch only the ui context.
 
 ## Traps
-- Screen-visible change: regenerate and commit screenshots of every scene it
-  touches, open them, list them in the PR.
+- Screen-visible change: the daemon regenerates and commits every picture
+  under `docs/images` before the feature's PR opens (`tools/harness/shots.py`;
+  the full run outlives a 10-minute tool call). Commit code and the scene
+  only. Check your scene renders by shooting it alone from your build tree
+  (`sonora-ui --fake-engine --scene NAME --screenshot ...`) and open it; a
+  missing picture is never a reason to block the slice.
 - Do not own model/session logic; it lives in `common/model`.
 - Keep QML/C++ files under ~500 lines (`.claude/rules/code-structure.md`).

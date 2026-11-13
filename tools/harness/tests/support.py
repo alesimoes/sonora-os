@@ -89,6 +89,7 @@ class FakeForge(Forge):
         self.diffs = {}        # pr -> diff text
         self.pushed, self.enqueued, self.created, self.pre_pr_calls = \
             [], [], [], []
+        self.pre_pr_envs = []
         self.pre_pr_result = (True, "ok")
         self.fail = set()
         self.dispatched = []
@@ -105,6 +106,10 @@ class FakeForge(Forge):
     def branch_tip(self, branch):
         self._chk("branch_tip")
         return getattr(self, "tips", {}).get(branch)
+
+    def changed_files(self, base, branch):
+        self._chk("changed_files")
+        return getattr(self, "changed", {}).get(branch)
 
     def sync_local(self, branch):
         self._chk("sync_local")
@@ -165,9 +170,10 @@ class FakeForge(Forge):
         self._chk("enqueue")
         self.enqueued.append(pr)
 
-    def pre_pr(self, worktree):
+    def pre_pr(self, worktree, env=None):
         self._chk("pre_pr")
         self.pre_pr_calls.append(worktree)
+        self.pre_pr_envs.append(dict(env or {}))
         return self.pre_pr_result
 
     def checks(self, pr, **states):

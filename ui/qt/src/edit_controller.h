@@ -381,6 +381,11 @@ public:
     // Tools leaves them: the paste goes ahead, and `why` then names what was
     // not pasted, for the status line (empty when everything was).
     bool paste(std::string& why);
+    // Where the open session lives, and how a paste brings another session's
+    // audio in (ADR-0142). Unset, a paste of audio from another session is
+    // refused, saying so.
+    void set_session_folder_source(std::function<std::string()> folder);
+    void set_bring_in(BringInFn bring_in);
     // A copy of the selection placed straight after it on the same tracks,
     // which then becomes the selection. The clipboard is left alone.
     bool duplicate(std::string& why);
@@ -874,6 +879,11 @@ private:
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
     Clipboard clipboard_;
+    std::function<std::string()> session_folder_;
+    BringInFn bring_in_;
+    void stamp_origin(Clipboard& clip) const;
+    bool bring_clipboard_in(Clipboard& use, std::vector<model::Member>& ops,
+                            std::string& why);
     std::vector<AutomationClip> auto_clips_;
     std::set<model::Id> autolanes_open_;
     std::set<model::Id> comp_lanes_open_;

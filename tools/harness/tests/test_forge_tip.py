@@ -49,6 +49,36 @@ class BranchTip(unittest.TestCase):
         self.assertIsNone(self.g.branch_tip("sub/x/nothing"))
 
 
+class ChangedFiles(unittest.TestCase):
+    """The paths a slice changed since the branch it started from: what a
+    scope triage widens the claim with (daw.model.session_mgmt.ui)."""
+
+    def setUp(self):
+        self.repo = tempfile.mkdtemp(prefix="diff-")
+        self.addCleanup(shutil.rmtree, self.repo, True)
+        git(self.repo, "init", "-q", "-b", "main")
+        commit(self.repo, "a", "first")
+        git(self.repo, "checkout", "-q", "-b", "sub/f/model")
+        commit(self.repo, "m", "model")
+        git(self.repo, "checkout", "-q", "-b", "sub/f/ui")
+        os.makedirs(os.path.join(self.repo, "ui"))
+        commit(self.repo, "ui/v.qml", "ui")
+        git(self.repo, "checkout", "-q", "main")
+        commit(self.repo, "later", "main moved on")
+        self.g = forge.GhForge(self.repo)
+
+    def test_diff_since_the_start_branch(self):
+        self.assertEqual(self.g.changed_files("sub/f/model", "sub/f/ui"),
+                         ["ui/v.qml"])
+
+    def test_missing_start_branch_falls_back_to_main(self):
+        self.assertEqual(self.g.changed_files("feat/f", "sub/f/ui"),
+                         ["m", "ui/v.qml"])
+
+    def test_unknown_branch_is_none(self):
+        self.assertIsNone(self.g.changed_files("main", "sub/f/none"))
+
+
 class PushedFix(unittest.TestCase):
     """An origin, the daemon's clone with the sub-branch checked out in an
     agent worktree, and a resolver's clone that pushes a fix."""
