@@ -83,7 +83,6 @@ int main() {
 
     CHECK(c.select_region(10));
     CHECK(!beat_command(c, &run, "detect banana", why) && why.find("detect [clip|selection]") != std::string::npos);
-    CHECK(!beat_command(c, &run, "detect selection", why));  // no range
     CHECK(!beat_command(c, nullptr, "detect", why));
     CHECK(!beat_command(c, "detect", why));
 
@@ -91,6 +90,9 @@ int main() {
     run.det.result = analyze::fake_beat_result(100.0, 0.2);
     CHECK(!beat_command(c, &run, "detect", why));
     CHECK(why.find("uncertain") != std::string::npos);
+    CHECK(doc.snapshot().settings.tempo == original);
+    // Selecting a clip selects its range, so "selection" reaches the same refusal.
+    CHECK(!beat_command(c, &run, "detect selection", why));
     CHECK(doc.snapshot().settings.tempo == original);
 
     // A failed detection is an error, not a tempo.
