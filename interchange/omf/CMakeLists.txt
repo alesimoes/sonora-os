@@ -18,3 +18,13 @@ target_link_libraries(test_omf_map PRIVATE sonora_omf)
 target_include_directories(test_omf_map PRIVATE src)
 add_test(NAME omf_map COMMAND test_omf_map)
 set_tests_properties(omf_map PROPERTIES LABELS interchange)
+
+# Reader on a hand-built OMFI fixture, every truncation and byte corruption
+# (ASan in the sanitizer build). Real-world OMF files: unverified (README).
+target_sources(sonora_omf PRIVATE src/omf_reader.cpp src/omf_container.cpp)
+target_include_directories(sonora_omf PRIVATE src)
+add_executable(test_omf_reader tests/test_omf_reader.cpp)
+target_link_libraries(test_omf_reader PRIVATE sonora_omf)
+target_include_directories(test_omf_reader PRIVATE src)
+add_test(NAME omf_reader COMMAND test_omf_reader)
+set_tests_properties(omf_reader PROPERTIES LABELS interchange)
