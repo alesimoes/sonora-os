@@ -77,7 +77,10 @@ namespace sonora::model {
 // 25 (ADR-0060, hardware output paths): an aux bus may carry "hardware", the
 //    first of the pair of device outputs it plays on, only when it is a
 //    path. A version 24 file opens with none.
-constexpr std::int64_t kFormatVersion = 25;
+// 26 (ADR-0058, side-chain keys): an insert may carry "key_bus", the aux bus
+//    whose sum keys its side-chain input, only when it is keyed. A version 25
+//    file opens with every insert unkeyed.
+constexpr std::int64_t kFormatVersion = 26;
 
 // The version a session file declares, read without migrating or checking
 // anything else: what a saver needs to know whether the file it is about to

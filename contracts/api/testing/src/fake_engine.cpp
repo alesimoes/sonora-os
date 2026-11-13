@@ -266,6 +266,7 @@ std::vector<PluginInfo> fake_catalog() {
     c[2].categories = {"Fx", "Dynamics"};
     c[2].inputs = c[2].outputs = 1;
     c[2].has_editor = true;
+    c[2].key_inputs = 1;   // ADR-0058: the compressor takes a side-chain key
     // A Windows build through yabridge (ADR-0017 Y2), so an interface's
     // "Windows (Wine)" tag has something to show against the fake.
     c[2].bridge = PluginBridge::Yabridge;

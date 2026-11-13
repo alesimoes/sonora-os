@@ -88,6 +88,16 @@ public:
     virtual void run(const PlanNode& node, const float* const in[2], float* const out[2],
                      uint32_t frames, const ChainParamEvent* events,
                      uint32_t event_count) noexcept SONORA_RT = 0;
+    // run() for a node with node.key_channels (ADR-0058): `key` has that
+    // many planes of `frames`, the side-chain input, read and never played;
+    // null is a silent key. A runner with no key input runs the chain on
+    // its signal alone, which only a test's runner is.
+    virtual void run_keyed(const PlanNode& node, const float* const in[2], const float* const* key,
+                           float* const out[2], uint32_t frames, const ChainParamEvent* events,
+                           uint32_t event_count) noexcept SONORA_RT {
+        (void)key;
+        run(node, in, out, frames, events, event_count);
+    }
     // After the last InsertChain node (§7.2 step 3: the hosts' tick).
     virtual void end() noexcept SONORA_RT = 0;
     // A bound node the session does not run this callback, or this slice

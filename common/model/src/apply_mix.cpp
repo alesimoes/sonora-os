@@ -79,6 +79,7 @@ bool Applier::operator()(const RemoveBus& op) {
     }
     auto edit = std::make_shared<EditState>(*before_.edit);
     edit->buses.erase(edit->buses.begin() + static_cast<std::ptrdiff_t>(b));
+    clear_keys(*edit, op.bus);
     after_ = before_;
     after_.edit = std::move(edit);
     return true;
@@ -105,6 +106,9 @@ bool Applier::operator()(const AddSend& op) {
         if (before_.edit->tracks[t]->kind == TrackKind::Midi) {
             return fail("track " + str(op.strip) + " is a MIDI track; it has no audio to send");
         }
+        const std::string loop =
+            detail::track_route_loop(*before_.edit, *before_.edit->tracks[t], op.bus);
+        if (!loop.empty()) return fail("the send would make a feedback loop: " + loop);
         track = std::make_shared<TrackEdit>(*before_.edit->tracks[t]);
         sends = &track->sends;
     } else {
@@ -219,6 +223,9 @@ bool Applier::operator()(const SetOutput& op) {
         if (before_.edit->tracks[t]->kind == TrackKind::Midi) {
             return fail("track " + str(op.strip) + " is a MIDI track; it has no audio output");
         }
+        const std::string loop =
+            detail::track_route_loop(*before_.edit, *before_.edit->tracks[t], op.output);
+        if (!loop.empty()) return fail("the output would make a feedback loop: " + loop);
         auto track = std::make_shared<TrackEdit>(*before_.edit->tracks[t]);
         track->output = op.output;
         edit->tracks[t] = std::move(track);

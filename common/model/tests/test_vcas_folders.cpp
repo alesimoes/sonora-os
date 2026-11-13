@@ -182,7 +182,7 @@ int test_codec_window_and_file() {
     CHECK(!deserialize(broken, bad, le));
     // A version 19 file cannot carry the keys.
     std::string v19 = bytes;
-    const std::size_t ver = v19.find("\"sonora_session\": 25");
+    const std::size_t ver = v19.find("\"sonora_session\": 26");
     CHECK(ver != std::string::npos);
     v19.replace(ver, 20, "\"sonora_session\": 19");
     Loaded old;
@@ -199,7 +199,7 @@ int test_a_version_19_file_without_vcas_opens() {
     std::string bytes, error;
     CHECK(serialize(r.h.current(), WriteInfo{"test", 1}, bytes, error));
     CHECK(!mentions(bytes, "\"vcas\":"));
-    const std::size_t ver = bytes.find("\"sonora_session\": 25");
+    const std::size_t ver = bytes.find("\"sonora_session\": 26");
     CHECK(ver != std::string::npos);
     bytes.replace(ver, 20, "\"sonora_session\": 19");
     Loaded l;
