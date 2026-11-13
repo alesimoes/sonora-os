@@ -57,3 +57,11 @@ with a fake reader (the shape ADR-0154 already uses).
 - Which OMF variants other DAWs actually wrote, and whether they follow the
   specification.
 - That the size and depth limits are adequate for real sessions.
+
+## Amendment 2026-11-13: wired into sonora-convert
+
+`sonora-convert import x.omf` and `omf-import` now run the importer
+(`interchange/src/convert.cpp`), copying media into `Audio Files/` through the
+same essence lookup as AAF. `interchange/tests/test_omf_convert.cpp` covers a
+synthetic round trip and truncated or missing files (exit 1, message). Real-world
+OMF files remain unverified, as listed above.
