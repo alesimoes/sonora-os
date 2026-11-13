@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <memory>
 #include <string>
 
 #include "sonora/interchange/aaf_document.h"
@@ -27,5 +28,9 @@ public:
 private:
     AafWriter* writer_;
 };
+
+// An exporter owning the build's AafWriter. Without SONORA_WITH_LIBAAF (or
+// with a libaaf that cannot write) its write fails loudly, never an empty file.
+std::unique_ptr<Exporter> make_aaf_exporter();
 
 }  // namespace sonora::interchange
