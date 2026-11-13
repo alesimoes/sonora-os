@@ -63,3 +63,12 @@ endif()
 # OMF import (ADR-0160), read-only.
 add_subdirectory(omf)
 add_subdirectory(aaf_export)
+
+# sonora-convert dispatches .omf: run_convert needs the OMF importer, and
+# sonora_omf already links sonora_interchange (a static cycle is legal).
+target_link_libraries(sonora_interchange PUBLIC sonora_omf)
+
+add_executable(test_omf_convert tests/test_omf_convert.cpp)
+target_link_libraries(test_omf_convert PRIVATE sonora_interchange)
+add_test(NAME omf_convert COMMAND test_omf_convert)
+set_tests_properties(omf_convert PROPERTIES LABELS interchange)

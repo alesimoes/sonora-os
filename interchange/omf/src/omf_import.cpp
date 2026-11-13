@@ -3,6 +3,8 @@
 
 #include <cctype>
 
+#include "omf_map.h"
+
 namespace sonora::interchange {
 
 bool OmfImporter::can_read(const std::string& path) const {
@@ -14,7 +16,7 @@ bool OmfImporter::can_read(const std::string& path) const {
     return ext == "omf" || ext == "omfi";
 }
 
-bool OmfImporter::read(const std::string& path, model::Snapshot&, ConversionReport&,
+bool OmfImporter::read(const std::string& path, model::Snapshot& out, ConversionReport& report,
                        std::string& error) {
     if (!reader_) {
         error = "OMF import is not available in this build";
@@ -26,9 +28,7 @@ bool OmfImporter::read(const std::string& path, model::Snapshot&, ConversionRepo
         error = "OMF file has no tracks";
         return false;
     }
-    // Mapping to a session is the next slice (ADR-0160).
-    error = "OMF mapping is not implemented yet";
-    return false;
+    return map_omf(doc, 48000, out, report, error);
 }
 
 }  // namespace sonora::interchange
