@@ -11,7 +11,7 @@ target_link_libraries(stepseq_contract_test PRIVATE sonora_stepseq)
 add_test(NAME stepseq_contract COMMAND stepseq_contract_test)
 set_tests_properties(stepseq_contract PROPERTIES LABELS stepseq)
 
-foreach(t timing swing probability rows)
+foreach(t timing swing probability rows block_size exchange_wiring)
     add_executable(stepseq_${t}_test tests/test_${t}.cpp)
     target_link_libraries(stepseq_${t}_test PRIVATE sonora_stepseq)
     target_include_directories(stepseq_${t}_test PRIVATE tests)

@@ -2,9 +2,10 @@
 //
 // The Step Sequencer window's model (logic.step_sequencer, ADR-0169): the
 // editing copy of a stepseq::Pattern. The window edits this copy; every edit
-// is handed to the injected publisher, which in the application puts it in
-// the PatternExchange the audio thread reads. The model never touches the
-// audio thread itself.
+// goes to the PatternExchange the audio thread reads, through a
+// PatternPublisher. When the exchange refuses (the audio thread still holds
+// the spare slot) the model keeps its copy and offers it again on the next
+// retry tick; it never waits. The model never touches the audio thread itself.
 //
 // Setters clamp, as the pattern does, and every read goes back to the
 // pattern, so a control cannot show a value the player will not play.
@@ -13,8 +14,16 @@
 #include <QObject>
 #include <QString>
 #include <functional>
+#include <memory>
 
 #include "sonora/stepseq/pattern.h"
+
+class QTimer;
+
+namespace sonora::stepseq {
+class PatternExchange;
+class PatternPublisher;
+}  // namespace sonora::stepseq
 
 namespace sonora::ui {
 
@@ -37,7 +46,11 @@ class StepSequencerModel : public QObject {
 public:
     using Publisher = std::function<void(const stepseq::Pattern&)>;
 
+    // Scenes and tests: every edit goes to `publish`, which never refuses.
     explicit StepSequencerModel(Publisher publish = {}, QObject* parent = nullptr);
+    // The application: edits go to `exchange`, which outlives the model.
+    explicit StepSequencerModel(stepseq::PatternExchange& exchange, QObject* parent = nullptr);
+    ~StepSequencerModel() override;
 
     int rows() const { return pattern_.row_count(); }
     int length() const { return pattern_.length(); }
@@ -73,6 +86,13 @@ public:
 
     const stepseq::Pattern& pattern() const { return pattern_; }
 
+    // True while the newest edit has not reached the exchange yet.
+    bool publishPending() const;
+    // The retry tick; public so a test can drive it without a clock.
+    void retryPublish();
+
+    static constexpr int kRetryIntervalMs = 5;
+
 signals:
     void changed();
     void selectionChanged();
@@ -82,9 +102,12 @@ private:
     bool valid_row(int row) const { return row >= 0 && row < pattern_.row_count(); }
     void edit_selected(const std::function<void(stepseq::Step&)>& f);
     void commit();
+    void publish_out();
 
     stepseq::Pattern pattern_;
     Publisher publish_;
+    std::unique_ptr<stepseq::PatternPublisher> publisher_;
+    QTimer* retry_timer_ = nullptr;
     int row_ = -1;
     int step_ = -1;
     int revision_ = 0;
