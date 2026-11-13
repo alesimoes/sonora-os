@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-from . import launcher, supervisor_dash
+from . import docker_heal, launcher, supervisor_dash
 
 HOST_KIND = "win" if os.name == "nt" else "linux"
 
@@ -142,6 +142,9 @@ class RealSys:
 
     def dash_start(self, port, repo_root):
         return supervisor_dash.start(repo_root, port)
+
+    def docker_restart(self):
+        return docker_heal.restart_docker_desktop()
 
     def notify(self, title, text):
         try:
