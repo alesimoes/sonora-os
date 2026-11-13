@@ -8,6 +8,7 @@
 #include "sonora/interchange/aaf_import.h"
 #include "sonora/interchange/interchange.h"
 #include "sonora/interchange/omf_import.h"
+#include "convert_ptx.h"
 
 namespace sonora::interchange {
 
@@ -19,14 +20,16 @@ const char* kUsage =
     "usage: sonora-convert smf-import <in.mid> <out.sonora>\n"
     "       sonora-convert aaf-import <in.aaf> <out.sonora>\n"
     "       sonora-convert omf-import <in.omf> <out.sonora>\n"
-    "       sonora-convert import     <in.mid|in.aaf|in.omf> <out.sonora>\n"
+    "       sonora-convert ptx-import <in.ptx> <out.sonora>\n"
+    "       sonora-convert import     <in.mid|in.aaf|in.omf|in.ptx> <out.sonora>\n"
     "       sonora-convert smf-export <in.sonora> <out.mid>\n"
     "       sonora-convert session    <in.sonora> <out.sonora>\n"
     "\n"
     "smf-import   a Standard MIDI File to a new session of MIDI tracks\n"
     "aaf-import   an AAF composition; its essence is copied into Audio Files/\n"
     "omf-import   an OMF composition; embedded media is extracted into Audio Files/\n"
-    "import       smf-import, aaf-import or omf-import, chosen by the file's extension\n"
+    "ptx-import   a Pro Tools .ptx session (needs libptformat); audio is copied into Audio Files/\n"
+    "import       smf-import, aaf-import, omf-import or ptx-import, chosen by extension\n"
     "smf-export   the MIDI and instrument tracks of a session to a format 1 file\n"
     "session      a session rewritten in the current format version\n"
     "\n"
@@ -140,6 +143,7 @@ int run_convert(const std::vector<std::string>& args, std::string& out, std::str
     if (command == "import")
         command = has_ext(in, ".aaf") ? "aaf-import"
                   : has_ext(in, ".omf") ? "omf-import"
+                  : has_ext(in, ".ptx") ? "ptx-import"
                                         : "smf-import";
     ConversionReport report;
     std::string error;
@@ -154,6 +158,8 @@ int run_convert(const std::vector<std::string>& args, std::string& out, std::str
         ok = aaf_import(in, dest, snapshot, report, error);
     } else if (command == "omf-import") {
         ok = omf_import(in, dest, snapshot, report, error);
+    } else if (command == "ptx-import") {
+        ok = ptx_import(in, dest, snapshot, report, error);
     } else if (command == "smf-export") {
         SmfExporter exporter;
         ok = read_session(in, snapshot, report, error) &&
