@@ -202,7 +202,7 @@ bool EditController::submit_move(const MoveRegion& op, std::string& why) {
         std::vector<std::string> left_all;
         if (automation_follows_edit_) {
             for (const Member& m : moves) {
-                const MoveRegion* step = std::get_if<MoveRegion>(&m);
+                const MoveRegion* step = get_if<MoveRegion>(&m);
                 const TrackEdit* gt = nullptr;
                 const Region* gr = step ? find_region(snapshot(), step->region, &gt) : nullptr;
                 if (gr == nullptr) continue;
