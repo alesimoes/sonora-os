@@ -16,6 +16,8 @@ add_library(sonora_control STATIC
   src/orphan_offer.cpp
   src/plugin_hosting.cpp
   src/plugin_hosting_state.cpp
+  src/plugin_editor_control.cpp
+  src/plugin_editor_routes.cpp
   src/plugin_scanner.cpp
   src/plugin_catalog_cache.cpp
   src/plugin_block_list.cpp
@@ -49,6 +51,7 @@ target_include_directories(sonora_control PUBLIC include)
 # a session folder with (ADR-0015 update of 2026-10-25).
 target_link_libraries(sonora_control PUBLIC sonora_core sonora_api sonora_platform
   sonora_model sonora_session_files sonora_plugin_client sonora_plugin_probe_record sonora_plugin_host_control
+  sonora_editor_service
   PRIVATE sonora_json)
 
 # The saver thread (ADR-0015 §6, update of 2026-10-25): syncs only after a
@@ -386,6 +389,12 @@ add_test(NAME mix_planner COMMAND test_mix_planner)
 add_executable(test_plugin_hosting_state_wait tests/test_plugin_hosting_state_wait.cpp)
 target_link_libraries(test_plugin_hosting_state_wait PRIVATE sonora_control)
 add_test(NAME plugin_hosting_state_wait COMMAND test_plugin_hosting_state_wait)
+
+# Plug-in editors over the hosts (ADR-0088): open, raise, failure, a host
+# crash and a chain change, against a fake host port; and the wire routes.
+add_executable(test_plugin_editor_control tests/test_plugin_editor_control.cpp)
+target_link_libraries(test_plugin_editor_control PRIVATE sonora_control)
+add_test(NAME plugin_editor_control COMMAND test_plugin_editor_control)
 
 # Reverb and delay space of a reference recording (ADR-0045 8).
 add_executable(test_space_measure tests/test_space_measure.cpp)

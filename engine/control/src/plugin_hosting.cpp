@@ -1169,6 +1169,8 @@ void PluginHosting::handle_host_message(model::Id track, const std::string& byte
     pc::Type t{};
     std::string e;
     if (!pc::peek_type(bytes, t)) return;
+    if (editor_sink_ && (t == pc::Type::EditorOpened || t == pc::Type::EditorFailed || t == pc::Type::EditorClosed))
+        editor_sink_(c.running->host(), bytes);
     // What the document needs to record (instance, param): the insert, and
     // the bypass or the parameter's stable key. False for neither.
     const auto describe = [&](uint32_t instance, uint32_t param, Chain::Touch& out) {
@@ -1475,6 +1477,30 @@ bool PluginHosting::kill_host_for_test(model::Id track) {
     if (it == chains_.end() || !it->second->running || !it->second->running->host()) return false;
     it->second->running->host()->signal_kill();
     return true;
+}
+
+const void* PluginHosting::editor_host(model::Id track, model::Id insert, uint32_t& instance, std::string& why) const {
+    const auto it = chains_.find(track);
+    const Chain* c = it == chains_.end() ? nullptr : it->second.get();
+    if (!c || !c->running || c->running->down() || c->running->restarting() || !c->running->host()) {
+        why = "its plug-in is not running";
+        return nullptr;
+    }
+    for (uint32_t i = 0; i < c->running_spec.size(); ++i) {
+        if (c->running_spec[i].insert != insert) continue;
+        instance = i;
+        return c->running->host();
+    }
+    why = "its plug-in is not running";
+    return nullptr;
+}
+
+bool PluginHosting::send_to_editor_host(const void* host, const std::string& encoded, std::string& why) {
+    for (auto& [track, c] : chains_)
+        if (c->running && !c->running->down() && c->running->host() == host)
+            return c->running->host()->send(encoded, why);
+    why = "its plug-in host has stopped";
+    return false;
 }
 
 // ---- what the operator is told (item 5)

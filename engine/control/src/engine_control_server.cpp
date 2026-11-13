@@ -512,6 +512,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
         };
         registry_.install("plugin.block", block_handler(true));
         registry_.install("plugin.unblock", block_handler(false));
+        install_plugin_editors();
     }
     // Recovered and orphan takes (session-format.md, "Crash recovery"):
     // placed only when the operator says so, as one undo step per take.
@@ -851,6 +852,10 @@ void EngineControlServer::start_hosting() {
     hc.max_block_frames = session_.config().playback.max_block_frames;
     hc.max_stores = session_.config().playback.max_param_stores;
     hosting_ = std::make_unique<PluginHosting>(session_, hc, *scanner_);
+    if (editors_) {
+        hosting_->set_editor_sink(
+            [this](const void* host, const std::string& bytes) { editors_->on_host_message(host, bytes); });
+    }
     if (!hosting_->ok()) {
         api::EngineEvent e;
         e.kind = api::EventKind::Notice;
@@ -972,6 +977,7 @@ void EngineControlServer::show_inserts(bool new_session) {
         post_event(e);
     };
     if (new_session) {
+        if (editors_) editors_->session_opened();
         // Copied: post_event() erases from the map as each is cleared.
         std::vector<uint64_t> standing;
         for (const auto& [insert, bytes] : plugin_faults_) standing.push_back(insert);
@@ -1433,6 +1439,8 @@ void EngineControlServer::remember(const api::EngineEvent& event, const std::str
         case api::EventKind::Bounce: bounce_ = bytes; break;
         case api::EventKind::Consolidate: consolidate_ = bytes; break;
         case api::EventKind::Render: render_event_ = bytes; break;
+        // Kept by the editor service, which greet_editors() replays.
+        case api::EventKind::PluginEditor: break;
     }
 }
 
@@ -1958,6 +1966,7 @@ void EngineControlServer::greet(ClientId id) {
           &recovery_offer_, &bounce_, &render_event_, &consolidate_}) {
         if (!e->empty()) send_to(client, *e);
     }
+    greet_editors(client);
 }
 
 void EngineControlServer::send_catalog(Client& client) {
@@ -3722,6 +3731,9 @@ void EngineControlServer::tick() {
         show_inserts(false);
         forward_telemetry();
     }
+    // After the hosts were polled, and with hosting gone too: an editor
+    // whose host went reports Closed (ADR-0088 decision 5).
+    if (editors_) editors_->reconcile();
     follow_flushes();
     // Every plug-in of the session just opened has loaded or failed, or the
     // bound has passed: the play that waited goes now.

@@ -50,6 +50,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -308,6 +309,19 @@ public:
     // crash would end it. For tests; false when it has none.
     bool kill_host_for_test(model::Id track);
 
+    // ---- Plug-in editors (ADR-0088; plugin_editor_control.h). The bound
+    // host running `insert` on `track` and its chain index, as an identity
+    // the editor service compares and never dereferences. Null, `why` set,
+    // while the chain is starting, restarting or down, or runs no such insert.
+    const void* editor_host(model::Id track, model::Id insert, uint32_t& instance, std::string& why) const;
+    // Queues `encoded` for `host` if it is still a chain's bound host.
+    bool send_to_editor_host(const void* host, const std::string& encoded, std::string& why);
+    // Given every EditorOpened, EditorFailed and EditorClosed a chain's host
+    // sends, with the chain's bound host, as poll() takes them.
+    void set_editor_sink(std::function<void(const void* host, const std::string& bytes)> sink) {
+        editor_sink_ = std::move(sink);
+    }
+
     // The parameter keys of the probe answer cached for `host_id` (any
     // channel count); false when none is Ok. For tests.
     bool probe_answer_for_test(const std::string& host_id, std::vector<std::string>& keys) const;
@@ -448,6 +462,7 @@ private:
     std::vector<Flush> flushes_done_;
     uint64_t next_flush_ = 1;
     uint32_t next_state_request_ = 1;
+    std::function<void(const void*, const std::string&)> editor_sink_;
 };
 
 }  // namespace sonora

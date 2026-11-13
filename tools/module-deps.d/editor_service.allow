@@ -1,0 +1,3 @@
+# plugins.host.editors (ADR-0088): engine/control implements the editor
+# service over the hosts. Folded into tools/module-deps.allow once that file is free.
+engine/control -> engine/editor_service

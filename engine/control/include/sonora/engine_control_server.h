@@ -87,6 +87,7 @@
 #include "sonora/model/operations.h"
 #include "sonora/orphan_offer.h"
 #include "sonora/platform/wait_set.h"
+#include "sonora/plugin_editor_control.h"
 #include "sonora/plugin_hosting.h"
 #include "sonora/session_commands.h"
 #include "sonora/session_saver.h"
@@ -547,6 +548,13 @@ private:
     // Its document operations (editor gestures) applied and sent.
     void apply_hosting_ops(std::vector<model::Operation>& ops);
     bool hosting_tried_ = false;
+    // Plug-in editors (ADR-0088), over hosting_ whichever activation it is
+    // of; with a host configured only, as plugin.rescan.
+    std::unique_ptr<EditorHostPort> editor_port_;
+    std::unique_ptr<PluginEditorControl> editors_;
+    void install_plugin_editors();
+    // The editors' state to a client that attaches.
+    void greet_editors(Client& client);
     // Play from a freshly opened session, held until its plug-ins have
     // loaded or failed, or until open_deadline_ms_ (the owner's decision of
     // 2026-10-18). Record is never held.
