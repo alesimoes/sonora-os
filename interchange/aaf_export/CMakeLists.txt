@@ -1,6 +1,4 @@
-# AAF export (ADR-0161). Not yet reached from interchange/CMakeLists.txt (a
-# follow-up once aaf_import merges); build it with the root project and
-# -DCMAKE_PROJECT_INCLUDE=<file adding this directory>.
+# AAF export (ADR-0161). Reached from interchange/CMakeLists.txt.
 add_library(sonora_aaf_export STATIC src/aaf_export.cpp src/aaf_export_map.cpp src/aaf_libaaf_writer.cpp)
 target_include_directories(sonora_aaf_export PUBLIC include PRIVATE src)
 target_link_libraries(sonora_aaf_export PUBLIC sonora_interchange)

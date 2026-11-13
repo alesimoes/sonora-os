@@ -62,3 +62,4 @@ endif()
 
 # OMF import (ADR-0160), read-only.
 add_subdirectory(omf)
+add_subdirectory(aaf_export)
