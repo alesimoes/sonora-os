@@ -220,6 +220,9 @@ private:
     // The document track whose mix each engine track's atomics hold, by
     // position; unset before the first mix is written.
     std::optional<std::vector<model::Id>> atoms_order_;
+    // By document track, bit p (a PlanAutoParam) set while p's hold began
+    // rolling: touch() releases a pass's ride and a stopped one apart.
+    std::unordered_map<model::Id, uint8_t> held_rolling_;
     uint32_t mix_serial_ = 0;           // the last PlaybackPlan::mix_serial given
     uint32_t pending_mix_serial_ = 0;   // pending_'s; 0 when it moves no track
     std::vector<model::Id> pending_order_;

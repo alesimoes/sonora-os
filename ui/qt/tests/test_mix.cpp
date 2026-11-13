@@ -1144,6 +1144,73 @@ int written_ride_keeps_the_static() {
     return 0;
 }
 
+// automation.write ui: the cap glides from a released Touch ride to the static
+// over the AutoMatch default on an injected clock; pan keeps its static in a
+// written ride; ride_wrote_ counts only moves made while rolling.
+int written_ride_glide_pan_and_transport() {
+    Rig r;
+    CHECK(r.connect());
+    uint64_t clock = 1000;
+    r.mixer.setGlideClock([&clock] { return clock; });
+    TransportSnapshot rolling;
+    rolling.state = TransportMode::Rolling;
+    TransportSnapshot stopped;
+    r.session.onTransport(rolling, true);
+    CHECK(r.mixer.setAutomationMode(1, "Touch"));
+    r.settle();
+    const double stat = r.session.stripGain(1);
+    r.mixer.beginRide(1);
+    r.mixer.ride(1, -20, 200, false);
+    const double held = r.mixer.rideGain();
+    CHECK(held > stat);
+    r.mixer.endRide(1);
+    r.settle();
+    CHECK(r.mixer.gliding(1));
+    CHECK(near(r.mixer.glideGain(1), held));
+    clock += uint64_t(MixModel::kGlideMs) * 1000000ull / 2;
+    CHECK(near(r.mixer.glideGain(1), (held + stat) / 2));
+    clock += uint64_t(MixModel::kGlideMs) * 1000000ull / 2;
+    CHECK(!r.mixer.gliding(1) && near(r.mixer.glideGain(1), stat));
+
+    // Pan in a written ride keeps its static; the engine still hears Moves.
+    r.mixer.beginPan(1);
+    const double pan0 = r.session.stripPan(1);
+    const uint64_t rev = r.doc.revision();
+    r.mixer.panDrag(1, 10, 100, false);
+    r.mixer.panDrag(1, 10, 100, false);
+    r.settle();
+    CHECK(r.doc.revision() == rev && near(r.session.stripPan(1), pan0));
+    CHECK(r.sent.back().param == api::ParamId::Pan && r.sent.back().gesture == api::Gesture::Move);
+    r.mixer.endPan(1);
+    // Stopped, the same drag is the static as before.
+    r.session.onTransport(stopped, true);
+    r.mixer.beginPan(1);
+    r.mixer.panDrag(1, 10, 100, false);
+    r.mixer.endPan(1);
+    r.settle();
+    CHECK(r.session.stripPan(1) > pan0);
+
+    // Begun and moved rolling, released after a stop: the static.
+    r.session.onTransport(rolling, true);
+    r.mixer.beginRide(1);
+    r.mixer.ride(1, -20, 200, false);
+    r.session.onTransport(stopped, true);
+    uint64_t rev2 = r.doc.revision();
+    r.mixer.endRide(1);
+    r.settle();
+    CHECK(r.doc.revision() == rev2 + 1 && r.session.stripGain(1) > stat);
+    // Moved stopped, released after the transport started: saved too.
+    r.mixer.beginRide(1);
+    r.mixer.ride(1, 20, 200, false);
+    r.session.onTransport(rolling, true);
+    rev2 = r.doc.revision();
+    r.mixer.endRide(1);
+    r.settle();
+    CHECK(r.doc.revision() == rev2 + 1);
+    std::printf("  glide, pan static, ride_wrote_: ok\n");
+    return 0;
+}
+
 int automation_mode_selector() {
     Rig r;
     CHECK(r.connect());
@@ -1315,6 +1382,7 @@ int main(int argc, char** argv) {
     if (automation_mode_selector() != 0) return 1;
     if (trim_ride() != 0) return 1;
     if (written_ride_keeps_the_static() != 0) return 1;
+    if (written_ride_glide_pan_and_transport() != 0) return 1;
     if (typed_values() != 0) return 1;
     if (modifier_clicks() != 0) return 1;
     if (implicit_mutes() != 0) return 1;

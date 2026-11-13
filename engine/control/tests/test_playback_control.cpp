@@ -2630,6 +2630,65 @@ int test_a_slot_follows_the_folder_and_the_document() {
     return 0;
 }
 
+// automation.write (ADR-0131 §4): a Touch ride across a stop. Begun while
+// rolling and released after the stop, the pass wrote it, so the document's
+// static goes back in the atomics (the stopped release only cleared the
+// bit, leaving the ride as the static). Moved while stopped and released
+// once rolling, it is the static the client saves, not a pass's ride: the
+// fader stays where the operator put it, whichever of the release and the
+// client's save comes first.
+int test_a_ride_across_a_stop() {
+    auto session = make_session(1);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    TrackMix m = *h.current().mix.find(100);
+    m.automation = AutomationMode::Touch;
+    m.gain_db = -6.0f;
+    CHECK_APPLY(h, SetMix{m});
+    const float fixed = std::pow(10.0f, -6.0f / 20.0f);
+    PlaybackController ctl(s);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    sonora::Track& t = *s.tracks()[0];
+    Out o;
+    run_block(s, o);
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Rolling);
+    run_block(s, o);
+    ctl.touch(h.current(), 0, sonora::kAutoVolume, true);
+    t.set_gain(0.25f);   // the ParameterChange moves
+    run_block(s, o);
+    ctl.stop();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Stopped);
+    run_block(s, o);
+    ctl.touch(h.current(), 0, sonora::kAutoVolume, false);
+    CHECK(t.touched() == 0);
+    CHECK(std::fabs(t.gain() - fixed) < 1e-6f && std::fabs(t.static_gain() - fixed) < 1e-6f);
+
+    ctl.touch(h.current(), 0, sonora::kAutoVolume, true);
+    t.set_gain(0.5f);
+    run_block(s, o);
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Rolling);
+    run_block(s, o);
+    ctl.touch(h.current(), 0, sonora::kAutoVolume, false);
+    CHECK(t.touched() == 0);
+    CHECK(t.gain() == 0.5f && t.static_gain() == 0.5f);
+    // The client's save of that static after the release changes nothing.
+    m.gain_db = 20.0f * std::log10(0.5f);
+    CHECK_APPLY(h, SetMix{m});
+    ctl.apply_mix(h.current());
+    CHECK(std::fabs(t.gain() - 0.5f) < 1e-6f);
+    ctl.stop();
+    CHECK(ctl.settle(2.0));
+    return 0;
+}
+
 int main() {
     std::filesystem::remove_all(kDir);
     ::mkdir(kDir.c_str(), 0775);
@@ -2679,6 +2738,7 @@ int main() {
     if (test_punch_pre_and_post_roll(true)) return 1;
     if (test_play_range_with_pre_and_post_roll()) return 1;
     if (test_a_slot_follows_the_folder_and_the_document()) return 1;
+    if (test_a_ride_across_a_stop()) return 1;
     std::filesystem::remove_all(kDir);
     std::printf("playback_control: ok\n");
     return 0;

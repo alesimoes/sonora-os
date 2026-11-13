@@ -2198,7 +2198,8 @@ void Session::apply_fader(uint32_t e, bool stereo, const float* const in[2], flo
 void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
                                  uint64_t playhead) noexcept SONORA_RT {
     const uint64_t start = rolling ? loop_frame(playhead, 0) : playhead;
-    const bool jumped = auto_new_plan_ || start != auto_next_;
+    const bool new_plan = auto_new_plan_;
+    const bool jumped = new_plan || start != auto_next_;
     auto_new_plan_ = false;
     // A new plan leaves the audio where it was: only a stop, a jump or a
     // new loop makes the frames behind A the timeline's again.
@@ -2247,10 +2248,10 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
             const uint8_t bit = static_cast<uint8_t>(1u << p);
             int64_t& at = return_at_[e * kAutoParams + p];
             const auto s = static_cast<int64_t>(start);
-            // A new plan alone keeps the return: an edit mid-return leaves
-            // the playhead where it was, and follow_track_owners() moved
-            // each return with its track.
-            if (!rolling || (live & bit) != 0 || start != auto_next_ ||
+            // A new plan ends the return (ADR-0131 §4): its static may have
+            // moved under it, and `jumped` ramps the track to its target over
+            // this callback.
+            if (!rolling || new_plan || (live & bit) != 0 || start != auto_next_ ||
                 (at != kNoReturn && (s < at || s >= at + touch_return_frames_))) {
                 at = kNoReturn;
             }
