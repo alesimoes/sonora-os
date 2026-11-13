@@ -1433,6 +1433,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (uint32_t b = 0; b < max_buses_; ++b) {
         aux_solo = aux_solo || aux_[b].solo.load(std::memory_order_relaxed);
     }
+    if (solo_hook_ != nullptr) solo_hook_(solo_hook_context_);
     std::memset(feeds_track_.get(), 0, tracks_.size());
     if (aux_solo) {
         any_solo = true;

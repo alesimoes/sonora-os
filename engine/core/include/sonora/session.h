@@ -709,6 +709,11 @@ private:
     using WordHook = void (*)(void* context) noexcept SONORA_RT;
     WordHook word_hook_ = nullptr;
     void* word_hook_context_ = nullptr;
+    // Called by process() right after it has taken the callback's aux solo
+    // flags, so a test can clear a solo between that and anything that
+    // reads them again (ADR-0148 §1). Set only while no callback runs.
+    WordHook solo_hook_ = nullptr;
+    void* solo_hook_context_ = nullptr;
 
     // No take: a track with no capture window, a punch record for none.
     static constexpr uint32_t kNoWindowTake = ~uint32_t{0};
