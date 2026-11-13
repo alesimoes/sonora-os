@@ -29,7 +29,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, d
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
 from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
-                     shots,
+                     prepr, shots,
                      leadwake, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
@@ -847,14 +847,7 @@ class Orchestrator:
         if pics != shots.READY:
             return False
         try:
-            ok, out = self.forge.pre_pr(wt)
-            if not ok:
-                self.store.event(rep["id"], "pre_pr_failed", out[-500:])
-                for x in ts:
-                    self.store.set_task(x["id"], integrated=0, note=(
-                        "tools/pre-pr.sh failed; fix and commit:\n"
-                        + out[-800:]))
-                self._count_failure(rep, "pre-pr failed", now)
+            if not prepr.passes(self, fid, ts, wt, now):
                 return False
             self.forge.push(wt, branch)
             n = next((p["number"] for p in self.forge.open_prs()

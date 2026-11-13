@@ -11,7 +11,8 @@ import json
 import os
 import re
 
-from . import dispatch, plangate, plans, proposal, queueimport, routing
+from . import (dispatch, plan_numbers, plangate, plans, proposal,
+               queueimport, routing)
 from .forge import ForgeError
 from .scheduler import HOLD
 from .status import write_atomic
@@ -309,6 +310,11 @@ class Flow:
         if err:
             return False, [err]
         f = self.store.get_feature(fid)
+        try:
+            plan_numbers.reserve(self.store, self.owner(fid), plan,
+                                 self.o.seed_fn)
+        except ForgeError as e:
+            return False, [f"could not reserve a version number: {e}"]
         res = self.reserved_for(fid)
         errs = plans.validate_plan(
             plan, {"feature": fid, "track": f["track"], "adr": res["adr"],
