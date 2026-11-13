@@ -344,9 +344,149 @@ int test_shuffle() {
     CHECK(lane(doc.snapshot(), 0).regions.size() == 1 && start_of(doc.snapshot(), 10) == kBar);
     CHECK(c.undo(why));
 
-    // Moves and trims with the mouse stay refused by name; Strip Silence too.
-    CHECK(!c.nudge(1, why) && has(why, "Shuffle"));
     CHECK(c.take_follow_notice().empty());
+    return 0;
+}
+
+// --- Shuffle: move, trim, nudge, spot and Loop ripple (ADR-0153) -------------
+
+Frames end_of(const Snapshot& s, Id region) {
+    for (const Region& r : lane(s, 0).regions) {
+        if (r.id == region) return r.end();
+    }
+    return -1;
+}
+
+// A [1, 3) bars, B [4, 5), C [6, 7): a gap of a bar before B and before C.
+Snapshot three_regions() {
+    return session_with({make_region(10, "A", kBar, 2 * kBar), make_region(11, "B", 4 * kBar, kBar),
+                         make_region(12, "C", 6 * kBar, kBar)});
+}
+
+int test_shuffle_trim_and_spot() {
+    ModelDocument doc(three_regions());
+    EditController c(doc);
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    c.set_mode(EditMode::Shuffle);
+    std::string why;
+    const Snapshot original = doc.snapshot();
+
+    // Trim A's end to 2 bars: every later region moves up by the bar lost.
+    c.select_track(0);
+    c.set_insertion(2 * kBar);
+    CHECK(c.trim_end_to_insertion(why));
+    CHECK(end_of(doc.snapshot(), 10) == 2 * kBar);
+    CHECK(start_of(doc.snapshot(), 11) == 3 * kBar && start_of(doc.snapshot(), 12) == 5 * kBar);
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Trim");
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why) && !doc.can_undo());
+    CHECK(start_of(doc.snapshot(), 11) == 4 * kBar && end_of(doc.snapshot(), 10) == 3 * kBar);
+
+    // Trim A's start: it keeps its place, its audio starts later, the rest follows.
+    c.select_track(0);
+    c.set_insertion(2 * kBar);
+    CHECK(c.trim_start_to_insertion(why));
+    CHECK(start_of(doc.snapshot(), 10) == kBar && end_of(doc.snapshot(), 10) == 2 * kBar);
+    CHECK(lane(doc.snapshot(), 0).regions[0].source_offset == 2 * kBar);
+    CHECK(start_of(doc.snapshot(), 11) == 3 * kBar && start_of(doc.snapshot(), 12) == 5 * kBar);
+    CHECK(doc.history().undo_depth() == 1 && valid(doc.snapshot()));
+    CHECK(c.undo(why) && !doc.can_undo());
+
+    // Spot A at 5 bars: it lands there, the gap it left closes (B and C move
+    // up two bars), in one step.
+    CHECK(c.select_region(10));
+    CHECK(c.spot_region(5 * kBar, why));
+    CHECK(start_of(doc.snapshot(), 10) == 5 * kBar);
+    CHECK(start_of(doc.snapshot(), 11) == 2 * kBar && start_of(doc.snapshot(), 12) == 4 * kBar);
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Move" && valid(doc.snapshot()));
+    CHECK(c.undo(why) && !doc.can_undo());
+    CHECK(start_of(doc.snapshot(), 10) == kBar && start_of(doc.snapshot(), 12) == 6 * kBar);
+
+    // Spot C at 2 bars, inside A: A is split and room opens the width of C.
+    CHECK(c.select_region(12));
+    CHECK(c.spot_region(2 * kBar, why));
+    CHECK(start_of(doc.snapshot(), 12) == 2 * kBar);
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 4);
+    CHECK(start_of(doc.snapshot(), 11) == 5 * kBar && valid(doc.snapshot()));
+    CHECK(doc.history().undo_depth() == 1);
+    CHECK(c.undo(why) && lane(doc.snapshot(), 0).regions.size() == 3 && !doc.can_undo());
+
+    // No-ops send nothing: spot where it already is, a trim to the same edge.
+    CHECK(c.select_region(10));
+    const uint64_t r0 = doc.revision();
+    CHECK(c.spot_region(kBar, why));
+    c.select_track(0);
+    c.set_insertion(3 * kBar);   // on A's end, not inside it
+    CHECK(!c.trim_end_to_insertion(why));
+    CHECK(doc.revision() == r0 && !doc.can_undo());
+    CHECK(lane(doc.snapshot(), 0).regions.size() == original.edit->tracks[0]->playlists[0]->regions.size());
+    return 0;
+}
+
+int test_shuffle_nudge_and_drag() {
+    ModelDocument doc(three_regions());
+    EditController c(doc);
+    c.set_viewport(4000, 400);
+    c.scroll_to_frame(0);
+    c.set_mode(EditMode::Shuffle);
+    c.set_grid(GridValue::Bar);
+    std::string why;
+
+    // Nudge B a bar earlier: room opens at 3 bars, B lands there, the gap it
+    // left closes, so C ends where it was.
+    CHECK(c.select_region(11));
+    CHECK(c.nudge(-1, why));
+    CHECK(start_of(doc.snapshot(), 11) == 3 * kBar);   // a bar earlier
+    CHECK(start_of(doc.snapshot(), 12) == 6 * kBar && doc.history().undo_depth() == 1);
+    CHECK(valid(doc.snapshot()));
+    CHECK(c.undo(why) && !doc.can_undo());
+
+    // Drag B two bars later: C closes up over the place B left.
+    const double th = c.view().track_height;
+    const double lower = th * 0.75;
+    const double x = c.view().x_of(4 * kBar + kBar / 2);
+    CHECK(c.press(x, lower, why));
+    c.move(x + (c.view().x_of(6 * kBar) - c.view().x_of(4 * kBar)), lower);
+    CHECK(c.release(x + (c.view().x_of(6 * kBar) - c.view().x_of(4 * kBar)), lower, why));
+    CHECK(start_of(doc.snapshot(), 12) == 5 * kBar);
+    CHECK(start_of(doc.snapshot(), 11) > end_of(doc.snapshot(), 12));
+    CHECK(doc.history().undo_depth() == 1 && valid(doc.snapshot()));
+    CHECK(c.undo(why) && !doc.can_undo());
+
+    // Drag B's end half a bar earlier: C keeps the gap it had to B.
+    const double edge = c.view().x_of(5 * kBar) - 2;
+    CHECK(c.hit(edge, lower).zone == HitZone::TrimEnd);
+    CHECK(c.press(edge, lower, why));
+    const double to = edge - (c.view().x_of(5 * kBar) - c.view().x_of(4 * kBar + kBar / 2));
+    c.move(to, lower);
+    CHECK(c.release(to, lower, why));
+    CHECK(end_of(doc.snapshot(), 11) < 5 * kBar);
+    CHECK(start_of(doc.snapshot(), 12) - end_of(doc.snapshot(), 11) == kBar);
+    CHECK(doc.history().undo_depth() == 1 && valid(doc.snapshot()));
+    CHECK(c.undo(why) && !doc.can_undo());
+
+    // A click without a move changes nothing.
+    CHECK(c.press(x, lower, why) && c.release(x, lower, why));
+    CHECK(!doc.can_undo());
+    return 0;
+}
+
+int test_shuffle_loop_ripples() {
+    ModelDocument doc(three_regions());
+    EditController c(doc);
+    c.set_mode(EditMode::Shuffle);
+    std::string why;
+    // Loop B twice: two bars of room open, C moves up behind the repeats.
+    CHECK(c.select_region(11));
+    CHECK(c.loop_clip(2, why));
+    CHECK(lane(doc.snapshot(), 0).regions.size() == 5);
+    CHECK(start_of(doc.snapshot(), 12) == 8 * kBar && valid(doc.snapshot()));
+    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Loop Clip");
+    // Looping again with one repeat gives a bar back.
+    CHECK(c.select_region(11));
+    CHECK(c.loop_clip(1, why));
+    CHECK(start_of(doc.snapshot(), 12) == 7 * kBar && valid(doc.snapshot()));
     return 0;
 }
 
@@ -1587,7 +1727,8 @@ int test_paste_across_sessions_shuffle() {
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
-    if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() || test_shuffle() ||
+    if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() || test_shuffle() || test_shuffle_trim_and_spot() ||
+        test_shuffle_nudge_and_drag() || test_shuffle_loop_ripples() ||
         test_shuffle_automation_notice() || test_insert_delete_time() ||
         test_repeat_count_text() || test_clip_loop_command() || test_fades_and_crossfades() ||
         test_cut_edges_lose_fades() || test_paste_across_sessions() ||
