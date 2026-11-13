@@ -153,10 +153,13 @@ The lead reserved protocol **70**; a peer of 69 or lower is refused at Hello.
   the codec, the reply and the command map stay the ones every command uses.
   `contracts/api/include/sonora/api/plugin_editor.h` declares the structs and
   the mapping; `contracts/api/src/plugin_editor_wire.cpp` implements it.
-- `OpenPluginEditor{track, slot}` is the command `plugin.editor_open`:
-  `CommandRequest::target` the track index, argument `slot=<n>`,
-  `0 <= n < kInsertSlots`. `ClosePluginEditor` is `plugin.editor_close`, the
-  same. The reply is Ok once the request is taken; the outcome is the event.
+- `OpenPluginEditor{track, slot}` is the catalog's `plugin.editor.open`
+  (ADR-0012 §8): `CommandRequest::target` the track index, argument the slot
+  in decimal, `0 <= slot < kInsertSlots`. `ClosePluginEditor` is
+  `plugin.editor.close`, the same. ADR-0012's argument
+  `"<slot> <parent token>"` loses its token: the interface holds no window
+  (§1), and the engine sends the host an empty one (§4). Nothing ran the old
+  form, so no client changes. The reply is Ok once the request is taken; the outcome is the event.
 - `PluginEditorState{track, slot, state, reason}` is `EventKind::PluginEditor`
   (11): `track` the track index, `insert` the slot, `flags` the
   `PluginEditorStatus` (`Closed 0`, `Opening 1`, `Open 2`, `Failed 3`, as

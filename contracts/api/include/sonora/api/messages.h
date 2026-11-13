@@ -232,7 +232,7 @@ namespace sonora::api {
 //   `key_inputs`. A peer of 68 or lower is refused at Hello, so an older
 //   engine never meets the command.
 // 70 (ADR-0088, plug-in editors; reserved by the lead): the commands
-//   plugin.editor_open and plugin.editor_close and EventKind::PluginEditor
+//   plugin.editor.open and plugin.editor.close and EventKind::PluginEditor
 //   (11; api/plugin_editor.h), which a version-69 decoder refuses as an
 //   unknown kind. A peer of 69 or lower is refused at Hello.
 constexpr uint32_t kProtocolVersion = 70;

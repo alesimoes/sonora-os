@@ -13,19 +13,17 @@ CommandRequest request(const char* id, uint32_t track, uint32_t slot) {
     CommandRequest r;
     r.command = id;
     r.target = static_cast<int32_t>(track);
-    r.argument = "slot=" + std::to_string(slot);
+    r.argument = std::to_string(slot);
     return r;
 }
 
-bool read_slot(const std::string& arg, uint32_t& slot, std::string& why) {
-    static const std::string kKey = "slot=";
-    const std::string v = arg.compare(0, kKey.size(), kKey) == 0 ? arg.substr(kKey.size()) : "";
+bool read_slot(const std::string& v, uint32_t& slot, std::string& why) {
     // Two digits at most: kInsertSlots is 10, and strtoul cannot overflow.
     char* end = nullptr;
     const unsigned long n = std::strtoul(v.c_str(), &end, 10);
     if (v.empty() || v.size() > 2 || *end != '\0' || v[0] < '0' || v[0] > '9') {
-        why = "name the insert: slot=<0.." + std::to_string(kInsertSlots - 1) + ">, not \"" +
-              arg + "\"";
+        why = "name the insert by its slot, 0 to " + std::to_string(kInsertSlots - 1) +
+              ", not \"" + v + "\"";
         return false;
     }
     if (n >= kInsertSlots) {

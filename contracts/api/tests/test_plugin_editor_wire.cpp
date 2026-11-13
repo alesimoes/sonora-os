@@ -31,6 +31,7 @@ int failures = 0;
     } while (0)
 
 using namespace sonora::api;
+using sonora::DispatchResult;
 using sonora::api::testing::FakeEngine;
 namespace model = sonora::model;
 
@@ -62,14 +63,15 @@ void open_round_trips() {
     m.track = 17;
     m.slot = kInsertSlots - 1;
     const CommandRequest r = over_wire(to_command(m));
-    CHECK(r.command == "plugin.editor_open");
+    CHECK(r.command == "plugin.editor.open");
+    CHECK(r.target == 17 && r.argument == std::to_string(kInsertSlots - 1));
     OpenPluginEditor back;
     std::string why;
     CHECK(from_command(r, back, why));
     CHECK(back.track == 17 && back.slot == kInsertSlots - 1);
     // A close is not read as an open.
     ClosePluginEditor wrong;
-    CHECK(!from_command(r, wrong, why) && mentions(why, "plugin.editor_close"));
+    CHECK(!from_command(r, wrong, why) && mentions(why, "plugin.editor.close"));
 }
 
 void close_round_trips() {
@@ -77,7 +79,7 @@ void close_round_trips() {
     m.track = 0;
     m.slot = 3;
     const CommandRequest r = over_wire(to_command(m));
-    CHECK(r.command == "plugin.editor_close");
+    CHECK(r.command == "plugin.editor.close");
     ClosePluginEditor back;
     std::string why;
     CHECK(from_command(r, back, why));
@@ -112,13 +114,15 @@ void commands_refused() {
     CommandRequest r = to_command(OpenPluginEditor{});
     r.target = -1;
     CHECK(!from_command(r, m, why) && mentions(why, "needs a track"));
-    for (const char* arg : {"", "slot=", "slot=x", "slot=-1", "slot=+1", "slot=123", "1", "slot=1 "}) {
+    // The old "<slot> <parent token>" form is refused: the interface holds
+    // no window (ADR-0088 §1).
+    for (const char* arg : {"", "x", "-1", "+1", "123", "slot=1", "1 ", "1 0x2a"}) {
         r = to_command(OpenPluginEditor{});
         r.argument = arg;
         why.clear();
-        CHECK(!from_command(r, m, why) && mentions(why, "slot="));
+        CHECK(!from_command(r, m, why) && mentions(why, "by its slot"));
     }
-    r.argument = "slot=" + std::to_string(kInsertSlots);
+    r.argument = std::to_string(kInsertSlots);
     CHECK(!from_command(r, m, why) && mentions(why, "past the last insert slot"));
 }
 
@@ -190,7 +194,7 @@ struct Rig {
     // A mono insert on track 0, slot `slot`.
     void add_insert(uint8_t slot) {
         const model::Snapshot& doc = engine->document();
-        const PluginInfo& p = testing::fake_catalog()[0];
+        const PluginInfo p = testing::fake_catalog()[0];
         model::AddInsert add;
         add.track = doc.edit->tracks[0]->id;
         add.insert = doc.next_id;

@@ -441,8 +441,9 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // amendment of 2026-11-03); the list is kept across starts.
         {"plugin.block", CommandTarget::None, "Never run this plug-in", true},
         {"plugin.unblock", CommandTarget::None, "Allow a blocked plug-in again", true},
-        // Argument: "<slot> <parent token>", the slot 0..9 (A..J) and the
-        // window to parent the editor to, opaque, empty on the appliance.
+        // Argument: "<slot>", 0..9 (A..J). The window has no parent token
+        // from the interface: the engine gives the host an empty one, a
+        // parentless toplevel (ADR-0088 §4; api/plugin_editor.h, protocol 70).
         {"plugin.editor.open", CommandTarget::Track, "Open a plugin's own editor", true},
         {"plugin.editor.close", CommandTarget::Track, "Close a plugin's own editor", true},
         {"plugin.retry", CommandTarget::Track,
