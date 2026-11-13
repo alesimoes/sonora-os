@@ -15,6 +15,8 @@ is marked `owner` with the sentence that asks. Plain mentions of an owner
 """
 import re
 
+from . import owner_route
+
 _ASK = re.compile(
     r"\bowner(?:/host)?\s+(?:decision|ruling|call|action|choice)s?\b"
     r"|\b(?:missing|needs?|awaits?|waits?\s+on|waiting\s+on|wait\s+for)\s+"
@@ -43,7 +45,7 @@ def mark(o, t):
     Returns True when it did."""
     if t["state"] != "blocked" or t.get("owner"):
         return False
-    ask = owner_from(t.get("note"))
+    ask = owner_route.real_ask(owner_from(t.get("note")), t.get("note"))
     if ask is None:
         return False
     o.store.set_task(t["id"], owner=ask)

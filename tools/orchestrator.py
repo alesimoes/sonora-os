@@ -928,14 +928,15 @@ class Orchestrator:
                         now, key=lambda f: f["id"], task=self._rep_task)
 
     def _rep_task(self, f):
-        """The task a feature's events are filed under (its first)."""
-        ts = self._feature_tasks(f["id"])
+        """The task a feature's events are filed under (its first live)."""
+        ts = siblings.live(self._feature_tasks(f["id"]))
         return ts[0]["id"] if ts else None
 
     def _watch_pr(self, f, now):
         if not self.dry_run and pr_sync.sync_tasks(self.store, f):
             f = self.store.get_feature(f["id"])
-        ts = self._feature_tasks(f["id"])
+        # A closed first slice is not pr_open: #709 was never polled (#706).
+        ts = siblings.live(self._feature_tasks(f["id"]))
         if not f["pr"] or not ts:
             return True
         # A blocked train PR is still watched: someone may merge or close

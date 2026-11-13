@@ -8,7 +8,8 @@ names a blocked feature, a PR open and not merging. These checks raise a
 dashboard alert for any task, feature or PR with no run and no progress
 past a bound, with the reason the daemon knows, and re-issue a lost wake.
 """
-from . import hold_check, resolver_link, siblings, stall_resolver, wakes
+from . import (blockinfo, hold_check, resolver_link, siblings,
+               stall_resolver, wakes)
 from .scheduler import DONE_STATES, HOLD
 from .supervisor_checks import (_active, _feature_has_run, _hms,
                                 _waiting_since, _why_not_launched)
@@ -68,7 +69,7 @@ def waits_elsewhere(store, t):
     fid = t.get("feature_id")
     if not fid:
         return False
-    if any(x["state"] == "blocked" and x.get("owner")
+    if any(x["state"] == "blocked" and blockinfo.waits_on_owner(x)
            for x in store.tasks() if x.get("feature_id") == fid):
         return True
     return resolver_link.open_entry_for(store, fid) is not None
@@ -192,7 +193,7 @@ def stalled_prs(sv, now):
     for f in sv.o.store.features():
         if not f["pr"] or f["state"] != "pr_open":
             continue
-        ts = sv.o.store.feature_tasks(f["id"])
+        ts = siblings.live(sv.o.store.feature_tasks(f["id"]))
         if not ts or _feature_has_run(sv, f["id"], ts[0]["id"]):
             continue
         age = _waiting_since(sv, ts[0], now)
