@@ -1,3 +1,9 @@
+# common/launch (ADR-0164) hooks in here while the root CMakeLists.txt is
+# held by other features; it has no dependency on this module.
+if(EXISTS "${CMAKE_SOURCE_DIR}/common/launch/CMakeLists.txt" AND NOT TARGET sonora_launch)
+  add_subdirectory("${CMAKE_SOURCE_DIR}/common/launch" "${CMAKE_BINARY_DIR}/common/launch")
+endif()
+
 # Pitch analysis and planning (time.pitch, ADR-0143 section 3). Pure standard
 # C++17, off the audio thread: a YIN-class tracker, note segmentation, the
 # PitchPlan that produces the PitchEditSpec of contracts/api/pitch.h, and the
