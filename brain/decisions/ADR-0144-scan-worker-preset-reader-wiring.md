@@ -97,3 +97,13 @@ ADR records why, so they are not taken for forgotten.
   the plugin loads; a broken label is no reason to hide a working preset.
 - **Read the whole file to find `Info`.** A listing would read up to 17 MB
   per file; the header and the chunk list already say where `Info` is.
+
+## Amendment 2026-11-13 - the server owns the reader
+
+`EngineControlServer` owns one `FactoryPresetReader` when a plug-in host is
+configured, built from the scan worker's host path, bundles and probe timeout
+(`preset_reader()`). `plugin.rescan` calls `forget_blocked()` before it queues
+the scan, so a preset that crashed its reader is tried again after a rescan
+and not before. Preset load (ADR-0029 slice 5) is the reader's first caller;
+until then only the test reads through it. No protocol or format change.
+Test: `test_plugin_rescan_presets`.
