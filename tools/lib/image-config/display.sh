@@ -109,6 +109,7 @@ grep -q 'install -m 0755 "\$UI" "\$STAGE/sonora-ui"' "$BUILD_ISO" || bad "build-
 BOOT_QEMU="$ROOT/tools/test-boot-qemu.sh"
 if [ -f "$SMOKE_SCRIPT" ]; then
   grep -q 'first frame after' "$SMOKE_SCRIPT" || bad "smoketest does not look for the UI's first-frame line"
+  grep -q 'display_failure_report' "$SMOKE_SCRIPT" || bad "smoketest does not report why the display stack failed"
   grep -q 'kill_and_recover sonora-ui.service' "$SMOKE_SCRIPT" || bad "smoketest does not SIGKILL the UI"
   grep -q 'kill_and_recover sonora-compositor.service' "$SMOKE_SCRIPT" || bad "smoketest does not SIGKILL labwc"
   # shellcheck disable=SC2016 # literal text of the script
