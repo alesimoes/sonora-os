@@ -245,7 +245,9 @@ def build_prompt(task, run_id, name, kind, result_path, extra=""):
         f"run: {run_id}",
         f"When finished write result.json to: {result_path}",
         "Schema: role, task, status (done|fail|blocked), summary, commit, "
-        "branch, findings, followups, unverified.",
+        "branch, findings, followups, unverified, and needs_owner (with "
+        "status blocked, only when the owner alone can unblock it: a "
+        "decision with no recommended default, or the host).",
     ]
     if task.get("brief"):
         lines += ["", task["brief"]]

@@ -10,13 +10,22 @@ Each tick, for features the PR watch does not cover:
   * PR merged on GitHub  -> feature merged;
   * PR closed unmerged   -> feature closed;
   * every task merged or closed -> the feature is terminal too (a feature
-    left "blocked" or "pr_open" only holds up what depends on it).
+    left "blocked" or "pr_open" only holds up what depends on it). The same
+    holds for a feature still "building", "qa" or "integrating": six
+    features whose every task had closed (ui.editing.import,
+    ui.shell.fullscreen, main-red-7aeea70f...) still counted as building on
+    2026-11-13, because only the PR states were looked at.
+
+The same step closes the features a stall resolver's PR carried
+(resolver_link) and applies the re-plans that waited for a run (replan).
 """
+from . import replan, resolver_link
 from .forge import ForgeError
 
 TERMINAL_TASK = ("merged", "closed")
 OPEN_PR = ("pr_open", "ci_fix")
 LIVE = OPEN_PR + ("blocked",)
+WORKING = ("building", "qa", "integrating")
 
 
 def _terminal_state(ts):
@@ -63,7 +72,7 @@ def _from_pr(o, f, ts):
 
 def sync_one(f, o, now):
     ts = o.store.feature_tasks(f["id"])
-    if not ts or f["state"] not in LIVE:
+    if not ts or f["state"] not in LIVE + WORKING:
         return True
     if _from_tasks(o, f, ts):
         return True
@@ -77,5 +86,7 @@ def sync_one(f, o, now):
 
 
 def sync(o, now):
+    o.guard.step("carried_prs", resolver_link.sweep, o)
+    o.guard.step("replan_pending", replan.apply_pending, o)
     o.guard.each("feature_sync", o.store.features(), sync_one, o, now,
                  key=lambda f: f["id"], task=o._rep_task)
