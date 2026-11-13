@@ -218,6 +218,8 @@ add_subdirectory(plugins/host)
 add_subdirectory(engine/core)
 # Offline converters (ADR-0007 M10); the engine never links them.
 add_subdirectory(interchange)
+# The opt-in Claude layer (ADR-0155), on common/model; the engine never links it.
+add_subdirectory(assistant)
 add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
 # ALSA direct (ADR-0053). Its logic builds and tests everywhere; libasound is optional.
@@ -287,6 +289,7 @@ sonora_label_module_tests(drivers/clock drivers)
 sonora_label_module_tests(drivers/ltc drivers)
 sonora_label_module_tests(drivers/surfaces drivers)
 sonora_label_module_tests(interchange interchange)
+sonora_label_module_tests(assistant assistant)
 sonora_label_module_tests(plugins/analyze analyze)
 sonora_label_module_tests(ui/keymap ui)
 sonora_label_module_tests(ui/tui ui)
