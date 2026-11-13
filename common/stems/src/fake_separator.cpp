@@ -36,7 +36,4 @@ bool FakeSeparator::separate(const StemRequest& r, StemResult& out, ProgressSink
     return true;
 }
 
-// Empty until the classical baseline lands (ADR-0165).
-std::vector<std::unique_ptr<StemSeparator>> default_separators() { return {}; }
-
 }  // namespace sonora::stems

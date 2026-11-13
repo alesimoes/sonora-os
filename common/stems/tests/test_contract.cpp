@@ -36,6 +36,6 @@ int main() {
     CHECK(!f.separate(req, r2, &stop, &err));
     CHECK(err == "cancelled");
     CHECK(!f.separate(StemRequest{}, r2, nullptr, &err));
-    CHECK(default_separators().empty());
+    CHECK(default_separators().size() == 2);
     return fails ? 1 : 0;
 }
