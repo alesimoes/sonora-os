@@ -63,12 +63,24 @@ endif()
 # OMF import (ADR-0160), read-only.
 add_subdirectory(omf)
 add_subdirectory(aaf_export)
+add_subdirectory(ptx)
 
 # sonora-convert dispatches .omf: run_convert needs the OMF importer, and
 # sonora_omf already links sonora_interchange (a static cycle is legal).
 target_link_libraries(sonora_interchange PUBLIC sonora_omf)
+# ptx glue (convert_ptx.cpp) needs the mapper and media copy.
+target_sources(sonora_interchange PRIVATE src/convert_ptx.cpp)
+target_link_libraries(sonora_interchange PUBLIC sonora_ptx_map sonora_ptx_media)
+if(TARGET sonora_ptx_libptformat)
+  target_compile_definitions(sonora_interchange PRIVATE SONORA_WITH_LIBPTFORMAT=1)
+  target_link_libraries(sonora_interchange PUBLIC sonora_ptx_libptformat)
+endif()
 
 add_executable(test_omf_convert tests/test_omf_convert.cpp)
 target_link_libraries(test_omf_convert PRIVATE sonora_interchange)
 add_test(NAME omf_convert COMMAND test_omf_convert)
 set_tests_properties(omf_convert PROPERTIES LABELS interchange)
+
+if(NOT TARGET sonora_ptx_libptformat)
+  target_compile_definitions(test_interchange PRIVATE SONORA_PTX_READER_OFF=1)
+endif()
