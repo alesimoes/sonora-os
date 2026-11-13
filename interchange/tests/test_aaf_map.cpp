@@ -111,7 +111,7 @@ void test_transition() {
     CHECK(pl.crossfades[0].align == model::Align::Centre);
 }
 
-void test_transition_without_handle_is_shortened() {
+void test_transition_without_handle_moves() {
     AafTransition t;
     t.length = 10;
     t.cut_point = 5;
@@ -121,8 +121,8 @@ void test_transition_without_handle_is_shortened() {
     // The right clip starts at 0 of its source: no handle before the cut.
     CHECK(run(doc_with({clip(0, 100), t, clip(0, 100)}), s, r, e));
     const auto& pl = playlist(s);
-    CHECK(pl.crossfades.empty() || pl.crossfades[0].length < 19200);
-    CHECK(!r.dropped.empty() || !r.approximated.empty());
+    CHECK(pl.crossfades.size() == 1 && pl.crossfades[0].align == model::Align::Post);
+    CHECK(!r.approximated.empty());
 }
 
 void test_missing_umid() {
@@ -202,7 +202,7 @@ int main() {
     test_rational();
     test_25fps_filler();
     test_transition();
-    test_transition_without_handle_is_shortened();
+    test_transition_without_handle_moves();
     test_missing_umid();
     test_overlap_refused();
     test_rounding_reported();

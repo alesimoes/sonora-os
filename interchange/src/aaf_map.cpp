@@ -435,6 +435,7 @@ private:
         Frames hb = 0, ha = 0;
         model::crossfade_handles(l, r, pool, hb, ha);
         const Frames want = x.length;
+        const model::Align planned = x.align;
         if (!model::fit_crossfade(x, hb, ha)) {
             report_.dropped.push_back(what + ": the clips have no spare source for a crossfade");
             return true;
@@ -445,6 +446,9 @@ private:
             (st.in_x[li] >= 0 && st.in_x[li] + xb > l.length)) {
             report_.dropped.push_back(what + ": its ends would meet inside a clip; no crossfade");
             return true;
+        }
+        if (x.align != planned) {
+            report_.approximated.push_back(what + ": no source handle on one side; the crossfade is moved to the other");
         }
         if (x.length != want) {
             report_.approximated.push_back(what + ": crossfade shortened from " +
