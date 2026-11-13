@@ -335,7 +335,7 @@ jobs:
       # -x follows `source=` directives, so tools/lib/* sourced by a script is
       # checked in that script's context (tools/test-image-config.sh's parts).
       - name: Check
-        run: shellcheck -x tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck iso/config/includes.chroot/usr/local/bin/sonora-acceptance iso/config/includes.chroot/usr/local/bin/sonora-windows-plugins
+        run: shellcheck -x tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/bin/sonora-session-open iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck iso/config/includes.chroot/usr/local/bin/sonora-acceptance iso/config/includes.chroot/usr/local/bin/sonora-windows-plugins
 
       # ADR-0007 M5: module include edges and the contract lock. Seconds,
       # no build needed.
@@ -371,6 +371,9 @@ jobs:
 
       - name: A/B updates, slot logic against files
         run: tools/test-ab-updates.sh
+
+      - name: Session-open probe
+        run: tools/test-session-open.sh
 
       - name: Policy check items match the image script
         run: tools/test-policycheck-qemu.sh --static
