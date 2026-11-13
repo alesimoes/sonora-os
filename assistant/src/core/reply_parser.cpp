@@ -54,7 +54,7 @@ template <class Op, class Mix, class Field>
 const Mix* latest(const model::Plan& plan, Field field, std::uint64_t id) {
     const Mix* found = nullptr;
     for (const auto& s : plan.steps)
-        if (const Op* op = std::get_if<Op>(&s.op))
+        if (const Op* op = s.op.template get_if<Op>())
             if ((op->mix.*field) == id) found = &op->mix;
     return found;
 }

@@ -217,7 +217,7 @@ void test_reply_valid_and_composes() {
         {"op":"set_bus_gain","bus":20,"gain_db":-2}]})", p, e));
     CHECK(p.steps.size() == 4);
     // The pan step keeps the gain the first step set.
-    const auto* m = std::get_if<model::SetMix>(&p.steps[1].op);
+    const auto* m = p.steps[1].op.get_if<model::SetMix>();
     CHECK(m && m->mix.gain_db == -3.0f && m->mix.pan == 0.25f);
 }
 
