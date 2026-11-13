@@ -51,6 +51,9 @@ void FakePatternPlayer::render_events(const Pattern& pattern, std::int64_t block
     const double frames_per_tick = frames_per_beat / kTicksPerBeat;
     const int length = pattern.length();
     const bool any_solo = pattern.any_solo();
+    // Pattern already keeps nudges inside half a step; clamping again here
+    // keeps the scan margin below valid whatever path built the snapshot.
+    const int max_nudge = pattern.max_nudge_ticks();
 
     const std::int64_t block_end = block_start_frame + frames;
     // Swing plus nudge move a trigger at most one step late or half a step
@@ -67,8 +70,10 @@ void FakePatternPlayer::render_events(const Pattern& pattern, std::int64_t block
         for (int r = 0; r < pattern.row_count(); ++r) {
             const Step& st = pattern.step(r, s);
             if (!st.on || st.velocity == 0 || !pattern.row_audible(r, any_solo)) continue;
+            const int nudge = st.nudge_ticks < -max_nudge ? -max_nudge
+                              : (st.nudge_ticks > max_nudge ? max_nudge : st.nudge_ticks);
             const std::int64_t at = tempo.origin_frame
-                + std::llround(base + st.nudge_ticks * frames_per_tick);
+                + std::llround(base + nudge * frames_per_tick);
             if (at < block_start_frame || at >= block_end) continue;
             if (!fires(seed_, n, r, st.probability)) continue;
 

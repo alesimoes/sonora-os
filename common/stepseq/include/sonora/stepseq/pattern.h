@@ -26,7 +26,15 @@ public:
     // Setters clamp instead of refusing: the editor shows the clamped value.
     void set_length(int steps) noexcept { length_ = clamp(steps, 1, kMaxSteps); }
     void set_row_count(int rows) noexcept { row_count_ = clamp(rows, 1, kMaxRows); }
-    void set_steps_per_beat(int n) noexcept { steps_per_beat_ = clamp(n, 1, 8); }
+    // A finer grid shrinks half a step, so stored nudges are clamped again;
+    // otherwise a trigger could drift outside the player's scan window.
+    void set_steps_per_beat(int n) noexcept {
+        steps_per_beat_ = clamp(n, 1, 8);
+        const int half = max_nudge_ticks();
+        for (auto& row_steps : steps_)
+            for (Step& s : row_steps)
+                s.nudge_ticks = static_cast<std::int16_t>(clamp(s.nudge_ticks, -half, half));
+    }
     void set_swing_percent(int p) noexcept {
         swing_percent_ = clamp(p, kMinSwingPercent, kMaxSwingPercent);
     }

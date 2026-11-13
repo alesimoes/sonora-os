@@ -211,6 +211,29 @@ void test_overflow_and_no_allocation() {
     CHECK(out->count == kMaxEventsPerBlock && out->dropped > 0);
 }
 
+// A nudge stored at a coarse grid must not outgrow half a step when the grid
+// gets finer, or the player's scan window misses it and the hit depends on
+// how the timeline is cut into blocks.
+void test_nudge_reclamped_on_grid_change() {
+    Pattern p;
+    p.set_row(0, row_of(1));
+    p.set_steps_per_beat(1);
+    p.set_step(0, 8, on(100, 100, -480));
+    CHECK(p.step(0, 8).nudge_ticks == -480);
+    p.set_steps_per_beat(8);
+    CHECK(p.step(0, 8).nudge_ticks >= -p.max_nudge_ticks());
+    CHECK(p.step(0, 8).nudge_ticks <= p.max_nudge_ticks());
+
+    FakePatternPlayer a, b;
+    a.reset(3);
+    b.reset(3);
+    TempoSnapshot t;
+    const auto whole = render_all(a, p, t, 0, 96000, 96000);
+    const auto small = render_all(b, p, t, 0, 96000, 64);
+    CHECK(!whole.empty());
+    CHECK(whole == small);
+}
+
 void test_exchange() {
     auto x = std::make_unique<PatternExchange>();
     Pattern a, b, c;
@@ -237,6 +260,7 @@ int main() {
     test_block_size_independence_and_seed();
     test_mute_solo();
     test_overflow_and_no_allocation();
+    test_nudge_reclamped_on_grid_change();
     test_exchange();
     std::printf("stepseq contract: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;

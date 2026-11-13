@@ -21,7 +21,7 @@ module dependency):
    its sample in the session model (0 = nothing), row gain in dB, pan, mute,
    solo. `Pattern` (`pattern.h`): fixed capacity 16 rows x 64 steps, length
    1..64, steps per beat 1..8, swing 50..75 % on every second step. Setters
-   clamp; nudge is clamped to half a step.
+   clamp; nudge is clamped to half a step, again whenever the grid changes.
 2. `PatternPlayer` (`pattern_player.h`), abstract: `reset(seed)` off the audio
    thread, and `render_events(pattern, block_start_frame, frames,
    TempoSnapshot, EventBlock&) noexcept`, which fills a fixed array of 256
