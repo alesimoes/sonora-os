@@ -106,6 +106,7 @@ class Config:
     # opens a fix task (harness/nightly.py).
     self_update_max_defer_s: float = 600.0   # harness/selfupdate bound
     nightly_workflow: str = "nightly.yml"
+    nightly_workflows: tuple = ("nightly.yml", "nightly-boot.yml")
     nightly_poll_s: float = 900.0
 
     def __post_init__(self):
