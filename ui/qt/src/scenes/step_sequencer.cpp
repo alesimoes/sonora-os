@@ -4,6 +4,8 @@
 // off-beat hats, a lane with nothing assigned, swing at 58 %, and the snare's
 // second hit selected so its velocity, probability and pitch show in the lane.
 // Opened the way the operator does, through window.step_sequencer.
+#include <QQuickItem>
+
 #include "screenshot_scene.h"
 #include "step_sequencer_model.h"
 
