@@ -109,6 +109,7 @@ ui/keymap -> common/json
 ui/keymap -> contracts/api
 ui/qt -> common/audiofile
 ui/qt -> common/base
+ui/qt -> common/loops
 ui/qt -> common/model
 ui/qt -> common/platform
 ui/qt -> common/session_files

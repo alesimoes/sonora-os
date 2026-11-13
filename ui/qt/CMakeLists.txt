@@ -170,6 +170,10 @@ sonora_ui_library(sonora_ui_mixer QT SOURCES
 )
 target_link_libraries(sonora_ui_mixer PUBLIC sonora_ui_session sonora_ui_inserts)
 
+# The loop browser (ADR-0163): its model over the catalog interfaces only.
+sonora_ui_library(sonora_ui_loops QT SOURCES src/loop_browser_model.h src/loop_browser_model.cpp)
+target_link_libraries(sonora_ui_loops PUBLIC sonora_loops)
+
 # The QML files are listed as sources so that the micro-build gate maps a QML
 # change to this library and to the tests that load it, not to the whole UI.
 set(SONORA_UI_QML_FILES
@@ -178,12 +182,12 @@ set(SONORA_UI_QML_FILES
   qml/InsertPanel.qml qml/Knob.qml qml/Fader.qml qml/MeterBar.qml qml/CurveView.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
   qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml qml/IoSetupWindow.qml qml/NewSessionDialog.qml
   qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
-  qml/PluginManager.qml qml/KeyChooser.qml qml/TrackListWindow.qml
+  qml/PluginManager.qml qml/KeyChooser.qml qml/TrackListWindow.qml qml/LoopBrowser.qml
 )
 sonora_ui_library(sonora_ui_qml QT SOURCES
   src/qml_resources.cpp src/register_types.h ${SONORA_UI_QML_FILES})
 set_source_files_properties(${SONORA_UI_QML_FILES} PROPERTIES HEADER_FILE_ONLY ON)
-target_link_libraries(sonora_ui_qml PUBLIC sonora_ui_mixer)
+target_link_libraries(sonora_ui_qml PUBLIC sonora_ui_mixer sonora_ui_loops)
 qt_add_resources(sonora_ui_qml sonora_qml
   PREFIX /sonora
   FILES ${SONORA_UI_QML_FILES}
@@ -489,6 +493,11 @@ add_test(NAME ui_insert_key COMMAND test_ui_insert_key)
 # next catalog, rescan, favourites kept through a fake store (and refused
 # when it cannot save), then the chooser's Manage, star and Favourites
 # loaded offscreen.
+add_executable(test_ui_loop_browser tests/test_loop_browser.cpp)
+target_link_libraries(test_ui_loop_browser PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_loop_browser COMMAND test_ui_loop_browser)
+set_tests_properties(ui_loop_browser PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 add_executable(test_ui_plugin_manager tests/test_plugin_manager.cpp)
 target_link_libraries(test_ui_plugin_manager PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_plugin_manager COMMAND test_ui_plugin_manager)
