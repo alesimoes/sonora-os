@@ -166,3 +166,30 @@ Decided 2026-11-13 (recommended default taken; no owner decision needed).
   - USB MIDI quarter-frame jitter on the target machine (UMC1820).
   No latency figure for this path exists yet; the first one must be measured,
   not estimated.
+
+## Unverified, needs hardware
+
+Open measurements, parked until a MIDI-capable interface and a real master
+are on the bench (owner decision: hardware validations go to the end). Each
+one is written so a result can be recorded in `brain/research/` with the
+model, kernel, quantum and host, as the standard of evidence requires.
+
+1. **Lock window vs transport lag.** Drive the chase from a real MTC master
+   through a play, stop and rolling start. Record the lag between the
+   master's frame and the engine's sample position, and count repeated
+   locates while rolling. Pass for the 2-frame window: the lag stays inside
+   it (80 ms at 25 fps, 66.7 ms at 30 fps) and rolling triggers no repeated
+   locates.
+2. **Locate-then-play latency.** Time from a locate command to the first
+   audible or sample-accurate play position, on the engine path. Record the
+   frames the engine starts behind the master. No figure exists yet.
+3. **USB MIDI quarter-frame jitter.** Capture quarter-frame arrival times
+   through USB MIDI and through a raw MIDI node on the UMC1820 host. Record
+   the spread of the inter-arrival interval around its nominal value, at each
+   frame rate.
+4. **Generator pacing source.** Decide what paces the generator (audio clock
+   or a timer), then measure its drift against the audio clock over a long
+   run. Until this is measured the generator has no stated drift figure.
+
+None of these is passing. Each stays Unverified until its result is in
+`brain/research/` with the setup that produced it.
