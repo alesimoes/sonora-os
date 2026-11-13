@@ -137,3 +137,32 @@ the same shape: what it needs is a codec, timecode arithmetic that gets
   target machine: not measured.
 - The generator's pacing source and its drift against the audio clock: not
   written yet.
+
+## Amendment 2026-11-13: rate mismatch is counted, not refused
+
+Decided 2026-11-13 (recommended default taken; no owner decision needed).
+
+- **Decision.** A chase whose master timecode carries a rate other than the
+  session's rate is not refused at start. `MtcChaseDriver::decide` counts it
+  in `MtcSyncStats::rate_mismatches` and still passes the position to
+  `ChaseRule`, because the sample is right even when the label's rate is not.
+  `start()` validates the settings against the instance's mode only; it does
+  not inspect the master's rate, which is only known once a frame arrives.
+- **Why counted, not refused.** A master that switches rate mid-programme (or
+  a deck set one step off) still has a correct sample position; refusing it
+  would stop the chase on a fact the engine can keep following. The count
+  keeps the mismatch visible to the operator and to tests.
+- **Where it is documented.** `drivers/surfaces/include/sonora/surfaces/mtc_sync.h`
+  (the `rate_mismatches` field and the chase comment), implemented in
+  `drivers/surfaces/src/mtc_sync.cpp`.
+- **Still Unverified, parked with hardware validation (routed to the
+  researcher).** None of the following has been measured on hardware, and
+  none is claimed here:
+  - the generator's pacing source and its drift against the audio clock;
+  - the lock window against the published transport lag (whether rolling
+    triggers repeated locates);
+  - the engine's locate-then-play latency and the frames the engine starts
+    behind the master;
+  - USB MIDI quarter-frame jitter on the target machine (UMC1820).
+  No latency figure for this path exists yet; the first one must be measured,
+  not estimated.
