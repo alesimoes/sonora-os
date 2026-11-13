@@ -20,7 +20,7 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 
 // A lock-free atomic pointer is what keeps acquire() off any mutex.
-static_assert(std::atomic<Pattern*>::is_always_lock_free, "acquire() would lock");
+static_assert(std::atomic<sonora::stepseq::Pattern*>::is_always_lock_free, "acquire() would lock");
 
 using namespace stepseq_test;
 
