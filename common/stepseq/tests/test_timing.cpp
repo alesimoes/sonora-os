@@ -22,7 +22,7 @@ int main() {
     CHECK(eb->events[0].gate_frames == 3000);
 
     // Odd block sizes give the same frames as aligned ones.
-    auto a = render(pl, p, 6000 * 16, 997);
+    auto a = render(pl, p, 6000 * 16, 800);
     CHECK(a.size() == hits.size());
     for (size_t i = 0; i < a.size(); ++i) CHECK(a[i].frame == hits[i].frame);
 

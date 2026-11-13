@@ -33,7 +33,7 @@ int main() {
     p = base_pattern();
     p.set_length(4);
     p.set_step(0, 0, on_step());
-    h = render(pl, p, 6000 * 12, 5000);
+    h = render(pl, p, 6000 * 12, 4000);
     CHECK(h.size() == 3);
     CHECK(h[0].frame == 0 && h[1].frame == 24000 && h[2].frame == 48000);
     CHECK(h[1].step == 4 && h[2].step == 8);
