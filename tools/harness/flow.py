@@ -12,7 +12,7 @@ import os
 import re
 
 from . import (dispatch, plan_numbers, plangate, plans, proposal,
-               queueimport, routing)
+               queueimport, replan, routing)
 from .forge import ForgeError
 from .scheduler import HOLD
 from .status import write_atomic
@@ -378,7 +378,7 @@ class Flow:
         return True, []
 
     def _task_id(self, fid, tid):
-        return f"{fid}.{tid}"
+        return f"{fid}.{tid}" + replan.suffix(self.store, fid)
 
     def _brief(self, t, row):
         lines = [f"{t['title']} ({t['kind']})", "", t["brief"], "",
@@ -484,8 +484,8 @@ class Flow:
         ev, fid = t.get("event"), t["feature_id"]
         if not fid:
             return True, []
-        if ev == "plan_request":
-            return self.ingest_plan(fid)
+        if ev == "plan_request" or replan.is_replan(t):
+            return replan.ingest(self, t)
         if t["agent"] == "lead" and (ev == "plan_ready" or
                                      self.is_planned(fid)):
             if ev != "plan_ready" and not os.path.exists(self.assign_file(fid)):

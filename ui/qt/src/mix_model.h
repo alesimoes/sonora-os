@@ -165,6 +165,16 @@ public:
     MixModel(SessionModel& session, GainSender sender, EngineTracks engine_tracks, bool audible,
              QObject* parent = nullptr);
 
+    // The AutoMatch default: how long the cap takes from a released Touch ride
+    // to the static (ADR-0131). The user's own time is a later Preferences item.
+    static constexpr int kGlideMs = 250;
+    using NsClock = std::function<uint64_t()>;
+    // For tests: the clock the glide is read against, in ns.
+    void setGlideClock(NsClock c) { now_ns_ = std::move(c); }
+    // The cap's dB for `track` now: mid-glide between the released ride and
+    // the static, the static otherwise. QML re-reads it as its animation ticks.
+    Q_INVOKABLE qreal glideGain(int track) const;
+    Q_INVOKABLE bool gliding(int track) const;
     int rideTrack() const { return ride_track_; }
     qreal rideGain() const { return ride_db_; }
     bool rideTrim() const { return ride_track_ != kNoRide && ride_trim_; }
@@ -330,6 +340,11 @@ private:
     // Some of the ride played in Touch while rolling: the
     // pass's lane holds it, so the static is not set (ADR-0027 §8).
     bool ride_wrote_ = false;
+    int glide_track_ = kNoRide;
+    float glide_from_db_ = 0.0f;
+    uint64_t glide_start_ns_ = 0;
+    NsClock now_ns_;
+    uint64_t nowNs() const;
     bool ride_trim_ = false;      // the ride is the trim fader's (VolumeTrim)
     struct RidePeer {
         int index;

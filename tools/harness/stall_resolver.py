@@ -120,7 +120,14 @@ def brief(sv, fid, stalled):
              "code or config in your own fresh worktree from origin/main "
              "(never edit the daemon's checkout, its state.json or "
              ".harness/ci), or say in result.json what the owner must "
-             "decide. Never disable a check to get green.", "",
+             "decide. Never disable a check to get green.",
+             f"If you open a PR for it, start its title with `{fid}: ` and "
+             "put its branch in result.json `branch` (its number in `pr`): "
+             "the daemon ties that PR to the feature and closes the feature "
+             "when it merges. If only the owner can unblock it (a decision "
+             "with no recommended default, or the host), report status "
+             "blocked with `needs_owner` saying what the owner must decide.",
+             "",
              "Stalled tasks:"]
     claims = set()
     for t, age in stalled:
@@ -144,11 +151,18 @@ def brief(sv, fid, stalled):
 
 REPLAN_BRIEF = (
     "Re-plan this feature: the unblock tries did not move it (or it stalled "
-    "again after a re-plan). Read the stall below, then rewrite "
-    "planning/plans/{fid}.md so every slice can finish: split or merge "
-    "slices, fix files/claims overlaps and dependencies, drop what is "
-    "already on main, grade each slice by risk. Send the lead plan_ready "
-    "for {fid} through mcp__harness__send." + chr(10) * 2)
+    "again after a re-plan). Read the stall below, then rewrite the plan so "
+    "every slice can finish: split or merge slices, fix files/claims "
+    "overlaps and dependencies, drop what is already on main, grade each "
+    "slice by risk. Write the machine plan to {plan} (schema "
+    "planning/orchestrator/plan.schema.json; the daemon reads this file, "
+    "not the markdown) and keep planning/plans/{fid}.md in step with it. "
+    "When you finish, the daemon applies it: the old unfinished slices "
+    "close, the plan's tasks start (start_from may name an old sub-branch "
+    "to keep its commits) and the lead distributes them. Nothing is left "
+    "to build (already on main): write it with \"tasks\": []. An "
+    "unchanged plan file means you found nothing to change, and the "
+    "feature then waits on the owner." + chr(10) * 2)
 
 
 def _queue(sv, fid, stalled, now):
@@ -159,7 +173,9 @@ def _queue(sv, fid, stalled, now):
     if model == REPLAN:
         wid = f"wake-{REPLAN_AGENT}-{EVENT}-{fid}-{n}"
         store.add_task(wid, None, REPLAN_AGENT, kind="wake", feature_id=fid,
-                       brief=REPLAN_BRIEF.format(fid=fid) + brief(sv, fid, stalled))
+                       brief=REPLAN_BRIEF.format(
+                           fid=fid, plan=sv.o.flow.plan_file(fid))
+                       + brief(sv, fid, stalled))
         model = "fable" if core else "sonnet"
     else:
         wid = f"wake-principal-{EVENT}-{fid}-{n}"

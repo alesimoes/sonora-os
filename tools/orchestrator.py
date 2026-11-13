@@ -30,7 +30,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, d
                      supervisor, supervisor_sys)
 from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
                      prepr, shots,
-                     leadwake, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
+                     leadwake, owner_infer, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
@@ -233,12 +233,12 @@ class Orchestrator:
         # Main's nightly full build on GitHub (ADR-0061): a red opens a task.
         g.step("nightly", nightly.tick, self, now)
         g.step("flow", self.flow.tick, now)
-        paused = self.paused() | (g.step("docker", self.docker.held, now) or frozenset())
+        owner, held = self.paused(), g.step("docker", self.docker.held, now)
         runs = self._enriched_runs(now)
         plan = g.step(
             "plan", scheduler.plan, self.store.tasks(), runs, self.cfg, now,
             stop=stop, usage_pause_until=self.usage_pause_until,
-            paused=paused, hour_budget=self.cfg.max_runs_per_hour
+            paused=owner, docker_held=held or (), hour_budget=self.cfg.max_runs_per_hour
             - self.store.runs_started_since(now - 3600, WORK_ROLES),
             planner_budget=self.cfg.max_planner_runs_per_hour
             - self.store.runs_started_since(now - 3600, PLANNER_ROLES,
@@ -257,7 +257,7 @@ class Orchestrator:
         if not stop_now:
             g.each("launch", plan.launches, self._launch, now,
                    key=lambda ln: ln.task_id, task=lambda ln: ln.task_id)
-        g.step("status", self._write_status, now, stop, stop_now, paused)
+        g.step("status", self._write_status, now, stop, stop_now, owner)
         return plan
 
     def _enriched_runs(self, now):
@@ -286,7 +286,7 @@ class Orchestrator:
         data["train_slots"] = self.cfg.train_slots
         data["gh_paused_until"] = self.train.pause_until or None
         data["daemon_pid"] = os.getpid()   # tools/supervisor.py probes it
-        data.update(self.supervisor.status())
+        data.update(self.supervisor.status(), **self.docker.status(data["pools"]))
         data["alerts"] = data.get("alerts", []) + self.guard.rows()
         data["tick_steps"] = self.guard.slowest()
         try:
@@ -728,11 +728,11 @@ class Orchestrator:
             # the next merge wakes the janitor again.
             triage_sweep.close_wake(self, t, why[:200])
             return
-        owner = data.get("needs_owner")
+        owner = data.get("needs_owner") or owner_infer.owner_from(why)
         if not owner and triage.handle(self, t, kind, why, data, now):
             return
         self._block(t, why, owner=owner if owner else None,
-                    cause=None if owner else "infra")
+                    cause=None if owner else blockinfo.classify(why))
 
     # -- results ------------------------------------------------------
     def _on_result(self, r, data, now):
