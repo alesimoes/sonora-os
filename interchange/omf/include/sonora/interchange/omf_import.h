@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <memory>
+#include <string>
+
 #include "sonora/interchange/interchange.h"
 #include "sonora/interchange/omf_document.h"
 
@@ -18,5 +21,11 @@ public:
 private:
     OmfReader* reader_;
 };
+
+// Reads OMFI files; embedded media is extracted into media_dir (the session
+// folder, which must exist).
+std::unique_ptr<OmfReader> make_omf_reader(const std::string& media_dir);
+// One-line wiring for sonora-convert: an importer that owns its reader.
+std::unique_ptr<Importer> make_omf_importer(const std::string& media_dir);
 
 }  // namespace sonora::interchange
