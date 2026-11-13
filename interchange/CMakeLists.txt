@@ -3,6 +3,7 @@
 # on common/model, common/midi and common/session_files. Nothing here is
 # reachable from the audio thread, and engine/core never links it.
 add_library(sonora_interchange STATIC
+  src/aaf_import.cpp
   src/convert.cpp
   src/session_io.cpp
   src/smf_export.cpp
@@ -20,3 +21,9 @@ target_link_libraries(test_interchange PRIVATE sonora_interchange)
 target_compile_definitions(test_interchange PRIVATE
   SONORA_MODEL_FIXTURES="${CMAKE_SOURCE_DIR}/common/model/tests/fixtures")
 add_test(NAME interchange COMMAND test_interchange)
+
+# AAF contract: the neutral document, the reader seam and the importer's errors.
+add_executable(test_aaf_contract tests/test_aaf_contract.cpp)
+target_link_libraries(test_aaf_contract PRIVATE sonora_interchange)
+target_include_directories(test_aaf_contract PRIVATE tests)
+add_test(NAME aaf_contract COMMAND test_aaf_contract)
