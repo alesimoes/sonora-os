@@ -213,9 +213,17 @@ struct SampleLane {
 };
 SampleLane sample_lane(double row_top, double row_height, int count, int lane);
 
+class SelectionLink;
+
 class EditController {
 public:
     explicit EditController(TimelineDocument& doc);
+
+    // Link Timeline and Edit Selection (ADR-0167): not owned, may be null.
+    void set_link(SelectionLink* link) { link_ = link; }
+    // The timeline range was set: when linked the edit selection takes it, on
+    // the tracks it already covers.
+    void apply_timeline_range(model::Frames a, model::Frames b);
 
     TimelineDocument& document() { return doc_; }
     // After TimelineDocument::reset (a session was opened): the selection,
@@ -869,6 +877,7 @@ private:
     Tool tool_ = Tool::Smart;
     GridValue grid_ = GridValue::Beat;
     Selection sel_;
+    SelectionLink* link_ = nullptr;
     struct TempoStep {
         std::vector<model::TempoEntry> before, after;
     };
