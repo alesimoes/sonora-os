@@ -233,12 +233,14 @@ class Orchestrator:
         # Main's nightly full build on GitHub (ADR-0061): a red opens a task.
         g.step("nightly", nightly.tick, self, now)
         g.step("flow", self.flow.tick, now)
-        paused = self.paused() | (g.step("docker", self.docker.held, now) or frozenset())
+        # The owner's pauses and Docker's hold stay apart in status.json.
+        owner_paused = self.paused()
+        held = g.step("docker", self.docker.held, now) or frozenset()
         runs = self._enriched_runs(now)
         plan = g.step(
             "plan", scheduler.plan, self.store.tasks(), runs, self.cfg, now,
             stop=stop, usage_pause_until=self.usage_pause_until,
-            paused=paused, hour_budget=self.cfg.max_runs_per_hour
+            paused=owner_paused, docker_held=held, hour_budget=self.cfg.max_runs_per_hour
             - self.store.runs_started_since(now - 3600, WORK_ROLES),
             planner_budget=self.cfg.max_planner_runs_per_hour
             - self.store.runs_started_since(now - 3600, PLANNER_ROLES,
@@ -257,7 +259,8 @@ class Orchestrator:
         if not stop_now:
             g.each("launch", plan.launches, self._launch, now,
                    key=lambda ln: ln.task_id, task=lambda ln: ln.task_id)
-        g.step("status", self._write_status, now, stop, stop_now, paused)
+        g.step("status", self._write_status, now, stop, stop_now,
+               owner_paused)
         return plan
 
     def _enriched_runs(self, now):
@@ -286,6 +289,7 @@ class Orchestrator:
         data["train_slots"] = self.cfg.train_slots
         data["gh_paused_until"] = self.train.pause_until or None
         data["daemon_pid"] = os.getpid()   # tools/supervisor.py probes it
+        data.update(self.docker.status(data.get("pools")))
         data.update(self.supervisor.status())
         data["alerts"] = data.get("alerts", []) + self.guard.rows()
         data["tick_steps"] = self.guard.slowest()
