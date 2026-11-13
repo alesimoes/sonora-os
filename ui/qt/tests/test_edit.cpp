@@ -457,13 +457,17 @@ int test_controller() {
     OK(c.undo(why));
     OK(!c.clear(why));  // the selection went with the region
 
-    // --- Shuffle and Spot refuse what they would do differently ---
+    // --- Shuffle ripples (ADR-0153); Spot asks where a region starts ---
     c.set_mode(EditMode::Shuffle);
-    OK(!c.press(a_mid, lower, why));
-    OK(why.find("Shuffle") != std::string::npos);
-    OK(c.drag().kind == Drag::Kind::None);
-    OK(!c.spot_region(30 * kBar, why) && why.find("Shuffle") != std::string::npos);
-    OK(!c.nudge(1, why) && why.find("Shuffle") != std::string::npos);
+    OK(c.press(a_mid, lower, why));
+    OK(c.drag().kind != Drag::Kind::None);
+    c.release(a_mid, lower, why);
+    const uint64_t shuffle_rev = doc.snapshot().revision;
+    OK(c.nudge(1, why));
+    OK(doc.snapshot().revision == shuffle_rev + 1);
+    OK(c.undo(why));
+    OK(c.spot_region(30 * kBar, why));
+    OK(c.undo(why));
     // Spot: a click on a region asks where it starts instead of dragging it,
     // and the time typed places it exactly, on no grid.
     c.set_mode(EditMode::Spot);
