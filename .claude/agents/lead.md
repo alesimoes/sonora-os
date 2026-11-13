@@ -43,6 +43,9 @@ offset/limit. Use `tools/progress.sh` (`get ID`, `list --open --track T`).
   `{"feature": "<id>", "track": "daw|os|plugin", "backlog_ids": ["<id>", ...], "brief": "<why, one line>"}`.
   Why: one feature per wake left the floors (8 DAW, 4 OS, 2 plugin) empty
   for hours with 2-3 agents running (owner, 2026-11-08).
+  The partial features your wake lists as continuable are candidates too:
+  propose the `<id>.rest...` id it names with the root's backlog ids; the
+  architect plans only what the merged part left open (2026-11-13).
   You do not choose ADR, protocol or format numbers: the orchestrator
   reserves them.
 - **ask** from an engineer: answer from the plan and ADRs, or forward to the
