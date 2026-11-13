@@ -72,6 +72,7 @@ SessionModel::SessionModel(TimelineDocument& doc, const PeakSource& peaks, bool 
       templates_dir_(default_templates_dir()),
       saved_revision_(doc.revision()),
       ctl_(doc) {
+    ctl_.set_marker_views(&marker_views_, {});
     updateCounters(true);
     // The list is a view over this session's work; the next one starts
     // without it.
