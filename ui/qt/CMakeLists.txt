@@ -598,7 +598,6 @@ set_tests_properties(ui_play_range PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offsc
 add_executable(test_ui_shell tests/test_shell.cpp)
 target_link_libraries(test_ui_shell PRIVATE sonora_ui_qt Qt6::Test)
 target_compile_definitions(test_ui_shell PRIVATE
-  SONORA_TEST_FONT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fonts"
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_shell COMMAND test_ui_shell)
 set_tests_properties(ui_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

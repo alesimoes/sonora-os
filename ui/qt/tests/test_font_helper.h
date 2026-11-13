@@ -11,7 +11,9 @@ namespace sonora_test {
 // Call after the QGuiApplication exists and before the first widget/view.
 // Fails loudly: a missing font would make width checks measure zero again.
 inline bool registerTestFont() {
-    const QString path = QStringLiteral(SONORA_TEST_FONT_DIR "/DejaVuSans.ttf");
+    // __FILE__ keeps the build files out of this: the font sits beside us.
+    const QString path = QString::fromUtf8(__FILE__).replace(QLatin1Char('\'), QLatin1Char('/')).section(QLatin1Char('/'), 0, -2)
+        + QStringLiteral("/fonts/DejaVuSans.ttf");
     const int id = QFontDatabase::addApplicationFont(path);
     if (id < 0) {
         std::fprintf(stderr, "cannot load test font %s\n", qPrintable(path));
