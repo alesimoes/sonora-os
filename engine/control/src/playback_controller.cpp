@@ -308,9 +308,26 @@ void PlaybackController::touch(const model::Snapshot& snapshot, std::size_t row,
     // volume is not held there, so there is no volume release to restore.
     const bool returns = m != nullptr && (m->automation == model::AutomationMode::Touch ||
                                           m->automation == model::AutomationMode::Trim);
-    if (held || param == kAutoTrim || !returns ||
-        session_.transport().state() == TransportState::Stopped) {
+    const bool stopped = session_.transport().state() == TransportState::Stopped;
+    // A ride is a pass's when its hold began rolling (ADR-0131 §4), however
+    // the transport stands at the release.
+    const auto bit = static_cast<uint8_t>(1u << param);
+    uint8_t& rolled = held_rolling_[tracks[row]->id];
+    const bool pass_ride = (rolled & bit) != 0;
+    rolled = static_cast<uint8_t>(held && !stopped ? rolled | bit : rolled & ~bit);
+    if (held || param == kAutoTrim || !returns || (stopped && !pass_ride)) {
         t.set_touched(param, held);
+        return;
+    }
+    if (!pass_ride) {
+        // Moved while stopped: that ride is the static the client saves, so
+        // the release returns to where the operator left the fader.
+        if (param == kAutoPan) {
+            t.set_static_pan(t.pan());
+        } else {
+            t.set_static_gain(t.gain());
+        }
+        t.set_touched(param, false);
         return;
     }
     // The static before the release, which orders it, and the played value

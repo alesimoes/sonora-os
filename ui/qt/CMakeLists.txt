@@ -100,6 +100,7 @@ sonora_ui_library(sonora_ui_edit SOURCES
   src/edit_comping.cpp
   src/comping_demo.h src/comping_demo.cpp
   src/live_take.h src/live_take.cpp
+  src/take_folder_view.h src/take_folder_view.cpp
   src/timeline_scene.h src/timeline_scene.cpp
   src/audio_importer.h src/audio_importer.cpp
 )
@@ -178,7 +179,7 @@ set(SONORA_UI_QML_FILES
   qml/InsertPanel.qml qml/Knob.qml qml/Fader.qml qml/MeterBar.qml qml/CurveView.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
   qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml qml/IoSetupWindow.qml qml/NewSessionDialog.qml
   qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
-  qml/PluginManager.qml qml/KeyChooser.qml qml/TrackListWindow.qml
+  qml/PluginManager.qml qml/KeyChooser.qml qml/TrackListWindow.qml qml/TakeFolder.qml
 )
 sonora_ui_library(sonora_ui_qml QT SOURCES
   src/qml_resources.cpp src/register_types.h ${SONORA_UI_QML_FILES})
@@ -272,6 +273,12 @@ add_executable(test_ui_live_take tests/test_live_take.cpp)
 target_link_libraries(test_ui_live_take PRIVATE sonora_ui_session)
 add_test(NAME ui_live_take COMMAND test_ui_live_take)
 set_tests_properties(ui_live_take PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Take-folder collapsed view state (ADR-0159).
+add_executable(test_ui_take_folder_view tests/test_take_folder_view.cpp)
+target_link_libraries(test_ui_take_folder_view PRIVATE sonora_ui_session)
+add_test(NAME ui_take_folder_view COMMAND test_ui_take_folder_view)
+set_tests_properties(ui_take_folder_view PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # Automation lanes (ADR-0027): the operations a gesture is built into, the
 # lane rows, the mouse and Edit-command paths, and what the timeline draws.
@@ -621,3 +628,11 @@ add_executable(test_ui_import tests/test_import.cpp)
 target_link_libraries(test_ui_import PRIVATE sonora_ui_session)
 add_test(NAME ui_import COMMAND test_ui_import)
 set_tests_properties(ui_import PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# Knob.qml from the keyboard (native.editors.knob): one begin/moved/end per
+# press, step sizes, Home resets, Slider role and value text.
+add_executable(test_ui_knob_keys tests/test_knob_keys.cpp)
+target_link_libraries(test_ui_knob_keys PRIVATE sonora_ui_qt Qt6::Test)
+set_target_properties(test_ui_knob_keys PROPERTIES AUTOMOC ON)
+add_test(NAME ui_knob_keys COMMAND test_ui_knob_keys)
+set_tests_properties(ui_knob_keys PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

@@ -163,10 +163,14 @@ class Plan:
 
 
 def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
-         paused=(), hour_budget=None, planner_budget=None):
+         paused=(), hour_budget=None, planner_budget=None, docker_held=()):
     """tasks: store task dicts. runs: active runs as dicts with keys task_id,
-    role (kind), working (bool), building (bool), name."""
+    role (kind), working (bool), building (bool), name. paused: the owner's
+    paused.json; docker_held: pools held while Docker is down (launch-wise a
+    pause, but the gap names Docker, not the owner)."""
     out = Plan()
+    docker_held = frozenset(docker_held)
+    paused = frozenset(paused) | docker_held
     live = len(runs)
     seats = max(cfg.cap - live, 0)
     out.seats_free = seats
@@ -372,6 +376,8 @@ def plan(tasks, runs, cfg, now, stop=False, usage_pause_until=0.0,
             continue
         if block:
             out.gaps[track] = block
+        elif track in docker_held or "build" in docker_held:
+            out.gaps[track] = "docker down"
         elif track in paused or "build" in paused:
             out.gaps[track] = "paused"
         elif NEW_WORK in paused:

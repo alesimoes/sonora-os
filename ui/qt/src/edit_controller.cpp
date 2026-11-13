@@ -368,13 +368,6 @@ Frames EditController::snapped(Frames f) const {
     return std::max<Frames>(0, f);
 }
 
-bool EditController::refuse_in_mode(const char* what, std::string& why) const {
-    // Spot trims and nudges as Slip does: only its mouse move asks for a time.
-    if (mode_ != EditMode::Shuffle) return false;
-    why = std::string(what) + " in Shuffle mode is not built yet; use Slip, Spot or Grid";
-    return true;
-}
-
 // --- selection ---
 
 void EditController::select_track(int index) {

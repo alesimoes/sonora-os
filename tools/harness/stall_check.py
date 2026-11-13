@@ -8,7 +8,7 @@ names a blocked feature, a PR open and not merging. These checks raise a
 dashboard alert for any task, feature or PR with no run and no progress
 past a bound, with the reason the daemon knows, and re-issue a lost wake.
 """
-from . import stall_resolver, wakes
+from . import resolver_link, stall_resolver, wakes
 from .scheduler import DONE_STATES, HOLD
 from .supervisor_checks import (_active, _feature_has_run, _hms,
                                 _waiting_since, _why_not_launched)
@@ -58,6 +58,21 @@ def _why_stalled(sv, t, now):
                                       else "") + ")" for s in sibs)
 
 
+def waits_elsewhere(store, t):
+    """Not stalled for the harness: the feature waits on a PR a stall
+    resolver opened for it, or on the owner (a task of it is blocked on an
+    owner decision; the owner list shows that). 2026-11-13: #687 and #688
+    were open and merging while their features alerted as stalled and got
+    two more resolvers each."""
+    fid = t.get("feature_id")
+    if not fid:
+        return False
+    if any(x["state"] == "blocked" and x.get("owner")
+           for x in store.tasks() if x.get("feature_id") == fid):
+        return True
+    return resolver_link.open_entry_for(store, fid) is not None
+
+
 def stalled_tasks(sv, now):
     stalled = []
     for t in sv.o.store.tasks(kind="work"):
@@ -65,6 +80,8 @@ def stalled_tasks(sv, now):
             continue
         if _has_run(sv, t):
             sv.forget("prs", (t["id"], t["state"]))
+            continue
+        if waits_elsewhere(sv.o.store, t):
             continue
         age = _waiting_since(sv, t, now)
         if age <= sv.th.stall_alert_s:
