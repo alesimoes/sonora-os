@@ -28,6 +28,8 @@
 - §4: engine: the other inserts are silenced by a render-scoped override in
   `PluginHosting`, never by an edit, and restored on every exit; a render
   whose override was never confirmed fails and keeps no file.
+- Amendment 2026-11-13: the control server is wired; what stays unverified
+  is measured by the researcher, not built.
 
 ## Context
 
@@ -159,6 +161,34 @@ measurement that would reopen it is under Unverified.
   The ADR-0051 status quo: three manual steps per process and a silent
   wrong print when one is forgotten.
 
+## Amendment 2026-11-13: the server is wired
+
+The first engine change (#625) built §4 in `RenderInPlace` and
+`PluginHosting` but left `engine_control_server.cpp` on the command-blind
+parse, because another task held that file. It is wired now, on the control
+thread only; nothing on the audio thread changed:
+
+- `start_render()` reads the argument with the command-aware
+  `parse_render_argument(command, arg, ...)`: `insert=<id>` reaches
+  `plan_render()` for `track.process_selection`, and `track.freeze` and
+  `track.commit` refuse it with the parse's reason.
+- Every render job gets `set_solo(hosting)`. The hosting outlives the job:
+  each path that resets `hosting_` resets `render_` first.
+- Hello announces `track.render.insert` after `track.render`.
+  `FakeEngine::Config`'s default still leaves it out, standing for an engine
+  before this ADR, which the interface's tests of the hidden entry rely on.
+  A client opts in by adding it, as `--fake-engine` does.
+
+Tests: `control_process_with` (engine/control) runs on every build, with no
+host: the capability, freeze and commit refusing the word, and the word
+reaching the plan. `control_process_with_host` runs where
+`sonora-plugin-host` is built. It prints through a 0 dB eg-amp beside a
+-90 dB one and checks that the file holds the take, not silence.
+
+The measurements below stay with the researcher and do not block the
+feature: the override's confirmation on real LV2 and VST3 hosts on the
+target machine, and rendering faster than real time.
+
 ## Unverified
 
 - **Offline host measurement (for the researcher):** can a host process run
@@ -168,9 +198,11 @@ measurement that would reopen it is under Unverified.
   render)? Measure on the target machine with real LV2 and VST3 hosts:
   throughput, misses, and whether the live callback's hosts are disturbed.
   A yes reopens faster-than-real-time Process; a no closes it.
-- The override path on a real out-of-process host: that a silenced insert
-  confirms within the pre-roll, and that the print of one insert nulls
-  against the live output with the others bypassed by hand.
+- The override path on real out-of-process LV2 and VST3 hosts on the target
+  machine (researcher measurement): that a silenced insert confirms within
+  the pre-roll, and that the print of one insert nulls against the live
+  output with the others bypassed by hand. CI covers only eg-amp under
+  `sonora-plugin-host`, and only where that host is built.
 - That plug-ins whose bypass is not a true bypass (a "soft" bypass with
   colouration) do not leak into the print; the override uses the host's
   bypass, so it inherits that behaviour.
