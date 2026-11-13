@@ -18,11 +18,6 @@ bool sync_data(std::FILE* f) {
     return false;
 }
 
-bool sync_directory(const std::string&) {
-    errno = ENOSYS;
-    return false;
-}
-
 bool free_bytes(const std::string& path, uint64_t& out) {
     std::error_code ec;
     const std::filesystem::space_info s = std::filesystem::space(path, ec);
