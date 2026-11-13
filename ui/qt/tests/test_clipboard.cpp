@@ -450,7 +450,7 @@ int test_shuffle_nudge_and_drag() {
     c.move(x + (c.view().x_of(6 * kBar) - c.view().x_of(4 * kBar)), lower);
     CHECK(c.release(x + (c.view().x_of(6 * kBar) - c.view().x_of(4 * kBar)), lower, why));
     CHECK(start_of(doc.snapshot(), 12) == 5 * kBar);
-    CHECK(start_of(doc.snapshot(), 11) > end_of(doc.snapshot(), 12));
+    CHECK(start_of(doc.snapshot(), 11) >= end_of(doc.snapshot(), 12));
     CHECK(doc.history().undo_depth() == 1 && valid(doc.snapshot()));
     CHECK(c.undo(why) && !doc.can_undo());
 

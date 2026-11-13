@@ -12,6 +12,7 @@
 namespace sonora::ui {
 
 using namespace model;
+using namespace edit_detail;
 
 bool EditController::strip_silence(const PeakSource& peaks, const StripParams& params,
                                    std::string& why) {

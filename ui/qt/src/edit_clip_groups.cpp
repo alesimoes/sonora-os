@@ -191,17 +191,6 @@ bool EditController::unloop_clip(std::string& why) {
     }
     std::vector<Member> members;
     for (const Region* r : repeats) members.push_back(RemoveRegion{p->id, r->id});
-    if (mode_ == EditMode::Shuffle) {
-        // The loop takes the room it needs and gives back what its old
-        // repeats held: everything after them ripples by the difference.
-        Frames old_end = last;
-        for (const Region* r : repeats) old_end = std::max(old_end, r->end());
-        const Frames delta = span * count - (old_end - last);
-        const bool tail = std::any_of(p->regions.begin(), p->regions.end(), [&](const Region& o) {
-            return o.loop == 0 && o.position >= old_end && !(o.clip_group == group);
-        });
-        if (delta != 0 && tail) members.push_back(ShiftRegions{p->id, old_end, delta});
-    }
     // A loop of one clip is no group once it has no repeats.
     if (origin.size() == 1) {
         SetClipGroup untag;
