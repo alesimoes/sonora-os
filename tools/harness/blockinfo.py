@@ -70,7 +70,7 @@ def superseded(task, features):
 
 
 def owner_items(tasks, features):
-    return [{"title": f"{t['id']}: {t.get('owner') or t['note'] or 'blocked'}",
+    return [{"title": f"{t['id']}: {t['note'] or t.get('owner') or 'blocked'}",
              "task": t["id"], "branch": t["branch"], "note": t["note"]}
             for t in tasks if t["state"] == "blocked" and t.get("owner")
             and not superseded(t, features)]
