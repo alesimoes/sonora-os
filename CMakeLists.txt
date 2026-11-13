@@ -115,6 +115,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/common/stretch/CMakeLists.txt)
 endif()
 # Groove templates (ADR-0115), pure functions over the model's tempo map.
 add_subdirectory(common/groove)
+# Loop catalog interfaces and fakes (ADR-0163).
+add_subdirectory(common/loops)
 endif()
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
@@ -265,6 +267,7 @@ sonora_label_module_tests(common/audiofile audiofile)
 sonora_label_module_tests(common/midi midi)
 sonora_label_module_tests(common/model model)
 sonora_label_module_tests(common/groove model)
+sonora_label_module_tests(common/loops model)
 sonora_label_module_tests(common/session_files session_files)
 sonora_label_module_tests(contracts/api contracts)
 sonora_label_module_tests(contracts/backend contracts)

@@ -6,6 +6,7 @@
 #include <cstdlib>
 
 #include "edit_controller_detail.h"
+#include "selection_link.h"
 #include "fader_taper.h"
 #include "sonora/fade_curve.h"
 #include "theme.h"
@@ -433,6 +434,7 @@ void EditController::select_range(int index, Frames a, Frames b, int count) {
     sel_.autolane = sel_.point = -1;
     sel_.start = sel_.insertion = std::max<Frames>(0, std::min(a, b));
     sel_.end = std::max<Frames>(0, std::max(a, b));
+    if (link_) link_->range_for_timeline(sel_.start, sel_.end);
 }
 
 bool EditController::select_all(std::string& why) {
@@ -455,6 +457,14 @@ bool EditController::select_all(std::string& why) {
     return true;
 }
 
+void EditController::apply_timeline_range(Frames a, Frames b) {
+    if (!link_ || !link_->apply_timeline_range(a, b)) return;
+    const int t = std::max(sel_.track, 0);
+    if (track(t) == nullptr) return;
+    const auto r = link_->timeline();
+    select_range(t, r.start, r.end, sel_.tracks);
+}
+
 void EditController::clear_selection() {
     sel_.region = kNoId;
     sel_.autolane = sel_.point = -1;
@@ -463,6 +473,7 @@ void EditController::clear_selection() {
 
 void EditController::clamp_selection() {
     if (const int n = span()) sel_.tracks = n;
+    if (link_) link_->prune(static_cast<int>(snapshot().edit->tracks.size()));
 }
 
 // --- mouse ---

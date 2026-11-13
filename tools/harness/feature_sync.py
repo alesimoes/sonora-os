@@ -17,9 +17,10 @@ Each tick, for features the PR watch does not cover:
     2026-11-13, because only the PR states were looked at.
 
 The same step closes the features a stall resolver's PR carried
-(resolver_link) and applies the re-plans that waited for a run (replan).
+(resolver_link), the slices whose own sub-branch PR merged (slice_pr_link),
+and applies the re-plans that waited for a run (replan).
 """
-from . import replan, resolver_link
+from . import replan, resolver_link, slice_pr_link
 from .forge import ForgeError
 
 TERMINAL_TASK = ("merged", "closed")
@@ -87,6 +88,7 @@ def sync_one(f, o, now):
 
 def sync(o, now):
     o.guard.step("carried_prs", resolver_link.sweep, o)
+    o.guard.step("slice_prs", slice_pr_link.sweep, o)
     o.guard.step("replan_pending", replan.apply_pending, o)
     o.guard.each("feature_sync", o.store.features(), sync_one, o, now,
                  key=lambda f: f["id"], task=o._rep_task)
