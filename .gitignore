@@ -151,3 +151,6 @@ build-plugins-win/
 
 # Detached heavy jobs (tools/build-job.sh): command, log, result.
 /.build-jobs/
+
+# Generated UI scene screenshots are not committed (owner, 2026-11-13).
+docs/images/sonora-ui-*.png

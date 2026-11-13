@@ -26,11 +26,9 @@ Local CI context: `sonora-ui`. Agent: ui-engineer (look: visual-designer).
 - Gate: `ui/` and `keymaps/` touch only the ui context.
 
 ## Traps
-- Screen-visible change: the daemon regenerates and commits every picture
-  under `docs/images` before the feature's PR opens (`tools/harness/shots.py`;
-  the full run outlives a 10-minute tool call). Commit code and the scene
-  only. Check your scene renders by shooting it alone from your build tree
-  (`sonora-ui --fake-engine --scene NAME --screenshot ...`) and open it; a
-  missing picture is never a reason to block the slice.
+- Generated screenshots are not committed (owner, 2026-11-13): they conflicted
+  between PRs and outran the command cap; `docs/images/sonora-ui-*.png` is ignored.
+  Check your scene renders by shooting it alone from your build tree
+  (`sonora-ui --fake-engine --scene NAME --screenshot ...`); never commit it.
 - Do not own model/session logic; it lives in `common/model`.
 - Keep QML/C++ files under ~500 lines (`.claude/rules/code-structure.md`).
