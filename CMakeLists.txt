@@ -251,6 +251,10 @@ add_subdirectory(ui/qt)
 if(EXISTS ${CMAKE_SOURCE_DIR}/ui/groove/CMakeLists.txt)
   add_subdirectory(ui/groove)
 endif()
+# tempo.edit detect (ADR-0114).
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/beat/CMakeLists.txt)
+  add_subdirectory(ui/beat)
+endif()
 # The elastic audio editor and its command (ADR-0136).
 if(EXISTS ${CMAKE_SOURCE_DIR}/ui/elastic/CMakeLists.txt)
   add_subdirectory(ui/elastic)
@@ -293,6 +297,7 @@ sonora_label_module_tests(ui/tui ui)
 sonora_label_module_tests(ui/client ui)
 sonora_label_module_tests(ui/qt ui)
 sonora_label_module_tests(ui/groove ui)
+sonora_label_module_tests(ui/beat ui)
 sonora_label_module_tests(ui/smart_controls ui)
 # One literal line per elastic module: tools/check-test-labels.sh greps for it.
 if(EXISTS ${CMAKE_SOURCE_DIR}/common/stretch/CMakeLists.txt)
