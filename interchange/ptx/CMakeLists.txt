@@ -58,4 +58,3 @@ add_executable(test_ptx_convert tests/test_ptx_convert.cpp)
 target_include_directories(test_ptx_convert PRIVATE tests ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(test_ptx_convert PRIVATE sonora_interchange)
 add_test(NAME interchange_ptx_convert COMMAND test_ptx_convert)
-
