@@ -148,3 +148,6 @@ build-plugins-only/
 dist/
 build-plugins-win/
 .sonora-local.env
+
+# Detached heavy jobs (tools/build-job.sh): command, log, result.
+/.build-jobs/

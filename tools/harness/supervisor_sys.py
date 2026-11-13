@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-from . import docker_heal, launcher, supervisor_dash
+from . import docker_heal, launcher, lock_probe, supervisor_dash
 
 HOST_KIND = "win" if os.name == "nt" else "linux"
 
@@ -75,6 +75,34 @@ class RealSys:
     def kill(self, pid):
         launcher.kill_tree(pid)
 
+    def container_running(self, name):
+        """True/False; None when docker does not answer in time."""
+        try:
+            r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}",
+                                name], capture_output=True, text=True,
+                               timeout=30, creationflags=getattr(
+                                   subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return r.returncode == 0 and r.stdout.strip() == "true"
+
+    def container_kill(self, name):
+        try:
+            subprocess.run(["docker", "kill", name], capture_output=True,
+                           timeout=60, creationflags=getattr(
+                               subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    def entry_alive(self, entry):
+        """A lock entry's liveness (lock_probe.entry_alive)."""
+        return lock_probe.entry_alive(entry, HOST_KIND, launcher.pid_alive,
+                                      self.container_running)
+
+    def kill_entry(self, entry):
+        return lock_probe.kill_entry(entry, HOST_KIND, launcher.kill_tree,
+                                     self.container_kill)
+
     # -- the heavy lock --------------------------------------------------
     def lock_entries(self):
         """[{role: holds|waits, path, pid, kind, prio, start, cwd, cmd}]"""
@@ -116,7 +144,8 @@ class RealSys:
         return {"role": role, "path": path, "pid": num("pid"),
                 "kind": kv.get("kind", ""), "prio": num("prio"),
                 "start": num("start"), "cwd": kv.get("cwd", ""),
-                "cmd": kv.get("cmd", ""), "claiming": bool(kv.get("claiming"))}
+                "cmd": kv.get("cmd", ""), "claiming": bool(kv.get("claiming")),
+                "winpid": num("winpid"), "container": kv.get("container", "")}
 
     def lock_remove(self, entry):
         """A waiter's ticket is one file; a holder is its slot directory."""

@@ -85,6 +85,10 @@ fi
 ((DRY)) && { cat "$OUT/files"; exit 0; }
 
 # --- stage 1: build and test the affected targets -------------------------------------
+# Each phase's wall time, so a slow run says where its minutes went (the lock
+# queue, the image, the volume ownership, the build itself).
+phase_t=$SECONDS
+phase() { echo "micro-build: phase $1 $((SECONDS - phase_t)) s"; phase_t=$SECONDS; }
 command -v docker >/dev/null || { echo "error: docker is required." >&2; exit 1; }
 docker image inspect "sonora-$IMAGE:trixie" >/dev/null 2>&1 || {
   # On GitHub the image comes from GHCR (the sonora-image action, which
@@ -104,6 +108,7 @@ docker image inspect "sonora-$IMAGE:trixie" >/dev/null 2>&1 || {
       -f "$(host_path "$ROOT/tools")/Dockerfile.build" "$(host_path "$ROOT/tools")" >/dev/null || exit 1
   fi
 }
+phase image
 JOBS="$("$ROOT/tools/build-slot.sh" --jobs)"
 ID="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
 # Off Linux the tree lives on a volume per checkout (NTFS bind mounts are
@@ -150,18 +155,22 @@ summary() {
     python3 "$ROOT/tools/micro_summary.py" "$OUT" "$SUMMARY_TITLE" >>"$GITHUB_STEP_SUMMARY" || true
 }
 trap summary EXIT
+phase volumes
 echo "micro-build: image sonora-$IMAGE:trixie, phases: configure, build, test"
 start=$SECONDS
-if ! "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" \
+rm -f "$OUT/lock-wait"
+if ! SONORA_HEAVY_WAIT_FILE="$OUT/lock-wait" "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" \
     -e SONORA_MICRO_FILES=/src/.micro-build/files -e SONORA_MICRO_PLAN=/src/.micro-build/plan.json \
     -e SONORA_MICRO_DIRECT="${SONORA_MICRO_DIRECT:-0}" -e SONORA_MICRO_BUILD_ONLY="${SONORA_MICRO_BUILD_ONLY:-0}" -e SONORA_MICRO_PLAN_ONLY="$PLAN_ONLY" -e SONORA_DSP_QUICK=1 \
     -e CCACHE_DIR=/ccache -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-10G}" -e CCACHE_COMPRESS=1 \
     "${VOL[@]}" "${CCACHE[@]}" -v "$(host_path "$ROOT"):/src" -w /src \
     "sonora-$IMAGE:trixie" tools/micro-build-entrypoint.sh; then
-  echo "micro-build: FAIL build ($((SECONDS - start)) s)"
+  echo "micro-build: FAIL build ($((SECONDS - start)) s, of which $(cat "$OUT/lock-wait" 2>/dev/null || echo 0) s waiting for the lock)"
   exit 1
 fi
-((PLAN_ONLY)) || echo "micro-build: ok build ($((SECONDS - start)) s)"
+lock_wait="$(cat "$OUT/lock-wait" 2>/dev/null || echo 0)"
+echo "micro-build: phase lock-queue $lock_wait s"
+((PLAN_ONLY)) || echo "micro-build: ok build ($((SECONDS - start)) s, of which $lock_wait s waiting for the lock)"
 
 # --- stage 2: the same targets under RealtimeSanitizer ---------------------------------
 if [[ "$RTSAN" == 1 && -f "$OUT/plan.json" ]]; then
