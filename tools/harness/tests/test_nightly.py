@@ -30,6 +30,36 @@ class Nightly(support.DaemonCase):
         self.assertIn("Never weaken", t["brief"])
         self.assertIn("https://x/runs/7", t["brief"])
 
+    def test_every_scheduled_workflow_is_watched(self):
+        o = self.make()
+        boot = dict(self.run_(9, "failure"), url="https://x/runs/9")
+        self.forge.runs_of_workflow = {
+            "nightly.yml": [self.run_(7, "success")], "nightly-boot.yml": [boot]}
+        o.tick()
+        t = o.store.get_task("main-red-aaaaaaaa-nightly-boot")
+        self.assertIsNotNone(t)
+        self.assertIn("nightly-boot.yml", t["brief"])
+        self.assertIsNone(o.store.get_task("main-red-aaaaaaaa"))
+
+    def test_two_red_workflows_on_one_sha_open_two_tasks(self):
+        o = self.make()
+        self.forge.runs_of_workflow = {
+            "nightly.yml": [self.run_(7, "failure")],
+            "nightly-boot.yml": [self.run_(9, "failure")]}
+        o.tick()
+        self.assertIsNotNone(o.store.get_task("main-red-aaaaaaaa"))
+        self.assertIsNotNone(o.store.get_task("main-red-aaaaaaaa-nightly-boot"))
+
+    def test_a_green_full_build_does_not_close_the_boot_task(self):
+        o = self.make()
+        self.forge.runs_of_workflow = {
+            "nightly-boot.yml": [self.run_(9, "failure")]}
+        o.tick()
+        self.forge.ancestry = {("aaaaaaaa", "b" * 40)}
+        green = dict(self.run_(10, "success"), head_sha="b" * 40)
+        from harness import nightly_supersede
+        self.assertEqual(nightly_supersede.close_superseded(o, green), [])
+
     def test_the_same_run_is_judged_once_and_a_green_one_opens_nothing(self):
         o = self.make()
         self.forge.nightly_runs = [self.run_(7, "failure")]
@@ -54,13 +84,13 @@ class Nightly(support.DaemonCase):
     def test_polls_no_more_than_the_interval(self):
         o = self.make()
         calls = []
-        self.forge.workflow_runs = lambda *a, **k: (calls.append(1), [])[1]
+        self.forge.workflow_runs = lambda wf, *a, **k: (calls.append(wf), [])[1]
         o.tick()
         o.tick()
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)   # one poll: both workflows
         self.clock.offset += o.cfg.nightly_poll_s + 1
         o.tick()
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 4)
 
     def test_a_forge_error_is_an_event_not_a_crash(self):
         o = self.make()

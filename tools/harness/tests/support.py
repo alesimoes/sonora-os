@@ -97,7 +97,10 @@ class FakeForge(Forge):
 
     def workflow_runs(self, workflow, branch="main", limit=20):
         self._chk("workflow_runs")
-        return list(self.nightly_runs)[:limit]
+        by = getattr(self, "runs_of_workflow", {})
+        if workflow in by:
+            return list(by[workflow])[:limit]
+        return list(self.nightly_runs)[:limit] if workflow == "nightly.yml" else []
 
     def is_ancestor(self, sha, head):
         self._chk("is_ancestor")
