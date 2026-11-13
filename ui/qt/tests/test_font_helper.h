@@ -12,7 +12,7 @@ namespace sonora_test {
 // Fails loudly: a missing font would make width checks measure zero again.
 inline bool registerTestFont() {
     // __FILE__ keeps the build files out of this: the font sits beside us.
-    const QString path = QString::fromUtf8(__FILE__).replace(QLatin1Char('\'), QLatin1Char('/')).section(QLatin1Char('/'), 0, -2)
+    const QString path = QString::fromUtf8(__FILE__).replace(QLatin1Char('\\'),QLatin1Char('/')).section(QLatin1Char('/'), 0, -2)
         + QStringLiteral("/fonts/DejaVuSans.ttf");
     const int id = QFontDatabase::addApplicationFont(path);
     if (id < 0) {
