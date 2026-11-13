@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Snapshot -> AafExporter -> AafDocument -> AafImporter -> Snapshot (ADR-0171).
-// The neutral document is the seam: no libaaf, no file.
+// The neutral document is the seam: no libaaf, no file. AafExporter::write
+// also copies each source file beside the .aaf, which needs real audio on
+// disk; the mapping stage it runs first, map_to_aaf, is called directly.
 #include <cstdio>
 #include <memory>
 
 #include "fake_aaf_reader.h"
-#include "fake_aaf_writer.h"
+#include "aaf_export_map.h"
 #include "sonora/interchange/aaf_import.h"
 
 using namespace sonora::interchange;
@@ -91,11 +93,10 @@ const model::Playlist& active(const model::Snapshot& s) {
 
 int main() {
     const model::Snapshot a = build();
-    FakeAafWriter writer;
-    AafExporter ex(&writer);
+    AafDocument doc;
     ConversionReport out_rep;
     std::string err;
-    CHECK(ex.write(a, "x.aaf", out_rep, err));
+    CHECK(map_to_aaf(a, doc, out_rep, err));
 
     // Automation cannot ride in AAF: it must be listed, not lost silently.
     bool auto_listed = false;
@@ -105,19 +106,16 @@ int main() {
     CHECK(auto_listed);
 
     FakeAafReader reader;
-    reader.doc = writer.doc;
+    reader.doc = doc;
     AafImporter imp(&reader);
     model::Snapshot b;
     ConversionReport in_rep;
     const bool imported = imp.read("x.aaf", b, in_rep, err);
-    if (!imported) std::printf("import error: %s
-", err.c_str());
+    if (!imported) std::printf("import error: %s\n", err.c_str());
     CHECK(imported);
     if (!imported) return 1;
-    for (const auto& l : in_rep.dropped) std::printf("in dropped: %s
-", l.c_str());
-    for (const auto& l : in_rep.approximated) std::printf("in approx: %s
-", l.c_str());
+    for (const auto& l : in_rep.dropped) std::printf("in dropped: %s\n", l.c_str());
+    for (const auto& l : in_rep.approximated) std::printf("in approx: %s\n", l.c_str());
     CHECK(in_rep.dropped.empty());
     CHECK(in_rep.approximated.empty());
 

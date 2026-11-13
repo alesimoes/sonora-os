@@ -18,8 +18,8 @@ AAF export for users: import only.
 ## Decision
 
 `interchange/aaf_export/tests/test_aaf_roundtrip.cpp` (ctest `aaf_roundtrip`,
-label `interchange`) exports a Snapshot with `AafExporter` into a capturing
-`FakeAafWriter`, hands the captured document to a `FakeAafReader`, imports it
+label `interchange`) maps a Snapshot to a document with the exporter's `map_to_aaf` (`AafExporter::write` also copies source audio from disk, so the test stops before that) and gives it to a
+`FakeAafReader`, imports it
 with `AafImporter`, and compares. Edits that must survive: region position,
 length, source offset, clip gain, fade lengths, a crossfade, a gap, markers,
 sample rate (rational rates stay exact). What AAF cannot carry (track

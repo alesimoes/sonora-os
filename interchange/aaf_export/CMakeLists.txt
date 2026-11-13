@@ -26,6 +26,6 @@ set_tests_properties(aaf_export_writer PROPERTIES LABELS interchange)
 
 add_executable(test_aaf_roundtrip tests/test_aaf_roundtrip.cpp)
 target_link_libraries(test_aaf_roundtrip PRIVATE sonora_aaf_export)
-target_include_directories(test_aaf_roundtrip PRIVATE tests ../tests)
+target_include_directories(test_aaf_roundtrip PRIVATE src ../tests)
 add_test(NAME aaf_roundtrip COMMAND test_aaf_roundtrip)
 set_tests_properties(aaf_roundtrip PROPERTIES LABELS interchange)
