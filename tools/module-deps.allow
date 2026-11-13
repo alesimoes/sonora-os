@@ -9,6 +9,8 @@
 # module is tested against the fakes of its neighbours):
 #   engine/core, engine/control, engine/plugin_client -> drivers/fake
 #   engine/core -> common/platform   (test_session_plugins)
+#   engine/core -> contracts/plugin  (test_keyed_chain_runner: a fake host
+#                                     on the shared-memory protocol)
 #   contracts/api -> common/model    (FakeEngine and conformance, not the
 #                                     contract headers)
 common/audiofile -> common/platform
@@ -73,6 +75,7 @@ engine/core -> common/base
 engine/core -> common/dsp
 engine/core -> common/platform
 engine/core -> contracts/backend
+engine/core -> contracts/plugin
 engine/core -> drivers/fake
 engine/core -> engine/plugin_client
 engine/plugin_client -> common/base
