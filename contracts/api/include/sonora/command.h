@@ -490,6 +490,9 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // latency.* commands.
         {"window.latency", CommandTarget::None, "Show or hide the Latency window",
          false, CommandDomain::Interface},
+        // Step Sequencer (ADR-0169): the drum-machine grid, opened from Edit.
+        {"window.step_sequencer", CommandTarget::None,
+         "Show or hide the Step Sequencer window", false, CommandDomain::Interface},
         // File > Bounce Mix…: the dialog that sends mix.bounce.
         {"window.bounce", CommandTarget::None, "Show or hide the Bounce Mix window",
          false, CommandDomain::Interface},

@@ -605,7 +605,7 @@ void domains() {
                                id == "window.transport" ||
                                id == "window.undo_history" ||
                                id == "window.memory_locations" || id == "window.latency" || id == "window.preferences" ||
-                               id == "window.bounce" ||
+                               id == "window.bounce" || id == "window.step_sequencer" ||
                                id == "window.configurations" || id == "window.config_store" ||
                                id == "window.config_recall" ||
                                id == "comp.toggle_lanes" || id == "comp.toggle_quick_swipe" ||

@@ -1,12 +1,43 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "step_sequencer_model.h"
 
+#include <QTimer>
 #include <algorithm>
+
+#include "sonora/stepseq/pattern_publisher.h"
 
 namespace sonora::ui {
 
 StepSequencerModel::StepSequencerModel(Publisher publish, QObject* parent)
     : QObject(parent), publish_(std::move(publish)) {}
+
+StepSequencerModel::StepSequencerModel(stepseq::PatternExchange& exchange, QObject* parent)
+    : QObject(parent),
+      publisher_(std::make_unique<stepseq::PatternPublisher>(exchange)),
+      retry_timer_(new QTimer(this)) {
+    retry_timer_->setInterval(kRetryIntervalMs);
+    connect(retry_timer_, &QTimer::timeout, this, &StepSequencerModel::retryPublish);
+    // The exchange starts on an empty pattern; hand it ours from the start.
+    publish_out();
+}
+
+StepSequencerModel::~StepSequencerModel() = default;
+
+bool StepSequencerModel::publishPending() const {
+    return publisher_ && publisher_->pending();
+}
+
+void StepSequencerModel::publish_out() {
+    if (!publisher_) {
+        if (publish_) publish_(pattern_);
+        return;
+    }
+    if (!publisher_->submit(pattern_)) retry_timer_->start();
+}
+
+void StepSequencerModel::retryPublish() {
+    if (publisher_ && publisher_->retry(pattern_)) retry_timer_->stop();
+}
 
 bool StepSequencerModel::valid(int row, int step) const {
     return valid_row(row) && step >= 0 && step < pattern_.length();
@@ -14,7 +45,7 @@ bool StepSequencerModel::valid(int row, int step) const {
 
 void StepSequencerModel::commit() {
     ++revision_;
-    if (publish_) publish_(pattern_);
+    publish_out();
     emit changed();
 }
 

@@ -46,8 +46,7 @@ inline void register_types() {
                                                    QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<SendModel>("Sonora", 1, 0, "SendModel",
                                           QStringLiteral("made once, in main()"));
-    qmlRegisterUncreatableType<StepSequencerModel>("Sonora", 1, 0, "StepSequencerModel",
-                                                   QStringLiteral("made by its window's owner"));
+    qmlRegisterType<StepSequencerModel>("Sonora", 1, 0, "StepSequencerModel");
     qmlRegisterSingletonType<ThemeObject>("Sonora", 1, 0, "Theme",
                                           [](QQmlEngine*, QJSEngine*) -> QObject* {
                                               return new ThemeObject;
