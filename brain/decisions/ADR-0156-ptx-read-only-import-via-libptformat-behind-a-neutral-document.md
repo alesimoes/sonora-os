@@ -34,11 +34,13 @@ and keeps third-party code out of every process that matters during a take.
 
 ## Consequences
 
-- The conversion and the libptformat adapter are follow-ups; this change is
-  the contract. `add_subdirectory(ptx)` in `interchange/CMakeLists.txt` follows
-  once interchange.sessions.aaf_import merges; until then the micro build does
-  not reach this directory.
-- Import of sessions that carry plugins or automation is lossy, and says so.
+- Wired: `add_subdirectory(ptx)` is in `interchange/CMakeLists.txt`;
+  `PtxImporter::read` maps through `map_ptx_document`; `sonora-convert` has
+  `ptx-import` (and `import` by `.ptx`), copying media into `Audio Files/`.
+  Without `SONORA_WITH_LIBPTFORMAT` the command exits 1 with "no .ptx reader
+  in this build". Decoding a real `.ptx` still needs a redistributable fixture.
+- Licence note: still unconfirmed by the owner (see Unverified); libptformat
+  stays an optional, off-by-default, separately linked adapter until then.
 
 ## Alternatives rejected
 
