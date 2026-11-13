@@ -119,7 +119,9 @@ int main() {
     const Bytes good = fixture();
 
     write(dir / "mix.omf", good);
-    CHECK(convert("import", dir / "mix.omf", dir / "out" / "s.sonora", so, se) == 0);
+    const int rc = convert("import", dir / "mix.omf", dir / "out" / "s.sonora", so, se);
+    if (rc != 0) std::printf("convert said: %s\n", se.c_str());
+    CHECK(rc == 0);
     CHECK(fs::exists(dir / "out" / "s.sonora"));
     CHECK(fs::exists(dir / "out" / "Audio Files" / "omf_media_2.wav"));
     CHECK(convert("omf-import", dir / "mix.omf", dir / "out2" / "s.sonora", so, se) == 0);
