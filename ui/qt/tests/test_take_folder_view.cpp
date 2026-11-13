@@ -25,7 +25,10 @@ int main() {
     a->regions.push_back(region(1, 0, 100, 5));
     b->regions.push_back(region(2, 0, 100, 6));
     comp->regions.push_back(region(3, 0, 50, 5));
-    comp->regions.push_back(region(4, 50, 50, 6));
+    // A swipe keeps the take's own timeline: the piece at 50 reads the source from 50.
+    model::Region swiped = region(4, 50, 50, 6);
+    swiped.source_offset = 50;
+    comp->regions.push_back(swiped);
     t.playlists = {comp, a, b};
 
     TakeFolderView v;
