@@ -1246,6 +1246,7 @@ private:
     void feeds_solo(const PlaybackPlan& plan) noexcept SONORA_RT;
     std::unique_ptr<uint8_t[]> feeds_node_;    // per node
     std::unique_ptr<uint8_t[]> feeds_track_;   // per engine track
+    std::unique_ptr<uint8_t[]> aux_solo_;      // per bus: the callback's one load
     uint32_t max_buses_ = 0;
     uint32_t send_states_ = 0;               // (tracks + max_buses) x kStripSendSlots
     std::unique_ptr<SendState[]> sends_;

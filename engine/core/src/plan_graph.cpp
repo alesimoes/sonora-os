@@ -296,6 +296,19 @@ void layout_track_graph(PlaybackPlan& plan, const ChainBinding* chains) {
     layout_mix_graph(plan, chains, MixLayout{});
 }
 
+namespace {
+
+// Whether a line still belongs to `pair` from an earlier build: its edge may
+// have sound in flight in it.
+bool holds_line(const DelayLinePool& pool, uint64_t pair) {
+    for (uint32_t i = 0; i < pool.lines(); ++i) {
+        if (pool.owner(i) == pair) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 DelayLinePool::DelayLinePool(uint32_t lines) : owner_(lines, 0), last_used_(lines, 0) {}
 
 void DelayLinePool::begin_build() { ++build_; }
@@ -327,9 +340,12 @@ Compensation compensate(PlaybackPlan& plan, uint32_t max_delay_frames, DelayLine
     // 64-bit: a chain of chains could in principle sum past 2^32 frames.
     std::vector<uint64_t> latency(plan.node_count, 0);
     std::vector<uint64_t> need(plan.edge_count, 0);
-    // An aux bus no send reaches plays silence, and silence needs no delay:
-    // its return takes no line from an edge that carries sound.
+    // An aux bus nothing reaches plays silence, and silence needs no delay:
+    // its return takes no line from an edge that carries sound. Silence
+    // passes through sums and faders only; an insert can play a tail with
+    // nothing going in, so whatever follows one is aligned (ADR-0148 §2).
     std::vector<uint8_t> silent(plan.node_count, 0);
+    std::vector<uint8_t> quiet(plan.edge_count, 0);
     uint64_t master_latency = 0;
     for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
         const PlanNode& node = plan.nodes[ni];
@@ -357,7 +373,8 @@ Compensation compensate(PlaybackPlan& plan, uint32_t max_delay_frames, DelayLine
         for (uint32_t k = 0; k < node.input_edge_count; ++k) {
             const uint32_t ei = node.first_input_edge + k;
             const uint32_t from = plan.edges[ei].from_node;
-            need[ei] = silent[from] ? 0 : max_in - latency[from];
+            need[ei] = max_in - latency[from];
+            quiet[ei] = silent[from];
         }
         latency[ni] = max_in + (node.kind == NodeKind::InsertChain ? node.latency_frames : 0);
         if (node.kind == NodeKind::HardwareOut) {
@@ -368,8 +385,8 @@ Compensation compensate(PlaybackPlan& plan, uint32_t max_delay_frames, DelayLine
     }
     // Lines go to the edges into the bus first, the dry tracks and the
     // returns (and the same edges into an aux), then to the sends: a pool too small for every send still
-    // keeps the mix itself aligned (#163 review).
-    for (int pass = 0; pass < 2; ++pass) {
+    // keeps the mix itself aligned (#163 review). Silent edges come last.
+    for (int pass = 0; pass < 3; ++pass) {
         for (uint32_t ei = 0; ei < plan.edge_count; ++ei) {
             PlanEdge& edge = plan.edges[ei];
             if (edge.from_node >= plan.node_count || edge.to_node >= plan.node_count) continue;
@@ -377,12 +394,21 @@ Compensation compensate(PlaybackPlan& plan, uint32_t max_delay_frames, DelayLine
             // The strips' own paths, to the BusSum or to the aux they output
             // to, before the sends (ADR-0024 §6).
             const bool own_path = to.kind == NodeKind::BusSum || edge.send == kNoSend;
-            if (own_path != (pass == 0)) continue;
+            if ((quiet[ei] != 0 ? 2 : own_path ? 0 : 1) != pass) continue;
+            const uint64_t pair = edge_pair(plan.nodes[edge.from_node].stable_id, to.stable_id);
+            // A silent edge keeps the line it had, aligned: the swap that
+            // removed the bus's last send left that send's last frames in
+            // it, still to play (ADR-0148 §2). One that had none takes none.
+            if (quiet[ei] != 0 && !holds_line(pool, pair)) {
+                edge.delay_frames = 0;
+                edge.delay_line = kNoDelayLine;
+                continue;
+            }
             uint64_t applied = std::min<uint64_t>(need[ei], max_delay_frames);
             if (applied < need[ei]) ++result.clamped_edges;
             uint32_t line = kNoDelayLine;
             if (applied > 0) {
-                line = pool.assign(edge_pair(plan.nodes[edge.from_node].stable_id, to.stable_id));
+                line = pool.assign(pair);
                 if (line == kNoDelayLine) {
                     applied = 0;
                     ++result.undelayed_edges;

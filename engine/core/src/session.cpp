@@ -405,6 +405,7 @@ Session::Session(SessionConfig cfg)
                                   (static_cast<std::size_t>(tracks) + 1)]());
     feeds_node_.reset(new uint8_t[scratch_buffers_ + 1]());
     feeds_track_.reset(new uint8_t[tracks + 1]());
+    aux_solo_.reset(new uint8_t[max_buses_ + 1]());
     aux_gain_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
     aux_target_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
     aux_stamp_.reset(new uint64_t[max_buses_ + 1]());
@@ -1428,10 +1429,14 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (std::size_t e = 0; e < tracks_.size(); ++e) any_solo = any_solo || mix_view(*plan, e).solo;
     // Soloing an aux solos what feeds it, through the plan being played, so a
     // reroute at a swap changes the implicit solo in the same callback
-    // (ADR-0024 §4).
+    // (ADR-0024 §4). Each flag is loaded once, and feeds_solo() reads the
+    // copy: a solo cleared between two loads would make the callback see a
+    // solo with nothing feeding it, and mute every unsoloed track for a
+    // block (ADR-0148 §1).
     bool aux_solo = false;
     for (uint32_t b = 0; b < max_buses_; ++b) {
-        aux_solo = aux_solo || aux_[b].solo.load(std::memory_order_relaxed);
+        aux_solo_[b] = aux_[b].solo.load(std::memory_order_relaxed) ? 1 : 0;
+        aux_solo = aux_solo || aux_solo_[b] != 0;
     }
     if (solo_hook_ != nullptr) solo_hook_(solo_hook_context_);
     std::memset(feeds_track_.get(), 0, tracks_.size());
@@ -2770,8 +2775,7 @@ void Session::feeds_solo(const PlaybackPlan& plan) noexcept SONORA_RT {
     std::memset(feeds_node_.get(), 0, plan.node_count);
     for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
         const PlanNode& node = plan.nodes[ni];
-        if (node.kind == NodeKind::AuxFader && node.track < max_buses_ &&
-            aux_[node.track].solo.load(std::memory_order_relaxed)) {
+        if (node.kind == NodeKind::AuxFader && node.track < max_buses_ && aux_solo_[node.track] != 0) {
             feeds_node_[ni] = 1;
         }
     }
