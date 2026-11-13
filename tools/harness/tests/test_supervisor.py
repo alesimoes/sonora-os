@@ -39,8 +39,9 @@ class FakeSys:
             lambda c: self.containers.get(c, False))
 
     def kill_entry(self, entry):
-        return lock_probe.kill_entry(entry, "win", self.killed.append,
-                                     self.ckilled.append)
+        return lock_probe.kill_entry(
+            entry, "win", self.killed.append, self.ckilled.append,
+            lambda p: 0.0 if self.alive.get(p, True) else None)
 
     def lock_entries(self):
         return list(self.entries)

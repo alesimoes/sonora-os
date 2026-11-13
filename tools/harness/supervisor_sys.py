@@ -58,6 +58,46 @@ def under(path, root):
     return bool(p) and (p == r or p.startswith(r + "/"))
 
 
+def process_created(pid):
+    """A live process's creation time (epoch seconds); None when there is
+    no such process or it cannot be read (lock_probe.is_holder)."""
+    try:
+        if os.name == "nt":
+            return _created_nt(int(pid))
+        return _created_linux(int(pid))
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _created_nt(pid):
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        code = wintypes.DWORD()
+        if not k32.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:
+            return None   # exited (STILL_ACTIVE is 259)
+        t = [wintypes.FILETIME() for _ in range(4)]
+        if not k32.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
+            return None
+        ft = (t[0].dwHighDateTime << 32) | t[0].dwLowDateTime
+        return ft / 1e7 - 11644473600.0   # 100 ns since 1601 -> epoch
+    finally:
+        k32.CloseHandle(h)
+
+
+def _created_linux(pid):
+    with open(f"/proc/{pid}/stat") as f:
+        # Field 22, counted after the ")" that ends the command name.
+        ticks = int(f.read().rsplit(")", 1)[1].split()[19])
+    with open("/proc/stat") as f:
+        btime = next(int(l.split()[1]) for l in f if l.startswith("btime"))
+    return btime + ticks / os.sysconf("SC_CLK_TCK")
+
+
 class RealSys:
     def __init__(self, lock=None, clock=time.time, notifier=None):
         self.lock = lock or lock_dir()
@@ -101,7 +141,7 @@ class RealSys:
 
     def kill_entry(self, entry):
         return lock_probe.kill_entry(entry, HOST_KIND, launcher.kill_tree,
-                                     self.container_kill)
+                                     self.container_kill, process_created)
 
     # -- the heavy lock --------------------------------------------------
     def lock_entries(self):

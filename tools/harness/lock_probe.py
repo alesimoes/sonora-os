@@ -36,13 +36,26 @@ def entry_alive(entry, host_kind, pid_alive, container_running):
     return False
 
 
-def kill_entry(entry, host_kind, kill_tree, container_kill):
+def is_holder(pid, start, created):
+    """The pid still names the process that wrote the entry: it exists and
+    was created no later than the entry's start (whole seconds, hence the
+    one-second slack). Windows reuses pids quickly; a holder's bash killed
+    at an agent's time limit may have left its number to the daemon,
+    Docker or another agent."""
+    if start is None:
+        return False
+    t = created(pid)
+    return t is not None and t <= start + 1
+
+
+def kill_entry(entry, host_kind, kill_tree, container_kill, created):
     """Kills what the entry left running; False when nothing could be
     reached (the slot is then kept: removing it would let a second build
-    start beside one still running)."""
+    start beside one still running). created(pid) -> the process's creation
+    time in epoch seconds, None when there is no such process."""
     did = False
     pid = probe_pid(entry, host_kind)
-    if pid is not None:
+    if pid is not None and is_holder(pid, entry.get("start"), created):
         kill_tree(pid)
         did = True
     c = entry.get("container")
