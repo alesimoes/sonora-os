@@ -53,7 +53,7 @@ if [ -n "$scripts" ]; then
   b=iso/config/includes.chroot/usr/local/bin
   ci_scripts=$(ls tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot \
     "$b/sonora-smoketest" "$b/sonora-display-gave-up" "$b/sonora-install" \
-    "$b/sonora-install-tty" "$b/sonora-update" "$b/sonora-policycheck" \
+    "$b/sonora-install-tty" "$b/sonora-update" "$b/sonora-session-open" "$b/sonora-policycheck" \
     "$b/sonora-acceptance" "$b/sonora-windows-plugins" \
     iso/config/includes.chroot/usr/local/lib/sonora/slots.sh 2>/dev/null)
   if command -v shellcheck >/dev/null 2>&1; then
