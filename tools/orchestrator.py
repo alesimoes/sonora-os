@@ -30,7 +30,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, d
                      supervisor, supervisor_sys)
 from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
                      prepr, shots,
-                     leadwake, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
+                     leadwake, owner_infer, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
@@ -728,11 +728,11 @@ class Orchestrator:
             # the next merge wakes the janitor again.
             triage_sweep.close_wake(self, t, why[:200])
             return
-        owner = data.get("needs_owner")
+        owner = data.get("needs_owner") or owner_infer.owner_from(why)
         if not owner and triage.handle(self, t, kind, why, data, now):
             return
         self._block(t, why, owner=owner if owner else None,
-                    cause=None if owner else "infra")
+                    cause=None if owner else blockinfo.classify(why))
 
     # -- results ------------------------------------------------------
     def _on_result(self, r, data, now):
