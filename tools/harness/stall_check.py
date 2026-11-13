@@ -8,7 +8,7 @@ names a blocked feature, a PR open and not merging. These checks raise a
 dashboard alert for any task, feature or PR with no run and no progress
 past a bound, with the reason the daemon knows, and re-issue a lost wake.
 """
-from . import resolver_link, stall_resolver, wakes
+from . import hold_check, resolver_link, siblings, stall_resolver, wakes
 from .scheduler import DONE_STATES, HOLD
 from .supervisor_checks import (_active, _feature_has_run, _hms,
                                 _waiting_since, _why_not_launched)
@@ -23,6 +23,7 @@ def check_stalls(sv, now):
     stalled_wakes(sv, now)
     stalled_features(sv, now)
     stalled_prs(sv, now)
+    hold_check.check_holds(sv, now)
 
 
 def _last_event(sv, tid, kinds):
@@ -45,7 +46,7 @@ def _waiting_siblings(sv, t):
     docs sibling each, and the text named neither the sibling nor its note."""
     if t["state"] != "integrating" or not t.get("feature_id"):
         return []
-    return [s for s in sv.o.store.feature_tasks(t["feature_id"])
+    return [s for s in siblings.live(sv.o.store.feature_tasks(t["feature_id"]))
             if s["state"] not in DONE_STATES]
 
 

@@ -29,7 +29,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, d
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
 from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
-                     prepr, shots,
+                     prepr, shots, siblings,
                      leadwake, owner_infer, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
@@ -811,7 +811,7 @@ class Orchestrator:
 
     def _ready_features(self):
         for f in self.store.features():
-            ts = self._feature_tasks(f["id"])
+            ts = siblings.live(self._feature_tasks(f["id"]))
             if ts and not f["pr"] and all(
                     x["state"] == "integrating" and x["integrated"]
                     for x in ts):
