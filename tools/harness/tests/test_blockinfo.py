@@ -72,7 +72,9 @@ class Daemon(support.DaemonCase):
         o._on_agent_blocked(o.store.get_task("b"), "engineer",
                             {"summary": "which ADR?", "needs_owner": "needs a choice"}, 1.0)
         a, b = o.store.get_task("a"), o.store.get_task("b")
-        self.assertEqual((a["owner"], a["cause"]), (None, "infra"))
+        # The wording names no cause: "other", not the blanket "infra" that
+        # read every block as an infrastructure fault (2026-11-13).
+        self.assertEqual((a["owner"], a["cause"]), (None, "other"))
         self.assertEqual(b["owner"], "needs a choice")
 
 

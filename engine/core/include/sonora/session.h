@@ -709,6 +709,11 @@ private:
     using WordHook = void (*)(void* context) noexcept SONORA_RT;
     WordHook word_hook_ = nullptr;
     void* word_hook_context_ = nullptr;
+    // Called by process() right after it has taken the callback's aux solo
+    // flags, so a test can clear a solo between that and anything that
+    // reads them again (ADR-0148 §1). Set only while no callback runs.
+    WordHook solo_hook_ = nullptr;
+    void* solo_hook_context_ = nullptr;
 
     // No take: a track with no capture window, a punch record for none.
     static constexpr uint32_t kNoWindowTake = ~uint32_t{0};
@@ -1241,6 +1246,7 @@ private:
     void feeds_solo(const PlaybackPlan& plan) noexcept SONORA_RT;
     std::unique_ptr<uint8_t[]> feeds_node_;    // per node
     std::unique_ptr<uint8_t[]> feeds_track_;   // per engine track
+    std::unique_ptr<uint8_t[]> aux_solo_;      // per bus: the callback's one load
     uint32_t max_buses_ = 0;
     uint32_t send_states_ = 0;               // (tracks + max_buses) x kStripSendSlots
     std::unique_ptr<SendState[]> sends_;
