@@ -231,12 +231,18 @@ jobs:
       - name: PR leaves PROGRESS.md alone
         if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Not pull_request.base.sha: that is main as it was when the PR was
+          # opened. Once the branch merges a later main, that old commit is
+          # an ancestor of the head, so base...head listed everything main
+          # had merged since, its PROGRESS.md regenerations included (#686).
+          # The tip of the base branch gives the merge base the PR really has.
+          BASE_REF: ${{ github.base_ref }}
           # The checked-out ref is the PR merged into *current* main, which
           # carries main's own PROGRESS.md regenerations; compare the PR head.
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if git diff --name-only "$BASE_SHA"..."$HEAD_SHA" | grep -qx 'planning/PROGRESS.md'; then
+          base=$(git rev-parse --verify "origin/$BASE_REF^{commit}")
+          if git diff --name-only "$base"..."$HEAD_SHA" | grep -qx 'planning/PROGRESS.md'; then
             echo "::error file=planning/PROGRESS.md::PRs must not change PROGRESS.md; CI regenerates it on main after the merge."
             echo "  fix with: git checkout origin/main -- planning/PROGRESS.md"
             exit 1
