@@ -326,6 +326,15 @@ gui_checks() {
   done
   echo "SMOKETEST info  first frame after ${FRAME_MS:-never} ms of UI uptime; boot uptime $(cut -d' ' -f1 /proc/uptime) s"
   check "UI logged its first frame" test -n "$FRAME_MS"
+  # The serial log is the only evidence a CI boot leaves: when the UI never
+  # drew, say why (each unit's state and last journal lines).
+  if [ -z "$FRAME_MS" ]; then
+    for u in sonora-ui sonora-compositor sonora-engine sonora-display-fallback; do
+      echo "SMOKETEST diag  $u: $(systemctl show -p ActiveState,SubState,Result,ExecMainStatus,NRestarts "$u.service" 2>/dev/null | tr '\n' ' ')"
+      journalctl -b -u "$u.service" -o cat --no-pager -n 25 2>/dev/null | cut -c1-200 |
+        sed "s/^/SMOKETEST diag  $u| /"
+    done
+  fi
 
   # The renderer labwc and Qt ended up with on a machine with no render node
   # (QEMU -vga std). Information only; ADR-0010 unverified item 3 records it.
