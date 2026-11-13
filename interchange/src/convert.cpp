@@ -7,6 +7,7 @@
 #include "sonora/audio_import.h"
 #include "sonora/interchange/aaf_import.h"
 #include "sonora/interchange/interchange.h"
+#include "sonora/interchange/omf_import.h"
 
 namespace sonora::interchange {
 
@@ -17,13 +18,15 @@ namespace {
 const char* kUsage =
     "usage: sonora-convert smf-import <in.mid> <out.sonora>\n"
     "       sonora-convert aaf-import <in.aaf> <out.sonora>\n"
-    "       sonora-convert import     <in.mid|in.aaf> <out.sonora>\n"
+    "       sonora-convert omf-import <in.omf> <out.sonora>\n"
+    "       sonora-convert import     <in.mid|in.aaf|in.omf> <out.sonora>\n"
     "       sonora-convert smf-export <in.sonora> <out.mid>\n"
     "       sonora-convert session    <in.sonora> <out.sonora>\n"
     "\n"
     "smf-import   a Standard MIDI File to a new session of MIDI tracks\n"
     "aaf-import   an AAF composition; its essence is copied into Audio Files/\n"
-    "import       smf-import or aaf-import, chosen by the file's extension\n"
+    "omf-import   an OMF composition; embedded media is extracted into Audio Files/\n"
+    "import       smf-import, aaf-import or omf-import, chosen by the file's extension\n"
     "smf-export   the MIDI and instrument tracks of a session to a format 1 file\n"
     "session      a session rewritten in the current format version\n"
     "\n"
@@ -61,15 +64,16 @@ bool find_essence(const fs::path& aaf_dir, const std::string& rel, fs::path& fou
 
 // A missing file is an error naming it, never a silent gap.
 bool copy_essence(const std::string& aaf, const std::string& dest, const model::Snapshot& snap,
-                  std::string& error) {
+                  std::string& error, const fs::path& extra_dir = {}) {
     if (!snap.sources) return true;
     const fs::path aaf_dir = fs::absolute(fs::path(aaf)).parent_path();
     const fs::path folder = fs::absolute(fs::path(dest)).parent_path();
     for (const model::Source& s : snap.sources->sources) {
         if (s.kind != model::SourceKind::Imported) continue;
         fs::path from;
-        if (!find_essence(aaf_dir, s.path, from)) {
-            error = "AAF essence file not found: " + s.path;
+        if (!find_essence(aaf_dir, s.path, from) &&
+            (extra_dir.empty() || !find_essence(extra_dir, s.path, from))) {
+            error = "essence file not found: " + s.path;
             return false;
         }
         const fs::path to = folder / fs::path(s.path);
@@ -102,6 +106,23 @@ bool aaf_import(const std::string& in, const std::string& dest, model::Snapshot&
            write_session(dest, snap, report, error);
 }
 
+bool omf_import(const std::string& in, const std::string& dest, model::Snapshot& snap,
+                ConversionReport& report, std::string& error) {
+    // Embedded media is extracted beside the session, then copied into
+    // Audio Files/ by the same path the AAF import uses.
+    const fs::path folder = fs::absolute(fs::path(dest)).parent_path();
+    std::error_code ec;
+    fs::create_directories(folder, ec);
+    std::unique_ptr<Importer> importer = make_omf_importer(folder.string());
+    if (!importer->can_read(in)) {
+        error = in + ": not an OMF file";
+        return false;
+    }
+    return importer->read(in, snap, report, error) &&
+           copy_essence(in, dest, snap, error, folder) &&
+           write_session(dest, snap, report, error);
+}
+
 }  // namespace
 
 int run_convert(const std::vector<std::string>& args, std::string& out, std::string& err) {
@@ -116,7 +137,10 @@ int run_convert(const std::vector<std::string>& args, std::string& out, std::str
     std::string command = args[0];
     const std::string& in = args[1];
     const std::string& dest = args[2];
-    if (command == "import") command = has_ext(in, ".aaf") ? "aaf-import" : "smf-import";
+    if (command == "import")
+        command = has_ext(in, ".aaf") ? "aaf-import"
+                  : has_ext(in, ".omf") ? "omf-import"
+                                        : "smf-import";
     ConversionReport report;
     std::string error;
     model::Snapshot snapshot;
@@ -128,6 +152,8 @@ int run_convert(const std::vector<std::string>& args, std::string& out, std::str
                                    : (error = in + ": not a Standard MIDI File", false);
     } else if (command == "aaf-import") {
         ok = aaf_import(in, dest, snapshot, report, error);
+    } else if (command == "omf-import") {
+        ok = omf_import(in, dest, snapshot, report, error);
     } else if (command == "smf-export") {
         SmfExporter exporter;
         ok = read_session(in, snapshot, report, error) &&
