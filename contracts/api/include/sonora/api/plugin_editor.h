@@ -2,9 +2,9 @@
 //
 // A plug-in's own editor on the wire (ADR-0088, protocol 70).
 //
-//   Command  "plugin.editor_open"   CommandRequest::target = the track index,
-//                                   argument "slot=<n>" (0 is slot A)
-//   Command  "plugin.editor_close"  the same
+//   Command  "plugin.editor.open"   CommandRequest::target = the track index,
+//                                   argument the slot, decimal (0 is slot A)
+//   Command  "plugin.editor.close"  the same
 //   Event    EventKind::PluginEditor on every state change, to every client:
 //              track  = the track index
 //              insert = the slot index
@@ -31,8 +31,10 @@
 
 namespace sonora::api {
 
-inline constexpr const char* kCommandOpenPluginEditor = "plugin.editor_open";
-inline constexpr const char* kCommandClosePluginEditor = "plugin.editor_close";
+// The catalog's ids (sonora/command.h, ADR-0012 §8), whose argument this
+// protocol fixes as the slot alone.
+inline constexpr const char* kCommandOpenPluginEditor = "plugin.editor.open";
+inline constexpr const char* kCommandClosePluginEditor = "plugin.editor.close";
 
 // The same four states as editor_service::EditorState, numbered alike.
 // Append-only.

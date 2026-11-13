@@ -118,7 +118,7 @@ public:
         // stretcher (ADR-0136 §3); added, audio.elastic is announced too.
         std::vector<std::string> capabilities = {kCapabilityPlayRange, kCapabilityBounce,
                                                 kCapabilityRender, kCapabilityStems};
-        // plugin.editor_open and plugin.editor_close (ADR-0088, protocol 70)
+        // plugin.editor.open and plugin.editor.close (ADR-0088, protocol 70)
         // run and are announced in Hello. Off by default until engine/control
         // installs them, so engine_commands() still matches it.
         bool plugin_editors = false;
