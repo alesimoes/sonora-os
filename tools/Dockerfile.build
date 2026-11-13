@@ -3,7 +3,7 @@
 # skipping. python3 runs tools/failed-take-quit.py against the binaries the
 # engine job has just built, on a pty in the same container. librubberband (GPL-2.0-or-later, compatible
 # with our GPL-3.0-or-later: ADR-0136 sec. 3, ADR-0143 sec. 4) turns on the pitch
-and elastic adapters so pitch_rubberband and elastic_rubberband build and run.
+# and elastic adapters so pitch_rubberband and elastic_rubberband build and run.
 FROM debian:trixie-slim
 
 RUN ok=; A="-o Acquire::Retries=5 -o Acquire::http::Timeout=30"; \
