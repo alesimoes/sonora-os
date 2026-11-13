@@ -15,7 +15,7 @@ Rectangle {
     objectName: "stepSequencer"
 
     readonly property int cell: 30
-    readonly property int headWidth: 132
+    readonly property int headWidth: 164
     width: headWidth + 16 * (cell + 4) + 2 * Theme.space4
     height: 52 + seq.rows * (cell + 4) + 108
     // Up to 16 steps at full size; a longer pattern narrows its cells to fit.

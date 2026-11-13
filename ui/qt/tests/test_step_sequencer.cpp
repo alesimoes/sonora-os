@@ -29,6 +29,14 @@ using namespace sonora::ui;
 
 namespace {
 
+// Repeater delegates are visual children only, which findChild cannot see.
+QQuickItem* find(QQuickItem* from, const QString& name) {
+    if (from->objectName() == name) return from;
+    for (QQuickItem* c : from->childItems())
+        if (QQuickItem* f = find(c, name)) return f;
+    return nullptr;
+}
+
 int toggling() {
     int published = 0;
     StepSequencerModel m{[&published](const stepseq::Pattern&) { ++published; }};
@@ -104,14 +112,14 @@ int qml() {
     CHECK(view.status() == QQuickView::Ready);
     view.show();
     QQuickItem* root = view.rootObject();
-    QQuickItem* c = root->findChild<QQuickItem*>("cell3_7");
+    QQuickItem* c = find(root, "cell3_7");
     CHECK(c != nullptr);
-    CHECK(root->findChild<QQuickItem*>("cell7_15") != nullptr);
-    CHECK(root->findChild<QQuickItem*>("cell8_0") == nullptr);  // 8 lanes
+    CHECK(find(root, "cell7_15") != nullptr);
+    CHECK(find(root, "cell8_0") == nullptr);  // 8 lanes
     m.toggleStep(3, 7);
     CHECK(c->property("on").toBool());
     m.toggleMute(2);
-    CHECK(root->findChild<QQuickItem*>("mute2")->property("active").toBool());
+    CHECK(find(root, "mute2")->property("active").toBool());
     return 0;
 }
 
