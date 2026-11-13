@@ -59,3 +59,6 @@ if(SONORA_WITH_LIBAAF)
 else()
   target_sources(sonora_interchange PRIVATE src/aaf_reader_off.cpp)
 endif()
+
+# OMF import (ADR-0160), read-only.
+add_subdirectory(omf)
