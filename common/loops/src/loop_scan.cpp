@@ -11,7 +11,8 @@ constexpr std::size_t kHeaderBytes = 64 * 1024;
 constexpr std::size_t kSidecarBytes = 64 * 1024;
 
 std::string join(const std::string& a, const std::string& b) {
-    return a.empty() ? b : a + "/" + b;
+    if (a.empty()) return b;
+    return b.empty() ? a : a + "/" + b;
 }
 
 bool ends_with_ci(const std::string& s, const std::string& suf) {
