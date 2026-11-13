@@ -21,6 +21,7 @@
 #include "fader_taper.h"
 #include "key_router.h"
 #include "peak_source.h"
+#include "selection_link.h"
 #include "qt_keys.h"
 #include "sample_window.h"
 #include "session_files.h"
@@ -2891,6 +2892,46 @@ int test_file_samples() {
     return 0;
 }
 
+// Link Timeline and Edit Selection: the range mirrors both ways when linked
+// and only then; Ctrl-click tracks are a set that loses removed tracks;
+// the flag, and only the flag, survives a restart.
+int test_selection_link() {
+    ModelDocument doc(two_tracks());
+    EditController c(doc);
+    SelectionLink link;
+    c.set_link(&link);
+    OK(link.linked());
+    c.select_range(0, kBar, 2 * kBar);
+    OK(link.timeline().start == kBar && link.timeline().end == 2 * kBar);
+    c.apply_timeline_range(3 * kBar, 4 * kBar);
+    OK(c.selection().start == 3 * kBar && c.selection().end == 4 * kBar);
+
+    link.setLinked(false);
+    c.apply_timeline_range(5 * kBar, 6 * kBar);
+    OK(link.timeline().start == 5 * kBar);
+    OK(c.selection().start == 3 * kBar);
+    c.select_range(0, kBar, 2 * kBar);
+    OK(link.timeline().start == 5 * kBar);
+
+    OK(link.toggle_track(1) && link.toggle_track(7));
+    OK(!link.toggle_track(1));
+    OK(link.extra_tracks().size() == 1);
+    c.clamp_selection();  // two tracks: 7 is gone
+    OK(link.extra_tracks().empty());
+
+    link.setLinked(false);
+    QTemporaryDir dir;
+    const std::string path = dir.path().toStdString() + "/sub/selection-link.json";
+    std::string why;
+    OK(link.save(path, why));
+    SelectionLink back;
+    OK(back.linked() && back.load(path, why) && !back.linked());
+    SelectionLink fresh;
+    OK(fresh.load(path + ".missing", why) && fresh.linked());
+    OK(!fresh.fromJson("{}", why) && fresh.linked());
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2906,7 +2947,7 @@ int main(int argc, char** argv) {
         test_midi_sequence_cleanup_follow_ups() || test_input_monitor() || test_track_punch() ||
         test_step_automation_mode() || test_save_as_and_copy() ||
         test_automation_follows_edit() || test_follow_edit_thins_a_full_lane() ||
-        test_sample_pencil() || test_file_samples()) {
+        test_sample_pencil() || test_file_samples() || test_selection_link()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);
