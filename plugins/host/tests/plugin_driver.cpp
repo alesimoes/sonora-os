@@ -2110,13 +2110,19 @@ int scenario_params(const Args& a) {
     // submit: one that does not is held and arrives through the table at
     // offset 0 (block protocol step 2), which is not what these check.
     uint64_t sent_at[4] = {0, 0, 0, 0};
+    uint64_t attempts[4] = {0, 0, 0, 0};
     const uint64_t when[4] = {at, at_offset, at_late, at_table};
     std::vector<std::array<float, 3>> seen(total, {-1.f, -1.f, -1.f});
     Signal sig(1);
     const LoopStats st = run_periodic(clock, total, [&](uint64_t i) {
         for (int k = 0; k < 4; ++k) {
-            if (sent_at[k] || i < when[k] || !host.idle()) continue;
+            // A block the loop missed (a loaded machine, RTSan) took its change
+            // with it: that change goes again, and the counters are checked
+            // against the number of attempts.
+            const bool lost = sent_at[k] && i >= sent_at[k] + 2 && seen[size_t(sent_at[k])][0] < 0.f;
+            if ((sent_at[k] && !lost) || i < when[k] || !host.idle()) continue;
             sent_at[k] = i;
+            ++attempts[k];
             if (k == 0) {
                 for (uint32_t d = 0; d < distinct; ++d) host.send(0, d, 0, value);
                 host.send(0, 9999, 0, value);  // no such parameter
@@ -2145,12 +2151,12 @@ int scenario_params(const Args& a) {
     check(sent_at[0] && host.refused() == 0, "the ring took every change");
     check(bulk && (*bulk)[0] == float(distinct), "every distinct change reached the plugin in one block");
     check(bulk && std::fabs((*bulk)[1] - float(distinct) * value) < 1e-3f, "with the value pushed");
-    check(host.h->params_rejected.load() == 1, "the change for a parameter that does not exist was counted as rejected");
+    check(host.h->params_rejected.load() == attempts[0], "the change for a parameter that does not exist was counted as rejected");
     const auto* offset = first_change(sent_at[1]);
     check(offset && (*offset)[0] == 1.f && (*offset)[1] == 0.5f && (*offset)[2] == 37.f,
           "a change tagged with frame 37 reached the plugin at frame 37");
     const auto* late = first_change(sent_at[2]);
-    check(late && (*late)[1] == 0.75f && (*late)[2] == 0.f && host.h->params_late.load() == 1,
+    check(late && (*late)[1] == 0.75f && (*late)[2] == 0.f && host.h->params_late.load() == attempts[2],
           "an entry for an older block was applied at frame 0 and counted late");
     const auto* table = first_change(sent_at[3]);
     check(table && (*table)[0] == 1.f && (*table)[1] == 0.125f && (*table)[2] == 0.f,

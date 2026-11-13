@@ -172,6 +172,9 @@ if(SONORA_PORTABLE_UI AND NOT SONORA_PLATFORM STREQUAL "linux" AND NOT SONORA_PL
   add_subdirectory(ui/client)
   add_subdirectory(ui/qt)
   _sonora_collect_targets(${CMAKE_SOURCE_DIR}/ui/qt _ui_targets)
+  # ui/keymap pulls ui/edit_tools in; its test is label ui, so it must be built too.
+  _sonora_collect_targets(${CMAKE_SOURCE_DIR}/ui/edit_tools _edit_tools_targets)
+  list(APPEND _ui_targets ${_edit_tools_targets})
   set(_ui_deps)
   foreach(_t ${_ui_targets})
     get_target_property(_type ${_t} TYPE)
