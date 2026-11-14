@@ -85,6 +85,10 @@ fi
 ((DRY)) && { cat "$OUT/files"; exit 0; }
 
 # --- stage 1: build and test the affected targets -------------------------------------
+# Each phase's wall time, so a slow run says where its minutes went (the lock
+# queue, the image, the volume ownership, the build itself).
+phase_t=$SECONDS
+phase() { echo "micro-build: phase $1 $((SECONDS - phase_t)) s"; phase_t=$SECONDS; }
 command -v docker >/dev/null || { echo "error: docker is required." >&2; exit 1; }
 docker image inspect "sonora-$IMAGE:trixie" >/dev/null 2>&1 || {
   # On GitHub the image comes from GHCR (the sonora-image action, which
@@ -104,6 +108,7 @@ docker image inspect "sonora-$IMAGE:trixie" >/dev/null 2>&1 || {
       -f "$(host_path "$ROOT/tools")/Dockerfile.build" "$(host_path "$ROOT/tools")" >/dev/null || exit 1
   fi
 }
+phase image
 JOBS="$("$ROOT/tools/build-slot.sh" --jobs)"
 ID="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
 # Off Linux the tree lives on a volume per checkout (NTFS bind mounts are
@@ -111,10 +116,19 @@ ID="$(printf %s "${ROOT##*/}" | tr -c 'A-Za-z0-9_.-' '_')"
 # volume every worktree shares, or SONORA_CCACHE_DIR (a host directory the
 # GitHub job restores from its cache).
 VOL=() AS_CALLER=()
+# Hands a volume to the container's user: only what someone else owns (a
+# root build-engine.sh run), found by a walk that only reads. A recursive
+# chown rewrote the metadata of every file of the shared ccache (24k files) on
+# every run: 76 s of a cold UI micro build on this host's USB disk, outside
+# the lock, beside the build holding it (2026-11-13).
+own_volume() {  # VOLUME:MOUNT OWNER
+  local mount="${1#*:}" uid="${2%:*}" gid="${2#*:}"
+  docker run --rm --user 0 -v "$1" --entrypoint find "sonora-$IMAGE:trixie" \
+    "$mount" \( ! -user "$uid" -o ! -group "$gid" \) -exec chown "$2" {} + >/dev/null 2>&1 || true
+}
 if [[ "$(uname -s)" != Linux ]]; then
   VOL=(-v "sonora-build-$ID:/build" -e "SONORA_BUILD_DIR=/build/micro-$IMAGE")
-  docker run --rm --user 0 -v "sonora-build-$ID:/build" --entrypoint chown "sonora-$IMAGE:trixie" \
-    -R 1000:1000 /build >/dev/null 2>&1 || true
+  own_volume "sonora-build-$ID:/build" 1000:1000
 else
   VOL=(-e "SONORA_BUILD_DIR=build-micro-$IMAGE")
   AS_CALLER=(--user "$(id -u):$(id -g)" -e HOME=/tmp)
@@ -138,8 +152,7 @@ else
   # (sonora-ui, 2026-11-07). Hand it to that user, whichever way it was made.
   owner="1000:1000"
   if ((${#AS_CALLER[@]})); then owner="$(id -u):$(id -g)"; fi
-  docker run --rm --user 0 -v sonora-ccache:/ccache --entrypoint chown \
-    "sonora-$IMAGE:trixie" -R "$owner" /ccache >/dev/null 2>&1 || true
+  own_volume sonora-ccache:/ccache "$owner"
 fi
 # The table in the job's summary page (changed files, targets, tests, times),
 # also when a stage fails.
@@ -150,18 +163,22 @@ summary() {
     python3 "$ROOT/tools/micro_summary.py" "$OUT" "$SUMMARY_TITLE" >>"$GITHUB_STEP_SUMMARY" || true
 }
 trap summary EXIT
+phase volumes
 echo "micro-build: image sonora-$IMAGE:trixie, phases: configure, build, test"
 start=$SECONDS
-if ! "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" \
+rm -f "$OUT/lock-wait"
+if ! SONORA_HEAVY_WAIT_FILE="$OUT/lock-wait" "$ROOT/tools/build-slot.sh" docker run --rm "${AS_CALLER[@]}" -e LANG=C.UTF-8 -e SONORA_JOBS="$JOBS" \
     -e SONORA_MICRO_FILES=/src/.micro-build/files -e SONORA_MICRO_PLAN=/src/.micro-build/plan.json \
     -e SONORA_MICRO_DIRECT="${SONORA_MICRO_DIRECT:-0}" -e SONORA_MICRO_BUILD_ONLY="${SONORA_MICRO_BUILD_ONLY:-0}" -e SONORA_MICRO_PLAN_ONLY="$PLAN_ONLY" -e SONORA_DSP_QUICK=1 \
     -e CCACHE_DIR=/ccache -e CCACHE_BASEDIR=/src -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-10G}" -e CCACHE_COMPRESS=1 \
     "${VOL[@]}" "${CCACHE[@]}" -v "$(host_path "$ROOT"):/src" -w /src \
     "sonora-$IMAGE:trixie" tools/micro-build-entrypoint.sh; then
-  echo "micro-build: FAIL build ($((SECONDS - start)) s)"
+  echo "micro-build: FAIL build ($((SECONDS - start)) s, of which $(cat "$OUT/lock-wait" 2>/dev/null || echo 0) s waiting for the lock)"
   exit 1
 fi
-((PLAN_ONLY)) || echo "micro-build: ok build ($((SECONDS - start)) s)"
+lock_wait="$(cat "$OUT/lock-wait" 2>/dev/null || echo 0)"
+echo "micro-build: phase lock-queue $lock_wait s"
+((PLAN_ONLY)) || echo "micro-build: ok build ($((SECONDS - start)) s, of which $lock_wait s waiting for the lock)"
 
 # --- stage 2: the same targets under RealtimeSanitizer ---------------------------------
 if [[ "$RTSAN" == 1 && -f "$OUT/plan.json" ]]; then

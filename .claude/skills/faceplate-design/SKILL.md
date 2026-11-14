@@ -21,4 +21,4 @@ description: Design a plugin faceplate or editor so it looks like the original h
 7. Hand the spec to `ui-engineer` (builds it) and `dsp-engineer` (confirms
    ranges and tapers match the DSP). Anything unmeasured (render cost, DPI
    scaling) is listed as unverified.
-8. The UI PR regenerates and commits screenshots of the finished editor.
+8. Screenshots of the finished editor are not committed (owner, 2026-11-13).
