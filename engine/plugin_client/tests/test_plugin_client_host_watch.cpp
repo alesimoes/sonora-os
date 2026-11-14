@@ -16,6 +16,7 @@
 // and no sonora-plugin-host are needed. Wakes are counted per turn, never
 // timed: a spin is a wake on every turn.
 #include "sonora/platform/ipc.h"
+#include "sonora/platform/process.h"
 #include "sonora/platform/wait_set.h"
 #include "sonora/plugin/host_control.h"
 #include "sonora/plugin_client/host_supervisor.h"
