@@ -91,6 +91,12 @@ void MtcChaseDriver::act(ChaseAction a, const api::TransportSnapshot& t) {
             ++stats_.plays;
             return;
         case ChaseAction::Stop:
+            // ADR-0225: a silent master (pulled cable, deck off) must not end
+            // a take; only the operator stops a recording.
+            if (t.state == api::TransportState::Recording) {
+                ++stats_.silence_while_recording;
+                return;
+            }
             send("transport.stop", {});
             ++stats_.stops;
             return;

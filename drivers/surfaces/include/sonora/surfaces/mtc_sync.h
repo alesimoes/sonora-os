@@ -55,6 +55,9 @@ struct MtcSyncStats {
     // whose rate is not the session's (still chased: the sample is right).
     std::uint32_t out_of_range = 0;
     std::uint32_t rate_mismatches = 0;
+    // Chase: the master went silent while the engine recorded; the stop that
+    // silence calls for was withheld so the take goes on (ADR-0225).
+    std::uint32_t silence_while_recording = 0;
     // Generate: quarter frames and full frames written, and writes the port
     // refused (a quarter frame is dropped, a full frame is retried).
     std::uint64_t quarter_frames = 0;

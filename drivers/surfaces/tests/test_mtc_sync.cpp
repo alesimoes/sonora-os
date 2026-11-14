@@ -230,6 +230,34 @@ void test_chase_stops_on_silence() {
     CHECK(!chase.locked());
 }
 
+// ADR-0225: a master gone silent mid-take is counted, never a stop; the
+// same silence merely rolling still stops. Silence is fed as audio samples.
+MtcSyncStats silence_after_lock(api::TransportState state, Engine& engine) {
+    FakeMtcPort port;
+    std::string error;
+    MtcChaseDriver chase(settings(MtcMode::Chase), engine, port);
+    CHECK(chase.start(error));
+    MtcEncoder enc;
+    enc.start(tc(1, 0, 0, 0));
+    engine.publish(state, 2 * kFrame25);
+    feed_cycles(port, enc, 1);
+    chase.tick(kFrame25);
+    for (int i = 0; i < 4; ++i) chase.tick(kFrame25);
+    return chase.stats();
+}
+
+void test_chase_silence_never_stops_a_recording() {
+    Engine recording;
+    const MtcSyncStats r = silence_after_lock(api::TransportState::Recording, recording);
+    CHECK(recording.count("transport.stop") == 0 && recording.commands.empty());
+    CHECK(r.silence_while_recording == 1 && r.stops == 0);
+
+    Engine rolling;
+    const MtcSyncStats p = silence_after_lock(api::TransportState::Rolling, rolling);
+    CHECK(rolling.count("transport.stop") == 1);
+    CHECK(p.silence_while_recording == 0 && p.stops == 1);
+}
+
 std::vector<MtcEvent> decode_sent(const FakeMtcPort& port) {
     MtcDecoder dec;
     std::vector<MtcEvent> out;
@@ -449,6 +477,7 @@ int main() {
     test_chase_plays_when_frames_advance();
     test_chase_never_locates_while_recording();
     test_chase_stops_on_silence();
+    test_chase_silence_never_stops_a_recording();
     test_generator_cadence();
     test_generator_start_and_jump();
     test_generator_refused_writes();
