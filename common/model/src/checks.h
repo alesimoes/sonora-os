@@ -78,6 +78,20 @@ std::vector<Id> bus_path(const EditState& e, Id from, Id to);
 // Group `where` is "[i]", the group's index.
 std::string group_problem(const EditState& e, std::string& where);
 std::string bus_loop_problem(const EditState& e, std::string& where);
+// Side-chain keys (ADR-0058, insert_key.cpp). The buses that the audio of a
+// track keyed by `bus` reaches in one step: its output and its sends'
+// destinations, for every track with an insert keyed by `bus`. bus_path and
+// bus_loop_problem follow these edges too, so the key joins ADR-0024's graph.
+std::vector<Id> key_fed_buses(const EditState& e, Id bus);
+// When keying an insert on `track` by `key_bus` would close a loop, the loop
+// named as ADR-0024 names one; empty otherwise.
+std::string key_loop(const EditState& e, const TrackEdit& track, Id key_bus);
+// When `track` sending or routing to `bus` would close a loop through a key
+// on its own chain, the loop named; empty otherwise.
+std::string track_route_loop(const EditState& e, const TrackEdit& track, Id bus);
+// Why insert `insert` on `track` may not take key `key_bus`: another insert
+// on the chain is keyed, or the key loops. Empty when it may, and for 0.
+std::string key_refusal(const EditState& e, const TrackEdit& track, Id insert, Id key_bus);
 
 // Automation (ADR-0027). Points: each `at` from 0 to kMaxInteger, sorted, at
 // most two at a frame, values in the param's range, at most

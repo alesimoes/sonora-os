@@ -917,3 +917,10 @@
   "name": "Cue",
   "first": 2
 }
+=== SetInsertKey 74
+{
+  "op": "SetInsertKey",
+  "track": 2,
+  "insert": 30,
+  "key_bus": 60
+}

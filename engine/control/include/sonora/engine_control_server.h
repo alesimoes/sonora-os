@@ -96,6 +96,7 @@
 namespace sonora {
 
 class ActiveFolder;
+class FactoryPresetReader;
 class PlaybackController;
 class PluginHosting;
 class PluginScanner;
@@ -103,6 +104,9 @@ class SessionSaver;
 class Session;
 namespace backend {
 class AudioBackend;
+}
+namespace elastic {
+class ElasticService;
 }
 namespace model {
 class Document;
@@ -295,6 +299,10 @@ public:
     // Clients attached now, and clients refused for what they sent since
     // construction. For diagnostics and the tests.
     std::size_t clients() const { return client_count_.load(std::memory_order_acquire); }
+    // The one reader of factory presets (ADR-0029 §5), null without a plug-in
+    // host. Blocking: its caller is the scan worker's thread, never the
+    // control thread; plugin.rescan clears what it remembers as Blocked.
+    FactoryPresetReader* preset_reader() { return preset_reader_.get(); }
     uint64_t refused() const { return refused_.load(std::memory_order_acquire); }
     // The most one client has had delivered and not handled, and the most
     // large messages reassembled at once, since construction.
@@ -501,6 +509,7 @@ private:
     // reopen at another period does not rescan. Null when no host is
     // configured. Destroyed after hosting_, whose probes it answers.
     std::unique_ptr<PluginScanner> scanner_;
+    std::unique_ptr<FactoryPresetReader> preset_reader_;
     // The catalog generation the clients were last sent.
     uint64_t catalog_sent_ = 0;
     // The catalog to clients, the scanner's notices said, once per turn.
@@ -648,6 +657,10 @@ private:
                          const std::string& text);
     bool start_render(model::RenderKind kind, const std::string& argument, std::string& why);
     void follow_render();
+    // Elastic audio (ADR-0136): a worker stretches a region into a new file,
+    // this thread places it, on the same Render event. Null when the build
+    // has no stretcher: the command and its capability are then absent.
+    std::unique_ptr<elastic::ElasticService> elastic_;
     // The compound the engine itself applied: every replica is sent it, the
     // chains follow the document and the playing plan is built again.
     void document_changed_by_engine(const std::vector<model::ReplicationUpdate>& updates);

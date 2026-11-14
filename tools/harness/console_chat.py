@@ -5,6 +5,7 @@ owner after a message sent to them (the broker log, via ownerchat.thread),
 and the live state of every action card. Read-only.
 """
 import time
+from datetime import datetime
 
 from . import console_store as S
 from . import ownerchat
@@ -27,6 +28,36 @@ def _agent_replies(hdir, rows):
     return out
 
 
+REPEAT_S = 120
+
+
+def _epoch(ts):
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _collapse_repeats(rows):
+    """One owner message sent several times in a row shows once, with one
+    answer. 2026-11-09: a question reached the daemon nine times (fixed at
+    the door in #621) and the history still showed nine questions and nine
+    answers in a block, which read as out of order."""
+    last, dropped, out = {}, set(), []
+    for m in rows:
+        if m["kind"] == "user":
+            key, t = (m["text"], m.get("to")), _epoch(m["ts"])
+            prev = last.get(key)
+            if t is not None and prev is not None and t - prev < REPEAT_S:
+                dropped.add(m["id"])
+                continue
+            last[key] = t
+        elif m.get("req") in dropped:
+            continue
+        out.append(m)
+    return out
+
+
 def _card_state(rec, now):
     view = {k: rec.get(k) for k in PUBLIC}
     view["state"] = S.effective_state(rec, now)
@@ -45,6 +76,7 @@ def view(hdir, now=None):
     now = now or time.time()
     rows = S.history(hdir)
     rows = sorted(rows + _agent_replies(hdir, rows), key=lambda m: (m["ts"], m["id"]))
+    rows = _collapse_repeats(rows)
     rows = rows[-S.HISTORY:]
     acts = S.load_actions(hdir)
     wanted = {c["id"] for m in rows for c in m.get("cards") or [] if c.get("type") == "action"}

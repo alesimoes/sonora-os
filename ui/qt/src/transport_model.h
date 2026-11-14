@@ -95,6 +95,10 @@ class TransportModel : public QObject {
     Q_PROPERTY(bool clickOn READ clickOn NOTIFY stateChanged)
     Q_PROPERTY(bool countOffOn READ countOffOn NOTIFY stateChanged)
     Q_PROPERTY(bool countingOff READ countingOff NOTIFY stateChanged)
+    // ADR-0043's three record-mode switches, as the session holds them.
+    Q_PROPERTY(bool inputOnly READ inputOnly NOTIFY settingsChanged)
+    Q_PROPERTY(bool rollsOn READ rollsOn NOTIFY settingsChanged)
+    Q_PROPERTY(bool quickPunch READ quickPunch NOTIFY settingsChanged)
     Q_PROPERTY(bool rollsAvailable READ rollsAvailable CONSTANT)
     Q_PROPERTY(QString rollsWhy READ rollsWhy CONSTANT)
 
@@ -146,6 +150,9 @@ public:
     bool punchSet() const { return range_set(settings_.transport.punch); }
     qint64 punchStart() const { return settings_.transport.punch[0]; }
     qint64 punchEnd() const { return settings_.transport.punch[1]; }
+    bool inputOnly() const { return settings_.transport.input_only; }
+    bool rollsOn() const { return settings_.transport.rolls_on; }
+    bool quickPunch() const { return settings_.transport.quick_punch; }
     // The engine's switches, from the state block; off with no engine.
     bool clickOn() const { return click_; }
     bool countOffOn() const { return count_off_; }

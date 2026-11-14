@@ -19,7 +19,8 @@ ui-engineer, dsp-engineer.
 - Skill `faceplate-design`: spec table (control, param id, range, unit,
   taper, px, colour tokens) -> ui-engineer builds, dsp-engineer confirms
   ranges.
-- Screenshots of every touched scene are committed in the UI PR.
+- Generated screenshots are not committed (owner, 2026-11-13): they conflicted
+  between PRs and outran the command cap; `docs/images/sonora-ui-*.png` is ignored.
 
 ## Traps
 - Licence of fonts and assets must be noted.

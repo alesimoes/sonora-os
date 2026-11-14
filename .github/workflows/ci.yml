@@ -126,10 +126,10 @@ jobs:
           # harness scripts the Sonora build depends on are NOT harness-only
           # and build everything: tools/build-*.sh (build-slot.sh excepted,
           # it is the lock, tested by tools/test-build-slot.sh in the Harness
-          # job), tools/micro-build.sh, tools/Dockerfile*, tools/*-entrypoint.sh.
+          # job, and so are build-job.sh/build-wait.sh, its detached form), tools/micro-build.sh, tools/Dockerfile*, tools/*-entrypoint.sh.
           harness_only=false
           if [ "${{ github.event_name }}" = pull_request ] && [ -n "$files" ] &&
-             ! printf '%s\n' "$files" | grep -qvE '^(planning|brain|docs|\.claude)/|\.md$|^tools/(harness/|harness[^/]*\.py$|orchestrator\.py$|supervisor\.py$|check_syntax\.py$|dashboard[^/]*$|build-slot\.sh$|test-build-slot\.sh$)'; then
+             ! printf '%s\n' "$files" | grep -qvE '^(planning|brain|docs|\.claude)/|\.md$|^tools/(harness/|harness[^/]*\.py$|orchestrator\.py$|supervisor\.py$|check_syntax\.py$|dashboard[^/]*$|build-slot\.sh$|test-build-slot\.sh$|build-job\.sh$|build-wait\.sh$|test-build-job\.sh$)'; then
             harness_only=true
           fi
           echo "harness_only=$harness_only" >> "$GITHUB_OUTPUT"
@@ -141,6 +141,7 @@ jobs:
               case "$f" in
                 planning/*|brain/*|docs/*|*.md) ;;
                 tools/build-slot.sh|tools/test-build-slot.sh|tools/supervisor.py|tools/check_syntax.py) ;;
+                tools/build-job.sh|tools/build-wait.sh|tools/test-build-job.sh) ;;
                 engine/core/*|common/audiofile/*) core=true rt=true bwf=true ;;
                 engine/*|drivers/*) core=true rt=true ;;
                 contracts/*) core=true ;;
@@ -231,12 +232,18 @@ jobs:
       - name: PR leaves PROGRESS.md alone
         if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Not pull_request.base.sha: that is main as it was when the PR was
+          # opened. Once the branch merges a later main, that old commit is
+          # an ancestor of the head, so base...head listed everything main
+          # had merged since, its PROGRESS.md regenerations included (#686).
+          # The tip of the base branch gives the merge base the PR really has.
+          BASE_REF: ${{ github.base_ref }}
           # The checked-out ref is the PR merged into *current* main, which
           # carries main's own PROGRESS.md regenerations; compare the PR head.
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if git diff --name-only "$BASE_SHA"..."$HEAD_SHA" | grep -qx 'planning/PROGRESS.md'; then
+          base=$(git rev-parse --verify "origin/$BASE_REF^{commit}")
+          if git diff --name-only "$base"..."$HEAD_SHA" | grep -qx 'planning/PROGRESS.md'; then
             echo "::error file=planning/PROGRESS.md::PRs must not change PROGRESS.md; CI regenerates it on main after the merge."
             echo "  fix with: git checkout origin/main -- planning/PROGRESS.md"
             exit 1
@@ -335,7 +342,7 @@ jobs:
       # -x follows `source=` directives, so tools/lib/* sourced by a script is
       # checked in that script's context (tools/test-image-config.sh's parts).
       - name: Check
-        run: shellcheck -x tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck iso/config/includes.chroot/usr/local/bin/sonora-acceptance iso/config/includes.chroot/usr/local/bin/sonora-windows-plugins
+        run: shellcheck -x tools/*.sh iso/auto/config iso/config/hooks/normal/*.hook.chroot iso/config/includes.chroot/usr/local/bin/sonora-smoketest iso/config/includes.chroot/usr/local/bin/sonora-display-gave-up iso/config/includes.chroot/usr/local/bin/sonora-install iso/config/includes.chroot/usr/local/bin/sonora-install-tty iso/config/includes.chroot/usr/local/bin/sonora-update iso/config/includes.chroot/usr/local/bin/sonora-session-open iso/config/includes.chroot/usr/local/lib/sonora/slots.sh iso/config/includes.chroot/usr/local/bin/sonora-policycheck iso/config/includes.chroot/usr/local/bin/sonora-acceptance iso/config/includes.chroot/usr/local/bin/sonora-windows-plugins
 
       # ADR-0007 M5: module include edges and the contract lock. Seconds,
       # no build needed.
@@ -343,6 +350,11 @@ jobs:
         run: |
           tools/check-deps.sh --test
           tools/check-deps.sh
+
+      - name: Every module with tests has a ctest label (ADR-0007 §7)
+        run: |
+          tools/check-test-labels.sh --test
+          tools/check-test-labels.sh
 
       - name: Contract files match contracts/CONTRACTS.lock (ADR-0007 §6)
         run: |
@@ -355,6 +367,9 @@ jobs:
       - name: Build slot limiter
         run: tools/test-build-slot.sh
 
+      - name: Detached build jobs
+        run: tools/test-build-job.sh
+
       - name: Secure Boot chain, static
         run: tools/test-secure-boot.sh
 
@@ -366,6 +381,9 @@ jobs:
 
       - name: A/B updates, slot logic against files
         run: tools/test-ab-updates.sh
+
+      - name: Session-open probe
+        run: tools/test-session-open.sh
 
       - name: Policy check items match the image script
         run: tools/test-policycheck-qemu.sh --static
@@ -578,9 +596,11 @@ jobs:
           python -m pip install --quiet pyyaml
           python tools/check_syntax.py yaml .github/workflows/*.yml
       - name: Harness shell scripts
-        run: shellcheck tools/build-slot.sh tools/test-build-slot.sh tools/micro-build.sh tools/micro-build-entrypoint.sh tools/ci-micro-label.sh tools/dashboard-up.sh
+        run: shellcheck tools/build-slot.sh tools/test-build-slot.sh tools/build-job.sh tools/build-wait.sh tools/test-build-job.sh tools/micro-build.sh tools/micro-build-entrypoint.sh tools/ci-micro-label.sh tools/dashboard-up.sh
       - name: Build slot limiter
         run: tools/test-build-slot.sh
+      - name: Detached build jobs
+        run: tools/test-build-job.sh
       - name: Harness unit tests
         # Output goes to a file, not the step's pipes: a child that outlives
         # the suite then cannot keep the step open until the job timeout,

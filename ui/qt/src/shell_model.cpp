@@ -359,7 +359,9 @@ bool ShellModel::clearsRecordRefusal(const std::string& c) {
 }
 
 bool ShellModel::isRecordCommand(const std::string& c) {
-    return c == "transport.record_ready" || c == "transport.record";
+    return c == "transport.record_ready" || c == "transport.record" ||
+           c == "transport.toggle_input_only" || c == "transport.toggle_pre_post_roll" ||
+           c == "transport.toggle_quick_punch";
 }
 
 void ShellModel::holdRecordRefusal(const QString& why) {
@@ -512,6 +514,11 @@ bool ShellModel::renderAvailable() const {
     return std::find(caps.begin(), caps.end(), api::kCapabilityRender) != caps.end();
 }
 
+bool ShellModel::renderInsertAvailable() const {
+    const auto& caps = engine_.info().capabilities;
+    return std::find(caps.begin(), caps.end(), api::kCapabilityRenderInsert) != caps.end();
+}
+
 void ShellModel::holdRenderNotice(const QString& text) {
     if (text == render_notice_) return;
     render_notice_ = text;
@@ -597,6 +604,8 @@ void ShellModel::tick() {
     if (engine_.info().implemented_commands != router_.engineCommands()) followEngineCommands();
     if (engine_.info().capabilities != router_.engineCapabilities()) {
         router_.setEngineCapabilities(engine_.info().capabilities);
+        // The Track menu's render entries read the capabilities.
+        emit renderChanged();
     }
     const EngineInfo& info = engine_.info();
     const bool reformatted = info.sample_rate != sized_rate_ ||
@@ -852,10 +861,12 @@ void ShellModel::refreshState(bool read_frame) {
                              : t.record_ready                    ? QStringLiteral("READY")
                                                                  : QStringLiteral("STOP");
         set(transport_text_, mode);
+        const bool was_recording = recording_;
         set(recording_, t.state == TransportMode::Recording);
         set(record_ready_, t.record_ready && t.state != TransportMode::Recording);
         // A take that started answers a refusal made before it.
-        if (t.state == TransportMode::Recording) holdRecordRefusal(QString());
+        // Only on the transition: a switch refused during the take stays held.
+        if (t.state == TransportMode::Recording && !was_recording) holdRecordRefusal(QString());
         set(clock_text_, clock_text(t.playhead_frames, engine_.info().sample_rate));
         set(take_, static_cast<int>(t.take));
         set(xruns_, static_cast<int>(t.xruns));

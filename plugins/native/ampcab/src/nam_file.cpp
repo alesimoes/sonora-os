@@ -155,6 +155,75 @@ struct Reader {
         *out = std::move(s);
         return true;
     }
+
+    // LSTM: exactly the three keys the format writes; lstm_check holds the
+    // sizes to the kernel's caps.
+    bool lstm_config(const Value& config, dsp::neural::LstmSpec* out) {
+        for (const auto& member : config.members()) {
+            const std::string& k = member.first;
+            if (k != "num_layers" && k != "input_size" && k != "hidden_size")
+                return fail("config: the key '" + k + "' is not supported");
+        }
+        dsp::neural::LstmSpec s;
+        if (!get_int(config, "num_layers", &s.num_layers, "config: ") ||
+            !get_int(config, "input_size", &s.input_size, "config: ") ||
+            !get_int(config, "hidden_size", &s.hidden_size, "config: "))
+            return false;
+        const std::string why = dsp::neural::lstm_check(s);
+        if (!why.empty()) return fail("config: " + why);
+        *out = s;
+        return true;
+    }
+
+    bool wavenet_config(const Value& config_v, dsp::neural::WaveNetSpec* out) {
+        const Value* config = &config_v;
+        for (const auto& member : config->members()) {
+            const std::string& k = member.first;
+            if (k != "layers" && k != "head" && k != "head_scale" && k != "in_channels" && k != "condition_dsp")
+                return fail("config: the key '" + k + "' is not supported");
+        }
+        const Value* head = config->find("head");
+        if (head && !head->is_null()) return fail("config: a post-stack head is not supported");
+        const Value* cdsp = config->find("condition_dsp");
+        if (cdsp && !cdsp->is_null()) return fail("config: a condition DSP is not supported");
+        if (!neutral_int(*config, "in_channels", 1, "config: ")) return false;
+        const Value* hs = config->find("head_scale");
+        double head_scale = 0.0;
+        if (!hs || !hs->is_number() || !hs->to_double(head_scale)) return fail("config: 'head_scale' must be a number");
+        const Value* layers = config->find("layers");
+        if (!layers || !layers->is_array() || layers->items().empty())
+            return fail("config: 'layers' must be a non-empty array");
+        dsp::neural::WaveNetSpec spec;
+        for (std::size_t i = 0; i < layers->items().size(); ++i) {
+            LayerArraySpec s;
+            if (!layer_array(layers->items()[i], i, &s)) return false;
+            spec.arrays.push_back(std::move(s));
+        }
+        const std::string why = dsp::neural::wavenet_check(spec);
+        if (!why.empty()) return fail("config: " + why);
+        *out = std::move(spec);
+        return true;
+    }
+
+    bool weights(const Value& root, std::size_t expected, std::vector<float>* out) {
+        const Value* weights = root.find("weights");
+        if (!weights || !weights->is_array()) return fail("the file has no 'weights' array");
+        if (weights->items().size() != expected)
+            return fail("the architecture needs " + std::to_string(expected) + " weights, the file has " +
+                        std::to_string(weights->items().size()));
+        out->reserve(expected);
+        for (const Value& w : weights->items()) {
+            // Through double, then narrowed: what the reference does (nlohmann
+            // reads a double, the weight vector is float), so a weight whose
+            // decimal form sits between two floats lands on the same one.
+            double d = 0.0;
+            if (!w.is_number() || !w.to_double(d)) return fail("every weight must be a number");
+            const float f = static_cast<float>(d);
+            if (!(f - f == 0.0f)) return fail("a weight is outside the float range");
+            out->push_back(f);
+        }
+        return true;
+    }
 };
 
 }  // namespace
@@ -181,52 +250,20 @@ bool parse_nam(std::string_view text, NamModel* out, std::string* error) {
     const Value* arch = root.find("architecture");
     if (!arch || !arch->is_string()) return r.fail("the file has no 'architecture'");
     m.architecture = arch->text();
-    if (m.architecture != "WaveNet")
-        return r.fail("the architecture '" + m.architecture + "' is not supported yet (WaveNet only)");
+    if (m.architecture != "WaveNet" && m.architecture != "LSTM")
+        return r.fail("the architecture '" + m.architecture + "' is not supported (WaveNet and LSTM are)");
 
     const Value* config = root.find("config");
     if (!config || !config->is_object()) return r.fail("the file has no 'config' object");
-    for (const auto& member : config->members()) {
-        const std::string& k = member.first;
-        if (k != "layers" && k != "head" && k != "head_scale" && k != "in_channels" && k != "condition_dsp")
-            return r.fail("config: the key '" + k + "' is not supported");
+    std::size_t expected = 0;
+    if (m.architecture == "LSTM") {
+        if (!r.lstm_config(*config, &m.lstm)) return false;
+        expected = dsp::neural::lstm_weight_count(m.lstm);
+    } else {
+        if (!r.wavenet_config(*config, &m.wavenet)) return false;
+        expected = dsp::neural::wavenet_weight_count(m.wavenet);
     }
-    const Value* head = config->find("head");
-    if (head && !head->is_null()) return r.fail("config: a post-stack head is not supported");
-    const Value* cdsp = config->find("condition_dsp");
-    if (cdsp && !cdsp->is_null()) return r.fail("config: a condition DSP is not supported");
-    if (!r.neutral_int(*config, "in_channels", 1, "config: ")) return false;
-    const Value* hs = config->find("head_scale");
-    double head_scale = 0.0;
-    if (!hs || !hs->is_number() || !hs->to_double(head_scale)) return r.fail("config: 'head_scale' must be a number");
-    const Value* layers = config->find("layers");
-    if (!layers || !layers->is_array() || layers->items().empty())
-        return r.fail("config: 'layers' must be a non-empty array");
-    for (std::size_t i = 0; i < layers->items().size(); ++i) {
-        LayerArraySpec s;
-        if (!r.layer_array(layers->items()[i], i, &s)) return false;
-        m.wavenet.arrays.push_back(std::move(s));
-    }
-    const std::string why = dsp::neural::wavenet_check(m.wavenet);
-    if (!why.empty()) return r.fail("config: " + why);
-
-    const Value* weights = root.find("weights");
-    if (!weights || !weights->is_array()) return r.fail("the file has no 'weights' array");
-    const std::size_t expected = dsp::neural::wavenet_weight_count(m.wavenet);
-    if (weights->items().size() != expected)
-        return r.fail("the architecture needs " + std::to_string(expected) + " weights, the file has " +
-                      std::to_string(weights->items().size()));
-    m.weights.reserve(expected);
-    for (const Value& w : weights->items()) {
-        // Through double, then narrowed: what the reference does (nlohmann
-        // reads a double, the weight vector is float), so a weight whose
-        // decimal form sits between two floats lands on the same one.
-        double d = 0.0;
-        if (!w.is_number() || !w.to_double(d)) return r.fail("every weight must be a number");
-        const float f = static_cast<float>(d);
-        if (!(f - f == 0.0f)) return r.fail("a weight is outside the float range");
-        m.weights.push_back(f);
-    }
+    if (!r.weights(root, expected, &m.weights)) return false;
 
     const Value* rate = root.find("sample_rate");
     if (rate && !rate->is_null()) {

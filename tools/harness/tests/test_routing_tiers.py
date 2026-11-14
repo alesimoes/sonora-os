@@ -142,7 +142,9 @@ class Tiers(unittest.TestCase):
         self.assertEqual(tiers.task_model(self.r, grade="S/low"), "haiku")
         self.assertEqual(tiers.task_model(self.r, grade="L/high"), "opus")
         self.assertEqual(tiers.task_model(None, grade="S/low"), "sonnet")
-        self.assertEqual(tiers.task_model(self.r, "senior", "S/low"), "opus")
+        # The grade (risk) wins over a tier name picked by size.
+        self.assertEqual(tiers.task_model(self.r, "senior", "S/low"), "haiku")
+        self.assertEqual(tiers.task_model(self.r, "senior"), "opus")
 
     def test_reviews_never_run_below_the_floor(self):
         self.assertEqual(tiers.run_model(self.r, "tester", "junior"),
@@ -150,6 +152,11 @@ class Tiers(unittest.TestCase):
         self.assertEqual(tiers.run_model(self.r, "engineer", "junior"),
                          "haiku")
         self.assertEqual(tiers.run_model(self.r, "tester", "senior"), "opus")
+
+    def test_an_integrator_is_never_above_the_floor(self):
+        # A conflict merge is mechanical, even on a high-risk slice.
+        self.assertEqual(tiers.run_model(self.r, "integrator", "senior",
+                                         "L/high"), "sonnet")
 
     def test_senior_round_lifts_a_fixer(self):
         self.assertEqual(tiers.run_model(self.r, "fixer", "junior",

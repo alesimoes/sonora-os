@@ -269,6 +269,19 @@ Rectangle {
         }
     }
 
+    // --- the Step Sequencer (Edit > Step Sequencer) ---
+    Loader {
+        id: stepSequencerLoader
+        objectName: "stepSequencerLoader"
+        active: root.session.stepSequencerOpen
+        x: Theme.space6
+        y: body.y + 120
+        z: 8
+        sourceComponent: StepSequencer {
+            seq: StepSequencerModel { objectName: "stepSequencerModel" }
+        }
+    }
+
     // --- the Preferences window (Setup > Preferences…) ---
     Loader {
         id: preferencesLoader
@@ -869,6 +882,7 @@ Rectangle {
             saveAsPanel.where = where
             saveAsPanel.problem = ""
             saveAsInput.text = name
+            saveAsCategory.text = ""
             visible = true
             saveAsInput.forceActiveFocus()
             saveAsInput.selectAll()
@@ -880,12 +894,17 @@ Rectangle {
         function close() {
             visible = false
             saveAsInput.focus = false
+            saveAsCategory.focus = false
             root.shell.setTextEntry(false)
         }
         function accept() {
             const command = saveAsPanel.asTemplate ? "app.save_as_template"
                           : saveAsPanel.copy ? "app.save_copy_in" : "app.save_as"
-            if (root.shell.invokeWith(command, -1, saveAsInput.text)) close()
+            // ADR-0146 §4: a category is the template's path one level deeper.
+            const category = saveAsCategory.text.trim()
+            const name = saveAsPanel.asTemplate && category.length > 0
+                       ? category + "/" + saveAsInput.text : saveAsInput.text
+            if (root.shell.invokeWith(command, -1, name)) close()
             else saveAsPanel.problem = root.shell.statusText
         }
 
@@ -915,6 +934,7 @@ Rectangle {
             Row {
                 spacing: Theme.space2
                 Text {
+                    id: saveAsNameLabel
                     anchors.verticalCenter: parent.verticalCenter
                     text: saveAsPanel.asTemplate ? "Template name" : "Session name"
                     color: Theme.text
@@ -941,6 +961,48 @@ Rectangle {
                         Keys.onEscapePressed: saveAsPanel.close()
                         Keys.onReturnPressed: saveAsPanel.accept()
                         Keys.onEnterPressed: saveAsPanel.accept()
+                    }
+                }
+            }
+            // Optional: empty saves the template at the top of the list.
+            Row {
+                visible: saveAsPanel.asTemplate
+                spacing: Theme.space2
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: saveAsNameLabel.width
+                    text: "Category"
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                }
+                Rectangle {
+                    width: 240
+                    height: 26
+                    radius: Theme.radiusSmall
+                    color: Theme.window
+                    border.color: saveAsCategory.activeFocus ? Theme.accent : Theme.borderStrong
+                    TextInput {
+                        id: saveAsCategory
+                        objectName: "saveAsCategory"
+                        anchors { fill: parent; leftMargin: Theme.space2; rightMargin: Theme.space2 }
+                        verticalAlignment: TextInput.AlignVCenter
+                        clip: true
+                        color: Theme.text
+                        selectionColor: Theme.selectionFill
+                        selectedTextColor: Theme.text
+                        font { family: Theme.fontFamily; pixelSize: Theme.textBody }
+                        onActiveFocusChanged: root.shell.setTextEntry(activeFocus)
+                        onTextChanged: saveAsPanel.problem = ""
+                        Keys.onEscapePressed: saveAsPanel.close()
+                        Keys.onReturnPressed: saveAsPanel.accept()
+                        Keys.onEnterPressed: saveAsPanel.accept()
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: saveAsCategory.text.length === 0 && !saveAsCategory.activeFocus
+                            text: "None"
+                            color: Theme.textSecondary
+                            font { family: Theme.fontFamily; pixelSize: Theme.textBody; italic: true }
+                        }
                     }
                 }
             }
@@ -1050,6 +1112,7 @@ Rectangle {
             visible = true
         }
         function choose(entry) {
+            if (entry.problem.length > 0) return
             chosen = entry.file
             chosenName = entry.name
             templateNameInput.text = root.session.unusedSessionName(entry.name)
@@ -1108,13 +1171,32 @@ Rectangle {
             }
             Repeater {
                 model: templatePanel.entries
+                Column {
+                    id: templateGroup
+                    required property var modelData
+                    required property int index
+                    // ADR-0146: entries come sorted by category; a header opens each group.
+                    readonly property bool anyCategory: templatePanel.entries.some(e => e.category.length > 0)
+                    readonly property bool firstOfGroup: index === 0
+                        || templatePanel.entries[index - 1].category !== modelData.category
+                    spacing: Theme.space1
+                    Text {
+                        objectName: "templateCategoryHeader"
+                        visible: templateGroup.anyCategory && templateGroup.firstOfGroup
+                        height: visible ? implicitHeight + Theme.space1 : 0
+                        verticalAlignment: Text.AlignBottom
+                        text: templateGroup.modelData.category.length > 0 ? templateGroup.modelData.category : "No category"
+                        color: Theme.textSecondary
+                        font { family: Theme.fontFamily; pixelSize: Theme.textSmall; weight: Font.DemiBold; capitalization: Font.AllUppercase }
+                    }
                 Rectangle {
                     id: templateRow
-                    required property var modelData
+                    property var modelData: templateGroup.modelData
+                    opacity: usable ? 1.0 : 0.55
                     readonly property bool usable: modelData.problem.length === 0
                     readonly property bool picked: modelData.file === templatePanel.chosen
-                    readonly property bool asking: modelData.name === templatePanel.confirming
-                    readonly property bool editing: modelData.name === templatePanel.renaming
+                    readonly property bool asking: modelData.path === templatePanel.confirming
+                    readonly property bool editing: modelData.path === templatePanel.renaming
                     objectName: "templateRow"
                     width: templateColumn.width
                     height: 44
@@ -1126,11 +1208,31 @@ Rectangle {
                         id: rowArea
                         anchors.fill: parent
                         hoverEnabled: true
-                        enabled: templateRow.usable && !templateRow.editing
-                        onClicked: templatePanel.choose(templateRow.modelData)
+                        // Enabled when greyed too, for the tooltip; the clicks do nothing then.
+                        enabled: !templateRow.editing
+                        onClicked: if (templateRow.usable) templatePanel.choose(templateRow.modelData)
                         onDoubleClicked: {
+                            if (!templateRow.usable) return
                             templatePanel.choose(templateRow.modelData)
                             templatePanel.accept()
+                        }
+                    }
+                    Rectangle {
+                        objectName: "templateTooltip"
+                        visible: !templateRow.usable && rowArea.containsMouse
+                        z: 5
+                        anchors { left: parent.left; leftMargin: Theme.space3; top: parent.bottom; topMargin: 2 }
+                        width: tipText.implicitWidth + 2 * Theme.space2
+                        height: tipText.implicitHeight + Theme.space2
+                        radius: Theme.radiusSmall
+                        color: Theme.window
+                        border.color: Theme.caution
+                        Text {
+                            id: tipText
+                            anchors.centerIn: parent
+                            text: templateRow.modelData.problem
+                            color: Theme.text
+                            font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
                         }
                     }
                     Column {
@@ -1195,7 +1297,7 @@ Rectangle {
                             onClicked: {
                                 templatePanel.confirming = ""
                                 templatePanel.problem = ""
-                                templatePanel.renaming = templateRow.modelData.name
+                                templatePanel.renaming = templateRow.modelData.path
                                 renameInput.text = templateRow.modelData.name
                                 renameInput.forceActiveFocus()
                                 renameInput.selectAll()
@@ -1210,7 +1312,7 @@ Rectangle {
                             onClicked: {
                                 templatePanel.renaming = ""
                                 templatePanel.problem = ""
-                                templatePanel.confirming = templateRow.modelData.name
+                                templatePanel.confirming = templateRow.modelData.path
                             }
                         }
                         SButton {
@@ -1226,7 +1328,7 @@ Rectangle {
                             implicitHeight: 24
                             active: true
                             activeColour: Theme.alarm
-                            onClicked: templatePanel.remove(templateRow.modelData.name)
+                            onClicked: templatePanel.remove(templateRow.modelData.path)
                         }
                         SButton {
                             visible: templateRow.editing
@@ -1245,6 +1347,7 @@ Rectangle {
                             onClicked: templatePanel.rename(renameInput.text)
                         }
                     }
+                }
                 }
             }
             Row {
@@ -1408,6 +1511,7 @@ Rectangle {
                     { name: "editNewMarker", label: "New Marker…", command: "marker.add", on: true },
                     { name: "editMemoryLocations", label: "Memory Locations", command: "window.memory_locations",on: true },
                     { name: "editEventList", label: "Automation Event List", command: "window.event_list", on: true },
+                    { name: "editStepSequencer", label: "Step Sequencer", command: "window.step_sequencer", on: true },
                     { name: "editWriteSelection", label: "Write Automation to Selection", command: "automation.write_selection", on: true },
                     { name: "editSnapshotAutomation", label: "Snapshot Automation", command: "automation.snapshot", on: true }
                 ]
@@ -1489,7 +1593,10 @@ Rectangle {
                         { name: "trackFreeze", label: "Freeze", command: "track.freeze", render: "freeze", on: render && sel >= 0 && !frozen },
                         { name: "trackCommit", label: "Commit", command: "track.commit", render: "commit", on: render && sel >= 0 && !frozen },
                         { name: "trackUnfreeze", label: "Unfreeze", command: "track.unfreeze", render: "unfreeze", on: render && frozen },
-                        { name: "trackProcess", label: "Process Selection", command: "track.process_selection", render: "process", on: render && sel >= 0 && !frozen }
+                        { name: "trackProcess", label: "Process Selection", command: "track.process_selection", render: "process", on: render && sel >= 0 && !frozen },
+                        // ADR-0087: one chosen insert, offered only by an engine that renders it.
+                        { name: "trackProcessWith", label: "Process Selection With ▸", command: "track.process_selection", render: "with",
+                          on: render && root.shell.renderInsertAvailable && sel >= 0 && !frozen && root.session.rangeOnSelectedTrack }
                     ]
                 }
                 Item {
@@ -1511,11 +1618,75 @@ Rectangle {
                         available: modelData.on
                         text: modelData.label
                         onClicked: {
+                            if (modelData.render === "with") {
+                                processWithMenu.show(trackMenu.x + trackMenu.width, trackMenu.y + parent.y)
+                                return
+                            }
                             trackMenu.visible = false
                             // A render names the track and its range from the selection.
                             if (modelData.render) root.session.renderInPlace(modelData.render)
                             else root.shell.invoke(modelData.command, -1)
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Track > Process Selection With: the one insert (ADR-0087) ----------------
+    // The selected track's active, non-bypassed inserts, read when it opens;
+    // a pick sends track.process_selection with insert=<id>.
+    Rectangle {
+        id: processWithMenu
+        objectName: "processWithMenu"
+        visible: false
+        z: 11
+        property var inserts: []
+        width: 200
+        height: processWithColumn.implicitHeight + 2 * Theme.space1
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        function show(px, py) {
+            inserts = root.session.selectedTrackInserts()
+            x = Math.min(px, root.width - width - Theme.space2)
+            y = Math.min(py, root.height - height - Theme.space2)
+            visible = true
+        }
+        Connections {
+            target: trackMenu
+            function onVisibleChanged() { if (!trackMenu.visible) processWithMenu.visible = false }
+        }
+        MouseArea { anchors.fill: parent }
+        Column {
+            id: processWithColumn
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: Theme.space1 }
+            spacing: 2
+            Text {
+                visible: processWithMenu.inserts.length === 0
+                width: parent.width
+                height: 26
+                verticalAlignment: Text.AlignVCenter
+                leftPadding: Theme.space1
+                text: "No active plug-in on this track"
+                color: Theme.textSecondary
+                font.pixelSize: Theme.textBody
+            }
+            Repeater {
+                model: processWithMenu.inserts
+                SButton {
+                    required property var modelData
+                    required property int index
+                    objectName: "processWith" + index
+                    width: processWithColumn.width
+                    height: 26
+                    bold: false
+                    fontPx: Theme.textBody
+                    text: modelData.name
+                    // Sent before the menus close: closing them ends this delegate.
+                    onClicked: {
+                        root.session.renderInPlace("process", modelData.id)
+                        trackMenu.visible = false
                     }
                 }
             }

@@ -17,7 +17,7 @@ Rectangle {
     readonly property int rowHeight: 24
     readonly property int shownRows: 8
 
-    width: 480
+    width: 740
     height: column.implicitHeight + 2 * Theme.space3
     radius: Theme.radius
     color: Theme.panel
@@ -72,7 +72,7 @@ Rectangle {
             width: parent.width
             height: 14
             Repeater {
-                model: [["#", 2], ["NAME", 40], ["START", 155], ["END", 242], ["LENGTH", 329]]
+                model: [["#", 2], ["NAME", 40], ["START", 155], ["END", 242], ["LENGTH", 329], ["RECALLS", 424]]
                 Text {
                     required property var modelData
                     x: modelData[1]
@@ -165,6 +165,38 @@ Rectangle {
                             font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
                         }
                     }
+                    // What this location recalls besides its position (ADR-0137).
+                    // Zoom and Track layout are dimmed until a view is stored:
+                    // a toggle on nothing would lie.
+                    Row {
+                        x: 424; anchors.verticalCenter: parent.verticalCenter
+                        spacing: Theme.space1
+                        SButton {
+                            objectName: "memoryLocationZoom"
+                            text: "Zoom"; implicitWidth: 44; implicitHeight: 18; fontPx: Theme.textSmall
+                            available: row.modelData.hasView
+                            active: row.modelData.recallZoom
+                            onClicked: win.session.setMarkerViewPart(row.index, true, !row.modelData.recallZoom)
+                        }
+                        SButton {
+                            objectName: "memoryLocationTracks"
+                            text: "Track layout"; implicitWidth: 78; implicitHeight: 18; fontPx: Theme.textSmall
+                            available: row.modelData.hasView
+                            active: row.modelData.recallTracks
+                            onClicked: win.session.setMarkerViewPart(row.index, false, !row.modelData.recallTracks)
+                        }
+                        SButton {
+                            objectName: "memoryLocationStoreView"
+                            text: "Store view"; implicitWidth: 68; implicitHeight: 18; fontPx: Theme.textSmall
+                            onClicked: win.session.storeMarkerView(row.index)
+                        }
+                        SButton {
+                            objectName: "memoryLocationClearView"
+                            text: "Clear view"; implicitWidth: 68; implicitHeight: 18; fontPx: Theme.textSmall
+                            available: row.modelData.hasView
+                            onClicked: win.session.clearMarkerView(row.index)
+                        }
+                    }
                     SButton {
                         objectName: "memoryLocationRemove"
                         anchors { right: parent.right; rightMargin: Theme.space1; verticalCenter: parent.verticalCenter }
@@ -184,10 +216,100 @@ Rectangle {
             }
         }
 
+        // --- Sections: a selection marker moved or copied to the insertion
+        // point (ADR-0116). Typing in the field locates there, as the main
+        // counter does; the buttons then act on that point.
+        Rectangle { width: parent.width; height: 1; color: Theme.borderSubtle }
+        Text {
+            text: "SECTIONS"
+            color: Theme.textTertiary
+            font { family: Theme.fontFamily; pixelSize: Theme.textOverline; letterSpacing: 0.6 }
+        }
+        Row {
+            spacing: Theme.space2
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Destination"
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+            CounterField {
+                objectName: "arrangementDestination"
+                anchors.verticalCenter: parent.verticalCenter
+                width: 150
+                shell: win.shell
+                session: win.session
+                fontPx: Theme.textBody
+                text: win.session.arrangementDestination
+            }
+        }
+        Text {
+            visible: sectionList.count === 0
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: "No sections. A selection marker over a range is a section."
+            color: Theme.textTertiary
+            font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+        }
+        ListView {
+            id: sectionList
+            objectName: "arrangementList"
+            width: parent.width
+            height: Math.min(count, 4) * win.rowHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            model: win.session.arrangementSections
+            delegate: Item {
+                id: sec
+                objectName: "arrangementRow"
+                required property var modelData
+                width: ListView.view.width
+                height: win.rowHeight
+                Text {
+                    x: Theme.space1; width: 150
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: sec.modelData.name
+                    elide: Text.ElideRight
+                    color: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textBody; weight: Font.DemiBold }
+                }
+                Text {
+                    x: 160; width: 130
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: sec.modelData.start + " · " + sec.modelData.length
+                    elide: Text.ElideRight
+                    color: Theme.textSecondary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
+                }
+                Row {
+                    anchors { right: parent.right; verticalCenter: parent.verticalCenter }
+                    spacing: Theme.space1
+                    SButton {
+                        objectName: "arrangementMove"
+                        text: "Move to"; implicitWidth: 80; implicitHeight: 20; fontPx: Theme.textSmall
+                        onClicked: win.session.arrangementApply(sec.modelData.row, true)
+                    }
+                    SButton {
+                        objectName: "arrangementCopy"
+                        text: "Copy to"; implicitWidth: 80; implicitHeight: 20; fontPx: Theme.textSmall
+                        onClicked: win.session.arrangementApply(sec.modelData.row, false)
+                    }
+                }
+            }
+        }
+        Text {  // held: the refusal, or what the edit left, until the next try
+            objectName: "arrangementNotice"
+            visible: text.length > 0
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: win.session.arrangementNotice
+            color: Theme.textSecondary
+            font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+        }
         Text {
             width: parent.width
             wrapMode: Text.Wrap
-            text: "A click recalls a location: the insertion point, or the selection, moves to it. Alt-click a marker on the ruler to clear it."
+            text: "A click recalls a location: the insertion point, or the selection, moves to it. Alt-click a marker on the ruler to clear it. Store view keeps the zoom and the track layout of the Edit window with a location; Zoom and Track layout choose what a recall restores."
             color: Theme.textTertiary
             font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
         }

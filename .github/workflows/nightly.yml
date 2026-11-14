@@ -226,10 +226,11 @@ jobs:
           SONORA_UI_SCOPE: all
         run: tools/build-ui.sh
 
-  sanitizers:
-    name: Thread and address sanitizers
-    # GCC 14's TSan, ASan and UBSan, in the engine job's trixie image: the
-    # shipped compiler's instrumentation, not whatever the runner carries.
+  tsan:
+    name: Thread sanitizer
+    # GCC 14's TSan in the engine job's trixie image. Its own job, with its own
+    # disk and clock: with ASan in the same job the pair outgrew 50 minutes
+    # (run 43410829248, 2026-11-13).
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -252,18 +253,8 @@ jobs:
             -v "$PWD:/src" -w /src sonora-build:trixie sleep infinity
           docker exec build c++ --version
 
-      # The ring buffer is the one piece of genuinely concurrent code in the
-      # tree, so a data race in it is worth a dedicated job. TSan is the only
-      # thing that reliably catches a wrong memory ordering.
-      # Newer kernels randomise more address bits than TSan's shadow mapping
-      # expects, and it aborts with "unexpected memory mapping" before running
-      # a single test. That looks like a test failure and is not one, so pin
-      # it rather than letting the job go flaky. The setting is the kernel's,
-      # so it is made on the host and holds in the container.
-      # Two instrumented trees no longer fit beside the runner's preinstalled
-      # toolchains: the TSan link died with "No space left on device" (PR
-      # #395, 2026-11-04). .NET, Android, GHC and CodeQL are never used here
-      # and hold about 30 GB; removing them is a few seconds.
+      # .NET, Android, GHC and CodeQL are never used here and hold about 30 GB
+      # (the TSan link once died with "No space left on device", PR #395).
       - name: Free runner disk
         run: |
           df -h /
@@ -274,17 +265,22 @@ jobs:
       - name: Make ASLR compatible with the sanitizers
         run: sudo sysctl -w vm.mmap_rnd_bits=28
 
-      # ccache hashes the compiler, flags and preprocessed source, so TSan and
-      # ASan objects never collide and an unchanged translation unit is not
-      # recompiled. Only pushes to main save it (last step), so PR pushes do not
-      # churn the repo cache; restore-keys picks the newest one.
+      # ccache hashes the compiler, flags and preprocessed source; each job has
+      # its own cache key so one sanitizer's objects never evict the other's.
+      # Only the save step writes it (always, so a cancelled build still keeps
+      # what it compiled); restore-keys picks the newest.
       - name: Restore the compiler cache
         uses: actions/cache/restore@v4
         with:
           path: .ccache
-          key: ccache-sanitizers-${{ github.sha }}
-          restore-keys: ccache-sanitizers-
+          key: ccache-tsan-${{ github.sha }}
+          restore-keys: ccache-tsan-
 
+      # The ring buffer is the one piece of genuinely concurrent code in the
+      # tree, so a data race in it is worth a dedicated job. TSan is the only
+      # thing that reliably catches a wrong memory ordering. Newer kernels
+      # randomise more address bits than TSan's shadow mapping expects, hence
+      # the vm.mmap_rnd_bits pin above.
       - name: Build with TSan
         run: |
           docker exec build bash -ec '
@@ -311,18 +307,61 @@ jobs:
           docker exec build bash -c
           'ctest --test-dir build-tsan --output-on-failure -j"$(nproc)" -R "^native_format"'
 
-      # Two instrumented RelWithDebInfo trees do not fit on the runner's disk
-      # together: the ASan build died with "No space left on device" (run
-      # 41246994280). Nothing reads build-tsan after its tests, and the objects
-      # worth keeping live in .ccache, which this leaves alone. The files are
-      # root's, so they go from inside the container. df shows the margin.
-      # ASan and UBSan run on main only: a PR's concurrency is TSan's, and a
-      # second instrumented tree doubled this job (owner, 2026-11-04).
-      - name: Remove the TSan build tree
+      - name: Save the compiler cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-tsan-${{ github.sha }}
+
+  asan:
+    name: Address and undefined-behaviour sanitizers
+    # GCC 14's ASan and UBSan in the engine job's trixie image, apart from TSan
+    # (one instrumented tree per runner: no tree to delete, a clock each).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the sonora-build image (pulled from GHCR)
+        uses: ./.github/actions/sonora-image
+        with:
+          name: sonora-build
+          dockerfile: tools/Dockerfile.build
+          context: tools
+          rebuild: 'false'
+
+      - name: Start the build container
         run: |
-          df -h "$PWD"
-          docker exec build rm -rf build-tsan
-          df -h "$PWD"
+          mkdir -p .ccache
+          docker run -d --name build --ulimit memlock=-1:-1 \
+            -e CCACHE_DIR=/src/.ccache -e CCACHE_BASEDIR=/src \
+            -e CCACHE_MAXSIZE=1G \
+            -v "$PWD:/src" -w /src sonora-build:trixie sleep infinity
+          docker exec build c++ --version
+
+      # .NET, Android, GHC and CodeQL are never used here and hold about 30 GB
+      # (the TSan link once died with "No space left on device", PR #395).
+      - name: Free runner disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Make ASLR compatible with the sanitizers
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      # ccache hashes the compiler, flags and preprocessed source; each job has
+      # its own cache key so one sanitizer's objects never evict the other's.
+      # Only the save step writes it (always, so a cancelled build still keeps
+      # what it compiled); restore-keys picks the newest.
+      - name: Restore the compiler cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-asan-${{ github.sha }}
+          restore-keys: ccache-asan-
 
       - name: Build with ASan and UBSan
         run: |
@@ -343,7 +382,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .ccache
-          key: ccache-sanitizers-${{ github.sha }}
+          key: ccache-asan-${{ github.sha }}
 
   rtsan:
     name: RealtimeSanitizer over the SONORA_RT call graph

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Regenerates plugins/native/ampcab/tests/data/: the test networks and input
 # (make_models.py) and the NAM reference implementation's output on each
-# (oracle.cpp), which test_nam.cpp holds our kernel to (ADR-0011 §3.2).
+# (oracle.cpp), which test_nam.cpp (WaveNet) and test_lstm_equiv.cpp (LSTM,
+# ADR-0111) hold our kernels to (ADR-0011 §3.2).
 #
 # The reference is a test oracle only (ADR-0011 §4.3): downloaded here at a
 # pinned commit and checked by SHA-256, built in a scratch directory, never
@@ -40,11 +41,12 @@ mapfile -t SRC < <(ls "$NAM"/NAM/*.cpp "$NAM"/NAM/wavenet/*.cpp)
 g++ -std=c++20 -O2 -DNDEBUG -I "$NAM" -I /usr/include/eigen3 -I "$NAM/Dependencies/nlohmann" \
   -o "$WORK/oracle" "$HERE/oracle.cpp" "${SRC[@]}"
 
-# --bench: time the reference at the trainer's four sizes instead, for the
-# comparison beside ampcab-budget (ADR-0011 Unverified 9). Writes nothing.
+# --bench: time the reference at the trainer's four WaveNet sizes, its LSTM
+# preset and the two LSTM test shapes instead, for the comparison beside
+# ampcab-budget (ADR-0011 Unverified 9). Writes nothing.
 if [[ "${1:-}" == --bench ]]; then
   python3 -I "$HERE/make_models.py" --presets "$WORK/presets"
-  for name in nano feather lite standard; do
+  for name in nano feather lite standard lstm_1x24 lstm_1x16 lstm_2x8; do
     "$WORK/oracle" --bench "$WORK/presets/$name.nam" "${2:-20}"
   done
   exit 0

@@ -10,7 +10,6 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 
 import support  # noqa: F401  (sets sys.path)
 import dashboard_console as V
@@ -40,8 +39,11 @@ class Strip(unittest.TestCase):
         self.assertEqual(V.level_of(3, 0), "ok")
 
     def test_daemon_cell_by_age(self):
-        for age, level in ((5, "ok"), (60, "warn"), (500, "bad")):
-            self.assertEqual(V.daemon_cell({"updated_ts": NOW - age}, NOW)["level"], level)
+        # One tick is ~50 s (30 s sleep + work): a normal tick must read ok.
+        for age, text in ((5, "vivo 5s"), (90, "vivo 90s"), (300, "lento 300s"), (900, "travado 15min")):
+            self.assertEqual(V.daemon_cell({"updated_ts": NOW - age}, NOW)["text"], text)
+        self.assertEqual(V.daemon_cell({"updated_ts": NOW - 300}, NOW, alive=False),
+                         {"level": "bad", "text": "parado"})
         self.assertEqual(V.daemon_cell(None, NOW), {"level": "bad", "text": "parado"})
 
     def test_cells_read_the_status_and_the_open_pr_brake(self):
@@ -110,7 +112,7 @@ class Served(unittest.TestCase):
         import dashboard
         from dashboard_token import TOKEN
         self.token = TOKEN
-        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
+        self.srv = dashboard.Server(("127.0.0.1", 0), dashboard.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.addCleanup(self.srv.server_close)
         self.addCleanup(self.srv.shutdown)
@@ -127,6 +129,30 @@ class Served(unittest.TestCase):
                 return r.status, json.loads(r.read() or b"{}") if "json" in r.headers.get("Content-Type", "") else r.read()
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read() or b"{}")
+
+    def test_a_burst_of_connections_is_served_not_refused(self):
+        """The phone through tailscale fetches every file at once (2026-11-09:
+        a 5-deep accept queue refused some and the chat never loaded)."""
+        import concurrent.futures as cf
+
+        def get(_):
+            try:
+                with urllib.request.urlopen(self.url + "/static/console.css", timeout=10) as r:
+                    return r.status
+            except OSError as e:
+                return type(e).__name__
+        with cf.ThreadPoolExecutor(128) as ex:
+            got = list(ex.map(get, range(128)))
+        self.assertEqual(got, [200] * 128)
+        # The burst does not always overflow a short queue on a fast test
+        # server; the queue depth itself is the guard.
+        import dashboard
+        self.assertGreaterEqual(dashboard.Server.request_queue_size, 64)
+
+    def test_a_second_dashboard_cannot_share_the_port(self):
+        import dashboard
+        with self.assertRaises(OSError):
+            dashboard.Server(("127.0.0.1", self.srv.server_address[1]), dashboard.Handler)
 
     def requests(self):
         d = os.path.join(self.hdir, "owner-requests")
@@ -149,7 +175,8 @@ class Served(unittest.TestCase):
     def test_a_message_only_drops_a_request_for_the_daemon(self):
         code, body = self.call("/api/chat", {"text": "status", "to": None})
         self.assertEqual(code, 202)
-        self.assertEqual(self.requests(), [{"kind": "console", "text": "status", "to": None}])
+        self.assertEqual([{k: v for k, v in r.items() if k != "sent"} for r in self.requests()],
+                         [{"kind": "console", "text": "status", "to": None}])
         self.assertEqual(S.history(self.hdir), [])       # the dashboard never writes the chat
 
     def test_confirm_cancel_retry_post_the_decision_and_run_nothing(self):

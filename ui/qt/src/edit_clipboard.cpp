@@ -164,19 +164,27 @@ std::string channels_text(std::uint16_t n) {
 
 }  // namespace
 
+std::string channel_problem(const TrackEdit& track, const Clip& clip) {
+    if (clip.channels == track.channels) return {};
+    const std::string from = clip.track.empty() ? "" : " from " + clip.track;
+    return "the clipboard holds " + channels_text(clip.channels) + " audio" + from + " and " +
+           track.name + " is " + channels_text(track.channels) + "; nothing was pasted";
+}
+
+bool sources_missing(const Snapshot& s, const Clip& clip) {
+    return std::any_of(clip.sources.begin(), clip.sources.end(), [&s](const Source& src) {
+        const Source* here = s.sources->find(src.id);
+        return here == nullptr || !(*here == src);
+    });
+}
+
 std::string paste_problem(const Snapshot& s, const TrackEdit& track, const Clip& clip) {
     if (clip.empty()) return "the clipboard is empty; cut or copy a selection first";
-    if (clip.channels != track.channels) {
-        const std::string from = clip.track.empty() ? "" : " from " + clip.track;
-        return "the clipboard holds " + channels_text(clip.channels) + " audio" + from + " and " +
-               track.name + " is " + channels_text(track.channels) + "; nothing was pasted";
-    }
-    for (const Source& src : clip.sources) {
-        const Source* here = s.sources->find(src.id);
-        if (here == nullptr || !(*here == src)) {
-            return "the clipboard's audio was copied from another session and is not in this "
-                   "one; nothing was pasted";
-        }
+    const std::string channels = channel_problem(track, clip);
+    if (!channels.empty()) return channels;
+    if (sources_missing(s, clip)) {
+        return "the clipboard's audio was copied from another session and is not in this "
+               "one; nothing was pasted";
     }
     return {};
 }

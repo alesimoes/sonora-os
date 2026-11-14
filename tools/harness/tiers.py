@@ -27,8 +27,11 @@ def model_of_tier(tier, routing=None):
 
 
 def task_model(routing, tier=None, grade=None):
-    """The tier wins over the grade; no tier or grade means sonnet."""
-    return (model_of_tier(tier, routing) or model_of_tier(grade, routing)
+    """The grade wins over a tier name; no tier or grade means sonnet.
+    Owner 2026-11-09: the model follows the risk, read from the grade
+    through routing.toml; 40 slices carried a "senior" tier picked by size
+    under the old table and ran on opus (5 of 6 agents at once)."""
+    return (model_of_tier(grade, routing) or model_of_tier(tier, routing)
             or DEFAULT_MODEL)
 
 
@@ -43,7 +46,13 @@ def run_model(routing, kind, tier=None, grade=None, senior_round=False):
     model = task_model(routing, tier, grade)
     floor = (routing.tiers().get("review_min") if routing else None) \
         or DEFAULT_MODEL
-    if kind in ("tester", "integrator", "planner"):
+    if kind == "integrator":
+        # Merging a conflict is mechanical whatever the slice's risk: an
+        # opus integrator on a contract slice cost several dollars a run
+        # (owner 2026-11-09). A stuck one climbs through the stall
+        # resolver's pin, not through the grade.
+        return floor if floor in ORDER else DEFAULT_MODEL
+    if kind in ("tester", "planner"):
         return at_least(model, floor if floor in ORDER else DEFAULT_MODEL)
     if senior_round:
         return at_least(model, SENIOR)

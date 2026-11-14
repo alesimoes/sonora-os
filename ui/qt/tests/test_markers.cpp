@@ -12,6 +12,7 @@
 #include <QQuickItem>
 #include <QQuickView>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTest>
 #include <algorithm>
 #include <cstdio>
@@ -19,6 +20,7 @@
 
 #include "edit_controller.h"
 #include "key_router.h"
+#include "marker_views.h"
 #include "peak_source.h"
 #include "qt_keys.h"
 #include "recording_adapter.h"
@@ -448,13 +450,129 @@ int test_window() {
     return 0;
 }
 
+// --- what a marker recalls besides its position (ADR-0137) -----------------
+
+int test_marker_views() {
+    ModelDocument doc(make_empty_session(3, kRate));
+    EditController c(doc);
+    c.set_viewport(1000, 400);
+    MarkerViews store;
+    std::vector<std::uint64_t> hidden_sent;
+    int hide_calls = 0;
+    c.set_marker_views(&store, [&](const std::vector<std::uint64_t>& h) {
+        hidden_sent = h;
+        ++hide_calls;
+    });
+    std::string why;
+    const auto& tracks = doc.snapshot().edit->tracks;
+    CHECK(c.add_marker("Verse", {48000 * 100, 0}, why));
+    CHECK(c.add_marker("Chorus", {48000 * 200, 0}, why));
+    const Id verse = named_marker(doc, "Verse")->id;
+    const Id chorus = named_marker(doc, "Chorus")->id;
+    CHECK(!c.marker_has_view(verse));
+
+    // A marker with no view recalls as it always did: position only.
+    const double fpp0 = c.view().fpp;
+    CHECK(c.recall_marker(verse, why));
+    CHECK(c.view().fpp == fpp0 && hide_calls == 0);
+
+    // Store: zoom, edge, height, and the hidden tracks of this moment.
+    c.zoom_by(0.25, 0);
+    c.set_track_height(120);
+    const double fpp1 = c.view().fpp;
+    CHECK(fpp1 != fpp0);
+    CHECK(c.store_marker_view(verse, why) && c.marker_has_view(verse) && !c.marker_has_view(chorus));
+    const MarkerView* v = store.find(doc.snapshot().settings.session_id, verse);
+    CHECK(v != nullptr && v->fpp == fpp1 && v->track_height == 120 && v->recall_zoom && v->recall_tracks);
+    CHECK(!c.store_marker_view(9999, why) && why.find("no longer") != std::string::npos);
+
+    // Recall after the view moved: it returns, and the track layout goes to the hider.
+    c.zoom_by(8.0, 0);
+    c.set_track_height(50);
+    {
+        MarkerView w = *v;
+        w.hidden = {tracks[1]->id, 777777};  // 777777: a track long gone
+        store.store(doc.snapshot().settings.session_id, verse, w);
+    }
+    CHECK(c.recall_marker(verse, why));
+    CHECK(c.view().fpp == fpp1 && c.view().track_height == 120);
+    CHECK(hide_calls == 1 && hidden_sent == std::vector<std::uint64_t>{tracks[1]->id});
+
+    // The toggles choose the parts: Zoom off leaves the zoom, Track layout off the rows.
+    CHECK(c.set_marker_view_part(verse, true, false, why));
+    c.zoom_by(8.0, 0);
+    const double fpp2 = c.view().fpp;
+    c.set_track_height(50);
+    CHECK(c.recall_marker(verse, why));
+    CHECK(c.view().fpp == fpp2 && c.view().track_height == 120);
+    CHECK(c.set_marker_view_part(verse, false, false, why));
+    c.set_track_height(50);
+    hide_calls = 0;
+    CHECK(c.recall_marker(verse, why));
+    CHECK(c.view().track_height == 50 && hide_calls == 0);
+    // A toggle on a marker with no view is refused, not silently kept.
+    CHECK(!c.set_marker_view_part(chorus, true, true, why) && why.find("store the view") != std::string::npos);
+
+    // Clear: the next recall is position only; clearing twice says so.
+    CHECK(c.clear_marker_view(verse, why) && !c.marker_has_view(verse));
+    CHECK(!c.clear_marker_view(verse, why) && why.find("no stored view") != std::string::npos);
+
+    // A marker that leaves the session takes its view with it at the next store.
+    CHECK(c.store_marker_view(chorus, why) && c.store_marker_view(verse, why));
+    CHECK(c.remove_marker(chorus, why));
+    CHECK(c.store_marker_view(verse, why));
+    CHECK(!c.marker_has_view(chorus));
+    return 0;
+}
+
+int test_marker_views_file() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("sub/marker-views.json"));
+    QString why;
+    MarkerViews a;
+    CHECK(a.load(path, why));  // a missing file is not a fault
+
+    MarkerView v;
+    v.fpp = 300.5;
+    v.start = 96000;
+    v.track_height = 88;
+    v.hidden = {4, 9};
+    v.recall_zoom = false;
+    a.store("sess-1", 7, v);
+    a.store("sess-2", 7, MarkerView{});
+    CHECK(a.save(path, why));
+
+    MarkerViews b;
+    CHECK(b.load(path, why));
+    const MarkerView* r = b.find("sess-1", 7);
+    CHECK(r != nullptr && r->fpp == 300.5 && r->start == 96000 && r->track_height == 88);
+    CHECK(r->hidden == std::vector<std::uint64_t>({4, 9}) && !r->recall_zoom && r->recall_tracks);
+    CHECK(b.find("sess-2", 7) != nullptr && b.find("sess-1", 8) == nullptr);
+    // Pruning is by session: another session's entries are not ours to drop.
+    CHECK(b.prune("sess-1", {}) == 1 && b.find("sess-1", 7) == nullptr && b.find("sess-2", 7) != nullptr);
+
+    // A damaged file is ignored, set aside as .bad, and the store starts empty.
+    QFile f(path);
+    CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    f.write("{ not json");
+    f.close();
+    MarkerViews d;
+    d.store("x", 1, MarkerView{});
+    QString bad_why;
+    CHECK(!d.load(path, bad_why) && bad_why.contains(QStringLiteral(".bad")));
+    CHECK(d.find("x", 1) == nullptr);
+    CHECK(!QFile::exists(path) && QFile::exists(path + QStringLiteral(".bad")));
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (test_add_recall_clear() || test_ruler() || test_command() || test_engine_playhead() ||
-        test_window()) return 1;
+        test_window() || test_marker_views() || test_marker_views_file()) return 1;
     std::printf("ui markers: ok\n");
     return 0;
 }

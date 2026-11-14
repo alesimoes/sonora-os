@@ -206,6 +206,67 @@ int test_refusals() {
     return 0;
 }
 
+// LSTM files: 1 layer x 2 hidden = 4H(in+H) 24 + bias 8 + h 2 + c 2 + head
+// (H+1) 3 = 39 weights (the layout common/dsp/neural/lstm.h counts).
+std::string lstm_text(const std::string& config, int weights, const std::string& version = "0.5.4") {
+    std::string w;
+    for (int i = 0; i < weights; ++i) w += (i ? ",0.125" : "0.125");
+    return "{\"version\":\"" + version + "\",\"architecture\":\"LSTM\",\"config\":" + config +
+           ",\"weights\":[" + w + "],\"sample_rate\":44100.0}";
+}
+
+int test_lstm_and_wide() {
+    ampcab::NamModel m;
+    std::string err;
+    const std::string ok_cfg = "{\"num_layers\":1,\"input_size\":1,\"hidden_size\":2}";
+    CHECK(ampcab::parse_nam(lstm_text(ok_cfg, 39), &m, &err));
+    CHECK(m.architecture == "LSTM" && m.lstm.num_layers == 1 && m.lstm.input_size == 1 && m.lstm.hidden_size == 2);
+    CHECK(m.weights.size() == 39 && m.sample_rate == 44100.0);
+
+    err.clear();
+    CHECK(!ampcab::parse_nam(lstm_text(ok_cfg, 38), &m, &err));
+    CHECK(err.find("39") != std::string::npos && err.find("38") != std::string::npos);
+    std::printf("  refused (LSTM weight count): %s\n", err.c_str());
+    err.clear();
+    CHECK(!ampcab::parse_nam(lstm_text("{\"num_layers\":1,\"input_size\":1,\"hidden_size\":2,\"peephole\":true}", 39),
+                             &m, &err));
+    CHECK(err.find("peephole") != std::string::npos);
+    CHECK(!ampcab::parse_nam(lstm_text("{\"num_layers\":1,\"input_size\":1}", 39), &m, &err));
+    CHECK(!ampcab::parse_nam(lstm_text("{\"num_layers\":0,\"input_size\":1,\"hidden_size\":2}", 0), &m, &err));
+    CHECK(!ampcab::parse_nam(lstm_text("{\"num_layers\":1,\"input_size\":2,\"hidden_size\":2}", 39), &m, &err));
+    err.clear();
+    CHECK(!ampcab::parse_nam(lstm_text(ok_cfg, 39, "0.7.0"), &m, &err));
+    CHECK(err.find("0.7.0") != std::string::npos);
+    CHECK(ampcab::parse_nam(lstm_text(ok_cfg, 39, "0.6.0"), &m, &err));
+
+    // Review of #318: the warm-up cap refused 64-channel gated WaveNets. The
+    // standard shape (kernel 3, dilations 1..512 twice) at 64 channels needs
+    // about 2.4e9 multiply-adds to prewarm.
+    dsp::neural::WaveNetSpec spec;
+    dsp::neural::LayerArraySpec a;
+    a.channels = 64;
+    a.head_size = 1;
+    a.kernel_size = 3;
+    a.gated = true;
+    a.head_bias = true;
+    for (int rep = 0; rep < 2; ++rep)
+        for (int d = 1; d <= 512; d *= 2) a.dilations.push_back(d);
+    spec.arrays.push_back(a);
+    std::string text =
+        "{\"version\":\"0.5.4\",\"architecture\":\"WaveNet\",\"config\":{\"layers\":[{"
+        "\"input_size\":1,\"condition_size\":1,\"head_size\":1,\"channels\":64,\"kernel_size\":3,"
+        "\"dilations\":[1,2,4,8,16,32,64,128,256,512,1,2,4,8,16,32,64,128,256,512],"
+        "\"activation\":\"Tanh\",\"gated\":true,\"head_bias\":true}],\"head\":null,\"head_scale\":0.02},"
+        "\"weights\":[";
+    const std::size_t n = dsp::neural::wavenet_weight_count(spec);
+    for (std::size_t i = 0; i < n; ++i) text += i ? ",0" : "0";
+    text += "]}";
+    err.clear();
+    CHECK(ampcab::parse_nam(text, &m, &err));
+    CHECK(m.wavenet.arrays.size() == 1 && m.wavenet.arrays[0].gated && m.wavenet.arrays[0].channels == 64);
+    return 0;
+}
+
 int test_equivalence() {
     const std::vector<float> x = read_f32(g_data + "/input.f32");
     CHECK(x.size() == 8192);
@@ -260,6 +321,7 @@ int main(int argc, char** argv) {
     int failed = 0;
     failed += test_reads_the_test_networks();
     failed += test_refusals();
+    failed += test_lstm_and_wide();
     failed += test_equivalence();
     if (failed != 0) {
         std::fprintf(stderr, "%d test(s) failed\n", failed);

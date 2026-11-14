@@ -57,6 +57,29 @@ const Region& first_region(const TimelineDocument& d, std::size_t row) {
     return t.playlists.front()->regions.front();
 }
 
+const Playlist& active_playlist(const TimelineDocument& d, std::size_t row) {
+    const TrackEdit& t = track(d, row);
+    for (const auto& p : t.playlists)
+        if (p->id == t.active_playlist) return *p;
+    return *t.playlists.front();
+}
+
+// A playlist the operator named keeps its name when the track is renamed,
+// and so does one whose followed name is already taken.
+int test_playlist_follows() {
+    ModelDocument doc(make_demo_session(3, kRate));
+    EditController c(doc);
+    std::string why;
+    CHECK(c.rename_playlist(0, "Take A", why));
+    CHECK(c.rename_track(0, "Kick In", why));
+    CHECK(track(doc, 0).name == "Kick In" && active_playlist(doc, 0).name == "Take A");
+    CHECK(c.rename_playlist(1, "Room.01", why));
+    CHECK(c.rename_track(2, "Room", why));
+    CHECK(track(doc, 2).name == "Room" && active_playlist(doc, 2).name == "Hi-Hat.01");
+    CHECK(doc.undo_label() == "SetTrackName");
+    return 0;
+}
+
 // --- the controller ---------------------------------------------------------
 
 int test_controller() {
@@ -77,7 +100,14 @@ int test_controller() {
     // Rename: one step, trimmed; refused empty or as another track is named.
     CHECK(c.rename_track(1, "  Lead Vox ", why));
     CHECK(track(doc, 1).name == "Lead Vox");
-    CHECK(doc.undo_label() == "SetTrackName");
+    // The active playlist still named for the track follows it, in the
+    // same step; one undo restores both.
+    CHECK(doc.undo_label() == "Rename Track");
+    CHECK(active_playlist(doc, 1).name == "Lead Vox.01");
+    CHECK(c.undo(why));
+    CHECK(track(doc, 1).name == "Snare" && active_playlist(doc, 1).name == "Snare.01");
+    CHECK(c.redo(why));
+    CHECK(active_playlist(doc, 1).name == "Lead Vox.01");
     CHECK(!c.rename_track(1, "   ", why) && why == "a track needs a name; \"Lead Vox\" keeps its own");
     CHECK(!c.rename_track(2, "Lead Vox", why));
     CHECK(why == "another track is already named \"Lead Vox\"");
@@ -110,6 +140,25 @@ int test_controller() {
     CHECK(c.set_region_colour(kTrackColour, why));
     CHECK(first_region(doc, 1).colour == kTrackColour);
     CHECK(!c.set_region_colour(16, why));
+    return 0;
+}
+
+// A colour needing more members than one step holds is refused whole.
+int test_colour_over_limit() {
+    ModelDocument doc(make_demo_session(kMaxCompoundMembers + 44, kRate));
+    EditController c(doc);
+    std::string why;
+    std::vector<int> before;
+    for (const auto& t : doc.snapshot().edit->tracks) before.push_back(t->colour);
+    const std::size_t undo_depth = doc.undo_label().size();
+    CHECK(!c.set_track_colour(0, static_cast<int>(kMaxCompoundMembers) + 44, 5, why));
+    CHECK(why.find("select fewer tracks") != std::string::npos);
+    CHECK(why.find("Nothing was coloured") != std::string::npos);
+    const auto& tracks = doc.snapshot().edit->tracks;
+    for (std::size_t i = 0; i < tracks.size(); ++i) CHECK(tracks[i]->colour == before[i]);
+    CHECK(doc.undo_label().size() == undo_depth);
+    // Within the limit it still goes.
+    CHECK(c.set_track_colour(0, 100, 5, why));
     return 0;
 }
 
@@ -366,6 +415,8 @@ int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (test_controller()) return 1;
+    if (test_playlist_follows()) return 1;
+    if (test_colour_over_limit()) return 1;
     if (test_commands()) return 1;
     if (test_window()) return 1;
     std::printf("ui names and colours: ok\n");

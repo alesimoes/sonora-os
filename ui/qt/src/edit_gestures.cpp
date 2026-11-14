@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "edit_controller_detail.h"
+#include "edit_shuffle_ops.h"
 #include "theme.h"
 
 namespace sonora::ui {
@@ -47,12 +48,12 @@ Hit EditController::hit(double x, double y) const {
     const double x0 = view_.x_of(r->position), x1 = view_.x_of(r->end());
     const double edge = std::min(kEdgePx, (x1 - x0) / 4);
     const double corner = std::min(kFadeZonePx, (x1 - x0) / 4);
-    const bool top = y - view_.y_of_track(i) < view_.track_height / 4;
+    const bool top = y - view_.y_of_track(i) < view_.row_h(i) / 4;
     if (top && x - x0 <= corner) h.zone = HitZone::FadeIn;
     else if (top && x1 - x <= corner) h.zone = HitZone::FadeOut;
     else if (x - x0 <= edge) h.zone = HitZone::TrimStart;
     else if (x1 - x <= edge) h.zone = HitZone::TrimEnd;
-    else if (y - view_.y_of_track(i) < view_.track_height / 2) h.zone = HitZone::Select;
+    else if (y - view_.y_of_track(i) < view_.row_h(i) / 2) h.zone = HitZone::Select;
     else h.zone = HitZone::Body;
     return h;
 }
@@ -136,10 +137,6 @@ bool EditController::press(double x, double y, std::string& why) {
         drag_ = Drag{};
         return true;
     }
-    if (refuse_in_mode(kind == Drag::Kind::Move ? "Moving a region" : "Trimming a region", why)) {
-        drag_ = Drag{};
-        return false;
-    }
     const Region* r = find_region(snapshot(), h.region);
     drag_.region = h.region;
     drag_.orig_start = drag_.start = r->position;
@@ -188,8 +185,15 @@ void EditController::move(double x, double y) {
             drag_.start = drag_.orig_start;
             drag_.end = drag_.orig_end;
             drag_.preview.reset();
-            if (resolve_trim(s, drag_.region, start ? Edge::Start : Edge::End, want, t)) {
+            const TrackEdit* owner = nullptr;
+            const Region* now = find_region(s, drag_.region, &owner);
+            const bool shuffle = mode_ == EditMode::Shuffle;
+            if (resolve_trim(s, drag_.region, start ? Edge::Start : Edge::End, want, t) &&
+                (!shuffle || shuffle_limit_trim(*active(owner), *now, t))) {
                 (start ? drag_.start : drag_.end) = t.to;
+                // Shuffle ripples what follows: the overwrite preview below
+                // would draw neighbours that are not lost.
+                if (shuffle) break;
                 // What the drop will do to the neighbours, drawn while the
                 // edge is still in the hand: apply() is pure, so the preview
                 // is the edit itself, applied to a copy nobody else sees.
@@ -264,7 +268,7 @@ bool EditController::release(double x, double y, std::string& why) {
         case Drag::Kind::Move: {
             MoveRegion op;
             if (!resolve_move(snapshot(), d.region, d.start, doc_.reserve_id(), op)) return true;
-            if (!submit_move(op, why)) return false;
+            if (!submit_place(op, why)) return false;
             break;
         }
         case Drag::Kind::TrimStart:
@@ -275,7 +279,7 @@ bool EditController::release(double x, double y, std::string& why) {
                               start ? d.start : d.end, op)) {
                 return true;
             }
-            if (!submit(op, why)) return false;
+            if (!submit_trim(op, why)) return false;
             break;
         }
         case Drag::Kind::FadeIn:
@@ -340,7 +344,7 @@ bool EditController::press_pencil(const Hit& h, double x, double y, std::string&
     const double row_top = view_.y_of_track(h.track);
     int lane = count - 1;
     for (int c = 0; c < count; ++c) {
-        const SampleLane l = sample_lane(row_top, view_.track_height, count, c);
+        const SampleLane l = sample_lane(row_top, view_.row_h(h.track), count, c);
         if (y < l.top + l.height) {
             lane = c;
             break;
@@ -368,7 +372,7 @@ float EditController::pencil_level(const Drag& d, double y) const {
     const Region* r = find_region(snapshot(), d.region);
     const int count = r != nullptr ? static_cast<int>(r->channels.size()) : 1;
     const SampleLane l =
-        sample_lane(view_.y_of_track(d.track), view_.track_height, count, d.channel);
+        sample_lane(view_.y_of_track(d.track), view_.row_h(d.track), count, d.channel);
     const double half = l.height / 2;
     if (!(half > 0.0)) return 0.0f;
     // At the operator's vertical zoom, so the level under the pointer is the
