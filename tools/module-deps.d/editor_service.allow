@@ -1,0 +1,4 @@
+# plugins.host.editors (ADR-0214): HostEditorService speaks the host control
+# messages of contracts/plugin. Merged into tools/module-deps.allow by
+# tools/check-deps.sh; folded into it once that file is free.
+engine/editor_service -> contracts/plugin
