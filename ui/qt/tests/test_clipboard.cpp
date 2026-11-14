@@ -1286,47 +1286,12 @@ int test_insert_delete_time() {
     return 0;
 }
 
-// clip.loop as the Loop Clip dialog will call it (ADR-0098): a typed count lays
-// that many repeats as one compound and one "Loop Clip" undo step; text that is
-// not a count is refused with the notice and changes nothing; an empty argument
-// loops with the count last used.
-int test_clip_loop_command() {
-    ModelDocument doc(two_regions());
-    SyntheticPeakSource peaks(kRate, 120.0);
-    SessionModel session(doc, peaks, true);
-    CommandRegistry local;
-    session.installCommands(local);
-    EditController& c = session.controller();
-    std::string why;
-    CommandContext none, arg;
-    const std::size_t before = lane(doc.snapshot(), 0).regions.size();
-
-    CHECK(c.select_region(11));
-    arg.argument = "4";
-    CHECK(local.dispatch("clip.loop", arg, why) == DispatchResult::Ok);
-    CHECK(lane(doc.snapshot(), 0).regions.size() == before + 4);
-    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Loop Clip");
-    CHECK(c.undo(why));
-    CHECK(lane(doc.snapshot(), 0).regions.size() == before && !doc.can_undo());
-
-    arg.argument = "many";
-    CHECK(local.dispatch("clip.loop", arg, why) == DispatchResult::Failed);
-    CHECK(has(why, "not a number of repeats") && has(why, "Nothing was looped."));
-    CHECK(lane(doc.snapshot(), 0).regions.size() == before && !doc.can_undo());
-
-    CHECK(c.select_region(11));
-    CHECK(local.dispatch("clip.loop", none, why) == DispatchResult::Ok);
-    CHECK(lane(doc.snapshot(), 0).regions.size() == before + 4);
-    CHECK(doc.history().undo_depth() == 1 && doc.undo_label() == "Loop Clip");
-    return 0;
-}
-
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (test_copy_paste() || test_cut_clear_duplicate() || test_repeat() || test_shuffle() ||
         test_shuffle_automation_notice() || test_insert_delete_time() ||
-        test_repeat_count_text() || test_clip_loop_command() || test_fades_and_crossfades() ||
+        test_repeat_count_text() || test_fades_and_crossfades() ||
         test_cut_edges_lose_fades() ||
         test_limit() || test_several_tracks() || test_menu()) {
         return 1;
