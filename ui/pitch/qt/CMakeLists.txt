@@ -13,8 +13,8 @@ file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/pitch_panel_qml.inc
 add_library(sonora_ui_pitch_panel STATIC
   include/sonora/ui_pitch/pitch_panel.h
   src/pitch_panel.cpp
-  PitchPanel.qml)
-set_source_files_properties(PitchPanel.qml PROPERTIES HEADER_FILE_ONLY ON)
+  PitchPanel.qml PitchRoll.qml PitchInspector.qml PitchScaleBar.qml)
+set_source_files_properties(PitchPanel.qml PitchRoll.qml PitchInspector.qml PitchScaleBar.qml PROPERTIES HEADER_FILE_ONLY ON)
 target_include_directories(sonora_ui_pitch_panel PUBLIC include
   PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_link_libraries(sonora_ui_pitch_panel PUBLIC sonora_ui_pitch)
