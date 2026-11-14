@@ -13,6 +13,7 @@ The command catalog already carries a text argument; a new message would force a
 
 ## Consequences
 The engine parses text on the control thread only; the audio thread is unchanged. Unverified: whether replicas need the ratio pushed in state; measure by the UI test showing the field after reconnect.
+Wire compatibility (older peers accept the new catalog id) is settled by the test_wire catalog loop and the conformance run; no protocol bump.
 
 ## Alternatives rejected
 A dedicated wire message (protocol bump, no benefit). A session-saved ratio (a take would replay at a shifted speed after reload).
