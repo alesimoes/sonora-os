@@ -6,7 +6,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "sonora/bus_order.h"
 #include "sonora/click.h"
+#include "sonora/graph_levels.h"
+#include "sonora/key_edges.h"
 #include "sonora/model/musical_map.h"
 
 namespace sonora {
@@ -388,33 +391,10 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
             bus_outputs[b] = it->second;
         }
     }
-    // Topological over sends and outputs, ties in display order: the
-    // lowest-numbered bus no remaining bus feeds goes next. Quadratic in
-    // buses, which are few.
-    std::vector<uint32_t> inputs(bus_count, 0);
-    for (const SendBinding& s : sends) {
-        if (s.strip >= limits.engine_tracks) ++inputs[s.bus];
-    }
-    for (uint32_t b = 0; b < bus_count; ++b) {
-        if (bus_outputs[b] != kNoBus) ++inputs[bus_outputs[b]];
-    }
     std::vector<uint32_t> bus_order;
-    std::vector<uint8_t> placed(bus_count, 0);
-    while (bus_order.size() < bus_count) {
-        uint32_t next = bus_count;
-        for (uint32_t b = 0; b < bus_count && next == bus_count; ++b) {
-            if (!placed[b] && inputs[b] == 0) next = b;
-        }
-        if (next == bus_count) {
-            error = "the aux buses' sends and outputs make a feedback loop; the plan is not built";
-            return false;
-        }
-        placed[next] = 1;
-        bus_order.push_back(next);
-        for (const SendBinding& s : sends) {
-            if (s.strip == limits.engine_tracks + next) --inputs[s.bus];
-        }
-        if (bus_outputs[next] != kNoBus) --inputs[bus_outputs[next]];
+    if (!order_buses(limits.engine_tracks, sends, bus_outputs, bus_order)) {
+        error = "the aux buses' sends and outputs make a feedback loop; the plan is not built";
+        return false;
     }
     MixLayout mix;
     mix.bus_count = bus_count;
@@ -432,12 +412,13 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     }
     mix.bus_hardware = bus_hardware.data();
     const GraphSize graph = mix_graph_size(limits.engine_tracks, bindings.data(), mix);
+    const std::vector<uint32_t> keys = chain_keys(tracks, bindings, bus_index);
 
     PlanSizes sizes;
     sizes.tracks = limits.engine_tracks;
     sizes.segments = static_cast<uint32_t>(segment_total);
     sizes.nodes = graph.nodes;
-    sizes.edges = graph.edges;
+    sizes.edges = graph.edges + key_edge_count(keys);
     sizes.chunk_slots = static_cast<uint32_t>(slot_total);
     const std::vector<ClickSegment> click = click_segments(snapshot.settings);
     sizes.click_segments = static_cast<uint32_t>(click.size());
@@ -570,6 +551,12 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
         n.first_plugin_lane = lanes_first[t];
         n.plugin_lane_count = lanes_count[t];
     }
+    KeyEdgeResult keyed;
+    if (!add_key_edges(*plan, keys, keyed, error)) {
+        destroy_plan(plan);
+        return false;
+    }
+    report.missing_keys = keyed.missing;
     report.track_shortfall.assign(limits.engine_tracks, 0);
     const Compensation comp =
         compensate(*plan, limits.max_delay_frames, continuity.pool, report.track_shortfall.data());
@@ -577,6 +564,10 @@ bool build_plan(const model::Snapshot& snapshot, const BuildLimits& limits,
     report.compensation_shortfall_frames = comp.shortfall_frames;
     report.clamped_edges = comp.clamped_edges;
     report.undelayed_edges = comp.undelayed_edges;
+    // ADR-0063 §1: after compensate(), which it leaves as it found it (delay
+    // lines by stable id, edges in place). A plan it refuses keeps one serial
+    // level, which is still a correct plan.
+    assign_plan_levels(*plan);
     // What the plan carries, not what the resolver asked for: a binding the
     // layout left unbound plays with latency 0, and the state block must
     // show the latency that is compensated (PR #59 re-review).

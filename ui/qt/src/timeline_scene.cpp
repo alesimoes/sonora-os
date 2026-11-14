@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "sample_scene.h"
 #include "sonora/model/comping.h"
 #include "theme.h"
 
@@ -120,7 +121,8 @@ void draw_gain_line(const Region& r, Frames offset, double x0, double cx0, doubl
 // translucent (a drag's origin).
 void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const RegionFades& fades,
                  double lane_y, const ViewState& v, uint32_t palette, bool selected, bool ghost,
-                 const PeakSource& peaks, Scene& out, const std::string* origin = nullptr) {
+                 const PeakSource& peaks, Scene& out, const std::string* origin = nullptr,
+                 const SampleSource* samples = nullptr) {
     const double x0 = v.x_of(pos), x1 = v.x_of(pos + len);
     if (x1 < 0 || x0 > v.width) return;
     const double cx0 = std::max(0.0, x0), cx1 = std::min(v.width, x1);
@@ -140,7 +142,13 @@ void draw_region(const Region& r, Frames pos, Frames len, Frames offset, const R
     const double wy = y + band + 1, wh = h - band - 2;
     const int first_px = static_cast<int>(std::floor(cx0));
     const int count = static_cast<int>(std::ceil(cx1)) - first_px;
-    if (count > 0 && wh > 2 && !r.channels.empty()) {
+    if (sample_view_on(v, samples) && !ghost && wh > 2) {
+        // At sample zoom the samples themselves, not an overview interpolated
+        // between 256-frame buckets (ADR-0096 §3).
+        draw_sample_curve(r, offset, x0, cx0, cx1, lane_y, v,
+                          r.mute ? theme::kTextTertiary : theme::region_wave(palette), *samples,
+                          out);
+    } else if (count > 0 && wh > 2 && !r.channels.empty()) {
         static thread_local std::vector<PeakPair> buf;
         buf.resize(static_cast<std::size_t>(count));
         const double src_first = static_cast<double>(offset) + (first_px - x0) * v.fpp;
@@ -362,8 +370,12 @@ void draw_live_take(const LiveTake& live, const ViewState& v, std::vector<SceneR
     const uint32_t band_colour = theme::region_name_band(theme::kRecord);
     const uint32_t wave = theme::region_wave(theme::kRecord);
     static thread_local std::vector<PeakPair> buf;
+    ViewState row_view = v;
     for (const LiveTake::Lane& lane : live.lanes()) {
         if (lane.end <= lane.start) continue;
+        if (v.row_hidden(lane.row)) continue;
+        row_view.track_height = v.row_h(lane.row);
+        const ViewState& v = row_view;
         const double lane_y = v.y_of_track(lane.row);
         if (lane_y + v.track_height < 0 || lane_y > v.height) continue;
         const double x0 = v.x_of(lane.start), x1 = v.x_of(lane.end);
@@ -459,7 +471,8 @@ void draw_take_lanes(const TrackEdit& t, int i, const ViewState& v, const Drag& 
 void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection& sel,
                           const Drag& drag, bool grid_lines, GridValue grid,
                           const PeakSource& peaks, Scene& out,
-                          const EditController::LaneSelection& lane_sel) {
+                          const EditController::LaneSelection& lane_sel,
+                          const SampleSource* samples) {
     out.clear();
     if (v.width <= 0 || v.height <= 0) return;
     const auto& tracks = s.edit->tracks;
@@ -468,8 +481,10 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
     for (std::size_t i = 0; i < tracks.size(); ++i) {
         const double y = v.y_of_track(static_cast<int>(i));
         if (v.y_of_track(static_cast<int>(i) + 1) < 0 || y > v.height) continue;
-        add(out.rects, 0, y, v.width, v.track_height, i % 2 ? theme::kLaneB : theme::kLaneA);
-        add(out.rects, 0, y + v.track_height - 1, v.width, 1, theme::kBorderSubtle);
+        const double row_h = v.row_h(static_cast<int>(i));
+        if (row_h <= 0) continue;  // hidden (ADR-0106)
+        add(out.rects, 0, y, v.width, row_h, i % 2 ? theme::kLaneB : theme::kLaneA);
+        add(out.rects, 0, y + row_h - 1, v.width, 1, theme::kBorderSubtle);
         if (!v.autolanes_open(static_cast<int>(i))) continue;
         for (int l = 0; l < kLaneCount; ++l) {
             const double top = v.y_of_autolane(static_cast<int>(i), l);
@@ -510,8 +525,12 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
         }
     }
 
-    // Regions.
+    // Regions. Each track is drawn with a view whose row is its own height.
+    ViewState row_view = v;
     for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (v.row_hidden(static_cast<int>(i))) continue;
+        row_view.track_height = v.row_h(static_cast<int>(i));
+        const ViewState& v = row_view;
         const double y = v.y_of_track(static_cast<int>(i));
         if (y + v.track_height < 0 || y > v.height) continue;
         const Playlist* p = active_playlist(tracks[i].get());
@@ -536,7 +555,9 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
             continue;
         }
         for (const Region& r : p->regions) {
-            const bool dragged = drag.moved && drag.region == r.id;
+            // The Pencil leaves its clip where it is; its stroke is drawn over it.
+            const bool dragged =
+                drag.moved && drag.region == r.id && drag.kind != Drag::Kind::Pencil;
             const bool selected = sel.region == r.id;
             RegionFades fades = region_fades(*p, r);
             if (!dragged) {
@@ -549,7 +570,7 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
                     }
                 }
                 draw_region(r, r.position, r.length, r.source_offset, fades, y, v, colour_of(r),
-                            selected, false, peaks, out, tag.empty() ? nullptr : &tag);
+                            selected, false, peaks, out, tag.empty() ? nullptr : &tag, samples);
                 continue;
             }
             switch (drag.kind) {
@@ -575,6 +596,7 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
         }
         draw_crossfades(*p, y, v, out);
     }
+    draw_pencil_preview(s, v, drag, out);
 
     // Take lanes, under each track that shows them.
     for (std::size_t i = 0; i < tracks.size(); ++i) {

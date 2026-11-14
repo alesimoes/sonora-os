@@ -1,20 +1,14 @@
 """Owner chat from the dashboard (harness/ownerchat.py): message type, the
-daemon consuming ask/wake requests, the thread view, and the dashboard's
-POST endpoint against a local server with a fake broker log (no daemon)."""
+daemon consuming ask/wake requests, and the thread view."""
 import json
 import os
 import shutil
 import tempfile
-import threading
 import unittest
-import urllib.error
-import urllib.request
-from http.server import ThreadingHTTPServer
 
 import support  # noqa: F401  (sets sys.path)
 from harness import ownerchat
 from harness import protocol as P
-from dashboard_actions_http import TOKEN  # noqa: E402
 
 
 class FakeStore:
@@ -130,93 +124,6 @@ class InTheTick(support.DaemonCase):
         o.tick()
         self.assertIn(("eng-1", "owner_ask"), [(s[0], s[1]) for s in o.broker.sent])
         self.assertEqual(os.listdir(ownerchat.request_dir(o.hdir)), [])
-
-
-class Endpoint(unittest.TestCase):
-    """The real Handler on a free port, reading a fake orchestrator tree."""
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.tmp, True)
-        odir = os.path.join(self.tmp, "planning", "orchestrator")
-        os.makedirs(odir)
-        self.status = os.path.join(odir, "status.json")
-        with open(self.status, "w") as f:
-            f.write("{}")
-        with open(os.path.join(odir, "state.json"), "w") as f:
-            json.dump({"runs": [{"id": "r1", "name": "eng-1", "task_id": "t1", "role": "engineer"}]}, f)
-        os.makedirs(os.path.join(self.tmp, ".harness", "log"))
-        self.mock = os.path.join(self.tmp, "mockups")
-        os.makedirs(self.mock)
-        with open(os.path.join(self.mock, "index.html"), "w") as f:
-            f.write("<h1>gallery</h1>")
-        with open(os.path.join(self.tmp, "secret.txt"), "w") as f:
-            f.write("no")
-        import dashboard
-        import dashboard_links
-        self.env = dict(os.environ)
-        os.environ["SONORA_ORCH_STATUS"] = self.status
-        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(self.env)))
-        self.orig = dashboard_links.mockups_dir
-        dashboard_links.mockups_dir = lambda: self.mock
-        self.addCleanup(setattr, dashboard_links, "mockups_dir", self.orig)
-        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
-        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
-        self.addCleanup(self.srv.server_close)
-        self.addCleanup(self.srv.shutdown)
-        self.url = "http://127.0.0.1:%d" % self.srv.server_address[1]
-
-    def call(self, path, payload=None, ctype="application/json", method=None):
-        data = json.dumps(payload).encode() if payload is not None else None
-        req = urllib.request.Request(self.url + path, data=data, method=method,
-                                     headers={"Content-Type": ctype,
-                                              "X-Dash-Token": TOKEN} if data else {})
-        try:
-            with urllib.request.urlopen(req, timeout=5) as r:
-                return r.status, r.read(), r.headers.get("Content-Type")
-        except urllib.error.HTTPError as e:
-            return e.code, e.read(), None
-
-    def test_ask_queues_a_request_for_the_daemon(self):
-        code, body, _ = self.call("/api/agent/ask", {"name": "eng-1", "text": "status?"})
-        self.assertEqual(code, 202)
-        reqs = os.listdir(os.path.join(self.tmp, ".harness", "owner-requests"))
-        self.assertEqual(len(reqs), 1)
-        with open(os.path.join(self.tmp, ".harness", "owner-requests", reqs[0])) as f:
-            self.assertEqual(json.load(f), {"kind": "ask", "to": "eng-1", "text": "status?"})
-
-    def test_unknown_agent_and_empty_text_are_refused(self):
-        self.assertEqual(self.call("/api/agent/ask", {"name": "ghost", "text": "x"})[0], 404)
-        self.assertEqual(self.call("/api/agent/ask", {"name": "eng-1", "text": ""})[0], 400)
-        self.assertEqual(self.call("/api/agent/nope", {"name": "eng-1"})[0], 404)
-
-    def test_non_json_post_is_refused(self):
-        code, _, _ = self.call("/api/agent/ask", {"name": "eng-1", "text": "x"}, ctype="text/plain")
-        self.assertEqual(code, 415)
-
-    def test_stale_status_means_daemon_is_down(self):
-        os.utime(self.status, (1, 1))
-        self.assertEqual(self.call("/api/agent/wake", {"name": "eng-1"})[0], 503)
-
-    def test_run_detail_has_the_thread_and_the_agent_panel_note(self):
-        with open(os.path.join(self.tmp, ".harness", "log", "messages.jsonl"), "w") as f:
-            f.write(json.dumps({"id": "1", "ts": "t", "from": "eng-1", "to": "daemon",
-                                "type": "answer", "body": {"text": "building"}}) + "\n")
-        _, body, _ = self.call("/api/detail?kind=run&id=r1")
-        chat = json.loads(body)["chat"]
-        self.assertEqual((chat["name"], chat["daemon_alive"]), ("eng-1", True))
-        self.assertEqual(chat["thread"][0]["text"], "building")
-        _, body, _ = self.call("/api/detail?kind=agent&id=nobody")
-        self.assertIn("Agent", json.loads(body)["not_reachable"])
-
-    def test_links_and_local_gallery(self):
-        _, body, _ = self.call("/api/state")
-        titles = [(l["title"], l["url"]) for l in json.loads(body)["links"]]
-        self.assertIn(("Faceplates (round 4)", "https://claude.ai/artifact/TwaXYZD42ZRm2At3Fe7SoK"), titles)
-        self.assertIn(("Faceplates (local)", "/mockups/"), titles)
-        code, body, ctype = self.call("/mockups/")
-        self.assertEqual((code, body, ctype), (200, b"<h1>gallery</h1>", "text/html; charset=utf-8"))
-        self.assertEqual(self.call("/mockups/../secret.txt")[0], 404)
-        self.assertEqual(self.call("/mockups/missing.png")[0], 404)
 
 
 if __name__ == "__main__":

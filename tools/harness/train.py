@@ -17,6 +17,7 @@ the rest wait for a slot. GitHub rate limits pause every gh call.
 """
 import json
 
+from . import feature_pr_link, prpending
 from .forge import ForgeError, RateLimited
 from .train_bundle import BundleMixin
 
@@ -141,13 +142,13 @@ class Train(BundleMixin):
         owned = {f["pr"] for f in self.o.store.features() if f["pr"]}
         # A feature's own branch is its PR in the making (push done, number
         # not yet recorded): the sweep must not take it from under it.
-        mine = {x["branch"] for x in (self.o.store.features()
-                                      + self.o.store.tasks())
-                if x["branch"] and not x["pr"]} if auto else set()
+        mine = prpending.in_the_making(self.o.store) if auto else set()
         done = []
         for p in self.o.forge.list_prs():
             n = p["number"]
             if n in owned or (numbers and n not in numbers):
+                continue
+            if self._link_to_feature(p):
                 continue
             # A PR against another PR is adopted too: _step retargets it to
             # main (stacked PRs are refused, CLAUDE.md).
@@ -170,6 +171,17 @@ class Train(BundleMixin):
                                + (" auto" if auto else ""))
             done.append(n)
         return done
+
+    def _link_to_feature(self, p):
+        """A PR on the branch of a feature stuck before its own PR belongs
+        to that feature, not to a new train entry (feature_pr_link)."""
+        if p.get("draft") or p.get("base") not in (None, "", "main"):
+            return False
+        f = feature_pr_link.owner_of(self.o.store, p["branch"])
+        if f is None:
+            return False
+        feature_pr_link.link(self.o, f, p["number"], p["branch"])
+        return True
 
     # -- one poll -------------------------------------------------------
     def _open_list(self, now):

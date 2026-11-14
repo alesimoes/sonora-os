@@ -57,6 +57,24 @@ using sonora::TransportState;
 
 constexpr uint32_t kChunk = 256;
 constexpr uint32_t kBlock = 64;
+
+// The builder re-sorts nodes by level (ADR-0063 §1), so a test finds a node
+// by what it is, not by where the layout put it. node_count when none.
+constexpr uint32_t kAnyTrack = ~uint32_t{0};
+uint32_t find_node(const PlaybackPlan& p, sonora::NodeKind kind, uint32_t track = kAnyTrack) {
+    for (uint32_t i = 0; i < p.node_count; ++i) {
+        if (p.nodes[i].kind == kind && (track == kAnyTrack || p.nodes[i].track == track)) return i;
+    }
+    return p.node_count;
+}
+uint32_t find_chain(const PlaybackPlan& p, uint64_t chain_id) {
+    for (uint32_t i = 0; i < p.node_count; ++i) {
+        if (p.nodes[i].kind == sonora::NodeKind::InsertChain && p.nodes[i].chain_id == chain_id) {
+            return i;
+        }
+    }
+    return p.node_count;
+}
 const std::string kDir = "test_playback_control_session";
 
 // As EngineControlServer does at start and after an update that changes the
@@ -254,9 +272,10 @@ int test_build_from_model() {
     // The graph: TrackOut x3 -> BusSum -> HardwareOut, delay fields at 0.
     CHECK(p.node_count == 5);
     CHECK(p.edge_count == 4);
-    CHECK(p.nodes[3].kind == sonora::NodeKind::BusSum);
-    CHECK(p.nodes[3].input_edge_count == 3);
-    CHECK(p.nodes[4].kind == sonora::NodeKind::HardwareOut);
+    const uint32_t bus_sum_at = find_node(p, sonora::NodeKind::BusSum);
+    CHECK(bus_sum_at < p.node_count && p.nodes[bus_sum_at].input_edge_count == 3);
+    CHECK(find_node(p, sonora::NodeKind::HardwareOut) > bus_sum_at);
+    CHECK(find_node(p, sonora::NodeKind::HardwareOut) < p.node_count);
     for (uint32_t e = 0; e < p.edge_count; ++e) CHECK(p.edges[e].delay_frames == 0);
     CHECK(p.monitor_out[0] == 0 && p.monitor_out[1] == 1);
     // -3 dB at centre.
@@ -1381,14 +1400,16 @@ int test_build_with_sends() {
     // Vox split, the spare track fused, Room (engine bus 1) before Verb
     // (engine bus 0), the bus, out.
     CHECK(plan->node_count == 2 + 1 + 4 + 2);
-    CHECK(plan->nodes[0].kind == sonora::NodeKind::TrackSource);
-    CHECK(plan->nodes[1].kind == sonora::NodeKind::TrackFader);
-    CHECK(plan->nodes[3].kind == sonora::NodeKind::AuxSum && plan->nodes[3].track == 1);
-    CHECK(plan->nodes[5].kind == sonora::NodeKind::AuxSum && plan->nodes[5].track == 0);
-    const sonora::PlanEdge& in_room = plan->edges[plan->nodes[3].first_input_edge];
-    CHECK(in_room.from_node == 0 && in_room.send == 0 * sonora::kStripSendSlots + 0);
-    const sonora::PlanEdge& in_verb = plan->edges[plan->nodes[5].first_input_edge];
-    CHECK(in_verb.from_node == 3 && in_verb.send == (2 + 1) * sonora::kStripSendSlots + 2);
+    const uint32_t vox_source = find_node(*plan, sonora::NodeKind::TrackSource);
+    const uint32_t room_sum = find_node(*plan, sonora::NodeKind::AuxSum, 1);
+    const uint32_t verb_sum = find_node(*plan, sonora::NodeKind::AuxSum, 0);
+    CHECK(vox_source < plan->node_count);
+    CHECK(find_node(*plan, sonora::NodeKind::TrackFader) < plan->node_count);
+    CHECK(room_sum < verb_sum && verb_sum < plan->node_count);
+    const sonora::PlanEdge& in_room = plan->edges[plan->nodes[room_sum].first_input_edge];
+    CHECK(in_room.from_node == vox_source && in_room.send == 0 * sonora::kStripSendSlots + 0);
+    const sonora::PlanEdge& in_verb = plan->edges[plan->nodes[verb_sum].first_input_edge];
+    CHECK(in_verb.from_node == room_sum && in_verb.send == (2 + 1) * sonora::kStripSendSlots + 2);
     sonora::destroy_plan(plan);
 
     limits.max_buses = 1;
@@ -1434,17 +1455,22 @@ int test_build_with_outputs() {
     std::string error;
     CHECK(sonora::build_plan(h.current(), limits, no_sources, 1, plan, report, error));
     CHECK(plan->node_count == 2 + 4 + 2);
-    const sonora::PlanNode& room = plan->nodes[2];
-    CHECK(room.kind == sonora::NodeKind::AuxSum && room.track == 1 && room.input_edge_count == 1);
-    CHECK(plan->edges[room.first_input_edge].from_node == 0);
+    const uint32_t room_at = find_node(*plan, sonora::NodeKind::AuxSum, 1);
+    const uint32_t verb_at = find_node(*plan, sonora::NodeKind::AuxSum, 0);
+    const uint32_t master_at = find_node(*plan, sonora::NodeKind::BusSum);
+    CHECK(room_at < verb_at && verb_at < master_at && master_at < plan->node_count);
+    const sonora::PlanNode& room = plan->nodes[room_at];
+    CHECK(room.input_edge_count == 1);
+    CHECK(plan->edges[room.first_input_edge].from_node == find_node(*plan, sonora::NodeKind::TrackOut, 0));
     CHECK(plan->edges[room.first_input_edge].send == sonora::kNoSend);
-    const sonora::PlanNode& verb = plan->nodes[4];
-    CHECK(verb.kind == sonora::NodeKind::AuxSum && verb.track == 0 && verb.input_edge_count == 1);
-    CHECK(plan->edges[verb.first_input_edge].from_node == 3);
-    const sonora::PlanNode& master = plan->nodes[6];
-    CHECK(master.kind == sonora::NodeKind::BusSum && master.input_edge_count == 2);
-    CHECK(plan->edges[master.first_input_edge].from_node == 1);
-    CHECK(plan->edges[master.first_input_edge + 1].from_node == 5);
+    const sonora::PlanNode& verb = plan->nodes[verb_at];
+    CHECK(verb.input_edge_count == 1);
+    CHECK(plan->edges[verb.first_input_edge].from_node == find_node(*plan, sonora::NodeKind::AuxFader, 1));
+    const sonora::PlanNode& master = plan->nodes[master_at];
+    CHECK(master.input_edge_count == 2);
+    CHECK(plan->edges[master.first_input_edge].from_node == find_node(*plan, sonora::NodeKind::TrackOut, 1));
+    CHECK(plan->edges[master.first_input_edge + 1].from_node ==
+          find_node(*plan, sonora::NodeKind::AuxFader, 0));
     sonora::destroy_plan(plan);
 
     Snapshot looped = h.current();
@@ -1981,17 +2007,22 @@ int test_build_with_chains() {
                              error));
     const PlaybackPlan& p = *plan;
     CHECK(p.node_count == 9);
-    CHECK(p.nodes[0].kind == sonora::NodeKind::TrackSource);
-    const sonora::PlanNode& a = p.nodes[1];
-    CHECK(a.kind == sonora::NodeKind::InsertChain);
+    CHECK(find_node(p, sonora::NodeKind::TrackSource) < p.node_count);
+    const uint32_t a_at = find_chain(p, 100);
+    CHECK(a_at < p.node_count);
+    const sonora::PlanNode& a = p.nodes[a_at];
     CHECK(a.chain_id == 100 && a.channel_slot == 10 && a.channel_generation == 3);
     CHECK(a.param_store == 20 && a.latency_frames == 2048 && a.channels == 1);
-    CHECK(p.nodes[2].kind == sonora::NodeKind::TrackFader);
-    CHECK(p.nodes[4].kind == sonora::NodeKind::InsertChain && p.nodes[4].chain_id == 102);
-    CHECK(p.nodes[6].kind == sonora::NodeKind::TrackOut);   // C: inactive insert
-    CHECK(p.last_insert_node == 4);
-    const sonora::PlanNode& bus = p.nodes[7];
-    CHECK(bus.kind == sonora::NodeKind::BusSum && bus.input_edge_count == 3);
+    CHECK(find_node(p, sonora::NodeKind::TrackFader) < p.node_count);
+    const uint32_t b_at = find_chain(p, 102);
+    CHECK(b_at < p.node_count);
+    CHECK(find_node(p, sonora::NodeKind::TrackOut) < p.node_count);   // C: inactive insert
+    // The last chain in plan order, which ends the runner's callback.
+    CHECK(p.last_insert_node == (a_at > b_at ? a_at : b_at));
+    const uint32_t bus_at = find_node(p, sonora::NodeKind::BusSum);
+    CHECK(bus_at < p.node_count);
+    const sonora::PlanNode& bus = p.nodes[bus_at];
+    CHECK(bus.input_edge_count == 3);
     CHECK(p.edges[bus.first_input_edge].delay_frames == 0);
     CHECK(p.edges[bus.first_input_edge + 1].delay_frames == 1948);
     CHECK(p.edges[bus.first_input_edge + 2].delay_frames == 2048);
@@ -2008,12 +2039,14 @@ int test_build_with_chains() {
     CHECK(report.clamped_edges == 2);
     CHECK(report.compensation_shortfall_frames == 1048);
     CHECK(report.track_shortfall == (std::vector<uint32_t>{0, 948, 1048}));
-    CHECK(plan->edges[plan->nodes[7].first_input_edge + 2].delay_frames == 1000);
+    CHECK(plan->edges[plan->nodes[find_node(*plan, sonora::NodeKind::BusSum)].first_input_edge + 2]
+              .delay_frames == 1000);
     sonora::destroy_plan(plan);
 
     // No resolver: every chain passes through, and nothing is delayed.
     CHECK(sonora::build_plan(h.current(), limits, no_sources, 3, plan, report, error));
-    CHECK(plan->node_count == 9 && plan->nodes[1].channel_slot == sonora::kNoChannelSlot);
+    CHECK(plan->node_count == 9 &&
+          plan->nodes[find_chain(*plan, 100)].channel_slot == sonora::kNoChannelSlot);
     CHECK(plan->compensation_frames == 0);
     for (uint32_t e = 0; e < plan->edge_count; ++e) CHECK(plan->edges[e].delay_frames == 0);
     sonora::destroy_plan(plan);
@@ -2023,19 +2056,21 @@ int test_build_with_chains() {
     limits.max_delay_frames = 16384;
     CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, continuity, 4, plan, report,
                              error));
-    const uint32_t chain_a = plan->nodes[1].stable_id;
-    const uint32_t out_c = plan->nodes[6].stable_id;
-    const uint32_t line_c = plan->edges[plan->nodes[7].first_input_edge + 2].delay_line;
+    const uint32_t chain_a = plan->nodes[find_chain(*plan, 100)].stable_id;
+    const uint32_t out_c = plan->nodes[find_node(*plan, sonora::NodeKind::TrackOut)].stable_id;
+    const uint32_t line_c =
+        plan->edges[plan->nodes[find_node(*plan, sonora::NodeKind::BusSum)].first_input_edge + 2]
+            .delay_line;
     CHECK(line_c != sonora::kNoDelayLine);
     sonora::destroy_plan(plan);
     CHECK_APPLY(h, (ReorderTracks{{104, 100, 102}}));
     CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, continuity, 5, plan, report,
                              error));
-    CHECK(plan->nodes[0].kind == sonora::NodeKind::TrackOut);   // C, first now
-    CHECK(plan->nodes[0].stable_id == out_c);
-    CHECK(plan->nodes[2].kind == sonora::NodeKind::InsertChain && plan->nodes[2].chain_id == 100);
-    CHECK(plan->nodes[2].stable_id == chain_a);
-    const sonora::PlanEdge& c_into_bus = plan->edges[plan->nodes[7].first_input_edge];
+    CHECK(plan->nodes[find_node(*plan, sonora::NodeKind::TrackOut)].stable_id == out_c);
+    CHECK(plan->nodes[find_chain(*plan, 100)].stable_id == chain_a);
+    // C is laid out first now, so its edge is the bus's first.
+    const sonora::PlanEdge& c_into_bus =
+        plan->edges[plan->nodes[find_node(*plan, sonora::NodeKind::BusSum)].first_input_edge];
     CHECK(c_into_bus.delay_frames == 2048 && c_into_bus.delay_line == line_c);
     sonora::destroy_plan(plan);
     return 0;
@@ -2112,8 +2147,8 @@ int test_build_resolves_plugin_lanes() {
     CHECK(asked == 4);   // never for C's lane: its chain plays none
     CHECK(p.plugin_lane_count == 3);
     CHECK(p.auto_point_count == 4);   // "gone" and C's lane copy nothing
-    const sonora::PlanNode& a = p.nodes[1];
-    CHECK(a.kind == sonora::NodeKind::InsertChain && a.chain_id == 100);
+    CHECK(find_chain(p, 100) < p.node_count);
+    const sonora::PlanNode& a = p.nodes[find_chain(p, 100)];
     CHECK(a.first_plugin_lane == 0 && a.plugin_lane_count == 2);
     const sonora::PlanPluginLane& gain = p.plugin_lanes[0];
     CHECK(gain.instance == 0 && gain.param == 3 && gain.count == 2);
@@ -2122,13 +2157,13 @@ int test_build_resolves_plugin_lanes() {
     const sonora::PlanPluginLane& ceiling = p.plugin_lanes[1];
     CHECK(ceiling.instance == 1 && ceiling.param == 7 && ceiling.count == 1);
     CHECK(p.auto_points[ceiling.first].value == -1.0f);
-    const sonora::PlanNode& b = p.nodes[4];
-    CHECK(b.kind == sonora::NodeKind::InsertChain && b.chain_id == 102);
+    CHECK(find_chain(p, 102) < p.node_count);
+    const sonora::PlanNode& b = p.nodes[find_chain(p, 102)];
     CHECK(b.first_plugin_lane == 2 && b.plugin_lane_count == 1);
     CHECK(p.plugin_lanes[2].instance == 0 && p.plugin_lanes[2].param == 3);
     CHECK(p.auto_points[p.plugin_lanes[2].first].value == 2.0f);
-    const sonora::PlanNode& c = p.nodes[7];
-    CHECK(c.kind == sonora::NodeKind::InsertChain && c.chain_id == 104);
+    CHECK(find_chain(p, 104) < p.node_count);
+    const sonora::PlanNode& c = p.nodes[find_chain(p, 104)];
     CHECK(c.param_store == sonora::kNoParamStore && c.plugin_lane_count == 0);
     sonora::destroy_plan(plan);
 
@@ -2149,7 +2184,7 @@ int test_build_resolves_plugin_lanes() {
         broken.edit = edit;
         CHECK(sonora::build_plan(broken, limits, no_sources, resolve, lanes, continuity, 2, plan,
                                  report, error));
-        CHECK(plan->plugin_lane_count == 2 && plan->nodes[1].plugin_lane_count == 1);
+        CHECK(plan->plugin_lane_count == 2 && plan->nodes[find_chain(*plan, 100)].plugin_lane_count == 1);
         CHECK(plan->plugin_lanes[0].param == 3 && plan->plugin_lanes[0].count == 2);
         for (uint32_t i = 0; i < plan->auto_point_count; ++i) {
             CHECK(std::isfinite(plan->auto_points[i].value));
@@ -2167,7 +2202,7 @@ int test_build_resolves_plugin_lanes() {
     // No lane resolver: the chains are bound, and no lane plays.
     CHECK(sonora::build_plan(h.current(), limits, no_sources, resolve, continuity, 3, plan, report,
                              error));
-    CHECK(plan->plugin_lane_count == 0 && plan->nodes[1].plugin_lane_count == 0);
+    CHECK(plan->plugin_lane_count == 0 && plan->nodes[find_chain(*plan, 100)].plugin_lane_count == 0);
     sonora::destroy_plan(plan);
 
     // #250 review: a lane on a stepped parameter (a choice of 0 to 3) holds
@@ -2304,7 +2339,9 @@ int test_latency_change_is_a_new_plan() {
     CHECK(ctl.settle(2.0));
     CHECK(ctl.playing_report().compensation_frames == 256);
     const PlaybackPlan* first = s.plans().current();
-    const uint32_t line = first->edges[first->nodes[4].first_input_edge + 1].delay_line;
+    const uint32_t line =
+        first->edges[first->nodes[find_node(*first, sonora::NodeKind::BusSum)].first_input_edge + 1]
+            .delay_line;
     CHECK(line != sonora::kNoDelayLine);
 
     latency = 512;
@@ -2315,7 +2352,8 @@ int test_latency_change_is_a_new_plan() {
     CHECK(ctl.playing_report().track_latency[0] == 512);
     const PlaybackPlan* second = s.plans().current();
     CHECK(ctl.plans_published() == 2);
-    const sonora::PlanEdge& dry = second->edges[second->nodes[4].first_input_edge + 1];
+    const sonora::PlanEdge& dry =
+        second->edges[second->nodes[find_node(*second, sonora::NodeKind::BusSum)].first_input_edge + 1];
     CHECK(dry.delay_frames == 512 && dry.delay_line == line);
     return 0;
 }
@@ -2592,6 +2630,65 @@ int test_a_slot_follows_the_folder_and_the_document() {
     return 0;
 }
 
+// automation.write (ADR-0131 §4): a Touch ride across a stop. Begun while
+// rolling and released after the stop, the pass wrote it, so the document's
+// static goes back in the atomics (the stopped release only cleared the
+// bit, leaving the ride as the static). Moved while stopped and released
+// once rolling, it is the static the client saves, not a pass's ride: the
+// fader stays where the operator put it, whichever of the release and the
+// client's save comes first.
+int test_a_ride_across_a_stop() {
+    auto session = make_session(1);
+    Session& s = *session;
+    History h(new_session(SessionSettings{}));
+    CHECK_APPLY(h, track_op(100, 101, "A"));
+    TrackMix m = *h.current().mix.find(100);
+    m.automation = AutomationMode::Touch;
+    m.gain_db = -6.0f;
+    CHECK_APPLY(h, SetMix{m});
+    const float fixed = std::pow(10.0f, -6.0f / 20.0f);
+    PlaybackController ctl(s);
+    std::string error;
+    CHECK(show(ctl, h.current(), error));
+    CHECK(ctl.settle(2.0));
+    sonora::Track& t = *s.tracks()[0];
+    Out o;
+    run_block(s, o);
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Rolling);
+    run_block(s, o);
+    ctl.touch(h.current(), 0, sonora::kAutoVolume, true);
+    t.set_gain(0.25f);   // the ParameterChange moves
+    run_block(s, o);
+    ctl.stop();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Stopped);
+    run_block(s, o);
+    ctl.touch(h.current(), 0, sonora::kAutoVolume, false);
+    CHECK(t.touched() == 0);
+    CHECK(std::fabs(t.gain() - fixed) < 1e-6f && std::fabs(t.static_gain() - fixed) < 1e-6f);
+
+    ctl.touch(h.current(), 0, sonora::kAutoVolume, true);
+    t.set_gain(0.5f);
+    run_block(s, o);
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == TransportState::Rolling);
+    run_block(s, o);
+    ctl.touch(h.current(), 0, sonora::kAutoVolume, false);
+    CHECK(t.touched() == 0);
+    CHECK(t.gain() == 0.5f && t.static_gain() == 0.5f);
+    // The client's save of that static after the release changes nothing.
+    m.gain_db = 20.0f * std::log10(0.5f);
+    CHECK_APPLY(h, SetMix{m});
+    ctl.apply_mix(h.current());
+    CHECK(std::fabs(t.gain() - 0.5f) < 1e-6f);
+    ctl.stop();
+    CHECK(ctl.settle(2.0));
+    return 0;
+}
+
 int main() {
     std::filesystem::remove_all(kDir);
     ::mkdir(kDir.c_str(), 0775);
@@ -2641,6 +2738,7 @@ int main() {
     if (test_punch_pre_and_post_roll(true)) return 1;
     if (test_play_range_with_pre_and_post_roll()) return 1;
     if (test_a_slot_follows_the_folder_and_the_document()) return 1;
+    if (test_a_ride_across_a_stop()) return 1;
     std::filesystem::remove_all(kDir);
     std::printf("playback_control: ok\n");
     return 0;

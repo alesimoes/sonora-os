@@ -13,8 +13,10 @@
 #include "sonora/click.h"
 #include "sonora/disk_reader.h"
 #include "sonora/disk_thread.h"
+#include "sonora/edge_ramp.h"
 #include "sonora/dsp/meter.h"
 #include "sonora/fade_curve.h"
+#include "sonora/graph_schedule.h"
 #include "sonora/insert_chain_runner.h"
 #include "sonora/latency_probe.h"
 #include "sonora/master_tap.h"
@@ -27,6 +29,8 @@
 #include "sonora/transport.h"
 
 namespace sonora {
+
+class GraphWorkerPool;
 
 // The playback path's fixed maxima and cache sizing (ADR-0009 §4.3, §4.5).
 // Everything here is allocated when the session is created; a plan that
@@ -87,6 +91,14 @@ struct PlaybackConfig {
     // publishes one: session-format.md's default. A different law in the
     // first published plan would be heard as a ramp in its first block.
     float pan_law_db = -3.0f;
+    // ADR-0063: threads that run parallel-safe mix nodes beside the audio
+    // thread. 0 is the serial walk, today's output, until the bare-metal
+    // measurement settles a default (Unverified 1).
+    uint32_t graph_workers = 0;
+    // SCHED_FIFO priority of the workers, one below the audio thread's
+    // (§5); 0 keeps the creating thread's policy.
+    int graph_worker_priority = 0;
+    float graph_deadline_fraction = kGraphDeadlineFraction;
 };
 
 // A sample-accurate event for the audio thread, drained at block start
@@ -233,6 +245,10 @@ struct SessionConfig {
     static constexpr uint32_t kMaxTouchReturnMs = 5000;
     uint32_t touch_return_ms = 250;
     PlaybackConfig playback;
+    // Tests only: runs the mix's levels instead of the scheduler
+    // playback.graph_workers would make (graph_schedule_fake.h injects
+    // stalls). Not owned; it must outlive the session.
+    GraphScheduler* graph_scheduler = nullptr;
 };
 
 // Owns the tracks, the transport and the disk thread. The audio backend calls
@@ -245,6 +261,9 @@ public:
     // ignore a stray "Audio 1_20261012.wav" instead of numbering after it.
     static constexpr int kMaxTake = 9999;
 
+    // Throws std::runtime_error, with the reason, when the graph workers
+    // PlaybackConfig::graph_workers asks for cannot start (ADR-0063 §6: a
+    // session never falls back to serial behind the operator's back).
     explicit Session(SessionConfig cfg);
     ~Session();
 
@@ -627,6 +646,8 @@ public:
     // one line holds.
     uint32_t delay_lines() const { return delay_lines_; }
     uint32_t max_delay_frames() const { return delay_len_ ? delay_len_ - 1 : 0; }
+    // How long a rerouted strip's crossfade lasts (ADR-0202).
+    uint32_t edge_ramp_frames() const { return edge_ramps_.ramp_frames(); }
 
     // What InsertChain nodes run; with null, a bound chain plays silence
     // and an unbound one passes through (insert_chain_runner.h). Not
@@ -670,16 +691,32 @@ public:
     uint64_t invalid_plan_blocks() const {
         return invalid_plan_blocks_.load(std::memory_order_relaxed);
     }
+    // ADR-0063, from any thread: the graph workers running beside the audio
+    // thread (0: serial); node blocks dropped at the deadline, and skipped
+    // while a node is down; worker results that came after their drop.
+    uint32_t graph_workers() const;
+    GraphDropCounts graph_drops() const;
+    uint64_t graph_late_results() const;
+    // Node blocks dropped because a worker abandoned at a deadline still
+    // held the node's index, scratch buffer or track (graph_session.cpp).
+    uint64_t graph_fenced() const { return graph_fenced_.load(std::memory_order_relaxed); }
 
 private:
     // Only a test defines it, to reach word_hook_.
     friend struct SessionTestAccess;
+    // The GraphNodeWork the scheduler calls (graph_session.cpp).
+    friend class SessionGraphWork;
     // Called by process() right after it has loaded the transport and
     // before it drains anything, so a test can land the control thread's
     // calls exactly there. Set only while no callback runs.
     using WordHook = void (*)(void* context) noexcept SONORA_RT;
     WordHook word_hook_ = nullptr;
     void* word_hook_context_ = nullptr;
+    // Called by process() right after it has taken the callback's aux solo
+    // flags, so a test can clear a solo between that and anything that
+    // reads them again (ADR-0148 §1). Set only while no callback runs.
+    WordHook solo_hook_ = nullptr;
+    void* solo_hook_context_ = nullptr;
 
     // No take: a track with no capture window, a punch record for none.
     static constexpr uint32_t kNoWindowTake = ~uint32_t{0};
@@ -741,6 +778,62 @@ private:
 
     void mix(const PlaybackPlan& plan, const backend::AudioBlock& block, uint32_t offset,
              uint32_t n, bool rolling, bool recording, uint64_t playhead) noexcept SONORA_RT;
+    // What one mix() call's nodes read, so a node runs from its index alone,
+    // on whichever thread the scheduler gives it (ADR-0063).
+    struct MixPass {
+        const PlaybackPlan* plan = nullptr;
+        const backend::AudioBlock* block = nullptr;
+        uint32_t offset = 0;
+        uint32_t n = 0;
+        bool rolling = false;
+        bool recording = false;
+        uint64_t from = 0;
+        uint64_t stamp = 0;  // mix_stamp_ of the mix() call
+    };
+    MixPass pass_;
+    // Node `ni` of pass.plan, into its scratch buffer. A worker passes its
+    // own copy of the pass, never pass_, which the next mix() rewrites.
+    void mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT;
+    // --- the processing graph (graph_session.cpp, ADR-0063) ---
+    // Constructor: the scheduler, its index list and the drop buffers.
+    void start_graph();
+    // At a plan's adoption: drop history and ramps belong to node indices,
+    // and the plan's levels are checked before a worker relies on them.
+    void adopt_graph_plan(const PlaybackPlan& plan) noexcept SONORA_RT;
+    // pass_'s nodes, level by level: the parallel-safe ones through the
+    // scheduler, the rest here in plan order.
+    void mix_graph() noexcept SONORA_RT;
+    bool graph_parallel_safe(const PlanNode& node) const noexcept SONORA_RT;
+    // GraphNodeWork, on a worker or the audio thread.
+    void graph_run(uint32_t ni) noexcept SONORA_RT;
+    // GraphNodeWork, audio thread: the drop buffer gets the ramp to silence.
+    void graph_drop(uint32_t ni) noexcept SONORA_RT;
+    // The fence against late workers (graph_session.cpp's file comment).
+    // Claims armed node `ni` and copies its pass; false: nothing to run.
+    bool graph_claim(uint32_t ni, MixPass& pass) noexcept SONORA_RT;
+    void graph_return(uint32_t ni) noexcept SONORA_RT;
+    void graph_arm(uint32_t ni) noexcept SONORA_RT;
+    // After run_level(): a dropped node its worker is still in joins the
+    // in-flight list.
+    void graph_settle(uint32_t ni) noexcept SONORA_RT;
+    void refresh_graph_fences() noexcept SONORA_RT;
+    // The engine track whose state node `ni` writes, or ~0u.
+    uint32_t graph_state_track(const PlaybackPlan& plan, uint32_t ni) const noexcept SONORA_RT;
+    // An in-flight worker writes node `ni`'s scratch buffer or track state.
+    bool graph_fenced_node(const PlaybackPlan& plan, uint32_t ni) const noexcept SONORA_RT;
+    void set_graph_fence(uint32_t entry, uint8_t on) noexcept SONORA_RT;
+    // mix_node(), or fence_drop() when graph_fenced_node().
+    void mix_or_fence(uint32_t ni) noexcept SONORA_RT;
+    void fence_drop(uint32_t ni) noexcept SONORA_RT;
+    // What node `ni`'s readers read this mix: its scratch, or its drop
+    // buffer when it was dropped (a late worker may still write the
+    // scratch).
+    const float* node_out(const MixPass& pass, uint32_t ni, uint32_t side) noexcept SONORA_RT {
+        if (graph_dropped_ != nullptr && graph_dropped_[ni] == pass.stamp) {
+            return graph_drop_buf_.get() + (static_cast<std::size_t>(ni) * 2 + side) * max_block_;
+        }
+        return scratch(pass.plan->nodes[ni].scratch_buffer, side);
+    }
     void render_track(const PlaybackPlan& plan, uint32_t plan_track, uint64_t from,
                       uint32_t n, float* const out[2]) noexcept SONORA_RT;
     // render_track(), or under varispeed the source read at the ratio's
@@ -850,6 +943,15 @@ private:
     // Adds `in` to `out`, `edge.delay_frames` late through its line.
     void sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const float* const in[2],
                   float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // A strip's output edge `ei`: sum_edge(), faded in at the line's input
+    // while the strip is rerouted (ADR-0202).
+    void sum_routed(const PlaybackPlan& plan, uint32_t ei, const float* const in[2],
+                    float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // The rerouted strips' old edges into node `ni`, fading out.
+    void sum_ghosts(const MixPass& pass, uint32_t ni, float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // `in` times strip s's fade (or one less it), through `edge`'s line.
+    void sum_faded(const PlaybackPlan& plan, const PlanEdge& edge, uint32_t s, bool out_fade,
+                   const float* const in[2], float* const out[2], uint32_t n) noexcept SONORA_RT;
     // A send edge: `in` scaled by the send's ramped coefficient, then
     // sum_edge(). `mono`: the source's side 0 feeds both sides. A send that
     // takes its track's lanes takes them per frame from `from`, `lag`
@@ -1012,6 +1114,10 @@ private:
     uint32_t scratch_buffers_ = 0;           // the most nodes a plan has
     std::unique_ptr<float[]> scratch_;       // scratch_buffers x 2 x max_block
     std::unique_ptr<float[]> track_buf_;     // 2 x max_block
+    // Reroutes at a swap crossfade (ADR-0202); fade_buf_, 2 x max_block, is
+    // where a faded edge's input is scaled before its line.
+    EdgeRamps edge_ramps_;
+    std::unique_ptr<float[]> fade_buf_;
     // The delay-line pool: channel state outside the plan, so a swap keeps
     // it. Each line remembers the edge it serves and how many frames of it
     // it holds, so a line handed to another edge restarts from silence
@@ -1156,6 +1262,7 @@ private:
     void feeds_solo(const PlaybackPlan& plan) noexcept SONORA_RT;
     std::unique_ptr<uint8_t[]> feeds_node_;    // per node
     std::unique_ptr<uint8_t[]> feeds_track_;   // per engine track
+    std::unique_ptr<uint8_t[]> aux_solo_;      // per bus: the callback's one load
     uint32_t max_buses_ = 0;
     uint32_t send_states_ = 0;               // (tracks + max_buses) x kStripSendSlots
     std::unique_ptr<SendState[]> sends_;
@@ -1281,6 +1388,45 @@ private:
     // a lock on the audio thread.
     static_assert(std::atomic<uint64_t>::is_always_lock_free,
                   "callback_seq_ must be lock-free");
+
+    // --- the processing graph (ADR-0063), graph_session.cpp ---
+    GraphScheduler* graph_sched_ = nullptr;   // graph_'s, or the injected one
+    GraphWorkerPool* graph_pool_ = nullptr;   // graph_sched_ when it has workers
+    GraphNodeWork* graph_work_ = nullptr;
+    // A scheduler that may drop: anything but the built-in serial one.
+    bool graph_parallel_ = false;
+    // The adopted plan's levels hold (adopt_graph_plan()); else it is walked
+    // serially.
+    bool graph_levels_ok_ = false;
+    std::unique_ptr<uint32_t[]> graph_list_;    // a level's parallel-safe nodes
+    std::unique_ptr<uint64_t[]> graph_dropped_;  // per node: mix_stamp_ of its drop
+    std::unique_ptr<float[]> graph_drop_buf_;    // per node x 2 x max_block
+    std::unique_ptr<float[]> graph_last_;        // per node, L and R: last frame it played
+    // True while mix_graph() runs levels: a worker that finds it false holds
+    // a claim older than the plan it could read, and runs nothing.
+    std::atomic<bool> graph_open_{false};
+    // Per node index: 0, or armed for a claim, or claimed (graph_session.cpp).
+    std::unique_ptr<std::atomic<uint32_t>[]> graph_arm_;
+    std::unique_ptr<MixPass[]> graph_pass_;     // per node: the pass it was armed with
+    // Nodes a worker abandoned at a deadline is still in, and what it
+    // writes. A worker holds one node at a time, so `nodes` entries is ample.
+    struct GraphFlight {
+        uint32_t node;
+        uint32_t buffer;
+        uint32_t track;  // engine track, or ~0u
+    };
+    std::unique_ptr<GraphFlight[]> graph_flight_;
+    uint32_t graph_flights_ = 0;
+    // What the in-flight list covers; audio thread only.
+    std::unique_ptr<uint8_t[]> graph_fence_node_;
+    std::unique_ptr<uint8_t[]> graph_fence_buf_;
+    std::unique_ptr<uint8_t[]> graph_fence_track_;
+    std::atomic<uint64_t> graph_fenced_{0};
+    struct GraphParts;
+    static void destroy_graph_parts(GraphParts* parts) noexcept;
+    // Last, so destroyed first: the pool joins its workers before anything
+    // they read is freed.
+    std::unique_ptr<GraphParts, void (*)(GraphParts*)> graph_{nullptr, &destroy_graph_parts};
 };
 
 }  // namespace sonora

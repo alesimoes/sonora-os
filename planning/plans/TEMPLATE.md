@@ -44,7 +44,7 @@ Deliverables / paths:
 Acceptance:
 
 ## 8. QA  (tester)
-Scenarios to exercise end to end; screenshots to produce under `docs/images`.
+Scenarios to exercise end to end. Screenshots are not committed.
 
 ## 9. Quality checks
 Sanitizers (ASan/TSan/RTSan), RT audit (rt-safety-auditor), performance and
@@ -60,8 +60,10 @@ contract PR -> parallel slices -> integrator -> one PR.
 | Slice | Agent | Difficulty (S/M/L) | Risk (low/med/high) | Tier (haiku/sonnet/opus) | Sub-branch | Starts from | Files |
 |---|---|---|---|---|---|---|---|
 
-Tier from the table in `.claude/rules/agents-and-models.md`; RT, contracts,
-storage, recovery and concurrency are high risk; no XL slice.
+Tier from the table in `.claude/rules/agents-and-models.md`: the risk picks
+it, not the size. High only when a mistake breaks all of Sonora, the build or
+the OS (contracts, engine core/RT, storage, recovery, shared concurrency,
+build/CI); one plugin, screen or feature is at most med. No XL slice.
 Integrator:
 Single PR title:
 
@@ -73,6 +75,6 @@ Single PR title:
 - [ ] contract PR merged
 - [ ] every slice merged into the feature branch by the integrator
 - [ ] tests of section 7 pass (commands and output in the PR)
-- [ ] QA scenarios of section 8 done, screenshots committed
+- [ ] QA scenarios of section 8 done
 - [ ] quality checks of section 9 reported
 - [ ] `tools/pre-pr.sh` clean; no file past ~500 lines

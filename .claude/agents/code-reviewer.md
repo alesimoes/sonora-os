@@ -89,8 +89,13 @@ shell costs tokens and attention until a human notices.
 
 - Run commands in the foreground with an explicit `timeout`. Do not use
   `run_in_background`, `nohup`, `&`, or a `sleep` loop that waits for CI or
-  for another process. If something needs longer than the tool's 10-minute
-  limit, split it or report it as unverified.
+  for another process. A build or test longer than the tool's 10-minute
+  limit (a UI micro build with its wait for the lock often is) starts with
+  `tools/build-slot.sh --detach COMMAND...` and is collected with
+  `tools/build-wait.sh` (returns within 9 minutes; exit 75 = still running,
+  call it again). That is the one sanctioned detached run: it queues for the
+  lock and ends by itself. Never report a build "unverified" because it was
+  long; collect it.
 - Never wait for CI. Push once, report the commit, and finish.
 - Never arm `tools/merge-when-green.sh`; only the coordinator does.
 - If the same command fails twice for the same reason, stop and report the
@@ -100,3 +105,4 @@ shell costs tokens and attention until a human notices.
 - Before reporting, `docker ps` and `ps -ef` for anything you started
   (docker runs, builds) and kill it.
 - Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.
+- Portability: a neutral module takes no platform header, macro or OS path: ADR-0008 section 1; platform code goes to an edge module through a seam.

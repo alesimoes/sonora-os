@@ -27,6 +27,15 @@ add_library(sonora_platform STATIC
   src/${SONORA_PLATFORM_IMPL}/wake.cpp
   src/${SONORA_PLATFORM_IMPL}/wait_set.cpp
 )
+# sync_directory: POSIX has it in file.cpp. A neutral build compiled for
+# Windows takes the Win32 body (src/windows), any other the ENOSYS stub.
+if(SONORA_PLATFORM_IMPL STREQUAL "unsupported")
+  if(WIN32)
+    target_sources(sonora_platform PRIVATE src/windows/file.cpp)
+  else()
+    target_sources(sonora_platform PRIVATE src/unsupported/sync_directory.cpp)
+  endif()
+endif()
 target_include_directories(sonora_platform PUBLIC include)
 # sonora_base for SONORA_RT, which wake.h's wake_all() carries (ADR-0012, A3).
 target_link_libraries(sonora_platform PUBLIC sonora_base Threads::Threads)
@@ -39,6 +48,14 @@ add_test(NAME platform_thread_cpu COMMAND test_thread_cpu)
 add_executable(test_process_setup tests/test_process_setup.cpp)
 target_link_libraries(test_process_setup PRIVATE sonora_platform)
 add_test(NAME platform_process_setup COMMAND test_process_setup)
+
+# sync_directory on a real folder and a missing one: wherever it has a body,
+# POSIX and Windows; the neutral stub claims no durability to test.
+if(SONORA_PLATFORM STREQUAL "linux" OR WIN32)
+  add_executable(test_platform_sync_directory tests/test_sync_directory.cpp)
+  target_link_libraries(test_platform_sync_directory PRIVATE sonora_platform)
+  add_test(NAME platform_sync_directory COMMAND test_platform_sync_directory)
+endif()
 
 # The control channel and the read-only region (ADR-0007 §3): POSIX only,
 # because the test also checks what the kernel refuses a client.

@@ -9,8 +9,13 @@ add_library(sonora_core_chain_runner OBJECT src/plugin_chain_runner.cpp)
 target_include_directories(sonora_core_chain_runner PUBLIC include)
 target_link_libraries(sonora_core_chain_runner PUBLIC sonora_base sonora_plugin_client)
 
+# The processing graph's scheduler, levels and workers (ADR-0063): globbed,
+# so its slices add files without touching this list.
+file(GLOB _sonora_core_graph_sources CONFIGURE_DEPENDS src/graph_*.cpp)
 add_library(sonora_core STATIC
+  ${_sonora_core_graph_sources}
   src/session.cpp
+  src/edge_ramp.cpp
   src/click.cpp
   src/latency_probe.cpp
   src/track.cpp
@@ -32,6 +37,24 @@ target_include_directories(sonora_core PUBLIC include)
 # holds them, so the edge is PUBLIC.
 target_link_libraries(sonora_core PUBLIC
   sonora_base sonora_backend_api sonora_audiofile sonora_plugin_client sonora_dsp Threads::Threads)
+
+# ADR-0063's tests, one executable per tests/test_graph_<name>.cpp, run as
+# ctest graph_<name>. Threads: the worker pool's tests start threads.
+file(GLOB _sonora_core_graph_tests CONFIGURE_DEPENDS tests/test_graph_*.cpp)
+foreach(_src IN LISTS _sonora_core_graph_tests)
+  get_filename_component(_exe ${_src} NAME_WE)
+  string(REGEX REPLACE "^test_" "" _name ${_exe})
+  add_executable(${_exe} ${_src})
+  target_link_libraries(${_exe} PRIVATE sonora_core Threads::Threads)
+  add_test(NAME ${_name} COMMAND ${_exe})
+endforeach()
+
+# ADR-0063 through Session::process(): real workers equal serial bit for bit
+# with no heap on the audio thread, drops never touch the take, a drop ramps
+# in its own buffer, a pool that cannot start fails creation.
+add_executable(test_session_parallel tests/test_session_parallel.cpp)
+target_link_libraries(test_session_parallel PRIVATE sonora_core Threads::Threads)
+add_test(NAME session_parallel COMMAND test_session_parallel)
 
 add_executable(test_session_process tests/test_session_process.cpp)
 target_link_libraries(test_session_process PRIVATE sonora_core)
@@ -76,6 +99,11 @@ add_test(NAME sends COMMAND test_sends)
 add_executable(test_routing tests/test_routing.cpp)
 target_link_libraries(test_routing PRIVATE sonora_core)
 add_test(NAME routing COMMAND test_routing)
+# A strip rerouted at a swap crossfades, undelayed and through PDC lines
+# (ADR-0202).
+add_executable(test_edge_ramp tests/test_edge_ramp.cpp)
+target_link_libraries(test_edge_ramp PRIVATE sonora_core)
+add_test(NAME edge_ramp COMMAND test_edge_ramp)
 
 # Takes closed while rolling, by in-band boundary records (timeline-model.md,
 # "Closing a take while rolling"), and the take-epoch race's regression test.
@@ -185,6 +213,12 @@ add_executable(test_plugin_chain_runner tests/test_plugin_chain_runner.cpp)
 target_link_libraries(test_plugin_chain_runner PRIVATE sonora_core)
 add_test(NAME plugin_chain_runner COMMAND test_plugin_chain_runner)
 
+# ADR-0058 §2: a keyed node's key reaches the region's last planes through
+# the runner; a keyed node on an unkeyed slot is a shape fault, not unkeyed.
+add_executable(test_keyed_chain_runner tests/test_keyed_chain_runner.cpp)
+target_link_libraries(test_keyed_chain_runner PRIVATE sonora_core)
+add_test(NAME keyed_chain_runner COMMAND test_keyed_chain_runner)
+
 # Session::process() running real hosts through PluginChainRunner (ADR-0012
 # checklist 4, the DAW 5 exit check against real plugins): tracks behind LV2
 # and VST3 chains, Debian's and in-tree, land sample-aligned at the bus with
@@ -239,3 +273,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(measure_disk_write tests/posix/measure_disk_write.cpp)
   target_link_libraries(measure_disk_write PRIVATE sonora_audiofile Threads::Threads)
 endif()
+
+# sonora-graph-bench (ADR-0218): Session::process() under 18 x 4 plugin
+# chains at quantum 128. Here, not in engine/plugin_client: that module must
+# not depend on core.
+include(bench/bench.cmake)

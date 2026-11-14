@@ -13,10 +13,10 @@ PREFIX = "main-red-"
 LIVE = ("queued", "building")
 
 
-def _stale(forge, task, head):
+def _stale(forge, task, head):   # id: main-red-<sha8>[-<workflow>]
     """True when the task's sha is an ancestor of `head`; a forge error
     (sha not fetched, git missing) leaves the task alone."""
-    sha8 = task["id"][len(PREFIX):]
+    sha8 = task["id"][len(PREFIX):][:8]
     try:
         return bool(forge.is_ancestor(sha8, head))
     except Exception:
@@ -32,7 +32,7 @@ def _stop_runs(orch, task_id):
         orch._end_run(r, "superseded", proc.returncode if proc else None)
 
 
-def close_superseded(orch, green):
+def close_superseded(orch, green, suffix=""):
     """Close the live main-red tasks the green run `green` supersedes;
     returns their ids."""
     store, head = orch.store, str(green.get("head_sha") or "")
@@ -41,6 +41,8 @@ def close_superseded(orch, green):
     closed = []
     for t in store.tasks():
         if not t["id"].startswith(PREFIX) or t["state"] not in LIVE:
+            continue
+        if t["id"][len(PREFIX) + 8:] != suffix:   # another workflow's task
             continue
         if not _stale(orch.forge, t, head):
             continue

@@ -7,13 +7,14 @@
 // exits -- the operator pressing q, the audio server going away -- so the
 // first take after any restart truncated "Audio N_01.wav" from the session
 // before, silently, on every armed track.
-#include <dirent.h>
-#include <unistd.h>
-
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
+#include <filesystem>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 #include "sonora/closed_take.h"
@@ -34,7 +35,12 @@
 
 namespace {
 
-bool exists(const std::string& path) { return ::access(path.c_str(), F_OK) == 0; }
+namespace fs = std::filesystem;
+
+bool exists(const std::string& path) {
+    std::error_code ec;
+    return fs::exists(path, ec);
+}
 
 bool write_text(const std::string& path, const char* text) {
     std::FILE* f = std::fopen(path.c_str(), "wb");
@@ -65,18 +71,11 @@ void feed(sonora::Session& s, const float* const* inputs, uint32_t nframes) {
 
 // A failed earlier run leaves its files behind, and a leftover take is
 // exactly what these tests are about, so every test starts from nothing.
+// The error code is ignored on purpose: a directory that is already gone is
+// the state this wants, and a stuck leftover shows up as a failed CHECK.
 void wipe(const std::string& dir) {
-    const std::string audio = dir + "/Audio Files";
-    if (DIR* d = ::opendir(audio.c_str())) {
-        std::vector<std::string> names;
-        while (const dirent* e = ::readdir(d)) names.push_back(e->d_name);
-        ::closedir(d);
-        for (const std::string& n : names) {
-            if (n != "." && n != "..") std::remove((audio + "/" + n).c_str());
-        }
-    }
-    ::rmdir(audio.c_str());
-    ::rmdir(dir.c_str());
+    std::error_code ec;
+    fs::remove_all(dir, ec);
 }
 
 sonora::SessionConfig config(const char* dir, int tracks) {
@@ -474,7 +473,7 @@ int test_take_failure_is_seen_while_recording() {
         // The disk thread drains on its own schedule.
         std::string why;
         for (int i = 0; i < 200 && why.empty(); ++i) {
-            ::usleep(10000);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
             why = s.take_failure();
         }
         CHECK(s.transport().state() == sonora::TransportState::Recording);

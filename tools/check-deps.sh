@@ -11,16 +11,20 @@
 #                                  allowlist and for reading the graph)
 #   tools/check-deps.sh --test     self-test against a throw-away tree
 #
-# Every edge between modules must be in tools/module-deps.allow ("from -> to",
-# the ADR §1 graph as built) or in tools/module-deps.known ("from -> to", a
-# violation that exists on main with a BACKLOG follow-up). A known entry that
-# no longer occurs is an error too, so the file shrinks and never rots.
+# Every edge between modules must be in tools/module-deps.allow or a
+# tools/module-deps.d/*.allow ("from -> to", the ADR §1 graph as built) or
+# in tools/module-deps.known ("from -> to", a violation that exists on main
+# with a BACKLOG follow-up). A known entry that no longer occurs is an error
+# too, so the file shrinks and never rots.
 set -euo pipefail
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${SONORA_DEPS_ROOT:-$(cd "$SELF/.." && pwd)}"
 ALLOW="${SONORA_DEPS_ALLOW:-$SELF/module-deps.allow}"
 KNOWN="${SONORA_DEPS_KNOWN:-$SELF/module-deps.known}"
+# Drop-in allow files, same format: a feature adds its edges in its own file
+# while module-deps.allow is held by another one.
+ALLOW_D="${SONORA_DEPS_ALLOW_D:-$SELF/module-deps.d}"
 TOPS=(common contracts engine drivers ui plugins interchange)
 
 # A module is its first two path components; plugins/native/* is one group
@@ -69,7 +73,7 @@ check() {
     found="$(scan | sort -u)"
     vendor="$(printf '%s\n' "$found" | grep '^vendor:' || true)"
     edges="$(printf '%s\n' "$found" | grep -- ' -> ' || true)"
-    allow="$(list "$ALLOW")"
+    allow="$(list "$ALLOW"; for f in "$ALLOW_D"/*.allow; do if [ -f "$f" ]; then list "$f"; fi; done)"
     known="$(list "$KNOWN")"
 
     if [ -n "$vendor" ]; then
@@ -107,8 +111,13 @@ selftest() {
     : > "$t/known"
     printf '#include "sonora/api.h"\n#include "sonora/ring.h"\n' > "$t/ui/keymap/src/a.cpp"
     printf 'ui/keymap -> contracts/api\nui/keymap -> common/base\n' > "$t/allow"
-    ROOT="$t" ALLOW="$t/allow" KNOWN="$t/known"
+    mkdir -p "$t/allow.d"
+    ROOT="$t" ALLOW="$t/allow" KNOWN="$t/known" ALLOW_D="$t/allow.d"
     check > /dev/null || { echo "selftest: clean tree rejected"; return 1; }
+    printf '#include "sonora/api.h"\n' > "$t/engine/core/src.cpp"
+    if check > /dev/null; then echo "selftest: unlisted edge accepted"; return 1; fi
+    printf 'engine/core -> contracts/api\n' > "$t/allow.d/x.allow"
+    check > /dev/null || { echo "selftest: drop-in allow edge rejected"; return 1; }
     printf '#include "sonora/session.h"\n' >> "$t/ui/keymap/src/a.cpp"
     if check > /dev/null; then echo "selftest: ui -> engine accepted"; return 1; fi
     printf 'ui/keymap -> engine/core\n' > "$t/known"

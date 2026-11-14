@@ -265,6 +265,10 @@ bool ControlAdapter::take_catalog(api::PluginCatalog& out) {
 
 float ControlAdapter::take_peak(uint32_t index) { return engine_.state().take_peak(index); }
 
+float ControlAdapter::take_post_peak(uint32_t index, uint32_t side) {
+    return engine_.state().take_post_peak(index, side);
+}
+
 float ControlAdapter::take_bus_peak(uint32_t side) {
     return engine_.state().take_bus_peak(side);
 }

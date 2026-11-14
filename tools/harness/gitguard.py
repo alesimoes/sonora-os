@@ -58,10 +58,11 @@ def _words(segment):
         return segment.split()
 
 
-def _moves_tree(words):
-    """(git target dir from -C or None, True) when this is a mover command."""
+def git_call(words):
+    """(git target dir from -C or None, subcommand, its arguments), or None
+    when the words are not a git command with a subcommand."""
     if "git" not in words:
-        return None, False
+        return None
     i = words.index("git") + 1
     target = None
     while i < len(words) and words[i].startswith("-"):
@@ -72,16 +73,11 @@ def _moves_tree(words):
             i += 1
         i += 1
     rest = words[i:]
-    if not rest:
-        return target, False
-    sub = rest[0]
-    if sub in MOVERS:
-        return target, True
-    return target, sub == "worktree" and "remove" in rest[1:]
+    return (target, rest[0], rest[1:]) if rest else None
 
 
-def violates(command, cwd, root):
-    """True when some git mover in `command` would run in the daemon root."""
+def segments(command, cwd):
+    """(directory, words) of each git command in `command`, following cd."""
     here = cwd or os.getcwd()
     for seg in SEPARATORS.split(command or ""):
         words = _words(seg.strip())
@@ -90,9 +86,17 @@ def violates(command, cwd, root):
         if words[0] == "cd" and len(words) > 1:
             here = _join(here, words[1])
             continue
-        target, mover = _moves_tree(words)
-        if mover:
-            where = _join(here, target) if target else here
-            if is_daemon_dir(where, root):
-                return True
-    return False
+        call = git_call(words)
+        if call:
+            target, sub, rest = call
+            yield (_join(here, target) if target else here), sub, rest
+
+
+def _moves_tree(sub, rest):
+    return sub in MOVERS or (sub == "worktree" and "remove" in rest)
+
+
+def violates(command, cwd, root):
+    """True when some git mover in `command` would run in the daemon root."""
+    return any(_moves_tree(sub, rest) and is_daemon_dir(where, root)
+               for where, sub, rest in segments(command, cwd))

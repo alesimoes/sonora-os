@@ -57,14 +57,12 @@ class Daemon(support.DaemonCase):
         self.assertEqual([w["task"] for w in st["waits_on_owner"]], ["ask"])
         self.assertEqual([i["task"] for g in st["blocked"] for i in g["items"]], ["infra"])
 
-    def test_janitor_container_refusal_is_retried_not_blocked(self):
+    def test_janitor_container_refusal_closes_the_wake_not_blocks(self):
         o = self.make(dry_run=True, floors={"daw": 0})
         o.store.add_task("w", None, "janitor", kind="wake", state="building")
         t = o.store.get_task("w")
         o._on_agent_blocked(t, "janitor", {"summary": "build container running"}, 100.0)
-        t = o.store.get_task("w")
-        self.assertNotEqual(t["state"], "blocked")
-        self.assertGreater(t["not_before"], 100.0)
+        self.assertEqual(o.store.get_task("w")["state"], "closed")
 
     def test_agent_block_marks_owner_only_when_asked(self):
         o = self.make(dry_run=True, floors={"daw": 0})
@@ -74,7 +72,9 @@ class Daemon(support.DaemonCase):
         o._on_agent_blocked(o.store.get_task("b"), "engineer",
                             {"summary": "which ADR?", "needs_owner": "needs a choice"}, 1.0)
         a, b = o.store.get_task("a"), o.store.get_task("b")
-        self.assertEqual((a["owner"], a["cause"]), (None, "infra"))
+        # The wording names no cause: "other", not the blanket "infra" that
+        # read every block as an infrastructure fault (2026-11-13).
+        self.assertEqual((a["owner"], a["cause"]), (None, "other"))
         self.assertEqual(b["owner"], "needs a choice")
 
 

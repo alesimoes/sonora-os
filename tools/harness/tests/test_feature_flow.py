@@ -92,7 +92,7 @@ class HappyPath(FlowCase):
         pr = self.forge.created[0]
         self.assertEqual((pr["base"], pr["branch"]),
                          ("main", f"feat/{FEATURE}"))
-        self.assertEqual(self.forge.enqueued, [pr["number"]])
+        self.assertEqual(self.forge.enqueued, [])  # daemon merges (#512)
         self.assertEqual(len(self.forge.pre_pr_calls), 1)
         f = o.store.get_feature(FEATURE)
         self.assertEqual(f["pr"], pr["number"])
@@ -303,6 +303,18 @@ class Promotion(FlowCase):
                                           "body": bad})
         self.assertIsNone(o.store.get_feature("midi.import"))
         self.assertEqual(len(o.store.events(kind="proposal_rejected")), 1)
+        o.on_broker_event("message", msg={"from": "lead", "type": "plan_request",
+                                          "body": body})    # already there
+        self.assertIn("lead: ui.mixer.io (exists: queued)",
+                      [e["detail"] for e in o.store.events(kind="proposal_rejected")])
+
+    def test_pool_under_floor_wake_lists_the_features_already_known(self):
+        o = self.make()
+        o.flow.open_feature("time.groove", "daw", ["time.groove"], state="merged")
+        o.flow.open_feature("ui.mixer.io", "daw", ["ui.mixer.io"])
+        text = o.flow.wake_context({"feature_id": None, "event": "pool_under_floor"})
+        self.assertIn("merged: time.groove", text)
+        self.assertIn("queued: ui.mixer.io", text)
 
 
 class Adoption(FlowCase):

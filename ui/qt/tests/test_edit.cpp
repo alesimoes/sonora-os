@@ -11,6 +11,7 @@
 #include <QGuiApplication>
 #include <QTemporaryDir>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -20,13 +21,16 @@
 #include "fader_taper.h"
 #include "key_router.h"
 #include "peak_source.h"
+#include "selection_link.h"
 #include "qt_keys.h"
+#include "sample_window.h"
 #include "session_files.h"
 #include "engine_saver.h"
 #include "session_model.h"
 #include "sonora/api/fake_engine.h"
 #include "sonora/fade_curve.h"
 #include "sonora/model/session_file.h"
+#include "sonora/wav_writer.h"
 #include "theme.h"
 #include "time_format.h"
 #include "timeline_document.h"
@@ -454,13 +458,17 @@ int test_controller() {
     OK(c.undo(why));
     OK(!c.clear(why));  // the selection went with the region
 
-    // --- Shuffle and Spot refuse what they would do differently ---
+    // --- Shuffle ripples (ADR-0153); Spot asks where a region starts ---
     c.set_mode(EditMode::Shuffle);
-    OK(!c.press(a_mid, lower, why));
-    OK(why.find("Shuffle") != std::string::npos);
-    OK(c.drag().kind == Drag::Kind::None);
-    OK(!c.spot_region(30 * kBar, why) && why.find("Shuffle") != std::string::npos);
-    OK(!c.nudge(1, why) && why.find("Shuffle") != std::string::npos);
+    OK(c.press(a_mid, lower, why));
+    OK(c.drag().kind != Drag::Kind::None);
+    c.release(a_mid, lower, why);
+    const uint64_t shuffle_rev = doc.snapshot().revision;
+    OK(c.nudge(1, why));
+    OK(doc.snapshot().revision == shuffle_rev + 1);
+    OK(c.undo(why));
+    OK(c.spot_region(30 * kBar, why));
+    OK(c.undo(why));
     // Spot: a click on a region asks where it starts instead of dragging it,
     // and the time typed places it exactly, on no grid.
     c.set_mode(EditMode::Spot);
@@ -2696,6 +2704,236 @@ int test_save_as_and_copy() {
     return 0;
 }
 
+// --- the Pencil on the waveform and the sample window (ADR-0096) ---
+
+namespace {
+
+// Region A of two_tracks() at 1 frame a pixel, its start at x = 100, the
+// Pencil in hand, every finished stroke's argument collected in `sent`.
+struct PencilRig {
+    ModelDocument doc{two_tracks()};
+    EditController c{doc};
+    FakeSampleSource samples{FakeSampleSource::Shape::Sine, 64};
+    std::vector<std::string> sent;
+    PencilRig() {
+        c.set_viewport(1000, 200);
+        c.zoom_by(1.0 / c.view().fpp, 0);
+        c.scroll_to_frame(static_cast<double>(kBar - 100));
+        c.set_tool(Tool::Pencil);
+        c.set_sample_source(&samples);
+        c.set_sample_edit_sender([this](const std::string& a) { sent.push_back(a); });
+    }
+    // The y of `level` on a mono clip's lane of track 1.
+    double y_of(float level) const {
+        const SampleLane l = sample_lane(c.view().y_of_track(0), c.view().track_height, 1, 0);
+        return l.mid() - level * l.height / 2;
+    }
+};
+
+int test_sample_pencil() {
+    std::string why, arg;
+    {
+        PencilRig r;
+        OK(r.c.view().fpp == 1.0 && r.c.sample_zoom());
+        OK(r.c.sample_view_at(150, r.y_of(0)));
+        OK(!r.c.sample_view_at(50, r.y_of(0)));   // before the clip: no clip under it
+        // A stroke: pressed at level 0, dragged two columns to 0.5. The
+        // column between is interpolated; FRAME is a timeline frame.
+        OK(r.c.press(150, r.y_of(0.0f), why));
+        OK(r.c.drag().kind == Drag::Kind::Pencil && r.c.drag().region == 10);
+        r.c.move(152, r.y_of(0.5f));
+        OK(r.c.pencil_argument(r.c.drag(), arg, why));
+        OK(r.sent.empty());   // previewed in the Drag, nothing sent yet
+        OK(r.c.release(152, r.y_of(0.5f), why));
+        const std::string f = std::to_string(kBar + 50);
+        OK(r.sent.size() == 1);
+        OK(r.sent[0] == "draw 10 " + f + " " + std::to_string(kBar + 53) + " 1 " + f + ":0," +
+                            std::to_string(kBar + 51) + ":0.25," + std::to_string(kBar + 52) +
+                            ":0.5");
+        OK(r.sent[0] == arg);
+        OK(r.c.drag().kind == Drag::Kind::None);
+
+        // One send per stroke, however many moves; a level past the lane is
+        // clamped to full scale.
+        OK(r.c.press(200, r.y_of(0.0f), why));
+        for (int x = 201; x <= 260; ++x) r.c.move(x, r.y_of(x % 2 ? 0.25f : -0.25f));
+        r.c.move(261, 0.0);
+        OK(r.c.release(261, 0.0, why));
+        OK(r.sent.size() == 2);
+        OK(r.sent[1].rfind("draw 10 " + std::to_string(kBar + 100) + " " +
+                               std::to_string(kBar + 162) + " 1 ", 0) == 0);
+        OK(r.sent[1].size() > 4 && r.sent[1].substr(r.sent[1].size() - 2) == ":1");
+
+        // The samples still loading: refused, nothing drawn or sent.
+        r.samples.set_not_ready(100);
+        OK(!r.c.press(150, r.y_of(0), why) && why.find("still loading") != std::string::npos);
+        OK(r.c.drag().kind == Drag::Kind::None);
+        OK(r.c.release(150, r.y_of(0), why) && r.sent.size() == 2);
+    }
+    {
+        // At a zoom coarser than the sample view: the status-line reason, no
+        // stroke, nothing sent.
+        PencilRig r;
+        r.c.zoom_by(8.0, 0);
+        OK(!r.c.sample_zoom() && !r.c.sample_view_at(r.c.view().x_of(kBar + 1000), r.y_of(0)));
+        OK(!r.c.press(r.c.view().x_of(kBar + 1000), r.y_of(0), why));
+        OK(why.find("zoom in to the samples") != std::string::npos);
+        OK(r.c.drag().kind == Drag::Kind::None);
+        r.c.release(r.c.view().x_of(kBar + 1000) + 20, r.y_of(0.5f), why);
+        OK(r.sent.empty());
+    }
+    {
+        // A stroke run past the clip's end is cut there: a drawing stays on
+        // one clip, and nothing lands on the gap after it.
+        PencilRig r;
+        r.c.scroll_to_frame(static_cast<double>(3 * kBar - 500));   // A's end at x = 500
+        OK(r.c.press(495, r.y_of(0.5f), why));
+        r.c.move(520, r.y_of(0.5f));
+        OK(r.c.release(520, r.y_of(0.5f), why));
+        OK(r.sent.size() == 1);
+        const std::string& s = r.sent[0];
+        OK(s.rfind("draw 10 " + std::to_string(3 * kBar - 5) + " " + std::to_string(3 * kBar) +
+                       " 1 ", 0) == 0);
+        OK(s.find(std::to_string(3 * kBar - 1) + ":0.5") != std::string::npos);
+        OK(s.find(std::to_string(3 * kBar) + ":") == std::string::npos);
+        // Pressed off the clip, the Pencil does not draw: it selects time.
+        OK(r.c.press(600, r.y_of(0), why) && r.c.drag().kind == Drag::Kind::Range);
+        r.c.release(620, r.y_of(0), why);
+        OK(r.sent.size() == 1);
+    }
+    {
+        // While a take records the engine refuses sample.edit, so the Pencil
+        // refuses first: at the press, and at a release when the take began
+        // during the stroke.
+        PencilRig r;
+        r.c.set_recording(true);
+        OK(!r.c.press(150, r.y_of(0), why) && why.find("recording") != std::string::npos);
+        r.c.release(160, r.y_of(0), why);
+        r.c.set_recording(false);
+        OK(r.c.press(150, r.y_of(0), why));
+        r.c.move(160, r.y_of(0.5f));
+        r.c.set_recording(true);
+        OK(!r.c.release(160, r.y_of(0.5f), why) && why.find("recording") != std::string::npos);
+        OK(r.sent.empty());
+        // No engine to send to: refused by name.
+        r.c.set_recording(false);
+        r.c.set_sample_edit_sender(nullptr);
+        OK(r.c.press(150, r.y_of(0), why));
+        OK(!r.c.release(152, r.y_of(0), why) && why.find("no engine") != std::string::npos);
+    }
+    return 0;
+}
+
+bool write_ramp_wav(const std::string& path, Frames frames) {
+    std::vector<float> in(static_cast<std::size_t>(frames) * 2);
+    for (Frames f = 0; f < frames; ++f) {
+        in[static_cast<std::size_t>(f) * 2] = static_cast<float>(f) / static_cast<float>(frames);
+        in[static_cast<std::size_t>(f) * 2 + 1] = -0.25f;
+    }
+    WavWriter w;
+    return w.open(path, kRate, 2, WavWriter::Format::Float32, 0) &&
+           w.write(in.data(), static_cast<std::size_t>(frames)) && w.close();
+}
+
+int test_file_samples() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    const std::string folder = dir.path().toStdString();
+    CHECK(QDir(dir.path()).mkpath(QStringLiteral("Audio Files")));
+    constexpr Frames kLen = 48000;
+    // A source sample.edit made: a copy in "Audio Files/" beside the takes,
+    // in the pool like any other source.
+    model::SourcePool pool;
+    model::Source made;
+    made.id = 7;
+    made.path = "Audio Files/Take 1 draw 1.wav";
+    made.channels = 2;
+    made.length = kLen;
+    model::Source missing = made;
+    missing.id = 8;
+    missing.path = "Audio Files/gone.wav";
+    pool.sources = {made, missing};
+    CHECK(write_ramp_wav(folder + "/" + made.path, kLen));
+
+    std::atomic<int> redraws{0};
+    FileSampleSource src(
+        [&](Id id, FileSampleSource::Located& out) {
+            return FileSampleSource::locate_in(pool, folder, id, out);
+        },
+        [&] { ++redraws; });
+    FileSampleSource::Located where;
+    OK(FileSampleSource::locate_in(pool, folder, 7, where) &&
+       where.wav == folder + "/Audio Files/Take 1 draw 1.wav" && where.length == kLen);
+    OK(!FileSampleSource::locate_in(pool, "", 7, where));
+    OK(!FileSampleSource::locate_in(pool, folder, 99, where));
+
+    float out[4] = {1, 1, 1, 1};
+    // The first ask answers silence and is not ready; the worker loads.
+    src.read(7, 0, 24000, 4, out);
+    OK(out[0] == 0.0f && out[3] == 0.0f && !src.ready(7));
+    src.wait_idle();
+    OK(redraws.load() >= 1 && src.ready(7));
+    src.read(7, 0, 24000, 4, out);
+    OK(out[0] == 0.5f && std::abs(out[3] - 24003.0f / kLen) < 1e-6f);
+    src.read(7, 1, 24000, 4, out);
+    OK(out[0] == -0.25f && out[3] == -0.25f);
+    // Past the end of the source: silence, and still ready for what exists.
+    src.read(7, 0, kLen - 2, 4, out);
+    OK(out[1] != 0.0f && out[2] == 0.0f && out[3] == 0.0f && src.ready(7));
+    // No file: silent and never ready, so the Pencil refuses on it.
+    src.read(8, 0, 0, 4, out);
+    src.wait_idle();
+    OK(!src.ready(8) && out[0] == 0.0f);
+    // The session says another length than the file: not drawn as the audio.
+    pool.sources[0].length = kLen / 2;
+    src.read(7, 0, 100, 4, out);
+    src.wait_idle();
+    OK(!src.ready(7) && out[0] == 0.0f);
+    return 0;
+}
+
+// Link Timeline and Edit Selection: the range mirrors both ways when linked
+// and only then; Ctrl-click tracks are a set that loses removed tracks;
+// the flag, and only the flag, survives a restart.
+int test_selection_link() {
+    ModelDocument doc(two_tracks());
+    EditController c(doc);
+    SelectionLink link;
+    c.set_link(&link);
+    OK(link.linked());
+    c.select_range(0, kBar, 2 * kBar);
+    OK(link.timeline().start == kBar && link.timeline().end == 2 * kBar);
+    c.apply_timeline_range(3 * kBar, 4 * kBar);
+    OK(c.selection().start == 3 * kBar && c.selection().end == 4 * kBar);
+
+    link.setLinked(false);
+    c.apply_timeline_range(5 * kBar, 6 * kBar);
+    OK(link.timeline().start == 5 * kBar);
+    OK(c.selection().start == 3 * kBar);
+    c.select_range(0, kBar, 2 * kBar);
+    OK(link.timeline().start == 5 * kBar);
+
+    OK(link.toggle_track(1) && link.toggle_track(7));
+    OK(!link.toggle_track(1));
+    OK(link.extra_tracks().size() == 1);
+    c.clamp_selection();  // two tracks: 7 is gone
+    OK(link.extra_tracks().empty());
+
+    link.setLinked(false);
+    QTemporaryDir dir;
+    const std::string path = dir.path().toStdString() + "/sub/selection-link.json";
+    std::string why;
+    OK(link.save(path, why));
+    SelectionLink back;
+    OK(back.linked() && back.load(path, why) && !back.linked());
+    SelectionLink fresh;
+    OK(fresh.load(path + ".missing", why) && fresh.linked());
+    OK(!fresh.fromJson("{}", why) && fresh.linked());
+    return 0;
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     if (test_model() || test_history() || test_controller() || test_heal_separation() ||
@@ -2708,7 +2946,8 @@ int main(int argc, char** argv) {
         test_midi_sequence_files() ||
         test_midi_sequence_cleanup_follow_ups() || test_input_monitor() || test_track_punch() ||
         test_step_automation_mode() || test_save_as_and_copy() ||
-        test_automation_follows_edit() || test_follow_edit_thins_a_full_lane()) {
+        test_automation_follows_edit() || test_follow_edit_thins_a_full_lane() ||
+        test_sample_pencil() || test_file_samples() || test_selection_link()) {
         return 1;
     }
     std::printf("ui edit: %d checks passed\n", checks);

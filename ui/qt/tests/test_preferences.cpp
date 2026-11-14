@@ -7,6 +7,8 @@
 // and in the window, and what is in use is still the choice.
 #include <QFile>
 #include <QGuiApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QQuickItem>
 #include <QQuickView>
 #include <QTemporaryDir>
@@ -118,6 +120,11 @@ int test_window() {
     // What the engine owns is reported as it is, not offered.
     QQuickItem* audio = named(win, QStringLiteral("prefAudio"));
     CHECK(audio != nullptr);
+    CHECK(named(win, QStringLiteral("prefClick")) != nullptr);
+    CHECK(named(win, QStringLiteral("prefCountOff")) != nullptr);
+    CHECK(named(win, QStringLiteral("prefBuffer")) == nullptr &&
+          named(win, QStringLiteral("prefDevice")) == nullptr &&
+          named(win, QStringLiteral("prefAutosave")) == nullptr);
     CHECK(named(win, QStringLiteral("pref_counter_Bars|Beats")) != nullptr);
     CHECK(active(win, "pref_counter_Bars|Beats") && active(win, "pref_mode_Slip"));
 
@@ -182,12 +189,211 @@ int test_window() {
     return 0;
 }
 
+// Click on, then a restart: it is on after the first state block, and a
+// second connect (the engine kept it on) toggles nothing.
+int test_click_at_start() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    const QString file = dir.filePath(QStringLiteral("preferences.json"));
+    SyntheticPeakSource peaks(kRate, 120.0);
+    {
+        ModelDocument doc(make_empty_session(4, kRate));
+        SessionModel first(doc, peaks, true);
+        first.setPreferencesFile(file);
+        CHECK(first.setPreference(QStringLiteral("click"), QStringLiteral("on")));
+        CHECK(!first.setPreference(QStringLiteral("click"), QStringLiteral("maybe")));
+        CHECK(!first.setPreference(QStringLiteral("buffer"), QStringLiteral("64")));
+    }
+    ModelDocument doc(make_empty_session(4, kRate));
+    SessionModel session(doc, peaks, true);
+    QStringList sent;
+    session.setCommandSender(
+        [&sent](const QString& c, const QString&) { sent << c; });
+    session.setPreferencesFile(file);
+    CHECK(session.prefClick() && !session.prefCountOff());
+    CHECK(sent.isEmpty());   // no engine yet: it waits
+
+    TransportSnapshot t;
+    session.onTransport(t, true);   // first state block, click off
+    CHECK(sent == QStringList{QStringLiteral("transport.toggle_click")});
+    t.click = true;
+    session.onTransport(t, true);
+    session.onTransport(t, false);   // engine gone
+    session.onTransport(t, true);    // second connect, click already on
+    CHECK(sent.size() == 1);
+    return 0;
+}
+
+// Version 2 keeps every choice, the two transport ones included; a session
+// that starts from the file finds them all in use.
+int test_v2_round_trip() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    const QString file = dir.filePath(QStringLiteral("preferences.json"));
+    SyntheticPeakSource peaks(kRate, 120.0);
+    {
+        ModelDocument doc(make_empty_session(4, kRate));
+        SessionModel session(doc, peaks, true);
+        session.setPreferencesFile(file);
+        CHECK(session.setPreference(QStringLiteral("counter"), QStringLiteral("Samples")));
+        CHECK(session.setPreference(QStringLiteral("grid"), QStringLiteral("1/8")));
+        CHECK(session.setPreference(QStringLiteral("mode"), QStringLiteral("Grid")));
+        CHECK(session.setPreference(QStringLiteral("click"), QStringLiteral("on")));
+        CHECK(session.setPreference(QStringLiteral("countoff"), QStringLiteral("on")));
+    }
+    QFile f(file);
+    CHECK(f.open(QIODevice::ReadOnly));
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    CHECK(o.value(QStringLiteral("version")).toInt() == 2);
+    CHECK(o.value(QStringLiteral("counter")).toString() == QStringLiteral("Samples"));
+    CHECK(o.value(QStringLiteral("grid")).toString() == QStringLiteral("1/8"));
+    CHECK(o.value(QStringLiteral("mode")).toString() == QStringLiteral("Grid"));
+    CHECK(o.value(QStringLiteral("click_at_start")).toBool(false));
+    CHECK(o.value(QStringLiteral("count_off_at_start")).toBool(false));
+
+    ModelDocument doc(make_empty_session(4, kRate));
+    SessionModel next(doc, peaks, true);
+    next.setPreferencesFile(file);
+    CHECK(next.prefRefusal().isEmpty());
+    CHECK(next.mainCounterFormat() == QStringLiteral("Samples"));
+    CHECK(next.gridValue() == QStringLiteral("1/8") && next.editMode() == QStringLiteral("Grid"));
+    CHECK(next.prefClick() && next.prefCountOff());
+    return 0;
+}
+
+// A version 1 file predates the transport choices: its missing keys keep the
+// defaults, and the file is read rather than refused.
+int test_v1_file() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    const QString file = dir.filePath(QStringLiteral("preferences.json"));
+    CHECK(write_file(file, "{\"version\": 1, \"counter\": \"Samples\", "
+                           "\"grid\": \"1 bar\", \"mode\": \"Shuffle\"}"));
+    SyntheticPeakSource peaks(kRate, 120.0);
+    ModelDocument doc(make_empty_session(4, kRate));
+    SessionModel session(doc, peaks, true);
+    session.setPreferencesFile(file);
+    CHECK(session.prefRefusal().isEmpty());
+    CHECK(session.mainCounterFormat() == QStringLiteral("Samples"));
+    CHECK(session.gridValue() == QStringLiteral("1 bar"));
+    CHECK(session.editMode() == QStringLiteral("Shuffle"));
+    CHECK(!session.prefClick() && !session.prefCountOff());
+    return 0;
+}
+
+// A refused choice names what was refused and why, and nothing it refused is
+// in use; the next accepted choice clears the notice.
+int test_refused_choices() {
+    SyntheticPeakSource peaks(kRate, 120.0);
+    ModelDocument doc(make_empty_session(4, kRate));
+    SessionModel session(doc, peaks, true);
+    CHECK(!session.setPreference(QStringLiteral("grid"), QStringLiteral("1/3")));
+    CHECK(session.prefRefusal() == QStringLiteral("no preference \"grid\" can be \"1/3\""));
+    CHECK(session.gridValue() == QStringLiteral("1/4"));
+    CHECK(!session.setPreference(QStringLiteral("click"), QStringLiteral("maybe")));
+    CHECK(session.prefRefusal() == QStringLiteral("no preference \"click\" can be \"maybe\""));
+    CHECK(!session.prefClick());
+    CHECK(!session.setPreference(QStringLiteral("countoff"), QStringLiteral("2")));
+    CHECK(session.prefRefusal().contains(QStringLiteral("countoff")));
+    CHECK(!session.setPreference(QStringLiteral("buffer"), QStringLiteral("64")));
+    CHECK(session.prefRefusal().contains(QStringLiteral("buffer")));
+    CHECK(session.setPreference(QStringLiteral("click"), QStringLiteral("on")));
+    CHECK(session.prefRefusal().isEmpty() && session.prefClick());
+    return 0;
+}
+
+// A file this version cannot read is refused with its path and the reason; the
+// defaults stay in use.
+int test_refused_files() {
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    const QString file = dir.filePath(QStringLiteral("preferences.json"));
+    SyntheticPeakSource peaks(kRate, 120.0);
+    const auto load = [&](const char* bytes) {
+        if (!write_file(file, bytes)) return QStringLiteral("<the file was not written>");
+        ModelDocument doc(make_empty_session(4, kRate));
+        SessionModel session(doc, peaks, true);
+        session.setPreferencesFile(file);
+        return session.prefRefusal();
+    };
+    CHECK(load("{\"version\": 2, \"grid\": \"1/3\"}") ==
+          file + QStringLiteral(": unknown grid \"1/3\""));
+    CHECK(load("{\"version\": 2, \"click_at_start\": \"yes\"}") ==
+          file + QStringLiteral(": click_at_start must be true or false"));
+    const QString future = load("{\"version\": 3}");
+    CHECK(future.contains(QStringLiteral("is version 3")) &&
+          future.contains(QStringLiteral("versions 1 to 2")));
+    CHECK(load("not json").contains(QStringLiteral("is not a preferences file")));
+    ModelDocument doc(make_empty_session(4, kRate));
+    SessionModel session(doc, peaks, true);
+    CHECK(write_file(file, "{\"version\": 2, \"grid\": \"1/3\", \"click_at_start\": true}"));
+    session.setPreferencesFile(file);
+    CHECK(!session.prefRefusal().isEmpty() && session.gridValue() == QStringLiteral("1/4"));
+    CHECK(!session.prefClick());
+    return 0;
+}
+
+// The engine owns click and count-off. A choice sends its toggle only when the
+// engine's flag differs, and applying the same choice again sends nothing. The
+// commands go to the fake engine over ControlAdapter's wire.
+int test_apply_once() {
+    api::testing::FakeEngine::Config cfg;
+    cfg.tracks = 4;
+    api::testing::FakeEngine fake(cfg);
+    ControlAdapter engine(fake);
+    std::string err;
+    CHECK(engine.connect(err));
+
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    SyntheticPeakSource peaks(kRate, 120.0);
+    ModelDocument doc(make_empty_session(4, kRate));
+    SessionModel session(doc, peaks, true);
+    QStringList sent;
+    session.setCommandSender([&sent, &engine](const QString& c, const QString&) {
+        sent << c;
+        engine.send(c.toStdString(), CommandContext{});
+    });
+    session.setPreferencesFile(dir.filePath(QStringLiteral("preferences.json")));
+    CHECK(sent.isEmpty());   // no engine yet: nothing is sent
+
+    TransportSnapshot t;   // the engine's first block: both flags off
+    session.onTransport(t, true);
+    CHECK(sent.isEmpty());   // the defaults already match the engine
+
+    const QString toggle_click = QStringLiteral("transport.toggle_click");
+    const QString toggle_count_off = QStringLiteral("transport.toggle_count_off");
+    CHECK(session.setPreference(QStringLiteral("click"), QStringLiteral("on")));
+    CHECK(sent == QStringList{toggle_click});
+    CHECK(session.setPreference(QStringLiteral("click"), QStringLiteral("on")));   // applied again
+    CHECK(sent.size() == 1);
+    CHECK(session.setPreference(QStringLiteral("countoff"), QStringLiteral("off")));   // already off
+    CHECK(sent.size() == 1);
+    CHECK(session.setPreference(QStringLiteral("countoff"), QStringLiteral("on")));
+    CHECK(sent == (QStringList{toggle_click, toggle_count_off}));
+
+    // The engine answers with both on: applying them again sends nothing.
+    t.click = true;
+    t.count_off = true;
+    session.onTransport(t, true);
+    CHECK(session.setPreference(QStringLiteral("click"), QStringLiteral("on")));
+    CHECK(session.setPreference(QStringLiteral("countoff"), QStringLiteral("on")));
+    CHECK(sent.size() == 2);
+
+    CHECK(session.setPreference(QStringLiteral("click"), QStringLiteral("off")));
+    CHECK(sent == (QStringList{toggle_click, toggle_count_off, toggle_click}));
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
-    if (test_window()) return 1;
+    if (test_window() || test_click_at_start() || test_v2_round_trip() || test_v1_file() ||
+        test_refused_choices() || test_refused_files() || test_apply_once()) {
+        return 1;
+    }
     std::printf("ui preferences: ok\n");
     return 0;
 }

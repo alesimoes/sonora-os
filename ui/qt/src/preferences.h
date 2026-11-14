@@ -20,6 +20,10 @@ struct Preferences {
     TimeFormat counter = TimeFormat::BarsBeats;
     GridValue grid = GridValue::Beat;
     EditMode mode = EditMode::Slip;
+    // Version 2. Toggles on the wire, so they are applied by comparing with
+    // the state block (transport_prefs.h), never by blind toggling.
+    bool click_at_start = false;
+    bool count_off_at_start = false;
 };
 
 // $SONORA_PREFERENCES_FILE, else $XDG_CONFIG_HOME/sonora/preferences.json.

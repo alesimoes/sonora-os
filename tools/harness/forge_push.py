@@ -3,8 +3,11 @@
 The daemon rebases the feature branch in its own worktree, so a copy that
 someone else already pushed (an integrator that ignored its brief, 2026-11-07,
 #500-#503) is rejected as non-fast-forward. Two cases: the remote carries the
-same patch against main (adopt it, push nothing), or it differs and the
-daemon's branch wins, replacing only the head it saw (--force-with-lease).
+same patch against main (adopt it, push nothing), or it differs. Then the
+remote's commits are merged into the local branch first and the push is a
+plain fast-forward: never --force, never --force-with-lease (2026-11-08,
+#574/#579 lost commits others pushed meanwhile). A push rejected because the
+remote moved again is retried after fetch+merge.
 """
 import hashlib
 import re
@@ -35,17 +38,90 @@ def _patch_of(ok, worktree, base_ref, rev):
         ok(["git", "diff", "--no-color", f"{base_ref}...{rev}"], worktree, 120))
 
 
-def push_feature_branch(ok, worktree, branch, base_ref="origin/main"):
+def _contains(ok, worktree, ancestor, descendant):
+    try:
+        ok(["git", "merge-base", "--is-ancestor", ancestor, descendant],
+           worktree, 60)
+        return True
+    except Exception:  # exit 1 = not an ancestor
+        return False
+
+
+class MergeConflict(Exception):
+    """The remote's copy conflicts with the local branch in `paths`."""
+
+    def __init__(self, paths, detail=""):
+        self.paths = list(paths)
+        super().__init__("merge conflict in: " + ", ".join(self.paths)
+                         + (f" ({detail})" if detail else ""))
+
+
+# Generated screenshots are never committed (owner, 2026-11-13, #724): a
+# remote copy that still carries them is resolved by dropping them.
+_SCREENSHOT = re.compile(r"^docs/images/sonora-ui-[^/]*\.png$")
+_IDENT = ["git", "-c", "user.name=sonora-harness",
+          "-c", "user.email=harness@sonora.invalid"]
+
+
+def _unmerged(ok, worktree):
+    out = ok(["git", "diff", "--name-only", "--diff-filter=U"], worktree, 60)
+    return [p.strip() for p in out.splitlines() if p.strip()]
+
+
+def _abort(ok, worktree):
+    try:
+        ok(["git", "merge", "--abort"], worktree, 60)
+    except Exception:
+        pass
+
+
+def _resolve_screenshots(ok, worktree, merge_error):
+    """After a conflicted merge: drop the screenshot conflicts; raise
+    MergeConflict for whatever else is left, otherwise conclude the merge."""
+    try:
+        paths = _unmerged(ok, worktree)
+        rest = [p for p in paths if not _SCREENSHOT.match(p)]
+        if not paths or rest:
+            raise MergeConflict(rest or paths, str(merge_error)[:400])
+        for p in paths:
+            ok(["git", "rm", "-f", "-q", "--", p], worktree, 60)
+        ok([*_IDENT, "commit", "--no-edit"], worktree, 120)
+    except Exception:
+        _abort(ok, worktree)
+        raise
+
+
+def _merge_remote(ok, worktree, branch):
+    """Bring FETCH_HEAD into the checked-out branch; a conflict aborts the
+    merge and raises, so nothing is pushed over the remote's work."""
+    if _contains(ok, worktree, "FETCH_HEAD", "HEAD"):
+        return
+    try:
+        ok([*_IDENT, "-c", "core.editor=true",
+            "merge", "--no-edit", "FETCH_HEAD"], worktree, 300)
+    except Exception as e:
+        _resolve_screenshots(ok, worktree, e)
+
+
+def push_feature_branch(ok, worktree, branch, base_ref="origin/main",
+                        attempts=3):
     """`ok(argv, cwd, timeout)` runs a command and returns stdout, raising
-    on failure. Returns SAME when origin already holds this patch."""
-    remote = _remote_head(ok, worktree, branch)
-    if remote is None:
-        ok(["git", "push", "origin", f"{branch}:{branch}"], worktree, 300)
-        return PUSHED
-    ok(["git", "fetch", "origin", branch], worktree, 300)
-    if _patch_of(ok, worktree, base_ref, "FETCH_HEAD") == \
-            _patch_of(ok, worktree, base_ref, branch):
-        return SAME
-    ok(["git", "push", f"--force-with-lease={branch}:{remote}", "origin",
-        f"{branch}:{branch}"], worktree, 300)
+    on failure. Returns SAME when origin already holds this patch. The
+    worktree has `branch` checked out."""
+    for attempt in range(attempts):
+        remote = _remote_head(ok, worktree, branch)
+        if remote is None:
+            ok(["git", "push", "origin", f"{branch}:{branch}"], worktree, 300)
+            return PUSHED
+        ok(["git", "fetch", "origin", branch], worktree, 300)
+        theirs = _patch_of(ok, worktree, base_ref, "FETCH_HEAD")
+        if theirs == _patch_of(ok, worktree, base_ref, branch):
+            return SAME
+        _merge_remote(ok, worktree, branch)
+        try:
+            ok(["git", "push", "origin", f"{branch}:{branch}"], worktree, 300)
+            return PUSHED
+        except Exception:
+            if attempt == attempts - 1:
+                raise
     return PUSHED

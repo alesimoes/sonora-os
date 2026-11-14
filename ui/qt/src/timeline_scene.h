@@ -47,11 +47,14 @@ struct Scene {
 // The track lanes and everything on them, for a timeline of view.width x
 // view.height. `drag` previews a gesture in progress. The take lanes of the
 // tracks that show them (ADR-0049) are drawn under their rows, `lane_sel` the
-// range selected on one.
+// range selected on one. With `samples`, a clip on a track's row at
+// kSampleViewMaxFpp or closer shows its samples instead of the overview,
+// and a Pencil stroke in the hand is drawn on it (ADR-0096).
 void build_timeline_scene(const model::Snapshot& s, const ViewState& view, const Selection& sel,
                           const Drag& drag, bool grid_lines, GridValue grid,
                           const PeakSource& peaks, Scene& out,
-                          const EditController::LaneSelection& lane_sel = {});
+                          const EditController::LaneSelection& lane_sel = {},
+                          const SampleSource* samples = nullptr);
 
 struct TransportOverlay {
     model::Frames playhead = 0;

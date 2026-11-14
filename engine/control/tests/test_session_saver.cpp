@@ -114,15 +114,23 @@ struct Rig {
                        0};
     Rig() { saver.start(); }
 
-    // The results, once `n` have come or two seconds have passed.
-    std::vector<SessionSaver::Done> wait(std::size_t n) {
+    // The results, once `n` have come. No wall-clock bound: the saver's
+    // events end the wait, and a real hang is ctest's timeout. `bump`: the
+    // disk thread's counter moves every turn, as a take's real one does, so a
+    // save the saver picked up late (its baseline read after the test's own
+    // bump) is still released; a checkpoint is never "already behind" it.
+    std::vector<SessionSaver::Done> wait(std::size_t n, bool bump = false) {
         std::vector<SessionSaver::Done> out;
-        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (out.size() < n && std::chrono::steady_clock::now() < until) {
+        while (out.size() < n) {
+            if (bump) checkpoints.fetch_add(1);
             for (SessionSaver::Done& d : saver.take_done()) out.push_back(std::move(d));
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         return out;
+    }
+    // Returns once the saver has run `n` cleanups.
+    void wait_cleanups(uint64_t n) {
+        while (saver.cleanups() < n) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     // Nothing comes in `ms`.
     bool quiet(int ms) {
@@ -169,8 +177,7 @@ int test_take_open_waits_for_a_checkpoint() {
     CHECK(rig.quiet(60));
     // Not a byte on disk before the bump.
     CHECK(!fs::exists(folder));
-    rig.checkpoints = 6;
-    auto done = rig.wait(1);
+    auto done = rig.wait(1, true);
     CHECK(done.size() == 1 && done[0].ok && done[0].paced);
     CHECK(fs::exists(file) && rig.saver.paced_saves() == 1);
 
@@ -180,18 +187,14 @@ int test_take_open_waits_for_a_checkpoint() {
     CHECK(m.edit(1));
     rig.saver.submit(m.job(file, 2));
     CHECK(rig.quiet(60));
-    rig.checkpoints = 7;
-    done = rig.wait(1);
+    done = rig.wait(1, true);
     CHECK(done.size() == 1 && done[0].ok && done[0].paced);
     CHECK(fs::exists(a));
     CHECK(rig.saver.cleanups() == 0);
     rig.saver.set_take_open(false);   // a loop take between passes: still rolling
     CHECK(rig.quiet(30) && fs::exists(a));
     rig.saver.set_transport_stopped(true);
-    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (rig.saver.cleanups() == 0 && std::chrono::steady_clock::now() < until) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    rig.wait_cleanups(1);
     CHECK(rig.saver.cleanups() == 1 && !fs::exists(a));
     return 0;
 }
@@ -214,8 +217,7 @@ int test_states_paced_and_answered() {
     rig.saver.submit(std::move(j));
     CHECK(rig.quiet(40));
     CHECK(!fs::exists(folder / "Plugin State"));
-    rig.checkpoints = 1;
-    auto done = rig.wait(1);
+    auto done = rig.wait(1, true);
     CHECK(done.size() == 1 && done[0].ok && done[0].paced);
     CHECK(done[0].kind == SessionSaver::Kind::States && done[0].seq == 42);
     CHECK(fs::exists(folder / "Plugin State" / (sonora::sha256_hex(bytes) + ".state")));
@@ -300,8 +302,7 @@ int test_undurable_save_drops_the_deferred_cleanup() {
     CHECK(m.edit(1));
     rig.saver.submit(m.job(file, 2));
     CHECK(rig.quiet(30));
-    rig.checkpoints = 2;
-    auto done = rig.wait(1);
+    auto done = rig.wait(1, true);
     CHECK(done.size() == 1 && done[0].ok && done[0].message.empty());
     const fs::path b = msq(folder, m.sequence());
 
@@ -309,8 +310,7 @@ int test_undurable_save_drops_the_deferred_cleanup() {
     CHECK(m.edit(2));
     rig.saver.submit(m.job(file, 3));
     CHECK(rig.quiet(30));
-    rig.checkpoints = 3;
-    done = rig.wait(1);
+    done = rig.wait(1, true);
     folder_sync_fails = false;
     CHECK(done.size() == 1 && done[0].ok && mentions(done[0].message, "power cut"));
 
@@ -340,8 +340,7 @@ int test_fence_writes_what_was_handed_over() {
     CHECK(m.edit(1));
     rig.saver.submit(m.job(file, 2));
     CHECK(rig.quiet(30));
-    rig.checkpoints = 1;
-    CHECK(rig.wait(1).size() == 1);   // its cleanup deferred
+    CHECK(rig.wait(1, true).size() == 1);   // its cleanup deferred
     CHECK(m.edit(2));
     rig.saver.submit(m.job(file, 3));
     SessionSaver::Job j;

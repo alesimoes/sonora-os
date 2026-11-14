@@ -19,6 +19,10 @@
 #                                           newer protocol, the version
 #                                           refusal at startup (-refusal) and
 #                                           on reconnect (-refusal-reconnect)
+#                                           Builds only sonora-ui and sonora-engine
+#                                           and runs no tests; the build tree and
+#                                           ccache are kept, so a rerun is
+#                                           incremental.
 #   tools/build-ui.sh --measure [SECONDS]   ... then frame time and CPU cost
 #                                           of the shell, meters on and off,
 #                                           under Xvfb and under cage

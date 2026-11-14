@@ -228,6 +228,7 @@ Item {
                     }
                 }
                 ConductorRuler {
+                    id: conductorRuler
                     objectName: index === 0 ? "tempoRuler" : "meterRuler"
                     x: Theme.trackHeaderWidth
                     width: parent.width - Theme.trackHeaderWidth
@@ -235,6 +236,17 @@ Item {
                     session: edit.session
                     kind: index
                     MouseArea { anchors.fill: parent; onClicked: (m) => edit.session.rulerClick(m.x) }
+                    // Editing on the ruler (ADR-0140), ui/conductor/qt's editor laid
+                    // over it; where that module is not built, the click above stays.
+                    Component.onCompleted: {
+                        if (editorQml === "") return
+                        const e = Qt.createQmlObject(editorQml, conductorRuler, "qrc:/sonora/qml/ConductorRulerEdit.qml")
+                        e.objectName = objectName + "Edit"
+                        e.session = edit.session
+                        e.shell = edit.shell
+                        e.ruler = conductorRuler
+                        e.host = edit
+                    }
                 }
             }
         }
@@ -305,10 +317,117 @@ Item {
         }
     }
 
+    // --- Sample Edit panel (ADR-0096) ------------------------------------------
+    // Under the timeline while it shows samples: the engine's sample.* edits
+    // on the range, each the command its key sends. A button is live only
+    // while the range lies inside one clip, the one thing every verb needs;
+    // the reason is written beside them rather than left for a click to find.
+    // A refusal from the engine is a held notice (ShellModel), not this bar.
+    Rectangle {
+        id: samplePanel
+        objectName: "samplePanel"
+        visible: edit.session.sampleView
+        anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+        height: visible ? Theme.toolbarHeight : 0
+        color: Theme.panel
+        Rectangle { anchors { left: parent.left; right: parent.right; top: parent.top } height: 1; color: Theme.borderSubtle }
+
+        // trackRows is read so a clip moved under the range re-asks: it
+        // changes with every revision, sampleEditable with the selection.
+        readonly property bool editable: { void edit.session.trackRows; return edit.session.sampleEditable }
+
+        function run(command, withLevel) {
+            if (!editable) return
+            if (withLevel) edit.shell.invokeWith(command, -1, levelInput.text)
+            else edit.shell.invoke(command, -1)
+        }
+
+        Row {
+            id: sampleRow
+            anchors { left: parent.left; leftMargin: Theme.space4; verticalCenter: parent.verticalCenter }
+            spacing: Theme.space2
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                rightPadding: Theme.space2
+                text: "SAMPLE EDIT"
+                color: Theme.textTertiary
+                font { family: Theme.fontFamily; pixelSize: Theme.textCaption; letterSpacing: 0.6 }
+            }
+            Repeater {
+                model: [["Repair", "sample.repair"], ["Silence", "sample.silence"],
+                        ["Reverse", "sample.reverse"], ["Invert", "sample.invert"],
+                        ["Fade In", "sample.fade_in"], ["Fade Out", "sample.fade_out"]]
+                SButton {
+                    required property var modelData
+                    objectName: "sample_" + modelData[1].slice(7)
+                    text: modelData[0]
+                    implicitWidth: 62
+                    enabled: samplePanel.editable
+                    available: samplePanel.editable
+                    onClicked: samplePanel.run(modelData[1], false)
+                }
+            }
+            Rectangle { width: 1; height: 20; anchors.verticalCenter: parent.verticalCenter; color: Theme.borderSubtle }
+            // The level Gain changes by and Normalize brings the peak to.
+            Rectangle {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 64; height: 24
+                radius: Theme.radiusSmall
+                color: Theme.window
+                border.color: levelInput.activeFocus ? Theme.accent : Theme.borderSubtle
+                opacity: samplePanel.editable ? 1.0 : 0.45
+                TextInput {
+                    id: levelInput
+                    objectName: "sampleLevelInput"
+                    anchors { fill: parent; leftMargin: Theme.space2; rightMargin: 22 }
+                    verticalAlignment: TextInput.AlignVCenter
+                    horizontalAlignment: TextInput.AlignRight
+                    clip: true
+                    enabled: samplePanel.editable
+                    text: "-3"
+                    color: Theme.text
+                    selectionColor: Theme.selectionFill
+                    selectedTextColor: Theme.text
+                    font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
+                    // Typing "-3" must not reach the key map and nudge a clip.
+                    onActiveFocusChanged: edit.shell.setTextEntry(activeFocus)
+                    Keys.onEscapePressed: focus = false
+                }
+                Text {
+                    anchors { right: parent.right; rightMargin: Theme.space2; verticalCenter: parent.verticalCenter }
+                    text: "dB"
+                    color: Theme.textTertiary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+                }
+            }
+            Repeater {
+                model: [["Gain", "sample.gain"], ["Normalize", "sample.normalize"]]
+                SButton {
+                    required property var modelData
+                    objectName: "sample_" + modelData[1].slice(7)
+                    text: modelData[0]
+                    implicitWidth: 72
+                    enabled: samplePanel.editable
+                    available: samplePanel.editable
+                    onClicked: samplePanel.run(modelData[1], true)
+                }
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                leftPadding: Theme.space2
+                visible: !samplePanel.editable
+                text: "Select a range inside one clip"
+                color: Theme.textSecondary
+                font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
+            }
+        }
+    }
+
     // --- tracks ---------------------------------------------------------------
     Item {
         id: tracks
-        anchors { left: parent.left; right: parent.right; top: rulers.bottom; bottom: parent.bottom }
+        anchors { left: parent.left; right: parent.right; top: rulers.bottom; bottom: samplePanel.top }
         clip: true
 
         // Headers scroll with the lanes, by the same offset.
@@ -329,8 +448,9 @@ Item {
                     readonly property bool armed: edit.shell.engineAlive && edit.shell.armed[index] === true
                     y: edit.rowTop(index) - edit.session.scrollY
                     width: headers.width
-                    height: edit.session.trackHeight
-                    visible: y + height >= 0 && y <= headers.height
+                    // Its own height, and none when hidden (ADR-0106).
+                    height: row.height !== undefined ? row.height : edit.session.trackHeight
+                    visible: row.hidden !== true && y + height >= 0 && y <= headers.height
                     color: selected ? Theme.raised : Theme.panel
                     z: headerAutoMode.open ? 100 : 0
 
@@ -519,7 +639,7 @@ Item {
                     required property int index
                     required property var modelData
                     visible: modelData.shown === true
-                    y: modelData.top + edit.session.trackHeight - edit.session.scrollY
+                    y: modelData.top + modelData.height - edit.session.scrollY
                     width: laneHeaders.width
                     height: edit.session.autolaneNames.length * edit.session.autolaneHeight
                     Repeater {
@@ -576,7 +696,7 @@ Item {
                     required property int index
                     required property var modelData
                     visible: modelData.lanesShown === true
-                    y: modelData.top + edit.session.trackHeight + modelData.lanesTop - edit.session.scrollY
+                    y: modelData.top + modelData.height + modelData.lanesTop - edit.session.scrollY
                     width: takeHeaders.width
                     height: (modelData.laneNames || []).length * edit.session.compLaneHeight
                     Repeater {
@@ -645,6 +765,10 @@ Item {
             MouseArea {
                 anchors.fill: parent
                 acceptedButtons: Qt.LeftButton
+                // The Pencil at sample zoom draws samples: a precise cross,
+                // where the overview's arrow would hide the point it writes.
+                cursorShape: edit.session.tool === "Pencil" && edit.session.sampleView
+                             ? Qt.CrossCursor : Qt.ArrowCursor
                 onPressed: (m) => edit.session.press(m.x, m.y)
                 onPositionChanged: (m) => { if (pressed) edit.session.drag(m.x, m.y) }
                 onReleased: (m) => edit.session.release(m.x, m.y)
@@ -653,6 +777,23 @@ Item {
                                                    (w.modifiers & Qt.ShiftModifier) !== 0,
                                                    (w.modifiers & Qt.ControlModifier) !== 0)
             }
+        }
+    }
+
+    // Show/Hide Tracks (ADR-0106), floating over the timeline. A context
+    // property, as the plug-in manager is: only this window reaches it.
+    Loader {
+        id: trackListLoader
+        objectName: "trackListLoader"
+        readonly property var views: typeof trackViews !== "undefined" ? trackViews : null
+        active: views !== null
+        x: edit.width - 380
+        y: Theme.toolbarHeight + Theme.space6
+        z: 9
+        sourceComponent: TrackListWindow {
+            objectName: "trackListWindow"
+            views: trackListLoader.views
+            mover: trackListLoader
         }
     }
 }

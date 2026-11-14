@@ -44,6 +44,10 @@ bool decode_leaf(Reader& rd, const Value& v, const std::string& kind, Out& out) 
     return ok;
 }
 
+}  // namespace
+
+// In codec, not the anonymous namespace: there it would hide the other
+// families' encode() overloads from the dispatch on MSVC.
 // Each member exactly as it would be alone; no label key when there is
 // none, so the encoding stays canonical.
 Value encode(const Compound& o) {
@@ -54,6 +58,8 @@ Value encode(const Compound& o) {
     if (!o.label.empty()) v.set("label", Value::string(o.label));
     return v;
 }
+
+namespace {
 
 // Members are refused by their JSON path, counted from 0 ("ops[3]: ..."),
 // as the file and every other path in this codec count.
@@ -146,7 +152,7 @@ const char* const kNames[] = {
     "AddInsert", "RemoveInsert", "MoveInsert", "SetInsertActive", "ReplaceInsert",
     "SetInsertBypass", "SetInsertParams", "SetInsertState",
     "SetMix", "AddBus", "RemoveBus", "AddSend", "RemoveSend", "SetSendMix", "SetBusMix",
-    "SetOutput", "EditAutomation", "SetBusPath",
+    "SetOutput", "EditAutomation", "SetBusPath", "SetInsertKey",
     "SetGroup", "RemoveGroup", "SetVca", "RemoveVca", "SetVcaMix", "SetFolder", "RemoveFolder",
     "AddMidiSource", "PlaceMidiRegion", "EditMidi", "SetMidiRouting",
     "Compound"};

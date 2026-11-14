@@ -16,6 +16,9 @@
 #include "sonora/audio_backend.h"
 #include "sonora/closed_take.h"
 #include "sonora/consolidate.h"
+#include "sonora/elastic/elastic_commands.h"
+#include "sonora/elastic/library_stretcher.h"
+#include "sonora/factory_preset_reader.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/groups.h"
 #include "sonora/model/op_codec.h"
@@ -473,6 +476,11 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
         sc.scan_at_start = opts_.plugin_scan_at_start;
         sc.max_probes = opts_.plugin_probe_slots;
         scanner_ = std::make_unique<PluginScanner>(sc);
+        FactoryPresetReaderConfig rc;
+        rc.host_path = sc.host_path;
+        rc.bundles = sc.bundles;
+        rc.timeout_ms = sc.probe_timeout_ms;
+        preset_reader_ = std::make_unique<FactoryPresetReader>(std::move(rc));
         registry_.install("plugin.rescan", ExplainingHandler([this](const CommandContext&, std::string& why) {
                               // Item 5 and Q3: answered when queued, not when
                               // it ends, and never during a take.
@@ -481,6 +489,9 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                   why = kNoRescanWhileRecording;
                                   return false;
                               }
+                              // A rescan is the operator's retry for presets
+                              // that crashed their reader.
+                              preset_reader_->forget_blocked();
                               scanner_->rescan();
                               return true;
                           }));
@@ -564,7 +575,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                       ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
                           api::BounceOptions o;
                           if (!api::parse_bounce_argument(ctx.argument, o, why)) return false;
-                          if (bounce_job_.active()) {
+                          if (bounce_job_.active() || stems_job_.exporting()) {
                               why = "a bounce is already running; cancel it or wait for it";
                               return false;
                           }
@@ -590,6 +601,11 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                       }));
     registry_.install("mix.bounce_cancel",
                       ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          // One export at a time: this cancels whichever runs.
+                          if (stems_job_.active()) {
+                              stems_job_.cancel();
+                              return true;
+                          }
                           if (!bounce_job_.active()) {
                               why = "no bounce is running";
                               return false;
@@ -597,6 +613,38 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                           bounce_job_.cancel();
                           return true;
                       }));
+    StemsCommandDeps stems;
+    stems.bounce = &bounce_gate_;
+    stems.snapshot = [this]() { return document_->current(); };
+    stems.session_dir = [this]() {
+        const auto folder = session_.folder();
+        return folder ? *folder : std::string();
+    };
+    stems.recording = [this]() { return takes_in_flight(); };
+    stems.announce = [this](api::BounceState state, uint32_t permille, uint64_t files,
+                            const std::string& text) {
+        announce_bounce(state, permille, files, text);
+    };
+    install_stems_commands(registry_, stems_job_, std::move(stems));
+    // Elastic audio (ADR-0136): a worker stretches, tick() places the copy.
+    // Without a stretcher in the build nothing is installed.
+    elastic::ElasticCommandDeps elastic_deps;
+    elastic_deps.document = document_.get();
+    elastic_deps.session_dir = [this]() {
+        const auto folder = session_.folder();
+        return folder ? *folder : std::string();
+    };
+    elastic_deps.recording = [this]() { return takes_in_flight(); };
+    elastic_deps.changed = [this](const std::vector<model::ReplicationUpdate>& updates) {
+        document_changed_by_engine(updates);
+    };
+    elastic_deps.announce = [this](api::RenderState state, uint32_t permille, model::Id track,
+                                   const std::string& text) {
+        announce_render(state, permille, track, text);
+    };
+    elastic::install_elastic_commands(registry_, elastic_, elastic::library_stretcher(),
+                                      std::make_unique<elastic::PeakOnsetSource>(),
+                                      std::move(elastic_deps));
     // Consolidate (ADR-0031 §6): the render runs on a worker, never the
     // audio thread; the edit is committed here, in tick().
     registry_.install("session.consolidate",
@@ -653,6 +701,7 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                       }));
     registry_.install("track.render_cancel",
                       ExplainingHandler([this](const CommandContext&, std::string& why) {
+                          if (elastic_ && elastic_->cancel()) return true;
                           if (!render_) {
                               why = "no render is running";
                               return false;
@@ -772,10 +821,13 @@ EngineControlServer::~EngineControlServer() {
     stop();
     // A render reads the hosts and rolls the playback controller: it goes first.
     render_.reset();
+    // Its worker only reads files; the copy of one unplaced is removed.
+    elastic_.reset();
     // Hosts before the plans that name their slots are freed.
     hosting_.reset();
     // Every probe child killed and reaped before its thread is joined.
     scanner_.reset();
+    preset_reader_.reset();
     // Its destructor waits for the reader to let go of the plans this side
     // still owns, so it goes while the session's reader is certainly there.
     playback_.reset();
@@ -1888,6 +1940,9 @@ void EngineControlServer::greet(ClientId id) {
     }
     hello.capabilities.push_back(api::kCapabilityBounce);
     hello.capabilities.push_back(api::kCapabilityRender);
+    hello.capabilities.push_back(api::kCapabilityRenderInsert);
+    hello.capabilities.push_back(api::kCapabilityStems);
+    if (elastic_) hello.capabilities.push_back(api::kCapabilityElastic);
     std::string bytes;
     api::wire::encode(hello, bytes);
     send_to(client, bytes);
@@ -2054,6 +2109,28 @@ std::string EngineControlServer::step_refusal(bool undo) const {
 std::string EngineControlServer::catalog_refusal(const model::Snapshot& doc, model::MemberRef member) const {
     const model::PluginRef* ref = nullptr;
     const model::TrackEdit* on = nullptr;
+    if (const auto* k = member.get_if<model::SetInsertKey>()) {
+        // ADR-0058 §1: only a plug-in with a side-chain input takes a key.
+        // One the catalog and this run's probes do not know is let through:
+        // it is out of the chain anyway, and apply() judges the rest.
+        if (k->key_bus == 0 || !scanner_) return {};
+        for (const auto& t : doc.edit->tracks)
+            for (const model::Insert& in : t->inserts)
+                if (in.id == k->insert) ref = &in.plugin;
+        if (ref == nullptr) return {};
+        const auto& c = scanner_->catalog();
+        uint32_t keys = 1;
+        std::string name = ref->name;
+        if (const api::PluginInfo* p = catalog_find(*c, ref->format, ref->id)) {
+            keys = p->key_inputs;
+            name = p->name;
+        } else if (const plugin::probe::Record* rec = c->any_probe(host_id(*ref))) {
+            keys = rec->sidechain_in;
+        }
+        if (keys != 0) return {};
+        return std::string(model::insert_key_refusal::kNoKeyInput) + ": " + name +
+               " cannot be keyed by a bus";
+    }
     if (const auto* a = member.get_if<model::AddInsert>()) {
         ref = &a->plugin;
         for (const auto& t : doc.edit->tracks)
@@ -3091,6 +3168,10 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                     announce_bounce(api::BounceState::Cancelled, 0, 0,
                                     "the session was closed; the bounce was stopped");
                 }
+                if (stems_job_.abandon()) {
+                    announce_bounce(api::BounceState::Cancelled, 0, 0,
+                                    "the session was closed; the stem export was stopped");
+                }
                 // A render rolling the old session's chain prints nothing
                 // for the new one: stopped (its destructor removes the
                 // file), its standing event dropped.
@@ -3108,6 +3189,8 @@ void EngineControlServer::handle(ClientId from, const std::string& bytes) {
                     render_event_.clear();
                     render_said_ = 0;
                 }
+                // A copy for the old session's region: stopped and removed.
+                if (elastic_) elastic_->abandon();
                 withdraw_orphans();
                 offer_orphans();
             }
@@ -3428,9 +3511,14 @@ void EngineControlServer::announce_render(api::RenderState state, uint32_t permi
 
 bool EngineControlServer::start_render(model::RenderKind kind, const std::string& argument,
                                        std::string& why) {
+    // The command decides whether insert= is read (ADR-0087): Process
+    // Selection only, so a freeze is never printed through part of a chain.
+    const char* const command = kind == model::RenderKind::Process  ? api::kCommandProcessSelection
+                                : kind == model::RenderKind::Commit ? "track.commit"
+                                                                    : "track.freeze";
     api::RenderOptions o;
-    if (!api::parse_render_argument(argument, o, why)) return false;
-    if (render_ || bounce_job_.active()) {
+    if (!api::parse_render_argument(command, argument, o, why)) return false;
+    if (render_ || bounce_job_.active() || stems_job_.exporting()) {
         why = "a render or a bounce is already running; cancel it or wait for it";
         return false;
     }
@@ -3443,13 +3531,7 @@ bool EngineControlServer::start_render(model::RenderKind kind, const std::string
         return false;
     }
     const model::Snapshot now = document_->current();
-    RenderAsk ask;
-    ask.track = o.track;
-    ask.start = o.start;
-    ask.end = o.end;
-    ask.tail_ms = o.tail_ms;
-    ask.name = o.name;
-    ask.sample_rate = now.settings.sample_rate;
+    const RenderAsk ask = RenderAsk::from_options(o, now.settings.sample_rate);
     RenderRequest request;
     if (!plan_render(now, kind, ask, request, why)) return false;
     if (!hosting_ || !hosting_->ok()) {
@@ -3464,6 +3546,8 @@ bool EngineControlServer::start_render(model::RenderKind kind, const std::string
     PluginHosting* const hosting = hosting_.get();
     const model::Id track = request.track;
     auto job = std::make_unique<RenderInPlace>(session_, *playback_);
+    // hosting_ outlives render_: every path that resets it resets render_ first.
+    job->set_solo(hosting);
     if (!job->start(now, *session_.folder(), request,
                     [hosting, track] { return hosting->chain_misses(track); }, why)) {
         return false;
@@ -3595,8 +3679,17 @@ void EngineControlServer::tick() {
     pump_playback();
     follow_saver();
     follow_bounce();
+    {
+        const auto folder = session_.folder();
+        follow_stems(stems_job_, folder ? *folder : std::string(),
+                     [this](api::BounceState state, uint32_t permille, uint64_t files,
+                            const std::string& text) {
+                         announce_bounce(state, permille, files, text);
+                     });
+    }
     follow_consolidate();
     follow_render();
+    if (elastic_) elastic_->follow();
     autosave_when_due();
     follow_latency();
     follow_reported_latency();

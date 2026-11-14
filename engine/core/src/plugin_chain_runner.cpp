@@ -24,6 +24,12 @@ void PluginChainRunner::skip(const PlanNode& node, float* const out[2], uint32_t
 void PluginChainRunner::run(const PlanNode& node, const float* const in[2], float* const out[2],
                             uint32_t frames, const ChainParamEvent* events,
                             uint32_t event_count) noexcept SONORA_RT {
+    run_keyed(node, in, nullptr, out, frames, events, event_count);
+}
+
+void PluginChainRunner::run_keyed(const PlanNode& node, const float* const in[2], const float* const* key,
+                                  float* const out[2], uint32_t frames, const ChainParamEvent* events,
+                                  uint32_t event_count) noexcept SONORA_RT {
     const std::size_t bytes = std::size_t(frames) * sizeof(float);
     if (node.channel_slot == kSilentChannelSlot) {
         // The session never runs one; a caller that does gets its fade.
@@ -38,7 +44,7 @@ void PluginChainRunner::run(const PlanNode& node, const float* const in[2], floa
         if (event_count) events_dropped_.store(events_dropped() + event_count, std::memory_order_relaxed);
         return;
     }
-    if (node.channels == 0 || node.channels > 2) {
+    if (node.channels == 0 || node.channels > 2 || node.key_channels > 2) {
         std::memset(out[0], 0, bytes);
         std::memset(out[1], 0, bytes);
         bump(unsupported_);
@@ -46,9 +52,9 @@ void PluginChainRunner::run(const PlanNode& node, const float* const in[2], floa
         return;
     }
     const plugin_client::InsertChainRef ref{node.channel_slot, node.channel_generation, node.param_store,
-                                            node.node_state, node.channels};
+                                            node.node_state, node.channels, node.key_channels};
     const plugin_client::Outcome o =
-        client_.process_chain(ref, in, out, frames, event_count ? events : nullptr, event_count);
+        client_.process_chain(ref, in, out, frames, event_count ? events : nullptr, event_count, key);
     if (node.channels == 1) std::memcpy(out[1], out[0], bytes);
     switch (o) {
         case plugin_client::Outcome::Collected: bump(collected_); break;

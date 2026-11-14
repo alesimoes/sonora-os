@@ -26,6 +26,15 @@ Rectangle {
     id: mix
     required property ShellModel shell
     required property SessionModel session
+    // The shell feeds every meter, so it is told where they read.
+    function syncMeterPoint() {
+        if (mix.mixer !== null) mix.shell.setMeterPostFader(mix.mixer.meterPoint === "post")
+    }
+    Component.onCompleted: syncMeterPoint()
+    Connections {
+        target: mix.mixer
+        function onMeterPointChanged() { mix.syncMeterPoint() }
+    }
     property InsertModel inserts: null
     property SendModel sends: null
     property MixModel mixer: null
@@ -51,6 +60,54 @@ Rectangle {
         if (mixer !== null) mixer.showSends = true
     }
     color: Theme.window
+
+    // Which strips the Mix window draws (ADR-0130): view state of this
+    // window, not of the session. A hidden strip stays in its model, so it
+    // plays, meters and counts in groups, VCAs and solo; only its card goes,
+    // and the cards after it close up. Keys: "t3" track, "a0" aux bus,
+    // "v1" VCA. The master is pinned and has no key.
+    property var hiddenIds: ({})
+    function isHidden(key) { return hiddenIds[key] === true }
+    function setStripHidden(key, hidden) {
+        if (!/^[tav][0-9]+$/.test(key) || isHidden(key) === hidden) return
+        const h = Object.assign({}, hiddenIds)
+        if (hidden) h[key] = true; else delete h[key]
+        hiddenIds = h
+    }
+    function setKindHidden(kind, hidden) {
+        const n = kind === "t" ? session.trackCount : kind === "a" ? auxCount : vcaCount
+        for (let i = 0; i < n; ++i) setStripHidden(kind + i, hidden)
+    }
+    function showAll() { hiddenIds = ({}) }
+    readonly property int vcaCount: vcaList.length
+    // The places of the cards that are hidden and would have been drawn.
+    readonly property var hiddenSlots: {
+        const out = []
+        for (const k of Object.keys(hiddenIds)) {
+            const i = parseInt(k.substring(1))
+            const slot = k[0] === "t" ? slotOf(i)
+                       : k[0] === "a" ? slotCount + i : slotCount + auxCount + i
+            if (slot >= 0) out.push(slot)
+        }
+        return out
+    }
+    readonly property int hiddenCount: Object.keys(hiddenIds).length
+    // The column of the card at `slot`: the hidden cards before it close up.
+    function column(slot) {
+        let n = 0
+        for (const h of hiddenSlots) if (h < slot) ++n
+        return Math.max(slot, 0) - n
+    }
+    // Indices shift when a strip is added or removed: nothing stays hidden
+    // under another strip's name.
+    readonly property int trackTotal: session.trackCount
+    onTrackTotalChanged: showAll()
+    onAuxCountChanged: showAll()
+    onVcaCountChanged: showAll()
+    Connections {
+        target: mix.session
+        function onSessionOpened() { mix.showAll() }
+    }
 
     Text {
         id: note
@@ -110,6 +167,13 @@ Rectangle {
         visible: mix.mixer !== null
         width: visible ? implicitWidth : 0
         SButton {
+            objectName: "meterPoint"
+            text: mix.mixer !== null && mix.mixer.meterPoint === "pre" ? "Pre" : "Post"
+            implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            active: mix.mixer !== null && mix.mixer.meterPoint === "pre"
+            onClicked: mix.mixer.meterPoint = mix.mixer.meterPoint === "pre" ? "post" : "pre"
+        }
+        SButton {
             objectName: "viewIO"
             text: "I/O"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
             active: mix.mixer !== null && mix.mixer.showIO
@@ -126,6 +190,28 @@ Rectangle {
             text: "Ins F-J"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
             active: mix.mixer !== null && mix.mixer.showInsertsFJ
             onClicked: mix.mixer.showInsertsFJ = !mix.mixer.showInsertsFJ
+        }
+        SButton {
+            id: stripsButton
+            objectName: "stripsButton"
+            text: "Strips"; implicitHeight: 20; fontPx: Theme.textCaption; bold: false
+            implicitWidth: 50 + (mix.hiddenCount > 0 ? 18 : 0)
+            labelOffset: mix.hiddenCount > 0 ? -9 : 0
+            active: stripsPopup.visible
+            onClicked: stripsPopup.toggle()
+            Rectangle {
+                objectName: "hiddenBadge"
+                visible: mix.hiddenCount > 0
+                anchors { right: parent.right; rightMargin: 4; verticalCenter: parent.verticalCenter }
+                width: 14; height: 14; radius: 7
+                color: Theme.caution
+                Text {
+                    anchors.centerIn: parent
+                    text: mix.hiddenCount
+                    color: Theme.window
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption - 1; weight: Font.DemiBold }
+                }
+            }
         }
         Item { width: Theme.space2; height: 1 }
         // Of the selected tracks (ADR-0048); a refusal is held.
@@ -203,7 +289,7 @@ Rectangle {
             leftMargin: Theme.space3; rightMargin: Theme.space3; topMargin: Theme.space2; bottomMargin: Theme.space3
         }
         clip: true
-        contentWidth: (mix.slotCount + mix.auxCount + mix.vcaList.length) * mix.stripWidth
+        contentWidth: (mix.slotCount + mix.auxCount + mix.vcaCount - mix.hiddenSlots.length) * mix.stripWidth
         contentHeight: height
         flickableDirection: Flickable.HorizontalFlick
         boundsBehavior: Flickable.StopAtBounds
@@ -236,10 +322,11 @@ Rectangle {
                 required property int index
                 required property string modelData
                 readonly property int slot: mix.slotOf(index)
-                visible: slot >= 0
-                x: Math.max(slot, 0) * strips.stripWidth
+                visible: slot >= 0 && !mix.isHidden("t" + index)
+                x: mix.column(slot) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height
+                channels: mix.session.trackChannels(index)
                 shell: mix.shell
                 session: mix.session
                 inserts: mix.inserts
@@ -258,7 +345,8 @@ Rectangle {
             AuxStrip {
                 required property int index
                 required property var modelData
-                x: (mix.slotCount + index) * strips.stripWidth
+                visible: !mix.isHidden("a" + index)
+                x: mix.column(mix.slotCount + index) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height
                 shell: mix.shell
@@ -273,7 +361,7 @@ Rectangle {
             model: mix.mixer !== null ? mix.mixer.folderCards : []
             FolderCard {
                 required property var modelData
-                x: modelData.slot * strips.stripWidth
+                x: mix.column(modelData.slot) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height
                 mixer: mix.mixer
@@ -287,7 +375,8 @@ Rectangle {
                 required property var modelData
                 vcaIndex: index
                 faderTop: bus.faderZone.y
-                x: (mix.slotCount + mix.auxCount + index) * strips.stripWidth
+                visible: !mix.isHidden("v" + index)
+                x: mix.column(mix.slotCount + mix.auxCount + index) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height
                 shell: mix.shell
@@ -444,6 +533,92 @@ Rectangle {
                 text: (dragLayer.copying ? "Copy " : "Move ") + dragLayer.name
                 color: Theme.text
                 font { family: Theme.fontFamily; pixelSize: Theme.textCaption; weight: Font.DemiBold }
+            }
+        }
+    }
+
+    // --- the Strips menu: every strip listed, hidden or not (ADR-0130) ----
+    MouseArea {
+        anchors.fill: parent
+        visible: stripsPopup.visible
+        z: 27
+        onClicked: stripsPopup.visible = false
+    }
+    Rectangle {
+        id: stripsPopup
+        objectName: "stripsPopup"
+        visible: false
+        z: 28
+        width: 200
+        height: Math.min(mix.height - 40, popupColumn.implicitHeight + 2 * Theme.space1)
+        radius: Theme.radius
+        color: Theme.panel
+        border.color: Theme.borderStrong
+        function toggle() {
+            const p = stripsButton.mapToItem(mix, 0, stripsButton.height)
+            x = Math.max(Theme.space2, Math.min(p.x, mix.width - width - Theme.space2))
+            y = p.y + 2
+            visible = !visible
+        }
+        readonly property var rows: {
+            const out = []
+            const names = mix.session.trackNames
+            for (let i = 0; i < names.length; ++i) out.push({ key: "t" + i, label: names[i], kind: "t" })
+            const aux = mix.sends !== null ? mix.sends.auxes : []
+            for (let a = 0; a < aux.length; ++a) out.push({ key: "a" + a, label: aux[a].name, kind: "a" })
+            for (let v = 0; v < mix.vcaList.length; ++v) out.push({ key: "v" + v, label: mix.vcaList[v].name, kind: "v" })
+            return out
+        }
+        Flickable {
+            anchors { fill: parent; margins: Theme.space1 }
+            clip: true
+            contentHeight: popupColumn.implicitHeight
+            boundsBehavior: Flickable.StopAtBounds
+            Column {
+                id: popupColumn
+                width: parent.width
+                spacing: 2
+                Repeater {
+                    model: [{ k: "t", label: "All audio" }, { k: "a", label: "All aux buses" }, { k: "v", label: "All VCAs" }]
+                    SButton {
+                        required property var modelData
+                        objectName: "stripsKind_" + modelData.k
+                        width: popupColumn.width; implicitHeight: 22; bold: false; fontPx: Theme.textSmall
+                        alignLeft: true
+                        text: modelData.label
+                        readonly property bool allHidden: {
+                            const mine = stripsPopup.rows.filter(r => r.kind === modelData.k)
+                            return mine.length > 0 && mine.every(r => mix.isHidden(r.key))
+                        }
+                        active: allHidden
+                        onClicked: mix.setKindHidden(modelData.k, !allHidden)
+                    }
+                }
+                SButton {
+                    objectName: "stripsShowAll"
+                    width: popupColumn.width; implicitHeight: 22; bold: false; fontPx: Theme.textSmall
+                    text: "Show all"
+                    available: mix.hiddenCount > 0
+                    onClicked: mix.showAll()
+                }
+                Repeater {
+                    model: stripsPopup.rows
+                    SButton {
+                        required property var modelData
+                        objectName: "stripsRow_" + modelData.key
+                        width: popupColumn.width; implicitHeight: 22; bold: false; fontPx: Theme.textSmall
+                        alignLeft: true
+                        text: (mix.isHidden(modelData.key) ? "Hidden  " : "Shown   ") + modelData.label
+                        active: mix.isHidden(modelData.key)
+                        activeColour: Theme.caution
+                        onClicked: mix.setStripHidden(modelData.key, !mix.isHidden(modelData.key))
+                    }
+                }
+                Text {
+                    text: "Master is always shown"
+                    color: Theme.textTertiary
+                    font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+                }
             }
         }
     }

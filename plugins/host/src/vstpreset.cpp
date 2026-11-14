@@ -98,7 +98,66 @@ bool read_bytes(const std::string& path, std::size_t want, std::string& bytes, s
     return true;
 }
 
+// `n` bytes at `at`, or false when the file holds fewer there.
+bool read_at(std::ifstream& in, uint64_t at, std::size_t n, std::string& out) {
+    in.clear();
+    in.seekg(static_cast<std::streamoff>(at));
+    out.assign(n, '\0');
+    if (n == 0) return bool(in);
+    in.read(out.data(), static_cast<std::streamsize>(n));
+    return in.gcount() == static_cast<std::streamsize>(n);
+}
+
+// Chunk data lies between the header and the list. Unsigned, so a
+// negative int64 is a huge value and fails the same test.
+bool inside_data(uint64_t off, uint64_t size, uint64_t list) {
+    return off >= kHeaderBytes && off <= list && size <= list - off;
+}
+
 }  // namespace
+
+bool load_info(const std::string& path, std::string& info, std::string& error) {
+    uint64_t size = 0;
+    if (!stat_regular(path, size, error)) return false;
+    std::ifstream in(path, std::ios::binary);
+    std::string head, id;
+    if (!in || !read_at(in, 0, kHeaderBytes, head)) {
+        error = path + " could not be read";
+        return false;
+    }
+    if (!read_header(head, id, error)) return false;
+    const uint64_t list = u64(head, 40);
+    std::string lh;
+    if (list < kHeaderBytes || list > size || size - list < 8 || !read_at(in, list, 8, lh) ||
+        lh.compare(0, 4, "List") != 0) {
+        error = "the .vstpreset's chunk list is not where its header says";
+        return false;
+    }
+    const auto count = static_cast<int32_t>(u32(lh, 4));
+    std::string entries;
+    if (count < 0 || count > kMaxEntries || (size - list - 8) / kEntryBytes < std::size_t(count) ||
+        !read_at(in, list + 8, std::size_t(count) * kEntryBytes, entries)) {
+        error = "the .vstpreset's chunk list is cut short or too long";
+        return false;
+    }
+    int infos = 0;
+    uint64_t off = 0, len = 0;
+    for (std::size_t e = 0; e < entries.size(); e += kEntryBytes) {
+        if (entries.compare(e, 4, "Info") != 0) continue;
+        ++infos;
+        off = u64(entries, e + 4);
+        len = u64(entries, e + 12);
+    }
+    if (infos != 1) {
+        error = infos == 0 ? "the .vstpreset has no 'Info' chunk" : "the .vstpreset has two 'Info' chunks";
+        return false;
+    }
+    if (!inside_data(off, len, list) || len > kMaxInfoBytes || !read_at(in, off, std::size_t(len), info)) {
+        error = "the .vstpreset's 'Info' chunk is outside its data or over " + std::to_string(kMaxInfoBytes) + " bytes";
+        return false;
+    }
+    return true;
+}
 
 bool read_header(std::string_view b, std::string& class_id, std::string& error) {
     if (b.size() < kHeaderBytes) {
@@ -164,8 +223,7 @@ bool parse(std::string_view b, File& out, std::string& error) {
             error = "the .vstpreset has two '" + printable(id) + "' chunks";
             return false;
         }
-        // Chunk data lies between the header and the list.
-        if (off < kHeaderBytes || off > list || size > list - off) {
+        if (!inside_data(off, size, list)) {
             error = "the .vstpreset's '" + printable(id) + "' chunk (" + std::to_string(size) + " bytes at " +
                     std::to_string(off) + ") is outside its data";
             return false;
@@ -250,7 +308,9 @@ std::vector<Listed> list(const std::vector<std::string>& roots, const std::strin
                 continue;
             const std::string rel = e.path().lexically_relative(root).generic_string();
             if (rel.empty() || rel.rfind("..", 0) == 0) continue;
-            here.push_back({rel, file.substr(0, file.size() - std::strlen(kExtension))});
+            std::string name = file.substr(0, file.size() - std::strlen(kExtension)), info, display;
+            if (load_info(e.path().string(), info, why) && info_name(info, display)) name = std::move(display);
+            here.push_back({rel, std::move(name)});
         }
         // Directory order is the filesystem's: sort, so a listing is the
         // same on every machine.

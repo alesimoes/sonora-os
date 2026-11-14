@@ -9,10 +9,13 @@ add_library(sonora_control STATIC
   src/engine_control_in_process.cpp
   src/control_socket_server.cpp
   src/plan_builder.cpp
+  src/bus_order.cpp
+  src/key_edges.cpp
   src/playback_controller.cpp
   src/closed_take.cpp
   src/orphan_offer.cpp
   src/plugin_hosting.cpp
+  src/plugin_hosting_state.cpp
   src/plugin_scanner.cpp
   src/plugin_catalog_cache.cpp
   src/plugin_block_list.cpp
@@ -24,7 +27,11 @@ add_library(sonora_control STATIC
   src/consolidate.cpp
   src/bounce.cpp
   src/bounce_job.cpp
+  src/stems.cpp
+  src/stems_job.cpp
+  src/stems_commands.cpp
   src/render_in_place.cpp
+  src/render_solo.cpp
   src/consolidate_job.cpp
   src/sample_edit.cpp
   src/mix_planner.cpp
@@ -115,6 +122,19 @@ if(UNIX)
   # other tests overruns it (2 of 25 runs beside the native renders).
   set_tests_properties(bounce PROPERTIES RUN_SERIAL TRUE LABELS timing)
 
+  # Export Stems (ADR-0085): the plan, the file names, the refusals, and no
+  # folder left by a cancel or a failure; the passes are a fake renderer.
+  add_executable(test_stems tests/test_stems.cpp)
+  target_link_libraries(test_stems PRIVATE sonora_control Threads::Threads)
+  add_test(NAME stems COMMAND test_stems)
+  # The null test: the stems summed are the full bounce within 1 LSB at 24
+  # bit. Alone under `ctest -j`, as bounce: seven offline passes through the
+  # disk reader, which retries when it is starved.
+  add_executable(test_stems_sum tests/test_stems_sum.cpp)
+  target_link_libraries(test_stems_sum PRIVATE sonora_control Threads::Threads)
+  add_test(NAME stems_sum COMMAND test_stems_sum)
+  set_tests_properties(stems_sum PROPERTIES RUN_SERIAL TRUE LABELS timing)
+
   # Track Freeze, Commit and Process Selection (ADR-0051): the print through
   # a chain with a declared latency, to the sample.
   add_executable(test_render_in_place tests/test_render_in_place.cpp)
@@ -125,7 +145,23 @@ if(UNIX)
   # where it flaked beside the other tests (2026-11-07).
   set_tests_properties(render_in_place PROPERTIES RUN_SERIAL TRUE)
   set_property(TEST render_in_place APPEND PROPERTY LABELS timing)
+
+  # Process Selection through one insert (ADR-0087 §4): the other inserts
+  # silenced by a render-scoped override, lifted on every exit.
+  add_executable(test_render_solo tests/test_render_solo.cpp)
+  target_link_libraries(test_render_solo PRIVATE sonora_control Threads::Threads)
+  add_test(NAME render_solo COMMAND test_render_solo)
+  # The same real-time roll and wall-clock deadlines as render_in_place.
+  set_tests_properties(render_solo PROPERTIES RUN_SERIAL TRUE)
+  set_property(TEST render_solo APPEND PROPERTY LABELS timing)
 endif()
+
+# Side-chain key edges (ADR-0058 items 2, 3): the plan's key edge from the
+# bus's AuxSum, PDC over it, a missing bus as a silent key, a key loop
+# refused, and signal and key sample-aligned through Session::process().
+add_executable(test_key_edges tests/test_key_edges.cpp)
+target_link_libraries(test_key_edges PRIVATE sonora_control)
+add_test(NAME key_edges COMMAND test_key_edges)
 
 # A closed take as one compound; a bad file costs one track (ADR-0009
 # update 2026-10-14, item 8).
@@ -139,6 +175,12 @@ add_test(NAME closed_take COMMAND test_closed_take)
 add_executable(test_loop_take tests/test_loop_take.cpp)
 target_link_libraries(test_loop_take PRIVATE sonora_control)
 add_test(NAME loop_take COMMAND test_loop_take)
+
+# A loop take whose window opened late on a track: the take's pass numbers
+# kept, and nothing placed past the pass cap (ADR-0141). Same rig.
+add_executable(test_loop_take_late tests/test_loop_take_late.cpp)
+target_link_libraries(test_loop_take_late PRIVATE sonora_control)
+add_test(NAME loop_take_late COMMAND test_loop_take_late)
 
 # The handlers on a real Session (moved here from ui/keymap's test in M4).
 add_executable(test_session_commands tests/test_session_commands.cpp)
@@ -158,6 +200,16 @@ add_test(NAME control COMMAND test_control)
 # where it flaked beside the other tests (2026-11-07).
 set_tests_properties(control PROPERTIES RUN_SERIAL TRUE)
 set_property(TEST control APPEND PROPERTY LABELS timing)
+
+# Process Selection With through the real server (ADR-0087): Hello's
+# capability, insert= for process_selection only and into the plan; with a
+# real host (below), the print through one insert with the solo seam set.
+add_executable(test_control_process_with tests/test_control_process_with.cpp)
+target_link_libraries(test_control_process_with PRIVATE sonora_control sonora_backend_fake)
+add_test(NAME control_process_with COMMAND test_control_process_with)
+# drivers/fake's real-time thread: alone under `ctest -j`, as control is.
+set_tests_properties(control_process_with PROPERTIES RUN_SERIAL TRUE)
+set_property(TEST control_process_with APPEND PROPERTY LABELS timing)
 
 # The server on a socket (M7), driven by raw platform channels rather than
 # ui/client, so this module's test needs nothing above it: several
@@ -206,6 +258,11 @@ if(UNIX)
   target_link_libraries(test_factory_preset_reader PRIVATE sonora_control)
   add_dependencies(test_factory_preset_reader fake_plugin_host)
   add_test(NAME factory_preset_reader COMMAND test_factory_preset_reader --host $<TARGET_FILE:fake_plugin_host>)
+  # plugin.rescan forgets the reader's Blocked presets (ADR-0144 amendment).
+  add_executable(test_plugin_rescan_presets tests/test_plugin_rescan_presets.cpp)
+  target_link_libraries(test_plugin_rescan_presets PRIVATE sonora_control sonora_backend_fake Threads::Threads)
+  add_dependencies(test_plugin_rescan_presets fake_plugin_host)
+  add_test(NAME plugin_rescan_presets COMMAND test_plugin_rescan_presets --host $<TARGET_FILE:fake_plugin_host>)
   # Wall-clock deadline (a poll with a timeout): alone under `ctest -j`, and
   # one at a time under the sanitizers (tools/local-ci.sh, label timing),
   # where it flaked beside the other tests (2026-11-07).
@@ -258,7 +315,7 @@ if(TARGET sonora-plugin-host)
   set(_ph_tests)
   foreach(scenario open_starts_silent new_insert_dry edit_keeps_old undo_abandons missing refused params lanes lanes_second_insert
                    down_keeps_latency gestures server values_while_starting reload_starts_afresh
-                   repost_bypass_off gesture_left_open failed_edit state_not_restored work_refused touch_faults work_refused_new_session server_work_refused play_waits play_wait_bounded move_off_missing
+                   repost_bypass_off render_solo render_unsolo_document render_solo_refused gesture_left_open failed_edit state_not_restored work_refused touch_faults work_refused_new_session server_work_refused play_waits play_wait_bounded move_off_missing
                    play_no_hosting play_wait_cancel rescan_drops_stale rescan_loses_running
                    rescan_blocks_running state_flush server_state_flush flush_active_folder
                    flush_read_across_load state_read_timeout state_reads_in_turn plugin_files_restore
@@ -266,6 +323,11 @@ if(TARGET sonora-plugin-host)
     add_test(NAME plugin_hosting_${scenario} COMMAND ${_ph} --scenario ${scenario})
     list(APPEND _ph_tests plugin_hosting_${scenario})
   endforeach()
+  add_dependencies(test_control_process_with sonora-plugin-host)
+  add_test(NAME control_process_with_host
+           COMMAND $<TARGET_FILE:test_control_process_with> --host $<TARGET_FILE:sonora-plugin-host>
+                   --bundle ${CMAKE_BINARY_DIR}/lv2/sonora-test.lv2)
+  list(APPEND _ph_tests control_process_with_host)
   # native.editors (ADR-0057): the real host, a Sonora EQ and its descriptor.
   get_property(_eq_mono_uri GLOBAL PROPERTY SONORA_NATIVE_eq-mono_LV2_URI)
   if(_eq_mono_uri)
@@ -323,6 +385,12 @@ add_executable(test_mix_planner tests/test_mix_planner.cpp)
 target_include_directories(test_mix_planner PRIVATE ${CMAKE_SOURCE_DIR}/common/model/tests)
 target_link_libraries(test_mix_planner PRIVATE sonora_control)
 add_test(NAME mix_planner COMMAND test_mix_planner)
+
+# GetState deadlines and the one-copying-save-at-a-time queue (ADR-0151
+# sections 1 and 4) on a fake clock: no host, no sleep.
+add_executable(test_plugin_hosting_state_wait tests/test_plugin_hosting_state_wait.cpp)
+target_link_libraries(test_plugin_hosting_state_wait PRIVATE sonora_control)
+add_test(NAME plugin_hosting_state_wait COMMAND test_plugin_hosting_state_wait)
 
 # Reverb and delay space of a reference recording (ADR-0045 8).
 add_executable(test_space_measure tests/test_space_measure.cpp)

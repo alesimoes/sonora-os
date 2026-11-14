@@ -1,35 +1,51 @@
-"""The dashboard's shared snapshot and the loop that refreshes it. Each source
-fails on its own: an error is listed in the snapshot, never raised."""
+"""The console's snapshot and the loop that refreshes it: the daemon's
+status.json, the open and merged PRs from GitHub, and the board rows built
+from them. Each source fails on its own: an error is listed, never raised."""
+import hashlib
 import json
 import os
 import threading
 import time
 
-from dashboard_agents import read_agents, stamp_done
-from dashboard_disk import disk_view
+from dashboard_board import agent_rows
+from dashboard_cost import read_cost
 from dashboard_github import read_merged, read_prs
-from dashboard_machine import read_containers, read_lock, read_watchers
-from dashboard_runview import add_last_steps
-from dashboard_orch import clean_orch, read_coordinator, read_orchestrator, read_progress
-from dashboard_usage import read_usage
+from dashboard_orch import clean_orch, read_coordinator_agents, read_orchestrator
+from dashboard_prboard import GreenClock, pr_rows
+from dashboard_progress import EVERY_S as PROGRESS_EVERY_S, read_progress
+from dashboard_util import orch_root
 
 GH_EVERY_S = 20
-PROGRESS_EVERY_S = 300
 LOOP_S = 4
+COST_EVERY_S = 30
+_cost_at = [0.0]
 
-state = {"usage": {"sessions": [], "week": None, "five_hour": None}, "updated": 0, "agents": [], "prs": [],
-         "watchers": [], "containers": [], "errors": [], "orchestrator": None, "merged": [], "lock": [], "disk": None}
+state = {"updated": 0, "progress": None, "prs": [], "merged": [], "errors": [], "orchestrator": None,
+         "board": {"agents": [], "prs": []}}
 lock = threading.Lock()
+green_clock = GreenClock()
 
 
-def read_labels(agents_file, errors):
-    try:
-        if agents_file and os.path.exists(agents_file):
-            with open(agents_file, encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        errors.append("agents file: %s" % e)
-    return {}
+def build_board(orch, prs, now=None):
+    """Every running agent and the open PRs with their gate."""
+    now = now or time.time()
+    return {"agents": agent_rows(orch, read_coordinator_agents(now), [], now),
+            "prs": pr_rows(prs, orch, green_clock, now)}
+
+
+class Progress:
+    """The catalogue, re-read every PROGRESS_EVERY_S; the last good value stands."""
+    def __init__(self):
+        self.at, self.value = 0.0, None
+
+    def poll(self, errors):
+        if time.time() - self.at <= PROGRESS_EVERY_S:
+            return
+        self.at = time.time()
+        try:
+            self.value = read_progress() or self.value
+        except Exception as e:
+            errors.append("progresso: %s" % e)
 
 
 class Gh:
@@ -46,33 +62,41 @@ class Gh:
             errors.append("gh: %s" % e)
 
 
-def refresh_once(agents_file, gh, progress):
-    """One pass; `progress` is a one-slot dict {"at", "value"} owned by the loop."""
+def refresh_once(gh, prog=None):
     errors = []
     gh.poll(errors)
-    labels = read_labels(agents_file, errors)
-    stamp_done(labels, agents_file)
-    containers, watchers = read_containers(), read_watchers()
-    lk = read_lock(labels)
-    status = read_orchestrator()
-    if time.time() - progress["at"] > PROGRESS_EVERY_S:
+    if prog:
+        prog.poll(errors)
+    orch = clean_orch(read_orchestrator(), {p["number"] for p in gh.prs} if gh.ok else None)
+    try:
+        board = build_board(orch, gh.prs)
+    except Exception as e:
+        board = state["board"]
+        errors.append("quadro: %s" % e)
+    cost = state.get("cost")
+    if time.time() - _cost_at[0] >= COST_EVERY_S:
+        _cost_at[0] = time.time()
         try:
-            progress["value"] = read_progress()
+            cost = read_cost(os.path.join(orch_root(), ".harness", "runs")) or cost
         except Exception as e:
-            errors.append("progress: %s" % e)
-        progress["at"] = time.time()
-    orch = add_last_steps(clean_orch(status, {p["number"] for p in gh.prs} if gh.ok else None))
+            errors.append("custo: %s" % e)
+    progress = prog.value if prog else state["progress"]
+    # `rev` moves only when what the screen shows moved: `updated` ticks on
+    # every pass, and a stream keyed to it pushed a full 25 KB frame every 4 s
+    # to every open page whether or not anything had changed (2026-11-09).
+    digest = hashlib.md5(json.dumps(
+        [gh.prs, gh.merged, orch, board, errors, cost, progress],
+        sort_keys=True, default=str).encode()).hexdigest()
     with lock:
-        state.update(updated=int(time.time()), progress=progress["value"], prs=gh.prs, watchers=watchers,
-                     containers=containers, merged=gh.merged, usage=read_usage(), orchestrator=orch,
-                     coordinator=read_coordinator(), lock=lk, buildtime=None, disk=disk_view())
-    agents = read_agents(labels, containers, lk)
-    with lock:
-        state.update(agents=agents, errors=errors)
+        if digest != state.get("digest"):
+            state["rev"] = state.get("rev", 0) + 1
+        state.update(updated=int(time.time()), digest=digest, prs=gh.prs, merged=gh.merged,
+                     orchestrator=orch, board=board, errors=errors, cost=cost,
+                     progress=progress)
 
 
-def refresh_loop(agents_file):
-    gh, progress = Gh(), {"at": 0.0, "value": None}
+def refresh_loop():
+    gh, prog = Gh(), Progress()
     while True:
-        refresh_once(agents_file, gh, progress)
+        refresh_once(gh, prog)
         time.sleep(LOOP_S)
