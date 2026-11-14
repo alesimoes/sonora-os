@@ -25,7 +25,7 @@ branch, worktree and progress names and the root's history is untouched.
 import json
 import re
 
-from . import closed, queueimport
+from . import blockinfo, closed, owner_route, queueimport
 
 SUFFIX = ".rest"
 MAX_ROUNDS = 3
@@ -111,12 +111,28 @@ def _in_scope(store, f):
     return not queueimport.out_of_scope(" ".join([f["id"], *map(str, ids)]))
 
 
+def _parked_roots(store):
+    """Roots whose chain has a link found to need only a hardware run."""
+    return {root_of(w["feature_id"]) for w in store.tasks(kind="wake")
+            if w["state"] == "blocked" and w.get("feature_id")
+            and blockinfo.cause_of(w) == owner_route.HARDWARE}
+
+
+def parked(store, track=None):
+    """Roots parked for a hardware run (owner 2026-11-13: until the product
+    is complete), never offered again."""
+    roots = _parked_roots(store)
+    return [f["id"] for f in store.features() if f["id"] in roots
+            and not (track and f["track"] != track)]
+
+
 def continuable(store, track=None):
     """[{root, next, track, prs}] for the lead, oldest first PR first."""
     rows = []
+    held = _parked_roots(store)
     for f in store.features():
         if round_of(f["id"]) or (track and f["track"] != track) \
-                or not _in_scope(store, f):
+                or not _in_scope(store, f) or f["id"] in held:
             continue
         nid = next_id(store, f["id"])
         if nid:
@@ -148,6 +164,8 @@ def target(store, fid):
         return None, None
     if store.get_feature(root) is None:
         return None, f"no feature {root} to continue"
+    if root in _parked_roots(store):
+        return None, f"{root} is parked for a hardware run"
     nid = next_id(store, fid)
     if nid and len(nid) > MAX_ID:
         return None, f"{nid} is longer than a feature id may be"

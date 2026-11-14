@@ -22,3 +22,14 @@ def by_feature(tasks):
         if t["kind"] == "work":
             out.setdefault(t["feature_id"] or t["id"], []).append(t)
     return out
+
+
+def holding(tasks, done_states):
+    """The live slices that keep a feature's finished ones from integrating
+    (its integrator waits for every slice), or [] when no slice waits.
+    2026-11-13: three features showed finished slices "integrating" for
+    hours and nothing said which blocked sibling held them."""
+    mine = live(tasks)
+    if not any(t["state"] == "integrating" for t in mine):
+        return []
+    return [t for t in mine if t["state"] not in done_states]

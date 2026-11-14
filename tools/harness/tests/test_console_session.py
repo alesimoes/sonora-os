@@ -1,5 +1,6 @@
 """One console run kept alive between messages (console_session) and the
 half-written answer (partial replies)."""
+import os
 import unittest
 
 import support
@@ -86,6 +87,48 @@ class Session(support.DaemonCase):
         self.assertEqual(len(self.wakes(o)), 1)
         self.assertEqual(o.store.get_meta("console_sess_end", "0"), "0")
         self.assertEqual(o.store.get_meta("console_sess_n", "0"), "1")
+
+
+class CleanExit(support.DaemonCase):
+    """2026-11-13: console runs answered, ended their turn ("no owner_ask
+    asked for the end, so no result.json") and exited 0. The daemon called
+    each one dead, counted a failure and launched the console again for a
+    message already answered (wake-console-console_request-877, #1 and #2)."""
+    SUCCESS = ('{"type":"result","subtype":"success","is_error":false,'
+               '"terminal_reason":"completed","result":"Respondi."}\n')
+
+    def poll_exit(self, o, name="console", tail=SUCCESS, agent="console"):
+        from test_stall_check import dead_pid
+        o.store.add_task("w", None, agent, kind="wake")
+        o.store.set_task("w", event="console_request")
+        stream = os.path.join(self.tmp, f"stream-{name}.log")
+        with open(stream, "w") as f:
+            f.write('{"type":"assistant"}\n' + tail)
+        o.store.add_run(id="w-r1", task_id="w", role="planner", name=name,
+                        pid=dead_pid(), started=o.clock(),
+                        last_beat=o.clock(), worktree=None,
+                        result_path=os.path.join(self.tmp, "none.json"),
+                        stream_path=stream)
+        o._poll_run(o.store.get_run("w-r1"), o.clock())
+        return o.store.get_run("w-r1"), o.store.get_task("w")
+
+    def test_a_console_that_ends_its_turn_finished_its_session(self):
+        o = self.make(dry_run=True, floors={"daw": 0})
+        r, t = self.poll_exit(o)
+        self.assertEqual((r["outcome"], t["state"], t["attempts"]),
+                         ("finished", "merged", 0))
+        self.assertEqual(o.store.events("w", "run_failed"), [])
+
+    def test_a_console_that_crashed_is_still_dead(self):
+        o = self.make(dry_run=True, floors={"daw": 0})
+        r, t = self.poll_exit(o, tail='{"type":"result","subtype":"error_during'
+                                '_execution","is_error":true}\n')
+        self.assertEqual((r["outcome"], t["attempts"]), ("dead", 1))
+
+    def test_another_role_without_result_json_is_still_dead(self):
+        o = self.make(dry_run=True, floors={"daw": 0})
+        r, t = self.poll_exit(o, name="lead", agent="lead")
+        self.assertEqual((r["outcome"], t["attempts"]), ("dead", 1))
 
 
 class Partial(support.DaemonCase):

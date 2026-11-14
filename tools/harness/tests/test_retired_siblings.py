@@ -71,6 +71,33 @@ class DaemonTests(ts.Case):
         self.o.flow.sync_states()
         self.assertEqual("integrating", s.get_feature("f")["state"])
 
+    def open_pr(self, mergeable):
+        s = self.o.store
+        s.add_feature("f", "daw", branch="feat/f")
+        punch_loop(s, last_state="pr_open")
+        s.set_feature("f", pr=709, state="pr_open")
+        s.set_task("f.ui-r1", pr=709)
+        self.forge.prs[709] = {"branch": "feat/f", "files": [],
+                               "state": "open", "mergeable": mergeable,
+                               "checks": {"build": "pass"}}
+
+    def test_conflicting_pr_is_watched_past_a_closed_first_sibling(self):
+        # 2026-11-13: #709 sat CONFLICTING 7 h; the watch read the closed
+        # .ui (not pr_open) as the feature and never polled the PR.
+        self.open_pr("no")
+        self.o._watch_pr(self.o.store.get_feature("f"), self.o.clock())
+        t = self.o.store.get_task("f.ui-r1")
+        self.assertEqual((t["state"], t["fix_kind"]), ("ci_fix", "conflict"))
+        self.assertEqual(self.o.store.get_task("f.ui")["state"], "closed")
+        p = plan(self.o.store)
+        self.assertIn(("f.ui-r1", "integrator"),
+                      [(x.task_id, x.kind) for x in p.launches])
+
+    def test_events_of_the_feature_go_to_a_live_task(self):
+        self.open_pr("yes")
+        self.assertEqual(self.o._rep_task(self.o.store.get_feature("f")),
+                         "f.ui-r1")
+
     def test_stall_text_never_names_a_closed_sibling(self):
         from harness import stall_check
         s = self.o.store

@@ -10,7 +10,7 @@ lists every feature id the daemon has.
 whose remainder may be opened are now listed apart, with the PRs that
 merged the earlier parts (remainder.py).
 """
-from . import remainder
+from . import queueimport, remainder
 
 WAKE_PREFIX = "wake-lead-pool_under_floor-"
 MAX_ROWS = 15
@@ -57,7 +57,22 @@ def spent(store, track=None):
             "again (the owner decides): " + ", ".join(sorted(ids)))
 
 
+def out_of_scope():
+    return ("Out of v1, never propose (rejected): "
+            + queueimport.OUT_OF_V1_TEXT + ".")
+
+
+def parked(store, track=None):
+    ids = remainder.parked(store, track)
+    if not ids:
+        return ""
+    return ("Parked for a hardware run (owner 2026-11-13: hardware-only "
+            "validations wait until the product is complete; do not "
+            "propose them or their remainder): " + ", ".join(sorted(ids)))
+
+
 def text(store, wake_id=None):
     track = track_of(wake_id)
-    parts = [known(store), continuable(store, track), spent(store, track)]
+    parts = [known(store), continuable(store, track), spent(store, track),
+             parked(store, track), out_of_scope()]
     return "\n\n".join(p for p in parts if p)

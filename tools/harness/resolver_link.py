@@ -22,6 +22,7 @@ a resolver was queued for, a PR whose title starts with the feature id
 """
 import re
 
+from . import blockinfo
 from .heartbeat import read_result
 
 EVENT = "stall_resolver"
@@ -149,8 +150,7 @@ def close_merged(orch, f, entry):
     ts = store.feature_tasks(fid)
     with store.tx():
         for t in ts:
-            if t["state"] in DONE or (t["state"] == "blocked"
-                                      and t.get("owner")):
+            if t["state"] in DONE or blockinfo.kept_open(t):
                 continue
             if t["state"] == "integrating":
                 store.advance(t["id"], "pr_open", note=note)
