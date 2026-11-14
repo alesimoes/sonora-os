@@ -5,8 +5,17 @@
 # sonora-ui is, because this library is linked into it once the root has been
 # read (ui/qt is added after plugins/analyze, which adds this directory).
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  ${CMAKE_CURRENT_SOURCE_DIR}/PitchPanel.qml)
+  ${CMAKE_CURRENT_SOURCE_DIR}/PitchPanel.qml
+  ${CMAKE_CURRENT_SOURCE_DIR}/PitchRoll.qml
+  ${CMAKE_CURRENT_SOURCE_DIR}/PitchInspector.qml
+  ${CMAKE_CURRENT_SOURCE_DIR}/PitchScaleBar.qml)
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/PitchPanel.qml SONORA_PITCH_PANEL_QML)
+# Fragments are spliced in where the panel carries an //#include marker.
+foreach(_frag PitchRoll PitchInspector PitchScaleBar)
+  file(READ ${CMAKE_CURRENT_SOURCE_DIR}/${_frag}.qml _frag_text)
+  string(REPLACE "//#include \"${_frag}.qml\"" "${_frag_text}"
+    SONORA_PITCH_PANEL_QML "${SONORA_PITCH_PANEL_QML}")
+endforeach()
 file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/generated/pitch_panel_qml.inc
   CONTENT "R\"sonoraqml(${SONORA_PITCH_PANEL_QML})sonoraqml\"\n" @ONLY)
 
