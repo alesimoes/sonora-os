@@ -1,0 +1,3 @@
+# logic.stem_split (ADR-0223): stems are rendered to WAV files through
+# common/audiofile. Folded into tools/module-deps.allow once that file is free.
+common/stems -> common/audiofile
