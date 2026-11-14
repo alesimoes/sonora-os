@@ -189,15 +189,13 @@ int main() {
         std::string err;
         const std::string path = std::string(SONORA_KEYMAP_DIR) + "/" + file;
         if (!KeyMap::load_file(path, map, err)) {
-            std::fprintf(stderr, "FAIL %s does not load: %s
-", path.c_str(), err.c_str());
+            std::fprintf(stderr, "FAIL %s does not load: %s\n", path.c_str(), err.c_str());
             return 1;
         }
         const Binding* b = map.resolve("ctrl+alt+0");
         if (find_command("transport.varispeed") == nullptr || b == nullptr ||
             b->command != "transport.varispeed" || b->ctx.argument != "1") {
-            std::fprintf(stderr, "FAIL %s: ctrl+alt+0 is not the varispeed reset
-", file);
+            std::fprintf(stderr, "FAIL %s: ctrl+alt+0 is not the varispeed reset\n", file);
             ++failures;
         }
     }
