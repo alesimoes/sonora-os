@@ -1,5 +1,6 @@
 add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp src/wav_recovery.cpp
-  src/wrap_sidecar.cpp src/audio_export.cpp src/export_file.cpp src/flac_bits.cpp src/audio_import.cpp src/peak_file.cpp)
+  src/wrap_sidecar.cpp src/audio_export.cpp src/export_file.cpp src/flac_bits.cpp src/audio_import.cpp src/peak_file.cpp
+  src/lossy_registry.cpp)
 target_include_directories(sonora_audiofile PUBLIC include)
 # common/platform for the take file's exclusive, close-on-exec create and its
 # periodic sync (ADR-0008 Â§3; ADR-0009 Consequences).
@@ -64,3 +65,10 @@ add_test(NAME audio_import COMMAND test_audio_import)
 add_executable(test_peak_file tests/test_peak_file.cpp)
 target_link_libraries(test_peak_file PRIVATE sonora_audiofile)
 add_test(NAME peak_file COMMAND test_peak_file)
+
+# The lossy codec seam (ADR-0182): an unavailable codec is refused at the
+# start of a bounce with its name, a rejected licence cannot register, and a
+# fake encoder runs through open, write and finish. Portable.
+add_executable(test_lossy_registry tests/test_lossy_registry.cpp)
+target_link_libraries(test_lossy_registry PRIVATE sonora_audiofile)
+add_test(NAME lossy_registry COMMAND test_lossy_registry)
