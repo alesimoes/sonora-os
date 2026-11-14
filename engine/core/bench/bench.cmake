@@ -1,4 +1,4 @@
-# sonora-graph-bench (ADR-0173): included from engine/core's CMakeLists.txt.
+# sonora-graph-bench (ADR-0218): included from engine/core's CMakeLists.txt.
 # It lives here, not in engine/plugin_client, because plugin_client -> core
 # is a forbidden edge and the tool drives Session.
 set(_bench_dir ${CMAKE_CURRENT_LIST_DIR})
@@ -10,7 +10,7 @@ target_link_libraries(sonora-graph-bench PRIVATE sonora_core sonora_plugin_clien
 set(_bench_exe -DBENCH=$<TARGET_FILE:sonora-graph-bench>)
 set(_bench_fake --fake --quantum 128 --rate 48000)
 
-# Counts only (ADR-0173 §3): exit 0, one RESULT line with zero drops,
+# Counts only (ADR-0218 §3): exit 0, one RESULT line with zero drops,
 # allocations and lag. No --strict-time: a shared runner's timing decides
 # nothing here.
 add_test(NAME plugin_client_bench_smoke

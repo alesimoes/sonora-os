@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The session sonora-graph-bench drives (ADR-0173 §1), built as
+// The session sonora-graph-bench drives (ADR-0218 §1), built as
 // engine/core/tests/test_session_plugins.cpp builds it: every track
 // monitoring its input, the chains bound, the plan laid out by
 // layout_track_graph and compensated, then published through the disk

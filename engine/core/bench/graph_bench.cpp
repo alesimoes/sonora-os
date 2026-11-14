@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// sonora-graph-bench (ADR-0173): Session::process() at quantum 128 over 18
+// sonora-graph-bench (ADR-0218): Session::process() at quantum 128 over 18
 // tracks of 4-plugin chains, beside a 2048-frame chain and a dry track.
 //
 //   sonora-graph-bench --fake [--callbacks N] [--quantum 128] [--rate 48000]

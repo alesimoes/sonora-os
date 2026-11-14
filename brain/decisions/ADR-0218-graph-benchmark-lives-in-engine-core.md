@@ -1,4 +1,4 @@
-# ADR-0173: Graph benchmark, 18 tracks x 4 plugins at quantum 128
+# ADR-0218: Graph benchmark, 18 tracks x 4 plugins at quantum 128
 
 Status: accepted (architect, 2026-11-08)
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// sonora-graph-bench's verdict (ADR-0173 §2): the callback times the driver
+// sonora-graph-bench's verdict (ADR-0218 §2): the callback times the driver
 // loop kept, the counters the session and the runner kept, one RESULT line
 // and the exit code. Counts decide the exit; time decides it only under
 // --strict-time, so CI gates on what is deterministic.

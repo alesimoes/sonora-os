@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The real chains (ADR-0173 §1): every chain in its own sonora-plugin-host,
+// The real chains (ADR-0218 §1): every chain in its own sonora-plugin-host,
 // started by the HostSupervisor, run by engine/core's PluginChainRunner, as
 // test_session_plugins.cpp's Rig does. The load chains are the in-tree
 // native plugins given on the command line (EQ, compressor, delay, reverb

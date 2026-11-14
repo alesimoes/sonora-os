@@ -274,7 +274,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(measure_disk_write PRIVATE sonora_audiofile Threads::Threads)
 endif()
 
-# sonora-graph-bench (ADR-0173): Session::process() under 18 x 4 plugin
+# sonora-graph-bench (ADR-0218): Session::process() under 18 x 4 plugin
 # chains at quantum 128. Here, not in engine/plugin_client: that module must
 # not depend on core.
 include(bench/bench.cmake)
