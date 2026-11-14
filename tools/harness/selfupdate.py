@@ -121,18 +121,26 @@ class SelfUpdate:
         keep = [ln for ln in out.splitlines()
                 if ln.strip() and not runtime_files.is_runtime(
                     ln[3:].split(" -> ")[-1].strip('"'))
-                and not self._adopt_main_copy(
+                and not self._equals_main(
                     ln[3:].split(" -> ")[-1].strip('"'))]
         return "\n".join(keep).strip()
 
-    def _adopt_main_copy(self, rel):
+    def _equals_main(self, rel):
         """A copy already identical to origin/main's (the coordinator put
-        main's config there by hand) is not a modification worth blocking;
-        it is staged so the checkout may overwrite it (git refuses otherwise)."""
-        if self.git(["diff", "--quiet", "origin/main", "--", rel],
-                    self.root).returncode:
-            return False
-        return self.git(["add", "--", rel], self.root).returncode == 0
+        main's config there by hand) is not a modification worth blocking."""
+        return self.git(["diff", "--quiet", "origin/main", "--", rel],
+                        self.root).returncode == 0
+
+    def _release_main_copies(self):
+        """Puts the working copy and index of files equal to main's back to
+        HEAD's: the move brings main's version anyway, and a staged or
+        modified file makes git refuse both checkout and rebase."""
+        out = self.git(["status", "--porcelain", "--untracked-files=no"],
+                       self.root).stdout
+        for ln in out.splitlines():
+            rel = ln[3:].split(" -> ")[-1].strip('"')
+            if ln.strip() and not runtime_files.is_runtime(rel)                     and self._equals_main(rel):
+                self.git(["checkout", "HEAD", "--", rel], self.root)
 
     def _move_to(self, target, force):
         """Checkout origin/main, keeping local commits. Planners commit plans
@@ -142,6 +150,7 @@ class SelfUpdate:
         are moved aside first (2026-11-13: an uncommitted ADR blocked it)."""
         runtime = selfupdate_runtime.Runtime(self.root, self.git, self.now)
         try:
+            self._release_main_copies()
             self._aside_untracked(target)
             return self._move_commits(target, force)
         finally:
