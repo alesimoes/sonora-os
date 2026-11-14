@@ -56,5 +56,10 @@ and keeps third-party code out of every process that matters during a take.
   process. **Owner to confirm.**
 - Debian packaging of libptformat.
 - Which Pro Tools versions it reads.
-- Availability of `.ptx` fixtures we may redistribute.
+- Availability of `.ptx` fixtures we may redistribute. **Still open:** no
+  free-licence `.ptx` fixture is in the tree; needs a human to source or
+  create one.
 - That its output maps onto `PtxDocument` without loss beyond the list above.
+- **libptformat-ON host:** the reader has not been built and run on a host
+  with `-DSONORA_WITH_LIBPTFORMAT=ON`. Only the OFF build is exercised; the
+  ON path needs the library installed and a person or hardware to run it.
