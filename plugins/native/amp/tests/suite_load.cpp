@@ -173,21 +173,33 @@ void concurrent_loads(Suite& s) {
     const int wanted = measure::quick() ? 6 : 30;
     std::atomic<int> loaded{0};
     std::atomic<bool> done{false};
+    std::atomic<std::uint64_t> blocks{0};
+    std::atomic<bool> stop{false};
     std::thread loader([&] {
         std::string m;
-        const auto t0 = std::chrono::steady_clock::now();
-        while (loaded < wanted && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(40)) {
+        // Busy clears when the audio thread renders a block, so a retry waits
+        // for that progress; a stall of many blocks in a row without a load
+        // is the failure, not elapsed time.
+        int stalled = 0;
+        while (loaded < wanted && stalled < 2000) {
             const auto r = loaded % 2 == 0 ? p->load_nam(at::lstm(1, 8), m) : p->load_capture(at::identity(fs), m);
             if (r == Amp::LoadResult::Ok) ++loaded;
-            else std::this_thread::sleep_for(std::chrono::microseconds(300));
+            else {
+                ++stalled;
+                const std::uint64_t seen = blocks.load();
+                while (blocks.load() == seen && !stop) std::this_thread::yield();
+            }
+            if (r == Amp::LoadResult::Ok) stalled = 0;
         }
         done = true;
+        stop = true;
     });
     const Chans x = measure::noise(fs, -6.0, 0.5, 11u);
     bool finite = true;
     double peak = 0.0;
     while (!done) {
         const Chans y = measure::render(*p, x);
+        ++blocks;
         for (const auto& ch : y) {
             peak = std::max(peak, measure::peak(ch));
             for (float v : ch) finite = finite && std::isfinite(v);
