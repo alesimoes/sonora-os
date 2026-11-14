@@ -193,10 +193,31 @@ bool EditController::submit_following(Member op, std::vector<EditAutomation> fol
 }
 
 bool EditController::submit_move(const MoveRegion& op, std::string& why) {
-    // A clip in a group takes its group along (ADR-0052). Automation does not
-    // follow a group's move yet: Automation Follows Edit acts on one clip.
+    // A clip in a group takes its group along (ADR-0052), and with Automation
+    // Follows Edit each member's lane span goes too, in the same Compound so
+    // one undo reverts clips and lanes together (ADR-0098 follow-up c).
     std::vector<Member> group;
-    if (group_move_ops(op, group)) return submit_compound(std::move(group), "Move Group", "moved", why);
+    if (group_move_ops(op, group)) {
+        std::vector<Member> moves = group;
+        std::vector<std::string> left_all;
+        if (automation_follows_edit_) {
+            for (const Member& m : moves) {
+                const MoveRegion* step = get_if<MoveRegion>(&m);
+                const TrackEdit* gt = nullptr;
+                const Region* gr = step ? find_region(snapshot(), step->region, &gt) : nullptr;
+                if (gr == nullptr) continue;
+                std::vector<const AutomationLane*> left;
+                for (EditAutomation& f :
+                     follow_move_ops(*gt, gr->position, gr->end(), step->position, &left)) {
+                    group.push_back(std::move(f));
+                }
+                for (std::string& n : lane_labels(*gt, left)) left_all.push_back(std::move(n));
+            }
+        }
+        if (!submit_compound(std::move(group), "Move Group", "moved", why)) return false;
+        note_left_behind("Move", left_all);
+        return true;
+    }
     std::vector<EditAutomation> follow;
     std::vector<std::string> left_names;
     const TrackEdit* t = nullptr;

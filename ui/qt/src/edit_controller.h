@@ -153,6 +153,7 @@ struct Selection {
 // FadeIn / FadeOut: the Smart Tool's top corners, as in Pro Tools.
 enum class HitZone {
     None, Lane, Body, Select, TrimStart, TrimEnd, FadeIn, FadeOut, Automation,
+    LoopHandle,   // a selected clip's bottom-right corner: drag past it to loop (ADR-0098 4a)
     TakeLane   // a take lane under the track: Hit::lane, and its region if one is there
 };
 
@@ -171,7 +172,7 @@ struct Drag {
     // Swipe: a range dragged across a take lane (`lane` its playlist).
     // Pencil: the Pencil on a clip's waveform at sample zoom (ADR-0096).
     enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut, Point, Stroke, Swipe,
-                      Pencil };
+                      Pencil, Loop };
     Kind kind = Kind::None;
     model::Id lane = 0;
     // An automation gesture: its lane (-1 for the others); the point it
@@ -193,6 +194,8 @@ struct Drag {
     bool moved = false;
     // A fade drag's length as the drop would set it; 0 removes the fade.
     model::Frames fade = 0;
+    // A Loop drag: the whole repeats the drop would lay (0 lays none).
+    int loops = 0;
     // A trim's playlist as the drop would leave it, neighbours overwritten;
     // null when there is nothing to show beyond start and end.
     std::shared_ptr<const model::Playlist> preview;
@@ -305,6 +308,8 @@ public:
     void move(double x, double y);
     bool release(double x, double y, std::string& why);
     const Drag& drag() const { return drag_; }
+    // Esc during a gesture: nothing is submitted, the session is untouched.
+    void cancel_drag() { drag_ = Drag{}; }
 
     // --- edit commands; each one operation at most ---
     bool separate(std::string& why);

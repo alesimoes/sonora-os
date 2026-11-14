@@ -571,6 +571,13 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
                 }
                 draw_region(r, r.position, r.length, r.source_offset, fades, y, v, colour_of(r),
                             selected, false, peaks, out, tag.empty() ? nullptr : &tag, samples);
+                if (selected) {
+                    // The loop handle: a tab in the bottom-right corner.
+                    const double hx = v.x_of(r.end());
+                    const double hw = std::min(10.0, (hx - v.x_of(r.position)) / 4);
+                    add(out.rects, hx - hw - 1, y + v.track_height - kLaneInset - 8, hw, 6,
+                        theme::kClipLoop);
+                }
                 continue;
             }
             switch (drag.kind) {
@@ -579,6 +586,14 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
                                 false, true, peaks, out);
                     draw_region(r, drag.start, r.length, r.source_offset, fades, y, v, colour_of(r),
                                 true, false, peaks, out);
+                    break;
+                case Drag::Kind::Loop:
+                    draw_region(r, r.position, r.length, r.source_offset, fades, y, v, colour_of(r),
+                                true, false, peaks, out);
+                    for (int k = 1; k <= drag.loops; ++k) {
+                        draw_region(r, r.position + r.length * k, r.length, r.source_offset, fades,
+                                    y, v, colour_of(r), false, true, peaks, out);
+                    }
                     break;
                 case Drag::Kind::FadeIn:
                 case Drag::Kind::FadeOut:
