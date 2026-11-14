@@ -4,12 +4,12 @@
 // bottom-right corner past its end. Qt-free; EditController calls it.
 #pragma once
 
-#include "sonora/model/types.h"
+#include <cstdint>
 
 namespace sonora::ui {
 
 // Whole repeats a drag `past` frames beyond the end of a clip `length` long
 // lays, snapped to the nearest: 2.4 lengths lay two, under half a length none.
-int loop_handle_repeats(model::Frames length, model::Frames past);
+int loop_handle_repeats(std::int64_t length, std::int64_t past);
 
 }  // namespace sonora::ui
