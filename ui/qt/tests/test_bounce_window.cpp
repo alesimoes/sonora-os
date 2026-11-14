@@ -191,6 +191,8 @@ int bounce_window_over_the_fake_engine() {
     model.tick();   // the cancel sent straight to the engine above
     CHECK(model.stemsAvailable() && !model.bounceRunning());
     CHECK(named(win, QStringLiteral("stemsStart"))->isVisible());
+    // The bounce above left the window on real time, where stems are refused.
+    click(view, named(win, QStringLiteral("bounceOffline")));
     click(view, named(win, QStringLiteral("stemsTrack_1")));   // leave track 1 out
     click(view, named(win, QStringLiteral("bounceFile_wav")));
     named(win, QStringLiteral("bounceName"))->setProperty("text", QStringLiteral("Mix"));
