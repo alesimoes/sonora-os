@@ -4,6 +4,7 @@
   2026-11-04)
 - Date: 2026-11-04
 - Item: `system.install.adr` (OS 3, "Installable to disk")
+- Closes backlog item system.install.adr
 - Relates to: ADR-0002 (Debian base), ADR-0005 (USB persistence), ADR-0010
   (kiosk compositor; its Phase 6 note about Calamares)
 

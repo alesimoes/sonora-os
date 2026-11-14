@@ -44,7 +44,7 @@ Deliverables / paths:
 Acceptance:
 
 ## 8. QA  (tester)
-Scenarios to exercise end to end; screenshots to produce under `docs/images`.
+Scenarios to exercise end to end. Screenshots are not committed.
 
 ## 9. Quality checks
 Sanitizers (ASan/TSan/RTSan), RT audit (rt-safety-auditor), performance and
@@ -75,6 +75,6 @@ Single PR title:
 - [ ] contract PR merged
 - [ ] every slice merged into the feature branch by the integrator
 - [ ] tests of section 7 pass (commands and output in the PR)
-- [ ] QA scenarios of section 8 done, screenshots committed
+- [ ] QA scenarios of section 8 done
 - [ ] quality checks of section 9 reported
 - [ ] `tools/pre-pr.sh` clean; no file past ~500 lines

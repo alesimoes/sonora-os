@@ -269,6 +269,19 @@ Rectangle {
         }
     }
 
+    // --- the Step Sequencer (Edit > Step Sequencer) ---
+    Loader {
+        id: stepSequencerLoader
+        objectName: "stepSequencerLoader"
+        active: root.session.stepSequencerOpen
+        x: Theme.space6
+        y: body.y + 120
+        z: 8
+        sourceComponent: StepSequencer {
+            seq: StepSequencerModel { objectName: "stepSequencerModel" }
+        }
+    }
+
     // --- the Preferences window (Setup > Preferences…) ---
     Loader {
         id: preferencesLoader
@@ -1498,6 +1511,7 @@ Rectangle {
                     { name: "editNewMarker", label: "New Marker…", command: "marker.add", on: true },
                     { name: "editMemoryLocations", label: "Memory Locations", command: "window.memory_locations",on: true },
                     { name: "editEventList", label: "Automation Event List", command: "window.event_list", on: true },
+                    { name: "editStepSequencer", label: "Step Sequencer", command: "window.step_sequencer", on: true },
                     { name: "editWriteSelection", label: "Write Automation to Selection", command: "automation.write_selection", on: true },
                     { name: "editSnapshotAutomation", label: "Snapshot Automation", command: "automation.snapshot", on: true }
                 ]

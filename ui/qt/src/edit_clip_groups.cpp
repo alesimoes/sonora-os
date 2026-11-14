@@ -98,7 +98,6 @@ bool EditController::loop_clip(int count, std::string& why) {
         why = "Loop needs a number of repeats of 1 or more; nothing was looped";
         return false;
     }
-    if (refuse_shuffle("Loop", "looped", why)) return false;
     const TrackEdit* t = nullptr;
     if (selected_region(why) == nullptr) return false;
     const Region* sel = find_region(snapshot(), sel_.region, &t);
@@ -137,6 +136,17 @@ bool EditController::loop_clip(int count, std::string& why) {
 
     std::vector<Member> members;
     for (const Region* r : repeats) members.push_back(RemoveRegion{p->id, r->id});
+    if (mode_ == EditMode::Shuffle) {
+        // The loop takes the room it needs and gives back what its old
+        // repeats held: everything after them ripples by the difference.
+        Frames old_end = last;
+        for (const Region* r : repeats) old_end = std::max(old_end, r->end());
+        const Frames delta = span * count - (old_end - last);
+        const bool tail = std::any_of(p->regions.begin(), p->regions.end(), [&](const Region& o) {
+            return o.loop == 0 && o.position >= old_end && !(o.clip_group == group);
+        });
+        if (delta != 0 && tail) members.push_back(ShiftRegions{p->id, old_end, delta});
+    }
     const Id first_id = origin.front()->id;
     const Id group_id = sel->clip_group != 0 ? group : first_id;
     SetClipGroup tag;

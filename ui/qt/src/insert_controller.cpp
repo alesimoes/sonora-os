@@ -561,6 +561,13 @@ float InsertController::value(Id insert, const api::PluginParam& p) const {
     return p.default_value;
 }
 
+bool InsertController::has_lane(Id insert, const std::string& key) const {
+    int t = -1;
+    if (find(insert, &t) == nullptr) return false;
+    const TrackEdit* tr = track(t);
+    return tr != nullptr && tr->lane(insert, key) != nullptr;
+}
+
 bool InsertController::param_begin(Id insert, std::string& why) {
     if (gesture_insert_ != kNoId && gesture_insert_ != insert && !param_end(why)) return false;
     if (find(insert) == nullptr) {

@@ -213,9 +213,18 @@ struct SampleLane {
 };
 SampleLane sample_lane(double row_top, double row_height, int count, int lane);
 
+class MarkerViewStore;
+class SelectionLink;
+
 class EditController {
 public:
     explicit EditController(TimelineDocument& doc);
+
+    // Link Timeline and Edit Selection (ADR-0167): not owned, may be null.
+    void set_link(SelectionLink* link) { link_ = link; }
+    // The timeline range was set: when linked the edit selection takes it, on
+    // the tracks it already covers.
+    void apply_timeline_range(model::Frames a, model::Frames b);
 
     TimelineDocument& document() { return doc_; }
     // After TimelineDocument::reset (a session was opened): the selection,
@@ -498,6 +507,23 @@ public:
     // link_marker_locate(). None, recall moves the selection only.
     using Locator = std::function<void(model::Frames frame)>;
     void set_locator(Locator l) { locate_ = std::move(l); }
+    // The Edit window's view stored with a marker (ADR-0137): interface
+    // state kept by `store`, not owned. Recall applies what the marker's
+    // Zoom and Track layout toggles tick, after the locate. `hide` receives
+    // the track ids to hide (ids that no longer exist already dropped); it
+    // is what applies the track layout, since the rows belong to the track
+    // list. With neither wired, a recall moves the position only.
+    using TrackHider = std::function<void(const std::vector<std::uint64_t>& hidden)>;
+    void set_marker_views(MarkerViewStore* store, TrackHider hide) {
+        marker_views_ = store;
+        hide_tracks_ = std::move(hide);
+    }
+    bool marker_has_view(model::Id marker) const;
+    // Captures zoom, left edge, track height and hidden tracks now.
+    bool store_marker_view(model::Id marker, std::string& why);
+    bool clear_marker_view(model::Id marker, std::string& why);
+    // `zoom` true sets the Zoom toggle, false the Track layout one.
+    bool set_marker_view_part(model::Id marker, bool zoom, bool on, std::string& why);
     // The marker drawn under `x` on the marker ruler, in its pixels: a
     // marker's flag, else a selection marker's bar; kNoId over neither.
     model::Id marker_at(double x) const;
@@ -565,6 +591,9 @@ public:
     bool remove_tempo(model::Frames at, std::string& why);
     // On the bar line nearest `near`.
     bool set_meter(model::Frames near, std::uint32_t beats, std::uint32_t note, std::string& why);
+    // One SetSettings with the map replaced, on the Undo Tempo stack
+    // (also the entry for tempo.edit detect, ui/beat).
+    bool submit_tempo(std::vector<model::TempoEntry> next, std::string& why);
     bool tempo_undo(std::string& why);
     bool tempo_redo(std::string& why);
     // What the Tempo dialog and the tempo.edit command take, at the start of
@@ -768,7 +797,6 @@ private:
     bool submit(const model::Operation& op, std::string& why);
     // The ids of `count` tracks from `first` down.
     bool selected_ids(int first, int count, std::vector<model::Id>& out, std::string& why) const;
-    bool refuse_in_mode(const char* what, std::string& why) const;
     model::Frames snapped(model::Frames f) const;
     void clamp_scroll();
     // Pages the view so `frame` is a tenth in from the left edge, when it
@@ -806,10 +834,14 @@ private:
                     std::string& why) const;
     // `span` becomes the selection: a range on its tracks, no region.
     void select_span(int first, int count, model::Frames a, model::Frames b);
-    // Refuses, by name, a gesture whose Shuffle form is not built (Strip
-    // Silence); the ones that are build their ripple (shuffle_shift).
     bool shift_time(bool insert, std::string& why);
-    bool refuse_shuffle(const char* gesture, const char* nothing_was, std::string& why) const;
+    // Shuffle's trim, move and spot: one compound with the ripple
+    // (edit_shuffle_ops.h). A grouped clip is refused: its group would not ripple.
+    bool submit_shuffle_trim(const model::TrimRegion& op, std::string& why);
+    bool submit_shuffle_move(const model::MoveRegion& op, std::string& why);
+    // Trim / move through the mode: Shuffle ripples, the others send the one op.
+    bool submit_trim(const model::TrimRegion& op, std::string& why);
+    bool submit_place(const model::MoveRegion& op, std::string& why);
     // Shuffle moves regions, not the automation under them: names the tracks
     // whose lanes now sit out of step, as a held notice.
     void note_shuffle_automation(const char* gesture, int first, int count);
@@ -869,10 +901,10 @@ private:
     Tool tool_ = Tool::Smart;
     GridValue grid_ = GridValue::Beat;
     Selection sel_;
+    SelectionLink* link_ = nullptr;
     struct TempoStep {
         std::vector<model::TempoEntry> before, after;
     };
-    bool submit_tempo(std::vector<model::TempoEntry> next, std::string& why);
     bool tempo_step(bool undo, std::string& why);
     std::vector<TempoStep> tempo_undo_, tempo_redo_;
     Drag drag_;
@@ -892,7 +924,11 @@ private:
     int event_lane_ = 0;
     int repeat_count_ = 1;
     int loop_count_ = 3;
+    void apply_marker_view(model::Id marker);
+    void prune_marker_views();
     Locator locate_;
+    MarkerViewStore* marker_views_ = nullptr;
+    TrackHider hide_tracks_;
     uint64_t clipboard_serial_ = 0;
     model::Id spot_request_ = kNoId;
     const SampleSource* samples_ = nullptr;
