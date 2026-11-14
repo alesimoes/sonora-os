@@ -123,6 +123,9 @@ class FakeForge(Forge):
         self.dispatched.append((workflow, ref))
 
     def _chk(self, what):
+        if what == "push" and "push_conflict" in self.fail:
+            from harness.forge import ForgeConflict
+            raise ForgeConflict("merge conflict in: a.cpp", ["a.cpp"])
         if what in self.fail:
             raise ForgeError(f"{what} failed")
 

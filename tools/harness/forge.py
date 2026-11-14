@@ -18,6 +18,15 @@ class ForgeError(Exception):
     pass
 
 
+class ForgeConflict(ForgeError):
+    """The branch conflicts with its remote copy: for the integrator, not a
+    retry."""
+
+    def __init__(self, msg, paths):
+        super().__init__(msg)
+        self.paths = list(paths)
+
+
 class RateLimited(ForgeError):
     """GitHub refused for rate (primary, secondary or abuse limit): every gh
     call waits, not only the one that failed."""
@@ -190,12 +199,16 @@ class GhForge(Forge):
     def _ok(self, argv, cwd=None, timeout=120):
         r = self.run(argv, cwd or self.root, timeout)
         if r.returncode:
-            self._raise(argv, r.stderr)
+            # git prints CONFLICT lines on stdout: keep both streams.
+            self._raise(argv, r.stderr, r.stdout)
         return r.stdout
 
     @staticmethod
-    def _raise(argv, stderr):
-        msg = f"{' '.join(argv[:3])}: {stderr.strip()[:300]}"
+    def _raise(argv, stderr, stdout=""):
+        text = (stderr or "").strip()
+        if (stdout or "").strip():
+            text = (text + " " + stdout.strip()).strip()
+        msg = f"{' '.join(argv[:3])}: {text[:600]}"
         if any(p.lower() in stderr.lower() for p in RATE_PATTERNS):
             raise RateLimited(msg)
         raise ForgeError(msg)
@@ -250,8 +263,11 @@ class GhForge(Forge):
     def push(self, worktree, branch):
         def ok(argv, cwd, timeout):
             return self._ok(argv, cwd, timeout)
-        return forge_push.push_feature_branch(ok, worktree, branch,
-                                              self.base_ref)
+        try:
+            return forge_push.push_feature_branch(ok, worktree, branch,
+                                                  self.base_ref)
+        except forge_push.MergeConflict as e:
+            raise ForgeConflict(str(e), e.paths)
 
     def create_pr(self, branch, base, title, body):
         fd, path = tempfile.mkstemp(prefix="orch-prbody-", suffix=".md")

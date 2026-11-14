@@ -34,7 +34,7 @@ from harness import (blockinfo, closures, feature_merge, feature_sync, findings,
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
-from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
+from harness.forge import ForgeConflict, ForgeError, GhForge, job_signatures  # noqa: E402
 from harness.store import PLANNER_ROLES, WORK_ROLES, Store  # noqa: E402
 from harness.train import Train  # noqa: E402
 
@@ -863,6 +863,12 @@ class Orchestrator:
             if n is not None:
                 self._adopt_opened_pr(f, ts, rep, branch, n, now, e)
                 return True
+            if isinstance(e, ForgeConflict):
+                self.store.event(rep["id"], "pr_open_failed", str(e))
+                self._block_feature(
+                    f, f"merge conflict with origin/{branch} in: "
+                       + ", ".join(e.paths), cause="conflict")
+                return False
             if triage_pr.handle(self, f, ts, e, now):
                 return True
             fails = int(self.store.get_meta(f"prfail:{fid}", 0)) + 1
