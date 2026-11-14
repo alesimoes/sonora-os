@@ -498,6 +498,7 @@ int main(int argc, char** argv) {
     if (!a.opt.fake_engine && !endpoint.empty() && platform::endpoint_live(endpoint)) {
         client::SocketEngine::Options so;
         so.endpoint = endpoint;
+        if (a.opt.kiosk) so.connect_timeout_ms = client::kKioskConnectTimeoutMs;
         auto s = std::make_unique<client::SocketEngine>(so);
         socket = s.get();
         backend = std::move(s);
