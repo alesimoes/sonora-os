@@ -15,6 +15,7 @@
 
 #include "sonora/analyze/mastering_plan.h"
 #include "sonora/analyze/mastering_rules.h"
+#include "mastering_rules_fixture.h"
 #include "sonora/analyze/mix_analysis.h"
 #include "sonora/dsp/fft.h"
 #include "sonora/dsp/math.h"
@@ -98,7 +99,7 @@ struct MixSpec {
 // Stereo: L = common + a * left noise, R = common + a * right noise.
 Planar make_mix(const MixSpec& m, double rate = 48000.0, double seconds = 12.0) {
     double lvl[kBands];
-    for (int b = 0; b < kBands; ++b) lvl[b] = kTargetDb[b] + m.dev_db[b];
+    for (int b = 0; b < kBands; ++b) lvl[b] = shipped_rules().target_db[b] + m.dev_db[b];
     const auto common = shaped_noise(lvl, rate, seconds, 1);
     const auto nl = shaped_noise(lvl, rate, seconds, 2);
     const auto nr = shaped_noise(lvl, rate, seconds, 3);
@@ -132,7 +133,7 @@ MixAnalysis analyse(const Planar& x, double rate = 48000.0) {
 MasteringSuggestion suggest(const MixAnalysis& a, const MasteringConfig& c = {}) {
     MasteringSuggestion s;
     std::string err;
-    const bool ok = suggest_mastering(a, c, s, err);
+    const bool ok = run_suggest(a, c, s, err);
     if (!ok) std::fprintf(stderr, "suggest_mastering: %s\n", err.c_str());
     CHECK(ok);
     return s;
@@ -162,7 +163,7 @@ MixAnalysis neutral_analysis() {
     a.correlation = 0.9;
     a.side_mid_db = -12.0;
     for (int b = 0; b < kBands; ++b) {
-        a.band_db[b] = -40.0 + kTargetDb[b];
+        a.band_db[b] = -40.0 + shipped_rules().target_db[b];
         a.band_valid[b] = true;
     }
     a.spectrum_frames = 100;
@@ -183,10 +184,10 @@ void analysis_recovers_shape() {
     double anchor = 0.0, anchor_t = 0.0;
     for (int b = 4; b <= 6; ++b) {
         anchor += a.band_db[b] / 3.0;
-        anchor_t += kTargetDb[b] / 3.0;
+        anchor_t += shipped_rules().target_db[b] / 3.0;
     }
     for (int b = 0; b < kBands; ++b) {
-        const double dev = (a.band_db[b] - anchor) - (kTargetDb[b] - anchor_t);
+        const double dev = (a.band_db[b] - anchor) - (shipped_rules().target_db[b] - anchor_t);
         CHECK_NEAR(dev, m.dev_db[b], 1.5);
     }
     CHECK_NEAR(a.rms_dbfs, -20.0, 0.1);
@@ -410,10 +411,10 @@ void rules_loudness() {
     silent.integrated_lufs = -200.0;
     MasteringSuggestion out;
     std::string err;
-    CHECK(!suggest_mastering(silent, c, out, err) && !err.empty());
+    CHECK(!run_suggest(silent, c, out, err) && !err.empty());
     MasteringConfig bad;
     bad.target_lufs = 3.0;
-    CHECK(!suggest_mastering(neutral_analysis(), bad, out, err));
+    CHECK(!run_suggest(neutral_analysis(), bad, out, err));
 }
 
 // --- the offline run ----------------------------------------------------------------
@@ -508,6 +509,7 @@ void plan_flow() {
     const MixAnalysis a = analyse(make_mix(spec));
     MasteringPlanConfig cfg;
     cfg.track = strip;
+    cfg.rules.table = &shipped_rules();
     MasteringPlanner planner(a, cfg);
     Plan plan;
     std::string err;
@@ -570,6 +572,7 @@ void plan_inserts_and_fader() {
     loud.plr_db = 5.5;
     MasteringPlanConfig cfg;
     cfg.track = strip;
+    cfg.rules.table = &shipped_rules();
     MasteringPlanner planner(loud, cfg);
     Plan plan;
     CHECK(planner.propose(h.current(), plan, err));
@@ -618,6 +621,7 @@ void plan_refusals() {
     Plan plan;
     MasteringPlanConfig cfg;
     cfg.track = strip + 100;
+    cfg.rules.table = &shipped_rules();
     MasteringPlanner missing(neutral_analysis(), cfg);
     CHECK(!missing.propose(h.current(), plan, err) && !err.empty());
     cfg.track = strip;

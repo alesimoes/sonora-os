@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "target_db": [-3.0, 4.0, 5.0, 3.0, 1.5, 0.0, -3.0, -6.5, -10.5, -16.0],
+  "band_names": ["31.5 Hz", "63 Hz", "125 Hz", "250 Hz", "500 Hz", "1 kHz", "2 kHz", "4 kHz", "8 kHz", "16 kHz"],
+  "anchor_bands": [4, 5, 6],
+  "sub_bass_margin_db": 3.0,
+  "balance_groups": [
+    {"rule": "balance.low", "bands": [1, 2], "what": "63 and 125 Hz", "title": "Low shelf", "at": "at 100 Hz", "gain": "low_gain", "freq": null, "freq_hz": 0.0},
+    {"rule": "balance.lowmid", "bands": [3], "what": "250 Hz", "title": "Low-mid bell", "at": "at 250 Hz", "gain": "lowmid_gain", "freq": "lowmid_freq", "freq_hz": 250.0},
+    {"rule": "balance.highmid", "bands": [7], "what": "4 kHz", "title": "High-mid bell", "at": "at 4 kHz", "gain": "highmid_gain", "freq": "highmid_freq", "freq_hz": 4000.0},
+    {"rule": "balance.high", "bands": [8, 9], "what": "8 and 16 kHz", "title": "High shelf", "at": "at 10 kHz", "gain": "high_gain", "freq": null, "freq_hz": 0.0}
+  ],
+  "dynamics": {
+    "ratio_step_plr_db": 18.0,
+    "ratio_normal": 1.5,
+    "ratio_high": 2.0,
+    "threshold_above_loudness_db": 4.0,
+    "saturation_plr_db": 16.0,
+    "saturation_drive_db": 6.0,
+    "saturation_mix_pct": 15.0
+  },
+  "stereo": {
+    "phase_correlation": 0.0,
+    "phase_width_pct": 80.0,
+    "wide_side_mid_db": -3.0,
+    "wide_width_pct": 90.0,
+    "near_mono_side_mid_db": -24.0
+  },
+  "loudness": {
+    "no_change_lu": 0.5,
+    "dense_limit_db": 2.0
+  }
+}
