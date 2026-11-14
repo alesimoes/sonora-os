@@ -228,13 +228,19 @@ public:
     // with no host or no pidfd, and then only running() tells.
     int exit_handle() const;
     bool wants_write() const { return link_.wants_write(); }
-    // Its entries for the control thread's WaitSet (M3 on #78): the exit
-    // handle while the process runs, and the socket, Writable, while frames
-    // wait on an open socket. Only what the owner services on the turn after
-    // a wake, or a ready handle would wake the loop again at once: running()
-    // here reaps a child that exited, so a fired pidfd is listed once, and
-    // the turn's pump() writes to the socket (or finds it closed, or the
-    // host faulted, and it is listed no more).
+    // Its entries for the control thread's WaitSet (M3 on #78, ADR-0213):
+    // the exit handle while the process runs; the open socket Readable, so
+    // an editor gesture ends the sleep instead of waiting for the next
+    // 50 ms turn; and the socket Writable while frames wait on it. Only what
+    // the owner services on the turn after a wake, or a ready handle would
+    // wake the loop again at once: running() here reaps a child that
+    // exited, so a fired pidfd is listed once; every holder pumps its hosts
+    // every turn (a chain's poll() or poll_parked(), stopped(), the
+    // supervisor's reap()), and the pump reads what waits and writes what
+    // is queued, or finds the socket closed or the host faulted, after which
+    // it is listed no more. A host signalled to die is not listed Readable:
+    // a down chain no longer pumps it, its exit handle is the wake it needs,
+    // and what it left unread must not end every sleep.
     void watch(std::vector<HostWatch>& out);
     // GestureEnds a burst coalesced (M2): counted, never a kill.
     uint64_t gesture_ends_coalesced() const { return gesture_ends_coalesced_; }
@@ -265,6 +271,9 @@ private:
     std::unique_ptr<platform::ControlChannel> ctl_;
     plugin::control::Link link_;
     bool ctl_closed_ = false;
+    // SIGKILL sent (signal_kill, a fault, a grace passed): watch() stops
+    // listing the socket for reading (ADR-0213).
+    bool kill_signalled_ = false;
     bool hello_ = false;
     bool loaded_seen_ = false;
     bool refused_seen_ = false;

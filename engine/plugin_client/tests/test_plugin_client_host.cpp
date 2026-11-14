@@ -1147,8 +1147,11 @@ int scenario_control_watch(const Args&) {
             return 0;
         }
         std::vector<HostWatch> w = listed();
-        check(w.size() == 1 && w[0].handle == h->exit_handle() && !w[0].writable,
-              "idle: its exit handle only, the socket not listed");
+        // ADR-0213: the socket is read every turn, so it is listed Readable
+        // (a gesture wakes the turn); Writable only while frames wait.
+        check(w.size() == 2 && w[0].handle == h->exit_handle() && !w[0].writable &&
+                  w[1].handle == h->socket_handle() && !w[1].writable,
+              "idle: its exit handle, and the socket for reading only");
 
         // The deaf host reads nothing more, so its socket fills.
         std::string bytes;
@@ -1161,7 +1164,7 @@ int scenario_control_watch(const Args&) {
         w = listed();
         bool socket = false;
         for (const HostWatch& e : w) socket = socket || (e.handle == h->socket_handle() && e.writable);
-        check(w.size() == 2 && socket, "listed: the exit handle, and the socket for writing");
+        check(w.size() == 3 && socket, "listed: the exit handle, and the socket for reading and writing");
 
         platform::WaitSet sleep;
         const std::vector<platform::WaitSet::Watch> ws = as_watches(w);
