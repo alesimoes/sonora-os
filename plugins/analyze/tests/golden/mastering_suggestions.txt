@@ -1,0 +1,575 @@
+== neutral
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== balance_all_groups
+finding balance.low | Low shelf -3.0 dB at 100 Hz | 63 and 125 Hz sit 9.0 dB above the target curve (tolerance 3.0 dB, balance judged against 500 Hz - 2 kHz); 50% of the excess beyond the tolerance is taken out, at most 6 dB.
+  set 1 -3
+finding balance.lowmid | Low-mid bell +1.5 dB at 250 Hz | 250 Hz sits 6.0 dB below the target curve (tolerance 3.0 dB, balance judged against 500 Hz - 2 kHz); 50% of the excess beyond the tolerance is put back, at most 6 dB.
+  set 2 250
+  set 3 1.5
+finding balance.highmid | High-mid bell -6.0 dB at 4 kHz | 4 kHz sits 20.0 dB above the target curve (tolerance 3.0 dB, balance judged against 500 Hz - 2 kHz); 50% of the excess beyond the tolerance is taken out, at most 6 dB.
+  set 4 4000
+  set 5 -6
+finding balance.high | High shelf +2.5 dB at 10 kHz | 8 and 16 kHz sit 8.0 dB below the target curve (tolerance 3.0 dB, balance judged against 500 Hz - 2 kHz); 50% of the excess beyond the tolerance is put back, at most 6 dB.
+  set 6 2.5
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +9.0; 125 Hz +9.0; 250 Hz -6.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +20.0; 8 kHz -8.0; 16 kHz -8.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 -3
+value 2 250
+value 3 1.5
+value 4 4000
+value 5 -6
+value 6 2.5
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== sub_bass_and_missing_band
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +12.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0;
+obs 31.5 Hz is 12.0 dB above the curve: sub-bass is reported, not adjusted (a high-pass or a sub cut belongs to the mix).
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== anchor_incomplete
+obs Spectral balance not judged: the file's sample rate leaves the 500 Hz - 2 kHz anchor bands incomplete.
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== dense
+finding dynamics.dense | Compressor and saturation left off | Peak-to-loudness ratio is 6.0 dB (true peak -8.0 dBTP, integrated -14.0 LUFS), under 8 dB: the mix is already dense, and more compression or saturation would take what dynamics are left. The loudness gain is held to the headroom the peaks leave.
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== glue_15
+finding dynamics.glue | Compressor 1.5:1 from -10.0 dB | Peak-to-loudness ratio is 15.0 dB, over 14 dB: peaks stand well above the body of the mix. A gentle 1.5:1 compressor from -10.0 dB (4 dB above the programme loudness of -14.0 LUFS), 30 ms attack, 200 ms release, brings them nearer.
+  set 7 -10
+  set 8 1.5
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs True peak 1.0 dBTP is 2.0 dB over the -1.0 dBTP ceiling: the limiter takes it.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -10
+value 8 1.5
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== glue_saturation_17
+finding dynamics.glue | Compressor 1.5:1 from -10.0 dB | Peak-to-loudness ratio is 17.0 dB, over 14 dB: peaks stand well above the body of the mix. A gentle 1.5:1 compressor from -10.0 dB (4 dB above the programme loudness of -14.0 LUFS), 30 ms attack, 200 ms release, brings them nearer.
+  set 7 -10
+  set 8 1.5
+finding dynamics.saturation | Saturation 15% at 6 dB drive | Peak-to-loudness ratio is 17.0 dB, over 16 dB: 15% of a soft-clipped copy at 6 dB drive rounds the highest peaks and adds density before the limiter.
+  set 12 6
+  set 13 15
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs True peak 3.0 dBTP is 4.0 dB over the -1.0 dBTP ceiling: the limiter takes it.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -10
+value 8 1.5
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 15
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== glue_ratio2_quiet
+finding dynamics.glue | Compressor 2.0:1 from -26.0 dB | Peak-to-loudness ratio is 19.5 dB, over 14 dB: peaks stand well above the body of the mix. A gentle 2.0:1 compressor from -26.0 dB (4 dB above the programme loudness of -30.0 LUFS), 30 ms attack, 200 ms release, brings them nearer.
+  set 7 -26
+  set 8 2
+finding dynamics.saturation | Saturation 15% at 6 dB drive | Peak-to-loudness ratio is 19.5 dB, over 16 dB: 15% of a soft-clipped copy at 6 dB drive rounds the highest peaks and adds density before the limiter.
+  set 12 6
+  set 13 15
+finding loudness.gain | Gain +12.0 dB ahead of the limiter | Integrated loudness is -30.0 LUFS, the target -14.0 LUFS: +16.0 dB. The true peak of -10.5 dBTP leaves 9.5 dB under the -1.0 dBTP ceiling, so the limiter takes about 2.5 dB (cap 5.0 dB). Capped: the target needs +16.0 dB, but that would ask the limiter for more than 5.0 dB; the mix reaches -18.0 LUFS, not -14.0.
+  set 15 12
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Capped: the target needs +16.0 dB, but that would ask the limiter for more than 5.0 dB; the mix reaches -18.0 LUFS, not -14.0.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -26
+value 8 2
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 15
+value 14 100
+value 15 12
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -18
+== phase
+finding stereo.phase | Width 80% | L/R correlation is -0.20: more of the mix is out of phase than in phase, which cancels when summed to mono. Narrowing to 80% brings the sides in.
+  set 14 80
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 80
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== wide
+finding stereo.wide | Width 90% | Side level is -2.0 dB against the mid (within 3 dB): a very wide mix. Narrowing to 90% keeps the centre from thinning in mono.
+  set 14 90
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 90
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== near_mono
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Side level is -30.0 dB against the mid: a near-mono mix. Width left at 100%; widening it would change the balance.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== mono
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Mono file: width left at 100%.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== quiet_gain
+finding loudness.gain | Gain +6.0 dB ahead of the limiter | Integrated loudness is -20.0 LUFS, the target -14.0 LUFS: +6.0 dB. The true peak of -8.0 dBTP leaves 7.0 dB under the -1.0 dBTP ceiling, so the limiter takes about 0.0 dB (cap 5.0 dB).
+  set 15 6
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 6
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== gain_capped_at_12
+finding loudness.gain | Gain +12.0 dB ahead of the limiter | Integrated loudness is -30.0 LUFS, the target -14.0 LUFS: +16.0 dB. The true peak of -18.0 dBTP leaves 17.0 dB under the -1.0 dBTP ceiling, so the limiter takes about 0.0 dB (cap 5.0 dB). Capped: the target needs +16.0 dB, but that would ask the limiter for more than 5.0 dB; the mix reaches -18.0 LUFS, not -14.0.
+  set 15 12
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Capped: the target needs +16.0 dB, but that would ask the limiter for more than 5.0 dB; the mix reaches -18.0 LUFS, not -14.0.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 12
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -18
+== no_room
+finding loudness.gain | Gain +5.0 dB ahead of the limiter | Integrated loudness is -22.0 LUFS, the target -14.0 LUFS: +8.0 dB. The true peak of -0.5 dBTP leaves 0.0 dB under the -1.0 dBTP ceiling, so the limiter takes about 5.0 dB (cap 5.0 dB). Capped: the target needs +8.0 dB, but that would ask the limiter for more than 5.0 dB; the mix reaches -17.0 LUFS, not -14.0.
+  set 15 5
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Capped: the target needs +8.0 dB, but that would ask the limiter for more than 5.0 dB; the mix reaches -17.0 LUFS, not -14.0.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 5
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -17
+== loud_dense
+finding dynamics.dense | Compressor and saturation left off | Peak-to-loudness ratio is 5.0 dB (true peak -1.0 dBTP, integrated -6.0 LUFS), under 8 dB: the mix is already dense, and more compression or saturation would take what dynamics are left. The loudness gain is held to the headroom the peaks leave.
+finding loudness.gain | Gain -8.0 dB ahead of the limiter | Integrated loudness is -6.0 LUFS, above the -14.0 LUFS target by 8.0 dB: the gain ahead of the limiter turns it down.
+  set 15 -8
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 -8
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== fader_trim_r128
+finding loudness.gain | Gain -12.0 dB ahead of the limiter | Integrated loudness is -4.0 LUFS, above the -23.0 LUFS target by 19.0 dB: the gain ahead of the limiter turns it down.
+  set 15 -12
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs True peak 8.0 dBTP is 10.0 dB over the -2.0 dBTP ceiling: the limiter takes it.
+obs Ceiling -2.0 dBTP and target -23.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 -12
+value 16 -2
+value 17 100
+value 18 -23
+value 19 0
+fader -7 | The mix is 19.0 dB above the -23.0 LUFS target; the console's gain stops at -12 dB, so the strip's fader takes the remaining 7.0 dB after the limiter.
+aimed -23
+== over_ceiling
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz +0.0; 16 kHz +0.0;
+obs Peak-to-loudness ratio 12.0 dB is in the normal range (8 - 14 dB): no compression or saturation proposed.
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs True peak 1.5 dBTP is 2.5 dB over the -1.0 dBTP ceiling: the limiter takes it.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 0
+value 7 -18
+value 8 1
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14
+== custom_config
+finding balance.high | High shelf +2.0 dB at 10 kHz | 8 and 16 kHz sit 3.5 dB below the target curve (tolerance 1.0 dB, balance judged against 500 Hz - 2 kHz); 80% of the excess beyond the tolerance is put back, at most 4 dB.
+  set 6 2
+finding dynamics.glue | Compressor 1.5:1 from -10.0 dB | Peak-to-loudness ratio is 16.0 dB, over 13 dB: peaks stand well above the body of the mix. A gentle 1.5:1 compressor from -10.0 dB (4 dB above the programme loudness of -14.0 LUFS), 30 ms attack, 200 ms release, brings them nearer.
+  set 7 -10
+  set 8 1.5
+obs Balance against the target curve (dB, + is more than the curve): 31.5 Hz +0.0; 63 Hz +0.0; 125 Hz +0.0; 250 Hz +0.0; 500 Hz +0.0; 1 kHz +0.0; 2 kHz +0.0; 4 kHz +0.0; 8 kHz -7.0; 16 kHz +0.0;
+obs Stereo image is healthy (correlation 0.90, side -12.0 dB against the mid): width left at 100%.
+obs Integrated loudness -14.0 LUFS is within 0.5 LU of the -14.0 LUFS target: no gain change.
+obs True peak 2.0 dBTP is 3.0 dB over the -1.0 dBTP ceiling: the limiter takes it.
+obs Ceiling -1.0 dBTP and target -14.0 LUFS are set on the console; auto-level stays off, so the gain above is fixed and can be checked.
+value 0 0
+value 1 0
+value 2 300
+value 3 0
+value 4 3000
+value 5 0
+value 6 2
+value 7 -10
+value 8 1.5
+value 9 30
+value 10 200
+value 11 100
+value 12 6
+value 13 0
+value 14 100
+value 15 0
+value 16 -1
+value 17 100
+value 18 -14
+value 19 0
+fader 0 | 
+aimed -14

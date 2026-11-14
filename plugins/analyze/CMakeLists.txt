@@ -39,6 +39,7 @@ endif()
 add_library(sonora_analyze STATIC
   src/mastering_plan.cpp
   src/mastering_rules.cpp
+  src/mastering_rules_data.cpp
   src/mix_analysis.cpp)
 target_include_directories(sonora_analyze PUBLIC include)
 target_link_libraries(sonora_analyze PUBLIC sonora_model sonora_native_mastering sonora_json PRIVATE sonora_dsp)
@@ -72,8 +73,18 @@ add_executable(sonora-analyze ${_sonora_analyze_app})
 target_link_libraries(sonora-analyze PRIVATE sonora_analyze sonora_audiofile sonora_json)
 
 add_executable(test_analyze_mastering tests/test_mastering.cpp)
+target_include_directories(test_analyze_mastering PRIVATE tests)
+target_compile_definitions(test_analyze_mastering PRIVATE RULES_PATH="${CMAKE_CURRENT_SOURCE_DIR}/data/mastering_rules.json")
 target_link_libraries(test_analyze_mastering PRIVATE sonora_analyze sonora_dsp)
 add_test(NAME analyze_mastering COMMAND test_analyze_mastering)
+
+add_executable(test_analyze_mastering_rules_data tests/test_mastering_rules_data.cpp)
+target_include_directories(test_analyze_mastering_rules_data PRIVATE tests)
+target_compile_definitions(test_analyze_mastering_rules_data PRIVATE
+  RULES_PATH="${CMAKE_CURRENT_SOURCE_DIR}/data/mastering_rules.json"
+  GOLDEN_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/mastering_suggestions.txt")
+target_link_libraries(test_analyze_mastering_rules_data PRIVATE sonora_analyze sonora_dsp)
+add_test(NAME analyze_mastering_rules_data COMMAND test_analyze_mastering_rules_data)
 
 add_executable(test_analyze_contract tests/test_analyze_contract.cpp)
 target_link_libraries(test_analyze_contract PRIVATE sonora_analyze)
@@ -122,3 +133,27 @@ foreach(_fragment models key timbre tone vocal beat beat_tempo)
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/${_fragment}.cmake")
   endif()
 endforeach()
+
+# The mastering rule table (ADR-0172) is data the CLI loads at start-up, with
+# no built-in copy. The build tree keeps it next to the binary (data/); the
+# install puts it at ../share/sonora/analyze/, both of which the CLI searches.
+add_custom_command(TARGET sonora-analyze POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:sonora-analyze>/data
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_SOURCE_DIR}/data/mastering_rules.json
+          $<TARGET_FILE_DIR:sonora-analyze>/data/mastering_rules.json)
+install(TARGETS sonora-analyze RUNTIME DESTINATION bin)
+install(FILES data/mastering_rules.json DESTINATION share/sonora/analyze)
+
+# A deleted or malformed table fails the CLI loudly (exit 1 with a message).
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/bad_rules/malformed.json" "{\"version\": 1, \"target_db\": [")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/bad_rules/missing_key.json" "{\"version\": 1}")
+function(sonora_analyze_rules_cli_test name rules text)
+  add_test(NAME ${name} COMMAND sh -c "${_sonora_analyze_expect}" $<TARGET_FILE:sonora-analyze> mastering nothing.wav)
+  set_tests_properties(${name} PROPERTIES ENVIRONMENT "EXPECT_RC=1;EXPECT_TEXT=${text};SONORA_ANALYZE_RULES=${rules}")
+endfunction()
+sonora_analyze_rules_cli_test(analyze_cli_rules_missing
+  "${CMAKE_CURRENT_BINARY_DIR}/bad_rules/deleted.json" "mastering rules: cannot open")
+sonora_analyze_rules_cli_test(analyze_cli_rules_malformed
+  "${CMAKE_CURRENT_BINARY_DIR}/bad_rules/malformed.json" "mastering rules: not valid JSON")
+sonora_analyze_rules_cli_test(analyze_cli_rules_incomplete
+  "${CMAKE_CURRENT_BINARY_DIR}/bad_rules/missing_key.json" "mastering rules: missing")

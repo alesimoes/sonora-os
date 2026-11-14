@@ -26,9 +26,11 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "commands.h"
@@ -76,6 +78,33 @@ int usage() {
     return 2;
 }
 
+// Where the rule table is read from (ADR-0172): SONORA_ANALYZE_RULES if set
+// else next to the binary (the build tree: data/) or in the installed layout
+// (../share/sonora/analyze/). No built-in copy: a file that is not found is an
+// error naming every path tried.
+bool load_rules(sonora::analyze::MasteringRules& rules, std::string& error) {
+    namespace fs = std::filesystem;
+    std::vector<fs::path> tried;
+    if (const char* env = std::getenv("SONORA_ANALYZE_RULES"); env != nullptr && *env != '\0') {
+        return sonora::analyze::load_mastering_rules(env, rules, error);  // an explicit path is not searched for
+    } else {
+        std::error_code ec;
+        const fs::path exe = fs::read_symlink("/proc/self/exe", ec);
+        if (!ec) {
+            tried.push_back(exe.parent_path() / "data" / "mastering_rules.json");
+            tried.push_back(exe.parent_path().parent_path() / "share" / "sonora" / "analyze" / "mastering_rules.json");
+        }
+    }
+    for (const fs::path& p : tried) {
+        std::error_code ec;
+        if (fs::exists(p, ec)) return sonora::analyze::load_mastering_rules(p.string(), rules, error);
+    }
+    error = "mastering rules: mastering_rules.json not found (looked in:";
+    for (const fs::path& p : tried) error += " " + p.string();
+    error += "); set SONORA_ANALYZE_RULES or reinstall";
+    return false;
+}
+
 }  // namespace
 
 namespace sonora::analyze::app {
@@ -85,6 +114,7 @@ int run_mastering_command(const std::vector<std::string>& args, const std::atomi
     const std::string& input = args[0];
     std::string out_path;
     MasteringConfig cfg;
+    sonora::analyze::MasteringRules rules;
     for (std::size_t i = 1; i < args.size(); ++i) {
         const std::string& a = args[i];
         if (i + 1 >= args.size()) return usage();
@@ -100,6 +130,11 @@ int run_mastering_command(const std::vector<std::string>& args, const std::atomi
     }
 
     std::string error;
+    if (!load_rules(rules, error)) {
+        std::fprintf(stderr, "sonora-analyze: %s\n", error.c_str());
+        return 1;
+    }
+    cfg.table = &rules;
     WavSource src;
     if (!src.open(input, error)) {
         std::fprintf(stderr, "sonora-analyze: %s: %s\n", input.c_str(), error.c_str());
