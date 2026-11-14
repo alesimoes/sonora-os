@@ -1,6 +1,30 @@
 add_library(sonora_audiofile STATIC src/wav_writer.cpp src/wav_reader.cpp src/wav_recovery.cpp
   src/wrap_sidecar.cpp src/audio_export.cpp src/export_file.cpp src/flac_bits.cpp src/audio_import.cpp src/peak_file.cpp
   src/lossy_registry.cpp)
+
+# Opus and Vorbis export (ADR-0182): optional. A codec whose libraries are not
+# found is not compiled and not registered, so asking for it is refused when
+# a bounce starts. The image and CI install the -dev packages.
+find_package(PkgConfig QUIET)
+set(SONORA_LOSSY_LIBS "")
+if(PkgConfig_FOUND)
+  pkg_check_modules(SONORA_OGG QUIET IMPORTED_TARGET ogg)
+  pkg_check_modules(SONORA_OPUS QUIET IMPORTED_TARGET opus)
+  pkg_check_modules(SONORA_VORBIS QUIET IMPORTED_TARGET vorbis vorbisenc vorbisfile)
+endif()
+if(SONORA_OGG_FOUND AND SONORA_OPUS_FOUND)
+  target_sources(sonora_audiofile PRIVATE src/opus_encoder.cpp)
+  target_compile_definitions(sonora_audiofile PRIVATE SONORA_HAVE_OPUS)
+  target_link_libraries(sonora_audiofile PRIVATE PkgConfig::SONORA_OGG PkgConfig::SONORA_OPUS)
+  set(SONORA_HAVE_OPUS_EXPORT TRUE)
+endif()
+if(SONORA_OGG_FOUND AND SONORA_VORBIS_FOUND)
+  target_sources(sonora_audiofile PRIVATE src/vorbis_encoder.cpp)
+  target_compile_definitions(sonora_audiofile PRIVATE SONORA_HAVE_VORBIS)
+  target_link_libraries(sonora_audiofile PRIVATE PkgConfig::SONORA_OGG PkgConfig::SONORA_VORBIS)
+  set(SONORA_HAVE_VORBIS_EXPORT TRUE)
+endif()
+message(STATUS "Lossy export: opus=${SONORA_HAVE_OPUS_EXPORT} vorbis=${SONORA_HAVE_VORBIS_EXPORT}")
 target_include_directories(sonora_audiofile PUBLIC include)
 # common/platform for the take file's exclusive, close-on-exec create and its
 # periodic sync (ADR-0008 Â§3; ADR-0009 Consequences).
@@ -72,3 +96,18 @@ add_test(NAME peak_file COMMAND test_peak_file)
 add_executable(test_lossy_registry tests/test_lossy_registry.cpp)
 target_link_libraries(test_lossy_registry PRIVATE sonora_audiofile)
 add_test(NAME lossy_registry COMMAND test_lossy_registry)
+
+# Encode a sine, decode it with the library, check rate, duration and level;
+# a codec that is not registered fails at the start. The decode checks run only
+# for codecs this build carries.
+add_executable(test_lossy_export tests/test_lossy_export.cpp)
+target_link_libraries(test_lossy_export PRIVATE sonora_audiofile)
+if(SONORA_HAVE_OPUS_EXPORT)
+  target_compile_definitions(test_lossy_export PRIVATE SONORA_HAVE_OPUS)
+  target_link_libraries(test_lossy_export PRIVATE PkgConfig::SONORA_OGG PkgConfig::SONORA_OPUS)
+endif()
+if(SONORA_HAVE_VORBIS_EXPORT)
+  target_compile_definitions(test_lossy_export PRIVATE SONORA_HAVE_VORBIS)
+  target_link_libraries(test_lossy_export PRIVATE PkgConfig::SONORA_VORBIS)
+endif()
+add_test(NAME lossy_export COMMAND test_lossy_export)

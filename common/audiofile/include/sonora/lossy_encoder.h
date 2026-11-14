@@ -57,6 +57,9 @@ public:
     // rate, channel count or bitrate it cannot take, naming what it takes.
     virtual bool open(uint32_t sample_rate, int channels, uint32_t bitrate,
                       std::string& error) = 0;
+    // The file's DESCRIPTION tag. Called after open, before the first write,
+    // so an encoder writes its headers on the first write or at finish.
+    virtual void set_description(const std::string& /*text*/) {}
     // `frames` frames of `channels` interleaved floats at full scale +-1.
     virtual bool write(const float* interleaved, std::size_t frames, std::string& error) = 0;
     // Flushes the encoder and closes the stream (Ogg end-of-stream page).
