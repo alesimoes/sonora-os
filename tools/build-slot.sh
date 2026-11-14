@@ -128,6 +128,14 @@ fi
 [[ "$1" != -* ]] || { echo "build-slot.sh: unknown flag $1" >&2; usage; }
 WAIT_FILE="${SONORA_HEAVY_WAIT_FILE:-}"
 unset SONORA_HEAVY_WAIT_FILE
+# SONORA_HEAVY_EXIT_FILE=PATH: our own exit status, written on the way out by
+# the EXIT trap. A process killed from outside (the supervisor's taskkill, a
+# tool call's tree kill) never writes it, and under Git bash its parent's
+# `wait` reports that kill as 0: tools/build-job.sh took it for a success
+# (2026-11-14: waiters "finished: exit 0" with only the lock-wait line, no
+# build run). Not passed on to the command.
+EXIT_FILE="${SONORA_HEAVY_EXIT_FILE:-}"
+unset SONORA_HEAVY_EXIT_FILE
 
 # The Windows pid of this Git bash, which the supervisor (Windows Python)
 # can probe; nothing elsewhere.
@@ -150,6 +158,8 @@ ours() {
 ticket="" held="" container="" running=0
 # shellcheck disable=SC2329  # runs from the EXIT trap
 release() {
+  local rc=$?
+  if [[ -n "$EXIT_FILE" ]]; then echo "$rc" >"$EXIT_FILE.tmp" && mv "$EXIT_FILE.tmp" "$EXIT_FILE"; fi
   [[ -z "$ticket" ]] || rm -f "$ticket"
   if ((running)); then
     local c="$container"

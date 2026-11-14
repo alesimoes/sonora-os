@@ -141,6 +141,18 @@ stop_containers() {
   done <"$1/containers"
 }
 
+# The status build-slot.sh itself wrote, which wins; none means it was killed
+# before it could (its parent's `wait` reads that as 0), so never a success.
+confirmed_rc() {
+  local d="$1" rc="$2" real
+  if real="$(cat "$d/exit" 2>/dev/null)" && [[ "$real" =~ ^[0-9]+$ ]]; then
+    echo "$real"
+  else
+    echo "build-job: the lock script was killed before it finished (no exit status; reported 0)" >>"$d/log"
+    echo 137
+  fi
+}
+
 # The detached side: run the command through the lock, record the result.
 cmd_run() {
   local d="$1" child rc=0 cmd=()
@@ -149,7 +161,8 @@ cmd_run() {
   date +%s >"$d/started"
   mapfile -d '' cmd <"$d/cmd"
   cd "$(cat "$d/cwd")" || { echo 2 >"$d/rc"; exit 2; }
-  SONORA_HEAVY_WAIT_FILE="$d/queued" SONORA_HEAVY_CONTAINER_LOG="$d/containers" \
+  rm -f "$d/exit"
+  SONORA_HEAVY_EXIT_FILE="$d/exit" SONORA_HEAVY_WAIT_FILE="$d/queued" SONORA_HEAVY_CONTAINER_LOG="$d/containers" \
     "$SLOT" "${cmd[@]}" >>"$d/log" 2>&1 </dev/null &
   child=$!
   # cancel: the lock script's trap only runs once its docker client ended,
@@ -160,6 +173,7 @@ cmd_run() {
     rc=0
     wait "$child" || rc=$?
   done
+  rc="$(confirmed_rc "$d" "$rc")"
   date +%s >"$d/ended"
   echo "$rc" >"$d/rc.tmp" && mv "$d/rc.tmp" "$d/rc"
 }
