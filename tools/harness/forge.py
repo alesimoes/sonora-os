@@ -101,6 +101,10 @@ class Forge:
         on a local train/ branch, so another worktree may hold the name)."""
         raise NotImplementedError
 
+    def commit_all(self, worktree, message):
+        """Stage and commit every change in `worktree`."""
+        raise NotImplementedError
+
     def close_pr(self, pr, comment):
         raise NotImplementedError
 
@@ -366,6 +370,12 @@ class GhForge(Forge):
     def push_head(self, worktree, branch):
         self._ok(["git", "push", "origin", f"HEAD:refs/heads/{branch}"],
                  worktree, timeout=300)
+
+    def commit_all(self, worktree, message):
+        self._ok(["git", "add", "-A"], worktree, timeout=60)
+        trailer = "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+        self._ok(["git", "commit", "-q", "-m", message, "-m", trailer],
+                 worktree, timeout=60)
 
     def close_pr(self, pr, comment):
         self._ok(["gh", "pr", "close", str(pr), "--comment", comment],

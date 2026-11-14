@@ -249,6 +249,10 @@ class FakeForge(Forge):
         self._chk("retarget")
         self.prs[pr]["base"] = base
 
+    def commit_all(self, worktree, message):
+        self._chk("commit_all")
+        self.commits = getattr(self, "commits", []) + [(worktree, message)]
+
     def push_head(self, worktree, branch):
         self._chk("push")
         self.pushed.append(branch)

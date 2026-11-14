@@ -28,7 +28,7 @@ from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, d
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
-from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
+from harness import (blockinfo, closures, feature_merge, feature_sync, findings, handoff,  # noqa: E402
                      prepr, siblings,
                      leadwake, owner_infer, owner_route, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
 from harness.tick_guard import Guard  # noqa: E402
@@ -221,6 +221,7 @@ class Orchestrator:
         if not self.dry_run:   # every interval_s, not every tick
             g.step("supervisor", self.supervisor.tick, now)
         g.step("open_prs", self._open_pending_prs, now)
+        g.step("closures", self._open_closures, now)
         g.step("autoadopt", autoadopt.tick, self, now)
         g.step("cli_mailbox", cli_mailbox.tick, self)
         if not self.dry_run:
@@ -833,12 +834,18 @@ class Orchestrator:
             self.guard.step("open_pr", self._open_feature_pr, f, ts, now,
                             key=f["id"], task=ts[0]["id"])
 
+    def _open_closures(self, now):
+        if not (self.dry_run or self._is_dry("merge")):
+            closures.open_batch(self, now)
+
     def _open_feature_pr(self, f, ts, now):
         fid, rep = f["id"], ts[0]
         branch = self._feature_branch(fid)
         wt = self.worktrees.ensure(self._feature_key(fid), branch)
         n = None
         try:
+            if closures.route(self, f, ts, wt, branch, now):
+                return True
             if not prepr.passes(self, fid, ts, wt, now):
                 return False
             self.forge.push(wt, branch)
