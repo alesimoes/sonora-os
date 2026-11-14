@@ -1,0 +1,5 @@
+# logic.live_loops (ADR-0224): engine/control's launcher contract names the
+# launcher's types (sonora/launch/*). common/launch includes nothing of
+# engine/control, so the graph keeps no cycle. Folded into
+# tools/module-deps.allow once that file is free.
+engine/control -> common/launch

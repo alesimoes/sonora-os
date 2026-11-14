@@ -17,3 +17,19 @@ foreach(_t quantize launcher block_edges no_alloc)
   add_test(NAME launch_${_t} COMMAND launch_${_t}_test)
   set_tests_properties(launch_${_t} PROPERTIES LABELS launch)
 endforeach()
+
+# engine/control's launcher contract (ADR-0224) joins once the root is read
+# and only where sonora_control exists: engine/control/CMakeLists.txt is held
+# by other features. Moves there when that file frees.
+if(EXISTS "${CMAKE_SOURCE_DIR}/engine/control/launch.cmake")
+  if(CMAKE_VERSION VERSION_LESS 3.19)
+    message(WARNING "engine/control launch contract needs CMake 3.19 (cmake_language DEFER); not built")
+  else()
+    function(_sonora_launch_join_control)
+      if(TARGET sonora_control)
+        include("${CMAKE_SOURCE_DIR}/engine/control/launch.cmake")
+      endif()
+    endfunction()
+    cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _sonora_launch_join_control)
+  endif()
+endif()
