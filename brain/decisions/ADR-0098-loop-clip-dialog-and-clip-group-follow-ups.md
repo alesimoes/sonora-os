@@ -92,6 +92,10 @@ named as follow-ups (its §3 and its trim note at lines 45 to 48, and the
      no; repeats stay independent, as ADR-0052 decided.
    - (c) **Automation Follows Edit follows a group move.** ADR-0052 §3 notes that
      automation does not follow a group move yet. Follow-up, no decision needed.
+     **Done (2026-11-13):** with Automation Follows Edit on, the group move adds each
+     member's lane span (`follow_move_ops`) to the same Compound, so one undo reverts
+     clips and lanes; off, the lanes stay. Control thread only, no protocol change.
+     Test: `test_group_move_automation_follows` in `ui/qt/tests/test_clipboard.cpp`.
 
 5. **Constraints on this feature.** `ui/qt/CMakeLists.txt`,
    `ui/qt/tests/CMakeLists.txt`, `session_model.h` and `shell_model.cpp` are held by
