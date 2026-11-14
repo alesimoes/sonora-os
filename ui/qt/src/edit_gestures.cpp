@@ -2,6 +2,7 @@
 //
 // The EditController's mouse: hit-testing, press, move and release.
 #include "edit_controller.h"
+#include "edit_loop_handle.h"
 
 #include <algorithm>
 #include <cmath>
@@ -212,13 +213,8 @@ void EditController::move(double x, double y) {
             break;
         }
         case Drag::Kind::Loop: {
-            // Whole repeats only: the ghost snaps to the nearest, so 2.4
-            // lengths past the end lays two.
-            const Frames len = drag_.orig_end - drag_.orig_start;
-            const double lengths = len > 0 ? static_cast<double>(view_.frame_at(x) - drag_.orig_end) /
-                                                 static_cast<double>(len)
-                                           : 0.0;
-            drag_.loops = lengths < 0.5 ? 0 : static_cast<int>(lengths + 0.5);
+            drag_.loops = loop_handle_repeats(drag_.orig_end - drag_.orig_start,
+                                              view_.frame_at(x) - drag_.orig_end);
             break;
         }
         case Drag::Kind::Range: {
