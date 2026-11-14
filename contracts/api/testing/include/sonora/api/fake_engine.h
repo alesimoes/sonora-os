@@ -219,6 +219,8 @@ public:
     void script_save_as_copying(bool copying) { save_as_copying_ = copying; }
     // Saves written since construction.
     uint32_t saves() const { return saves_; }
+    // The ratio transport.varispeed last set, 1 at every session open.
+    double varispeed() const { return varispeed_; }
     // The capture inputs go away (`why` says how) or come back: an
     // InputsMissing event, the health flag and the per-track flags, as the
     // engine's housekeeping reports them.
@@ -399,6 +401,7 @@ private:
     bool record_requested_ = false;
     // Pro Tools' record-ready: Play starts the take (kTransportRecordReady).
     bool record_ready_ = false;
+    double varispeed_ = 1.0;
     std::vector<std::string> planned_;
     std::vector<PlannedCall> planned_log_;
     bool elastic_ = false;
