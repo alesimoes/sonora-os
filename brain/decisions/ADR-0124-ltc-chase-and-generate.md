@@ -34,3 +34,12 @@ Two timecode types exist until unified. The audio-thread tap and the settings UI
 - Varispeed range over which the decoder holds lock (assumption: +-10 %).
 - Latency from the input tap to the control tick; default offset.
 - Whether LTC out needs a hardware-clocked sample counter rather than the session's.
+
+Amendment (tests, 2026-11-13): the hardware checks are pending, not run. None
+of the following is measured yet; the tests above run only through the fakes.
+- UMC1820 decode and lock: an LTC signal fed into a UMC1820 input is decoded
+  to the expected frames and the chase locks on it. Pending, handed to the
+  researcher.
+- Generator read by an external device: the samples LTC out writes on a
+  UMC1820 output are read back by an external timecode reader and agree with
+  the published position. Pending, handed to the researcher.

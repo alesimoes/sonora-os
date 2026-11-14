@@ -1,3 +1,7 @@
+if(NOT TARGET sonora_ui_edit_tools)
+  add_subdirectory(${CMAKE_SOURCE_DIR}/ui/edit_tools ${CMAKE_BINARY_DIR}/ui/edit_tools)
+endif()
+
 add_library(sonora_keymap STATIC src/keymap.cpp)
 target_include_directories(sonora_keymap PUBLIC include)
 target_link_libraries(sonora_keymap PUBLIC sonora_api sonora_base PRIVATE sonora_json)

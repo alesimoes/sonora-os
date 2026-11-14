@@ -430,6 +430,25 @@ work, it waits.
 5. **Path encoding.** UTF-8 manifest (`activeCodePage`) or
    `std::filesystem::path` at the file-opening boundary.
 
+**Amendment, 2026-11-13: `sync_directory` on Windows.** The neutral build
+compiled for Windows (the nightly's Windows UI tests) takes a Win32 body of
+`platform::sync_directory` from `common/platform/src/windows/file.cpp`,
+wired in CMake only when `WIN32`; every other neutral build keeps the
+ENOSYS stub, now in `src/unsupported/sync_directory.cpp`, and POSIX is
+unchanged. The body opens the folder with `CreateFileW(GENERIC_WRITE,
+FILE_FLAG_BACKUP_SEMANTICS)` and calls `FlushFileBuffers`. A missing path
+fails with `ENOENT` and a file with `ENOTDIR`, as on POSIX. **Access denied
+counts as synced:** Windows opens a folder for writing only for a process
+holding the backup privilege, which an ordinary user lacks, and NTFS
+journals its metadata, so a created or renamed entry is committed with the
+log, the durability fsync on a POSIX folder buys. `ERROR_INVALID_FUNCTION`
+from the flush (FAT, some redirectors) counts as synced too, as POSIX's
+`EINVAL` does. Unverified: that a FAT or exFAT stick gives the same
+durability; Windows is not a shipping target (owner decision 1), so this
+serves the tests that open and save sessions, not a durability claim.
+Path encoding (item 5) is settled for this one call by converting the UTF-8
+path to UTF-16 at the boundary.
+
 ## Unverified
 
 - **The CI durations** in §4 are estimates. P7 records the first 10 runs.

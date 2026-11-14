@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "edit_controller_detail.h"
+#include "edit_shuffle_ops.h"
 #include "theme.h"
 
 namespace sonora::ui {
@@ -136,10 +137,6 @@ bool EditController::press(double x, double y, std::string& why) {
         drag_ = Drag{};
         return true;
     }
-    if (refuse_in_mode(kind == Drag::Kind::Move ? "Moving a region" : "Trimming a region", why)) {
-        drag_ = Drag{};
-        return false;
-    }
     const Region* r = find_region(snapshot(), h.region);
     drag_.region = h.region;
     drag_.orig_start = drag_.start = r->position;
@@ -188,8 +185,15 @@ void EditController::move(double x, double y) {
             drag_.start = drag_.orig_start;
             drag_.end = drag_.orig_end;
             drag_.preview.reset();
-            if (resolve_trim(s, drag_.region, start ? Edge::Start : Edge::End, want, t)) {
+            const TrackEdit* owner = nullptr;
+            const Region* now = find_region(s, drag_.region, &owner);
+            const bool shuffle = mode_ == EditMode::Shuffle;
+            if (resolve_trim(s, drag_.region, start ? Edge::Start : Edge::End, want, t) &&
+                (!shuffle || shuffle_limit_trim(*active(owner), *now, t))) {
                 (start ? drag_.start : drag_.end) = t.to;
+                // Shuffle ripples what follows: the overwrite preview below
+                // would draw neighbours that are not lost.
+                if (shuffle) break;
                 // What the drop will do to the neighbours, drawn while the
                 // edge is still in the hand: apply() is pure, so the preview
                 // is the edit itself, applied to a copy nobody else sees.
@@ -264,7 +268,7 @@ bool EditController::release(double x, double y, std::string& why) {
         case Drag::Kind::Move: {
             MoveRegion op;
             if (!resolve_move(snapshot(), d.region, d.start, doc_.reserve_id(), op)) return true;
-            if (!submit_move(op, why)) return false;
+            if (!submit_place(op, why)) return false;
             break;
         }
         case Drag::Kind::TrimStart:
@@ -275,7 +279,7 @@ bool EditController::release(double x, double y, std::string& why) {
                               start ? d.start : d.end, op)) {
                 return true;
             }
-            if (!submit(op, why)) return false;
+            if (!submit_trim(op, why)) return false;
             break;
         }
         case Drag::Kind::FadeIn:

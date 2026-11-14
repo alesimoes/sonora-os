@@ -44,10 +44,10 @@ def agent_activity(name):
 
 
 def stream_signature():
-    """Changes whenever view() would: the chat files or the daemon snapshot."""
+    """Changes whenever view() would: the chat files or the snapshot's content."""
     with lock:
-        updated = state.get("updated")
-    return (stream.file_signature(harness_dir()), updated, daemon_alive())
+        rev = state.get("rev")
+    return (stream.file_signature(harness_dir()), rev, daemon_alive())
 
 
 def frames(**kw):

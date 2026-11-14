@@ -1,6 +1,6 @@
 # Plan: system.image.kiosk - Kiosk compositor for the Qt shell, plus its ADR
 
-Status: approved
+Status: closed (2026-11-14, ADR-0186): smoketest and static check on main via #613; default flip parked for KVM
 Written by: architect   Dispatched by: lead   Architect sign-off: architect 2026-11-08
 
 ## 1. Goal and user experience
@@ -53,3 +53,11 @@ it passes ~500.
 smoketest -> docs. Single partial PR (KVM-gated evidence); title says so.
 Grades: smoketest M/high -> senior; docs S/low -> junior.
 Open questions (defaults): none; the flip waits for the KVM run.
+
+## 12. Closure (ADR-0186)
+Closed 2026-11-14. Done on main: `sonora-smoketest` asserts the kiosk runs
+under `sonora.gui` and the fallback under `sonora.expect_fallback`
+(`git log origin/main -S unit_running` -> #613, b7aebf69);
+`tools/test-image-config.sh` keeps the checks; `iso/README` documents the
+opt-in kiosk and the default-flip gate. Parked, not closed here: the default
+flip needs a recorded KVM `--gui` and `--gui-broken` run (owner, 2026-11-13).

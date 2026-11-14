@@ -136,42 +136,6 @@ bool insert_in(const model::Snapshot& doc, model::Id insert) {
     return false;
 }
 
-// ADR-0029 §6: a session received from elsewhere (a stick, a copy) names
-// files the host never saw saved. Before the plugin is handed a path into
-// "Plugin Files/", the file is the one the session named: a real file (no
-// link on the way), of the size named, and, up to a cap that keeps the
-// control loop from stalling on a sample library, with the sha256 named.
-// Empty when it is.
-std::string plugin_files_on_disk_problem(const std::string& folder, const std::vector<model::PluginFileRef>& files) {
-    namespace fs = std::filesystem;
-    constexpr uint64_t kHashBudget = uint64_t(256) << 20;
-    uint64_t hashed = 0;
-    for (const model::PluginFileRef& f : files) {
-        const std::string why = model::plugin_file_problem(f);
-        if (!why.empty()) return f.path + ": " + why;
-        fs::path at = fs::path(folder);
-        std::error_code ec;
-        for (const fs::path& part : fs::path(f.path)) {
-            at /= part;
-            if (fs::is_symlink(fs::symlink_status(at, ec))) return f.path + " is behind a link";
-        }
-        const fs::file_status st = fs::symlink_status(at, ec);
-        if (ec || !fs::is_regular_file(st)) return f.path + " is missing";
-        const uint64_t size = fs::file_size(at, ec);
-        if (ec || size != f.bytes) return f.path + " is not the size the session named";
-        if (hashed + size > kHashBudget) continue;
-        std::ifstream in(at, std::ios::binary);
-        if (!in) return f.path + " could not be read";
-        Sha256 sha;
-        std::vector<char> buf(std::size_t(1) << 20);
-        while (in.read(buf.data(), std::streamsize(buf.size())) || in.gcount() > 0)
-            sha.update(buf.data(), std::size_t(in.gcount()));
-        hashed += size;
-        if (sha.hex() != f.sha256) return f.path + " does not match its checksum";
-    }
-    return {};
-}
-
 }  // namespace
 
 // ---- what the scan says of one plugin at one channel count
@@ -653,7 +617,9 @@ void PluginHosting::start_pending(Chain& c, const model::Snapshot& doc, const st
                 else state = ss.str();
             }
             if (why.empty()) {
-                const std::string file_why = plugin_files_on_disk_problem(*session_.folder(), m->state->files);
+                // Hashed when the session opened (verify_plugin_files), so a
+                // restart during a take reads no sample library again.
+                const std::string file_why = plugin_files_.problem(*session_.folder(), m->state->files);
                 if (!file_why.empty()) {
                     why = "a file it names: " + file_why;
                     state.clear();
@@ -729,6 +695,7 @@ void PluginHosting::show(const model::Snapshot& doc, bool opened) {
     // An insert the document no longer has keeps no held notice.
     for (auto it = held_.begin(); it != held_.end();)
         it = it->first != 0 && !insert_in(doc, it->first) ? held_.erase(it) : std::next(it);
+    if (opened) verify_plugin_files(doc);
     std::set<model::Id> seen;
     for (const auto& tp : doc.edit->tracks) {
         const model::TrackEdit& t = *tp;
@@ -1050,9 +1017,9 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
     for (auto it = retiring_.begin(); it != retiring_.end();) {
         Retiring& r = *it;
         if (r.first_epoch_without == 0 || oldest_live_epoch < r.first_epoch_without) {
-            // Its hosts are still in watch(): one left unserviced with a
-            // writable socket would end every sleep of the control thread
-            // at once (the #198 review's spin).
+            // Its hosts are still in watch(), Readable and, while frames
+            // wait, Writable: one left unserviced would end every sleep of
+            // the control thread at once (the #198 review's spin; ADR-0213).
             r.chain->poll_parked(now_ms);
             ++it;
             continue;
@@ -1349,7 +1316,6 @@ uint64_t PluginHosting::request_states(model::Id only, const model::Snapshot& do
             }
             if (next_state_request_ == 0) next_state_request_ = 1;
             const uint32_t request = next_state_request_++;
-            std::string bytes, e;
             pc::GetState ask;
             ask.request = request;
             ask.instance = i;
@@ -1357,26 +1323,38 @@ uint64_t PluginHosting::request_states(model::Id only, const model::Snapshot& do
             // During a take the hosts copy and hash nothing (ADR-0029 §6): no
             // bulk I/O competes with the disk thread.
             ask.flags = no_copy ? pc::kGetStateNoCopy : 0u;
-            pc::encode(ask, bytes);
-            if (!c.running->host()->send(bytes, e)) {
-                f.failed.push_back(who + ": its state could not be asked for: " + e);
-                continue;
-            }
-            // A save that may copy plugin files waits for them (host_control.h).
-            // The host serves its GetStates one after the other, so a deadline
-            // started now for each would give the second instance only what the
-            // first left of it (#283 review): two 3 GiB samplers on one track
-            // would kill the host mid-copy. One behind another on this host
-            // starts its deadline when that one is answered (arm_state_request).
-            const int timeout_ms = pc::state_reply_timeout_ms(ask);
-            bool behind = false;
-            for (const auto& [other, r] : state_requests_) behind = behind || r.track == c.track;
-            const uint64_t deadline = behind ? 0 : steady_ms() + uint64_t(timeout_ms);
-            state_requests_[request] = StateRequest{id, insert, c.track, c.running->host(), deadline, timeout_ms, who};
+            PluginStateRequests::Request r;
+            r.flush = id;
+            r.insert = insert;
+            r.track = c.track;
+            r.host = c.running->host();
+            r.where = who;
+            pc::encode(ask, r.frame);
+            // A save that may copy plugin files waits for them (host_control.h)
+            // and goes one host at a time (ADR-0151 §1); each deadline starts
+            // when its host begins on it (plugin_hosting_state.h).
+            r.timeout_ms = pc::state_reply_timeout_ms(ask);
+            r.copies = !ask.save_dir.empty() && !(ask.flags & pc::kGetStateNoCopy);
+            state_requests_.add(request, std::move(r));
         }
     }
+    send_due_states(steady_ms());
     finish_flush_if_done(id);
     return id;
+}
+
+void PluginHosting::send_due_states(uint64_t now_ms) {
+    // A send that fails frees the copying turn, so ask again until none is due.
+    for (auto due = state_requests_.due(now_ms); !due.empty(); due = state_requests_.due(now_ms)) {
+        for (auto& [request, frame] : due) {
+            const PluginStateRequests::Request* r = state_requests_.find(request);
+            std::string e;
+            if (!r || r->host->send(frame, e)) continue;
+            const PluginStateRequests::Request gone = state_requests_.remove(request, now_ms);
+            flushes_[gone.flush].failed.push_back(gone.where + ": its state could not be asked for: " + e);
+            finish_flush_if_done(gone.flush);
+        }
+    }
 }
 
 void PluginHosting::take_state_reply(model::Id track, const std::string& bytes) {
@@ -1385,11 +1363,8 @@ void PluginHosting::take_state_reply(model::Id track, const std::string& bytes) 
     if (!pc::decode(bytes, m, e)) return;
     // The supervisor accepted it as the answer to a GetState this host has
     // outstanding; ids are unique across hosts, so it is the one asked.
-    const auto it = state_requests_.find(m.request);
-    if (it == state_requests_.end() || it->second.track != track) return;
-    const StateRequest r = it->second;
-    state_requests_.erase(it);
-    arm_state_request(track, steady_ms());
+    PluginStateRequests::Request r;
+    if (!state_requests_.answered(m.request, track, steady_ms(), r)) return;
     Flush& f = flushes_[r.flush];
     switch (m.status) {
         case pc::StateStatus::Ok: {
@@ -1427,62 +1402,36 @@ void PluginHosting::take_state_reply(model::Id track, const std::string& bytes) 
                                (m.text.empty() ? std::string() : " (" + m.text + ")"));
             break;
     }
+    // The copying turn this answer frees goes to the next host waiting.
+    send_due_states(steady_ms());
     finish_flush_if_done(r.flush);
 }
 
 void PluginHosting::fail_state_requests(model::Id track, const std::string& why) {
     std::set<uint64_t> touched;
-    for (auto it = state_requests_.begin(); it != state_requests_.end();) {
-        if (it->second.track != track) {
-            ++it;
-            continue;
-        }
-        flushes_[it->second.flush].failed.push_back(it->second.where + ": " + why);
-        touched.insert(it->second.flush);
-        it = state_requests_.erase(it);
+    for (const PluginStateRequests::Request& r : state_requests_.remove_track(track)) {
+        flushes_[r.flush].failed.push_back(r.where + ": " + why);
+        touched.insert(r.flush);
     }
+    if (!touched.empty()) send_due_states(steady_ms());
     for (const uint64_t f : touched) finish_flush_if_done(f);
 }
 
-void PluginHosting::arm_state_request(model::Id track, uint64_t now_ms) {
-    StateRequest* first = nullptr;
-    for (auto& [request, r] : state_requests_) {
-        if (r.track != track) continue;
-        if (r.deadline_ms != 0) return;  // one is already being served
-        // Ids grow in the order sent, so the lowest is the one the host takes
-        // next; after the wrap of 2^32 requests at worst one waits its turn
-        // with another's deadline.
-        if (!first) first = &r;
-    }
-    if (first) first->deadline_ms = now_ms + uint64_t(first->timeout_ms);
-}
-
 void PluginHosting::follow_state_requests(uint64_t now_ms) {
-    std::set<model::Id> late;
-    // Deadline 0: behind another on its host, not started yet.
-    for (const auto& [request, r] : state_requests_)
-        if (r.deadline_ms != 0 && now_ms >= r.deadline_ms) late.insert(r.track);
-    for (const model::Id track : late) {
-        int timeout_ms = pc::kReplyTimeoutMs;
-        // host_control.h: a GetState unanswered past state_reply_timeout_ms is
-        // a hung host, killed; the crash path restarts it from the session's
-        // last saved state. `host` is still the bound one: anything that
-        // unbinds it fails its requests first.
-        for (const auto& [request, r] : state_requests_) {
-            if (r.track != track || r.deadline_ms == 0 || now_ms < r.deadline_ms) continue;
-            timeout_ms = r.timeout_ms;
-            r.host->signal_kill();
-            break;
-        }
-        fail_state_requests(track, "its plug-in did not hand over its state within " +
-                                       std::to_string(timeout_ms / 1000) +
-                                       " s, so its host was restarted");
+    // host_control.h: a GetState unanswered past state_reply_timeout_ms (the
+    // one its host is serving; one still queued has not started its clock)
+    // is a hung host, killed; the crash path restarts it from the session's
+    // last saved state. `host` is still the bound one: anything that unbinds
+    // it fails its requests first.
+    for (const PluginStateRequests::Request& r : state_requests_.late(now_ms)) {
+        r.host->signal_kill();
+        fail_state_requests(r.track, "its plug-in did not hand over its state within " +
+                                         std::to_string(r.timeout_ms / 1000) + " s, so its host was restarted");
     }
 }
 
 void PluginHosting::finish_flush_if_done(uint64_t flush) {
-    for (const auto& [request, r] : state_requests_)
-        if (r.flush == flush) return;
+    if (state_requests_.flush_pending(flush)) return;
     const auto it = flushes_.find(flush);
     if (it == flushes_.end()) return;
     flushes_done_.push_back(std::move(it->second));
@@ -1502,6 +1451,9 @@ std::vector<model::Operation> PluginHosting::states_saved(const Flush& flush, co
         std::optional<model::StateRef> want;
         if (!s.sha256.empty())
             want = model::StateRef{model::plugin_state_file(s.sha256), s.sha256, s.bytes.size(), s.files};
+        // The host hashed each file as it wrote it, and the saver made them
+        // durable: a restart need not hash them again.
+        plugin_files_.trust(s.files);
         const model::InsertMix* m = doc.mix.find_insert(s.insert);
         const std::optional<model::StateRef> have = m ? m->state : std::nullopt;
         if (!(have == want)) ops.push_back(model::SetInsertState{s.insert, want});
@@ -1634,6 +1586,24 @@ std::vector<std::string> PluginHosting::take_notices() {
 void PluginHosting::hold(model::Id insert, std::string text) {
     held_[insert] = std::move(text);
     held_new_.push_back(insert);
+}
+
+void PluginHosting::verify_plugin_files(const model::Snapshot& doc) {
+    plugin_files_.open();
+    const std::shared_ptr<const std::string> folder = session_.folder();
+    if (!folder || folder->empty()) return;
+    for (const auto& tp : doc.edit->tracks) {
+        for (const model::Insert& in : tp->inserts) {
+            const model::InsertMix* m = doc.mix.find_insert(in.id);
+            if (!m || !m->state || m->state->files.empty()) continue;
+            const std::string why = plugin_files_.problem(*folder, m->state->files);
+            // The chain's start reads the same verdict and loads the plugin
+            // without the state, never with the file (ADR-0151 §2).
+            if (!why.empty())
+                hold(in.id, where(*tp, in) + ": its saved state will not be restored: a file it names, " + why +
+                                ". Replace the session's Plugin Files from a good copy before relying on it");
+        }
+    }
 }
 
 std::vector<std::string> PluginHosting::take_held_notices() {

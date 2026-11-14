@@ -57,7 +57,15 @@ function renderChat() {
   const top = log.scrollTop;
   const items = [];
   if (!messages.length) items.push(["welcome", welcome()]);
-  messages.forEach((m, i) => items.push(["m:" + (m.id || i), bubble(m) + cardsHtml(m, chat.actions)]));
+  // Keys must be unique: a repeated id left an orphan element that patchLog
+  // never removed, and each render pushed a stale copy to the end (2026-11-09).
+  const seen = new Set();
+  messages.forEach((m, i) => {
+    let k = "m:" + (m.id || i);
+    if (seen.has(k)) k += ":" + i;
+    seen.add(k);
+    items.push([k, bubble(m) + cardsHtml(m, chat.actions)]);
+  });
   C.queue.forEach((q, i) => items.push(["q:" + i, `<div class="msg me"><div class="who"><span>Você${q.to ? " → " + esc(q.to) : ""}</span>` +
     `<time>enviando…</time></div><p>${esc(q.text)}</p></div>`]));
   if (thinking(messages)) items.push(["think", thinkingBubble(chat.partial)]);
@@ -74,7 +82,7 @@ function renderChat() {
 function patchLog(log, items) {
   const old = new Map();
   for (const el of Array.from(log.children)) {
-    if (el.dataset && el.dataset.k) old.set(el.dataset.k, el); else el.remove();
+    if (el.dataset && el.dataset.k && !old.has(el.dataset.k)) old.set(el.dataset.k, el); else el.remove();
   }
   let added = 0, prev = null;
   for (const [k, html] of items) {

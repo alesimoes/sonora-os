@@ -419,9 +419,10 @@ bool read_state(Reader& rd, const Value& obj, const std::string& path,
 }
 
 bool read_insert_value(Reader& rd, const Value& v, const std::string& p, Insert& in) {
-    return rd.keys(v, p, {"id", "slot", "plugin", "active"}) && rd.id(v, p, "id", in.id) &&
-           rd.small(v, p, "slot", in.slot) && read_plugin(rd, v, p, in.plugin) &&
-           rd.flag(v, p, "active", in.active);
+    return rd.keys(v, p, {"id", "slot", "plugin", "active", "key_bus"}) &&
+           rd.id(v, p, "id", in.id) && rd.small(v, p, "slot", in.slot) &&
+           read_plugin(rd, v, p, in.plugin) && rd.flag(v, p, "active", in.active) &&
+           rd.id(v, p, "key_bus", in.key_bus);
 }
 
 bool read_insert_mix_value(Reader& rd, const Value& v, const std::string& p, InsertMix& m) {

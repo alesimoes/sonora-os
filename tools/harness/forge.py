@@ -11,11 +11,20 @@ import re
 import subprocess
 import tempfile
 
-from harness import branch_tip, forge_push, shell
+from harness import branch_tip, forge_push, prepr, shell
 
 
 class ForgeError(Exception):
     pass
+
+
+class ForgeConflict(ForgeError):
+    """The branch conflicts with its remote copy: for the integrator, not a
+    retry."""
+
+    def __init__(self, msg, paths):
+        super().__init__(msg)
+        self.paths = list(paths)
 
 
 class RateLimited(ForgeError):
@@ -60,8 +69,9 @@ class Forge:
     def enqueue(self, pr):
         raise NotImplementedError
 
-    def pre_pr(self, worktree):
-        """(ok, output). A repo without the script passes with a note."""
+    def pre_pr(self, worktree, env=None):
+        """(ok, output). A repo without the script passes with a note. `env`:
+        extra variables for the script (harness/prepr.allow_env)."""
         raise NotImplementedError
 
     # -- merge train (adopted PRs) ------------------------------------
@@ -98,6 +108,10 @@ class Forge:
     def push_head(self, worktree, branch):
         """Push the worktree's HEAD to `branch` (adopted PRs are checked out
         on a local train/ branch, so another worktree may hold the name)."""
+        raise NotImplementedError
+
+    def commit_all(self, worktree, message):
+        """Stage and commit every change in `worktree`."""
         raise NotImplementedError
 
     def close_pr(self, pr, comment):
@@ -138,6 +152,11 @@ class Forge:
         """Fast-forward the local branch to origin's head. (ok, why)."""
         raise NotImplementedError
 
+    def changed_files(self, base, branch):
+        """Paths `branch` changed since `base` (harness/branch_tip.py), or
+        None when that cannot be told."""
+        raise NotImplementedError
+
 
 def job_signatures(excerpt):
     """{job name: cause} from failure_excerpt's text. The cause is the job's
@@ -162,11 +181,13 @@ def job_signatures(excerpt):
     return out
 
 
-def run(argv, cwd=None, timeout=120):
+def run(argv, cwd=None, timeout=120, env=None):
+    """`env` adds to the daemon's environment, never replaces it."""
     try:
         return subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
                               timeout=timeout, encoding="utf-8",
-                              errors="replace")
+                              errors="replace",
+                              env=dict(os.environ, **env) if env else None)
     except (OSError, subprocess.SubprocessError) as e:
         raise ForgeError(f"{argv[0]}: {e}")
 
@@ -178,12 +199,16 @@ class GhForge(Forge):
     def _ok(self, argv, cwd=None, timeout=120):
         r = self.run(argv, cwd or self.root, timeout)
         if r.returncode:
-            self._raise(argv, r.stderr)
+            # git prints CONFLICT lines on stdout: keep both streams.
+            self._raise(argv, r.stderr, r.stdout)
         return r.stdout
 
     @staticmethod
-    def _raise(argv, stderr):
-        msg = f"{' '.join(argv[:3])}: {stderr.strip()[:300]}"
+    def _raise(argv, stderr, stdout=""):
+        text = (stderr or "").strip()
+        if (stdout or "").strip():
+            text = (text + " " + stdout.strip()).strip()
+        msg = f"{' '.join(argv[:3])}: {text[:600]}"
         if any(p.lower() in stderr.lower() for p in RATE_PATTERNS):
             raise RateLimited(msg)
         raise ForgeError(msg)
@@ -238,8 +263,11 @@ class GhForge(Forge):
     def push(self, worktree, branch):
         def ok(argv, cwd, timeout):
             return self._ok(argv, cwd, timeout)
-        return forge_push.push_feature_branch(ok, worktree, branch,
-                                              self.base_ref)
+        try:
+            return forge_push.push_feature_branch(ok, worktree, branch,
+                                                  self.base_ref)
+        except forge_push.MergeConflict as e:
+            raise ForgeConflict(str(e), e.paths)
 
     def create_pr(self, branch, base, title, body):
         fd, path = tempfile.mkstemp(prefix="orch-prbody-", suffix=".md")
@@ -359,6 +387,12 @@ class GhForge(Forge):
         self._ok(["git", "push", "origin", f"HEAD:refs/heads/{branch}"],
                  worktree, timeout=300)
 
+    def commit_all(self, worktree, message):
+        self._ok(["git", "add", "-A"], worktree, timeout=60)
+        trailer = "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+        self._ok(["git", "commit", "-q", "-m", message, "-m", trailer],
+                 worktree, timeout=60)
+
     def close_pr(self, pr, comment):
         self._ok(["gh", "pr", "close", str(pr), "--comment", comment],
                  timeout=60)
@@ -462,9 +496,14 @@ class GhForge(Forge):
     def sync_local(self, branch):
         return branch_tip.sync_local(self.run, self.root, branch)
 
-    def pre_pr(self, worktree):
+    def changed_files(self, base, branch):
+        return branch_tip.changed_files(self.run, self.root, base, branch)
+
+    def pre_pr(self, worktree, env=None):
         script = os.path.join(worktree, "tools", "pre-pr.sh")
         if not os.path.exists(script):
             return True, "tools/pre-pr.sh not present: not run"
-        r = self.run([shell.bash(), "tools/pre-pr.sh"], worktree, 1800)
-        return r.returncode == 0, (r.stdout + r.stderr)[-2000:]
+        argv = [shell.bash(), "tools/pre-pr.sh"]
+        r = (self.run(argv, worktree, 1800, env=env) if env
+             else self.run(argv, worktree, 1800))
+        return r.returncode == 0, prepr.summary(r.stdout + r.stderr, 2000)

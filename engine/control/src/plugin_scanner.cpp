@@ -247,6 +247,7 @@ api::PluginInfo catalog_entry(const pr::Record& r) {
     if (p.categories.size() > api::wire::kMaxPluginCategories) p.categories.resize(api::wire::kMaxPluginCategories);
     p.inputs = r.audio_in;
     p.outputs = r.audio_out;
+    p.key_inputs = r.sidechain_in;
     p.usable = r.ok();
     p.refusal = r.ok() ? std::string() : r.reason;
     p.has_editor = r.has_editor;

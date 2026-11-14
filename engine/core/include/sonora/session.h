@@ -13,6 +13,7 @@
 #include "sonora/click.h"
 #include "sonora/disk_reader.h"
 #include "sonora/disk_thread.h"
+#include "sonora/edge_ramp.h"
 #include "sonora/dsp/meter.h"
 #include "sonora/fade_curve.h"
 #include "sonora/graph_schedule.h"
@@ -645,6 +646,8 @@ public:
     // one line holds.
     uint32_t delay_lines() const { return delay_lines_; }
     uint32_t max_delay_frames() const { return delay_len_ ? delay_len_ - 1 : 0; }
+    // How long a rerouted strip's crossfade lasts (ADR-0202).
+    uint32_t edge_ramp_frames() const { return edge_ramps_.ramp_frames(); }
 
     // What InsertChain nodes run; with null, a bound chain plays silence
     // and an unbound one passes through (insert_chain_runner.h). Not
@@ -709,6 +712,11 @@ private:
     using WordHook = void (*)(void* context) noexcept SONORA_RT;
     WordHook word_hook_ = nullptr;
     void* word_hook_context_ = nullptr;
+    // Called by process() right after it has taken the callback's aux solo
+    // flags, so a test can clear a solo between that and anything that
+    // reads them again (ADR-0148 §1). Set only while no callback runs.
+    WordHook solo_hook_ = nullptr;
+    void* solo_hook_context_ = nullptr;
 
     // No take: a track with no capture window, a punch record for none.
     static constexpr uint32_t kNoWindowTake = ~uint32_t{0};
@@ -935,6 +943,15 @@ private:
     // Adds `in` to `out`, `edge.delay_frames` late through its line.
     void sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const float* const in[2],
                   float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // A strip's output edge `ei`: sum_edge(), faded in at the line's input
+    // while the strip is rerouted (ADR-0202).
+    void sum_routed(const PlaybackPlan& plan, uint32_t ei, const float* const in[2],
+                    float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // The rerouted strips' old edges into node `ni`, fading out.
+    void sum_ghosts(const MixPass& pass, uint32_t ni, float* const out[2], uint32_t n) noexcept SONORA_RT;
+    // `in` times strip s's fade (or one less it), through `edge`'s line.
+    void sum_faded(const PlaybackPlan& plan, const PlanEdge& edge, uint32_t s, bool out_fade,
+                   const float* const in[2], float* const out[2], uint32_t n) noexcept SONORA_RT;
     // A send edge: `in` scaled by the send's ramped coefficient, then
     // sum_edge(). `mono`: the source's side 0 feeds both sides. A send that
     // takes its track's lanes takes them per frame from `from`, `lag`
@@ -1097,6 +1114,10 @@ private:
     uint32_t scratch_buffers_ = 0;           // the most nodes a plan has
     std::unique_ptr<float[]> scratch_;       // scratch_buffers x 2 x max_block
     std::unique_ptr<float[]> track_buf_;     // 2 x max_block
+    // Reroutes at a swap crossfade (ADR-0202); fade_buf_, 2 x max_block, is
+    // where a faded edge's input is scaled before its line.
+    EdgeRamps edge_ramps_;
+    std::unique_ptr<float[]> fade_buf_;
     // The delay-line pool: channel state outside the plan, so a swap keeps
     // it. Each line remembers the edge it serves and how many frames of it
     // it holds, so a line handed to another edge restarts from silence
@@ -1241,6 +1262,7 @@ private:
     void feeds_solo(const PlaybackPlan& plan) noexcept SONORA_RT;
     std::unique_ptr<uint8_t[]> feeds_node_;    // per node
     std::unique_ptr<uint8_t[]> feeds_track_;   // per engine track
+    std::unique_ptr<uint8_t[]> aux_solo_;      // per bus: the callback's one load
     uint32_t max_buses_ = 0;
     uint32_t send_states_ = 0;               // (tracks + max_buses) x kStripSendSlots
     std::unique_ptr<SendState[]> sends_;

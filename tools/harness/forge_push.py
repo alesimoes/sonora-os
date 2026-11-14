@@ -47,21 +47,60 @@ def _contains(ok, worktree, ancestor, descendant):
         return False
 
 
+class MergeConflict(Exception):
+    """The remote's copy conflicts with the local branch in `paths`."""
+
+    def __init__(self, paths, detail=""):
+        self.paths = list(paths)
+        super().__init__("merge conflict in: " + ", ".join(self.paths)
+                         + (f" ({detail})" if detail else ""))
+
+
+# Generated screenshots are never committed (owner, 2026-11-13, #724): a
+# remote copy that still carries them is resolved by dropping them.
+_SCREENSHOT = re.compile(r"^docs/images/sonora-ui-[^/]*\.png$")
+_IDENT = ["git", "-c", "user.name=sonora-harness",
+          "-c", "user.email=harness@sonora.invalid"]
+
+
+def _unmerged(ok, worktree):
+    out = ok(["git", "diff", "--name-only", "--diff-filter=U"], worktree, 60)
+    return [p.strip() for p in out.splitlines() if p.strip()]
+
+
+def _abort(ok, worktree):
+    try:
+        ok(["git", "merge", "--abort"], worktree, 60)
+    except Exception:
+        pass
+
+
+def _resolve_screenshots(ok, worktree, merge_error):
+    """After a conflicted merge: drop the screenshot conflicts; raise
+    MergeConflict for whatever else is left, otherwise conclude the merge."""
+    try:
+        paths = _unmerged(ok, worktree)
+        rest = [p for p in paths if not _SCREENSHOT.match(p)]
+        if not paths or rest:
+            raise MergeConflict(rest or paths, str(merge_error)[:400])
+        for p in paths:
+            ok(["git", "rm", "-f", "-q", "--", p], worktree, 60)
+        ok([*_IDENT, "commit", "--no-edit"], worktree, 120)
+    except Exception:
+        _abort(ok, worktree)
+        raise
+
+
 def _merge_remote(ok, worktree, branch):
     """Bring FETCH_HEAD into the checked-out branch; a conflict aborts the
     merge and raises, so nothing is pushed over the remote's work."""
     if _contains(ok, worktree, "FETCH_HEAD", "HEAD"):
         return
     try:
-        ok(["git", "-c", "user.name=sonora-harness",
-            "-c", "user.email=harness@sonora.invalid",
+        ok([*_IDENT, "-c", "core.editor=true",
             "merge", "--no-edit", "FETCH_HEAD"], worktree, 300)
-    except Exception:
-        try:
-            ok(["git", "merge", "--abort"], worktree, 60)
-        except Exception:
-            pass
-        raise
+    except Exception as e:
+        _resolve_screenshots(ok, worktree, e)
 
 
 def push_feature_branch(ok, worktree, branch, base_ref="origin/main",

@@ -8,7 +8,10 @@ function kpiCells() {
     `<div class="bar"><span style="width:${p.pct}%"></span></div></div>` :
     '<div class="cell" data-q="quanto falta para terminar?"><small>Concluído</small><b>—</b></div>';
   const mc = m ? `<div class="cell hide-s" data-q="o que entrou hoje?"><small>Merges hoje</small><b>${m.today}<em> · ${m.last_hour}/h</em></b></div>` : "";
-  return pc + mc;
+  const c = C.data.cost;
+  const top = c && c.by_model ? Object.entries(c.by_model).slice(0, 2).map(([k, v]) => `${esc(k)} $${Math.round(v)}`).join(" · ") : "";
+  const cc = c ? `<div class="cell hide-s" data-q="onde estamos gastando tokens?"><small>Gasto 24h</small><b>$${Math.round(c.usd)}<em> · ${top}</em></b></div>` : "";
+  return pc + mc + cc;
 }
 
 function trackRow(t) {

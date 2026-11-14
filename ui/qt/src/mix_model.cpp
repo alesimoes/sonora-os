@@ -4,6 +4,7 @@
 #include <QList>
 #include <QStringList>
 #include <algorithm>
+#include <chrono>
 #include <utility>
 
 #include "automation_edit.h"
@@ -272,7 +273,9 @@ void MixModel::beginRide(int track) {
     ride_from_db_ = ride_db_ = trim ? trimNow(track, lane) : session_.stripGain(track);
     ride_sent_live_ = false;
     ride_touched_ = false;
-    ride_wrote_ = !trim && writes(track);
+    // Only a move made while rolling is the pass's: a press alone is not.
+    ride_wrote_ = false;
+    glide_track_ = kNoRide;
     // The hand is on the fader from the press, before it moves: Touch and
     // Latch take over at this value, so nothing jumps.
     if (live(track)) {
@@ -307,7 +310,9 @@ void MixModel::endRide(int track) {
     const float db = ride_db_;
     const bool sent = ride_sent_live_;
     const bool touched = ride_touched_;
-    const bool wrote = ride_wrote_ || writes(track);
+    // A ride the transport outlived (stopped before the release) is the
+    // static: no lane was left to take it.
+    const bool wrote = ride_wrote_ && writes(track);
     if (ride_trim_) {
         // The engine holds the trim and writes its lane; the document's
         // fader is not the trim's, so nothing is saved.
@@ -329,7 +334,13 @@ void MixModel::endRide(int track) {
     if (touched) sendLive(track, db, api::Gesture::Release);
     releasePeers(false);
     // A Touch ride is the pass's lane; the engine glides back to
-    // the static, which the cap shows again.
+    // the static, which the cap shows again, gliding from where the hand left it.
+    if (wrote && track >= 0 && track < session_.automationModes().size() &&
+        session_.automationModes()[track] == QLatin1String("Touch")) {
+        glide_track_ = track;
+        glide_from_db_ = db;
+        glide_start_ns_ = nowNs();
+    }
     if (sent && !wrote) {
         std::string why;
         const bool ok = session_.controller().set_gain(track, db, why);
@@ -388,15 +399,41 @@ void MixModel::panDrag(int track, qreal dx, qreal width, bool fine) {
     // lane in Write or Touch records it; the SetMix below saves it.
     // A step the clamp turns into none (hard over, pushed further) is no
     // Move: a lane in Write would record the same value again.
+    // In a written ride the pan keeps its static as the gain does: the hand's
+    // value lives in pan_value_ and the document is not stepped.
+    const bool written = track == pan_track_ && pan_track_ != kNoRide && writes(track);
     if (track == pan_track_ && pan_track_ != kNoRide && w > 0 && live(track)) {
-        const float now = session_.stripPan(track);
+        const float now = written ? pan_value_ : session_.stripPan(track);
         const float next = pan_drag(now, static_cast<float>(dx), static_cast<float>(w));
         if (next != now) {
             pan_value_ = next;
             sender_(static_cast<uint32_t>(track), api::ParamId::Pan, next, api::Gesture::Move);
         }
     }
-    session_.panDrag(track, dx, w);
+    if (!written) session_.panDrag(track, dx, w);
+}
+
+uint64_t MixModel::nowNs() const {
+    return now_ns_ ? now_ns_()
+                   : static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                               std::chrono::steady_clock::now().time_since_epoch())
+                                               .count());
+}
+
+qreal MixModel::glideGain(int track) const {
+    if (track < 0 || track >= session_.trackCount()) return 0.0;
+    if (track != glide_track_) return session_.stripGain(track);
+    const float to = session_.stripGain(track);
+    const uint64_t dt = nowNs() - glide_start_ns_;
+    const uint64_t total = static_cast<uint64_t>(kGlideMs) * 1000000ull;
+    if (dt >= total) return to;
+    const double t = double(dt) / double(total);
+    return glide_from_db_ + (to - glide_from_db_) * t;
+}
+
+bool MixModel::gliding(int track) const {
+    return track == glide_track_ && track != kNoRide &&
+           nowNs() - glide_start_ns_ < static_cast<uint64_t>(kGlideMs) * 1000000ull;
 }
 
 bool MixModel::setAutomationMode(int track, const QString& mode) {

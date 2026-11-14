@@ -53,7 +53,7 @@ def status(store):
     return {"last": last, "dispatched_at": disp, "watch_s": WATCH_S}
 
 
-def drop_bogus_tasks(store, done):
+def drop_bogus_tasks(store, done, suffix=""):
     """A main-red task opened for a run that was only cancelled: close it
     while nobody has started it. A failure on the same head keeps it."""
     failed = {str(r.get("head_sha") or "")[:8]
@@ -62,7 +62,7 @@ def drop_bogus_tasks(store, done):
         if r.get("conclusion") in DECISIVE:
             continue
         sha8 = str(r.get("head_sha") or "")[:8]
-        t = store.get_task(f"main-red-{sha8}") if sha8 else None
+        t = store.get_task(f"main-red-{sha8}{suffix}") if sha8 else None
         if t and t["state"] == "queued" and sha8 not in failed:
             store.advance(t["id"], "closed",
                           f"nightly run {r.get('id')} was {r.get('conclusion')}"

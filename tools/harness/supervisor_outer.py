@@ -35,8 +35,10 @@ def default_spawn(root, log_path):
     daemon log; returns the pid."""
     kw = {}
     if sys.platform == "win32":
+        # Hidden console, not DETACHED_PROCESS: the daemon's console children
+        # (git, bash, docker) would each open a visible window (2026-11-09).
         kw["creationflags"] = (subprocess.CREATE_NEW_PROCESS_GROUP
-                               | subprocess.DETACHED_PROCESS)
+                               | subprocess.CREATE_NO_WINDOW)
     else:
         kw["start_new_session"] = True
     out = open(log_path, "ab")

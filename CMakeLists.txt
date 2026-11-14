@@ -108,8 +108,15 @@ add_subdirectory(common/midi)
 # The session document (ADR-0009), layer 1 beside common/audiofile. It links
 # common/midi for notes and edits (ADR-0014 §1), above it in this list.
 add_subdirectory(common/model)
+# Elastic audio's pure half (ADR-0136): warp maps, the quantize planner and
+# the Stretcher interface; no stretcher library here.
+if(EXISTS ${CMAKE_SOURCE_DIR}/common/stretch/CMakeLists.txt)
+  add_subdirectory(common/stretch)
+endif()
 # Groove templates (ADR-0115), pure functions over the model's tempo map.
 add_subdirectory(common/groove)
+# Loop catalog interfaces and fakes (ADR-0163).
+add_subdirectory(common/loops)
 endif()
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
@@ -167,6 +174,9 @@ if(SONORA_PORTABLE_UI AND NOT SONORA_PLATFORM STREQUAL "linux" AND NOT SONORA_PL
   add_subdirectory(ui/client)
   add_subdirectory(ui/qt)
   _sonora_collect_targets(${CMAKE_SOURCE_DIR}/ui/qt _ui_targets)
+  # ui/keymap pulls ui/edit_tools in; its test is label ui, so it must be built too.
+  _sonora_collect_targets(${CMAKE_SOURCE_DIR}/ui/edit_tools _edit_tools_targets)
+  list(APPEND _ui_targets ${_edit_tools_targets})
   set(_ui_deps)
   foreach(_t ${_ui_targets})
     get_target_property(_type ${_t} TYPE)
@@ -191,6 +201,10 @@ if(NOT SONORA_PLATFORM STREQUAL "linux" OR SONORA_PLUGINS_ONLY)
   return()
 endif()
 add_subdirectory(contracts/api)
+# audio.elastic's contract tests (ADR-0136), on contracts/api's targets.
+if(EXISTS ${CMAKE_SOURCE_DIR}/contracts/api/elastic/CMakeLists.txt)
+  add_subdirectory(contracts/api/elastic)
+endif()
 add_subdirectory(contracts/backend)
 # Control surface events in, feedback out (ADR-0007 4.4, ADR-0040).
 add_subdirectory(contracts/surfaces)
@@ -204,6 +218,8 @@ add_subdirectory(plugins/host)
 add_subdirectory(engine/core)
 # Offline converters (ADR-0007 M10); the engine never links them.
 add_subdirectory(interchange)
+# The opt-in Claude layer (ADR-0155), on common/model; the engine never links it.
+add_subdirectory(assistant)
 add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
 # ALSA direct (ADR-0053). Its logic builds and tests everywhere; libasound is optional.
@@ -222,6 +238,10 @@ add_subdirectory(engine/editor_service)
 add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)
 add_subdirectory(engine/control)
+# The audio.elastic job and its stretcher adapter (ADR-0136), on sonora_control.
+if(EXISTS ${CMAKE_SOURCE_DIR}/engine/elastic/CMakeLists.txt)
+  add_subdirectory(engine/elastic)
+endif()
 add_subdirectory(engine/app)
 # The interfaces' side of the socket (M7). After engine/app: its test runs
 # sonora-engine as a process, a build-order dependency, never a link.
@@ -232,6 +252,14 @@ add_subdirectory(ui/qt)
 # time.groove's panel and command, a module of its own (ADR-0115).
 if(EXISTS ${CMAKE_SOURCE_DIR}/ui/groove/CMakeLists.txt)
   add_subdirectory(ui/groove)
+endif()
+# tempo.edit detect (ADR-0114).
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/beat/CMakeLists.txt)
+  add_subdirectory(ui/beat)
+endif()
+# The elastic audio editor and its command (ADR-0136).
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/elastic/CMakeLists.txt)
+  add_subdirectory(ui/elastic)
 endif()
 
 # Module labels (see sonora_label_module_tests above). The neutral modules
@@ -245,6 +273,7 @@ sonora_label_module_tests(common/audiofile audiofile)
 sonora_label_module_tests(common/midi midi)
 sonora_label_module_tests(common/model model)
 sonora_label_module_tests(common/groove model)
+sonora_label_module_tests(common/loops model)
 sonora_label_module_tests(common/session_files session_files)
 sonora_label_module_tests(contracts/api contracts)
 sonora_label_module_tests(contracts/backend contracts)
@@ -264,10 +293,25 @@ sonora_label_module_tests(drivers/clock drivers)
 sonora_label_module_tests(drivers/ltc drivers)
 sonora_label_module_tests(drivers/surfaces drivers)
 sonora_label_module_tests(interchange interchange)
+sonora_label_module_tests(assistant assistant)
 sonora_label_module_tests(plugins/analyze analyze)
 sonora_label_module_tests(ui/keymap ui)
 sonora_label_module_tests(ui/tui ui)
 sonora_label_module_tests(ui/client ui)
 sonora_label_module_tests(ui/qt ui)
 sonora_label_module_tests(ui/groove ui)
+sonora_label_module_tests(ui/beat ui)
 sonora_label_module_tests(ui/smart_controls ui)
+# One literal line per elastic module: tools/check-test-labels.sh greps for it.
+if(EXISTS ${CMAKE_SOURCE_DIR}/common/stretch/CMakeLists.txt)
+  sonora_label_module_tests(common/stretch model)
+endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/contracts/api/elastic/CMakeLists.txt)
+  sonora_label_module_tests(contracts/api/elastic contracts)
+endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/engine/elastic/CMakeLists.txt)
+  sonora_label_module_tests(engine/elastic control)
+endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/elastic/CMakeLists.txt)
+  sonora_label_module_tests(ui/elastic ui)
+endif()

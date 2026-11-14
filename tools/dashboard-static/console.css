@@ -195,6 +195,10 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   .card{width:100%}.msg{max-width:94%}
   .comp{padding:8px 10px calc(8px + env(safe-area-inset-bottom))}
 }
+#hcare2 summary{cursor:pointer;color:var(--mute);font:12px var(--mono);padding:6px 2px}
+#hcare2 .hc{border-left:3px solid var(--line);padding:4px 10px;margin:6px 0}
+#hcare2 .hc.bad{border-left-color:var(--bad,#d55)}
+#hcare2 .hc p{color:var(--mute);font-size:12px;margin:2px 0}
 #hcare summary{cursor:pointer;color:var(--mute);font:12px var(--mono);padding:6px 2px}
 #hcare .hc{border-left:3px solid var(--line);padding:4px 10px;margin:6px 0}
 #hcare .hc h4{font-size:13px;font-weight:500}

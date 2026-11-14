@@ -270,6 +270,11 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // sample_edit.h). The interface builds it from the selection.
         {"sample.edit", CommandTarget::None,
          "Apply a sample edit to a region's range (VERB REGION FROM TO CHANNEL [PARAM])", true},
+        // Elastic audio (ADR-0136): the region is stretched offline into a
+        // new file and repointed, one undo step; the grammar is api/elastic.h.
+        // Only an engine announcing the audio.elastic capability runs it.
+        {"audio.elastic", CommandTarget::None,
+         "Stretch a region into a new file (REGION ALGORITHM ratio=|warp=|quantize=)", true},
         // The track's playlist selector (ADR-0026), on the track given or the
         // selected one. Choose takes the playlist's name; Rename the new name,
         // and asks for it without one.
@@ -485,6 +490,9 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // latency.* commands.
         {"window.latency", CommandTarget::None, "Show or hide the Latency window",
          false, CommandDomain::Interface},
+        // Step Sequencer (ADR-0169): the drum-machine grid, opened from Edit.
+        {"window.step_sequencer", CommandTarget::None,
+         "Show or hide the Step Sequencer window", false, CommandDomain::Interface},
         // File > Bounce Mix…: the dialog that sends mix.bounce.
         {"window.bounce", CommandTarget::None, "Show or hide the Bounce Mix window",
          false, CommandDomain::Interface},

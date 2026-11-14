@@ -216,7 +216,7 @@ int test_codec_and_file() {
     CHECK(!deserialize(bad, loaded, le));
     // A version 18 file may not hold groups.
     std::string old = file;
-    const std::size_t v = old.find("\"sonora_session\": 25");
+    const std::size_t v = old.find("\"sonora_session\": 26");
     CHECK(v != std::string::npos);
     old.replace(v, 20, "\"sonora_session\": 18");
     CHECK(!deserialize(old, loaded, le) && le.message.find("groups") != std::string::npos);

@@ -121,12 +121,14 @@ bool HostProcess::stopped(uint64_t now_ms, uint64_t grace_ms) {
     // The signal only: running() reaps it on a later call, so a child slow
     // to die (D state on a slow stick) never holds the control thread (M5
     // on #80).
-    if (stop_requested_ms_ != 0 && now_ms - stop_requested_ms_ >= grace_ms) child_->kill();
+    if (stop_requested_ms_ != 0 && now_ms - stop_requested_ms_ >= grace_ms) signal_kill();
     return !child_->running();
 }
 
 void HostProcess::signal_kill() {
-    if (child_ && child_->running()) child_->kill();
+    if (!child_ || !child_->running()) return;
+    kill_signalled_ = true;
+    child_->kill();
 }
 
 bool HostProcess::refresh_latency() {
@@ -635,9 +637,13 @@ void HostProcess::watch(std::vector<HostWatch>& out) {
     if (!child_ || !child_->running()) return;
     if (child_->exit_handle() >= 0) out.push_back({child_->exit_handle(), false});
     // A host that broke the contract is pumped no more (pump() returns at
-    // once), so its socket would stay writable with nobody writing.
-    if (ctl_ && !ctl_closed_ && protocol_fault_.empty() && link_.wants_write())
-        out.push_back({ctl_->native_handle(), true});
+    // once), so its socket would stay ready with nobody reading or writing.
+    if (!ctl_ || ctl_closed_ || !protocol_fault_.empty()) return;
+    // ADR-0213: the socket is listed only because every holder pumps it on
+    // the turn after the wake. A gesture wakes that turn; a dying host is
+    // reaped through its exit handle, its unread datagrams left alone.
+    if (!kill_signalled_) out.push_back({ctl_->native_handle(), false});
+    if (link_.wants_write()) out.push_back({ctl_->native_handle(), true});
 }
 
 std::string HostProcess::exit_text() {

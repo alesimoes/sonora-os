@@ -19,8 +19,8 @@ file can crash a converter, never a session.
   one, through the engine's own saver.
 
 What did not survive is printed to standard output as `dropped:` and
-`approximated:` lines. Exit codes: 0 done, 1 failed, 2 usage. AAF and
-`.ptx` are not here yet (they need libaaf and libptformat, a separate item).
+`approximated:` lines. Exit codes: 0 done, 1 failed, 2 usage. `.ptx`
+is not here yet (it needs libptformat, a separate item).
 Do not run it against a session an engine has open.
 
 Tests: `ctest -R interchange`.
@@ -38,3 +38,24 @@ VCAs and folders are listed as `dropped:`. A newer format, a missing file,
 another sample rate or an open take refuses the import before anything is
 written. Logic projects come in through AAF or stems, not through this.
 Tests: `ctest -R session_import`.
+
+## AAF import (ADR-0154)
+
+`sonora-convert import x.aaf out.sonora` (or `aaf-import`) reads the
+composition through libaaf (LGPL-2.1-or-later), maps it with the neutral
+`AafDocument` and copies the essence it references into `Audio Files/` as BWF
+at the session rate. The file is looked for at the path the mapper chose,
+beside the `.aaf`, in `Audio Files/` and in `Media/`; a missing one is an error
+naming it. CMake option `SONORA_WITH_LIBAAF` (default OFF) compiles the
+adapter; the library is found with `find_path`/`find_library`, never fetched.
+With it OFF the command exits 1 with "built without AAF support". Tests with
+the library: `ctest -R aaf_libaaf`. Logic projects come through AAF or stems.
+
+## OMF import (ADR-0160)
+
+`sonora-convert import x.omf out.sonora` (or `omf-import`) reads an OMF
+composition with our own parser (`omf/`), extracts embedded media beside the
+output and copies it into `Audio Files/`; media referenced by path is looked
+up beside the `.omf`, in `Audio Files/` and in `Media/`. A truncated or
+corrupt file exits 1 with a message. Import only, no OMF export; tested on
+synthetic files, no real-world OMF verified. Tests: `ctest -R omf_`.

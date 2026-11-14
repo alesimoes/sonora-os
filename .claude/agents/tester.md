@@ -29,7 +29,10 @@ sub-branch diff against its start-from point and read only the code around it.
    logging or throw. Each hit is blocking.
 4. **Accept commands.** Run every command in the task's `accept`, in the
    foreground with a timeout, within the build budget (`tools/build-slot.sh`,
-   narrow targets, keep the build directory). Quote what each printed. A claim
+   narrow targets, keep the build directory). A build longer than the
+   10-minute tool limit runs as a detached job and is collected, never
+   bounced for being slow: `tools/build-slot.sh --detach tools/micro-build.sh`
+   then `tools/build-wait.sh` until it exits other than 75. Quote what each printed. A claim
    in the engineer's `done` that you did not reproduce is listed `unverified`,
    never passing. Privileged docker or loop-device tests cannot run in a
    subagent: list them `unverified` and say so.
@@ -53,8 +56,13 @@ shell costs tokens and attention until a human notices.
 
 - Run commands in the foreground with an explicit `timeout`. Do not use
   `run_in_background`, `nohup`, `&`, or a `sleep` loop that waits for CI or
-  for another process. If something needs longer than the tool's 10-minute
-  limit, split it or report it as unverified.
+  for another process. A build or test longer than the tool's 10-minute
+  limit (a UI micro build with its wait for the lock often is) starts with
+  `tools/build-slot.sh --detach COMMAND...` and is collected with
+  `tools/build-wait.sh` (returns within 9 minutes; exit 75 = still running,
+  call it again). That is the one sanctioned detached run: it queues for the
+  lock and ends by itself. Never report a build "unverified" because it was
+  long; collect it.
 - Never wait for CI. Push once, report the commit, and finish.
 - Never arm `tools/merge-when-green.sh`; only the coordinator does.
 - If the same command fails twice for the same reason, stop and report the

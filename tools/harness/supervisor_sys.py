@@ -13,7 +13,7 @@ import subprocess
 import sys
 import time
 
-from . import launcher, supervisor_dash
+from . import docker_heal, launcher, lock_probe, supervisor_dash
 
 HOST_KIND = "win" if os.name == "nt" else "linux"
 
@@ -58,6 +58,46 @@ def under(path, root):
     return bool(p) and (p == r or p.startswith(r + "/"))
 
 
+def process_created(pid):
+    """A live process's creation time (epoch seconds); None when there is
+    no such process or it cannot be read (lock_probe.is_holder)."""
+    try:
+        if os.name == "nt":
+            return _created_nt(int(pid))
+        return _created_linux(int(pid))
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _created_nt(pid):
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        code = wintypes.DWORD()
+        if not k32.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:
+            return None   # exited (STILL_ACTIVE is 259)
+        t = [wintypes.FILETIME() for _ in range(4)]
+        if not k32.GetProcessTimes(h, *[ctypes.byref(x) for x in t]):
+            return None
+        ft = (t[0].dwHighDateTime << 32) | t[0].dwLowDateTime
+        return ft / 1e7 - 11644473600.0   # 100 ns since 1601 -> epoch
+    finally:
+        k32.CloseHandle(h)
+
+
+def _created_linux(pid):
+    with open(f"/proc/{pid}/stat") as f:
+        # Field 22, counted after the ")" that ends the command name.
+        ticks = int(f.read().rsplit(")", 1)[1].split()[19])
+    with open("/proc/stat") as f:
+        btime = next(int(l.split()[1]) for l in f if l.startswith("btime"))
+    return btime + ticks / os.sysconf("SC_CLK_TCK")
+
+
 class RealSys:
     def __init__(self, lock=None, clock=time.time, notifier=None):
         self.lock = lock or lock_dir()
@@ -74,6 +114,34 @@ class RealSys:
 
     def kill(self, pid):
         launcher.kill_tree(pid)
+
+    def container_running(self, name):
+        """True/False; None when docker does not answer in time."""
+        try:
+            r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}",
+                                name], capture_output=True, text=True,
+                               timeout=30, creationflags=getattr(
+                                   subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return r.returncode == 0 and r.stdout.strip() == "true"
+
+    def container_kill(self, name):
+        try:
+            subprocess.run(["docker", "kill", name], capture_output=True,
+                           timeout=60, creationflags=getattr(
+                               subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    def entry_alive(self, entry):
+        """A lock entry's liveness (lock_probe.entry_alive)."""
+        return lock_probe.entry_alive(entry, HOST_KIND, launcher.pid_alive,
+                                      self.container_running)
+
+    def kill_entry(self, entry):
+        return lock_probe.kill_entry(entry, HOST_KIND, launcher.kill_tree,
+                                     self.container_kill, process_created)
 
     # -- the heavy lock --------------------------------------------------
     def lock_entries(self):
@@ -116,7 +184,8 @@ class RealSys:
         return {"role": role, "path": path, "pid": num("pid"),
                 "kind": kv.get("kind", ""), "prio": num("prio"),
                 "start": num("start"), "cwd": kv.get("cwd", ""),
-                "cmd": kv.get("cmd", ""), "claiming": bool(kv.get("claiming"))}
+                "cmd": kv.get("cmd", ""), "claiming": bool(kv.get("claiming")),
+                "winpid": num("winpid"), "container": kv.get("container", "")}
 
     def lock_remove(self, entry):
         """A waiter's ticket is one file; a holder is its slot directory."""
@@ -142,6 +211,9 @@ class RealSys:
 
     def dash_start(self, port, repo_root):
         return supervisor_dash.start(repo_root, port)
+
+    def docker_restart(self):
+        return docker_heal.restart_docker_desktop()
 
     def notify(self, title, text):
         try:

@@ -359,7 +359,9 @@ bool ShellModel::clearsRecordRefusal(const std::string& c) {
 }
 
 bool ShellModel::isRecordCommand(const std::string& c) {
-    return c == "transport.record_ready" || c == "transport.record";
+    return c == "transport.record_ready" || c == "transport.record" ||
+           c == "transport.toggle_input_only" || c == "transport.toggle_pre_post_roll" ||
+           c == "transport.toggle_quick_punch";
 }
 
 void ShellModel::holdRecordRefusal(const QString& why) {
@@ -467,6 +469,7 @@ void ShellModel::startBounce(bool real_time, const QString& file, int bits, int 
                              const QString& dither, bool normalise, qreal target_lufs,
                              const QString& name) {
     holdBounceRefusal(QString());
+    if (!bounceRunning()) bounce_is_stems_ = false;
     api::BounceOptions o;
     o.mode = real_time ? api::BounceMode::RealTime : api::BounceMode::Offline;
     o.format = bits == 32 ? api::BounceFormat::Float32
@@ -640,7 +643,7 @@ void ShellModel::tick() {
         if (r.command == "sample.edit") {
             addNotice(QStringLiteral("Sample edit refused: ") + QString::fromStdString(why));
         }
-        if (r.command.compare(0, 10, "mix.bounce") == 0) {
+        if (r.command.compare(0, 10, "mix.bounce") == 0 || r.command == "mix.stems") {
             holdBounceRefusal(QString::fromStdString(why));
         }
         // The refusal of a render stays in the footer, not on the 2.5 s line.
@@ -767,13 +770,19 @@ void ShellModel::takeEvents() {
                 switch (state) {
                     case api::BounceState::Running: setBounceNotice(QString()); break;
                     case api::BounceState::Done:
-                        setBounceNotice(QStringLiteral("Bounced to ") + text);
+                        setBounceNotice(bounce_is_stems_
+                                            ? QStringLiteral("Stems written to folder ") + text +
+                                                  QStringLiteral(" (") + QString::number(e.insert) +
+                                                  QStringLiteral(" files)")
+                                            : QStringLiteral("Bounced to ") + text);
                         break;
                     case api::BounceState::Failed:
-                        setBounceNotice(QStringLiteral("Bounce failed: ") + text);
+                        setBounceNotice((bounce_is_stems_ ? QStringLiteral("Stems failed: ")
+                                                          : QStringLiteral("Bounce failed: ")) + text);
                         break;
                     case api::BounceState::Cancelled:
-                        setBounceNotice(QStringLiteral("Bounce stopped: ") + text);
+                        setBounceNotice((bounce_is_stems_ ? QStringLiteral("Stems stopped: ")
+                                                          : QStringLiteral("Bounce stopped: ")) + text);
                         break;
                 }
                 emit bounceChanged();
@@ -859,10 +868,12 @@ void ShellModel::refreshState(bool read_frame) {
                              : t.record_ready                    ? QStringLiteral("READY")
                                                                  : QStringLiteral("STOP");
         set(transport_text_, mode);
+        const bool was_recording = recording_;
         set(recording_, t.state == TransportMode::Recording);
         set(record_ready_, t.record_ready && t.state != TransportMode::Recording);
         // A take that started answers a refusal made before it.
-        if (t.state == TransportMode::Recording) holdRecordRefusal(QString());
+        // Only on the transition: a switch refused during the take stays held.
+        if (t.state == TransportMode::Recording && !was_recording) holdRecordRefusal(QString());
         set(clock_text_, clock_text(t.playhead_frames, engine_.info().sample_rate));
         set(take_, static_cast<int>(t.take));
         set(xruns_, static_cast<int>(t.xruns));

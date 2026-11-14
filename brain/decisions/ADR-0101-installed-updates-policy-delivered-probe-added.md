@@ -57,6 +57,16 @@ ADR-0044's `apply --from DIR`.
      refuses. That is the safe direction; the operator clears it by a reboot
      (tmpfs), which the refusal message says.
    - The probe is never on the audio thread and never calls the engine.
+   - Directory present, file absent: exit `1`. Directory missing: exit `2`,
+     unless `SONORA_ENGINE_UP=1` is set, in which case `systemctl is-active
+     sonora-engine.service` is consulted and an active unit gives `1`. The
+     opt-in is off by default and systemctl is never called otherwise. It is
+     not a pass on its own: a failed or absent systemctl stays `2`.
+   - `tmpfiles.d` interaction: `/run/sonora` is created at boot by the
+     `tmpfiles.d` line (follow-up below). Once it exists, "directory present"
+     means the app side is provisioned, so an absent file is a real "none".
+     Until that line lands the directory is missing and the probe says `2`,
+     so `sonora-update apply` keeps refusing.
 
 4. **Follow-ups, each with an owner:**
    - The app writes `/run/sonora/session-open` on session open and removes it
@@ -116,7 +126,8 @@ ADR-0044's `apply --from DIR`.
 
 - That the app can write `/run/sonora` as its user. It needs the `tmpfiles.d`
   line listed under follow-ups; no line exists on main yet.
-- The probe script itself. Its contract is fixed here; the script is not
-  written by this ADR.
+- The probe script exists (`sonora-session-open`) and `tools/test-session-open.sh`
+  exercises it against files in CI. It has not run on a booted image, and the
+  `SONORA_ENGINE_UP` path has only run against a stubbed systemctl.
 - A real installed update has never run. Nothing here was booted or
   exercised on hardware.

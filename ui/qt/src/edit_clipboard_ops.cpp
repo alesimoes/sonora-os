@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "edit_controller_detail.h"
+#include "edit_shuffle_ops.h"
 
 namespace sonora::ui {
 
@@ -37,13 +38,55 @@ std::string spoken_list(const std::vector<std::string>& names) {
 
 }  // namespace
 
-bool EditController::refuse_shuffle(const char* gesture, const char* nothing_was,
-                                    std::string& why) const {
-    if (mode_ != EditMode::Shuffle) return false;
-    why = std::string(gesture) +
-          " in Shuffle mode would close the gaps it leaves, and that is not built for it yet; "
-          "use Slip, Spot or Grid. Nothing was " + nothing_was + ".";
+bool EditController::submit_shuffle_trim(const TrimRegion& op, std::string& why) {
+    const TrackEdit* t = nullptr;
+    const Region* r = find_region(snapshot(), op.region, &t);
+    if (r == nullptr) {
+        why = "the region is gone";
+        return false;
+    }
+    if (r->clip_group != 0) {
+        why = "a grouped clip does not ripple in Shuffle mode; ungroup it or use Slip. "
+              "Nothing was trimmed.";
+        return false;
+    }
+    TrimRegion limited = op;
+    if (!shuffle_limit_trim(*active(t), *r, limited)) return true;
+    std::vector<Member> members;
+    shuffle_trim(*active(t), *r, limited, members);
+    const int at = track_index(snapshot(), t->id);
+    if (!submit_compound(std::move(members), "Trim", "trimmed", why)) return false;
+    note_shuffle_automation("Trim", at, 1);
     return true;
+}
+
+bool EditController::submit_shuffle_move(const MoveRegion& op, std::string& why) {
+    const TrackEdit* t = nullptr;
+    const Region* r = find_region(snapshot(), op.region, &t);
+    if (r == nullptr) {
+        why = "the region is gone";
+        return false;
+    }
+    if (r->clip_group != 0) {
+        why = "a grouped clip does not ripple in Shuffle mode; ungroup it or use Slip. "
+              "Nothing was moved.";
+        return false;
+    }
+    if (op.position == r->position) return true;
+    std::vector<Member> members;
+    shuffle_move(*active(t), *r, op.position, [this]() { return doc_.reserve_id(); }, members);
+    const int at = track_index(snapshot(), t->id);
+    if (!submit_compound(std::move(members), "Move", "moved", why)) return false;
+    note_shuffle_automation("Move", at, 1);
+    return true;
+}
+
+bool EditController::submit_trim(const TrimRegion& op, std::string& why) {
+    return mode_ == EditMode::Shuffle ? submit_shuffle_trim(op, why) : submit(op, why);
+}
+
+bool EditController::submit_place(const MoveRegion& op, std::string& why) {
+    return mode_ == EditMode::Shuffle ? submit_shuffle_move(op, why) : submit_move(op, why);
 }
 
 void EditController::note_shuffle_automation(const char* gesture, int first, int count) {
@@ -180,11 +223,69 @@ void EditController::note_left_behind(const char* gesture, const std::vector<std
                      " as it was";
 }
 
+void EditController::set_session_folder_source(std::function<std::string()> folder) {
+    session_folder_ = std::move(folder);
+}
+
+void EditController::set_bring_in(BringInFn bring_in) { bring_in_ = std::move(bring_in); }
+
+void EditController::stamp_origin(Clipboard& clip) const {
+    clip.origin_folder = session_folder_ ? session_folder_() : std::string();
+    clip.origin_sample_rate = snapshot().settings.sample_rate;
+}
+
+// Cross-session paste (ADR-0142): the clipboard's audio is brought into this
+// session before anything is sent. `use` is the clipboard with its source ids
+// mapped onto this session's; `ops` the AddSource members that go first.
+bool EditController::bring_clipboard_in(Clipboard& use, std::vector<Member>& ops,
+                                        std::string& why) {
+    if (recording_) {
+        why = "Stop recording first: a paste that brings audio in from another session copies "
+              "files while a take is written; nothing was pasted";
+        return false;
+    }
+    if (!bring_in_) {
+        why = "the clipboard's audio was copied from another session and this window cannot "
+              "bring it in; nothing was pasted";
+        return false;
+    }
+    std::vector<Source> sources;
+    for (const Clip& lane : clipboard_.lanes) {
+        for (const Source& s : lane.sources) {
+            const bool known = std::any_of(sources.begin(), sources.end(),
+                                           [&s](const Source& x) { return x.id == s.id; });
+            if (!known) sources.push_back(s);
+        }
+    }
+    BroughtIn in;
+    if (!bring_in_(snapshot(), sources, clipboard_.origin_folder, clipboard_.origin_sample_rate,
+                   in, why)) {
+        return false;
+    }
+    // The ids the AddSources took are this document's from now on; the paste's
+    // own members start past them.
+    if (!in.ops.empty()) {
+        while (doc_.reserve_id() + 1 < in.next_id) {}
+    }
+    for (Clip& lane : use.lanes) {
+        for (Region& r : lane.regions) {
+            for (SourceRef& ch : r.channels) {
+                const auto it = in.remap.find(ch.source);
+                if (it != in.remap.end()) ch.source = it->second;
+            }
+        }
+        lane.sources.clear();
+    }
+    ops = std::move(in.ops);
+    return true;
+}
+
 bool EditController::copy(std::string& why) {
     if (autolane_selected()) return automation_copy(false, why);
     Span e;
     Clipboard clip;
     if (!edit_range(e, "copied", why) || !copy_lanes(e, clip, "copied", why)) return false;
+    stamp_origin(clip);
     clipboard_ = std::move(clip);
     ++clipboard_serial_;
     return true;
@@ -206,6 +307,7 @@ bool EditController::cut(std::string& why) {
     // The clipboard changes only with the edit: a refused Cut leaves both.
     if (!submit_compound(std::move(members), "Cut", "cut", why)) return false;
     if (mode_ == EditMode::Shuffle) note_shuffle_automation("Cut", e.first, e.count);
+    stamp_origin(clip);
     clipboard_ = std::move(clip);
     ++clipboard_serial_;
     select_span(e.first, e.count, e.a, e.b);
@@ -231,20 +333,29 @@ bool EditController::paste(std::string& why) {
     // every one of them, as Pro Tools does; a clipboard of several lanes
     // keeps their layout, so it never repeats onto a selection's extra tracks.
     const int targets = lanes == 1 && sel_.region == kNoId ? span() : 1;
-    const auto lane_for = [this, targets](int i) -> const Clip& {
-        return clipboard_.lanes[targets > 1 ? 0 : static_cast<std::size_t>(i)];
+    Clipboard brought;   // the clipboard with another session's audio mapped in
+    const Clipboard* src = &clipboard_;
+    const auto lane_for = [&src, targets](int i) -> const Clip& {
+        return src->lanes[targets > 1 ? 0 : static_cast<std::size_t>(i)];
     };
     const int fit = targets > 1 ? targets : std::min(lanes, n - sel_.track);
     bool any = false;
+    bool foreign = false;   // audio of another session, to bring in
+    const std::string here = session_folder_ ? session_folder_() : std::string();
+    const bool other_session = clipboard_.origin_folder != here;
     for (int i = 0; i < fit; ++i) {
         const Clip& lane = lane_for(i);
         if (lane.empty()) continue;
         any = true;
-        const std::string problem = paste_problem(snapshot(), *track(sel_.track + i), lane);
+        const bool missing = sources_missing(snapshot(), lane);
+        const std::string problem = missing && other_session
+                                        ? channel_problem(*track(sel_.track + i), lane)
+                                        : paste_problem(snapshot(), *track(sel_.track + i), lane);
         if (!problem.empty()) {
             why = problem;
             return false;
         }
+        foreign = foreign || (missing && other_session);
     }
     // Only lanes that hold regions are lost by being left out: an empty one
     // would have cleared a track that is not there.
@@ -261,9 +372,14 @@ bool EditController::paste(std::string& why) {
               ", and there is no track below " + last + " to paste them on; nothing was pasted";
         return false;
     }
+    std::vector<Member> members;
+    if (foreign) {
+        brought = clipboard_;
+        if (!bring_clipboard_in(brought, members, why)) return false;
+        src = &brought;
+    }
     const Frames at = sel_.has_range() ? sel_.start : sel_.insertion;
     const bool shuffle = mode_ == EditMode::Shuffle;
-    std::vector<Member> members;
     for (int i = 0; i < fit; ++i) {
         const Playlist& p = *active(track(sel_.track + i));
         const auto next = [this]() { return doc_.reserve_id(); };
