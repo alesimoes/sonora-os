@@ -117,6 +117,32 @@ class SelfUpdate(unittest.TestCase):
         self.assertTrue(self.up.ready(1000))
         self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
 
+    def test_a_staged_main_copy_does_not_block(self):
+        rel = "planning/orchestrator/orchestrator.toml"
+        self.push(rel, "v1\n")
+        git(self.daemon, "pull", "-q", "origin", "main")
+        new = self.push(rel, "v2\n")
+        write(self.daemon, rel, "v2\n")
+        git(self.daemon, "add", rel)
+        self.assertTrue(self.up.ready(1000))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
+
+    def test_a_plan_commit_and_a_main_copy_rebase_and_move(self):
+        rel = "planning/orchestrator/orchestrator.toml"
+        self.push(rel, "v1\n")
+        git(self.daemon, "pull", "-q", "origin", "main")
+        write(self.daemon, "planning/plans/x.md", "plan\n")
+        git(self.daemon, "add", "-A")
+        git(self.daemon, "commit", "-qm", "x: plan")
+        new = self.push(rel, "v2\n")
+        write(self.daemon, rel, "v2\n")
+        self.assertTrue(self.up.ready(1000))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD~1"), new)
+        self.assertTrue(os.path.exists(
+            os.path.join(self.daemon, "planning/plans/x.md")))
+        self.assertIn("self_update_rebased", self.store.kinds())
+        self.assertNotIn("self_update_forced", self.store.kinds())
+
     def test_modified_tracked_files_block_the_update(self):
         self.push("tools/harness/train.py", "v2\n")
         write(self.daemon, "engine/x.cpp", "local edit\n")
