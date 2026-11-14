@@ -15,7 +15,9 @@ namespace sonora::ui::edit_detail {
 
 using namespace model;
 
-inline constexpr double kMinFpp = 1.0;  // one sample a pixel
+// 16 pixels a sample: room for the sample view's dots, which show from 4 px
+// a sample (ADR-0096 §3), and for the Pencil to place one sample at a time.
+inline constexpr double kMinFpp = 1.0 / 16.0;
 inline constexpr double kEdgePx = 8.0;  // the Smart Tool's trim zone at each end
 inline constexpr double kDragSlopPx = 3.0;
 inline constexpr double kFadeZonePx = 12.0;  // the Smart Tool's fade corners, in the lane's top quarter

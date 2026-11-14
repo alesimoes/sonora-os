@@ -24,6 +24,11 @@ add_executable(test_bounce_wire tests/test_bounce_wire.cpp)
 target_link_libraries(test_bounce_wire PRIVATE sonora_api)
 add_test(NAME bounce_wire COMMAND test_bounce_wire)
 
+# Export Stems' wire argument over the bounce one (ADR-0085, no protocol bump).
+add_executable(test_stems_wire tests/test_stems_wire.cpp)
+target_link_libraries(test_stems_wire PRIVATE sonora_api)
+add_test(NAME stems_wire COMMAND test_stems_wire)
+
 # Render in place's wire argument (ADR-0051, protocol 56).
 add_executable(test_render_wire tests/test_render_wire.cpp)
 target_link_libraries(test_render_wire PRIVATE sonora_api)
@@ -33,6 +38,12 @@ add_test(NAME render_wire COMMAND test_render_wire)
 add_executable(test_plugin_refusal tests/test_plugin_refusal.cpp)
 target_link_libraries(test_plugin_refusal PRIVATE sonora_api)
 add_test(NAME api_plugin_refusal COMMAND test_plugin_refusal)
+
+# Side-chain keys on the wire (ADR-0058): links the model, as the fake does,
+# to encode the operation the request carries.
+add_executable(test_api_wire_insert_key tests/test_wire_insert_key.cpp)
+target_link_libraries(test_api_wire_insert_key PRIVATE sonora_api sonora_model)
+add_test(NAME api_wire_insert_key COMMAND test_api_wire_insert_key)
 
 add_executable(test_api_state_view tests/test_state_view.cpp)
 target_link_libraries(test_api_state_view PRIVATE sonora_api)

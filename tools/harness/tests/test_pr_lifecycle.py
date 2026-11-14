@@ -56,7 +56,7 @@ class Lifecycle(support.DaemonCase):
         self.assertEqual(len(self.forge.created), 1)
         pr = self.forge.created[0]
         self.assertEqual((pr["base"], pr["branch"]), ("main", "feat/f"))
-        self.assertEqual(self.forge.enqueued, [pr["number"]])
+        self.assertEqual(self.forge.enqueued, [])  # the daemon owns the merge
         self.assertEqual(self.forge.pushed, ["feat/f"])
         self.assertEqual(len(self.forge.pre_pr_calls), 1)
         self.assertIn("- f0 (rt-engineer)", pr["body"])
@@ -133,12 +133,14 @@ class Lifecycle(support.DaemonCase):
                              "checks": {"build": "pass"}}
         self.assertTrue(self.pump(o, lambda: state(o, "solo") == "pr_open"))
         self.assertEqual((self.forge.created, self.forge.pushed), ([], []))
-        self.assertEqual(self.forge.enqueued, [7])
+        self.assertEqual(self.forge.enqueued, [])
         self.assertEqual(o.store.get_feature("solo")["pr"], 7)
         self.assertEqual(o.store.events("solo", "pr_open_failed"), [])
 
     def test_pr_created_then_enqueue_fails_is_still_recorded(self):
-        o = self.make()
+        # daemon_merge off is the one configuration that still runs the
+        # detached enqueue script; with it on, no script is ever started.
+        o = self.make(daemon_merge=False)
         self.feature(o, "solo")
         self.forge.fail.add("enqueue")
         self.assertTrue(self.pump(o, lambda: state(o, "solo") == "pr_open"))
@@ -197,8 +199,47 @@ class Lifecycle(support.DaemonCase):
         # the fixer is the track's engineer agent; the daemon pushes
         self.assertEqual(agents_launched(o), ["rt-engineer"])
         self.assertEqual(self.forge.pushed, ["feat/p"])
-        self.assertEqual(self.forge.enqueued, [100])
+        self.assertEqual(self.forge.enqueued, [])
         self.assertIsNone(o.store.get_task("p")["fix_kind"])
+
+    def test_requeued_task_of_a_ci_fix_feature_gets_its_fixer(self):
+        # ui.mixer.groups: task went qa->integrating while the feature sat in
+        # ci_fix with the PR red; no fixer ran for 5 h.
+        o = self.make()
+        self.open_feature(o, "g", 528, {"build": "fail"})
+        o.store.set_feature("g", state="ci_fix")
+        o.store.set_task("g", state="integrating")
+        o.tick()
+        self.assertEqual(state(o, "g"), "ci_fix")
+        self.assertEqual([r["role"] for r in o.store.runs_of("g")], ["fixer"])
+
+    def test_stray_task_of_a_red_pr_feature_goes_to_ci_fix(self):
+        o = self.make()
+        self.open_feature(o, "h", 529, {"build": "fail"})
+        o.store.set_task("h", state="qa")
+        o.tick()
+        t = o.store.get_task("h")
+        self.assertEqual((t["state"], t["fix_kind"]), ("ci_fix", "ci"))
+        self.assertEqual([r["role"] for r in o.store.runs_of("h")], ["fixer"])
+
+    def test_stray_task_of_a_green_pr_goes_back_to_pr_open(self):
+        o = self.make()
+        self.open_feature(o, "k", 530, {"build": "pass"})
+        o.store.set_task("k", state="integrating")
+        o.tick()
+        self.assertEqual(state(o, "k"), "pr_open")
+        self.assertEqual(o.store.runs_of("k"), [])
+
+    def test_task_with_a_live_run_is_left_alone(self):
+        from harness import pr_sync
+        o = self.make()
+        self.open_feature(o, "m", 531)
+        o.store.set_task("m", state="qa")
+        o.store.add_run(id="r1", task_id="m", role="tester", started=1,
+                        ended=None)
+        f = o.store.get_feature("m")
+        self.assertEqual(pr_sync.sync_tasks(o.store, f), [])
+        self.assertEqual(state(o, "m"), "qa")
 
     def test_green_and_pending_checks_do_nothing(self):
         o = self.make()
@@ -265,7 +306,7 @@ class Lifecycle(support.DaemonCase):
         self.assertEqual(agents_launched(o), ["integrator"])
         self.assertIn("Conflict run", argv_log(o)[0][-1])
         self.assertEqual(self.forge.pushed, ["feat/p"])
-        self.assertEqual(self.forge.enqueued, [100])
+        self.assertEqual(self.forge.enqueued, [])
 
     def test_conflict_runs_even_when_pr_slots_are_full(self):
         o = self.make(max_open_prs=1)

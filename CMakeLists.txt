@@ -50,6 +50,10 @@ message(STATUS "SONORA_PLATFORM=${SONORA_PLATFORM} SONORA_BACKENDS=${SONORA_BACK
 # Portable job so it stays a test of the neutral modules.
 option(SONORA_WINDOWS_VST3 "Build the native plugins as Windows VST3 bundles" OFF)
 option(SONORA_PLUGINS_ONLY "Configure only the native plugin suite and what it links" OFF)
+# ADR-0071: under SONORA_PLATFORM=neutral, also configure ui/qt and the modules
+# it links, so the nightly's Portable job builds the Qt interface under MSVC.
+# Off elsewhere; the Linux build already configures all of it.
+option(SONORA_PORTABLE_UI "With SONORA_PLATFORM=neutral, also configure ui/qt" OFF)
 
 # The RealtimeSanitizer build (tools/build-rtsan.sh, CI's rtsan job; ADR-0007,
 # first 2026-10-12 update). Every SONORA_RT function is [[clang::nonblocking]]
@@ -99,18 +103,27 @@ enable_testing()
 add_subdirectory(common/base)
 # Strict JSON for the session file and the key maps (ADR-0009 §5), layer 0.
 add_subdirectory(common/json)
-if(SONORA_PLATFORM STREQUAL "linux")
+if(SONORA_PLATFORM STREQUAL "linux" OR SONORA_PORTABLE_UI)
 add_subdirectory(common/midi)
 # The session document (ADR-0009), layer 1 beside common/audiofile. It links
 # common/midi for notes and edits (ADR-0014 §1), above it in this list.
 add_subdirectory(common/model)
+# Elastic audio's pure half (ADR-0136): warp maps, the quantize planner and
+# the Stretcher interface; no stretcher library here.
+if(EXISTS ${CMAKE_SOURCE_DIR}/common/stretch/CMakeLists.txt)
+  add_subdirectory(common/stretch)
+endif()
+# Groove templates (ADR-0115), pure functions over the model's tempo map.
+add_subdirectory(common/groove)
+# Loop catalog interfaces and fakes (ADR-0163).
+add_subdirectory(common/loops)
 endif()
 # The OS seam (ADR-0008). Linked only by modules that need an OS service.
 add_subdirectory(common/platform)
 # The take file (BWF writer, reader, crash recovery). Standard C++ plus the
 # OS seam, so the neutral build and the MSVC job compile it (ADR-0008 P2).
 add_subdirectory(common/audiofile)
-if(SONORA_PLATFORM STREQUAL "linux" AND NOT SONORA_PLUGINS_ONLY)
+if((SONORA_PLATFORM STREQUAL "linux" OR SONORA_PORTABLE_UI) AND NOT SONORA_PLUGINS_ONLY)
 # A session folder on disk (ADR-0015 §3, §6), layer 2 on common/model and
 # common/platform: the engine's saver writes through it.
 add_subdirectory(common/session_files)
@@ -153,6 +166,30 @@ function(sonora_label_module_tests dir label)
   endwhile()
 endfunction()
 
+# ADR-0071: the Qt interface and the neutral modules it links (ui/tui and
+# anything POSIX stay out). sonora_portable_ui is what the nightly builds.
+if(SONORA_PORTABLE_UI AND NOT SONORA_PLATFORM STREQUAL "linux" AND NOT SONORA_PLUGINS_ONLY)
+  add_subdirectory(contracts/api)
+  add_subdirectory(ui/keymap)
+  add_subdirectory(ui/client)
+  add_subdirectory(ui/qt)
+  _sonora_collect_targets(${CMAKE_SOURCE_DIR}/ui/qt _ui_targets)
+  # ui/keymap pulls ui/edit_tools in; its test is label ui, so it must be built too.
+  _sonora_collect_targets(${CMAKE_SOURCE_DIR}/ui/edit_tools _edit_tools_targets)
+  list(APPEND _ui_targets ${_edit_tools_targets})
+  set(_ui_deps)
+  foreach(_t ${_ui_targets})
+    get_target_property(_type ${_t} TYPE)
+    if(_type STREQUAL "EXECUTABLE" OR _type STREQUAL "STATIC_LIBRARY")
+      list(APPEND _ui_deps ${_t})
+    endif()
+  endforeach()
+  add_custom_target(sonora_portable_ui DEPENDS ${_ui_deps})
+  sonora_label_module_tests(ui/keymap ui)
+  sonora_label_module_tests(ui/client ui)
+  sonora_label_module_tests(ui/qt ui)
+endif()
+
 # Everything below is POSIX or Qt: the neutral build stops here, and so does
 # the plugins-only one.
 if(NOT SONORA_PLATFORM STREQUAL "linux" OR SONORA_PLUGINS_ONLY)
@@ -164,6 +201,10 @@ if(NOT SONORA_PLATFORM STREQUAL "linux" OR SONORA_PLUGINS_ONLY)
   return()
 endif()
 add_subdirectory(contracts/api)
+# audio.elastic's contract tests (ADR-0136), on contracts/api's targets.
+if(EXISTS ${CMAKE_SOURCE_DIR}/contracts/api/elastic/CMakeLists.txt)
+  add_subdirectory(contracts/api/elastic)
+endif()
 add_subdirectory(contracts/backend)
 # Control surface events in, feedback out (ADR-0007 4.4, ADR-0040).
 add_subdirectory(contracts/surfaces)
@@ -177,6 +218,8 @@ add_subdirectory(plugins/host)
 add_subdirectory(engine/core)
 # Offline converters (ADR-0007 M10); the engine never links them.
 add_subdirectory(interchange)
+# The opt-in Claude layer (ADR-0155), on common/model; the engine never links it.
+add_subdirectory(assistant)
 add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
 # ALSA direct (ADR-0053). Its logic builds and tests everywhere; libasound is optional.
@@ -195,6 +238,10 @@ add_subdirectory(engine/editor_service)
 add_subdirectory(ui/keymap)
 add_subdirectory(ui/tui)
 add_subdirectory(engine/control)
+# The audio.elastic job and its stretcher adapter (ADR-0136), on sonora_control.
+if(EXISTS ${CMAKE_SOURCE_DIR}/engine/elastic/CMakeLists.txt)
+  add_subdirectory(engine/elastic)
+endif()
 add_subdirectory(engine/app)
 # The interfaces' side of the socket (M7). After engine/app: its test runs
 # sonora-engine as a process, a build-order dependency, never a link.
@@ -202,6 +249,18 @@ add_subdirectory(ui/client)
 # Optional: skipped, with one status line, where Qt 6 is not installed (the
 # engine's build container and CI). tools/build-ui.sh builds it.
 add_subdirectory(ui/qt)
+# time.groove's panel and command, a module of its own (ADR-0115).
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/groove/CMakeLists.txt)
+  add_subdirectory(ui/groove)
+endif()
+# tempo.edit detect (ADR-0114).
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/beat/CMakeLists.txt)
+  add_subdirectory(ui/beat)
+endif()
+# The elastic audio editor and its command (ADR-0136).
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/elastic/CMakeLists.txt)
+  add_subdirectory(ui/elastic)
+endif()
 
 # Module labels (see sonora_label_module_tests above). The neutral modules
 # are labelled here too; the early return above covers the neutral build.
@@ -213,6 +272,8 @@ sonora_label_module_tests(plugins/native native)
 sonora_label_module_tests(common/audiofile audiofile)
 sonora_label_module_tests(common/midi midi)
 sonora_label_module_tests(common/model model)
+sonora_label_module_tests(common/groove model)
+sonora_label_module_tests(common/loops model)
 sonora_label_module_tests(common/session_files session_files)
 sonora_label_module_tests(contracts/api contracts)
 sonora_label_module_tests(contracts/backend contracts)
@@ -227,7 +288,30 @@ sonora_label_module_tests(engine/app app)
 sonora_label_module_tests(drivers/support drivers)
 sonora_label_module_tests(drivers/jack drivers)
 sonora_label_module_tests(drivers/fake drivers)
+sonora_label_module_tests(drivers/alsa drivers)
+sonora_label_module_tests(drivers/clock drivers)
+sonora_label_module_tests(drivers/ltc drivers)
+sonora_label_module_tests(drivers/surfaces drivers)
+sonora_label_module_tests(interchange interchange)
+sonora_label_module_tests(assistant assistant)
+sonora_label_module_tests(plugins/analyze analyze)
 sonora_label_module_tests(ui/keymap ui)
 sonora_label_module_tests(ui/tui ui)
 sonora_label_module_tests(ui/client ui)
 sonora_label_module_tests(ui/qt ui)
+sonora_label_module_tests(ui/groove ui)
+sonora_label_module_tests(ui/beat ui)
+sonora_label_module_tests(ui/smart_controls ui)
+# One literal line per elastic module: tools/check-test-labels.sh greps for it.
+if(EXISTS ${CMAKE_SOURCE_DIR}/common/stretch/CMakeLists.txt)
+  sonora_label_module_tests(common/stretch model)
+endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/contracts/api/elastic/CMakeLists.txt)
+  sonora_label_module_tests(contracts/api/elastic contracts)
+endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/engine/elastic/CMakeLists.txt)
+  sonora_label_module_tests(engine/elastic control)
+endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/elastic/CMakeLists.txt)
+  sonora_label_module_tests(ui/elastic ui)
+endif()

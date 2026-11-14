@@ -159,9 +159,18 @@ struct PlanNode {
     uint32_t first_plugin_lane = 0;
     uint32_t plugin_lane_count = 0;
     uint16_t channels = 2;
+    // InsertChain only: its side-chain key planes (ADR-0058), `channels` of
+    // them when an insert of the chain is keyed, else 0. The key is the
+    // node's second input edge, from an AuxSum; a keyed node with one input
+    // edge (its key bus is gone) hears a silent key.
+    uint16_t key_channels = 0;
     // PathOut only: the device output the left side plays on; the right
     // side plays on the next.
     uint16_t hardware_out = 0;
+    // The node's level (ADR-0063 §1): its longest path from a source. Every
+    // input edge comes from a lower level, so the nodes of one level are
+    // independent of each other. 0 until the builder's level pass sets it.
+    uint16_t level = 0;
     // The model track id, for the control thread; the audio thread never
     // reads it.
     uint64_t chain_id = 0;
@@ -313,7 +322,34 @@ struct PlaybackPlan {
     // their points are in auto_points with the mix lanes'.
     PlanPluginLane* plugin_lanes = nullptr;
     uint32_t plugin_lane_count = 0;
+    // The nodes by level (ADR-0063 §1): level l is nodes [level_first[l],
+    // level_first[l + 1]), the levels in order and contiguous, so walking
+    // them in turn is the serial walk. create_plan() sizes the array at
+    // node_count + 1 entries, as no graph has more levels than nodes.
+    // level_count 0: the builder ran no level pass, and the plan is one
+    // serial walk (plan_level_count() says 1 for a plan with nodes).
+    uint32_t* level_first = nullptr;
+    uint32_t level_count = 0;
 };
+
+// The levels a scheduler walks: the plan's, or one level holding every node
+// for a plan whose builder set none.
+inline uint32_t plan_level_count(const PlaybackPlan& plan) noexcept SONORA_RT {
+    if (plan.level_count > 0) return plan.level_count;
+    return plan.node_count > 0 ? 1u : 0u;
+}
+
+// Level l's node range, l < plan_level_count(plan).
+inline void plan_level_range(const PlaybackPlan& plan, uint32_t l, uint32_t& first,
+                             uint32_t& count) noexcept SONORA_RT {
+    if (plan.level_count == 0) {
+        first = 0;
+        count = plan.node_count;
+        return;
+    }
+    first = plan.level_first[l];
+    count = plan.level_first[l + 1] - first;
+}
 
 // Automation is evaluated at timeline frames that are multiples of this and
 // interpolated between them (ADR-0027 §2): anchored to the timeline, so a

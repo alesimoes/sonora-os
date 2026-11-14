@@ -14,6 +14,7 @@
 //   EngineAdapter::take_events  EngineControl::poll (events, kept until taken)
 //   EngineAdapter::frame        StateView::frame      (one publish)
 //   EngineAdapter::take_peak    StateView::take_peak  (per-reader cursor)
+//   EngineAdapter::take_post_peak  StateView::take_post_peak
 //   EngineAdapter::engine_alive StateView::engine_alive (heartbeat)
 //   EngineAdapter::send_track_param
 //                               EngineControl::send(ParameterChange), Gain or Pan
@@ -233,6 +234,14 @@ public:
     // The same for the monitor bus, side 0 left and 1 right, each with a
     // cursor of its own.
     virtual float take_bus_peak(uint32_t side) = 0;
+    // Post-fader peak of a track, side 0 left and 1 right, each with its own
+    // cursor (state layout 8). Not pure: fakes that predate it keep building,
+    // and read 0 here, which only a post-fader meter on such a fake shows.
+    virtual float take_post_peak(uint32_t index, uint32_t side) {
+        (void)index;
+        (void)side;
+        return 0.0f;
+    }
     // False when the heartbeat has stalled. The interface then shows meters
     // as "no data" rather than frozen values (§3).
     virtual bool engine_alive(uint64_t now_ns) const = 0;

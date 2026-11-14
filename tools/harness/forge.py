@@ -11,7 +11,7 @@ import re
 import subprocess
 import tempfile
 
-from harness import forge_push, shell
+from harness import branch_tip, forge_push, prepr, shell
 
 
 class ForgeError(Exception):
@@ -60,8 +60,9 @@ class Forge:
     def enqueue(self, pr):
         raise NotImplementedError
 
-    def pre_pr(self, worktree):
-        """(ok, output). A repo without the script passes with a note."""
+    def pre_pr(self, worktree, env=None):
+        """(ok, output). A repo without the script passes with a note. `env`:
+        extra variables for the script (harness/prepr.allow_env)."""
         raise NotImplementedError
 
     # -- merge train (adopted PRs) ------------------------------------
@@ -127,6 +128,22 @@ class Forge:
         """True when commit `sha` is an ancestor of (or equal to) `head`."""
         raise NotImplementedError
 
+    def branch_tip(self, branch):
+        """{sha, ts (committer epoch seconds), subject, ref} of the branch
+        head that counts: the local one, or origin's when it is strictly
+        ahead (a hand fix pushed from another worktree, harness/branch_tip.py).
+        None when no such branch exists."""
+        raise NotImplementedError
+
+    def sync_local(self, branch):
+        """Fast-forward the local branch to origin's head. (ok, why)."""
+        raise NotImplementedError
+
+    def changed_files(self, base, branch):
+        """Paths `branch` changed since `base` (harness/branch_tip.py), or
+        None when that cannot be told."""
+        raise NotImplementedError
+
 
 def job_signatures(excerpt):
     """{job name: cause} from failure_excerpt's text. The cause is the job's
@@ -151,11 +168,13 @@ def job_signatures(excerpt):
     return out
 
 
-def run(argv, cwd=None, timeout=120):
+def run(argv, cwd=None, timeout=120, env=None):
+    """`env` adds to the daemon's environment, never replaces it."""
     try:
         return subprocess.run(argv, cwd=cwd, capture_output=True, text=True,
                               timeout=timeout, encoding="utf-8",
-                              errors="replace")
+                              errors="replace",
+                              env=dict(os.environ, **env) if env else None)
     except (OSError, subprocess.SubprocessError) as e:
         raise ForgeError(f"{argv[0]}: {e}")
 
@@ -445,9 +464,20 @@ class GhForge(Forge):
             self._raise(["git", "merge-base"], r.stderr)
         return r.returncode == 0
 
-    def pre_pr(self, worktree):
+    def branch_tip(self, branch):
+        return branch_tip.branch_tip(self.run, self.root, branch)
+
+    def sync_local(self, branch):
+        return branch_tip.sync_local(self.run, self.root, branch)
+
+    def changed_files(self, base, branch):
+        return branch_tip.changed_files(self.run, self.root, base, branch)
+
+    def pre_pr(self, worktree, env=None):
         script = os.path.join(worktree, "tools", "pre-pr.sh")
         if not os.path.exists(script):
             return True, "tools/pre-pr.sh not present: not run"
-        r = self.run([shell.bash(), "tools/pre-pr.sh"], worktree, 1800)
-        return r.returncode == 0, (r.stdout + r.stderr)[-2000:]
+        argv = [shell.bash(), "tools/pre-pr.sh"]
+        r = (self.run(argv, worktree, 1800, env=env) if env
+             else self.run(argv, worktree, 1800))
+        return r.returncode == 0, prepr.summary(r.stdout + r.stderr, 2000)

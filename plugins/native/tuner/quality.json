@@ -13,5 +13,15 @@
   "zipper_dbfs": -100.0,
   "zipper": ["key", "scale", "speed", "amount", "reference"],
   "golden_abs": 1e-6,
-  "cpu": {"p999_us": 150.0, "max_us": 300.0}
+  "cpu": {"p999_us": 150.0, "max_us": 300.0},
+  "real_voice": {
+    "note": "ADR-0181. Measured on an i7-11800H (GCC 14.2 Release, Linux container) at commit a5bd87ac, key 0 major, YIN; bars sit 4-6 points inside the measured figure for the other compilers. Checked by an operator run of native_tuner_eval --data DIR (the datasets are never in CI), not by ctest. vocadito 2 (Zenodo 5578259): detector ranges low and medium are the voice ranges; high measured 0.716 RPA on this set, so its bar is a regression floor, not a quality claim.",
+    "vocadito": {
+      "low": {"rpa_min": 0.88, "rca_min": 0.89, "voicing_recall_min": 0.90, "voicing_false_alarm_max": 0.17},
+      "medium": {"rpa_min": 0.87, "rca_min": 0.89, "voicing_recall_min": 0.90, "voicing_false_alarm_max": 0.16},
+      "high": {"rpa_min": 0.66, "rca_min": 0.67, "voicing_recall_min": 0.69, "voicing_false_alarm_max": 0.14},
+      "in_scale_min": 0.75
+    },
+    "vocalset": {"in_scale_min": 0.84}
+  }
 }

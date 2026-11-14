@@ -322,7 +322,7 @@ the Tool menu by number after pressing T" — is wrong on the digits.
 
 | Our chord | Our command | Verdict | Correct chord / note |
 |---|---|---|---|
-| `t` | `tool.next` | **Not expressible** | `T` is "Show Tool Menu" (*Various Windows*) — it opens a floating menu that then takes a *letter*. A menu is not a command and this schema cannot express the two-step chord. **However, there is a real cycling command we should bind instead:** *Various Windows* lists "**Set Next Tool or Edit Mode — Option-Page Down**" and "Set Previous Tool or Edit Mode — Option-Page Up". So `tool.next` belongs on **`alt+pagedown`** (both `page_down` and `pagedown` are accepted by `engine/src/keymap.cpp`), and a `tool.previous` command — which the catalog lacks — would belong on `alt+pageup`. |
+| `t` | `tool.next` | **Not expressible** | `T` is "Show Tool Menu" (*Various Windows*) — it opens a floating menu that then takes a *letter*. A menu is not a command and this schema cannot express the two-step chord. **However, there is a real cycling command we should bind instead:** *Various Windows* lists "**Set Next Tool or Edit Mode — Option-Page Down**" and "Set Previous Tool or Edit Mode — Option-Page Up". So `tool.next` belongs on **`alt+pagedown`** (both `page_down` and `pagedown` are accepted by `ui/keymap/src/keymap.cpp`), and a `tool.previous` command — which the catalog lacks — would belong on `alt+pageup`. |
 | `escape` | `tool.select` | **Unknown** | Escape appears exactly once in the whole 12.3 user guide, and it is about closing a search field. There is no Esc tool binding in Apple's documentation, and no "Pointer tool" key command either — Apple documents pressing **T twice**. Our comment ("Escape returns to the Pointer tool (and in Logic also opens the Tool menu)") is unsupported by the primary source. Older Logic versions are widely said to have used Esc for the tool box, but I have only secondary recollection for that and no citation, so: Unknown. Treat `escape` as ours until someone with Logic in front of them says otherwise. |
 | `ctrl+alt+1` | `tool.pencil` | **Ours — and COLLIDES** | *Global Commands*: "**Set Nudge Value to 1 ms** — Control-Option-1". Logic's Pencil is `T` then `P`. |
 | `ctrl+alt+2` | `tool.zoom` | **Ours** | **No collision** found. Logic's Zoom Tool is `T` then `Y`. |
@@ -429,7 +429,7 @@ shortcuts must be disabled or remapped."
 
 ### Why this is a deviation for us
 
-`engine/src/keymap.cpp` resolves a chord to one command, unconditionally. There
+`ui/keymap/src/keymap.cpp` resolves a chord to one command, unconditionally. There
 is no focus concept anywhere in the engine. So the eight letters in §1.7 plus
 `e` are bound as if Commands Keyboard Focus were permanently on — which is a
 real Pro Tools state, just not its default, and not a state the operator can
@@ -545,7 +545,7 @@ Commands Keyboard Focus should also be able to express "T, then P".
 
 ## 5. Commands our bindings want and the catalog does not have
 
-Read against `engine/include/sonora/command.h` as it stands (the catalog is
+Read against `contracts/api/include/sonora/command.h` as it stands (the catalog is
 unchanged by the `takes_argument` addition). **Nothing was added — this is a
 list of gaps.**
 
@@ -680,7 +680,7 @@ Grabber or Smart Tool, as our profile says.
 
 Shortest path from here to a correct pair of files. **Applied 2026-10-12** —
 every item below is now in `keymaps/*.json`, and
-`engine/tests/test_keymap.cpp` (`test_profile_corrections`) checks the chord
+`ui/keymap/tests/test_keymap.cpp` (`test_profile_corrections`) checks the chord
 moves. Where an item said "move" without naming a destination, the choice is
 recorded under "Applied" at the end of this section.
 

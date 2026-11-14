@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "denormals.h"
+#include "sonora/chain_key.h"
 #include "sonora/frame_text.h"
 #include "sonora/plan_graph.h"
 
@@ -405,12 +406,14 @@ Session::Session(SessionConfig cfg)
                                   (static_cast<std::size_t>(tracks) + 1)]());
     feeds_node_.reset(new uint8_t[scratch_buffers_ + 1]());
     feeds_track_.reset(new uint8_t[tracks + 1]());
+    aux_solo_.reset(new uint8_t[max_buses_ + 1]());
     aux_gain_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
     aux_target_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
     aux_stamp_.reset(new uint64_t[max_buses_ + 1]());
     aux_open_.reset(new float[max_buses_ + 1]());
     aux_level_.reset(new float[max_buses_ + 1]());
     aux_pan_.reset(new float[max_buses_ + 1]());
+    start_graph();
 
     // Until engine/control publishes one: every track into the bus, no
     // region. Published before any backend can call process().
@@ -1187,6 +1190,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         reseek_ = true;
         plan_valid_ = plan_in_bounds(*plan);
         adopt_param_order(*plan);
+        adopt_graph_plan(*plan);
         follow_track_owners(*plan);
         snap_mix_ = false;
         for (std::size_t e = 0; e < tracks_.size(); ++e) {
@@ -1426,11 +1430,16 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
     for (std::size_t e = 0; e < tracks_.size(); ++e) any_solo = any_solo || mix_view(*plan, e).solo;
     // Soloing an aux solos what feeds it, through the plan being played, so a
     // reroute at a swap changes the implicit solo in the same callback
-    // (ADR-0024 §4).
+    // (ADR-0024 §4). Each flag is loaded once, and feeds_solo() reads the
+    // copy: a solo cleared between two loads would make the callback see a
+    // solo with nothing feeding it, and mute every unsoloed track for a
+    // block (ADR-0148 §1).
     bool aux_solo = false;
     for (uint32_t b = 0; b < max_buses_; ++b) {
-        aux_solo = aux_solo || aux_[b].solo.load(std::memory_order_relaxed);
+        aux_solo_[b] = aux_[b].solo.load(std::memory_order_relaxed) ? 1 : 0;
+        aux_solo = aux_solo || aux_solo_[b] != 0;
     }
+    if (solo_hook_ != nullptr) solo_hook_(solo_hook_context_);
     std::memset(feeds_track_.get(), 0, tracks_.size());
     if (aux_solo) {
         any_solo = true;
@@ -1857,10 +1866,21 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
     for (uint32_t o = 0; o < block.output_count; ++o) {
         std::memset(block.outputs[o] + offset, 0, n * sizeof(float));
     }
+    pass_ = MixPass{&plan, &block, offset, n, rolling, recording, from, mix_stamp_};
+    mix_graph();
+}
+
+void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
+    const PlaybackPlan& plan = *pass.plan;
+    const backend::AudioBlock& block = *pass.block;
+    const uint32_t offset = pass.offset;
+    const uint32_t n = pass.n;
+    const bool rolling = pass.rolling;
+    const bool recording = pass.recording;
+    const uint64_t from = pass.from;
     const float inv_block = 1.0f / static_cast<float>(block_frames_);
     float* const tb[2] = {track_buf_.get(), track_buf_.get() + max_block_};
-
-    for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
+    {
         const PlanNode& node = plan.nodes[ni];
         float* const out[2] = {scratch(node.scratch_buffer, 0), scratch(node.scratch_buffer, 1)};
         float* const L = out[0];
@@ -1874,7 +1894,7 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 const PlanTrack& pt = plan.tracks[node.track];
                 apply_track_fader(plan, pt, stereo, in, out, n, from, 0);
                 track_meters_[pt.engine_track].process(out, n);
-                continue;
+                return;
             }
             case NodeKind::TrackSource: {
                 const bool stereo =
@@ -1882,13 +1902,22 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 // A mono source feeds a stereo-planed chain; the copy keeps
                 // side 1 defined for a runner that reads it anyway.
                 if (!stereo) std::memcpy(R, L, n * sizeof(float));
-                continue;
+                return;
             }
             case NodeKind::InsertChain: {
-                // One input edge, never delayed: compensation sits on the
-                // edges into the bus.
-                const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
-                const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
+                // The signal edge is delayed only to meet a key bus's late
+                // sum (ADR-0058 §2); the rest of compensation sits on the
+                // edges into the bus. Delayed here, into the node's own
+                // planes, which the runner may read in place.
+                const PlanEdge& signal = plan.edges[node.first_input_edge];
+                const float* in[2] = {node_out(pass, signal.from_node, 0), node_out(pass, signal.from_node, 1)};
+                if (signal.delay_frames != 0) {
+                    std::memset(L, 0, n * sizeof(float));
+                    std::memset(R, 0, n * sizeof(float));
+                    sum_edge(plan, signal, in, out, n);
+                    in[0] = L;
+                    in[1] = R;
+                }
                 const bool silent = node.channel_slot == kSilentChannelSlot;
                 bool played = false;
                 if (runner_ != nullptr && node.channel_slot != kNoChannelSlot && !silent) {
@@ -1898,11 +1927,30 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                     // changes gather_params() sorted to it.
                     const uint32_t o = node_order_[ni];
                     const uint32_t k = o < order_chains_ ? order_count_[o] : 0;
-                    runner_->run(node, in, out, n, k != 0 ? node_params_.get() + order_first_[o] : nullptr, k);
+                    const ChainParamEvent* events = k != 0 ? node_params_.get() + order_first_[o] : nullptr;
+                    if (node.key_channels == 0) {
+                        runner_->run(node, in, out, n, events, k);
+                    } else {
+                        // No key edge: the bus is gone, and the key is
+                        // silence, never the chain's own signal.
+                        const uint32_t ks = key_source(plan, node);
+                        const float* key[2] = {nullptr, nullptr};
+                        if (ks != kNoNode) {
+                            key[0] = node_out(pass, ks, 0);
+                            key[1] = node_out(pass, ks, 1);
+                        }
+                        // A mono chain's side 1 is free until it copies
+                        // side 0 there after the run.
+                        if (ks != kNoNode && node.key_channels == 1 && node.channels == 1) {
+                            mono_key(key[0], key[1], R, n);
+                            key[0] = R;
+                        }
+                        runner_->run_keyed(node, in, key, out, n, events, k);
+                    }
                 } else if (node.channel_slot == kNoChannelSlot) {
                     // Unbound: laid out with latency 0, so dry is aligned.
-                    std::memcpy(L, in[0], n * sizeof(float));
-                    std::memcpy(R, in[1], n * sizeof(float));
+                    if (in[0] != L) std::memcpy(L, in[0], n * sizeof(float));
+                    if (in[1] != R) std::memcpy(R, in[1], n * sizeof(float));
                 } else {
                     // Laid out silent, or bound but not run this callback
                     // (no runner, a callback the runner does not take): the
@@ -1924,7 +1972,7 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                     if (TrackTap* tap = track_tap_.load(std::memory_order_acquire)) {
                         if (tap->engine_track() == plan.tracks[node.track].engine_track) {
                             if (played) {
-                                tap->push(L, R, n, node.latency_frames);
+                                tap->push(L, R, n, chain_lag(plan, node));
                             } else {
                                 tap->unplayed(n);
                             }
@@ -1932,19 +1980,19 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                     }
                 }
                 if (runner_ != nullptr && ni == plan.last_insert_node) runner_->end();
-                continue;
+                return;
             }
             case NodeKind::TrackFader: {
-                const PlanNode& chain = plan.nodes[plan.edges[node.first_input_edge].from_node];
-                const float* const in[2] = {scratch(chain.scratch_buffer, 0),
-                                            scratch(chain.scratch_buffer, 1)};
+                const uint32_t ci = plan.edges[node.first_input_edge].from_node;
+                const PlanNode& chain = plan.nodes[ci];
+                const float* const in[2] = {node_out(pass, ci, 0), node_out(pass, ci, 1)};
                 const PlanTrack& pt = plan.tracks[node.track];
                 // The chain's output is its latency late: the lanes follow
                 // the audio they scale (ADR-0027 §2).
                 apply_track_fader(plan, pt, pt.channels >= 2, in, out, n, from,
-                                  chain.latency_frames);
+                                  chain_lag(plan, chain));
                 track_meters_[pt.engine_track].process(out, n);
-                continue;
+                return;
             }
             case NodeKind::AuxSum: {
                 // Every input is a send (ADR-0022 §5), in the builder's
@@ -1954,8 +2002,8 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                 for (uint32_t k = 0; k < node.input_edge_count; ++k) {
                     const PlanEdge& edge = plan.edges[node.first_input_edge + k];
                     const PlanNode& src = plan.nodes[edge.from_node];
-                    const float* const in[2] = {scratch(src.scratch_buffer, 0),
-                                                scratch(src.scratch_buffer, 1)};
+                    const float* const in[2] = {node_out(pass, edge.from_node, 0),
+                                                node_out(pass, edge.from_node, 1)};
                     if (edge.send == kNoSend) {
                         sum_edge(plan, edge, in, out, n);
                         continue;
@@ -1965,15 +2013,15 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                     // A chain's output is its latency late, as for the
                     // fader after it.
                     const uint32_t lag =
-                        src.kind == NodeKind::InsertChain ? src.latency_frames : 0;
+                        src.kind == NodeKind::InsertChain ? chain_lag(plan, src) : 0;
                     sum_send(plan, edge, mono, in, out, n, from, lag);
                 }
-                continue;
+                return;
             }
             case NodeKind::AuxFader: {
-                const uint32_t src = plan.nodes[plan.edges[node.first_input_edge].from_node].scratch_buffer;
-                const float* const in0 = scratch(src, 0);
-                const float* const in1 = scratch(src, 1);
+                const uint32_t src = plan.edges[node.first_input_edge].from_node;
+                const float* const in0 = node_out(pass, src, 0);
+                const float* const in1 = node_out(pass, src, 1);
                 const uint32_t b = node.track;
                 const float l0 = aux_gain_[2 * b];
                 const float r0 = aux_gain_[2 * b + 1];
@@ -1984,7 +2032,7 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
                     L[i] = in0[i] * (l0 + dl * a);
                     R[i] = in1[i] * (r0 + dr * a);
                 }
-                continue;
+                return;
             }
             case NodeKind::BusSum:
             case NodeKind::HardwareOut:
@@ -1998,8 +2046,8 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
         std::memset(R, 0, n * sizeof(float));
         for (uint32_t k = 0; k < node.input_edge_count; ++k) {
             const PlanEdge& edge = plan.edges[node.first_input_edge + k];
-            const uint32_t src = plan.nodes[edge.from_node].scratch_buffer;
-            const float* const in[2] = {scratch(src, 0), scratch(src, 1)};
+            const float* const in[2] = {node_out(pass, edge.from_node, 0),
+                                        node_out(pass, edge.from_node, 1)};
             sum_edge(plan, edge, in, out, n);
         }
         if (node.kind == NodeKind::PathOut) {
@@ -2010,9 +2058,9 @@ void Session::mix(const PlaybackPlan& plan, const backend::AudioBlock& block, ui
             if (node.hardware_out + 1u < block.output_count) {
                 std::memcpy(block.outputs[node.hardware_out + 1u] + offset, R, n * sizeof(float));
             }
-            continue;
+            return;
         }
-        if (node.kind != NodeKind::HardwareOut) continue;
+        if (node.kind != NodeKind::HardwareOut) return;
 
         const float b0 = bus_applied_;
         const float db = bus_target_ - b0;
@@ -2150,7 +2198,8 @@ void Session::apply_fader(uint32_t e, bool stereo, const float* const in[2], flo
 void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
                                  uint64_t playhead) noexcept SONORA_RT {
     const uint64_t start = rolling ? loop_frame(playhead, 0) : playhead;
-    const bool jumped = auto_new_plan_ || start != auto_next_;
+    const bool new_plan = auto_new_plan_;
+    const bool jumped = new_plan || start != auto_next_;
     auto_new_plan_ = false;
     // A new plan leaves the audio where it was: only a stop, a jump or a
     // new loop makes the frames behind A the timeline's again.
@@ -2199,10 +2248,10 @@ void Session::automation_targets(const PlaybackPlan& plan, bool rolling,
             const uint8_t bit = static_cast<uint8_t>(1u << p);
             int64_t& at = return_at_[e * kAutoParams + p];
             const auto s = static_cast<int64_t>(start);
-            // A new plan alone keeps the return: an edit mid-return leaves
-            // the playhead where it was, and follow_track_owners() moved
-            // each return with its track.
-            if (!rolling || (live & bit) != 0 || start != auto_next_ ||
+            // A new plan ends the return (ADR-0131 §4): its static may have
+            // moved under it, and `jumped` ramps the track to its target over
+            // this callback.
+            if (!rolling || new_plan || (live & bit) != 0 || start != auto_next_ ||
                 (at != kNoReturn && (s < at || s >= at + touch_return_frames_))) {
                 at = kNoReturn;
             }
@@ -2710,7 +2759,11 @@ bool Session::plan_in_bounds(const PlaybackPlan& plan) noexcept SONORA_RT {
                 if (node.input_edge_count != 1) return false;
                 break;
             case NodeKind::InsertChain:
-                if (node.input_edge_count != 1) return false;
+                // The signal, and a keyed chain's key when its bus exists.
+                if (node.key_channels > node.channels) return false;
+                if (node.input_edge_count != 1 && (node.input_edge_count != 2 || node.key_channels == 0)) {
+                    return false;
+                }
                 if (node.track >= plan.track_count) return false;
                 break;
             case NodeKind::AuxSum:
@@ -2756,8 +2809,7 @@ void Session::feeds_solo(const PlaybackPlan& plan) noexcept SONORA_RT {
     std::memset(feeds_node_.get(), 0, plan.node_count);
     for (uint32_t ni = 0; ni < plan.node_count; ++ni) {
         const PlanNode& node = plan.nodes[ni];
-        if (node.kind == NodeKind::AuxFader && node.track < max_buses_ &&
-            aux_[node.track].solo.load(std::memory_order_relaxed)) {
+        if (node.kind == NodeKind::AuxFader && node.track < max_buses_ && aux_solo_[node.track] != 0) {
             feeds_node_[ni] = 1;
         }
     }

@@ -106,9 +106,12 @@ class MixModel : public QObject {
     Q_PROPERTY(QList<bool> trimLanes READ trimLanes NOTIFY trimsChanged)
     // What the strips' meters read, said on the strips themselves; and the
     // line above the strips.
-    Q_PROPERTY(QString trackMeterCaption READ trackMeterCaption CONSTANT)
+    // "pre" (the input) or "post" (after the fader, the default): one choice
+    // for every strip, and the caption follows it.
+    Q_PROPERTY(QString meterPoint READ meterPoint WRITE setMeterPoint NOTIFY meterPointChanged)
+    Q_PROPERTY(QString trackMeterCaption READ trackMeterCaption NOTIFY meterPointChanged)
     Q_PROPERTY(QString busMeterCaption READ busMeterCaption CONSTANT)
-    Q_PROPERTY(QString note READ note CONSTANT)
+    Q_PROPERTY(QString note READ note NOTIFY meterPointChanged)
     // The Mix window's views (ui-design.md, "Mixer strip anatomy"): which
     // sections of a strip are shown. Interface state, outside the session
     // file (session-format.md, ADR-0007 5); it goes back to the defaults
@@ -162,12 +165,26 @@ public:
     MixModel(SessionModel& session, GainSender sender, EngineTracks engine_tracks, bool audible,
              QObject* parent = nullptr);
 
+    // The AutoMatch default: how long the cap takes from a released Touch ride
+    // to the static (ADR-0131). The user's own time is a later Preferences item.
+    static constexpr int kGlideMs = 250;
+    using NsClock = std::function<uint64_t()>;
+    // For tests: the clock the glide is read against, in ns.
+    void setGlideClock(NsClock c) { now_ns_ = std::move(c); }
+    // The cap's dB for `track` now: mid-glide between the released ride and
+    // the static, the static otherwise. QML re-reads it as its animation ticks.
+    Q_INVOKABLE qreal glideGain(int track) const;
+    Q_INVOKABLE bool gliding(int track) const;
     int rideTrack() const { return ride_track_; }
     qreal rideGain() const { return ride_db_; }
     bool rideTrim() const { return ride_track_ != kNoRide && ride_trim_; }
     QList<qreal> trims() const;
     QList<bool> trimLanes() const;
     QString trackMeterCaption() const;
+    QString meterPoint() const;
+    // Anything but "pre" or "post" is ignored: a point nobody can name
+    // would draw a meter that reads nothing in particular.
+    void setMeterPoint(const QString& point);
     QString busMeterCaption() const;
     QString note() const;
     bool showIO() const { return show_io_; }
@@ -256,6 +273,7 @@ signals:
     void rideChanged();
     void groupsChanged();
     void viewsChanged();
+    void meterPointChanged();
     void trimsChanged();
     void structureChanged();
 
@@ -322,6 +340,11 @@ private:
     // Some of the ride played in Touch while rolling: the
     // pass's lane holds it, so the static is not set (ADR-0027 §8).
     bool ride_wrote_ = false;
+    int glide_track_ = kNoRide;
+    float glide_from_db_ = 0.0f;
+    uint64_t glide_start_ns_ = 0;
+    NsClock now_ns_;
+    uint64_t nowNs() const;
     bool ride_trim_ = false;      // the ride is the trim fader's (VolumeTrim)
     struct RidePeer {
         int index;
@@ -340,6 +363,7 @@ private:
     uint64_t pan_generation_ = 0;
     float pan_value_ = 0.0f;      // the held pan's last value sent
     uint64_t live_steps_ = 0;
+    bool meter_post_ = true;
     bool show_io_ = true;
     bool show_inserts_ae_ = true;
     bool show_inserts_fj_ = false;

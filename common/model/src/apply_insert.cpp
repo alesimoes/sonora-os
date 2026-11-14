@@ -57,6 +57,13 @@ bool Applier::operator()(const MoveInsert& op) {
     std::shared_ptr<TrackEdit> to_track =
         to == at.track ? from_track : std::make_shared<TrackEdit>(*edit->tracks[to]);
     if (!free_slot(*to_track, op.to_slot, op.insert)) return false;
+    // A keyed insert takes its key along (ADR-0058): the chain it joins may
+    // hold a key already, or feed the key bus.
+    if (to != at.track) {
+        const std::string refused =
+            detail::key_refusal(*before_.edit, *to_track, op.insert, moving.key_bus);
+        if (!refused.empty()) return fail(refused);
+    }
     moving.slot = op.to_slot;
     insert_by_slot(to_track->inserts, std::move(moving));
     if (to != at.track) {

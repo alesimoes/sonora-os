@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "feature": "drivers.sync.ltc",
+  "backlog_ids": ["drivers.sync.ltc"],
+  "track": "os",
+  "feature_branch": "feat/drivers.sync.ltc",
+  "depends_on_feature": null,
+  "reserved": {"adr": 124, "protocol": null, "formats": []},
+  "adr": "brain/decisions/ADR-0124-ltc-chase-and-generate.md",
+  "tasks": [
+    {
+      "id": "contract",
+      "kind": "contract",
+      "title": "LTC interfaces, time maths and fakes",
+      "brief": "Read planning/plans/drivers.sync.ltc.md and ADR-0124 (already written; keep in sync; do NOT edit brain/INDEX.md, put its line in the PR body). Create module drivers/ltc. include/sonora/ltc/ltc.h: enum LtcRate{Fps24,Fps25,Fps2997Drop,Fps30}; struct LtcTime{h,m,s,frame; LtcRate} with INLINE to_frames/from_frames/to_samples/from_samples (29.97 drop-frame rule: drop frames 0,1 at minutes not divisible by 10); class LtcDecoder{feed(span<const float>, fixed-size result of good frames); reset()} and class LtcEncoder{render(LtcTime, span<float>) keeping biphase phase across calls} as DECLARATIONS only (impl slice defines them in src/ltc_codec.cpp). include/sonora/ltc/ltc_sync.h: interfaces LtcSampleSource (read(span<float>)->size) and LtcSampleSink (write), class LtcChase (on_time(LtcTime)->ChaseAction None/Locate/Play/Stop; 2-frame window; silence budget as tick count; may be inline/header-only here), declarations of LtcChaseDriver and LtcGenerator (impl defines them in src/ltc_driver.cpp) using api::EngineControl only. testing/fake_ltc_io.h: FakeLtcSource, FakeLtcSink. CMake drivers/ltc/CMakeLists.txt: library sonora_ltc from file(GLOB CONFIGURE_DEPENDS src/*.cpp) linking sonora_api; one test executable and add_test named ltc_<stem> per tests/test_*.cpp (GLOB CONFIGURE_DEPENDS), LABELS drivers via set_tests_properties; testing dir on the include path. Create src/ltc_version.cpp (trivial constant) so the library is never empty. Hook with ONE line in drivers/support/CMakeLists.txt: add_subdirectory(../ltc ltc). Contract test tests/test_ltc_contract.cpp: frame/sample round trips at 4 rates, drop-frame vectors 00:01:00;02 and 00:10:00;00, LtcChase window/silence behaviour, fakes. Allocation-free after construction.",
+      "files": [
+        "brain/decisions/ADR-0124-ltc-chase-and-generate.md",
+        "drivers/ltc/CMakeLists.txt",
+        "drivers/ltc/include/sonora/ltc/ltc.h",
+        "drivers/ltc/include/sonora/ltc/ltc_sync.h",
+        "drivers/ltc/testing/fake_ltc_io.h",
+        "drivers/ltc/tests/test_ltc_contract.cpp",
+        "drivers/ltc/src/ltc_version.cpp",
+        "drivers/support/CMakeLists.txt"
+      ],
+      "depends_on": [],
+      "agent": "driver-engineer",
+      "grade": "M/high",
+      "tier": "senior",
+      "accept": [
+        "tools/micro-build.sh builds drivers/ltc and ctest -R ltc_contract passes; PR prints command and output",
+        "ADR-0124 keeps Context, Decision, Rationale, Consequences, Alternatives rejected, Unverified",
+        "no change to contracts/ or the protocol version"
+      ]
+    },
+    {
+      "id": "impl",
+      "kind": "engine",
+      "title": "LTC decoder, encoder, chase driver and generator",
+      "brief": "Define the declared classes. drivers/ltc/src/ltc_codec.cpp: LtcDecoder (zero-crossing bit-clock tracking, sync word 0x3FFD, BCD checks, no allocation after construction) and LtcEncoder (biphase-mark, phase continuous across calls). drivers/ltc/src/ltc_driver.cpp: LtcChaseDriver (each control tick reads LtcSampleSource, decodes, runs LtcChase, issues api::EngineControl locate/play/stop with command ids already in the catalog - grep contracts/api; if one is missing report to the architect, do not add) and LtcGenerator (from the published transport position writes frames to LtcSampleSink, re-syncs on locate). Mode (chase or generate) is a constructor argument validated at start-up (fail loudly); rate mismatch with the session is refused. While recording, chase never locates: it increments a drift counter. Do not edit CMake (the glob picks the files up) or the headers (contract-owned; ask the architect for an amendment). Control thread only.",
+      "files": [
+        "drivers/ltc/src/ltc_codec.cpp",
+        "drivers/ltc/src/ltc_driver.cpp"
+      ],
+      "depends_on": ["contract"],
+      "agent": "driver-engineer",
+      "grade": "M/high",
+      "tier": "senior",
+      "accept": [
+        "ctest -R ltc passes through tools/build-slot.sh with the micro build",
+        "chase never issues locate while the state shows recording",
+        "no file past ~500 lines"
+      ]
+    },
+    {
+      "id": "tests",
+      "kind": "tests",
+      "title": "Codec and chase/generate behaviour tests",
+      "brief": "tests/test_ltc_codec.cpp: synthetic round trip at 4 rates and 44.1/48/96 kHz, arbitrary block sizes give identical results, silence and noise yield no frame. tests/test_ltc_sync_behaviour.cpp with FakeLtcSource/Sink and the fake EngineControl pattern from drivers/surfaces/tests/test_engine_bridge.cpp (read only; copy the pattern): chase locates on first lock, plays while frames advance, stops after the silence tick budget, tolerates a dropped frame, never locates while recording, rate mismatch refused; generator output decodes back to the published position and re-syncs on locate. No sleeps. CMake globs the files, no edit. List the hardware measurements from ADR-0124 Unverified in the PR for the researcher.",
+      "files": [
+        "drivers/ltc/tests/test_ltc_codec.cpp",
+        "drivers/ltc/tests/test_ltc_sync_behaviour.cpp"
+      ],
+      "depends_on": ["impl"],
+      "agent": "driver-engineer",
+      "grade": "M/med",
+      "tier": "pleno",
+      "accept": [
+        "ctest -R ltc passes; command and output in the PR",
+        "no test uses wall-clock time"
+      ]
+    }
+  ],
+  "merge_order": ["contract", "impl", "tests"],
+  "pr": {
+    "title": "Sync: LTC chase and generate (ADR-0124)",
+    "partial": true,
+    "partial_reason": "No audio-thread channel tap, no settings UI, and signal quality on real hardware is unmeasured."
+  }
+}

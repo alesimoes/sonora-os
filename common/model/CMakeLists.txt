@@ -16,11 +16,14 @@ set(SONORA_MODEL_SOURCES
   src/apply_playlist.cpp
   src/apply_insert.cpp
   src/apply_mix.cpp
+  src/apply_insert_key.cpp
   src/apply_group.cpp
   src/apply_midi.cpp
+  src/arrangement.cpp
   src/comping.cpp
   src/groups.cpp
   src/history.cpp
+  src/insert_key.cpp
   src/local_edit.cpp
   src/midi_json.cpp
   src/model.cpp
@@ -91,6 +94,16 @@ add_executable(test_model_session_template tests/test_session_template.cpp)
 target_link_libraries(test_model_session_template PRIVATE sonora_model_audited)
 add_test(NAME model_session_template COMMAND test_model_session_template)
 
+# A template browser's entry (ADR-0146): category and newer-than-build.
+add_executable(test_session_template_info tests/test_session_template_info.cpp)
+target_link_libraries(test_session_template_info PRIVATE sonora_model_audited)
+add_test(NAME test_session_template_info COMMAND test_session_template_info)
+
+# The template list (ADR-0146 §1): one category level, version from the head.
+add_executable(test_session_template_list tests/test_session_template_list.cpp)
+target_link_libraries(test_session_template_list PRIVATE sonora_model_audited)
+add_test(NAME test_session_template_list COMMAND test_session_template_list)
+
 # Plugin inserts (ADR-0012 6): operations, undo under O1, refusals.
 add_executable(test_model_inserts tests/test_inserts.cpp)
 target_link_libraries(test_model_inserts PRIVATE sonora_model_audited)
@@ -107,6 +120,10 @@ add_test(NAME model_routing COMMAND test_model_routing)
 add_executable(test_model_output_paths tests/test_output_paths.cpp)
 target_link_libraries(test_model_output_paths PRIVATE sonora_model_audited)
 add_test(NAME model_output_paths COMMAND test_model_output_paths)
+# Side-chain keys (ADR-0058).
+add_executable(test_model_insert_key tests/test_insert_key.cpp)
+target_link_libraries(test_model_insert_key PRIVATE sonora_model_audited)
+add_test(NAME model_insert_key COMMAND test_model_insert_key)
 # Automation lanes and modes (ADR-0027).
 add_executable(test_model_automation tests/test_automation.cpp)
 target_link_libraries(test_model_automation PRIVATE sonora_model_audited)
@@ -115,6 +132,10 @@ add_test(NAME model_automation COMMAND test_model_automation)
 add_executable(test_model_comping tests/test_comping.cpp)
 target_link_libraries(test_model_comping PRIVATE sonora_model_audited)
 add_test(NAME model_comping COMMAND test_model_comping)
+# Swipe over a target inside a crossfade is refused whole (ADR-0031).
+add_executable(test_model_comp_crossfade_refusal tests/test_comp_crossfade_refusal.cpp)
+target_link_libraries(test_model_comp_crossfade_refusal PRIVATE sonora_model_audited)
+add_test(NAME model_comp_crossfade_refusal COMMAND test_model_comp_crossfade_refusal)
 # Track Freeze, Commit and Process Selection (ADR-0051).
 add_executable(test_model_render_in_place tests/test_render_in_place.cpp)
 target_link_libraries(test_model_render_in_place PRIVATE sonora_model_audited)
@@ -130,6 +151,8 @@ add_test(NAME model_vcas_folders COMMAND test_model_vcas_folders)
 # Mix and edit groups (ADR-0041).
 add_executable(test_model_groups tests/test_groups.cpp)
 target_link_libraries(test_model_groups PRIVATE sonora_model_audited)
+target_compile_definitions(test_model_groups PRIVATE
+  SONORA_MODEL_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 add_test(NAME model_groups COMMAND test_model_groups)
 
 # Clip gain: SetRegionGain, the source-frame gain line, codec and undo window.
@@ -214,3 +237,8 @@ add_test(NAME model_sequence_file COMMAND test_model_sequence_file)
 add_executable(test_model_tempo_edit tests/test_tempo_edit.cpp)
 target_link_libraries(test_model_tempo_edit PRIVATE sonora_model_audited)
 add_test(NAME model_tempo_edit COMMAND test_model_tempo_edit)
+
+# Arrangement sections (ADR-0116): copy and move a range marker as one Compound.
+add_executable(test_model_arrangement tests/test_arrangement.cpp)
+target_link_libraries(test_model_arrangement PRIVATE sonora_model_audited)
+add_test(NAME model_arrangement COMMAND test_model_arrangement)

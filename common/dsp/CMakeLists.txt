@@ -32,6 +32,7 @@ add_library(sonora_dsp STATIC
   src/loudness.cpp
   src/meter.cpp
   src/neural/kernels.cpp
+  src/neural/lstm_spec.cpp
   src/neural/wavenet.cpp
   src/noise.cpp
   src/opto.cpp
@@ -63,6 +64,10 @@ if(SONORA_DSP_ARCH STREQUAL "x86_64")
     set_source_files_properties(src/arch/x86_64/neural_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mno-fma")
   endif()
 endif()
+# The LSTM kernel (src/neural/lstm.cpp, ADR-0111) adds itself here when it
+# lands; until then the library carries the spec functions only and nothing
+# may call Lstm's members.
+include(cmake/lstm_kernel.cmake OPTIONAL)
 target_include_directories(sonora_dsp PUBLIC include)
 target_link_libraries(sonora_dsp PUBLIC sonora_base)
 # No fused multiply-add contraction: golden files must not depend on what a
@@ -79,7 +84,7 @@ target_compile_options(sonora_dsp PUBLIC
 set_source_files_properties(src/neural/wavenet.cpp src/neural/kernels.cpp PROPERTIES COMPILE_OPTIONS
   "$<$<AND:$<CXX_COMPILER_ID:GNU>,$<NOT:$<CONFIG:Debug>>>:-O3>")
 
-foreach(t filters convolver oversampling loudness meter dynamics limiter fdn triode opto fet noise tape transformer neural)
+foreach(t filters convolver oversampling loudness meter dynamics limiter fdn triode opto fet noise tape transformer neural lstm_contract)
   add_executable(test_dsp_${t} tests/test_${t}.cpp)
   target_link_libraries(test_dsp_${t} PRIVATE sonora_dsp)
   # The root CMakeLists.txt's SONORA_SANITIZED: timing bars are reported, not held.

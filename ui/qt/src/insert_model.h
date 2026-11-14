@@ -21,6 +21,7 @@
 #include <functional>
 
 #include "insert_controller.h"
+#include "insert_key_controller.h"
 
 namespace sonora::ui {
 
@@ -137,6 +138,11 @@ public:
     Q_INVOKABLE void toggleBypass(int track, int slot);
     Q_INVOKABLE void setActive(int track, int slot, bool active);
     Q_INVOKABLE void remove(int track, int slot);
+    // The side-chain key chooser (ADR-0058): [{bus, name, current}], empty
+    // for a plugin without a key input; setKey is one undo step, a refusal
+    // is held in the window (the routing notice).
+    Q_INVOKABLE QVariantList keyChoices(int track, int slot) const;
+    Q_INVOKABLE void setKey(int track, int slot, const QString& busId);
 
     // [{index, name, vendor, format, channels, host, category, refusal}]
     // for the chooser's track; `host` is "Windows (Wine)" for a plug-in
@@ -185,6 +191,7 @@ private:
     void locatePanel();
 
     InsertController ctl_;
+    InsertKeyController key_{ctl_};
     SessionModel& session_;
     QVariantList strips_;
     QVariantMap summary_;   // the other properties, as last published

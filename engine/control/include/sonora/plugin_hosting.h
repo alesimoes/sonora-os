@@ -61,6 +61,9 @@
 #include "sonora/model/operations.h"
 #include "sonora/plan_graph.h"
 #include "sonora/platform/wait_set.h"
+#include "sonora/plugin_hosting_state.h"
+#include "sonora/render_solo.h"
+#include "sonora/session_files/session_plugin_verify.h"
 
 namespace sonora {
 
@@ -97,7 +100,7 @@ struct PluginHostingConfig {
     std::string plugin_scratch_root;
 };
 
-class PluginHosting {
+class PluginHosting final : public RenderSolo {
 public:
     // Builds the client for config.block_frames and two-channel chains,
     // the supervisor (the host's --version, the sealed clock) and the
@@ -111,7 +114,7 @@ public:
     // has deactivated the backend or seen a callback pass since; chains,
     // supervisor, client. Every host is asked to stop first and the whole
     // set gets one grace (2 s) before it is killed, not one per host.
-    ~PluginHosting();
+    ~PluginHosting() override;
     PluginHosting(const PluginHosting&) = delete;
     PluginHosting& operator=(const PluginHosting&) = delete;
 
@@ -167,6 +170,14 @@ public:
     // rises while the host runs; 0 when there is none. A render compares two
     // readings and refuses its file when they differ.
     uint64_t chain_misses(model::Id track) const;
+    // Process Selection through one insert (ADR-0087 §4, render_solo.h): the
+    // other inserts of the chain bypassed on its host for the render, the
+    // document untouched. The override is the chain's, so every post of its
+    // values honours it, a forced repost of dropped changes included, until
+    // render_unsolo() republishes the document's bypass; a session opened or
+    // the chain dropped forgets it.
+    bool render_solo(model::Id track, model::Id insert) override;
+    void render_unsolo(model::Id track) override;
 
     // Standing faults by insert id (item 5): the text names the plugin,
     // track and slot. An insert not here has none standing.
@@ -282,8 +293,11 @@ public:
     uint64_t request_states(model::Id insert, const model::Snapshot& doc, bool no_copy = false);
     // Flushes with every request answered or failed: a host that stops,
     // restarts or is replaced before answering fails its requests, and one
-    // that has not answered within kReplyTimeoutMs fails them and is killed
-    // (host_control.h, timeouts), which takes the crash path.
+    // that has not answered within state_reply_timeout_ms (60 s for a save
+    // that may copy files, else kReplyTimeoutMs) fails them and is killed
+    // (host_control.h, timeouts), which takes the crash path. A GetState
+    // that may copy waits until no other host is copying (ADR-0151 §1); its
+    // deadline starts when it is sent.
     std::vector<Flush> take_flushes();
     // The flush's files are durable: SetInsertState for each insert still
     // in `doc` whose state differs (none for a plugin that keeps no state),
@@ -332,6 +346,8 @@ private:
     // The epoch a change for the chain's store is tagged with; 0 while no
     // plan built names the store.
     uint64_t post_epoch(const Chain& c) const;
+    // The changes kept for a retry, sent again while the store is in a plan.
+    void flush_retry(Chain& c);
     // One change to the running store, or kept for a retry, newest wins.
     void post(Chain& c, uint32_t instance, uint32_t param, float value);
     // The running host's messages taken and mapped (poll does it every
@@ -359,16 +375,21 @@ private:
     void take_state_reply(model::Id track, const std::string& bytes);
     void fail_state_requests(model::Id track, const std::string& why);
     void follow_state_requests(uint64_t now_ms);
-    // Starts the deadline of the next GetState on `track`'s host, unless one
-    // is already running: the host answers them in order.
-    void arm_state_request(model::Id track, uint64_t now_ms);
+    // Sends the GetStates PluginStateRequests says are due; one that cannot
+    // be sent fails, which may let the next copying one go.
+    void send_due_states(uint64_t now_ms);
     void finish_flush_if_done(uint64_t flush);
+    // A session opened: each state's plugin files hashed against their
+    // digests now, before a take (ADR-0151 §2); a bad one is held by name.
+    void verify_plugin_files(const model::Snapshot& doc);
 
     Session& session_;
     PluginHostingConfig config_;
     PluginScanner& scanner_;
     bool ok_ = false;
     std::string why_;
+    // The document last shown: what render_unsolo() republishes.
+    model::Snapshot shown_;
     std::unique_ptr<plugin_client::PluginClient> client_;
     std::unique_ptr<plugin_client::HostSupervisor> supervisor_;
     std::unique_ptr<PluginChainRunner> runner_;
@@ -419,19 +440,10 @@ private:
     uint64_t last_repost_ms_ = 0;
 
     // Outstanding GetState requests by request id, unique across hosts so a
-    // reply can only be the one asked for. `host` is the chain's bound host
-    // when asked; every event that unbinds it fails the request first, so
-    // it is never read after the host is gone.
-    struct StateRequest {
-        uint64_t flush = 0;
-        model::Id insert = 0;
-        model::Id track = 0;
-        plugin_client::HostProcess* host = nullptr;
-        uint64_t deadline_ms = 0;  // 0: behind another GetState on its host
-        int timeout_ms = 0;
-        std::string where;
-    };
-    std::map<uint32_t, StateRequest> state_requests_;
+    // reply can only be the one asked for.
+    PluginStateRequests state_requests_;
+    // Plugin files hashed this session (ADR-0151 §2).
+    session_files::PluginFileVerifier plugin_files_;
     std::map<uint64_t, Flush> flushes_;  // waiting for answers
     std::vector<Flush> flushes_done_;
     uint64_t next_flush_ = 1;

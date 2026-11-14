@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 
+from .agent_perms import writable_rules
 from .tiers import ALLOWED_MODELS, DEFAULT_MODEL
 
 MODEL = DEFAULT_MODEL
@@ -32,8 +33,20 @@ class ModelError(Exception):
     pass
 
 
+class Pinned(str):
+    """A model a task pins on purpose; it wins over MODEL_OF_AGENT (the stall
+    resolver pins opus for the principal, 2026-11-08). A plain tier model
+    still loses to the agent's fixed one."""
+
+
 def model_for(agent, model=None):
-    """The agent's fixed model, else the requested tier model, else sonnet."""
+    """A pinned model, else the agent's fixed model, else the requested tier
+    model, else sonnet."""
+    if isinstance(model, Pinned):
+        if model not in ALLOWED_MODELS:
+            raise ModelError(f"model {model!r} is not one of "
+                             f"{', '.join(ALLOWED_MODELS)}")
+        return str(model)
     if agent in MODEL_OF_AGENT:
         return MODEL_OF_AGENT[agent]
     if model is None:
@@ -150,7 +163,7 @@ def build_command(claude, agent, prompt, mcp_path, settings_path,
     argv += ["--agent", agent,
              "--mcp-config", str(mcp_path), "--strict-mcp-config",
              "--settings", str(settings_path),
-             "--allowedTools", ",".join(tools),
+             "--allowedTools", ",".join(list(tools) + writable_rules()),
              "--permission-mode", permission_mode,
              "--max-turns", str(max_turns),
              "--output-format", "stream-json", "--verbose",
@@ -168,7 +181,7 @@ def hook_settings(harness_py):
     def cmd(*a):
         return " ".join([f'"{sys.executable}"', f'"{harness_py}"', *a])
     recv = {"type": "command", "command": cmd("recv", "--brief", "--hook")}
-    return {"hooks": {
+    return {"permissions": {"allow": writable_rules()}, "hooks": {
         "PostToolUse": [{"matcher": "*", "hooks": [recv]}],
         "UserPromptSubmit": [{"hooks": [recv]}],
         "PreToolUse": [
@@ -232,7 +245,9 @@ def build_prompt(task, run_id, name, kind, result_path, extra=""):
         f"run: {run_id}",
         f"When finished write result.json to: {result_path}",
         "Schema: role, task, status (done|fail|blocked), summary, commit, "
-        "branch, findings, followups, unverified.",
+        "branch, findings, followups, unverified, and needs_owner (with "
+        "status blocked, only when the owner alone can unblock it: a "
+        "decision with no recommended default, or the host).",
     ]
     if task.get("brief"):
         lines += ["", task["brief"]]
@@ -359,14 +374,20 @@ def _pump(src, path, secrets_):
 
 
 def kill_tree(pid):
-    if not pid:
+    # pid 1 is init and our own group is the daemon: a test run with a fake
+    # pid=1 made the supervisor killpg the CI runner (2026-11-08, #515).
+    if not pid or int(pid) <= 1 or int(pid) == os.getpid():
         return
     if os.name == "nt":
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
                        capture_output=True)
         return
     try:
-        os.killpg(os.getpgid(pid), signal.SIGKILL)
+        pg = os.getpgid(pid)
+        if pg <= 1 or pg == os.getpgrp():
+            os.kill(pid, signal.SIGKILL)   # never our own group or init's
+        else:
+            os.killpg(pg, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         try:
             os.kill(pid, signal.SIGKILL)

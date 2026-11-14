@@ -30,6 +30,16 @@ std::vector<const Region*> members_of(const Playlist& p, Id group) {
     return out;
 }
 
+// "VERB REGION FROM TO CHANNEL [PARAM]", as engine/control's
+// parse_sample_edit reads it.
+std::string sample_edit_text(const std::string& verb, Id region, Frames from, Frames to,
+                             const std::string& channel, const std::string& param) {
+    std::string out = verb + " " + std::to_string(region) + " " + std::to_string(from) + " " +
+                      std::to_string(to) + " " + channel;
+    if (!param.empty()) out += " " + param;
+    return out;
+}
+
 }  // namespace
 
 bool EditController::group_clips(std::string& why) {
@@ -88,7 +98,6 @@ bool EditController::loop_clip(int count, std::string& why) {
         why = "Loop needs a number of repeats of 1 or more; nothing was looped";
         return false;
     }
-    if (refuse_shuffle("Loop", "looped", why)) return false;
     const TrackEdit* t = nullptr;
     if (selected_region(why) == nullptr) return false;
     const Region* sel = find_region(snapshot(), sel_.region, &t);
@@ -127,6 +136,17 @@ bool EditController::loop_clip(int count, std::string& why) {
 
     std::vector<Member> members;
     for (const Region* r : repeats) members.push_back(RemoveRegion{p->id, r->id});
+    if (mode_ == EditMode::Shuffle) {
+        // The loop takes the room it needs and gives back what its old
+        // repeats held: everything after them ripples by the difference.
+        Frames old_end = last;
+        for (const Region* r : repeats) old_end = std::max(old_end, r->end());
+        const Frames delta = span * count - (old_end - last);
+        const bool tail = std::any_of(p->regions.begin(), p->regions.end(), [&](const Region& o) {
+            return o.loop == 0 && o.position >= old_end && !(o.clip_group == group);
+        });
+        if (delta != 0 && tail) members.push_back(ShiftRegions{p->id, old_end, delta});
+    }
     const Id first_id = origin.front()->id;
     const Id group_id = sel->clip_group != 0 ? group : first_id;
     SetClipGroup tag;
@@ -235,9 +255,27 @@ bool EditController::sample_edit_argument(const std::string& verb, const std::st
               "Nothing was edited.";
         return false;
     }
-    argument = verb + " " + std::to_string(in->id) + " " + std::to_string(sel_.start) + " " +
-               std::to_string(sel_.end) + " all";
-    if (!param.empty()) argument += " " + param;
+    argument = sample_edit_text(verb, in->id, sel_.start, sel_.end, "all", param);
+    return true;
+}
+
+bool EditController::pencil_argument(const Drag& d, std::string& argument,
+                                     std::string& why) const {
+    if (d.kind != Drag::Kind::Pencil) {
+        why = "draw with the Pencil on a clip's waveform first; nothing was drawn";
+        return false;
+    }
+    const Region* r = find_region(snapshot(), d.region);
+    if (r == nullptr || d.channel >= r->channels.size()) {
+        why = "the clip drawn on is gone; nothing was drawn";
+        return false;
+    }
+    // The clip's bounds cut the stroke: a drawing stays on one clip.
+    const PencilFrame view{view_.scroll, view_.fpp, r->position, r->end()};
+    PencilStroke stroke;
+    if (!pencil_points(d.pencil, view, stroke, why)) return false;
+    argument = sample_edit_text("draw", r->id, stroke.from, stroke.to,
+                                std::to_string(d.channel + 1), stroke.points);
     return true;
 }
 

@@ -16,6 +16,9 @@
 #             LeakyReLU, Sigmoid
 #   feather   the trainer's "feather" size, Fasttanh
 #   standard  the trainer's "standard" size (13 802 weights), Tanh
+#   lstm_1x16 an LSTM, one layer of 16 (1 201 weights; the trainer's LSTM
+#             preset, 1 x 24, is in --presets for timing)
+#   lstm_2x8  an LSTM, two stacked layers of 8 (905 weights)
 #
 # Usage: make_models.py [OUT_DIR]   (default: ../data beside this file)
 #        make_models.py --presets DIR   (nano, feather, lite, standard; timing)
@@ -120,6 +123,50 @@ def write_model(path, name, layers, seed):
         f.write("\n")
 
 
+# name: (num_layers, hidden_size), ADR-0111.
+LSTMS = {
+    "lstm_1x16": (1, 16),
+    "lstm_2x8": (2, 8),
+}
+
+
+def lstm_weights_for(layers, hidden, rng):
+    """The format's order (common/dsp neural/lstm.h, lstm_weight_count):
+    per layer W [4H][in + H], bias [4H], initial h [H], initial c [H]; then
+    the head [H] and its bias."""
+    w = []
+
+    def put(n, fan):
+        e = round(math.log2(math.sqrt(fan) / 1.5))
+        for _ in range(n):
+            w.append(rng.randint(-128, 128) / 128.0 / (2.0 ** e))
+
+    for layer in range(layers):
+        nin = (1 if layer == 0 else hidden) + hidden
+        put(4 * hidden * nin, nin)
+        put(4 * hidden, 16)  # bias_ih + bias_hh, summed on export
+        put(hidden, 16)      # initial h
+        put(hidden, 16)      # initial c
+    put(hidden, hidden)      # head
+    put(1, 64)               # head bias
+    return w
+
+
+def write_lstm(path, name, layers, hidden, seed):
+    rng = random.Random(seed)
+    doc = {
+        "version": "0.5.4",
+        "metadata": {"name": "Sonora test network " + name, "loudness": -18.0},
+        "architecture": "LSTM",
+        "config": {"num_layers": layers, "input_size": 1, "hidden_size": hidden},
+        "weights": lstm_weights_for(layers, hidden, rng),
+        "sample_rate": 48000,
+    }
+    with open(path, "w", newline="\n") as f:
+        json.dump(doc, f, separators=(",", ":"))
+        f.write("\n")
+
+
 def write_input(path, n=8192):
     """Silence, a quiet sweep, a hot sweep, noise and a step: every regime
     of the activations, from linear to saturated."""
@@ -156,11 +203,17 @@ def main():
                       array(c, c // 2, 1, 3, LONG_DIL, "Tanh", head_bias=True)]
             write_model(os.path.join(sys.argv[2], name + ".nam"), name, layers, c)
         write_model(os.path.join(sys.argv[2], "standard.nam"), "standard", MODELS["standard"], 16)
+        # The trainer's LSTM preset (1 x 24) and the two test shapes.
+        for layers, hidden in ((1, 24), (1, 16), (2, 8)):
+            name = "lstm_%dx%d" % (layers, hidden)
+            write_lstm(os.path.join(sys.argv[2], name + ".nam"), name, layers, hidden, 300 + hidden)
         return
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "..", "data")
     os.makedirs(out, exist_ok=True)
     for seed, (name, layers) in enumerate(MODELS.items(), start=101):
         write_model(os.path.join(out, name + ".nam"), name, layers, seed)
+    for seed, (name, (layers, hidden)) in enumerate(LSTMS.items(), start=201):
+        write_lstm(os.path.join(out, name + ".nam"), name, layers, hidden, seed)
     write_input(os.path.join(out, "input.f32"))
 
 

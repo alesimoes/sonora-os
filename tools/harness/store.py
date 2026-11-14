@@ -83,7 +83,7 @@ RUN_COLS = {
     "id": None, "task_id": None, "role": None, "name": None, "state": None,
     "pid": None, "started": None, "last_beat": None, "ended": None,
     "exit": None, "result_path": None, "stream_path": None, "worktree": None,
-    "session_id": None, "suspect": 0, "outcome": None,
+    "session_id": None, "suspect": 0, "outcome": None, "model": None,
 }
 
 
@@ -595,10 +595,11 @@ class Store:
             lambda r: r["task_id"] == task_id and r["role"] == role)
         return rs[-1]["name"] if rs else None
 
-    def runs_started_since(self, ts, roles=None):
+    def runs_started_since(self, ts, roles=None, skip_names=()):
         return len(self._sorted_runs(
             lambda r: r["started"] is not None and r["started"] >= ts
-            and (roles is None or r["role"] in roles)))
+            and (roles is None or r["role"] in roles)
+            and r["name"] not in skip_names))
 
     # -- number reservation ------------------------------------------
     def reserve(self, kind, task_id, seed):

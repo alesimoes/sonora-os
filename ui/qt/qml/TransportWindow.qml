@@ -370,6 +370,33 @@ Rectangle {
                 }
             }
         }
+        // ADR-0043's record-mode switches, each lit from the session's own
+        // field, not from the press: a refused command leaves it unlit.
+        Row {
+            spacing: Theme.space1
+            TransportKey {
+                objectName: "transportInputOnly"
+                shell: win.shell
+                text: "Input Only"; command: "transport.toggle_input_only"
+                implicitWidth: 80; implicitHeight: 22; fontPx: Theme.textSmall
+                active: win.transport.inputOnly
+            }
+            TransportKey {
+                objectName: "transportPrePostRoll"
+                shell: win.shell
+                text: "Pre/Post-Roll"; command: "transport.toggle_pre_post_roll"
+                implicitWidth: 96; implicitHeight: 22; fontPx: Theme.textSmall
+                active: win.transport.rollsOn
+            }
+            TransportKey {
+                objectName: "transportQuickPunch"
+                shell: win.shell
+                text: "QuickPunch"; command: "transport.toggle_quick_punch"
+                implicitWidth: 84; implicitHeight: 22; fontPx: Theme.textSmall
+                active: win.transport.quickPunch
+                activeColour: Theme.record
+            }
+        }
         Text {
             width: parent.width
             wrapMode: Text.Wrap

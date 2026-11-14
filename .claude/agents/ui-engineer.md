@@ -74,6 +74,8 @@ ADR, which belongs to `architect`.
 - The report is at most 5 lines.
 - A new screenshot scene is a new file under `ui/qt/src/scenes/` and nothing
   else: never an edit to `main.cpp` or `tools/build-ui-entrypoint.sh`.
+- Do not run the full `tools/build-ui.sh --screenshot` and never commit
+  pictures (owner, 2026-11-13). Shoot your own scene alone to check it.
 
 ## Process hygiene (every agent)
 
@@ -82,8 +84,13 @@ shell costs tokens and attention until a human notices.
 
 - Run commands in the foreground with an explicit `timeout`. Do not use
   `run_in_background`, `nohup`, `&`, or a `sleep` loop that waits for CI or
-  for another process. If something needs longer than the tool's 10-minute
-  limit, split it or report it as unverified.
+  for another process. A build or test longer than the tool's 10-minute
+  limit (a UI micro build with its wait for the lock often is) starts with
+  `tools/build-slot.sh --detach COMMAND...` and is collected with
+  `tools/build-wait.sh` (returns within 9 minutes; exit 75 = still running,
+  call it again). That is the one sanctioned detached run: it queues for the
+  lock and ends by itself. Never report a build "unverified" because it was
+  long; collect it.
 - Never wait for CI. Push once, report the commit, and finish.
 - Never arm `tools/merge-when-green.sh`; only the coordinator does.
 - If the same command fails twice for the same reason, stop and report the
@@ -95,3 +102,4 @@ shell costs tokens and attention until a human notices.
 
 - Build budget: finish the whole slice before building; at most three build cycles per task, narrowest target, no rebuild per edit (CLAUDE.md "Build budget"). Only the narrowest target, through `tools/build-slot.sh` (one heavy job at a time on the machine); the whole tree is built and tested by the orchestrator's local CI gate, never by you.
 - Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.
+- Portability: a neutral module takes no platform header, macro or OS path: ADR-0008 section 1; platform code goes to an edge module through a seam.

@@ -15,6 +15,7 @@
 #include <variant>
 
 #include "sonora/api/consolidate_argument.h"
+#include "sonora/api/elastic.h"
 #include "sonora/api/wire.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/op_codec.h"
@@ -265,6 +266,7 @@ std::vector<PluginInfo> fake_catalog() {
     c[2].categories = {"Fx", "Dynamics"};
     c[2].inputs = c[2].outputs = 1;
     c[2].has_editor = true;
+    c[2].key_inputs = 1;   // ADR-0058: the compressor takes a side-chain key
     // A Windows build through yabridge (ADR-0017 Y2), so an interface's
     // "Windows (Wine)" tag has something to show against the fake.
     c[2].bridge = PluginBridge::Yabridge;
@@ -419,7 +421,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready", "meters.reset",
         "transport.toggle_input_only", "transport.toggle_pre_post_roll",
         "transport.toggle_quick_punch",
-        "mix.bounce", "mix.bounce_cancel", "track.freeze", "track.commit", "track.process_selection",
+        "mix.bounce", "mix.bounce_cancel", "mix.stems", "track.freeze", "track.commit", "track.process_selection",
         "track.unfreeze", "track.render_cancel",
         "session.consolidate", "session.consolidate_cancel",
         "sample.edit",
@@ -465,6 +467,11 @@ FakeEngine::FakeEngine(Config config) : cfg_(std::move(config)), block_(cfg_.tra
         planned_.push_back(id);
         hello_.implemented_commands.push_back(id);
     }
+    // As engine/control: the command is installed only beside the
+    // capability, so a peer reads one from the other.
+    elastic_ = std::find(cfg_.capabilities.begin(), cfg_.capabilities.end(),
+                         std::string(kCapabilityElastic)) != cfg_.capabilities.end();
+    if (elastic_) hello_.implemented_commands.push_back("audio.elastic");
     folder_ = cfg_.folder;
     folder_untitled_ = cfg_.folder_untitled;
     armed_.assign(cfg_.tracks, false);
@@ -1547,6 +1554,12 @@ void FakeEngine::handle(const std::string& bytes) {
             reply(r.seq, DispatchResult::Ok, "");
             return;
         }
+        if (elastic_ && r.command == "audio.elastic") {
+            std::string why;
+            const bool ok = elastic(r, why);
+            reply(r.seq, ok ? DispatchResult::Ok : DispatchResult::Failed, ok ? "" : why);
+            return;
+        }
         const auto& ids = engine_commands();
         if (std::find(ids.begin(), ids.end(), r.command) == ids.end()) {
             reply(r.seq, DispatchResult::NotImplemented, "");
@@ -1745,6 +1758,28 @@ void FakeEngine::handle(const std::string& bytes) {
 
 // The same handlers, refusals and words as engine/control's
 // install_session_commands(); the conformance suite holds both to them.
+// The refusals the contract defines (api/elastic.h), against the region in
+// the fake's document; then recorded, with nothing rendered.
+bool FakeEngine::elastic(const CommandRequest& r, std::string& why) {
+    ElasticRequest req;
+    if (!parse_elastic_request(r.argument, req, why)) return false;
+    const model::Region* region = nullptr;
+    for (const auto& t : document_->current().edit->tracks) {
+        for (const auto& p : t->playlists) {
+            for (const model::Region& g : p->regions) {
+                if (g.id == req.region) region = &g;
+            }
+        }
+    }
+    if (region == nullptr) {
+        why = "region " + std::to_string(req.region) + " is not an audio region of this session";
+        return false;
+    }
+    if (!validate_elastic_request(req, region->length, why)) return false;
+    elastic_log_.push_back(std::move(req));
+    return true;
+}
+
 bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     const bool recording = mode_ == TransportState::Recording;
     // The transport moves from where the playhead stands now.
@@ -1829,6 +1864,27 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         }
         bounce_running_ = true;
         bounce_age_ = 0;
+        stems_folder_.clear();
+        announce_bounce(static_cast<uint32_t>(BounceState::Running), 500, "");
+        return true;
+    }
+    // engine/control's stems_commands.cpp, its words; one export at a time,
+    // so it shares the bounce's running flag and its cancel.
+    if (id == "mix.stems") {
+        StemsOptions o;
+        if (!parse_stems_argument(r.argument, o, why)) return false;
+        if (bounce_running_) {
+            why = "a bounce or a stem export is already running; cancel it or wait for it";
+            return false;
+        }
+        if (recording) {
+            why = "stop recording before exporting stems";
+            return false;
+        }
+        bounce_running_ = true;
+        bounce_age_ = 0;
+        stems_folder_ = stems_folder(o.base.name.empty() ? std::string("Untitled") : o.base.name);
+        stems_files_ = o.tracks.empty() ? 1 : o.tracks.size();
         announce_bounce(static_cast<uint32_t>(BounceState::Running), 500, "");
         return true;
     }
@@ -1875,10 +1931,16 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
     }
     // Render in place (ADR-0051): like the bounce above, Running then Done.
     // The real engine renders the track's chain; the fake has no document to
-    // put the file in.
+    // put the file in, so insert=<id> (ADR-0087) is read and not checked. It
+    // is read as the engine does: only by one announcing track.render.insert.
     if (id == "track.freeze" || id == "track.commit" || id == "track.process_selection") {
         RenderOptions o;
-        if (!parse_render_argument(r.argument, o, why)) return false;
+        const bool one_insert =
+            std::find(cfg_.capabilities.begin(), cfg_.capabilities.end(),
+                      std::string(kCapabilityRenderInsert)) != cfg_.capabilities.end();
+        const bool read = one_insert ? parse_render_argument(id, r.argument, o, why)
+                                     : parse_render_argument(r.argument, o, why);
+        if (!read) return false;
         if (id == "track.process_selection" && o.end == 0) {
             why = "select a range to process";
             return false;
@@ -2137,7 +2199,9 @@ void FakeEngine::announce_bounce(uint32_t state, uint32_t permille, const std::s
     e.frame = permille;
     e.flags = state;
     e.text = text;
-    if (state == static_cast<uint32_t>(BounceState::Done)) e.insert = 48000;
+    if (state == static_cast<uint32_t>(BounceState::Done)) {
+        e.insert = stems_folder_.empty() ? 48000 : stems_files_;
+    }
     bounce_event_.clear();
     wire::encode(e, bounce_event_);
     post_event(e);
@@ -2147,7 +2211,8 @@ void FakeEngine::check_bounce() {
     if (!bounce_running_) return;
     if (bounce_age_++ < 1) return;
     bounce_running_ = false;
-    announce_bounce(static_cast<uint32_t>(BounceState::Done), 1000, "Bounced Files/Bounce_01.wav");
+    announce_bounce(static_cast<uint32_t>(BounceState::Done), 1000,
+                    stems_folder_.empty() ? "Bounced Files/Bounce_01.wav" : stems_folder_);
 }
 
 // The server holds the last Consolidate event for a client that attaches

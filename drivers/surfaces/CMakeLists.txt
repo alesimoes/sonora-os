@@ -6,6 +6,8 @@ add_library(sonora_surface_mcu STATIC
   src/hui.cpp
   src/engine_bridge.cpp
   src/raw_midi_port.cpp
+  src/mtc.cpp
+  src/mtc_sync.cpp
 )
 target_include_directories(sonora_surface_mcu PUBLIC include)
 target_link_libraries(sonora_surface_mcu PUBLIC sonora_surfaces sonora_api)
@@ -29,3 +31,16 @@ add_test(NAME surface_engine_bridge COMMAND test_surface_bridge)
 add_executable(test_raw_midi_port tests/test_raw_midi_port.cpp)
 target_link_libraries(test_raw_midi_port PRIVATE sonora_surface_testing)
 add_test(NAME surface_raw_midi_port COMMAND test_raw_midi_port)
+
+# MTC codec and chase (ADR-0122). Header-only; the root does not label
+# drivers/surfaces yet, so the label is set here.
+add_executable(test_mtc_contract tests/test_mtc_contract.cpp)
+target_link_libraries(test_mtc_contract PRIVATE sonora_surface_testing)
+add_test(NAME surface_mtc_contract COMMAND test_mtc_contract)
+set_tests_properties(surface_mtc_contract PROPERTIES LABELS drivers)
+
+# Chase and generation over the port (ADR-0122), against a real state block.
+add_executable(test_mtc_sync tests/test_mtc_sync.cpp)
+target_link_libraries(test_mtc_sync PRIVATE sonora_surface_testing)
+add_test(NAME surface_mtc_sync COMMAND test_mtc_sync)
+set_tests_properties(surface_mtc_sync PROPERTIES LABELS drivers)

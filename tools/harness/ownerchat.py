@@ -10,6 +10,8 @@ state.json and the broker):
 - wake: an agent with no live run is relaunched at once (its backoff is
         skipped, attempts are not reset); one that is running is left alone.
 The dashboard shows the conversation from log/messages.jsonl.
+The console's own kinds (console, confirm, cancel, retry) come through the
+same door and go to harness/console.py.
 """
 import json
 import os
@@ -78,7 +80,11 @@ def _read_all(hdir, remove):
 
 # -- daemon side ---------------------------------------------------------
 def tick(orch):
+    from . import console   # imports this module for ask(); loaded late
     for req in _read_all(orch.hdir, remove=True):
+        if req.get("kind") in ("console", "confirm", "cancel", "retry"):
+            _guarded(orch, console.handle_request, req)
+            continue
         name = req.get("to")
         run = orch.store.last_run_of_name(name) if P.valid_name(name) else None
         if run is None:
@@ -88,6 +94,14 @@ def tick(orch):
             ask(orch, run, req.get("text") or "")
         elif req.get("kind") == "wake":
             wake(orch, run)
+
+
+def _guarded(orch, fn, req):
+    try:
+        fn(orch, req)
+    except Exception as e:   # one bad console request must not stop the tick
+        orch.store.event(None, "owner_request_failed",
+                         f"{req.get('kind')}: {str(e)[:160]}")
 
 
 def ask(orch, run, text):

@@ -1,0 +1,9 @@
+# time.pitch (ADR-0143): edges of the new pitch modules, merged into
+# tools/module-deps.allow by tools/check-deps.sh. engine/pitch's edges and
+# engine/control's edge into it live in pitch_engine.allow (ADR-0143 section 6).
+# Folded into tools/module-deps.allow once that file is free.
+common/pitch -> common/model
+common/pitch -> contracts/api
+ui/pitch -> common/pitch
+ui/pitch -> contracts/api
+ui/qt -> ui/pitch

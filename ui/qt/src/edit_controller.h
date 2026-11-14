@@ -29,11 +29,14 @@
 #include <vector>
 
 #include "automation_edit.h"
+#include "sonora/model/arrangement.h"
 #include "edit_clipboard.h"
 #include "peak_source.h"
+#include "sample_view.h"
 #include "strip_silence.h"
 #include "time_format.h"
 #include "timeline_document.h"
+#include "track_row_geometry.h"
 
 namespace sonora::ui {
 
@@ -64,6 +67,15 @@ struct ViewState {
     double autolane_height = kAutolaneBaseHeight;
     std::vector<double> tops;
     std::vector<std::uint8_t> open;
+    // Each track's own row, apart from its lanes (ADR-0106): empty while
+    // every row is `track_height`, 0 for a hidden track.
+    std::vector<double> heights;
+    double row_h(int index) const {
+        return index >= 0 && static_cast<std::size_t>(index) < heights.size()
+                   ? heights[static_cast<std::size_t>(index)]
+                   : track_height;
+    }
+    bool row_hidden(int index) const { return row_h(index) <= 0.0; }
     // Take lanes (ADR-0031 §1, ADR-0049): a track's other playlists shown
     // under its row, below its automation lanes, each `comp_lane_height`
     // tall. `lanes[i]` is how many track i shows; empty when none does.
@@ -75,7 +87,7 @@ struct ViewState {
     }
     // The top of take lane `lane` (0 first) under track `index`.
     double y_of_complane(int index, int lane) const {
-        return y_of_track(index) + track_height +
+        return y_of_track(index) + row_h(index) +
                (autolanes_open(index) ? kLaneCount * autolane_height : 0.0) +
                lane * comp_lane_height;
     }
@@ -98,7 +110,7 @@ struct ViewState {
     }
     // The top of automation lane `lane` (0 .. kLaneCount - 1) under track `index`.
     double y_of_autolane(int index, int lane) const {
-        return y_of_track(index) + track_height + lane * autolane_height;
+        return y_of_track(index) + row_h(index) + lane * autolane_height;
     }
     // The automation lane under pixel `y` of track `index`'s block: -1 over
     // the track's own row.
@@ -157,7 +169,9 @@ struct Hit {
 struct Drag {
     // Point: a breakpoint added or moved; Stroke: the Pencil's line.
     // Swipe: a range dragged across a take lane (`lane` its playlist).
-    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut, Point, Stroke, Swipe };
+    // Pencil: the Pencil on a clip's waveform at sample zoom (ADR-0096).
+    enum class Kind { None, Move, TrimStart, TrimEnd, Range, FadeIn, FadeOut, Point, Stroke, Swipe,
+                      Pencil };
     Kind kind = Kind::None;
     model::Id lane = 0;
     // An automation gesture: its lane (-1 for the others); the point it
@@ -182,11 +196,35 @@ struct Drag {
     // A trim's playlist as the drop would leave it, neighbours overwritten;
     // null when there is nothing to show beyond start and end.
     std::shared_ptr<const model::Playlist> preview;
+    // A Pencil stroke on `region`: the pointer positions so far, the preview,
+    // and the region channel it draws (from 0; the lane it was pressed on).
+    std::vector<PencilPosition> pencil;
+    uint16_t channel = 0;
 };
+
+// One channel's lane of a clip in a track row at [row_top, row_top +
+// row_height): the waveform area under the name band, split evenly between
+// `count` channels, as the sample view draws them. The inset is the
+// timeline's lane inset (timeline_scene.cpp) and the band theme's
+// kRegionNameBand, so a level read from a y is the level drawn there.
+struct SampleLane {
+    double top = 0.0, height = 0.0;
+    double mid() const { return top + height / 2; }
+};
+SampleLane sample_lane(double row_top, double row_height, int count, int lane);
+
+class MarkerViewStore;
+class SelectionLink;
 
 class EditController {
 public:
     explicit EditController(TimelineDocument& doc);
+
+    // Link Timeline and Edit Selection (ADR-0167): not owned, may be null.
+    void set_link(SelectionLink* link) { link_ = link; }
+    // The timeline range was set: when linked the edit selection takes it, on
+    // the tracks it already covers.
+    void apply_timeline_range(model::Frames a, model::Frames b);
 
     TimelineDocument& document() { return doc_; }
     // After TimelineDocument::reset (a session was opened): the selection,
@@ -202,6 +240,8 @@ public:
     }
     void set_viewport(double width, double height);
     void set_track_height(double h);
+    // Per-track heights and hidden rows (ADR-0106); not owned, null for plain rows.
+    void set_row_policy(const RowPolicy* p) { rows_ = p; }
     void zoom_in();
     void zoom_out();
     // `x` is the pixel kept still; the insertion point when it is in view,
@@ -350,6 +390,11 @@ public:
     // Tools leaves them: the paste goes ahead, and `why` then names what was
     // not pasted, for the status line (empty when everything was).
     bool paste(std::string& why);
+    // Where the open session lives, and how a paste brings another session's
+    // audio in (ADR-0142). Unset, a paste of audio from another session is
+    // refused, saying so.
+    void set_session_folder_source(std::function<std::string()> folder);
+    void set_bring_in(BringInFn bring_in);
     // A copy of the selection placed straight after it on the same tracks,
     // which then becomes the selection. The clipboard is left alone.
     bool duplicate(std::string& why);
@@ -462,10 +507,36 @@ public:
     // link_marker_locate(). None, recall moves the selection only.
     using Locator = std::function<void(model::Frames frame)>;
     void set_locator(Locator l) { locate_ = std::move(l); }
+    // The Edit window's view stored with a marker (ADR-0137): interface
+    // state kept by `store`, not owned. Recall applies what the marker's
+    // Zoom and Track layout toggles tick, after the locate. `hide` receives
+    // the track ids to hide (ids that no longer exist already dropped); it
+    // is what applies the track layout, since the rows belong to the track
+    // list. With neither wired, a recall moves the position only.
+    using TrackHider = std::function<void(const std::vector<std::uint64_t>& hidden)>;
+    void set_marker_views(MarkerViewStore* store, TrackHider hide) {
+        marker_views_ = store;
+        hide_tracks_ = std::move(hide);
+    }
+    bool marker_has_view(model::Id marker) const;
+    // Captures zoom, left edge, track height and hidden tracks now.
+    bool store_marker_view(model::Id marker, std::string& why);
+    bool clear_marker_view(model::Id marker, std::string& why);
+    // `zoom` true sets the Zoom toggle, false the Track layout one.
+    bool set_marker_view_part(model::Id marker, bool zoom, bool on, std::string& why);
     // The marker drawn under `x` on the marker ruler, in its pixels: a
     // marker's flag, else a selection marker's bar; kNoId over neither.
     model::Id marker_at(double x) const;
     const model::MarkerList& markers() const { return *snapshot().edit->markers; }
+
+    // --- arrangement sections (edit_arrangement.cpp, ADR-0116) ---
+    // The session's range markers: the sections Move to / Copy to act on.
+    std::vector<model::Marker> arrangement_sections() const;
+    // Moves or copies `section` to the timeline frame `destination` as one
+    // Compound, one undo step. `message` is set either way: on success what
+    // the edit left where it was, else the refusal (nothing was changed).
+    bool arrangement_apply(model::Id section, model::Frames destination, model::SectionMode mode,
+                           std::string& message);
 
     // --- tracks: Pro Tools' Track menu (ADR-0023), each one undo step ---
     // `count` mono audio tracks named "Audio <n>" with the lowest free
@@ -520,6 +591,9 @@ public:
     bool remove_tempo(model::Frames at, std::string& why);
     // On the bar line nearest `near`.
     bool set_meter(model::Frames near, std::uint32_t beats, std::uint32_t note, std::string& why);
+    // One SetSettings with the map replaced, on the Undo Tempo stack
+    // (also the entry for tempo.edit detect, ui/beat).
+    bool submit_tempo(std::vector<model::TempoEntry> next, std::string& why);
     bool tempo_undo(std::string& why);
     bool tempo_redo(std::string& why);
     // What the Tempo dialog and the tempo.edit command take, at the start of
@@ -551,6 +625,30 @@ public:
     // which must lie inside one clip; otherwise why not.
     bool sample_edit_argument(const std::string& verb, const std::string& param,
                               std::string& argument, std::string& why) const;
+    // --- the sample view and the Pencil on the waveform (ADR-0096) ---
+    // At kSampleViewMaxFpp or closer the sample view replaces the overview.
+    bool sample_zoom() const { return view_.fpp <= kSampleViewMaxFpp; }
+    // True where the sample view shows: at sample zoom, over a clip on a
+    // track's own row.
+    bool sample_view_at(double x, double y) const;
+    // What the Pencil checks before it draws (ready(), so it never draws over
+    // a window still loading); none, and it does not check.
+    void set_sample_source(const SampleSource* s) { samples_ = s; }
+    // What the timeline draws the sample view from (sample_scene.h).
+    const SampleSource* sample_source() const { return samples_; }
+    // Where a finished stroke goes: the argument of one `sample.edit`. None,
+    // and a stroke is refused: there is no engine to draw.
+    using SampleEditSender = std::function<void(const std::string& argument)>;
+    void set_sample_edit_sender(SampleEditSender s) { sample_sender_ = std::move(s); }
+    // Whether a take is recording. The engine refuses sample.edit then
+    // (sample_edit.h); the Pencil refuses before sending, so nothing is drawn
+    // on screen that the engine will not write.
+    void set_recording(bool on) { recording_ = on; }
+    bool recording() const { return recording_; }
+    // The `sample.edit draw REGION FROM TO CHANNEL POINTS` argument a Pencil
+    // drag `d` would send (pencil_points), cut at its clip's edges; otherwise
+    // why not.
+    bool pencil_argument(const Drag& d, std::string& argument, std::string& why) const;
     // The palette index a region is drawn in: its own, else its track's.
     static int region_colour(const model::TrackEdit& t, const model::Region& r) {
         return r.colour == model::kTrackColour ? t.colour : r.colour;
@@ -699,7 +797,6 @@ private:
     bool submit(const model::Operation& op, std::string& why);
     // The ids of `count` tracks from `first` down.
     bool selected_ids(int first, int count, std::vector<model::Id>& out, std::string& why) const;
-    bool refuse_in_mode(const char* what, std::string& why) const;
     model::Frames snapped(model::Frames f) const;
     void clamp_scroll();
     // Pages the view so `frame` is a tenth in from the left edge, when it
@@ -737,10 +834,14 @@ private:
                     std::string& why) const;
     // `span` becomes the selection: a range on its tracks, no region.
     void select_span(int first, int count, model::Frames a, model::Frames b);
-    // Refuses, by name, a gesture whose Shuffle form is not built (Strip
-    // Silence); the ones that are build their ripple (shuffle_shift).
     bool shift_time(bool insert, std::string& why);
-    bool refuse_shuffle(const char* gesture, const char* nothing_was, std::string& why) const;
+    // Shuffle's trim, move and spot: one compound with the ripple
+    // (edit_shuffle_ops.h). A grouped clip is refused: its group would not ripple.
+    bool submit_shuffle_trim(const model::TrimRegion& op, std::string& why);
+    bool submit_shuffle_move(const model::MoveRegion& op, std::string& why);
+    // Trim / move through the mode: Shuffle ripples, the others send the one op.
+    bool submit_trim(const model::TrimRegion& op, std::string& why);
+    bool submit_place(const model::MoveRegion& op, std::string& why);
     // Shuffle moves regions, not the automation under them: names the tracks
     // whose lanes now sit out of step, as a held notice.
     void note_shuffle_automation(const char* gesture, int first, int count);
@@ -762,6 +863,7 @@ private:
 
     TimelineDocument& doc_;
     void refresh_rows() const;
+    const RowPolicy* rows_ = nullptr;
     bool autolane_selected() const { return sel_.autolane >= 0; }
     // Cut, Copy, Paste and Clear on the selected lane's range: that lane on
     // every track the range covers that shows its lanes; the others are
@@ -783,6 +885,10 @@ private:
     bool press_autolane(const Hit& h, double x, double y, std::string& why);
     bool release_autolane(const Drag& d, std::string& why);
     void move_autolane(double x, double y);
+    // The Pencil on a clip's waveform (edit_gestures.cpp).
+    bool press_pencil(const Hit& h, double x, double y, std::string& why);
+    float pencil_level(const Drag& d, double y) const;
+    bool release_pencil(const Drag& d, std::string& why);
     // The lane value under pixel `y` of lane `lane` of track `index`.
     float autolane_value_at(int index, int lane, double y) const;
 
@@ -795,16 +901,21 @@ private:
     Tool tool_ = Tool::Smart;
     GridValue grid_ = GridValue::Beat;
     Selection sel_;
+    SelectionLink* link_ = nullptr;
     struct TempoStep {
         std::vector<model::TempoEntry> before, after;
     };
-    bool submit_tempo(std::vector<model::TempoEntry> next, std::string& why);
     bool tempo_step(bool undo, std::string& why);
     std::vector<TempoStep> tempo_undo_, tempo_redo_;
     Drag drag_;
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
     Clipboard clipboard_;
+    std::function<std::string()> session_folder_;
+    BringInFn bring_in_;
+    void stamp_origin(Clipboard& clip) const;
+    bool bring_clipboard_in(Clipboard& use, std::vector<model::Member>& ops,
+                            std::string& why);
     std::vector<AutomationClip> auto_clips_;
     std::set<model::Id> autolanes_open_;
     std::set<model::Id> comp_lanes_open_;
@@ -813,9 +924,16 @@ private:
     int event_lane_ = 0;
     int repeat_count_ = 1;
     int loop_count_ = 3;
+    void apply_marker_view(model::Id marker);
+    void prune_marker_views();
     Locator locate_;
+    MarkerViewStore* marker_views_ = nullptr;
+    TrackHider hide_tracks_;
     uint64_t clipboard_serial_ = 0;
     model::Id spot_request_ = kNoId;
+    const SampleSource* samples_ = nullptr;
+    SampleEditSender sample_sender_;
+    bool recording_ = false;
 };
 
 // The audio playlist `id` of `t`, or null.

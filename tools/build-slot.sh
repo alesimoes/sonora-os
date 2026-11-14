@@ -28,6 +28,31 @@
 # SONORA_HEAVY_WAIT seconds (default 4 h) the command runs anyway, with a
 # warning: a stuck queue must not stop work for good.
 #
+# A `docker run` command gets a container name (sonora-heavy-PID-TIME unless
+# it has its own --name), recorded in the owner file. Its slot stays held
+# while that container runs, even when the client is dead: an agent's tool
+# call cut at its time limit kills the client, never the container, which
+# kept building outside the lock while the next build took the slot
+# (2026-11-09: ten builds at once, Docker hung, every agent build timed out).
+# A holder stopped by a signal kills its container on the way out.
+#
+# A holder records its Windows pid too (winpid, Git bash only): the bash pid
+# ($$) is an MSYS number the Windows-side supervisor cannot probe, and taking
+# it for a Windows pid made it reap live holders, so a second build started
+# beside the first (2026-11-13: 430 holders reaped as "pid dead", builds
+# still running among them). A holder only ever removes its own slot
+# directory, so one reaped by mistake does not free the next holder's slot.
+# A docker run nested in a held command (micro-build.sh under
+# `build-slot.sh tools/micro-build.sh`) is named too and added to the
+# holder's owner file (SONORA_HEAVY_SLOT_DIR): the slot stays held while it
+# runs, and a stopped holder kills it.
+#
+#   tools/build-slot.sh --detach COMMAND [ARG...]
+# queues and runs the command detached from the caller (tools/build-job.sh),
+# for a build longer than the caller's command time limit; the caller then
+# collects the result with tools/build-wait.sh, which returns within that
+# limit and may be called again.
+#
 # SONORA_HEAVY_WAIT_FILE=PATH: the seconds spent waiting for the lock are
 # written there once it is ours (tools/micro-build.sh logs lock waits apart from
 # step times). The variable is not passed on to the command, so a nested call
@@ -91,23 +116,48 @@ if [[ "${1:-}" == --list ]]; then
   exit 0
 fi
 
-usage() { echo "usage: build-slot.sh COMMAND [ARG...] | --jobs | --list" >&2; exit 2; }
+usage() { echo "usage: build-slot.sh [--detach] COMMAND [ARG...] | --jobs | --list" >&2; exit 2; }
+if [[ "${1:-}" == --detach ]]; then
+  shift
+  [[ $# -gt 0 ]] || usage
+  exec "$(dirname "${BASH_SOURCE[0]}")/build-job.sh" start "$@"
+fi
 [[ $# -gt 0 ]] || usage
 # A flag this script does not know is a typo, never a command: `--status`
 # once sat in the queue as a job (2026-11-07).
 [[ "$1" != -* ]] || { echo "build-slot.sh: unknown flag $1" >&2; usage; }
 WAIT_FILE="${SONORA_HEAVY_WAIT_FILE:-}"
 unset SONORA_HEAVY_WAIT_FILE
-[[ -z "${SONORA_HEAVY_HELD:-}" ]] || exec "$@"
 
-mkdir -p "$DIR/wait"
-ticket="$DIR/wait/$PRIO-$(printf '%020d' "$(date +%s%N)")-$$"
-held=""
+# The Windows pid of this Git bash, which the supervisor (Windows Python)
+# can probe; nothing elsewhere.
+winpid() {
+  if [[ "$KIND" == win && -r "/proc/$$/winpid" ]]; then cat "/proc/$$/winpid" 2>/dev/null || true; fi
+}
+
+# The last container an owner file names (a nested run appends its own).
+owner_container() {
+  sed -n 's/^container=//p' "$1" 2>/dev/null | tail -n 1
+}
+
+# The slot directory still records this process: a holder reaped by mistake
+# must not remove the slot the next holder took since.
+# shellcheck disable=SC2329  # runs from the EXIT trap
+ours() {
+  [[ -f "$1/owner" ]] && grep -qx "pid=$$" "$1/owner" && grep -qx "kind=$KIND" "$1/owner"
+}
+
+ticket="" held="" container="" running=0
 # shellcheck disable=SC2329  # runs from the EXIT trap
 release() {
-  rm -f "$ticket"
+  [[ -z "$ticket" ]] || rm -f "$ticket"
+  if ((running)); then
+    local c="$container"
+    [[ -z "$held" ]] || c="$(owner_container "$held/owner")"
+    [[ -z "$c" ]] || timeout 60 docker kill "$c" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$held" ]]; then
-    rm -rf "$held"
+    if ours "$held"; then rm -rf "$held"; fi
     held=""
   fi
 }
@@ -119,6 +169,21 @@ trap 'exit 143' TERM
 describe() {
   printf 'pid=%s\nkind=%s\nuser=%s\nprio=%s\nstart=%s\ncwd=%s\ncmd=%s\n' \
     "$$" "$KIND" "${USERNAME:-${USER:-?}}" "$PRIO" "$(date +%s)" "$PWD" "$(printf '%s ' "$@" | cut -c1-200)"
+  local w
+  w="$(winpid)"
+  [[ -z "$w" ]] || printf 'winpid=%s\n' "$w"
+  [[ -z "$container" ]] || printf 'container=%s\n' "$container"
+}
+
+# The holder's container still runs. A docker that does not answer in time
+# counts as running: a hung daemon is a loaded machine, not a free one.
+container_running() {
+  local c state rc=0
+  c="$(owner_container "$1")"
+  [[ -n "$c" ]] || return 1
+  state="$(timeout 30 docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" || rc=$?
+  ((rc != 124)) || return 0
+  [[ "$state" == true ]]
 }
 
 alive() {  # a pid of another kind of shell cannot be probed: assume alive
@@ -126,7 +191,9 @@ alive() {  # a pid of another kind of shell cannot be probed: assume alive
   k="$(sed -n 's/^kind=//p' "$1" 2>/dev/null)"
   pid="$(sed -n 's/^pid=//p' "$1" 2>/dev/null)"
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
-  [[ "$k" != "$KIND" ]] || kill -0 "$pid" 2>/dev/null
+  if [[ "$k" == "$KIND" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    container_running "$1"
+  fi
 }
 
 # A directory with no owner file yet is a claim between mkdir and the write;
@@ -173,6 +240,41 @@ take() {
   return 1
 }
 
+cmd=("$@")
+if [[ "${1##*/}" == docker || "${1##*/}" == docker.exe ]] && [[ "${2:-}" == run ]]; then
+  prev=""
+  for a in "${@:3}"; do
+    case "$a" in --name=*) container="${a#--name=}" ;; esac
+    [[ "$prev" != --name ]] || container="$a"
+    prev="$a"
+  done
+  if [[ -z "$container" ]]; then
+    container="sonora-heavy-$$-$(date +%s)"
+    cmd=("$1" run --name "$container" "${@:3}")
+  fi
+fi
+# A detached job (tools/build-job.sh) lists its containers, to stop them
+# when it is cancelled: a signalled holder waits for its docker client.
+if [[ -n "$container" && -n "${SONORA_HEAVY_CONTAINER_LOG:-}" ]]; then
+  echo "$container" >>"$SONORA_HEAVY_CONTAINER_LOG"
+fi
+
+# Inside the lock already: run at once. A nested docker run is added to the
+# holder's owner file, so the slot stays held while it runs, and it is
+# killed if this call is stopped.
+if [[ -n "${SONORA_HEAVY_HELD:-}" ]]; then
+  [[ -n "$container" ]] || exec "$@"
+  slot="${SONORA_HEAVY_SLOT_DIR:-}"
+  if [[ -n "$slot" && -f "$slot/owner" ]]; then printf 'container=%s\n' "$container" >>"$slot/owner"; fi
+  rc=0
+  running=1
+  "${cmd[@]}" || rc=$?
+  running=0
+  exit "$rc"
+fi
+
+mkdir -p "$DIR/wait"
+ticket="$DIR/wait/$PRIO-$(printf '%020d' "$(date +%s%N)")-$$"
 describe "$@" >"$ticket"
 start=$SECONDS
 announced=0
@@ -187,13 +289,18 @@ until may_go && take "$@"; do
     break
   fi
   sleep "$POLL"
-  touch "$ticket"
+  # A ticket another reaper removed is written again whole: an empty one
+  # names no pid and is dropped as dead at the next look.
+  if [[ -s "$ticket" ]]; then touch "$ticket"; else describe "$@" >"$ticket"; fi
   reap
 done
 rm -f "$ticket"
 [[ -z "$WAIT_FILE" ]] || echo "$((SECONDS - start))" >"$WAIT_FILE"
 
 export SONORA_HEAVY_HELD=1
+[[ -z "$held" ]] || export SONORA_HEAVY_SLOT_DIR="$held"
 rc=0
-"$@" || rc=$?
+running=1
+"${cmd[@]}" || rc=$?
+running=0
 exit "$rc"

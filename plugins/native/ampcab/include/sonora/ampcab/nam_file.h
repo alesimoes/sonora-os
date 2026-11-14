@@ -8,23 +8,25 @@
 // is exactly what common/dsp/neural runs: a "WaveNet" whose configuration
 // uses only the keys of format 0.5 (the trainer's standard, lite, feather
 // and nano presets, gated or not), or the newer keys at their neutral
-// value. Anything else is refused with a sentence naming the key, so an
-// operator's file is either run as its author trained it or not at all.
-// LSTM files are refused until the LSTM kernel lands (BACKLOG, N3).
+// value; or an "LSTM" (num_layers, input_size 1, hidden_size, flat weights).
+// Anything else is refused with a sentence naming the key, so an operator's
+// file is either run as its author trained it or not at all.
 #pragma once
 
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "sonora/dsp/neural/lstm.h"
 #include "sonora/dsp/neural/wavenet.h"
 
 namespace sonora::ampcab {
 
 struct NamModel {
     std::string version;       // the file's "version", e.g. "0.5.4"
-    std::string architecture;  // "WaveNet"
-    dsp::neural::WaveNetSpec wavenet;
+    std::string architecture;  // "WaveNet" or "LSTM"
+    dsp::neural::WaveNetSpec wavenet;  // set when architecture is "WaveNet"
+    dsp::neural::LstmSpec lstm;        // set when architecture is "LSTM"
     std::vector<float> weights;
     // The rate the capture was trained at. Early files carry none; the
     // format then means 48 kHz (sample_rate_given is false).

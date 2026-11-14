@@ -18,8 +18,9 @@
 // SessionModel, so the cap and the scale marks use the same mapping the
 // tests check.
 //
-// The meter beside a track's fader reads the track's input, which is what
-// the engine publishes (state_block.h); it says so over it. The monitor
+// The meter beside a track's fader reads after the fader (OUT, left and
+// right) or the input (IN), as the Mix window's Pre/Post says; it says so
+// over it. The monitor
 // bus's two read the monitor bus after its fader, left and right.
 import QtQuick
 import Sonora
@@ -37,7 +38,25 @@ Rectangle {
     property real gainDb: 0
     // What the cap and readout show: the ride's value while this fader is
     // being ridden, the document's otherwise.
-    readonly property real shownGain: mixer !== null && mixer.rideTrack === track ? mixer.rideGain : gainDb
+    // A released written Touch ride glides to the static over the model's
+    // AutoMatch time: the animation clock below only prompts the re-read, the
+    // value comes from the model's (injectable) clock.
+    property bool glideActive: false
+    property int glideTick: 0
+    readonly property real shownGain: mixer !== null && mixer.rideTrack === track ? mixer.rideGain
+        : (glideActive && glideTick >= 0 && mixer !== null && !isBus) ? mixer.glideGain(track)
+        : gainDb
+    Connections {
+        target: strip.mixer
+        function onRideChanged() { strip.glideActive = strip.mixer.gliding(strip.track) }
+    }
+    FrameAnimation {
+        running: strip.glideActive
+        onTriggered: {
+            strip.glideTick = strip.glideTick + 1
+            if (!strip.mixer.gliding(strip.track)) strip.glideActive = false
+        }
+    }
     // In Trim and Write/Trim the fader is the trim fader (ADR-0027 §8 slice
     // 5, as in Pro Tools' Trim modes): the cap and the readout show the
     // trim, in the trim colour, and the volume stays where the document has
@@ -69,6 +88,8 @@ Rectangle {
     readonly property bool soloed: !isBus && session.solos[track] === true
     readonly property bool muted: !isBus && session.mutes[track] === true
     readonly property bool soloSafe: !isBus && session.soloSafes[track] === true
+    // After the fader a track has a left and a right; before it, the one input.
+    readonly property bool stereoMeter: !isBus && mixer !== null && mixer.meterPoint === "post"
     readonly property bool inputMonitor: !isBus && session.inputMonitors[track] === true
     // The folder this strip is in, an index or -1, and the VCAs that hold it
     // (MixModel, ADR-0048).
@@ -603,19 +624,24 @@ Rectangle {
                 source: strip.shell
                 channel: strip.isBus ? -1 : strip.track
                 busSide: strip.isBus ? 0 : -1
-                width: strip.isBus ? 8 : 10
+                side: strip.stereoMeter ? 0 : -1
+                width: strip.isBus || strip.stereoMeter ? 8 : 10
                 height: parent.height
             }
             Loader {
-                active: strip.isBus
+                active: strip.isBus || strip.stereoMeter
                 width: 8
                 height: parent.height
                 sourceComponent: Meter {
-                    objectName: "busMeterR"; channel: -1; busSide: 1; source: strip.shell
+                    objectName: strip.isBus ? "busMeterR" : "mixMeterR" + strip.track
+                    channel: strip.isBus ? -1 : strip.track
+                    busSide: strip.isBus ? 1 : -1
+                    side: strip.isBus ? -1 : 1
+                    source: strip.shell
                 }
             }
         }
-        // What the meter reads, over it: a track's input, or for the bus,
+        // What the meter reads, over it: IN or OUT for a track, or for the bus,
         // that there is nothing to read.
         Text {
             objectName: strip.isBus ? "busMeterCaption" : "meterCaption" + strip.track

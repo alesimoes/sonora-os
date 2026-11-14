@@ -9,7 +9,11 @@ add_library(sonora_core_chain_runner OBJECT src/plugin_chain_runner.cpp)
 target_include_directories(sonora_core_chain_runner PUBLIC include)
 target_link_libraries(sonora_core_chain_runner PUBLIC sonora_base sonora_plugin_client)
 
+# The processing graph's scheduler, levels and workers (ADR-0063): globbed,
+# so its slices add files without touching this list.
+file(GLOB _sonora_core_graph_sources CONFIGURE_DEPENDS src/graph_*.cpp)
 add_library(sonora_core STATIC
+  ${_sonora_core_graph_sources}
   src/session.cpp
   src/click.cpp
   src/latency_probe.cpp
@@ -32,6 +36,24 @@ target_include_directories(sonora_core PUBLIC include)
 # holds them, so the edge is PUBLIC.
 target_link_libraries(sonora_core PUBLIC
   sonora_base sonora_backend_api sonora_audiofile sonora_plugin_client sonora_dsp Threads::Threads)
+
+# ADR-0063's tests, one executable per tests/test_graph_<name>.cpp, run as
+# ctest graph_<name>. Threads: the worker pool's tests start threads.
+file(GLOB _sonora_core_graph_tests CONFIGURE_DEPENDS tests/test_graph_*.cpp)
+foreach(_src IN LISTS _sonora_core_graph_tests)
+  get_filename_component(_exe ${_src} NAME_WE)
+  string(REGEX REPLACE "^test_" "" _name ${_exe})
+  add_executable(${_exe} ${_src})
+  target_link_libraries(${_exe} PRIVATE sonora_core Threads::Threads)
+  add_test(NAME ${_name} COMMAND ${_exe})
+endforeach()
+
+# ADR-0063 through Session::process(): real workers equal serial bit for bit
+# with no heap on the audio thread, drops never touch the take, a drop ramps
+# in its own buffer, a pool that cannot start fails creation.
+add_executable(test_session_parallel tests/test_session_parallel.cpp)
+target_link_libraries(test_session_parallel PRIVATE sonora_core Threads::Threads)
+add_test(NAME session_parallel COMMAND test_session_parallel)
 
 add_executable(test_session_process tests/test_session_process.cpp)
 target_link_libraries(test_session_process PRIVATE sonora_core)
@@ -184,6 +206,12 @@ add_test(NAME plugin_automation COMMAND test_plugin_automation)
 add_executable(test_plugin_chain_runner tests/test_plugin_chain_runner.cpp)
 target_link_libraries(test_plugin_chain_runner PRIVATE sonora_core)
 add_test(NAME plugin_chain_runner COMMAND test_plugin_chain_runner)
+
+# ADR-0058 §2: a keyed node's key reaches the region's last planes through
+# the runner; a keyed node on an unkeyed slot is a shape fault, not unkeyed.
+add_executable(test_keyed_chain_runner tests/test_keyed_chain_runner.cpp)
+target_link_libraries(test_keyed_chain_runner PRIVATE sonora_core)
+add_test(NAME keyed_chain_runner COMMAND test_keyed_chain_runner)
 
 # Session::process() running real hosts through PluginChainRunner (ADR-0012
 # checklist 4, the DAW 5 exit check against real plugins): tracks behind LV2

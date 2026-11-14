@@ -15,13 +15,17 @@
 #include <utility>
 #include <vector>
 
+#include "sonora/api/pitch.h"
 #include "sonora/model/model.h"
 #include "sonora/model/replication.h"
 #include "sonora/session.h"
 
 namespace sonora {
 
-enum class SampleVerb { Repair, Draw, Silence, Reverse, Invert, Gain, Normalize, FadeIn, FadeOut };
+enum class SampleVerb {
+    Repair, Draw, Silence, Reverse, Invert, Gain, Normalize, FadeIn, FadeOut,
+    Pitch  // rendered by engine/pitch (ADR-0143), not by process_samples
+};
 
 struct SampleEditRequest {
     SampleVerb verb = SampleVerb::Repair;
@@ -33,6 +37,8 @@ struct SampleEditRequest {
     // Draw: (timeline frame, level in -1..1), strictly increasing, joined by
     // straight lines; the stretch outside the first and last point holds.
     std::vector<std::pair<model::Frames, float>> points;
+    // Pitch: the notes, frames relative to the region's start.
+    api::PitchEditSpec pitch;
 };
 
 // The longest stretch one edit processes: it is held in memory, one channel
@@ -44,10 +50,12 @@ inline constexpr model::Frames kMaxRepairFrames = 2048;
 inline constexpr double kSampleEditHandleSeconds = 2.0;
 
 // "VERB REGION FROM TO CHANNEL [PARAM]": VERB is repair, draw, silence,
-// reverse, invert, gain, normalize, fade_in or fade_out; FROM and TO are
-// timeline frames; CHANNEL is a number from 1 or "all"; PARAM is the dB of
-// gain and normalize (normalize without one reaches 0 dB), and for draw
-// "FRAME:LEVEL,FRAME:LEVEL,...". On failure `why` says what is wrong.
+// reverse, invert, gain, normalize, fade_in, fade_out or pitch; FROM and TO
+// are timeline frames; CHANNEL is a number from 1 or "all"; PARAM is the dB of
+// gain and normalize (normalize without one reaches 0 dB), for draw
+// "FRAME:LEVEL,FRAME:LEVEL,...", and for pitch the note list of
+// sonora/api/pitch.h, on every channel ("all"). On failure `why` says what is
+// wrong.
 bool parse_sample_edit(const std::string& text, SampleEditRequest& out, std::string& why);
 
 // Processes buf[lead, lead + count) in place. buf holds `lead` frames of
@@ -66,7 +74,8 @@ bool process_samples(const SampleEditRequest& request, std::vector<float>& buf,
 // SetRegionSources) applied to `document`. `updates` gets the one update to
 // send every replica. On any failure the document is unchanged and the new
 // file is removed unless the model refuses after it was written, when it stays
-// in "Audio Files/" but out of the pool, and `error` says so.
+// in "Audio Files/" but out of the pool, and `error` says so. Pitch goes to
+// engine/pitch's pitch_sample_edit (sonora/pitch_render.h), same contract.
 bool sample_edit(model::Document& document, const Session& session,
                  const std::string& session_dir, const SampleEditRequest& request,
                  std::vector<model::ReplicationUpdate>& updates, std::string& error);

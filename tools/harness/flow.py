@@ -11,7 +11,9 @@ import json
 import os
 import re
 
-from . import dispatch, plangate, plans, proposal, queueimport, routing
+from . import (dispatch, plan_numbers, plangate, plans, pool_prompt,
+               proposal, queueimport, remainder, replan, routing,
+               siblings)
 from .forge import ForgeError
 from .scheduler import HOLD
 from .status import write_atomic
@@ -115,14 +117,23 @@ class Flow:
         if queueimport.out_of_scope(" ".join([fid, *map(str, ids)])):
             self.store.event(None, "proposal_rejected", f"{fid}: out of v1")
             return False
+        rest, why = remainder.target(self.store, fid)
+        if rest or why:
+            if why:
+                self.store.event(None, "proposal_rejected", f"{fid}: {why}")
+            return bool(rest) and remainder.open_rest(self, rest, sender)
         try:
             made = self.open_feature(fid, track, [str(i) for i in ids],
                                      brief=str(body.get("brief") or ""),
                                      wants=body.get("wants") or ("adr",))
         except ValueError:
             made = False
+        why = ""
+        if not made:
+            old = self.store.get_feature(fid)
+            why = f" (exists: {old['state']})" if old else " (bad id)"
         self.store.event(None, "proposal_accepted" if made
-                         else "proposal_rejected", f"{sender}: {fid}")
+                         else "proposal_rejected", f"{sender}: {fid}{why}")
         return made
 
     def _waits_unmet(self, fid):
@@ -205,7 +216,11 @@ class Flow:
 
     def wake_context(self, t):
         fid, ev = t["feature_id"], t.get("event") or "wake"
+        if ev == "stall_resolver":
+            return ""   # its brief (harness/stall_resolver.py) is all it needs
         lines = [f"event: {ev} feature={fid or '-'}"]
+        if ev == "pool_under_floor":
+            lines.append(pool_prompt.text(self.store, t.get("id")))
         if not fid:
             return "\n".join(lines)
         f = self.store.get_feature(fid) or {}
@@ -232,6 +247,7 @@ class Flow:
                          "and its one PR, never one PR per item; say in "
                          "the plan which open items you grouped and why. "
                          + self.gate_hint(fid))
+            lines += remainder.plan_lines(self, fid)
         elif ev == "plan_ready":
             lines.append(f"Read the plan at {self.plan_file(fid)}; write the "
                          f"table to {self.assign_file(fid)}. Sub-branch of "
@@ -287,6 +303,11 @@ class Flow:
         if err:
             return False, [err]
         f = self.store.get_feature(fid)
+        try:
+            plan_numbers.reserve(self.store, self.owner(fid), plan,
+                                 self.o.seed_fn)
+        except ForgeError as e:
+            return False, [f"could not reserve a version number: {e}"]
         res = self.reserved_for(fid)
         errs = plans.validate_plan(
             plan, {"feature": fid, "track": f["track"], "adr": res["adr"],
@@ -350,7 +371,7 @@ class Flow:
         return True, []
 
     def _task_id(self, fid, tid):
-        return f"{fid}.{tid}"
+        return f"{fid}.{tid}" + replan.suffix(self.store, fid)
 
     def _brief(self, t, row):
         lines = [f"{t['title']} ({t['kind']})", "", t["brief"], "",
@@ -418,6 +439,7 @@ class Flow:
         self.promote_queued(now)
         self._release_holds()
         self.sync_states()
+        remainder.settle(self.store)
 
     def _release_holds(self):
         for f in self.store.features():
@@ -434,7 +456,7 @@ class Flow:
         for f in self.store.features():
             if f["state"] not in ACTIVE:
                 continue
-            ts = self.store.feature_tasks(f["id"])
+            ts = siblings.live(self.store.feature_tasks(f["id"]))
             if not ts:
                 continue
             states = {t["state"] for t in ts}
@@ -456,8 +478,8 @@ class Flow:
         ev, fid = t.get("event"), t["feature_id"]
         if not fid:
             return True, []
-        if ev == "plan_request":
-            return self.ingest_plan(fid)
+        if ev == "plan_request" or replan.is_replan(t):
+            return replan.ingest(self, t)
         if t["agent"] == "lead" and (ev == "plan_ready" or
                                      self.is_planned(fid)):
             if ev != "plan_ready" and not os.path.exists(self.assign_file(fid)):

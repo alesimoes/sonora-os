@@ -1,0 +1,6 @@
+# The stock effects set (ADR-0076): exactly the packages of
+# plugins/content/stock.json. tools/check-stock.sh keeps the two equal.
+lsp-plugins-lv2
+dragonfly-reverb-lv2
+zam-plugins
+invada-studio-plugins-lv2

@@ -1,10 +1,18 @@
 """Shared test fixtures: path setup, a stub broker, fake worktrees, clock."""
+import faulthandler
 import os
 import shutil
 import sys
 import tempfile
 import time
 import unittest
+
+# On GitHub a hung test is cancelled at the job's timeout and the log is
+# lost (2026-11-08, #515: two 20-minute runs, no trace of which test). The
+# suite takes under a minute there; past this bound every thread's stack is
+# dumped, the hanging test named, and the step fails with a readable log.
+if os.environ.get("GITHUB_ACTIONS"):
+    faulthandler.dump_traceback_later(540, exit=True)
 
 TOOLS = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
@@ -31,6 +39,10 @@ class StubBroker:
         self.channels = {}
         self.claims = {}
         self.events = []
+        self.mail = {}        # name -> messages a test puts in its mailbox
+
+    def mail_for(self, name):
+        return list(self.mail.get(name, []))
 
     def start(self):
         self.started = True
@@ -76,6 +88,7 @@ class FakeForge(Forge):
         self.diffs = {}        # pr -> diff text
         self.pushed, self.enqueued, self.created, self.pre_pr_calls = \
             [], [], [], []
+        self.pre_pr_envs = []
         self.pre_pr_result = (True, "ok")
         self.fail = set()
         self.dispatched = []
@@ -83,11 +96,27 @@ class FakeForge(Forge):
 
     def workflow_runs(self, workflow, branch="main", limit=20):
         self._chk("workflow_runs")
-        return list(self.nightly_runs)[:limit]
+        by = getattr(self, "runs_of_workflow", {})
+        if workflow in by:
+            return list(by[workflow])[:limit]
+        return list(self.nightly_runs)[:limit] if workflow == "nightly.yml" else []
 
     def is_ancestor(self, sha, head):
         self._chk("is_ancestor")
         return (sha, head) in getattr(self, "ancestry", set())
+
+    def branch_tip(self, branch):
+        self._chk("branch_tip")
+        return getattr(self, "tips", {}).get(branch)
+
+    def changed_files(self, base, branch):
+        self._chk("changed_files")
+        return getattr(self, "changed", {}).get(branch)
+
+    def sync_local(self, branch):
+        self._chk("sync_local")
+        self.synced = getattr(self, "synced", []) + [branch]
+        return getattr(self, "sync_result", (True, "fast-forwarded"))
 
     def dispatch_workflow(self, workflow, ref="main"):
         self._chk("dispatch_workflow")
@@ -143,9 +172,10 @@ class FakeForge(Forge):
         self._chk("enqueue")
         self.enqueued.append(pr)
 
-    def pre_pr(self, worktree):
+    def pre_pr(self, worktree, env=None):
         self._chk("pre_pr")
         self.pre_pr_calls.append(worktree)
+        self.pre_pr_envs.append(dict(env or {}))
         return self.pre_pr_result
 
     def checks(self, pr, **states):

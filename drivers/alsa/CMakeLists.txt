@@ -45,3 +45,5 @@ if(ALSA_FOUND)
   add_executable(sonora-alsa-passthrough tests/alsa_passthrough.cpp)
   target_link_libraries(sonora-alsa-passthrough PRIVATE sonora_backend_alsa Threads::Threads)
 endif()
+
+add_subdirectory(../clock clock)

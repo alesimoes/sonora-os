@@ -189,3 +189,40 @@ code, which is the exact failure mode above. Start Docker first.
 To schedule a run, use `/loop` with an interval, or the `schedule` skill for
 cron-based cloud runs. Both are owner actions: this file defines how a run
 behaves, it does not start one.
+
+## Portability
+
+Source: [ADR-0008 section 1, "The rule"](../brain/decisions/ADR-0008-portability.md#1-the-rule),
+copied as the ADR stands today (its section 1 is unchanged since 2026-10-12 in
+substance; the ADR wins on any difference).
+
+**Platform-neutral modules use standard C++17 and the modules they may link
+under ADR-0007 §1. Nothing else.** That means:
+- no POSIX, Linux, JACK, PipeWire, ALSA, Win32 or macOS headers;
+- no `#if`/`#ifdef` on a platform macro (`__linux__`, `_WIN32`, `__APPLE__`,
+  `__unix__`, `_POSIX_*`);
+- no OS paths in string literals (`/proc/`, `/sys/`, `/dev/`,
+  `$XDG_RUNTIME_DIR`).
+
+Platform code lives only in **edge modules**, and is reached through a small
+seam whose header is itself neutral.
+
+Compiler feature tests are not platform tests and stay allowed (for example
+`__has_cpp_attribute(clang::nonblocking)` behind `SONORA_RT`). `ui/qt` may also
+use Qt, and only Qt.
+
+| Platform-neutral (standard C++17 only) | Edge: platform code allowed |
+|---|---|
+| `common/base` | `drivers/*`, each backend (`drivers/jack` now, `drivers/asio` later) |
+| `common/audiofile` | `engine/app`, the process entry layer (§3) |
+| `common/model` *(P2)* | `ui/tui`, the POSIX terminal front end |
+| `contracts/*` | `common/platform/src/<os>/` (§3) |
+| `engine/core`, `engine/control` | `drivers/surfaces` *(P5)*: MIDI I/O |
+| `engine/plugin_client` *(P4)*, `engine/sync` *(P5)* | `plugins/host` *(P4)*: editor windows are display-server specific |
+| `drivers/fake` | `<module>/tests/posix/`: OS fault-injection tests, built `if(UNIX)` |
+| `ui/keymap`, `ui/client` | `tools/`, `iso/`, `audio-stack/`, `.github/` |
+| `ui/qt` (plus Qt) | |
+| `interchange/` *(P4)* | |
+
+Check: the `portable` job in `.github/workflows/nightly.yml` (builds
+`sonora_portable`, which collects the neutral targets).

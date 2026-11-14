@@ -292,6 +292,38 @@ kill_and_recover() {
   sleep 2
 }
 
+# unit_running UNIT: the unit exists and is active. is-active alone prints
+# "inactive" for a unit the image lost, so LoadState is asked first and a
+# not-found unit can never count as running (ADR-0118 decision 1).
+unit_running() {
+  [ "$(systemctl show -p LoadState --value "$1" 2>/dev/null)" != not-found ] &&
+    systemctl is-active --quiet "$1"
+}
+
+# sonora.gui without the fallback: the kiosk really runs (ADR-0118 decision 1).
+kiosk_running() {
+  check "sonora-compositor.service loaded and active" unit_running sonora-compositor.service
+  check "sonora-ui.service loaded and active" unit_running sonora-ui.service
+}
+
+# sonora.expect_fallback: the fallback really ran and handed tty1 back to the
+# session (ADR-0118 decision 2).
+fallback_ran() {
+  check "sonora-session.service loaded and active after fallback" unit_running sonora-session.service
+  check "fallback flag $FLAG exists" test -e "$FLAG"
+}
+
+# Why the display stack gave up. The harness keeps only the serial console, and
+# a failed run (nightly-boot, 2026-11-09 on) said "no first frame" with no word
+# of what labwc or the UI printed; the cause stayed unknown for five nights.
+display_failure_report() {
+  for u in sonora-compositor sonora-ui sonora-engine sonora-display-fallback; do
+    echo "SMOKETEST info  $u: $(systemctl show -p ActiveState,SubState,Result,ExecMainStatus,NRestarts --value "$u.service" 2>/dev/null | tr '\n' ' ')"
+    journalctl -b -u "$u.service" -o cat --no-pager 2>/dev/null | tail -n 25 |
+      sed "s/^/SMOKETEST info  $u> /"
+  done
+}
+
 gui_checks() {
   # The UI logs one line at its first frame (ui/qt/README.md); the journal
   # holds a unit's stderr. Waited for: Qt on a software renderer can take
@@ -305,6 +337,7 @@ gui_checks() {
   done
   echo "SMOKETEST info  first frame after ${FRAME_MS:-never} ms of UI uptime; boot uptime $(cut -d' ' -f1 /proc/uptime) s"
   check "UI logged its first frame" test -n "$FRAME_MS"
+  [ -n "$FRAME_MS" ] || display_failure_report
 
   # The renderer labwc and Qt ended up with on a machine with no render node
   # (QEMU -vga std). Information only; ADR-0010 unverified item 3 records it.
@@ -351,8 +384,7 @@ if [ "$GUI" = 1 ] && [ "$EXPECT_FALLBACK" = 1 ]; then
   # ADR-0010 stage 1 recovery: a failing UI must end with the engine on tty1,
   # never with a blank console.
   echo "SMOKETEST info  sonora.gui with a broken UI; fallback expected"
-  check "fallback flag $FLAG exists" test -e "$FLAG"
-  check "sonora-session.service active after fallback" systemctl is-active --quiet sonora-session.service
+  fallback_ran
   check "sonora-compositor.service stopped after fallback" sh -c '! systemctl is-active --quiet sonora-compositor.service'
   check "sonora-ui.service not running after fallback" sh -c '! systemctl is-active --quiet sonora-ui.service'
   echo "SMOKETEST info  foreground VT $(fgconsole 2>/dev/null)"
@@ -360,8 +392,7 @@ if [ "$GUI" = 1 ] && [ "$EXPECT_FALLBACK" = 1 ]; then
   check "tty1 is the foreground VT" sh -c '[ "$(fgconsole)" = 1 ]'
 elif [ "$GUI" = 1 ]; then
   echo "SMOKETEST info  sonora.gui set; display stack expected to run"
-  check "sonora-compositor.service active" systemctl is-active --quiet sonora-compositor.service
-  check "sonora-ui.service active" systemctl is-active --quiet sonora-ui.service
+  kiosk_running
   check "sonora-engine.service active (started before the UI)" systemctl is-active --quiet sonora-engine.service
   check "display fallback did not run" test ! -e "$FLAG"
   check "sonora-session.service not running under sonora.gui" sh -c '! systemctl is-active --quiet sonora-session.service'
