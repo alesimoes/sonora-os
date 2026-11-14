@@ -15,8 +15,14 @@ using namespace sonora;
 using namespace sonora::ui;
 using namespace sonora::ui::model;
 
-#define CHECK(cond)                                                          do {                                                                         if (!(cond)) {                                                               std::fprintf(stderr, "FAIL %s:%d: %s
-", __FILE__, __LINE__,                          #cond);                                                     return 1;                                                            }                                                                    } while (0)
+#define CHECK(cond)                                                      \
+    do {                                                                 \
+        if (!(cond)) {                                                   \
+            std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, \
+                         #cond);                                         \
+            return 1;                                                    \
+        }                                                                \
+    } while (0)
 
 namespace {
 
