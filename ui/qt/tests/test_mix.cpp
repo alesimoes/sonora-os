@@ -710,6 +710,56 @@ QPoint centre(QQuickItem* item) {
     return item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint();
 }
 
+// A stereo strip's pan is a balance: the same value, the same gestures.
+int stereo_balance() {
+    Rig r(3);
+    CHECK(r.connect());
+    std::string why;
+    // Room for the stereo track on the engine's tracks (ADR-0023 §5).
+    CHECK(r.doc.submit(model::RemoveTrack{r.doc.snapshot().edit->tracks.back()->id}, why));
+    r.settle();
+    const int mono = r.session.trackCount() - 1;
+    model::AddTrack add;
+    add.track = r.doc.reserve_id();
+    add.name = "Overheads";
+    add.playlist = r.doc.reserve_id();
+    add.playlist_name = "Overheads.01";
+    add.channels = 2;
+    add.mix.input = {0, 1};
+    CHECK(r.doc.submit(add, why));
+    r.settle();
+    const int st = mono + 1;
+    CHECK(r.session.trackCount() == st + 1);
+    // Drag, fine drag and typed forms all land in TrackMix::pan.
+    r.mixer.beginPan(st);
+    r.mixer.panDrag(st, 10, 100, false);
+    r.mixer.endPan(st);
+    r.settle();
+    CHECK(near(r.session.stripPan(st), 0.2));
+    r.mixer.panDrag(st, -10, 100, true);
+    r.settle();
+    CHECK(near(r.session.stripPan(st), 0.18));
+    CHECK(r.mixer.setPanText(st, QStringLiteral("L30")));
+    r.settle();
+    CHECK(near(r.session.stripPan(st), -0.30));
+    CHECK(r.mixer.setPanText(st, QStringLiteral("R30")));
+    r.settle();
+    CHECK(near(r.session.stripPan(st), 0.30));
+    CHECK(r.mixer.setPanText(st, QStringLiteral("C")));
+    r.settle();
+    CHECK(near(r.session.stripPan(st), 0.0));
+    r.session.panDrag(st, 10, 100);
+    r.session.resetPan(st);
+    r.settle();
+    CHECK(near(r.session.stripPan(st), 0.0));
+    // The mono strip beside it is as it was.
+    CHECK(near(r.session.stripPan(mono), 0.0));
+    CHECK(r.mixer.setPanText(mono, QStringLiteral("R30")));
+    r.settle();
+    CHECK(near(r.session.stripPan(mono), 0.30) && near(r.session.stripPan(st), 0.0));
+    return 0;
+}
+
 int qml() {
     Rig r;
     CHECK(r.connect());
@@ -1386,6 +1436,7 @@ int main(int argc, char** argv) {
     if (typed_values() != 0) return 1;
     if (modifier_clicks() != 0) return 1;
     if (implicit_mutes() != 0) return 1;
+    if (stereo_balance() != 0) return 1;
     if (qml() != 0) return 1;
     std::printf("ui mix: all checks passed\n");
     return 0;

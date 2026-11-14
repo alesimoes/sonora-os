@@ -326,6 +326,7 @@ Rectangle {
                 x: mix.column(slot) * strips.stripWidth
                 width: strips.stripWidth - 2
                 height: strips.height
+                channels: mix.session.trackChannels(index)
                 shell: mix.shell
                 session: mix.session
                 inserts: mix.inserts
