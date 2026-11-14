@@ -9,8 +9,10 @@
 #include <filesystem>
 #include <thread>
 
+#include "sonora/api/render.h"
 #include "sonora/model/operations.h"
 #include "sonora/playback_controller.h"
+#include "sonora/render_solo.h"
 #include "sonora/session.h"
 #include "sonora/session_files/session_folder.h"
 #include "sonora/track_tap.h"
@@ -113,10 +115,19 @@ bool plan_render(const model::Snapshot& snapshot, model::RenderKind kind, const 
                                 static_cast<model::Frames>(ask.end), range, error)) {
         return false;
     }
+    if (ask.only_insert != 0) {
+        if (kind != model::RenderKind::Process) {
+            error = "only Process Selection runs through one plug-in; freeze and commit print "
+                    "the whole chain";
+            return false;
+        }
+        if (!model::render_insert_valid(snapshot, ask.track, ask.only_insert, error)) return false;
+    }
     const model::TrackEdit* t = track_of(snapshot, ask.track, nullptr);
     RenderRequest r;
     r.kind = kind;
     r.track = ask.track;
+    r.only_insert = ask.only_insert;
     r.start = range.start;
     r.end = range.end;
     const int64_t tail_ms = ask.tail_ms >= 0
@@ -126,6 +137,18 @@ bool plan_render(const model::Snapshot& snapshot, model::RenderKind kind, const 
     r.name = ask.name.empty() ? default_name(kind, t->name) : ask.name;
     out = std::move(r);
     return true;
+}
+
+RenderAsk RenderAsk::from_options(const api::RenderOptions& o, uint32_t sample_rate) {
+    RenderAsk a;
+    a.track = o.track;
+    a.start = o.start;
+    a.end = o.end;
+    a.tail_ms = o.tail_ms;
+    a.only_insert = o.only_insert;
+    a.name = o.name;
+    a.sample_rate = sample_rate;
+    return a;
 }
 
 // --- the roll ---------------------------------------------------------------
@@ -156,6 +179,7 @@ RenderInPlace::~RenderInPlace() {
             std::remove(run_->path.c_str());
         }
     }
+    lift_solo();
 }
 
 bool RenderInPlace::start(const model::Snapshot& snapshot, const std::string& session_dir,
@@ -186,6 +210,21 @@ bool RenderInPlace::start(const model::Snapshot& snapshot, const std::string& se
     if (request.end <= request.start) {
         error = "there is nothing to render: the range is empty";
         return false;
+    }
+    if (request.only_insert != 0) {
+        // Checked again here: what a caller hands start() need not have come
+        // through plan_render, and a print through more than was asked is
+        // the one outcome this must never have.
+        if (request.kind != model::RenderKind::Process ||
+            !model::render_insert_valid(snapshot, request.track, request.only_insert, error)) {
+            if (error.empty()) error = "only Process Selection runs through one plug-in";
+            return false;
+        }
+        if (solo_ == nullptr) {
+            error = "this engine cannot silence the track's other inserts for a render; "
+                    "nothing was rendered";
+            return false;
+        }
     }
 
     const uint32_t rate = session_.config().sample_rate;
@@ -235,6 +274,10 @@ bool RenderInPlace::start(const model::Snapshot& snapshot, const std::string& se
 
     if (!playback_.locate(from, error) || !playback_.settle(30.0)) {
         if (error.empty()) error = "the disk did not serve the start of the range in time";
+        return discard(error);
+    }
+    // Before the roll, so the pre-roll warms the one insert alone too.
+    if (request.only_insert != 0 && !engage_solo(request.track, request.only_insert, error)) {
         return discard(error);
     }
     run->playback_misses_before = session_.playback_misses();
@@ -375,6 +418,7 @@ bool RenderInPlace::poll(RenderResult& out, std::string& error, bool& cancelled)
     if (!worker_.joinable() || !finished_.load(std::memory_order_acquire)) return false;
     worker_.join();
     release_tap();
+    lift_solo();
     out = run_->result;
     error = run_->error;
     cancelled = run_->cancelled;
@@ -426,6 +470,7 @@ bool place_render(model::Document& document, const std::string& session_dir,
     p.kind = request.kind;
     p.start = rendered.start;
     p.source = add.source.id;
+    p.only_insert = request.only_insert;
     p.name = request.name;
     std::vector<model::Member> members;
     if (!model::render_members(with, p, [&id] { return id++; }, members, why)) {

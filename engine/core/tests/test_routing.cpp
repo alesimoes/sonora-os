@@ -15,6 +15,16 @@
 #include "sonora/plan_graph.h"
 #include "sonora/session.h"
 
+// The solo hook is private to Session; only a test defines this.
+namespace sonora {
+struct SessionTestAccess {
+    static void set_solo_hook(Session& s, Session::WordHook hook, void* context) {
+        s.solo_hook_ = hook;
+        s.solo_hook_context_ = context;
+    }
+};
+}  // namespace sonora
+
 namespace {
 
 using playback_test::heap_untouched;
@@ -366,6 +376,126 @@ int test_aux_solo_follows_the_plan() {
     return 0;
 }
 
+// The control thread clears a bus's solo once the callback has loaded the
+// solo flags (ADR-0148 §1).
+struct SoloClear {
+    Session* session = nullptr;
+    bool armed = false;
+};
+
+void clear_solo_once(void* context) noexcept SONORA_RT {
+    auto* c = static_cast<SoloClear*>(context);
+    if (!c->armed) return;
+    c->armed = false;
+    c->session->set_aux_solo(0, false);
+}
+
+// A solo cleared between two loads of the flags in one callback: the
+// callback plays one view of them, so the track feeding the soloed bus is
+// not muted for a block with every other unsoloed track.
+int test_solo_cleared_mid_callback_mutes_nothing() {
+    Rig rig(2);
+    Session& s = *rig.session;
+    s.tracks()[0]->set_gain(0.5f);
+    s.tracks()[1]->set_gain(0.25f);
+    s.set_aux(0, 1.0f, 0.0f, false, true);
+    DelayLinePool pool(s.delay_lines());
+    const std::vector<uint32_t> order{0};
+    CHECK(rig.publish(rig.plan({}, {}, 1, order, pool, {0, kNoBus})));
+    reset_heap_counts();
+    const auto soloed = [](float x) { return x * 0.5f; };
+    CHECK(heard(rig, soloed, soloed));
+
+    SoloClear clear{&s, true};
+    sonora::SessionTestAccess::set_solo_hook(s, clear_solo_once, &clear);
+    const int64_t at = rig.frame;
+    rig.block();
+    sonora::SessionTestAccess::set_solo_hook(s, nullptr, nullptr);
+    CHECK(!clear.armed);
+    for (uint32_t i = 0; i < kBlock; ++i) {
+        const float want = signal(at + i) * 0.5f;
+        if (rig.out[0][i] != want || rig.out[1][i] != want) {
+            std::fprintf(stderr, "  frame %u: L %g R %g want %g\n", i, rig.out[0][i], rig.out[1][i],
+                         want);
+            return 1;
+        }
+    }
+    const auto all = [](float x) { return x * 0.5f + x * 0.25f; };
+    CHECK(heard(rig, all, all));
+    CHECK(heap_untouched());
+    return 0;
+}
+
+// The edge from bus `b`'s return into the Master.
+const sonora::PlanEdge* return_edge(const PlaybackPlan& p, uint32_t b) {
+    for (uint32_t ni = 0; ni < p.node_count; ++ni) {
+        if (p.nodes[ni].kind != NodeKind::BusSum) continue;
+        for (uint32_t k = 0; k < p.nodes[ni].input_edge_count; ++k) {
+            const sonora::PlanEdge& e = p.edges[p.nodes[ni].first_input_edge + k];
+            const PlanNode& from = p.nodes[e.from_node];
+            if (from.kind == NodeKind::AuxFader && from.track == b) return &e;
+        }
+    }
+    return nullptr;
+}
+
+// The swap that removes a bus's last send leaves the send's last frames in
+// the return's delay line: the line is kept, aligned, and plays them out
+// rather than cutting them (ADR-0148 §2). A bus that never carried sound
+// still takes no line.
+int test_removed_send_plays_out_of_the_return_line() {
+    Rig rig(2);
+    Session& s = *rig.session;
+    DelayRunner runner(1, 4096);
+    s.set_insert_chains(&runner);
+    s.tracks()[0]->set_gain(0.0f);   // only its 100-frame chain counts
+    s.tracks()[1]->set_gain(0.0f);   // only its pre-fader send is heard
+    s.set_send(1, 0, 1.0f, 0.0f, false, false, true);
+    s.set_aux(0, 1.0f, 0.0f, false);
+    DelayLinePool pool(s.delay_lines());
+    const std::vector<uint32_t> order{0};
+    PlaybackPlan* p = rig.plan({latent_chain(0, 100)}, {{1, 0, 0}}, 1, order, pool);
+    const sonora::PlanEdge* before = return_edge(*p, 0);
+    CHECK(before != nullptr && before->delay_frames == 100);
+    const uint32_t line = before->delay_line;
+    CHECK(line < s.delay_lines());
+    CHECK(rig.publish(p));
+    reset_heap_counts();
+    for (int i = 0; i < 4; ++i) rig.block();
+    int64_t at = rig.frame;
+    rig.block();
+    for (uint32_t i = 0; i < kBlock; ++i) CHECK(rig.out[0][i] == signal(at + i - 100));
+
+    PlaybackPlan* q = rig.plan({latent_chain(0, 100)}, {}, 1, order, pool);
+    const sonora::PlanEdge* after = return_edge(*q, 0);
+    CHECK(after != nullptr && after->delay_frames == 100 && after->delay_line == line);
+    CHECK(q->compensation_shortfall_frames == 0 && q->undelayed_edges == 0);
+    const int64_t cut = rig.frame;
+    CHECK(rig.publish(q));
+    for (int blk = 0; blk < 3; ++blk) {
+        at = rig.frame;
+        rig.block();
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const int64_t t = at + i;
+            const float want = t < cut + 100 ? signal(t - 100) : 0.0f;
+            if (rig.out[0][i] != want) {
+                std::fprintf(stderr, "  frame %lld: %g want %g\n", static_cast<long long>(t),
+                             rig.out[0][i], want);
+                return 1;
+            }
+        }
+    }
+    CHECK(heap_untouched());
+
+    DelayLinePool fresh(s.delay_lines());
+    PlaybackPlan* r = rig.plan({latent_chain(0, 100)}, {}, 1, order, fresh);
+    const sonora::PlanEdge* silent = return_edge(*r, 0);
+    CHECK(silent != nullptr && silent->delay_frames == 0 &&
+          silent->delay_line == sonora::kNoDelayLine);
+    sonora::destroy_plan(r);
+    return 0;
+}
+
 // The output does not depend on how a callback is split into max_block
 // pieces, with routing, aux solo and a reroute mid-run.
 int test_block_split_invariance() {
@@ -508,6 +638,8 @@ int main() {
     t(test_reroute_at_a_swap);
     t(test_aux_solo);
     t(test_aux_solo_follows_the_plan);
+    t(test_solo_cleared_mid_callback_mutes_nothing);
+    t(test_removed_send_plays_out_of_the_return_line);
     t(test_block_split_invariance);
     t(test_output_path_plays_on_its_pair);
     t(test_output_path_is_aligned_with_the_master);

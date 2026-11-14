@@ -1,8 +1,10 @@
 """harness/stall_resolver: a stalled feature gets one principal-engineer run
 (trigger, dedupe within the bound, cap, skip when a fixer is on it)."""
+import json
 import unittest
 
 import support  # noqa: F401  puts tools/ on sys.path before harness.*
+from harness import stall_resolver as SR
 from harness.supervisor import Thresholds
 from test_stall_check import dead_pid
 import test_supervisor as ts
@@ -95,6 +97,62 @@ class Resolver(ts.Case):
         self.age(2.5)
         self.sweep()
         self.assertEqual(self.resolvers(), [])
+
+    def dependent_chain(self):
+        """f.contract (in QA) <- f.ui (queued) <- f.tests (queued)."""
+        s = self.o.store
+        s.add_task("f.contract", "daw", "ui-engineer", feature_id="f",
+                   state="qa")
+        s.add_task("f.ui", "daw", "ui-engineer", feature_id="f",
+                   depends_on=["f.contract"])
+        s.add_task("f.tests", "daw", "ui-engineer", feature_id="f",
+                   depends_on=["f.ui"])
+
+    def test_waiting_on_a_dependency_with_a_live_tester_is_not_a_stall(self):
+        # 2026-11-09 #448: a resolver was queued for ui.workflow.windows
+        # while its contract was in QA with a tester running.
+        self.dependent_chain()
+        self.run_of("f.contract", "tester")
+        self.age(2.5)
+        self.sweep()
+        self.assertEqual(self.resolvers(), [])
+
+    def test_waiting_on_an_idle_dependency_still_gets_a_resolver(self):
+        self.dependent_chain()
+        self.age(2.5)
+        self.sweep()
+        (w,) = self.resolvers()
+        self.assertIn("f.ui", w["brief"])
+
+
+class Ladder(Resolver):
+    """Owner 2026-11-09: sonnet first; only the core climbs to opus and fable."""
+    def climb(self, grade, tries):
+        self.stalled_feature()
+        if grade:
+            self.o.store.set_meta("tier:f.a", json.dumps({"tier": None, "grade": grade}))
+        out = []
+        for i in range(tries):
+            SR._queue(self.sv, "f", [(self.o.store.get_task("f.a"), 3 * H)], self.now() + i)
+            w = self.resolvers()[-1]
+            out.append((w["agent"], w["model_pin"]))
+        return out
+
+    def test_a_part_of_the_product_stays_on_sonnet_then_is_replanned_on_sonnet(self):
+        self.assertEqual(self.climb("L/med", 4), [
+            ("principal-engineer", "sonnet"), ("principal-engineer", "sonnet"),
+            ("architect", "sonnet"), ("architect", "sonnet")])
+
+    def test_the_core_climbs_sonnet_opus_fable_then_fable_replans(self):
+        self.assertEqual(self.climb("M/high", 5), [
+            ("principal-engineer", "sonnet"), ("principal-engineer", "opus"),
+            ("principal-engineer", "fable"), ("architect", "fable"), ("architect", "fable")])
+
+    def test_a_stall_after_the_reset_starts_at_the_bottom(self):
+        self.climb("S/high", 2)
+        self.age(SR.LADDER_RESET_S / H + 1)
+        SR._queue(self.sv, "f", [(self.o.store.get_task("f.a"), 3 * H)], self.now())
+        self.assertEqual(self.resolvers()[-1]["model_pin"], "sonnet")
 
 
 if __name__ == "__main__":

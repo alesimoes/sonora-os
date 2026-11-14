@@ -61,7 +61,7 @@ target_link_libraries(sonora_plugin_loader PUBLIC sonora_plugin_ipc ${CMAKE_DL_L
 
 # The .vstpreset reader (ADR-0029 §5): untrusted bytes, no SDK and no lilv,
 # so the fuzz test builds it alone.
-add_library(sonora_vstpreset STATIC src/vstpreset.h src/vstpreset.cpp)
+add_library(sonora_vstpreset STATIC src/vstpreset.h src/vstpreset.cpp src/vstpreset_info.cpp)
 target_include_directories(sonora_vstpreset PUBLIC src)
 
 add_executable(sonora-plugin-host src/main.cpp src/processor.h src/chain.cpp src/chain.h

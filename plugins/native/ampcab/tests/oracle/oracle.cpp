@@ -6,7 +6,11 @@
 // generate.sh, against a pinned download of NeuralAmpModelerCore and Eigen
 // (MPL-2.0); neither is vendored, linked into any Sonora target, or
 // shipped. The committed outputs in ../data/ are the oracle's, and
-// test_nam.cpp holds our kernel to them.
+// test_nam.cpp (WaveNet) and test_lstm_equiv.cpp (LSTM) hold our kernels
+// to them. Nothing here is per-architecture: get_dsp() reads either, and
+// ResetAndPrewarm() runs the LSTM's own warm-up, int(0.5 x the file's rate)
+// samples of silence in BLOCK-frame pieces (24 000 at 48 kHz, a whole
+// number of 64-frame blocks, which is what Lstm::prepare() runs).
 //
 //   oracle MODEL.nam INPUT.f32 BLOCK OUTPUT.f32
 //   oracle --bench MODEL.nam SECONDS

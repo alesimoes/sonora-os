@@ -37,12 +37,15 @@
 #include "session_model.h"
 #include "shell_model.h"
 #include "sonora/api/fake_engine.h"
+#include "sonora/api/render.h"
 #include "sonora/client/socket_engine.h"
 #include "sonora/peak_file.h"
 #include "sonora/platform/ipc.h"
 #include "theme.h"
 #include "capture.h"
 #include "timeline_document.h"
+#include "track_view_model.h"
+#include "track_views.h"
 #include "transport_model.h"
 
 using namespace sonora;
@@ -495,6 +498,7 @@ int main(int argc, char** argv) {
     if (!a.opt.fake_engine && !endpoint.empty() && platform::endpoint_live(endpoint)) {
         client::SocketEngine::Options so;
         so.endpoint = endpoint;
+        if (a.opt.kiosk) so.connect_timeout_ms = client::kKioskConnectTimeoutMs;
         auto s = std::make_unique<client::SocketEngine>(so);
         socket = s.get();
         backend = std::move(s);
@@ -505,6 +509,8 @@ int main(int argc, char** argv) {
         // A loopback cable, out_2 into the last input, so the Latency window
         // measures something here as on a patched interface.
         fake_config.latency_cable = {2, fake_config.tracks, 287};
+        // Process Selection With (ADR-0087) on the demo; the fake reads insert=.
+        fake_config.capabilities.push_back(api::kCapabilityRenderInsert);
         if (a.opt.scene != nullptr && a.opt.scene->cabinet) {
             fake_config.plugins = api::testing::fake_catalog();
             fake_config.plugins.push_back(demo_cabinet_info());
@@ -730,6 +736,7 @@ int main(int argc, char** argv) {
     link_transport(model, session, transport);
     link_marker_locate(model, session);
     session.setLayoutsFile(default_layouts_file());
+    session.setMarkerViewsFile(a.opt.demo ? QString() : default_marker_views_file());
     // Quick Swipe follows the key map the operator comes from (ADR-0031 §3):
     // on under Logic's, off under Pro Tools'; a toggle holds until the profile changes.
     QObject::connect(&model, &ShellModel::keymapChanged, &session,
@@ -756,6 +763,51 @@ int main(int argc, char** argv) {
             const QString text = QStringLiteral("Plug-in favourites were not read: ") + QString::fromStdString(why);
             model.addNotice(text);
             plugin_manager.hold(text);
+        }
+    }
+    // Track heights and Show/Hide Tracks (ADR-0106): per machine, by session id.
+    // A demo keeps its views in memory: a picture must not write the machine's file.
+    TrackViews track_store(a.opt.demo ? std::string() : TrackViews::default_path());
+    TrackViewModel track_views(
+        track_store,
+        {[&session]() { return session.controller().snapshot().settings.session_id; },
+         [&session]() {
+             return static_cast<int>(session.controller().snapshot().edit->tracks.size());
+         },
+         [&session](int i) -> std::uint64_t {
+             const auto& ts = session.controller().snapshot().edit->tracks;
+             return i >= 0 && static_cast<std::size_t>(i) < ts.size() ? ts[static_cast<std::size_t>(i)]->id : 0;
+         },
+         [&session](int i) -> std::string {
+             const auto& ts = session.controller().snapshot().edit->tracks;
+             return i >= 0 && static_cast<std::size_t>(i) < ts.size() ? ts[static_cast<std::size_t>(i)]->name : std::string();
+         },
+         [&model](int i) {
+             const QList<bool> armed = model.armed();
+             return model.engineAlive() && i >= 0 && i < armed.size() && armed[i];
+         }});
+    track_views.installCommands(router.local());
+    session.controller().set_row_policy(&track_views);
+    QObject::connect(&track_views, &TrackViewModel::changed, &session, &SessionModel::documentUpdated);
+    // A marker recall that ticks Track layout (ADR-0137): hide exactly the
+    // stored tracks, show the rest. An armed track refuses to hide and stays.
+    session.setMarkerTrackHider([&session, &track_views](const std::vector<std::uint64_t>& hidden) {
+        const auto& ts = session.controller().snapshot().edit->tracks;
+        for (std::size_t i = 0; i < ts.size(); ++i) {
+            const int index = static_cast<int>(i);
+            std::string why;
+            if (std::find(hidden.begin(), hidden.end(), ts[i]->id) != hidden.end()) {
+                track_views.hide(index, why);
+            } else {
+                track_views.show(index);
+            }
+        }
+    });
+    QObject::connect(&track_views, &TrackViewModel::heldNotice, &model, &ShellModel::addNotice);
+    {
+        std::string why;
+        if (!track_store.load(why)) {
+            model.addNotice(QStringLiteral("Track views were not read: ") + QString::fromStdString(why));
         }
     }
     ShellModel::PluginSinks plugin_sinks;
@@ -821,6 +873,7 @@ int main(int argc, char** argv) {
     // A context property, not a Main.qml property: only the plugin chooser
     // reaches it, and it opens the manager over itself.
     view.rootContext()->setContextProperty(QStringLiteral("pluginManager"), &plugin_manager);
+    view.rootContext()->setContextProperty(QStringLiteral("trackViews"), &track_views);
     view.setSource(QUrl(QStringLiteral("qrc:/sonora/qml/Main.qml")));
     if (view.status() == QQuickView::Error) {
         for (const auto& e : view.errors()) {

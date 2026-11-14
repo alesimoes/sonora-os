@@ -6,6 +6,7 @@
 #include <cstdlib>
 
 #include "edit_controller_detail.h"
+#include "selection_link.h"
 #include "fader_taper.h"
 #include "sonora/fade_curve.h"
 #include "theme.h"
@@ -63,7 +64,7 @@ int ViewState::track_at(double y) const {
 
 int ViewState::autolane_at(int index, double y) const {
     if (!autolanes_open(index)) return -1;
-    const double rel = y - y_of_track(index) - track_height;
+    const double rel = y - y_of_track(index) - row_h(index);
     if (rel < 0 || rel >= kLaneCount * autolane_height) return -1;
     return std::min(kLaneCount - 1, static_cast<int>(rel / autolane_height));
 }
@@ -368,13 +369,6 @@ Frames EditController::snapped(Frames f) const {
     return std::max<Frames>(0, f);
 }
 
-bool EditController::refuse_in_mode(const char* what, std::string& why) const {
-    // Spot trims and nudges as Slip does: only its mouse move asks for a time.
-    if (mode_ != EditMode::Shuffle) return false;
-    why = std::string(what) + " in Shuffle mode is not built yet; use Slip, Spot or Grid";
-    return true;
-}
-
 // --- selection ---
 
 void EditController::select_track(int index) {
@@ -395,12 +389,19 @@ bool EditController::select_next_track(int delta, std::string& why) {
         why = "the session has no tracks";
         return false;
     }
-    const int next = sel_.track < 0 ? 0 : std::clamp(sel_.track + delta, 0, n - 1);
+    int next = sel_.track < 0 ? 0 : std::clamp(sel_.track + delta, 0, n - 1);
+    // A hidden track is not on screen to land on (ADR-0106).
+    const int step = delta < 0 ? -1 : 1;
+    while (next >= 0 && next < n && view_.row_hidden(next)) next += step;
+    if (next < 0 || next >= n) {
+        why = "no visible track that way";
+        return false;
+    }
     select_track(next);
     // Keep the selected lane on screen.
     const double y = view_.y_of_track(next);
     if (y < 0) view_.scroll_y += y;
-    else if (y + view_.track_height > view_.height) view_.scroll_y += y + view_.track_height - view_.height;
+    else if (y + view_.row_h(next) > view_.height) view_.scroll_y += y + view_.row_h(next) - view_.height;
     clamp_scroll();
     return true;
 }
@@ -433,6 +434,7 @@ void EditController::select_range(int index, Frames a, Frames b, int count) {
     sel_.autolane = sel_.point = -1;
     sel_.start = sel_.insertion = std::max<Frames>(0, std::min(a, b));
     sel_.end = std::max<Frames>(0, std::max(a, b));
+    if (link_) link_->range_for_timeline(sel_.start, sel_.end);
 }
 
 bool EditController::select_all(std::string& why) {
@@ -455,6 +457,14 @@ bool EditController::select_all(std::string& why) {
     return true;
 }
 
+void EditController::apply_timeline_range(Frames a, Frames b) {
+    if (!link_ || !link_->apply_timeline_range(a, b)) return;
+    const int t = std::max(sel_.track, 0);
+    if (track(t) == nullptr) return;
+    const auto r = link_->timeline();
+    select_range(t, r.start, r.end, sel_.tracks);
+}
+
 void EditController::clear_selection() {
     sel_.region = kNoId;
     sel_.autolane = sel_.point = -1;
@@ -463,6 +473,7 @@ void EditController::clear_selection() {
 
 void EditController::clamp_selection() {
     if (const int n = span()) sel_.tracks = n;
+    if (link_) link_->prune(static_cast<int>(snapshot().edit->tracks.size()));
 }
 
 // --- mouse ---

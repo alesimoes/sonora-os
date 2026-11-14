@@ -31,6 +31,10 @@ def run_role_pt(r):
     role = role_key(r.get("role"))
     if role == "fixer":
         return "Corretor"
+    # a tester or integrator run carries the task's agent (ui-engineer...),
+    # which is not who it is: tester-142 showed as "Engenheiro de interface"
+    if role in ("tester", "qa", "integrator", "merge"):
+        return role_pt(r.get("role"))
     return AGENT_PT.get(str(r.get("agent") or "")) or role_pt(r.get("role"))
 
 

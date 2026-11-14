@@ -85,3 +85,37 @@ change. Commands, on the installed system (UMC1820 attached):
     journalctl -u sonora-session -b | grep -i xrun
 
 Record the machine, the buffer size and the xrun count here when it is run.
+
+## Appliance sign-off run (ADR-0139, owner's hardware command)
+
+The deadline sign-off is run on the installed appliance with the UMC1820
+attached and a real Windows VST3 in `~/Windows-Plugins`. It needs the built
+`plugin_driver` and the test crash plugin (Windows build) in
+`SONORA_YABRIDGE_TEST_VST3_DIR`. Command, from the Sonora checkout:
+
+    SONORA_YABRIDGE_TEST_VST3_DIR=/path/to/test-vst3 \
+    tools/signoff-yabridge.sh --host /path/to/sonora-plugin-host \
+        --driver /path/to/plugin_driver \
+        --plugin ~/Windows-Plugins/Plugin.vst3 \
+        --blocks 225000 --report ~/sonora-yabridge-signoff.txt
+    echo "exit $?"
+
+`--blocks 225000` is the 10-minute run at 128 frames and 48 kHz (ADR-0139,
+criterion 3). Exit 0 is PASS, 1 is FAIL (the report names the criteria), 77
+is SKIP (Wine, yabridge or the plugin absent). A skip is not a sign-off. Keep
+the report file with the take log and attach it to the BACKLOG item.
+
+Record here: the machine, the Wine and yabridge versions, the report's
+round-trip line, the dropped count, the RT thread count, the crash outcome
+(`died` or `silent`) and the exit code. Run it once with the plugin as
+shipped and once under load (a second session open), and record both.
+
+Open for the researcher, to settle from that run (ADR-0139, Consequences):
+
+- Wine's audio threads at a real-time class under yabridge 5.1.1 on the
+  appliance: which `rtprio`, and whether short-lived threads are missed by the
+  once-per-second `ps` sampling.
+- How a crashing bridged plugin ends (died or silent) and how long the silence
+  lasts before the timeout refuses it.
+- Whether 667 us between the deadline (2000 us) and the period (2667 us) is
+  enough margin for the drop rate and the IPC jitter.

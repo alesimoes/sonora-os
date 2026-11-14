@@ -98,7 +98,7 @@ tests, RTSan on them for the RT path. Full builds (the application, the
 sanitizers, interop, Windows, the ISO) are release/nightly (`nightly.yml`,
 once a day on main); a red nightly opens a fix task, never blocks a PR.
 A PR is opened only for a task complete end to end: the whole path a user or
-the next layer depends on (contract, engine, UI, tests, docs, screenshots), so
+the next layer depends on (contract, engine, UI, tests, docs), so
 fewer PRs wait on CI and fewer branches conflict. No PR for half an item (an
 engine half whose UI half is a separate PR, a standalone ADR for code that is
 still to come): the ADR travels with the code it decides, and a slice stays on
@@ -167,9 +167,8 @@ something below is a PR that waits an hour.
   --chmod=+x`) for `tools/*.sh`, hooks and `usr/local/bin`; the CI "Executable
   bits" job checks it. Read C++ string literals you edited: an `\n` must not
   become a real line break.
-- UI changes that show on screen: regenerate and commit the screenshots of
-  every scene the change touches under `docs/images`, open them yourself, and
-  list them in the PR. Stale or missing pictures block the PR.
+- Generated screenshots are not committed (owner, 2026-11-13): they conflicted
+  between PRs and outran the command cap; `docs/images/sonora-ui-*.png` is ignored.
 - PowerShell 5.1 scripts: a one-element array out of an `if` expression
   becomes a string; wrap it in `@(...)`. Run it for real when you can.
 - Open one PR per item with a body written from your own text, and name

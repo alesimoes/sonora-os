@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The op codec (op_codec.h) for the family MixOp (ADR-0059):
-// the mixer: faders, buses, sends, outputs and automation.
+// the mixer: faders, buses, sends, outputs, automation and side-chain keys.
 #include "op_codec_detail.h"
 
 namespace sonora::model::codec {
@@ -61,6 +61,13 @@ struct Encoder {
         v.set("bus", id_value(o.bus));
         v.set("name", Value::string(o.name));
         v.set("first", integer(o.first));
+        return v;
+    }
+    Value operator()(const SetInsertKey& o) const {
+        Value v = with_kind("SetInsertKey");
+        v.set("track", id_value(o.track));
+        v.set("insert", id_value(o.insert));
+        v.set("key_bus", id_value(o.key_bus));
         return v;
     }
     Value operator()(const EditAutomation& o) const {
@@ -155,6 +162,14 @@ bool decode(Reader& rd, const Value& v, const std::string& kind, MixOp& out,
         o.from = range[0];
         o.to = range[1];
         out = std::move(o);
+    } else if (kind == "SetInsertKey") {
+        SetInsertKey o;
+        if (!rd.keys(v, "", {"op", "track", "insert", "key_bus"}) ||
+            !rd.id(v, "", "track", o.track) || !rd.id(v, "", "insert", o.insert) ||
+            !rd.id(v, "", "key_bus", o.key_bus)) {
+            return false;
+        }
+        out = o;
     } else {
         known = false;
         return false;

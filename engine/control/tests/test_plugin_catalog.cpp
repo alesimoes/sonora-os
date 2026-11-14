@@ -242,6 +242,16 @@ void test_resolution() {
     check(in && in->plugin.name == "Fake urn:mono" && in->plugin.version == "1.0",
           "stored with the catalog's name and version, not the client's");
 
+    // ADR-0058: a plug-in with no side-chain input in the catalog takes no key.
+    const model::Id bus = c.replica.current().next_id;
+    const auto* added = c.apply(model::AddBus{bus, "Key", model::BusMix{}});
+    check(added && added->result == DispatchResult::Ok, "a key bus is added");
+    check(says(c.apply(model::SetInsertKey{track, id, bus}), DispatchResult::Failed,
+               "the plug-in has no side-chain input: Fake urn:mono"),
+          "SetInsertKey on a plug-in without a key input is refused, naming it");
+    check(says(c.apply(model::SetInsertKey{track, id, 0}), DispatchResult::Ok, ""),
+          "unkeying needs no key input");
+
     model::ReplaceInsert r;
     r.insert = id;
     r.replacement = c.replica.current().next_id;

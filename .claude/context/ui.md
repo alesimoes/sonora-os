@@ -16,10 +16,19 @@ Local CI context: `sonora-ui`. Agent: ui-engineer (look: visual-designer).
 
 ## Build and test
 - `ctest -L ui`; build with `tools/build-slot.sh tools/build-ui.sh` (ccache).
+- The slice's check is the micro build. With the wait for the lock a UI run
+  can pass the 10-minute tool limit, so run it detached and collect it:
+  `tools/build-slot.sh --detach tools/micro-build.sh --image ui --no-rtsan`,
+  then `tools/build-wait.sh` (exit 75: still running, call it again; any
+  other exit is the build's). `--files-from F` with the slice's own paths
+  keeps it to the targets they reach. Lines `micro-build: phase ...` say where
+  the time went (lock-queue, volumes, configure, build, test).
 - Gate: `ui/` and `keymaps/` touch only the ui context.
 
 ## Traps
-- Screen-visible change: regenerate and commit screenshots of every scene it
-  touches, open them, list them in the PR.
+- Generated screenshots are not committed (owner, 2026-11-13): they conflicted
+  between PRs and outran the command cap; `docs/images/sonora-ui-*.png` is ignored.
+  Check your scene renders by shooting it alone from your build tree
+  (`sonora-ui --fake-engine --scene NAME --screenshot ...`); never commit it.
 - Do not own model/session logic; it lives in `common/model`.
 - Keep QML/C++ files under ~500 lines (`.claude/rules/code-structure.md`).

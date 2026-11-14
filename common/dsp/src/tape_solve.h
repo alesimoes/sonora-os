@@ -11,16 +11,22 @@
 // where any lane needs them, and each lane keeps its own. Internal to
 // common/dsp.
 //
-// V provides: V::kLanes; V(double) broadcast; V::from(const double*), the
-// lanes from an array; get(lane); + - * /; neg; abs; comparisons < > <=
-// == returning V::Mask; select(mask, a, b); Mask with & | ~ and any();
-// and exp2_magic(t), 2^k for t = k + kMagic (the rounding sum below), by
+// V is the shared two-lane type of src/arch/<arch>/f64x2.h (F64x2), or
+// tape_detail::V1 for one lane, through the subset of its interface that
+// tape_detail::LaneTypeCheck asserts: V::kLanes; V(double) broadcast;
+// V::load(const double*), the lanes from an array; get(lane); + - * /;
+// neg; abs; comparisons < > <= == returning V::Mask; select(mask, a, b);
+// Mask with & | ~ and any(); trunc_index(int*); gather2(rows, lo, hi).
+// Bits supplies the one operation F64x2 does not have:
+// Bits::exp2_magic(t), 2^k for t = k + kMagic (the rounding sum below), by
 // moving k's bits into the exponent: the same bits whatever the lane type.
 #pragma once
 
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
+#include <utility>
 
 #include "sonora/dsp/tape.h"
 
@@ -43,7 +49,18 @@ constexpr double kTauMax = 40.0;
 // The series of the w_j below holds to 1e-10 relative under it.
 constexpr double kTauSeries = 0.01;
 
-// One lane: the scalar tick().
+// 2^k for t = k + kMagic: k's bits moved into the exponent. Every Bits
+// policy computes this, lane by lane or in one register.
+inline double exp2_bits(double t) noexcept SONORA_RT {
+    std::uint64_t u;
+    std::memcpy(&u, &t, sizeof u);
+    u = (u + 1023u) << 52;
+    double r;
+    std::memcpy(&r, &u, sizeof r);
+    return r;
+}
+
+// One lane: the scalar tick(), with F64x2's interface.
 struct V1 {
     static constexpr int kLanes = 1;
     struct Mask {
@@ -56,8 +73,16 @@ struct V1 {
     double x;
     V1() noexcept : x(0.0) {}
     explicit V1(double v) noexcept : x(v) {}
-    static V1 from(const double* p) noexcept { return V1(p[0]); }
+    static V1 load(const double* p) noexcept { return V1(p[0]); }
     double get(int) const noexcept { return x; }
+    static void gather2(const double* const* p, V1& lo, V1& hi) noexcept {
+        lo = V1(p[0][0]);
+        hi = V1(p[0][1]);
+    }
+    V1 trunc_index(int* idx) const noexcept {
+        idx[0] = static_cast<int>(x);
+        return V1(static_cast<double>(idx[0]));
+    }
     V1 operator+(V1 o) const noexcept { return V1(x + o.x); }
     V1 operator-(V1 o) const noexcept { return V1(x - o.x); }
     V1 operator*(V1 o) const noexcept { return V1(x * o.x); }
@@ -69,32 +94,96 @@ struct V1 {
     Mask operator<=(V1 o) const noexcept { return {x <= o.x}; }
     Mask operator==(V1 o) const noexcept { return {x == o.x}; }
     static V1 select(Mask m, V1 a, V1 b) noexcept { return m.b ? a : b; }
+};
+struct V1Bits {
     static V1 exp2_magic(V1 t) noexcept { return V1(exp2_bits(t.x)); }
-    static V1 trunc(V1 u, int* idx) noexcept {
-        idx[0] = static_cast<int>(u.x);
-        return V1(static_cast<double>(idx[0]));
-    }
-    static void rows4(const double* const* r, V1& c0, V1& c1, V1& c2, V1& c3) noexcept {
-        c0 = V1(r[0][0]);
-        c1 = V1(r[0][1]);
-        c2 = V1(r[0][2]);
-        c3 = V1(r[0][3]);
-    }
-    // Shared with the portable two-lane V (arch/generic/tape_pair.cpp).
-    static double exp2_bits(double t) noexcept {
-        std::uint64_t u;
-        std::memcpy(&u, &t, sizeof u);
-        u = (u + 1023u) << 52;
-        double r;
-        std::memcpy(&r, &u, sizeof r);
-        return r;
-    }
+};
+
+// The lane type's requirements, checked where TapeSolve is instantiated,
+// so a type that lacks one fails with the requirement named rather than
+// deep inside the solve (C++17 detection through std::void_t).
+template <class V>
+using Mask_t = typename V::Mask;
+
+template <class V, class = void>
+struct HasArithmetic : std::false_type {};
+template <class V>
+struct HasArithmetic<V, std::void_t<decltype(std::declval<V>() + std::declval<V>()),
+                                    decltype(std::declval<V>() - std::declval<V>()),
+                                    decltype(std::declval<V>() * std::declval<V>()),
+                                    decltype(std::declval<V>() / std::declval<V>()),
+                                    decltype(std::declval<const V&>().neg()), decltype(std::declval<const V&>().abs())>>
+    : std::integral_constant<bool, std::is_same<decltype(std::declval<V>() + std::declval<V>()), V>::value &&
+                                       std::is_same<decltype(std::declval<V>() - std::declval<V>()), V>::value &&
+                                       std::is_same<decltype(std::declval<V>() * std::declval<V>()), V>::value &&
+                                       std::is_same<decltype(std::declval<V>() / std::declval<V>()), V>::value &&
+                                       std::is_same<decltype(std::declval<const V&>().neg()), V>::value &&
+                                       std::is_same<decltype(std::declval<const V&>().abs()), V>::value> {};
+
+template <class V, class = void>
+struct HasCompare : std::false_type {};
+template <class V>
+struct HasCompare<V, std::void_t<Mask_t<V>, decltype(std::declval<V>() < std::declval<V>()),
+                                 decltype(std::declval<V>() > std::declval<V>()),
+                                 decltype(std::declval<V>() <= std::declval<V>()),
+                                 decltype(std::declval<V>() == std::declval<V>())>>
+    : std::integral_constant<bool, std::is_same<decltype(std::declval<V>() < std::declval<V>()), Mask_t<V>>::value &&
+                                       std::is_same<decltype(std::declval<V>() > std::declval<V>()), Mask_t<V>>::value &&
+                                       std::is_same<decltype(std::declval<V>() <= std::declval<V>()), Mask_t<V>>::value &&
+                                       std::is_same<decltype(std::declval<V>() == std::declval<V>()), Mask_t<V>>::value> {};
+
+template <class V, class = void>
+struct HasMaskSelect : std::false_type {};
+template <class V>
+struct HasMaskSelect<V, std::void_t<decltype(std::declval<Mask_t<V>>() & std::declval<Mask_t<V>>()),
+                                    decltype(std::declval<Mask_t<V>>() | std::declval<Mask_t<V>>()),
+                                    decltype(~std::declval<Mask_t<V>>()), decltype(std::declval<const Mask_t<V>&>().any()),
+                                    decltype(V::select(std::declval<Mask_t<V>>(), std::declval<V>(), std::declval<V>()))>>
+    : std::integral_constant<
+          bool, std::is_same<decltype(std::declval<Mask_t<V>>() & std::declval<Mask_t<V>>()), Mask_t<V>>::value &&
+                    std::is_same<decltype(std::declval<Mask_t<V>>() | std::declval<Mask_t<V>>()), Mask_t<V>>::value &&
+                    std::is_same<decltype(~std::declval<Mask_t<V>>()), Mask_t<V>>::value &&
+                    std::is_same<decltype(std::declval<const Mask_t<V>&>().any()), bool>::value &&
+                    std::is_same<decltype(V::select(std::declval<Mask_t<V>>(), std::declval<V>(), std::declval<V>())),
+                                 V>::value> {};
+
+template <class V, class = void>
+struct HasLanes : std::false_type {};
+template <class V>
+struct HasLanes<V, std::void_t<decltype(V::kLanes), decltype(V(1.0)), decltype(V::load(std::declval<const double*>())),
+                               decltype(std::declval<const V&>().get(0)),
+                               decltype(std::declval<const V&>().trunc_index(std::declval<int*>())),
+                               decltype(V::gather2(std::declval<const double* const*>(), std::declval<V&>(),
+                                                   std::declval<V&>()))>>
+    : std::integral_constant<bool, std::is_same<decltype(V::load(std::declval<const double*>())), V>::value &&
+                                       std::is_same<decltype(std::declval<const V&>().get(0)), double>::value &&
+                                       std::is_same<decltype(std::declval<const V&>().trunc_index(std::declval<int*>())),
+                                                    V>::value &&
+                                       (V::kLanes >= 1)> {};
+
+template <class V, class Bits, class = void>
+struct HasExp2 : std::false_type {};
+template <class V, class Bits>
+struct HasExp2<V, Bits, std::void_t<decltype(Bits::exp2_magic(std::declval<V>()))>>
+    : std::is_same<decltype(Bits::exp2_magic(std::declval<V>())), V> {};
+
+template <class V, class Bits>
+struct LaneTypeCheck {
+    static_assert(HasArithmetic<V>::value, "TapeSolve's V: + - * / neg() abs(), each returning V");
+    static_assert(HasCompare<V>::value, "TapeSolve's V: < > <= == returning V::Mask");
+    static_assert(HasMaskSelect<V>::value, "TapeSolve's V::Mask: & | ~ any(); V::select(Mask, V, V) returning V");
+    static_assert(HasLanes<V>::value,
+                  "TapeSolve's V: kLanes >= 1, V(double), V::load(const double*), get(int) returning double, "
+                  "trunc_index(int*) returning V, V::gather2(const double* const*, V&, V&)");
+    static_assert(HasExp2<V, Bits>::value, "TapeSolve's Bits: static V exp2_magic(V)");
+    static constexpr bool value = true;
 };
 
 }  // namespace tape_detail
 
-template <class V>
+template <class V, class Bits>
 struct TapeSolve {
+    static_assert(tape_detail::LaneTypeCheck<V, Bits>::value, "TapeSolve: lane type");
     static constexpr int L = V::kLanes;
     using Mask = typename V::Mask;
 
@@ -102,7 +191,7 @@ struct TapeSolve {
     static V lanes(TapeHysteresis* const* st, double TapeHysteresis::*field) noexcept {
         double v[L];
         for (int i = 0; i < L; ++i) v[i] = st[i]->*field;
-        return V::from(v);
+        return V::load(v);
     }
     static void put(TapeHysteresis* const* st, double TapeHysteresis::*field, V x) noexcept {
         for (int i = 0; i < L; ++i) st[i]->*field = x.get(i);
@@ -126,7 +215,7 @@ struct TapeSolve {
         const V a45 = V(1.0 / 24.0) + r * V(1.0 / 120.0);
         const V a67 = V(1.0 / 720.0) + r * V(1.0 / 5040.0);
         const V p = ((a01 + r2 * a23) + r4 * (a45 + r2 * a67)) + r8 * V(1.0 / 40320.0);
-        return p * V::exp2_magic(t);
+        return p * Bits::exp2_magic(t);
     }
 
     // L(x) and L'(x) by the table (LangevinTable::eval, lane by lane).
@@ -135,11 +224,17 @@ struct TapeSolve {
         const Mask far = ~(ax < V(LangevinTable::kMax));
         const V u = sel(far, V(0.0), ax) * V(static_cast<double>(LangevinTable::kPerUnit));
         int cell[L];
-        const V t = u - V::trunc(u, cell);
+        const V t = u - u.trunc_index(cell);
+        // A cell is four adjacent doubles: two gathers of a pair each.
         const double* rows[L];
-        for (int i = 0; i < L; ++i) rows[i] = tab.cell(cell[i]);
+        const double* rows_hi[L];
+        for (int i = 0; i < L; ++i) {
+            rows[i] = tab.cell(cell[i]);
+            rows_hi[i] = rows[i] + 2;
+        }
         V k0, k1, k2, k3;
-        V::rows4(rows, k0, k1, k2, k3);
+        V::gather2(rows, k0, k1);
+        V::gather2(rows_hi, k2, k3);
         const V t2 = t * t;
         V v = (k0 + t * k1) + t2 * (k2 + t * k3);
         V d = ((k1 + V(2.0) * t * k2) + V(3.0) * t2 * k3) * V(static_cast<double>(LangevinTable::kPerUnit));
@@ -335,7 +430,7 @@ struct TapeSolve {
         for (std::uint32_t i = 0; i < n; ++i) {
             double hv[L];
             for (int c = 0; c < L; ++c) hv[c] = x[c][i];
-            h0 = sample(p0, tab, s, h0, V::from(hv));
+            h0 = sample(p0, tab, s, h0, V::load(hv));
             for (int c = 0; c < L; ++c) x[c][i] = s.m.get(c);
         }
         put(st, &TapeHysteresis::he_, s.he);

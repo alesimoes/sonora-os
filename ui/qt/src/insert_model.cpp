@@ -31,6 +31,15 @@ QVariantMap slot_map(const SlotView& v, int slot) {
     return m;
 }
 
+// Ids travel to QML as text: a 64-bit id does not fit a JS number.
+QVariantMap with_key(QVariantMap m, const KeyView& k) {
+    m.insert(QStringLiteral("keyCapable"), k.capable);
+    m.insert(QStringLiteral("keyBus"), QString::number(k.bus));
+    m.insert(QStringLiteral("keyMissing"), k.missing);
+    m.insert(QStringLiteral("keyName"), q(k.name));
+    return m;
+}
+
 const char* format_name(api::PluginFormat f) {
     return f == api::PluginFormat::Vst3 ? "VST3" : "LV2";
 }
@@ -115,7 +124,9 @@ void InsertModel::refresh() {
     const int n = ctl_.track_count();
     for (int t = 0; t < n; ++t) {
         QVariantList cells;
-        for (int s = 0; s < static_cast<int>(kInsertSlots); ++s) cells << slot_map(ctl_.slot(t, s), s);
+        for (int s = 0; s < static_cast<int>(kInsertSlots); ++s) {
+            cells << with_key(slot_map(ctl_.slot(t, s), s), key_.view(t, s));
+        }
         QVariantMap strip;
         const int64_t latency = ctl_.track_latency(t);
         strip.insert(QStringLiteral("slots"), cells);
@@ -210,6 +221,24 @@ void InsertModel::setActive(int track, int slot, bool active) {
 void InsertModel::remove(int track, int slot) {
     std::string why;
     report(ctl_.remove(track, slot, why), why);
+}
+
+void InsertModel::setKey(int track, int slot, const QString& busId) {
+    std::string why;
+    const bool ok = key_.set(track, slot, busId.toULongLong(), why);
+    // Held, not the status line: the operator must see a loop refused.
+    session_.reportRouting(ok, why);
+    refresh();
+}
+
+QVariantList InsertModel::keyChoices(int track, int slot) const {
+    QVariantList out;
+    for (const KeyChoice& c : key_.choices(track, slot)) {
+        out << QVariantMap{{QStringLiteral("bus"), QString::number(c.bus)},
+                           {QStringLiteral("name"), q(c.name)},
+                           {QStringLiteral("current"), c.current}};
+    }
+    return out;
 }
 
 // --- the chooser ---
@@ -412,6 +441,7 @@ void InsertModel::refreshPanel() {
             m.insert(QStringLiteral("section"), q(each.section));
             m.insert(QStringLiteral("unit"), q(each.unit));
             m.insert(QStringLiteral("curveSource"), q(each.curve_source));
+            m.insert(QStringLiteral("automated"), ctl_.has_lane(panel_insert_, each.key));
             params << m;
             bool placed = false;
             for (QVariant& s : sections) {

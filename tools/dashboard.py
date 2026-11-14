@@ -13,6 +13,7 @@ needs the per-start token (dashboard_token.py).
 import argparse
 import json
 import os
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -25,6 +26,44 @@ from dashboard_token import TOKEN_HEADER, inject_token, token_ok
 MAX_POST = 20000
 
 
+def host_ok(header, hostname=None, env=None):
+    """Local names, and this machine's own Tailscale name: the owner opens the
+    console from the phone through `tailscale serve` (2026-11-08). Any other
+    Host is refused, so a page elsewhere cannot post here by DNS rebinding;
+    the token is still required. SONORA_DASH_HOSTS adds names (comma list)."""
+    host = (header or "").split(":")[0].lower().rstrip(".")
+    if host in ("127.0.0.1", "localhost"):
+        return True
+    env = os.environ if env is None else env
+    extra = {h.strip().lower() for h in env.get("SONORA_DASH_HOSTS", "").split(",") if h.strip()}
+    if host in extra:
+        return True
+    me = (hostname or socket.gethostname()).lower()
+    return host.startswith(me + ".") and host.endswith(".ts.net")
+
+
+class Server(ThreadingHTTPServer):
+    """The phone opens the page through `tailscale serve`, which fetches the
+    six scripts, the stylesheet and the stream at once. socketserver's accept
+    queue is 5: the rest were refused, tailscale answered 502, and the page
+    came up without its chat (2026-11-09: 19 of 64 parallel requests refused
+    on 127.0.0.1). Threads die with the process, so a stuck stream never
+    keeps the server alive."""
+    request_queue_size = 128
+    daemon_threads = True
+    # One dashboard per port. HTTPServer sets SO_REUSEADDR, which on Windows
+    # lets a second process bind the same port: every agent session's start
+    # hook found a slow page, started another, and ten copies shared :8765
+    # answering at random (2026-11-09, "o computador está em loop"). With an
+    # exclusive bind the second start fails and exits.
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self):
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         route = self.path.split("?", 1)[0]
@@ -32,6 +71,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, console.view())
         if route == "/api/console/stream":
             return self.stream()
+        parts = route.strip("/").split("/")
+        if len(parts) == 4 and parts[:2] == ["api", "agent"] and parts[3] == "activity":
+            return self.reply(*console.agent_activity(parts[2]))
         if route.startswith(STATIC_ROUTE):
             got = static_file(route)
             return self.send(*got) if got else self.reply(404, {"error": "not found"})
@@ -62,8 +104,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         """A JSON content type forces a CORS preflight, which this server
         never answers, so another web page cannot post here."""
-        host = (self.headers.get("Host") or "").split(":")[0]
-        if host not in ("127.0.0.1", "localhost"):
+        if not host_ok(self.headers.get("Host")):
             return self.reply(403, {"error": "forbidden host"})
         if "application/json" not in (self.headers.get("Content-Type") or ""):
             return self.reply(415, {"error": "send application/json"})
@@ -88,7 +129,7 @@ def main():
     threading.Thread(target=refresh_loop, daemon=True).start()
     if os.environ.get("SONORA_DASH_NO_SELFUPDATE") != "1":
         dashboard_selfupdate.start()
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    srv = Server(("127.0.0.1", args.port), Handler)
     print("http://127.0.0.1:%d/" % args.port, flush=True)
     srv.serve_forever()
 

@@ -207,6 +207,12 @@ add_executable(test_plugin_chain_runner tests/test_plugin_chain_runner.cpp)
 target_link_libraries(test_plugin_chain_runner PRIVATE sonora_core)
 add_test(NAME plugin_chain_runner COMMAND test_plugin_chain_runner)
 
+# ADR-0058 §2: a keyed node's key reaches the region's last planes through
+# the runner; a keyed node on an unkeyed slot is a shape fault, not unkeyed.
+add_executable(test_keyed_chain_runner tests/test_keyed_chain_runner.cpp)
+target_link_libraries(test_keyed_chain_runner PRIVATE sonora_core)
+add_test(NAME keyed_chain_runner COMMAND test_keyed_chain_runner)
+
 # Session::process() running real hosts through PluginChainRunner (ADR-0012
 # checklist 4, the DAW 5 exit check against real plugins): tracks behind LV2
 # and VST3 chains, Debian's and in-tree, land sample-aligned at the bus with

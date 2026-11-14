@@ -97,5 +97,67 @@ out="$("$SLOT" --status 2>&1)" || rc=$?
 [[ "$rc" -eq 2 && "$out" == *"unknown flag --status"* ]] || bad "--status: rc $rc, $out"
 [[ -z "$(ls -A "$T/lock/wait" 2>/dev/null)" ]] || bad "--status left a ticket"
 
+# A docker run outlives its client when the client is killed (an agent's tool
+# call cut at its time limit): the container keeps building, so its slot is
+# held until the container ends, not freed with the dead pid. Otherwise every
+# killed call left a build running outside the lock and the next ones timed
+# out too (2026-11-09: ten containers at once, ui.mixer.sidechain stalled).
+mkdir -p "$T/bin"
+cat >"$T/bin/docker" <<'FAKE'
+#!/usr/bin/env bash
+# A fake docker: a running container is a file named after it.
+echo "$*" >>"$FAKE_DIR/docker.log"
+case "$1" in
+  inspect) [[ -f "$FAKE_DIR/running-${*: -1}" ]] && echo true || { echo "Error: No such object" >&2; exit 1; } ;;
+  kill) rm -f "$FAKE_DIR/running-$2" ;;
+  run)
+    name=""; prev=""
+    for a in "$@"; do [[ "$prev" == --name ]] && name="$a"; prev="$a"; done
+    touch "$FAKE_DIR/running-$name"
+    echo "$$" >"$FAKE_DIR/client"
+    sleep "${FAKE_RUN:-0}"
+    rm -f "$FAKE_DIR/running-$name" ;;
+esac
+FAKE
+chmod +x "$T/bin/docker"
+export FAKE_DIR="$T"
+kind="$(case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) echo win ;; *) echo linux ;; esac)"
+dead="$(bash -c 'echo $$')"
+
+mkdir -p "$T/lock/slot-0"
+printf 'pid=%s\nkind=%s\ncontainer=orphan1\n' "$dead" "$kind" >"$T/lock/slot-0/owner"
+touch "$T/running-orphan1"
+out="$(PATH="$T/bin:$PATH" SONORA_HEAVY_WAIT=1 "$SLOT" echo ran 2>&1)"
+grep -q 'running anyway' <<<"$out" || bad "a dead client's running container lost its slot: $out"
+rm -f "$T/running-orphan1"
+out="$(PATH="$T/bin:$PATH" "$SLOT" echo ran 2>&1)"
+[[ "$out" == ran ]] || bad "slot of an ended container not reaped: $out"
+[[ ! -d "$T/lock/slot-0" ]] || bad "lock not released after the ended container"
+
+# A docker run through the lock gets a name, recorded in the owner file.
+: >"$T/docker.log"
+PATH="$T/bin:$PATH" FAKE_RUN=1 "$SLOT" docker run --rm img true 2>/dev/null & pr=$!
+until ls "$T"/running-* >/dev/null 2>&1; do sleep 0.1; done
+name="$(sed -n 's/^container=//p' "$T/lock/slot-0/owner" 2>/dev/null)"
+wait "$pr"
+[[ "$name" == sonora-heavy-* ]] || bad "owner file records container '$name'"
+grep -q "^run --name $name " "$T/docker.log" || bad "docker run not named: $(cat "$T/docker.log")"
+grep -q '^kill ' "$T/docker.log" && bad "a run that ended was killed"
+
+# A holder stopped by a signal stops its container (no orphan). The signal
+# goes to the holder and its docker client together, as timeout(1) sends it
+# to the process group; the client dies and leaves the container running.
+: >"$T/docker.log"
+rm -f "$T/client"
+PATH="$T/bin:$PATH" FAKE_RUN=30 "$SLOT" docker run --rm img true 2>/dev/null & ps_=$!
+until [[ -s "$T/client" ]]; do sleep 0.1; done
+kill -TERM "$ps_" "$(cat "$T/client")"
+rc=0
+wait "$ps_" || rc=$?
+[[ "$rc" -ne 0 ]] || bad "the stopped holder exited 0"
+grep -q '^kill sonora-heavy-' "$T/docker.log" || bad "container not killed with its holder: $(cat "$T/docker.log")"
+! ls "$T"/running-* >/dev/null 2>&1 || bad "container left running: $(ls "$T"/running-*)"
+[[ ! -d "$T/lock/slot-0" ]] || bad "lock not released by the stopped holder"
+
 [[ "$fail" -eq 0 ]] || exit 1
-echo "ok: heavy lock has capacity 1, orders by priority, reaps dead owners"
+echo "ok: heavy lock has capacity 1, orders by priority, reaps dead owners, holds for a running container"

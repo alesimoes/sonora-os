@@ -18,7 +18,10 @@ function cell(label, c, extra) {
 function renderStrip() {
   const s = C.data.strip, d = s.daemon;
   const dot = d.level === "bad" ? "" : '<span class="live"><span class="dot"></span></span>';
-  const dcell = `<div class="cell ${d.level}"><small>Daemon</small><b>${dot}${esc(d.text)}</b></div>`;
+  // "vivo 47s": on a phone only the age shows (the word is hidden by CSS).
+  const m = /^(\S+)\s+(.+)$/.exec(d.text || "");
+  const dtext = m ? `<span class="dtext">${esc(m[1])} </span>${esc(m[2])}` : esc(d.text);
+  const dcell = `<div class="cell ${d.level}"><small>Daemon</small><b>${dot}${dtext}</b></div>`;
   const strip = $("#strip");
   if (!strip.querySelector(".cells"))
     strip.innerHTML = '<div class="brand live"><i></i><span>Sonora Console</span></div><div class="cells"></div>';
@@ -69,8 +72,25 @@ function renderAttention() {
   });
 }
 
+/* Docker down, idle pools, blocked groups by cause, supervisor actions. */
+function truthHTML(t) {
+  if (!t) return "";
+  const out = [];
+  if (t.docker) out.push(`<div class="hc bad"><h4>${esc(t.docker.text)}</h4><p>Não é pausa sua: os pools voltam sozinhos.` +
+    `${t.docker.held.length ? " Seguradas: " + esc(t.docker.held.join(", ")) : ""}</p></div>`);
+  t.idle_pools.forEach(p => out.push(`<div class="hc"><h4>${esc(p.pool)} ${p.working}/${p.floor} (${esc(p.why)})</h4>` +
+    `<p>${esc(p.reason)}</p></div>`));
+  t.blocked.forEach(g => out.push(`<div class="hc"><h4>${g.n} bloqueada(s): ${esc(g.label)}</h4>` +
+    g.items.map(i => `<p><b>${esc(i.task)}</b> ${esc(i.note)}</p>`).join("") + "</div>"));
+  t.supervisor.forEach(a => out.push(`<div class="hc"><h4>supervisor: ${esc(a.what)} ${esc(a.check)}</h4><p>${esc(a.reason)}</p></div>`));
+  return out.join("");
+}
+
 function renderHarness() {
   const h = C.data.harness || {n: 0, groups: []};
+  const tr = truthHTML(C.data.truth);
+  const open2 = document.querySelector("#hcare2 details")?.open;
+  setHTML($("#hcare2"), tr ? `<details${open2 ? " open" : ""}><summary>estado do harness</summary>${tr}</details>` : "");
   const open = document.querySelector("#hcare details")?.open;
   $("#hcare").innerHTML = h.n ? `<details${open ? " open" : ""}><summary>harness cuidando <b>${h.n}</b></summary>` +
     h.groups.map(g => `<div class="hc"><h4>${esc(g.title)}</h4><p>${esc(g.reason)}</p></div>`).join("") + "</details>" : "";
@@ -85,7 +105,7 @@ function renderTabs() {
 
 function pane(p) { document.body.dataset.pane = p; if (C.data) renderTabs(); }
 
-function setTarget(id) { C.target = id; if (C.data) renderAgents(); renderTo(); }
+function setTarget(id) { C.target = id; if (C.data) renderAgents(); renderTo(); followAgent(id); }
 
 function renderTo() {
   $("#to").innerHTML = C.target

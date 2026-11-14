@@ -97,3 +97,9 @@ grub-common
 # /usr/local/lib/{lv2,vst3} need nothing beyond libc.
 liblilv-0-0
 libx11-6
+
+# Ogg Opus and Vorbis export (ADR-0182): linked when the engine is built
+libopus0
+libvorbis0a
+libvorbisenc2
+libogg0

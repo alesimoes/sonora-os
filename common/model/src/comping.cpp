@@ -74,6 +74,22 @@ const Region* region_at(const Playlist& p, Id id) {
     return nullptr;
 }
 
+// A range that overlaps a crossfade's extent but does not hold it whole
+// would trim a region it joins, and clear() would drop the crossfade
+// silently; the swipe is refused instead.
+bool cuts_a_crossfade(const Playlist& p, Frames start, Frames end) {
+    for (const Crossfade& x : p.crossfades) {
+        const Region* left = region_at(p, x.left);
+        if (left == nullptr) continue;
+        Frames before = 0, after = 0;
+        crossfade_extent(x, before, after);
+        const Frames lo = left->end() - before, hi = left->end() + after;
+        if (end <= lo || start >= hi) continue;
+        if (start > lo || end < hi) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 bool comp_range(const Snapshot& s, const CompRange& c, const std::function<Id()>& next_id,
@@ -104,6 +120,11 @@ bool comp_range(const Snapshot& s, const CompRange& c, const std::function<Id()>
         return false;
     }
 
+    if (cuts_a_crossfade(*to, c.start, c.end)) {
+        why = "the range reaches into a crossfade of the comp without holding it whole; "
+              "nothing was copied";
+        return false;
+    }
     std::vector<Member> m;
     clear(*to, c.start, c.end, next_id, m);
     std::map<Id, Id> renamed;

@@ -2,18 +2,20 @@
 //
 // Strip Silence as an edit: each quiet stretch becomes separations and a
 // removal, all regions in one Compound so it is one undo step.
+#include <algorithm>
 #include <cmath>
 
 #include "edit_controller.h"
+#include "edit_controller_detail.h"
 #include "strip_silence.h"
 
 namespace sonora::ui {
 
 using namespace model;
+using namespace edit_detail;
 
 bool EditController::strip_silence(const PeakSource& peaks, const StripParams& params,
                                    std::string& why) {
-    if (refuse_shuffle("Strip Silence", "stripped", why)) return false;
     // The selected region, else every region the selected range covers whole.
     std::vector<std::pair<Id, const Region*>> targets;  // playlist, region
     if (sel_.region != kNoId) {
@@ -60,6 +62,14 @@ bool EditController::strip_silence(const PeakSource& peaks, const StripParams& p
 
     const uint32_t rate = snapshot().settings.sample_rate;
     std::vector<Member> members;
+    // Shuffle closes each stripped stretch: shifted after every split, right
+    // to left so the coordinates stay the originals'.
+    struct Closing {
+        const Playlist* playlist;
+        Frames from, to;
+    };
+    std::vector<Closing> closing;
+    const bool shuffle = mode_ == EditMode::Shuffle;
     int whole_quiet = 0;
     for (const auto& [playlist, r] : targets) {
         const std::vector<SilentSpan> spans = find_silence(peaks, *r, rate, params);
@@ -81,7 +91,20 @@ bool EditController::strip_silence(const PeakSource& peaks, const StripParams& p
                 members.push_back(SplitRegion{playlist, r->id, it->from, gap});
             }
             members.push_back(RemoveRegion{playlist, gap});
+            if (shuffle) {
+                const TrackEdit* owner = nullptr;
+                find_region(snapshot(), r->id, &owner);
+                closing.push_back({active(owner), it->from, it->to});
+            }
         }
+    }
+    std::sort(closing.begin(), closing.end(),
+              [](const Closing& a, const Closing& b) { return a.from > b.from; });
+    for (const Closing& c : closing) {
+        // Something must start at or after the stretch's end, or be cut there.
+        const bool tail = std::any_of(c.playlist->regions.begin(), c.playlist->regions.end(),
+                                      [&](const Region& o) { return o.end() > c.to; });
+        if (tail) members.push_back(ShiftRegions{c.playlist->id, c.to, -(c.to - c.from)});
     }
     if (members.empty()) {
         const std::string level = std::to_string(static_cast<int>(std::lround(params.threshold_db)));

@@ -200,6 +200,7 @@ std::vector<Operation> one_of_each() {
             DuplicateTrack{2, 50, "Kick.dup1", true, false},
             SetOutput{2, 60},
             SetBusPath{60, "Cue", 2},
+            SetInsertKey{2, 30, 60},
             DuplicatePlaylist{2, 3, 70, "Kick.02"},
             SetPlaylistName{2, 3, "Kick lead"},
             RemovePlaylist{2, 3},
@@ -699,8 +700,8 @@ int test_window_refuses_what_does_not_fit() {
         return !decode_window(WindowParts{u.parts, bytes}, out, err) && !out.has_value() &&
                mentions(err, why);
     };
-    CHECK(refused("\"window_format\": 20", "\"window_format\": 19", "window_format"));
-    CHECK(refused("\"window_format\": 20", "\"window_format\": 21", "window_format"));
+    CHECK(refused("\"window_format\": 21", "\"window_format\": 20", "window_format"));
+    CHECK(refused("\"window_format\": 21", "\"window_format\": 22", "window_format"));
     CHECK(refused("\"position\": 2", "\"position\": 3", "position"));
     CHECK(refused("\"edit\": 2", "\"edit\": 9", "steps.edit"));
     CHECK(refused("\"revision\": 1,", "\"revision\": 0,", "do not rise"));

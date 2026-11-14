@@ -135,5 +135,5 @@ fi
 # SCHED_FIFO, as the appliance runs its server (PR #77 RT audit B1).
 docker run --rm --ulimit memlock=-1:-1 --shm-size=512m \
   --cap-add=SYS_NICE --ulimit rtprio=95:95 -e SONORA_RTSAN_CONTAINER=1 \
-  -e SONORA_RTSAN_LIVE -e SONORA_RTSAN_TARGETS -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" \
+  -e SONORA_RTSAN_LIVE -e SONORA_RTSAN_TARGETS -e SONORA_STOCK_OPTIONAL -v "$(host_path "$ROOT"):/src" -w /src "$IMAGE" \
   bash /src/tools/build-rtsan.sh --native "$@"
