@@ -16,6 +16,13 @@ Local CI context: `sonora-ui`. Agent: ui-engineer (look: visual-designer).
 
 ## Build and test
 - `ctest -L ui`; build with `tools/build-slot.sh tools/build-ui.sh` (ccache).
+- The slice's check is the micro build. With the wait for the lock a UI run
+  can pass the 10-minute tool limit, so run it detached and collect it:
+  `tools/build-slot.sh --detach tools/micro-build.sh --image ui --no-rtsan`,
+  then `tools/build-wait.sh` (exit 75: still running, call it again; any
+  other exit is the build's). `--files-from F` with the slice's own paths
+  keeps it to the targets they reach. Lines `micro-build: phase ...` say where
+  the time went (lock-queue, volumes, configure, build, test).
 - Gate: `ui/` and `keymaps/` touch only the ui context.
 
 ## Traps
