@@ -17,7 +17,7 @@ bool ModelChain::build(std::unique_ptr<NeuralModel> model, double capture_rate, 
         if (error) *error = "no network to run";
         return false;
     }
-    if (!plan_rates(session_rate, capture_rate, &plan_, error)) return false;
+    if (!dsp::plan_rates(session_rate, capture_rate, &plan_, error)) return false;
     max_frames_ = max_frames;
     if (!plan_.resample) {
         model->prepare(static_cast<int>(max_frames), capture_rate);
@@ -31,8 +31,10 @@ bool ModelChain::build(std::unique_ptr<NeuralModel> model, double capture_rate, 
             if (error) *error = "a network with its own latency cannot run at another session rate";
             return false;
         }
-        up_.design(plan_.p, plan_.q, plan_.cut_up, plan_.delay_up, max_frames);
-        down_.design(plan_.q, plan_.p, plan_.cut_down, plan_.delay_down, up_.max_out());
+        if (!dsp::prepare_pair(plan_, max_frames, &up_, &down_)) {
+            if (error) *error = "the rate conversion cannot be prepared";
+            return false;
+        }
         capture_.assign(up_.max_out(), 0.0f);
         // After K session inputs the second stage has made at least K
         // outputs and at most K + q / p + 1, so what a block leaves over is

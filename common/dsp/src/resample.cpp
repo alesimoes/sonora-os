@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "sonora/native/amp_resampler.h"
+#include "sonora/dsp/resample.h"
 
 #include <algorithm>
 #include <cmath>
@@ -7,7 +7,7 @@
 
 #include "sonora/dsp/math.h"
 
-namespace sonora::native::amp {
+namespace sonora::dsp {
 
 namespace {
 
@@ -30,7 +30,7 @@ double kaiser_sinc(double tau, double cut, double span, double i0_beta) noexcept
     const double w = tau / span;
     if (w <= -1.0 || w >= 1.0) return 0.0;
     const double d = tau * cut;
-    const double sinc = std::fabs(d) < 1e-12 ? 1.0 : std::sin(dsp::kPi * d) / (dsp::kPi * d);
+    const double sinc = std::fabs(d) < 1e-12 ? 1.0 : std::sin(kPi * d) / (kPi * d);
     return cut * sinc * bessel_i0(kBeta * std::sqrt(1.0 - w * w)) / i0_beta;
 }
 
@@ -39,10 +39,16 @@ std::uint32_t ceil_whole(double x) noexcept { return static_cast<std::uint32_t>(
 
 }  // namespace
 
-void Resampler::design(std::uint32_t up, std::uint32_t down, double cut, std::uint32_t delay, std::uint32_t max_in) {
-    up_ = std::max<std::uint32_t>(1, up);
-    down_ = std::max<std::uint32_t>(1, down);
-    taps_ = 2 * delay / up_ + 1;
+bool Resampler::prepare(std::uint32_t up, std::uint32_t down, double cut, std::uint32_t delay, std::uint32_t max_in) {
+    if (up == 0 || down == 0 || up > kMaxRatioTerm || down > kMaxRatioTerm || max_in == 0) return false;
+    if (!(cut > 0.0 && cut <= 1.0)) return false;
+    const std::uint64_t taps64 = 2 * static_cast<std::uint64_t>(delay) / up + 1;
+    if (static_cast<std::uint64_t>(up) * taps64 > kMaxCoefficients) return false;
+    const auto taps = static_cast<std::uint32_t>(taps64);
+    up_ = up;
+    down_ = down;
+    taps_ = taps;
+    delay_ = delay;
     const double span = std::max(1.0, static_cast<double>(delay) / up_);
     const double i0b = bessel_i0(kBeta);
     coef_.assign(static_cast<std::size_t>(up_) * taps_, 0.0f);
@@ -68,6 +74,7 @@ void Resampler::design(std::uint32_t up, std::uint32_t down, double cut, std::ui
     // further, and the position stays in [0, up_ + down_).
     max_out_ = static_cast<std::uint32_t>((static_cast<std::uint64_t>(max_in + 1) * up_ + down_ - 1) / down_) + 2;
     reset();
+    return true;
 }
 
 void Resampler::reset() noexcept {
@@ -77,11 +84,14 @@ void Resampler::reset() noexcept {
 }
 
 std::uint32_t Resampler::process(const float* in, std::uint32_t n, float* out, std::uint32_t cap) noexcept {
+    if (hist_.empty()) return 0;  // never prepared
     std::uint32_t count = 0;
     const std::uint32_t taps = taps_;
     for (std::uint32_t k = 0; k < n; ++k) {
-        hist_[write_] = in[k];
-        hist_[write_ + taps] = in[k];
+        // One NaN would poison the ring, and every output, for `taps` inputs.
+        const float x = is_finite(in[k]) ? in[k] : 0.0f;
+        hist_[write_] = x;
+        hist_[write_ + taps] = x;
         const float* window = hist_.data() + write_ + 1;  // oldest .. newest
         write_ = write_ + 1 == taps ? 0 : write_ + 1;
         t_ -= up_;
@@ -126,4 +136,10 @@ bool plan_rates(double session_rate, double capture_rate, RatePlan* plan, std::s
     return true;
 }
 
-}  // namespace sonora::native::amp
+bool prepare_pair(const RatePlan& plan, std::uint32_t max_in, Resampler* up, Resampler* down) {
+    if (!plan.resample || up == nullptr || down == nullptr) return false;
+    if (!up->prepare(plan.p, plan.q, plan.cut_up, plan.delay_up, max_in)) return false;
+    return down->prepare(plan.q, plan.p, plan.cut_down, plan.delay_down, up->max_out());
+}
+
+}  // namespace sonora::dsp
