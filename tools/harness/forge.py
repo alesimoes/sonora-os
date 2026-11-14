@@ -11,7 +11,7 @@ import re
 import subprocess
 import tempfile
 
-from harness import branch_tip, forge_push, prepr, shell
+from harness import branch_tip, forge_push, prepr, runtime_files, shell
 
 
 class ForgeError(Exception):
@@ -388,7 +388,7 @@ class GhForge(Forge):
                  worktree, timeout=300)
 
     def commit_all(self, worktree, message):
-        self._ok(["git", "add", "-A"], worktree, timeout=60)
+        runtime_files.stage_all(lambda a: self._ok(a, worktree, timeout=60))
         trailer = "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
         self._ok(["git", "commit", "-q", "-m", message, "-m", trailer],
                  worktree, timeout=60)

@@ -12,18 +12,20 @@ Three things stopped it, each handled here so selfupdate.py stays a loop:
     not committed): git refuses the checkout, so it is moved under
     .harness/selfupdate-aside/ first (move_aside_untracked);
   - runtime files a local commit tracked: dropping that commit would
-    delete them (the owner's paused.json), so they are kept across the
-    move (Runtime).
+    delete them (the owner's paused.json, 2026-11-14 state.json and
+    events.jsonl), so they are kept across the move
+    (selfupdate_runtime.Runtime) and stripped from every replayed commit.
 Every git call goes through the injected `git(args, cwd)`.
 """
 import os
 import shutil
 import time
 
-# Local commits the planners may leave; anything else is foreign.
-PLAN_ONLY = ("planning/plans/", "brain/", ".harness/")
-# Runtime state written into the checkout, never code (.gitignore'd).
-RUNTIME = ("planning/orchestrator/paused.json",)
+from . import runtime_files
+
+# Local commits the planners may leave; anything else is foreign. Runtime
+# files (runtime_files.py) are neither: they are stripped, never replayed.
+PLAN_ONLY = ("planning/plans/", "brain/")
 ASIDE = os.path.join(".harness", "selfupdate-aside")
 IDENTITY = ["-c", "user.name=sonora-harness",
             "-c", "user.email=harness@sonora.invalid"]
@@ -48,7 +50,14 @@ def save_head(git, root, now):
 
 
 def plan_only(files):
-    return all(f.startswith(PLAN_ONLY) for f in files)
+    return all(f.startswith(PLAN_ONLY) or runtime_files.is_runtime(f)
+               for f in files)
+
+
+def foreign(files):
+    """Files outside plans that are not runtime files either."""
+    return [f for f in files if f and not f.startswith(PLAN_ONLY)
+            and not runtime_files.is_runtime(f)]
 
 
 def commit_files(git, root, sha):
@@ -62,18 +71,48 @@ def local_commits(git, root):
                root).stdout.split()
 
 
+def _runner(git, root):
+    def run(args):
+        r = git(args[1:] if args[:1] == ["git"] else args, root)
+        if r.returncode:
+            raise RuntimeError(f"git {' '.join(args[1:3])}: "
+                               f"{r.stderr.strip()[:150]}")
+        return r.stdout
+    return run
+
+
+def _pick_one(git, root, sha):
+    """True when sha's changes, runtime files taken out, became a commit.
+    Raises RuntimeError when it does not apply."""
+    r = git(IDENTITY + ["cherry-pick", "-n", "-X", "ours", sha], root)
+    if r.returncode:
+        raise RuntimeError(r.stderr.strip()[:150])
+    run = _runner(git, root)
+    runtime_files.unstage(run)
+    if not git(["diff", "--cached", "--quiet"], root).returncode:
+        return False   # only runtime files, or already on main
+    run(IDENTITY + ["commit", "-q", "--no-verify", "-C", sha])
+    return True
+
+
 def replay(git, root, commits):
-    """Cherry-picks each commit, main's side winning conflicting hunks as
-    in the rebase; one that still does not apply (or is already on main)
-    is skipped: it is on the keep branch. Returns (applied, skipped)."""
+    """Cherry-picks each commit without its runtime files (2026-11-14: a
+    replayed plan commit must never track state.json again), main's side
+    winning conflicting hunks as in the rebase; one that still does not
+    apply, is already on main or carried only runtime files is skipped: it
+    is on the keep branch. Returns (applied, skipped)."""
     applied = skipped = 0
     for sha in commits:
-        r = git(IDENTITY + ["cherry-pick", "-X", "ours", sha], root)
-        if r.returncode:
-            git(["cherry-pick", "--abort"], root)
-            skipped += 1
-        else:
+        try:
+            ok = _pick_one(git, root, sha)
+        except RuntimeError:
+            ok = False
+        if ok:
             applied += 1
+            continue
+        git(["cherry-pick", "--quit"], root)
+        git(["reset", "-q", "--hard", "HEAD"], root)
+        skipped += 1
     return applied, skipped
 
 
@@ -103,25 +142,3 @@ def move_aside_untracked(git, root, target, now):
         os.makedirs(os.path.dirname(to), exist_ok=True)
         shutil.move(os.path.join(root, rel), to)
     return files, dest
-
-
-class Runtime:
-    """Snapshot of RUNTIME files; restore() writes back the ones a move
-    deleted, never overwriting one that is there."""
-
-    def __init__(self, root):
-        self.root, self.saved = root, {}
-        for rel in RUNTIME:
-            try:
-                with open(os.path.join(root, rel), "rb") as f:
-                    self.saved[rel] = f.read()
-            except OSError:
-                pass
-
-    def restore(self):
-        for rel, data in self.saved.items():
-            p = os.path.join(self.root, rel)
-            if not os.path.exists(p):
-                os.makedirs(os.path.dirname(p), exist_ok=True)
-                with open(p, "wb") as f:
-                    f.write(data)

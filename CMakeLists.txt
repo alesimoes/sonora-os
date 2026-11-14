@@ -261,6 +261,9 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/ui/elastic/CMakeLists.txt)
   add_subdirectory(ui/elastic)
 endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/tce/CMakeLists.txt)
+  add_subdirectory(ui/tce)
+endif()
 
 # Module labels (see sonora_label_module_tests above). The neutral modules
 # are labelled here too; the early return above covers the neutral build.
@@ -314,4 +317,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/engine/elastic/CMakeLists.txt)
 endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/ui/elastic/CMakeLists.txt)
   sonora_label_module_tests(ui/elastic ui)
+endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/tce/CMakeLists.txt)
+  sonora_label_module_tests(ui/tce ui)
 endif()

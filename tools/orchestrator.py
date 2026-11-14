@@ -35,7 +35,8 @@ from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
 from harness.forge import ForgeConflict, ForgeError, GhForge, job_signatures  # noqa: E402
-from harness.store import PLANNER_ROLES, WORK_ROLES, Store  # noqa: E402
+from harness.store import PLANNER_ROLES, WORK_ROLES  # noqa: E402
+from harness.store_backup import BackedStore  # noqa: E402
 from harness.train import Train  # noqa: E402
 
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer",
@@ -67,7 +68,7 @@ class Orchestrator:
         self.clock = clock
         self.dry_run = dry_run
         self.fake_claude = fake_claude
-        self.store = Store(os.path.join(self.odir, "state.json"), clock)
+        self.store = BackedStore(os.path.join(self.odir, "state.json"), clock)
         self.worktrees = worktrees or launcher.GitWorktrees(self.root)
         self.forge = forge or GhForge(self.root)
         self.seed_fn = seed_fn or self._default_seed

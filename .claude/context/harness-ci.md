@@ -28,6 +28,11 @@ The micro build builds nothing for these paths. Agent: harness-engineer.
 - The target graph (CMake file API) is the single source of what a change
   reaches; `ci.yml`'s `changes` only picks the image and the `rt` flag.
 - A red product test is not a harness bug: route it (PROCESS.md).
+- The daemon's runtime files (`tools/harness/runtime_files.py`: state.json,
+  events*.jsonl, status.json, `.harness/`) are never staged: harness code
+  uses `runtime_files.stage_all`, agents are stopped by `commitguard.py`,
+  self-update keeps them across moves (`selfupdate_runtime.py`) and the
+  store keeps `state.json.bak.1..3` (`store_backup.py`; 2026-11-14 wipe).
 
 ## The console (dashboard at :8765, owner 2026-11-08)
 - One screen, spec in `docs/design/dashboard-console/SPEC.md`. Dashboard side:
