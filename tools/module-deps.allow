@@ -23,6 +23,8 @@ common/model -> common/base
 common/stretch -> common/model
 common/model -> common/json
 common/model -> common/midi
+common/pitch -> common/model
+common/pitch -> contracts/api
 common/platform -> common/base
 common/session_files -> common/base
 common/session_files -> common/model
@@ -67,6 +69,7 @@ engine/control -> contracts/plugin
 engine/control -> drivers/fake
 engine/control -> engine/core
 engine/control -> engine/elastic
+engine/control -> engine/pitch
 engine/control -> engine/plugin_client
 engine/elastic -> common/audiofile
 engine/elastic -> common/model
@@ -81,6 +84,12 @@ engine/core -> contracts/backend
 engine/core -> contracts/plugin
 engine/core -> drivers/fake
 engine/core -> engine/plugin_client
+engine/pitch -> common/audiofile
+engine/pitch -> common/model
+engine/pitch -> common/pitch
+engine/pitch -> common/session_files
+engine/pitch -> contracts/api
+engine/pitch -> engine/core
 engine/plugin_client -> common/base
 engine/plugin_client -> common/platform
 engine/plugin_client -> contracts/plugin
@@ -131,7 +140,10 @@ ui/qt -> ui/conductor
 ui/qt -> ui/elastic
 ui/qt -> ui/groove
 ui/qt -> ui/keymap
+ui/qt -> ui/pitch
 ui/qt -> ui/smart_controls
+ui/pitch -> common/pitch
+ui/pitch -> contracts/api
 ui/smart_controls -> common/json
 ui/tui -> contracts/api
 ui/tui -> ui/client

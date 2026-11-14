@@ -52,6 +52,10 @@ resting on unmeasured CPU. ADR-0136 already settled the same trade for time stre
    `sonora_control` with a plain `target_sources` and labels its tests itself. Its
    module edges live in the drop-in `tools/module-deps.d/pitch_engine.allow`. The contract test is `contracts/api/pitch`. They move to the root and `engine/control/CMakeLists.txt`
    once time.elastic and ui.mixer.sidechain merge.
+   Amended 2026-11-14 by ADR-0203: the pitch module edges (`common/pitch`, `engine/pitch`,
+   `ui/pitch` and the edges into them) are folded into the shared `tools/module-deps.allow`
+   and the drop-in `tools/module-deps.d/pitch*.allow` files are deleted, so the edges cannot
+   drift from the shared file. `plugins/analyze/CMakeLists.txt` keeps its existing include hook.
 
 ## Rationale
 Reuses the one proven destructive path, adds nothing to `process()`, cannot lose a take.
