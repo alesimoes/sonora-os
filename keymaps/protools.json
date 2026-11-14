@@ -50,6 +50,12 @@
       "verified": false,
       "comment": "Click on/off, 7 on the numeric keypad in Transport mode. Not yet checked against Avid's guide in brain/research/protools-logic-key-bindings.md."
     },
+    "ctrl+alt+0": {
+      "command": "transport.varispeed",
+      "argument": "1",
+      "verified": false,
+      "comment": "Varispeed back to 100 %: our own chord, not a vendor default (ADR-0190). Other speeds are typed in the transport bar's varispeed field."
+    },
     "numpad_8": {
       "command": "transport.toggle_count_off",
       "verified": false,
