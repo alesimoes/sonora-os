@@ -70,6 +70,8 @@ struct Rig {
             r.command = c;
             r.argument = a;
             engine->send(r);
+            in.clear();
+            engine->poll(in);
         };
     }
     std::unique_ptr<FakeEngine> engine;
@@ -88,7 +90,7 @@ int main() {
         std::string why;
         CHECK(d.apply(1.5, "rhythmic", why));
         CHECK(rig.engine->elastic_log().size() == 1);
-        CHECK(rig.engine->elastic_log()[0].ratio == 1.5);
+        if (rig.engine->elastic_log().size() == 1) CHECK(rig.engine->elastic_log()[0].ratio == 1.5);
         CHECK(d.resulting_length() == 72000);
     }
     {
