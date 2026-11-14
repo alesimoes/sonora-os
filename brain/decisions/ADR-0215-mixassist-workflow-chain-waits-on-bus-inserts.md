@@ -4,8 +4,8 @@ Status: Proposed (2026-11-14)
 
 ## Context
 The mix planners (gain staging, bus structure, parallel compression, saturation,
-reverb/delay) are on main (#564, #437) and `mix_planner` passes its suite. Five
-of the planned steps are done: the planner emits real plan steps for them.
+reverb/delay) are on main (#564, #437) and `mix_planner` passes its suite. The
+steps they plan for tracks and sends are real plan steps; only the bus chain is missing.
 
 The mix-bus chain (a compressor or EQ on the Master or on an Aux) is not. Aux and
 Master strips host no inserts yet (ADR-0045 §5), so `AddInsert` cannot target them.
