@@ -32,6 +32,8 @@ using measure::Suite;
 namespace at = amp_test;
 
 constexpr amp::Budget kImpossible = {1.0, 2.0};
+// For tests of loading, not of speed: a loaded CI runner (ASan, parallel ctest) must not refuse a tiny capture.
+constexpr amp::Budget kRelaxed = {1.0e6, 2.0e6};
 
 double delayed_error(const Chans& x, const Chans& y, std::size_t lag) {
     double e = 0.0;
@@ -111,6 +113,7 @@ void refusal(Suite& s) {
 
 void file_slot(Suite& s) {
     auto p = make_amp();
+    p->set_budget(kRelaxed);
     FileSlots* f = p->files();
     ok(s, "the amp has one file slot, \"model\", for .nam", f != nullptr && f->slot_count() == 1 &&
        std::string(f->slot(0).id) == "model" && std::string(f->slot(0).extensions) == "nam");
@@ -136,7 +139,7 @@ void file_slot(Suite& s) {
     const bool over = f->load(0, data("lstm_2x8.nam"), err);
     ok(s, "file slot: a capture over budget fails with the notice, the slot unchanged",
        !over && names_budget(err) && f->path(0) == data("tiny.nam"), err);
-    p->set_budget(amp::Budget{});
+    p->set_budget(kRelaxed);
     measure::render(*p, measure::silence(48000.0, 0.05));
     err.clear();
     const bool cleared = f->load(0, "", err);

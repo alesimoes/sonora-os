@@ -282,6 +282,9 @@ check_kind() {
   # called /dev/mmcblk0 and /dev/disk/by-id/usb-...-0:0 partitions, and called
   # /dev/disk/by-label/persistence -- partition 3 of a SonoraOS stick -- a disk.
   type="$(lsblk -dno TYPE "$DEV")" || die "lsblk cannot describe $DEV."
+  # Test mode accepts one thing only, so say that for any other type (a dm root
+  # disk too) before the generic type refusals below.
+  [[ -z "$TEST_IMAGE" || "$type" == loop ]]     || die "SONORA_WRITE_USB_TEST_IMAGE is set, so only a loop device over that file is accepted, and $DEV is a $type."
   case "$type" in
     disk) ;;
     part) die "$DEV is a partition. Pass the whole disk, e.g. /dev/sdb." ;;
