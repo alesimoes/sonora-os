@@ -34,6 +34,8 @@ add_library(sonora_control STATIC
   src/render_solo.cpp
   src/consolidate_job.cpp
   src/sample_edit.cpp
+  src/sample_edit_parse.cpp
+  src/sample_edit_pitch.cpp
   src/mix_planner.cpp
   src/space_measure.cpp
 )
