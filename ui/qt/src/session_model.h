@@ -387,6 +387,8 @@ public:
     QStringList autolaneNames() const;
     // The track's playlists in their order, for its selector's menu.
     Q_INVOKABLE QStringList trackPlaylists(int track) const;
+    // Channels of the track: two or more makes its pan a balance.
+    Q_INVOKABLE int trackChannels(int track) const;
     bool canUndo() const { return doc_.can_undo(); }
     bool canRedo() const { return doc_.can_redo(); }
     QString undoText() const;
