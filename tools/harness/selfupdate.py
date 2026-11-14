@@ -139,7 +139,8 @@ class SelfUpdate:
                        self.root).stdout
         for ln in out.splitlines():
             rel = ln[3:].split(" -> ")[-1].strip('"')
-            if ln.strip() and not runtime_files.is_runtime(rel)                     and self._equals_main(rel):
+            if (ln.strip() and not runtime_files.is_runtime(rel)
+                    and self._equals_main(rel)):
                 self.git(["checkout", "HEAD", "--", rel], self.root)
 
     def _move_to(self, target, force):
