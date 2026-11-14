@@ -114,6 +114,9 @@ struct PlanReport {
     // MIDI and instrument tracks, which this version plays nothing on
     // (ADR-0014 M-1): the engine says so rather than look broken.
     uint32_t silent_midi_tracks = 0;
+    // Chains keyed by an aux bus the document no longer has (ADR-0058): they
+    // hear a silent key, and stay keyed.
+    uint32_t missing_keys = 0;
 };
 
 // On success `out` is a plan with `epoch`, fully written, ready to hand to
@@ -134,7 +137,8 @@ struct PlanReport {
 // an order where every bus comes after the buses that send to it, ties in
 // display order; a track with a send is split at its pre-fader point
 // (ADR-0022 §5). More buses than limits.max_buses, or sends that loop, are
-// refused.
+// refused. A bound chain with a keyed insert hears its key bus's AuxSum
+// (key_edges.h, ADR-0058); a key that closes a loop is refused too.
 //
 // A plugin lane is carried only on a chain bound to a host with a parameter
 // store, and only when `lanes` resolves its key; more than

@@ -9,7 +9,10 @@
   --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
 }
 *{box-sizing:border-box;margin:0}
-html,body{height:100%}
+/* The page is the viewport: 100% alone left the body a third of the phone
+   screen high in the Android browser (white below, chat squeezed, 2026-11-08). */
+html{height:100%;background:var(--bg)}
+body{height:100%;height:100vh;height:100dvh}
 body{background:radial-gradient(1200px 600px at 50% -10%,#0a1c30 0,var(--bg) 60%);color:var(--text);
   font:15px/1.45 var(--sans);display:flex;flex-direction:column;overflow:hidden}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
@@ -20,10 +23,10 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .brand i{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--cyan);box-shadow:var(--glow);position:relative}
 .brand i::after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--cyan)}
 .cells{display:flex;flex:1;min-width:0}
-.cell{flex:1;min-width:0;padding:7px 12px;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
+.cell{flex:1;min-width:0;overflow:hidden;padding:7px 12px;border-right:1px solid var(--line);display:flex;flex-direction:column;justify-content:center}
 .cell:last-child{border-right:0}
 .cell small{font:500 10px var(--mono);letter-spacing:.12em;color:var(--mute);text-transform:uppercase;white-space:nowrap}
-.cell b{font:600 17px var(--mono);white-space:nowrap;font-variant-numeric:tabular-nums}
+.cell b{font:600 17px var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .cell b em{font-style:normal;color:var(--mute);font-weight:400}
 .cell.ok b{color:var(--ok)} .cell.warn b{color:var(--amber)} .cell.bad b{color:var(--bad)}
 .cell .bar{height:2px;background:var(--line);margin-top:3px;position:relative}
@@ -102,6 +105,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .btn.sm{min-height:34px;padding:4px 10px}
 
 /* ---------- conversation ---------- */
+.log .it{display:contents}
 .log{flex:1;min-height:0;overflow:auto;padding:18px 22px;display:flex;flex-direction:column;gap:12px}
 .sys{align-self:center;font:11px var(--mono);color:var(--mute);letter-spacing:.08em;border-top:1px solid var(--line);padding-top:6px;width:100%;text-align:center}
 .msg{max-width:min(680px,92%);padding:9px 13px;border-radius:3px;border:1px solid var(--line);background:var(--panel)}
@@ -172,12 +176,14 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 /* ---------- phone ---------- */
 @media (max-width:900px){
   .brand span{display:none} .brand{padding:0 12px}
-  .cell{padding:6px 8px}.cell b{font-size:15px}.cell small{font-size:9px;letter-spacing:.06em}
+  .cell{padding:6px 6px}.cell b{font-size:14px}.cell small{font-size:9px;letter-spacing:.04em}
+  /* the daemon cell shows the dot and the age only: 'vivo 47s' ran over the next cell */
+  .cell .dtext{display:none}
   .cell.hide-s{display:none}
   .tabs{display:flex;flex:none;border-bottom:1px solid var(--line);background:var(--bg2)}
-  .tabs button{flex:1;padding:11px 4px;font:600 12px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--mute);border-bottom:2px solid transparent;min-height:44px}
+  .tabs button{flex:1 1 0;min-width:0;padding:11px 2px;font:600 11px var(--mono);letter-spacing:.02em;text-transform:uppercase;color:var(--mute);border-bottom:2px solid transparent;min-height:44px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .tabs button.on{color:var(--cyan);border-bottom-color:var(--cyan)}
-  .tabs button i{font-style:normal;margin-left:5px;padding:1px 6px;border-radius:9px;background:var(--line);color:var(--text)}
+  .tabs button i{font-style:normal;margin-left:3px;padding:1px 6px;border-radius:9px;background:var(--line);color:var(--text)}
   .tabs button.al i{background:var(--amber);color:#201400}
   .main{display:block;position:relative}
   .side,.chat{position:absolute;inset:0;display:none;border:0!important}
@@ -189,7 +195,32 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
   .card{width:100%}.msg{max-width:94%}
   .comp{padding:8px 10px calc(8px + env(safe-area-inset-bottom))}
 }
+#hcare2 summary{cursor:pointer;color:var(--mute);font:12px var(--mono);padding:6px 2px}
+#hcare2 .hc{border-left:3px solid var(--line);padding:4px 10px;margin:6px 0}
+#hcare2 .hc.bad{border-left-color:var(--bad,#d55)}
+#hcare2 .hc p{color:var(--mute);font-size:12px;margin:2px 0}
 #hcare summary{cursor:pointer;color:var(--mute);font:12px var(--mono);padding:6px 2px}
 #hcare .hc{border-left:3px solid var(--line);padding:4px 10px;margin:6px 0}
 #hcare .hc h4{font-size:13px;font-weight:500}
 #hcare .hc p{color:var(--mute);font-size:12px;margin:2px 0}
+
+/* The selected agent's last steps (console-activity.js). */
+.act{flex:none;max-height:42%;display:flex;flex-direction:column;border-bottom:1px solid var(--line);background:var(--panel);padding:10px 16px}
+.act .ah,.act .atitle{flex:none}
+.act .ah{display:flex;gap:10px;align-items:center;font:600 13px var(--mono)}
+.act .ah span+span{color:var(--cyan);font-weight:500}
+.act .ah button{margin-left:auto;color:var(--mute);text-decoration:underline;font:11px var(--mono);min-height:24px}
+.act .atitle{color:var(--mute);font-size:13px;margin:4px 0 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act ol{list-style:none;margin:0;padding:0;overflow:auto;min-height:0}
+.act li{display:grid;grid-template-columns:44px 84px 1fr;gap:8px;padding:4px 0;border-top:1px solid var(--line);font-size:12px}
+.act li time,.act li b{font:11px var(--mono);color:var(--mute);font-weight:500}
+.act li b{color:var(--cyan)}
+.act li.text b{color:var(--amber)}
+.act li span{overflow-wrap:anywhere;color:var(--text)}
+@media (max-width:900px){.act{max-height:50%;padding:8px 12px}.act li{grid-template-columns:40px 70px 1fr}}
+
+/* Long messages open on a tap (console-chat.js bodyHtml). */
+.msg details.more summary{list-style:none;cursor:pointer}
+.msg details.more summary::-webkit-details-marker{display:none}
+.msg details.more summary u{color:var(--cyan);text-decoration:underline;font-size:12px}
+.msg details.more[open] summary{display:none}

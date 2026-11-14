@@ -19,8 +19,10 @@ separate planner agent (`architect` and `lead` cover it).
 5. Sizing: one plan is one PR. More than about 4 slices, or more than one
    context's gate: split the item and plan each part. No XL slice.
 6. Grade every slice (difficulty S/M/L, risk low/med/high) and read the tier
-   from the table in `.claude/rules/agents-and-models.md`. Contracts, RT,
-   storage, recovery, concurrency are high risk.
+   from the table in `.claude/rules/agents-and-models.md`. High risk only when
+   a mistake breaks all of Sonora, the build or the OS (contracts, engine
+   core/RT, storage, recovery, shared concurrency, build/CI); one plugin,
+   screen or feature is at most med. Size never raises the tier: split it.
 7. Slices to agents (from `.claude/routing.toml`): contract (architect + owner
    engineer, its own PR, merged first); design (visual-designer); core
    (rt-engineer); dsp/host (dsp-engineer, plugin-engineer); UI (ui-engineer);

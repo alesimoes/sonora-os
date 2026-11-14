@@ -72,7 +72,8 @@ const Playlist* playlist(const Fixture& f, Id id) { return playlist_in(f.h.curre
 // What the engine does: render, add the file to the pool, then ask the model
 // for the members; returns the compound.
 bool make(Fixture& f, RenderKind kind, Frames sel_start, Frames sel_end, Frames file_frames,
-          Compound& out, std::string& why, std::uint16_t file_channels = 1) {
+          Compound& out, std::string& why, std::uint16_t file_channels = 1,
+          Id only_insert = 0) {
     const Snapshot now = f.h.current();
     RenderRange range;
     if (!render_range_of(now, f.vox.track, kind, sel_start, sel_end, range, why)) return false;
@@ -97,6 +98,7 @@ bool make(Fixture& f, RenderKind kind, Frames sel_start, Frames sel_end, Frames 
     p.start = range.start;
     p.source = add.source.id;
     p.name = "Vox render";
+    p.only_insert = only_insert;
     std::vector<Member> members;
     if (!render_members(probe.current(), p, std::ref(ids), members, why)) return false;
     for (Member& m : members) c.ops.push_back(std::move(m));
@@ -212,6 +214,67 @@ int test_process_replaces_the_selection_on_a_copy() {
     return 0;
 }
 
+// ADR-0087: Process through one insert makes only that one inactive; the
+// others stay live, and the operator's bypass of them is untouched.
+int test_process_through_one_insert() {
+    Fixture f;
+    if (build(f) != 0) return 1;
+    CHECK_APPLY(f.h, (SetInsertBypass{f.first, true}));
+    Compound c;
+    std::string why;
+    CHECK(make(f, RenderKind::Process, 20000, 30000, 10000, c, why, 1, f.second));
+    CHECK_APPLY(f.h, c);
+    CHECK(invariants_hold(f.h.current()));
+    CHECK(!active_of(f, f.second) && active_of(f, f.first));
+    const InsertMix* first = f.h.current().mix.find_insert(f.first);
+    CHECK(first != nullptr && first->bypass);
+    const Playlist& p = *playlist(f, vox(f).active_playlist);
+    CHECK(p.regions.size() == 3 && p.regions[1].position == 20000);
+    CHECK(f.h.undo());
+    CHECK(active_of(f, f.first) && active_of(f, f.second));
+    return 0;
+}
+
+int test_one_insert_refusals() {
+    Fixture f;
+    if (build(f) != 0) return 1;
+    // Another track's insert, active and live, is still not this track's.
+    Ids ids(f.h.current());
+    const AddTrack bass = add_track(ids, "Bass");
+    CHECK_APPLY(f.h, bass);
+    AddInsert foreign;
+    foreign.track = bass.track;
+    foreign.insert = ids();
+    foreign.slot = 0;
+    foreign.plugin = limiter();
+    CHECK_APPLY(f.h, foreign);
+    std::string why;
+    CHECK(render_insert_valid(f.h.current(), f.vox.track, f.second, why));
+    CHECK(!render_insert_valid(f.h.current(), f.vox.track, foreign.insert, why) && !why.empty());
+    Compound c;
+    CHECK(!make(f, RenderKind::Process, 20000, 30000, 10000, c, why, 1, foreign.insert));
+    CHECK(!render_insert_valid(f.h.current(), f.vox.track, f.raw, why) && !why.empty());
+    // An insert that is there but inactive is not in the chain to run.
+    CHECK_APPLY(f.h, (SetInsertActive{f.second, false}));
+    CHECK(!render_insert_valid(f.h.current(), f.vox.track, f.second, why) && !why.empty());
+    CHECK(!make(f, RenderKind::Process, 20000, 30000, 10000, c, why, 1, f.second));
+    CHECK_APPLY(f.h, (SetInsertActive{f.second, true}));
+    // Bypassed: the print would be dry.
+    CHECK_APPLY(f.h, (SetInsertBypass{f.second, true}));
+    CHECK(!render_insert_valid(f.h.current(), f.vox.track, f.second, why));
+    CHECK(why.find("bypassed") != std::string::npos);
+    CHECK(!make(f, RenderKind::Process, 20000, 30000, 10000, c, why, 1, f.second));
+    CHECK(why.find("bypassed") != std::string::npos);
+    CHECK_APPLY(f.h, (SetInsertBypass{f.second, false}));
+    // Freeze and Commit print the whole chain.
+    for (const RenderKind k : {RenderKind::Freeze, RenderKind::Commit}) {
+        why.clear();
+        CHECK(!make(f, k, 0, 0, 98000, c, why, 1, f.second) && !why.empty());
+    }
+    CHECK(make(f, RenderKind::Process, 20000, 30000, 10000, c, why, 1, f.second));
+    return 0;
+}
+
 int test_refusals() {
     Fixture f;
     if (build(f) != 0) return 1;
@@ -321,6 +384,8 @@ int main() {
     t(test_unfreeze_returns_the_track);
     t(test_commit_keeps_no_record);
     t(test_process_replaces_the_selection_on_a_copy);
+    t(test_process_through_one_insert);
+    t(test_one_insert_refusals);
     t(test_refusals);
     t(test_a_frozen_playlist_survives_file_wire_and_older_readers);
     if (failed != 0) {

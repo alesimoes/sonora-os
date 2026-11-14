@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <limits>
 #include <string>
 #include <vector>
@@ -15,7 +16,9 @@
 #include "model_test.h"
 #include "sonora/automation_writer.h"
 #include "sonora/model/history.h"
+#include "sonora/playback_controller.h"
 #include "sonora/playback_plan.h"
+#include "sonora/session.h"
 
 namespace {
 
@@ -422,6 +425,115 @@ int test_a_trim_write_is_its_own_lane() {
     return 0;
 }
 
+// automation.write (ADR-0131 §4, #282 review): end to end, the gain the
+// audio plays through a released Touch is the lane the writer then writes
+// from that pass's writes, frame for frame by the 32-frame grid rule. The
+// track is empty with its input monitored: the input is the probe.
+int test_the_audio_returns_along_the_written_lane() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "sonora_test_writer_end_to_end";
+    fs::remove_all(dir);
+    sonora::SessionConfig cfg;
+    cfg.dir = dir.string();
+    cfg.track_count = 1;
+    cfg.ring_seconds = 0.1;
+    cfg.playback.chunk_frames = 256;
+    cfg.playback.window_seconds = 0.02;
+    cfg.playback.pool_chunks = 64;
+    cfg.playback.max_block_frames = 256;
+    sonora::Session s(cfg);
+    s.create_dirs();
+
+    History h(new_session(settings()));
+    Ids ids(h.current());
+    const AddTrack vox = add_track(ids, "Vox");
+    CHECK_APPLY(h, vox);
+    TrackMix m = *h.current().mix.find(vox.track);
+    m.automation = AutomationMode::Touch;
+    m.gain_db = -6.0f;
+    m.pan = -1.0f;   // hard left: the left output is the track, exactly
+    m.input = {0};
+    CHECK_APPLY(h, SetMix{m});
+    sonora::PlaybackController ctl(s);
+    ctl.apply_mix(h.current());
+    std::string error;
+    CHECK(ctl.show(h.current(), error));
+    CHECK(ctl.settle(2.0));
+    sonora::Track& t = *s.tracks()[0];
+    t.set_rec_armed(false);
+    t.set_monitor(sonora::Track::Monitor::Input);
+
+    constexpr uint32_t kBlock = 64;
+    constexpr float kIn = 0.5f;
+    std::vector<float> in(kBlock, kIn);
+    std::vector<float> l(kBlock);
+    std::vector<float> r(kBlock);
+    const float* ins[1] = {in.data()};
+    float* outs[2] = {l.data(), r.data()};
+    const auto block = [&] {
+        sonora::backend::AudioBlock b{};
+        b.inputs = ins;
+        b.input_count = 1;
+        b.outputs = outs;
+        b.output_count = 2;
+        b.nframes = kBlock;
+        s.process(b);
+    };
+    block();
+    ctl.play();
+    CHECK(ctl.settle(2.0));
+    CHECK(s.transport().state() == sonora::TransportState::Rolling);
+    block();
+    block();
+    ctl.touch(h.current(), 0, sonora::kAutoVolume, true);
+    t.set_gain(std::pow(10.0f, 6.0f / 20.0f));   // the ParameterChange moves
+    for (int k = 0; k < 4; ++k) block();
+    ctl.touch(h.current(), 0, sonora::kAutoVolume, false);
+    const auto released = static_cast<Frames>(s.transport().playhead());
+    const auto len = static_cast<Frames>(s.touch_return_frames());
+    std::vector<float> heard;
+    while (static_cast<Frames>(heard.size()) < len + 4 * kBlock) {
+        block();
+        for (uint32_t i = 0; i < kBlock; ++i) heard.push_back(l[i] / kIn);
+    }
+    ctl.stop();
+    CHECK(ctl.settle(2.0));
+
+    std::vector<sonora::AutomationWrite> got(4096);
+    got.resize(s.take_automation_writes(got.data(), got.size()));
+    std::vector<PassWrite> w;
+    for (const sonora::AutomationWrite& x : got) {
+        PassWrite p;
+        if (live_pass_write(x, vox.track, p)) w.push_back(p);
+    }
+    const std::vector<EditAutomation> edits = automation_pass_edits(h.current(), w, len);
+    CHECK(edits.size() == 1 && edits[0].param == AutomationParam::Volume);
+    if (edits.size() != 1) return 1;
+    const std::vector<AutomationPoint>& lane = edits[0].points;
+    const auto gain = [&](Frames g) { return std::pow(10.0f, value_at(lane, g) / 20.0f); };
+    // From the callback after the release's, which crossfades into the
+    // return from what played before it.
+    for (std::size_t i = kBlock; i < heard.size(); ++i) {
+        const Frames f = released + static_cast<Frames>(i);
+        const Frames g0 = f - f % sonora::kAutoGridFrames;
+        const float c0 = gain(g0);
+        const float c1 = gain(g0 + sonora::kAutoGridFrames);
+        const float want = c0 + (c1 - c0) * static_cast<float>(f - g0) /
+                                    static_cast<float>(sonora::kAutoGridFrames);
+        if (std::fabs(heard[i] - want) > 1e-4f * std::max(1.0f, want)) {
+            std::fprintf(stderr, "  frame %lld plays %.6f, the lane %.6f\n",
+                         static_cast<long long>(f), static_cast<double>(heard[i]),
+                         static_cast<double>(want));
+            CHECK(std::fabs(heard[i] - want) <= 1e-4f * std::max(1.0f, want));
+        }
+    }
+    // A glide, not a snap: the written lane is still well above the static
+    // a few callbacks into the return.
+    CHECK(heard[6 * kBlock] > std::pow(10.0f, 5.0f / 20.0f));
+    fs::remove_all(dir);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -438,6 +550,7 @@ int main() {
     failed += test_a_merged_line_ends_on_its_value();
     failed += test_a_non_finite_live_value_is_dropped();
     failed += test_a_trim_write_is_its_own_lane();
+    failed += test_the_audio_returns_along_the_written_lane();
     if (failed != 0) {
         std::fprintf(stderr, "automation_writer: %d failed\n", failed);
         return 1;

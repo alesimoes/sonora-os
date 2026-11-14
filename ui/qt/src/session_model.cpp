@@ -72,6 +72,7 @@ SessionModel::SessionModel(TimelineDocument& doc, const PeakSource& peaks, bool 
       templates_dir_(default_templates_dir()),
       saved_revision_(doc.revision()),
       ctl_(doc) {
+    ctl_.set_marker_views(&marker_views_, {});
     updateCounters(true);
     // The list is a view over this session's work; the next one starts
     // without it.
@@ -210,6 +211,7 @@ void SessionModel::onTransport(const TransportSnapshot& t, bool alive) {
     // shown, as TransportModel does, or the bar counter drops to the
     // insertion point while the Transport window keeps the playhead.
     if (alive && t.stale) return;
+    noteEngineToggles(t, alive);
     const bool rolling = alive && t.state != TransportMode::Stopped;
     const bool recording = rolling && t.state == TransportMode::Recording;
     const auto playhead = static_cast<Frames>(t.playhead_frames);

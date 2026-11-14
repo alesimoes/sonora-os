@@ -117,7 +117,7 @@ float param_step_value(const api::PluginParam& p, int i) {
 
 float param_position(const api::PluginParam& p, float value) {
     const float span = p.max - p.min;
-    if (!(span > 0.0f) || !std::isfinite(value)) return 0.0f;
+    if (!(span > 0.0f) || !std::isfinite(span) || !std::isfinite(value)) return 0.0f;
     const uint32_t steps = effective_steps(p);
     if (steps >= 2) return static_cast<float>(param_step(p, value)) / static_cast<float>(steps - 1);
     value = std::clamp(value, p.min, p.max);
@@ -128,6 +128,7 @@ float param_position(const api::PluginParam& p, float value) {
 float param_value_at(const api::PluginParam& p, float position) {
     if (!std::isfinite(position)) position = 0.0f;
     position = std::clamp(position, 0.0f, 1.0f);
+    if (!std::isfinite(p.max - p.min)) return std::isfinite(p.min) ? p.min : 0.0f;
     const uint32_t steps = effective_steps(p);
     if (steps >= 2) {
         return param_step_value(p, static_cast<int>(std::lround(position * static_cast<float>(steps - 1))));
@@ -558,6 +559,13 @@ float InsertController::value(Id insert, const api::PluginParam& p) const {
         }
     }
     return p.default_value;
+}
+
+bool InsertController::has_lane(Id insert, const std::string& key) const {
+    int t = -1;
+    if (find(insert, &t) == nullptr) return false;
+    const TrackEdit* tr = track(t);
+    return tr != nullptr && tr->lane(insert, key) != nullptr;
 }
 
 bool InsertController::param_begin(Id insert, std::string& why) {

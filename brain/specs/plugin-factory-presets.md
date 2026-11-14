@@ -16,7 +16,15 @@ not read at listing.
 |---|---|---|---|
 | LV2 | `lv2:<preset URI>` | `lilv_plugin_get_related(plugin, pset:Preset)`: the plugin's bundle and any bundle on the LV2 path that declares a preset `lv2:appliesTo` it | `rdfs:label`, else the URI's tail; sorted by name, then id |
 | VST3 program | `vst3-program:<unit id>/<index>` | the controller's `IUnitInfo`: each unit with a program list *and* a writable `kIsProgramChange` parameter of that unit | `getProgramName`, else "Program N" |
-| VST3 file | `vst3-file:<path relative to its root>` | `*.vstpreset` under `<root>/<vendor>/<plugin name>/`, four folders deep, whose header names the plugin's class; roots `$HOME/.vst3/presets`, `/usr/share/vst3/presets`, `/usr/local/share/vst3/presets`, an earlier root shadowing a later one | the file name without `.vstpreset` |
+| VST3 file | `vst3-file:<path relative to its root>` | `*.vstpreset` under `<root>/<vendor>/<plugin name>/`, four folders deep, whose header names the plugin's class; roots `$HOME/.vst3/presets`, `/usr/share/vst3/presets`, `/usr/local/share/vst3/presets`, an earlier root shadowing a later one | the `Info` chunk's `<Attr id="Name">` (ADR-0144), else the file name without `.vstpreset` |
+
+The `Info` chunk is untrusted XML, read through the header and the chunk
+list alone (never the whole file) and scanned for the one attribute: at most
+64 KiB, no DOCTYPE or declared entity (refused, never expanded), only the
+five predefined entities and character references, strict UTF-8 without
+control characters, the name cut to 128 bytes on a character boundary. No
+`Info`, two of them, or any of these failing leaves the file name; it never
+drops the preset.
 
 ## Reading: `--read-preset BUNDLE PRESET-ID --plugin ID`
 
@@ -55,9 +63,7 @@ back over the operator's edits.
 - **LV2 presets with `state:state` for a plugin without
   `state:interface`.** The properties are dropped; the port values are
   kept.
-- **`.vstpreset` `Info` (XML metadata) and `Prog` chunks.** Not read: no
-  category, author or comment from the file reaches the list, and the
-  name is the file name.
+- **`.vstpreset` `Prog` chunks** are not read.
 - **VST3 programs without a program-change parameter**, programs offered
   only through `IProgramListData`, and pitch names are not listed.
 - **`.vstpreset` files inside a plugin's bundle**

@@ -1,6 +1,7 @@
 """The console's endpoints (docs/design/dashboard-console/SPEC.md, section 8).
 
     GET  /api/console                   strip, agents, attention, chat
+    GET  /api/agent/<name>/activity     that agent's last steps
     POST /api/chat    {text, to?}       an owner message
     POST /api/action/<id>/confirm       run the card (the only way to run one)
     POST /api/action/<id>/cancel | retry
@@ -11,6 +12,7 @@ message or decision is refused while the daemon is down, because nobody would
 consume it."""
 import os
 
+import dashboard_activity
 import dashboard_console_stream as stream
 from dashboard_console import build
 from dashboard_daemon import daemon_alive
@@ -35,11 +37,17 @@ def view():
     return out
 
 
-def stream_signature():
-    """Changes whenever view() would: the chat files or the daemon snapshot."""
+def agent_activity(name):
     with lock:
-        updated = state.get("updated")
-    return (stream.file_signature(harness_dir()), updated, daemon_alive())
+        orch = state.get("orchestrator")
+    return dashboard_activity.activity(orch if isinstance(orch, dict) else {}, name)
+
+
+def stream_signature():
+    """Changes whenever view() would: the chat files or the snapshot's content."""
+    with lock:
+        rev = state.get("rev")
+    return (stream.file_signature(harness_dir()), rev, daemon_alive())
 
 
 def frames(**kw):

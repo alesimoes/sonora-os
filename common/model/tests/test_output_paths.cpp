@@ -124,7 +124,7 @@ int test_codec_window_and_file() {
     Loaded l;
     LoadError le;
     CHECK(deserialize(file, l, le));
-    CHECK(l.file_version == kFormatVersion && kFormatVersion == 25);
+    CHECK(l.file_version == kFormatVersion && kFormatVersion == 26);
     CHECK(same_document(l.snapshot, doc.current()));
     CHECK(l.snapshot.edit->buses[0].hardware == 2);
     std::string again;
@@ -140,7 +140,7 @@ int test_codec_window_and_file() {
 
     // A file that says version 24 and holds the key is not a version 24 file.
     std::string old = file;
-    old.replace(old.find("\"sonora_session\": 25"), 20, "\"sonora_session\": 24");
+    old.replace(old.find("\"sonora_session\": 26"), 20, "\"sonora_session\": 24");
     CHECK(!deserialize(old, nope, le));
     CHECK(mentions(le.text(), "version 24 does not define"));
     return 0;

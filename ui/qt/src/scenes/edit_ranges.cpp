@@ -12,6 +12,7 @@
 #include <cstdio>
 
 #include "screenshot_scene.h"
+#include "selection_link.h"
 
 namespace sonora::ui {
 namespace {
@@ -45,6 +46,27 @@ const ShotRegistrar registrar{[] {
         if (p == nullptr || p->regions.size() <= 2) return;
         c.session.controller().select_range(c.track, p->regions[1].position, p->regions[2].end());
         punch_and_roll(c.session, c.model, 12);
+    };
+    return s;
+}()};
+
+// Link Timeline and Edit Selection (ADR-0167): a range over three tracks is
+// the timeline's range too.
+const ShotRegistrar link_registrar{[] {
+    ShotScene s;
+    s.name = QStringLiteral("selection-link");
+    s.take = false;
+    s.apply = [](ShotContext& c) {
+        const auto* p = c.playlist;
+        if (p == nullptr || p->regions.size() <= 1) return;
+        static SelectionLink link;
+        EditController& edit = c.session.controller();
+        edit.set_link(&link);
+        const auto& r = p->regions[1];
+        edit.select_range(c.track, r.position, r.end(), 3);
+        c.model.invoke(QStringLiteral("zoom.fit_session"), -1);
+        if (link.timeline().end != r.end())
+            std::fprintf(stderr, "sonora-ui: selection-link: range not mirrored\n");
     };
     return s;
 }()};

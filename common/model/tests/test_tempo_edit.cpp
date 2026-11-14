@@ -85,6 +85,19 @@ int test_ramp() {
     return 0;
 }
 
+// A ramp of many bars would need thousands of steps; it stops at the cap
+// and still ends on its end tempo.
+int test_ramp_step_cap() {
+    auto m = base();
+    std::string why;
+    const Frames end = 200 * kBar;
+    CHECK(tempo_ramp(m, kRate, 0, end, 120.0f, 60.0f, why));
+    CHECK(valid(m));
+    CHECK(m.size() >= kMaxRampSteps && m.size() <= kMaxRampSteps + 1);
+    CHECK(m.back().at == end && m.back().bpm == 60.0f);
+    return 0;
+}
+
 int test_ramp_refusals() {
     auto m = base();
     std::string why;
@@ -112,6 +125,11 @@ int test_scale() {
     CHECK(m[tempo_entry_in_force(m, kBar)].bpm == 120.0f);
     CHECK(m[tempo_entry_in_force(m, 2 * kBar)].bpm == 240.0f);
     CHECK(m[tempo_entry_in_force(m, 3 * kBar)].bpm == 120.0f);
+    CHECK(m[tempo_entry_in_force(m, 4 * kBar)].bpm == 100.0f);
+    // Half time over bar 3 only: the tempo at bar 4 is untouched.
+    CHECK(tempo_scale(m, kRate, 3 * kBar, 4 * kBar, 0.5, why));
+    CHECK(valid(m));
+    CHECK(m[tempo_entry_in_force(m, 3 * kBar)].bpm == 60.0f);
     CHECK(m[tempo_entry_in_force(m, 4 * kBar)].bpm == 100.0f);
 
     const auto before = m;
@@ -165,6 +183,7 @@ int main() {
     };
     t(test_set_and_remove);
     t(test_ramp);
+    t(test_ramp_step_cap);
     t(test_ramp_refusals);
     t(test_scale);
     t(test_meter);

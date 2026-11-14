@@ -1089,6 +1089,9 @@ unless stated otherwise. Several are expected in the forthcoming
    architecture we capture at, and it must be measured **before the first
    capture session**. The dsp-engineer measures it, with our kernels and
    with the reference implementation for comparison.
+    *Pointer, 2026-11-12: measured with the 200 ms IR included in the timed
+    loop, in a container on a busy Windows host, not a quiet machine. The
+    per-architecture verdict is ADR-0152; the quiet-machine rerun is open.*
 10. **Source separation weights.** The widely used open separation models
     publish their code under permissive licences. Their weights are
     commonly trained on research datasets (MUSDB18 family) whose terms

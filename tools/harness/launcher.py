@@ -33,8 +33,20 @@ class ModelError(Exception):
     pass
 
 
+class Pinned(str):
+    """A model a task pins on purpose; it wins over MODEL_OF_AGENT (the stall
+    resolver pins opus for the principal, 2026-11-08). A plain tier model
+    still loses to the agent's fixed one."""
+
+
 def model_for(agent, model=None):
-    """The agent's fixed model, else the requested tier model, else sonnet."""
+    """A pinned model, else the agent's fixed model, else the requested tier
+    model, else sonnet."""
+    if isinstance(model, Pinned):
+        if model not in ALLOWED_MODELS:
+            raise ModelError(f"model {model!r} is not one of "
+                             f"{', '.join(ALLOWED_MODELS)}")
+        return str(model)
     if agent in MODEL_OF_AGENT:
         return MODEL_OF_AGENT[agent]
     if model is None:
@@ -233,7 +245,9 @@ def build_prompt(task, run_id, name, kind, result_path, extra=""):
         f"run: {run_id}",
         f"When finished write result.json to: {result_path}",
         "Schema: role, task, status (done|fail|blocked), summary, commit, "
-        "branch, findings, followups, unverified.",
+        "branch, findings, followups, unverified, and needs_owner (with "
+        "status blocked, only when the owner alone can unblock it: a "
+        "decision with no recommended default, or the host).",
     ]
     if task.get("brief"):
         lines += ["", task["brief"]]
