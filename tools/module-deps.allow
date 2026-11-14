@@ -15,6 +15,7 @@
 #                                     contract headers)
 # The opt-in Claude layer (ADR-0155): its replies become model::Plans. One
 # module, like interchange; it never reaches engine/*, drivers/* or audio.
+assistant -> common/json    # the core parses replies with sonora_json
 assistant -> common/model
 common/audiofile -> common/platform
 common/dsp -> common/base

@@ -70,7 +70,7 @@ while IFS= read -r f; do
     engine/*|drivers/*|plugins/client/*|plugins/native/*|plugins/sdk/*) rt=1 build=1 ;;
     common/dsp/*) build=1 ;;
     common/*|contracts/*) rt=1 build=1 ;;
-    plugins/*|interchange/*|CMakeLists.txt|cmake/*|tools/*.cmake) build=1 ;;
+    plugins/*|interchange/*|assistant/*|CMakeLists.txt|cmake/*|tools/*.cmake) build=1 ;;
     *) ;;
   esac
 done <"$OUT/files"

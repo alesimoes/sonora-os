@@ -25,13 +25,14 @@ KNOWN="${SONORA_DEPS_KNOWN:-$SELF/module-deps.known}"
 # Drop-in allow files, same format: a feature adds its edges in its own file
 # while module-deps.allow is held by another one.
 ALLOW_D="${SONORA_DEPS_ALLOW_D:-$SELF/module-deps.d}"
-TOPS=(common contracts engine drivers ui plugins interchange)
+TOPS=(common contracts engine drivers ui plugins interchange assistant)
 
 # A module is its first two path components; plugins/native/* is one group
 # because its processors share an SDK by design.
 AWK_MODOF='function modof(p,   a) {
     if (p ~ /^plugins\/native\//) return "plugins/native"
     if (p ~ /^interchange(\/|$)/) return "interchange"
+    if (p ~ /^assistant(\/|$)/) return "assistant"
     split(p, a, "/"); return a[1] "/" a[2]
 }'
 
@@ -124,6 +125,16 @@ selftest() {
     check > /dev/null || { echo "selftest: known edge rejected"; return 1; }
     printf '#include <jack/jack.h>\n' >> "$t/ui/keymap/src/a.cpp"
     if check > /dev/null; then echo "selftest: jack outside drivers/jack accepted"; return 1; fi
+    # assistant/ is one module (ADR-0155) and must be scanned: an edge to
+    # engine/* is refused, not silently unseen.
+    : > "$t/known"
+    printf '#include "sonora/api.h"\n#include "sonora/ring.h"\n' > "$t/ui/keymap/src/a.cpp"
+    mkdir -p "$t/assistant/src/core"
+    printf '#include "sonora/ring.h"\n' > "$t/assistant/src/core/a.cpp"
+    printf 'assistant -> common/base\n' >> "$t/allow.d/x.allow"
+    check > /dev/null || { echo "selftest: allowed assistant edge rejected"; return 1; }
+    printf '#include "sonora/session.h"\n' >> "$t/assistant/src/core/a.cpp"
+    if check > /dev/null; then echo "selftest: assistant -> engine accepted"; return 1; fi
     echo "check-deps selftest: ok"
 }
 
