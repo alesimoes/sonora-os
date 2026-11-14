@@ -186,8 +186,38 @@ it (the reference chain and the goldens do): eco, standard, high read
 0.6926, 0.7035, 0.7067 % at drive 0 dB and 2.6186, 2.6558, 2.6666 % at
 drive 12 dB, outside both bands in every quality. A +-10 % band (0.57-0.71 %,
 tried first) let all three through at drive 0 dB. The second harmonic sits
-at -146 dBc (the loop is symmetric), so `thd.h2_below_h3_db` (-20 dB, measured
--102.7) is left as the ceiling it is.
+at -146 dBc (the loop is symmetric), and `thd.h2_below_h3_db` holds it 90 dB
+under the third (measured -102.7 dB; the bar was -20 dB before the
+native.analog tape task tightened it).
+
+### Regenerating the THD rows
+
+The rows are written by the harness, not typed in. Run from the repository
+root, after the build has produced `sonora-dsp-measure`:
+
+    mkdir -p build/dsp-reports && SONORA_DSP_QUICK=1 sonora-dsp-measure --processor tape --quality plugins/native/tape/quality.json --golden plugins/native/tape/tests/golden --report build/dsp-reports
+
+`sonora-dsp-measure` is the `sonora-dsp-measure` target of the build tree
+(`plugins/native/measure/app`, linked at the tree's top level); put its
+directory on `PATH` first. Run once on 2026-11-09, Release, `sonora-build:trixie`,
+`SONORA_DSP_QUICK=1` set for the run: exit 0, "tape: meets its bars (0 failing)",
+and `build/dsp-reports/tape.json` written. Its -18 dBFS standard rows read
+drive 0 dB 0.6387 % and drive 12 dB 2.3121 %, the 48 kHz standard figures in the
+table above.
+
+The measured rows land in `build/dsp-reports/tape.json` under
+`data.drive_level_gain_thdn_h2_h3`: one row per drive (0, 12 dB) and level
+(-36, -18, 0 dBFS in quick mode; -48 to +6 dBFS in 6 dB steps in the full
+run), each `[drive, level, gain, thd_pct, h2_dbc,
+h3_dbc]`. The `-18 dBFS` rows are the ones the bands read. The bands
+themselves are not written by the command: they are the `thd` keys in
+`plugins/native/tape/quality.json`, set by hand from the standard-quality
+figure at 48 kHz, +-5 %.
+
+Scope of the bands, as the tape task left them: held at 48 kHz in all three
+qualities, and in standard also at 44.1 and 96 kHz (`distortion()` in
+`plugins/native/tape/tests/suite.cpp`, #286 review). The table above lists
+every rate, but only those three checks are held.
 
 ## Open
 

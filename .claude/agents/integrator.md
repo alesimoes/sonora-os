@@ -120,8 +120,13 @@ shell costs tokens and attention until a human notices.
 
 - Run commands in the foreground with an explicit `timeout`. Do not use
   `run_in_background`, `nohup`, `&`, or a `sleep` loop that waits for CI or
-  for another process. If something needs longer than the tool's 10-minute
-  limit, split it or report it as unverified.
+  for another process. A build or test longer than the tool's 10-minute
+  limit (a UI micro build with its wait for the lock often is) starts with
+  `tools/build-slot.sh --detach COMMAND...` and is collected with
+  `tools/build-wait.sh` (returns within 9 minutes; exit 75 = still running,
+  call it again). That is the one sanctioned detached run: it queues for the
+  lock and ends by itself. Never report a build "unverified" because it was
+  long; collect it.
 - Never wait for CI. Push once, report the commit, and finish.
 - Never arm `tools/merge-when-green.sh`; only the coordinator does.
 - If the same command fails twice for the same reason, stop and report the
@@ -131,3 +136,15 @@ shell costs tokens and attention until a human notices.
 - Before reporting, `docker ps` and `ps -ef` for anything you started
   (docker runs, builds) and kill it.
 - Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.
+
+## Closure-only results (owner, 2026-11-14)
+
+Found the item already done on main, only a hardware/human run left, or only
+an ADR close-out with no source change: do not invent a code change. Commit
+only the docs (ADR text under `brain/`, notes under `planning/` or `docs/`),
+and put the item id, the evidence commit and a one-line reason in
+`summary`/`commit` of your result. The daemon sees a diff against origin/main
+that touches only `brain/`, `planning/`, `docs/` or `*.md`, records it in its
+pending-closures list and opens no PR; one batched closures PR (at most every
+few hours) carries every closure together with the coordinator's BACKLOG and
+progress ticks. Never edit BACKLOG or progress yourself.

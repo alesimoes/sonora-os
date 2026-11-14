@@ -64,10 +64,26 @@ constexpr double kReferenceDb = -18.0;
 // trim stops there.
 constexpr double kMaxTrimDb = 24.0;
 
+// A build instrumented by a sanitizer runs the kernel several times slower,
+// so it is given twice the class bars (owner, 2026-11-12). The shipped build
+// is never instrumented, so the product's bars do not move.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define SONORA_AMP_INSTRUMENTED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define SONORA_AMP_INSTRUMENTED 1
+#endif
+#endif
+#ifdef SONORA_AMP_INSTRUMENTED
+constexpr double kBudgetScale = 2.0;
+#else
+constexpr double kBudgetScale = 1.0;
+#endif
+
 // ADR-0011 §3.5 class E, per q128 block: p99.9 and max.
 struct Budget {
-    double p999_us = 250.0;
-    double max_us = 500.0;
+    double p999_us = 250.0 * kBudgetScale;
+    double max_us = 500.0 * kBudgetScale;
 };
 // The load-time timing: blocks per run, runs (the per-block minimum).
 constexpr int kTimedBlocks = 400;

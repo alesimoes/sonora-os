@@ -13,7 +13,7 @@
 namespace sonora::ui {
 namespace {
 
-void build(ShotContext& c, int counter_cycles) {
+void build(ShotContext& c, int counter_cycles, bool views = false) {
     EditController& edit = c.session.controller();
     const double end = static_cast<double>(edit.session_end());
     const struct {
@@ -36,16 +36,23 @@ void build(ShotContext& c, int counter_cycles) {
             std::fprintf(stderr, "sonora-ui: marker: %s\n", qPrintable(c.model.statusText()));
     }
     for (int i = 0; i < counter_cycles; ++i) c.session.cycleMainCounter();
+    if (views) {
+        // Two locations keep the Edit window's view (ADR-0137); the Chorus
+        // recalls its position only, its Track layout toggle switched off.
+        c.session.storeMarkerView(1);
+        c.session.storeMarkerView(2);
+        c.session.setMarkerViewPart(2, false, false);
+    }
     c.session.recallMarker(2);
     c.model.invoke(QStringLiteral("window.memory_locations"), -1);
 }
 
-ShotScene markers_scene(const char* name, int counter_cycles) {
+ShotScene markers_scene(const char* name, int counter_cycles, bool views = false) {
     ShotScene s;
     s.name = QString::fromLatin1(name);
     s.take = false;
-    s.apply = [counter_cycles](ShotContext& c0) {
-        when_open(c0, [counter_cycles](ShotContext& c) { build(c, counter_cycles); });
+    s.apply = [counter_cycles, views](ShotContext& c0) {
+        when_open(c0, [counter_cycles, views](ShotContext& c) { build(c, counter_cycles, views); });
     };
     return s;
 }
@@ -53,6 +60,7 @@ ShotScene markers_scene(const char* name, int counter_cycles) {
 // Two cycles from the default counter reach Timecode (Min:Secs, then Timecode).
 const ShotRegistrar registrar{markers_scene("edit-markers", 0)};
 const ShotRegistrar registrar_timecode{markers_scene("edit-markers-timecode", 2)};
+const ShotRegistrar registrar_view{markers_scene("markers-view", 0, true)};
 
 }  // namespace
 }  // namespace sonora::ui

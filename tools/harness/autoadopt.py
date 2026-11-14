@@ -10,6 +10,7 @@ import json
 import os
 import time
 
+from . import feature_pr_merged
 from .forge import ForgeError
 from .status import write_atomic
 from .train import LIST_TTL_S
@@ -76,5 +77,6 @@ def tick(orch, now):
     orch.auto_adopt_at = now
     try:
         orch.train.adopt(auto=True)
+        feature_pr_merged.sweep(orch)
     except ForgeError as e:   # incl. RateLimited: try again next cadence
         orch.store.event(None, "auto_adopt_failed", str(e)[:200])

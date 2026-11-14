@@ -10,7 +10,7 @@
 //
 // With no bundle installed the test FAILS, so an image never ships an empty
 // set silently; SONORA_STOCK_OPTIONAL=1 (the PR micro build only) turns that
-// into a skip.
+// into a skip (also for refusals, where the image is not the stock one).
 #include <sys/wait.h>
 
 #include <cstdio>
@@ -111,6 +111,9 @@ int probe_bundle(const std::string& host, const std::string& bundle, std::vector
     std::istringstream in(r.out);
     for (std::string line; std::getline(in, line);) {
         if (line.find("\"uri\":\"") == std::string::npos) continue;
+        // --only-given limits the VST3 scan only: the LV2 world lists every
+        // installed plugin, so a record belongs to this bundle by its own field.
+        if (string_after(line, "\"bundle\":\"") != bundle) continue;
         ++plugins;
         const std::string name = string_after(line, "\"uri\":\"");
         if (line.find("\"usable\":true") == std::string::npos)
@@ -152,8 +155,11 @@ int main(int argc, char** argv) {
         }
     }
     const char* optional = std::getenv("SONORA_STOCK_OPTIONAL");
-    if (bundles == 0 && optional && !std::strcmp(optional, "1")) {
-        std::cout << "stock bundles absent; SONORA_STOCK_OPTIONAL=1, skipped\n";
+    // The RTSan image carries unrelated LV2 packages (MIDI-only plugins among
+    // them), not the stock set; only the PR micro build sets this variable.
+    if (optional && !std::strcmp(optional, "1") && (bundles == 0 || !refusals.empty())) {
+        std::cout << "stock set is not this image's; SONORA_STOCK_OPTIONAL=1, " << refusals.size()
+                  << " refusal(s) skipped\n";
         return 0;
     }
     for (const std::string& m : refusals) std::cerr << "REFUSED " << m << "\n";

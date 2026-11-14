@@ -67,7 +67,11 @@ function pendingEcho(messages) {
 function setOnline(on) {
   C.online = on;
   $("#offline").hidden = on;
-  if (on) flushQueue();
+  // Only when something waits: flushQueue ends with a poll, whose answer
+  // calls setOnline again, so an unconditional flush polled back to back
+  // forever (2026-11-09: ~1.4 requests a second per open page, the server
+  // pinned a core, every answer took over a second).
+  if (on && C.queue.length) flushQueue();
 }
 
 /* Messages wait here until the server takes them; a refusal (daemon down,

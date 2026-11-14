@@ -1650,6 +1650,11 @@ std::string inserts_problem(const std::vector<Insert>& inserts, std::string& whe
             return "slot " + str(static_cast<std::int64_t>(in.slot)) + " is used twice";
         }
         if (i > 0 && in.slot < inserts[i - 1].slot) return "inserts are not sorted by slot";
+        // The plug-in host keys a whole chain (ADR-0058 §4). A key naming no
+        // bus is accepted: it plays as silence and is shown.
+        for (std::size_t k = 0; k < i && in.key_bus != 0; ++k) {
+            if (inserts[k].key_bus != 0) return "a chain takes one keyed insert; another is keyed";
+        }
         std::string inner;
         const std::string why = plugin_problem(in.plugin, inner);
         if (!why.empty()) {
@@ -1820,9 +1825,21 @@ std::vector<Id> bus_path(const EditState& e, Id from, Id to) {
     std::unordered_set<Id> seen;
     struct Frame {
         Id bus;
+        std::vector<Id> out;
         std::size_t next;
     };
-    std::vector<Frame> stack{{from, 0}};
+    // Its sends, its output (ADR-0024 §3), then the buses its key feeds
+    // through the keyed tracks (ADR-0058 §3).
+    const auto edges = [&e](Id id) {
+        std::vector<Id> out;
+        const Bus* b = find_bus(e, id);
+        if (b == nullptr) return out;
+        for (const Send& sd : b->sends) out.push_back(sd.bus);
+        out.push_back(b->output);
+        for (const Id k : key_fed_buses(e, id)) out.push_back(k);
+        return out;
+    };
+    std::vector<Frame> stack{{from, edges(from), 0}};
     seen.insert(from);
     while (!stack.empty()) {
         Frame& f = stack.back();
@@ -1830,17 +1847,13 @@ std::vector<Id> bus_path(const EditState& e, Id from, Id to) {
             for (const Frame& k : stack) path.push_back(k.bus);
             return path;
         }
-        const Bus* b = find_bus(e, f.bus);
-        // Its sends, then its output (ADR-0024 §3), as edge sends.size().
-        const std::size_t edges = b == nullptr ? 0 : b->sends.size() + 1;
-        if (f.next >= edges) {
+        if (f.next >= f.out.size()) {
             stack.pop_back();
             continue;
         }
-        const std::size_t k = f.next++;
-        const Id next = k < b->sends.size() ? b->sends[k].bus : b->output;
+        const Id next = f.out[f.next++];
         if (next == kMasterOutput) continue;
-        if (seen.insert(next).second) stack.push_back({next, 0});
+        if (seen.insert(next).second) stack.push_back({next, edges(next), 0});
     }
     return path;
 }
@@ -1850,6 +1863,8 @@ std::string bus_loop_problem(const EditState& e, std::string& where) {
     // are peeled off is on a loop.
     std::unordered_map<Id, std::size_t> inputs;
     for (const Bus& b : e.buses) inputs.emplace(b.id, 0);
+    // A key feeds the buses of the tracks it keys (ADR-0058 §3).
+    std::unordered_map<Id, std::vector<Id>> keyed;
     for (const Bus& b : e.buses) {
         for (const Send& sd : b.sends) {
             const auto it = inputs.find(sd.bus);
@@ -1857,6 +1872,10 @@ std::string bus_loop_problem(const EditState& e, std::string& where) {
         }
         const auto out = inputs.find(b.output);
         if (b.output != kMasterOutput && out != inputs.end()) ++out->second;
+        for (const Id k : keyed.emplace(b.id, key_fed_buses(e, b.id)).first->second) {
+            const auto it = inputs.find(k);
+            if (it != inputs.end()) ++it->second;
+        }
     }
     std::vector<Id> ready;
     for (const Bus& b : e.buses) {
@@ -1875,6 +1894,10 @@ std::string bus_loop_problem(const EditState& e, std::string& where) {
         const auto out = inputs.find(b->output);
         if (b->output != kMasterOutput && out != inputs.end() && --out->second == 0) {
             ready.push_back(b->output);
+        }
+        for (const Id k : keyed[id]) {
+            const auto it = inputs.find(k);
+            if (it != inputs.end() && --it->second == 0) ready.push_back(k);
         }
     }
     if (done == e.buses.size()) {

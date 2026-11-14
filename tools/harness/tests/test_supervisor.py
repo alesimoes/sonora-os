@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 import support
-from harness import scheduler, supervisor, supervisor_checks as C
+from harness import lock_probe, scheduler, supervisor, supervisor_checks as C
 from harness.supervisor import Supervisor, Thresholds
 
 NOW = 2_000_000.0
@@ -20,6 +20,7 @@ class FakeSys:
         self.alive = {}            # pid -> True/False (default True)
         self.entries = []          # lock_entries() rows
         self.killed, self.removed, self.notes = [], [], []
+        self.containers, self.ckilled = {}, []   # name -> running
         self.free = 200.0
 
     def pid_alive(self, pid, kind=None):
@@ -29,6 +30,18 @@ class FakeSys:
 
     def kill(self, pid):
         self.killed.append(pid)
+
+    # The real decision (lock_probe) on scripted processes and containers,
+    # as a Windows host sees them.
+    def entry_alive(self, entry):
+        return lock_probe.entry_alive(
+            entry, "win", lambda p: self.alive.get(p, True),
+            lambda c: self.containers.get(c, False))
+
+    def kill_entry(self, entry):
+        return lock_probe.kill_entry(
+            entry, "win", self.killed.append, self.ckilled.append,
+            lambda p: 0.0 if self.alive.get(p, True) else None)
 
     def lock_entries(self):
         return list(self.entries)
@@ -47,10 +60,13 @@ class FakeSys:
 
 
 def entry(role="waits", pid=500, cwd="", cmd="bash build", start=None,
-          kind="win", path=None):
+          kind="win", path=None, winpid="same", container=""):
+    """A lock row; its Windows pid is the pid unless told otherwise (None:
+    an older build-slot.sh that recorded only the MSYS pid)."""
     return {"role": role, "path": path or f"/lock/{role}-{pid}", "pid": pid,
             "kind": kind, "prio": 2, "start": start, "cwd": cwd, "cmd": cmd,
-            "claiming": False}
+            "claiming": False, "winpid": pid if winpid == "same" else winpid,
+            "container": container}
 
 
 class Case(support.DaemonCase):
@@ -149,6 +165,40 @@ class Lock(Case):
         self.assertIn("left behind by ended run t1-r1",
                       self.actions("lock")[0].reason)
 
+    def _wake_in_root(self):
+        # wake runs (lead, architect) run in the daemon checkout, which
+        # contains every agent worktree.
+        self.add_run("w-r1", "w", worktree=self.o.root, ended=True,
+                     name="wake-architect")
+
+    def test_ended_wake_in_root_does_not_kill_nested_live_build(self):
+        self._wake_in_root()
+        r = self.add_run()
+        nested = os.path.join(self.o.root, ".claude", "worktrees", "t1")
+        self.o.store.set_run(r["id"], worktree=nested)
+        self.sys.entries = [entry("holds", 610, cwd=nested,
+                                  start=self.now() - 5)]
+        self.sweep()
+        self.assertEqual(self.sys.killed, [])
+
+    def test_ended_wake_in_root_does_not_kill_unknown_nested_cwd(self):
+        self._wake_in_root()
+        cwd = os.path.join(self.o.root, ".claude", "worktrees", "zz")
+        self.sys.entries = [entry("holds", 611, cwd=cwd,
+                                  start=self.now() - 5)]
+        self.sweep()
+        self.assertEqual(self.sys.killed, [])
+
+    def test_ended_engineer_in_nested_worktree_is_killed(self):
+        self._wake_in_root()
+        nested = os.path.join(self.o.root, ".claude", "worktrees", "t2")
+        self.add_run("t2-r1", "t2", worktree=nested, ended=True)
+        self.sys.entries = [entry("holds", 612, cwd=nested,
+                                  start=self.now() - 5)]
+        self.sweep()
+        self.assertEqual(self.sys.killed, [612])
+        self.assertIn("t2-r1", self.actions("lock")[0].reason)
+
     def test_live_run_worktree_is_left_alone(self):
         r = self.add_run()
         self.sys.entries = [entry("holds", 602, cwd=r["worktree"],
@@ -171,6 +221,55 @@ class Lock(Case):
                                   start=self.now() - 5)]
         self.sweep()
         self.assertEqual(self.sys.removed, [])
+
+    def test_msys_pid_alone_is_never_taken_for_a_windows_pid(self):
+        # 2026-11-13: the supervisor probed Git bash's $$ as a Windows pid,
+        # found nothing and reaped live holders; a second build then ran
+        # beside the first.
+        self.sys.entries = [entry("holds", 150963, cwd="/x", winpid=None,
+                                  start=self.now() - 5)]
+        self.sys.alive[150963] = False
+        self.sweep()
+        self.assertEqual(self.sys.removed, [])
+
+    def test_dead_shell_with_a_running_container_keeps_its_slot(self):
+        self.sys.entries = [entry("holds", 610, cwd="/x", container="c1",
+                                  start=self.now() - 5)]
+        self.sys.alive[610] = False
+        self.sys.containers["c1"] = True
+        self.sweep()
+        self.assertEqual(self.sys.removed, [])
+        self.sys.containers["c1"] = False
+        self.sweep()
+        self.assertEqual(self.sys.removed, ["/lock/holds-610"])
+
+    def test_docker_that_does_not_answer_keeps_the_slot(self):
+        self.sys.entries = [entry("holds", 611, cwd="/x", container="c2",
+                                  start=self.now() - 5)]
+        self.sys.alive[611] = False
+        self.sys.containers["c2"] = None
+        self.sweep()
+        self.assertEqual(self.sys.removed, [])
+
+    def test_ended_run_holder_without_a_windows_pid_is_not_killed_blind(self):
+        # Its MSYS pid may be any Windows process's number: taskkill on it
+        # was a random kill. Nothing reachable: the slot stays (the lock's
+        # own reaper probes the MSYS pid from Git bash).
+        r = self.add_run(ended=True)
+        self.sys.entries = [entry("holds", 612, cwd=r["worktree"],
+                                  winpid=None, start=self.now() - 5)]
+        self.sweep()
+        self.assertEqual(self.sys.killed, [])
+        self.assertEqual(self.sys.removed, [])
+
+    def test_ended_run_holder_container_is_stopped_with_it(self):
+        r = self.add_run(ended=True)
+        self.sys.entries = [entry("holds", 613, cwd=r["worktree"],
+                                  container="c3", start=self.now() - 5)]
+        self.sweep()
+        self.assertEqual(self.sys.killed, [613])
+        self.assertEqual(self.sys.ckilled, ["c3"])
+        self.assertEqual(self.sys.removed, ["/lock/holds-613"])
 
     def test_claim_without_owner_is_reaped_after_grace(self):
         e = entry("holds", None, start=self.now() - 300)

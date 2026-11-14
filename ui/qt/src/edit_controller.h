@@ -29,12 +29,14 @@
 #include <vector>
 
 #include "automation_edit.h"
+#include "sonora/model/arrangement.h"
 #include "edit_clipboard.h"
 #include "peak_source.h"
 #include "sample_view.h"
 #include "strip_silence.h"
 #include "time_format.h"
 #include "timeline_document.h"
+#include "track_row_geometry.h"
 
 namespace sonora::ui {
 
@@ -65,6 +67,15 @@ struct ViewState {
     double autolane_height = kAutolaneBaseHeight;
     std::vector<double> tops;
     std::vector<std::uint8_t> open;
+    // Each track's own row, apart from its lanes (ADR-0106): empty while
+    // every row is `track_height`, 0 for a hidden track.
+    std::vector<double> heights;
+    double row_h(int index) const {
+        return index >= 0 && static_cast<std::size_t>(index) < heights.size()
+                   ? heights[static_cast<std::size_t>(index)]
+                   : track_height;
+    }
+    bool row_hidden(int index) const { return row_h(index) <= 0.0; }
     // Take lanes (ADR-0031 §1, ADR-0049): a track's other playlists shown
     // under its row, below its automation lanes, each `comp_lane_height`
     // tall. `lanes[i]` is how many track i shows; empty when none does.
@@ -76,7 +87,7 @@ struct ViewState {
     }
     // The top of take lane `lane` (0 first) under track `index`.
     double y_of_complane(int index, int lane) const {
-        return y_of_track(index) + track_height +
+        return y_of_track(index) + row_h(index) +
                (autolanes_open(index) ? kLaneCount * autolane_height : 0.0) +
                lane * comp_lane_height;
     }
@@ -99,7 +110,7 @@ struct ViewState {
     }
     // The top of automation lane `lane` (0 .. kLaneCount - 1) under track `index`.
     double y_of_autolane(int index, int lane) const {
-        return y_of_track(index) + track_height + lane * autolane_height;
+        return y_of_track(index) + row_h(index) + lane * autolane_height;
     }
     // The automation lane under pixel `y` of track `index`'s block: -1 over
     // the track's own row.
@@ -202,9 +213,18 @@ struct SampleLane {
 };
 SampleLane sample_lane(double row_top, double row_height, int count, int lane);
 
+class MarkerViewStore;
+class SelectionLink;
+
 class EditController {
 public:
     explicit EditController(TimelineDocument& doc);
+
+    // Link Timeline and Edit Selection (ADR-0167): not owned, may be null.
+    void set_link(SelectionLink* link) { link_ = link; }
+    // The timeline range was set: when linked the edit selection takes it, on
+    // the tracks it already covers.
+    void apply_timeline_range(model::Frames a, model::Frames b);
 
     TimelineDocument& document() { return doc_; }
     // After TimelineDocument::reset (a session was opened): the selection,
@@ -220,6 +240,8 @@ public:
     }
     void set_viewport(double width, double height);
     void set_track_height(double h);
+    // Per-track heights and hidden rows (ADR-0106); not owned, null for plain rows.
+    void set_row_policy(const RowPolicy* p) { rows_ = p; }
     void zoom_in();
     void zoom_out();
     // `x` is the pixel kept still; the insertion point when it is in view,
@@ -368,6 +390,11 @@ public:
     // Tools leaves them: the paste goes ahead, and `why` then names what was
     // not pasted, for the status line (empty when everything was).
     bool paste(std::string& why);
+    // Where the open session lives, and how a paste brings another session's
+    // audio in (ADR-0142). Unset, a paste of audio from another session is
+    // refused, saying so.
+    void set_session_folder_source(std::function<std::string()> folder);
+    void set_bring_in(BringInFn bring_in);
     // A copy of the selection placed straight after it on the same tracks,
     // which then becomes the selection. The clipboard is left alone.
     bool duplicate(std::string& why);
@@ -480,10 +507,36 @@ public:
     // link_marker_locate(). None, recall moves the selection only.
     using Locator = std::function<void(model::Frames frame)>;
     void set_locator(Locator l) { locate_ = std::move(l); }
+    // The Edit window's view stored with a marker (ADR-0137): interface
+    // state kept by `store`, not owned. Recall applies what the marker's
+    // Zoom and Track layout toggles tick, after the locate. `hide` receives
+    // the track ids to hide (ids that no longer exist already dropped); it
+    // is what applies the track layout, since the rows belong to the track
+    // list. With neither wired, a recall moves the position only.
+    using TrackHider = std::function<void(const std::vector<std::uint64_t>& hidden)>;
+    void set_marker_views(MarkerViewStore* store, TrackHider hide) {
+        marker_views_ = store;
+        hide_tracks_ = std::move(hide);
+    }
+    bool marker_has_view(model::Id marker) const;
+    // Captures zoom, left edge, track height and hidden tracks now.
+    bool store_marker_view(model::Id marker, std::string& why);
+    bool clear_marker_view(model::Id marker, std::string& why);
+    // `zoom` true sets the Zoom toggle, false the Track layout one.
+    bool set_marker_view_part(model::Id marker, bool zoom, bool on, std::string& why);
     // The marker drawn under `x` on the marker ruler, in its pixels: a
     // marker's flag, else a selection marker's bar; kNoId over neither.
     model::Id marker_at(double x) const;
     const model::MarkerList& markers() const { return *snapshot().edit->markers; }
+
+    // --- arrangement sections (edit_arrangement.cpp, ADR-0116) ---
+    // The session's range markers: the sections Move to / Copy to act on.
+    std::vector<model::Marker> arrangement_sections() const;
+    // Moves or copies `section` to the timeline frame `destination` as one
+    // Compound, one undo step. `message` is set either way: on success what
+    // the edit left where it was, else the refusal (nothing was changed).
+    bool arrangement_apply(model::Id section, model::Frames destination, model::SectionMode mode,
+                           std::string& message);
 
     // --- tracks: Pro Tools' Track menu (ADR-0023), each one undo step ---
     // `count` mono audio tracks named "Audio <n>" with the lowest free
@@ -538,6 +591,9 @@ public:
     bool remove_tempo(model::Frames at, std::string& why);
     // On the bar line nearest `near`.
     bool set_meter(model::Frames near, std::uint32_t beats, std::uint32_t note, std::string& why);
+    // One SetSettings with the map replaced, on the Undo Tempo stack
+    // (also the entry for tempo.edit detect, ui/beat).
+    bool submit_tempo(std::vector<model::TempoEntry> next, std::string& why);
     bool tempo_undo(std::string& why);
     bool tempo_redo(std::string& why);
     // What the Tempo dialog and the tempo.edit command take, at the start of
@@ -741,7 +797,6 @@ private:
     bool submit(const model::Operation& op, std::string& why);
     // The ids of `count` tracks from `first` down.
     bool selected_ids(int first, int count, std::vector<model::Id>& out, std::string& why) const;
-    bool refuse_in_mode(const char* what, std::string& why) const;
     model::Frames snapped(model::Frames f) const;
     void clamp_scroll();
     // Pages the view so `frame` is a tenth in from the left edge, when it
@@ -779,10 +834,14 @@ private:
                     std::string& why) const;
     // `span` becomes the selection: a range on its tracks, no region.
     void select_span(int first, int count, model::Frames a, model::Frames b);
-    // Refuses, by name, a gesture whose Shuffle form is not built (Strip
-    // Silence); the ones that are build their ripple (shuffle_shift).
     bool shift_time(bool insert, std::string& why);
-    bool refuse_shuffle(const char* gesture, const char* nothing_was, std::string& why) const;
+    // Shuffle's trim, move and spot: one compound with the ripple
+    // (edit_shuffle_ops.h). A grouped clip is refused: its group would not ripple.
+    bool submit_shuffle_trim(const model::TrimRegion& op, std::string& why);
+    bool submit_shuffle_move(const model::MoveRegion& op, std::string& why);
+    // Trim / move through the mode: Shuffle ripples, the others send the one op.
+    bool submit_trim(const model::TrimRegion& op, std::string& why);
+    bool submit_place(const model::MoveRegion& op, std::string& why);
     // Shuffle moves regions, not the automation under them: names the tracks
     // whose lanes now sit out of step, as a held notice.
     void note_shuffle_automation(const char* gesture, int first, int count);
@@ -804,6 +863,7 @@ private:
 
     TimelineDocument& doc_;
     void refresh_rows() const;
+    const RowPolicy* rows_ = nullptr;
     bool autolane_selected() const { return sel_.autolane >= 0; }
     // Cut, Copy, Paste and Clear on the selected lane's range: that lane on
     // every track the range covers that shows its lanes; the others are
@@ -841,16 +901,21 @@ private:
     Tool tool_ = Tool::Smart;
     GridValue grid_ = GridValue::Beat;
     Selection sel_;
+    SelectionLink* link_ = nullptr;
     struct TempoStep {
         std::vector<model::TempoEntry> before, after;
     };
-    bool submit_tempo(std::vector<model::TempoEntry> next, std::string& why);
     bool tempo_step(bool undo, std::string& why);
     std::vector<TempoStep> tempo_undo_, tempo_redo_;
     Drag drag_;
     model::FadeShape fade_shape_ = model::FadeShape::Linear;
     model::FadeShape crossfade_shape_ = model::FadeShape::EqualPower;
     Clipboard clipboard_;
+    std::function<std::string()> session_folder_;
+    BringInFn bring_in_;
+    void stamp_origin(Clipboard& clip) const;
+    bool bring_clipboard_in(Clipboard& use, std::vector<model::Member>& ops,
+                            std::string& why);
     std::vector<AutomationClip> auto_clips_;
     std::set<model::Id> autolanes_open_;
     std::set<model::Id> comp_lanes_open_;
@@ -859,7 +924,11 @@ private:
     int event_lane_ = 0;
     int repeat_count_ = 1;
     int loop_count_ = 3;
+    void apply_marker_view(model::Id marker);
+    void prune_marker_views();
     Locator locate_;
+    MarkerViewStore* marker_views_ = nullptr;
+    TrackHider hide_tracks_;
     uint64_t clipboard_serial_ = 0;
     model::Id spot_request_ = kNoId;
     const SampleSource* samples_ = nullptr;

@@ -17,8 +17,12 @@
 //     and of an unsaved recording alike, and a refused Open does not;
 //   - at 1280x720 the header's controls sit apart, and the elided note
 //     ends before the first of them;
+//   - strips hidden from the Mix window (per strip, per kind) leave the
+//     models alone, close the cards up, never include the master, are not
+//     saved, and are cleared when another session opens;
 //   - no QML "Binding loop" warning is raised while it runs.
 #include <QDir>
+#include <QFile>
 #include <QGuiApplication>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -40,6 +44,7 @@
 #include "session_model.h"
 #include "shell_model.h"
 #include "sonora/api/fake_engine.h"
+#include "sonora/model/operations.h"
 #include "theme.h"
 #include "timeline_document.h"
 
@@ -314,6 +319,114 @@ int layout(int tracks) {
     return 0;
 }
 
+// Strips the Mix window hides (ADR-0130): view state of the window, not of
+// the session. Hidden strips stay in the models; the cards after them close up.
+int strip_visibility() {
+    Rig r(6);
+    CHECK(r.connect());
+    r.sends.newBus();
+    r.settle();
+    std::string why;
+    CHECK(r.save(why));
+    const QString saved = r.session.sessionFile();
+    QQuickView view;
+    QQuickItem* root = show_mix(r, view, 1920, 1080);
+    CHECK(root != nullptr);
+    QQuickItem* button = named(root, QStringLiteral("stripsButton"));
+    CHECK(button != nullptr);
+    QQuickItem* mix = button;
+    while (mix != nullptr && !mix->property("hiddenIds").isValid()) mix = mix->parentItem();
+    CHECK(mix != nullptr);
+    const double px = theme::kStripRegular;
+    const auto click = [&](const QString& name) {
+        QQuickItem* i = named(root, name);
+        if (i == nullptr) return false;
+        const bool ok = QMetaObject::invokeMethod(i, "clicked", Q_ARG(QVariant, QVariant()));
+        QTest::qWait(20);
+        return ok;
+    };
+    const auto call = [&](const char* fn, const QString& key, bool hide) {
+        QMetaObject::invokeMethod(mix, fn, Q_ARG(QVariant, key), Q_ARG(QVariant, hide));
+        QTest::qWait(20);
+    };
+    const auto count = [&]() { return mix->property("hiddenCount").toInt(); };
+    const auto strip = [&](int t) {
+        return named(root, QStringLiteral("faderZone%1").arg(t))->parentItem();
+    };
+    const auto aux = [&]() { return named(root, QStringLiteral("auxFaderZone0"))->parentItem(); };
+    QQuickItem* badge = named(root, QStringLiteral("hiddenBadge"));
+    QQuickItem* master = named(root, QStringLiteral("busFaderZone"))->parentItem();
+    CHECK(badge != nullptr && !badge->isVisible() && count() == 0);
+
+    // Hiding strip 1: its card goes, the ones after it close up, the badge counts.
+    CHECK(click(QStringLiteral("stripsRow_t1")));
+    CHECK(count() == 1 && badge->isVisible());
+    CHECK(!strip(1)->isVisible() && strip(0)->isVisible() && strip(2)->isVisible());
+    CHECK(std::fabs(strip(0)->x()) < 0.5 && std::fabs(strip(2)->x() - px) < 0.5);
+    CHECK(std::fabs(aux()->x() - 5 * px) < 0.5);
+    CHECK(std::fabs(named(root, QStringLiteral("mixStrips"))->property("contentWidth").toDouble() -
+                    6 * px) < 0.5);
+    // It stays in the model: slot, meter and solo are as before.
+    CHECK(r.mixer.slotCount() == 6 && r.mixer.trackSlots().value(1) == 1);
+    QQuickItem* meter = named(root, QStringLiteral("mixMeter1"));
+    CHECK(meter != nullptr && meter->property("channel").toInt() == 1 &&
+          meter->property("source").value<QObject*>() == &r.shell);
+    CHECK(r.session.controller().toggle_solo(1, why));
+    r.settle();
+    CHECK(r.session.solos().value(1) && r.session.implicitMutes().value(0));
+    CHECK(r.session.controller().toggle_solo(1, why));
+
+    // The master is pinned.
+    call("setStripHidden", QStringLiteral("master"), true);
+    call("setStripHidden", QStringLiteral("m0"), true);
+    CHECK(count() == 1 && master->isVisible());
+
+    // Per kind, then Show all.
+    CHECK(click(QStringLiteral("stripsKind_t")));
+    CHECK(count() == 6 && master->isVisible() && aux()->isVisible());
+    for (int t = 0; t < 6; ++t) CHECK(!strip(t)->isVisible());
+    CHECK(std::fabs(aux()->x()) < 0.5);
+    CHECK(click(QStringLiteral("stripsKind_t")));
+    CHECK(count() == 0 && strip(5)->isVisible());
+    call("setStripHidden", QStringLiteral("t0"), true);
+    call("setStripHidden", QStringLiteral("a0"), true);
+    CHECK(count() == 2 && !aux()->isVisible());
+    CHECK(click(QStringLiteral("stripsShowAll")));
+    CHECK(count() == 0 && aux()->isVisible() && strip(0)->isVisible());
+
+    // The popup lists every strip, so a hidden one cannot be lost.
+    QQuickItem* popup = named(root, QStringLiteral("stripsPopup"));
+    CHECK(popup != nullptr && !popup->isVisible());
+    CHECK(QMetaObject::invokeMethod(popup, "toggle"));
+    QTest::qWait(20);
+    CHECK(popup->isVisible());
+    CHECK(named(root, QStringLiteral("stripsRow_t5")) != nullptr &&
+          named(root, QStringLiteral("stripsRow_a0")) != nullptr);
+
+    // Not in the saved file.
+    call("setStripHidden", QStringLiteral("t3"), true);
+    CHECK(r.save(why));
+    QFile f(r.session.sessionFile());
+    CHECK(f.open(QIODevice::ReadOnly));
+    const QByteArray bytes = f.readAll();
+    CHECK(!bytes.isEmpty() && !bytes.contains("hiddenIds") && !bytes.contains("stripsHidden"));
+
+    // Another session opening, a file or an unsaved recording, shows them all.
+    QSignalSpy opened(&r.session, &SessionModel::sessionOpened);
+    call("setStripHidden", QStringLiteral("t2"), true);
+    CHECK(count() == 2);
+    CHECK(r.session.openSessionFile(saved, true, why));
+    r.settle();
+    CHECK(opened.size() == 1 && count() == 0 && strip(2)->isVisible());
+    call("setStripHidden", QStringLiteral("t2"), true);
+    const QDir sessions(r.dir.path());
+    CHECK(sessions.mkpath(QStringLiteral("Untitled 2/Audio Files")));
+    CHECK(r.session.openRecording(sessions.filePath(QStringLiteral("Untitled 2")), true));
+    r.settle();
+    CHECK(opened.size() == 2 && count() == 0);
+    return 0;
+}
+
 // At 1280x720 the header holds the note, the views, the sends' switch and
 // the delay compensation on one line: each control apart from the next, and
 // the note, elided, ending before the views begin (PR #182 review).
@@ -336,6 +449,8 @@ int header_at_1280() {
                 left(note), right(note), note->implicitWidth(), left(views), right(views),
                 left(sendsRow), right(sendsRow), left(comp), right(comp));
     CHECK(note->width() > 0.0);
+    QQuickItem* group = named(root, QStringLiteral("groupControls"));
+    CHECK(group != nullptr && right(note) <= left(group) && right(group) <= left(views));
     CHECK(right(note) <= left(views));
     CHECK(right(views) <= left(sendsRow));
     CHECK(right(sendsRow) <= left(comp));
@@ -343,6 +458,37 @@ int header_at_1280() {
     // Longer than its room, the note is cut short, not drawn under the
     // buttons.
     CHECK(note->implicitWidth() <= note->width() || note->property("truncated").toBool());
+    return 0;
+}
+
+// A strip of two channels shows its pan as a balance with end marks; a mono
+// strip does not, and both keep the pan area the gestures land on.
+int stereo_balance_marks() {
+    Rig r(4);
+    CHECK(r.connect());
+    std::string why;
+    // Room for the stereo track on the engine's tracks (ADR-0023 §5).
+    CHECK(r.doc.submit(model::RemoveTrack{r.doc.snapshot().edit->tracks.back()->id}, why));
+    r.settle();
+    const int mono = r.session.trackCount() - 1;
+    model::AddTrack add;
+    add.track = r.doc.reserve_id();
+    add.name = "Overheads";
+    add.playlist = r.doc.reserve_id();
+    add.playlist_name = "Overheads.01";
+    add.channels = 2;
+    add.mix.input = {0, 1};
+    CHECK(r.doc.submit(add, why));
+    r.settle();
+    const int st = mono + 1;
+    QQuickView view;
+    QQuickItem* root = show_mix(r, view, 1920, 1080);
+    CHECK(root != nullptr);
+    QQuickItem* marks = named(root, QStringLiteral("balanceMarks%1").arg(st));
+    CHECK(marks != nullptr && marks->isVisible());
+    CHECK(named(root, QStringLiteral("balanceMarks%1").arg(mono)) == nullptr);
+    CHECK(named(root, QStringLiteral("panArea%1").arg(st)) != nullptr);
+    CHECK(named(root, QStringLiteral("panArea%1").arg(mono)) != nullptr);
     return 0;
 }
 
@@ -362,6 +508,8 @@ int main(int argc, char** argv) {
     if (layout(18) != 0) return 1;
     if (layout(48) != 0) return 1;
     if (header_at_1280() != 0) return 1;
+    if (strip_visibility() != 0) return 1;
+    if (stereo_balance_marks() != 0) return 1;
     // QML warns, and carries on with a binding that never settles.
     if (g_binding_loops != 0) {
         std::fprintf(stderr, "FAIL: %d \"Binding loop\" warnings\n", g_binding_loops);

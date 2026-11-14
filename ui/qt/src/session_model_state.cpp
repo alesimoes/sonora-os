@@ -70,6 +70,8 @@ QVariantList SessionModel::trackRows() const {
         const TrackEdit& t = *s.edit->tracks[i];
         QVariantMap row;
         row[QStringLiteral("top")] = v.tops.size() > i ? v.tops[i] : static_cast<qreal>(i) * v.track_height;
+        row[QStringLiteral("height")] = v.row_h(static_cast<int>(i));
+        row[QStringLiteral("hidden")] = v.row_hidden(static_cast<int>(i));
         row[QStringLiteral("shown")] = v.autolanes_open(static_cast<int>(i));
         row[QStringLiteral("canShow")] = t.kind != TrackKind::Midi;
         // Take lanes (ADR-0031 §1): the other playlists, shown under the
@@ -137,6 +139,12 @@ QStringList SessionModel::trackPlaylists(int track) const {
     QStringList out;
     for (const std::string& name : ctl_.playlist_names(track)) out << q(name);
     return out;
+}
+
+int SessionModel::trackChannels(int track) const {
+    const auto& tracks = ctl_.snapshot().edit->tracks;
+    if (track < 0 || static_cast<std::size_t>(track) >= tracks.size()) return 1;
+    return tracks[static_cast<std::size_t>(track)]->channels;
 }
 
 QString SessionModel::selectionStart() const {

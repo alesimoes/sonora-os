@@ -66,6 +66,16 @@ fields that v0 leaves zeroed, so writing zeroes there is valid.
   `brain/research/bwf-interop.md`. Ardour treats a TimeReference of 0 as
   "no timestamp".
 
+## RF64 in the export writer
+
+Export (ADR-0119, amends ADR-0054) reserves a 36-byte `JUNK` chunk right after
+`WAVE` in every BWF and WAV. When the finished file is over 0xFFFFFFFF bytes,
+`close()` patches it in place into an RF64 file: `RF64`, RIFF size
+0xFFFFFFFF, `ds64` (riffSize, dataSize, sampleCount as 64-bit, tableLength 0),
+data size 0xFFFFFFFF. Under the limit it stays RIFF with the `JUNK` chunk. AIFF
+over 4 GiB is refused. Not yet checked against a real file over 4 GiB in a
+third-party reader.
+
 ## Open question
 
 Files over 4 GB overflow the 32-bit RIFF size fields. Pro Tools and most tools

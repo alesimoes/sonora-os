@@ -16,6 +16,7 @@
 // involved; engine/plugin_client is the real runner.
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
@@ -809,6 +810,142 @@ int test_looped_lane_behind_a_chain() {
     return 0;
 }
 
+// A plan laid out by hand, for a graph layout_mix_graph() does not make yet:
+// an insert on an aux bus (ADR-0024 §5). Each node's input edges are added
+// with it, so edges stay grouped by the node they feed.
+struct HandPlan {
+    PlaybackPlan* p = nullptr;
+    uint32_t n = 0;
+    uint32_t e = 0;
+
+    HandPlan(Session& s, uint32_t nodes, uint32_t edges) {
+        sonora::PlanSizes sizes;
+        sizes.tracks = static_cast<uint32_t>(s.tracks().size());
+        sizes.nodes = nodes;
+        sizes.edges = edges;
+        p = sonora::create_plan(sizes);
+        p->epoch = s.plans().next_epoch();
+        p->chunk_frames = 256;
+        p->pan_exponent = 0.0f;   // centre is 1 on each side: exact sums
+        for (uint32_t t = 0; t < sizes.tracks; ++t) {
+            p->tracks[t].engine_track = t;
+            p->tracks[t].channels = 1;
+        }
+        p->last_insert_node = sonora::kNoNode;
+    }
+
+    uint32_t add(NodeKind kind, uint32_t stable_id, uint32_t track, std::vector<uint32_t> from) {
+        PlanNode& node = p->nodes[n];
+        node = PlanNode{};
+        node.kind = kind;
+        node.stable_id = stable_id;
+        node.scratch_buffer = n;
+        node.track = track;
+        node.first_input_edge = e;
+        node.input_edge_count = static_cast<uint32_t>(from.size());
+        for (const uint32_t f : from) p->edges[e++] = sonora::PlanEdge{f, n, 0, sonora::kNoDelayLine};
+        return n++;
+    }
+
+    uint32_t chain(uint32_t id, uint32_t track, uint32_t from, uint32_t slot, uint32_t latency) {
+        const uint32_t c = add(NodeKind::InsertChain, sonora::kInsertChainIdTag | id, track, {from});
+        PlanNode& node = p->nodes[c];
+        node.channel_slot = slot;
+        node.param_store = 7 + slot;
+        node.node_state = slot;
+        node.latency_frames = latency;
+        node.chain_id = 100 + slot;
+        node.channels = 1;
+        p->last_insert_node = c;
+        return c;
+    }
+
+    const sonora::PlanEdge& edge(uint32_t from, uint32_t to) const {
+        const PlanNode& node = p->nodes[to];
+        for (uint32_t k = 0; k < node.input_edge_count; ++k) {
+            if (p->edges[node.first_input_edge + k].from_node == from) {
+                return p->edges[node.first_input_edge + k];
+            }
+        }
+        std::fprintf(stderr, "  no edge %u -> %u\n", from, to);
+        std::abort();
+    }
+};
+
+// Track -> bus A -> bus B -> Master, a 100-frame insert on bus A, against a
+// dry track on the Master: the dry edge waits for the insert, the chain of
+// buses adds nothing, and both land on the same frame.
+int test_insert_on_a_bus_into_a_bus() {
+    Rig rig(2, 16384);
+    DelayRunner runner(1, 4096);
+    rig.session->set_insert_chains(&runner);
+    rig.session->tracks()[0]->set_pan(-1.0f);
+    rig.session->tracks()[1]->set_pan(-1.0f);
+    rig.session->set_aux(0, 1.0f, 0.0f, false);
+    rig.session->set_aux(1, 1.0f, 0.0f, false);
+    HandPlan h(*rig.session, 9, 8);
+    const uint32_t routed = h.add(NodeKind::TrackOut, 1, 0, {});
+    const uint32_t dry = h.add(NodeKind::TrackOut, 2, 1, {});
+    const uint32_t sum_a = h.add(NodeKind::AuxSum, sonora::kAuxSumIdTag | 1, 0, {routed});
+    const uint32_t insert = h.chain(0x10001, 0, sum_a, 0, 100);
+    const uint32_t ret_a = h.add(NodeKind::AuxFader, sonora::kAuxFaderIdTag | 1, 0, {insert});
+    const uint32_t sum_b = h.add(NodeKind::AuxSum, sonora::kAuxSumIdTag | 2, 1, {ret_a});
+    const uint32_t ret_b = h.add(NodeKind::AuxFader, sonora::kAuxFaderIdTag | 2, 1, {sum_b});
+    const uint32_t master = h.add(NodeKind::BusSum, sonora::kBusSumStableId, 0, {dry, ret_b});
+    h.add(NodeKind::HardwareOut, sonora::kHardwareOutStableId, 0, {master});
+    DelayLinePool pool(rig.session->delay_lines());
+    const sonora::Compensation comp = sonora::compensate(*h.p, rig.session->max_delay_frames(), pool);
+    CHECK(comp.compensation_frames == 100);
+    CHECK(comp.shortfall_frames == 0);
+    CHECK(h.edge(dry, master).delay_frames == 100);
+    CHECK(h.edge(ret_b, master).delay_frames == 0);
+    CHECK(h.edge(ret_a, sum_b).delay_frames == 0);
+    CHECK(h.edge(routed, sum_a).delay_frames == 0);
+    CHECK(rig.publish(h.p));
+
+    reset_heap_counts();
+    long checked = 0;
+    for (int blk = 0; blk < 20; ++blk) {
+        const int64_t at = rig.frame;
+        rig.block();
+        for (uint32_t i = 0; i < kBlock; ++i) {
+            const float want = signal(at + i - 100);
+            CHECK(rig.out[0][i] == want + want);
+            if (want != 0.0f) ++checked;
+        }
+    }
+    CHECK(checked > 500);
+    CHECK(runner.sequence_errors == 0);
+    CHECK(heap_untouched());
+    return 0;
+}
+
+// A bus no strip feeds, with an insert: the insert may play a tail into the
+// return, so the return is aligned like any sounding path, not taken for
+// silence (ADR-0148 §2).
+int test_insert_on_a_bus_with_no_input_is_aligned() {
+    Rig rig(2, 16384);
+    HandPlan h(*rig.session, 9, 8);
+    const uint32_t dry = h.add(NodeKind::TrackOut, 1, 0, {});
+    const uint32_t source = h.add(NodeKind::TrackSource, sonora::kTrackSourceIdTag | 2, 1, {});
+    const uint32_t chain = h.chain(2, 1, source, 0, 200);
+    const uint32_t fader = h.add(NodeKind::TrackFader, sonora::kTrackFaderIdTag | 2, 1, {chain});
+    const uint32_t sum = h.add(NodeKind::AuxSum, sonora::kAuxSumIdTag | 1, 0, {});
+    const uint32_t insert = h.chain(0x10001, 0, sum, 1, 100);
+    const uint32_t ret = h.add(NodeKind::AuxFader, sonora::kAuxFaderIdTag | 1, 0, {insert});
+    const uint32_t master = h.add(NodeKind::BusSum, sonora::kBusSumStableId, 0, {dry, fader, ret});
+    h.add(NodeKind::HardwareOut, sonora::kHardwareOutStableId, 0, {master});
+    DelayLinePool pool(rig.session->delay_lines());
+    const sonora::Compensation comp = sonora::compensate(*h.p, rig.session->max_delay_frames(), pool);
+    CHECK(comp.compensation_frames == 200);
+    CHECK(h.edge(dry, master).delay_frames == 200);
+    CHECK(h.edge(fader, master).delay_frames == 0);
+    CHECK(h.edge(ret, master).delay_frames == 100);
+    CHECK(h.edge(ret, master).delay_line < rig.session->delay_lines());
+    sonora::destroy_plan(h.p);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -829,6 +966,8 @@ int main() {
     if (test_zero_frame_callback_neither_begins_nor_ends()) return 1;
     if (test_no_node_state_is_unbound_and_never_early()) return 1;
     if (test_looped_lane_behind_a_chain()) return 1;
+    if (test_insert_on_a_bus_into_a_bus()) return 1;
+    if (test_insert_on_a_bus_with_no_input_is_aligned()) return 1;
     std::printf("plan_pdc: ok\n");
     return 0;
 }

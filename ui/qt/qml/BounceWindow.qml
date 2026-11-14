@@ -22,6 +22,22 @@ Rectangle {
     property bool normalise: false
     property int targetLufs: -16
 
+    property string stemsBy: "track"
+    property var stemsOff: []   // indices of the tracks left out
+
+    function toggleStemTrack(i) {
+        const k = stemsOff.indexOf(i)
+        stemsOff = k < 0 ? stemsOff.concat([i]) : stemsOff.filter(x => x !== i)
+    }
+    // The ids mix.stems names the checked tracks by.
+    function stemsChecked() {
+        const ids = []
+        for (let i = 0; i < session.trackCount; ++i) {
+            if (stemsOff.indexOf(i) < 0) ids.push(session.trackIdAt(i))
+        }
+        return ids
+    }
+
     // FLAC and AIFF hold no 32-bit float.
     function setFile(f) {
         file = f
@@ -34,6 +50,8 @@ Rectangle {
     color: Theme.panel
     border.color: Theme.borderStrong
     visible: session.bounceOpen
+    // A track left out last time is not left out of the next session's export.
+    onVisibleChanged: if (visible) stemsOff = []
 
     MouseArea { anchors.fill: parent }
 
@@ -276,6 +294,77 @@ Rectangle {
             text: "Off by default. On, one gain brings the whole file to the target, and never past -1 dBFS."
             color: Theme.textTertiary
             font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+        }
+
+        // --- Export Stems (ADR-0085): hidden unless the engine has it ---
+        Overline { text: "STEMS"; visible: win.shell.stemsAvailable }
+        Row {
+            visible: win.shell.stemsAvailable
+            spacing: Theme.space2
+            SButton {
+                objectName: "stemsByTrack"
+                text: "By track"; implicitWidth: 120
+                active: win.stemsBy === "track"
+                onClicked: win.stemsBy = "track"
+            }
+            SButton {
+                objectName: "stemsByOutput"
+                text: "By output"; implicitWidth: 120
+                active: win.stemsBy === "output"
+                onClicked: win.stemsBy = "output"
+            }
+        }
+        Flow {
+            objectName: "stemsTracks"
+            visible: win.shell.stemsAvailable && win.stemsBy === "track"
+            width: parent.width
+            spacing: Theme.space2
+            Repeater {
+                model: win.session.trackNames
+                SButton {
+                    required property int index
+                    required property string modelData
+                    objectName: "stemsTrack_" + index
+                    text: modelData; implicitWidth: 96
+                    active: win.stemsOff.indexOf(index) < 0
+                    onClicked: win.toggleStemTrack(index)
+                }
+            }
+        }
+        Text {
+            objectName: "stemsHelp"
+            visible: win.shell.stemsAvailable
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: (win.stemsBy === "track"
+                   ? "One file per checked track. "
+                   : "One file per output the tracks feed (each bus and the master). ")
+                  + "Offline only, with the file, depth, rate, dither and name above; the files go in a folder named after the name. "
+                  + "Stems are not the mix: bus processing that depends on level (a compressor, say) acts on each stem alone, so their sum differs from the bounced mix."
+            color: Theme.textTertiary
+            font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
+        }
+        SButton {
+            objectName: "stemsStart"
+            visible: win.shell.stemsAvailable
+            text: "Export Stems"; implicitWidth: 120
+            available: !win.realTime && !win.shell.bounceRunning
+                       && (win.stemsBy === "output" || win.stemsChecked().length > 0)
+            onClicked: {
+                win.shell.startStems(win.realTime, win.stemsBy,
+                                     win.stemsBy === "track" ? win.stemsChecked() : [],
+                                     win.file, win.bits, win.rate, win.dither, nameInput.text)
+                nameInput.focus = false
+            }
+        }
+        Text {
+            objectName: "stemsRealTimeNote"
+            visible: win.shell.stemsAvailable && win.realTime
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: "Stems render offline only: choose Offline above."
+            color: Theme.caution
+            font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
         }
 
         // --- progress ---

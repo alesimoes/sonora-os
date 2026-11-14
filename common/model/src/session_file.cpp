@@ -662,10 +662,31 @@ bool v24_to_v25(Value& root, std::vector<Repair>&, std::string& error) {
     return true;
 }
 
+// v25 -> v26 (ADR-0058): an insert may carry "key_bus", the aux bus keying
+// its side-chain input. A version 25 file opens with every insert unkeyed,
+// and one that holds the key is refused, as a version 25 reader would.
+bool v25_to_v26(Value& root, std::vector<Repair>&, std::string& error) {
+    const Value* tracks = root.find("tracks");
+    for (std::size_t t = 0; tracks != nullptr && tracks->is_array() && t < tracks->items().size(); ++t) {
+        const Value& tv = tracks->items()[t];
+        const Value* list = tv.is_object() ? tv.find("inserts") : nullptr;
+        for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
+            const Value& in = list->items()[i];
+            if (in.is_object() && in.find("key_bus") != nullptr) {
+                error = "tracks[" + std::to_string(t) + "].inserts[" + std::to_string(i) +
+                        "] has \"key_bus\", which version 25 does not define";
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 const std::array<Migration, kFormatVersion - 1> kMigrations{
     {v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
      v9_to_v10, v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
-     v16_to_v17, v17_to_v18, v18_to_v19, v19_to_v20, carried, carried, v22_to_v23, v23_to_v24, v24_to_v25}};
+     v16_to_v17, v17_to_v18, v18_to_v19, v19_to_v20, carried, carried, v22_to_v23, v23_to_v24, v24_to_v25,
+     v25_to_v26}};
 
 bool migrate(Value& root, std::int64_t from, std::vector<Repair>& repairs,
              std::string& error) {
@@ -807,6 +828,8 @@ Value insert_value(const Insert& in, const InsertMix& m) {
     p.set("name", Value::string(in.plugin.name));
     p.set("version", Value::string(in.plugin.version));
     v.set("active", Value::boolean(in.active));
+    // Only when keyed, so an unkeyed session is written as version 25 wrote it.
+    if (in.key_bus != 0) v.set("key_bus", id_value(in.key_bus));
     v.set("bypass", Value::boolean(m.bypass));
     Value& params = v.set("params", Value::array());
     for (const ParamValue& pv : m.params) {
@@ -1614,7 +1637,8 @@ bool read_inserts(Reader& rd, const Value& track, const std::string& path, Track
     for (std::size_t i = 0; list != nullptr && list->is_array() && i < list->items().size(); ++i) {
         const Value& v = list->items()[i];
         const std::string p = index_path(path + ".inserts", i);
-        if (!rd.keys(v, p, {"id", "slot", "plugin", "active", "bypass", "params"}, {"state"})) {
+        if (!rd.keys(v, p, {"id", "slot", "plugin", "active", "bypass", "params"},
+                     {"state", "key_bus"})) {
             return false;
         }
         Insert in;
@@ -1633,6 +1657,8 @@ bool read_inserts(Reader& rd, const Value& track, const std::string& path, Track
         if (!rd.text(pv, pp, "name", in.plugin.name)) return false;
         if (!rd.text(pv, pp, "version", in.plugin.version)) return false;
         if (!rd.flag(v, p, "active", in.active)) return false;
+        // A bus id the file does not hold is kept: a silent key, shown.
+        if (v.find("key_bus") != nullptr && !rd.id(v, p, "key_bus", in.key_bus)) return false;
         if (!rd.flag(v, p, "bypass", m.bypass)) return false;
         const Value* params = nullptr;
         if (!rd.array(v, p, "params", params)) return false;

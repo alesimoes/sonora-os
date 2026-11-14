@@ -33,6 +33,13 @@
 //                        document's values, silent until Ready (B3, #80)
 //   repost_bypass_off    an un-bypass the audio thread dropped is re-posted
 //                        (the #80 review's should-fix 1)
+//   render_solo          ADR-0087 §4: one insert soloed for a render, the
+//                        others bypassed on their hosts, confirmed only once
+//                        the host reads it, the document untouched, a mix
+//                        change keeping the override, the unsolo restoring
+//   render_unsolo_document  the unsolo republishes the document's bypass,
+//                        0 or 1, whatever moved while the solo stood
+//   render_solo_refused  a missing insert, an unknown one, a chainless track
 //   gesture_left_open    a host that dies mid-touch: the touched value is
 //                        written to the document (M3, #80)
 //   failed_edit          an edit whose host crashes at start: faulted, the
@@ -706,6 +713,120 @@ int scenario_repost_bypass_off(const Args& a) {
     check(rig.session->plugin_params_dropped() > dropped, "the un-bypass was dropped by the audio thread");
     check(rig.until([&] { return rig.hosting->host_value(500, "", bypass) && bypass == 0.f; }, 3000),
           "re-posted: the store is not bypassed, as the document says");
+    return failures ? 1 : 0;
+}
+
+// ADR-0087 §4: Process Selection through one insert. Returns true once the
+// insert's host reads `want`; false if it never does within `max_ms`.
+bool host_bypass_reads(Rig& rig, Id insert, float want, uint64_t max_ms) {
+    float v = -1.f;
+    return rig.until([&] { return rig.hosting->host_value(insert, "", v) && v == want; }, max_ms);
+}
+
+bool doc_bypass(const Rig& rig, Id insert) {
+    const InsertMix* m = rig.history.current().mix.find_insert(insert);
+    return m != nullptr && m->bypass;
+}
+
+// Two eg-amps, A (500) and B (501): B soloed for the render silences A on
+// its host only, a mix change while it stands keeps A silenced, and the
+// unsolo puts A back where the document says.
+int scenario_render_solo(const Args& a) {
+    std::printf("render_solo: B soloed for a render, A silenced on its host only\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.apply(insert_op(100, 501, 1, kEgAmp));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "both eg-amps running");
+    check(host_bypass_reads(rig, 500, 0.f, 2000) && host_bypass_reads(rig, 501, 0.f, 2000), "neither bypassed");
+    const size_t ops_before = rig.ops_seen.size();
+
+    check(!rig.hosting->render_solo(100, 501), "not confirmed before the audio thread took the override");
+    bool confirmed = false;
+    rig.until([&] { return confirmed = rig.hosting->render_solo(100, 501); }, 3000);
+    check(confirmed, "confirmed once the host reads it");
+    float va = -1.f, vb = -1.f;
+    check(rig.hosting->host_value(500, "", va) && va == 1.f, "A reads bypassed on its host");
+    check(rig.hosting->host_value(501, "", vb) && vb == 0.f, "B, the soloed one, does not");
+    check(!doc_bypass(rig, 500) && !doc_bypass(rig, 501), "the document's bypass is unchanged");
+    const bool wrote_bypass = std::any_of(rig.ops_seen.begin() + long(ops_before), rig.ops_seen.end(),
+                                          [](const Operation& op) { return model::holds_alternative<SetInsertBypass>(op); });
+    check(!wrote_bypass, "the hosting wrote no bypass into the document");
+
+    rig.apply(SetInsertParams{500, {{"gain", -12.f}}});
+    rig.show();
+    float gain = 0.f;
+    check(rig.until([&] { return rig.hosting->host_value(500, "gain", gain) && gain == -12.f; }, 3000),
+          "a mix change on A reaches its host while the override stands");
+    check(rig.hosting->host_value(500, "", va) && va == 1.f, "and A stays bypassed on its host");
+    check(rig.hosting->render_solo(100, 501), "the solo still confirms");
+
+    rig.hosting->render_unsolo(100);
+    check(host_bypass_reads(rig, 500, 0.f, 3000), "unsolo: A back to the document's 0");
+    check(rig.hosting->host_value(501, "", vb) && vb == 0.f, "B untouched");
+    check(!doc_bypass(rig, 500), "the document still says A is active");
+    return failures ? 1 : 0;
+}
+
+// A bypassed in the document: un-bypassing it in the document while B is
+// soloed keeps it silent on its host, the unsolo lets the document's 0
+// through, and with A bypassed again the unsolo leaves it at 1.
+int scenario_render_unsolo_document(const Args& a) {
+    std::printf("render_unsolo_document: the unsolo republishes the document's bypass\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.apply(insert_op(100, 501, 1, kEgAmp));
+    rig.apply(SetInsertBypass{500, true});
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "both eg-amps running");
+    check(host_bypass_reads(rig, 500, 1.f, 2000), "A bypassed, as the document says");
+
+    bool confirmed = false;
+    rig.until([&] { return confirmed = rig.hosting->render_solo(100, 501); }, 3000);
+    check(confirmed, "B soloed");
+    rig.apply(SetInsertBypass{500, false});
+    rig.show();
+    for (int i = 0; i < 20; ++i) rig.turn();
+    float va = -1.f;
+    check(rig.hosting->host_value(500, "", va) && va == 1.f, "A un-bypassed in the document stays silent for the render");
+    rig.hosting->render_unsolo(100);
+    check(host_bypass_reads(rig, 500, 0.f, 3000), "unsolo: A takes the document's 0");
+
+    rig.apply(SetInsertBypass{500, true});
+    rig.show();
+    check(host_bypass_reads(rig, 500, 1.f, 3000), "A bypassed again in the document");
+    confirmed = false;
+    rig.until([&] { return confirmed = rig.hosting->render_solo(100, 501); }, 3000);
+    check(confirmed, "B soloed again");
+    rig.hosting->render_unsolo(100);
+    for (int i = 0; i < 20; ++i) rig.turn();
+    check(rig.hosting->host_value(500, "", va) && va == 1.f, "unsolo: A stays at the document's 1");
+    float vb = -1.f;
+    check(rig.hosting->host_value(501, "", vb) && vb == 0.f, "B active throughout");
+    rig.hosting->render_unsolo(100);
+    check(true, "a second unsolo is harmless");
+    return failures ? 1 : 0;
+}
+
+// The refusals: an insert the running host left out, one it does not know,
+// a track without a chain.
+int scenario_render_solo_refused(const Args& a) {
+    std::printf("render_solo_refused: nothing to solo\n");
+    Rig rig(a);
+    rig.apply(track_op(100, 101, "A"));
+    rig.apply(track_op(102, 103, "B"));
+    rig.apply(insert_op(100, 500, 0, kEgAmp));
+    rig.apply(insert_op(100, 501, 1, "urn:sonora:test#not-installed"));
+    rig.show(true);
+    check(rig.until([&] { return rig.bound_at(0, kBlock); }, 15000), "A runs eg-amp without the missing one");
+    check(!rig.hosting->render_solo(100, 501), "the missing insert the host left out is refused");
+    check(!rig.hosting->render_solo(100, 999), "an insert the chain does not hold is refused");
+    check(!rig.hosting->render_solo(102, 500), "a track without a chain is refused");
+    for (int i = 0; i < 10; ++i) rig.turn();
+    float v = -1.f;
+    check(rig.hosting->host_value(500, "", v) && v == 0.f, "a refused solo silenced nothing");
     return failures ? 1 : 0;
 }
 
@@ -2531,6 +2652,9 @@ int main(int argc, char** argv) {
     else if (a.scenario == "values_while_starting") rc = scenario_values_while_starting(a);
     else if (a.scenario == "reload_starts_afresh") rc = scenario_reload_starts_afresh(a);
     else if (a.scenario == "repost_bypass_off") rc = scenario_repost_bypass_off(a);
+    else if (a.scenario == "render_solo") rc = scenario_render_solo(a);
+    else if (a.scenario == "render_unsolo_document") rc = scenario_render_unsolo_document(a);
+    else if (a.scenario == "render_solo_refused") rc = scenario_render_solo_refused(a);
     else if (a.scenario == "gesture_left_open") rc = scenario_gesture_left_open(a);
     else if (a.scenario == "failed_edit") rc = scenario_failed_edit(a);
     else if (a.scenario == "move_off_missing") rc = scenario_move_off_missing(a);

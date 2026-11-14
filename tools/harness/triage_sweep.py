@@ -9,9 +9,11 @@ classes, so no human has to look.
 A blocked work task whose branch received a commit after the block was
 finished by hand (triage.hand_fixed): it goes to QA, whatever its note said.
 
+A block whose note asks for the owner is marked `owner` (owner_infer).
+
 A janitor wake blocked by "containers running" is closed: the next merge
 wakes the janitor again, a retry of the old one would only pile up."""
-from . import blockinfo, triage
+from . import blockinfo, owner_infer, owner_route, triage
 
 SWEEP_EVERY_S = 3600.0
 ROLE = "engineer"
@@ -60,7 +62,12 @@ def _revive(o, t, why, now):
 
 def sweep_one(o, t, features, now):
     why = t.get("note") or ""
-    if t.get("owner") or blockinfo.superseded(t, features):
+    if owner_infer.mark(o, t):
+        return True
+    # A real owner ruling or a parked hardware run: nothing to triage. A
+    # false owner ask (owner_route) is swept like any other block.
+    if blockinfo.waits_on_owner(t) or blockinfo.superseded(t, features) \
+            or blockinfo.cause_of(t) == owner_route.HARDWARE:
         return False
     if _is_busy_janitor_wake(t):
         close_wake(o, t, "janitor: containers running; next merge wakes it")

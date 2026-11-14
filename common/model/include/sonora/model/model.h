@@ -640,8 +640,14 @@ struct Insert {
     std::uint8_t slot = 0;   // below kInsertSlots; unique on the track, gaps allowed
     PluginRef plugin;
     bool active = true;      // false: not instantiated, not in the chain, no latency
+    // The aux bus whose sum keys its side-chain input (ADR-0058), 0 for none.
+    // Structure, set by SetInsertKey. An id no bus has (an old file) is kept
+    // and played as a silent key, so the warning shows instead of the mix
+    // changing.
+    Id key_bus = 0;
     bool operator==(const Insert& o) const {
-        return id == o.id && slot == o.slot && plugin == o.plugin && active == o.active;
+        return id == o.id && slot == o.slot && plugin == o.plugin && active == o.active &&
+               key_bus == o.key_bus;
     }
 };
 

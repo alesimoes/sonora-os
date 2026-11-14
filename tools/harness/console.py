@@ -47,7 +47,9 @@ def handle_request(orch, req):
 
 def _owner_message(orch, req):
     to, text = req.get("to"), str(req.get("text") or "")
-    msg = S.add_message(orch.hdir, "user", text, to=to)
+    sent = req.get("sent")
+    sent = sent if isinstance(sent, str) and len(sent) <= 40 else None
+    msg = S.add_message(orch.hdir, "user", text, to=to, ts=sent)
     if not to:
         return    # tick() starts the console run
     run = orch.store.last_run_of_name(to) if P.valid_name(str(to)) else None

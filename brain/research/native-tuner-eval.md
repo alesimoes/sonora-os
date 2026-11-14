@@ -73,20 +73,46 @@ native_tuner_eval --data ~/data/vocadito --dataset vocadito --out vocadito-repor
 native_tuner_eval --data ~/data/vocalset --dataset vocalset --out vocalset-report.json --key 0 --scale major
 ```
 
-## Results (not yet measured)
+## Results (first measured run, 2026-11-13)
 
-Every cell is empty until a command prints the value. Fill a row only from that
-command's output, and write the machine and settings beside it.
+Machine: Intel i7-11800H, Linux container `sonora-build:trixie` (GCC 14.2,
+Release), under Windows 11 Docker Desktop. Commit `a5bd87ac` (tool unchanged).
+Settings: tuner key 0, scale `major` (index 1), YIN. Reports (numbers only) were
+written with `--out`; each cell is the tool's printed value, rounded to 3 places.
 
-| Dataset | Measurement | Detector / path | Value | Command and output file | Machine | Settings |
-|---|---|---|---|---|---|---|
-| vocadito | Raw pitch accuracy (RPA), 50 cents | YIN | not yet measured | | | |
-| vocadito | Raw pitch accuracy (RPA), 50 cents | pYIN | not yet measured | | | |
-| vocadito | Raw chroma accuracy (RCA) | YIN | not yet measured | | | |
-| vocadito | Voicing recall / false alarm | YIN | not yet measured | | | |
-| VocalSet | Tuner latency (ms) | processor, hard retune | not yet measured | not in the tool's report; source to be confirmed (measure harness) | | |
-| VocalSet | Correction quality: in-scale fraction | processor | not yet measured | `in_scale_fraction` in the `--out` JSON | | |
-| VocalSet | CPU, busiest vocal clip (class C) | processor | not yet measured | not in the tool's report; source to be confirmed (measure harness) | | |
+Datasets: vocadito record 5578259 (version 2 on its card), all 40 clips, the
+tool's loader unchanged (its CSVs are `time_s,f0_hz` at a 256/44100 s hop, 0 Hz
+unvoiced; this matched the loader). VocalSet: record 1442513, file
+`VocalSet11.zip` (the 2.1 GB archive; the card's v1.2 file was not used), the
+101 clips under `*/scales/straight/` only (a subset, not the whole set).
+
+```sh
+native_tuner_eval --data D/vocadito --dataset vocadito --out vocadito-report.json
+native_tuner_eval --data D/vocalset --dataset vocalset --out vocalset-report.json --key 0 --scale major
+```
+
+| Dataset | Measurement | Detector range | Value |
+|---|---|---|---|
+| vocadito | RPA, 50 cents (YIN) | low / medium / high | 0.922 / 0.917 / 0.716 |
+| vocadito | RCA (YIN) | low / medium / high | 0.931 / 0.930 / 0.727 |
+| vocadito | Voicing recall (YIN) | low / medium / high | 0.942 / 0.941 / 0.742 |
+| vocadito | Voicing false alarm (YIN) | low / medium / high | 0.126 / 0.114 / 0.096 |
+| vocadito | In-scale fraction, processor | | 0.806 |
+| VocalSet scales/straight | In-scale fraction, processor | | 0.889 |
+| vocadito | RPA, pYIN | | no published figure found (see below); not run |
+| VocalSet | Latency, CPU class C | | not measured (the tool does not report them) |
+
+The VocalSet in-scale figure is against C major while the singers' scales are
+in their own keys; the processor snaps to the scale asked for, so this is how
+well the corrected output sits on that scale, not a musical-key claim. vocadito
+frames: 140782 per range.
+
+pYIN: the vocadito paper (Bittner et al., arXiv 2110.05580) reports baselines
+only for the Vocano note transcriber (Table 3) and CREPE (Table 4: RPA 0.98,
+RCA 0.98, voicing recall 0.89, false alarm 0.31); it has no pYIN row. The
+paper also says the f0 annotations were seeded by pYIN in Tony and then
+corrected by hand, which would favour pYIN on this set. pYIN's RPA on
+vocadito is therefore unverified.
 
 ## Open measurements
 
@@ -106,8 +132,8 @@ command's output, and write the machine and settings beside it.
    busiest VocalSet clip and measure it with the measure harness against the
    ADR-0011 §3.5 class C budget at the settings used above. A processor over its
    class ships gated off until it has an eco mode.
-4. **The real-voice bars.** ADR-0077 point 4 sets the bars from the first
-   measured run. They are not set yet.
+4. **The real-voice bars** are set from this run in `plugins/native/tuner/quality.json`
+   (`real_voice`), ADR-0181.
 
 ## Licence and attribution
 

@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sonora/model/session_template.h"
 
+#include <algorithm>
+#include <iterator>
 #include <memory>
 #include <utility>
+
+#include "sonora/model/template_list.h"
 
 namespace sonora::model {
 
@@ -61,6 +65,48 @@ Snapshot session_from_template(const Snapshot& tmpl, const std::string& name,
     Snapshot out = template_of(tmpl, keep);
     out.settings.name = name;
     out.settings.session_id = session_id;
+    return out;
+}
+
+namespace {
+
+std::string joined(const std::string& folder, const std::string& name) {
+    if (folder.empty() || folder.back() == '/') return folder + name;
+    return folder + '/' + name;
+}
+
+// 0 when `dir` holds no <name>.sonora, so it may be a category; -1 when it
+// holds one that is not a session file, so it is neither; 1 when listed.
+int add_template(TemplateFolder& folder, const std::string& dir, const std::string& name,
+                 const std::string& category, std::vector<TemplateInfo>& out) {
+    TemplateInfo info;
+    info.name = name;
+    info.file = joined(dir, name + ".sonora");
+    info.category = category;
+    std::string bytes;
+    if (!folder.read_file(info.file, bytes)) return 0;
+    if (!read_template_version(bytes, info)) return -1;
+    out.push_back(std::move(info));
+    return 1;
+}
+
+}  // namespace
+
+std::vector<TemplateInfo> list_templates(TemplateFolder& folder, const std::string& root) {
+    std::vector<TemplateInfo> out;
+    std::vector<std::string> top = folder.subfolders(root);
+    std::sort(top.begin(), top.end());
+    std::vector<TemplateInfo> categorised;
+    for (const std::string& name : top) {
+        const std::string dir = joined(root, name);
+        if (add_template(folder, dir, name, std::string(), out) != 0) continue;
+        // One level only: a folder in a category is a template or nothing.
+        std::vector<std::string> inner = folder.subfolders(dir);
+        std::sort(inner.begin(), inner.end());
+        for (const std::string& t : inner) add_template(folder, joined(dir, t), t, name, categorised);
+    }
+    out.insert(out.end(), std::make_move_iterator(categorised.begin()),
+               std::make_move_iterator(categorised.end()));
     return out;
 }
 
