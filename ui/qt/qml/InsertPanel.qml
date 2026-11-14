@@ -311,6 +311,7 @@ Item {
                                         position: paramCell.now.position
                                         origin: paramCell.modelData.origin
                                         defaultPosition: paramCell.modelData.defaultPosition
+                                        laneActive: paramCell.modelData.automated === true
                                         onBegin: panelRoot.inserts.paramBegin()
                                         onMoved: (p) => panelRoot.inserts.paramPosition(paramCell.modelData.key, p)
                                         onEnd: panelRoot.inserts.paramEnd()

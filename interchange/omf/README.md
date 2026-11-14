@@ -12,8 +12,10 @@ other way.
 - Embedded WAVE media is extracted into the session folder and checked with
   `WavReader`. Embedded AIFF/AIFC is extracted but not decoded and is listed
   in the report.
-- Wire-up: `make_omf_importer(media_dir)` returns an `Importer`; adding it to
-  `sonora-convert` by extension is a follow-up after `aaf_import` merges.
+- Wire-up: `sonora-convert import x.omf out.sonora` (or `omf-import`) calls
+  `make_omf_importer` on the output folder, then copies the media into
+  `Audio Files/` the way `aaf-import` does; a missing file is an error naming
+  it. Test: `ctest -R omf_convert` (synthetic fixture, truncations).
 
 ## What is dropped
 

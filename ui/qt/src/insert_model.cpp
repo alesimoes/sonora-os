@@ -441,6 +441,7 @@ void InsertModel::refreshPanel() {
             m.insert(QStringLiteral("section"), q(each.section));
             m.insert(QStringLiteral("unit"), q(each.unit));
             m.insert(QStringLiteral("curveSource"), q(each.curve_source));
+            m.insert(QStringLiteral("automated"), ctl_.has_lane(panel_insert_, each.key));
             params << m;
             bool placed = false;
             for (QVariant& s : sections) {

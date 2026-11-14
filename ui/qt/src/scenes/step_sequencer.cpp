@@ -3,7 +3,7 @@
 // The Step Sequencer on the demo: a four-on-the-floor kick, a backbeat snare,
 // off-beat hats, a lane with nothing assigned, swing at 58 %, and the snare's
 // second hit selected so its velocity, probability and pitch show in the lane.
-#include <QQmlComponent>
+// Opened the way the operator does, through window.step_sequencer.
 #include <QQuickItem>
 
 #include "screenshot_scene.h"
@@ -30,17 +30,10 @@ const ShotRegistrar registrar{[] {
     s.name = QStringLiteral("step-sequencer");
     s.take = false;
     s.apply = [](ShotContext& c) {
-        auto* m = new StepSequencerModel({}, &c.view);
-        fill(*m);
-        auto* comp = new QQmlComponent(
-            c.view.engine(), QUrl(QStringLiteral("qrc:/sonora/qml/StepSequencer.qml")), &c.view);
-        auto* item = qobject_cast<QQuickItem*>(
-            comp->createWithInitialProperties({{QStringLiteral("seq"), QVariant::fromValue(m)}}));
-        if (item == nullptr) return;
-        item->setParentItem(c.view.rootObject());
-        item->setX(60);
-        item->setY(120);
-        item->setZ(20);
+        c.model.invoke(QStringLiteral("window.step_sequencer"), -1);
+        auto* m = c.view.rootObject()->findChild<StepSequencerModel*>(
+            QStringLiteral("stepSequencerModel"));
+        if (m != nullptr) fill(*m);
     };
     return s;
 }()};

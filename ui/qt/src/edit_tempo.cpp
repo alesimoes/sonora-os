@@ -16,6 +16,10 @@
 #include "sonora/ui_groove/groove_command.h"
 #define SONORA_UI_GROOVE 1
 #endif
+#if __has_include("sonora/ui_beat/beat_command.h")
+#include "sonora/ui_beat/beat_command.h"
+#define SONORA_UI_BEAT 1
+#endif
 #if __has_include("sonora/ui_elastic/elastic_command.h")
 #include "sonora/ui_elastic/elastic_command.h"
 #define SONORA_UI_ELASTIC 1
@@ -144,11 +148,14 @@ bool EditController::edit_tempo(const std::string& raw, std::string& why) {
     const Frames where = sel_.has_range() ? sel_.start : sel_.insertion;
     const char* usage =
         "type a tempo (96), a ramp over the selection (120>90), a factor over it (x2), "
-        "a meter (3/4) or remove";
+        "a meter (3/4), detect (from the clip's beats) or remove";
     double a = 0.0, b = 0.0;
     if (text == "remove") return remove_tempo(sel_.insertion, why);
 #ifdef SONORA_UI_GROOVE
     if (text.rfind("groove", 0) == 0) return groove_command(*this, text, why);
+#endif
+#ifdef SONORA_UI_BEAT
+    if (text == "detect" || text.rfind("detect ", 0) == 0) return beat_command(*this, text, why);
 #endif
 #ifdef SONORA_UI_ELASTIC
     if (text.rfind("elastic", 0) == 0) return elastic_command(*this, text, why);

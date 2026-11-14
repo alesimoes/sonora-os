@@ -37,6 +37,10 @@ if command -v mold >/dev/null; then
 fi
 JUNIT="$(dirname "$PLAN")/ctest.xml"
 
+# Each phase's wall time (tools/micro-build.sh prints the ones outside).
+phase_t=$SECONDS
+phase() { echo "micro-build: phase $1 $((SECONDS - phase_t)) s"; phase_t=$SECONDS; }
+[[ -f "$BUILD/CMakeCache.txt" ]] && echo "micro-build: build tree $BUILD exists (incremental)"   || echo "micro-build: build tree $BUILD is new (cold)"
 python3 tools/micro_targets.py query "$BUILD"
 echo "micro-build: configuring ($BUILD, ${gen[*]:-existing generator}, linker $([[ ${#link[@]} -gt 0 ]] && echo mold || echo default))"
 configure() {
@@ -60,6 +64,7 @@ if ! configure; then
   fi
 fi
 grep -E "^-- SONORA_PLATFORM|^-- (ui/qt|plugins/host)" "$BUILD.configure.log" || true
+phase configure
 
 direct=()
 [[ "${SONORA_MICRO_DIRECT:-0}" != 1 ]] || direct=(--direct)
@@ -74,6 +79,7 @@ p = json.load(open(sys.argv[1]))
 t = p.get("tests")
 print("\n".join(t) if isinstance(t, list) else "")' "$PLAN")
 
+phase plan
 echo "micro-build: scope $scope, ${#targets[@]} targets, ${#tests[@]} tests"
 python3 -c '
 import json, sys
@@ -88,6 +94,7 @@ case "$scope" in
   all)
     echo "micro-build: a root build file changed; building the whole tree"
     cmake --build "$BUILD" -j"$JOBS"
+    phase build
     if [[ "${SONORA_MICRO_BUILD_ONLY:-0}" == 1 ]]; then   # nightly's ccache seed
       echo "micro-build: build only (ccache seed)"; exit 0
     fi
@@ -97,6 +104,7 @@ case "$scope" in
     if ((${#targets[@]})); then
       printf '  target %s\n' "${targets[@]}"
       cmake --build "$BUILD" -j"$JOBS" --target "${targets[@]}"
+      phase build
     else
       # Every owner was an executable no test runs (pruned as a product).
       echo "micro-build: no library or test target to build"
@@ -106,6 +114,7 @@ case "$scope" in
       echo "micro-build: ctest -R '$regex'"
       QT_QPA_PLATFORM=offscreen ctest --test-dir "$BUILD" --output-on-failure \
         -j"$(nproc)" -LE slow -R "$regex"
+      phase test
     else
       echo "micro-build: no test runs an affected target"
     fi ;;

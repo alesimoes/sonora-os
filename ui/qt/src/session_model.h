@@ -97,6 +97,7 @@ class SessionModel : public QObject {
     Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
     // File > Bounce Mix: the Bounce window (ui.mixer.bounce).
     Q_PROPERTY(bool bounceOpen READ bounceOpen NOTIFY bounceOpenChanged)
+    Q_PROPERTY(bool stepSequencerOpen READ stepSequencerOpen NOTIFY stepSequencerOpenChanged)
     // Setup > Preferences: window.preferences, what the operator starts with
     // (counter format, grid, edit mode) and why a save or a read was refused.
     Q_PROPERTY(bool preferencesOpen READ preferencesOpen NOTIFY preferencesChanged)
@@ -420,6 +421,8 @@ public:
     bool tempoTrackShown() const { return tempo_track_; }
     bool bounceOpen() const { return bounce_open_; }
     Q_INVOKABLE void setBounceOpen(bool on);
+    bool stepSequencerOpen() const { return step_sequencer_open_; }
+    void setStepSequencerOpen(bool on);
     bool preferencesOpen() const { return prefs_open_; }
     QString prefCounter() const { return QString::fromLatin1(time_format_name(prefs_.counter)); }
     QString prefGrid() const { return QString::fromLatin1(grid_value_name(prefs_.grid)); }
@@ -712,6 +715,7 @@ signals:
     void memoryLocationsOpenChanged();
     void latencyOpenChanged();
     void bounceOpenChanged();
+    void stepSequencerOpenChanged();
     void preferencesChanged();
     void windowConfigsChanged();
     void windowConfigsOpenChanged();
@@ -898,6 +902,7 @@ private:
     int seen_event_lane_ = 0;
     bool latency_open_ = false;
     bool bounce_open_ = false;
+    bool step_sequencer_open_ = false;
     bool prefs_open_ = false;
     Preferences prefs_;
     QString prefs_file_, prefs_refusal_;

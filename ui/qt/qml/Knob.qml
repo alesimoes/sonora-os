@@ -17,6 +17,9 @@ Item {
     property real origin: 0       // where the lit arc starts
     property real defaultPosition: 0
     property int diameter: 52
+    // An automation lane exists for this parameter: a small marker, and a
+    // screen reader hears it.
+    property bool laneActive: false
     // What a screen reader says; the panel names the parameter.
     property string accessibleName: ""
     property string accessibleValue: Math.round(position * 100) + " %"
@@ -35,7 +38,7 @@ Item {
     activeFocusOnTab: true
     Accessible.role: Accessible.Slider
     Accessible.name: accessibleName
-    Accessible.description: accessibleValue
+    Accessible.description: laneActive ? accessibleValue + ", automated" : accessibleValue
     Accessible.onIncreaseAction: knob.step(0.01)
     Accessible.onDecreaseAction: knob.step(-0.01)
 
@@ -139,6 +142,15 @@ Item {
                 color: Theme.text
             }
         }
+    }
+
+    Rectangle {
+        objectName: "knobLaneMarker"
+        visible: knob.laneActive
+        x: knob.width - width - 1
+        y: 1
+        width: 6; height: 6; radius: 3
+        color: Theme.automationTrim
     }
 
     MouseArea {

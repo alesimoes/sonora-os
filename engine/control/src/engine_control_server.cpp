@@ -18,6 +18,7 @@
 #include "sonora/consolidate.h"
 #include "sonora/elastic/elastic_commands.h"
 #include "sonora/elastic/library_stretcher.h"
+#include "sonora/factory_preset_reader.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/groups.h"
 #include "sonora/model/op_codec.h"
@@ -475,6 +476,11 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
         sc.scan_at_start = opts_.plugin_scan_at_start;
         sc.max_probes = opts_.plugin_probe_slots;
         scanner_ = std::make_unique<PluginScanner>(sc);
+        FactoryPresetReaderConfig rc;
+        rc.host_path = sc.host_path;
+        rc.bundles = sc.bundles;
+        rc.timeout_ms = sc.probe_timeout_ms;
+        preset_reader_ = std::make_unique<FactoryPresetReader>(std::move(rc));
         registry_.install("plugin.rescan", ExplainingHandler([this](const CommandContext&, std::string& why) {
                               // Item 5 and Q3: answered when queued, not when
                               // it ends, and never during a take.
@@ -483,6 +489,9 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                                   why = kNoRescanWhileRecording;
                                   return false;
                               }
+                              // A rescan is the operator's retry for presets
+                              // that crashed their reader.
+                              preset_reader_->forget_blocked();
                               scanner_->rescan();
                               return true;
                           }));
@@ -818,6 +827,7 @@ EngineControlServer::~EngineControlServer() {
     hosting_.reset();
     // Every probe child killed and reaped before its thread is joined.
     scanner_.reset();
+    preset_reader_.reset();
     // Its destructor waits for the reader to let go of the plans this side
     // still owns, so it goes while the session's reader is certainly there.
     playback_.reset();
@@ -1930,6 +1940,7 @@ void EngineControlServer::greet(ClientId id) {
     }
     hello.capabilities.push_back(api::kCapabilityBounce);
     hello.capabilities.push_back(api::kCapabilityRender);
+    hello.capabilities.push_back(api::kCapabilityRenderInsert);
     hello.capabilities.push_back(api::kCapabilityStems);
     if (elastic_) hello.capabilities.push_back(api::kCapabilityElastic);
     std::string bytes;
@@ -3500,8 +3511,13 @@ void EngineControlServer::announce_render(api::RenderState state, uint32_t permi
 
 bool EngineControlServer::start_render(model::RenderKind kind, const std::string& argument,
                                        std::string& why) {
+    // The command decides whether insert= is read (ADR-0087): Process
+    // Selection only, so a freeze is never printed through part of a chain.
+    const char* const command = kind == model::RenderKind::Process  ? api::kCommandProcessSelection
+                                : kind == model::RenderKind::Commit ? "track.commit"
+                                                                    : "track.freeze";
     api::RenderOptions o;
-    if (!api::parse_render_argument(argument, o, why)) return false;
+    if (!api::parse_render_argument(command, argument, o, why)) return false;
     if (render_ || bounce_job_.active() || stems_job_.exporting()) {
         why = "a render or a bounce is already running; cancel it or wait for it";
         return false;
@@ -3515,13 +3531,7 @@ bool EngineControlServer::start_render(model::RenderKind kind, const std::string
         return false;
     }
     const model::Snapshot now = document_->current();
-    RenderAsk ask;
-    ask.track = o.track;
-    ask.start = o.start;
-    ask.end = o.end;
-    ask.tail_ms = o.tail_ms;
-    ask.name = o.name;
-    ask.sample_rate = now.settings.sample_rate;
+    const RenderAsk ask = RenderAsk::from_options(o, now.settings.sample_rate);
     RenderRequest request;
     if (!plan_render(now, kind, ask, request, why)) return false;
     if (!hosting_ || !hosting_->ok()) {
@@ -3536,6 +3546,8 @@ bool EngineControlServer::start_render(model::RenderKind kind, const std::string
     PluginHosting* const hosting = hosting_.get();
     const model::Id track = request.track;
     auto job = std::make_unique<RenderInPlace>(session_, *playback_);
+    // hosting_ outlives render_: every path that resets it resets render_ first.
+    job->set_solo(hosting);
     if (!job->start(now, *session_.folder(), request,
                     [hosting, track] { return hosting->chain_misses(track); }, why)) {
         return false;
