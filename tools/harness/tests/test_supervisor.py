@@ -165,6 +165,40 @@ class Lock(Case):
         self.assertIn("left behind by ended run t1-r1",
                       self.actions("lock")[0].reason)
 
+    def _wake_in_root(self):
+        # wake runs (lead, architect) run in the daemon checkout, which
+        # contains every agent worktree.
+        self.add_run("w-r1", "w", worktree=self.o.root, ended=True,
+                     name="wake-architect")
+
+    def test_ended_wake_in_root_does_not_kill_nested_live_build(self):
+        self._wake_in_root()
+        r = self.add_run()
+        nested = os.path.join(self.o.root, ".claude", "worktrees", "t1")
+        self.o.store.set_run(r["id"], worktree=nested)
+        self.sys.entries = [entry("holds", 610, cwd=nested,
+                                  start=self.now() - 5)]
+        self.sweep()
+        self.assertEqual(self.sys.killed, [])
+
+    def test_ended_wake_in_root_does_not_kill_unknown_nested_cwd(self):
+        self._wake_in_root()
+        cwd = os.path.join(self.o.root, ".claude", "worktrees", "zz")
+        self.sys.entries = [entry("holds", 611, cwd=cwd,
+                                  start=self.now() - 5)]
+        self.sweep()
+        self.assertEqual(self.sys.killed, [])
+
+    def test_ended_engineer_in_nested_worktree_is_killed(self):
+        self._wake_in_root()
+        nested = os.path.join(self.o.root, ".claude", "worktrees", "t2")
+        self.add_run("t2-r1", "t2", worktree=nested, ended=True)
+        self.sys.entries = [entry("holds", 612, cwd=nested,
+                                  start=self.now() - 5)]
+        self.sweep()
+        self.assertEqual(self.sys.killed, [612])
+        self.assertIn("t2-r1", self.actions("lock")[0].reason)
+
     def test_live_run_worktree_is_left_alone(self):
         r = self.add_run()
         self.sys.entries = [entry("holds", 602, cwd=r["worktree"],
