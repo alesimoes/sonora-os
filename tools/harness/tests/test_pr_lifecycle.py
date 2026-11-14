@@ -113,6 +113,16 @@ class Lifecycle(support.DaemonCase):
         self.assertEqual(state(o, "solo"), "blocked")
         self.assertEqual(self.forge.created, [])
 
+    def test_push_merge_conflict_blocks_at_once_as_conflict(self):
+        o = self.make()
+        self.feature(o, "solo")
+        self.forge.fail.add("push_conflict")
+        self.assertTrue(self.pump(
+            o, lambda: state(o, "solo") == "blocked"))
+        t = o.store.get_task("solo")
+        self.assertEqual(t["cause"], "conflict")
+        self.assertIn("a.cpp", t["note"])
+
     def test_open_pr_adopted_not_duplicated(self):
         o = self.make()
         self.feature(o, "solo")
