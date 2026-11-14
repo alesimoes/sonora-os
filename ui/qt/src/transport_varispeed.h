@@ -14,10 +14,10 @@
 #include <QObject>
 #include <QString>
 #include <functional>
+#include "shell_model.h"
 
 namespace sonora::ui {
 
-class ShellModel;
 
 class TransportVarispeed : public QObject {
     Q_OBJECT
