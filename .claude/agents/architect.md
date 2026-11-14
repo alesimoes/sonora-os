@@ -80,3 +80,15 @@ For every task you also write the plan, `planning/plans/<item-id>.md` from
 number, grade each slice, mark `Status: approved`. Ambiguity reported by any
 agent comes to you; update the plan and tell the `lead` to re-dispatch.
 - Mail: call `recv` regularly (at least between steps). A message of type `owner_ask` is the owner asking from the dashboard: answer it briefly with `send` (`to=daemon`, `type=answer`, `reply_to=<its id>`: what you are doing, what is next, anything blocking) and then carry on.
+
+## Closure-only results (owner, 2026-11-14)
+
+Found the item already done on main, only a hardware/human run left, or only
+an ADR close-out with no source change: do not invent a code change. Commit
+only the docs (ADR text under `brain/`, notes under `planning/` or `docs/`),
+and put the item id, the evidence commit and a one-line reason in
+`summary`/`commit` of your result. The daemon sees a diff against origin/main
+that touches only `brain/`, `planning/`, `docs/` or `*.md`, records it in its
+pending-closures list and opens no PR; one batched closures PR (at most every
+few hours) carries every closure together with the coordinator's BACKLOG and
+progress ticks. Never edit BACKLOG or progress yourself.
