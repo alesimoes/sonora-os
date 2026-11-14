@@ -159,6 +159,11 @@ struct PlanNode {
     uint32_t first_plugin_lane = 0;
     uint32_t plugin_lane_count = 0;
     uint16_t channels = 2;
+    // InsertChain only: its side-chain key planes (ADR-0058), `channels` of
+    // them when an insert of the chain is keyed, else 0. The key is the
+    // node's second input edge, from an AuxSum; a keyed node with one input
+    // edge (its key bus is gone) hears a silent key.
+    uint16_t key_channels = 0;
     // PathOut only: the device output the left side plays on; the right
     // side plays on the next.
     uint16_t hardware_out = 0;

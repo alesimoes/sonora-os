@@ -13,6 +13,7 @@
 #include "sonora/dsp/convolver.h"
 #include "sonora/dsp/ir_prepare.h"
 #include "sonora/dsp/math.h"
+#include "sonora/dsp/resample.h"
 
 namespace sonora::native {
 
@@ -36,50 +37,42 @@ const Descriptor kDesc = {"org.sonora.cab", "Sonora Cabinet", "Amp", 2, kParams,
 // The cost for a 0.3 s response is in quality.json's note.
 constexpr std::uint32_t kPartition = 128;
 
-double bessel_i0(double x) noexcept {
-    double sum = 1.0, term = 1.0;
-    const double q = 0.25 * x * x;
-    for (int k = 1; k < 60; ++k) {
-        term *= q / (static_cast<double>(k) * k);
-        sum += term;
-        if (term < 1e-17 * sum) break;
-    }
-    return sum;
-}
-
-// Band-limited resampling by a Kaiser-windowed sinc (beta 9, 32 zero
-// crossings each side at the lower of the two rates' cutoff: about -90 dB
-// stopband), J. O. Smith, "Digital Audio Resampling Home Page", CCRMA.
-// Offline: this runs in load_ir(), never in process().
-std::vector<double> resample(const float* x, std::size_t n, double from, double to) {
-    std::vector<double> y;
+// Offline rate conversion with the shared polyphase resampler (ADR-0180),
+// run in load_ir(), never in process(). The stage's group delay D (high-rate
+// samples) is raised to a multiple of p*q when the table allows, so it is a
+// whole number of output samples (D/q) and the response lands exactly on the
+// session's sample grid; the first D/q outputs are dropped. Otherwise (an
+// exotic ratio) D stays a multiple of p and is rounded to a sample.
+bool resample(const float* x, std::size_t n, double from, double to, std::vector<double>& y) {
     if (from == to) {
         y.assign(x, x + n);
-        return y;
+        return true;
     }
-    const double ratio = to / from;
+    dsp::RatePlan plan;
+    std::string err;
+    if (!dsp::plan_rates(from, to, &plan, &err)) return false;
+    const std::uint64_t pq = static_cast<std::uint64_t>(plan.p) * plan.q;
+    std::uint64_t delay = plan.delay_up;
+    if (2 * (delay + pq) + plan.p <= dsp::Resampler::kMaxCoefficients) delay = (delay + pq - 1) / pq * pq;
+    constexpr std::uint32_t kChunk = 4096;
+    dsp::Resampler rs;
+    if (!rs.prepare(plan.p, plan.q, plan.cut_up, static_cast<std::uint32_t>(delay), kChunk)) return false;
+    const std::size_t skip = static_cast<std::size_t>(std::llround(static_cast<double>(delay) / plan.q));
     const std::size_t out_n =
-        std::max<std::size_t>(1, static_cast<std::size_t>(std::llround(static_cast<double>(n) * ratio)));
-    const double cut = std::min(1.0, ratio);
-    constexpr double kHalf = 32.0, kBeta = 9.0;
-    const double span = kHalf / cut;  // input samples each side
-    const double i0b = bessel_i0(kBeta);
+        std::max<std::size_t>(1, static_cast<std::size_t>(std::llround(static_cast<double>(n) * to / from)));
     y.assign(out_n, 0.0);
-    for (std::size_t m = 0; m < out_n; ++m) {
-        const double t = static_cast<double>(m) / ratio;
-        const long j0 = std::max(0L, static_cast<long>(std::ceil(t - span)));
-        const long j1 = std::min(static_cast<long>(n) - 1, static_cast<long>(std::floor(t + span)));
-        double acc = 0.0;
-        for (long j = j0; j <= j1; ++j) {
-            const double d = (t - static_cast<double>(j)) * cut;
-            const double w = d / kHalf;
-            if (w <= -1.0 || w >= 1.0) continue;
-            const double sinc = std::fabs(d) < 1e-12 ? 1.0 : std::sin(dsp::kPi * d) / (dsp::kPi * d);
-            acc += static_cast<double>(x[j]) * cut * sinc * bessel_i0(kBeta * std::sqrt(1.0 - w * w)) / i0b;
+    std::vector<float> zeros(kChunk, 0.0f), out(rs.max_out());
+    std::size_t made = 0, fed = 0;
+    while (made < skip + out_n) {
+        const std::uint32_t m = static_cast<std::uint32_t>(std::min<std::size_t>(kChunk, n > fed ? n - fed : kChunk));
+        const float* src = fed < n ? x + fed : zeros.data();
+        const std::uint32_t got = rs.process(src, m, out.data(), static_cast<std::uint32_t>(out.size()));
+        fed += m;
+        for (std::uint32_t i = 0; i < got; ++i, ++made) {
+            if (made >= skip && made - skip < out_n) y[made - skip] = out[i];
         }
-        y[m] = acc;
     }
-    return y;
+    return true;
 }
 
 const FileSlotInfo kIrSlot = {"ir", "Impulse response", "wav"};
@@ -289,18 +282,26 @@ private:
                 frames = conditioned.size();
             }
         }
-        std::vector<double> taps = resample(ir, frames, ir_rate, sample_rate());
+        // Cut to kMaxSeconds of the response's own time before resampling, so
+        // a long file costs no more than a 1 s one; the closing 10 ms fade is
+        // laid on the source for the same reason.
+        std::vector<float> cut_src;
         truncated = false;
-        if (taps.size() > max_taps_) {
+        const auto keep = static_cast<std::size_t>(std::ceil(kMaxSeconds * ir_rate));
+        if (frames > keep) {
             truncated = true;
-            taps.resize(max_taps_);
-            const std::size_t f =
-                std::min<std::size_t>(taps.size() / 2, static_cast<std::size_t>(0.010 * sample_rate()));
+            cut_src.assign(ir, ir + keep);
+            const std::size_t f = std::min<std::size_t>(keep / 2, static_cast<std::size_t>(0.010 * ir_rate));
             for (std::size_t i = 0; i < f; ++i) {
-                taps[taps.size() - 1 - i] *=
-                    0.5 - 0.5 * std::cos(dsp::kPi * (static_cast<double>(i) + 0.5) / static_cast<double>(f));
+                cut_src[keep - 1 - i] *=
+                    0.5f - 0.5f * static_cast<float>(std::cos(dsp::kPi * (static_cast<double>(i) + 0.5) / static_cast<double>(f)));
             }
+            ir = cut_src.data();
+            frames = keep;
         }
+        std::vector<double> taps;
+        if (!resample(ir, frames, ir_rate, sample_rate(), taps)) return false;
+        if (taps.size() > max_taps_) taps.resize(max_taps_);
         return k.set(taps.data(), static_cast<std::uint32_t>(taps.size()));
     }
 

@@ -226,7 +226,12 @@ namespace sonora::api {
 //   `output_count`, the device channels the engine opened, and the operation
 //   codec has SetBusPath; the undo window's aux bus carries `hardware`
 //   (65535: none). A peer of 67 or lower is refused at Hello.
-constexpr uint32_t kProtocolVersion = 68;
+// 69 (ADR-0058, side-chain keys; the daemon reserved none, so the next free
+//   number on main): the operation codec has SetInsertKey, the undo window's
+//   insert carries `key_bus` (window format 21), and PluginInfo carries
+//   `key_inputs`. A peer of 68 or lower is refused at Hello, so an older
+//   engine never meets the command.
+constexpr uint32_t kProtocolVersion = 69;
 
 // ModelAction::Load's file, when it starts with this and names a template's
 // session file: the engine makes a new Untitled folder in its sessions
@@ -754,6 +759,9 @@ struct PluginInfo {
     std::vector<std::string> categories;
     uint32_t inputs = 0;   // audio channels
     uint32_t outputs = 0;
+    // Side-chain key input channels (protocol 69, ADR-0058); 0: none, and an
+    // insert of it cannot be keyed.
+    uint32_t key_inputs = 0;
     // False when the scan refused the plugin; `refusal` says why, and an
     // AddInsert naming it is refused with the same words.
     bool usable = true;

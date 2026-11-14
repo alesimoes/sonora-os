@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "sonora/interchange/aaf_import.h"
 #include "sonora/interchange/interchange.h"
 #include "sonora/model/session_file.h"
 #include "sonora/midi/notes.h"
@@ -231,6 +232,16 @@ int test_command_line() {
     CHECK(interchange::run_convert({"--help"}, out, err) == 0 && !out.empty());
     err.clear();
     CHECK(interchange::run_convert({"frobnicate", "a", "b"}, out, err) == 2);
+    err.clear();
+#ifdef SONORA_PTX_READER_OFF
+    CHECK(interchange::run_convert({"import", "x.ptx", (scratch() / "p.sonora").string()}, out, err) == 1);
+    CHECK(err.find("no .ptx reader") != std::string::npos);
+    err.clear();
+#endif
+    if (!interchange::make_libaaf_reader()) {  // option OFF: fail loudly, never an empty session
+        CHECK(interchange::run_convert({"import", "x.aaf", (scratch() / "a.sonora").string()}, out, err) == 1);
+        CHECK(err.find("built without AAF support") != std::string::npos);
+    }
     err.clear();
     CHECK(interchange::run_convert({"smf-import", (scratch() / "missing.mid").string(),
                                     (scratch() / "o.sonora").string()},

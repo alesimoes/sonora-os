@@ -17,6 +17,12 @@ Item {
     property real origin: 0       // where the lit arc starts
     property real defaultPosition: 0
     property int diameter: 52
+    // An automation lane exists for this parameter: a small marker, and a
+    // screen reader hears it.
+    property bool laneActive: false
+    // What a screen reader says; the panel names the parameter.
+    property string accessibleName: ""
+    property string accessibleValue: Math.round(position * 100) + " %"
     signal begin()
     signal moved(real position)
     signal end()
@@ -28,6 +34,57 @@ Item {
 
     implicitWidth: diameter + 12
     implicitHeight: diameter + 12
+
+    activeFocusOnTab: true
+    Accessible.role: Accessible.Slider
+    Accessible.name: accessibleName
+    Accessible.description: laneActive ? accessibleValue + ", automated" : accessibleValue
+    Accessible.onIncreaseAction: knob.step(0.01)
+    Accessible.onDecreaseAction: knob.step(-0.01)
+
+    // One press is one begin/moved/end, so one undo step; a press at the end
+    // of the travel changes nothing and opens no step.
+    function step(delta) {
+        const next = Math.max(0, Math.min(1, knob.position + delta))
+        if (next === knob.position) return
+        knob.begin()
+        knob.moved(next)
+        knob.end()
+    }
+
+    function stepSize(modifiers) {
+        if (modifiers & Qt.ControlModifier) return 0.001
+        if (modifiers & Qt.ShiftModifier) return 0.1
+        return 0.01
+    }
+
+    Keys.onPressed: (e) => {
+        if (e.modifiers & (Qt.AltModifier | Qt.MetaModifier)) return
+        switch (e.key) {
+        case Qt.Key_Up:
+        case Qt.Key_Right: knob.step(stepSize(e.modifiers)); break
+        case Qt.Key_Down:
+        case Qt.Key_Left: knob.step(-stepSize(e.modifiers)); break
+        case Qt.Key_PageUp: knob.step(0.1); break
+        case Qt.Key_PageDown: knob.step(-0.1); break
+        case Qt.Key_Home: knob.reset(); break
+        default: return
+        }
+        e.accepted = true
+    }
+
+    // Keyboard focus ring.
+    Rectangle {
+        objectName: "knobFocusRing"
+        anchors.centerIn: parent
+        width: knob.width - 2
+        height: width
+        radius: width / 2
+        color: "transparent"
+        border.width: 2
+        border.color: Theme.accent
+        visible: knob.activeFocus
+    }
 
     function angleAt(p) { return -sweep / 2 + Math.max(0, Math.min(1, p)) * sweep }
 
@@ -87,6 +144,15 @@ Item {
         }
     }
 
+    Rectangle {
+        objectName: "knobLaneMarker"
+        visible: knob.laneActive
+        x: knob.width - width - 1
+        y: 1
+        width: 6; height: 6; radius: 3
+        color: Theme.automationTrim
+    }
+
     MouseArea {
         id: area
         anchors.fill: parent
@@ -102,6 +168,7 @@ Item {
                 knob.reset()
                 return
             }
+            knob.forceActiveFocus()
             dragging = true
             lastY = m.y
             at = knob.position

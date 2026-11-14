@@ -1,0 +1,13 @@
+# time.pitch engine (ADR-0143 sections 2 and 6): engine/pitch renders the
+# `pitch` verb of sample.edit as engine/control's sample_edit renders the
+# others (the model, the session's take state, the WAV reader and writer, the
+# session folder's names), and engine/control dispatches the verb to it.
+# engine/pitch never includes engine/control, so the graph keeps no cycle.
+# Folded into tools/module-deps.allow, with pitch.allow, once it is free.
+engine/control -> engine/pitch
+engine/pitch -> common/audiofile
+engine/pitch -> common/pitch
+engine/pitch -> common/model
+engine/pitch -> common/session_files
+engine/pitch -> contracts/api
+engine/pitch -> engine/core

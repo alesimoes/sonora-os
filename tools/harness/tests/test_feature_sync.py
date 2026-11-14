@@ -63,6 +63,19 @@ class FeatureSync(support.DaemonCase):
         self.assertEqual(self.fstate(o, "open"), "pr_open")
         self.assertEqual(self.fstate(o, "live"), "blocked")
 
+    def test_working_feature_whose_tasks_all_closed_is_closed(self):
+        # ui.editing.import, ui.shell.fullscreen, main-red-7aeea70f... sat
+        # in building/qa with every task closed (2026-11-13).
+        o = self.make()
+        for fid, fst in (("b", "building"), ("q", "qa"),
+                         ("i", "integrating")):
+            self.feature(o, fid, "closed", fst)
+        self.feature(o, "live", "queued", "building")
+        self.sync(o)
+        self.assertEqual([self.fstate(o, f) for f in ("b", "q", "i")],
+                         ["closed"] * 3)
+        self.assertEqual(self.fstate(o, "live"), "building")
+
 
 if __name__ == "__main__":
     unittest.main()

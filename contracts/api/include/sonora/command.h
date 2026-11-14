@@ -38,6 +38,7 @@ enum class CommandDomain {
     Engine,     // transport.*, track.*, edit operations, nudge.*, app.save
     Interface,  // tool.*, zoom.*, edit.mode.*, focus.*, window.transport,
                 // window.undo_history, window.memory_locations, window.event_list, app.quit,
+                // track.height, track.hide, track.show_all, window.tracks_list,
                 // app.save_as_template, app.new_from_template
 };
 
@@ -269,6 +270,11 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // sample_edit.h). The interface builds it from the selection.
         {"sample.edit", CommandTarget::None,
          "Apply a sample edit to a region's range (VERB REGION FROM TO CHANNEL [PARAM])", true},
+        // Elastic audio (ADR-0136): the region is stretched offline into a
+        // new file and repointed, one undo step; the grammar is api/elastic.h.
+        // Only an engine announcing the audio.elastic capability runs it.
+        {"audio.elastic", CommandTarget::None,
+         "Stretch a region into a new file (REGION ALGORITHM ratio=|warp=|quantize=)", true},
         // The track's playlist selector (ADR-0026), on the track given or the
         // selected one. Choose takes the playlist's name; Rename the new name,
         // and asks for it without one.
@@ -468,10 +474,25 @@ inline const std::vector<CommandSpec>& command_catalog() {
         // selected track. What it changes goes through EditAutomation, undoable.
         {"window.event_list", CommandTarget::None,
          "Show or hide the automation Event List window", false, CommandDomain::Interface},
+        // Track view (ADR-0106): how tall a track's row is and whether it is
+        // shown. The operator's look at the session, kept by the interface per
+        // session id; the engine is not asked. track.height takes the preset
+        // name small, medium, large or jumbo.
+        {"track.height", CommandTarget::Track, "Set a track's row height to a preset",
+         true, CommandDomain::Interface},
+        {"track.hide", CommandTarget::Track, "Hide a track from the Edit and Mix windows",
+         false, CommandDomain::Interface},
+        {"track.show_all", CommandTarget::None, "Show every hidden track again",
+         false, CommandDomain::Interface},
+        {"window.tracks_list", CommandTarget::None, "Show or hide the Tracks list window",
+         false, CommandDomain::Interface},
         // Setup > Latency: measures and sets the round trip through the
         // latency.* commands.
         {"window.latency", CommandTarget::None, "Show or hide the Latency window",
          false, CommandDomain::Interface},
+        // Step Sequencer (ADR-0169): the drum-machine grid, opened from Edit.
+        {"window.step_sequencer", CommandTarget::None,
+         "Show or hide the Step Sequencer window", false, CommandDomain::Interface},
         // File > Bounce Mix…: the dialog that sends mix.bounce.
         {"window.bounce", CommandTarget::None, "Show or hide the Bounce Mix window",
          false, CommandDomain::Interface},

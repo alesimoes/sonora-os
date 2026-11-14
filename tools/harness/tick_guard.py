@@ -11,6 +11,7 @@ the first occurrence of an error text is an event and a stderr traceback,
 repeats only count, and the error stands on the dashboard (status.json
 `alerts`) until the same step succeeds again.
 """
+import time
 import traceback
 
 
@@ -19,15 +20,29 @@ class Guard:
         self.store, self.clock = store, clock
         self.log = log or (lambda m: None)
         self.errors = {}   # (step, key) -> {text, count, first, last, task}
+        # Seconds each step took in the current tick (a loop's items add up).
+        # 2026-11-09: ticks took 40-60 s of work and nothing said which step.
+        self.times, self._timer = {}, time.monotonic
+
+    def begin_tick(self):
+        self.times = {}
+
+    def slowest(self, n=6):
+        """[[step, seconds]] of this tick, slowest first, for status.json."""
+        rows = sorted(self.times.items(), key=lambda kv: -kv[1])[:n]
+        return [[k, round(v, 1)] for k, v in rows]
 
     def step(self, name, fn, *args, key=None, task=None, **kw):
         """fn(*args, **kw); its value, or None when it raised."""
         k = (name, key)
+        t0 = self._timer()
         try:
             out = fn(*args, **kw)
         except Exception as e:  # noqa: BLE001 - the whole point
             self._failed(k, e, task)
             return None
+        finally:
+            self.times[name] = self.times.get(name, 0.0) + self._timer() - t0
         self.errors.pop(k, None)
         return out
 

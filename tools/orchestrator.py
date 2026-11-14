@@ -24,17 +24,19 @@ import traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import (autoadopt, closed, cli, cli_mailbox, console, daemonlock, dispatch,  # noqa: E402
+                     docker_guard, bounce, console_session,
                      heartbeat, launcher, nightly, nightly_watch, numbers, ownerchat,
                      routing, scheduler, selfupdate, shadow, status,
                      supervisor, supervisor_sys)
-from harness import (blockinfo, feature_merge, feature_sync, findings, handoff,  # noqa: E402
-                     shots,
-                     leadwake, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
+from harness import (blockinfo, closures, feature_merge, feature_sync, findings, handoff,  # noqa: E402
+                     prepr, siblings,
+                     leadwake, owner_infer, owner_route, pr_sync, prtext, triage, triage_pr, triage_sweep, wakes)
 from harness.tick_guard import Guard  # noqa: E402
 from harness.brokerhost import BrokerHost, NullBroker  # noqa: E402
 from harness.flow import Flow  # noqa: E402
-from harness.forge import ForgeError, GhForge, job_signatures  # noqa: E402
-from harness.store import PLANNER_ROLES, WORK_ROLES, Store  # noqa: E402
+from harness.forge import ForgeConflict, ForgeError, GhForge, job_signatures  # noqa: E402
+from harness.store import PLANNER_ROLES, WORK_ROLES  # noqa: E402
+from harness.store_backup import BackedStore  # noqa: E402
 from harness.train import Train  # noqa: E402
 
 NAME_PREFIX = {"engineer": "eng", "tester": "tester", "fixer": "fixer",
@@ -66,7 +68,7 @@ class Orchestrator:
         self.clock = clock
         self.dry_run = dry_run
         self.fake_claude = fake_claude
-        self.store = Store(os.path.join(self.odir, "state.json"), clock)
+        self.store = BackedStore(os.path.join(self.odir, "state.json"), clock)
         self.worktrees = worktrees or launcher.GitWorktrees(self.root)
         self.forge = forge or GhForge(self.root)
         self.seed_fn = seed_fn or self._default_seed
@@ -86,11 +88,14 @@ class Orchestrator:
         self.last_holds = {}
         self.flow = Flow(self)
         self.train = Train(self)
-        self.shots = shots.Shots(self)
         # The watchdog over runs, lock, queues, PRs and disk; the tests hand
         # it a fake system (supervisor_sys.RealSys surface).
         self.supervisor = supervisor.Supervisor(
             self, sys_ or supervisor_sys.RealSys(clock=clock))
+        # Live only: a dry run or a test (fake system) never probes Docker.
+        self.docker = docker_guard.Guard(
+            self.store, docker_guard.docker_up if (sys_ is None and not dry_run)
+            else (lambda: True))
         self.attribution = ATTRIBUTION
         self.shadow = None
         self.updater = None   # enable_self_update(): a live daemon only
@@ -207,6 +212,7 @@ class Orchestrator:
         tick_guard): one bad result, one PR's gh error, one failing
         launch never stops the merges, the status or the launches."""
         now, g = self.clock(), self.guard
+        g.begin_tick()
         g.step("drain_events", self.drain_events)
         stop, stop_now = self.kill_switch()
         if stop_now:
@@ -216,6 +222,7 @@ class Orchestrator:
         if not self.dry_run:   # every interval_s, not every tick
             g.step("supervisor", self.supervisor.tick, now)
         g.step("open_prs", self._open_pending_prs, now)
+        g.step("closures", self._open_closures, now)
         g.step("autoadopt", autoadopt.tick, self, now)
         g.step("cli_mailbox", cli_mailbox.tick, self)
         if not self.dry_run:
@@ -227,12 +234,12 @@ class Orchestrator:
         # Main's nightly full build on GitHub (ADR-0061): a red opens a task.
         g.step("nightly", nightly.tick, self, now)
         g.step("flow", self.flow.tick, now)
-        paused = self.paused()
+        owner, held = self.paused(), g.step("docker", self.docker.held, now)
         runs = self._enriched_runs(now)
         plan = g.step(
             "plan", scheduler.plan, self.store.tasks(), runs, self.cfg, now,
             stop=stop, usage_pause_until=self.usage_pause_until,
-            paused=paused, hour_budget=self.cfg.max_runs_per_hour
+            paused=owner, docker_held=held or (), hour_budget=self.cfg.max_runs_per_hour
             - self.store.runs_started_since(now - 3600, WORK_ROLES),
             planner_budget=self.cfg.max_planner_runs_per_hour
             - self.store.runs_started_since(now - 3600, PLANNER_ROLES,
@@ -251,7 +258,7 @@ class Orchestrator:
         if not stop_now:
             g.each("launch", plan.launches, self._launch, now,
                    key=lambda ln: ln.task_id, task=lambda ln: ln.task_id)
-        g.step("status", self._write_status, now, stop, stop_now, paused)
+        g.step("status", self._write_status, now, stop, stop_now, owner)
         return plan
 
     def _enriched_runs(self, now):
@@ -280,8 +287,9 @@ class Orchestrator:
         data["train_slots"] = self.cfg.train_slots
         data["gh_paused_until"] = self.train.pause_until or None
         data["daemon_pid"] = os.getpid()   # tools/supervisor.py probes it
-        data.update(self.supervisor.status())
+        data.update(self.supervisor.status(), **self.docker.status(data["pools"]))
         data["alerts"] = data.get("alerts", []) + self.guard.rows()
+        data["tick_steps"] = self.guard.slowest()
         try:
             status.write_atomic(self._p("status.json"), data)
         except OSError as e:   # the dashboard is reading it; next tick retries
@@ -561,6 +569,7 @@ class Orchestrator:
             # `done` message without result.json: the process is gone or
             # result.json is overdue, so the message is the result.
             data = self._result_from_done(r, done[1])
+        data = data or console_session.clean_exit(r, alive)
         building = scheduler.holds_build_slot(self.root, r["worktree"])
         beat = self.activity.sample(r["id"], r["worktree"],
                                     r["stream_path"], r["last_beat"], now)
@@ -721,11 +730,12 @@ class Orchestrator:
             # the next merge wakes the janitor again.
             triage_sweep.close_wake(self, t, why[:200])
             return
-        owner = data.get("needs_owner")
+        owner, hint, why = owner_route.route(
+            data.get("needs_owner") or owner_infer.owner_from(why), why)
         if not owner and triage.handle(self, t, kind, why, data, now):
             return
-        self._block(t, why, owner=owner if owner else None,
-                    cause=None if owner else "infra")
+        self._block(t, why, owner=owner,
+                    cause=None if owner else hint or blockinfo.classify(why))
 
     # -- results ------------------------------------------------------
     def _on_result(self, r, data, now):
@@ -759,7 +769,7 @@ class Orchestrator:
         if kind == "tester":
             blocking = findings.blocking(data.get("findings"))
             if st == "fail" or blocking:
-                self._bounce(t)
+                bounce.bounce(self, t, data)
             else:
                 self.store.advance(t["id"], "integrating")
                 self._release(t)
@@ -804,7 +814,7 @@ class Orchestrator:
 
     def _ready_features(self):
         for f in self.store.features():
-            ts = self._feature_tasks(f["id"])
+            ts = siblings.live(self._feature_tasks(f["id"]))
             if ts and not f["pr"] and all(
                     x["state"] == "integrating" and x["integrated"]
                     for x in ts):
@@ -825,29 +835,19 @@ class Orchestrator:
             self.guard.step("open_pr", self._open_feature_pr, f, ts, now,
                             key=f["id"], task=ts[0]["id"])
 
+    def _open_closures(self, now):
+        if not (self.dry_run or self._is_dry("merge")):
+            closures.open_batch(self, now)
+
     def _open_feature_pr(self, f, ts, now):
         fid, rep = f["id"], ts[0]
         branch = self._feature_branch(fid)
         wt = self.worktrees.ensure(self._feature_key(fid), branch)
         n = None
-        # UI pictures are regenerated by the daemon, detached, not by the
-        # engineer whose command limit the build outlives (2026-11-08).
-        pics = self.shots.step(fid, wt, rep["id"], now)
-        if pics == shots.FAILED:
-            self._block_feature(f, "screenshot regeneration failed:\n"
-                                + self.shots.tail(fid))
-            return False
-        if pics != shots.READY:
-            return False
         try:
-            ok, out = self.forge.pre_pr(wt)
-            if not ok:
-                self.store.event(rep["id"], "pre_pr_failed", out[-500:])
-                for x in ts:
-                    self.store.set_task(x["id"], integrated=0, note=(
-                        "tools/pre-pr.sh failed; fix and commit:\n"
-                        + out[-800:]))
-                self._count_failure(rep, "pre-pr failed", now)
+            if closures.route(self, f, ts, wt, branch, now):
+                return True
+            if not prepr.passes(self, fid, ts, wt, now):
                 return False
             self.forge.push(wt, branch)
             n = next((p["number"] for p in self.forge.open_prs()
@@ -864,6 +864,12 @@ class Orchestrator:
             if n is not None:
                 self._adopt_opened_pr(f, ts, rep, branch, n, now, e)
                 return True
+            if isinstance(e, ForgeConflict):
+                self.store.event(rep["id"], "pr_open_failed", str(e))
+                self._block_feature(
+                    f, f"merge conflict with origin/{branch} in: "
+                       + ", ".join(e.paths), cause="conflict")
+                return False
             if triage_pr.handle(self, f, ts, e, now):
                 return True
             fails = int(self.store.get_meta(f"prfail:{fid}", 0)) + 1
@@ -928,14 +934,15 @@ class Orchestrator:
                         now, key=lambda f: f["id"], task=self._rep_task)
 
     def _rep_task(self, f):
-        """The task a feature's events are filed under (its first)."""
-        ts = self._feature_tasks(f["id"])
+        """The task a feature's events are filed under (its first live)."""
+        ts = siblings.live(self._feature_tasks(f["id"]))
         return ts[0]["id"] if ts else None
 
     def _watch_pr(self, f, now):
         if not self.dry_run and pr_sync.sync_tasks(self.store, f):
             f = self.store.get_feature(f["id"])
-        ts = self._feature_tasks(f["id"])
+        # A closed first slice is not pr_open: #709 was never polled (#706).
+        ts = siblings.live(self._feature_tasks(f["id"]))
         if not f["pr"] or not ts:
             return True
         # A blocked train PR is still watched: someone may merge or close
@@ -1071,21 +1078,6 @@ class Orchestrator:
                 self.store.advance(x["id"], "blocked", note=why)
                 self.store.set_task(x["id"], cause=cause, owner=owner)
         self.store.set_feature(f["id"], state="blocked")
-
-    def _bounce(self, t):
-        n = t["bounces"] + 1
-        self.store.set_task(t["id"], bounces=n)
-        if n >= 3:
-            self._block(t, "third bounce: owner decision",
-                        owner="third QA bounce, no recommended default")
-            return
-        self.store.advance(t["id"], "bugfix")
-        self._tell("lead", "qa_fail", {"task": t["id"], "bounces": n},
-                   feature=t["feature_id"], task=t["id"])
-        self._lead_event("qa_fail", t)
-        if n == 2:
-            self._ensure_wake("architect", "bug_ruling", t["id"],
-                              feature=t["feature_id"])
 
     def _ensure_wake(self, role, kind, detail, brief=None, feature=None,
                      body=None):

@@ -225,10 +225,48 @@ int the_stems_sum_to_the_mix() {
     return 0;
 }
 
+// The same null test with every file int24, undithered: what a user gets.
+// Each stem and the mix round on their own, so the sum of n stems is off the
+// mix by up to (n + 1) half-LSBs; that is the bound, and a real error in the
+// render (a pan, a bus gain) is thousands of LSBs, far above it.
+int the_int24_stems_sum_to_the_int24_mix() {
+    Rig r;
+    std::string err;
+    CHECK_OK(make_rig(r, "stems_sum_t2", err), err);
+    const model::Snapshot snap = r.doc->current();
+
+    api::BounceOptions full;
+    CHECK_OK(api::parse_bounce_argument("file=wav format=int24 dither=none name=Full24", full, err),
+             err);
+    CHECK(full.format == api::BounceFormat::Int24);
+    BounceHooks hooks;
+    BounceResult mixed;
+    CHECK_OK(bounce_offline(snap, r.dir, full, hooks, mixed, err), err);
+    std::vector<float> mix;
+    CHECK(read_stereo(r.dir + "/" + mixed.relative_path, mix));
+    CHECK(peak(mix) > 0.05);
+
+    api::StemsOptions o;
+    CHECK_OK(api::parse_stems_argument("by=track file=wav format=int24 dither=none name=Tracks24", o,
+                                       err),
+             err);
+    CHECK(o.base.format == api::BounceFormat::Int24);
+    StemsResult stems;
+    CHECK_OK(stems_offline(snap, r.dir, o, hooks, stems, err), err);
+    CHECK(stems.files.size() == static_cast<std::size_t>(kTracks));
+    const double worst = worst_difference(r.dir, mix, stems);
+    const double bound = 0.5 * (kTracks + 1) * kLsb24 * 1.001;
+    std::printf("int24: %zu stems, worst |sum - mix| = %.3g (%.2f LSB; bound %.2f LSB)\n",
+                stems.files.size(), worst, worst / kLsb24, bound / kLsb24);
+    CHECK(worst >= 0.0 && worst <= bound);
+    return 0;
+}
+
 }  // namespace
 
 int main() {
-    const int failures = the_stems_sum_to_the_mix();
+    int failures = the_stems_sum_to_the_mix();
+    if (failures == 0) failures = the_int24_stems_sum_to_the_int24_mix();
     if (failures == 0) std::puts("stems_sum: all passed");
     return failures == 0 ? 0 : 1;
 }

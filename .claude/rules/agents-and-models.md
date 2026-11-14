@@ -24,10 +24,17 @@ carries XL), and risk low / med / high.
 |---|---|---|---|
 | S | junior | pleno | senior |
 | M | pleno | pleno | senior |
-| L | pleno | senior | senior |
+| L | pleno | pleno | senior |
 
-- Risk is high by definition for: the real-time path, `contracts/`, storage
-  and recovery (a take must not be lost), concurrency, cross-module refactors.
+- The model follows the risk, not the size (owner, 2026-11-09). A big slice
+  of low or medium risk is split or stays pleno; size alone never buys opus.
+- Risk is high when a mistake breaks all of Sonora, the build or the OS:
+  `contracts/` (a wrong contract), the shared engine core and real-time path,
+  storage and recovery (a take must not be lost), concurrency in shared
+  code, the build system and CI, the image's boot, cross-module refactors.
+- Risk is at most med when a mistake breaks one part: one plugin, one
+  screen, one feature, one tool. Breaking a plugin breaks that plugin, not
+  Sonora.
 - Junior never touches the RT path or contracts; a junior slice that grows
   past S is re-graded and re-assigned, not finished.
 - Reviews (`code-reviewer`, `rt-safety-auditor`) run at least at the author's

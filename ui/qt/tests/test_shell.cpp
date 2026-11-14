@@ -6,6 +6,7 @@
 // this is about wiring, so it runs on any machine with Qt and no display.
 // What it looks like is the screenshot's job (tools/build-ui.sh).
 #include <QGuiApplication>
+#include "test_font_helper.h"
 #include <QKeyEvent>
 #include <QQuickItem>
 #include <QQuickView>
@@ -84,6 +85,7 @@ QQuickItem* named(QQuickItem* item, const QString& name) {
 
 int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
+    if (!sonora_test::registerTestFont()) return 1;
     register_types();
 
     KeyMap map;

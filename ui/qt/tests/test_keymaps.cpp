@@ -477,7 +477,9 @@ int test_shell() {
     CHECK(!focus->isVisible());
     CHECK(model.notices().contains(QStringLiteral("engine notice")));
     CHECK(!model.notices().contains(QStringLiteral("old key map notice")));
-    CHECK(remembered.size() == 1 && remembered[0] == kDir + "/logic.json");
+    CHECK(remembered.size() == 1 &&
+          std::filesystem::path(remembered[0]).lexically_normal() ==
+              std::filesystem::path(kDir + "/logic.json").lexically_normal());
     const std::size_t before = engine.sent.size();
     key(view, Qt::Key_R, Qt::NoModifier, 27, QStringLiteral("r"));
     CHECK(engine.sent.size() == before + 1 && engine.sent.back().command == "transport.record");

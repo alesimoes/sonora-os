@@ -33,6 +33,7 @@ human has to look:
 
 `classify` is pure; `handle` applies the action and returns True when it
 dealt with the result (the caller then does not block)."""
+import fnmatch
 import json
 import re
 
@@ -47,6 +48,10 @@ _INFRA = re.compile(
     r"WinError 10061|broker (is )?(unreachable|down)|connection refused"
     r"|10[- ]minute (command )?(limit|timeout)|command (time ?limit|timed out)"
     r".{0,80}build-slot|build-slot.{0,120}(time ?limit|timed? ?out|10 min)"
+    # `timeout N tools/build-slot.sh ...` killed: rc=124 / "Terminated" come
+    # a sentence or two after the command (loop_takes.tests r1429, 2026-11-09).
+    r"|(build-slot|micro-build).{0,400}(\brc\s*=\s*124\b|\bTerminated\b"
+    r"|\btool (cap|limit)\b)"
     r"|(docker|container) (engine|daemon)[^.\n]{0,40}(error|not running|"
     r"unreachable|unavailable)|cannot connect to the docker daemon"
     r"|error during connect.{0,60}docker", re.I | re.S)
@@ -58,13 +63,22 @@ _ACCEPT_OK = re.compile(
 _GREEN = re.compile(
     r"\b(functionally|code(-wise)?|tests?|tester-?\d*|qa|ctest|build)\b"
     r"[^.\n]{0,60}\b(pass(es|ed|ing)?|green|ok)\b", re.I)
+# "Work is complete at 6923c036 but ...": done in the engineer's own words
+# (daw.model.session_mgmt.ui, 2026-11-09). QA still judges it.
+_COMPLETE = re.compile(
+    r"\b(work|slice|code|feature|task)\s+(is\s+)?(complete|done|finished)\b",
+    re.I)
+# "need the plan to add those two files to this task": what is left is the
+# claim, nothing else (time.elastic.engine, 2026-11-09: 9 h blocked).
+_PLAN_ADD = (r"\b(needs?|asks?|wants?)\s+the\s+plan\s+to\s+add\b"
+             r"|\bplan\s+(must|has\s+to|needs\s+to)\s+add\b")
 # The tester failed on scope and nothing else.
 _SCOPE_ONLY = re.compile(
     r"\b(fail(ed|s)?|blocked)\s+(only\s+)?on\s+(a\s+|the\s+)?scope\b"
-    r"|\bscope(\s+(decision|finding|issue))?\s+only\b", re.I)
+    r"|\bscope(\s+(decision|finding|issue))?\s+only\b|" + _PLAN_ADD, re.I)
 _SCOPE = re.compile(r"\b(scope|outside (its|my|the|our) claim|"
                     r"not in (its|my|the) claim|outside (its|my|the) files|"
-                    r"files? outside|unclaimed files?)", re.I)
+                    r"files? outside|unclaimed files?)|" + _PLAN_ADD, re.I)
 _PATH = re.compile(r"[\w.+-]+(?:/[\w.+-]+)+")
 _MARK = re.compile(r"\[triage:(\w+) (\d+)\]")
 
@@ -76,7 +90,8 @@ def classify(role, summary):
     if _NOCOMMIT.search(s):
         return "nocommit"
     if role == "engineer" and _SCOPE.search(s) and (
-            _ACCEPT_OK.search(s) or _GREEN.search(s) or _SCOPE_ONLY.search(s)):
+            _ACCEPT_OK.search(s) or _GREEN.search(s) or _SCOPE_ONLY.search(s)
+            or _COMPLETE.search(s)):
         return "scope"
     return None
 
@@ -162,13 +177,40 @@ def held_elsewhere(o, t, paths):
     return out
 
 
-def _scope(o, t, why, now):
-    paths = [p for p in paths_in(why) if p not in (t.get("files") or [])]
+def out_of_claim(o, t):
+    """Paths the task's branch changed that none of its claim globs cover;
+    None when the forge cannot tell. An agent's report abbreviates paths
+    ("scenes/save_as_template.cpp", bare file names): widened as written they
+    matched nothing and QA bounced the slice on scope again."""
+    diff_of = getattr(o.forge, "changed_files", None)
+    if diff_of is None or not t.get("branch"):
+        return None
+    try:
+        changed = diff_of(t.get("start_from"), t["branch"])
+    except Exception:  # noqa: BLE001 - unknown, fall back to the report
+        return None
+    if changed is None:
+        return None
+    globs = t.get("files") or []
+    return [p for p in changed
+            if not any(fnmatch.fnmatchcase(p, g) for g in globs)]
+
+
+def _widen(o, t, paths):
     if paths:
+        o.store.set_task(t["id"], files=list(t.get("files") or []) + paths)
+
+
+def _scope(o, t, why, now):
+    diff = out_of_claim(o, t)
+    paths = diff if diff is not None else [
+        p for p in paths_in(why) if p not in (t.get("files") or [])]
+    if paths or diff is not None:
         held = held_elsewhere(o, t, paths)
-        o.store.set_task(t["id"], files=list(t["files"]) + paths)
-        o.store.advance(t["id"], "qa",
-                        note="claim widened: " + ", ".join(paths))
+        _widen(o, t, paths)
+        o.store.advance(t["id"], "qa", note=(
+            "claim widened: " + ", ".join(paths) if paths
+            else "nothing on the branch is outside the claim"))
         o._release(t)
         o.store.event(t["id"], "triage_scope", "widened " + ", ".join(paths)
                       + ("; also held by: " + ", ".join(held) if held else ""))
@@ -247,13 +289,38 @@ def hand_fixed(o, t):
     return tip
 
 
+def _sync_pushed_fix(o, t, tip):
+    """A fix pushed from another worktree reaches the local branch, which
+    the tester and the integrator work from. (ok, why)."""
+    if tip.get("ref") != "origin":
+        return True, ""
+    sync = getattr(o.forge, "sync_local", None)
+    if sync is None:
+        return False, "this forge cannot sync the local branch"
+    try:
+        return sync(t["branch"])
+    except Exception as e:  # noqa: BLE001 - git failed: leave it blocked
+        return False, str(e)[:200]
+
+
 def handfixed(o, t, tip):
     """Hand the hand-fixed slice to QA, which verifies the accept."""
     sha, subject = tip["sha"][:8], (tip.get("subject") or "")[:120]
+    ok, why = _sync_pushed_fix(o, t, tip)
+    if not ok:
+        # QA on a local branch without the fix would judge the old code.
+        o.store.event(t["id"], "triage_handfixed_unsynced",
+                      f"{sha} on origin/{t['branch']}: {why}"[:200])
+        return False
+    # A hand fix often reaches past the slice's globs; QA must not bounce
+    # it on scope for that (daw.model.session_mgmt.ui, 2026-11-09).
+    extra = out_of_claim(o, t) or []
+    _widen(o, t, extra)
     o.store.advance(t["id"], "qa", note=f"hand-fixed after the block: "
                     f"{sha} {subject}")
     o._release(t)
-    o.store.event(t["id"], "triage_handfixed", f"{sha} {subject}")
+    o.store.event(t["id"], "triage_handfixed", f"{sha} {subject}" + (
+        "; claim widened: " + ", ".join(extra) if extra else ""))
     o._tell("lead", "task_done", {"task": t["id"]},
             feature=t["feature_id"], task=t["id"])
     return True

@@ -439,6 +439,7 @@ Value encode(const InsertOp& op);
 Value encode(const MixOp& op);
 Value encode(const GroupOp& op);
 Value encode(const MidiOp& op);
+Value encode(const Compound& o);
 bool decode(Reader& rd, const Value& v, const std::string& kind, SessionOp& out,
             bool& known);
 bool decode(Reader& rd, const Value& v, const std::string& kind, TrackOp& out,
@@ -498,6 +499,8 @@ bool decode(Reader& rd, const Value& v, const std::string& kind, MidiOp& out,
 //    replaced by a sample edit (SetRegionSources).
 // 17 (ADR-0048): the edit state also carries "vcas" and "folders", the mix
 //    "vca_mix"; 18 and 19 are other work's.
-constexpr std::int64_t kWindowFormat = 20;
+// 21 (ADR-0058, side-chain keys): an insert carries "key_bus" (0: none), and
+//    the operation codec has SetInsertKey.
+constexpr std::int64_t kWindowFormat = 21;
 
 }  // namespace sonora::model::codec

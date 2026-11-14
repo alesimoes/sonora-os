@@ -14,7 +14,10 @@ SEVERITY = {"bad": 0, "warn": 1}
 # still silent, has the supervisor's own restart failed.
 RESTART_FAILED_MIN = 35
 OWNER_CHECKS = {"disk", "budget", "usage", "limit"}
-BLOCKER = re.compile(r"(?:blocked|waits on|behind|blocker)[: ]+([A-Za-z0-9][\w.\-/]*)", re.I)
+# "blocked: Wrote ... waits for ui.x" names the blocker after "waits for", not
+# after the first "blocked:". Task ids carry a dot; try the explicit forms first.
+BLOCKER = re.compile(r"(?:waits? (?:for|on)|behind|blocker)[: ]+([A-Za-z0-9][\w.\-/]*)", re.I)
+BLOCKED_TASK = re.compile(r"blocked[: ]+([A-Za-z0-9]+(?:[.\-/][\w.\-/]*)+)", re.I)
 
 
 def item(key, level, title, reason, label=None, command=None, age=0):
@@ -31,7 +34,7 @@ def alert_is_owner_only(al):
 
 
 def blocker_of(text):
-    m = BLOCKER.search(text or "")
+    m = BLOCKER.search(text or "") or BLOCKED_TASK.search(text or "")
     return m.group(1).rstrip(".,;:)") if m else None
 
 
@@ -69,7 +72,10 @@ def attention(orch, agents, prs, daemon, now):
     """-> (owner items, harness fold); each item goes away when its cause does."""
     items = []
     if daemon["level"] == "bad":
-        items.append(item("daemon", "bad", "Daemon parado", "Sem o daemon o chat só mostra o estado e nada executa."))
+        stuck = daemon["text"].startswith("travado")
+        items.append(item("daemon", "bad", "Daemon travado" if stuck else "Daemon parado",
+                          "O processo roda, mas o ciclo dele não volta há " + daemon["text"][8:] + "."
+                          if stuck else "Sem o daemon o chat só mostra o estado e nada executa."))
     o = orch or {}
     if o.get("kill_switch"):
         items.append(item("switch", "warn", "Lançamentos parados", f"A chave {o['kill_switch']} está ligada.",

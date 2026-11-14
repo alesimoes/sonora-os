@@ -22,6 +22,7 @@
 #include <iterator>
 #include <vector>
 
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -405,6 +406,42 @@ int main() {
         check(fs::exists(pf / ".incoming-notes"), "a name that is not <pid>-<n> is kept");
         check(fs::is_symlink(fs::symlink_status(pf / dead_link)) && fs::exists(base / "keep" / "target"),
               "a link with a dead pid's name is not followed or removed");
+    }
+
+    std::printf("state_paths: a saved file that verifies is kept, not renamed over\n");
+    {
+        room = uint64_t{1} << 40;
+        ::alarm(30);  // a blocked open on a FIFO fails the test instead of hanging it
+        const fs::path src = scratch / "k" / "loop.bin", s5 = base / "S5";
+        fs::create_directories(s5);
+        write_file(src, 300, 'k');
+        StatePaths sp((scratch / "k2").string(), s5.string(), small);
+        std::vector<pc::StateFile> listed;
+        std::string error;
+        check(save(sp, s5, {src}, listed, error) && listed.size() == 1, "first save copies the file");
+        const fs::path saved = s5 / listed[0].path;
+        struct stat before {};
+        ::stat(saved.c_str(), &before);
+        StatePaths again((scratch / "k3").string(), s5.string(), small);
+        check(save(again, s5, {src}, listed, error) && listed.size() == 1, "the same bytes saved again");
+        struct stat after {};
+        ::stat(saved.c_str(), &after);
+        check(before.st_ino == after.st_ino, "  the existing file keeps its inode");
+        check(no_incoming(s5), "  the temporary copy is removed");
+
+        fs::permissions(saved, fs::perms::owner_write, fs::perm_options::add);
+        { std::ofstream(saved, std::ios::binary | std::ios::trunc) << std::string(300, 'x'); }
+        check(save(again, s5, {src}, listed, error) && fs::file_size(saved) == 300,
+              "a file with other bytes is replaced");
+        std::ifstream in(saved, std::ios::binary);
+        const std::string got((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        check(got == std::string(300, 'k'), "  by the bytes that were saved");
+
+        fs::remove(saved);
+        check(::mkfifo(saved.c_str(), 0644) == 0, "a FIFO takes the name");
+        check(save(again, s5, {src}, listed, error) && listed.size() == 1, "  the save does not block on it");
+        check(fs::is_regular_file(saved) && fs::file_size(saved) == 300, "  and replaces it with the file");
+        ::alarm(0);
     }
 
     fs::remove_all(base, ec);

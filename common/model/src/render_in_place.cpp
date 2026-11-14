@@ -59,6 +59,27 @@ std::vector<Id> active_inserts(const TrackEdit& t) {
     return ids;
 }
 
+bool render_insert_valid(const Snapshot& s, Id track, Id insert, std::string& why) {
+    why.clear();
+    const TrackEdit* t = find_track(s, track);
+    if (t == nullptr) {
+        why = "no such track; nothing was rendered";
+        return false;
+    }
+    const std::vector<Id> inserts = active_inserts(*t);
+    if (std::find(inserts.begin(), inserts.end(), insert) == inserts.end()) {
+        why = "that plug-in is not an active insert of " + t->name + "; nothing was rendered";
+        return false;
+    }
+    const InsertMix* mix = s.mix.find_insert(insert);
+    if (mix != nullptr && mix->bypass) {
+        why = "that plug-in is bypassed on " + t->name +
+              ", so processing would print the dry signal; un-bypass it first";
+        return false;
+    }
+    return true;
+}
+
 bool render_range_of(const Snapshot& s, Id track, RenderKind kind, Frames sel_start,
                      Frames sel_end, RenderRange& out, std::string& why) {
     out = RenderRange{};
@@ -135,10 +156,20 @@ bool render_members(const Snapshot& s, const RenderPlacement& pl,
         why = "the rendered file is empty; nothing was rendered";
         return false;
     }
-    const std::vector<Id> inserts = active_inserts(*t);
+    std::vector<Id> inserts = active_inserts(*t);
     if (inserts.empty()) {
         why = t->name + " has no active plug-in insert; nothing was rendered";
         return false;
+    }
+    if (pl.only_insert != 0) {
+        if (pl.kind != RenderKind::Process) {
+            why = "only Process Selection runs through one plug-in; " + t->name +
+                  " is printed through its whole chain";
+            return false;
+        }
+        if (!render_insert_valid(s, pl.track, pl.only_insert, why)) return false;
+        // Its effect is in the audio now; the others' is not, so they stay.
+        inserts = {pl.only_insert};
     }
 
     Region r;

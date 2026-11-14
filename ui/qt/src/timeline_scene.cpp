@@ -370,8 +370,12 @@ void draw_live_take(const LiveTake& live, const ViewState& v, std::vector<SceneR
     const uint32_t band_colour = theme::region_name_band(theme::kRecord);
     const uint32_t wave = theme::region_wave(theme::kRecord);
     static thread_local std::vector<PeakPair> buf;
+    ViewState row_view = v;
     for (const LiveTake::Lane& lane : live.lanes()) {
         if (lane.end <= lane.start) continue;
+        if (v.row_hidden(lane.row)) continue;
+        row_view.track_height = v.row_h(lane.row);
+        const ViewState& v = row_view;
         const double lane_y = v.y_of_track(lane.row);
         if (lane_y + v.track_height < 0 || lane_y > v.height) continue;
         const double x0 = v.x_of(lane.start), x1 = v.x_of(lane.end);
@@ -477,8 +481,10 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
     for (std::size_t i = 0; i < tracks.size(); ++i) {
         const double y = v.y_of_track(static_cast<int>(i));
         if (v.y_of_track(static_cast<int>(i) + 1) < 0 || y > v.height) continue;
-        add(out.rects, 0, y, v.width, v.track_height, i % 2 ? theme::kLaneB : theme::kLaneA);
-        add(out.rects, 0, y + v.track_height - 1, v.width, 1, theme::kBorderSubtle);
+        const double row_h = v.row_h(static_cast<int>(i));
+        if (row_h <= 0) continue;  // hidden (ADR-0106)
+        add(out.rects, 0, y, v.width, row_h, i % 2 ? theme::kLaneB : theme::kLaneA);
+        add(out.rects, 0, y + row_h - 1, v.width, 1, theme::kBorderSubtle);
         if (!v.autolanes_open(static_cast<int>(i))) continue;
         for (int l = 0; l < kLaneCount; ++l) {
             const double top = v.y_of_autolane(static_cast<int>(i), l);
@@ -519,8 +525,12 @@ void build_timeline_scene(const Snapshot& s, const ViewState& v, const Selection
         }
     }
 
-    // Regions.
+    // Regions. Each track is drawn with a view whose row is its own height.
+    ViewState row_view = v;
     for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (v.row_hidden(static_cast<int>(i))) continue;
+        row_view.track_height = v.row_h(static_cast<int>(i));
+        const ViewState& v = row_view;
         const double y = v.y_of_track(static_cast<int>(i));
         if (y + v.track_height < 0 || y > v.height) continue;
         const Playlist* p = active_playlist(tracks[i].get());

@@ -286,7 +286,9 @@ check_kind() {
     disk) ;;
     part) die "$DEV is a partition. Pass the whole disk, e.g. /dev/sdb." ;;
     loop) [[ -n "$TEST_IMAGE" ]] || die "$DEV is a loop device, not a USB stick." ;;
-    *)    die "$DEV is a '$type' device, not a disk." ;;
+    # Test mode accepts one loop device only; say so for a dm root disk too.
+    *)    [[ -z "$TEST_IMAGE" ]] || die "SONORA_WRITE_USB_TEST_IMAGE is set, so only a loop device over that file is accepted, and $DEV is a $type."
+          die "$DEV is a '$type' device, not a disk." ;;
   esac
 
   if [[ -n "$TEST_IMAGE" ]]; then

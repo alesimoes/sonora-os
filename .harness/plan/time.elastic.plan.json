@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "feature": "time.elastic",
+  "backlog_ids": ["time.elastic"],
+  "track": "daw",
+  "feature_branch": "feat/time.elastic",
+  "reserved": {"adr": 136, "protocol": null, "formats": []},
+  "adr": "brain/decisions/ADR-0136-elastic-audio-offline-warp.md",
+  "tasks": [
+    {
+      "id": "contract",
+      "kind": "contract",
+      "title": "audio.elastic command, capability and fake engine",
+      "brief": "ADR-0136 is already written; keep it in sync, do not edit brain/INDEX.md (the index line is already there). New header contracts/api/include/sonora/api/elastic.h: ElasticRequest {region, algorithm (polyphonic|rhythmic|monophonic|varispeed), mode ratio=R | warp=SRC:DST,... | quantize=GRID[:STRENGTH]}, parse/format functions with `why`, kCapabilityElastic=\"audio.elastic\", limits kMaxElasticFrames, ratio range 0.25..4, validation (strictly increasing markers, inside the region). One catalog entry audio.elastic in command.h (argument command). Fake engine: announces the capability only when configured, records a valid request, refuses invalid ones with the same reasons. No protocol bump, no session format, no Operation. Tests in contracts/api/tests: parse round trips, every refusal, capability gating, fake.",
+      "files": [
+        "brain/decisions/ADR-0136-elastic-audio-offline-warp.md",
+        "contracts/api/include/sonora/api/elastic.h",
+        "contracts/api/src/elastic.cpp",
+        "contracts/api/include/sonora/command.h",
+        "contracts/api/testing/src/fake_engine.cpp",
+        "contracts/api/tests/test_elastic.cpp",
+        "contracts/api/CMakeLists.txt"
+      ],
+      "depends_on": [],
+      "agent": "rt-engineer",
+      "tier": "senior",
+      "grade": "M/high",
+      "accept": [
+        "tools/micro-build.sh builds contracts/api and ctest -L contract passes incl. the elastic test",
+        "kProtocolVersion and the session format version unchanged",
+        "tools/pre-pr.sh clean"
+      ]
+    },
+    {
+      "id": "stretch",
+      "kind": "engine",
+      "title": "common/stretch: warp map, quantize planner, Stretcher interface and fake",
+      "brief": "New pure module common/stretch (own CMakeLists, standard C++17, no Rubber Band here): WarpMap (validated SRC->DST markers, output length, inverse lookup), quantize_plan(onsets, MusicalMap/grid, strength 0..100) -> WarpMap with never-crossing markers and refusal reasons (no onsets, bad grid, strength 0), interface Stretcher {process(planar input, WarpMap, algorithm) -> planar output} and a deterministic linear-resample fake used by tests. Pure, off the audio thread. The root CMakeLists.txt is yours alone: add add_subdirectory(common/stretch) after common/model, add add_subdirectory(engine/elastic) guarded by if(EXISTS) after engine/control, and inside the Qt block add_subdirectory(ui/elastic) guarded by if(EXISTS), so the engine and ui tasks do not edit shared CMake files. Tests (label model): marker validation, output length equals the target span, onset quantize on even/swung/sparse onsets, strength 0/50/100, markers never cross, refusals.",
+      "files": [
+        "common/stretch/**",
+        "CMakeLists.txt"
+      ],
+      "depends_on": [],
+      "agent": "dsp-engineer",
+      "tier": "pleno",
+      "grade": "M/med",
+      "accept": [
+        "tools/micro-build.sh builds common/stretch and its tests pass",
+        "no dependency outside the standard library and common/model (tools/module-deps.allow updated if needed)",
+        "tools/pre-pr.sh clean"
+      ]
+    },
+    {
+      "id": "engine",
+      "kind": "engine",
+      "title": "Engine: audio.elastic job, Rubber Band adapter, one Compound, capability",
+      "brief": "New module engine/elastic (own CMakeLists, added by the root line from the stretch task; target_sources on sonora_control with absolute paths; do NOT edit engine/control/CMakeLists.txt, claimed by ui.mixer.sidechain). Rubber Band adapter implementing common/stretch's Stretcher: pkg-config rubberband, offline mode, key-frame map from the WarpMap, algorithm -> options (rhythmic = crisp transients, monophonic = formant preserved, varispeed = plain resample without the library). If rubberband is absent the adapter is not built and the capability is not advertised. Job on the control thread (pattern of sample_edit.cpp and the stems/render jobs): reads the region span plus handles, runs the stretcher, writes Audio Files/<track>_elastic_NN.wav exclusive create and synced, deletes a partial file on cancel or failure, refuses when the result would overlap the next region, then submits ONE Compound (AddSource, SetRegionSources, region length) so undo is one step and the original file is untouched; progress and cancel as the render job. Quantize mode reads onsets through an injected OnsetSource and the tempo map. Registration: one call install_elastic_commands(...) from engine_control_server.cpp (precedent install_stems_commands). Tests (label engine) with the fake Stretcher: one undo step, original file byte-identical, overlap refused, cancel removes the partial file, capability absent without the library, take-open refusal; one adapter test when rubberband is present asserting output length equals the target span.",
+      "files": [
+        "engine/elastic/**",
+        "engine/control/src/engine_control_server.cpp"
+      ],
+      "depends_on": ["contract", "stretch"],
+      "agent": "rt-engineer",
+      "tier": "senior",
+      "grade": "L/high",
+      "accept": [
+        "tools/micro-build.sh builds the engine/control targets reached; ctest -L engine incl. the elastic tests passes",
+        "original take file unchanged after apply and after undo; no audio-thread code touched",
+        "tools/pre-pr.sh clean"
+      ]
+    },
+    {
+      "id": "ui",
+      "kind": "ui",
+      "title": "Elastic UI: ui/elastic module, tempo.edit elastic words, warp panel, Quantize Audio",
+      "brief": "New module ui/elastic (own CMakeLists, guarded root line added by the stretch task; target_sources on sonora_ui_edit like ui/groove; do not edit ui/qt/CMakeLists.txt, EditWindow.qml, command.h or edit_controller.h). Free function bool elastic_command(EditController&, text, why) using only the public EditController API and dispatching audio.elastic through it. tempo.edit words: `elastic ratio <R> [algo]`, `elastic quantize <grid> [strength] [algo]`, `elastic warp <src:dst,...> [algo]`; the hook is one line in ui/qt/src/edit_tempo.cpp. WarpPanel.qml (new file, own design, original names: marker list, algorithm picker, ratio field, Quantize strength slider, Apply/Cancel; held notice for refusals; hidden with a reason when the engine lacks the capability). Marker editing state is an injected, Qt-free model class, tested. Screenshot scene ui/qt/src/scenes/elastic.cpp (existing GLOB); regenerate and commit docs/images/elastic-*.png, open them, list them in the PR. Tests in ui/elastic/tests (ctest ui_elastic) against the fake engine: parse of each word, refusals, capability absent, marker model.",
+      "files": [
+        "ui/elastic/**",
+        "ui/qt/src/edit_tempo.cpp",
+        "ui/qt/src/scenes/elastic.cpp",
+        "docs/images/elastic-*.png"
+      ],
+      "depends_on": ["contract", "stretch"],
+      "agent": "ui-engineer",
+      "tier": "senior",
+      "grade": "L/med",
+      "accept": [
+        "tools/micro-build.sh builds the ui targets reached and ctest -R ui_elastic passes",
+        "screenshots regenerated, opened and listed in the PR",
+        "no edit to EditWindow.qml, command.h, edit_controller.h or ui/qt/CMakeLists.txt"
+      ]
+    }
+  ],
+  "merge_order": ["contract", "stretch", "engine", "ui"],
+  "pr": {
+    "title": "time.elastic: Elastic Audio, warp markers, algorithms and Quantize Audio (offline render, ADR-0136)",
+    "partial": false,
+    "partial_reason": null
+  }
+}

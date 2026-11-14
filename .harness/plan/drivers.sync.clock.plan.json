@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "feature": "drivers.sync.clock",
+  "backlog_ids": ["drivers.sync.clock"],
+  "track": "os",
+  "feature_branch": "feat/drivers.sync.clock",
+  "depends_on_feature": null,
+  "reserved": {"adr": 125, "protocol": null, "formats": []},
+  "adr": "brain/decisions/ADR-0125-external-clock-source.md",
+  "tasks": [
+    {
+      "id": "contract",
+      "kind": "contract",
+      "title": "Clock source interfaces, mixer seam and fakes",
+      "brief": "Read planning/plans/drivers.sync.clock.md and ADR-0125 (already written; keep in sync; do NOT edit brain/INDEX.md, put its line in the PR body). Create module drivers/clock. include/sonora/clock/clock_source.h: enum ClockSource{Internal,Adat,Spdif,WordClock}, enum ClockLock{Locked,Unlocked,Unknown}, ClockCaps, abstract ClockSourceControl{caps,select,selected,lock}. clock_mixer.h: abstract ClockMixer seam (enumerate elements, read/write enum and bool) and declaration of AlsaClockControl. clock_guard.h: class ClockGuard declaration (prepare(requested) with bounded poll count returning a result with a reason, confirm_unknown(device), poll(), lock_loss_count()). testing/fake_clock.h: FakeClockMixer, FakeClockControl. CMake drivers/clock/CMakeLists.txt: library sonora_clock from file(GLOB CONFIGURE_DEPENDS src/*.cpp); one test executable and add_test clock_<stem> per tests/test_*.cpp, LABELS drivers; src/clock_version.cpp trivial so the library is never empty. Hook with ONE line in drivers/alsa/CMakeLists.txt: add_subdirectory(../clock clock). Do not edit root CMakeLists.txt or tools/module-deps.allow. Contract test tests/test_clock_contract.cpp exercising the fakes. No contracts/ or protocol change.",
+      "files": [
+        "brain/decisions/ADR-0125-external-clock-source.md",
+        "drivers/clock/CMakeLists.txt",
+        "drivers/clock/include/sonora/clock/clock_source.h",
+        "drivers/clock/include/sonora/clock/clock_mixer.h",
+        "drivers/clock/include/sonora/clock/clock_guard.h",
+        "drivers/clock/testing/fake_clock.h",
+        "drivers/clock/tests/test_clock_contract.cpp",
+        "drivers/clock/src/clock_version.cpp",
+        "drivers/alsa/CMakeLists.txt"
+      ],
+      "depends_on": [],
+      "agent": "driver-engineer",
+      "grade": "M/high",
+      "tier": "senior",
+      "accept": [
+        "tools/micro-build.sh builds drivers/clock and ctest -R clock_test_clock_contract passes; PR prints command and output",
+        "ADR-0125 keeps Context, Decision, Rationale, Consequences, Alternatives rejected, Unverified",
+        "no change to contracts/ or the protocol version"
+      ]
+    },
+    {
+      "id": "impl",
+      "kind": "engine",
+      "title": "ClockGuard and ALSA clock control",
+      "brief": "Define the declared classes. drivers/clock/src/clock_guard.cpp: ClockGuard per ADR-0125 section 4: refuse a missing source, a failed select, or still-unlocked after N polls (a count, no wall clock) with a reason; Unknown lock allowed only after confirm_unknown; poll() counts lock loss and never touches transport. drivers/clock/src/alsa_clock_control.cpp: AlsaClockControl over ClockMixer with an element-name table (UAC2 'Clock Source N Validity', 'Clock Selector', plus candidates). No libasound dependency here. Do not edit CMake or headers (ask the architect for an amendment). Control thread only; fail loudly.",
+      "files": [
+        "drivers/clock/src/clock_guard.cpp",
+        "drivers/clock/src/alsa_clock_control.cpp"
+      ],
+      "depends_on": ["contract"],
+      "agent": "driver-engineer",
+      "grade": "M/high",
+      "tier": "senior",
+      "accept": [
+        "ctest -R clock passes through tools/build-slot.sh with the micro build",
+        "no silent fallback to Internal; lock loss never stops transport",
+        "no file past ~500 lines"
+      ]
+    },
+    {
+      "id": "tests",
+      "kind": "tests",
+      "title": "Guard and ALSA control behaviour tests",
+      "brief": "tests/test_clock_guard.cpp: unavailable source refused with reason, unlocked refused after bounded polls, Unknown needs confirmation, lock loss counted, no transport call, recovery after relock. tests/test_alsa_clock_control.cpp: element-name table, select/selected round trip, caps from FakeClockMixer, missing elements give caps with lock reporting false. No sleeps; CMake globs the files. List the ADR-0125 Unverified hardware questions in the PR for the researcher.",
+      "files": [
+        "drivers/clock/tests/test_clock_guard.cpp",
+        "drivers/clock/tests/test_alsa_clock_control.cpp"
+      ],
+      "depends_on": ["impl"],
+      "agent": "driver-engineer",
+      "grade": "M/med",
+      "tier": "pleno",
+      "accept": [
+        "ctest -R clock passes; command and output in the PR",
+        "no test uses wall-clock time"
+      ]
+    }
+  ],
+  "merge_order": ["contract", "impl", "tests"],
+  "pr": {
+    "title": "Sync: external clock source (ADR-0125)",
+    "partial": true,
+    "partial_reason": "Not validated on the UMC1820; no real ALSA mixer adapter and no settings UI yet."
+  }
+}

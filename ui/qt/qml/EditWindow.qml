@@ -228,6 +228,7 @@ Item {
                     }
                 }
                 ConductorRuler {
+                    id: conductorRuler
                     objectName: index === 0 ? "tempoRuler" : "meterRuler"
                     x: Theme.trackHeaderWidth
                     width: parent.width - Theme.trackHeaderWidth
@@ -235,6 +236,17 @@ Item {
                     session: edit.session
                     kind: index
                     MouseArea { anchors.fill: parent; onClicked: (m) => edit.session.rulerClick(m.x) }
+                    // Editing on the ruler (ADR-0140), ui/conductor/qt's editor laid
+                    // over it; where that module is not built, the click above stays.
+                    Component.onCompleted: {
+                        if (editorQml === "") return
+                        const e = Qt.createQmlObject(editorQml, conductorRuler, "qrc:/sonora/qml/ConductorRulerEdit.qml")
+                        e.objectName = objectName + "Edit"
+                        e.session = edit.session
+                        e.shell = edit.shell
+                        e.ruler = conductorRuler
+                        e.host = edit
+                    }
                 }
             }
         }
@@ -436,8 +448,9 @@ Item {
                     readonly property bool armed: edit.shell.engineAlive && edit.shell.armed[index] === true
                     y: edit.rowTop(index) - edit.session.scrollY
                     width: headers.width
-                    height: edit.session.trackHeight
-                    visible: y + height >= 0 && y <= headers.height
+                    // Its own height, and none when hidden (ADR-0106).
+                    height: row.height !== undefined ? row.height : edit.session.trackHeight
+                    visible: row.hidden !== true && y + height >= 0 && y <= headers.height
                     color: selected ? Theme.raised : Theme.panel
                     z: headerAutoMode.open ? 100 : 0
 
@@ -626,7 +639,7 @@ Item {
                     required property int index
                     required property var modelData
                     visible: modelData.shown === true
-                    y: modelData.top + edit.session.trackHeight - edit.session.scrollY
+                    y: modelData.top + modelData.height - edit.session.scrollY
                     width: laneHeaders.width
                     height: edit.session.autolaneNames.length * edit.session.autolaneHeight
                     Repeater {
@@ -683,7 +696,7 @@ Item {
                     required property int index
                     required property var modelData
                     visible: modelData.lanesShown === true
-                    y: modelData.top + edit.session.trackHeight + modelData.lanesTop - edit.session.scrollY
+                    y: modelData.top + modelData.height + modelData.lanesTop - edit.session.scrollY
                     width: takeHeaders.width
                     height: (modelData.laneNames || []).length * edit.session.compLaneHeight
                     Repeater {
@@ -764,6 +777,23 @@ Item {
                                                    (w.modifiers & Qt.ShiftModifier) !== 0,
                                                    (w.modifiers & Qt.ControlModifier) !== 0)
             }
+        }
+    }
+
+    // Show/Hide Tracks (ADR-0106), floating over the timeline. A context
+    // property, as the plug-in manager is: only this window reaches it.
+    Loader {
+        id: trackListLoader
+        objectName: "trackListLoader"
+        readonly property var views: typeof trackViews !== "undefined" ? trackViews : null
+        active: views !== null
+        x: edit.width - 380
+        y: Theme.toolbarHeight + Theme.space6
+        z: 9
+        sourceComponent: TrackListWindow {
+            objectName: "trackListWindow"
+            views: trackListLoader.views
+            mover: trackListLoader
         }
     }
 }

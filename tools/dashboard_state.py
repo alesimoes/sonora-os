@@ -1,17 +1,24 @@
 """The console's snapshot and the loop that refreshes it: the daemon's
 status.json, the open and merged PRs from GitHub, and the board rows built
 from them. Each source fails on its own: an error is listed, never raised."""
+import hashlib
+import json
+import os
 import threading
 import time
 
 from dashboard_board import agent_rows
+from dashboard_cost import read_cost
 from dashboard_github import read_merged, read_prs
 from dashboard_orch import clean_orch, read_coordinator_agents, read_orchestrator
 from dashboard_prboard import GreenClock, pr_rows
 from dashboard_progress import EVERY_S as PROGRESS_EVERY_S, read_progress
+from dashboard_util import orch_root
 
 GH_EVERY_S = 20
 LOOP_S = 4
+COST_EVERY_S = 30
+_cost_at = [0.0]
 
 state = {"updated": 0, "progress": None, "prs": [], "merged": [], "errors": [], "orchestrator": None,
          "board": {"agents": [], "prs": []}}
@@ -66,10 +73,26 @@ def refresh_once(gh, prog=None):
     except Exception as e:
         board = state["board"]
         errors.append("quadro: %s" % e)
+    cost = state.get("cost")
+    if time.time() - _cost_at[0] >= COST_EVERY_S:
+        _cost_at[0] = time.time()
+        try:
+            cost = read_cost(os.path.join(orch_root(), ".harness", "runs")) or cost
+        except Exception as e:
+            errors.append("custo: %s" % e)
+    progress = prog.value if prog else state["progress"]
+    # `rev` moves only when what the screen shows moved: `updated` ticks on
+    # every pass, and a stream keyed to it pushed a full 25 KB frame every 4 s
+    # to every open page whether or not anything had changed (2026-11-09).
+    digest = hashlib.md5(json.dumps(
+        [gh.prs, gh.merged, orch, board, errors, cost, progress],
+        sort_keys=True, default=str).encode()).hexdigest()
     with lock:
-        state.update(updated=int(time.time()), prs=gh.prs, merged=gh.merged,
-                     orchestrator=orch, board=board, errors=errors,
-                     progress=prog.value if prog else state["progress"])
+        if digest != state.get("digest"):
+            state["rev"] = state.get("rev", 0) + 1
+        state.update(updated=int(time.time()), digest=digest, prs=gh.prs, merged=gh.merged,
+                     orchestrator=orch, board=board, errors=errors, cost=cost,
+                     progress=progress)
 
 
 def refresh_loop():

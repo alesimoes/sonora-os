@@ -164,6 +164,119 @@ class SelfUpdate(unittest.TestCase):
         self.assertIn("self_update_blocked", self.store.kinds())
         self.assertEqual(git(self.daemon, "status", "--porcelain"), "")
 
+    def commit_plan(self, rel, text):
+        write(self.daemon, rel, text)
+        git(self.daemon, "add", "-A")
+        git(self.daemon, "commit", "-qm", "plan " + rel)
+
+    def test_a_plan_also_merged_on_main_rebases_with_main_winning(self):
+        # 2026-11-09: a feature PR carried its plan and ADR to main with
+        # edits; the planner's local commit of the same files conflicted, the
+        # rebase was aborted every 5 min and the daemon ran 11 commits behind
+        # main for hours (#607 never loaded; plugins.offline stalled).
+        self.commit_plan("brain/decisions/ADR-1.md", "draft\n")
+        self.commit_plan("planning/plans/y.md", "local only\n")
+        self.push("brain/decisions/ADR-1.md", "reviewed\n")
+        new = self.push("tools/harness/train.py", "v2\n")
+        self.assertTrue(self.up.ready(1000))
+        self.assertEqual(git(self.daemon, "merge-base", "HEAD", new), new)
+        with open(os.path.join(self.daemon, "brain/decisions/ADR-1.md")) as f:
+            self.assertEqual(f.read(), "reviewed\n")
+        self.assertTrue(os.path.exists(
+            os.path.join(self.daemon, "planning/plans/y.md")))
+        self.assertEqual(git(self.daemon, "status", "--porcelain"), "")
+        ev = [r for r in self.store.rows if r[1] == "self_update_rebased"]
+        self.assertIn("main's version", ev[0][2])
+
+    def test_an_unrebaseable_plan_commit_is_saved_and_forced_at_the_bound(self):
+        # modify/delete: no merge option resolves it, yet the daemon must
+        # still reach main's harness within the bound, keeping the commits.
+        self.commit_plan("planning/plans/z.md", "v1\n")
+        git(self.dev, "pull", "-q", self.daemon, "HEAD")
+        git(self.dev, "push", "-q", "origin", "main")
+        self.commit_plan("planning/plans/z.md", "local v2\n")
+        git(self.dev, "rm", "-q", "planning/plans/z.md")
+        git(self.dev, "commit", "-qm", "drop z")
+        git(self.dev, "push", "-q", "origin", "main")
+        local = git(self.daemon, "rev-parse", "HEAD")
+        new = self.push("tools/harness/train.py", "v2\n")
+        self.assertFalse(self.up.ready(1000))
+        self.assertIn("self_update_blocked", self.store.kinds())
+        self.assertEqual(git(self.daemon, "status", "--porcelain"), "")
+        self.assertTrue(self.up.ready(1000 + self.up.max_defer_s))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
+        ev = [r for r in self.store.rows if r[1] == "self_update_forced"]
+        saved = ev[-1][2].split()[-1]
+        self.assertEqual(git(self.daemon, "rev-parse", saved), local)
+
+    def test_a_foreign_commit_is_kept_on_a_branch_and_dropped_at_the_bound(self):
+        # 2026-11-12/13: a product commit and a tracked paused.json in the
+        # daemon checkout blocked the update ~8 h ("move them to a branch",
+        # forever). Past the bound the harness keeps them on a branch, goes
+        # to main and replays the plan commits; the owner's pause survives.
+        self.commit_plan("planning/plans/p.md", "plan\n")
+        write(self.daemon, "plugins/amp/tests/t.cpp", "stray\n")
+        write(self.daemon, "planning/orchestrator/paused.json", '["qa"]')
+        git(self.daemon, "add", "-A")
+        git(self.daemon, "commit", "-qm", "stray product edit + runtime")
+        self.commit_plan("brain/decisions/ADR-9.md", "adr\n")
+        local = git(self.daemon, "rev-parse", "HEAD")
+        new = self.push("tools/harness/train.py", "v2\n")
+        self.assertFalse(self.up.ready(1000))
+        self.assertFalse(self.up.ready(1000 + self.up.max_defer_s - 1))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), local)
+        self.assertTrue(self.up.ready(1000 + self.up.max_defer_s))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD~2"), new)
+        for rel in ("planning/plans/p.md", "brain/decisions/ADR-9.md"):
+            self.assertTrue(os.path.exists(os.path.join(self.daemon, rel)))
+        self.assertFalse(os.path.exists(
+            os.path.join(self.daemon, "plugins/amp/tests/t.cpp")))
+        with open(os.path.join(self.daemon,
+                               "planning/orchestrator/paused.json")) as f:
+            self.assertEqual(f.read(), '["qa"]')
+        ev = [r for r in self.store.rows if r[1] == "self_update_forced"]
+        self.assertEqual(len(ev), 1)
+        self.assertIn("ALERT", ev[0][2])
+        self.assertIn("plugins/amp/tests/t.cpp", ev[0][2])
+        saved = ev[0][2].split()[-1]
+        self.assertTrue(saved.startswith("keep/daemon-"))
+        self.assertEqual(git(self.daemon, "rev-parse", saved), local)
+
+    def test_an_untracked_file_main_carries_is_moved_aside(self):
+        # 2026-11-13: a planner's uncommitted ADR, now on main, made git
+        # refuse the move ("untracked working tree files would be
+        # overwritten"). It goes under .harness/ and the update proceeds.
+        self.push(".gitignore", ".harness/\n")
+        git(self.daemon, "pull", "-q", "origin", "main")
+        write(self.daemon, "brain/decisions/ADR-7.md", "draft\n")
+        write(self.daemon, "brain/notes.md", "mine\n")
+        self.push("brain/decisions/ADR-7.md", "merged\n")
+        new = self.push("tools/harness/train.py", "v2\n")
+        self.assertTrue(self.up.ready(1000))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
+        with open(os.path.join(self.daemon, "brain/decisions/ADR-7.md")) as f:
+            self.assertEqual(f.read(), "merged\n")
+        self.assertTrue(os.path.exists(
+            os.path.join(self.daemon, "brain/notes.md")))  # not in the way
+        ev = [r for r in self.store.rows if r[1] == "self_update_aside"]
+        self.assertEqual(len(ev), 1)
+        dest = ev[0][2].split(" moved to ")[1].split(": ")[0]
+        self.assertTrue(dest.startswith(os.path.join(self.daemon,
+                                                     ".harness")))
+        with open(os.path.join(dest, "brain/decisions/ADR-7.md")) as f:
+            self.assertEqual(f.read(), "draft\n")
+
+    def test_paused_json_is_ignored_runtime_state(self):
+        # 2026-11-12: a planner's `git add` committed it in a plan commit.
+        # The repository's .gitignore alone, in a bare repo of its own, so
+        # a local info/exclude cannot make this pass.
+        shutil.copy(os.path.join(selfupdate.CODE_ROOT, ".gitignore"),
+                    os.path.join(self.dev, ".gitignore"))
+        r = subprocess.run(["git", "check-ignore", "-q",
+                            "planning/orchestrator/paused.json"],
+                           cwd=self.dev)
+        self.assertEqual(r.returncode, 0)
+
     def test_an_error_in_the_check_is_one_event_not_silence(self):
         def boom(now):
             raise RuntimeError("git exploded")
