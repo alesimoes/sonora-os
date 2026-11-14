@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "sonora/api/engine_settings.h"
 #include "sonora/command.h"
 
 namespace sonora::api {
@@ -231,7 +232,13 @@ namespace sonora::api {
 //   insert carries `key_bus` (window format 21), and PluginInfo carries
 //   `key_inputs`. A peer of 68 or lower is refused at Hello, so an older
 //   engine never meets the command.
-constexpr uint32_t kProtocolVersion = 69;
+// 71 (ADR-0204, Preferences engine settings; reserved by the daemon, 70 being
+//   another PR's): EngineSettingsSet (wire type 11) and EngineSettingsReport
+//   (wire type 12) carry the autosave interval, the backup count, the
+//   AutoMatch time, the audio device and the buffer (engine_settings.h). A
+//   peer of 70 or lower is refused at Hello, so an older engine never meets
+//   a type byte it would refuse as unknown.
+constexpr uint32_t kProtocolVersion = 71;
 
 // ModelAction::Load's file, when it starts with this and names a template's
 // session file: the engine makes a new Untitled folder in its sessions
@@ -806,6 +813,7 @@ struct Inbox {
     std::vector<ModelUpdate> model;
     std::vector<PluginCatalog> catalogs;
     std::vector<PluginTelemetry> telemetry;
+    std::vector<EngineSettingsReport> settings;   // protocol 71
 
     void clear() {
         replies.clear();
@@ -813,6 +821,7 @@ struct Inbox {
         model.clear();
         catalogs.clear();
         telemetry.clear();
+        settings.clear();
     }
 };
 

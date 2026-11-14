@@ -3,6 +3,7 @@
 # Depends on common/base only (ADR-0007 §1).
 add_library(sonora_api STATIC
   src/wire.cpp
+  src/engine_settings_wire.cpp
   src/state_block.cpp
   src/state_view.cpp
 )
@@ -44,6 +45,13 @@ add_test(NAME api_plugin_refusal COMMAND test_plugin_refusal)
 add_executable(test_api_wire_insert_key tests/test_wire_insert_key.cpp)
 target_link_libraries(test_api_wire_insert_key PRIVATE sonora_api sonora_model)
 add_test(NAME api_wire_insert_key COMMAND test_api_wire_insert_key)
+
+# The engine settings pair (ADR-0204, protocol 71) and its header-only fake;
+# the fake's include directory without sonora_api_fake, which needs the model.
+add_executable(test_api_engine_settings_wire tests/test_engine_settings_wire.cpp)
+target_include_directories(test_api_engine_settings_wire PRIVATE testing/include)
+target_link_libraries(test_api_engine_settings_wire PRIVATE sonora_api)
+add_test(NAME api_engine_settings_wire COMMAND test_api_engine_settings_wire)
 
 add_executable(test_api_state_view tests/test_state_view.cpp)
 target_link_libraries(test_api_state_view PRIVATE sonora_api)

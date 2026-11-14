@@ -721,11 +721,18 @@ bool decode_into(std::string_view bytes, Inbox& inbox, std::string& error) {
             inbox.telemetry.push_back(std::move(m));
             return true;
         }
+        case Type::EngineSettingsReport: {
+            EngineSettingsReport m;
+            if (!decode(bytes, m, error)) return false;
+            inbox.settings.push_back(std::move(m));
+            return true;
+        }
         case Type::Hello:
         case Type::CommandRequest:
         case Type::ParameterChange:
         case Type::ModelRequest:
         case Type::PluginParameterChange:
+        case Type::EngineSettingsSet:
             break;
     }
     error = "message type " + std::to_string(static_cast<unsigned>(type)) +

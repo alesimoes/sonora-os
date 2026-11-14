@@ -39,6 +39,15 @@ public:
     virtual uint64_t send(const ParameterChange& change) = 0;
     virtual uint64_t send(const PluginParameterChange& change) = 0;
     virtual uint64_t submit(const ModelRequest& request) = 0;
+    // Protocol 71 (ADR-0204): an EngineSettingsReport with this seq answers.
+    // Not pure, so a control with no settings path still builds; it returns
+    // 0, no seq, and the interface holds a notice instead of waiting. A name
+    // of its own rather than another send(): an overload would be hidden in
+    // every implementation that does not override it.
+    virtual uint64_t send_settings(const EngineSettingsSet& request) {
+        (void)request;
+        return 0;
+    }
 
     // Appends whatever has arrived since the last call. Called from the
     // client's own tick; never blocks.

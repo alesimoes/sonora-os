@@ -77,7 +77,8 @@ void catalog_carries_key_inputs() {
 }  // namespace
 
 int main() {
-    CHECK(kProtocolVersion == 69);
+    // Side-chain keys arrived in 69; test_wire.cpp pins the current number.
+    CHECK(kProtocolVersion >= 69);
     set_insert_key_crosses();
     catalog_carries_key_inputs();
     if (failures != 0) {

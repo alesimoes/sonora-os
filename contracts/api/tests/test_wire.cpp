@@ -469,7 +469,8 @@ void version_check() {
     // 66: the bundle's 61 to 63 land together on top of 65.
     // 68: Hello::input_count and output_count, SetBusPath (ADR-0060).
     // 69: SetInsertKey, the window insert's key_bus, PluginInfo::key_inputs (ADR-0058).
-    CHECK(kProtocolVersion == 69);
+    // 71: EngineSettingsSet and EngineSettingsReport (ADR-0204; 70 is another PR's).
+    CHECK(kProtocolVersion == 71);
     // Layout 6: kTransportRecordReady. Layout 5: "Locating…", the bus peaks
     // and the playback misses (ADR-0009 update of 2026-11-01).
     // Layout 8: the meters' loudness and kNonfinitePeak.
@@ -480,7 +481,7 @@ void version_check() {
     wire::encode(engine, bytes);
     CHECK(wire::decode_hello_versions(bytes, pv, lv, error));
     const std::string v17 = wire::version_mismatch(pv, lv, 17, kStateLayoutVersion);
-    CHECK(mentions(v17, "the engine speaks control protocol version 69 and this interface "
+    CHECK(mentions(v17, "the engine speaks control protocol version 71 and this interface "
                         "speaks version 17"));
     CHECK(mentions(v17, "same build"));
     // Bounce and Consolidate are the first two kinds past Latency, which a
@@ -492,7 +493,7 @@ void version_check() {
     // And this interface refuses a version-17 engine the same way.
     CHECK(mentions(wire::version_mismatch(17, kStateLayoutVersion),
                    "the engine speaks control protocol version 17 and this interface "
-                   "speaks version 69"));
+                   "speaks version 71"));
 }
 
 // Protocol 49: a Bounce event carries the fraction in `frame`, the frames in

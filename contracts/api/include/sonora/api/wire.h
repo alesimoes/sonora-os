@@ -37,6 +37,8 @@ enum class Type : uint8_t {
     PluginParameterChange = 8,   // protocol 3
     PluginCatalog = 9,           // protocol 3
     PluginTelemetry = 10,        // protocol 65
+    EngineSettingsSet = 11,      // protocol 71
+    EngineSettingsReport = 12,   // protocol 71
 };
 
 // A message's text fields; a session snapshot gets the larger cap.
@@ -98,6 +100,17 @@ bool decode(std::string_view bytes, PluginCatalog& out, std::string& error);
 // Also refuses a mask naming a meter that is not there, a value that is not
 // finite, and a curve of more than kMaxCurvePoints points.
 bool decode(std::string_view bytes, PluginTelemetry& out, std::string& error);
+
+// Protocol 71 (engine_settings_wire.cpp). The decoders check the shape only:
+// a value out of range still decodes, so the engine can refuse it with a
+// reason (validate()) instead of dropping the connection. They refuse a
+// device id over kMaxDeviceIdBytes, a refusal code or pending flag this
+// version does not define, and a report whose refusal and reason disagree
+// (one without the other).
+void encode(const EngineSettingsSet& m, std::string& out);
+void encode(const EngineSettingsReport& m, std::string& out);
+bool decode(std::string_view bytes, EngineSettingsSet& out, std::string& error);
+bool decode(std::string_view bytes, EngineSettingsReport& out, std::string& error);
 
 // A client's half: whatever the engine sends to a client (a reply, an
 // event, a model update, a catalog), decoded and appended to the inbox.
