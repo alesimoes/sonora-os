@@ -93,8 +93,9 @@ void cancel_leaves_no_files() {
     WavStemWriter w;
     StemRenderer r(sep, w);
     std::string err;
-    // FakeSeparator reports 6 times; the renderer then once per file (4).
-    for (int n : {1, 3, 7, 8, 10}) {
+    // FakeSeparator reports once per stem (4); the renderer then once per file
+    // (4): cancel in separation, on the first file, mid-set and on the last.
+    for (int n : {1, 3, 5, 6, 8}) {
         const fs::path dir = fresh_dir("cancel");
         std::vector<RenderedStem> out;
         StopAt stop(n);
