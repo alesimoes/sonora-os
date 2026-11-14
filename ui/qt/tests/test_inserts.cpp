@@ -26,6 +26,7 @@
 #include <cmath>
 #include <chrono>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -355,6 +356,38 @@ int faults() {
     return 0;
 }
 
+int lane_awareness() {
+    Rig r;
+    CHECK(r.connect());
+    std::string why;
+    CHECK(r.ctl().add(0, 0, kComp, why));
+    r.settle();
+    const model::Id comp = r.slot(0, 0).insert;
+    r.inserts.openPanel(0, 0);
+    const auto automated = [&](int i) {
+        return r.inserts.panelParams()[i].toMap()[QStringLiteral("automated")].toBool();
+    };
+    CHECK(r.inserts.panelParams().size() == 3 && !automated(0) && !automated(1));
+    model::EditAutomation e;
+    e.track = r.doc.snapshot().edit->tracks[0]->id;
+    e.param = model::AutomationParam::Plugin;
+    e.from = 0;
+    e.to = model::kMaxInteger;
+    e.points = {{0, 0.2f}, {1000, 0.8f}};
+    e.insert = comp;
+    e.key = "0";
+    CHECK(r.doc.submit(e, why));
+    r.settle();
+    CHECK(automated(0) && !automated(1));
+    // A lane left with no point is removed: the marker goes.
+    e.points.clear();
+    CHECK(r.doc.submit(e, why));
+    r.settle();
+    CHECK(!automated(0));
+    std::printf("  lane awareness: ok\n");
+    return 0;
+}
+
 int parameters_and_delay() {
     Rig r;
     CHECK(r.connect());
@@ -444,6 +477,27 @@ int parameters_and_delay() {
     CHECK(param_control(two) == ParamControl::Choices);
     CHECK(std::fabs(param_origin(g) - 0.5f) < 1e-6f);
     CHECK(param_origin(rel) == 0.0f && param_origin(cat[kComp].params[0]) == 0.0f);
+    {
+        // A non-finite bound is an unusable span: position and origin 0, never NaN.
+        const float inf = std::numeric_limits<float>::infinity();
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        const auto finite_at = [&](const api::PluginParam& q) {
+            return std::isfinite(param_position(q, 0.0f)) && param_position(q, 0.0f) == 0.0f &&
+                   std::isfinite(param_position(q, 5.0f)) && param_position(q, 5.0f) == 0.0f &&
+                   std::isfinite(param_origin(q)) && param_origin(q) == 0.0f &&
+                   std::isfinite(param_value_at(q, 0.5f));
+        };
+        api::PluginParam b = g;
+        b.min = -inf;  b.max = 24.0f;  CHECK(finite_at(b));
+        b.min = -60.0f; b.max = inf;   CHECK(finite_at(b));
+        b.min = -inf;  b.max = inf;    CHECK(finite_at(b));
+        b.min = nan;   b.max = 24.0f;  CHECK(finite_at(b));
+        b.min = -60.0f; b.max = nan;   CHECK(finite_at(b));
+        api::PluginParam lg = rel;
+        lg.max = inf;                  CHECK(finite_at(lg));
+        // Normal ranges are unchanged.
+        CHECK(std::fabs(param_position(g, 0.0f) - 0.5f) < 1e-6f && std::fabs(param_origin(g) - 0.5f) < 1e-6f);
+    }
     CHECK(!r.ctl().param_set(gain, "nope", 1.0f, why) && why.find("no parameter") != std::string::npos);
     CHECK(r.ctl().param_set(gain, "gain", 99.0f, why));   // clamped to the range
     CHECK(r.ctl().param_end(why));
@@ -909,6 +963,7 @@ int main(int argc, char** argv) {
     if (short_names() != 0) return 1;
     if (faults() != 0) return 1;
     if (parameters_and_delay() != 0) return 1;
+    if (lane_awareness() != 0) return 1;
     if (editors() != 0) return 1;
     if (save_flushes_first() != 0) return 1;
     if (qml() != 0) return 1;

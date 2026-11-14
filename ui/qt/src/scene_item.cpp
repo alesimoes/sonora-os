@@ -13,6 +13,13 @@
 
 #include "session_model.h"
 #include "theme.h"
+// ui/conductor/qt (ADR-0140): only in the Linux build, as in session_model_mix.cpp.
+#if __has_include("conductor_ruler_edit.h")
+#include "conductor_ruler_edit.h"
+#include "conductor_ruler_qml.h"
+#include "sonora/ui_conductor/conductor.h"
+#define SONORA_UI_CONDUCTOR_EDIT 1
+#endif
 
 namespace sonora::ui {
 
@@ -251,5 +258,62 @@ void ConductorRulerItem::buildContent(Scene& out) {
                                                : ConductorRuler::Tempo,
                                   height(), out);
 }
+
+// --- conductor ruler editing (ADR-0140): the reads; the logic is ui/conductor's ---
+
+#ifdef SONORA_UI_CONDUCTOR_EDIT
+QString ConductorRulerItem::editorQml() const { return QString::fromUtf8(conductor_ruler_qml()); }
+
+int ConductorRulerItem::markAt(qreal x) const {
+    return session_ && kind_ == 0 ? conductor_edit::mark_at(session_->controller(), x) : -1;
+}
+
+qreal ConductorRulerItem::markX(int mark) const {
+    if (!session_) return 0;
+    const EditController& ctl = session_->controller();
+    const auto& map = ctl.snapshot().settings.tempo;
+    // -1, or a mark that is gone: the insertion point, where a new change goes.
+    const bool mark_ok = mark >= 0 && static_cast<std::size_t>(mark) < map.size();
+    return ctl.view().x_of(mark_ok ? map[static_cast<std::size_t>(mark)].at
+                                   : ctl.selection().insertion);
+}
+
+QString ConductorRulerItem::dragLabel(int mark, qreal dy, bool wholeBpm) const {
+    if (!session_) return QString();
+    return QString::fromStdString(
+        conductor_edit::drag_label(session_->controller(), mark, dy, wholeBpm));
+}
+
+QString ConductorRulerItem::tempoText(int mark) const {
+    if (!session_) return QString();
+    return QString::fromStdString(conductor_edit::tempo_text(session_->controller(), mark));
+}
+
+QString ConductorRulerItem::meterText(qreal x) const {
+    if (!session_) return QString();
+    return QString::fromStdString(conductor_edit::meter_text(session_->controller(), x));
+}
+
+namespace {
+QVariantList numbers(const std::vector<std::uint32_t>& v) {
+    QVariantList out;
+    for (std::uint32_t n : v) out.append(static_cast<int>(n));
+    return out;
+}
+}  // namespace
+
+QVariantList ConductorRulerItem::meterBeats() const { return numbers(conductor::meter_choices().beats); }
+
+QVariantList ConductorRulerItem::meterNotes() const { return numbers(conductor::meter_choices().notes); }
+#else
+QString ConductorRulerItem::editorQml() const { return QString(); }
+int ConductorRulerItem::markAt(qreal) const { return -1; }
+qreal ConductorRulerItem::markX(int) const { return 0; }
+QString ConductorRulerItem::dragLabel(int, qreal, bool) const { return QString(); }
+QString ConductorRulerItem::tempoText(int) const { return QString(); }
+QString ConductorRulerItem::meterText(qreal) const { return QString(); }
+QVariantList ConductorRulerItem::meterBeats() const { return {}; }
+QVariantList ConductorRulerItem::meterNotes() const { return {}; }
+#endif
 
 }  // namespace sonora::ui

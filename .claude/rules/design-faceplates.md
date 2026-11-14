@@ -9,8 +9,7 @@
   original or freely licensed, with the licence noted.
 - UI direction: Pro Tools workflow improved, Logic-level modern and classic
   polish.
-- Any UI change that shows on screen regenerates and commits the screenshots
-  of every scene it touches under `docs/images`, and the author opens them.
-  Missing or stale pictures block the PR.
+- Generated screenshots are not committed (owner, 2026-11-13): they conflicted
+  between PRs and outran the command cap; `docs/images/sonora-ui-*.png` is ignored.
 - Specs flow `visual-designer` -> `ui-engineer` / `dsp-engineer`
   (skill `faceplate-design`).

@@ -44,6 +44,7 @@
 #include "session_model.h"
 #include "shell_model.h"
 #include "sonora/api/fake_engine.h"
+#include "sonora/model/operations.h"
 #include "theme.h"
 #include "timeline_document.h"
 
@@ -460,6 +461,37 @@ int header_at_1280() {
     return 0;
 }
 
+// A strip of two channels shows its pan as a balance with end marks; a mono
+// strip does not, and both keep the pan area the gestures land on.
+int stereo_balance_marks() {
+    Rig r(4);
+    CHECK(r.connect());
+    std::string why;
+    // Room for the stereo track on the engine's tracks (ADR-0023 §5).
+    CHECK(r.doc.submit(model::RemoveTrack{r.doc.snapshot().edit->tracks.back()->id}, why));
+    r.settle();
+    const int mono = r.session.trackCount() - 1;
+    model::AddTrack add;
+    add.track = r.doc.reserve_id();
+    add.name = "Overheads";
+    add.playlist = r.doc.reserve_id();
+    add.playlist_name = "Overheads.01";
+    add.channels = 2;
+    add.mix.input = {0, 1};
+    CHECK(r.doc.submit(add, why));
+    r.settle();
+    const int st = mono + 1;
+    QQuickView view;
+    QQuickItem* root = show_mix(r, view, 1920, 1080);
+    CHECK(root != nullptr);
+    QQuickItem* marks = named(root, QStringLiteral("balanceMarks%1").arg(st));
+    CHECK(marks != nullptr && marks->isVisible());
+    CHECK(named(root, QStringLiteral("balanceMarks%1").arg(mono)) == nullptr);
+    CHECK(named(root, QStringLiteral("panArea%1").arg(st)) != nullptr);
+    CHECK(named(root, QStringLiteral("panArea%1").arg(mono)) != nullptr);
+    return 0;
+}
+
 int g_binding_loops = 0;
 
 void count_binding_loops(QtMsgType, const QMessageLogContext&, const QString& msg) {
@@ -477,6 +509,7 @@ int main(int argc, char** argv) {
     if (layout(48) != 0) return 1;
     if (header_at_1280() != 0) return 1;
     if (strip_visibility() != 0) return 1;
+    if (stereo_balance_marks() != 0) return 1;
     // QML warns, and carries on with a binding that never settles.
     if (g_binding_loops != 0) {
         std::fprintf(stderr, "FAIL: %d \"Binding loop\" warnings\n", g_binding_loops);

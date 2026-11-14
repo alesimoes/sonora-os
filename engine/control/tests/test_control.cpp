@@ -352,8 +352,15 @@ void same_commands_as_the_fake() {
     // announcing it (ADR-0007 §6); the fake announces what the engine does.
     CHECK(real.hello().capabilities ==
           (std::vector<std::string>{api::kCapabilityPlayRange, api::kCapabilityBounce,
-                                      api::kCapabilityRender, api::kCapabilityStems}));
-    CHECK(real.hello().capabilities == api::testing::FakeEngine::Config{}.capabilities);
+                                      api::kCapabilityRender, api::kCapabilityRenderInsert,
+                                      api::kCapabilityStems}));
+    // The fake's default still stands for an engine before ADR-0087, the
+    // one the interface's tests of the hidden entry rely on; it opts in by
+    // adding track.render.insert, as --fake-engine does.
+    std::vector<std::string> fake_caps = api::testing::FakeEngine::Config{}.capabilities;
+    fake_caps.insert(std::find(fake_caps.begin(), fake_caps.end(), api::kCapabilityStems),
+                     api::kCapabilityRenderInsert);
+    CHECK(real.hello().capabilities == fake_caps);
     // app.quit is installed by install_session_commands but belongs to the
     // interface (ADR-0007 §5): never announced, and refused if sent.
     CHECK(std::find(a.begin(), a.end(), "app.quit") == a.end());

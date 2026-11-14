@@ -77,6 +77,7 @@ Both passes write one JSON object to stdout or `--out`, the shape of the masteri
 - **Artist-tone matching** (N6): matching a player's sound needs amp capture cards recorded on hardware the owner provides (ADR-0011 §3.3, §4.6), and no product, capture or preset name may carry a guitarist's or band's name (ADR-0004, ADR-0011 §5). Deferred until those captures exist.
 - **Tuner follows the session key** (N6): there is no key field in the session format on main. It needs a session-format change under an ADR of its own. Deferred; the key pass reports, nothing stores it.
 - Tempo and presence passes (Beat This!, YAMNet) will follow this contract; they are not part of this item's slices.
+- **Dated note (2026-11-14):** the two deferred parts above are recorded in ADR-0192 (native.ai_analysis, the two deferred parts). Artist-tone matching stays parked with the hardware validations; tuner-follows-key needs its own session-format ADR and protocol bump. Neither has code under this item until one unblocks.
 
 ## Consequences
 

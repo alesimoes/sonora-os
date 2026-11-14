@@ -164,6 +164,9 @@ public:
     // What the panel shows: the value being dragged, else the document's,
     // else the plugin's default.
     float value(model::Id insert, const api::PluginParam& p) const;
+    // Whether the insert's track has an automation lane for the parameter
+    // (ADR-0027 section 5); read from the document, nothing is asked of the engine.
+    bool has_lane(model::Id insert, const std::string& key) const;
     // A gesture: begin, any number of sets (each a PluginParameterChange),
     // end (one SetInsertParams with the insert's whole list).
     bool param_begin(model::Id insert, std::string& why);

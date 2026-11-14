@@ -64,6 +64,27 @@ class SelfUpdate(unittest.TestCase):
             FakeGit(diff="tools/dashboard.py\n", checkout=1))
         self.assertEqual((r, restarts), ("blocked", []))
 
+    def test_diff_is_against_the_loaded_sha_not_head(self):
+        git = FakeGit(diff="tools/dashboard.py\n")
+        logs, restarts = [], []
+        du.update_once("/r", git, restarts.append, ["d"], logs.append,
+                       loaded="abc123")
+        diff = [c for c in git.calls if c[0] == "diff"][0]
+        self.assertIn("abc123", diff)
+        self.assertNotIn("HEAD", diff)
+
+    def test_watch_covers_progress_launcher_and_loaded_tools_modules(self):
+        root = os.path.abspath("rr")
+        mod = type("M", (), {"__file__": os.path.join(root, "tools", "x_dep.py")})
+        other = type("M", (), {"__file__": os.path.join(root, "elsewhere.py")})
+        w = du.watched(root, [mod, other])
+        for f in ("tools/progress.py", "tools/harness/launcher.py", "tools/x_dep.py"):
+            self.assertIn(f, w)
+        self.assertNotIn("elsewhere.py", " ".join(w))
+
+    def test_loaded_sha_reads_head_once(self):
+        self.assertEqual(du.loaded_sha("/r", lambda *a, **k: cp("deadbeef\n")), "deadbeef")
+
     def test_loop_survives_an_exception(self):
         n = []
 

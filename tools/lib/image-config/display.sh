@@ -109,6 +109,7 @@ grep -q 'install -m 0755 "\$UI" "\$STAGE/sonora-ui"' "$BUILD_ISO" || bad "build-
 BOOT_QEMU="$ROOT/tools/test-boot-qemu.sh"
 if [ -f "$SMOKE_SCRIPT" ]; then
   grep -q 'first frame after' "$SMOKE_SCRIPT" || bad "smoketest does not look for the UI's first-frame line"
+  grep -q 'display_failure_report' "$SMOKE_SCRIPT" || bad "smoketest does not report why the display stack failed"
   grep -q 'kill_and_recover sonora-ui.service' "$SMOKE_SCRIPT" || bad "smoketest does not SIGKILL the UI"
   grep -q 'kill_and_recover sonora-compositor.service' "$SMOKE_SCRIPT" || bad "smoketest does not SIGKILL labwc"
   # shellcheck disable=SC2016 # literal text of the script
@@ -133,3 +134,9 @@ for t in test-boot-qemu.sh test-install-qemu.sh test-write-usb.sh; do
   grep -q 'lib/qemu-accel.sh' "$ROOT/tools/$t" || bad "$t does not use tools/lib/qemu-accel.sh"
   grep -q 'qemu_scale' "$ROOT/tools/$t" || bad "$t does not scale its timeouts for TCG"
 done
+
+# A UI that gives up on a cold engine after 3 s burns the unit's 5 starts in
+# 60 s and hands the screen to the fallback (nightly-boot red from 2026-11-09).
+grep -q 'kKioskConnectTimeoutMs' "$ROOT/ui/qt/src/main.cpp" || bad "kiosk UI does not wait longer than the default for the engine's Hello"
+kiosk_wait="$(sed -n 's/.*kKioskConnectTimeoutMs = \([0-9]*\);.*/\1/p' "$ROOT/ui/client/include/sonora/client/socket_engine.h")"
+[ "${kiosk_wait:-0}" -ge 30000 ] || bad "kKioskConnectTimeoutMs (${kiosk_wait:-unset}) is under the start budget the UI unit allows"

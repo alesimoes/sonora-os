@@ -50,6 +50,10 @@ void SessionModel::installWindowCommands(CommandRegistry& local, const InstallSi
         setBounceOpen(!bounce_open_);
         return true;
     });
+    local.install("window.step_sequencer", [this](const CommandContext&) {
+        setStepSequencerOpen(!step_sequencer_open_);
+        return true;
+    });
     local.install("window.preferences", [this](const CommandContext&) {
         setPreferencesOpen(!prefs_open_);
         return true;

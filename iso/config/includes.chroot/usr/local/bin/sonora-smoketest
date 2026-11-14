@@ -313,6 +313,17 @@ fallback_ran() {
   check "fallback flag $FLAG exists" test -e "$FLAG"
 }
 
+# Why the display stack gave up. The harness keeps only the serial console, and
+# a failed run (nightly-boot, 2026-11-09 on) said "no first frame" with no word
+# of what labwc or the UI printed; the cause stayed unknown for five nights.
+display_failure_report() {
+  for u in sonora-compositor sonora-ui sonora-engine sonora-display-fallback; do
+    echo "SMOKETEST info  $u: $(systemctl show -p ActiveState,SubState,Result,ExecMainStatus,NRestarts --value "$u.service" 2>/dev/null | tr '\n' ' ')"
+    journalctl -b -u "$u.service" -o cat --no-pager 2>/dev/null | tail -n 25 |
+      sed "s/^/SMOKETEST info  $u> /"
+  done
+}
+
 gui_checks() {
   # The UI logs one line at its first frame (ui/qt/README.md); the journal
   # holds a unit's stderr. Waited for: Qt on a software renderer can take
@@ -326,6 +337,7 @@ gui_checks() {
   done
   echo "SMOKETEST info  first frame after ${FRAME_MS:-never} ms of UI uptime; boot uptime $(cut -d' ' -f1 /proc/uptime) s"
   check "UI logged its first frame" test -n "$FRAME_MS"
+  [ -n "$FRAME_MS" ] || display_failure_report
 
   # The renderer labwc and Qt ended up with on a machine with no render node
   # (QEMU -vga std). Information only; ADR-0010 unverified item 3 records it.

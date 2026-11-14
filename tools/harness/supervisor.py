@@ -51,6 +51,13 @@ class Thresholds:
     # for this long too (harness/stall_check.py)
     stall_alert_s: float = 2 * 3600.0
     pr_stall_s: float = 3 * 3600.0
+    # Docker down (harness/docker_heal.py): restart Docker Desktop after
+    # this long down, at most docker_restart_max times per outage and per
+    # hour, docker_restart_gap_s apart; then only the alert
+    docker_restart: bool = True
+    docker_restart_after_s: float = 180.0
+    docker_restart_gap_s: float = 300.0
+    docker_restart_max: float = 3.0
     # owner notifications
     notify: bool = True
     notify_repeat_s: float = 3600.0
@@ -139,7 +146,7 @@ class Supervisor:
     """Runs inside the daemon: `sv.tick(now)` from Orchestrator.tick()."""
 
     def __init__(self, orch, sys_, th=None, clock=None, checks=None):
-        from . import stall_check, supervisor_checks
+        from . import docker_heal, stall_check, supervisor_checks
         self.o = orch
         self.sys = sys_
         self.clock = clock or orch.clock
@@ -147,7 +154,8 @@ class Supervisor:
                                                      None))
         self.alerts = Alerts(self.clock, self.th, self._notify)
         self.checks = checks if checks is not None else \
-            supervisor_checks.DAEMON_CHECKS + (stall_check.check_stalls,)
+            supervisor_checks.DAEMON_CHECKS + (stall_check.check_stalls,
+                                               docker_heal.check_docker)
         self.actions = []
         self.last_sweep = 0.0
         self.mem = {}            # per-check memory (first seen, nudged...)

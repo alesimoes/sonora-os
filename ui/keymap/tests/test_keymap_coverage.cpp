@@ -33,6 +33,11 @@ const Doc kDocumented[] = {
     {"protools.json", "numpad_3", "transport.record_ready"},
     {"protools.json", "numpad_4", "transport.toggle_loop"},
     {"protools.json", "ctrl+shift+l", "transport.toggle_loop"},
+    // ADR-0043, ADR-0129: the record-mode switches.
+    {"protools.json", "alt+k", "transport.toggle_input_only"},
+    {"protools.json", "ctrl+k", "transport.toggle_pre_post_roll"},
+    {"protools.json", "ctrl+shift+p", "transport.toggle_quick_punch"},
+    {"protools.json", "ctrl+shift+t", "track.toggle_track_punch"},
     // Pro Tools: edit modes, with the Option+digit alternates
     {"protools.json", "f1", "edit.mode.shuffle"},
     {"protools.json", "f2", "edit.mode.slip"},
