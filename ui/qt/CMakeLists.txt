@@ -78,6 +78,7 @@ target_link_libraries(sonora_ui_core PUBLIC sonora_base sonora_keymap sonora_mod
 sonora_ui_library(sonora_ui_edit SOURCES
   src/edit_controller.h src/edit_controller.cpp src/edit_controller_detail.h
   src/edit_gestures.cpp
+  src/edit_loop_handle.h src/edit_loop_handle.cpp
   src/edit_separate.cpp
   src/edit_clipboard_ops.cpp
   src/edit_fades.cpp
@@ -299,6 +300,11 @@ target_compile_definitions(test_ui_clipboard PRIVATE
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_clipboard COMMAND test_ui_clipboard)
 set_tests_properties(ui_clipboard PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The loop handle drag: 2.4 lengths lays two repeats as one undo step; Esc none.
+add_executable(test_ui_loop_handle tests/test_loop_handle.cpp)
+target_link_libraries(test_ui_loop_handle PRIVATE sonora_ui_edit)
+add_test(NAME ui_loop_handle COMMAND test_ui_loop_handle)
 
 # The Undo History window: its rows and jumps over the document's history,
 # then the window in the real QML, opened from the Edit menu.

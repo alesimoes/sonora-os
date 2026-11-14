@@ -2,6 +2,7 @@
 //
 // The EditController's mouse: hit-testing, press, move and release.
 #include "edit_controller.h"
+#include "edit_loop_handle.h"
 
 #include <algorithm>
 #include <cmath>
@@ -52,6 +53,8 @@ Hit EditController::hit(double x, double y) const {
     if (top && x - x0 <= corner) h.zone = HitZone::FadeIn;
     else if (top && x1 - x <= corner) h.zone = HitZone::FadeOut;
     else if (x - x0 <= edge) h.zone = HitZone::TrimStart;
+    else if (sel_.region == r->id && tool_ == Tool::Smart && x1 - x <= edge &&
+             y - view_.y_of_track(i) > view_.row_h(i) * 3 / 4) h.zone = HitZone::LoopHandle;
     else if (x1 - x <= edge) h.zone = HitZone::TrimEnd;
     else if (y - view_.y_of_track(i) < view_.row_h(i) / 2) h.zone = HitZone::Select;
     else h.zone = HitZone::Body;
@@ -74,6 +77,7 @@ bool EditController::press(double x, double y, std::string& why) {
     switch (tool_) {
         case Tool::Smart:
             if (h.zone == HitZone::TrimStart) kind = Drag::Kind::TrimStart;
+            else if (h.zone == HitZone::LoopHandle) kind = Drag::Kind::Loop;
             else if (h.zone == HitZone::TrimEnd) kind = Drag::Kind::TrimEnd;
             else if (h.zone == HitZone::Body) kind = Drag::Kind::Move;
             else if (h.zone == HitZone::FadeIn) kind = Drag::Kind::FadeIn;
@@ -208,6 +212,11 @@ void EditController::move(double x, double y) {
             }
             break;
         }
+        case Drag::Kind::Loop: {
+            drag_.loops = loop_handle_repeats(drag_.orig_end - drag_.orig_start,
+                                              view_.frame_at(x) - drag_.orig_end);
+            break;
+        }
         case Drag::Kind::Range: {
             // Above or below the lanes is the first or the last track, so
             // a drag past the edge still reaches it.
@@ -282,6 +291,12 @@ bool EditController::release(double x, double y, std::string& why) {
             if (!submit_trim(op, why)) return false;
             break;
         }
+        case Drag::Kind::Loop:
+            // One Compound, one undo step; a drop short of one repeat is a click.
+            if (d.loops < 1) return true;
+            sel_.region = d.region;
+            if (!loop_clip(d.loops, why)) return false;
+            return true;
         case Drag::Kind::FadeIn:
         case Drag::Kind::FadeOut:
             if (!set_region_fade(d.region,
