@@ -33,7 +33,10 @@ from . import selfupdate_runtime
 WATCH = ("tools/harness", "tools/orchestrator.py", "tools/build-slot.sh",
          "tools/dashboard*",
          # the daemon launches agents from this checkout's definitions
-         ".claude/agents")
+         ".claude/agents",
+         # the daemon reads its config at start: a config-only merge must
+         # re-exec it (2026-11-14, #775 never applied)
+         "planning/orchestrator/orchestrator.toml")
 CHECK_S = 300
 # Local commits the planners may leave in the daemon checkout; anything else
 # there is a mistake that must be seen, not rebased under the daemon's feet.
@@ -117,8 +120,19 @@ class SelfUpdate:
                        self.root).stdout
         keep = [ln for ln in out.splitlines()
                 if ln.strip() and not runtime_files.is_runtime(
+                    ln[3:].split(" -> ")[-1].strip('"'))
+                and not self._adopt_main_copy(
                     ln[3:].split(" -> ")[-1].strip('"'))]
         return "\n".join(keep).strip()
+
+    def _adopt_main_copy(self, rel):
+        """A copy already identical to origin/main's (the coordinator put
+        main's config there by hand) is not a modification worth blocking;
+        it is staged so the checkout may overwrite it (git refuses otherwise)."""
+        if self.git(["diff", "--quiet", "origin/main", "--", rel],
+                    self.root).returncode:
+            return False
+        return self.git(["add", "--", rel], self.root).returncode == 0
 
     def _move_to(self, target, force):
         """Checkout origin/main, keeping local commits. Planners commit plans
