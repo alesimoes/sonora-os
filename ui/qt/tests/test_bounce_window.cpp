@@ -21,6 +21,7 @@
 #include "shell_model.h"
 #include "sonora/api/bounce.h"
 #include "sonora/api/fake_engine.h"
+#include "sonora/api/stems.h"
 #include "timeline_document.h"
 
 using namespace sonora;
@@ -72,9 +73,11 @@ int bounce_window_over_the_fake_engine() {
     SyntheticPeakSource peaks(kRate, 120.0);
     SessionModel session(doc, peaks, true);
     std::string sent_argument;
+    std::string sent_stems;
     KeyRouter router(map, engine.info().implemented_commands,
                      [&](const std::string& c, const CommandContext& ctx) {
                          if (c == "mix.bounce") sent_argument = ctx.argument;
+                         if (c == "mix.stems") sent_stems = ctx.argument;
                          return engine.send(c, ctx);
                      });
     session.installCommands(router.local());
@@ -184,8 +187,97 @@ int bounce_window_over_the_fake_engine() {
     CHECK(model.bounceRefusal().isEmpty());
     CHECK(engine.send("mix.bounce_cancel", none) != 0);
 
+    // Export Stems: the section is there, the checked tracks are the ids sent.
+    model.tick();   // the cancel sent straight to the engine above
+    CHECK(model.stemsAvailable() && !model.bounceRunning());
+    CHECK(named(win, QStringLiteral("stemsStart"))->isVisible());
+    click(view, named(win, QStringLiteral("stemsTrack_1")));   // leave track 1 out
+    click(view, named(win, QStringLiteral("bounceFile_wav")));
+    named(win, QStringLiteral("bounceName"))->setProperty("text", QStringLiteral("Mix"));
+    sent_stems.clear();
+    click(view, named(win, QStringLiteral("stemsStart")));
+    api::StemsOptions stems;
+    CHECK(api::parse_stems_argument(sent_stems, stems, why));
+    CHECK(stems.by == api::StemsBy::Track && stems.base.name == "Mix");
+    CHECK(stems.base.file == api::BounceFile::Wav && stems.base.mode == api::BounceMode::Offline);
+    CHECK(stems.tracks.size() == 3);
+    for (const uint64_t id : stems.tracks) CHECK(id != session.trackIdAt(1));
+    model.tick();
+    CHECK(model.bounceRunning());
+    model.tick();
+    // Done names the folder and the files, held until dismissed.
+    CHECK(model.notices().size() == base + 1);
+    const QString done = model.notices().last();
+    CHECK(done.contains(QStringLiteral("Bounced Files/Mix Stems")) && done.contains(QStringLiteral("3 files")));
+    CHECK(text_of(win, "bounceResult").contains(QStringLiteral("Mix Stems")));
+    QTest::qWait(2700);
+    model.tick();
+    CHECK(model.notices().size() == base + 1);
+    click(view, named(win, QStringLiteral("bounceDismiss")));
+    CHECK(model.notices().size() == base);
+
+    // Real time is refused, loudly and held; the button is off in the window.
+    model.startStems(true, QStringLiteral("output"), {}, QStringLiteral("bwf"), 24, 0,
+                     QStringLiteral("auto"), QString());
+    model.tick();
+    CHECK(model.bounceRefusal().contains(QStringLiteral("offline only")));
+    CHECK(named(win, QStringLiteral("bounceRefusal"))->isVisible());
+    click(view, named(win, QStringLiteral("bounceRealTime")));
+    CHECK(named(win, QStringLiteral("stemsRealTimeNote"))->isVisible());
+    CHECK(!named(win, QStringLiteral("stemsStart"))->property("available").toBool());
+    click(view, named(win, QStringLiteral("bounceOffline")));
+
+    // Cancel reuses mix.bounce_cancel.
+    model.startStems(false, QStringLiteral("output"), {}, QStringLiteral("bwf"), 24, 0,
+                     QStringLiteral("auto"), QString());
+    model.tick();
+    click(view, named(win, QStringLiteral("bounceCancel")));
+    model.tick();
+    CHECK(model.bounceState() == static_cast<int>(api::BounceState::Cancelled));
+    CHECK(model.notices().last().startsWith(QStringLiteral("Stems stopped")));
+    click(view, named(win, QStringLiteral("bounceDismiss")));
+
     click(view, named(win, QStringLiteral("bounceClose")));
     CHECK(!session.bounceOpen() && !win->isVisible());
+    return 0;
+}
+
+// An engine that does not list the capability: no Stems section.
+int stems_hidden_without_the_capability() {
+    api::testing::FakeEngine::Config cfg;
+    cfg.tracks = 2;
+    cfg.capabilities = {api::kCapabilityBounce};
+    api::testing::FakeEngine fake(cfg);
+    ControlAdapter engine(fake);
+    std::string err;
+    CHECK(engine.connect(err));
+    KeyMap map;
+    CHECK(KeyMap::load_file(std::string(SONORA_KEYMAP_DIR) + "/protools.json", map, err));
+    ModelDocument doc(make_empty_session(2, kRate));
+    SyntheticPeakSource peaks(kRate, 120.0);
+    SessionModel session(doc, peaks, true);
+    KeyRouter router(map, engine.info().implemented_commands,
+                     [&](const std::string& c, const CommandContext& ctx) {
+                         return engine.send(c, ctx);
+                     });
+    session.installCommands(router.local());
+    router.prepare(qt_device_chords(true));
+    ShellModel model(engine, router);
+    model.tick();
+    CHECK(model.bounceAvailable() && !model.stemsAvailable());
+    QQuickView view;
+    view.resize(1280, 720);
+    view.setInitialProperties({{QStringLiteral("shell"), QVariant::fromValue(&model)},
+                               {QStringLiteral("session"), QVariant::fromValue(&session)}});
+    view.setSource(QUrl(QStringLiteral("qrc:/sonora/qml/Main.qml")));
+    CHECK(view.status() == QQuickView::Ready);
+    view.show();
+    CHECK(QTest::qWaitForWindowExposed(&view));
+    model.invoke(QStringLiteral("window.bounce"), -1);
+    QQuickItem* win = named(view.rootObject(), QStringLiteral("bounceWindow"));
+    CHECK(win != nullptr && win->isVisible());
+    CHECK(!named(win, QStringLiteral("stemsStart"))->isVisible());
+    CHECK(!named(win, QStringLiteral("stemsByTrack"))->isVisible());
     return 0;
 }
 
@@ -195,6 +287,7 @@ int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     register_types();
     if (bounce_window_over_the_fake_engine()) return 1;
+    if (stems_hidden_without_the_capability()) return 1;
     std::printf("ui bounce window: ok\n");
     return 0;
 }

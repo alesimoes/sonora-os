@@ -638,6 +638,8 @@ public:
     // shown now (-1 when it is not), so a gesture can hold the track rather
     // than the strip it began on.
     model::Id trackId(int track) const;
+    // trackId for QML: the id mix.stems names a track by.
+    Q_INVOKABLE qulonglong trackIdAt(int track) const { return trackId(track); }
     int trackIndex(model::Id id) const;
     // TimelineDocument::session_generation: changes when the document may
     // be another session, or the engine's copy again after a reconnection.

@@ -274,6 +274,7 @@ public:
     Q_INVOKABLE void measureLatency(int output, int input);
     Q_INVOKABLE void cancelLatency();
     Q_INVOKABLE void setLatency(int frames);
+    Q_PROPERTY(bool stemsAvailable READ stemsAvailable NOTIFY bounceChanged)
     bool bounceAvailable() const;
     int bounceState() const { return bounce_state_; }
     bool bounceRunning() const { return bounce_state_ == 0; }
@@ -288,6 +289,12 @@ public:
     Q_INVOKABLE void startBounce(bool real_time, const QString& file, int bits, int rate,
                                  const QString& dither, bool normalise, qreal target_lufs,
                                  const QString& name);
+    // Export Stems (ADR-0085): the same window's second section; defined in
+    // shell_model_stems.h. `by` is "track" or "output"; `track_ids` empty = all.
+    bool stemsAvailable() const;
+    Q_INVOKABLE void startStems(bool real_time, const QString& by, const QVariantList& track_ids,
+                                const QString& file, int bits, int rate, const QString& dither,
+                                const QString& name);
     Q_INVOKABLE void cancelBounce();
     Q_INVOKABLE void dismissBounce();
     bool renderAvailable() const;
@@ -476,6 +483,7 @@ private:
     QString consolidate_text_;
     bool consolidate_failed_ = false;
     bool consolidate_running_ = false;
+    bool bounce_is_stems_ = false;   // the export under way or last ended is mix.stems
     int bounce_state_ = -1;
     qreal bounce_progress_ = 0.0;
     QString bounce_notice_;    // the held notice standing in notices_, if any
@@ -490,3 +498,5 @@ private:
 };
 
 }  // namespace sonora::ui
+
+#include "shell_model_stems.h"
