@@ -99,6 +99,10 @@ QVariantList SessionModel::markers() const {
         row[QStringLiteral("name")] = q(m.name);
         row[QStringLiteral("start")] = q(format_time(main_fmt_, m.position, settings));
         row[QStringLiteral("range")] = m.length > 0;
+        const MarkerView* view = marker_views_.find(settings.session_id, m.id);
+        row[QStringLiteral("hasView")] = view != nullptr;
+        row[QStringLiteral("recallZoom")] = view != nullptr && view->recall_zoom;
+        row[QStringLiteral("recallTracks")] = view != nullptr && view->recall_tracks;
         row[QStringLiteral("end")] =
             m.length > 0 ? q(format_time(main_fmt_, m.position + m.length, settings)) : QString();
         row[QStringLiteral("length")] = m.length > 0 ? q(format_length(main_fmt_, m.position, m.length, settings))
@@ -188,6 +192,12 @@ void SessionModel::setLatencyOpen(bool on) {
     latency_open_ = on;
     layouts_.setOpen(QStringLiteral("latency"), on);
     emit latencyOpenChanged();
+}
+
+void SessionModel::setStepSequencerOpen(bool on) {
+    if (on == step_sequencer_open_) return;
+    step_sequencer_open_ = on;
+    emit stepSequencerOpenChanged();
 }
 
 void SessionModel::setBounceOpen(bool on) {
@@ -290,6 +300,52 @@ bool SessionModel::removeMarker(int row) {
     }
     std::string why;
     return run(ctl_.remove_marker(list[static_cast<std::size_t>(row)].id, why), why);
+}
+
+void SessionModel::setMarkerViewsFile(const QString& path) {
+    marker_views_file_ = path;
+    QString why;
+    if (!path.isEmpty() && !marker_views_.load(path, why)) {
+        emit heldNotice(QStringLiteral("Marker views not loaded: ") + why);
+    }
+    emit markersChanged();
+}
+
+void SessionModel::setMarkerTrackHider(EditController::TrackHider hide) {
+    ctl_.set_marker_views(&marker_views_, std::move(hide));
+}
+
+bool SessionModel::markerViewsEdit(int row, const std::function<bool(model::Id, std::string&)>& act) {
+    const auto& list = ctl_.markers().markers;
+    if (row < 0 || static_cast<std::size_t>(row) >= list.size()) {
+        return run(false, "that marker is no longer in the session");
+    }
+    std::string why;
+    if (!act(list[static_cast<std::size_t>(row)].id, why)) {
+        // A refusal the operator must see stays up until the next try.
+        emit heldNotice(q(why));
+        return run(false, why);
+    }
+    QString reason;
+    if (!marker_views_file_.isEmpty() && !marker_views_.save(marker_views_file_, reason)) {
+        emit heldNotice(QStringLiteral("The marker view is kept for now but could not be saved: ") + reason);
+    }
+    emit markersChanged();
+    return run(true, why);
+}
+
+bool SessionModel::storeMarkerView(int row) {
+    return markerViewsEdit(row, [this](model::Id id, std::string& why) { return ctl_.store_marker_view(id, why); });
+}
+
+bool SessionModel::clearMarkerView(int row) {
+    return markerViewsEdit(row, [this](model::Id id, std::string& why) { return ctl_.clear_marker_view(id, why); });
+}
+
+bool SessionModel::setMarkerViewPart(int row, bool zoom, bool on) {
+    return markerViewsEdit(row, [this, zoom, on](model::Id id, std::string& why) {
+        return ctl_.set_marker_view_part(id, zoom, on, why);
+    });
 }
 
 void SessionModel::markerRulerClick(qreal x, bool alt) {

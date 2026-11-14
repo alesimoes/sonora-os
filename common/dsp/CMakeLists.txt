@@ -38,6 +38,7 @@ add_library(sonora_dsp STATIC
   src/opto.cpp
   src/oversampling.cpp
   src/reference_peak.cpp
+  src/resample.cpp
   src/supply.cpp
   src/tape.cpp
   src/transformer.cpp
@@ -84,7 +85,7 @@ target_compile_options(sonora_dsp PUBLIC
 set_source_files_properties(src/neural/wavenet.cpp src/neural/kernels.cpp PROPERTIES COMPILE_OPTIONS
   "$<$<AND:$<CXX_COMPILER_ID:GNU>,$<NOT:$<CONFIG:Debug>>>:-O3>")
 
-foreach(t filters convolver oversampling loudness meter dynamics limiter fdn triode opto fet noise tape transformer neural lstm_contract)
+foreach(t filters convolver convolver_refusals resample oversampling loudness meter dynamics limiter fdn triode opto fet noise tape transformer neural lstm_contract)
   add_executable(test_dsp_${t} tests/test_${t}.cpp)
   target_link_libraries(test_dsp_${t} PRIVATE sonora_dsp)
   # The root CMakeLists.txt's SONORA_SANITIZED: timing bars are reported, not held.

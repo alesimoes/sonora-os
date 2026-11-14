@@ -4,6 +4,12 @@
 # edit_tempo.cpp (which dispatches the `groove` word) lives, since putting
 # them in sonora_ui_session would make sonora_ui_edit need a library above it.
 # Nothing here exists where ui/qt was skipped (no Qt 6).
+# The conductor ruler's pure gestures (ADR-0140) are hooked here, not in the
+# root CMakeLists (time.elastic owns it); they need no Qt, so before the return.
+if(NOT TARGET sonora_ui_conductor)
+  add_subdirectory(${CMAKE_SOURCE_DIR}/ui/conductor ${CMAKE_BINARY_DIR}/ui/conductor)
+endif()
+
 if(NOT TARGET sonora_ui_edit)
   return()
 endif()

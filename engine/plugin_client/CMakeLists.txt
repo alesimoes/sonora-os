@@ -108,6 +108,18 @@ else()
                  "wake_all (ADR-0012 Unverified 10) runs in tools/build-rtsan.sh")
 endif()
 
+# ADR-0213: what the control thread's WaitSet lists for each host socket.
+# The binary is its own scripted host, so it needs no plugin and no lilv;
+# Linux only (pidfd, sealed memfd regions, /proc/self/exe).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(test_plugin_client_host_watch tests/test_plugin_client_host_watch.cpp)
+  target_link_libraries(test_plugin_client_host_watch PRIVATE sonora_plugin_client sonora_platform)
+  foreach(scenario gesture parked_unread)
+    add_test(NAME plugin_client_host_watch_${scenario} COMMAND test_plugin_client_host_watch ${scenario})
+    set_tests_properties(plugin_client_host_watch_${scenario} PROPERTIES LABELS "plugins;timing" RUN_SERIAL TRUE)
+  endforeach()
+endif()
+
 # End to end: drivers/fake drives the callback, the supervisor starts the
 # real sonora-plugin-host (built only where lilv is, tools/build-plugins.sh
 # and CI's plugins job), with the in-tree test plugins and Sonora's own EQ

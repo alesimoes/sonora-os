@@ -126,11 +126,16 @@ Thumbs.db
 
 .harness/
 planning/orchestrator/state.json
+# Rotating backups the Store keeps (harness/store_backup.py).
+planning/orchestrator/state.json.bak.*
 planning/orchestrator/state.quarantine.json
 planning/orchestrator/state.db*
 planning/orchestrator/events*.jsonl
 planning/orchestrator/status.json
 planning/orchestrator/STOP*
+# Runtime state (owner and supervisor pauses), never a plan: a planner's
+# `git add` committed it in the daemon checkout and blocked self-update.
+planning/orchestrator/paused.json
 planning/orchestrator/waits-on-owner.md
 planning/orchestrator/shadow.log
 planning/orchestrator/plans/
@@ -145,3 +150,9 @@ build-plugins-only/
 dist/
 build-plugins-win/
 .sonora-local.env
+
+# Detached heavy jobs (tools/build-job.sh): command, log, result.
+/.build-jobs/
+
+# Generated UI scene screenshots are not committed (owner, 2026-11-13).
+docs/images/sonora-ui-*.png

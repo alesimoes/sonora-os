@@ -17,7 +17,7 @@
 #include "suite_models.h"
 #include "sonora/measure/measure.h"
 #include "sonora/native/amp.h"
-#include "sonora/native/amp_resampler.h"
+#include "sonora/dsp/resample.h"
 
 namespace sonora::native::suites {
 
@@ -31,9 +31,9 @@ namespace at = amp_test;
 std::string rate_name(double fs) { return std::to_string(static_cast<int>(fs)) + " Hz"; }
 
 std::uint32_t planned_latency(double session, double capture) {
-    amp::RatePlan plan;
+    dsp::RatePlan plan;
     std::string err;
-    return amp::plan_rates(session, capture, &plan, &err) ? plan.latency : 0;
+    return dsp::plan_rates(session, capture, &plan, &err) ? plan.latency : 0;
 }
 
 // max |y[n] - x[n - lag]| over the whole render, ignoring the first `skip`.

@@ -42,6 +42,12 @@ class SharedRegion;
 
 namespace sonora::client {
 
+// Under the kiosk the unit restarts a UI that could not reach its engine, but
+// StartLimitBurst=5 in 60 s turns five 3 s attempts into the display fallback
+// before a cold engine on a slow machine has said hello (nightly-boot, QEMU
+// without KVM, 2026-11-09 on). The wait must outlast that start budget.
+constexpr int kKioskConnectTimeoutMs = 45000;
+
 class SocketEngine final : public api::EngineControl {
 public:
     struct Options {

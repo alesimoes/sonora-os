@@ -1017,9 +1017,9 @@ PluginHosting::PollResult PluginHosting::poll(uint64_t now_ms, const model::Snap
     for (auto it = retiring_.begin(); it != retiring_.end();) {
         Retiring& r = *it;
         if (r.first_epoch_without == 0 || oldest_live_epoch < r.first_epoch_without) {
-            // Its hosts are still in watch(): one left unserviced with a
-            // writable socket would end every sleep of the control thread
-            // at once (the #198 review's spin).
+            // Its hosts are still in watch(), Readable and, while frames
+            // wait, Writable: one left unserviced would end every sleep of
+            // the control thread at once (the #198 review's spin; ADR-0213).
             r.chain->poll_parked(now_ms);
             ++it;
             continue;

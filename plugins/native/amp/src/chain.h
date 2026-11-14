@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "sonora/native/amp_model.h"
-#include "sonora/native/amp_resampler.h"
+#include "sonora/dsp/resample.h"
 #include "sonora/rt.h"
 
 namespace sonora::native::amp {
@@ -37,8 +37,8 @@ public:
 
 private:
     std::unique_ptr<NeuralModel> model_;
-    RatePlan plan_;
-    Resampler up_, down_;
+    dsp::RatePlan plan_;
+    dsp::Resampler up_, down_;
     std::vector<float> capture_;   // the network's block at the capture rate
     std::vector<float> fifo_;      // session-rate outputs not yet handed out
     std::uint32_t fill_ = 0;

@@ -269,6 +269,19 @@ Rectangle {
         }
     }
 
+    // --- the Step Sequencer (Edit > Step Sequencer) ---
+    Loader {
+        id: stepSequencerLoader
+        objectName: "stepSequencerLoader"
+        active: root.session.stepSequencerOpen
+        x: Theme.space6
+        y: body.y + 120
+        z: 8
+        sourceComponent: StepSequencer {
+            seq: StepSequencerModel { objectName: "stepSequencerModel" }
+        }
+    }
+
     // --- the Preferences window (Setup > Preferences…) ---
     Loader {
         id: preferencesLoader
@@ -1483,7 +1496,7 @@ Rectangle {
                     { name: "", label: "", command: "", on: false },
                     { name: "editGroupClips", label: "Group Clips", command: "clip.group", on: true },
                     { name: "editUngroupClips", label: "Ungroup Clips", command: "clip.ungroup", on: true },
-                    { name: "editLoopClip", label: "Loop Clip", command: "clip.loop", on: true },
+                    { name: "editLoopClip", label: "Loop Clip…", command: "clip.loop", on: true },
                     { name: "editUnloopClip", label: "Unloop Clip", command: "clip.unloop", on: true },
                     { name: "", label: "", command: "", on: false },
                     { name: "editSampleRepair", label: "Repair Selected Samples", command: "sample.repair", on: true },
@@ -1498,6 +1511,7 @@ Rectangle {
                     { name: "editNewMarker", label: "New Marker…", command: "marker.add", on: true },
                     { name: "editMemoryLocations", label: "Memory Locations", command: "window.memory_locations",on: true },
                     { name: "editEventList", label: "Automation Event List", command: "window.event_list", on: true },
+                    { name: "editStepSequencer", label: "Step Sequencer", command: "window.step_sequencer", on: true },
                     { name: "editWriteSelection", label: "Write Automation to Selection", command: "automation.write_selection", on: true },
                     { name: "editSnapshotAutomation", label: "Snapshot Automation", command: "automation.snapshot", on: true }
                 ]
@@ -1521,7 +1535,11 @@ Rectangle {
                         text: modelData.label
                         onClicked: {
                             editMenu.visible = false
-                            root.shell.invoke(modelData.command, -1)
+                            if (modelData.command === "clip.loop") {
+                                repeatPanel.pending = "clip.loop"
+                                root.shell.invokeWith("clip.loop", -1, "ask")
+                                repeatPanel.pending = "edit.repeat"
+                            } else root.shell.invoke(modelData.command, -1)
                         }
                     }
                 }
@@ -2296,6 +2314,12 @@ Rectangle {
         id: repeatPanel
         objectName: "repeatPanel"
         property string what
+        // The command OK sends the count to: edit.repeat, or clip.loop when the
+        // Edit menu's "Loop Clip..." asked (ADR-0212). `pending` is set only
+        // around that one invoke, so every other request is a Repeat.
+        property string command: "edit.repeat"
+        property string pending: "edit.repeat"
+        readonly property bool looping: command === "clip.loop"
         visible: false
         z: 10
         anchors.centerIn: parent
@@ -2307,6 +2331,7 @@ Rectangle {
         MouseArea { anchors.fill: parent }  // a click inside does not close it
 
         function show(count, what) {
+            repeatPanel.command = repeatPanel.pending
             repeatPanel.what = what
             repeatInput.text = String(count)
             visible = true
@@ -2319,7 +2344,7 @@ Rectangle {
             root.shell.setTextEntry(false)
         }
         function accept() {
-            if (root.shell.invokeWith("edit.repeat", -1, repeatInput.text)) close()
+            if (root.shell.invokeWith(repeatPanel.command, -1, repeatInput.text)) close()
         }
 
         Column {
@@ -2328,7 +2353,7 @@ Rectangle {
             spacing: Theme.space2
 
             Text {
-                text: "Repeat"
+                text: repeatPanel.looping ? "Loop Clip" : "Repeat"
                 color: Theme.text
                 font { family: Theme.fontFamily; pixelSize: Theme.textTitle; weight: Font.DemiBold }
             }
@@ -2336,7 +2361,9 @@ Rectangle {
                 objectName: "repeatWhat"
                 width: parent.width
                 wrapMode: Text.Wrap
-                text: "Copies of " + repeatPanel.what + ", end to end after the selection. What they cover is replaced."
+                text: repeatPanel.looping
+                    ? "Repeats of " + repeatPanel.what + ", looped as one clip group."
+                    : "Copies of " + repeatPanel.what + ", end to end after the selection. What they cover is replaced."
                 color: Theme.textSecondary
                 font { family: Theme.fontFamily; pixelSize: Theme.textSmall }
             }

@@ -4,7 +4,7 @@ import json
 import os
 import time
 
-from . import blockinfo, leadwake
+from . import blockinfo, leadwake, siblings
 from .run_view import run_view
 from .scheduler import POOL_OF_KIND, ready_feature_ids
 
@@ -88,7 +88,12 @@ def build(store, cfg, now, runs, gaps, mode, stop, stop_now, usage_pause_until,
             "tasks_total": len(mine),
             "adr": f["adr_no"], "protocol": f["protocol_no"],
             "partial": bool(f["partial"]), "age": now - f["created"],
-            "blocked_reason": why if f["state"] == "blocked" else None})
+            "blocked_reason": why if f["state"] == "blocked" else None,
+            "held_by": [{"task": t["id"], "state": t["state"],
+                         "cause": blockinfo.cause_of(t)
+                         if t["state"] == "blocked" else None,
+                         "note": (t["note"] or "")[:200]}
+                        for t in siblings.holding(mine, DONE_STATES)]})
     owner = blockinfo.owner_items(tasks, by_feat)
     return {
         "updated": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now)),

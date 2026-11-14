@@ -10,8 +10,6 @@ namespace sonora::analyze {
 
 using namespace native::mastering;
 
-const double kTargetDb[kBands] = {-3.0, 4.0, 5.0, 3.0, 1.5, 0.0, -3.0, -6.5, -10.5, -16.0};
-
 namespace {
 
 std::string fmt(const char* f, ...) {
@@ -25,12 +23,9 @@ std::string fmt(const char* f, ...) {
 
 double round_to(double v, double step) { return std::round(v / step) * step; }
 
-const char* kBandNames[kBands] = {"31.5 Hz", "63 Hz", "125 Hz", "250 Hz", "500 Hz",
-                                  "1 kHz",   "2 kHz", "4 kHz",  "8 kHz",  "16 kHz"};
-
 class Builder {
 public:
-    Builder(const MixAnalysis& a, const MasteringConfig& c, MasteringSuggestion& out) : a_(a), c_(c), out_(out) {
+    Builder(const MixAnalysis& a, const MasteringConfig& c, MasteringSuggestion& out) : a_(a), c_(c), t_(*c.table), out_(out) {
         const native::Descriptor& d = native::mastering_descriptor();
         out_.values.assign(d.param_count, 0.0f);
         for (std::uint32_t i = 0; i < d.param_count; ++i) out_.values[i] = d.params[i].def;
@@ -52,13 +47,13 @@ public:
         bool ok[kBands] = {};
         double anchor_mix = 0.0, anchor_target = 0.0;
         int n = 0;
-        for (int b = 4; b <= 6; ++b) {
+        for (const int b : t_.anchor_bands) {
             if (!a_.band_valid[b]) continue;
             anchor_mix += a_.band_db[b];
-            anchor_target += kTargetDb[b];
+            anchor_target += t_.target_db[b];
             ++n;
         }
-        if (n < 3) {
+        if (n < static_cast<int>(t_.anchor_bands.size())) {
             out_.observations.push_back("Spectral balance not judged: the file's sample rate leaves the 500 Hz - 2 kHz anchor bands incomplete.");
             return;
         }
@@ -68,28 +63,12 @@ public:
         for (int b = 0; b < kBands; ++b) {
             ok[b] = a_.band_valid[b];
             if (!ok[b]) continue;
-            dev[b] = (a_.band_db[b] - anchor_mix) - (kTargetDb[b] - anchor_target);
-            line += fmt(" %s %+.1f;", kBandNames[b], dev[b]);
+            dev[b] = (a_.band_db[b] - anchor_mix) - (t_.target_db[b] - anchor_target);
+            line += fmt(" %s %+.1f;", t_.band_names[b].c_str(), dev[b]);
         }
         out_.observations.push_back(line);
 
-        struct Group {
-            const char* rule;
-            int bands[2];
-            const char* what;     // "63 and 125 Hz"
-            const char* title;    // "Low shelf"
-            std::uint32_t gain;
-            std::uint32_t freq;   // 0: fixed
-            double freq_hz;
-            const char* at;       // "at 100 Hz"
-        };
-        const Group groups[] = {
-            {"balance.low", {1, 2}, "63 and 125 Hz", "Low shelf", kLowGain, 0, 0.0, "at 100 Hz"},
-            {"balance.lowmid", {3, -1}, "250 Hz", "Low-mid bell", kLowMidGain, kLowMidFreq, 250.0, "at 250 Hz"},
-            {"balance.highmid", {7, -1}, "4 kHz", "High-mid bell", kHighMidGain, kHighMidFreq, 4000.0, "at 4 kHz"},
-            {"balance.high", {8, 9}, "8 and 16 kHz", "High shelf", kHighGain, 0, 0.0, "at 10 kHz"},
-        };
-        for (const Group& g : groups) {
+        for (const BalanceGroup& g : t_.groups) {
             double sum = 0.0;
             int cnt = 0;
             for (int b : g.bands) {
@@ -106,16 +85,16 @@ public:
             if (corr == 0.0) continue;
             Finding f;
             f.rule = g.rule;
-            f.title = fmt("%s %+.1f dB %s", g.title, corr, g.at);
+            f.title = fmt("%s %+.1f dB %s", g.title.c_str(), corr, g.at.c_str());
             f.reason = fmt("%s %s %.1f dB %s the target curve (tolerance %.1f dB, balance judged against 500 Hz - 2 kHz); "
                            "%.0f%% of the excess beyond the tolerance is %s, at most %.0f dB.",
-                           g.what, cnt > 1 ? "sit" : "sits", std::fabs(d), d > 0 ? "above" : "below",
+                           g.what.c_str(), cnt > 1 ? "sit" : "sits", std::fabs(d), d > 0 ? "above" : "below",
                            c_.band_tolerance_db, c_.eq_fraction * 100.0, d > 0 ? "taken out" : "put back", c_.eq_max_db);
             if (g.freq != 0) set(f, g.freq, g.freq_hz);
             set(f, g.gain, corr);
             out_.findings.push_back(std::move(f));
         }
-        if (ok[0] && std::fabs(dev[0]) > c_.band_tolerance_db + 3.0) {
+        if (ok[0] && std::fabs(dev[0]) > c_.band_tolerance_db + t_.sub_bass_margin_db) {
             out_.observations.push_back(fmt("31.5 Hz is %.1f dB %s the curve: sub-bass is reported, not adjusted (a high-pass or a sub cut belongs to the mix).",
                                             std::fabs(dev[0]), dev[0] > 0 ? "above" : "below"));
         }
@@ -136,26 +115,26 @@ public:
             return true;
         }
         if (plr > c_.dynamic_plr_db) {
-            const double ratio = plr > 18.0 ? 2.0 : 1.5;
-            const double thr = std::fmax(-40.0, std::fmin(0.0, round_to(a_.integrated_lufs + 4.0, 0.5)));
+            const double ratio = plr > t_.ratio_step_plr_db ? t_.ratio_high : t_.ratio_normal;
+            const double thr = std::fmax(-40.0, std::fmin(0.0, round_to(a_.integrated_lufs + t_.threshold_above_loudness_db, 0.5)));
             Finding f;
             f.rule = "dynamics.glue";
             f.title = fmt("Compressor %.1f:1 from %.1f dB", ratio, thr);
             f.reason = fmt("Peak-to-loudness ratio is %.1f dB, over %.0f dB: peaks stand well above the body of the mix. A gentle %.1f:1 "
-                           "compressor from %.1f dB (4 dB above the programme loudness of %.1f LUFS), 30 ms attack, 200 ms release, "
+                           "compressor from %.1f dB (%.0f dB above the programme loudness of %.1f LUFS), 30 ms attack, 200 ms release, "
                            "brings them nearer.",
-                           plr, c_.dynamic_plr_db, ratio, thr, a_.integrated_lufs);
+                           plr, c_.dynamic_plr_db, ratio, thr, t_.threshold_above_loudness_db, a_.integrated_lufs);
             set(f, kCompThreshold, thr);
             set(f, kCompRatio, ratio);
             out_.findings.push_back(std::move(f));
-            if (plr > 16.0) {
+            if (plr > t_.saturation_plr_db) {
                 Finding s;
                 s.rule = "dynamics.saturation";
-                s.title = "Saturation 15% at 6 dB drive";
-                s.reason = fmt("Peak-to-loudness ratio is %.1f dB, over 16 dB: 15%% of a soft-clipped copy at 6 dB drive rounds the "
-                               "highest peaks and adds density before the limiter.", plr);
-                set(s, kSatDrive, 6.0);
-                set(s, kSatMix, 15.0);
+                s.title = fmt("Saturation %.0f%% at %.0f dB drive", t_.saturation_mix_pct, t_.saturation_drive_db);
+                s.reason = fmt("Peak-to-loudness ratio is %.1f dB, over %.0f dB: %.0f%% of a soft-clipped copy at %.0f dB drive rounds the "
+                               "highest peaks and adds density before the limiter.", plr, t_.saturation_plr_db, t_.saturation_mix_pct, t_.saturation_drive_db);
+                set(s, kSatDrive, t_.saturation_drive_db);
+                set(s, kSatMix, t_.saturation_mix_pct);
                 out_.findings.push_back(std::move(s));
             }
         } else {
@@ -170,23 +149,23 @@ public:
             out_.observations.push_back("Mono file: width left at 100%.");
             return;
         }
-        if (a_.correlation < 0.0) {
+        if (a_.correlation < t_.phase_correlation) {
             Finding f;
             f.rule = "stereo.phase";
-            f.title = "Width 80%";
+            f.title = fmt("Width %.0f%%", t_.phase_width_pct);
             f.reason = fmt("L/R correlation is %.2f: more of the mix is out of phase than in phase, which cancels when summed to mono. "
-                           "Narrowing to 80%% brings the sides in.", a_.correlation);
-            set(f, kWidth, 80.0);
+                           "Narrowing to %.0f%% brings the sides in.", a_.correlation, t_.phase_width_pct);
+            set(f, kWidth, t_.phase_width_pct);
             out_.findings.push_back(std::move(f));
-        } else if (a_.side_mid_db > -3.0) {
+        } else if (a_.side_mid_db > t_.wide_side_mid_db) {
             Finding f;
             f.rule = "stereo.wide";
-            f.title = "Width 90%";
-            f.reason = fmt("Side level is %.1f dB against the mid (within 3 dB): a very wide mix. Narrowing to 90%% keeps the centre "
-                           "from thinning in mono.", a_.side_mid_db);
-            set(f, kWidth, 90.0);
+            f.title = fmt("Width %.0f%%", t_.wide_width_pct);
+            f.reason = fmt("Side level is %.1f dB against the mid (within %.0f dB): a very wide mix. Narrowing to %.0f%% keeps the centre "
+                           "from thinning in mono.", a_.side_mid_db, -t_.wide_side_mid_db, t_.wide_width_pct);
+            set(f, kWidth, t_.wide_width_pct);
             out_.findings.push_back(std::move(f));
-        } else if (a_.side_mid_db < -24.0) {
+        } else if (a_.side_mid_db < t_.near_mono_side_mid_db) {
             out_.observations.push_back(fmt("Side level is %.1f dB against the mid: a near-mono mix. Width left at 100%%; widening it would change the balance.",
                                             a_.side_mid_db));
         } else {
@@ -198,12 +177,12 @@ public:
     void loudness(bool dense) {
         const double needed = c_.target_lufs - a_.integrated_lufs;
         const double headroom = c_.ceiling_dbtp - a_.true_peak_dbtp;
-        const double limit = dense ? std::fmin(c_.max_limiting_db, 2.0) : c_.max_limiting_db;
+        const double limit = dense ? std::fmin(c_.max_limiting_db, t_.dense_limit_db) : c_.max_limiting_db;
         double gain = 0.0;
         std::string cap_note;
-        if (std::fabs(needed) < 0.5) {
-            out_.observations.push_back(fmt("Integrated loudness %.1f LUFS is within 0.5 LU of the %.1f LUFS target: no gain change.",
-                                            a_.integrated_lufs, c_.target_lufs));
+        if (std::fabs(needed) < t_.no_change_lu) {
+            out_.observations.push_back(fmt("Integrated loudness %.1f LUFS is within %.1f LU of the %.1f LUFS target: no gain change.",
+                                            a_.integrated_lufs, t_.no_change_lu, c_.target_lufs));
         } else if (needed > 0.0) {
             const double allowed = std::fmax(headroom, 0.0) + limit;
             gain = std::fmin(std::fmin(needed, kTrimRangeDb), allowed);
@@ -234,7 +213,7 @@ public:
             }
             set(f, kGain, gain);
             out_.findings.push_back(std::move(f));
-        } else if (needed > 0.5) {
+        } else if (needed > t_.no_change_lu) {
             out_.observations.push_back(fmt("Target %.1f LUFS is %.1f dB above the mix, but the peaks leave no room: no gain proposed.",
                                             c_.target_lufs, needed));
         }
@@ -261,6 +240,7 @@ public:
 private:
     const MixAnalysis& a_;
     const MasteringConfig& c_;
+    const MasteringRules& t_;
     MasteringSuggestion& out_;
 };
 
@@ -268,6 +248,10 @@ private:
 
 bool suggest_mastering(const MixAnalysis& a, const MasteringConfig& c, MasteringSuggestion& out, std::string& error) {
     out = MasteringSuggestion{};
+    if (c.table == nullptr) {
+        error = "the mastering rule table is not loaded";
+        return false;
+    }
     if (a.spectrum_frames == 0 || !(a.integrated_lufs > -70.0) || a.channels == 0) {
         error = "the analysis is empty or silent: nothing to base settings on";
         return false;

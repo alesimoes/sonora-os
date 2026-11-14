@@ -144,6 +144,14 @@ void SessionModel::installClipCommands(CommandRegistry& /*local*/, const Install
     simple("clip.unloop", [this](const CommandContext&, Why& why) { return ctl_.unloop_clip(why); });
     simple("clip.loop", [this](const CommandContext& ctx, Why& why) {
         int count = ctl_.loop_count();
+        // The menu's "Loop Clip..." (ADR-0212) asks; the key sends no argument
+        // and loops silently with the last count.
+        if (ctx.argument == "ask") {
+            const model::Region* r = ctl_.selected_region(why);
+            if (r == nullptr) return false;
+            emit repeatRequested(count, q(r->name));
+            return true;
+        }
         if (!ctx.argument.empty() && !parse_repeat_count(ctx.argument, count)) {
             why = "\"" + ctx.argument +
                   "\" is not a number of repeats; type a whole number, 1 or more. Nothing was "

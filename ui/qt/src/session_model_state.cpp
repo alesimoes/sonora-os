@@ -141,6 +141,12 @@ QStringList SessionModel::trackPlaylists(int track) const {
     return out;
 }
 
+int SessionModel::trackChannels(int track) const {
+    const auto& tracks = ctl_.snapshot().edit->tracks;
+    if (track < 0 || static_cast<std::size_t>(track) >= tracks.size()) return 1;
+    return tracks[static_cast<std::size_t>(track)]->channels;
+}
+
 QString SessionModel::selectionStart() const {
     return q(format_time(main_fmt_, ctl_.selection().start, ctl_.snapshot().settings));
 }

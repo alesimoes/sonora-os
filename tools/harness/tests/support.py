@@ -22,7 +22,6 @@ FAKE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                     "fake_claude.py")
 
 from harness import scheduler  # noqa: E402
-from harness import shots  # noqa: E402
 from harness.forge import Forge, ForgeError  # noqa: E402
 import orchestrator  # noqa: E402
 
@@ -97,7 +96,10 @@ class FakeForge(Forge):
 
     def workflow_runs(self, workflow, branch="main", limit=20):
         self._chk("workflow_runs")
-        return list(self.nightly_runs)[:limit]
+        by = getattr(self, "runs_of_workflow", {})
+        if workflow in by:
+            return list(by[workflow])[:limit]
+        return list(self.nightly_runs)[:limit] if workflow == "nightly.yml" else []
 
     def is_ancestor(self, sha, head):
         self._chk("is_ancestor")
@@ -121,6 +123,9 @@ class FakeForge(Forge):
         self.dispatched.append((workflow, ref))
 
     def _chk(self, what):
+        if what == "push" and "push_conflict" in self.fail:
+            from harness.forge import ForgeConflict
+            raise ForgeConflict("merge conflict in: a.cpp", ["a.cpp"])
         if what in self.fail:
             raise ForgeError(f"{what} failed")
 
@@ -247,6 +252,10 @@ class FakeForge(Forge):
         self._chk("retarget")
         self.prs[pr]["base"] = base
 
+    def commit_all(self, worktree, message):
+        self._chk("commit_all")
+        self.commits = getattr(self, "commits", []) + [(worktree, message)]
+
     def push_head(self, worktree, branch):
         self._chk("push")
         self.pushed.append(branch)
@@ -262,15 +271,6 @@ class FakeForge(Forge):
 
     def contains(self, worktree, branch):
         return branch not in getattr(self, "left_out", ())
-
-
-class _NoPictures:
-    """Tests never start the real screenshot build; test_shots covers it."""
-    def head(self, wt):
-        return "h"
-
-    def changed(self, wt):
-        return []
 
 
 class DirWorktrees:
@@ -338,7 +338,6 @@ class DaemonCase(unittest.TestCase):
             fake_claude=FAKE, clock=self.clock, forge=self.forge,
             worktrees=DirWorktrees(self.tmp),
             seed_fn=(lambda k: 10) if seed_fn == "fixed" else seed_fn)
-        o.shots = shots.Shots(o, io=_NoPictures())
         self.orchs.append(o)
         return o
 

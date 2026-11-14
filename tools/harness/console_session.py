@@ -62,3 +62,35 @@ def feed(orch, pending, now):
         orch.store.set_meta("console_sess_last", str(now))
     elif not pending and now - last > IDLE_S:
         _request_end(orch, "idle")
+
+
+# 2026-11-13: console runs answered, ended their turn without result.json
+# ("no owner_ask asked for the end") and exited normally. The daemon called
+# each one dead, counted a failure and relaunched the console for a message
+# already answered. A console session's result.json carries nothing, so a
+# clean end of the CLI (its final `result` line says success) is its end.
+_TAIL_BYTES = 8192
+
+
+def _ended_ok(stream_path):
+    try:
+        with open(stream_path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - _TAIL_BYTES))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except (OSError, TypeError):
+        return False
+    for ln in reversed(lines):
+        if '"type":"result"' in ln.replace(" ", ""):
+            flat = ln.replace(" ", "")
+            return '"subtype":"success"' in flat and '"is_error":true' not in flat
+    return False
+
+
+def clean_exit(run, alive):
+    """A `done` result for a console run whose process ended cleanly with
+    no result.json; None for anything else (still dead when it crashed)."""
+    if alive or run.get("name") != NAME or not _ended_ok(run.get("stream_path")):
+        return None
+    return {"role": run["role"], "task": run["task_id"], "status": "done",
+            "summary": "console session ended (turn over, no result.json)"}

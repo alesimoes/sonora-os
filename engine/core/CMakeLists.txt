@@ -15,6 +15,7 @@ file(GLOB _sonora_core_graph_sources CONFIGURE_DEPENDS src/graph_*.cpp)
 add_library(sonora_core STATIC
   ${_sonora_core_graph_sources}
   src/session.cpp
+  src/edge_ramp.cpp
   src/click.cpp
   src/latency_probe.cpp
   src/track.cpp
@@ -98,6 +99,11 @@ add_test(NAME sends COMMAND test_sends)
 add_executable(test_routing tests/test_routing.cpp)
 target_link_libraries(test_routing PRIVATE sonora_core)
 add_test(NAME routing COMMAND test_routing)
+# A strip rerouted at a swap crossfades, undelayed and through PDC lines
+# (ADR-0202).
+add_executable(test_edge_ramp tests/test_edge_ramp.cpp)
+target_link_libraries(test_edge_ramp PRIVATE sonora_core)
+add_test(NAME edge_ramp COMMAND test_edge_ramp)
 
 # Takes closed while rolling, by in-band boundary records (timeline-model.md,
 # "Closing a take while rolling"), and the take-epoch race's regression test.
@@ -267,3 +273,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(measure_disk_write tests/posix/measure_disk_write.cpp)
   target_link_libraries(measure_disk_write PRIVATE sonora_audiofile Threads::Threads)
 endif()
+
+# sonora-graph-bench (ADR-0218): Session::process() under 18 x 4 plugin
+# chains at quantum 128. Here, not in engine/plugin_client: that module must
+# not depend on core.
+include(bench/bench.cmake)

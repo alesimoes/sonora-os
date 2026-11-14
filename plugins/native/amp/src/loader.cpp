@@ -116,7 +116,8 @@ Amp::LoadResult AmpImpl::load_capture(CaptureSource source, std::string& message
                   std::to_string(latency()) + ": it plays once the host restarts the plugin";
         source_ = std::move(source);
         has_source_ = true;
-        status_ = st;
+        // status() describes what plays; this capture plays after prepare(),
+        // which sets it.
         notice_.clear();
         return LoadResult::Deferred;
     }
@@ -198,12 +199,12 @@ std::string AmpImpl::path(std::uint32_t) const {
 }
 
 std::uint32_t AmpImpl::default_latency() const {
-    RatePlan plan;
+    dsp::RatePlan plan;
     std::string err;
     const double rate = has_source_ ? source_.rate : kDefaultCaptureRate;
     // A session rate the resampler cannot reach leaves no capture playable
     // (build_slot refuses it) and nothing to delay.
-    if (!plan_rates(sample_rate(), rate, &plan, &err)) return 0;
+    if (!dsp::plan_rates(sample_rate(), rate, &plan, &err)) return 0;
     return plan.latency;
 }
 
