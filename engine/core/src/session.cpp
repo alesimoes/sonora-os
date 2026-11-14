@@ -407,6 +407,8 @@ Session::Session(SessionConfig cfg)
     feeds_node_.reset(new uint8_t[scratch_buffers_ + 1]());
     feeds_track_.reset(new uint8_t[tracks + 1]());
     aux_solo_.reset(new uint8_t[max_buses_ + 1]());
+    edge_ramps_.allocate(tracks, max_buses_, cfg_.sample_rate / 1000 * kEdgeRampMs);
+    fade_buf_.reset(new float[2 * static_cast<std::size_t>(max_block_)]());
     aux_gain_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
     aux_target_.reset(new float[2 * static_cast<std::size_t>(max_buses_) + 2]());
     aux_stamp_.reset(new uint64_t[max_buses_ + 1]());
@@ -1192,6 +1194,11 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         adopt_param_order(*plan);
         adopt_graph_plan(*plan);
         follow_track_owners(*plan);
+        if (plan_valid_) {
+            edge_ramps_.adopt(*plan, delay_lines_);
+        } else {
+            edge_ramps_.clear();
+        }
         snap_mix_ = false;
         for (std::size_t e = 0; e < tracks_.size(); ++e) {
             const bool named = e < plan->track_mix_count && plan->track_mix[e].track != 0;
@@ -1537,6 +1544,7 @@ void Session::process(const backend::AudioBlock& block) noexcept SONORA_RT {
         block_done_ = off;
         mix(*plan, block, off, n, rolling, recording,
             vs_on_ ? vs_from : loop_frame(playhead, off));
+        edge_ramps_.advance(n);
         reseek_ = false;
         off += n;
         if (vs_on_) {
@@ -2005,7 +2013,7 @@ void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
                     const float* const in[2] = {node_out(pass, edge.from_node, 0),
                                                 node_out(pass, edge.from_node, 1)};
                     if (edge.send == kNoSend) {
-                        sum_edge(plan, edge, in, out, n);
+                        sum_routed(plan, node.first_input_edge + k, in, out, n);
                         continue;
                     }
                     const bool mono = src.kind != NodeKind::AuxSum &&
@@ -2016,6 +2024,7 @@ void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
                         src.kind == NodeKind::InsertChain ? chain_lag(plan, src) : 0;
                     sum_send(plan, edge, mono, in, out, n, from, lag);
                 }
+                sum_ghosts(pass, ni, out, n);
                 return;
             }
             case NodeKind::AuxFader: {
@@ -2048,8 +2057,9 @@ void Session::mix_node(const MixPass& pass, uint32_t ni) noexcept SONORA_RT {
             const PlanEdge& edge = plan.edges[node.first_input_edge + k];
             const float* const in[2] = {node_out(pass, edge.from_node, 0),
                                         node_out(pass, edge.from_node, 1)};
-            sum_edge(plan, edge, in, out, n);
+            sum_routed(plan, node.first_input_edge + k, in, out, n);
         }
+        sum_ghosts(pass, ni, out, n);
         if (node.kind == NodeKind::PathOut) {
             // Straight to the interface: no Master gain, meter or tap.
             if (node.hardware_out < block.output_count) {
@@ -2866,6 +2876,40 @@ void Session::sum_edge(const PlaybackPlan& plan, const PlanEdge& edge, const flo
     }
     delay_pos_[line] = pos;
     line_filled_[line] = filled;
+}
+
+void Session::sum_routed(const PlaybackPlan& plan, uint32_t ei, const float* const in[2],
+                         float* const out[2], uint32_t n) noexcept SONORA_RT {
+    const uint32_t s = edge_ramps_.fading_in(plan, ei);
+    if (s == EdgeRamps::kNone) {
+        sum_edge(plan, plan.edges[ei], in, out, n);
+        return;
+    }
+    sum_faded(plan, plan.edges[ei], s, false, in, out, n);
+}
+
+void Session::sum_ghosts(const MixPass& pass, uint32_t ni, float* const out[2], uint32_t n) noexcept SONORA_RT {
+    for (uint32_t k = 0; k < edge_ramps_.ghost_count(); ++k) {
+        const PlanEdge& ghost = edge_ramps_.ghost_edge(k);
+        if (ghost.to_node != ni) continue;
+        const float* const in[2] = {node_out(pass, ghost.from_node, 0), node_out(pass, ghost.from_node, 1)};
+        sum_faded(*pass.plan, ghost, edge_ramps_.ghost_strip(k), true, in, out, n);
+    }
+}
+
+void Session::sum_faded(const PlaybackPlan& plan, const PlanEdge& edge, uint32_t s, bool out_fade,
+                        const float* const in[2], float* const out[2], uint32_t n) noexcept SONORA_RT {
+    float* const f[2] = {fade_buf_.get(), fade_buf_.get() + max_block_};
+    // Before the line, not after: what is already in a line plays out as
+    // it was, and two routes PDC aligns cross on the same output frame.
+    for (uint32_t i = 0; i < n; ++i) {
+        const float a = edge_ramps_.gain(s, i);
+        const float g = out_fade ? 1.0f - a : a;
+        f[0][i] = in[0][i] * g;
+        f[1][i] = in[1][i] * g;
+    }
+    const float* const faded[2] = {f[0], f[1]};
+    sum_edge(plan, edge, faded, out, n);
 }
 
 void Session::send_lane_gains(const PlaybackPlan& plan, const PlanTrack& pt, uint32_t k, int64_t t,
