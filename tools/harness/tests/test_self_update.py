@@ -103,6 +103,24 @@ class SelfUpdate(unittest.TestCase):
         self.assertTrue(self.up.ready(1000))
         self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
 
+    def test_a_config_only_change_moves_the_checkout(self):
+        new = self.push("planning/orchestrator/orchestrator.toml", "v2
+")
+        self.assertTrue(self.up.ready(1000))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
+
+    def test_a_hand_copied_config_equal_to_main_is_not_dirty(self):
+        rel = "planning/orchestrator/orchestrator.toml"
+        self.push(rel, "v1
+")
+        git(self.daemon, "pull", "-q", "origin", "main")
+        new = self.push(rel, "v2
+")
+        write(self.daemon, rel, "v2
+")
+        self.assertTrue(self.up.ready(1000))
+        self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
+
     def test_modified_tracked_files_block_the_update(self):
         self.push("tools/harness/train.py", "v2\n")
         write(self.daemon, "engine/x.cpp", "local edit\n")
