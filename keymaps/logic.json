@@ -19,6 +19,12 @@
       "verified": false,
       "comment": "Logic's Autopunch is on while punch locators are set. Its Set Punch Locators by Selection key command is not in the 12.3 guide's default list, so this chord is unconfirmed (ADR-0043):the Edit selection becomes the punch range and PUNCH lights; transport.clear_punch turns it off."
     },
+    "ctrl+alt+0": {
+      "command": "transport.varispeed",
+      "argument": "1",
+      "verified": false,
+      "comment": "Varispeed back to 100 %: our own chord, not a vendor default (ADR-0190). Other speeds are typed in the transport bar's varispeed field."
+    },
     "k": {
       "command": "transport.toggle_click",
       "verified": false,

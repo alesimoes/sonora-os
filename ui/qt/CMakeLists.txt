@@ -136,6 +136,7 @@ sonora_ui_library(sonora_ui_session QT SOURCES
   src/transport_prefs.h src/transport_prefs.cpp
   src/import_model.h src/import_model.cpp
   src/transport_model.h src/transport_model.cpp
+  src/transport_varispeed.h src/transport_varispeed.cpp
   src/scene_item.h src/scene_item.cpp
   src/session_model.h src/session_model.cpp src/session_model_support.h
   src/session_new.cpp
@@ -183,7 +184,7 @@ set(SONORA_UI_QML_FILES
   qml/MixWindow.qml qml/ScrollFrame.qml qml/ChannelStrip.qml qml/InsertSlot.qml qml/PluginBrowser.qml
   qml/InsertPanel.qml qml/Knob.qml qml/Fader.qml qml/MeterBar.qml qml/CurveView.qml qml/ValueField.qml qml/RefusalPage.qml qml/SoloButton.qml qml/UndoHistoryWindow.qml
   qml/MemoryLocationsWindow.qml qml/CounterField.qml qml/EventListWindow.qml qml/LatencyWindow.qml qml/BounceWindow.qml qml/PreferencesWindow.qml qml/WindowConfigsWindow.qml qml/ClipGainPanel.qml qml/TempoPanel.qml qml/IoSetupWindow.qml qml/NewSessionDialog.qml
-  qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml
+  qml/SendSlot.qml qml/SendWindow.qml qml/SendChooser.qml qml/AuxStrip.qml qml/VcaStrip.qml qml/FolderCard.qml qml/AutomationModeButton.qml qml/RecordButton.qml qml/ImportPanel.qml qml/LoudnessPanel.qml qml/VarispeedField.qml
   qml/PluginManager.qml qml/KeyChooser.qml qml/TrackListWindow.qml qml/StepSequencer.qml qml/TakeFolder.qml qml/LoopBrowser.qml
 )
 sonora_ui_library(sonora_ui_qml QT SOURCES
@@ -571,6 +572,12 @@ add_executable(test_ui_mix tests/test_mix.cpp)
 target_link_libraries(test_ui_mix PRIVATE sonora_ui_qt Qt6::Test)
 add_test(NAME ui_mix COMMAND test_ui_mix)
 set_tests_properties(ui_mix PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# The varispeed field: percent text, the range refusals, the ratio sent.
+add_executable(test_ui_transport_varispeed tests/test_transport_varispeed.cpp)
+target_link_libraries(test_ui_transport_varispeed PRIVATE sonora_ui_qt Qt6::Test)
+add_test(NAME ui_transport_varispeed COMMAND test_ui_transport_varispeed)
+set_tests_properties(ui_transport_varispeed PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # The master's loudness: the readings as the engine publishes them, the
 # target presets, the reset and its refusals, the panel in QML.

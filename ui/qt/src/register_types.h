@@ -16,6 +16,7 @@
 #include "step_sequencer_model.h"
 #include "theme_object.h"
 #include "transport_model.h"
+#include "transport_varispeed.h"
 
 namespace sonora::ui {
 
@@ -46,6 +47,7 @@ inline void register_types() {
                                                    QStringLiteral("made once, in main()"));
     qmlRegisterUncreatableType<SendModel>("Sonora", 1, 0, "SendModel",
                                           QStringLiteral("made once, in main()"));
+    qmlRegisterType<TransportVarispeed>("Sonora", 1, 0, "TransportVarispeed");
     qmlRegisterType<StepSequencerModel>("Sonora", 1, 0, "StepSequencerModel");
     qmlRegisterSingletonType<ThemeObject>("Sonora", 1, 0, "Theme",
                                           [](QQmlEngine*, QJSEngine*) -> QObject* {
