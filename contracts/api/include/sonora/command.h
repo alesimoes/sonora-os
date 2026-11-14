@@ -137,6 +137,10 @@ inline const std::vector<CommandSpec>& command_catalog() {
         {"transport.toggle_count_off", CommandTarget::None,
          "Turn the count-off before a take on or off"},
         {"transport.play_half_speed", CommandTarget::None, "Play at half speed"},
+        // ADR-0190 (amends ADR-0033 §4): argument the playback ratio as
+        // decimal text, 0.5 to 2.0, "1" resets; pitch follows, as tape.
+        // Parsed by api/varispeed.h. Not saved: every session opens at 1.
+        {"transport.varispeed", CommandTarget::None, "Set the varispeed ratio", true},
 
         // --- tracks ---
         {"track.arm", CommandTarget::Track, "Record-arm a track"},

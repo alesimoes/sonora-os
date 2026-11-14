@@ -16,6 +16,7 @@
 
 #include "sonora/api/consolidate_argument.h"
 #include "sonora/api/elastic.h"
+#include "sonora/api/varispeed.h"
 #include "sonora/api/wire.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/op_codec.h"
@@ -420,7 +421,7 @@ const std::vector<std::string>& FakeEngine::engine_commands() {
         "transport.cycle_selection", "transport.punch_selection", "transport.clear_punch",
         "transport.set_pre_roll", "transport.set_post_roll", "transport.record_ready", "meters.reset",
         "transport.toggle_input_only", "transport.toggle_pre_post_roll",
-        "transport.toggle_quick_punch",
+        "transport.toggle_quick_punch", "transport.varispeed",
         "mix.bounce", "mix.bounce_cancel", "mix.stems", "track.freeze", "track.commit", "track.process_selection",
         "track.unfreeze", "track.render_cancel",
         "session.consolidate", "session.consolidate_cancel",
@@ -709,8 +710,10 @@ bool FakeEngine::load(const std::string& op, std::string& why) {
     if (!document_->load(bytes, cfg_.sample_rate, why, load_parts_.get(), wire::kMaxModelBytes)) {
         return false;
     }
-    // Per-session, as the engine's: the next session opens not ready.
+    // Per-session, as the engine's: the next session opens not ready and
+    // at normal speed (ADR-0190: the ratio is not saved).
     record_ready_ = false;
+    varispeed_ = 1.0;
     if (!folder.empty()) {
         folder_ = folder;
         folder_untitled_ = untitled;
@@ -2038,6 +2041,9 @@ bool FakeEngine::command(const CommandRequest& r, std::string& why) {
         transport_flags_ ^= kTransportCountOff;
         return true;
     }
+    // ADR-0190: allowed mid-take, as Session::set_varispeed is; a refusal
+    // keeps the ratio that was.
+    if (id == kVarispeedCommand) return parse_varispeed(r.argument, varispeed_, why);
     // As the engine's: the selection becomes the range when loop playback
     // or loop record turns on, and turning either off keeps the range;
     // Cycle sets both from loop playback's and takes the selection only

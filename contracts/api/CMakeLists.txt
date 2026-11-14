@@ -53,3 +53,9 @@ add_executable(test_api_fake_engine tests/test_fake_engine.cpp)
 target_link_libraries(test_api_fake_engine PRIVATE sonora_api_fake sonora_api_conformance
                                                    sonora_model)
 add_test(NAME api_conformance_fake COMMAND test_api_fake_engine)
+
+# transport.varispeed (ADR-0190, no protocol bump): the shared argument
+# parser, and the fake engine holding and refusing the ratio.
+add_executable(test_varispeed_command tests/test_varispeed_command.cpp)
+target_link_libraries(test_varispeed_command PRIVATE sonora_api_fake sonora_model)
+add_test(NAME api_varispeed_command COMMAND test_varispeed_command)
