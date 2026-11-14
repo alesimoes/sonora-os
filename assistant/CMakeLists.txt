@@ -18,6 +18,19 @@ add_executable(assistant_core_test tests/test_core_assistant.cpp)
 target_link_libraries(assistant_core_test PRIVATE sonora_assistant_core)
 add_test(NAME assistant_core COMMAND assistant_core_test)
 
+add_executable(assistant_service_contract_test tests/test_service_contract.cpp)
+target_link_libraries(assistant_service_contract_test PRIVATE sonora_assistant_contract)
+add_test(NAME assistant_service_contract COMMAND assistant_service_contract_test)
+
+# Later tasks add the service implementation and its tests as directories of
+# their own; this file needs no edit when they do (ADR-0226).
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/service/CMakeLists.txt)
+  add_subdirectory(src/service)
+endif()
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/service/CMakeLists.txt)
+  add_subdirectory(tests/service)
+endif()
+
 add_executable(assistant_contract_test tests/test_contract.cpp)
 target_link_libraries(assistant_contract_test PRIVATE sonora_assistant_contract)
 add_test(NAME assistant_contract COMMAND assistant_contract_test)
