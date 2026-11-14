@@ -81,3 +81,14 @@ Single PR title: plugins.offline: Process Selection through one chosen plug-in (
 - [ ] tests pass, commands quoted
 - [ ] QA done, screenshot committed
 - [ ] `tools/pre-pr.sh` clean
+
+## 14. Closure note (2026-11-14)
+
+Closed by ADR-0219. On `main`: the one-insert rule and `insert=` (`54af7493`,
+`89ca1b44`), the capability `track.render.insert` (announced in Hello,
+`89ca1b44`), the UI entry `Track > Process Selection With ▸`
+(`ui/qt/qml/Main.qml`, `54af7493`) and the control-server wiring
+(`89ca1b44`, #707). The §13 boxes are not ticked here: the test run and the
+pre-PR check were not run by this closure, and no screenshot is committed
+(owner rule, 2026-11-13). Open, for the researcher and not blocking: the
+worker-thread render speed above 1x real time (ADR-0087 §Unverified).

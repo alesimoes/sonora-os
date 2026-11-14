@@ -206,3 +206,19 @@ target machine, and rendering faster than real time.
 - That plug-ins whose bypass is not a true bypass (a "soft" bypass with
   colouration) do not leak into the print; the override uses the host's
   bypass, so it inherits that behaviour.
+
+## Closure note 2026-11-14
+
+`plugins.offline` is closed by ADR-0219, which quotes the `git log
+origin/main -S` evidence for the one-insert rule, `insert=`, the
+`track.render.insert` capability, the UI entry and the server wiring. The
+feature is on `main` (#625, #707).
+
+Still open, handed to the researcher, not blocking closure:
+
+- **Worker-thread render speed above 1x real time.** Can a host process run
+  a plug-in chain driven from a worker thread at more than 1x real time
+  without breaking ADR-0004 or ADR-0012? Measure on the target machine with
+  real LV2 and VST3 hosts: throughput, misses, and whether the live
+  callback's hosts are disturbed. This is the first item of §Unverified
+  above, carried unchanged.
