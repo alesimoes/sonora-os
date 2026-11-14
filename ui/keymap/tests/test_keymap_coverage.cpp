@@ -182,6 +182,23 @@ int main() {
             ++failures;
         }
     }
+    // ADR-0190: our own chord, so not in the vendor lists above: it must
+    // resolve to the reset, with its argument, in both profiles.
+    for (const char* file : {"protools.json", "logic.json"}) {
+        KeyMap map;
+        std::string err;
+        const std::string path = std::string(SONORA_KEYMAP_DIR) + "/" + file;
+        if (!KeyMap::load_file(path, map, err)) {
+            std::fprintf(stderr, "FAIL %s does not load: %s\n", path.c_str(), err.c_str());
+            return 1;
+        }
+        const Binding* b = map.resolve("ctrl+alt+0");
+        if (find_command("transport.varispeed") == nullptr || b == nullptr ||
+            b->command != "transport.varispeed" || b->ctx.argument != "1") {
+            std::fprintf(stderr, "FAIL %s: ctrl+alt+0 is not the varispeed reset\n", file);
+            ++failures;
+        }
+    }
     std::printf("documented shortcuts checked: %d, pending a command: %d\n",
                 checked, pending);
     return failures == 0 ? 0 : 1;

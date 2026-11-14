@@ -324,6 +324,8 @@ Rectangle {
             }
         }
 
+        VarispeedField { objectName: "varispeed"; shell: bar.shell; anchors.verticalCenter: parent.verticalCenter }
+
         // --- engine ---
         Row {
             anchors.verticalCenter: parent.verticalCenter

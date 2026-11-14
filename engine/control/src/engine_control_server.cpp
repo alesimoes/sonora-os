@@ -19,6 +19,7 @@
 #include "sonora/elastic/elastic_commands.h"
 #include "sonora/elastic/library_stretcher.h"
 #include "sonora/factory_preset_reader.h"
+#include "sonora/varispeed_command.h"
 #include "sonora/frame_text.h"
 #include "sonora/model/groups.h"
 #include "sonora/model/op_codec.h"
@@ -726,6 +727,10 @@ EngineControlServer::EngineControlServer(Session& session, backend::AudioBackend
                           if (!unfreeze_track(*document_, o.track, updates, why)) return false;
                           document_changed_by_engine(updates);
                           return true;
+                      }));
+    registry_.install("transport.varispeed",
+                      ExplainingHandler([this](const CommandContext& ctx, std::string& why) {
+                          return apply_varispeed(session_, ctx.argument, why);
                       }));
     // Pro Tools' Loop Playback and Loop Record, Logic's Cycle: session
     // settings, saved and outside undo like the range (ADR-0016, updates
