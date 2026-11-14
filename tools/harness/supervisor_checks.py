@@ -76,22 +76,30 @@ def check_runs(sv, now):
 
 
 # -- the heavy lock ---------------------------------------------------------
-def _ended_worktrees(sv):
-    """Worktrees of runs that ended, minus those an active run uses."""
+def lock_owner_ended(sv, cwd):
+    """Id of the ended run that owns `cwd`, else None. Owner = the DEEPEST
+    known run worktree containing cwd; agent worktrees nest inside the
+    daemon checkout, where wake runs live, so the root never owns a
+    nested cwd. A worktree an active run uses is not ended."""
     live = {S.posix(r.get("worktree") or "") for r in _active(sv)}
-    out = {}
+    root = S.posix(getattr(sv.o, "root", "") or "")
+    best, best_run = "", None
     for r in sv.o.store._d["runs"].values():
         wt = S.posix(r.get("worktree") or "")
-        if r.get("ended") and wt and wt not in live:
-            out[wt] = r["id"]
-    return out
+        if not wt or wt == root or not S.under(cwd, wt):
+            continue
+        if len(wt) > len(best):
+            best, best_run = wt, r
+    for wt in live:
+        if wt and wt != root and S.under(cwd, wt) and len(wt) >= len(best):
+            return None
+    return best_run["id"] if best_run and best_run.get("ended") else None
 
 
 def check_lock(sv, now):
     entries = sv.sys.lock_entries()
     if not entries:
         return
-    ended = _ended_worktrees(sv)
     for e in entries:
         where = f"{e['role']} pid={e['pid']} cwd={e['cwd']} cmd={e['cmd']}"
         age = now - (e["start"] or now)
@@ -106,8 +114,7 @@ def check_lock(sv, now):
             sv.act("lock", f"reap {e['role']}", f"pid dead: {where}",
                    lambda e=e: sv.sys.lock_remove(e))
             continue
-        owner = next((rid for wt, rid in ended.items()
-                      if S.under(e["cwd"], wt)), None)
+        owner = lock_owner_ended(sv, e["cwd"])
         if owner and sv.th.lock_reap:
             sv.act("lock", f"kill {e['role']}",
                    f"left behind by ended run {owner}: {where}",
