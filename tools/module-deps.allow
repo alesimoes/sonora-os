@@ -109,6 +109,9 @@ ui/client -> contracts/api
 ui/conductor -> common/model
 ui/elastic -> common/model
 ui/elastic -> contracts/api
+ui/tce -> ui/elastic
+ui/tce -> contracts/api
+ui/tce -> common/model
 ui/groove -> common/groove
 ui/groove -> common/json
 ui/groove -> common/model
