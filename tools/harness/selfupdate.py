@@ -24,7 +24,9 @@ import os
 import subprocess
 import sys
 
+from . import runtime_files
 from . import selfupdate_local as L
+from . import selfupdate_runtime
 
 # The dashboard is served from this checkout too: a dashboard-only merge must
 # move it, or the owner keeps the old page (2026-11-08, #571 never showed).
@@ -91,8 +93,7 @@ class SelfUpdate:
         target) when tracked files are modified or the checkout fails."""
         target = self.git(["rev-parse", "origin/main"], self.root).stdout.strip()
         old = self.git(["rev-parse", "HEAD"], self.root).stdout.strip()
-        dirty = self.git(["status", "--porcelain", "--untracked-files=no"],
-                         self.root).stdout.strip()
+        dirty = self._dirty()
         force = self.overdue()
         why = f"tracked files modified: {dirty[:200]}"             if dirty and not force else None
         if dirty and force:
@@ -109,31 +110,57 @@ class SelfUpdate:
                            f"{old[:12]} -> {target[:12]}: " + " ".join(self.pending)[:200])
         return True
 
+    def _dirty(self):
+        """Modified tracked files, runtime files left out: those are kept
+        across the move by selfupdate_runtime, so they never block it."""
+        out = self.git(["status", "--porcelain", "--untracked-files=no"],
+                       self.root).stdout
+        keep = [ln for ln in out.splitlines()
+                if ln.strip() and not runtime_files.is_runtime(
+                    ln[3:].split(" -> ")[-1].strip('"'))]
+        return "\n".join(keep).strip()
+
     def _move_to(self, target, force):
         """Checkout origin/main, keeping local commits. Planners commit plans
         in this checkout (2026-11-08: five plan commits); a bare checkout
         would drop them, so they are rebased onto origin/main instead.
         Runtime files survive the move; untracked files main now carries
         are moved aside first (2026-11-13: an uncommitted ADR blocked it)."""
-        self._aside_untracked(target)
-        runtime = L.Runtime(self.root)
+        runtime = selfupdate_runtime.Runtime(self.root, self.git, self.now)
         try:
+            self._aside_untracked(target)
             return self._move_commits(target, force)
         finally:
-            runtime.restore()
+            self._restored(runtime.restore(), runtime.aside)
+
+    def _restored(self, rels, aside):
+        """2026-11-14: git deleted state.json and events.jsonl in the move.
+        What it took is back; the store rewrites state.json from memory."""
+        if not rels:
+            return
+        self.o.store.event("daemon", "self_update_runtime_restored",
+                           f"ALERT git removed or changed "
+                           f"{' '.join(rels)[:150]}; restored (copy in "
+                           f"{aside})")
+        mark = getattr(self.o.store, "mark_dirty", None)
+        if mark:
+            mark()
 
     def _move_commits(self, target, force):
         local = self.git(["rev-list", "origin/main..HEAD"],
                          self.root).stdout.split()
         if local:
             foreign = self._non_plan_files()
-            if foreign and force:
-                return self._drop_foreign(len(local), target, foreign)
-            if foreign:
+            carried = self._runtime_files()
+            if foreign and not force:
                 return (f"ALERT {len(local)} local commit(s) in the daemon "
                         f"checkout touch more than plans: "
                         f"{' '.join(foreign)[:150]}; saved on a keep/ "
                         f"branch and dropped at the bound")
+            if foreign or carried:
+                # a rebase would keep runtime files tracked: strip them now
+                return self._drop_foreign(len(local), target,
+                                          foreign + carried)
             return self._rebase(len(local), target, force)
         return self._checkout(target, force)
 
@@ -208,10 +235,16 @@ class SelfUpdate:
                            f"saved on {saved}")
         return self._checkout(target, True)
 
-    def _non_plan_files(self):
+    def _local_files(self):
         r = self.git(["diff", "--name-only", "origin/main...HEAD"], self.root)
-        return [f for f in r.stdout.splitlines()
-                if f and not f.startswith(PLAN_ONLY)]
+        return [f for f in r.stdout.splitlines() if f]
+
+    def _non_plan_files(self):
+        return L.foreign(self._local_files())
+
+    def _runtime_files(self):
+        """Runtime files the local commits track (they must never be)."""
+        return runtime_files.runtime_only(self._local_files())
 
     def ready_or_report(self, now):
         """ready(), but an exception becomes one event per distinct error

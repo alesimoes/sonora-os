@@ -6,6 +6,8 @@ import os
 import re
 import subprocess
 
+from . import runtime_files
+
 RESULT_STATUS = ("done", "fail", "blocked")
 
 
@@ -41,6 +43,14 @@ def _git(worktree, *args):
     except (OSError, subprocess.SubprocessError):
         return None
     return r.stdout if r.returncode == 0 else None
+
+
+def _git_or_raise(worktree, argv):
+    """argv is ["git", ...]; stdout, or RuntimeError on a failed call."""
+    out = _git(worktree, *argv[1:])
+    if out is None:
+        raise RuntimeError(f"{' '.join(argv[:3])} failed in {worktree}")
+    return out
 
 
 def _mtime(path):
@@ -134,7 +144,9 @@ def wip_checkpoint(worktree):
     st = _git(worktree, "status", "--porcelain")
     if not st or not st.strip():
         return False
-    if _git(worktree, "add", "-A") is None:
+    try:
+        runtime_files.stage_all(lambda a: _git_or_raise(worktree, a))
+    except (OSError, RuntimeError, subprocess.SubprocessError):
         return False
     r = subprocess.run(
         ["git", "-C", worktree, "-c", "user.name=orchestrator",

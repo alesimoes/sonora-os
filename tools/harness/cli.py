@@ -15,7 +15,7 @@ import json
 import os
 import sys
 
-from . import autoadopt, cli_mailbox, daemonlock, launcher
+from . import autoadopt, cli_mailbox, daemonlock, launcher, store_backup
 from . import status
 from .brokerhost import NullBroker
 
@@ -134,6 +134,8 @@ def _direct(root, args, make_orch):
     except daemonlock.Busy:
         return _post(root, args)   # a daemon started meanwhile
     try:
+        if _empty_store_refused(root, "cli"):
+            return 2
         o = make_orch(root)
         try:
             if args.cmd == "adopt":
@@ -152,6 +154,17 @@ def _direct(root, args, make_orch):
     return 0
 
 
+def _empty_store_refused(root, who):
+    """2026-11-14: the daemon restarted on a store git had deleted. With a
+    recent backup it does not start on an empty one; the alert says how to
+    restore (store_backup.refuse_start)."""
+    why = store_backup.refuse_start(os.path.join(root, "planning",
+                                                 "orchestrator"))
+    if why:
+        print(f"{who}: refusing to start: {why}", file=sys.stderr)
+    return bool(why)
+
+
 def _run(ap, args, root, orch_cls, make_broker):
     if args.shadow and not args.shadow_agents:
         ap.error("--shadow needs --shadow-agents FILE")
@@ -162,6 +175,8 @@ def _run(ap, args, root, orch_cls, make_broker):
         print(f"orchestrator: refusing to start: {e}", file=sys.stderr)
         return 2
     try:
+        if _empty_store_refused(root, "orchestrator"):
+            return 2
         try:
             broker = NullBroker() if args.no_broker else make_broker(root)
             o = orch_cls(root, broker=broker, dry_run=not args.live,
