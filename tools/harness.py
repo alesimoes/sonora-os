@@ -36,12 +36,19 @@ def hook_path(data):
 
 def bash_guard(data):
     """PreToolUse for Bash: 2 (deny) when a git command would move the
-    daemon's own checkout (the root of the tools/ this file lives in)."""
+    daemon's own checkout (the root of the tools/ this file lives in) or
+    commit its runtime files there (commitguard.py)."""
+    import commitguard
     from gitguard import MESSAGE, violates
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cmd = (data.get("tool_input") or {}).get("command", "")
-    if violates(cmd, data.get("cwd") or os.getcwd(), root):
+    cwd = data.get("cwd") or os.getcwd()
+    if violates(cmd, cwd, root):
         print(f"harness: {MESSAGE}", file=sys.stderr)
+        return 2
+    why = commitguard.reason(cmd, cwd, root)
+    if why:
+        print(f"harness: {why}: {commitguard.MESSAGE}", file=sys.stderr)
         return 2
     return 0
 

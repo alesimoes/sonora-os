@@ -126,6 +126,8 @@ Thumbs.db
 
 .harness/
 planning/orchestrator/state.json
+# Rotating backups the Store keeps (harness/store_backup.py).
+planning/orchestrator/state.json.bak.*
 planning/orchestrator/state.quarantine.json
 planning/orchestrator/state.db*
 planning/orchestrator/events*.jsonl
