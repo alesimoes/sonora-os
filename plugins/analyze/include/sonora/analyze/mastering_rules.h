@@ -8,7 +8,7 @@
 //
 // The rules (each a Finding when it changes something):
 //  1. Spectral balance. The octave-band levels are put on the same footing
-//     as the target curve (kTargetDb) by anchoring both to the mean of the
+//     as the target curve (MasteringRules::target_db) by anchoring both to the mean of the
 //     500 Hz, 1 kHz and 2 kHz bands, so a mix is judged on its shape and not
 //     its level. Bands within +-tolerance of the curve are left alone; past
 //     it, the console takes out half of the excess (a correction, not a
@@ -53,11 +53,44 @@
 
 namespace sonora::analyze {
 
-// dB per octave band, relative to the 1 kHz band. Only its shape is used:
-// the pass anchors both it and the mix to the mean of 500 Hz, 1 kHz, 2 kHz.
-extern const double kTargetDb[kBands];
+// One spectral-balance rule: which octave bands it judges and the console
+// parameters it moves. Loaded from data/mastering_rules.json.
+struct BalanceGroup {
+    std::string rule;         // "balance.low"
+    int bands[2] = {-1, -1};  // octave-band indices, -1 for unused
+    std::string what;         // "63 and 125 Hz"
+    std::string title;        // "Low shelf"
+    std::string at;           // "at 100 Hz"
+    std::uint32_t gain = 0;   // native::mastering::k... index
+    std::uint32_t freq = 0;   // 0: fixed frequency
+    double freq_hz = 0.0;
+};
+
+// The rule table (ADR-0172): the target curve, the thresholds and the
+// balance groups, as data. parse/load fail with a message on a missing or
+// malformed file; there is no built-in fallback.
+struct MasteringRules {
+    // dB per octave band, relative to the 1 kHz band. Only its shape is used:
+    // the pass anchors both it and the mix to the mean of the anchor bands.
+    double target_db[kBands] = {};
+    std::string band_names[kBands];
+    std::vector<int> anchor_bands;
+    double sub_bass_margin_db = 0.0;
+    std::vector<BalanceGroup> groups;
+    double ratio_step_plr_db = 0.0, ratio_normal = 0.0, ratio_high = 0.0;
+    double threshold_above_loudness_db = 0.0;
+    double saturation_plr_db = 0.0, saturation_drive_db = 0.0, saturation_mix_pct = 0.0;
+    double phase_correlation = 0.0, phase_width_pct = 0.0;
+    double wide_side_mid_db = 0.0, wide_width_pct = 0.0, near_mono_side_mid_db = 0.0;
+    double no_change_lu = 0.0, dense_limit_db = 0.0;
+};
+
+bool parse_mastering_rules(const std::string& json_text, MasteringRules& out, std::string& error);
+bool load_mastering_rules(const std::string& path, MasteringRules& out, std::string& error);
 
 struct MasteringConfig {
+    // The loaded table; suggest_mastering refuses a config without one.
+    const MasteringRules* table = nullptr;
     double target_lufs = -14.0;     // streaming; -23 for EBU R128 broadcast
     double ceiling_dbtp = -1.0;
     double max_limiting_db = 5.0;   // most the limiter is asked to take
