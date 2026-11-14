@@ -45,6 +45,8 @@ One line per entry. Agents read this before opening anything else.
 - [ADR-0041](decisions/ADR-0041-mix-and-edit-groups.md) — **Accepted** (recommended defaults). Mix and edit groups: `Group` in the edit state, `SetGroup`/`RemoveGroup` undoable, a move expanded into one Compound of SetMix (relative or absolute volume, mute, solo), arm applied by the engine; session format 19, window 16, protocol 48 (shared bump with ADR-0042 and ADR-0043).
 - [ADR-0052](decisions/ADR-0052-clip-groups-loops-and-sample-edits.md) — **Accepted** (recommended defaults). Clip groups and loops (`ui.editing.clip_groups`) as `clip_group`/`loop` tags on the region (`SetClipGroup`, a group moves as one, repeats are plain regions), and sample-level edits (`ui.editing.sample_edit`): the engine's `sample.edit` writes a copy of the region with the stretch repaired, drawn, silenced, reversed, inverted, gained, normalised or faded and points the region at it (`SetRegionSources`); the take is never written. Session format 24, window 20, protocol 57.
 
+- [ADR-0221](decisions/ADR-0221-ampcab-captures-closure.md) — **Accepted** (recommended default). Amp and cabinet captures close-out: the tooling, card policy, checker, rig and tests are on main (ADR-0069, #534); the captures themselves stay parked until the owner supplies the hardware; no stand-in capture from a schematic or public IR.
+
 ## Specs
 - [MIDI](specs/midi.md) — Proposed with ADR-0014: units and the exact tick conversion, the model and operations, session format v4 keys, the backend and plugin MIDI layouts, recording, take files, SMF import/export, MIDI 2.0 notes.
 - [Plugin latency compensation](specs/plugin-latency-compensation.md) — real-time plugin playback, PDC, and why the graph must be parallel from the start.
