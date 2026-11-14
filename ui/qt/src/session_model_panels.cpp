@@ -194,6 +194,12 @@ void SessionModel::setLatencyOpen(bool on) {
     emit latencyOpenChanged();
 }
 
+void SessionModel::setStepSequencerOpen(bool on) {
+    if (on == step_sequencer_open_) return;
+    step_sequencer_open_ = on;
+    emit stepSequencerOpenChanged();
+}
+
 void SessionModel::setBounceOpen(bool on) {
     if (on == bounce_open_) return;
     bounce_open_ = on;

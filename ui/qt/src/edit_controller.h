@@ -591,6 +591,9 @@ public:
     bool remove_tempo(model::Frames at, std::string& why);
     // On the bar line nearest `near`.
     bool set_meter(model::Frames near, std::uint32_t beats, std::uint32_t note, std::string& why);
+    // One SetSettings with the map replaced, on the Undo Tempo stack
+    // (also the entry for tempo.edit detect, ui/beat).
+    bool submit_tempo(std::vector<model::TempoEntry> next, std::string& why);
     bool tempo_undo(std::string& why);
     bool tempo_redo(std::string& why);
     // What the Tempo dialog and the tempo.edit command take, at the start of
@@ -902,7 +905,6 @@ private:
     struct TempoStep {
         std::vector<model::TempoEntry> before, after;
     };
-    bool submit_tempo(std::vector<model::TempoEntry> next, std::string& why);
     bool tempo_step(bool undo, std::string& why);
     std::vector<TempoStep> tempo_undo_, tempo_redo_;
     Drag drag_;

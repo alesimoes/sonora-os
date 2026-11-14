@@ -17,7 +17,7 @@ head); the feature keeps its `partial` flag, so its rest is continuable
 resolver_link does, so the decision stays visible; slices still being
 worked on, or with unfinished siblings, are not moved.
 """
-from . import resolver_link
+from . import blockinfo, resolver_link
 
 DONE = ("merged", "closed")
 SETTLED = ("integrating", "blocked")
@@ -30,7 +30,7 @@ def _slice_on(store, entry):
     for t in store.tasks(kind="work"):
         if t.get("branch") == branch and t.get("feature_id") \
                 and t["feature_id"] != entry["id"] \
-                and t["state"] in SETTLED and not t.get("owner"):
+                and t["state"] in SETTLED and not blockinfo.kept_open(t):
             return t
     return None
 
@@ -41,7 +41,7 @@ def _running(store, fid):
 
 
 def _finished(t):
-    return t["state"] in DONE or (t["state"] == "blocked" and t.get("owner"))
+    return t["state"] in DONE or blockinfo.kept_open(t)
 
 
 def _only_one_left(store, t):

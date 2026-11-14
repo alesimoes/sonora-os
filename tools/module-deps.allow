@@ -13,6 +13,9 @@
 #                                     on the shared-memory protocol)
 #   contracts/api -> common/model    (FakeEngine and conformance, not the
 #                                     contract headers)
+# The opt-in Claude layer (ADR-0155): its replies become model::Plans. One
+# module, like interchange; it never reaches engine/*, drivers/* or audio.
+assistant -> common/model
 common/audiofile -> common/platform
 common/dsp -> common/base
 common/groove -> common/model
@@ -97,6 +100,9 @@ plugins/native -> common/dsp
 plugins/native -> common/json
 plugins/native -> common/model
 plugins/native -> contracts/plugin
+ui/beat -> common/model
+ui/beat -> common/platform
+ui/beat -> plugins/analyze
 ui/client -> common/model
 ui/client -> common/platform
 ui/client -> contracts/api
@@ -116,6 +122,7 @@ ui/qt -> common/platform
 ui/qt -> common/session_files
 ui/qt -> common/stepseq
 ui/qt -> contracts/api
+ui/qt -> ui/beat
 ui/qt -> ui/client
 ui/qt -> ui/conductor
 ui/qt -> ui/elastic

@@ -50,3 +50,12 @@ naming it. CMake option `SONORA_WITH_LIBAAF` (default OFF) compiles the
 adapter; the library is found with `find_path`/`find_library`, never fetched.
 With it OFF the command exits 1 with "built without AAF support". Tests with
 the library: `ctest -R aaf_libaaf`. Logic projects come through AAF or stems.
+
+## OMF import (ADR-0160)
+
+`sonora-convert import x.omf out.sonora` (or `omf-import`) reads an OMF
+composition with our own parser (`omf/`), extracts embedded media beside the
+output and copies it into `Audio Files/`; media referenced by path is looked
+up beside the `.omf`, in `Audio Files/` and in `Media/`. A truncated or
+corrupt file exits 1 with a message. Import only, no OMF export; tested on
+synthetic files, no real-world OMF verified. Tests: `ctest -R omf_`.

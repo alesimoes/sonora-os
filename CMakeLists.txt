@@ -218,6 +218,8 @@ add_subdirectory(plugins/host)
 add_subdirectory(engine/core)
 # Offline converters (ADR-0007 M10); the engine never links them.
 add_subdirectory(interchange)
+# The opt-in Claude layer (ADR-0155), on common/model; the engine never links it.
+add_subdirectory(assistant)
 add_subdirectory(drivers/support)
 add_subdirectory(drivers/jack)
 # ALSA direct (ADR-0053). Its logic builds and tests everywhere; libasound is optional.
@@ -250,6 +252,10 @@ add_subdirectory(ui/qt)
 # time.groove's panel and command, a module of its own (ADR-0115).
 if(EXISTS ${CMAKE_SOURCE_DIR}/ui/groove/CMakeLists.txt)
   add_subdirectory(ui/groove)
+endif()
+# tempo.edit detect (ADR-0114).
+if(EXISTS ${CMAKE_SOURCE_DIR}/ui/beat/CMakeLists.txt)
+  add_subdirectory(ui/beat)
 endif()
 # The elastic audio editor and its command (ADR-0136).
 if(EXISTS ${CMAKE_SOURCE_DIR}/ui/elastic/CMakeLists.txt)
@@ -287,12 +293,14 @@ sonora_label_module_tests(drivers/clock drivers)
 sonora_label_module_tests(drivers/ltc drivers)
 sonora_label_module_tests(drivers/surfaces drivers)
 sonora_label_module_tests(interchange interchange)
+sonora_label_module_tests(assistant assistant)
 sonora_label_module_tests(plugins/analyze analyze)
 sonora_label_module_tests(ui/keymap ui)
 sonora_label_module_tests(ui/tui ui)
 sonora_label_module_tests(ui/client ui)
 sonora_label_module_tests(ui/qt ui)
 sonora_label_module_tests(ui/groove ui)
+sonora_label_module_tests(ui/beat ui)
 sonora_label_module_tests(ui/smart_controls ui)
 # One literal line per elastic module: tools/check-test-labels.sh greps for it.
 if(EXISTS ${CMAKE_SOURCE_DIR}/common/stretch/CMakeLists.txt)

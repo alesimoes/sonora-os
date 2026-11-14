@@ -197,6 +197,44 @@ class Remainder(support.DaemonCase):
         self.assertEqual([r["next"] for r in remainder.continuable(o.store)],
                          [ROOT + ".rest2"])
 
+    # -- parked and out of scope (owner, 2026-11-13) ------------------
+    def parked(self, o):
+        self.merged(o)
+        self.propose(o)
+        w = self.plan_wake(o)
+        o._on_agent_blocked(w, "planner", {
+            "summary": "Only the hardware power-pull run remains.",
+            "needs_owner": "Run the power-pull protocol on the UMC1820 "
+                           "hardware unit."}, o.clock())
+        # what the coordinator does with a stale blocked remainder
+        o.store.set_feature(REST, state="closed")
+
+    def test_a_hardware_only_remainder_is_never_offered_again(self):
+        o = self.make()
+        self.parked(o)
+        self.assertEqual(remainder.continuable(o.store), [])
+        self.assertEqual(remainder.parked(o.store), [ROOT])
+        text = self.lead_prompt(o)
+        self.assertNotIn(f"propose feature {ROOT}.rest2", text)
+        self.assertIn("Parked for a hardware run", text)
+        self.assertIn(ROOT, text.split("Parked for a hardware run")[1])
+        self.assertFalse(self.propose(o))
+        self.assertIsNone(o.store.get_feature(ROOT + ".rest2"))
+
+    def test_aaf_export_and_round_trip_are_out_of_v1(self):
+        o = self.make()
+        for fid in ("interchange.sessions.aaf_export",
+                    "interchange.sessions.roundtrip",
+                    "interchange.sessions.roundtrip.rest"):
+            self.assertFalse(self.propose(o, fid, [fid]), fid)
+            self.assertIsNone(o.store.get_feature(fid))
+        self.merged(o, "interchange.sessions.roundtrip",
+                    ids=["interchange.sessions.roundtrip"])
+        self.assertEqual(remainder.continuable(o.store), [])
+        self.assertTrue(self.propose(o, "interchange.sessions.aaf_import2",
+                                     ["interchange.sessions.aaf_import"]))
+        self.assertIn("AAF export", self.lead_prompt(o))
+
     def test_pr_of_a_root_merged_by_a_train_entry(self):
         o = self.make()
         self.merged(o, pr=None)

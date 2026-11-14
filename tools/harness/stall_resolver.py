@@ -162,26 +162,47 @@ REPLAN_BRIEF = (
     "to keep its commits) and the lead distributes them. Nothing is left "
     "to build (already on main): write it with \"tasks\": []. An "
     "unchanged plan file means you found nothing to change, and the "
-    "feature then waits on the owner." + chr(10) * 2)
+    "feature then waits on the owner. A blocked slice under finished ones "
+    "holds the whole feature (its integrator waits for every slice): "
+    "re-scope it (widen its claim, split it, fix its dependency) so it can "
+    "finish; leave it out of this plan only when what it lacks is hardware "
+    "or an owner decision, and say so in the plan, so the finished slices "
+    "merge now." + chr(10) * 2)
+
+
+def replan_pending(store, fid):
+    """An architect re-plan of fid queued and not yet served."""
+    return any(w["state"] == "queued" and w["feature_id"] == fid
+               and w.get("event") == EVENT and w["agent"] == REPLAN_AGENT
+               for w in store.tasks(kind="wake"))
+
+
+def queue_replan(o, fid, detail, model):
+    """One architect re-plan run for fid (replan.py applies its plan).
+    Returns the wake id."""
+    store = o.store
+    wid = f"wake-{REPLAN_AGENT}-{EVENT}-{fid}-{store.next_counter('wake')}"
+    store.add_task(wid, None, REPLAN_AGENT, kind="wake", feature_id=fid,
+                   brief=REPLAN_BRIEF.format(fid=fid,
+                                             plan=o.flow.plan_file(fid))
+                   + detail)
+    store.set_task(wid, event=EVENT, model_pin=model)
+    return wid
 
 
 def _queue(sv, fid, stalled, now):
     store = sv.o.store
     core = is_core(store, fid)
     model = _rung(store, fid, now, core)
-    n = store.next_counter("wake")
+    n = None if model == REPLAN else store.next_counter("wake")
     if model == REPLAN:
-        wid = f"wake-{REPLAN_AGENT}-{EVENT}-{fid}-{n}"
-        store.add_task(wid, None, REPLAN_AGENT, kind="wake", feature_id=fid,
-                       brief=REPLAN_BRIEF.format(
-                           fid=fid, plan=sv.o.flow.plan_file(fid))
-                       + brief(sv, fid, stalled))
-        model = "fable" if core else "sonnet"
+        wid = queue_replan(sv.o, fid, brief(sv, fid, stalled),
+                           "fable" if core else "sonnet")
     else:
         wid = f"wake-principal-{EVENT}-{fid}-{n}"
         store.add_task(wid, None, AGENT, kind="wake", feature_id=fid,
                        brief=brief(sv, fid, stalled))
-    store.set_task(wid, event=EVENT, model_pin=model)
+        store.set_task(wid, event=EVENT, model_pin=model)
     store.set_meta(_meta_key(fid), now)
     store.event(wid, "stall_resolver", json.dumps(
         {"feature": fid, "tasks": [t["id"] for t, _ in stalled]}))

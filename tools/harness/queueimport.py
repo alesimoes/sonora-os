@@ -2,11 +2,19 @@
 
 The queue is a markdown table: Order | Item | Agent | Waits on. One row is one
 feature; an Item may name several BACKLOG ids. MIDI, video, immersive and
-virtual instruments are out of v1 and skipped.
+virtual instruments are out of v1 and skipped (OUT_OF_V1).
 """
 import re
 
-OUT_OF_V1 = re.compile(r"midi|video|immersive|surround|instrument", re.I)
+# Owner 2026-11-13: AAF export is not built (libaaf only reads), so the
+# export and the AAF round trip are out too; AAF import stays.
+OUT_OF_V1 = re.compile(r"midi|video|immersive|surround|instrument"
+                       r"|interchange\.sessions\.(?:aaf_export|roundtrip)\b",
+                       re.I)
+OUT_OF_V1_TEXT = ("MIDI, virtual instruments, video, immersive/surround, "
+                  "AAF export and the AAF round trip "
+                  "(interchange.sessions.aaf_export, "
+                  "interchange.sessions.roundtrip)")
 BACKLOG_ID = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+")
 TRACK_OF_AGENT = (("dsp-engineer", "plugin"), ("plugin-engineer", "plugin"),
                   ("distro-engineer", "os"), ("driver-engineer", "os"))

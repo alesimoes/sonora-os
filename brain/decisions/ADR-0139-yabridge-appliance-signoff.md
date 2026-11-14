@@ -90,11 +90,12 @@ absent) or a run not yet made leaves the state as it is today:
 
 - Until the appliance run passes, Windows plugins stay "Windows (Wine)
   unverified" in the chooser. ADR-0017's Y6 stays open in the BACKLOG.
-- **Known gap, to fix on the signoff-script branch (not in this ADR's files):**
-  the script's `yb_evaluate` checks the round trip's p99 against the deadline,
-  not p99.9 as criterion 1 says, and its default `BLOCKS` is 20000. Until the
-  script is aligned, a script pass is not the sign-off. The constants agree:
-  `YB_PERIOD_US=2667`, `YB_DEADLINE_US=2000`.
+- The sign-off script's round-trip check is p99.9 against the deadline, as
+  criterion 1 says, and its default `BLOCKS` is 225000. The constants agree:
+  `YB_PERIOD_US=2667`, `YB_DEADLINE_US=2000`. A script pass on the target
+  machine is the sign-off.
+  *Amendment, 2026-11-13: the earlier known gap (p99 checked, `BLOCKS` 20000)
+  is resolved; the script was aligned in PR #631.*
 - The sign-off is per machine and per plugin. A pass on the UMC1820 appliance
   does not clear another interface or another plugin.
 - Wine's RT behaviour may differ between Wine versions. ADR-0017 Y1 pins Wine

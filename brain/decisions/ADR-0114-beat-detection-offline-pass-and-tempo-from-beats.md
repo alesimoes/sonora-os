@@ -83,6 +83,19 @@ defines how a tempo map is edited and undone without a protocol change.
   never a silent fallback (ADR-0066 §1).
 - No protocol bump, no session-format change, no file under `contracts/`.
 
+## Amendment: the interface grammar (ui/beat)
+
+`tempo.edit detect [clip|selection] [follow]` runs the pass on the selected
+clip's first source through an injected `BeatRunner` (production:
+`ProcessBeatRunner`, `sonora-analyze beat <file> --out <report>` read with
+`parse_beat_report`; tests: `FakeBeatDetector`). The origin is the region's
+`position - source_offset`, the meter the map's first entry's. Confidence
+below `kBeatMinConfidence` is refused with the figures and the map
+unchanged; `follow` is refused for a `stable` result. The map goes through
+`EditController::submit_tempo`, so Undo Tempo reverts it. From `tempo.edit`
+no runner is reachable yet, so the bare entry refuses plainly rather than
+appearing to detect.
+
 ## Alternatives rejected
 
 - **Detector inside the engine process.** It would put a seconds-long,

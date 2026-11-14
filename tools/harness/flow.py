@@ -12,7 +12,8 @@ import os
 import re
 
 from . import (dispatch, plan_numbers, plangate, plans, pool_prompt,
-               proposal, queueimport, remainder, replan, routing)
+               proposal, queueimport, remainder, replan, routing,
+               siblings)
 from .forge import ForgeError
 from .scheduler import HOLD
 from .status import write_atomic
@@ -455,7 +456,7 @@ class Flow:
         for f in self.store.features():
             if f["state"] not in ACTIVE:
                 continue
-            ts = self.store.feature_tasks(f["id"])
+            ts = siblings.live(self.store.feature_tasks(f["id"]))
             if not ts:
                 continue
             states = {t["state"] for t in ts}

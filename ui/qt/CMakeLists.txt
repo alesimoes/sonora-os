@@ -465,6 +465,16 @@ target_compile_definitions(test_ui_transport PRIVATE
 add_test(NAME ui_transport COMMAND test_ui_transport)
 set_tests_properties(ui_transport PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+# ADR-0129: the three record-mode switches in the Transport bar and window on
+# a fake engine: each sends its command, lit from the replica; a refusal
+# during a take is held; the Pro Tools chords resolve to the same commands.
+add_executable(test_ui_transport_modes tests/test_transport_modes.cpp)
+target_link_libraries(test_ui_transport_modes PRIVATE sonora_ui_qt Qt6::Test)
+target_compile_definitions(test_ui_transport_modes PRIVATE
+  SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
+add_test(NAME ui_transport_modes COMMAND test_ui_transport_modes)
+set_tests_properties(ui_transport_modes PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
 # The Edit window's document as the engine's, on FakeEngine (ADR-0007 M7).
 add_executable(test_ui_replica_document tests/test_replica_document.cpp)
 target_link_libraries(test_ui_replica_document PRIVATE sonora_ui_edit)
@@ -598,6 +608,7 @@ set_tests_properties(ui_play_range PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offsc
 add_executable(test_ui_shell tests/test_shell.cpp)
 target_link_libraries(test_ui_shell PRIVATE sonora_ui_qt Qt6::Test)
 target_compile_definitions(test_ui_shell PRIVATE
+  SONORA_TEST_FONT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fonts"
   SONORA_KEYMAP_DIR="${PROJECT_SOURCE_DIR}/keymaps")
 add_test(NAME ui_shell COMMAND test_ui_shell)
 set_tests_properties(ui_shell PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

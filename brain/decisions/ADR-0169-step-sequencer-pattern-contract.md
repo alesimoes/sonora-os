@@ -68,6 +68,23 @@ whatever the block size.
 - `PatternExchange::publish()` can refuse; the editor must keep its copy and
   retry, never spin.
 - The module is not yet in the dependency allow-list.
+- Amended 2026-11-13 (logic.step_sequencer.rest, exchange wiring): the two
+  sides of the exchange are named classes in `common/stepseq`.
+  `PatternPublisher` is the editor side: `submit()` after each edit, and on
+  a refusal it records the edit as pending; `retry()` on the next tick offers
+  the *current* editor copy, so edits made in between are not lost. Neither
+  call waits. `StepSequencerModel` (ui/qt) gets an exchange constructor
+  that owns a publisher and runs a 5 ms retry timer only
+  while an edit is pending; the `Publisher` callback constructor stays for
+  scenes and tests. `PatternFeed` is the audio side: `render_block()` calls
+  `acquire()` once per block and hands that snapshot to the `PatternPlayer`.
+  Two atomic operations and the player: no allocation, no lock (checked by
+  `stepseq_exchange_wiring`, which also asserts the atomic pointer is always
+  lock-free). Block-size independence of the probability draws is
+  cross-checked by `stepseq_block_size` (block sizes 1 to 6000, swing,
+  nudge, non-zero origin, through the feed). Still open: the engine voice
+  that owns a feed per sequencer track and the application object that owns
+  the exchange; neither exists yet.
 
 ## Alternatives rejected
 

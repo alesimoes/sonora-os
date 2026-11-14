@@ -22,6 +22,7 @@ PR #224 settled the wire between the engine and the plugin host: a keyed chain's
 - The model cannot see the catalogue, so item 1's "plugin that declares no key input" is refused by engine/control's catalogue check before `apply()`, from the new `PluginInfo::key_inputs` (the probe record's `sidechain_in`); the model refuses the rest (unknown track, insert or bus, a second keyed insert, a loop). The refusals start with fixed words (`insert_key_refusal` in `common/model/include/sonora/model/insert_key.h`).
 - The key edge joins the bus graph in `bus_path` and `bus_loop_problem`: a bus that keys a track reaches that track's output and send buses. So a later `AddSend`, `SetOutput` or `MoveInsert` that would close a loop through a key is refused too, naming the path.
 - Session format 26, protocol 69 (25 and 68 on main when the work started; the daemon reserved none), undo window format 21 (an insert carries `key_bus`). `ReplaceInsert` leaves the replacement unkeyed; undo restores the keyed one.
+- 2026-11-14: the engine key routing, `SetInsertKey` and the UI key chooser (item 6 above) landed in PR #671 (protocol 69, format 26), on main as 54ff4fd9.
 
 ## Rationale
 

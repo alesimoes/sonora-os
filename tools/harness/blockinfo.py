@@ -1,9 +1,12 @@
 """Why a task is blocked, and who has to act (owner 2026-11-07).
 
-Only a task its blocker marked `owner` (a decision with no recommended
-default, or hardware) waits on the owner. Every other blocked task is
-grouped by cause so the dashboard can say "stuck, not you"."""
+Only a task its blocker marked `owner` with a real ruling (owner_route: a
+decision with no recommended default; hardware runs are parked since
+2026-11-13) waits on the owner. Every other blocked task is grouped by
+cause so the dashboard can say "stuck, not you"."""
 import re
+
+from . import owner_route
 
 # cause -> (label shown in Portuguese, sort order)
 CAUSES = {
@@ -13,6 +16,9 @@ CAUSES = {
     "code": ("o código ou os testes falham", 3),
     "infra": ("erro da infraestrutura / bug do harness", 4),
     "other": ("sem causa reconhecida: ler a nota", 5),
+    # Owner 2026-11-13: hardware-only validations wait until the product is
+    # complete; nothing to act on now, for the owner or anyone.
+    owner_route.HARDWARE: ("validação em hardware, estacionado", 6),
 }
 DEFAULT_CAUSE = "other"
 
@@ -46,9 +52,27 @@ def classify(note):
     return DEFAULT_CAUSE
 
 
+def waits_on_owner(task):
+    """Its `owner` names a real owner ruling (owner_route), not hardware,
+    the host or a plan step worded as one."""
+    return bool(task.get("owner")) and owner_route.cause(
+        task["owner"], task.get("note")) is None
+
+
+def kept_open(task):
+    """A blocked slice that stays as it is when its feature merges or is
+    carried: the owner's part, or a hardware run parked for later."""
+    return task["state"] == "blocked" and bool(
+        task.get("owner") or task.get("cause") == owner_route.HARDWARE)
+
+
 def cause_of(task):
     """An explicit cause wins, except the blanket "infra" older daemons
-    stored for every agent-reported block: there the note decides."""
+    stored for every agent-reported block: there the note decides. An
+    `owner` that is not the owner's names its own cause."""
+    routed = owner_route.cause(task.get("owner"), task.get("note"))
+    if routed:
+        return routed
     c = task.get("cause")
     if c in CAUSES and c != "infra":
         return c
@@ -72,7 +96,7 @@ def superseded(task, features):
 def owner_items(tasks, features):
     return [{"title": f"{t['id']}: {t['note'] or t.get('owner') or 'blocked'}",
              "task": t["id"], "branch": t["branch"], "note": t["note"]}
-            for t in tasks if t["state"] == "blocked" and t.get("owner")
+            for t in tasks if t["state"] == "blocked" and waits_on_owner(t)
             and not superseded(t, features)]
 
 
@@ -80,7 +104,7 @@ def blocked_groups(tasks, features):
     """Blocked tasks that do not need the owner, grouped by cause."""
     groups = {}
     for t in tasks:
-        if t["state"] != "blocked" or t.get("owner") \
+        if t["state"] != "blocked" or waits_on_owner(t) \
                 or superseded(t, features):
             continue
         groups.setdefault(cause_of(t), []).append(

@@ -101,7 +101,7 @@ def check_lock(sv, now):
                        f"{_hms(age)}: {e['path']}",
                        lambda e=e: sv.sys.lock_remove(e))
             continue
-        alive = sv.sys.pid_alive(e["pid"], e.get("kind"))
+        alive = sv.sys.entry_alive(e)
         if alive is False and sv.th.lock_reap:
             sv.act("lock", f"reap {e['role']}", f"pid dead: {where}",
                    lambda e=e: sv.sys.lock_remove(e))
@@ -111,7 +111,7 @@ def check_lock(sv, now):
         if owner and sv.th.lock_reap:
             sv.act("lock", f"kill {e['role']}",
                    f"left behind by ended run {owner}: {where}",
-                   lambda e=e: (sv.sys.kill(e["pid"]), sv.sys.lock_remove(e)))
+                   lambda e=e: sv.sys.kill_entry(e) and sv.sys.lock_remove(e))
             continue
         limit = sv.th.lock_hold_alert_s if e["role"] == "holds" \
             else sv.th.lock_wait_alert_s

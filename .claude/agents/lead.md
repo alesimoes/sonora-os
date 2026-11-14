@@ -35,8 +35,10 @@ offset/limit. Use `tools/progress.sh` (`get ID`, `list --open --track T`).
   `planning/orchestrator/status.json`: `pools["build:<track>"].floor` minus
   its `live`, minus the track's features already `planning` or `queued` in
   `features`. Pick that many features (at least 1, at most 4) for the track
-  from `tools/progress.sh list --open --track T`, skipping MIDI, instruments
-  and video (out of v1), items already done on main, and items whose files
+  from `tools/progress.sh list --open --track T`, skipping MIDI, instruments,
+  video, AAF export and the AAF round trip (out of v1; libaaf only reads),
+  hardware-only runs (parked until the product is complete; the prompt
+  lists them), items already done on main, and items whose files
   overlap an active feature or another feature you pick now (they must be
   able to run in parallel). Send the orchestrator one `plan_request` per
   feature, each with exactly this body:
@@ -66,8 +68,13 @@ shell costs tokens and attention until a human notices.
 
 - Run commands in the foreground with an explicit `timeout`. Do not use
   `run_in_background`, `nohup`, `&`, or a `sleep` loop that waits for CI or
-  for another process. If something needs longer than the tool's 10-minute
-  limit, split it or report it as unverified.
+  for another process. A build or test longer than the tool's 10-minute
+  limit (a UI micro build with its wait for the lock often is) starts with
+  `tools/build-slot.sh --detach COMMAND...` and is collected with
+  `tools/build-wait.sh` (returns within 9 minutes; exit 75 = still running,
+  call it again). That is the one sanctioned detached run: it queues for the
+  lock and ends by itself. Never report a build "unverified" because it was
+  long; collect it.
 - Never wait for CI. Push once, report the commit, and finish.
 - Never arm `tools/merge-when-green.sh`; only the coordinator does.
 - If the same command fails twice for the same reason, stop and report the
