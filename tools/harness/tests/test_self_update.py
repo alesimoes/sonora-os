@@ -104,20 +104,16 @@ class SelfUpdate(unittest.TestCase):
         self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
 
     def test_a_config_only_change_moves_the_checkout(self):
-        new = self.push("planning/orchestrator/orchestrator.toml", "v2
-")
+        new = self.push("planning/orchestrator/orchestrator.toml", "v2\n")
         self.assertTrue(self.up.ready(1000))
         self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
 
     def test_a_hand_copied_config_equal_to_main_is_not_dirty(self):
         rel = "planning/orchestrator/orchestrator.toml"
-        self.push(rel, "v1
-")
+        self.push(rel, "v1\n")
         git(self.daemon, "pull", "-q", "origin", "main")
-        new = self.push(rel, "v2
-")
-        write(self.daemon, rel, "v2
-")
+        new = self.push(rel, "v2\n")
+        write(self.daemon, rel, "v2\n")
         self.assertTrue(self.up.ready(1000))
         self.assertEqual(git(self.daemon, "rev-parse", "HEAD"), new)
 

@@ -121,14 +121,18 @@ class SelfUpdate:
         keep = [ln for ln in out.splitlines()
                 if ln.strip() and not runtime_files.is_runtime(
                     ln[3:].split(" -> ")[-1].strip('"'))
-                and not self._equals_main(ln[3:].split(" -> ")[-1].strip('"'))]
+                and not self._adopt_main_copy(
+                    ln[3:].split(" -> ")[-1].strip('"'))]
         return "\n".join(keep).strip()
 
-    def _equals_main(self, rel):
+    def _adopt_main_copy(self, rel):
         """A copy already identical to origin/main's (the coordinator put
-        main's config there by hand) is not a modification worth blocking."""
-        return self.git(["diff", "--quiet", "origin/main", "--", rel],
-                        self.root).returncode == 0
+        main's config there by hand) is not a modification worth blocking;
+        it is staged so the checkout may overwrite it (git refuses otherwise)."""
+        if self.git(["diff", "--quiet", "origin/main", "--", rel],
+                    self.root).returncode:
+            return False
+        return self.git(["add", "--", rel], self.root).returncode == 0
 
     def _move_to(self, target, force):
         """Checkout origin/main, keeping local commits. Planners commit plans
