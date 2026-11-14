@@ -226,6 +226,38 @@ int test_commands() {
     return 0;
 }
 
+// The Loop Clip... dialog (ADR-0212): "ask" opens it with the last count and
+// changes nothing; the count it sends back is one undo step.
+int test_loop_dialog() {
+    ModelDocument doc(make_demo_session(16, kRate));
+    SyntheticPeakSource peaks(kRate, 120.0);
+    SessionModel session(doc, peaks, true);
+    CommandRegistry local;
+    session.installCommands(local);
+    std::string why;
+    CommandContext ask, arg;
+    ask.argument = "ask";
+    int asked = -1;
+    QObject::connect(&session, &SessionModel::repeatRequested,
+                     [&](int count, const QString&) { asked = count; });
+    CHECK(local.dispatch("clip.loop", ask, why) == DispatchResult::Failed);  // nothing selected
+    CHECK(asked == -1);
+    CHECK(session.controller().select_region(lane(doc, 0).regions[2].id));
+    const std::size_t before = lane(doc, 0).regions.size();
+    CHECK(local.dispatch("clip.loop", ask, why) == DispatchResult::Ok);
+    CHECK(asked == 3 && lane(doc, 0).regions.size() == before);
+    arg.argument = "4";
+    CHECK(local.dispatch("clip.loop", arg, why) == DispatchResult::Ok);
+    CHECK(lane(doc, 0).regions.size() == before + 4);
+    CHECK(doc.undo_label() == "Loop Clip");
+    CHECK(doc.undo(why));
+    CHECK(lane(doc, 0).regions.size() == before);
+    // The last count is offered next time, once looped.
+    CHECK(local.dispatch("clip.loop", arg, why) == DispatchResult::Ok);
+    CHECK(local.dispatch("clip.loop", ask, why) == DispatchResult::Ok && asked == 4);
+    return 0;
+}
+
 // Grouped clips wear a bar along their foot, a repeat says which one it is.
 int test_scene_marks_groups() {
     ModelDocument doc(make_demo_session(2, kRate));
@@ -259,6 +291,7 @@ int main(int argc, char** argv) {
     failed += test_loop_and_unloop();
     failed += test_sample_edit_request();
     failed += test_commands();
+    failed += test_loop_dialog();
     failed += test_scene_marks_groups();
     if (failed == 0) std::printf("ui_clip_groups: ok\n");
     return failed == 0 ? 0 : 1;
