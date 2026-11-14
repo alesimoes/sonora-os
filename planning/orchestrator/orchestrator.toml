@@ -4,14 +4,17 @@
 # stopped every engineer with "CI budget". Change it through a PR.
 
 # Agents at once; the weekly-quota guard is max_runs_per_hour.
+# Owner 2026-11-14: "planejar, desenvolver e entregar, sem freio" - the
+# planner's hourly limit (default 20) held new plans while builders idled.
 cap = 12
-max_runs_per_hour = 60
+max_runs_per_hour = 120
+max_planner_runs_per_hour = 60
 max_turns = 250
 
 # PRs and integration.
 # The brake on new work (owner 2026-11-08): at this many open PRs no new
 # task starts; fixers and integrators get the seats to merge them.
-max_open_prs = 8
+max_open_prs = 16
 max_ready_unpr = 12
 max_integrators = 8
 train_slots = 8
@@ -19,4 +22,4 @@ daemon_merge = true
 
 # Features planned or being built at once (owner 2026-11-08: plan the v1
 # queue in bulk).
-max_active_features = 24
+max_active_features = 32
