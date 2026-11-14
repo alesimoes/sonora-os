@@ -1753,10 +1753,20 @@ int test_group_move_automation_follows() {
         CHECK(delta != 0 && start_of(doc.snapshot(), 11) - b0 == delta);
         CHECK(doc.undo_label() == "Move Group");
         const auto& pts = doc.snapshot().edit->tracks[0]->automation[0]->points;
-        CHECK(pts.size() == 3);
-        CHECK(pts[0].at == before[0].at + (follows ? delta : 0));
-        CHECK(pts[1].at == before[1].at + (follows ? delta : 0));
-        CHECK(pts[2].at == before[2].at);
+        // Following also writes the span's edge points, so look points up by value.
+        auto at_of = [&](float v, Frames& out) {
+            int n = 0;
+            for (const AutomationPoint& q : pts) {
+                if (q.value == v) { out = q.at; ++n; }
+            }
+            return n == 1;
+        };
+        Frames x0 = 0, x1 = 0, x2 = 0;
+        CHECK(at_of(-1.0f, x0) && at_of(-2.0f, x1) && at_of(-3.0f, x2));
+        CHECK(follows || pts.size() == 3);
+        CHECK(x0 == before[0].at + (follows ? delta : 0));
+        CHECK(x1 == before[1].at + (follows ? delta : 0));
+        CHECK(x2 == before[2].at);
         CHECK(doc.history().undo_depth() == 1);
         CHECK(c.undo(why));
         const auto& back = doc.snapshot().edit->tracks[0]->automation[0]->points;
