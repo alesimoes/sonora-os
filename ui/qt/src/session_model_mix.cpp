@@ -27,6 +27,12 @@
 #include "sonora/model/session_template.h"
 #include "transport_model.h"
 #include "session_model_support.h"
+// ui/conductor/qt (ADR-0140) is configured only in the Linux build; the
+// portable one compiles this file without it and says so on the ruler.
+#if __has_include("conductor_ruler_edit.h")
+#include "conductor_ruler_edit.h"
+#define SONORA_UI_CONDUCTOR_EDIT 1
+#endif
 
 namespace sonora::ui {
 
@@ -119,5 +125,61 @@ void SessionModel::buildMarkerRuler(double height, Scene& out) const {
 void SessionModel::buildConductorRuler(ConductorRuler kind, double height, Scene& out) const {
     build_conductor_ruler_scene(kind, ctl_.snapshot().settings, ctl_.view(), height, out);
 }
+
+// --- Tempo and Meter rulers (ADR-0140) ---
+
+#ifdef SONORA_UI_CONDUCTOR_EDIT
+namespace {
+// "" on success, so the ruler clears its refusal; the view is refreshed then.
+template <typename Edit>
+QString conductor_result(Edit&& edit, const std::function<void()>& refresh) {
+    std::string why;
+    if (!edit(why)) return q(why.empty() ? std::string("the tempo map refused the edit") : why);
+    refresh();
+    return QString();
+}
+}  // namespace
+
+QString SessionModel::conductorDragEnd(int mark, qreal dy, bool wholeBpm) {
+    return conductor_result([&](std::string& why) {
+        return conductor_edit::drag_end(ctl_, overlay_.recording, mark, dy, wholeBpm, why);
+    }, [this] { sync(); });
+}
+
+QString SessionModel::conductorTypeTempo(int mark, const QString& text) {
+    return conductor_result([&](std::string& why) {
+        return conductor_edit::type_tempo(ctl_, overlay_.recording, mark, text.toStdString(), why);
+    }, [this] { sync(); });
+}
+
+QString SessionModel::conductorRemove(int mark) {
+    return conductor_result([&](std::string& why) {
+        return conductor_edit::remove(ctl_, overlay_.recording, mark, why);
+    }, [this] { sync(); });
+}
+
+QString SessionModel::conductorSetMeter(qreal x, int beats, int note) {
+    return conductor_result([&](std::string& why) {
+        if (beats < 1 || note < 1) {
+            why = "choose a number of beats and a note value";
+            return false;
+        }
+        return conductor_edit::set_meter(ctl_, overlay_.recording, x,
+                                         static_cast<std::uint32_t>(beats),
+                                         static_cast<std::uint32_t>(note), why);
+    }, [this] { sync(); });
+}
+#else
+namespace {
+QString conductor_missing() {
+    return QStringLiteral("editing on the ruler is not in this build; use Tempo… in the Edit menu");
+}
+}  // namespace
+
+QString SessionModel::conductorDragEnd(int, qreal, bool) { return conductor_missing(); }
+QString SessionModel::conductorTypeTempo(int, const QString&) { return conductor_missing(); }
+QString SessionModel::conductorRemove(int) { return conductor_missing(); }
+QString SessionModel::conductorSetMeter(qreal, int, int) { return conductor_missing(); }
+#endif
 
 }  // namespace sonora::ui

@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "edit_controller_detail.h"
+#include "edit_shuffle_ops.h"
 
 namespace sonora::ui {
 
@@ -37,13 +38,55 @@ std::string spoken_list(const std::vector<std::string>& names) {
 
 }  // namespace
 
-bool EditController::refuse_shuffle(const char* gesture, const char* nothing_was,
-                                    std::string& why) const {
-    if (mode_ != EditMode::Shuffle) return false;
-    why = std::string(gesture) +
-          " in Shuffle mode would close the gaps it leaves, and that is not built for it yet; "
-          "use Slip, Spot or Grid. Nothing was " + nothing_was + ".";
+bool EditController::submit_shuffle_trim(const TrimRegion& op, std::string& why) {
+    const TrackEdit* t = nullptr;
+    const Region* r = find_region(snapshot(), op.region, &t);
+    if (r == nullptr) {
+        why = "the region is gone";
+        return false;
+    }
+    if (r->clip_group != 0) {
+        why = "a grouped clip does not ripple in Shuffle mode; ungroup it or use Slip. "
+              "Nothing was trimmed.";
+        return false;
+    }
+    TrimRegion limited = op;
+    if (!shuffle_limit_trim(*active(t), *r, limited)) return true;
+    std::vector<Member> members;
+    shuffle_trim(*active(t), *r, limited, members);
+    const int at = track_index(snapshot(), t->id);
+    if (!submit_compound(std::move(members), "Trim", "trimmed", why)) return false;
+    note_shuffle_automation("Trim", at, 1);
     return true;
+}
+
+bool EditController::submit_shuffle_move(const MoveRegion& op, std::string& why) {
+    const TrackEdit* t = nullptr;
+    const Region* r = find_region(snapshot(), op.region, &t);
+    if (r == nullptr) {
+        why = "the region is gone";
+        return false;
+    }
+    if (r->clip_group != 0) {
+        why = "a grouped clip does not ripple in Shuffle mode; ungroup it or use Slip. "
+              "Nothing was moved.";
+        return false;
+    }
+    if (op.position == r->position) return true;
+    std::vector<Member> members;
+    shuffle_move(*active(t), *r, op.position, [this]() { return doc_.reserve_id(); }, members);
+    const int at = track_index(snapshot(), t->id);
+    if (!submit_compound(std::move(members), "Move", "moved", why)) return false;
+    note_shuffle_automation("Move", at, 1);
+    return true;
+}
+
+bool EditController::submit_trim(const TrimRegion& op, std::string& why) {
+    return mode_ == EditMode::Shuffle ? submit_shuffle_trim(op, why) : submit(op, why);
+}
+
+bool EditController::submit_place(const MoveRegion& op, std::string& why) {
+    return mode_ == EditMode::Shuffle ? submit_shuffle_move(op, why) : submit_move(op, why);
 }
 
 void EditController::note_shuffle_automation(const char* gesture, int first, int count) {

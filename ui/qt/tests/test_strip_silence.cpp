@@ -174,7 +174,9 @@ int test_refusals() {
     OK(!c.strip_silence(steady, high, why) && why.find("everything selected") != std::string::npos);
 
     c.set_mode(EditMode::Shuffle);
-    OK(!c.strip_silence(two_phrases(), StripParams{}, why) && why.find("Shuffle") != std::string::npos);
+    OK(c.strip_silence(two_phrases(), StripParams{}, why));
+    OK(regions(doc).size() == 2);
+    OK(c.undo(why));
     OK(regions(doc).size() == 1);
     return 0;
 }

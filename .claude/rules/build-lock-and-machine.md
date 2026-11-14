@@ -16,3 +16,8 @@
   not even that unless the task names it.
 - Stop what you started (`docker ps`, `ps -ef`) before reporting. No
   `run_in_background`, `nohup`, `&`, or polling loops.
+- A build longer than the 10-minute tool limit is the one exception, and only
+  this way: `tools/build-slot.sh --detach COMMAND...` (queues for the lock,
+  ends by itself), collected with `tools/build-wait.sh` (bounded; exit 75 =
+  call again). Why: UI slices bounced three times on a build that was only
+  slow (2026-11-13).

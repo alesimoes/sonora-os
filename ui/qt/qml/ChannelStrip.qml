@@ -73,6 +73,11 @@ Rectangle {
     readonly property real capValue: trimMode ? shownTrim : shownGain
     property real pan: 0
     property bool hasPan: true
+    // Two channels or more: the one value is a balance between left and
+    // right (as the engine's pan_gains treats it), drawn with end marks.
+    // Set by the host that knows the track's channel count; 1 until then.
+    property int channels: 1
+    readonly property bool stereo: !isBus && channels >= 2
     property bool selected: false
     // Null where no insert slots are wired (the shell's routing test).
     property InsertModel inserts: null
@@ -275,7 +280,8 @@ Rectangle {
             }
         }
 
-        // Pan: a bar filled from the centre toward the side it leans.
+        // Pan: a bar filled from the centre toward the side it leans. A
+        // stereo strip reads it as a balance: centre detent and L / R marks.
         Item {
             visible: strip.hasPan
             anchors.horizontalCenter: parent.horizontalCenter
@@ -297,6 +303,20 @@ Rectangle {
                 }
                 Rectangle { x: panTrack.width / 2; width: 1; height: parent.height; color: Theme.textTertiary }
             }
+            Item {
+                objectName: strip.stereo ? "balanceMarks" + strip.track : ""
+                visible: strip.stereo
+                anchors.fill: parent
+                Rectangle { x: parent.width / 2; width: 2; height: 12; color: Theme.textSecondary }
+                Text {
+                    anchors { left: parent.left; bottom: parent.bottom }
+                    text: "L"; color: Theme.textTertiary; font.pixelSize: Theme.textCaption
+                }
+                Text {
+                    anchors { right: parent.right; bottom: parent.bottom }
+                    text: "R"; color: Theme.textTertiary; font.pixelSize: Theme.textCaption
+                }
+            }
             ValueField {
                 id: panField
                 objectName: strip.isBus ? "" : "panValue" + strip.track
@@ -310,12 +330,12 @@ Rectangle {
                 editable: strip.mixer !== null
                 onSubmitted: (t) => { if (strip.mixer.setPanText(strip.track, t)) panField.finish() }
             }
-            // The bar and the space around it; the value below is a field.
             MouseArea {
                 objectName: strip.isBus ? "" : "panArea" + strip.track
                 anchors { left: parent.left; right: parent.right; top: parent.top }
                 height: 14
                 property real lastX: 0
+                property bool holding: false
                 onPressed: (m) => {
                     lastX = m.x
                     if (m.modifiers & Qt.AltModifier) {
@@ -325,7 +345,6 @@ Rectangle {
                         strip.mixer.beginPan(strip.track)
                     }
                 }
-                property bool holding: false
                 function finish() {
                     if (holding) strip.mixer.endPan(strip.track)
                     holding = false

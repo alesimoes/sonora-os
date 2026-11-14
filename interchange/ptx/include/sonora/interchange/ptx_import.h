@@ -21,24 +21,10 @@ public:
         return ext == ".ptx" || ext == ".PTX";
     }
 
-    // Contract stage: the document-to-Snapshot conversion lands with the
-    // follow-up; until then a decoded non-empty document reports that.
-    bool read(const std::string& path, model::Snapshot&, ConversionReport& report,
-              std::string& error) override {
-        if (!reader_) {
-            error = "no .ptx reader in this build";
-            return false;
-        }
-        PtxDocument doc;
-        if (!reader_->read(path, doc, error)) return false;
-        if (doc.tracks.empty() && doc.sources.empty()) {
-            error = "ptx: '" + path + "' decoded but holds no tracks or audio";
-            return false;
-        }
-        for (const auto& u : doc.unsupported) report.dropped.push_back(u);
-        error = "ptx: conversion to a session is not implemented yet";
-        return false;
-    }
+    // Decodes, then maps the document (ptx_map.h); unsupported features
+    // reach report.dropped from the mapper.
+    bool read(const std::string& path, model::Snapshot& snap, ConversionReport& report,
+              std::string& error) override;
 
 private:
     PtxReader* reader_;

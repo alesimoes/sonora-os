@@ -30,3 +30,6 @@ Real installed update never run: unverified (researcher: QEMU plan in ADR-0044).
 | adr | distro-engineer | S/low | junior | ADR-0101 |
 Order: probe, adr. PR is partial (title says so).
 Open questions with defaults: state file under /run (default) vs /var/lib - /run, a stale file cannot survive a reboot.
+
+## 12. Closure (2026-11-14)
+Delivered: policy by #398 (ADR-0035/0044 files), probe and test by #550 (ADR-0101), closure record ADR-0187. Open part: the app writer of `/run/sonora/session-open` is a DAW-track follow-up; apply fails closed until it lands. Verification and UNVERIFIED items are in ADR-0187.

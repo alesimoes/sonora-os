@@ -5,7 +5,6 @@ here is new to you except where the buttons are. The same path is the
 scripted test `ui/qt/tests/test_comping.cpp` (`test_exit`), which runs it in
 the real window with the Pro Tools key map.
 
-![The Edit window with the lead vocal's takes shown as lanes](images/sonora-ui-edit-comping.png)
 
 ## 1. Get the takes under the track
 
@@ -50,7 +49,6 @@ on a lane then copies as you let go, and each join gets a 10 ms crossfade. If
 a join has no audio to spare beyond the swipe it stays a cut, and the window
 tells you how many.
 
-![Quick Swipe: three drags, each copied on release](images/sonora-ui-edit-comping-quick-swipe.png)
 
 ## 4. Make it one clip
 
@@ -62,7 +60,6 @@ While it renders, the window shows the progress with a **Cancel**; if it
 cannot (a take is recording, the disk is full) the reason is held under the
 window until you **Dismiss** it.
 
-![Consolidate rendering](images/sonora-ui-edit-comping-consolidate.png)
 
 ## What is not here yet
 

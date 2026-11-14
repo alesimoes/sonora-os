@@ -5,9 +5,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <memory>
 #include <vector>
 
 #include "export_file.h"
+#include "lossy_codecs.h"
+#include "sonora/lossy_export.h"
 #include "sonora/wav_reader.h"
 
 namespace sonora {
@@ -203,59 +207,41 @@ std::string export_spec_problem(const ExportSpec& spec) {
     return {};
 }
 
-bool export_audio(const std::string& src, const std::string& dst, const ExportSpec& spec,
-                  const ExportMeta& meta, double gain_db, std::string& error) {
-    error = export_spec_problem(spec);
-    if (!error.empty()) return false;
-    WavReader in;
-    std::string why;
-    if (!in.open(src, why)) {
-        error = src + ": " + why;
-        return false;
-    }
+// Reads `in`, converts it to `out_rate`, applies `gain` and hands blocks of
+// interleaved floats to `emit`; the PCM containers and the lossy codecs share
+// it so both resample the same way.
+using BlockSink = std::function<bool(const float*, std::size_t)>;
+
+static int64_t converted_frames(int64_t frames, uint32_t in_rate, uint32_t out_rate) {
+    return out_rate == in_rate
+               ? frames
+               : static_cast<int64_t>(std::llround(static_cast<double>(frames) * out_rate / in_rate));
+}
+
+static float db_to_gain(double db) { return static_cast<float>(std::pow(10.0, db / 20.0)); }
+
+static bool stream_blocks(WavReader& in, const std::string& src, uint32_t out_rate, int64_t out_frames,
+                   float gain, std::string& error, const BlockSink& emit) {
     const uint16_t ch = in.channels();
-    if (ch < 1 || ch > 2) {
-        error = "export writes mono or stereo files";
-        return false;
-    }
     const uint32_t in_rate = in.sample_rate();
-    const uint32_t out_rate = spec.sample_rate != 0 ? spec.sample_rate : in_rate;
     const bool convert = out_rate != in_rate;
     const int64_t in_frames = in.frames();
-    const int64_t out_frames =
-        convert ? static_cast<int64_t>(std::llround(static_cast<double>(in_frames) * out_rate / in_rate))
-                : in_frames;
-    ExportMeta m = meta;
-    // The origin is a position in samples; it follows the rate.
-    if (convert) {
-        m.time_reference = static_cast<uint64_t>(
-            std::llround(static_cast<double>(meta.time_reference) * out_rate / in_rate));
-    }
-
-    OutFile out;
-    if (!out.open(dst, spec.container, spec.bits, out_rate, ch, m, error)) return false;
-    const auto fail = [&](const std::string& because) {
-        out.abort();
-        std::remove(dst.c_str());
-        error = because;
-        return false;
-    };
-
-    const float gain = static_cast<float>(std::pow(10.0, gain_db / 20.0));
     const double step = static_cast<double>(in_rate) / static_cast<double>(out_rate);
     const double fc = std::min(1.0, static_cast<double>(out_rate) / in_rate);
     const double halfw = kSincZeroes / fc;
     Kernel kernel;
-    Quantiser quant(spec.bits == 32 ? 24 : spec.bits, spec.dither, ch);
     std::vector<float> win, samples(kBlockFrames * ch);
-    std::vector<int32_t> ints(kBlockFrames * ch);
+    const auto unreadable = [&] {
+        error = src + " cannot be read back to export it";
+        return false;
+    };
 
     for (int64_t at = 0; at < out_frames; at += static_cast<int64_t>(kBlockFrames)) {
         const std::size_t k =
             static_cast<std::size_t>(std::min<int64_t>(kBlockFrames, out_frames - at));
         if (!convert) {
             if (in.read(at, static_cast<int64_t>(k), samples.data()) != static_cast<int64_t>(k)) {
-                return fail(src + " cannot be read back to export it");
+                return unreadable();
             }
         } else {
             const int64_t lo = static_cast<int64_t>(std::floor(static_cast<double>(at) * step - halfw)) + 1;
@@ -267,7 +253,7 @@ bool export_audio(const std::string& src, const std::string& dst, const ExportSp
             if (to > from) {
                 if (in.read(from, to - from, win.data() + static_cast<std::size_t>(from - lo) * ch) !=
                     to - from) {
-                    return fail(src + " cannot be read back to export it");
+                    return unreadable();
                 }
             }
             for (std::size_t i = 0; i < k; ++i) {
@@ -286,18 +272,147 @@ bool export_audio(const std::string& src, const std::string& dst, const ExportSp
             }
         }
         for (std::size_t i = 0; i < k * ch; ++i) samples[i] *= gain;
-        if (spec.bits == 32) {
-            if (!out.write_float(samples.data(), k, error)) return fail(error);
-        } else {
-            for (std::size_t i = 0; i < k; ++i) {
-                for (uint16_t c = 0; c < ch; ++c) {
-                    ints[i * ch + c] = quant.process(c, samples[i * ch + c]);
-                }
-            }
-            if (!out.write_int(ints.data(), k, error)) return fail(error);
-        }
+        if (!emit(samples.data(), k)) return false;
     }
+    return true;
+}
+
+bool export_audio(const std::string& src, const std::string& dst, const ExportSpec& spec,
+                  const ExportMeta& meta, double gain_db, std::string& error) {
+    error = export_spec_problem(spec);
+    if (!error.empty()) return false;
+    WavReader in;
+    std::string why;
+    if (!in.open(src, why)) {
+        error = src + ": " + why;
+        return false;
+    }
+    const uint16_t ch = in.channels();
+    if (ch < 1 || ch > 2) {
+        error = "export writes mono or stereo files";
+        return false;
+    }
+    const uint32_t in_rate = in.sample_rate();
+    const uint32_t out_rate = spec.sample_rate != 0 ? spec.sample_rate : in_rate;
+    const bool convert = out_rate != in_rate;
+    const int64_t out_frames = converted_frames(in.frames(), in_rate, out_rate);
+    ExportMeta m = meta;
+    // The origin is a position in samples; it follows the rate.
+    if (convert) {
+        m.time_reference = static_cast<uint64_t>(
+            std::llround(static_cast<double>(meta.time_reference) * out_rate / in_rate));
+    }
+
+    OutFile out;
+    if (!out.open(dst, spec.container, spec.bits, out_rate, ch, m, error)) return false;
+    const auto fail = [&](const std::string& because) {
+        out.abort();
+        std::remove(dst.c_str());
+        error = because;
+        return false;
+    };
+    Quantiser quant(spec.bits == 32 ? 24 : spec.bits, spec.dither, ch);
+    std::vector<int32_t> ints(kBlockFrames * ch);
+    const bool ok = stream_blocks(in, src, out_rate, out_frames, db_to_gain(gain_db), error,
+                                  [&](const float* samples, std::size_t k) {
+        if (spec.bits == 32) return out.write_float(samples, k, error);
+        for (std::size_t i = 0; i < k; ++i) {
+            for (uint16_t c = 0; c < ch; ++c) {
+                ints[i * ch + c] = quant.process(c, samples[i * ch + c]);
+            }
+        }
+        return out.write_int(ints.data(), k, error);
+    });
+    if (!ok) return fail(error);
     if (!out.close(error)) return fail(error);
+    return true;
+}
+
+// --- lossy export (ADR-0182) --------------------------------------------------
+
+namespace {
+
+class FileSink : public LossyByteSink {
+public:
+    ~FileSink() override { close(); }
+    bool open(const std::string& path) {
+        f_ = std::fopen(path.c_str(), "wb");
+        return f_ != nullptr;
+    }
+    bool write(const uint8_t* data, std::size_t n, std::string& error) override {
+        if (f_ != nullptr && std::fwrite(data, 1, n, f_) == n) return true;
+        error = "the export file could not be written (disk full?)";
+        return false;
+    }
+    bool close() {
+        const bool ok = f_ == nullptr || std::fclose(f_) == 0;
+        f_ = nullptr;
+        return ok;
+    }
+
+private:
+    std::FILE* f_ = nullptr;
+};
+
+}  // namespace
+
+bool register_builtin_lossy_codecs(LossyRegistry& registry, std::string& error) {
+#ifdef SONORA_HAVE_OPUS
+    if (!registry.add(LossyCodec::Opus, make_opus_encoder, error)) return false;
+#endif
+#ifdef SONORA_HAVE_VORBIS
+    if (!registry.add(LossyCodec::Vorbis, make_vorbis_encoder, error)) return false;
+#endif
+    (void)registry;
+    (void)error;
+    return true;
+}
+
+bool export_lossy(const std::string& src, const std::string& dst, LossyCodec codec,
+                  uint32_t bitrate, const ExportMeta& meta, double gain_db,
+                  const LossyRegistry& registry, std::string& error) {
+    // Refused before the source or the destination is touched.
+    if (!registry.available(codec)) {
+        const LossyCodecInfo& info = lossy_codec_info(codec);
+        error = std::string(info.name) + " export is not available in this build (" +
+                info.library + " not installed)";
+        return false;
+    }
+    WavReader in;
+    std::string why;
+    if (!in.open(src, why)) {
+        error = src + ": " + why;
+        return false;
+    }
+    const uint16_t ch = in.channels();
+    if (ch < 1 || ch > 2) {
+        error = "export writes mono or stereo files";
+        return false;
+    }
+    // Opus has one rate; Vorbis keeps the source's.
+    const uint32_t out_rate = codec == LossyCodec::Opus ? 48000u : in.sample_rate();
+    FileSink sink;
+    if (!sink.open(dst)) {
+        error = dst + " cannot be created";
+        return false;
+    }
+    const auto fail = [&](const std::string& because) {
+        sink.close();
+        std::remove(dst.c_str());
+        error = because;
+        return false;
+    };
+    std::unique_ptr<LossyEncoder> enc =
+        registry.start(codec, sink, out_rate, ch, bitrate, error);
+    if (!enc) return fail(error);
+    enc->set_description(meta.description);
+    const bool ok = stream_blocks(in, src, out_rate, converted_frames(in.frames(), in.sample_rate(), out_rate),
+                                  db_to_gain(gain_db), error,
+                                  [&](const float* samples, std::size_t k) {
+        return enc->write(samples, k, error);
+    });
+    if (!ok || !enc->finish(error)) return fail(error);
+    if (!sink.close()) return fail("the export file could not be closed (disk full?)");
     return true;
 }
 

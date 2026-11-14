@@ -19,7 +19,7 @@ Now the daemon applies a re-plan itself:
                                     close, the next generation of task ids
                                     starts, and the lead distributes it.
 """
-from . import closed
+from . import closed, remainder
 
 EVENT = "stall_resolver"
 AGENT = "architect"
@@ -50,7 +50,7 @@ def ingest(flow, t):
     """Flow.on_wake_done for plan_request and re-plan wakes: (ok, errors)."""
     fid = t["feature_id"]
     if not is_replan(t):
-        return flow.ingest_plan(fid)
+        return remainder.ingest(flow, fid)
     f = flow.store.get_feature(fid)
     if f is None or f["state"] in ("merged", "closed"):
         return True, []     # carried or closed while the architect ran

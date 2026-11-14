@@ -17,7 +17,7 @@ Rectangle {
     readonly property int rowHeight: 24
     readonly property int shownRows: 8
 
-    width: 480
+    width: 740
     height: column.implicitHeight + 2 * Theme.space3
     radius: Theme.radius
     color: Theme.panel
@@ -72,7 +72,7 @@ Rectangle {
             width: parent.width
             height: 14
             Repeater {
-                model: [["#", 2], ["NAME", 40], ["START", 155], ["END", 242], ["LENGTH", 329]]
+                model: [["#", 2], ["NAME", 40], ["START", 155], ["END", 242], ["LENGTH", 329], ["RECALLS", 424]]
                 Text {
                     required property var modelData
                     x: modelData[1]
@@ -163,6 +163,38 @@ Rectangle {
                             elide: Text.ElideRight
                             color: Theme.textSecondary
                             font { family: Theme.fontFamily; pixelSize: Theme.textSmall; features: { "tnum": 1 } }
+                        }
+                    }
+                    // What this location recalls besides its position (ADR-0137).
+                    // Zoom and Track layout are dimmed until a view is stored:
+                    // a toggle on nothing would lie.
+                    Row {
+                        x: 424; anchors.verticalCenter: parent.verticalCenter
+                        spacing: Theme.space1
+                        SButton {
+                            objectName: "memoryLocationZoom"
+                            text: "Zoom"; implicitWidth: 44; implicitHeight: 18; fontPx: Theme.textSmall
+                            available: row.modelData.hasView
+                            active: row.modelData.recallZoom
+                            onClicked: win.session.setMarkerViewPart(row.index, true, !row.modelData.recallZoom)
+                        }
+                        SButton {
+                            objectName: "memoryLocationTracks"
+                            text: "Track layout"; implicitWidth: 78; implicitHeight: 18; fontPx: Theme.textSmall
+                            available: row.modelData.hasView
+                            active: row.modelData.recallTracks
+                            onClicked: win.session.setMarkerViewPart(row.index, false, !row.modelData.recallTracks)
+                        }
+                        SButton {
+                            objectName: "memoryLocationStoreView"
+                            text: "Store view"; implicitWidth: 68; implicitHeight: 18; fontPx: Theme.textSmall
+                            onClicked: win.session.storeMarkerView(row.index)
+                        }
+                        SButton {
+                            objectName: "memoryLocationClearView"
+                            text: "Clear view"; implicitWidth: 68; implicitHeight: 18; fontPx: Theme.textSmall
+                            available: row.modelData.hasView
+                            onClicked: win.session.clearMarkerView(row.index)
                         }
                     }
                     SButton {
@@ -277,7 +309,7 @@ Rectangle {
         Text {
             width: parent.width
             wrapMode: Text.Wrap
-            text: "A click recalls a location: the insertion point, or the selection, moves to it. Alt-click a marker on the ruler to clear it."
+            text: "A click recalls a location: the insertion point, or the selection, moves to it. Alt-click a marker on the ruler to clear it. Store view keeps the zoom and the track layout of the Edit window with a location; Zoom and Track layout choose what a recall restores."
             color: Theme.textTertiary
             font { family: Theme.fontFamily; pixelSize: Theme.textCaption }
         }

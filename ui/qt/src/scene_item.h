@@ -15,6 +15,8 @@
 
 #include <QPointer>
 #include <QQuickItem>
+#include <QString>
+#include <QVariantList>
 #include <vector>
 
 #include "session_model.h"
@@ -106,10 +108,24 @@ class ConductorRulerItem : public SceneItem {
     Q_OBJECT
     // 0 tempo, 1 meter, 2 tempo track (ConductorRuler's order).
     Q_PROPERTY(int kind READ kind WRITE setKind NOTIFY kindChanged)
+    // ConductorRulerEdit.qml's text (ui/conductor/qt, ADR-0140): EditWindow
+    // creates it over the ruler; "" where that module is not built.
+    Q_PROPERTY(QString editorQml READ editorQml CONSTANT)
 public:
     using SceneItem::SceneItem;
     int kind() const { return kind_; }
     void setKind(int k);
+    QString editorQml() const;
+
+    // What the editor reads while it edits; SessionModel's conductor* calls
+    // make the changes. `x` is in this item's pixels, `mark` a map index.
+    Q_INVOKABLE int markAt(qreal x) const;  // -1 on a miss
+    Q_INVOKABLE qreal markX(int mark) const;
+    Q_INVOKABLE QString dragLabel(int mark, qreal dy, bool wholeBpm) const;
+    Q_INVOKABLE QString tempoText(int mark) const;  // -1: at the insertion point
+    Q_INVOKABLE QString meterText(qreal x) const;
+    Q_INVOKABLE QVariantList meterBeats() const;
+    Q_INVOKABLE QVariantList meterNotes() const;
 
 signals:
     void kindChanged();

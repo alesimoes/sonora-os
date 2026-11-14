@@ -31,6 +31,7 @@
 #include "sonora/model/sequence_file.h"
 #include "import_model.h"
 #include "time_format.h"
+#include "marker_views.h"
 #include "window_layouts.h"
 #include "timeline_document.h"
 #include "timeline_scene.h"
@@ -96,6 +97,7 @@ class SessionModel : public QObject {
     Q_PROPERTY(bool latencyOpen READ latencyOpen NOTIFY latencyOpenChanged)
     // File > Bounce Mix: the Bounce window (ui.mixer.bounce).
     Q_PROPERTY(bool bounceOpen READ bounceOpen NOTIFY bounceOpenChanged)
+    Q_PROPERTY(bool stepSequencerOpen READ stepSequencerOpen NOTIFY stepSequencerOpenChanged)
     // Setup > Preferences: window.preferences, what the operator starts with
     // (counter format, grid, edit mode) and why a save or a read was refused.
     Q_PROPERTY(bool preferencesOpen READ preferencesOpen NOTIFY preferencesChanged)
@@ -385,6 +387,8 @@ public:
     QStringList autolaneNames() const;
     // The track's playlists in their order, for its selector's menu.
     Q_INVOKABLE QStringList trackPlaylists(int track) const;
+    // Channels of the track: two or more makes its pan a balance.
+    Q_INVOKABLE int trackChannels(int track) const;
     bool canUndo() const { return doc_.can_undo(); }
     bool canRedo() const { return doc_.can_redo(); }
     QString undoText() const;
@@ -419,6 +423,8 @@ public:
     bool tempoTrackShown() const { return tempo_track_; }
     bool bounceOpen() const { return bounce_open_; }
     Q_INVOKABLE void setBounceOpen(bool on);
+    bool stepSequencerOpen() const { return step_sequencer_open_; }
+    void setStepSequencerOpen(bool on);
     bool preferencesOpen() const { return prefs_open_; }
     QString prefCounter() const { return QString::fromLatin1(time_format_name(prefs_.counter)); }
     QString prefGrid() const { return QString::fromLatin1(grid_value_name(prefs_.grid)); }
@@ -463,6 +469,14 @@ public:
     // one undo step.
     Q_INVOKABLE bool recallMarker(int row);
     Q_INVOKABLE bool removeMarker(int row);
+    // The view a marker recalls (ADR-0137): captured from the Edit window
+    // now, cleared, or its Zoom / Track layout toggle set. Kept per machine.
+    Q_INVOKABLE bool storeMarkerView(int row);
+    Q_INVOKABLE bool clearMarkerView(int row);
+    Q_INVOKABLE bool setMarkerViewPart(int row, bool zoom, bool on);
+    void setMarkerViewsFile(const QString& path);
+    // Hides exactly these tracks on a recall that ticks Track layout.
+    void setMarkerTrackHider(EditController::TrackHider hide);
     // Section `row` of arrangementSections moved or copied to the insertion point.
     Q_INVOKABLE bool arrangementApply(int row, bool move);
     QVariantList arrangementSections() const;
@@ -531,6 +545,14 @@ public:
     // scrolls time, Ctrl zooms about the pointer.
     Q_INVOKABLE void wheel(qreal x, qreal dx, qreal dy, bool shift, bool ctrl);
     Q_INVOKABLE void rulerClick(qreal x);
+    // Editing on the Tempo and Meter rulers (ADR-0140; ConductorRulerEdit.qml,
+    // ui/conductor/qt). Each returns "" or the refusal, which the ruler shows
+    // beside itself; each edit is one Undo Tempo step, refused during a take.
+    // `mark` is a tempo-map index (-1: a new change at the insertion point).
+    Q_INVOKABLE QString conductorDragEnd(int mark, qreal dy, bool wholeBpm);
+    Q_INVOKABLE QString conductorTypeTempo(int mark, const QString& text);
+    Q_INVOKABLE QString conductorRemove(int mark);
+    Q_INVOKABLE QString conductorSetMeter(qreal x, int beats, int note);
     Q_INVOKABLE void selectTrack(int index);
     // The tracks a Shift-click on a track's R or I button acts on (Pro
     // Tools' "apply to the selected tracks"): the selection's tracks when it
@@ -695,6 +717,7 @@ signals:
     void memoryLocationsOpenChanged();
     void latencyOpenChanged();
     void bounceOpenChanged();
+    void stepSequencerOpenChanged();
     void preferencesChanged();
     void windowConfigsChanged();
     void windowConfigsOpenChanged();
@@ -881,6 +904,7 @@ private:
     int seen_event_lane_ = 0;
     bool latency_open_ = false;
     bool bounce_open_ = false;
+    bool step_sequencer_open_ = false;
     bool prefs_open_ = false;
     Preferences prefs_;
     QString prefs_file_, prefs_refusal_;
@@ -895,6 +919,9 @@ private:
     bool window_configs_open_ = false;
     WindowLayouts layouts_;
     QString layouts_file_;
+    MarkerViews marker_views_;
+    QString marker_views_file_;
+    bool markerViewsEdit(int row, const std::function<bool(model::Id, std::string&)>& act);
     std::function<void(bool)> transport_open_hook_;
     bool tempo_track_ = false;
 
