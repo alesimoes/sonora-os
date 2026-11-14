@@ -3135,3 +3135,28 @@ ADR-0011 "For the owner".
       audio; graceful fallback to native suggestions. ui-engineer.
 - [ ] M-1c follow-up: a fader ride during an unanswered Open may change the
       gain of the track at that index in A. Non-blocking; ui-engineer.
+
+## Harness follow-ups (chore 2026-11-14)
+
+- [ ] harness: build-slot.sh reap() and supervisor lock_remove delete a slot by path after a slow liveness probe; re-read the owner file (pid/start token) immediately before removal, or rename-then-verify, so a reaper never deletes a slot claimed since its probe
+- [ ] harness: RealSys.container_kill returns success and kill_entry returns False when the container could not be confirmed stopped, so the slot is kept while docker is unresponsive
+- [ ] harness: build-wait.sh exit codes collide with the build's own (70/75/2); print a machine-readable state line or map the build's rc out of the reserved range
+- [ ] harness: build-job state "lost" checks the lock for a holder/waiter from the job's cwd before telling the caller to start again
+- [ ] harness: build-job.sh start takes a mkdir lock around the one-job-per-checkout check
+- [ ] harness: test that a build-job runner survives its starting shell's process-tree kill (and document the no-breakaway outcome)
+- [ ] harness: status.py tasks_total still counts closed slices (from #706)
+- [ ] harness: lock_probe.entry_alive treats a recycled winpid as a live holder (pid_alive only); with no container the slot stays until build-slot.sh's MSYS reaper drops it — use is_holder there too (supervisor_checks.py:105)
+- [ ] harness: supervisor_sys._created_nt sets no restype/argtypes on OpenProcess/GetProcessTimes/CloseHandle; declare HANDLE types so a 64-bit handle cannot be truncated
+- [ ] harness: _created_linux uses btime+starttime, which can drift from wall time after suspend or a WSL2 clock resync; compare against a start read on the same clock, or also check the cmdline
+- [ ] harness: remainder._parked_roots parks a root forever on any blocked wake with a hardware cause (a stall-resolver wake included), with no expiry and no check that software slices remain; key parking on the remainder-plan wake only and list what is left (#726 follow-up)
+- [ ] harness: a re-plan's _retire closes a slice blocked with cause hardware, so the parked hardware run drops out of tracking; keep cause=hardware slices in replan.KEEP or record them (#726 follow-up)
+- [ ] harness: console_session._ended_ok reads an 8 KB tail, so a final result line longer than 8 KB loses its "type" key and the clean exit counts as dead; find the last result line instead (#726 follow-up)
+- [ ] harness: blockinfo.kept_open keeps any blocked task with an owner set, including the legacy false asks (docker, coordinator, third bounce); use waits_on_owner or the hardware cause (#726 follow-up)
+- [ ] harness: a third-bounced slice whose re-plan wake blocks (max_attempts) or whose pending re-plan is invalid (replan_invalid) is never retried when no sibling stalls; route it to the owner or re-queue the re-plan (#726 review)
+- [ ] harness: stall_resolver.resolve skips a feature with replan_pending (meta replan_pending:fid) so no resolver is queued while a re-plan waits to apply (#726 review)
+- [ ] harness.selfupdate.restore-scope: selfupdate_runtime.restore() writes back only files git removed or that match HEAD's tracked copy, not ones another writer changed during the move (paused.json pause reverted; event lines appended mid-move lost) (follow-up #767)
+- [ ] harness.selfupdate.restore-atomic: selfupdate_runtime reuses store.write_json_atomic (Windows PermissionError retry) and _move_to calls store.mark_dirty() unconditionally after a move (follow-up #767)
+- [ ] harness.store.empty-refusal-expiry: refuse_start keeps refusing past 24 h while a .bak with content exists, unless an explicit reset marker is given; alert deduplicated per backup (follow-up #767)
+- [ ] harness.selfupdate.runtime-strip-event: a self-update that only strips runtime files logs self_update_runtime_stripped, not the "touched more than plans" ALERT (follow-up #767)
+- [ ] harness.gitguard.nested-shell: gitguard/commitguard parse bash -c / sh -c / eval arguments (follow-up #767)
+- [ ] harness.untrack-harness-plans: git rm --cached the 4 .harness/plan/*.plan.json files main still tracks (follow-up #767)
