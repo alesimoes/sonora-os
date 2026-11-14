@@ -4,6 +4,7 @@
 add_library(sonora_control STATIC
   src/automation_writer.cpp
   src/session_commands.cpp
+  src/varispeed_command.cpp
   src/state_publisher.cpp
   src/engine_control_server.cpp
   src/engine_control_in_process.cpp
@@ -186,6 +187,10 @@ add_test(NAME loop_take_late COMMAND test_loop_take_late)
 add_executable(test_session_commands tests/test_session_commands.cpp)
 target_link_libraries(test_session_commands PRIVATE sonora_control)
 add_test(NAME session_commands COMMAND test_session_commands)
+
+add_executable(test_varispeed_control tests/test_varispeed_control.cpp)
+target_link_libraries(test_varispeed_control PRIVATE sonora_control)
+add_test(NAME varispeed_control COMMAND test_varispeed_control)
 
 # The control API end to end on the real engine: the conformance suite on
 # InProcessEngine over drivers/fake (a test-only edge, as engine/core's
